@@ -18,7 +18,13 @@ test("the install archive excludes local evaluation and session state", { timeou
 		writeFileSync(join(source, ".npmignore"), readFileSync(ignoreFile));
 		writeFileSync(join(source, "README.md"), "Package fixture.\n");
 		writeFileSync(join(source, "runtime.ts"), "export const enabled = true;\n");
-		for (const path of [".evals/run/execution.json", ".pi/session.json", "dump/probe.txt", "output.log", "capture.zip"]) {
+		for (const path of [
+			".evals/run/execution.json",
+			".pi/session.json",
+			"dump/probe.txt",
+			"output.log",
+			"capture.zip",
+		]) {
 			const file = join(source, path);
 			mkdirSync(dirname(file), { recursive: true });
 			writeFileSync(file, "synthetic local state\n");
@@ -44,10 +50,7 @@ test("the install archive excludes local evaluation and session state", { timeou
 		const [archive] = JSON.parse(packed.stdout) as Array<{ filename: string; files: Array<{ path: string }> }>;
 		assert.ok(archive);
 		assert.ok(existsSync(join(destination, archive.filename)));
-		assert.deepEqual(
-			archive.files.map((file) => file.path).sort(),
-			["README.md", "package.json", "runtime.ts"],
-		);
+		assert.deepEqual(archive.files.map((file) => file.path).sort(), ["README.md", "package.json", "runtime.ts"]);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}

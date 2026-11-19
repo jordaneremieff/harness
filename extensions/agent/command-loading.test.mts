@@ -35,7 +35,9 @@ it("loads the work view, its forms and owner views only for an interactive reque
 		assert.equal(loaded.filter(url => url.endsWith("/dashboard.ts")).length, 1);
 	`;
 	const child = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
-		encoding: "utf8", timeout: 15_000, maxBuffer: 512 * 1024,
+		encoding: "utf8",
+		timeout: 15_000,
+		maxBuffer: 512 * 1024,
 	});
 	assert.equal(child.status, 0, child.stderr || child.error?.message);
 });
@@ -71,8 +73,9 @@ it("keeps profile dialog and native contribution modules deferred until command 
 		assert.deepEqual(loaded, [], "registration does not load dialog or native implementation modules");
 	`;
 	const child = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
-		encoding: "utf8", timeout: 15_000, maxBuffer: 512 * 1024,
+		encoding: "utf8",
+		timeout: 15_000,
+		maxBuffer: 512 * 1024,
 	});
 	assert.equal(child.status, 0, child.stderr || child.error?.message);
 });
-

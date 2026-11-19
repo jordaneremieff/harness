@@ -11,15 +11,20 @@ export type BudgetContext = { kind: "unavailable" } | { kind: "host_estimate" | 
 export type BudgetCost = { kind: "unavailable"; reason: string } | { kind: "recorded"; usd: number };
 export const BUDGET_USAGE = "Usage: /stash budget [<context-tokens> <cost-usd>|off]";
 export const BUDGET_NOTICE = "[stash-budget] Local budget notice, not a new operator request.";
-export const ORDINARY_COST: BudgetCost = { kind: "unavailable", reason: "the ordinary extension API has no maintained conversation cost counter" };
+export const ORDINARY_COST: BudgetCost = {
+	kind: "unavailable",
+	reason: "the ordinary extension API has no maintained conversation cost counter",
+};
 
 export function budgetAction(parts: readonly string[]): BudgetAction {
 	if (!parts.length) return { kind: "status" };
 	if (parts.length === 1 && parts[0] === "off") return { kind: "off" };
-	if (parts.length !== 2 || !/^\d+$/.test(parts[0] ?? "") || !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(parts[1] ?? "")) throw new Error(BUDGET_USAGE);
+	if (parts.length !== 2 || !/^\d+$/.test(parts[0] ?? "") || !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(parts[1] ?? ""))
+		throw new Error(BUDGET_USAGE);
 	const contextTokens = Number(parts[0]);
 	const costUsd = Number(parts[1]);
-	if (!Number.isSafeInteger(contextTokens) || contextTokens <= 0 || !Number.isFinite(costUsd) || costUsd <= 0) throw new Error(BUDGET_USAGE);
+	if (!Number.isSafeInteger(contextTokens) || contextTokens <= 0 || !Number.isFinite(costUsd) || costUsd <= 0)
+		throw new Error(BUDGET_USAGE);
 	return { kind: "set", budget: { contextTokens, costUsd } };
 }
 
@@ -27,7 +32,9 @@ export function budgetContext(read: () => ContextUsage | undefined): BudgetConte
 	try {
 		const tokens = read()?.tokens;
 		if (typeof tokens === "number" && Number.isFinite(tokens) && tokens >= 0) return { kind: "host_estimate", tokens };
-	} catch { /* An unavailable observation is not zero. */ }
+	} catch {
+		/* An unavailable observation is not zero. */
+	}
 	return { kind: "unavailable" };
 }
 
@@ -38,16 +45,20 @@ export function conversationCost(state: Readonly<UsageState> | undefined): Budge
 	for (const bucket of [state.models, state.tools]) {
 		for (const usage of Object.values(bucket)) {
 			const amount = usage.cost?.total;
-			if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) return { kind: "unavailable", reason: "a conversation usage bucket has no valid cost" };
+			if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0)
+				return { kind: "unavailable", reason: "a conversation usage bucket has no valid cost" };
 			// Zero does not distinguish an unpriced response from free use.
-			if (amount === 0) return { kind: "unavailable", reason: "a zero-cost usage bucket does not establish price coverage" };
+			if (amount === 0)
+				return { kind: "unavailable", reason: "a zero-cost usage bucket does not establish price coverage" };
 			usd += amount;
 		}
 	}
-	return Number.isFinite(usd) ? { kind: "recorded", usd } : { kind: "unavailable", reason: "the conversation cost total is invalid" };
+	return Number.isFinite(usd)
+		? { kind: "recorded", usd }
+		: { kind: "unavailable", reason: "the conversation cost total is invalid" };
 }
 
-const reached = (value: number, limit: number) => value >= limit ? "at or above budget" : "below budget";
+const reached = (value: number, limit: number) => (value >= limit ? "at or above budget" : "below budget");
 
 export function budgetNotice(budget: SessionBudget, context: BudgetContext, cost: BudgetCost): string {
 	return [
@@ -63,7 +74,9 @@ export function budgetNotice(budget: SessionBudget, context: BudgetContext, cost
 }
 
 /** Facts of a retained `budgetNotice` text: each observed share of its budget, or undefined when unavailable. */
-export function budgetNoticeFacts(text: string): { context?: { tokens: number; budget: number }; cost?: { usd: number; budget: number } } | undefined {
+export function budgetNoticeFacts(
+	text: string,
+): { context?: { tokens: number; budget: number }; cost?: { usd: number; budget: number } } | undefined {
 	if (!text.startsWith(BUDGET_NOTICE)) return undefined;
 	const context = /: (\d+) tokens \/ (\d+)-token budget \(/u.exec(text);
 	const cost = /recorded cost: USD (\d+(?:\.\d+)?) \/ USD (\d+(?:\.\d+)?) budget \(/u.exec(text);
@@ -74,17 +87,28 @@ export function budgetNoticeFacts(text: string): { context?: { tokens: number; b
 }
 
 /** Facts of a retained `budgetStatus` text: the selection state and, when selected, both budgets. */
-export function budgetStatusFacts(text: string): { state: "disabled" | "enabled" | "selected"; budget?: SessionBudget } | undefined {
-	const state = text.startsWith("Stash budget: disabled") ? "disabled" : text.startsWith("Stash budget notices: enabled") ? "enabled" : text.startsWith("Stash budget: selected") ? "selected" : undefined;
+export function budgetStatusFacts(
+	text: string,
+): { state: "disabled" | "enabled" | "selected"; budget?: SessionBudget } | undefined {
+	const state = text.startsWith("Stash budget: disabled")
+		? "disabled"
+		: text.startsWith("Stash budget notices: enabled")
+			? "enabled"
+			: text.startsWith("Stash budget: selected")
+				? "selected"
+				: undefined;
 	if (!state) return undefined;
 	const budget = /\nContext budget: (\d+) tokens; cost budget: USD (\d+(?:\.\d+)?)\./u.exec(text);
 	return { state, ...(budget ? { budget: { contextTokens: Number(budget[1]), costUsd: Number(budget[2]) } } : {}) };
 }
 
 export function budgetStatus(budget: SessionBudget | undefined, delivery: "turn" | "command" = "turn"): string {
-	if (!budget) return "Stash budget: disabled for this conversation. Select budgets with /stash budget <context-tokens> <cost-usd>.";
+	if (!budget)
+		return "Stash budget: disabled for this conversation. Select budgets with /stash budget <context-tokens> <cost-usd>.";
 	return [
-		delivery === "turn" ? "Stash budget notices: enabled for this conversation." : "Stash budget: selected for this conversation. Native automatic per-turn notices are unavailable; /stash budget reports a current snapshot.",
+		delivery === "turn"
+			? "Stash budget notices: enabled for this conversation."
+			: "Stash budget: selected for this conversation. Native automatic per-turn notices are unavailable; /stash budget reports a current snapshot.",
 		`Context budget: ${budget.contextTokens} tokens; cost budget: USD ${budget.costUsd}. Selection lasts until /stash budget off or extension reload; reset and compaction do not clear it.`,
 	].join("\n");
 }

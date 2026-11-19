@@ -25,7 +25,9 @@ function assertReleased(metadata: Parameters<typeof hostPaths>[0]): void {
 
 function deferred(): { promise: Promise<void>; resolve(): void } {
 	let resolve!: () => void;
-	const promise = new Promise<void>((done) => { resolve = done; });
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
 	return { promise, resolve };
 }
 
@@ -38,11 +40,14 @@ function root(t: { after(fn: () => void): void }): string {
 it("rejects a local protocol validation error without recovering the host", { timeout: 15000 }, async (t) => {
 	const metadata = fixtureMetadata(root(t));
 	let requests = 0;
-	const host = await runHost(() => ({
-		request: async () => ({ requests: ++requests }),
-		isIdle: () => true,
-		close: async () => {},
-	}), { metadata, idleMs: 0, announceReady: () => {} });
+	const host = await runHost(
+		() => ({
+			request: async () => ({ requests: ++requests }),
+			isIdle: () => true,
+			close: async () => {},
+		}),
+		{ metadata, idleMs: 0, announceReady: () => {} },
+	);
 	try {
 		const client = await connectHost(metadata, { retryAttempts: 0 });
 		try {
@@ -63,23 +68,46 @@ it("rejects a local protocol validation error without recovering the host", { ti
 	}
 });
 
-async function rejectingVersionHost(t: { after(fn: () => void | Promise<void>): void }, path: string, malformed = false) {
+async function rejectingVersionHost(
+	t: { after(fn: () => void | Promise<void>): void },
+	path: string,
+	malformed = false,
+) {
 	const metadata = fixtureMetadata(path);
 	const paths = hostPaths(metadata);
 	const writerId = randomUUID();
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
-	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: metadata.storageId, cwd: path, createdAt: new Date().toISOString() }));
+	writeFileSync(
+		paths.claim,
+		JSON.stringify({
+			token: randomUUID(),
+			pid: process.pid,
+			host: hostname(),
+			sessionId: metadata.storageId,
+			cwd: path,
+			createdAt: new Date().toISOString(),
+		}),
+	);
 	const released = deferred();
 	const peers = new Set<string>();
 	const server = createTransportServer({
-		serverId: paths.serverId, path: paths.socket,
+		serverId: paths.serverId,
+		path: paths.socket,
 		request: async (_request, peerId) => {
 			peers.add(peerId);
-			if (malformed) return { format: "pi.agent.host-hello/1", writerId, contract: { format: "pi.agent.contract/1", release: "invalid" } };
+			if (malformed)
+				return {
+					format: "pi.agent.host-hello/1",
+					writerId,
+					contract: { format: "pi.agent.contract/1", release: "invalid" },
+				};
 			throw new Error("durable host is closed");
 		},
-		release: (peerId) => { peers.delete(peerId); released.resolve(); },
+		release: (peerId) => {
+			peers.delete(peerId);
+			released.resolve();
+		},
 	});
 	await server.start();
 	t.after(() => server.close());
@@ -97,10 +125,13 @@ it("does not launch after an application error from a live writer", { timeout: 1
 	const path = root(t);
 	const fixture = await rejectingVersionHost(t, path);
 	const marker = join(path, "launched");
-	await assert.rejects(acquireHost(fixture.metadata, {
-		runner: "--eval",
-		runnerArgs: [`require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched'); process.exitCode = 1;`],
-	}), /durable host is closed/u);
+	await assert.rejects(
+		acquireHost(fixture.metadata, {
+			runner: "--eval",
+			runnerArgs: [`require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched'); process.exitCode = 1;`],
+		}),
+		/durable host is closed/u,
+	);
 	assert.equal(existsSync(marker), false, "a live writer's application failure grants no launch authority");
 	await fixture.released;
 	assert.equal(fixture.count(), 0);
@@ -117,21 +148,30 @@ it("a wire close exits the durable process and releases its writer claim", { tim
 	let stop = async () => {};
 	t.after(() => stop());
 	const fixture = runtimeFixture(t);
-	const child = spawn(process.execPath, [fileURLToPath(new URL("./durable-runner.ts", import.meta.url)), JSON.stringify(fixture.metadata)], {
-		cwd: fixture.cwd,
-		env: { ...process.env, ...fixture.env("answer"), PI_AGENT_SESSIONS_DIR: fixture.root },
-		stdio: ["ignore", "pipe", "pipe"],
-	});
+	const child = spawn(
+		process.execPath,
+		[fileURLToPath(new URL("./durable-runner.ts", import.meta.url)), JSON.stringify(fixture.metadata)],
+		{
+			cwd: fixture.cwd,
+			env: { ...process.env, ...fixture.env("answer"), PI_AGENT_SESSIONS_DIR: fixture.root },
+			stdio: ["ignore", "pipe", "pipe"],
+		},
+	);
 	const exited = once(child, "exit");
 	stop = async () => {
 		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 		await exited;
 	};
 	let stderr = "";
-	child.stderr.on("data", (chunk: Buffer) => { stderr = `${stderr}${chunk.toString()}`.slice(-8192); });
+	child.stderr.on("data", (chunk: Buffer) => {
+		stderr = `${stderr}${chunk.toString()}`.slice(-8192);
+	});
 	await new Promise<void>((resolve, reject) => {
 		let output = "";
-		child.stdout.on("data", (chunk: Buffer) => { output = `${output}${chunk.toString()}`.slice(-8192); if (output.includes(HOST_READY_PREFIX)) resolve(); });
+		child.stdout.on("data", (chunk: Buffer) => {
+			output = `${output}${chunk.toString()}`.slice(-8192);
+			if (output.includes(HOST_READY_PREFIX)) resolve();
+		});
 		child.once("error", reject);
 		child.once("exit", () => reject(new Error(`host exited before readiness: ${stderr}`)));
 	});
@@ -163,29 +203,52 @@ it("a lost claim pathname makes the durable runner exit with failure on shutdown
 	assert.equal(existsSync(paths.socket), false, "shutdown removes its own published endpoint");
 });
 
-for (const ownedExit of [false, true]) it(`preserves the busy writer claim with ${ownedExit ? "an explicit" : "no"} process exit owner`, async (t) => {
-	const metadata = fixtureMetadata(root(t));
-	let exits = 0;
-	const exit = (): never => { exits++; assert.equal(existsSync(hostPaths(metadata).claim), true); throw new Error("fixture process exit"); };
-	const host = await runHost(() => ({ request: async () => ({}), isIdle: () => false, close: async () => "process-exit" as const }), {
-		metadata, idleMs: 0, announceReady: () => {}, ...(ownedExit ? { exit } : {}),
+for (const ownedExit of [false, true])
+	it(`preserves the busy writer claim with ${ownedExit ? "an explicit" : "no"} process exit owner`, async (t) => {
+		const metadata = fixtureMetadata(root(t));
+		let exits = 0;
+		const exit = (): never => {
+			exits++;
+			assert.equal(existsSync(hostPaths(metadata).claim), true);
+			throw new Error("fixture process exit");
+		};
+		const host = await runHost(
+			() => ({ request: async () => ({}), isIdle: () => false, close: async () => "process-exit" as const }),
+			{
+				metadata,
+				idleMs: 0,
+				announceReady: () => {},
+				...(ownedExit ? { exit } : {}),
+			},
+		);
+		await assert.rejects(host.close(), ownedExit ? /fixture process exit/u : /dedicated process owner/u);
+		assert.equal(exits, ownedExit ? 1 : 0);
+		assert.equal(existsSync(hostPaths(metadata).claim), true, "a callback or refusal is not proof of writer death");
 	});
-	await assert.rejects(host.close(), ownedExit ? /fixture process exit/u : /dedicated process owner/u);
-	assert.equal(exits, ownedExit ? 1 : 0);
-	assert.equal(existsSync(hostPaths(metadata).claim), true, "a callback or refusal is not proof of writer death");
-});
 
 it("disconnects only after runtime shutdown and writer release", { timeout: 15000 }, async (t) => {
 	const metadata = fixtureMetadata(root(t));
 	const closing = deferred();
 	const release = deferred();
 	let dispatched = 0;
-	const host = await runHost(() => ({
-		request: async () => { dispatched++; return {}; },
-		isIdle: () => true,
-		close: async () => { closing.resolve(); await release.promise; },
-	}), { metadata, idleMs: 0, announceReady: () => {} });
-	t.after(async () => { release.resolve(); await host.close(); });
+	const host = await runHost(
+		() => ({
+			request: async () => {
+				dispatched++;
+				return {};
+			},
+			isIdle: () => true,
+			close: async () => {
+				closing.resolve();
+				await release.promise;
+			},
+		}),
+		{ metadata, idleMs: 0, announceReady: () => {} },
+	);
+	t.after(async () => {
+		release.resolve();
+		await host.close();
+	});
 	const client = await connectHost(metadata, { retryAttempts: 0 });
 	t.after(() => client.close());
 	const closed = client.request("close").catch(() => undefined);
@@ -202,10 +265,16 @@ it("disconnects only after runtime shutdown and writer release", { timeout: 1500
 
 it("waits for writer release through close completion", { timeout: 15000 }, async (t) => {
 	const metadata = fixtureMetadata(root(t));
-	const host = await runHost(() => ({ request: async () => ({}), isIdle: () => true, close: async () => {} }), { metadata, idleMs: 0, announceReady: () => {} });
+	const host = await runHost(() => ({ request: async () => ({}), isIdle: () => true, close: async () => {} }), {
+		metadata,
+		idleMs: 0,
+		announceReady: () => {},
+	});
 	t.after(() => host.close());
 	let settled = false;
-	const released = hostClient.waitForHostRelease(metadata, { after: host.done }).then(() => { settled = true; });
+	const released = hostClient.waitForHostRelease(metadata, { after: host.done }).then(() => {
+		settled = true;
+	});
 	const client = await connectHost(metadata, { retryAttempts: 0 });
 	t.after(() => client.close());
 	await client.request("status");
@@ -220,11 +289,20 @@ it("wire close and local close share one complete shutdown", { timeout: 15000 },
 	const closing = deferred();
 	let closes = 0;
 	let dispatched = 0;
-	const host = await runHost(() => ({
-		request: async () => { dispatched++; return {}; },
-		isIdle: () => true,
-		close: async () => { closes++; closing.resolve(); },
-	}), { metadata, idleMs: 0, announceReady: () => {} });
+	const host = await runHost(
+		() => ({
+			request: async () => {
+				dispatched++;
+				return {};
+			},
+			isIdle: () => true,
+			close: async () => {
+				closes++;
+				closing.resolve();
+			},
+		}),
+		{ metadata, idleMs: 0, announceReady: () => {} },
+	);
 	t.after(() => host.close());
 	const client = await connectHost(metadata, { retryAttempts: 0 });
 	t.after(() => client.close());
@@ -242,13 +320,27 @@ it("shuts down on spontaneous runtime failure without a client request", { timeo
 	let failed = false;
 	let closes = 0;
 	let unsubscribed = false;
-	const host = await runHost(() => ({
-		request: async () => { assert.fail("failure supervision needs no request"); },
-		isIdle: () => true,
-		get shutdownRequired() { return failed; },
-		onActivity: (listener) => { activity = listener; return () => { unsubscribed = true; }; },
-		close: async () => { closes++; },
-	}), { metadata, idleMs: 0, announceReady: () => {} });
+	const host = await runHost(
+		() => ({
+			request: async () => {
+				assert.fail("failure supervision needs no request");
+			},
+			isIdle: () => true,
+			get shutdownRequired() {
+				return failed;
+			},
+			onActivity: (listener) => {
+				activity = listener;
+				return () => {
+					unsubscribed = true;
+				};
+			},
+			close: async () => {
+				closes++;
+			},
+		}),
+		{ metadata, idleMs: 0, announceReady: () => {} },
+	);
 	t.after(() => host.close());
 	assert.equal(existsSync(hostPaths(metadata).claim), true);
 	failed = true;

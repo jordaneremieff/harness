@@ -6,7 +6,8 @@ import { JOB_LIMITS, JobManager } from "./manager.ts";
 it("matches exact binary tail retention across capacities and chunk boundaries", () => {
 	for (const capacity of [1, 2, 7, 256, JOB_LIMITS.logBytes]) {
 		const tail = new OutputTail(capacity);
-		let reference = Buffer.alloc(0), state = 17;
+		let reference = Buffer.alloc(0),
+			state = 17;
 		for (let turn = 0; turn < 80; turn += 1) {
 			state = (Math.imul(state, 1103515245) + 12345) >>> 0;
 			const data = Buffer.alloc(state % (capacity * 2 + 1));
@@ -15,7 +16,8 @@ it("matches exact binary tail retention across capacities and chunk boundaries",
 			tail.append(data);
 			assert.deepEqual(tail.read(), reference);
 			assert.equal(tail.length, reference.length);
-			const independent = tail.read(); independent.fill(0);
+			const independent = tail.read();
+			independent.fill(0);
 			assert.deepEqual(tail.read(), reference);
 		}
 	}
@@ -31,12 +33,15 @@ it("copies only input and bounded read materialisation in the manager workload",
 	});
 	const manager = new JobManager();
 	try {
-		const inputBytes = 16 * 1024 * 1024, chunkBytes = 1024;
+		const inputBytes = 16 * 1024 * 1024,
+			chunkBytes = 1024;
 		const chunk = Buffer.alloc(chunkBytes, 120);
-		const job = manager.start("synthetic", "/", { exec: async (_command, _cwd, execution) => {
-			for (let received = 0; received < inputBytes; received += chunkBytes) execution.onData(chunk);
-			return { exitCode: 0 };
-		} });
+		const job = manager.start("synthetic", "/", {
+			exec: async (_command, _cwd, execution) => {
+				for (let received = 0; received < inputBytes; received += chunkBytes) execution.onData(chunk);
+				return { exitCode: 0 };
+			},
+		});
 		await manager.wait(job.id);
 		assert.equal(copiedBytes, inputBytes);
 		const page = manager.logs(job.id);
@@ -44,8 +49,21 @@ it("copies only input and bounded read materialisation in the manager workload",
 		assert.equal(page.text, "x".repeat(JOB_LIMITS.pageBytes));
 		assert.equal(copiedBytes, inputBytes + JOB_LIMITS.logBytes);
 		let referenceCopies = 0;
-		for (let received = chunkBytes; received <= inputBytes; received += chunkBytes) referenceCopies += Math.min(received, JOB_LIMITS.logBytes);
+		for (let received = chunkBytes; received <= inputBytes; received += chunkBytes)
+			referenceCopies += Math.min(received, JOB_LIMITS.logBytes);
 		assert.equal(referenceCopies, 4_261_543_936);
-		t.diagnostic(JSON.stringify({ inputBytes, chunkBytes, retainedBytes: JOB_LIMITS.logBytes, appendCopiedBytes: copiedBytes - JOB_LIMITS.logBytes, readCopiedBytes: JOB_LIMITS.logBytes, previousAppendCopiedBytes: referenceCopies }));
-	} finally { mocked.mock.restore(); await manager.dispose(); }
+		t.diagnostic(
+			JSON.stringify({
+				inputBytes,
+				chunkBytes,
+				retainedBytes: JOB_LIMITS.logBytes,
+				appendCopiedBytes: copiedBytes - JOB_LIMITS.logBytes,
+				readCopiedBytes: JOB_LIMITS.logBytes,
+				previousAppendCopiedBytes: referenceCopies,
+			}),
+		);
+	} finally {
+		mocked.mock.restore();
+		await manager.dispose();
+	}
 });

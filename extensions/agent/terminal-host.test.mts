@@ -18,7 +18,12 @@ import type { ConversationFrame } from "./live-frames.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { TerminalController, terminalForms, type TerminalManager } from "./terminal-client.ts";
 import { theme } from "./dashboard-test-fixture.mts";
-import { controlledGate, createSibling, terminalHostFixture, type ControlledTerminalHost } from "./terminal-host-fixture.mts";
+import {
+	controlledGate,
+	createSibling,
+	terminalHostFixture,
+	type ControlledTerminalHost,
+} from "./terminal-host-fixture.mts";
 
 /** Poll a condition against real host work, with a deadline and a failure message. */
 async function waitFor(condition: () => boolean, what: string, ms = 10000): Promise<void> {
@@ -35,17 +40,37 @@ async function waitFor(condition: () => boolean, what: string, ms = 10000): Prom
  */
 async function rowOf(manager: TerminalManager, id: string): Promise<AgentConversationSummary> {
 	const found = (await manager.dashboardPage()).rows.find((item) => item.id === id);
-	return found ?? { id, storageId: id.split(":")[0] ?? id, cwd: "", modifiedAt: Date.now(), owner: "unknown", state: "unavailable", cost: Number.NaN, partial: true };
+	return (
+		found ?? {
+			id,
+			storageId: id.split(":")[0] ?? id,
+			cwd: "",
+			modifiedAt: Date.now(),
+			owner: "unknown",
+			state: "unavailable",
+			cost: Number.NaN,
+			partial: true,
+		}
+	);
 }
 
 /** The terminal's forms for one captured target, with each reported result kept for the test. */
-function formsFor(controller: TerminalController, target: AgentConversationSummary): AgentFormHost & { readonly results: ActionResult[] } {
+function formsFor(
+	controller: TerminalController,
+	target: AgentConversationSummary,
+): AgentFormHost & { readonly results: ActionResult[] } {
 	const results: ActionResult[] = [];
 	return { ...terminalForms(controller, new Map(), target), outcome: (result) => results.push(result), results };
 }
 
 /** Mount one form as the work view's inspector does, then run its labelled action until the form closes. */
-async function runForm(name: string, host: AgentFormHost, ready: RegExp, action: string, prepare?: (frame: Inspector) => void): Promise<void> {
+async function runForm(
+	name: string,
+	host: AgentFormHost,
+	ready: RegExp,
+	action: string,
+	prepare?: (frame: Inspector) => void,
+): Promise<void> {
 	let closed = false;
 	const frame = new Inspector({
 		theme,
@@ -70,7 +95,9 @@ async function runForm(name: string, host: AgentFormHost, ready: RegExp, action:
 async function rewindEntry(host: ControlledTerminalHost, manager: TerminalManager): Promise<string> {
 	const gate = controlledGate();
 	host.gates.set("seed", gate);
-	const input = await host.durable.request("submit", { message: "gate:seed", requestId: "seed" }) as { submissionId: number };
+	const input = (await host.durable.request("submit", { message: "gate:seed", requestId: "seed" })) as {
+		submissionId: number;
+	};
 	await gate.started;
 	gate.release();
 	await host.settled(input.submissionId);
@@ -80,7 +107,9 @@ async function rewindEntry(host: ControlledTerminalHost, manager: TerminalManage
 	return entryId;
 }
 
-it("terminal schedule requests a timer owned by the caller, for the captured target, without another input", { timeout: 20000 }, async (t) => {
+it("terminal schedule requests a timer owned by the caller, for the captured target, without another input", {
+	timeout: 20000,
+}, async (t) => {
 	const fixture = terminalHostFixture(t);
 	const host = await fixture.host("schedule", { timers: true });
 	const manager = fixture.manager();
@@ -102,11 +131,16 @@ it("terminal schedule requests a timer owned by the caller, for the captured tar
 	assert.equal(request?.params?.sessionId, row.id);
 	assert.equal(request?.params?.mode, "steer");
 	const deadline = Number(request?.params?.deliverAt);
-	assert.ok(deadline >= before + 59_000 && deadline <= Date.now() + 61_000, "the relative time becomes an absolute deadline");
+	assert.ok(
+		deadline >= before + 59_000 && deadline <= Date.now() + 61_000,
+		"the relative time becomes an absolute deadline",
+	);
 	assert.equal(host.requests.length, 0, "scheduling starts no model turn");
 });
 
-it("terminal rewind owns its result in the executing conversation without another input", { timeout: 20000 }, async (t) => {
+it("terminal rewind owns its result in the executing conversation without another input", {
+	timeout: 20000,
+}, async (t) => {
 	const fixture = terminalHostFixture(t);
 	const host = await fixture.host("rewind");
 	const manager = fixture.manager();
@@ -125,61 +159,100 @@ it("terminal rewind owns its result in the executing conversation without anothe
 	assert.ok(submissionId);
 	const request = host.calls.find((call) => call.method === "rewind");
 	assert.equal(request?.params?.selfOwned, true);
-	assert.equal(request?.params?.ownerId, caller.id, "the manager preserves the caller before host ownership resolution");
+	assert.equal(
+		request?.params?.ownerId,
+		caller.id,
+		"the manager preserves the caller before host ownership resolution",
+	);
 	assert.equal(status.owner, caller.id, "fork provenance stays with the caller");
 	gate.release();
-	assert.equal((await host.settled(submissionId) as { status: string }).status, "done");
+	assert.equal(((await host.settled(submissionId)) as { status: string }).status, "done");
 	await settleDeliveries(host.durable.harness, BACKGROUND_CONTEXT);
 	const state = await readRetainedDelivery(host.durable.harness, BACKGROUND_CONTEXT, true);
 	assert.equal(state?.receipts[String(submissionId)]?.ownerId, returned.sessionId);
 	assert.equal(state?.receipts[String(submissionId)]?.conversationId, started.conversationId);
 	const errors = eventLog<Error>();
 	const passes = eventLog<void>();
-	const watcher = startDurableDelivery({ host: host.durable, metadata: hostMetadata(host.record), catalog: new AgentCatalog(fixture.agentDir), signal: new AbortController().signal, onError: (error) => errors.push(error), onIdle: () => passes.push(undefined) });
+	const watcher = startDurableDelivery({
+		host: host.durable,
+		metadata: hostMetadata(host.record),
+		catalog: new AgentCatalog(fixture.agentDir),
+		signal: new AbortController().signal,
+		onError: (error) => errors.push(error),
+		onIdle: () => passes.push(undefined),
+	});
 	try {
 		await passes.waitForCount(2);
-	} finally { await watcher.close(); }
+	} finally {
+		await watcher.close();
+	}
 	const delivered = await readRetainedDelivery(host.durable.harness, BACKGROUND_CONTEXT, true);
 	assert.equal(delivered?.receipts[String(submissionId)]?.acknowledged, true);
 	assert.deepEqual(errors, []);
-	assert.equal((await host.durable.request("status", { sessionId: returned.sessionId }) as { deliveryError?: string }).deliveryError, undefined);
+	assert.equal(
+		((await host.durable.request("status", { sessionId: returned.sessionId })) as { deliveryError?: string })
+			.deliveryError,
+		undefined,
+	);
 	assert.equal(host.requests.length, 4, "only the seed and requested work use provider turns");
 });
 
-for (const action of ["rewind", "timer-schedule"] as const) for (const selfOwned of [undefined, false, true]) it(`host ${action} preserves caller provenance with selfOwned ${selfOwned}`, { timeout: 20000 }, async (t) => {
-	const fixture = terminalHostFixture(t);
-	const host = await fixture.host("host-options", { timers: action === "timer-schedule" });
-	const caller = `terminal:${randomUUID()}`;
-	const manager = fixture.manager();
-	const entryId = action === "rewind" ? await rewindEntry(host, manager) : undefined;
-	const gate = controlledGate();
-	host.gates.set("options", gate);
-	const sibling = action === "timer-schedule" ? await createSibling(host) : host.record.storageId;
-	const target = action === "timer-schedule" ? `${host.record.storageId}:${sibling.split(":")[1]?.padStart(3, "0")}` : sibling;
-	const result = await host.durable.request(action, { sessionId: target, message: "gate:options", correction: "gate:options", entryId, ownerId: caller, requestId: "host-options", scheduleId: "host-options", deliverAt: Date.now() - 1, origin: "operator", ...(selfOwned === undefined ? {} : { selfOwned }) }) as { submissionId?: number; identity: string };
-	const started = await gate.started;
-	const identity = host.durable.identity(started.conversationId as ConversationId);
-	const status = await host.status(identity);
-	const submissionId = status.submissions.find((input) => input.type === "input")?.id;
-	assert.ok(submissionId);
-	if (action === "rewind") assert.equal(status.owner, caller);
-	else {
-		const context = await host.durable.harness.snapshot(RequestContextDoc, started.conversationId as ConversationId, BACKGROUND_CONTEXT);
-		assert.equal(context?.requests[0]?.requester, caller);
-		assert.equal(context?.requests[0]?.replyTo, selfOwned ? identity : caller);
-		assert.notEqual(target, identity, "the host resolves the padded selector to its canonical target identity");
-	}
-	gate.release();
-	await host.settled(submissionId);
-	await settleDeliveries(host.durable.harness, BACKGROUND_CONTEXT);
-	const state = await readRetainedDelivery(host.durable.harness, BACKGROUND_CONTEXT, true);
-	assert.equal(state?.receipts[String(submissionId)]?.ownerId, selfOwned ? identity : caller);
-	assert.equal(state?.receipts[String(submissionId)]?.origin, "operator");
-	if (action === "rewind") assert.equal(result.identity, identity);
-});
+for (const action of ["rewind", "timer-schedule"] as const)
+	for (const selfOwned of [undefined, false, true])
+		it(`host ${action} preserves caller provenance with selfOwned ${selfOwned}`, { timeout: 20000 }, async (t) => {
+			const fixture = terminalHostFixture(t);
+			const host = await fixture.host("host-options", { timers: action === "timer-schedule" });
+			const caller = `terminal:${randomUUID()}`;
+			const manager = fixture.manager();
+			const entryId = action === "rewind" ? await rewindEntry(host, manager) : undefined;
+			const gate = controlledGate();
+			host.gates.set("options", gate);
+			const sibling = action === "timer-schedule" ? await createSibling(host) : host.record.storageId;
+			const target =
+				action === "timer-schedule" ? `${host.record.storageId}:${sibling.split(":")[1]?.padStart(3, "0")}` : sibling;
+			const result = (await host.durable.request(action, {
+				sessionId: target,
+				message: "gate:options",
+				correction: "gate:options",
+				entryId,
+				ownerId: caller,
+				requestId: "host-options",
+				scheduleId: "host-options",
+				deliverAt: Date.now() - 1,
+				origin: "operator",
+				...(selfOwned === undefined ? {} : { selfOwned }),
+			})) as { submissionId?: number; identity: string };
+			const started = await gate.started;
+			const identity = host.durable.identity(started.conversationId as ConversationId);
+			const status = await host.status(identity);
+			const submissionId = status.submissions.find((input) => input.type === "input")?.id;
+			assert.ok(submissionId);
+			if (action === "rewind") assert.equal(status.owner, caller);
+			else {
+				const context = await host.durable.harness.snapshot(
+					RequestContextDoc,
+					started.conversationId as ConversationId,
+					BACKGROUND_CONTEXT,
+				);
+				assert.equal(context?.requests[0]?.requester, caller);
+				assert.equal(context?.requests[0]?.replyTo, selfOwned ? identity : caller);
+				assert.notEqual(target, identity, "the host resolves the padded selector to its canonical target identity");
+			}
+			gate.release();
+			await host.settled(submissionId);
+			await settleDeliveries(host.durable.harness, BACKGROUND_CONTEXT);
+			const state = await readRetainedDelivery(host.durable.harness, BACKGROUND_CONTEXT, true);
+			assert.equal(state?.receipts[String(submissionId)]?.ownerId, selfOwned ? identity : caller);
+			assert.equal(state?.receipts[String(submissionId)]?.origin, "operator");
+			if (action === "rewind") assert.equal(result.identity, identity);
+		});
 
 /** Resolve with the selected identity's live frame once `accept` holds. */
-function frameWhen(controller: TerminalController, id: string, accept: (frame: ConversationFrame) => boolean): Promise<ConversationFrame> {
+function frameWhen(
+	controller: TerminalController,
+	id: string,
+	accept: (frame: ConversationFrame) => boolean,
+): Promise<ConversationFrame> {
 	return new Promise((resolve) => {
 		const check = () => {
 			const frame = controller.source.frame(id);
@@ -199,7 +272,11 @@ const viewing = new WeakSet<TerminalController>();
  * Select one identity as the work view does: the view listens for its whole life, and selection
  * is passive, with the live observation and owner modules of the chosen identity.
  */
-function observe(controller: TerminalController, id: string, accept: (frame: ConversationFrame) => boolean = () => true): Promise<ConversationFrame> {
+function observe(
+	controller: TerminalController,
+	id: string,
+	accept: (frame: ConversationFrame) => boolean = () => true,
+): Promise<ConversationFrame> {
 	if (!viewing.has(controller)) {
 		viewing.add(controller);
 		controller.source.subscribe(() => {});
@@ -221,7 +298,10 @@ async function activeInput(host: ControlledTerminalHost, identity = host.record.
 }
 
 function assertNoAbort(host: ControlledTerminalHost) {
-	assert.equal(host.calls.some((call) => ["abort", "configure", "compact", "reset", "rewind"].includes(call.method)), false);
+	assert.equal(
+		host.calls.some((call) => ["abort", "configure", "compact", "reset", "rewind"].includes(call.method)),
+		false,
+	);
 	for (const gate of host.gates.values()) assert.equal(gate.aborts, 0);
 }
 
@@ -230,13 +310,23 @@ it("acknowledges terminal input without submitting its answer back to the target
 	const host = await fixture.host("self-owned");
 	const gate = controlledGate();
 	host.gates.set("answer", gate);
-	const controller = new TerminalController({ manager: fixture.manager(), caller: { id: `terminal:${randomUUID()}`, cwd: fixture.root } });
+	const controller = new TerminalController({
+		manager: fixture.manager(),
+		caller: { id: `terminal:${randomUUID()}`, cwd: fixture.root },
+	});
 	const revisions = eventLog<AgentDeliveryState>();
 	const off = onStoredCommit(host.durable.harness, (publication) => {
 		const receipts = { ...revisions.at(-1)?.receipts };
 		let changed = false;
 		for (const change of publication.changes) {
-			if (change.type !== "document" || change.kind !== "change" || change.record.kind !== "agent.delivery-row" || change.value.kind !== "receipt" || change.value.value == null) continue;
+			if (
+				change.type !== "document" ||
+				change.kind !== "change" ||
+				change.record.kind !== "agent.delivery-row" ||
+				change.value.kind !== "receipt" ||
+				change.value.value == null
+			)
+				continue;
 			const receipt = JSON.parse(JSON.stringify(change.value.value)) as AgentDeliveryState["receipts"][string];
 			receipts[String(receipt.submissionId)] = receipt;
 			changed = true;
@@ -244,14 +334,20 @@ it("acknowledges terminal input without submitting its answer back to the target
 		if (changed) revisions.push({ intents: [], receipts, reports: [] });
 	});
 	const errors = eventLog<Error>();
-	const watcher = startDurableDelivery({ host: host.durable, metadata: hostMetadata(host.record), catalog: new AgentCatalog(fixture.agentDir), signal: new AbortController().signal, onError: (error) => errors.push(error) });
+	const watcher = startDurableDelivery({
+		host: host.durable,
+		metadata: hostMetadata(host.record),
+		catalog: new AgentCatalog(fixture.agentDir),
+		signal: new AbortController().signal,
+		onError: (error) => errors.push(error),
+	});
 	try {
 		const admitted = await controller.admit(host.record.storageId, "gate:answer", "steer");
 		const id = (admitted.raw as { submissionId: number }).submissionId;
 		await gate.started;
 		assert.equal(host.requests.length, 1);
 		gate.release();
-		assert.equal((await host.settled(id) as { status: string }).status, "done");
+		assert.equal(((await host.settled(id)) as { status: string }).status, "done");
 		await revisions.waitFor((states) => states.some((state) => state.receipts[String(id)]?.acknowledged === true));
 		await watcher.close();
 		const state = await readRetainedDelivery(host.durable.harness, BACKGROUND_CONTEXT, true);
@@ -261,13 +357,28 @@ it("acknowledges terminal input without submitting its answer back to the target
 		const status = await host.status();
 		for (const input of status.submissions) if (input.type === "input") await host.settled(input.id);
 		const entries = await host.durable.root().entries({}, 50, undefined, BACKGROUND_CONTEXT);
-		assert.deepEqual({ modelRequests: host.requests.length, resultInputs: entries.items.filter((entry) => entry.kind === "pi.user" && JSON.stringify(entry).includes("Agent result from")).length },
-			{ modelRequests: 2, resultInputs: 0 }, "only the tool call and its answer request the model; no answer is fed back as input");
+		assert.deepEqual(
+			{
+				modelRequests: host.requests.length,
+				resultInputs: entries.items.filter(
+					(entry) => entry.kind === "pi.user" && JSON.stringify(entry).includes("Agent result from"),
+				).length,
+			},
+			{ modelRequests: 2, resultInputs: 0 },
+			"only the tool call and its answer request the model; no answer is fed back as input",
+		);
 		assert.deepEqual(errors, []);
-	} finally { gate.release(); off(); await watcher.close(); await controller.close(); }
+	} finally {
+		gate.release();
+		off();
+		await watcher.close();
+		await controller.close();
+	}
 });
 
-it("switches A-B-A observations without replay, identity changes, or a model turn while both native tools block", { timeout: 20000 }, async (t) => {
+it("switches A-B-A observations without replay, identity changes, or a model turn while both native tools block", {
+	timeout: 20000,
+}, async (t) => {
 	const fixture = terminalHostFixture(t);
 	const a = await fixture.host("a");
 	const b = await fixture.host("b");
@@ -275,7 +386,10 @@ it("switches A-B-A observations without replay, identity changes, or a model tur
 	const gateB = controlledGate();
 	a.gates.set("a", gateA);
 	b.gates.set("b", gateB);
-	const controller = new TerminalController({ manager: fixture.manager(), caller: { id: "terminal-one", cwd: fixture.root } });
+	const controller = new TerminalController({
+		manager: fixture.manager(),
+		caller: { id: "terminal-one", cwd: fixture.root },
+	});
 	t.after(() => controller.close());
 	await observe(controller, a.record.storageId);
 	await controller.admit(a.record.storageId, "gate:a", "steer");
@@ -293,7 +407,11 @@ it("switches A-B-A observations without replay, identity changes, or a model tur
 	assert.ok(b.requests[0]?.sessionId);
 	assert.notEqual(a.requests[0]?.sessionId, b.requests[0]?.sessionId);
 	for (const host of [a, b, a]) {
-		const frame = await observe(controller, host.record.storageId, (value) => value.storageId === host.record.storageId && value.status.busy);
+		const frame = await observe(
+			controller,
+			host.record.storageId,
+			(value) => value.storageId === host.record.storageId && value.status.busy,
+		);
 		assert.equal(controller.selected, host.record.storageId);
 		assert.equal(frame.conversationId, 1);
 		assert.equal(frame.status.submissions[0]?.id, host === a ? inputA : inputB);
@@ -310,8 +428,8 @@ it("switches A-B-A observations without replay, identity changes, or a model tur
 	assertNoAbort(b);
 	gateA.release();
 	gateB.release();
-	assert.equal((await a.settled(inputA) as { status: string }).status, "done");
-	assert.equal((await b.settled(inputB) as { status: string }).status, "done");
+	assert.equal(((await a.settled(inputA)) as { status: string }).status, "done");
+	assert.equal(((await b.settled(inputB)) as { status: string }).status, "done");
 	assert.equal(a.requests.length, 2, "only the normal post-tool answer requests another turn");
 	assert.equal(b.requests.length, 2);
 	assert.equal(a.requests[1]?.sessionId, a.requests[0]?.sessionId);
@@ -329,7 +447,10 @@ it("attaches the exact nonroot identity without changing root or sibling work", 
 		host.gates.set(`c${index}`, gate);
 		return gate;
 	});
-	const controller = new TerminalController({ manager: fixture.manager(), caller: { id: "terminal-nonroot", cwd: fixture.root } });
+	const controller = new TerminalController({
+		manager: fixture.manager(),
+		caller: { id: "terminal-nonroot", cwd: fixture.root },
+	});
 	t.after(() => controller.close());
 	const submissions: number[] = [];
 	for (const [index, identity] of identities.entries()) {
@@ -341,7 +462,11 @@ it("attaches the exact nonroot identity without changing root or sibling work", 
 		submissions.push(await activeInput(host, identity));
 	}
 	const before = await Promise.all(identities.map((identity) => host.identityState(identity)));
-	const frame = await observe(controller, target, (value) => `${value.storageId}:${value.conversationId}` === target && value.status.busy);
+	const frame = await observe(
+		controller,
+		target,
+		(value) => `${value.storageId}:${value.conversationId}` === target && value.status.busy,
+	);
 	assert.equal(controller.selected, target);
 	assert.equal(frame.status.identity, target);
 	assert.equal(frame.status.submissions[0]?.id, submissions[1]);
@@ -351,19 +476,30 @@ it("attaches the exact nonroot identity without changing root or sibling work", 
 	for (const gate of gates) assert.equal(gate.calls, 1);
 	assertNoAbort(host);
 	for (const gate of gates) gate.release();
-	for (const id of submissions) assert.equal((await host.settled(id) as { status: string }).status, "done");
+	for (const id of submissions) assert.equal(((await host.settled(id)) as { status: string }).status, "done");
 });
 
-it("admits two clients to one target and closes only the first client's observations", { timeout: 20000 }, async (t) => {
+it("admits two clients to one target and closes only the first client's observations", {
+	timeout: 20000,
+}, async (t) => {
 	const fixture = terminalHostFixture(t);
 	const host = await fixture.host("shared");
 	const firstGate = controlledGate();
 	const secondGate = controlledGate();
 	host.gates.set("first", firstGate);
 	host.gates.set("second", secondGate);
-	const first = new TerminalController({ manager: fixture.manager(), caller: { id: "terminal-first", cwd: fixture.root } });
-	const second = new TerminalController({ manager: fixture.manager(), caller: { id: "terminal-second", cwd: fixture.root } });
-	t.after(async () => { await first.close(); await second.close(); });
+	const first = new TerminalController({
+		manager: fixture.manager(),
+		caller: { id: "terminal-first", cwd: fixture.root },
+	});
+	const second = new TerminalController({
+		manager: fixture.manager(),
+		caller: { id: "terminal-second", cwd: fixture.root },
+	});
+	t.after(async () => {
+		await first.close();
+		await second.close();
+	});
 	const id = host.record.storageId;
 	await Promise.all([observe(first, id), observe(second, id)]);
 	await host.waitForObservations(2);
@@ -384,18 +520,41 @@ it("admits two clients to one target and closes only the first client's observat
 	assert.equal(firstGate.calls, 1);
 	assert.equal(host.requests.length, 1);
 	assertNoAbort(host);
-	const continued = frameWhen(second, id, (frame) => frame.status.busy && frame.status.submissions.some((submission) => submission.id === secondInput) && frame.entries.some((entry) => JSON.stringify(entry).includes("released:first")));
+	const continued = frameWhen(
+		second,
+		id,
+		(frame) =>
+			frame.status.busy &&
+			frame.status.submissions.some((submission) => submission.id === secondInput) &&
+			frame.entries.some((entry) => JSON.stringify(entry).includes("released:first")),
+	);
 	firstGate.release();
 	await secondGate.started;
 	await continued;
 	const sharedRun = await host.status();
-	assert.deepEqual(sharedRun.submissions.filter((input) => input.id === firstInput || input.id === secondInput).map((input) => input.status), ["placed", "placed"], "both inputs remain placed until their shared run ends");
+	assert.deepEqual(
+		sharedRun.submissions
+			.filter((input) => input.id === firstInput || input.id === secondInput)
+			.map((input) => input.status),
+		["placed", "placed"],
+		"both inputs remain placed until their shared run ends",
+	);
 	assert.equal(secondGate.calls, 1);
 	assert.equal(host.observations.size, 1);
-	const finished = frameWhen(second, id, (frame) => !frame.status.busy && frame.entries.some((entry) => JSON.stringify(entry).includes("answer:second")));
+	const finished = frameWhen(
+		second,
+		id,
+		(frame) => !frame.status.busy && frame.entries.some((entry) => JSON.stringify(entry).includes("answer:second")),
+	);
 	secondGate.release();
-	const outcomes = await Promise.all([host.settled(firstInput), host.settled(secondInput)]) as Array<{ status: string; answer: number }>;
-	assert.deepEqual(outcomes.map(({ status }) => status), ["done", "done"]);
+	const outcomes = (await Promise.all([host.settled(firstInput), host.settled(secondInput)])) as Array<{
+		status: string;
+		answer: number;
+	}>;
+	assert.deepEqual(
+		outcomes.map(({ status }) => status),
+		["done", "done"],
+	);
 	assert.ok(Number.isSafeInteger(outcomes[0]?.answer));
 	assert.equal(outcomes[0]?.answer, outcomes[1]?.answer, "both inputs settle with the same committed answer entry");
 	await finished;
@@ -403,7 +562,9 @@ it("admits two clients to one target and closes only the first client's observat
 	assertNoAbort(host);
 });
 
-it("runs native commands with a distinct invocation ID on the target captured when the form opened", { timeout: 20000 }, async (t) => {
+it("runs native commands with a distinct invocation ID on the target captured when the form opened", {
+	timeout: 20000,
+}, async (t) => {
 	const fixture = terminalHostFixture(t);
 	const host = await fixture.host("commands");
 	const target = await createSibling(host);
@@ -413,7 +574,10 @@ it("runs native commands with a distinct invocation ID on the target captured wh
 	await observe(controller, target);
 	const forms = formsFor(controller, await rowOf(manager, target));
 	const listed = await forms.commands();
-	assert.ok(listed?.some((choice) => choice.value === "echo"), "the host's inventory backs the command list");
+	assert.ok(
+		listed?.some((choice) => choice.value === "echo"),
+		"the host's inventory backs the command list",
+	);
 	assert.ok(listed?.some((choice) => choice.value === "reload"));
 	await observe(controller, host.record.storageId);
 	const result = await forms.run("command", ["echo", "hello"]);
@@ -440,7 +604,9 @@ it("runs native commands with a distinct invocation ID on the target captured wh
 	assert.equal(host.requests.length, 0, "command dispatch does not request a model turn");
 });
 
-it("configures the native model object on an idle exact target without provider calls", { timeout: 20000 }, async (t) => {
+it("configures the native model object on an idle exact target without provider calls", {
+	timeout: 20000,
+}, async (t) => {
 	const fixture = terminalHostFixture(t);
 	const host = await fixture.host("configuration");
 	const target = await createSibling(host);
@@ -451,7 +617,10 @@ it("configures the native model object on an idle exact target without provider 
 	const model = { provider: host.record.model.provider, modelId: "alternate" };
 	const rootBefore = await host.status();
 	const offered = await forms.models();
-	assert.ok(offered.some((choice) => choice.identity === `${model.provider}/${model.modelId}`), "the host's own model list backs the picker");
+	assert.ok(
+		offered.some((choice) => choice.identity === `${model.provider}/${model.modelId}`),
+		"the host's own model list backs the picker",
+	);
 	await runForm("configure", forms, /Configure /u, "Apply", (frame) => {
 		frame.handleInput("\r");
 		for (const character of "alternate") frame.handleInput(character);

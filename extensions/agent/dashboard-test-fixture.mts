@@ -88,16 +88,41 @@ export function row(id = "storage:1", patch: Partial<AgentConversationSummary> =
 		...patch,
 	};
 }
-export function coverage(rows: readonly AgentConversationSummary[] = [], patch: Partial<AgentDashboardCoverage> = {}): AgentDashboardCoverage {
+export function coverage(
+	rows: readonly AgentConversationSummary[] = [],
+	patch: Partial<AgentDashboardCoverage> = {},
+): AgentDashboardCoverage {
 	const storages = new Set(rows.map((row) => row.storageId));
-	return { complete: true, storagesVisited: storages.size, skipped: 0, omitted: 0, nextCursor: null,
-		inventory: { candidates: storages.size, inspected: storages.size, unreadable: 0, unknownClaims: 0, returned: storages.size, remaining: 0, priorityRemaining: 0,
-			remainingRows: 0, priorityRemainingRows: 0, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 320 },
-		projections: Object.fromEntries([...storages].map((id) => [id, { skipped: 0, omitted: 0 }])), ...patch };
+	return {
+		complete: true,
+		storagesVisited: storages.size,
+		skipped: 0,
+		omitted: 0,
+		nextCursor: null,
+		inventory: {
+			candidates: storages.size,
+			inspected: storages.size,
+			unreadable: 0,
+			unknownClaims: 0,
+			returned: storages.size,
+			remaining: 0,
+			priorityRemaining: 0,
+			remainingRows: 0,
+			priorityRemainingRows: 0,
+			recordByteLimit: 32768,
+			claimByteLimit: 16384,
+			outputLimit: 320,
+		},
+		projections: Object.fromEntries([...storages].map((id) => [id, { skipped: 0, omitted: 0 }])),
+		...patch,
+	};
 }
 export function page(rows: readonly AgentConversationSummary[]): AgentPriorityPage {
 	return {
-		rows: rows.map((row) => ({ ...row, rosterOrder: row.rosterOrder ?? { priority: false, modifiedAt: row.modifiedAt } })),
+		rows: rows.map((row) => ({
+			...row,
+			rosterOrder: row.rosterOrder ?? { priority: false, modifiedAt: row.modifiedAt },
+		})),
 		coverage: coverage(rows),
 		observedAt: new Date(0).toISOString(),
 	};
@@ -171,14 +196,21 @@ export function formsHost(
 		source: observed,
 		run: (name, args) => record(name, args),
 		timers: async () => [],
-		schedule: async (input) => ({ text: String(await record("schedule", [input.message, input.deliverAt, input.mode])), sessionId: target.id }),
+		schedule: async (input) => ({
+			text: String(await record("schedule", [input.message, input.deliverAt, input.mode])),
+			sessionId: target.id,
+		}),
 		models: async () => [{ identity: "test/model" }, { identity: "test/other", name: "Other" }],
 		configure: (configured) => record("configure", [JSON.stringify(configured)]),
 		commands: async () => [{ value: "plan", label: "plan", description: "Plan the work" }],
 		profile: async (method, input) => record(method, [JSON.stringify(input)]),
 		profileDrafts: new Map(),
 		status: async () => ({ identity: target.id }),
-		inspect: async (params) => ({ view: "result", status: "unavailable", reason: `No result fixture for ${JSON.stringify(params)}` }),
+		inspect: async (params) => ({
+			view: "result",
+			status: "unavailable",
+			reason: `No result fixture for ${JSON.stringify(params)}`,
+		}),
 		outcome: () => {},
 		...patch,
 	};
@@ -217,7 +249,12 @@ export function fixture(
 		{
 			submit: async () => ({ text: "admitted" }),
 			newAgent: async () => ({ text: "created" }),
-			newDefaults: () => ({ cwd: "/work", presets: [{ value: "worker", label: "worker", description: "test/model \u00b7 high \u00b7 machine default" }], preset: "worker", ownership: "The new conversation owns its answer." }),
+			newDefaults: () => ({
+				cwd: "/work",
+				presets: [{ value: "worker", label: "worker", description: "test/model \u00b7 high \u00b7 machine default" }],
+				preset: "worker",
+				ownership: "The new conversation owns its answer.",
+			}),
 			forms: (target) => formsHost(target, state, observed, calls),
 			...operations,
 		},

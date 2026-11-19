@@ -7,11 +7,16 @@ import { findSessionFile, readSessionModel } from "./primary-session-model.ts";
 
 async function fixture(run: (root: string) => Promise<void>): Promise<void> {
 	const root = await mkdtemp(join(tmpdir(), "session-model-"));
-	try { await run(root); } finally { await rm(root, { recursive: true, force: true }); }
+	try {
+		await run(root);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 }
 const model = (provider: string, modelId: string) => JSON.stringify({ type: "model_change", provider, modelId });
 const thinking = (thinkingLevel: string) => JSON.stringify({ type: "thinking_level_change", thinkingLevel });
-const assistant = (provider: string, id: string) => JSON.stringify({ type: "message", message: { role: "assistant", provider, model: id } });
+const assistant = (provider: string, id: string) =>
+	JSON.stringify({ type: "message", message: { role: "assistant", provider, model: id } });
 
 it("finds a session by its exact filename suffix in a working-directory folder", async () => {
 	await fixture(async (root) => {
@@ -51,7 +56,17 @@ it("returns undefined for invalid identities and absent or unreadable session ro
 it("uses the newest model and thinking level independently", async () => {
 	await fixture(async (root) => {
 		const file = join(root, "session.jsonl");
-		await writeFile(file, [model("first", "one"), thinking("low"), assistant("second", "two"), thinking("high"), model("last", "three"), thinking("max")].join("\n"));
+		await writeFile(
+			file,
+			[
+				model("first", "one"),
+				thinking("low"),
+				assistant("second", "two"),
+				thinking("high"),
+				model("last", "three"),
+				thinking("max"),
+			].join("\n"),
+		);
 		assert.deepEqual(await readSessionModel(file), { provider: "last", modelId: "three", thinkingLevel: "max" });
 		await writeFile(file, [model("first", "one"), thinking("medium"), assistant("last", "two")].join("\n"));
 		assert.deepEqual(await readSessionModel(file), { provider: "last", modelId: "two", thinkingLevel: "medium" });
@@ -61,7 +76,8 @@ it("uses the newest model and thinking level independently", async () => {
 it("keeps model facts from the head when a long session has no model change in its tail", async () => {
 	await fixture(async (root) => {
 		const file = join(root, "session.jsonl");
-		const padding = `${JSON.stringify({ type: "message", message: { role: "user", content: "x".repeat(1024) } })}\n`.repeat(400);
+		const padding =
+			`${JSON.stringify({ type: "message", message: { role: "user", content: "x".repeat(1024) } })}\n`.repeat(400);
 		await writeFile(file, `${model("head", "initial")}\n${thinking("low")}\n${padding}${thinking("high")}\n`);
 		assert.deepEqual(await readSessionModel(file), { provider: "head", modelId: "initial", thinkingLevel: "high" });
 	});
@@ -70,8 +86,14 @@ it("keeps model facts from the head when a long session has no model change in i
 it("reads newest facts from the tail of a long session and ignores partial boundary records", async () => {
 	await fixture(async (root) => {
 		const file = join(root, "session.jsonl");
-		const longRecord = JSON.stringify({ type: "message", message: { role: "user", content: `model thinking ${"x".repeat(400 * 1024)}` } });
-		await writeFile(file, `${model("head", "initial")}\n${thinking("low")}\n${longRecord}\n${assistant("tail", "latest")}\n${thinking("xhigh")}\n`);
+		const longRecord = JSON.stringify({
+			type: "message",
+			message: { role: "user", content: `model thinking ${"x".repeat(400 * 1024)}` },
+		});
+		await writeFile(
+			file,
+			`${model("head", "initial")}\n${thinking("low")}\n${longRecord}\n${assistant("tail", "latest")}\n${thinking("xhigh")}\n`,
+		);
 		assert.deepEqual(await readSessionModel(file), { provider: "tail", modelId: "latest", thinkingLevel: "xhigh" });
 	});
 });
@@ -79,7 +101,18 @@ it("reads newest facts from the tail of a long session and ignores partial bound
 it("ignores malformed records and other message roles without losing valid model facts", async () => {
 	await fixture(async (root) => {
 		const file = join(root, "session.jsonl");
-		await writeFile(file, [model("valid", "selected"), '{"type":"model_change",', "null", "[]", JSON.stringify({ type: "model_change", provider: "bad", modelId: 3 }), JSON.stringify({ type: "thinking_level_change", thinkingLevel: 3 }), JSON.stringify({ type: "message", message: { role: "user", provider: "wrong", model: "ignored" } })].join("\n"));
+		await writeFile(
+			file,
+			[
+				model("valid", "selected"),
+				'{"type":"model_change",',
+				"null",
+				"[]",
+				JSON.stringify({ type: "model_change", provider: "bad", modelId: 3 }),
+				JSON.stringify({ type: "thinking_level_change", thinkingLevel: 3 }),
+				JSON.stringify({ type: "message", message: { role: "user", provider: "wrong", model: "ignored" } }),
+			].join("\n"),
+		);
 		assert.deepEqual(await readSessionModel(file), { provider: "valid", modelId: "selected" });
 	});
 });

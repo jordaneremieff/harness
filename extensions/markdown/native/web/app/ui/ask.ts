@@ -111,8 +111,14 @@
 		}
 		function paintPassage() {
 			const range = visible ? rangeFor(threadRange()) : null;
-			editor.highlight("comment", passageRanges(comments.filter((comment) => !visible || current?.pendingComment !== comment)));
-			editor.highlight("passage", visible && current?.comments ? passageRanges(current.comments) : range ? [range] : []);
+			editor.highlight(
+				"comment",
+				passageRanges(comments.filter((comment) => !visible || current?.pendingComment !== comment)),
+			);
+			editor.highlight(
+				"passage",
+				visible && current?.comments ? passageRanges(current.comments) : range ? [range] : [],
+			);
 		}
 		function action(label: string, run: () => void) {
 			return button(label, "", run, { className: "link agent" });
@@ -122,12 +128,20 @@
 			return msg ? api.uiLogic.promptLabel(msg.state) : "New question";
 		}
 		function selectionAction() {
-			const selection = editor.selection(), documentAtOpen = controller.doc, generation = documentAtOpen?.generation;
-			const item = button("Ask about the selection", "quote", () => {
-				activity.hidePopover();
-				if (selection && documentAtOpen === controller.doc && generation === controller.doc?.generation) ask.open(selection);
-				else ctx.toast("Select text to ask about it.");
-			}, { className: "item" });
+			const selection = editor.selection(),
+				documentAtOpen = controller.doc,
+				generation = documentAtOpen?.generation;
+			const item = button(
+				"Ask about the selection",
+				"quote",
+				() => {
+					activity.hidePopover();
+					if (selection && documentAtOpen === controller.doc && generation === controller.doc?.generation)
+						ask.open(selection);
+					else ctx.toast("Select text to ask about it.");
+				},
+				{ className: "item" },
+			);
 			item.disabled = !selection;
 			return item;
 		}
@@ -146,10 +160,17 @@
 				el("div", { class: "sep" }),
 			);
 			if (comments.length)
-				activity.append(button(`Pending batch · ${commentCount(comments.length)}`, "ask", () => {
-					activity.hidePopover();
-					openBatchList();
-				}, { className: "item" }));
+				activity.append(
+					button(
+						`Pending batch · ${commentCount(comments.length)}`,
+						"ask",
+						() => {
+							activity.hidePopover();
+							openBatchList();
+						},
+						{ className: "item" },
+					),
+				);
 			else if (!threads.length) activity.append(el("div", { class: "sec" }, "Select a passage and choose Ask."));
 			for (const thread of threads) {
 				const b = button(
@@ -175,12 +196,26 @@
 		function composerActions(thread: ReaderThread, followUp: boolean) {
 			const send = () => void sendMessage();
 			if (followUp) return { primary: "Send", run: send, hint: "⌘↩ send" };
-			if (thread.pendingComment) return { primary: "Done", run: () => ask.close(),
-				secondary: `Send all ${comments.length}`, runSecondary: () => void sendBatch(), hint: "⌘↩ done · ⇧⌘↩ send" };
+			if (thread.pendingComment)
+				return {
+					primary: "Done",
+					run: () => ask.close(),
+					secondary: `Send all ${comments.length}`,
+					runSecondary: () => void sendBatch(),
+					hint: "⌘↩ done · ⇧⌘↩ send",
+				};
 			const add = () => addComment(thread);
-			if (!comments.length) return { primary: "Send", run: send, secondary: "Add to batch", runSecondary: add, hint: "⌘↩ send · ⇧⌘↩ add" };
-			return { primary: "Add to batch", run: add, secondary: `Send all ${comments.length + 1}`,
-				runSecondary: () => { if (add()) void sendBatch(); }, hint: "⌘↩ add · ⇧⌘↩ send" };
+			if (!comments.length)
+				return { primary: "Send", run: send, secondary: "Add to batch", runSecondary: add, hint: "⌘↩ send · ⇧⌘↩ add" };
+			return {
+				primary: "Add to batch",
+				run: add,
+				secondary: `Send all ${comments.length + 1}`,
+				runSecondary: () => {
+					if (add()) void sendBatch();
+				},
+				hint: "⌘↩ add · ⇧⌘↩ send",
+			};
 		}
 		function composerField(thread: ReaderThread, followUp: boolean) {
 			const field = el("textarea", {
@@ -196,13 +231,20 @@
 			return field;
 		}
 		function composer(thread: ReaderThread, followUp: boolean) {
-			const field = composerField(thread, followUp), comment = thread.pendingComment;
+			const field = composerField(thread, followUp),
+				comment = thread.pendingComment;
 			const { primary: label, run, secondary: alternative, runSecondary, hint } = composerActions(thread, followUp);
-			const primary = label === "Send"
-				? button(label, "send", run, { iconOnly: true, key: "⌘↩", className: "ask-primary send" })
-				: button(label, "", run, { className: "ask-primary batch-primary" });
-			const secondary = alternative && runSecondary ? button(alternative, "", runSecondary, { className: "ask-secondary batch-secondary" }) : null;
-			const remove = comment ? button("Remove", "", () => removeComment(comment), { className: "batch-secondary batch-remove" }) : null;
+			const primary =
+				label === "Send"
+					? button(label, "send", run, { iconOnly: true, key: "⌘↩", className: "ask-primary send" })
+					: button(label, "", run, { className: "ask-primary batch-primary" });
+			const secondary =
+				alternative && runSecondary
+					? button(alternative, "", runSecondary, { className: "ask-secondary batch-secondary" })
+					: null;
+			const remove = comment
+				? button("Remove", "", () => removeComment(comment), { className: "batch-secondary batch-remove" })
+				: null;
 			function updateButtons() {
 				primary.disabled = !comment && (!field.value.trim() || pending(thread));
 				if (secondary) secondary.disabled = !field.value.trim();
@@ -249,27 +291,51 @@
 			return el("span", { class: "batch-number" }, String(index + 1));
 		}
 		function commentPreview(comment: ReaderComment) {
-			return el("span", { class: "batch-preview" },
+			return el(
+				"span",
+				{ class: "batch-preview" },
 				el("span", { class: "batch-quote" }, comment.quote ?? "Whole document"),
-				el("span", { class: "batch-text" }, comment.text));
+				el("span", { class: "batch-text" }, comment.text),
+			);
 		}
 		function drawBatchList() {
 			const body = el("ol", { class: "batch-list-body", role: "list" });
 			for (const [index, comment] of comments.entries()) {
-				const open = button("", "", () => {
-					batchList.hidePopover();
-					const target = comment.range && blockAt(comment.range.start);
-					if (target) navigation.jumpElement(target);
-					openThread({ threadId: "", quote: comment.quote, pendingComment: comment, draft: "", messages: [] });
-				}, { className: "batch-row-open batch-entry" });
+				const open = button(
+					"",
+					"",
+					() => {
+						batchList.hidePopover();
+						const target = comment.range && blockAt(comment.range.start);
+						if (target) navigation.jumpElement(target);
+						openThread({ threadId: "", quote: comment.quote, pendingComment: comment, draft: "", messages: [] });
+					},
+					{ className: "batch-row-open batch-entry" },
+				);
 				open.setAttribute("aria-label", `Edit comment ${index + 1}: ${comment.text}`);
 				open.replaceChildren(commentNumber(index), commentPreview(comment));
-				body.append(el("li", {}, open, button(`Remove comment ${index + 1}`, "x", () => removeComment(comment), { iconOnly: true, className: "btn-i batch-row-remove" })));
+				body.append(
+					el(
+						"li",
+						{},
+						open,
+						button(`Remove comment ${index + 1}`, "x", () => removeComment(comment), {
+							iconOnly: true,
+							className: "btn-i batch-row-remove",
+						}),
+					),
+				);
 			}
-			batchList.replaceChildren(el("h2", {}, "Pending batch"), body,
-				el("div", { class: "batch-list-foot" },
+			batchList.replaceChildren(
+				el("h2", {}, "Pending batch"),
+				body,
+				el(
+					"div",
+					{ class: "batch-list-foot" },
 					button("Remove all", "", removeAll, { className: "batch-secondary" }),
-					button(`Send ${commentCount(comments.length)}`, "", () => void sendBatch(), { className: "batch-primary" })));
+					button(`Send ${commentCount(comments.length)}`, "", () => void sendBatch(), { className: "batch-primary" }),
+				),
+			);
 		}
 		function openBatchList() {
 			if (!comments.length) return;
@@ -314,21 +380,26 @@
 			}
 		}
 		function removeAll() {
-			const batch = comments, removed = batch.splice(0), docAtRemoval = controller.doc;
+			const batch = comments,
+				removed = batch.splice(0),
+				docAtRemoval = controller.doc;
 			const generation = docAtRemoval?.generation;
 			if (current?.pendingComment) {
 				current = null;
 				visible = false;
 			}
 			ask.refresh();
-			ctx.toast(`Removed ${commentCount(removed.length)}.`, { label: "Undo", run: () => {
-				if (!removed.length) return;
-				const document = controller.doc;
-				if (comments === batch && document && (docAtRemoval !== document || generation !== document.generation))
-					reanchor(removed, document.source);
-				batch.unshift(...removed.splice(0));
-				ask.refresh();
-			} });
+			ctx.toast(`Removed ${commentCount(removed.length)}.`, {
+				label: "Undo",
+				run: () => {
+					if (!removed.length) return;
+					const document = controller.doc;
+					if (comments === batch && document && (docAtRemoval !== document || generation !== document.generation))
+						reanchor(removed, document.source);
+					batch.unshift(...removed.splice(0));
+					ask.refresh();
+				},
+			});
 		}
 		function quoteFits(quote?: string) {
 			if (quote && utf8.encode(quote).length > 8192) {
@@ -353,15 +424,27 @@
 			return true;
 		}
 		function reanchor(items: ReaderComment[], source: string) {
-			for (const comment of items) comment.range = api.uiLogic.reanchorPassage(source, comment.sourceAnchor, comment.range);
+			for (const comment of items)
+				comment.range = api.uiLogic.reanchorPassage(source, comment.sourceAnchor, comment.range);
 		}
 		function batchPacket(id: string, items: ReaderComment[]) {
 			return {
-				requestId: id, threadId: id, generation: controller.doc?.generation ?? 0,
-				annotations: items.map(({ text, quote, range }) => ({ text, ...(quote ? { quote } : {}), ...(range ? { quoteRange: range } : {}) })),
+				requestId: id,
+				threadId: id,
+				generation: controller.doc?.generation ?? 0,
+				annotations: items.map(({ text, quote, range }) => ({
+					text,
+					...(quote ? { quote } : {}),
+					...(range ? { quoteRange: range } : {}),
+				})),
 			};
 		}
-		function restoreBatch(batch: ReaderComment[], thread: ReaderThread, items: ReaderComment[], sourceAtSend: ReaderExactDocument | null) {
+		function restoreBatch(
+			batch: ReaderComment[],
+			thread: ReaderThread,
+			items: ReaderComment[],
+			sourceAtSend: ReaderExactDocument | null,
+		) {
 			const sourceNow = controller.doc;
 			if (batch === comments && sourceAtSend !== sourceNow && sourceNow) reanchor(items, sourceNow.source);
 			batch.unshift(...items);
@@ -397,13 +480,20 @@
 		}
 		async function sendBatch() {
 			if (!batchReady()) return;
-			const batch = comments, documentAtSend = controller.doc;
-			const additions = [...batch], id = crypto.randomUUID(), payload = batchPacket(id, additions);
+			const batch = comments,
+				documentAtSend = controller.doc;
+			const additions = [...batch],
+				id = crypto.randomUUID(),
+				payload = batchPacket(id, additions);
 			if (utf8.encode(JSON.stringify(payload)).length > 256 * 1024 - 128) {
 				ctx.notice("The batch is too long. Shorten or remove comments before sending it.", "warn");
 				return;
 			}
-			const message: ReaderAskMessage = { requestId: id, text: `Batch of ${commentCount(additions.length)}`, state: "sending" };
+			const message: ReaderAskMessage = {
+				requestId: id,
+				text: `Batch of ${commentCount(additions.length)}`,
+				state: "sending",
+			};
 			const thread: ReaderThread = { threadId: id, comments: additions, draft: "", messages: [message] };
 			batch.length = 0;
 			threads.unshift(thread);
@@ -413,8 +503,13 @@
 			retryBatch.set(message, attempt);
 			await attempt();
 		}
-		async function deliverBatch(batch: ReaderComment[], thread: ReaderThread, message: ReaderAskMessage,
-			items: ReaderComment[], sourceAtSend: ReaderExactDocument | null) {
+		async function deliverBatch(
+			batch: ReaderComment[],
+			thread: ReaderThread,
+			message: ReaderAskMessage,
+			items: ReaderComment[],
+			sourceAtSend: ReaderExactDocument | null,
+		) {
 			sendingBatches.add(batch);
 			await sendAttempt(message);
 			sendingBatches.delete(batch);
@@ -426,7 +521,8 @@
 			ask.refresh();
 		}
 		function drawStatus(message: ReaderAskMessage, changeCount: number) {
-			const glyph = ({ failed: "info", unanswered: "info", answered: "check" } as Record<string, string>)[message.state] ?? "spark";
+			const glyph =
+				({ failed: "info", unanswered: "info", answered: "check" } as Record<string, string>)[message.state] ?? "spark";
 			let label = api.uiLogic.promptLabel(message.state);
 			if (changeCount) label = `Changed ${changeCount} ${changeCount === 1 ? "passage" : "passages"}`;
 			return el(
@@ -437,20 +533,26 @@
 			);
 		}
 		function sentComments(items: ReaderComment[]) {
-			return el("ol", { class: "batch-sent", role: "list" }, ...items.map((item, index) =>
-				el("li", { class: "batch-entry" }, commentNumber(index), commentPreview(item))));
+			return el(
+				"ol",
+				{ class: "batch-sent", role: "list" },
+				...items.map((item, index) => el("li", { class: "batch-entry" }, commentNumber(index), commentPreview(item))),
+			);
 		}
 		function promptAnswer(message: ReaderAskMessage) {
 			if (!message.detail) return null;
-			if (message.state === "answered") return el("div", { class: "reply" }, el("span", { class: "from" }, "Agent"), message.detail);
+			if (message.state === "answered")
+				return el("div", { class: "reply" }, el("span", { class: "from" }, "Agent"), message.detail);
 			if (message.state === "unanswered") return el("p", { class: "send-failure" }, message.detail);
 			return null;
 		}
 		function drawMessages(thread: ReaderThread) {
 			const log = el("div", { class: "ask-messages" });
 			for (const [index, m] of thread.messages.entries()) {
-				const question = index === 0 && thread.comments ? sentComments(thread.comments) :
-					el("div", { class: "ask-question" }, el("span", { class: "from" }, "You"), m.text);
+				const question =
+					index === 0 && thread.comments
+						? sentComments(thread.comments)
+						: el("div", { class: "ask-question" }, el("span", { class: "from" }, "You"), m.text);
 				const answer = promptAnswer(m);
 				log.append(question);
 				if (answer) log.append(answer);
@@ -469,9 +571,15 @@
 					action("Retry", () => void sendMessage(message)),
 				);
 			if (message.state !== "unknown") return;
-			card.append(el("p", { class: "send-failure" }, message.retryable
-				? "Delivery is not confirmed. Retry checks the same request."
-				: "Delivery is not confirmed. Your text is kept. The reader will not send it twice."));
+			card.append(
+				el(
+					"p",
+					{ class: "send-failure" },
+					message.retryable
+						? "Delivery is not confirmed. Retry checks the same request."
+						: "Delivery is not confirmed. Your text is kept. The reader will not send it twice.",
+				),
+			);
 			if (message.retryable) card.append(action("Retry", () => void (batch ? batch() : sendMessage(message))));
 		}
 		function drawConversation(thread: ReaderThread) {
@@ -521,13 +629,14 @@
 			card.dataset.state = activeMessage(thread)?.state ?? "draft";
 			card.setAttribute("data-open", "");
 			card.append(drawHead(thread));
-			if (!thread.comments) card.append(
-				el(
-					"div",
-					{ class: "quote" },
-					el("span", {}, thread.quote ?? `About ${String(controller.payload?.meta.title ?? "this document")}`),
-				),
-			);
+			if (!thread.comments)
+				card.append(
+					el(
+						"div",
+						{ class: "quote" },
+						el("span", {}, thread.quote ?? `About ${String(controller.payload?.meta.title ?? "this document")}`),
+					),
+				);
 			drawConversation(thread);
 			card.append(composer(thread, !!activeMessage(thread)));
 			revealLatest(thread);
@@ -588,10 +697,11 @@
 		// The thread whose request was working when the agent was held back by the open block.
 		let heldThread: ReaderThread | null = null;
 		function noteHeld() {
-			heldThread = [...threads].reverse().find((t) => {
-				const state = activeMessage(t)?.state;
-				return !!state && ["sending", "sent", "admitted", "working"].includes(state);
-			}) ?? heldThread;
+			heldThread =
+				[...threads].reverse().find((t) => {
+					const state = activeMessage(t)?.state;
+					return !!state && ["sending", "sent", "admitted", "working"].includes(state);
+				}) ?? heldThread;
 		}
 		// Let it releases the passage. If the held request has already ended, the agent is asked in
 		// the same thread to make the change now; while it still works, its own retry lands.
@@ -668,7 +778,9 @@
 			changeIndex = index;
 			const { operation } = review[index];
 			if (operation.unread) controller.markRead(operation.operationId);
-			get("#notices").querySelector(`[data-notice-id="${CSS.escape(`agent-${operation.operationId}`)}"]`)?.remove();
+			get("#notices")
+				.querySelector(`[data-notice-id="${CSS.escape(`agent-${operation.operationId}`)}"]`)
+				?.remove();
 			drawDiff();
 			const panel = mounted?.panel;
 			if (!panel) return;
@@ -695,26 +807,44 @@
 			return el("div", { class: `diff-row ${side}` }, el("span", { class: "diff-label" }, label), words);
 		}
 		function diffBody(target: DiffTarget) {
-			const body = el("div", { class: "diff-body" }), { oldText, newText } = target.edit;
+			const body = el("div", { class: "diff-body" }),
+				{ oldText, newText } = target.edit;
 			const parts = api.uiLogic.diffWords(oldText, newText);
-			const before = newText ? "Before" : "Removed", after = oldText ? "After" : "Added";
+			const before = newText ? "Before" : "Removed",
+				after = oldText ? "After" : "Added";
 			if (oldText) body.append(diffRow(before, "removed", target, parts));
 			if (newText) body.append(diffRow(after, "added", target, parts));
-			if (!parts) body.append(el("p", { class: "diff-note" }, "Long edit. Both versions are shown without word highlights."));
+			if (!parts)
+				body.append(el("p", { class: "diff-note" }, "Long edit. Both versions are shown without word highlights."));
 			return body;
 		}
 		function changeBlocks(edit: ReaderRange) {
 			const blocks = Array.from(doc.querySelectorAll<HTMLElement>(":scope > [data-block]"));
-			const first = blockAt(edit.start) ?? blocks.find((node) => Number(node.dataset.start) >= edit.start) ?? blocks.at(-1);
+			const first =
+				blockAt(edit.start) ?? blocks.find((node) => Number(node.dataset.start) >= edit.start) ?? blocks.at(-1);
 			if (!first) return [];
-			return [first, ...blocks.filter((node) => node !== first && Number(node.dataset.start) < edit.end && Number(node.dataset.end) > edit.start)];
+			return [
+				first,
+				...blocks.filter(
+					(node) => node !== first && Number(node.dataset.start) < edit.end && Number(node.dataset.end) > edit.start,
+				),
+			];
 		}
 		function diffTarget({ operation, edit }: ReviewEntry) {
 			if (!controller.doc) return null;
-			const blocks = changeBlocks(edit), block = blocks[0] ?? doc;
-			const context = !blocks.length || operation.conflicted ? null : api.uiLogic.changeContext(controller.doc.source, {
-				start: Number(block.dataset.start), end: Number(blocks.at(-1)?.dataset.end),
-			}, edit);
+			const blocks = changeBlocks(edit),
+				block = blocks[0] ?? doc;
+			const context =
+				!blocks.length || operation.conflicted
+					? null
+					: api.uiLogic.changeContext(
+							controller.doc.source,
+							{
+								start: Number(block.dataset.start),
+								end: Number(blocks.at(-1)?.dataset.end),
+							},
+							edit,
+						);
 			return { blocks, block, context, edit };
 		}
 		function mountDiff(diff: HTMLElement, target: DiffTarget) {
@@ -729,22 +859,40 @@
 		function diffMounted(entry: ReviewEntry, target: DiffTarget) {
 			if (!mounted || mounted.entry !== entry || mounted.panel.parentElement !== target.block) return false;
 			const previous = mounted.target;
-			return mounted.conflicted === entry.operation.conflicted && previous.context?.prefix === target.context?.prefix &&
-				previous.context?.suffix === target.context?.suffix && previous.blocks.length === target.blocks.length &&
-				target.blocks.every((block, i) => block === previous.blocks[i]);
+			return (
+				mounted.conflicted === entry.operation.conflicted &&
+				previous.context?.prefix === target.context?.prefix &&
+				previous.context?.suffix === target.context?.suffix &&
+				previous.blocks.length === target.blocks.length &&
+				target.blocks.every((block, i) => block === previous.blocks[i])
+			);
 		}
 		function conflictWarning() {
 			return el("p", { class: "diff-warning" }, "Original agent wording. Later edits overlap this change.");
 		}
 		function diffPanel(operation: ReaderAgentOperation, target: DiffTarget) {
-			const diff = el("section", { class: "inline-diff", "data-reader-control": "", "aria-label": "Agent change", tabindex: "-1" });
-			const head = el("div", { class: "diff-head" }, el("span", { class: "diff-title" }, icon("spark"), "Passage change"));
+			const diff = el("section", {
+				class: "inline-diff",
+				"data-reader-control": "",
+				"aria-label": "Agent change",
+				tabindex: "-1",
+			});
+			const head = el(
+				"div",
+				{ class: "diff-head" },
+				el("span", { class: "diff-title" }, icon("spark"), "Passage change"),
+			);
 			if (review.length > 1) {
-				const turn = (delta: number) => visitChange((changeIndex + delta + review.length) % review.length,
-					delta < 0 ? "Previous change" : "Next change");
-				head.append(button("Previous change", "back", () => turn(-1), { iconOnly: true }),
+				const turn = (delta: number) =>
+					visitChange(
+						(changeIndex + delta + review.length) % review.length,
+						delta < 0 ? "Previous change" : "Next change",
+					);
+				head.append(
+					button("Previous change", "back", () => turn(-1), { iconOnly: true }),
 					el("span", { class: "diff-count" }, `${changeIndex + 1} of ${review.length}`),
-					button("Next change", "forward", () => turn(1), { iconOnly: true }));
+					button("Next change", "forward", () => turn(1), { iconOnly: true }),
+				);
 			}
 			head.append(button("Close changes", "x", closeReview, { iconOnly: true, key: "esc" }));
 			const foot = el("div", { class: "diff-actions" });
@@ -899,7 +1047,9 @@
 		};
 		batchList.addEventListener("beforetoggle", onBatchToggle);
 		off.push(() => batchList.removeEventListener("beforetoggle", onBatchToggle));
-		const onToggle = (event: ToggleEvent) => { if (event.newState === "open") drawActivity(); };
+		const onToggle = (event: ToggleEvent) => {
+			if (event.newState === "open") drawActivity();
+		};
 		activity.addEventListener("beforetoggle", onToggle);
 		off.push(() => activity.removeEventListener("beforetoggle", onToggle));
 		const scroll = () => position();

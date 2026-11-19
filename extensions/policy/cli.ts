@@ -116,7 +116,8 @@ function decodeGlobalWord(
 			options: [{ spelling: name, canonical: name.slice(2), value: attached, argumentIndex: index, polarity: "set" }],
 		};
 	}
-	if (globalFlags.has(arg)) return { advance: 1, options: [{ spelling: arg, canonical: arg, argumentIndex: index, polarity: "set" }] };
+	if (globalFlags.has(arg))
+		return { advance: 1, options: [{ spelling: arg, canonical: arg, argumentIndex: index, polarity: "set" }] };
 	if (globalValues.has(name)) return decodeGlobalValue(name, attached, args, index, literal);
 	return { status: "unknown", reason: "unsupported-global-option" };
 }
@@ -182,7 +183,8 @@ function decodeLongPushOption(
 	const descriptor = pushOptions.get(spelling);
 	if (!descriptor) return { status: "unknown", reason: "unsupported-option" };
 	const attached = equals < 0 ? undefined : arg.slice(equals + 1);
-	if (attached !== undefined && descriptor.arity === "none") return { status: "unknown", reason: "invalid-option-form" };
+	if (attached !== undefined && descriptor.arity === "none")
+		return { status: "unknown", reason: "invalid-option-form" };
 	if (attached === undefined && descriptor.arity === "required") {
 		const value = args[index + 1];
 		if (value === undefined) return { status: "unknown", reason: "missing-value" };
@@ -283,5 +285,11 @@ export function decodeGitPush(stage: Stage): CliEvidence {
 	if (args.slice(index + 1).some((_, offset) => !literal(index + 1 + offset))) return unknown("dynamic-word");
 	const rest = collectPushOptions(args, index + 1, unknown);
 	if ("status" in rest) return rest;
-	return { status: "known", subcommand: ["push"], globals: leading.globals, options: rest.options, operands: rest.operands };
+	return {
+		status: "known",
+		subcommand: ["push"],
+		globals: leading.globals,
+		options: rest.options,
+		operands: rest.operands,
+	};
 }

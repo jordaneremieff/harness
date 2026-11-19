@@ -36,7 +36,9 @@ test("native codemode consumes recent, search, empty and error objects without p
 		["four", '---\nstate: "open"\n'],
 	] as const;
 	for (const [id, text] of sources) await writeFile(join(store, `${id}.md`), text, { mode: 0o600 });
-	const saved = ["PI_STASH_DIR", "PI_STASH_CAPACITY", "PI_CODING_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]] as const);
+	const saved = ["PI_STASH_DIR", "PI_STASH_CAPACITY", "PI_CODING_AGENT_DIR", "PI_HARNESS_FILE"].map(
+		(key) => [key, process.env[key]] as const,
+	);
 	t.after(() => {
 		for (const [key, value] of saved) {
 			if (value === undefined) delete process.env[key];

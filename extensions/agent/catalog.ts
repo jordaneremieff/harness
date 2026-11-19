@@ -31,7 +31,11 @@ const MAX_VISITS = 256;
 const VALIDATED_RECORD_LIMIT = 512;
 const VALIDATED_PAYLOAD_LIMIT = 8 * 1024 * 1024;
 // A read opens the bounded file and checks its identity. Only an unchanged file skips payload reads.
-interface ValidatedRecord { readonly revision: string; readonly record: CatalogRecord; readonly bytes: number }
+interface ValidatedRecord {
+	readonly revision: string;
+	readonly record: CatalogRecord;
+	readonly bytes: number;
+}
 const validatedRecords = new Map<string, ValidatedRecord>();
 let validatedPayloadBytes = 0;
 function forgetValidatedRecord(path: string): void {
@@ -72,12 +76,22 @@ function queryBinding(options: CatalogQuery): string {
 function startName(cursor: string | undefined, binding: string): string {
 	if (!cursor) return "";
 	let parsed: { binding?: unknown; after?: unknown } | null;
-	try { parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")); }
-	catch { throw new Error("Invalid catalog cursor; restart discovery"); }
-	if (!parsed || typeof parsed.binding !== "string" || typeof parsed.after !== "string" ||
-		!parsed.after || parsed.after.length > 255 || /[/\0]/u.test(parsed.after))
+	try {
+		parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+	} catch {
 		throw new Error("Invalid catalog cursor; restart discovery");
-	if (parsed.binding !== binding) throw new Error("Catalog cursor does not match the query or cwd; repeat the same query and cwd");
+	}
+	if (
+		!parsed ||
+		typeof parsed.binding !== "string" ||
+		typeof parsed.after !== "string" ||
+		!parsed.after ||
+		parsed.after.length > 255 ||
+		/[/\0]/u.test(parsed.after)
+	)
+		throw new Error("Invalid catalog cursor; restart discovery");
+	if (parsed.binding !== binding)
+		throw new Error("Catalog cursor does not match the query or cwd; repeat the same query and cwd");
 	return parsed.after;
 }
 function matches(record: CatalogRecord, options: CatalogQuery): boolean {
@@ -91,7 +105,7 @@ async function directoryEntries(root: string) {
 	try {
 		const entries = await readdir(root, { withFileTypes: true });
 		// Filename order survives record replacement and insertion/removal before the cursor.
-		return entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+		return entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
 		throw error;
@@ -141,10 +155,17 @@ export interface CatalogPriorityRecord {
 	claim: ClaimObservation;
 	observedAt: string;
 }
-interface PriorityKey { priority: boolean; modifiedAt: number; storageId: string }
+interface PriorityKey {
+	priority: boolean;
+	modifiedAt: number;
+	storageId: string;
+}
 function comparePriority(left: PriorityKey, right: PriorityKey): number {
-	return Number(right.priority) - Number(left.priority) || right.modifiedAt - left.modifiedAt ||
-		(left.storageId < right.storageId ? -1 : left.storageId > right.storageId ? 1 : 0);
+	return (
+		Number(right.priority) - Number(left.priority) ||
+		right.modifiedAt - left.modifiedAt ||
+		(left.storageId < right.storageId ? -1 : left.storageId > right.storageId ? 1 : 0)
+	);
 }
 
 function checkPriorityLimit(limit: number): void {
@@ -154,10 +175,17 @@ function priorityCursor(cursor: string | undefined, binding: string): PriorityKe
 	if (!cursor) return;
 	try {
 		const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-		if (value.binding !== binding || typeof value.after?.priority !== "boolean" ||
-			!Number.isFinite(value.after.modifiedAt) || !UUID.test(value.after.storageId)) throw new Error();
+		if (
+			value.binding !== binding ||
+			typeof value.after?.priority !== "boolean" ||
+			!Number.isFinite(value.after.modifiedAt) ||
+			!UUID.test(value.after.storageId)
+		)
+			throw new Error();
 		return value.after;
-	} catch { throw new Error("Invalid roster cursor or caller changed; restart the roster"); }
+	} catch {
+		throw new Error("Invalid roster cursor or caller changed; restart the roster");
+	}
 }
 
 function fileStamp(info: BigIntStats): string {
@@ -177,7 +205,12 @@ export interface CatalogInventory {
 	/** Oldest retained observation; projecting a page does not advance freshness. */
 	observedAt: string;
 }
-interface CatalogPriorityOptions { ownerIds?: readonly string[]; activeStorageIds?: readonly string[]; cursor?: string; limit: number }
+interface CatalogPriorityOptions {
+	ownerIds?: readonly string[];
+	activeStorageIds?: readonly string[];
+	cursor?: string;
+	limit: number;
+}
 interface CatalogPriorityPage {
 	items: CatalogPriorityRecord[];
 	coverage: CatalogPriorityCoverage;
@@ -194,24 +227,37 @@ export class CatalogObservation {
 	private observedAt = "";
 	private pending?: Promise<CatalogInventory>;
 	private readonly catalog: AgentCatalog;
-	constructor(catalog: AgentCatalog) { this.catalog = catalog; }
+	constructor(catalog: AgentCatalog) {
+		this.catalog = catalog;
+	}
 
 	invalidate(change?: CatalogChange): void {
 		const identities = catalogChange(change);
-		if (!identities) { this.full = true; this.dirty.clear(); return; }
+		if (!identities) {
+			this.full = true;
+			this.dirty.clear();
+			return;
+		}
 		if (this.full) return;
 		for (const id of identities) this.dirty.add(id);
-		if (!catalogChange([...this.dirty])) { this.full = true; this.dirty.clear(); }
+		if (!catalogChange([...this.dirty])) {
+			this.full = true;
+			this.dirty.clear();
+		}
 	}
 
-	ownerId(storageId: string): string | undefined { return this.facts.get(storageId)?.record.ownerId; }
+	ownerId(storageId: string): string | undefined {
+		return this.facts.get(storageId)?.record.ownerId;
+	}
 
 	read(): Promise<CatalogInventory> {
 		if (this.pending) return this.pending;
 		// The dashboard's existing reconciliation demand refreshes silent claim deaths.
 		// Footer and status requests share the same claim-age boundary.
 		if (Date.now() - this.reconciledAt >= 2000) this.full = true;
-		this.pending = this.refresh().finally(() => { this.pending = undefined; });
+		this.pending = this.refresh().finally(() => {
+			this.pending = undefined;
+		});
 		return this.pending;
 	}
 
@@ -227,10 +273,16 @@ export class CatalogObservation {
 				const facts = new Map<string, CatalogFact | null>();
 				for (const id of identities) await this.refreshRecord(facts, id, full || changed.has(id));
 				this.facts = facts;
-				if (full) { this.reconciledAt = started; this.observedAt = new Date(started).toISOString(); }
+				if (full) {
+					this.reconciledAt = started;
+					this.observedAt = new Date(started).toISOString();
+				}
 			} while (this.full || this.dirty.size);
 			return { facts: this.facts, observedAt: this.observedAt };
-		} catch (error) { this.full = true; throw error; }
+		} catch (error) {
+			this.full = true;
+			throw error;
+		}
 	}
 
 	private async refreshRecord(facts: Map<string, CatalogFact | null>, id: string, dirty: boolean): Promise<void> {
@@ -238,9 +290,18 @@ export class CatalogObservation {
 			const stamp = this.catalog.recordStamp(id);
 			const previous = this.facts.get(id);
 			if (previous?.fileStamp !== stamp) facts.set(id, await this.catalog.observeRecord(id));
-			else facts.set(id, dirty ? { ...previous, claim: await this.catalog.observeClaim(previous.record), observedAt: new Date().toISOString() } : previous);
-		}
-		catch (error) {
+			else
+				facts.set(
+					id,
+					dirty
+						? {
+								...previous,
+								claim: await this.catalog.observeClaim(previous.record),
+								observedAt: new Date().toISOString(),
+							}
+						: previous,
+				);
+		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") facts.delete(id);
 			else facts.set(id, null);
 		}
@@ -248,34 +309,66 @@ export class CatalogObservation {
 }
 
 /** Rank raw facts for this caller only; continuations bind the caller's ownership set. */
-export function projectCatalogPriority(inventory: CatalogInventory, options: CatalogPriorityOptions): CatalogPriorityPage {
+export function projectCatalogPriority(
+	inventory: CatalogInventory,
+	options: CatalogPriorityOptions,
+): CatalogPriorityPage {
 	checkPriorityLimit(options.limit);
 	const ownerIds = options.ownerIds ?? [];
 	const activeStorageIds = options.activeStorageIds ?? [];
 	const binding = JSON.stringify([[...ownerIds].sort(), [...activeStorageIds].sort()]);
 	const after = priorityCursor(options.cursor, binding);
-	const coverage: CatalogPriorityCoverage = { candidates: inventory.facts.size, inspected: inventory.facts.size, unreadable: 0, unknownClaims: 0, returned: 0, remaining: 0, priorityRemaining: 0, remainingRows: 0, priorityRemainingRows: 0,
-		recordByteLimit: MAX_RECORD_BYTES, claimByteLimit: CLAIM_BYTES, outputLimit: options.limit };
+	const coverage: CatalogPriorityCoverage = {
+		candidates: inventory.facts.size,
+		inspected: inventory.facts.size,
+		unreadable: 0,
+		unknownClaims: 0,
+		returned: 0,
+		remaining: 0,
+		priorityRemaining: 0,
+		remainingRows: 0,
+		priorityRemainingRows: 0,
+		recordByteLimit: MAX_RECORD_BYTES,
+		claimByteLimit: CLAIM_BYTES,
+		outputLimit: options.limit,
+	};
 	const items: CatalogPriorityRecord[] = [];
 	for (const fact of inventory.facts.values()) {
-		if (!fact) { coverage.unreadable++; continue; }
+		if (!fact) {
+			coverage.unreadable++;
+			continue;
+		}
 		const { record, modifiedAt, claim } = fact;
 		coverage.unknownClaims += Number(claim.kind === "unknown");
-		const priority = claim.kind === "live" || ownerIds.includes(record.ownerId ?? "") || activeStorageIds.includes(record.storageId);
+		const priority =
+			claim.kind === "live" || ownerIds.includes(record.ownerId ?? "") || activeStorageIds.includes(record.storageId);
 		if (after && comparePriority({ priority, modifiedAt, storageId: record.storageId }, after) <= 0) continue;
 		items.push({ record, modifiedAt, priority, claim, observedAt: fact.observedAt });
 	}
-	items.sort((left, right) => comparePriority({ ...left, storageId: left.record.storageId }, { ...right, storageId: right.record.storageId }));
+	items.sort((left, right) =>
+		comparePriority({ ...left, storageId: left.record.storageId }, { ...right, storageId: right.record.storageId }),
+	);
 	const selected = items.slice(0, options.limit);
 	coverage.returned = selected.length;
 	coverage.remaining = items.length - selected.length;
 	const remaining = items.slice(selected.length);
 	coverage.priorityRemaining = remaining.filter((item) => item.priority).length;
-	const rowCount = (item: CatalogPriorityRecord) => !item.record.view || item.record.view.unavailable ? 1 : item.record.view.rows.length;
+	const rowCount = (item: CatalogPriorityRecord) =>
+		!item.record.view || item.record.view.unavailable ? 1 : item.record.view.rows.length;
 	coverage.remainingRows = remaining.reduce((total, item) => total + rowCount(item), 0);
-	coverage.priorityRemainingRows = remaining.filter((item) => item.priority).reduce((total, item) => total + rowCount(item), 0);
+	coverage.priorityRemainingRows = remaining
+		.filter((item) => item.priority)
+		.reduce((total, item) => total + rowCount(item), 0);
 	const last = selected.at(-1);
-	const nextCursor = coverage.remaining && last ? Buffer.from(JSON.stringify({ binding, after: { priority: last.priority, modifiedAt: last.modifiedAt, storageId: last.record.storageId } })).toString("base64url") : null;
+	const nextCursor =
+		coverage.remaining && last
+			? Buffer.from(
+					JSON.stringify({
+						binding,
+						after: { priority: last.priority, modifiedAt: last.modifiedAt, storageId: last.record.storageId },
+					}),
+				).toString("base64url")
+			: null;
 	return { items: selected, coverage, nextCursor, observedAt: inventory.observedAt };
 }
 
@@ -298,7 +391,11 @@ export function storageIdOf(identity: string): string {
 
 /** Validate an exact delivery recipient before accepting a new route. */
 export function validateDeliveryRecipient(identity: string): void {
-	try { storageIdOf(identity); } catch { throw new Error("Delivery recipient must be an exact native or primary identity"); }
+	try {
+		storageIdOf(identity);
+	} catch {
+		throw new Error("Delivery recipient must be an exact native or primary identity");
+	}
 }
 
 /** Discovery metadata locates storage. It never substitutes for native conversation state. */
@@ -312,7 +409,11 @@ export class AgentCatalog {
 	}
 
 	/** Publish one complete handle claim without replacing a concurrent creator's record. */
-	createHandled(input: Omit<HostMetadata, "storageId" | "storagePath">, handle: string, role: string): CatalogCreateResult {
+	createHandled(
+		input: Omit<HostMetadata, "storageId" | "storagePath">,
+		handle: string,
+		role: string,
+	): CatalogCreateResult {
 		handleSlug(handle);
 		profileText(role, "role");
 		mkdirSync(this.root, { recursive: true, mode: 0o700 });
@@ -320,16 +421,29 @@ export class AgentCatalog {
 		const metadata = parseHostMetadata({ ...input, storageId, storagePath: join(this.root, `${storageId}.sqlite`) });
 		if (!isThinkingLevel(metadata.thinkingLevel)) throw new Error("Unknown reasoning level");
 		const createdAt = new Date().toISOString();
-		const record: CatalogRecord = { ...metadata, createdAt, view: { updatedAt: createdAt, storageId, rows: [], coverage: { complete: false, omitted: 1 }, profileSeed: { handle, role } } };
+		const record: CatalogRecord = {
+			...metadata,
+			createdAt,
+			view: {
+				updatedAt: createdAt,
+				storageId,
+				rows: [],
+				coverage: { complete: false, omitted: 1 },
+				profileSeed: { handle, role },
+			},
+		};
 		const prepared = join(this.root, `.${storageId}.${randomUUID()}.claim`);
 		writeFileSync(prepared, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 });
 		try {
-			try { linkSync(prepared, this.path(storageId)); }
-			catch (error) {
+			try {
+				linkSync(prepared, this.path(storageId));
+			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 				return { record: this.read(storageId), created: false };
 			}
-		} finally { unlinkSync(prepared); }
+		} finally {
+			unlinkSync(prepared);
+		}
 		forgetValidatedRecord(this.path(storageId));
 		publishCatalogChange(this.root, storageId);
 		return { record, created: true };
@@ -340,7 +454,11 @@ export class AgentCatalog {
 	 * marks whether this call owns the new record, so a caller can discard only
 	 * its own record when the first acquire fails.
 	 */
-	createTracked(input: Omit<HostMetadata, "storageId" | "storagePath">, requestId?: string, beforeCreate?: (storageId: string) => void): CatalogCreateResult {
+	createTracked(
+		input: Omit<HostMetadata, "storageId" | "storagePath">,
+		requestId?: string,
+		beforeCreate?: (storageId: string) => void,
+	): CatalogCreateResult {
 		mkdirSync(this.root, { recursive: true, mode: 0o700 });
 		const storageId =
 			requestId === undefined ? randomUUID() : requestStorageId(JSON.stringify([input.ownerId, requestId]));
@@ -392,8 +510,9 @@ export class AgentCatalog {
 	ordinaryOwner(ownerId: string | undefined): string | undefined {
 		for (let depth = 0; ownerId !== undefined && depth < 32; depth++) {
 			const target: string = ownerId;
-			try { ownerId = this.read(target).ownerId; }
-			catch (error) {
+			try {
+				ownerId = this.read(target).ownerId;
+			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 				return target;
 			}
@@ -402,13 +521,19 @@ export class AgentCatalog {
 	}
 	/** Read the storage already assigned to one creation request, without resolving defaults again. */
 	readRequest(ownerId: string, requestId: string): CatalogRecord | undefined {
-		try { return this.read(requestStorageId(JSON.stringify([ownerId, requestId]))); }
-		catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+		try {
+			return this.read(requestStorageId(JSON.stringify([ownerId, requestId])));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			throw error;
+		}
 	}
 	path(identity: string): string {
 		return join(this.root, `${storageIdOf(identity)}.json`);
 	}
-	read(identity: string): CatalogRecord { return this.readWithTime(identity).record; }
+	read(identity: string): CatalogRecord {
+		return this.readWithTime(identity).record;
+	}
 
 	private readWithTime(identity: string): { record: CatalogRecord; modifiedAt: number; fileStamp: string } {
 		const storageId = storageIdOf(identity);
@@ -470,13 +595,16 @@ export class AgentCatalog {
 
 	/** Capture source identities before byte-bounded record and claim observation. */
 	async identities(): Promise<string[]> {
-		return (await directoryEntries(this.root)).filter((entry) => entry.name.endsWith(".json") && UUID.test(entry.name.slice(0, -5))).map((entry) => entry.name.slice(0, -5));
+		return (await directoryEntries(this.root))
+			.filter((entry) => entry.name.endsWith(".json") && UUID.test(entry.name.slice(0, -5)))
+			.map((entry) => entry.name.slice(0, -5));
 	}
 
 	/** Check a catalog pathname without opening its payload or following a symlink. */
 	recordStamp(storageId: string): string {
 		const info = lstatSync(this.path(storageId), { bigint: true });
-		if (!info.isFile() || info.size > BigInt(MAX_RECORD_BYTES)) throw new Error("Agent metadata exceeds its bound or is not a regular file");
+		if (!info.isFile() || info.size > BigInt(MAX_RECORD_BYTES))
+			throw new Error("Agent metadata exceeds its bound or is not a regular file");
 		return fileStamp(info);
 	}
 
@@ -506,7 +634,11 @@ export class AgentCatalog {
 		const record = this.read(identity);
 		const parsed = parseCatalogView(view);
 		this.checkViewIdentity(record.storageId, parsed);
-		return this.rewrite({ ...record, view: parsed, ...(threads === undefined ? {} : { threads: parseCollaborationProjection(threads, record.storageId) }) });
+		return this.rewrite({
+			...record,
+			view: parsed,
+			...(threads === undefined ? {} : { threads: parseCollaborationProjection(threads, record.storageId) }),
+		});
 	}
 
 	private parseProjections(record: CatalogRecord): void {
@@ -516,17 +648,31 @@ export class AgentCatalog {
 
 	/** Unknown cached values are unavailable observations, not alternate native state shapes. */
 	private observedView(storageId: string, value: CatalogView): CatalogView {
-		if (value?.storageId !== undefined && value.storageId !== storageId) throw new Error("Agent view storageId does not match its catalog record");
+		if (value?.storageId !== undefined && value.storageId !== storageId)
+			throw new Error("Agent view storageId does not match its catalog record");
 		if (Array.isArray(value?.rows)) this.checkViewIdentity(storageId, value);
-		try { return parseCatalogView(value); }
-		catch {
-			const states = Array.isArray(value?.rows) ? value.rows.slice(0, 5).map((row) => String(row?.state).slice(0, 64)) : [];
-			return { storageId, updatedAt: new Date().toISOString(), rows: [], coverage: { complete: false, omitted: 0 }, unavailable: `Host metadata is unsupported by this Pi (states: ${JSON.stringify(states)}). Restart this Pi if the host runs newer code. No cached state was interpreted.` };
+		try {
+			return parseCatalogView(value);
+		} catch {
+			const states = Array.isArray(value?.rows)
+				? value.rows.slice(0, 5).map((row) => String(row?.state).slice(0, 64))
+				: [];
+			return {
+				storageId,
+				updatedAt: new Date().toISOString(),
+				rows: [],
+				coverage: { complete: false, omitted: 0 },
+				unavailable: `Host metadata is unsupported by this Pi (states: ${JSON.stringify(states)}). Restart this Pi if the host runs newer code. No cached state was interpreted.`,
+			};
 		}
 	}
 
 	private checkViewIdentity(storageId: string, view: CatalogView): void {
-		if ((view.storageId !== undefined && view.storageId !== storageId) || view.rows.some((row) => row.storageId !== storageId)) throw new Error("Agent view storageId does not match its catalog record");
+		if (
+			(view.storageId !== undefined && view.storageId !== storageId) ||
+			view.rows.some((row) => row.storageId !== storageId)
+		)
+			throw new Error("Agent view storageId does not match its catalog record");
 	}
 
 	/**

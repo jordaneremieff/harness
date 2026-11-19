@@ -1,4 +1,9 @@
-import { getMarkdownTheme, type MessageRenderer, type MessageRenderOptions, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+	getMarkdownTheme,
+	type MessageRenderer,
+	type MessageRenderOptions,
+	type Theme,
+} from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, MouseRegion, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { BUDGET_NOTICE, budgetNoticeFacts, budgetStatusFacts } from "./budget.ts";
@@ -28,7 +33,10 @@ interface CardFacts {
 }
 
 /** Displayed text keeps newlines and tabs and drops terminal controls and other control or format characters. */
-const safe = (value: string) => stripVTControlCharacters(value).replace(/[\p{Cc}\p{Cf}]/gu, (character) => (character === "\n" || character === "\t" ? character : ""));
+const safe = (value: string) =>
+	stripVTControlCharacters(value).replace(/[\p{Cc}\p{Cf}]/gu, (character) =>
+		character === "\n" || character === "\t" ? character : "",
+	);
 const oneLine = (value: string) => safe(value).replace(/\s+/gu, " ").trim();
 
 function record(value: unknown): Record<string, unknown> {
@@ -36,7 +44,9 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function contentText(content: Parameters<MessageRenderer>[0]["content"]): string {
-	return typeof content === "string" ? content : content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+	return typeof content === "string"
+		? content
+		: content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
 
 /** The text after its first line, or after its first paragraph. */
@@ -49,24 +59,38 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
 export function redactionFacts(details: unknown, text: string): CardFacts {
 	const report = record(record(details).redactions) as Partial<RedactionReport>;
 	const count = typeof report.count === "number" ? report.count : undefined;
-	const classes = Object.entries(record(report.classes)).flatMap(([kind, amount]) => (typeof amount === "number" ? [`${safe(kind)} ${amount}`] : []));
+	const classes = Object.entries(record(report.classes)).flatMap(([kind, amount]) =>
+		typeof amount === "number" ? [`${safe(kind)} ${amount}`] : [],
+	);
 	return {
 		label: "Credentials redacted",
-		facts: [...(count === undefined ? [] : [plural(count, "value", "values")]), ...(classes.length ? [classes.join(", ")] : [])],
+		facts: [
+			...(count === undefined ? [] : [plural(count, "value", "values")]),
+			...(classes.length ? [classes.join(", ")] : []),
+		],
 		body: text,
-		preview: afterLine(text).split("\n").map((line) => line.trim()).join("\n"),
+		preview: afterLine(text)
+			.split("\n")
+			.map((line) => line.trim())
+			.join("\n"),
 	};
 }
 
 /** The model-facing tag line stays in the message text and is not displayed. */
 export function budgetFacts(text: string): CardFacts {
 	const facts = budgetNoticeFacts(text);
-	const reached = (facts?.context !== undefined && facts.context.tokens >= facts.context.budget) || (facts?.cost !== undefined && facts.cost.usd >= facts.cost.budget);
+	const reached =
+		(facts?.context !== undefined && facts.context.tokens >= facts.context.budget) ||
+		(facts?.cost !== undefined && facts.cost.usd >= facts.cost.budget);
 	const body = text.startsWith(`${BUDGET_NOTICE}\n`) ? afterLine(text) : text;
 	return {
 		label: reached ? "Budget reached" : "Budget notice",
 		facts: [
-			...(facts?.context ? [`context ${percent(facts.context.tokens, facts.context.budget)} of ${formatTokenCount(facts.context.budget)}`] : []),
+			...(facts?.context
+				? [
+						`context ${percent(facts.context.tokens, facts.context.budget)} of ${formatTokenCount(facts.context.budget)}`,
+					]
+				: []),
 			...(facts?.cost ? [`cost ${percent(facts.cost.usd, facts.cost.budget)} of USD ${facts.cost.budget}`] : []),
 		],
 		body,
@@ -76,10 +100,19 @@ export function budgetFacts(text: string): CardFacts {
 
 export function budgetStatusCardFacts(text: string): CardFacts {
 	const facts = budgetStatusFacts(text);
-	const label = facts?.state === "disabled" ? "Budget off" : facts?.state === "enabled" ? "Budget notices on" : facts?.state === "selected" ? "Budget selected" : "Budget status";
+	const label =
+		facts?.state === "disabled"
+			? "Budget off"
+			: facts?.state === "enabled"
+				? "Budget notices on"
+				: facts?.state === "selected"
+					? "Budget selected"
+					: "Budget status";
 	return {
 		label,
-		facts: facts?.budget ? [`${formatTokenCount(facts.budget.contextTokens)} tokens`, `USD ${facts.budget.costUsd}`] : [],
+		facts: facts?.budget
+			? [`${formatTokenCount(facts.budget.contextTokens)} tokens`, `USD ${facts.budget.costUsd}`]
+			: [],
 		body: text,
 		preview: text,
 	};
@@ -89,8 +122,16 @@ export function capacityFacts(details: unknown, text: string): CardFacts {
 	const state = record(details) as Partial<CapacityState>;
 	const usage = record(state.usage);
 	return {
-		label: state.decisionRequested === true ? "Continuity decision requested" : state.checkpointRequested === true ? "Capacity checkpoint requested" : "Capacity notice",
-		facts: usage.kind === "host_estimate" && typeof usage.percent === "number" ? [`context ${Math.round(usage.percent)}%`] : [],
+		label:
+			state.decisionRequested === true
+				? "Continuity decision requested"
+				: state.checkpointRequested === true
+					? "Capacity checkpoint requested"
+					: "Capacity notice",
+		facts:
+			usage.kind === "host_estimate" && typeof usage.percent === "number"
+				? [`context ${Math.round(usage.percent)}%`]
+				: [],
 		body: text,
 		preview: text.startsWith(`${CAPACITY_NOTICE_HEADER}\n\n`) ? afterParagraph(text) : text,
 	};
@@ -98,7 +139,10 @@ export function capacityFacts(details: unknown, text: string): CardFacts {
 
 /** One row at most `width` wide; a clipped row ends in `…` in the colour of the text it cuts and keeps the row background. */
 function clipRow(line: string, width: number): string {
-	return truncateToWidth(line, Math.max(0, width), "…").replace(/\x1b\[0m…\x1b\[0m$/u, "…\x1b[22;23;24;25;27;28;29;39m");
+	return truncateToWidth(line, Math.max(0, width), "…").replace(
+		/\x1b\[0m…\x1b\[0m$/u,
+		"…\x1b[22;23;24;25;27;28;29;39m",
+	);
 }
 
 /** Pi's tool-card hint, `... (2 more lines, ctrl+o to expand)`, with the key from Pi's `keyHint` and the rest muted. */
@@ -106,7 +150,9 @@ function expansionHint(theme: Theme, options: MessageRenderOptions, hidden: numb
 	const key = typeof options.keyText === "function" ? options.keyText("app.tools.expand") : "";
 	const action = !key
 		? theme.fg("muted", "click to expand")
-		: typeof options.keyHint === "function" ? options.keyHint("app.tools.expand", "to expand") : theme.fg("dim", key) + theme.fg("muted", " to expand");
+		: typeof options.keyHint === "function"
+			? options.keyHint("app.tools.expand", "to expand")
+			: theme.fg("dim", key) + theme.fg("muted", " to expand");
 	return theme.fg("muted", `... (${hidden} more line${hidden === 1 ? "" : "s"}, `) + action + theme.fg("muted", ")");
 }
 
@@ -119,7 +165,10 @@ function trimBlank(lines: string[]): string[] {
 	return lines.slice(start, end);
 }
 
-const markdown = (text: string, theme: Theme) => new Markdown(safe(text).trim() || "(no text)", 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("text", value) });
+const markdown = (text: string, theme: Theme) =>
+	new Markdown(safe(text).trim() || "(no text)", 0, 0, getMarkdownTheme(), {
+		color: (value) => theme.fg("text", value),
+	});
 
 /**
  * A card's own disclosure, kept with the stored message object that Pi hands to every rebuild of the card. A
@@ -169,7 +218,10 @@ class MessageCardBody implements Component {
 	}
 	private header(width: number): string[] {
 		const theme = this.theme;
-		const title = clipRow(`${theme.fg("customMessageLabel", theme.bold("[stash]"))} ${theme.fg("text", theme.bold(oneLine(this.facts.label)))}`, width);
+		const title = clipRow(
+			`${theme.fg("customMessageLabel", theme.bold("[stash]"))} ${theme.fg("text", theme.bold(oneLine(this.facts.label)))}`,
+			width,
+		);
 		const facts = this.facts.facts.map(oneLine).filter(Boolean);
 		return [title, ...(facts.length ? [clipRow(theme.fg("muted", facts.join(" · ")), width)] : []), ""];
 	}
@@ -187,7 +239,11 @@ class MessageCardBody implements Component {
 		else {
 			const preview = trimBlank(trimBlank(this.preview.render(width)).slice(0, MESSAGE_PREVIEW_LINES));
 			const hidden = Math.max(0, full.length - preview.length);
-			lines = [...this.header(width), ...preview, ...(hidden > 0 ? [clipRow(expansionHint(this.theme, this.options, hidden), width)] : [])];
+			lines = [
+				...this.header(width),
+				...preview,
+				...(hidden > 0 ? [clipRow(expansionHint(this.theme, this.options, hidden), width)] : []),
+			];
 		}
 		this.cache = { width, lines };
 		return lines;
@@ -201,7 +257,12 @@ class MessageCardBody implements Component {
 
 function card(message: object, facts: CardFacts, options: MessageRenderOptions, theme: Theme): Component {
 	const background = theme.getBgAnsi("customMessageBg");
-	const box = new Box(options.outputPad, 1, (line) => theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background)));
+	const box = new Box(options.outputPad, 1, (line) =>
+		theme.bg(
+			"customMessageBg",
+			line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background),
+		),
+	);
 	box.addChild(clickToggle(new MessageCardBody(message, facts, theme, options)));
 	return box;
 }

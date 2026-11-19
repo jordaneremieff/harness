@@ -5,7 +5,19 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
-import { Harness, MemoryStorage, LiveDoc, createRegistry, defineExtension, defineTask, type ConversationId, type LiveState, type Storage, type SubmissionId, type TaskId } from "@earendil-works/pi-durable";
+import {
+	Harness,
+	MemoryStorage,
+	LiveDoc,
+	createRegistry,
+	defineExtension,
+	defineTask,
+	type ConversationId,
+	type LiveState,
+	type Storage,
+	type SubmissionId,
+	type TaskId,
+} from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { deliveryState, migrateDeliveryStore } from "./delivery-store.ts";
 import type { DeliveryReport } from "./durable-controls.ts";
@@ -13,7 +25,20 @@ import { waitForDeliveryFixture } from "./delivery-store-fixture.mts";
 import { onStoredCommit } from "./commit-observation.ts";
 import { OpenWorkDoc } from "./open-work.ts";
 import { RequestContextDoc } from "./request-context.ts";
-import { UNPLACED_NOTICE_MS, UnplacedInputsDoc, UnplacedWatchEnd, UnplacedWatchTask, currentStep, placementOf, pruneUnplacedInputs, readUnplacedSummary, recordUnplacedInput, unplacedSummary, type InputClass, type UnplacedInput } from "./unplaced-inputs.ts";
+import {
+	UNPLACED_NOTICE_MS,
+	UnplacedInputsDoc,
+	UnplacedWatchEnd,
+	UnplacedWatchTask,
+	currentStep,
+	placementOf,
+	pruneUnplacedInputs,
+	readUnplacedSummary,
+	recordUnplacedInput,
+	unplacedSummary,
+	type InputClass,
+	type UnplacedInput,
+} from "./unplaced-inputs.ts";
 
 const RECIPIENT = "store";
 const EPOCH = 1_800_000_000_000;
@@ -23,8 +48,13 @@ const StepTask = defineTask<Record<string, never>, { phase: "hold" }, null>({
 	name: "fixture.step",
 	version: 1,
 	initial: () => ({ phase: "hold" }),
-	phases: { hold: async (task, runtime, context) => { await runtime.sleepUntil(Number.MAX_SAFE_INTEGER, task.state.checkpoint, context); } },
-	abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+	phases: {
+		hold: async (task, runtime, context) => {
+			await runtime.sleepUntil(Number.MAX_SAFE_INTEGER, task.state.checkpoint, context);
+		},
+	},
+	abort: (_task, runtime, context) =>
+		runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
 interface Fixture {
@@ -34,10 +64,18 @@ interface Fixture {
 }
 
 /** The Harness clock is the test's value; the Harness arms no timer for a sleep and runs a due task at `resume()`. */
-async function open(t: { after(fn: () => void | Promise<void>): void }, clock = { now: EPOCH }, storage: Storage = new MemoryStorage()): Promise<Fixture> {
+async function open(
+	t: { after(fn: () => void | Promise<void>): void },
+	clock = { now: EPOCH },
+	storage: Storage = new MemoryStorage(),
+): Promise<Fixture> {
 	const registry = createRegistry();
 	registry.install(defineExtension({ name: "fixture.unplaced", tasks: [UnplacedWatchTask, StepTask] }));
-	const harness = await Harness.open(storage, { models: createModels(), registry, now: () => clock.now, onWake: () => {} }, BACKGROUND_CONTEXT);
+	const harness = await Harness.open(
+		storage,
+		{ models: createModels(), registry, now: () => clock.now, onWake: () => {} },
+		BACKGROUND_CONTEXT,
+	);
 	t.after(() => harness.close(BACKGROUND_CONTEXT).catch(() => undefined));
 	await migrateDeliveryStore(harness, BACKGROUND_CONTEXT);
 	const root = await harness.root(BACKGROUND_CONTEXT);
@@ -52,19 +90,40 @@ function bounded() {
 /** Resolve when a live task of the kind sleeps. */
 async function sleeping(f: Fixture, kind: string): Promise<void> {
 	const graph = await f.harness.watchTaskGraph(BACKGROUND_CONTEXT);
-	const ready = (value: typeof graph.value) => Object.values(value.tasks).some((node) => node.kind === kind && node.state.status === "sleeping");
+	const ready = (value: typeof graph.value) =>
+		Object.values(value.tasks).some((node) => node.kind === kind && node.state.status === "sleeping");
 	try {
-		if (!ready(graph.value)) await new Promise<void>((resolve) => graph.start(async (call) => { if (call.kind === "value" && ready(call.value)) resolve(); }));
-	} finally { await graph.stop(); }
+		if (!ready(graph.value))
+			await new Promise<void>((resolve) =>
+				graph.start(async (call) => {
+					if (call.kind === "value" && ready(call.value)) resolve();
+				}),
+			);
+	} finally {
+		await graph.stop();
+	}
 }
 
 async function queued(f: Fixture, requestId: string): Promise<number> {
-	return f.harness.commit(async (tx) => (await tx.createSubmission({ conversationId: f.id, requestId, type: "input", status: "queued" })).id, BACKGROUND_CONTEXT);
+	return f.harness.commit(
+		async (tx) => (await tx.createSubmission({ conversationId: f.id, requestId, type: "input", status: "queued" })).id,
+		BACKGROUND_CONTEXT,
+	);
 }
 
 async function admit(f: Fixture, requestId: string, inputClass: InputClass, sender: string): Promise<number> {
 	const submissionId = await queued(f, requestId);
-	const placement = await f.harness.commit((tx) => recordUnplacedInput(tx, f.id, { submissionId, class: inputClass, sender, admittedAt: f.clock.now, recipient: RECIPIENT }), BACKGROUND_CONTEXT);
+	const placement = await f.harness.commit(
+		(tx) =>
+			recordUnplacedInput(tx, f.id, {
+				submissionId,
+				class: inputClass,
+				sender,
+				admittedAt: f.clock.now,
+				recipient: RECIPIENT,
+			}),
+		BACKGROUND_CONTEXT,
+	);
 	assert.equal(placement, "unplaced");
 	// The watch commits its sleep before the test moves the clock.
 	await sleeping(f, UnplacedWatchTask.definition.name);
@@ -72,7 +131,9 @@ async function admit(f: Fixture, requestId: string, inputClass: InputClass, send
 }
 
 async function settle(f: Fixture, submissionId: number): Promise<void> {
-	await f.harness.commit((tx) => { tx.settleSubmission(submissionId as SubmissionId, { status: "unanswered", reason: "aborted" }); }, BACKGROUND_CONTEXT);
+	await f.harness.commit((tx) => {
+		tx.settleSubmission(submissionId as SubmissionId, { status: "unanswered", reason: "aborted" });
+	}, BACKGROUND_CONTEXT);
 }
 
 async function watchTask(f: Fixture): Promise<TaskId> {
@@ -98,22 +159,32 @@ function rowsWhen(f: Fixture, ready: (rows: readonly UnplacedInput[]) => boolean
 			detach();
 			resolve(rows.map((row) => row.noticed));
 		};
-		const detach = onStoredCommit(f.harness, () => { void check().catch(reject); });
+		const detach = onStoredCommit(f.harness, () => {
+			void check().catch(reject);
+		});
 		void check().catch(reject);
 	});
 }
 
 async function notices(f: Fixture): Promise<DeliveryReport[]> {
-	return (await deliveryState(f.harness, BACKGROUND_CONTEXT, true)).reports.filter((report) => report.sourceId.startsWith("unplaced:"));
+	return (await deliveryState(f.harness, BACKGROUND_CONTEXT, true)).reports.filter((report) =>
+		report.sourceId.startsWith("unplaced:"),
+	);
 }
 
 function noticeFor(f: Fixture, ownerId: string): Promise<DeliveryReport> {
-	return waitForDeliveryFixture(f.harness, bounded(), (state) => state.reports.find((report) => report.ownerId === ownerId && report.sourceId.startsWith("unplaced:")));
+	return waitForDeliveryFixture(f.harness, bounded(), (state) =>
+		state.reports.find((report) => report.ownerId === ownerId && report.sourceId.startsWith("unplaced:")),
+	);
 }
 
 /** A sleeping task with a recorded first start. */
 async function stepTask(f: Fixture): Promise<{ id: TaskId; startedAt: number }> {
-	const id = await f.harness.commit((tx) => tx.createTask(StepTask, {}, { ownership: { kind: "conversation" }, conversationId: f.id, background: true }), BACKGROUND_CONTEXT);
+	const id = await f.harness.commit(
+		(tx) =>
+			tx.createTask(StepTask, {}, { ownership: { kind: "conversation" }, conversationId: f.id, background: true }),
+		BACKGROUND_CONTEXT,
+	);
 	await sleeping(f, StepTask.definition.name);
 	const startedAt = (await f.harness.getTask(id, BACKGROUND_CONTEXT))?.startedAt;
 	assert.ok(startedAt !== undefined, "a task that ran has a first start");
@@ -121,18 +192,25 @@ async function stepTask(f: Fixture): Promise<{ id: TaskId; startedAt: number }> 
 }
 
 async function live(f: Fixture, change: (state: LiveState) => void): Promise<void> {
-	await f.harness.commit(async (tx) => { change(await tx.doc(LiveDoc, f.id) as LiveState); }, BACKGROUND_CONTEXT);
+	await f.harness.commit(async (tx) => {
+		change((await tx.doc(LiveDoc, f.id)) as LiveState);
+	}, BACKGROUND_CONTEXT);
 }
 
 /** A run that serves one placed input with a route to `replyTo`. */
 async function routedRun(f: Fixture, taskId: TaskId, requestId: string, replyTo: string): Promise<void> {
 	const submission = await f.harness.commit(async (tx) => {
-		const entry = await tx.appendEntry(f.id, { kind: "agent.input", model: [{ role: "user", content: "routed", timestamp: f.clock.now }] });
-		return (await tx.createSubmission({ conversationId: f.id, requestId, type: "input", status: "placed", entry: entry.id })).id;
+		const entry = await tx.appendEntry(f.id, {
+			kind: "agent.input",
+			model: [{ role: "user", content: "routed", timestamp: f.clock.now }],
+		});
+		return (
+			await tx.createSubmission({ conversationId: f.id, requestId, type: "input", status: "placed", entry: entry.id })
+		).id;
 	}, BACKGROUND_CONTEXT);
 	await f.harness.commit(async (tx) => {
 		(await tx.doc(RequestContextDoc, f.id)).requests.push({ requestId, requester: replyTo, replyTo, origin: "model" });
-		(await tx.doc(LiveDoc, f.id) as LiveState).run = { taskId, inputs: [submission], turns: 0 };
+		((await tx.doc(LiveDoc, f.id)) as LiveState).run = { taskId, inputs: [submission], turns: 0 };
 	}, BACKGROUND_CONTEXT);
 }
 
@@ -141,27 +219,84 @@ it("reports the committed placement, keeps the first admission time, and counts 
 	const first = await admit(f, "first", "steer", "sender-a");
 	f.clock.now = EPOCH + 1000;
 	const second = await admit(f, "second", "followUp", "sender-b");
-	const repeat = await f.harness.commit((tx) => recordUnplacedInput(tx, f.id, { submissionId: first, class: "steer", sender: "sender-a", admittedAt: EPOCH + 5000, recipient: RECIPIENT }), BACKGROUND_CONTEXT);
+	const repeat = await f.harness.commit(
+		(tx) =>
+			recordUnplacedInput(tx, f.id, {
+				submissionId: first,
+				class: "steer",
+				sender: "sender-a",
+				admittedAt: EPOCH + 5000,
+				recipient: RECIPIENT,
+			}),
+		BACKGROUND_CONTEXT,
+	);
 	assert.equal(repeat, "unplaced");
 	const rows = (await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs ?? [];
 	assert.deepEqual(rows, [
 		{ requestId: "first", submissionId: first, class: "steer", sender: "sender-a", admittedAt: EPOCH, noticed: false },
-		{ requestId: "second", submissionId: second, class: "followUp", sender: "sender-b", admittedAt: EPOCH + 1000, noticed: false },
+		{
+			requestId: "second",
+			submissionId: second,
+			class: "followUp",
+			sender: "sender-b",
+			admittedAt: EPOCH + 1000,
+			noticed: false,
+		},
 	]);
-	assert.deepEqual(await readUnplacedSummary(f.harness, f.id, BACKGROUND_CONTEXT), { unplaced: 2, oldestAdmittedAt: EPOCH });
-	assert.deepEqual(await f.harness.commit((tx) => unplacedSummary(tx, f.id), BACKGROUND_CONTEXT), { unplaced: 2, oldestAdmittedAt: EPOCH });
+	assert.deepEqual(await readUnplacedSummary(f.harness, f.id, BACKGROUND_CONTEXT), {
+		unplaced: 2,
+		oldestAdmittedAt: EPOCH,
+	});
+	assert.deepEqual(await f.harness.commit((tx) => unplacedSummary(tx, f.id), BACKGROUND_CONTEXT), {
+		unplaced: 2,
+		oldestAdmittedAt: EPOCH,
+	});
 
 	await settle(f, first);
-	assert.deepEqual(await readUnplacedSummary(f.harness, f.id, BACKGROUND_CONTEXT), { unplaced: 1, oldestAdmittedAt: EPOCH + 1000 }, "a read counts only rows that are still queued");
-	assert.equal((await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs.length, 2, "a read prunes nothing");
-	const pruned = await f.harness.commit(async (tx) => (await pruneUnplacedInputs(tx, f.id)).map((row) => row.requestId), BACKGROUND_CONTEXT);
+	assert.deepEqual(
+		await readUnplacedSummary(f.harness, f.id, BACKGROUND_CONTEXT),
+		{ unplaced: 1, oldestAdmittedAt: EPOCH + 1000 },
+		"a read counts only rows that are still queued",
+	);
+	assert.equal(
+		(await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs.length,
+		2,
+		"a read prunes nothing",
+	);
+	const pruned = await f.harness.commit(
+		async (tx) => (await pruneUnplacedInputs(tx, f.id)).map((row) => row.requestId),
+		BACKGROUND_CONTEXT,
+	);
 	assert.deepEqual(pruned, ["second"]);
 
-	const withdrawn = await f.harness.commit((tx) => recordUnplacedInput(tx, f.id, { submissionId: first, class: "steer", sender: "sender-a", admittedAt: f.clock.now, recipient: RECIPIENT }), BACKGROUND_CONTEXT);
+	const withdrawn = await f.harness.commit(
+		(tx) =>
+			recordUnplacedInput(tx, f.id, {
+				submissionId: first,
+				class: "steer",
+				sender: "sender-a",
+				admittedAt: f.clock.now,
+				recipient: RECIPIENT,
+			}),
+		BACKGROUND_CONTEXT,
+	);
 	assert.equal(withdrawn, "withdrawn", "an input that left the inbox without an entry is neither unplaced nor placed");
-	const absent = await f.harness.commit((tx) => recordUnplacedInput(tx, f.id, { submissionId: 999_999, class: "steer", sender: "sender-a", admittedAt: f.clock.now }), BACKGROUND_CONTEXT);
+	const absent = await f.harness.commit(
+		(tx) =>
+			recordUnplacedInput(tx, f.id, {
+				submissionId: 999_999,
+				class: "steer",
+				sender: "sender-a",
+				admittedAt: f.clock.now,
+			}),
+		BACKGROUND_CONTEXT,
+	);
 	assert.equal(absent, "withdrawn", "an unknown submission records no row and is not placed");
-	assert.equal((await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs.length, 1, "neither call records a row");
+	assert.equal(
+		(await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs.length,
+		1,
+		"neither call records a row",
+	);
 	await settle(f, second);
 	assert.deepEqual(await readUnplacedSummary(f.harness, f.id, BACKGROUND_CONTEXT), { unplaced: 0 });
 });
@@ -169,9 +304,15 @@ it("reports the committed placement, keeps the first admission time, and counts 
 it("sends one notice at five minutes with the running tool and the first start of its task", async (t) => {
 	const f = await open(t);
 	const step = await stepTask(f);
-	await live(f, (state) => { state.tools = [{ callId: "call-1", name: "bash", status: "running", taskId: step.id }]; });
+	await live(f, (state) => {
+		state.tools = [{ callId: "call-1", name: "bash", status: "running", taskId: step.id }];
+	});
 	await admit(f, "stuck", "followUp", "sender-a");
-	assert.equal(f.harness.wake().at, EPOCH + UNPLACED_NOTICE_MS, "the watch sleeps to the admission time plus the notice period");
+	assert.equal(
+		f.harness.wake().at,
+		EPOCH + UNPLACED_NOTICE_MS,
+		"the watch sleeps to the admission time plus the notice period",
+	);
 	assert.deepEqual(await notices(f), [], "no notice precedes the notice period");
 
 	// One millisecond early nothing is due; the notice below carries the time of the due clock value.
@@ -184,7 +325,10 @@ it("sends one notice at five minutes with the running tool and the first start o
 	assert.equal(notice.passive, undefined);
 	assert.match(notice.message, /did not place 1 admitted input from you for more than 5 minutes/u);
 	assert.ok(notice.message.includes(`oldest admitted ${new Date(EPOCH).toISOString()}, request stuck`));
-	assert.ok(notice.message.includes(`Current step: tool bash, first started at ${new Date(step.startedAt).toISOString()}.`), notice.message);
+	assert.ok(
+		notice.message.includes(`Current step: tool bash, first started at ${new Date(step.startedAt).toISOString()}.`),
+		notice.message,
+	);
 	assert.equal((await notices(f)).length, 1);
 	assert.equal((await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs[0]?.noticed, true);
 });
@@ -195,23 +339,61 @@ it("names the step from the live state: unknown start, compaction, provider retr
 	const first = `first started at ${new Date(step.startedAt).toISOString()}`;
 	const read = () => f.harness.commit((tx) => currentStep(tx, f.id, 4), BACKGROUND_CONTEXT);
 	assert.equal(await read(), "no run");
-	await live(f, (state) => { state.tools = [{ callId: "call-1", name: "bash", status: "running" }, { callId: "call-2", name: "read", status: "done", taskId: step.id }]; });
-	assert.equal(await read(), "tool bash, start unknown", "a slot without a task has no start; a finished slot is not the step");
-	await live(f, (state) => { state.tools = [{ callId: "call-1", name: "bash", status: "running", taskId: 999_999 as TaskId }]; });
+	await live(f, (state) => {
+		state.tools = [
+			{ callId: "call-1", name: "bash", status: "running" },
+			{ callId: "call-2", name: "read", status: "done", taskId: step.id },
+		];
+	});
+	assert.equal(
+		await read(),
+		"tool bash, start unknown",
+		"a slot without a task has no start; a finished slot is not the step",
+	);
+	await live(f, (state) => {
+		state.tools = [{ callId: "call-1", name: "bash", status: "running", taskId: 999_999 as TaskId }];
+	});
 	assert.equal(await read(), "tool bash, start unknown", "a slot whose task record is absent has no start");
-	await live(f, (state) => { delete state.tools; state.compactions = [{ taskId: step.id as never, trigger: "threshold" as never, blocking: true, attempt: 2, retry: { at: EPOCH + 9000, error: "busy" } }]; });
-	assert.equal(await read(), `compaction, attempt 2, ${first}, next attempt at ${new Date(EPOCH + 9000).toISOString()}`);
-	await live(f, (state) => { delete state.compactions; state.run = { taskId: step.id, inputs: [], turns: 0 }; state.generation = { attempt: 3, retry: { at: EPOCH + 7000, error: "overloaded" } }; });
-	assert.equal(await read(), `provider retry, attempt 3 of 4, next attempt at ${new Date(EPOCH + 7000).toISOString()}; model step ${first}`);
-	await live(f, (state) => { state.generation = { attempt: 1 }; });
+	await live(f, (state) => {
+		delete state.tools;
+		state.compactions = [
+			{
+				taskId: step.id as never,
+				trigger: "threshold" as never,
+				blocking: true,
+				attempt: 2,
+				retry: { at: EPOCH + 9000, error: "busy" },
+			},
+		];
+	});
+	assert.equal(
+		await read(),
+		`compaction, attempt 2, ${first}, next attempt at ${new Date(EPOCH + 9000).toISOString()}`,
+	);
+	await live(f, (state) => {
+		delete state.compactions;
+		state.run = { taskId: step.id, inputs: [], turns: 0 };
+		state.generation = { attempt: 3, retry: { at: EPOCH + 7000, error: "overloaded" } };
+	});
+	assert.equal(
+		await read(),
+		`provider retry, attempt 3 of 4, next attempt at ${new Date(EPOCH + 7000).toISOString()}; model step ${first}`,
+	);
+	await live(f, (state) => {
+		state.generation = { attempt: 1 };
+	});
 	assert.equal(await read(), `model step, ${first}`);
-	await live(f, (state) => { delete state.generation; });
+	await live(f, (state) => {
+		delete state.generation;
+	});
 	assert.equal(await read(), `between steps; run ${first}`);
 });
 
 it("states an unknown start in the notice when the running tool has no task", async (t) => {
 	const f = await open(t);
-	await live(f, (state) => { state.tools = [{ callId: "call-1", name: "bash", status: "running" }]; });
+	await live(f, (state) => {
+		state.tools = [{ callId: "call-1", name: "bash", status: "running" }];
+	});
 	await admit(f, "stuck", "steer", "sender-a");
 	advance(f, EPOCH + UNPLACED_NOTICE_MS);
 	const notice = await noticeFor(f, "sender-a");
@@ -244,7 +426,11 @@ it("sends one notice for each explicit sender with several queued inputs, and no
 	advance(f, EPOCH + UNPLACED_NOTICE_MS);
 	const first = await noticeFor(f, "sender-a");
 	assert.equal(first.sourceId, `unplaced:${f.id}:a-1`);
-	assert.match(first.message, /did not place 1 admitted input from you for more than 5 minutes \(oldest admitted [^)]*, request a-1\); 2 newer inputs from you wait there too\./u, "only the input that is five minutes old is said to wait that long; the one notice names the newer ones apart");
+	assert.match(
+		first.message,
+		/did not place 1 admitted input from you for more than 5 minutes \(oldest admitted [^)]*, request a-1\); 2 newer inputs from you wait there too\./u,
+		"only the input that is five minutes old is said to wait that long; the one notice names the newer ones apart",
+	);
 	assert.equal((await notices(f)).length, 1, "the other sender's input is not due yet");
 
 	advance(f, EPOCH + 1000 + UNPLACED_NOTICE_MS);
@@ -258,8 +444,14 @@ it("sends one notice for each explicit sender with several queued inputs, and no
 	assert.notEqual(later, watch, "a new row after the watch ended starts one new watch");
 	advance(f, EPOCH + 2000 + 2 * UNPLACED_NOTICE_MS);
 	await f.harness.waitForTask(later, bounded());
-	assert.equal((await notices(f)).filter((report) => report.ownerId === "sender-a").length, 1, "the sender has one notice for this stuck recipient");
-	assert.ok((await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs.every((row) => row.noticed));
+	assert.equal(
+		(await notices(f)).filter((report) => report.ownerId === "sender-a").length,
+		1,
+		"the sender has one notice for this stuck recipient",
+	);
+	assert.ok(
+		(await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs.every((row) => row.noticed),
+	);
 });
 
 it("sends no notice to the producer of a result, a check-in or a timer, and a passive one to a thread notice poster", async (t) => {
@@ -271,7 +463,10 @@ it("sends no notice to the producer of a result, a check-in or a timer, and a pa
 	advance(f, EPOCH + UNPLACED_NOTICE_MS);
 	await f.harness.waitForTask(watch, bounded());
 	assert.deepEqual(await notices(f), []);
-	assert.ok((await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs.every((row) => row.noticed), "an event row waits for no later notice");
+	assert.ok(
+		(await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs.every((row) => row.noticed),
+		"an event row waits for no later notice",
+	);
 
 	await admit(f, "thread-1", "thread-notice", "poster-a");
 	await admit(f, "no-session", "operator", "");
@@ -279,7 +474,11 @@ it("sends no notice to the producer of a result, a check-in or a timer, and a pa
 	advance(f, EPOCH + 2 * UNPLACED_NOTICE_MS);
 	const notice = await noticeFor(f, "poster-a");
 	assert.equal(notice.passive, true);
-	assert.deepEqual((await notices(f)).map((report) => report.ownerId), ["poster-a"], "an input without a sender session and the recipient's own input produce no row");
+	assert.deepEqual(
+		(await notices(f)).map((report) => report.ownerId),
+		["poster-a"],
+		"an input without a sender session and the recipient's own input produce no row",
+	);
 });
 
 it("does not count a queued event of a sender as its notice", async (t) => {
@@ -293,14 +492,26 @@ it("does not count a queued event of a sender as its notice", async (t) => {
 	await admit(f, "other-1", "followUp", "sender-b");
 
 	advance(f, EPOCH + UNPLACED_NOTICE_MS);
-	assert.deepEqual(await rowsWhen(f, (rows) => rows[0]?.noticed === true), [true, false, false], "the due result is marked");
+	assert.deepEqual(
+		await rowsWhen(f, (rows) => rows[0]?.noticed === true),
+		[true, false, false],
+		"the due result is marked",
+	);
 	assert.deepEqual(await notices(f), [], "the due result produces no notice");
 
 	advance(f, EPOCH + 1000 + UNPLACED_NOTICE_MS);
 	const notice = await noticeFor(f, "producer-a");
-	assert.equal(notice.sourceId, `unplaced:${f.id}:report-1`, "the later explicit report produces the sender's one notice");
+	assert.equal(
+		notice.sourceId,
+		`unplaced:${f.id}:report-1`,
+		"the later explicit report produces the sender's one notice",
+	);
 	assert.match(notice.message, /did not place 1 admitted input from you/u, "the count names explicit inputs only");
-	assert.deepEqual((await notices(f)).map((report) => report.sourceId), [`unplaced:${f.id}:report-1`], "the sender is the requester and gets no second row");
+	assert.deepEqual(
+		(await notices(f)).map((report) => report.sourceId),
+		[`unplaced:${f.id}:report-1`],
+		"the sender is the requester and gets no second row",
+	);
 
 	const requester = await open(t);
 	const run = await stepTask(requester);
@@ -311,10 +522,14 @@ it("does not count a queued event of a sender as its notice", async (t) => {
 	const watch = await watchTask(requester);
 	advance(requester, EPOCH + 1000 + UNPLACED_NOTICE_MS);
 	await requester.harness.waitForTask(watch, bounded());
-	assert.deepEqual((await notices(requester)).map((report) => [report.ownerId, report.sourceId]).sort(), [
-		["producer-a", `unplaced:${requester.id}:run:${run.id}`],
-		["sender-b", `unplaced:${requester.id}:other-1`],
-	], "a noticed event row does not exclude its sender from the requester notice");
+	assert.deepEqual(
+		(await notices(requester)).map((report) => [report.ownerId, report.sourceId]).sort(),
+		[
+			["producer-a", `unplaced:${requester.id}:run:${run.id}`],
+			["sender-b", `unplaced:${requester.id}:other-1`],
+		],
+		"a noticed event row does not exclude its sender from the requester notice",
+	);
 });
 
 it("sends one notice to each reply recipient of the current run's routed requests, and one only to a requester that is the sender", async (t) => {
@@ -327,7 +542,12 @@ it("sends one notice to each reply recipient of the current run's routed request
 	assert.equal(requester.sourceId, `unplaced:${f.id}:run:${step.id}`);
 	assert.equal(requester.senderIdentity, RECIPIENT);
 	assert.match(requester.message, /which serves your request, did not place 1 admitted input for more than 5 minutes/u);
-	assert.ok(requester.message.includes(`Current step: between steps; run first started at ${new Date(step.startedAt).toISOString()}.`), requester.message);
+	assert.ok(
+		requester.message.includes(
+			`Current step: between steps; run first started at ${new Date(step.startedAt).toISOString()}.`,
+		),
+		requester.message,
+	);
 	assert.deepEqual((await notices(f)).map((report) => report.ownerId).sort(), ["requester-r", "sender-a"]);
 
 	const same = await open(t);
@@ -337,7 +557,11 @@ it("sends one notice to each reply recipient of the current run's routed request
 	const watch = await watchTask(same);
 	advance(same, EPOCH + UNPLACED_NOTICE_MS);
 	await same.harness.waitForTask(watch, bounded());
-	assert.deepEqual((await notices(same)).map((report) => report.sourceId), [`unplaced:${same.id}:stuck`], "a requester that is the sender gets the sender notice only");
+	assert.deepEqual(
+		(await notices(same)).map((report) => report.sourceId),
+		[`unplaced:${same.id}:stuck`],
+		"a requester that is the sender gets the sender notice only",
+	);
 
 	const event = await open(t);
 	const served = await stepTask(event);
@@ -362,12 +586,19 @@ it("sends no second notice after the storage is opened again", async (t) => {
 
 	clock.now = EPOCH + 2 * UNPLACED_NOTICE_MS;
 	const second = await open(t, clock, await openNodeSqliteStorage(path));
-	assert.deepEqual(await readUnplacedSummary(second.harness, second.id, BACKGROUND_CONTEXT), { unplaced: 1, oldestAdmittedAt: EPOCH }, "the queued row survives the reopen");
+	assert.deepEqual(
+		await readUnplacedSummary(second.harness, second.id, BACKGROUND_CONTEXT),
+		{ unplaced: 1, oldestAdmittedAt: EPOCH },
+		"the queued row survives the reopen",
+	);
 	await admit(second, "again", "followUp", "sender-a");
 	const watch = await watchTask(second);
 	advance(second, EPOCH + 3 * UNPLACED_NOTICE_MS);
 	await second.harness.waitForTask(watch, bounded());
-	assert.deepEqual((await notices(second)).map((report) => report.sourceId), [`unplaced:${second.id}:stuck`]);
+	assert.deepEqual(
+		(await notices(second)).map((report) => report.sourceId),
+		[`unplaced:${second.id}:stuck`],
+	);
 });
 
 it("notifies the reply recipient of open declared work when the current run serves no routed request", async (t) => {
@@ -375,13 +606,42 @@ it("notifies the reply recipient of open declared work when the current run serv
 	const step = await stepTask(f);
 	// A run that a result started: it has no routed input, and the conversation holds one open work item.
 	await f.harness.commit(async (tx) => {
-		const entry = await tx.appendEntry(f.id, { kind: "agent.input", model: [{ role: "user", content: "earlier request", timestamp: f.clock.now }] });
+		const entry = await tx.appendEntry(f.id, {
+			kind: "agent.input",
+			model: [{ role: "user", content: "earlier request", timestamp: f.clock.now }],
+		});
 		const answer = await tx.appendEntry(f.id, { kind: "pi.assistant", model: [] });
-		const declared = await tx.createSubmission({ conversationId: f.id, requestId: "declared", type: "input", status: "done", entry: entry.id, answer: answer.id });
-		const result = await tx.appendEntry(f.id, { kind: "agent.input", model: [{ role: "user", content: "a result", timestamp: f.clock.now }] });
-		const started = await tx.createSubmission({ conversationId: f.id, requestId: "result-delivery", type: "input", status: "placed", entry: result.id });
-		(await tx.doc(OpenWorkDoc, f.id)).items.push({ requestId: "declared", submissionId: declared.id, requester: "requester-w", replyTo: "requester-w", origin: "model", results: [], note: "own work remains", declaredAt: f.clock.now, updatedAt: f.clock.now });
-		(await tx.doc(LiveDoc, f.id) as LiveState).run = { taskId: step.id, inputs: [started.id], turns: 0 };
+		const declared = await tx.createSubmission({
+			conversationId: f.id,
+			requestId: "declared",
+			type: "input",
+			status: "done",
+			entry: entry.id,
+			answer: answer.id,
+		});
+		const result = await tx.appendEntry(f.id, {
+			kind: "agent.input",
+			model: [{ role: "user", content: "a result", timestamp: f.clock.now }],
+		});
+		const started = await tx.createSubmission({
+			conversationId: f.id,
+			requestId: "result-delivery",
+			type: "input",
+			status: "placed",
+			entry: result.id,
+		});
+		(await tx.doc(OpenWorkDoc, f.id)).items.push({
+			requestId: "declared",
+			submissionId: declared.id,
+			requester: "requester-w",
+			replyTo: "requester-w",
+			origin: "model",
+			results: [],
+			note: "own work remains",
+			declaredAt: f.clock.now,
+			updatedAt: f.clock.now,
+		});
+		((await tx.doc(LiveDoc, f.id)) as LiveState).run = { taskId: step.id, inputs: [started.id], turns: 0 };
 	}, BACKGROUND_CONTEXT);
 	await admit(f, "stuck", "followUp", "sender-a");
 	advance(f, EPOCH + UNPLACED_NOTICE_MS);
@@ -394,35 +654,97 @@ it("notifies the reply recipient of open declared work when the current run serv
 	const closed = await open(t);
 	const run = await stepTask(closed);
 	await closed.harness.commit(async (tx) => {
-		(await tx.doc(OpenWorkDoc, closed.id)).items.push({ requestId: "declared", submissionId: 424_242, requester: "requester-w", replyTo: "requester-w", origin: "model", results: [], note: "done", declaredAt: EPOCH, updatedAt: EPOCH, close: { status: "done", at: EPOCH, message: "done", reportRequestId: `work-final:${closed.id}:declared` } });
-		(await tx.doc(LiveDoc, closed.id) as LiveState).run = { taskId: run.id, inputs: [], turns: 0 };
+		(await tx.doc(OpenWorkDoc, closed.id)).items.push({
+			requestId: "declared",
+			submissionId: 424_242,
+			requester: "requester-w",
+			replyTo: "requester-w",
+			origin: "model",
+			results: [],
+			note: "done",
+			declaredAt: EPOCH,
+			updatedAt: EPOCH,
+			close: { status: "done", at: EPOCH, message: "done", reportRequestId: `work-final:${closed.id}:declared` },
+		});
+		((await tx.doc(LiveDoc, closed.id)) as LiveState).run = { taskId: run.id, inputs: [], turns: 0 };
 	}, BACKGROUND_CONTEXT);
 	await admit(closed, "stuck", "followUp", "sender-a");
 	const watch = await watchTask(closed);
 	advance(closed, EPOCH + UNPLACED_NOTICE_MS);
 	await closed.harness.waitForTask(watch, bounded());
-	assert.deepEqual((await notices(closed)).map((report) => report.ownerId), ["sender-a"], "the reply recipient of closed work is not a requester");
+	assert.deepEqual(
+		(await notices(closed)).map((report) => report.ownerId),
+		["sender-a"],
+		"the reply recipient of closed work is not a requester",
+	);
 });
 
 it("states withdrawn, not placed, for a submission that is absent or left the inbox before placement", async (t) => {
 	const f = await open(t);
 	const record = (id: number) => f.harness.commit((tx) => tx.submission(id as SubmissionId), BACKGROUND_CONTEXT);
-	const place = (id: number) => f.harness.commit((tx) => recordUnplacedInput(tx, f.id, { submissionId: id, class: "followUp", sender: "sender-a", admittedAt: f.clock.now, recipient: RECIPIENT }), BACKGROUND_CONTEXT);
+	const place = (id: number) =>
+		f.harness.commit(
+			(tx) =>
+				recordUnplacedInput(tx, f.id, {
+					submissionId: id,
+					class: "followUp",
+					sender: "sender-a",
+					admittedAt: f.clock.now,
+					recipient: RECIPIENT,
+				}),
+			BACKGROUND_CONTEXT,
+		);
 
 	const queuedId = await queued(f, "queued");
 	assert.equal(placementOf(await record(queuedId), f.id), "unplaced");
 	await settle(f, queuedId);
-	assert.equal(placementOf(await record(queuedId), f.id), "withdrawn", "an abort withdrew the queued input: it has no entry");
+	assert.equal(
+		placementOf(await record(queuedId), f.id),
+		"withdrawn",
+		"an abort withdrew the queued input: it has no entry",
+	);
 	assert.equal(await place(queuedId), "withdrawn");
 
 	const ids = await f.harness.commit(async (tx) => {
-		const entry = await tx.appendEntry(f.id, { kind: "agent.input", model: [{ role: "user", content: "placed", timestamp: f.clock.now }] });
-		const stopped = await tx.appendEntry(f.id, { kind: "agent.input", model: [{ role: "user", content: "stopped", timestamp: f.clock.now }] });
+		const entry = await tx.appendEntry(f.id, {
+			kind: "agent.input",
+			model: [{ role: "user", content: "placed", timestamp: f.clock.now }],
+		});
+		const stopped = await tx.appendEntry(f.id, {
+			kind: "agent.input",
+			model: [{ role: "user", content: "stopped", timestamp: f.clock.now }],
+		});
 		const answer = await tx.appendEntry(f.id, { kind: "pi.assistant", model: [] });
 		return {
-			placed: (await tx.createSubmission({ conversationId: f.id, requestId: "placed", type: "input", status: "placed", entry: entry.id })).id,
-			done: (await tx.createSubmission({ conversationId: f.id, requestId: "done", type: "input", status: "done", entry: entry.id, answer: answer.id })).id,
-			stopped: (await tx.createSubmission({ conversationId: f.id, requestId: "stopped", type: "input", status: "unanswered", entry: stopped.id, reason: "aborted" })).id,
+			placed: (
+				await tx.createSubmission({
+					conversationId: f.id,
+					requestId: "placed",
+					type: "input",
+					status: "placed",
+					entry: entry.id,
+				})
+			).id,
+			done: (
+				await tx.createSubmission({
+					conversationId: f.id,
+					requestId: "done",
+					type: "input",
+					status: "done",
+					entry: entry.id,
+					answer: answer.id,
+				})
+			).id,
+			stopped: (
+				await tx.createSubmission({
+					conversationId: f.id,
+					requestId: "stopped",
+					type: "input",
+					status: "unanswered",
+					entry: stopped.id,
+					reason: "aborted",
+				})
+			).id,
 		};
 	}, BACKGROUND_CONTEXT);
 	assert.equal(await place(ids.placed), "placed");
@@ -430,8 +752,16 @@ it("states withdrawn, not placed, for a submission that is absent or left the in
 	assert.equal(await place(ids.stopped), "placed", "an input that a boundary placed before its run stopped was placed");
 	assert.equal(await place(999_999), "withdrawn", "the conversation has no such submission");
 	assert.equal(placementOf(undefined), "withdrawn");
-	assert.equal(placementOf(await record(ids.placed), (f.id + 1) as ConversationId), "withdrawn", "a submission of another conversation is not this conversation's input");
-	assert.deepEqual((await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs ?? [], [], "no call recorded a row");
+	assert.equal(
+		placementOf(await record(ids.placed), (f.id + 1) as ConversationId),
+		"withdrawn",
+		"a submission of another conversation is not this conversation's input",
+	);
+	assert.deepEqual(
+		(await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT))?.inputs ?? [],
+		[],
+		"no call recorded a row",
+	);
 });
 
 it("counts only inputs older than the notice period and sends an active notice when a stuck input is not a thread notice", async (t) => {
@@ -448,9 +778,19 @@ it("counts only inputs older than the notice period and sends an active notice w
 	const sender = await noticeFor(f, "sender-a");
 	assert.equal(sender.sourceId, `unplaced:${f.id}:thread-1`);
 	assert.equal(sender.passive, undefined, "the notice also stands for the sender's follow-up, so it is not passive");
-	assert.ok(sender.message.includes(`did not place 1 admitted input from you for more than 5 minutes (oldest admitted ${new Date(EPOCH).toISOString()}, request thread-1); 1 newer input from you waits there too.`), sender.message);
+	assert.ok(
+		sender.message.includes(
+			`did not place 1 admitted input from you for more than 5 minutes (oldest admitted ${new Date(EPOCH).toISOString()}, request thread-1); 1 newer input from you waits there too.`,
+		),
+		sender.message,
+	);
 	const requester = await noticeFor(f, "requester-r");
-	assert.ok(requester.message.includes(`did not place 1 admitted input for more than 5 minutes (oldest admitted ${new Date(EPOCH).toISOString()}); 2 newer inputs wait there too.`), requester.message);
+	assert.ok(
+		requester.message.includes(
+			`did not place 1 admitted input for more than 5 minutes (oldest admitted ${new Date(EPOCH).toISOString()}); 2 newer inputs wait there too.`,
+		),
+		requester.message,
+	);
 	assert.equal(requester.passive, undefined);
 
 	const only = await open(t);
@@ -460,7 +800,10 @@ it("counts only inputs older than the notice period and sends an active notice w
 	advance(only, EPOCH + 1000 + UNPLACED_NOTICE_MS);
 	const passive = await noticeFor(only, "poster-a");
 	assert.equal(passive.passive, true, "a notice that stands only for thread notices stays passive");
-	assert.match(passive.message, /did not place 2 admitted inputs from you for more than 5 minutes \(oldest admitted [^)]*, request thread-1\)\. Current step/u);
+	assert.match(
+		passive.message,
+		/did not place 2 admitted inputs from you for more than 5 minutes \(oldest admitted [^)]*, request thread-1\)\. Current step/u,
+	);
 });
 
 it("ends the sleeping watch when its last queued input is placed, and starts a new one at the next queued admission", async (t) => {
@@ -468,10 +811,14 @@ it("ends the sleeping watch when its last queued input is placed, and starts a n
 	const reported: unknown[] = [];
 	const end = new UnplacedWatchEnd(f.harness, (error) => reported.push(error));
 	t.after(() => end.close());
-	const place = (submissionId: number) => f.harness.commit(async (tx) => {
-		const entry = await tx.appendEntry(f.id, { kind: "agent.input", model: [{ role: "user", content: "placed", timestamp: f.clock.now }] });
-		tx.placeSubmission(submissionId as SubmissionId, entry.id);
-	}, BACKGROUND_CONTEXT);
+	const place = (submissionId: number) =>
+		f.harness.commit(async (tx) => {
+			const entry = await tx.appendEntry(f.id, {
+				kind: "agent.input",
+				model: [{ role: "user", content: "placed", timestamp: f.clock.now }],
+			});
+			tx.placeSubmission(submissionId as SubmissionId, entry.id);
+		}, BACKGROUND_CONTEXT);
 	const live = async (id: TaskId) => (await f.harness.getTask(id, BACKGROUND_CONTEXT))?.state.status;
 
 	const first = await admit(f, "first", "followUp", "sender-a");
@@ -488,7 +835,13 @@ it("ends the sleeping watch when its last queued input is placed, and starts a n
 	assert.equal(await live(watch), "terminal", "the watch is not live after the placement of its last queued input");
 	const state = await f.harness.snapshot(UnplacedInputsDoc, f.id, BACKGROUND_CONTEXT);
 	assert.deepEqual([state?.inputs, state?.watch], [[], undefined]);
-	assert.equal((await f.harness.inspect(BACKGROUND_CONTEXT)).tasks.some((task) => task.record.kind === UnplacedWatchTask.definition.name), false, "no watch task is live work of the host");
+	assert.equal(
+		(await f.harness.inspect(BACKGROUND_CONTEXT)).tasks.some(
+			(task) => task.record.kind === UnplacedWatchTask.definition.name,
+		),
+		false,
+		"no watch task is live work of the host",
+	);
 
 	await admit(f, "third", "followUp", "sender-a");
 	const next = await watchTask(f);

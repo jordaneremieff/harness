@@ -7,15 +7,27 @@ import type { SettingsSnapshot } from "./configuration.ts";
 import type { HostSnapshot } from "./records.ts";
 
 /** Resource paths come only from the host's loaded registrations. */
-export function noteResource(kind: NoteResource["kind"], name: string, source: SourceInfo, resolvedPath?: string): NoteResource | undefined {
+export function noteResource(
+	kind: NoteResource["kind"],
+	name: string,
+	source: SourceInfo,
+	resolvedPath?: string,
+): NoteResource | undefined {
 	const path = resolvedPath ?? source.path;
 	if (!isAbsolute(path)) return;
 	if (kind === "prompt") return { kind, name, path };
 	const entryFile = /\.[cm]?[jt]s$/.test(path);
 	const location = kind === "skill" || entryFile ? dirname(path) : path;
-	const extensionName = entryFile && !/^index\.[cm]?[jt]s$/.test(basename(path)) ? basename(path).replace(/\.[cm]?[jt]s$/, "") : basename(location);
-	return { kind, name: kind === "extension" ? extensionName : name, path: location,
-		...(kind === "extension" ? { entryPath: path } : {}) };
+	const extensionName =
+		entryFile && !/^index\.[cm]?[jt]s$/.test(basename(path))
+			? basename(path).replace(/\.[cm]?[jt]s$/, "")
+			: basename(location);
+	return {
+		kind,
+		name: kind === "extension" ? extensionName : name,
+		path: location,
+		...(kind === "extension" ? { entryPath: path } : {}),
+	};
 }
 export function ordinaryNoteResources(snapshot: HostSnapshot): NoteResource[] | null {
 	if (!snapshot.availability.tools || !snapshot.availability.commands) return null;
@@ -29,7 +41,21 @@ export function ordinaryNoteResources(snapshot: HostSnapshot): NoteResource[] | 
 	});
 	return [...tools, ...commands].filter((resource) => resource !== undefined);
 }
-export function noteKnowledge(cwd: string, agentDir: string, resources: readonly NoteResource[] | null, settings: SettingsSnapshot): NoteKnowledge {
-	return { cwd, agentDir, home: homedir(), resources, settings, version: installedAccessors.version(),
-		packageDir: installedAccessors.packageDir(), docsPath: installedAccessors.docsPath(), examplesPath: installedAccessors.examplesPath() };
+export function noteKnowledge(
+	cwd: string,
+	agentDir: string,
+	resources: readonly NoteResource[] | null,
+	settings: SettingsSnapshot,
+): NoteKnowledge {
+	return {
+		cwd,
+		agentDir,
+		home: homedir(),
+		resources,
+		settings,
+		version: installedAccessors.version(),
+		packageDir: installedAccessors.packageDir(),
+		docsPath: installedAccessors.docsPath(),
+		examplesPath: installedAccessors.examplesPath(),
+	};
 }

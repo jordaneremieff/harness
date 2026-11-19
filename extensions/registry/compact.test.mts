@@ -6,42 +6,126 @@ import { isoTime, recordBlock } from "./format.ts";
 import type { ModelRecord, ModelSnapshot } from "./models.ts";
 import { buildRecords, type HostSnapshot } from "./records.ts";
 
-const sourceInfo = { path: "/fixture/index.ts", source: "fixture-package", scope: "user" as const, origin: "package" as const, baseDir: "/fixture" };
+const sourceInfo = {
+	path: "/fixture/index.ts",
+	source: "fixture-package",
+	scope: "user" as const,
+	origin: "package" as const,
+	baseDir: "/fixture",
+};
 const at = 1000;
 const accessors: HostAccessors = {
-	version: () => "fixture-version", packageDir: () => "/fixture/package", docsPath: () => "/fixture/docs",
-	examplesPath: () => "/fixture/examples", readmePath: () => "/fixture/README.md", agentDir: () => "/fixture/agent",
-	configDirName: () => ".fixture", pathExists: () => true,
+	version: () => "fixture-version",
+	packageDir: () => "/fixture/package",
+	docsPath: () => "/fixture/docs",
+	examplesPath: () => "/fixture/examples",
+	readmePath: () => "/fixture/README.md",
+	agentDir: () => "/fixture/agent",
+	configDirName: () => ".fixture",
+	pathExists: () => true,
 };
 function snapshot(): HostSnapshot {
 	return {
-		at, tools: [{ name: "inspect", description: "Inspect a document", sourceInfo,
-			parameters: { type: "object", properties: { name: { type: "string" } } }, promptGuidelines: ["Use inspect for documents."] }],
-		activeTools: [], availability: { tools: true, activeTools: true, commands: true },
+		at,
+		tools: [
+			{
+				name: "inspect",
+				description: "Inspect a document",
+				sourceInfo,
+				parameters: { type: "object", properties: { name: { type: "string" } } },
+				promptGuidelines: ["Use inspect for documents."],
+			},
+		],
+		activeTools: [],
+		availability: { tools: true, activeTools: true, commands: true },
 		commands: [
 			{ name: "review", source: "extension", description: "Review a document", sourceInfo },
 			{ name: "review", source: "prompt", description: "Review prompt", sourceInfo },
 			{ name: "skill:review", source: "skill", description: "Review skill", sourceInfo },
 		],
-		observation: { observedAt: 500, cwd: "/fixture", skills: [{ name: "review", filePath: sourceInfo.path,
-			baseDir: "/fixture/skill", disableModelInvocation: true, sourceInfo }], selectedTools: ["inspect"],
-			contextFilePaths: ["/fixture/AGENTS.md"], customPromptPresent: true, forcedSystemPromptPresent: false,
-			appendSystemPromptPresent: true, recordCount: 3, bytes: 300, overflowRecords: false, overflowBytes: false },
+		observation: {
+			observedAt: 500,
+			cwd: "/fixture",
+			skills: [
+				{
+					name: "review",
+					filePath: sourceInfo.path,
+					baseDir: "/fixture/skill",
+					disableModelInvocation: true,
+					sourceInfo,
+				},
+			],
+			selectedTools: ["inspect"],
+			contextFilePaths: ["/fixture/AGENTS.md"],
+			customPromptPresent: true,
+			forcedSystemPromptPresent: false,
+			appendSystemPromptPresent: true,
+			recordCount: 3,
+			bytes: 300,
+			overflowRecords: false,
+			overflowBytes: false,
+		},
 	};
 }
 function model(): ModelRecord {
-	return { kind: "model", name: "fixture/model", provider: "fixture", id: "model", displayName: "Fixture Model",
-		metadataAvailable: true, catalog: true, selected: true, reasoning: true, input: ["text", "image"], contextWindow: 10000, maxTokens: 1000,
-		supportedThinkingLevels: ["off", "high"], available: true, configuredAuth: true, extensionProvider: false,
-		oauth: null, subscriptionRecognized: null, authSource: null, catalogCost: null, catalogCostHasTiers: null, providerHasScopedModels: true, providerNamedInSettings: null,
-		inScope: true, scopeIndex: 0, scopeThinkingLevel: "off", currentThinkingLevel: "high", evidence: "registration", at };
+	return {
+		kind: "model",
+		name: "fixture/model",
+		provider: "fixture",
+		id: "model",
+		displayName: "Fixture Model",
+		metadataAvailable: true,
+		catalog: true,
+		selected: true,
+		reasoning: true,
+		input: ["text", "image"],
+		contextWindow: 10000,
+		maxTokens: 1000,
+		supportedThinkingLevels: ["off", "high"],
+		available: true,
+		configuredAuth: true,
+		extensionProvider: false,
+		oauth: null,
+		subscriptionRecognized: null,
+		authSource: null,
+		catalogCost: null,
+		catalogCostHasTiers: null,
+		providerHasScopedModels: true,
+		providerNamedInSettings: null,
+		inScope: true,
+		scopeIndex: 0,
+		scopeThinkingLevel: "off",
+		currentThinkingLevel: "high",
+		evidence: "registration",
+		at,
+	};
 }
 function models(records = [model()]): ModelSnapshot {
-	return { records, catalogAvailable: true, availableSnapshot: true, catalogError: false, scopeConfigured: true, scopeOrder: ["fixture/model"] };
+	return {
+		records,
+		catalogAvailable: true,
+		availableSnapshot: true,
+		catalogError: false,
+		scopeConfigured: true,
+		scopeOrder: ["fixture/model"],
+	};
 }
-const request = (over: Partial<LookupRequest> = {}): LookupRequest => ({ params: {}, snapshot: snapshot(), models: models(),
-	session: { cwd: "/fixture", mode: "print", hasUI: false, projectTrusted: true, sessionId: "fixture", sessionFile: null },
-	epoch: "fixture", accessors, ...over });
+const request = (over: Partial<LookupRequest> = {}): LookupRequest => ({
+	params: {},
+	snapshot: snapshot(),
+	models: models(),
+	session: {
+		cwd: "/fixture",
+		mode: "print",
+		hasUI: false,
+		projectTrusted: true,
+		sessionId: "fixture",
+		sessionFile: null,
+	},
+	epoch: "fixture",
+	accessors,
+	...over,
+});
 const records = (result: Awaited<ReturnType<typeof lookup>>) => result.details.records as Record<string, unknown>[];
 
 describe("compact registry output", () => {
@@ -51,7 +135,8 @@ describe("compact registry output", () => {
 			const exact = await lookup(request({ params: { kind: record.kind, name: record.name } }));
 			assert.deepEqual(records(list), records(exact));
 			assert.doesNotMatch(list.text, /sourceInfo\.(source|scope|origin|baseDir):/);
-			for (const [key, value] of Object.entries(record.sourceInfo)) assert.ok(exact.text.includes(`sourceInfo.${key}: ${value}`));
+			for (const [key, value] of Object.entries(record.sourceInfo))
+				assert.ok(exact.text.includes(`sourceInfo.${key}: ${value}`));
 			assert.ok(exact.text.includes(`evidence: registration at ${isoTime(at)}`));
 			assert.deepEqual(records(exact)[0].sourceInfo, sourceInfo);
 			assert.match(list.text, /exact name \+ kind/);
@@ -83,10 +168,22 @@ describe("compact registry output", () => {
 	});
 
 	it("preserves unknown selected-model capabilities in exact and compact output", async () => {
-		const unknown: ModelRecord = { ...model(), displayName: null, reasoning: null, input: null, contextWindow: null,
-			maxTokens: null, supportedThinkingLevels: null, metadataAvailable: false, catalog: false, evidence: "selection",
-			inScope: null, providerHasScopedModels: null };
-		delete unknown.scopeIndex; delete unknown.scopeThinkingLevel;
+		const unknown: ModelRecord = {
+			...model(),
+			displayName: null,
+			reasoning: null,
+			input: null,
+			contextWindow: null,
+			maxTokens: null,
+			supportedThinkingLevels: null,
+			metadataAvailable: false,
+			catalog: false,
+			evidence: "selection",
+			inScope: null,
+			providerHasScopedModels: null,
+		};
+		delete unknown.scopeIndex;
+		delete unknown.scopeThinkingLevel;
 		const snapshot = { ...models([unknown]), scopeConfigured: null, scopeOrder: null };
 		const list = await lookup(request({ params: { kind: "model" }, models: snapshot }));
 		const exact = await lookup(request({ params: { kind: "model", name: unknown.name }, models: snapshot }));
@@ -111,13 +208,17 @@ describe("compact registry output", () => {
 
 	it("makes resource and model records materially smaller without dropping structured facts", async () => {
 		const tool = buildRecords(snapshot())[0];
-		assert.ok(Buffer.byteLength(recordBlock(tool, false).lines.join("\n")) < Buffer.byteLength(recordBlock(tool).lines.join("\n")) * 0.6);
+		assert.ok(
+			Buffer.byteLength(recordBlock(tool, false).lines.join("\n")) <
+				Buffer.byteLength(recordBlock(tool).lines.join("\n")) * 0.6,
+		);
 		const catalog = models(Array.from({ length: 8 }, () => model()));
 		const list = await lookup(request({ params: { kind: "model" }, models: catalog }));
 		const exact = await lookup(request({ params: { kind: "model", name: "fixture/model" }, models: catalog }));
 		assert.deepEqual(records(list), records(exact));
 		assert.ok(Buffer.byteLength(list.text) < Buffer.byteLength(exact.text));
-		const recordBytes = (text: string) => Buffer.byteLength(text.slice(text.indexOf("\nMODEL "), text.indexOf("\nBOUNDARIES")));
+		const recordBytes = (text: string) =>
+			Buffer.byteLength(text.slice(text.indexOf("\nMODEL "), text.indexOf("\nBOUNDARIES")));
 		assert.ok(recordBytes(list.text) < recordBytes(exact.text) * 0.75);
 	});
 
@@ -128,9 +229,14 @@ describe("compact registry output", () => {
 			assert.match(result.text, /No path argument, crawl, mutation, activation, or fetch/);
 			if (kind === "tool") assert.match(result.text, /Configured presence is not active status/);
 			else assert.doesNotMatch(result.text, /Configured presence/);
-			if (["command", "prompt", "skill"].includes(kind)) assert.match(result.text, /Slash names do not prove dispatch; extension commands can shadow same-name prompts/);
+			if (["command", "prompt", "skill"].includes(kind))
+				assert.match(result.text, /Slash names do not prove dispatch; extension commands can shadow same-name prompts/);
 			else assert.doesNotMatch(result.text, /Slash names|shadow/);
-			if (kind === "skill") assert.match(result.text, /modelInvocable is default skill-list eligibility from the disable flag, not visibility or permission; active tools and later hooks/);
+			if (kind === "skill")
+				assert.match(
+					result.text,
+					/modelInvocable is default skill-list eligibility from the disable flag, not visibility or permission; active tools and later hooks/,
+				);
 			else assert.doesNotMatch(result.text, /modelInvocable/);
 			if (kind === "model") {
 				assert.match(result.text, /cached availability.*local snapshots/);
@@ -148,24 +254,39 @@ describe("compact registry output", () => {
 
 	for (const state of ["available", "unknown", "unavailable"] as const) {
 		it(`preserves host facts, observation flags, estimate time, and ${state} usage`, async () => {
-			const context: ContextSnapshot = { at: 1500, evidence: "host_estimate", state, model: "fixture/model", thinkingLevel: "high",
-				tokens: state === "available" ? 0 : null, contextWindow: state === "unavailable" ? null : 10000, percent: state === "available" ? 0 : null };
+			const context: ContextSnapshot = {
+				at: 1500,
+				evidence: "host_estimate",
+				state,
+				model: "fixture/model",
+				thinkingLevel: "high",
+				tokens: state === "available" ? 0 : null,
+				contextWindow: state === "unavailable" ? null : 10000,
+				percent: state === "available" ? 0 : null,
+			};
 			const req = request({ readContext: () => context });
 			const result = await lookup(req);
 			assert.deepEqual(result.details.context, context);
-			for (const fact of hostFacts(req.session, accessors)) assert.ok(result.text.includes(`${fact.key}: ${fact.value}`), fact.key);
+			for (const fact of hostFacts(req.session, accessors))
+				assert.ok(result.text.includes(`${fact.key}: ${fact.value}`), fact.key);
 			assert.match(result.text, /getAgentDir\(\) process default, not an embedding-configured directory/);
 			assert.match(result.text, /ephemeral only if the accessor answered/);
 			assert.ok(result.text.includes(`context usage: ${state} (host_estimate at ${isoTime(1500)})`));
 			assert.ok(result.text.includes(`context tokens: ${context.tokens ?? "unknown"}`));
 			assert.ok(result.text.includes(`context percent: ${context.percent ?? "unknown"}`));
 			assert.match(result.text, /assistant usage and trailing messages; unknown usage can follow compaction/);
-			assert.match(result.text, /not a safe remaining budget, a final provider payload count, or a compaction threshold/);
+			assert.match(
+				result.text,
+				/not a safe remaining budget, a final provider payload count, or a compaction threshold/,
+			);
 			assert.match(result.text, /observed: skills=1, selected tools=1, context paths=1 \(no contents retained\)/);
 			assert.match(result.text, /custom=true, forced whole=false, appended=true/);
 			assert.match(result.text, /retained records: 3 \| retained bytes: 300/);
 			assert.match(result.text, /overflow: no/);
-			assert.match(result.text, /Final provider payload and serialized system instructions are not readable here; observed prompt inputs do not establish them/);
+			assert.match(
+				result.text,
+				/Final provider payload and serialized system instructions are not readable here; observed prompt inputs do not establish them/,
+			);
 		});
 	}
 
@@ -180,8 +301,18 @@ describe("compact registry output", () => {
 		const ambiguous = await lookup(request({ params: { contains: "needle" } }));
 		assert.equal(ambiguous.outcome, "ambiguous");
 		assert.equal(ambiguous.text.match(boundary)?.length, 1);
-		const scanned = await lookup(request({ params: { kind: "skill", name: "review", contains: "needle" },
-			scan: async () => ({ outcome: "ok", matches: [{ line: 1, text: "needle" }], bytesRead: 6, fileSize: 6, truncated: false }) }));
+		const scanned = await lookup(
+			request({
+				params: { kind: "skill", name: "review", contains: "needle" },
+				scan: async () => ({
+					outcome: "ok",
+					matches: [{ line: 1, text: "needle" }],
+					bytesRead: 6,
+					fileSize: 6,
+					truncated: false,
+				}),
+			}),
+		);
 		assert.equal(scanned.outcome, "ok");
 		assert.equal(scanned.text.match(boundary)?.length, 1);
 	});
@@ -197,8 +328,14 @@ describe("compact registry output", () => {
 	});
 
 	it("retains inventory exclusions for missing skill content targets", async () => {
-		const result = await lookup(request({ params: { kind: "skill", name: "absent", contains: "needle" },
-			scan: async () => { throw new Error("missing targets must not scan"); } }));
+		const result = await lookup(
+			request({
+				params: { kind: "skill", name: "absent", contains: "needle" },
+				scan: async () => {
+					throw new Error("missing targets must not scan");
+				},
+			}),
+		);
 		assert.equal(result.outcome, "missing");
 		assert.match(result.text, /Not a complete extension inventory/);
 		assert.match(result.text, /Built-in interactive commands, full settings, and load rejection reasons are excluded/);
@@ -206,7 +343,8 @@ describe("compact registry output", () => {
 	});
 
 	it("labels registration evidence on compact incomplete and ambiguous pages", async () => {
-		const host = snapshot(); host.availability.commands = false;
+		const host = snapshot();
+		host.availability.commands = false;
 		const incomplete = await lookup(request({ snapshot: host, params: { search: "document" } }));
 		assert.equal(incomplete.outcome, "unavailable");
 		assert.match(incomplete.text, /Known records: registration evidence/);
@@ -245,7 +383,9 @@ describe("compact registry output", () => {
 	});
 
 	it("retains unavailable activity, unknown skill evidence, and partial observations", async () => {
-		const host = snapshot(); host.availability.activeTools = false; host.observation = null;
+		const host = snapshot();
+		host.availability.activeTools = false;
+		host.observation = null;
 		const tools = await lookup(request({ snapshot: host, params: { kind: "tool" } }));
 		assert.match(tools.text, /active: unavailable/);
 		assert.equal(records(tools)[0].active, undefined);
@@ -257,7 +397,8 @@ describe("compact registry output", () => {
 		const result = await lookup(request({ params: { kind: "model" }, models: catalog }));
 		assert.match(result.text, /available=null.*configuredAuth=null.*inScope=null/);
 		host.observation = snapshot().observation;
-		assert.ok(host.observation); host.observation.overflowBytes = true;
+		assert.ok(host.observation);
+		host.observation.overflowBytes = true;
 		const partial = await lookup(request({ params: { kind: "context_file", name: "absent" }, snapshot: host }));
 		assert.equal(partial.outcome, "partial");
 		assert.match(partial.text, /incomplete.*not absence/);

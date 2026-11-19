@@ -1,16 +1,33 @@
-import type { ExtensionAPI, KeybindingHints, Theme, ThemeColor, ToolDefinition, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	KeybindingHints,
+	Theme,
+	ThemeColor,
+	ToolDefinition,
+	ToolRenderResultOptions,
+} from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 
 type DisplayRecord = Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">;
 type CardTheme = Pick<Theme, "fg">;
 type RenderResult = Parameters<NonNullable<ToolDefinition["renderResult"]>>[0];
-interface Line { text: string; colour: ThemeColor; preview?: boolean }
+interface Line {
+	text: string;
+	colour: ThemeColor;
+	preview?: boolean;
+}
 
 export function publishRexToolDisplay(events: ExtensionAPI["events"], tools: readonly DisplayRecord[]): () => void {
-	const publish = () => events.emit("harness:tool-display:publish", {
-		version: 1,
-		tools: tools.map(({ name, renderCall, renderResult, renderShell }) => ({ name, renderCall, renderResult, renderShell })),
-	});
+	const publish = () =>
+		events.emit("harness:tool-display:publish", {
+			version: 1,
+			tools: tools.map(({ name, renderCall, renderResult, renderShell }) => ({
+				name,
+				renderCall,
+				renderResult,
+				renderShell,
+			})),
+		});
 	const stop = events.on("harness:tool-display:request", (request) => {
 		if (object(request).version === 1) publish();
 	});
@@ -32,25 +49,44 @@ export function createRexToolDisplay(name: string) {
 			if (name === "rex_ask" && context.isPartial) lines.push(line("Waiting for the operator's answer.", "muted"));
 			return card(lines, theme);
 		},
-		renderResult(result: RenderResult, options: ToolRenderResultOptions, theme: CardTheme, context: { args: unknown; isError: boolean } & Partial<KeybindingHints>): Component {
-			const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+		renderResult(
+			result: RenderResult,
+			options: ToolRenderResultOptions,
+			theme: CardTheme,
+			context: { args: unknown; isError: boolean } & Partial<KeybindingHints>,
+		): Component {
+			const text = result.content
+				.filter((part) => part.type === "text")
+				.map((part) => part.text)
+				.join("\n");
 			const value = canonicalResult(text);
-			const lines = value ? canonicalLines(name, value, options, context.args) : fallbackLines(text, options, context.isError);
+			const lines = value
+				? canonicalLines(name, value, options, context.args)
+				: fallbackLines(text, options, context.isError);
 			// The host injects keyText with the operator's configured bindings; without it the card omits the key row.
 			const key = context.keyText?.("app.tools.expand");
-			if (key) lines.push(line(`${key} to ${options.expanded ? "collapse" : "expand · complete bounded result"}`, "muted"));
+			if (key)
+				lines.push(line(`${key} to ${options.expanded ? "collapse" : "expand · complete bounded result"}`, "muted"));
 			return card(lines, theme);
 		},
 	} satisfies Pick<ToolDefinition, "renderCall" | "renderResult" | "renderShell">;
 }
 
 function callHeader(name: string, request: Record<string, unknown>): Line[] {
-	const action = [string(request.op), string(request.kind) ?? string(request.view) ?? string(request.condition)].filter(Boolean).join(" ");
+	const action = [string(request.op), string(request.kind) ?? string(request.view) ?? string(request.condition)]
+		.filter(Boolean)
+		.join(" ");
 	const lines = [line(`${name}${action ? ` · ${action}` : ""}`, "toolTitle")];
-	const facts = [string(request.label), string(request.method), string(request.action),
+	const facts = [
+		string(request.label),
+		string(request.method),
+		string(request.action),
 		string(request.phase) ? `phase ${request.phase}` : undefined,
 		string(request.recordId) ? "one record" : undefined,
-		string(request.query) ? `query ${JSON.stringify(request.query)}` : undefined].filter(Boolean).join(" · ");
+		string(request.query) ? `query ${JSON.stringify(request.query)}` : undefined,
+	]
+		.filter(Boolean)
+		.join(" · ");
 	if (facts) lines.push(line(facts, "muted"));
 	return lines;
 }
@@ -60,20 +96,36 @@ function callBody(args: unknown, request: Record<string, unknown>, expanded: boo
 	const lines: Line[] = [];
 	if (typeof request.question === "string") lines.push(line(request.question, "toolOutput"));
 	const choices = choiceTitles(request);
-	if (choices.length) lines.push(line(`${request.multiple ? "choose any of" : "choose"} ${choices.join(" · ")}${request.allowOther ? " · or type an answer" : ""}`, "muted", true));
+	if (choices.length)
+		lines.push(
+			line(
+				`${request.multiple ? "choose any of" : "choose"} ${choices.join(" · ")}${request.allowOther ? " · or type an answer" : ""}`,
+				"muted",
+				true,
+			),
+		);
 	if (typeof request.text === "string") lines.push(line(JSON.stringify(request.text), "toolOutput", true));
-	if (Array.isArray(request.keys)) lines.push(line(`keys ${request.keys.filter((key) => typeof key === "string").join(" · ")}`, "muted", true));
+	if (Array.isArray(request.keys))
+		lines.push(line(`keys ${request.keys.filter((key) => typeof key === "string").join(" · ")}`, "muted", true));
 	return lines;
 }
 
 function fallbackLines(text: string, options: ToolRenderResultOptions, isError: boolean): Line[] {
 	return [
 		line(options.isPartial ? "partial result" : "tool result", isError ? "error" : "toolOutput"),
-		...text.split("\n").slice(0, options.expanded ? undefined : 2).map((part) => line(part, "toolOutput", !options.expanded)),
+		...text
+			.split("\n")
+			.slice(0, options.expanded ? undefined : 2)
+			.map((part) => line(part, "toolOutput", !options.expanded)),
 	];
 }
 
-function canonicalLines(name: string, value: Record<string, unknown>, options: ToolRenderResultOptions, args: unknown): Line[] {
+function canonicalLines(
+	name: string,
+	value: Record<string, unknown>,
+	options: ToolRenderResultOptions,
+	args: unknown,
+): Line[] {
 	const effects = object(value.effects);
 	const coverage = object(value.coverage);
 	const data = object(value.data);
@@ -96,18 +148,43 @@ function canonicalLines(name: string, value: Record<string, unknown>, options: T
  * The collapsed lead: the human subject (the resolved label, or the plain resource kind) and the precise
  * outcome. Unknown effects stay on this line; exact identities, endpoints and the effect record wait in Details.
  */
-function leadLine(name: string, request: Record<string, unknown>, value: Record<string, unknown>, data: Record<string, unknown>, isPartial: boolean): Line {
+function leadLine(
+	name: string,
+	request: Record<string, unknown>,
+	value: Record<string, unknown>,
+	data: Record<string, unknown>,
+	isPartial: boolean,
+): Line {
 	const unknown = object(value.effects).state === "unknown";
 	const subject = string(data.label) ?? string(request.label) ?? subjectKind(name, request, value.target);
 	const exit = object(object(data.process).last_exit).exit_code;
-	const childExit = name === "rex_wait" && ["child_completed", "child_failed"].includes(String(value.outcome)) && Number.isInteger(exit) ? `exit ${exit}` : undefined;
-	const parts = [isPartial ? "partial" : undefined, subject, String(value.outcome).replaceAll("_", " "), childExit, unknown ? "UNKNOWN EFFECTS" : undefined].filter(Boolean);
+	const childExit =
+		name === "rex_wait" && ["child_completed", "child_failed"].includes(String(value.outcome)) && Number.isInteger(exit)
+			? `exit ${exit}`
+			: undefined;
+	const parts = [
+		isPartial ? "partial" : undefined,
+		subject,
+		String(value.outcome).replaceAll("_", " "),
+		childExit,
+		unknown ? "UNKNOWN EFFECTS" : undefined,
+	].filter(Boolean);
 	return line(parts.join(" · "), unknown ? "warning" : value.ok ? "toolOutput" : "error");
 }
 
-const OWNED_SUBJECTS: Record<string, string> = { owned: "owned records", observe: "observation", reconcile: "reconciliation", cleanup: "cleanup" };
+const OWNED_SUBJECTS: Record<string, string> = {
+	owned: "owned records",
+	observe: "observation",
+	reconcile: "reconciliation",
+	cleanup: "cleanup",
+};
 const STATUS_SUBJECTS: Record<string, string> = { bind: "binding", unbind: "unbinding" };
-const TARGET_KINDS: ReadonlyArray<readonly [string, string, string]> = [["blockId", "block", "block"], ["windowId", "window", "window"], ["sessionId", "session", "session"], ["clientId", "client", "client"]];
+const TARGET_KINDS: ReadonlyArray<readonly [string, string, string]> = [
+	["blockId", "block", "block"],
+	["windowId", "window", "window"],
+	["sessionId", "session", "session"],
+	["clientId", "client", "client"],
+];
 
 /** The subject of a native call: the method or action it named, or its kind. */
 function nativeSubject(request: Record<string, unknown>): string {
@@ -137,7 +214,9 @@ function subjectKind(name: string, request: Record<string, unknown>, target: unk
 
 /** The titles of a question's choices, as the operator saw them. */
 function choiceTitles(request: Record<string, unknown>): string[] {
-	return Array.isArray(request.choices) ? request.choices.map((choice) => string(object(choice).title) ?? string(object(choice).id) ?? "").filter(Boolean) : [];
+	return Array.isArray(request.choices)
+		? request.choices.map((choice) => string(object(choice).title) ?? string(object(choice).id) ?? "").filter(Boolean)
+		: [];
 }
 
 /** A question's answer by the titles the operator chose, and where it was answered. */
@@ -146,12 +225,22 @@ function answerLines(name: string, request: Record<string, unknown>, data: Recor
 	const where = data.channel === "dialog" ? "in this session's dialog" : "in Rex";
 	const answer = object(data.answer);
 	const titled = (id: unknown) => {
-		const found = Array.isArray(request.choices) ? request.choices.map(object).find((choice) => choice.id === id) : undefined;
+		const found = Array.isArray(request.choices)
+			? request.choices.map(object).find((choice) => choice.id === id)
+			: undefined;
 		return string(found?.title) ?? String(id);
 	};
-	if (typeof answer.text === "string") return [line(`Answer ${where}: ${JSON.stringify(answer.text)}`, "toolOutput", true)];
+	if (typeof answer.text === "string")
+		return [line(`Answer ${where}: ${JSON.stringify(answer.text)}`, "toolOutput", true)];
 	if (answer.choice !== undefined) return [line(`Answer ${where}: ${titled(answer.choice)}`, "toolOutput", true)];
-	if (Array.isArray(answer.choices)) return [line(`Answer ${where}: ${answer.choices.length ? answer.choices.map(titled).join(", ") : "none chosen"}`, "toolOutput", true)];
+	if (Array.isArray(answer.choices))
+		return [
+			line(
+				`Answer ${where}: ${answer.choices.length ? answer.choices.map(titled).join(", ") : "none chosen"}`,
+				"toolOutput",
+				true,
+			),
+		];
 	return data.channel === "dialog" ? [line("Asked in this session's dialog.", "muted")] : [];
 }
 
@@ -182,33 +271,63 @@ function statusSummaryLines(name: string, data: Record<string, unknown>): Line[]
 	if (states.length) lines.push(line(`Reported: ${[...new Set(states)].join(", ")}`, "toolOutput"));
 	const binding = object(data.binding);
 	const bound = object(binding.target);
-	lines.push(line(binding.target ? `Binding: ${string(bound.blockId) ? "block" : "target"} bound` : "Binding: none", "muted"));
+	lines.push(
+		line(binding.target ? `Binding: ${string(bound.blockId) ? "block" : "target"} bound` : "Binding: none", "muted"),
+	);
 	return lines;
 }
 
 function deadlineLine(name: string, request: Record<string, unknown>): Line[] {
-	return name === "rex_wait" && typeof request.timeoutMs === "number" ? [line(`deadline ${request.timeoutMs} ms`, "muted")] : [];
+	return name === "rex_wait" && typeof request.timeoutMs === "number"
+		? [line(`deadline ${request.timeoutMs} ms`, "muted")]
+		: [];
 }
 
-function terminalQualifications(name: string, request: Record<string, unknown>, value: Record<string, unknown>): Line[] {
+function terminalQualifications(
+	name: string,
+	request: Record<string, unknown>,
+	value: Record<string, unknown>,
+): Line[] {
 	const lines: Line[] = [];
-	if (request.op === "input" || value.outcome === "input_delivered") lines.push(line("Input delivery is not application execution.", "muted"));
-	if (name === "rex_wait") lines.push(line(value.outcome === "timeout" ? "Observer deadline; terminal work remains independent." : "Observer end does not stop terminal work.", "muted"));
-	if (request.op === "inspect" && request.view === "capture") lines.push(line("Bounded capture, not a complete transcript.", "muted"));
+	if (request.op === "input" || value.outcome === "input_delivered")
+		lines.push(line("Input delivery is not application execution.", "muted"));
+	if (name === "rex_wait")
+		lines.push(
+			line(
+				value.outcome === "timeout"
+					? "Observer deadline; terminal work remains independent."
+					: "Observer end does not stop terminal work.",
+				"muted",
+			),
+		);
+	if (request.op === "inspect" && request.view === "capture")
+		lines.push(line("Bounded capture, not a complete transcript.", "muted"));
 	return lines;
 }
 
-function authorityQualifications(name: string, request: Record<string, unknown>, value: Record<string, unknown>): Line[] {
+function authorityQualifications(
+	name: string,
+	request: Record<string, unknown>,
+	value: Record<string, unknown>,
+): Line[] {
 	const lines: Line[] = [];
-	if (name === "rex_owned" && ["owned", "observe"].includes(String(request.op))) lines.push(line("Stored phase is not live presence or cleanup permission.", "muted"));
-	if (name === "rex_owned" && request.op === "observe") lines.push(line("Observation does not stop work or establish task success.", "muted"));
+	if (name === "rex_owned" && ["owned", "observe"].includes(String(request.op)))
+		lines.push(line("Stored phase is not live presence or cleanup permission.", "muted"));
+	if (name === "rex_owned" && request.op === "observe")
+		lines.push(line("Observation does not stop work or establish task success.", "muted"));
 	if (name === "rex_status") lines.push(line("Reported status is not permission or task acceptance.", "muted"));
-	if (name === "rex_native" && ["api", "lua", "action"].includes(String(request.kind)) && value.ok) lines.push(line("CLI success is not inner application success.", "muted"));
+	if (name === "rex_native" && ["api", "lua", "action"].includes(String(request.kind)) && value.ok)
+		lines.push(line("CLI success is not inner application success.", "muted"));
 	if (name === "rex_ask" && value.ok) lines.push(line("The answer covers this question only.", "muted"));
 	return lines;
 }
 
-function ownedObservationLines(name: string, request: Record<string, unknown>, data: Record<string, unknown>, expanded: boolean): Line[] {
+function ownedObservationLines(
+	name: string,
+	request: Record<string, unknown>,
+	data: Record<string, unknown>,
+	expanded: boolean,
+): Line[] {
 	if (name !== "rex_owned" || request.op !== "observe" || expanded || !Array.isArray(data.reports)) return [];
 	const count = data.reports.length;
 	return data.reports.flatMap((value, index) => reportLines(object(value), count > 1 ? `#${index + 1} · ` : ""));
@@ -219,13 +338,25 @@ function reportLines(report: Record<string, unknown>, prefix: string): Line[] {
 	const observations = Array.isArray(report.observations) ? report.observations : [];
 	const observation = object(observations[0]);
 	const exit = object(object(observation.process).last_exit).exit_code;
-	const facts = [string(observation.presence), string(observation.childState) ? `child ${observation.childState}` : undefined, typeof exit === "number" ? `exit ${exit}` : undefined].filter(Boolean).join(" · ");
+	const facts = [
+		string(observation.presence),
+		string(observation.childState) ? `child ${observation.childState}` : undefined,
+		typeof exit === "number" ? `exit ${exit}` : undefined,
+	]
+		.filter(Boolean)
+		.join(" · ");
 	const lines = [line(`${prefix}stored ${report.phase} · ${facts || "unresolved"}`, "toolOutput")];
-	const error = report.error ?? observation.error ?? observation.processError ?? observation.statusError ?? observation.captureError;
+	const error =
+		report.error ??
+		observation.error ??
+		observation.processError ??
+		observation.statusError ??
+		observation.captureError;
 	if (typeof error === "string") lines.push(line(error, "muted", true));
 	const capture = string(object(observation.capture).content);
 	if (capture) lines.push(line(capture.trimEnd().split("\n").at(-1) ?? "", "toolOutput", true));
-	if (observations.length > 1) lines.push(line(`${observations.length - 1} more resource observations in the complete result.`, "muted"));
+	if (observations.length > 1)
+		lines.push(line(`${observations.length - 1} more resource observations in the complete result.`, "muted"));
 	return lines;
 }
 
@@ -242,8 +373,12 @@ function omissionLines(coverage: Record<string, unknown>, data: Record<string, u
 
 function countLines(coverage: Record<string, unknown>, data: Record<string, unknown>): Line[] {
 	const lines: Line[] = [];
-	if (typeof coverage.returnedRecords === "number" && typeof coverage.totalRecords === "number") lines.push(line(`${coverage.returnedRecords} of ${coverage.totalRecords} records`, "muted"));
-	if (typeof data.returnedMethods === "number" && typeof data.matchedMethods === "number") lines.push(line(`${data.returnedMethods} of ${data.matchedMethods} methods · ${data.totalMethods} installed`, "muted"));
+	if (typeof coverage.returnedRecords === "number" && typeof coverage.totalRecords === "number")
+		lines.push(line(`${coverage.returnedRecords} of ${coverage.totalRecords} records`, "muted"));
+	if (typeof data.returnedMethods === "number" && typeof data.matchedMethods === "number")
+		lines.push(
+			line(`${data.returnedMethods} of ${data.matchedMethods} methods · ${data.totalMethods} installed`, "muted"),
+		);
 	const next = coverage.nextOffset ?? data.nextOffset;
 	if (typeof next === "number") lines.push(line(`next offset ${next}`, "muted"));
 	return lines;
@@ -252,13 +387,25 @@ function countLines(coverage: Record<string, unknown>, data: Record<string, unkn
 /** Recent output stays beside its established outcome, including a failed optional capture. */
 function capturePreview(data: Record<string, unknown>): Line[] {
 	const capture = string(data.content) ?? string(object(data.snapshot).content) ?? string(object(data.capture).content);
-	const lines = capture ? capture.trimEnd().split("\n").slice(-2).map((part) => line(part, "toolOutput", true)) : [];
+	const lines = capture
+		? capture
+				.trimEnd()
+				.split("\n")
+				.slice(-2)
+				.map((part) => line(part, "toolOutput", true))
+		: [];
 	if (string(data.captureError)) lines.push(line(`Capture: ${data.captureError}`, "muted", true));
 	return lines;
 }
 
 /** Collapsed: the error, notes and a two-line capture preview. Expanded: exact identities, then the complete bounded result. */
-function resultDetails(value: Record<string, unknown>, effects: Record<string, unknown>, coverage: Record<string, unknown>, data: Record<string, unknown>, expanded: boolean): Line[] {
+function resultDetails(
+	value: Record<string, unknown>,
+	effects: Record<string, unknown>,
+	coverage: Record<string, unknown>,
+	data: Record<string, unknown>,
+	expanded: boolean,
+): Line[] {
 	const lines: Line[] = [];
 	if (string(value.error)) lines.push(line(String(value.error), "error", true));
 	if (!expanded) {
@@ -273,7 +420,12 @@ function resultDetails(value: Record<string, unknown>, effects: Record<string, u
 	if (string(effects.recordId)) lines.push(line(`record ${effects.recordId}`, "muted"));
 	lines.push(...identityDetails(data));
 	const state = effects.state;
-	lines.push(line(state === "unknown" ? "effects UNKNOWN" : state === "confirmed" ? "effects confirmed" : "no effects", state === "unknown" ? "warning" : "muted"));
+	lines.push(
+		line(
+			state === "unknown" ? "effects UNKNOWN" : state === "confirmed" ? "effects confirmed" : "no effects",
+			state === "unknown" ? "warning" : "muted",
+		),
+	);
 	lines.push(line(""), ...jsonLines(value));
 	return lines;
 }
@@ -283,7 +435,12 @@ function bindingDetail(data: Record<string, unknown>): Line[] {
 	const binding = object(data.binding);
 	if (!binding.target) return [];
 	const owner = string(binding.ownerId) ? ` · owner ${binding.ownerId}` : "";
-	return [line(`binding ${targetText(object(binding.target)) || "target"} · verified ${string(binding.verifiedAt) ?? "unknown time"}${owner}`, "muted")];
+	return [
+		line(
+			`binding ${targetText(object(binding.target)) || "target"} · verified ${string(binding.verifiedAt) ?? "unknown time"}${owner}`,
+			"muted",
+		),
+	];
 }
 
 /** Each observed record identity, numbered as in the collapsed rows when there is more than one. */
@@ -302,17 +459,34 @@ function identityDetails(data: Record<string, unknown>): Line[] {
 }
 
 function object(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
-function string(value: unknown): string | undefined { return typeof value === "string" && value.length ? value : undefined; }
-function number(value: unknown): number { return typeof value === "number" ? value : 0; }
+function string(value: unknown): string | undefined {
+	return typeof value === "string" && value.length ? value : undefined;
+}
+function number(value: unknown): number {
+	return typeof value === "number" ? value : 0;
+}
 function safe(text: string): string {
-	return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]|\p{Cs}/gu, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
+	return text.replace(
+		/[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]|\p{Cs}/gu,
+		(character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
 }
-function line(text: string, colour: ThemeColor = "toolOutput", preview = false): Line { return { text: safe(text), colour, preview }; }
+function line(text: string, colour: ThemeColor = "toolOutput", preview = false): Line {
+	return { text: safe(text), colour, preview };
+}
 function targetText(value: unknown): string {
 	const target = object(value);
-	const id = string(target.blockId) ?? string(target.block) ?? string(target.windowId) ?? string(target.window) ?? string(target.sessionId) ?? string(target.session) ?? string(target.clientId) ?? string(target.client);
+	const id =
+		string(target.blockId) ??
+		string(target.block) ??
+		string(target.windowId) ??
+		string(target.window) ??
+		string(target.sessionId) ??
+		string(target.session) ??
+		string(target.clientId) ??
+		string(target.client);
 	const source = string(target.source);
 	const server = string(target.server) ?? string(object(target.server).endpoint);
 	return [id, source ? `${source} target` : undefined, server].filter(Boolean).join(" · ");
@@ -320,8 +494,15 @@ function targetText(value: unknown): string {
 function canonicalResult(text: string): Record<string, unknown> | undefined {
 	try {
 		const value = object(JSON.parse(text));
-		return typeof value.ok === "boolean" && typeof value.outcome === "string" && ["none", "confirmed", "unknown"].includes(String(object(value.effects).state)) && object(value.coverage).bounded === true ? value : undefined;
-	} catch { return undefined; }
+		return typeof value.ok === "boolean" &&
+			typeof value.outcome === "string" &&
+			["none", "confirmed", "unknown"].includes(String(object(value.effects).state)) &&
+			object(value.coverage).bounded === true
+			? value
+			: undefined;
+	} catch {
+		return undefined;
+	}
 }
 function jsonLines(value: unknown): Line[] {
 	return (JSON.stringify(value, null, 2) ?? "null").split("\n").map((text) => line(text));
@@ -330,14 +511,18 @@ function card(lines: Line[], theme: CardTheme): Component {
 	let cachedWidth: number | undefined;
 	let cached: string[] = [];
 	return {
-		invalidate() { cachedWidth = undefined; },
+		invalidate() {
+			cachedWidth = undefined;
+		},
 		render(width) {
 			if (width <= 0) return [];
 			if (cachedWidth === width) return cached;
 			cachedWidth = width;
 			cached = lines.flatMap((entry) => {
 				// Input is plain escaped text. Remove only the utility's SGR reset before applying the row colour.
-				const rows = entry.preview ? [truncateToWidth(entry.text, width, "…").replaceAll("\u001b[0m", "")] : wrapTextWithAnsi(entry.text, width);
+				const rows = entry.preview
+					? [truncateToWidth(entry.text, width, "…").replaceAll("\u001b[0m", "")]
+					: wrapTextWithAnsi(entry.text, width);
 				return rows.map((row) => theme.fg(entry.colour, row));
 			});
 			return cached;

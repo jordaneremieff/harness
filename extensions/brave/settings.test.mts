@@ -129,15 +129,19 @@ describe("Brave settings", () => {
 			assert.equal(snapshot.records[0].status, "invalid");
 			assert.equal(snapshot.records[0].origin, "default");
 			assert.equal(snapshot.records[0].secretState, "unset");
-			assert.deepEqual(snapshot.diagnostics.map(({ field, source, code }) => ({ field, source, code })), [
-				{ field: "brave.apiKey", source: "env", code: "invalid" },
-			]);
+			assert.deepEqual(
+				snapshot.diagnostics.map(({ field, source, code }) => ({ field, source, code })),
+				[{ field: "brave.apiKey", source: "env", code: "invalid" }],
+			);
 		}
 	});
 
 	it("documents an environment-only key without a secret value or default", () => {
 		const readme = readFileSync(new URL("./README.md", import.meta.url), "utf8");
-		const table = readme.slice(readme.indexOf("<!-- harness:settings:start -->"), readme.indexOf("<!-- harness:settings:end -->"));
+		const table = readme.slice(
+			readme.indexOf("<!-- harness:settings:start -->"),
+			readme.indexOf("<!-- harness:settings:end -->"),
+		);
 		assert.match(table, /PI_BRAVE_API_KEY/);
 		assert.match(table, /env-only/);
 		assertSecretFree(table);
@@ -269,22 +273,31 @@ it("unknown diagnostics bound their key text and retain publication records", (t
 	const options = { agentDir, env: {} };
 	writeFileSync(join(agentDir, "harness.json"), JSON.stringify({ version: 1, brave: { apiKey: 7 } }));
 	const baseline = readSettings(options);
-	writeFileSync(join(agentDir, "harness.json"), JSON.stringify({
-		version: 1,
-		brave: { apiKey: 7, otherUnknown: true, ...Object.fromEntries(keys.map((key) => [key, true])) },
-	}));
+	writeFileSync(
+		join(agentDir, "harness.json"),
+		JSON.stringify({
+			version: 1,
+			brave: { apiKey: 7, otherUnknown: true, ...Object.fromEntries(keys.map((key) => [key, true])) },
+		}),
+	);
 	const snapshot = readSettings(options);
 	assert.deepEqual(snapshot.records, baseline.records);
-	assert.deepEqual(snapshot.diagnostics.filter((item) => item.code !== "unknown"), baseline.diagnostics);
-	assert.deepEqual(snapshot.diagnostics.filter((item) => item.code === "unknown").map((item) => item.field), [
-		`${prefix}otherUnknown`,
-		`${prefix}${"a".repeat(63)}`,
-		`${prefix}${"a".repeat(64)}`,
-		`${prefix}${"a".repeat(62)}😀`,
-		`${prefix}${"😀".repeat(32)}`,
-		`${prefix}<invalid-key>`,
-		`${prefix}<invalid-key>`,
-	]);
+	assert.deepEqual(
+		snapshot.diagnostics.filter((item) => item.code !== "unknown"),
+		baseline.diagnostics,
+	);
+	assert.deepEqual(
+		snapshot.diagnostics.filter((item) => item.code === "unknown").map((item) => item.field),
+		[
+			`${prefix}otherUnknown`,
+			`${prefix}${"a".repeat(63)}`,
+			`${prefix}${"a".repeat(64)}`,
+			`${prefix}${"a".repeat(62)}😀`,
+			`${prefix}${"😀".repeat(32)}`,
+			`${prefix}<invalid-key>`,
+			`${prefix}<invalid-key>`,
+		],
+	);
 	for (const item of snapshot.diagnostics) {
 		assert.ok(item.field.startsWith(prefix));
 		assert.ok(item.field.slice(prefix.length).length <= 64);

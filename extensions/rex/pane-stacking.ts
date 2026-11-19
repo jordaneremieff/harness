@@ -3,16 +3,15 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export type PaneRect = [number, number, number, number];
-export type PaneStackingReport =
-	| { version: 1; pane: null }
-	| { version: 1; pane: PaneRect; above: PaneRect[] };
+export type PaneStackingReport = { version: 1; pane: null } | { version: 1; pane: PaneRect; above: PaneRect[] };
 
 function object(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+	return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 function rect(value: unknown): PaneRect | undefined {
-	if (!Array.isArray(value) || value.length !== 4 || !value.every((n) => typeof n === "number" && Number.isFinite(n))) return undefined;
+	if (!Array.isArray(value) || value.length !== 4 || !value.every((n) => typeof n === "number" && Number.isFinite(n)))
+		return undefined;
 	return value.map((n: number) => Math.min(1, Math.max(0, n))) as PaneRect;
 }
 
@@ -29,9 +28,16 @@ function leafRect(layout: unknown, blockId: string): PaneRect | undefined {
 }
 
 function intersects(a: PaneRect, b: PaneRect): boolean {
-	return a[2] > 0 && a[3] > 0 && b[2] > 0 && b[3] > 0 &&
-		a[0] < b[0] + b[2] && b[0] < a[0] + a[2] &&
-		a[1] < b[1] + b[3] && b[1] < a[1] + a[3];
+	return (
+		a[2] > 0 &&
+		a[3] > 0 &&
+		b[2] > 0 &&
+		b[3] > 0 &&
+		a[0] < b[0] + b[2] &&
+		b[0] < a[0] + a[2] &&
+		a[1] < b[1] + b[3] &&
+		b[1] < a[1] + a[3]
+	);
 }
 
 function frontRects(layers: unknown[], index: number, pane: PaneRect): PaneRect[] {
@@ -86,13 +92,21 @@ export function paneStackingCommand(
 ): string[] | undefined {
 	if (!endpoint.startsWith("unix:///")) return undefined;
 	const available = (path: string, mode: number) => {
-		try { accessSync(path, mode); return statSync(path).isFile(); } catch { return false; }
+		try {
+			accessSync(path, mode);
+			return statSync(path).isFile();
+		} catch {
+			return false;
+		}
 	};
 	if (!isAbsolute(helper) || !available(helper, constants.R_OK)) return undefined;
 	// Keep PATH entries unresolved so a package manager's stable launcher survives upgrades.
 	const directories = (env.PATH ?? "").split(delimiter).slice(0, 256);
-	const node = directories.filter(isAbsolute).map((directory) => join(directory, "node"))
-		.find((candidate) => available(candidate, constants.X_OK)) ?? runtime;
+	const node =
+		directories
+			.filter(isAbsolute)
+			.map((directory) => join(directory, "node"))
+			.find((candidate) => available(candidate, constants.X_OK)) ?? runtime;
 	return isAbsolute(node) && available(node, constants.X_OK) ? [node, helper] : undefined;
 }
 

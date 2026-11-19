@@ -32,33 +32,48 @@ function optional(input: Input, key: string, accepts: (value: unknown) => boolea
 }
 
 function acceptsAbort(input: unknown): boolean {
-	return closed(input, ["sessionId", "background", "release", "timerId"])
-		&& target(input.sessionId)
-		&& optional(input, "background", (value) => typeof value === "boolean")
-		&& optional(input, "release", (value) => typeof value === "boolean")
-		&& optional(input, "timerId", (value) => Number.isSafeInteger(value) && (value as number) >= 1)
-		&& !(input.release === true && (input.background === true || Object.hasOwn(input, "timerId")));
+	return (
+		closed(input, ["sessionId", "background", "release", "timerId"]) &&
+		target(input.sessionId) &&
+		optional(input, "background", (value) => typeof value === "boolean") &&
+		optional(input, "release", (value) => typeof value === "boolean") &&
+		optional(input, "timerId", (value) => Number.isSafeInteger(value) && (value as number) >= 1) &&
+		!(input.release === true && (input.background === true || Object.hasOwn(input, "timerId")))
+	);
 }
 
 function acceptsSteer(input: unknown): boolean {
-	return closed(input, ["sessionId", "message", "replyTo"])
-		&& target(input.sessionId) && message(input.message)
-		&& optional(input, "replyTo", target);
+	return (
+		closed(input, ["sessionId", "message", "replyTo"]) &&
+		target(input.sessionId) &&
+		message(input.message) &&
+		optional(input, "replyTo", target)
+	);
 }
 
 function acceptsReport(input: unknown): boolean {
-	return closed(input, ["sessionId", "message", "mode", "passive"])
-		&& input.mode === "report" && target(input.sessionId) && message(input.message)
-		&& optional(input, "passive", (value) => typeof value === "boolean");
+	return (
+		closed(input, ["sessionId", "message", "mode", "passive"]) &&
+		input.mode === "report" &&
+		target(input.sessionId) &&
+		message(input.message) &&
+		optional(input, "passive", (value) => typeof value === "boolean")
+	);
 }
 
 /** Native `agent_work complete`: closes one declared item and sends its final report. */
 function acceptsNativeCompletion(input: unknown): boolean {
-	return closed(input, ["action", "request", "status", "message"])
-		&& input.action === "complete"
-		&& typeof input.request === "string" && input.request.length >= 1 && input.request.length <= 1024
-		&& (input.status === "done" || input.status === "failed")
-		&& typeof input.message === "string" && input.message.length >= 1 && input.message.length <= WORK_MESSAGE_CHARS;
+	return (
+		closed(input, ["action", "request", "status", "message"]) &&
+		input.action === "complete" &&
+		typeof input.request === "string" &&
+		input.request.length >= 1 &&
+		input.request.length <= 1024 &&
+		(input.status === "done" || input.status === "failed") &&
+		typeof input.message === "string" &&
+		input.message.length >= 1 &&
+		input.message.length <= WORK_MESSAGE_CHARS
+	);
 }
 
 export function declareContinuityTools(pi: ExtensionAPI, runtime: "native" | "ordinary"): void {
@@ -66,7 +81,11 @@ export function declareContinuityTools(pi: ExtensionAPI, runtime: "native" | "or
 		if (data === null || typeof data !== "object") return;
 		const request = data as { version?: unknown; declare?: unknown };
 		if (request.version !== 1 || typeof request.declare !== "function") return;
-		const declare = request.declare as (tool: { name: string; act: "compaction" | "worker-resolution" | "work-completion"; accepts?: (input: unknown) => boolean }) => void;
+		const declare = request.declare as (tool: {
+			name: string;
+			act: "compaction" | "worker-resolution" | "work-completion";
+			accepts?: (input: unknown) => boolean;
+		}) => void;
 		declare({ name: "agent_compact", act: "compaction" });
 		declare({ name: "agent_abort", act: "worker-resolution", accepts: acceptsAbort });
 		declare({ name: "agent_steer", act: "worker-resolution", accepts: acceptsSteer });

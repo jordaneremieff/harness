@@ -15,27 +15,41 @@ type Emit = (name: string, event: unknown) => Promise<void>;
 
 function observationHost(ctx: ContextFields): Emit {
 	const handlers = new Map<string, unknown>();
-	const api: Pick<ExtensionAPI, "on" | "registerTool" | "registerCommand" | "registerEntryRenderer" | "registerMessageRenderer" | "getAllTools" | "events"> = {
+	const api: Pick<
+		ExtensionAPI,
+		| "on"
+		| "registerTool"
+		| "registerCommand"
+		| "registerEntryRenderer"
+		| "registerMessageRenderer"
+		| "getAllTools"
+		| "events"
+	> = {
 		events: { emit() {}, on: () => () => {} },
 		on(name, handler) {
 			handlers.set(name, handler);
-			return () => { handlers.delete(name); };
+			return () => {
+				handlers.delete(name);
+			};
 		},
 		registerTool() {},
 		registerCommand() {},
-		registerEntryRenderer() {}, registerMessageRenderer() {},
-		getAllTools: () => [{
-			name: "pillars",
-			exposure: "direct",
-			description: "Synthetic source tool",
-			parameters: obj({}, { open: true }),
-			sourceInfo: {
-				path: fileURLToPath(new URL("./index.ts", import.meta.url)),
-				source: "synthetic",
-				scope: "temporary",
-				origin: "top-level",
+		registerEntryRenderer() {},
+		registerMessageRenderer() {},
+		getAllTools: () => [
+			{
+				name: "pillars",
+				exposure: "direct",
+				description: "Synthetic source tool",
+				parameters: obj({}, { open: true }),
+				sourceInfo: {
+					path: fileURLToPath(new URL("./index.ts", import.meta.url)),
+					source: "synthetic",
+					scope: "temporary",
+					origin: "top-level",
+				},
 			},
-		}],
+		],
 	};
 	pillarsExtension(api as ExtensionAPI);
 	return async (name, event) => {
@@ -83,20 +97,31 @@ const request = { toolName: "pillars", toolCallId: "own-source", input: { resour
 
 test("own-tool deduplication precedes the first source-read await", async (t) => {
 	let admissions = 0;
-	t.mock.method(Deduplicator.prototype, "admit", () => { admissions++; return "admitted"; });
+	t.mock.method(Deduplicator.prototype, "admit", () => {
+		admissions++;
+		return "admitted";
+	});
 	t.mock.method(Collector.prototype, "admit", () => false);
 	await withObservationHost(async (emit) => {
 		const pending = emit("tool_call", request);
-		try { assert.equal(admissions, 1); }
-		finally { await pending; }
+		try {
+			assert.equal(admissions, 1);
+		} finally {
+			await pending;
+		}
 	});
 });
 
 test("an observation uses the current collector after its source read", async (t) => {
 	const owners: Collector[] = [];
 	const admissions: Collector[] = [];
-	t.mock.method(Collector.prototype, "flush", async function (this: Collector) { owners.push(this); });
-	t.mock.method(Collector.prototype, "admit", function (this: Collector) { admissions.push(this); return false; });
+	t.mock.method(Collector.prototype, "flush", async function (this: Collector) {
+		owners.push(this);
+	});
+	t.mock.method(Collector.prototype, "admit", function (this: Collector) {
+		admissions.push(this);
+		return false;
+	});
 	await withObservationHost(async (emit) => {
 		await emit("turn_end", {});
 		const pending = emit("tool_call", request);

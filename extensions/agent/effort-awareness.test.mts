@@ -13,7 +13,12 @@ import * as Durable from "@earendil-works/pi-durable";
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { AgentCatalog } from "./catalog.ts";
 import { createAgentContribution } from "./durable-agents.ts";
-import { EFFORT_AWARENESS_PROMPT_BYTES, EFFORT_AWARENESS_SELF_BYTES, formatEffortAwareness, readEffortAwareness } from "./effort-awareness.ts";
+import {
+	EFFORT_AWARENESS_PROMPT_BYTES,
+	EFFORT_AWARENESS_SELF_BYTES,
+	formatEffortAwareness,
+	readEffortAwareness,
+} from "./effort-awareness.ts";
 import { createPrimaryLocationResolver } from "./effort-location.ts";
 import type { EffortReadResources } from "./effort-presence.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
@@ -45,23 +50,81 @@ function ambientPreferences(t: { after(fn: () => void): void }): string {
 		else process.env.PI_HARNESS_FILE = previous.file;
 		rmSync(directory, { recursive: true, force: true });
 	});
-	writeFileSync(join(directory, "harness.json"), JSON.stringify(machineConfig({ presets: {}, preferences: { reportingNotes: marker },
-	})));
+	writeFileSync(
+		join(directory, "harness.json"),
+		JSON.stringify(machineConfig({ presets: {}, preferences: { reportingNotes: marker } })),
+	);
 	process.env.PI_AGENT_DIR = directory;
 	delete process.env.PI_HARNESS_FILE;
 	return marker;
 }
 
 function claim(purpose = "Own published purpose"): PrimaryIntentClaim {
-	return { purpose, integration: "Run focused checks before integration", authority: "Operator: edit only the agent slice", scope: { paths: ["extensions/agent"], branches: ["topic"] }, updatedAt: "2026-10-04T10:00:00.000Z" };
+	return {
+		purpose,
+		integration: "Run focused checks before integration",
+		authority: "Operator: edit only the agent slice",
+		scope: { paths: ["extensions/agent"], branches: ["topic"] },
+		updatedAt: "2026-10-04T10:00:00.000Z",
+	};
 }
-function publish(root: string, id: string, intentClaim: PrimaryIntentClaim | null = claim(), cwd = root, observedPurpose?: { source: "session-name" | "interactive-input"; text: string }): void {
-	writeFileSync(primaryEndpointPath(root, id), JSON.stringify({ id, version: PRIMARY_ENDPOINT_VERSION, serverId: randomUUID(), cwd, hostname: hostname(), pid: process.pid, socketPath: join(root, "missing.sock"), startedAt: "2026-10-04T09:00:00Z", ...(intentClaim === null ? {} : { intentClaim }), ...(observedPurpose === undefined ? {} : { observedPurpose }) }));
+function publish(
+	root: string,
+	id: string,
+	intentClaim: PrimaryIntentClaim | null = claim(),
+	cwd = root,
+	observedPurpose?: { source: "session-name" | "interactive-input"; text: string },
+): void {
+	writeFileSync(
+		primaryEndpointPath(root, id),
+		JSON.stringify({
+			id,
+			version: PRIMARY_ENDPOINT_VERSION,
+			serverId: randomUUID(),
+			cwd,
+			hostname: hostname(),
+			pid: process.pid,
+			socketPath: join(root, "missing.sock"),
+			startedAt: "2026-10-04T09:00:00Z",
+			...(intentClaim === null ? {} : { intentClaim }),
+			...(observedPurpose === undefined ? {} : { observedPurpose }),
+		}),
+	);
 }
 function publishThread(catalog: AgentCatalog, root: string): string {
-	const record = catalog.create({ cwd: root, agentDir: root, packageDir: root, model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off", ownerId: "owner" });
+	const record = catalog.create({
+		cwd: root,
+		agentDir: root,
+		packageDir: root,
+		model: { provider: "faux", modelId: "faux-1" },
+		thinkingLevel: "off",
+		ownerId: "owner",
+	});
 	const id = `${record.storageId}/${"a".repeat(32)}`;
-	catalog.updateView(record.storageId, { storageId: record.storageId, updatedAt: "2026-10-04T10:00:00.000Z", rows: [], coverage: { complete: true, omitted: 0 }, intentClaims: { rows: {}, coverage: { complete: true, omitted: 0 } } }, { items: [{ id, title: "Active shared work", purpose: "Coordinate integration", updatedAt: 100, closed: false, members: 2 }], omitted: 0, updatedAt: "2026-10-04T10:00:00.000Z" });
+	catalog.updateView(
+		record.storageId,
+		{
+			storageId: record.storageId,
+			updatedAt: "2026-10-04T10:00:00.000Z",
+			rows: [],
+			coverage: { complete: true, omitted: 0 },
+			intentClaims: { rows: {}, coverage: { complete: true, omitted: 0 } },
+		},
+		{
+			items: [
+				{
+					id,
+					title: "Active shared work",
+					purpose: "Coordinate integration",
+					updatedAt: 100,
+					closed: false,
+					members: 2,
+				},
+			],
+			omitted: 0,
+			updatedAt: "2026-10-04T10:00:00.000Z",
+		},
+	);
 	return id;
 }
 
@@ -72,19 +135,44 @@ it("unifies self-published purpose, related presence and active thread hints wit
 	const peer = randomUUID();
 	publish(root, peer, claim("Related effort"));
 	const threadId = publishThread(catalog, root);
-	const view = await readAwareness(root, { ...self, intentClaim, observedPurpose: { source: "interactive-input", text: "First interactive input" } }, catalog);
-	assert.equal(matchesSchema(EffortAwarenessSchema, view), true, JSON.stringify(schemaErrors(EffortAwarenessSchema, view, 10)));
+	const view = await readAwareness(
+		root,
+		{ ...self, intentClaim, observedPurpose: { source: "interactive-input", text: "First interactive input" } },
+		catalog,
+	);
+	assert.equal(
+		matchesSchema(EffortAwarenessSchema, view),
+		true,
+		JSON.stringify(schemaErrors(EffortAwarenessSchema, view, 10)),
+	);
 	assert.deepEqual(view.self.intentClaim, intentClaim);
 	assert.equal(view.self.observedPurpose, undefined);
 	assert.equal(JSON.stringify(view).includes("First interactive input"), false);
-	assert.deepEqual(view.presence.efforts.map((effort) => effort.id), [peer]);
-	assert.deepEqual(view.threads.items.map((thread) => thread.id), [threadId]);
+	assert.deepEqual(
+		view.presence.efforts.map((effort) => effort.id),
+		[peer],
+	);
+	assert.deepEqual(
+		view.threads.items.map((thread) => thread.id),
+		[threadId],
+	);
 	const prompt = formatEffortAwareness(view);
-	assert.ok(prompt.includes('"authority":"Operator: edit only the agent slice","scope":{"paths":["extensions/agent"],"branches":["topic"]}'));
+	assert.ok(
+		prompt.includes(
+			'"authority":"Operator: edit only the agent slice","scope":{"paths":["extensions/agent"],"branches":["topic"]}',
+		),
+	);
 	assert.ok(prompt.includes("Own published purpose"));
 	assert.ok(prompt.includes("Active shared work"));
 	assert.ok(prompt.includes("do not grant authority to the reader"));
-	assert.deepEqual(await readAwareness(root, { ...self, intentClaim, observedPurpose: { source: "interactive-input", text: "First interactive input" } }, catalog), view);
+	assert.deepEqual(
+		await readAwareness(
+			root,
+			{ ...self, intentClaim, observedPurpose: { source: "interactive-input", text: "First interactive input" } },
+			catalog,
+		),
+		view,
+	);
 	assert.equal(formatEffortAwareness(view), prompt);
 });
 
@@ -95,19 +183,35 @@ it("keeps prompt bytes stable when clocks, traversal counters and activity order
 	publishThread(catalog, root);
 	const view = await readAwareness(root, { ...self, intentClaim: claim() }, catalog);
 	const before = formatEffortAwareness(view, "prompt");
-	const changed = { ...view,
+	const changed = {
+		...view,
 		self: { ...view.self, intentClaim: { ...claim(), updatedAt: "2026-10-29T12:00:00Z" } },
-		presence: { ...view.presence,
-			efforts: [...view.presence.efforts].reverse().map(effort => ({ ...effort,
-				lastActivityAt: "2026-10-29T12:00:00Z", startedAt: "2026-10-29T10:00:00Z",
+		presence: {
+			...view.presence,
+			efforts: [...view.presence.efforts].reverse().map((effort) => ({
+				...effort,
+				lastActivityAt: "2026-10-29T12:00:00Z",
+				startedAt: "2026-10-29T10:00:00Z",
 				...(effort.intentClaim ? { intentClaim: { ...effort.intentClaim, updatedAt: "2026-10-29T12:00:00Z" } } : {}),
 			})),
-			coverage: { ...view.presence.coverage, visited: view.presence.coverage.visited + 1, dead: view.presence.coverage.dead + 1 },
+			coverage: {
+				...view.presence.coverage,
+				visited: view.presence.coverage.visited + 1,
+				dead: view.presence.coverage.dead + 1,
+			},
 		},
-		threads: { ...view.threads, coverage: { ...view.threads.coverage, visited: view.threads.coverage.visited + 1 }, items: view.threads.items.map(thread => ({ ...thread, updatedAt: thread.updatedAt + 1 })) },
+		threads: {
+			...view.threads,
+			coverage: { ...view.threads.coverage, visited: view.threads.coverage.visited + 1 },
+			items: view.threads.items.map((thread) => ({ ...thread, updatedAt: thread.updatedAt + 1 })),
+		},
 	};
 	assert.equal(formatEffortAwareness(changed, "prompt"), before);
-	assert.notEqual(formatEffortAwareness(changed), formatEffortAwareness(view), "tools retain current clocks and coverage");
+	assert.notEqual(
+		formatEffortAwareness(changed),
+		formatEffortAwareness(view),
+		"tools retain current clocks and coverage",
+	);
 	changed.self.intentClaim = { ...claim(), purpose: "New material purpose" };
 	assert.notEqual(formatEffortAwareness(changed, "prompt"), before);
 });
@@ -119,20 +223,49 @@ it("never emits observed competitors with declared intent, including compact pro
 	publish(root, peer, claim("PEER-DECLARED-PURPOSE"), root, observedPurpose);
 	const view = await readAwareness(root, { ...self, intentClaim: claim("SELF-DECLARED-PURPOSE"), observedPurpose });
 	assert.equal(JSON.stringify(view).includes(observedPurpose.text), false);
-	const raw = { ...view, self: { ...view.self, observedPurpose }, presence: { ...view.presence, efforts: view.presence.efforts.map((row) => ({ ...row, observedPurpose })) } };
+	const raw = {
+		...view,
+		self: { ...view.self, observedPurpose },
+		presence: { ...view.presence, efforts: view.presence.efforts.map((row) => ({ ...row, observedPurpose })) },
+	};
 	const prompt = formatEffortAwareness(raw);
 	assert.equal(prompt.includes(observedPurpose.text), false);
 	assert.ok(prompt.includes("SELF-DECLARED-PURPOSE"));
 	assert.ok(prompt.includes("PEER-DECLARED-PURPOSE"));
 	assert.ok(prompt.includes("Declared purpose takes precedence"));
-	const largeClaim = { ...claim("COMPACT-PURPOSE"), authority: "😀".repeat(512), integration: "😀".repeat(512), scope: { paths: Array.from({ length: 4 }, () => "😀".repeat(64)), branches: Array.from({ length: 4 }, () => "😀".repeat(64)) } };
-	const compact = { ...raw, self: { ...raw.self, intentClaim: largeClaim }, presence: { ...raw.presence, efforts: raw.presence.efforts.map((row) => ({ ...row, cwd: "x".repeat(7000), intentClaim: largeClaim })) } };
+	const largeClaim = {
+		...claim("COMPACT-PURPOSE"),
+		authority: "😀".repeat(512),
+		integration: "😀".repeat(512),
+		scope: {
+			paths: Array.from({ length: 4 }, () => "😀".repeat(64)),
+			branches: Array.from({ length: 4 }, () => "😀".repeat(64)),
+		},
+	};
+	const compact = {
+		...raw,
+		self: { ...raw.self, intentClaim: largeClaim },
+		presence: {
+			...raw.presence,
+			efforts: raw.presence.efforts.map((row) => ({ ...row, cwd: "x".repeat(7000), intentClaim: largeClaim })),
+		},
+	};
 	const shortPrompt = formatEffortAwareness(compact);
 	assert.ok(shortPrompt.includes("Self detail shortened"));
 	assert.ok(shortPrompt.includes("Effort detail shortened"));
 	assert.equal(shortPrompt.includes(observedPurpose.text), false);
 	assert.ok(Buffer.byteLength(shortPrompt) <= EFFORT_AWARENESS_PROMPT_BYTES);
-	const machine = { ...raw, presence: { ...raw.presence, efforts: raw.presence.efforts.map(({ intentClaim: _intent, ...row }) => ({ ...row, relationship: "machine" as const, purposeClaim: "MACHINE-DECLARED-PURPOSE" })) } };
+	const machine = {
+		...raw,
+		presence: {
+			...raw.presence,
+			efforts: raw.presence.efforts.map(({ intentClaim: _intent, ...row }) => ({
+				...row,
+				relationship: "machine" as const,
+				purposeClaim: "MACHINE-DECLARED-PURPOSE",
+			})),
+		},
+	};
 	assert.equal(formatEffortAwareness(machine).includes(observedPurpose.text), false);
 	assert.ok(formatEffortAwareness(machine).includes("MACHINE-DECLARED-PURPOSE"));
 });
@@ -167,7 +300,13 @@ it("refreshes declared purpose and clear directly from current records without s
 it("includes unrelated local purpose claims without full authority or integration detail", async (t) => {
 	const { root, self } = fixture(t);
 	const peer = randomUUID();
-	const intentClaim = { ...claim("Unrelated local purpose"), integration: "PRIVATE-INTEGRATION", authority: "PRIVATE-AUTHORITY", scope: { paths: ["PRIVATE-PATH"], branches: ["private-branch"], fullGate: true }, contactThread: "contact/thread" };
+	const intentClaim = {
+		...claim("Unrelated local purpose"),
+		integration: "PRIVATE-INTEGRATION",
+		authority: "PRIVATE-AUTHORITY",
+		scope: { paths: ["PRIVATE-PATH"], branches: ["private-branch"], fullGate: true },
+		contactThread: "contact/thread",
+	};
 	publish(root, peer, intentClaim, join(root, "other-cwd"));
 	const view = await readAwareness(root, self);
 	const effort = view.presence.efforts[0];
@@ -193,9 +332,13 @@ it("keeps machine-only prompt bytes stable when intentUpdatedAt alone changes", 
 	const view = await readAwareness(root, self);
 	assert.equal(view.presence.efforts[0]?.relationship, "machine");
 	assert.equal(view.presence.efforts[0]?.intentUpdatedAt, claim().updatedAt);
-	const changed = { ...view, presence: { ...view.presence,
-		efforts: view.presence.efforts.map(effort => ({ ...effort, intentUpdatedAt: "2026-10-29T12:00:00.000Z" })),
-	} };
+	const changed = {
+		...view,
+		presence: {
+			...view.presence,
+			efforts: view.presence.efforts.map((effort) => ({ ...effort, intentUpdatedAt: "2026-10-29T12:00:00.000Z" })),
+		},
+	};
 	assert.equal(formatEffortAwareness(changed, "prompt"), formatEffortAwareness(view, "prompt"));
 	assert.doesNotMatch(formatEffortAwareness(changed, "prompt"), /intentUpdatedAt/u);
 	assert.notEqual(formatEffortAwareness(changed), formatEffortAwareness(view));
@@ -205,11 +348,25 @@ it("preserves repository state and declared full gates in the current self view"
 	const { root, self } = fixture(t);
 	publish(root, randomUUID());
 	const intentClaim = { ...claim(), scope: { ...claim().scope, fullGate: true } };
-	const view = await readAwareness(root, { ...self, repository: "/repository/common", repositoryState: "git", intentClaim });
+	const view = await readAwareness(root, {
+		...self,
+		repository: "/repository/common",
+		repositoryState: "git",
+		intentClaim,
+	});
 	assert.equal(view.self.repositoryState, "git");
 	assert.equal(view.self.repository, "/repository/common");
 	assert.ok(formatEffortAwareness(view).includes('"fullGate":true'));
-	const largeClaim = { ...intentClaim, authority: "😀".repeat(512), integration: "😀".repeat(512), scope: { ...intentClaim.scope, paths: Array.from({ length: 4 }, () => "😀".repeat(64)), branches: Array.from({ length: 4 }, () => "😀".repeat(64)) } };
+	const largeClaim = {
+		...intentClaim,
+		authority: "😀".repeat(512),
+		integration: "😀".repeat(512),
+		scope: {
+			...intentClaim.scope,
+			paths: Array.from({ length: 4 }, () => "😀".repeat(64)),
+			branches: Array.from({ length: 4 }, () => "😀".repeat(64)),
+		},
+	};
 	const wide = await readAwareness(root, { ...self, intentClaim: largeClaim });
 	const prompt = formatEffortAwareness(wide);
 	assert.ok(prompt.includes("Own published purpose"));
@@ -236,8 +393,11 @@ it("reserves prompt space for active threads and retains or omits whole claims",
 	const prompt = formatEffortAwareness(view);
 	assert.ok(Buffer.byteLength(prompt) <= EFFORT_AWARENESS_PROMPT_BYTES);
 	assert.ok(prompt.includes("Active shared work"));
-	const retained = prompt.split("\n").filter(line => line.startsWith("Related effort: ")).map(line => JSON.parse(line.slice("Related effort: ".length)));
-	assert.ok(retained.some(row => row.intentClaim));
+	const retained = prompt
+		.split("\n")
+		.filter((line) => line.startsWith("Related effort: "))
+		.map((line) => JSON.parse(line.slice("Related effort: ".length)));
+	assert.ok(retained.some((row) => row.intentClaim));
 	for (const row of retained) if (row.intentClaim) assert.deepEqual(row.intentClaim, longClaim);
 	assert.equal(prompt.includes("Claim text or scope shortened"), false);
 	assert.match(prompt, /Prompt omissions: self 0, related efforts [0-9]+, active threads 0/u);
@@ -250,15 +410,51 @@ it("keeps zero-live-effort context to one line without losing unknown coverage",
 	assert.equal(formatEffortAwareness(view), "No other live efforts or active thread hints in the covered sources.");
 	publishThread(catalog, root);
 	const withThread = await readAwareness(root, self, catalog);
-	const unknownView = { ...withThread, self: { ...self, omitted: true }, presence: { ...withThread.presence, efforts: [
-		{ id: "unknown", cwd: root, startedAt: "now", relationship: "cwd" as const, liveness: "unknown" as const },
-		{ id: "incompatible", cwd: root, startedAt: "now", relationship: "cwd" as const, liveness: "incompatible" as const },
-	], coverage: { ...withThread.presence.coverage, complete: false, omitted: 2, unreadable: 3 } } };
-	unknownView.threads.coverage = { ...unknownView.threads.coverage, complete: false, omittedHints: 2, omittedResults: 1, missingHints: 1, unreadable: 4, unvisited: true };
+	const unknownView = {
+		...withThread,
+		self: { ...self, omitted: true },
+		presence: {
+			...withThread.presence,
+			efforts: [
+				{ id: "unknown", cwd: root, startedAt: "now", relationship: "cwd" as const, liveness: "unknown" as const },
+				{
+					id: "incompatible",
+					cwd: root,
+					startedAt: "now",
+					relationship: "cwd" as const,
+					liveness: "incompatible" as const,
+				},
+			],
+			coverage: { ...withThread.presence.coverage, complete: false, omitted: 2, unreadable: 3 },
+		},
+	};
+	unknownView.threads.coverage = {
+		...unknownView.threads.coverage,
+		complete: false,
+		omittedHints: 2,
+		omittedResults: 1,
+		missingHints: 1,
+		unreadable: 4,
+		unvisited: true,
+	};
 	const line = formatEffortAwareness(unknownView);
 	assert.equal(line.split("\n").length, 1);
 	assert.ok(Buffer.byteLength(line) < 512);
-	for (const label of ["1 unknown", "1 incompatible", "2 omitted", "3 unreadable", "Active thread hints: 1", "2 source omissions", "1 result omissions", "1 missing", "4 unreadable", "unvisited yes", "Own detail incomplete", "agent_status"]) assert.ok(line.includes(label), label);
+	for (const label of [
+		"1 unknown",
+		"1 incompatible",
+		"2 omitted",
+		"3 unreadable",
+		"Active thread hints: 1",
+		"2 source omissions",
+		"1 result omissions",
+		"1 missing",
+		"4 unreadable",
+		"unvisited yes",
+		"Own detail incomplete",
+		"agent_status",
+	])
+		assert.ok(line.includes(label), label);
 });
 
 it("refreshes native root and child sections at model requests while stable state emits no new section patch", async (t) => {
@@ -271,26 +467,52 @@ it("refreshes native root and child sections at model requests while stable stat
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
-	faux.setResponses(Array.from({ length: 20 }, () => (request) => {
-		requests.push([...request.messages]);
-		return fauxAssistantMessage("DONE");
-	}));
+	faux.setResponses(
+		Array.from({ length: 20 }, () => (request) => {
+			requests.push([...request.messages]);
+			return fauxAssistantMessage("DONE");
+		}),
+	);
 	const registry = Durable.createRegistry();
-	const extension = createAgentContribution({ configureSettings: () => {}, source: "/extensions/agent/index.ts" }).create({ onClose() {}, durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, agentDir: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } });
+	const extension = createAgentContribution({
+		configureSettings: () => {},
+		source: "/extensions/agent/index.ts",
+	}).create({
+		onClose() {},
+		durable: Durable,
+		storageId: randomUUID(),
+		catalogRoot: join(sessionsRoot, "durable"),
+		cwd: sessionsRoot,
+		agentDir: sessionsRoot,
+		services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } },
+	});
 	registry.install(extension);
 	const context = BACKGROUND_CONTEXT;
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
-	t.after(async () => { await harness.close(context); });
+	t.after(async () => {
+		await harness.close(context);
+	});
 	harness.resume();
 	const model = { provider: "faux", modelId: "faux-1" };
 	const root = await harness.root(context, { agent: { model } });
-	const say = async (conversation: Durable.Conversation) => { const submission = await conversation.submit({ type: "input", content: "Read current view" }, context); await submission.wait(context); };
+	const say = async (conversation: Durable.Conversation) => {
+		const submission = await conversation.submit({ type: "input", content: "Read current view" }, context);
+		await submission.wait(context);
+	};
 	await say(root);
-	assert.equal(getCurrentSystemPrompt(requests.at(-1) ?? []).includes(ambientMarker), false,
-		"native effort fixtures must not read ambient machine preferences");
-	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("BEFORE-PURPOSE"), getCurrentSystemPrompt(requests.at(-1) ?? []));
+	assert.equal(
+		getCurrentSystemPrompt(requests.at(-1) ?? []).includes(ambientMarker),
+		false,
+		"native effort fixtures must not read ambient machine preferences",
+	);
+	assert.ok(
+		getCurrentSystemPrompt(requests.at(-1) ?? []).includes("BEFORE-PURPOSE"),
+		getCurrentSystemPrompt(requests.at(-1) ?? []),
+	);
 	await say(root);
-	const sectionEntries = requests.at(-1)?.filter((message) => message.role === "system" && message.sections?.["agent-efforts"] !== undefined);
+	const sectionEntries = requests
+		.at(-1)
+		?.filter((message) => message.role === "system" && message.sections?.["agent-efforts"] !== undefined);
 	assert.equal(sectionEntries?.length, 1);
 	const count = requests.length;
 	publish(sessionsRoot, peer, claim("AFTER-PURPOSE"));
@@ -299,7 +521,10 @@ it("refreshes native root and child sections at model requests while stable stat
 	const currentPrompt = getCurrentSystemPrompt(requests.at(-1) ?? []);
 	assert.ok(currentPrompt.includes("AFTER-PURPOSE"));
 	assert.equal(currentPrompt.includes("BEFORE-PURPOSE"), false);
-	const child = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model, extensions: [extension] } }, context);
+	const child = await harness.createConversation(
+		{ ownership: { kind: "ownerless" }, agent: { model, extensions: [extension] } },
+		context,
+	);
 	await say(child);
 	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("AFTER-PURPOSE"));
 	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("Active shared work"));
@@ -323,45 +548,111 @@ it("omits awareness from compact native status and preserves selected detail", a
 	publish(sessionsRoot, peer);
 	const requests: Message[][] = [];
 	const calls: Readonly<Record<string, unknown>>[] = [];
-	const hostStatus = { conversations: [], live: false, storageId: randomUUID(), coverage: { complete: true, returned: 0, scanned: 0, next: null } };
-	const selectedStatus = { live: false, storageId: peer,
-		conversation: { conversationId: 1, identity: peer, busy: false, lastText: null, live: null, inbox: null,
-			agent: { thinkingLevel: "off", extensions: [], tools: [] }, tasks: [], submissions: [] } };
+	const hostStatus = {
+		conversations: [],
+		live: false,
+		storageId: randomUUID(),
+		coverage: { complete: true, returned: 0, scanned: 0, next: null },
+	};
+	const selectedStatus = {
+		live: false,
+		storageId: peer,
+		conversation: {
+			conversationId: 1,
+			identity: peer,
+			busy: false,
+			lastText: null,
+			live: null,
+			inbox: null,
+			agent: { thinkingLevel: "off", extensions: [], tools: [] },
+			tasks: [],
+			submissions: [],
+		},
+	};
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
-	faux.setResponses(Array.from({ length: 20 }, () => (request) => {
-		requests.push([...request.messages]);
-		const last = request.messages.findLast((message) => message.role !== "system");
-		if (last?.role !== "user") return fauxAssistantMessage("DONE");
-		const args: Durable.JsonObject = last.content === "selected" ? { sessionId: peer } : last.content === "detail" ? { sessionId: peer, detail: true } : last.content === "fleet" ? { view: "fleet" } : {};
-		return fauxAssistantMessage([fauxToolCall("agent_status", args)], { stopReason: "toolUse" });
-	}));
+	faux.setResponses(
+		Array.from({ length: 20 }, () => (request) => {
+			requests.push([...request.messages]);
+			const last = request.messages.findLast((message) => message.role !== "system");
+			if (last?.role !== "user") return fauxAssistantMessage("DONE");
+			const args: Durable.JsonObject =
+				last.content === "selected"
+					? { sessionId: peer }
+					: last.content === "detail"
+						? { sessionId: peer, detail: true }
+						: last.content === "fleet"
+							? { view: "fleet" }
+							: {};
+			return fauxAssistantMessage([fauxToolCall("agent_status", args)], { stopReason: "toolUse" });
+		}),
+	);
 	const registry = Durable.createRegistry();
-	registry.install(createAgentContribution({ configureSettings: () => {}, source: "/extensions/agent/index.ts", dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return params.sessionId === peer ? selectedStatus : hostStatus; } }).create({ onClose() {}, durable: Durable, storageId: randomUUID(), catalogRoot: join(sessionsRoot, "durable"), cwd: sessionsRoot, agentDir: sessionsRoot, services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } } }));
+	registry.install(
+		createAgentContribution({
+			configureSettings: () => {},
+			source: "/extensions/agent/index.ts",
+			dispatch: async (method, params) => {
+				assert.equal(method, "status");
+				calls.push(params);
+				return params.sessionId === peer ? selectedStatus : hostStatus;
+			},
+		}).create({
+			onClose() {},
+			durable: Durable,
+			storageId: randomUUID(),
+			catalogRoot: join(sessionsRoot, "durable"),
+			cwd: sessionsRoot,
+			agentDir: sessionsRoot,
+			services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } },
+		}),
+	);
 	const context = BACKGROUND_CONTEXT;
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
-	t.after(async () => { await harness.close(context); });
+	t.after(async () => {
+		await harness.close(context);
+	});
 	harness.resume();
 	const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
-	const say = async (content: string) => { const submission = await root.submit({ type: "input", content }, context); await submission.wait(context); };
+	const say = async (content: string) => {
+		const submission = await root.submit({ type: "input", content }, context);
+		await submission.wait(context);
+	};
 	await say("overview");
-	assert.equal(getCurrentSystemPrompt(requests.at(-1) ?? []).includes(ambientMarker), false,
-		"native status fixtures must not read ambient machine preferences");
+	assert.equal(
+		getCurrentSystemPrompt(requests.at(-1) ?? []).includes(ambientMarker),
+		false,
+		"native status fixtures must not read ambient machine preferences",
+	);
 	const overview = requests.at(-1)?.findLast((message) => message.role === "toolResult");
 	assert.equal(overview?.role, "toolResult");
-	const text = overview?.role === "toolResult" ? overview.content.flatMap((part) => part.type === "text" && part.text.startsWith("{") ? [part.text] : []).at(0) : "";
+	const text =
+		overview?.role === "toolResult"
+			? overview.content.flatMap((part) => (part.type === "text" && part.text.startsWith("{") ? [part.text] : [])).at(0)
+			: "";
 	assert.ok(text, JSON.stringify(overview));
 	const structured = JSON.parse(text ?? "") as typeof hostStatus & { format: string; omitted: string[] };
 	structuredObservation(StatusToolOutputSchema, structured);
-	assert.deepEqual({ conversations: structured.conversations, live: structured.live, storageId: structured.storageId, coverage: structured.coverage }, hostStatus);
+	assert.deepEqual(
+		{
+			conversations: structured.conversations,
+			live: structured.live,
+			storageId: structured.storageId,
+			coverage: structured.coverage,
+		},
+		hostStatus,
+	);
 	assert.equal(structured.format, "compact");
 	assert.equal("awareness" in structured, false);
 	assert.equal("createdAgents" in structured, false);
 	assert.deepEqual(structured.omitted, ["host inventory", "effort awareness", "created-agent detail"]);
 	await say("selected");
 	const selected = requests.at(-1)?.findLast((message) => message.role === "toolResult");
-	const selectedText = selected?.role === "toolResult" ? selected.content.flatMap((part) => part.type === "text" && part.text.startsWith("{") ? [part.text] : []).at(0) : "";
+	const selectedText =
+		selected?.role === "toolResult"
+			? selected.content.flatMap((part) => (part.type === "text" && part.text.startsWith("{") ? [part.text] : [])).at(0)
+			: "";
 	const selectedResult = JSON.parse(selectedText ?? "");
 	structuredObservation(StatusToolOutputSchema, selectedResult);
 	assert.equal(selectedResult.format, "compact");
@@ -369,11 +660,17 @@ it("omits awareness from compact native status and preserves selected detail", a
 	assert.equal("awareness" in selectedResult, false);
 	await say("detail");
 	const detail = requests.at(-1)?.findLast((message) => message.role === "toolResult");
-	const detailText = detail?.role === "toolResult" ? detail.content.flatMap((part) => part.type === "text" && part.text.startsWith("{") ? [part.text] : []).at(0) : "";
+	const detailText =
+		detail?.role === "toolResult"
+			? detail.content.flatMap((part) => (part.type === "text" && part.text.startsWith("{") ? [part.text] : [])).at(0)
+			: "";
 	assert.deepEqual(JSON.parse(detailText ?? ""), selectedStatus);
 	await say("fleet");
 	const fleet = requests.at(-1)?.findLast((message) => message.role === "toolResult");
-	const fleetText = fleet?.role === "toolResult" ? fleet.content.flatMap((part) => part.type === "text" && part.text.startsWith("{") ? [part.text] : []).at(0) : "";
+	const fleetText =
+		fleet?.role === "toolResult"
+			? fleet.content.flatMap((part) => (part.type === "text" && part.text.startsWith("{") ? [part.text] : [])).at(0)
+			: "";
 	const fleetResult = JSON.parse(fleetText ?? "");
 	assert.equal(fleetResult.view, "fleet");
 	assert.equal("awareness" in fleetResult, false);
@@ -383,7 +680,14 @@ it("omits awareness from compact native status and preserves selected detail", a
 it("resolves the reader location through the supplied resolver and only when the caller has no repository", async (t) => {
 	const { root, catalog, self } = fixture(t);
 	const resolved: string[] = [];
-	const locations = { resolve: async (cwd: string) => { resolved.push(cwd); return { cwd, repositoryState: "git" as const, repository: "/shared/common" }; }, invalidate() {}, clear() {} };
+	const locations = {
+		resolve: async (cwd: string) => {
+			resolved.push(cwd);
+			return { cwd, repositoryState: "git" as const, repository: "/shared/common" };
+		},
+		invalidate() {},
+		clear() {},
+	};
 	const view = await readEffortAwareness({ catalog, locations }, self);
 	assert.deepEqual(resolved, [root]);
 	assert.equal(view.self.repository, "/shared/common");

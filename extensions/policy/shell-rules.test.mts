@@ -21,7 +21,11 @@ describe("qualified output guidance", () => {
 			assert.ok(bash(command).includes(fd.id), command);
 		const pipeline = "fd -t f -l . src docs tests | awk '{print $5, $9}' | sort -k2 | head -n 200";
 		assert.deepEqual(bash(pipeline), [fd.id, cap.id]);
-		for (const id of ["bounds.find-output-uncapped", "bounds.grep-recursive-uncapped", "bounds.ls-recursive-uncapped"]) {
+		for (const id of [
+			"bounds.find-output-uncapped",
+			"bounds.grep-recursive-uncapped",
+			"bounds.ls-recursive-uncapped",
+		]) {
 			const row = RULES.find((entry) => entry.id === id);
 			assert.ok(row);
 			assert.match(row.note, /cap after global sorting or aggregation limits display, not upstream work/);
@@ -32,8 +36,12 @@ describe("qualified output guidance", () => {
 describe("certain slice suggestions", () => {
 	it("omits mixed modes, repeated counts and uncertain paths", () => {
 		for (const command of [
-			"head -n 2 -c 7 notes.md", "head -n 2 -n 7 notes.md", "head notes.md -n 2",
-			"head -n 2 -- @notes.md", "head -n 2 -- '*.md'", "head -n 2 -- '~/notes.md'",
+			"head -n 2 -c 7 notes.md",
+			"head -n 2 -n 7 notes.md",
+			"head notes.md -n 2",
+			"head -n 2 -- @notes.md",
+			"head -n 2 -- '*.md'",
+			"head -n 2 -- '~/notes.md'",
 		]) {
 			const stage = parseStatements(command)[0][0];
 			assert.deepEqual(predicateSuggestions("routing.head-slice", stage), [], command);
@@ -41,11 +49,19 @@ describe("certain slice suggestions", () => {
 	});
 	it("omits every sed form outside one plain script and one file", () => {
 		for (const command of [
-			"sed -n '3p' -- notes.md", "sed -n '3p' --", "sed -n -- '3p' notes.md",
-			"sed -n -- '3p' -notes.md", "sed -n -e '3p' notes.md", "sed -n -e '3p' 1,2p",
-			"sed -n -e '3p' -- -notes.md", "sed -n -e '3p' -e '7p' notes.md",
-			"sed -n '3p' a.md b.md", "sed -n -n '3p' notes.md", "sed -n '3p' -e '7p' notes.md",
-			"sed -n '3, 7p' notes.md", "sed -n '3p' -notes.md",
+			"sed -n '3p' -- notes.md",
+			"sed -n '3p' --",
+			"sed -n -- '3p' notes.md",
+			"sed -n -- '3p' -notes.md",
+			"sed -n -e '3p' notes.md",
+			"sed -n -e '3p' 1,2p",
+			"sed -n -e '3p' -- -notes.md",
+			"sed -n -e '3p' -e '7p' notes.md",
+			"sed -n '3p' a.md b.md",
+			"sed -n -n '3p' notes.md",
+			"sed -n '3p' -e '7p' notes.md",
+			"sed -n '3, 7p' notes.md",
+			"sed -n '3p' -notes.md",
 		]) {
 			const stage = parseStatements(command)[0][0];
 			assert.deepEqual(predicateSuggestions("routing.sed-slice", stage), [], command);

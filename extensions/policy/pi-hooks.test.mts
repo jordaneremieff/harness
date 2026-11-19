@@ -209,10 +209,13 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 				result: async () => message,
 			};
 		};
-		const prepared = await runner.emitBeforeAgentStart({ messageType: "user", prompt: "Run controlled tools" }, {
-			cwd: base,
-			selectedTools: tools.map((tool) => tool.name),
-		});
+		const prepared = await runner.emitBeforeAgentStart(
+			{ messageType: "user", prompt: "Run controlled tools" },
+			{
+				cwd: base,
+				selectedTools: tools.map((tool) => tool.name),
+			},
+		);
 		const preparationMessages = prepared.messages.map((message: Record<string, unknown>) => ({
 			...message,
 			role: "custom",
@@ -223,7 +226,11 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 				{ role: "user", content: "Run controlled tools", timestamp: promptTimestamp },
 				...host.convertToLlm(preparationMessages),
 			],
-			{ systemPrompt: "Controlled test", messages: options.continueSession ? session.buildSessionProjection().messages : [], tools },
+			{
+				systemPrompt: "Controlled test",
+				messages: options.continueSession ? session.buildSessionProjection().messages : [],
+				tools,
+			},
 			{
 				model,
 				convertToLlm: (messages: unknown[]) => messages,
@@ -259,48 +266,48 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 			},
 			async (event: AgentEvent) => {
 				switch (event.type) {
-				case "tool_execution_end":
-					endings.push(event.toolCallId);
-					await runner.emit(event);
-					break;
-				case "message_end": {
-					const replacement = await runner.emitMessageEnd(event);
-					assert.equal(replacement, undefined, "This fixture does not apply message replacements");
-					messageIds.set(event.message, session.appendMessage(event.message));
-					break;
-				}
-				case "turn_end": {
-					const stopReason = (event.message as AssistantMessage).stopReason;
-					const outcome = stopReason === "error" || stopReason === "aborted" ? stopReason : "completed";
-					const boundary = await runner.emitBoundary(
-						{
-							...event,
-							turnIndex,
-							messageEntryId: entryId(event.message),
-							toolResultEntryIds: event.toolResults.map(entryId),
-							outcome,
-						},
-						(entries: SessionBoundaryDraft[]) => {
-							assert.deepEqual(entries, [], "Policy hook tests do not apply boundary drafts");
-							const projection = session.buildSessionProjection();
-							return {
-								contextEntries: projection.entries,
-								contextMessages: projection.messages,
-								llmMessages: host.convertToLlm(projection.messages),
-								pendingMessages: [],
-								canContinue: outcome === "completed" && !controller.signal.aborted,
-							};
-						},
-					);
-					assert.equal(boundary.valid, true);
-					assert.equal(boundary.continue, false, "Policy must not request boundary continuation");
-					break;
-				}
-				case "turn_start":
-					await runner.emit({ ...event, turnIndex: ++turnIndex, timestamp: Date.now() });
-					break;
-				default:
-					await runner.emit(event);
+					case "tool_execution_end":
+						endings.push(event.toolCallId);
+						await runner.emit(event);
+						break;
+					case "message_end": {
+						const replacement = await runner.emitMessageEnd(event);
+						assert.equal(replacement, undefined, "This fixture does not apply message replacements");
+						messageIds.set(event.message, session.appendMessage(event.message));
+						break;
+					}
+					case "turn_end": {
+						const stopReason = (event.message as AssistantMessage).stopReason;
+						const outcome = stopReason === "error" || stopReason === "aborted" ? stopReason : "completed";
+						const boundary = await runner.emitBoundary(
+							{
+								...event,
+								turnIndex,
+								messageEntryId: entryId(event.message),
+								toolResultEntryIds: event.toolResults.map(entryId),
+								outcome,
+							},
+							(entries: SessionBoundaryDraft[]) => {
+								assert.deepEqual(entries, [], "Policy hook tests do not apply boundary drafts");
+								const projection = session.buildSessionProjection();
+								return {
+									contextEntries: projection.entries,
+									contextMessages: projection.messages,
+									llmMessages: host.convertToLlm(projection.messages),
+									pendingMessages: [],
+									canContinue: outcome === "completed" && !controller.signal.aborted,
+								};
+							},
+						);
+						assert.equal(boundary.valid, true);
+						assert.equal(boundary.continue, false, "Policy must not request boundary continuation");
+						break;
+					}
+					case "turn_start":
+						await runner.emit({ ...event, turnIndex: ++turnIndex, timestamp: Date.now() });
+						break;
+					default:
+						await runner.emit(event);
 				}
 			},
 			controller.signal,
@@ -317,7 +324,9 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 	const telemetry = async () => {
 		await runner.emit({ type: "session_shutdown", reason: "quit" });
 		const segments = join(dir, "telemetry");
-		const names = (await readdir(segments).catch(() => [] as string[])).filter((name) => /^\d{4}-\d{2}-\d{2}\.\d{6}\.jsonl$/.test(name)).sort();
+		const names = (await readdir(segments).catch(() => [] as string[]))
+			.filter((name) => /^\d{4}-\d{2}-\d{2}\.\d{6}\.jsonl$/.test(name))
+			.sort();
 		return (
 			await Promise.all(
 				names.map(async (name) =>
@@ -535,7 +544,12 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			});
 			assert.equal(instants.structuredContent.selection.untilUtc, "2025-12-31T23:00:00.000Z");
 			await assert.rejects(
-				f.invoke("policy_control", { operation: "telemetry", from: "2026-01-01", to: "2026-01-01", since: "2026-01-01T09:00:00Z" }),
+				f.invoke("policy_control", {
+					operation: "telemetry",
+					from: "2026-01-01",
+					to: "2026-01-01",
+					since: "2026-01-01T09:00:00Z",
+				}),
 				/Invalid policy control fields/,
 			);
 			const inspected = await f.invoke("policy_control", { operation: "mode" });
@@ -636,7 +650,9 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			assert.doesNotMatch(JSON.stringify(f.requestContexts[1]), /Shell contract snapshot/);
 			await f.telemetry();
 			assert.deepEqual(f.errors, []);
-		} finally { await f.cleanup(); }
+		} finally {
+			await f.cleanup();
+		}
 	});
 	it("ends a complete nonterminating tool batch through finishTurn and dispatches a populated turn boundary", async () => {
 		const boundaries: TurnEndEvent[] = [];
@@ -717,14 +733,18 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			]);
 			await natural.telemetry();
 			assert.deepEqual(natural.errors, []);
-		} finally { await natural.cleanup(); }
+		} finally {
+			await natural.cleanup();
+		}
 	});
 
 	for (const stopReason of ["error", "aborted"] as const) {
 		it(`preserves the ${stopReason} response hard exit without an end decision`, async () => {
 			const boundaries: TurnEndEvent[] = [];
 			const f = await setup([], "enforce", (pi) => {
-				(pi as ExtensionAPI).on("turn_end", (event) => { boundaries.push(event); });
+				(pi as ExtensionAPI).on("turn_end", (event) => {
+					boundaries.push(event);
+				});
 			});
 			try {
 				const result = await f.run([], { endAfterTurn: true, stopReason });
@@ -736,15 +756,21 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				assert.deepEqual(boundaries[0].toolResultEntryIds, []);
 				await f.telemetry();
 				assert.deepEqual(f.errors, []);
-			} finally { await f.cleanup(); }
+			} finally {
+				await f.cleanup();
+			}
 		});
 	}
 
 	it("retains final chained failures through later same-batch success before the next real model request", async () => {
 		let releaseSecond = () => {};
 		let releaseSuccess = () => {};
-		const firstEnded = new Promise<void>((resolve) => { releaseSecond = resolve; });
-		const secondEnded = new Promise<void>((resolve) => { releaseSuccess = resolve; });
+		const firstEnded = new Promise<void>((resolve) => {
+			releaseSecond = resolve;
+		});
+		const secondEnded = new Promise<void>((resolve) => {
+			releaseSuccess = resolve;
+		});
 		const f = await setup([], "enforce", (pi: unknown) => {
 			const api = pi as { on: (name: string, handler: (event: { toolCallId: string }) => unknown) => void };
 			api.on("tool_result", (event) => ({ isError: event.toolCallId !== "success" }));
@@ -816,7 +842,9 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			assert.doesNotMatch(JSON.stringify(f.requestContexts[1]), /actual failed assumption or tool contract/);
 			await f.telemetry();
 			assert.deepEqual(f.errors, []);
-		} finally { await f.cleanup(); }
+		} finally {
+			await f.cleanup();
+		}
 	});
 	it("qualifies decoded conditions with exact raw server and operation facts", async () => {
 		const program: FactsProgram = {
@@ -843,11 +871,14 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				{
 					name: "gateway",
 					description: "controlled envelope",
-					parameters: obj({
-						server: opt(str()),
-						operation: str(),
-						arguments: str(),
-					}, { open: true }),
+					parameters: obj(
+						{
+							server: opt(str()),
+							operation: str(),
+							arguments: str(),
+						},
+						{ open: true },
+					),
 					execute: async (_id, args) => {
 						received.push({ ...args });
 						return { content: [{ type: "text", text: "received" }], details: {} };
@@ -957,17 +988,23 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				},
 			]);
 			const first = await f.run([{ id: "reused", arguments: { name: "first" } }]);
-			const second = await f.run([{ id: "reused", arguments: { name: "second", fail: true } }], { continueSession: true });
+			const second = await f.run([{ id: "reused", arguments: { name: "second", fail: true } }], {
+				continueSession: true,
+			});
 			const errorOf = (messages: unknown[]) =>
-				(messages as Array<{ role: string; isError?: boolean }>).find((message) => message.role === "toolResult")?.isError;
+				(messages as Array<{ role: string; isError?: boolean }>).find((message) => message.role === "toolResult")
+					?.isError;
 			assert.equal(executions, 2);
 			assert.equal(errorOf(first.messages), false);
 			assert.equal(errorOf(second.messages), true);
 			const records = await f.telemetry();
-			assert.deepEqual(records.map((row) => [row.callId, row.error, row.outcome]), [
-				["reused", false, "success"],
-				["reused", true, "execution-error"],
-			]);
+			assert.deepEqual(
+				records.map((row) => [row.callId, row.error, row.outcome]),
+				[
+					["reused", false, "success"],
+					["reused", true, "execution-error"],
+				],
+			);
 			assert.deepEqual(f.errors, []);
 		} finally {
 			await f.cleanup();

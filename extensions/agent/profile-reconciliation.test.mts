@@ -13,7 +13,12 @@ import { AgentMetaDoc, readOutcome, type DeliveryReceipt } from "./durable-contr
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { ProfileDoc } from "./profile.ts";
-import { readRequestContexts, recordRequestContext, requestContextHooks, requestContextSection } from "./request-context.ts";
+import {
+	readRequestContexts,
+	recordRequestContext,
+	requestContextHooks,
+	requestContextSection,
+} from "./request-context.ts";
 import { testModel } from "./test-runtime.mts";
 
 it("resumes retained work despite an independent profile reconciliation failure", { timeout: 10000 }, async (t) => {
@@ -21,68 +26,166 @@ it("resumes retained work despite an independent profile reconciliation failure"
 	const storagePath = join(directory, "agent.sqlite");
 	const storageId = randomUUID();
 	const runtime = await fixtureRuntime("answer");
-	const original = await Harness.open(await openNodeSqliteStorage(storagePath), { models: runtime, registry: fixtureRegistry() }, context);
+	const original = await Harness.open(
+		await openNodeSqliteStorage(storagePath),
+		{ models: runtime, registry: fixtureRegistry() },
+		context,
+	);
 	let host: DurableHost | undefined;
-	t.after(async () => { await original.close(context); await host?.close(); rmSync(directory, { recursive: true, force: true }); });
-	const agent = { model: { provider: testModel.provider, modelId: testModel.id }, instructions: "Retained instructions" };
+	t.after(async () => {
+		await original.close(context);
+		await host?.close();
+		rmSync(directory, { recursive: true, force: true });
+	});
+	const agent = {
+		model: { provider: testModel.provider, modelId: testModel.id },
+		instructions: "Retained instructions",
+	};
 	const root = await original.root(context, { agent });
 	const child = await original.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
-	await original.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
-		(await tx.doc(ProfileDoc, root.id)).identity = "conflicting-profile-identity";
-		const delivery = deliveryFixtureState;
-		for (const id of [root.id, child.id]) delivery.intents.push({ requestId: `accepted-${id}`, conversationId: id, ownerId: "requester", origin: "operator", message: `Accepted task ${id}`, whenBusy: "followUp", operationId: null, submissionId: null });
-	}), context);
+	await original.commit(
+		async (tx) =>
+			editDeliveryFixture(tx, async (deliveryFixtureState) => {
+				(await tx.doc(ProfileDoc, root.id)).identity = "conflicting-profile-identity";
+				const delivery = deliveryFixtureState;
+				for (const id of [root.id, child.id])
+					delivery.intents.push({
+						requestId: `accepted-${id}`,
+						conversationId: id,
+						ownerId: "requester",
+						origin: "operator",
+						message: `Accepted task ${id}`,
+						whenBusy: "followUp",
+						operationId: null,
+						submissionId: null,
+					});
+			}),
+		context,
+	);
 	await original.close(context);
 	const errors: unknown[] = [];
-	host = await DurableHost.open({ storagePath, storageId, models: runtime, registry: fixtureRegistry(), onReport: (report) => errors.push(report.error) }, context);
+	host = await DurableHost.open(
+		{
+			storagePath,
+			storageId,
+			models: runtime,
+			registry: fixtureRegistry(),
+			onReport: (report) => errors.push(report.error),
+		},
+		context,
+	);
 	await host.harness.waitForIdle(context);
-	const result = await host.request("receipts", { ownerId: "requester", wait: false }, context) as { receipts: DeliveryReceipt[]; pending: number };
+	const result = (await host.request("receipts", { ownerId: "requester", wait: false }, context)) as {
+		receipts: DeliveryReceipt[];
+		pending: number;
+	};
 	assert.equal(result.pending, 0);
 	assert.equal(result.receipts.length, 2);
 	assert.ok(result.receipts.every((receipt) => receipt.status === "done" && receipt.answer === "durable answer"));
 	assert.equal(errors.length, 1);
 	assert.match(String(errors[0]), /Profile identity differs/u);
-	assert.equal((await host.harness.snapshot(ProfileDoc, root.id, context))?.identity, "conflicting-profile-identity", "failed repair stays atomic");
-	assert.equal((await host.harness.snapshot(ProfileDoc, child.id, context))?.identity, `${storageId}:${child.id}`, "one failure does not suppress other repairs");
+	assert.equal(
+		(await host.harness.snapshot(ProfileDoc, root.id, context))?.identity,
+		"conflicting-profile-identity",
+		"failed repair stays atomic",
+	);
+	assert.equal(
+		(await host.harness.snapshot(ProfileDoc, child.id, context))?.identity,
+		`${storageId}:${child.id}`,
+		"one failure does not suppress other repairs",
+	);
 });
 
-it("reconciles retained children before resume and preserves retained routes without labelling plain operator input", { timeout: 30000 }, async (t) => {
+it("reconciles retained children before resume and preserves retained routes without labelling plain operator input", {
+	timeout: 30000,
+}, async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "profile-reopen-"));
 	const storagePath = join(directory, "agent.sqlite");
 	const storageId = randomUUID();
 	const model = { provider: testModel.provider, modelId: testModel.id };
 	const runtime = await fixtureRuntime("answer");
-	const original = await Harness.open(await openNodeSqliteStorage(storagePath), { models: runtime, registry: fixtureRegistry() }, context);
+	const original = await Harness.open(
+		await openNodeSqliteStorage(storagePath),
+		{ models: runtime, registry: fixtureRegistry() },
+		context,
+	);
 	let host: DurableHost | undefined;
-	t.after(async () => { await host?.close(); rmSync(directory, { recursive: true, force: true }); });
+	t.after(async () => {
+		await host?.close();
+		rmSync(directory, { recursive: true, force: true });
+	});
 	const root = await original.root(context, { agent: { model, instructions: "OLD ROOT INSTRUCTIONS" } });
 	const ids = [root.id];
 	for (let index = 0; index < 65; index++) {
-		const child = await original.createConversation({ ownership: { kind: "ownerless" }, agent: { model, instructions: "OLD CHILD INSTRUCTIONS" } }, context);
+		const child = await original.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model, instructions: "OLD CHILD INSTRUCTIONS" } },
+			context,
+		);
 		ids.push(child.id);
 	}
 	const last = ids.at(-1);
 	assert.ok(last !== undefined);
-	const retainedRoute = { requestId: "retained-base", requester: "old-requester", replyTo: "old-requester", origin: "model" as const };
-	await original.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
-		for (const id of ids) {
-			const meta = await tx.doc(AgentMetaDoc, id);
-			meta.name = `Retained ${id}`;
-			meta.owner = "founder";
-		}
-		await recordRequestContext(tx, last, retainedRoute);
-		const delivery = deliveryFixtureState;
-		delivery.intents.push({ requestId: "retained-base", conversationId: last, ownerId: "old-requester", origin: "model", message: "Retained task", whenBusy: null, operationId: null, submissionId: null });
-	}), context);
+	const retainedRoute = {
+		requestId: "retained-base",
+		requester: "old-requester",
+		replyTo: "old-requester",
+		origin: "model" as const,
+	};
+	await original.commit(
+		async (tx) =>
+			editDeliveryFixture(tx, async (deliveryFixtureState) => {
+				for (const id of ids) {
+					const meta = await tx.doc(AgentMetaDoc, id);
+					meta.name = `Retained ${id}`;
+					meta.owner = "founder";
+				}
+				await recordRequestContext(tx, last, retainedRoute);
+				const delivery = deliveryFixtureState;
+				delivery.intents.push({
+					requestId: "retained-base",
+					conversationId: last,
+					ownerId: "old-requester",
+					origin: "model",
+					message: "Retained task",
+					whenBusy: null,
+					operationId: null,
+					submissionId: null,
+				});
+			}),
+		context,
+	);
 	await original.close(context);
 	const observed: TranscriptContext[] = [];
-	const models = new Proxy(runtime, { get(target, property) {
-		const value = Reflect.get(target, property, target);
-		if (property === "streamSimple") return (selected: unknown, input: TranscriptContext, options: unknown) => { observed.push(input); return value.call(target, selected, input, options); };
-		return typeof value === "function" ? value.bind(target) : value;
-	} });
+	const models = new Proxy(runtime, {
+		get(target, property) {
+			const value = Reflect.get(target, property, target);
+			if (property === "streamSimple")
+				return (selected: unknown, input: TranscriptContext, options: unknown) => {
+					observed.push(input);
+					return value.call(target, selected, input, options);
+				};
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
 	const registry = fixtureRegistry();
-	registry.install({ name: "request-routes", sections: [requestContextSection(() => { assert.ok(host); return host.harness; })], hooks: [hook(GenerationTask, requestContextHooks(() => { assert.ok(host); return host.harness; }))] });
+	registry.install({
+		name: "request-routes",
+		sections: [
+			requestContextSection(() => {
+				assert.ok(host);
+				return host.harness;
+			}),
+		],
+		hooks: [
+			hook(
+				GenerationTask,
+				requestContextHooks(() => {
+					assert.ok(host);
+					return host.harness;
+				}),
+			),
+		],
+	});
 	host = await DurableHost.open({ storagePath, storageId, models, registry, resume: false }, context);
 	assert.equal(observed.length, 0);
 	for (const id of ids) {
@@ -92,15 +195,39 @@ it("reconciles retained children before resume and preserves retained routes wit
 		assert.doesNotMatch(instructions, /OLD (ROOT|CHILD) INSTRUCTIONS/u);
 		assert.ok(instructions.includes(`Retained ${id}`));
 		assert.match(instructions, /mode: report/u);
-		assert.equal((await host.harness.snapshot(ProfileDoc, id, context))?.handle, null, "reconciliation does not adopt a handle");
+		assert.equal(
+			(await host.harness.snapshot(ProfileDoc, id, context))?.handle,
+			null,
+			"reconciliation does not adopt a handle",
+		);
 	}
 	assert.deepEqual(await readRequestContexts(host.harness, last, context), [{ ...retainedRoute, status: "admitting" }]);
-	for (const [id, owner] of [[root.id, "old-primary"], [last, "old-child-caller"]] as const) {
+	for (const [id, owner] of [
+		[root.id, "old-primary"],
+		[last, "old-child-caller"],
+	] as const) {
 		const conversation = await host.harness.conversation(id, context);
 		assert.ok(conversation);
 		await conversation.configure({ instructions: "STALE ADMISSION INSTRUCTIONS" }, context);
-		const admitted = await host.request("submit", { sessionId: id === root.id ? storageId : `${storageId}:${id}`, message: `Task for ${owner}`, requestId: `base-${id}`, ownerId: owner, origin: "operator" }, context) as { submissionId: SubmissionId; placement: string; recipient: string };
-		assert.deepEqual(Object.keys(admitted).sort(), ["conversationId", "deduped", "identity", "placement", "recipient", "submissionId"]);
+		const admitted = (await host.request(
+			"submit",
+			{
+				sessionId: id === root.id ? storageId : `${storageId}:${id}`,
+				message: `Task for ${owner}`,
+				requestId: `base-${id}`,
+				ownerId: owner,
+				origin: "operator",
+			},
+			context,
+		)) as { submissionId: SubmissionId; placement: string; recipient: string };
+		assert.deepEqual(Object.keys(admitted).sort(), [
+			"conversationId",
+			"deduped",
+			"identity",
+			"placement",
+			"recipient",
+			"submissionId",
+		]);
 		assert.equal(admitted.placement, "placed");
 		assert.equal(admitted.recipient, owner);
 		await readOutcome(host.harness, admitted.submissionId, context);
@@ -108,9 +235,23 @@ it("reconciles retained children before resume and preserves retained routes wit
 		assert.ok(input);
 		const prompt = getCurrentSystemPrompt(input.messages);
 		assert.doesNotMatch(prompt, /STALE ADMISSION INSTRUCTIONS/u);
-		const notes = input.messages.flatMap((message) => message.role === "user" && typeof message.content === "string" && message.content.startsWith("<agent-request-route host=") ? [JSON.parse(message.content.split("\n")[1] ?? "null")] : []);
-		assert.equal(notes.some((note) => note.requestId === `base-${id}`), false, "plain native operator input needs no added note");
-		assert.deepEqual(await readRequestContexts(host.harness, id, context), id === last ? [{ ...retainedRoute, status: "admitting" }] : [], "base admission preserves retained routes without creating one from the receipt owner");
+		const notes = input.messages.flatMap((message) =>
+			message.role === "user" &&
+			typeof message.content === "string" &&
+			message.content.startsWith("<agent-request-route host=")
+				? [JSON.parse(message.content.split("\n")[1] ?? "null")]
+				: [],
+		);
+		assert.equal(
+			notes.some((note) => note.requestId === `base-${id}`),
+			false,
+			"plain native operator input needs no added note",
+		);
+		assert.deepEqual(
+			await readRequestContexts(host.harness, id, context),
+			id === last ? [{ ...retainedRoute, status: "admitting" }] : [],
+			"base admission preserves retained routes without creating one from the receipt owner",
+		);
 		assert.ok(input.messages.some((message) => message.role === "user" && message.content === `Task for ${owner}`));
 	}
 });

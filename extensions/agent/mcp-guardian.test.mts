@@ -9,14 +9,21 @@ import type { StdioTransport } from "@earendil-works/pi-mcp";
 import { guardStdio, McpGuardian } from "./mcp-guardian.ts";
 
 it("starts one guardian on the first registration", { skip: process.platform === "win32" }, async () => {
-	const guardian = new McpGuardian((message) => { throw new Error(message); });
+	const guardian = new McpGuardian((message) => {
+		throw new Error(message);
+	});
 	assert.equal(guardian.processId, undefined);
 	let resolve!: () => void;
-	const pending = new Promise<void>((done) => { resolve = done; });
+	const pending = new Promise<void>((done) => {
+		resolve = done;
+	});
 	const transport = { pid: 2147483647, start: () => pending, onClose: () => () => {} } as unknown as StdioTransport;
 	const registered: number[] = [];
 	const register = guardian.register.bind(guardian);
-	guardian.register = (pid) => { registered.push(pid); register(pid); };
+	guardian.register = (pid) => {
+		registered.push(pid);
+		register(pid);
+	};
 	guardStdio(transport, guardian);
 	const start = transport.start();
 	assert.deepEqual(registered, [2147483647]);
@@ -30,20 +37,33 @@ it("starts one guardian on the first registration", { skip: process.platform ===
 	guardian.close();
 });
 
-it("kills an owned macOS process group, including its descendant, after lifeline close", { timeout: 10000, skip: process.platform !== "darwin" }, async (t) => {
+it("kills an owned macOS process group, including its descendant, after lifeline close", {
+	timeout: 10000,
+	skip: process.platform !== "darwin",
+}, async (t) => {
 	const source = `
 		const { spawn } = require('node:child_process');
 		const descendant = spawn(process.execPath, ['-e', "process.send('ready'); setInterval(()=>{},1000)"], {stdio:['ignore','ignore','ignore','ipc']});
 		descendant.once('message', () => process.send({descendant:descendant.pid}));
 		setInterval(()=>{},1000);
 	`;
-	const child = spawn(process.execPath, ["-e", source], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+	const child = spawn(process.execPath, ["-e", source], {
+		detached: true,
+		stdio: ["ignore", "ignore", "ignore", "ipc"],
+	});
 	const exited = once(child, "exit");
 	const group = child.pid;
 	assert.ok(group);
 	let gone = false;
-	t.after(async () => { if (!gone) { try { process.kill(-group, "SIGKILL"); } catch {} } await exited; });
-	const [ready] = await once(child, "message") as [{ descendant: number }];
+	t.after(async () => {
+		if (!gone) {
+			try {
+				process.kill(-group, "SIGKILL");
+			} catch {}
+		}
+		await exited;
+	});
+	const [ready] = (await once(child, "message")) as [{ descendant: number }];
 	assert.ok(Number.isSafeInteger(ready.descendant) && ready.descendant > 0);
 	const warnings: string[] = [];
 	const guardian = new McpGuardian((message) => warnings.push(message));
@@ -53,8 +73,9 @@ it("kills an owned macOS process group, including its descendant, after lifeline
 	await exited;
 	const deadline = Date.now() + 3000;
 	while (!gone && Date.now() < deadline) {
-		try { process.kill(-group, 0); }
-		catch (error) {
+		try {
+			process.kill(-group, 0);
+		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ESRCH") gone = true;
 			// EPERM does not establish that the process group disappeared.
@@ -70,7 +91,9 @@ it("kills an owned macOS process group, including its descendant, after lifeline
 
 it("registers a process before transport start settles", async () => {
 	let resolve!: () => void;
-	const pending = new Promise<void>((done) => { resolve = done; });
+	const pending = new Promise<void>((done) => {
+		resolve = done;
+	});
 	const registered: number[] = [];
 	const transport = { pid: 42, start: () => pending, onClose: () => () => {} } as unknown as StdioTransport;
 	const guardian = { register: (pid: number) => registered.push(pid), unregister: () => {} } as unknown as McpGuardian;
@@ -81,12 +104,26 @@ it("registers a process before transport start settles", async () => {
 	await start;
 });
 
-it("does not signal a group unregistered before lifeline closure", { timeout: 10000, skip: process.platform === "win32" }, async (t) => {
-	const child = spawn(process.execPath, ["-e", "let signals = 0; process.on('SIGTERM', () => signals++); process.on('message', () => process.send(signals)); process.send('ready'); setInterval(() => {}, 1000)"], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
-	t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+it("does not signal a group unregistered before lifeline closure", {
+	timeout: 10000,
+	skip: process.platform === "win32",
+}, async (t) => {
+	const child = spawn(
+		process.execPath,
+		[
+			"-e",
+			"let signals = 0; process.on('SIGTERM', () => signals++); process.on('message', () => process.send(signals)); process.send('ready'); setInterval(() => {}, 1000)",
+		],
+		{ detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] },
+	);
+	t.after(() => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+	});
 	await once(child, "message");
 	assert.ok(child.pid);
-	const guardian = new McpGuardian((message) => { throw new Error(message); });
+	const guardian = new McpGuardian((message) => {
+		throw new Error(message);
+	});
 	guardian.register(child.pid);
 	guardian.unregister(child.pid);
 	const guardianPid = guardian.processId;
@@ -96,7 +133,11 @@ it("does not signal a group unregistered before lifeline closure", { timeout: 10
 	let alive = true;
 	while (alive && Date.now() < end) {
 		await new Promise((resolve) => setTimeout(resolve, 25));
-		try { process.kill(guardianPid, 0); } catch { alive = false; }
+		try {
+			process.kill(guardianPid, 0);
+		} catch {
+			alive = false;
+		}
 	}
 	assert.equal(alive, false, "the guardian exited");
 	assert.equal(child.exitCode, null);
@@ -122,8 +163,12 @@ await server.close();
 guard.close();
 console.log(JSON.stringify([guard.processId, pid]));
 `;
-	const host = spawn(process.execPath, ["--input-type=module", "-e", source], { cwd: process.cwd(), env: { ...process.env, PI_AGENT_DIR: directory, PI_AGENT_SESSIONS_DIR: directory }, stdio: ["ignore", "pipe", "pipe"] });
-	const [chunk] = await once(host.stdout, "data") as [Buffer];
+	const host = spawn(process.execPath, ["--input-type=module", "-e", source], {
+		cwd: process.cwd(),
+		env: { ...process.env, PI_AGENT_DIR: directory, PI_AGENT_SESSIONS_DIR: directory },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const [chunk] = (await once(host.stdout, "data")) as [Buffer];
 	const pids: number[] = JSON.parse(chunk.toString().trim());
 	assert.equal(pids.length, 2);
 	assert.ok(pids.every((pid) => Number.isSafeInteger(pid) && pid > 0));
@@ -132,12 +177,21 @@ console.log(JSON.stringify([guard.processId, pid]));
 	const alive = new Set(pids);
 	while (alive.size > 0 && Date.now() < end) {
 		await new Promise((resolve) => setTimeout(resolve, 50));
-		for (const pid of alive) { try { process.kill(pid, 0); } catch { alive.delete(pid); } }
+		for (const pid of alive) {
+			try {
+				process.kill(pid, 0);
+			} catch {
+				alive.delete(pid);
+			}
+		}
 	}
 	assert.equal(alive.size, 0);
 });
 
-it("kills a Durable execution server after its host is killed", { timeout: 15000, skip: process.platform === "win32" }, async (t) => {
+it("kills a Durable execution server after its host is killed", {
+	timeout: 15000,
+	skip: process.platform === "win32",
+}, async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "durable-mcp-kill-"));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
 	const source = `
@@ -150,9 +204,15 @@ const pid = Number(/started (\\d+)/.exec(readFileSync(events, 'utf8'))[1]);
 console.log(JSON.stringify({pid, root: fixture.root}));
 setInterval(()=>{},1000);
 `;
-	const host = spawn(process.execPath, ["--input-type=module", "-e", source], { cwd: process.cwd(), env: { ...process.env, PI_AGENT_DIR: directory, PI_AGENT_SESSIONS_DIR: directory }, stdio: ["ignore", "pipe", "pipe"] });
-	t.after(() => { if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL"); });
-	const [chunk] = await once(host.stdout, "data") as [Buffer];
+	const host = spawn(process.execPath, ["--input-type=module", "-e", source], {
+		cwd: process.cwd(),
+		env: { ...process.env, PI_AGENT_DIR: directory, PI_AGENT_SESSIONS_DIR: directory },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	t.after(() => {
+		if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL");
+	});
+	const [chunk] = (await once(host.stdout, "data")) as [Buffer];
 	const info = JSON.parse(chunk.toString().trim()) as { pid: number; root: string };
 	t.after(() => rmSync(info.root, { recursive: true, force: true }));
 	assert.ok(Number.isSafeInteger(info.pid) && info.pid > 0);
@@ -162,12 +222,19 @@ setInterval(()=>{},1000);
 	let alive = true;
 	while (alive && Date.now() < end) {
 		await new Promise((resolve) => setTimeout(resolve, 50));
-		try { process.kill(info.pid, 0); } catch { alive = false; }
+		try {
+			process.kill(info.pid, 0);
+		} catch {
+			alive = false;
+		}
 	}
 	assert.equal(alive, false);
 });
 
-it("kills a registered stdio server after its host is killed", { timeout: 12000, skip: process.platform === "win32" }, async (t) => {
+it("kills a registered stdio server after its host is killed", {
+	timeout: 12000,
+	skip: process.platform === "win32",
+}, async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "mcp-guardian-"));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
 	const source = `
@@ -181,9 +248,15 @@ const starting = server.start();
 await starting;
 setInterval(()=>{},1000);
 `;
-	const host = spawn(process.execPath, ["--input-type=module", "-e", source], { cwd: process.cwd(), env: { ...process.env, PI_AGENT_DIR: directory, PI_AGENT_SESSIONS_DIR: directory }, stdio: ["ignore", "pipe", "pipe"] });
-	t.after(() => { if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL"); });
-	const [chunk] = await once(host.stdout, "data") as [Buffer];
+	const host = spawn(process.execPath, ["--input-type=module", "-e", source], {
+		cwd: process.cwd(),
+		env: { ...process.env, PI_AGENT_DIR: directory, PI_AGENT_SESSIONS_DIR: directory },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	t.after(() => {
+		if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL");
+	});
+	const [chunk] = (await once(host.stdout, "data")) as [Buffer];
 	const pid = Number(chunk.toString().trim());
 	assert.ok(Number.isSafeInteger(pid) && pid > 0);
 	host.kill("SIGKILL");
@@ -192,7 +265,11 @@ setInterval(()=>{},1000);
 	let alive = true;
 	while (alive && Date.now() < end) {
 		await new Promise((resolve) => setTimeout(resolve, 25));
-		try { process.kill(pid, 0); } catch { alive = false; }
+		try {
+			process.kill(pid, 0);
+		} catch {
+			alive = false;
+		}
 	}
 	assert.equal(alive, false, "guardian must stop the server without delayed escalation");
 });

@@ -296,7 +296,17 @@ if (process.argv[2] === "--transaction-child") {
 			}
 			assert.equal(await readFile(reg.path, "utf8"), "");
 		});
-		for (const boundary of ["lock-open", "lock-stat", "read-open", "read-stat", "read-read", "append-open", "append-stat", "append-chmod", "append-write"] as const) {
+		for (const boundary of [
+			"lock-open",
+			"lock-stat",
+			"read-open",
+			"read-stat",
+			"read-read",
+			"append-open",
+			"append-stat",
+			"append-chmod",
+			"append-write",
+		] as const) {
 			it(`honours cancellation at ${boundary} without hiding a committed event`, async (t) => {
 				const dir = await directory(t);
 				const reg = registry(dir);
@@ -322,7 +332,10 @@ if (process.argv[2] === "--transaction-child") {
 					return handle;
 				});
 				syncBuiltinESMExports();
-				t.after(() => { replacement.mock.restore(); syncBuiltinESMExports(); });
+				t.after(() => {
+					replacement.mock.restore();
+					syncBuiltinESMExports();
+				});
 				const mutation = reg.setData(binding("value"), null, audit, controller.signal);
 				if (boundary === "append-write") {
 					const event = await mutation;
@@ -358,8 +371,14 @@ if (process.argv[2] === "--transaction-child") {
 					return handle;
 				});
 				syncBuiltinESMExports();
-				t.after(() => { replacement.mock.restore(); syncBuiltinESMExports(); });
-				await assert.rejects(reg.setData(binding("value"), null, audit, controller.signal), failure === "thrown" ? /uncertain write/ : /write stopped/);
+				t.after(() => {
+					replacement.mock.restore();
+					syncBuiltinESMExports();
+				});
+				await assert.rejects(
+					reg.setData(binding("value"), null, audit, controller.signal),
+					failure === "thrown" ? /uncertain write/ : /write stopped/,
+				);
 				assert.equal(await readFile(reg.path, "utf8"), before);
 				await assert.rejects(lstat(join(dir, lockName)), /ENOENT/);
 			});
@@ -375,7 +394,10 @@ if (process.argv[2] === "--transaction-child") {
 			const controller = new AbortController();
 			const queue = reg as unknown as { mutationTail: Promise<void> };
 			const firstTail = queue.mutationTail;
-			const queued = assert.rejects(reg.setData(binding("second"), null, audit, controller.signal), PolicyMutationCancelledError);
+			const queued = assert.rejects(
+				reg.setData(binding("second"), null, audit, controller.signal),
+				PolicyMutationCancelledError,
+			);
 			await Promise.resolve();
 			assert.notEqual(queue.mutationTail, firstTail, "the second mutation reached the queue");
 			controller.abort();
@@ -396,7 +418,10 @@ if (process.argv[2] === "--transaction-child") {
 			await writeFile(path, "owner", { mode: 0o600 });
 			const contended = observeContention(t);
 			const controller = new AbortController();
-			const cancelled = assert.rejects(reg.setData(binding("value"), null, audit, controller.signal), PolicyMutationCancelledError);
+			const cancelled = assert.rejects(
+				reg.setData(binding("value"), null, audit, controller.signal),
+				PolicyMutationCancelledError,
+			);
 			await contended;
 			controller.abort();
 			await cancelled;

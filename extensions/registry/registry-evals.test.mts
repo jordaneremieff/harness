@@ -298,7 +298,9 @@ test("ledger fixture registers exact archive schema without replacing builtins",
 		properties: { batchId: { type: "string" }, retentionDays: { type: "integer", minimum: 7, maximum: 90 } },
 	});
 	const archive = requireTool(tools, "ledger_archive");
-	assert.deepEqual(archive.promptGuidelines, ["Use ledger_archive when the operator asks to retain reconciled batches."]);
+	assert.deepEqual(archive.promptGuidelines, [
+		"Use ledger_archive when the operator asks to retain reconciled batches.",
+	]);
 	assert.ok(!archive.name.includes("retain reconciled batches"));
 	assert.ok(!archive.description.includes("retain reconciled batches"));
 	const preview = await tools[0].execute("preview", { batchId: "DEMO-7", dryRun: true });

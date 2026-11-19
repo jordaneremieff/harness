@@ -1,18 +1,38 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ExtensionToolContext,
+	Theme,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import registerRegistry, { type RegistryParams } from "./index.ts";
 import { renderRegistryCall, renderRegistryResult } from "./presentation.ts";
 
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }, width = 140) =>
-	component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
+	component
+		.render(width)
+		.map((line) => stripVTControlCharacters(line).trimEnd())
+		.join("\n");
 const rows = (component: { render(width: number): string[] }, width = 100) =>
-	component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).filter((line) => line !== "");
-const resultOf = (text: string, details: Record<string, unknown>) => ({ content: [{ type: "text" as const, text }], details });
+	component
+		.render(width)
+		.map((line) => stripVTControlCharacters(line).trimEnd())
+		.filter((line) => line !== "");
+const resultOf = (text: string, details: Record<string, unknown>) => ({
+	content: [{ type: "text" as const, text }],
+	details,
+});
 
-const sourceInfo = { path: "/fixtures/TOOL.ts", source: "fixture", scope: "temporary" as const, origin: "top-level" as const };
+const sourceInfo = {
+	path: "/fixtures/TOOL.ts",
+	source: "fixture",
+	scope: "temporary" as const,
+	origin: "top-level" as const,
+};
 const baseContext = {
 	cwd: "/fixtures",
 	mode: "rpc",
@@ -26,7 +46,9 @@ const baseContext = {
 const context = {
 	...baseContext,
 	tools: [],
-	executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+	executeTool: async () => {
+		throw new Error("Unexpected nested tool call");
+	},
 } satisfies ExtensionToolContext;
 
 function registryTool(): ToolDefinition<typeof RegistryParams, Record<string, unknown>> {
@@ -62,33 +84,53 @@ describe("registry tool registration", () => {
 
 describe("registry call card", () => {
 	it("names the lookup and carries one qualifier row", () => {
-		const named = renderRegistryCall(
-			{ name: "registry", kind: "tool", detail: true, limit: 5 },
-			theme,
-			{ expanded: false, argsComplete: true },
-		);
+		const named = renderRegistryCall({ name: "registry", kind: "tool", detail: true, limit: 5 }, theme, {
+			expanded: false,
+			argsComplete: true,
+		});
 		assert.match(screen(named), /registry · registry/);
 		assert.match(screen(named), /tool · detail · limit 5/);
 		assert.equal(rows(named).length, 2);
 		assert.match(screen(renderRegistryCall({}, theme, { argsComplete: true })), /registry · session overview/);
 		assert.equal(rows(renderRegistryCall({}, theme, { argsComplete: true })).length, 1);
-		assert.match(screen(renderRegistryCall({ search: "file contents", kind: "tool" }, theme, { argsComplete: true })), /registry · search "file contents"/);
-		assert.match(screen(renderRegistryCall({ contains: "needle", kind: "skill" }, theme, { argsComplete: true })), /registry · contains "needle"/);
-		assert.match(screen(renderRegistryCall({ kind: "model", provider: "p", available: true }, theme, { argsComplete: true })), /registry · model/);
-		assert.match(screen(renderRegistryCall({ kind: "model", provider: "p", available: true }, theme, { argsComplete: true })), /provider p · available only/);
+		assert.match(
+			screen(renderRegistryCall({ search: "file contents", kind: "tool" }, theme, { argsComplete: true })),
+			/registry · search "file contents"/,
+		);
+		assert.match(
+			screen(renderRegistryCall({ contains: "needle", kind: "skill" }, theme, { argsComplete: true })),
+			/registry · contains "needle"/,
+		);
+		assert.match(
+			screen(renderRegistryCall({ kind: "model", provider: "p", available: true }, theme, { argsComplete: true })),
+			/registry · model/,
+		);
+		assert.match(
+			screen(renderRegistryCall({ kind: "model", provider: "p", available: true }, theme, { argsComplete: true })),
+			/provider p · available only/,
+		);
 		const continuation = renderRegistryCall({ cursor: "opaque-cursor" }, theme, { argsComplete: true });
 		assert.match(screen(continuation), /registry · continuation/);
 		assert.doesNotMatch(screen(continuation), /expand result|expand arguments/i);
 	});
 
 	it("clips long values, escapes controls, and expands the full arguments", () => {
-		const view = renderRegistryCall({ name: `\x1b]52;c;x\x07${"n".repeat(200)}` }, theme, { expanded: false, argsComplete: true });
+		const view = renderRegistryCall({ name: `\x1b]52;c;x\x07${"n".repeat(200)}` }, theme, {
+			expanded: false,
+			argsComplete: true,
+		});
 		const shown = screen(view, 80);
 		assert.doesNotMatch(shown, /[\x1b\x07]/);
 		assert.match(shown, /Expand for arguments/);
-		const keyed = renderRegistryCall({ name: "n".repeat(200) }, theme, { expanded: false, argsComplete: true, keyText: () => "ctrl+g" });
+		const keyed = renderRegistryCall({ name: "n".repeat(200) }, theme, {
+			expanded: false,
+			argsComplete: true,
+			keyText: () => "ctrl+g",
+		});
 		assert.match(screen(keyed, 80), /ctrl\+g to expand arguments/, "the hint uses the host-injected binding");
-		const expanded = screen(renderRegistryCall({ name: "registry", detail: true }, theme, { expanded: true, argsComplete: true }));
+		const expanded = screen(
+			renderRegistryCall({ name: "registry", detail: true }, theme, { expanded: true, argsComplete: true }),
+		);
 		assert.match(expanded, /"detail": true/);
 	});
 });
@@ -117,14 +159,31 @@ describe("registry result card", () => {
 	it("reports no match without claiming absence", async () => {
 		const result = await registryTool().execute("miss", { kind: "tool", name: "nope" }, undefined, undefined, context);
 		assert.equal(result.details?.outcome, "missing");
-		assert.match(screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false })), /no match · 0 shown of 0/);
+		assert.match(
+			screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false })),
+			/no match · 0 shown of 0/,
+		);
 	});
 
 	it("keeps the chat-only boundary visible on a missing model card", async () => {
-		const modelContext = { ...context, model: undefined, scopedModels: [], modelRegistry: {
-			getAll: () => [], getAvailable: () => [], getError: () => undefined, getRegisteredProviderIds: () => [],
-		} } as unknown as ExtensionToolContext;
-		const result = await registryTool().execute("model", { kind: "model", name: "cloudflare-workers-ai/@cf/cloudflare/clef" }, undefined, undefined, modelContext);
+		const modelContext = {
+			...context,
+			model: undefined,
+			scopedModels: [],
+			modelRegistry: {
+				getAll: () => [],
+				getAvailable: () => [],
+				getError: () => undefined,
+				getRegisteredProviderIds: () => [],
+			},
+		} as unknown as ExtensionToolContext;
+		const result = await registryTool().execute(
+			"model",
+			{ kind: "model", name: "cloudflare-workers-ai/@cf/cloudflare/clef" },
+			undefined,
+			undefined,
+			modelContext,
+		);
 		assert.equal(result.details?.outcome, "missing");
 		const card = renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false });
 		const shown = screen(card);
@@ -132,7 +191,9 @@ describe("registry result card", () => {
 		assert.match(shown, /Classifier\/image discovery: codemode models\.\*/);
 		assert.match(shown, /(?:to expand result|expand for result)/i);
 		assert.equal(rows(card, 140).length, 2);
-		const expanded = screen(renderRegistryResult(result, { expanded: true, isPartial: false }, theme, { isError: false }));
+		const expanded = screen(
+			renderRegistryResult(result, { expanded: true, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(expanded, /missing here does not establish their absence/);
 		assert.match(expanded, /models\.getModelsOfType\("classifier"\)/);
 	});
@@ -153,7 +214,15 @@ describe("registry result card", () => {
 		assert.match(shown, /(?:to expand result|expand for result)/i);
 		const partial = screen(
 			renderRegistryResult(
-				resultOf("x", { outcome: "partial", scanned: true, resolved: { kind: "skill", name: "example" }, total: 3, returnedRecords: 1, records: [], partialScan: true }),
+				resultOf("x", {
+					outcome: "partial",
+					scanned: true,
+					resolved: { kind: "skill", name: "example" },
+					total: 3,
+					returnedRecords: 1,
+					records: [],
+					partialScan: true,
+				}),
 				{ expanded: false, isPartial: false },
 				theme,
 				{ isError: false },
@@ -168,27 +237,76 @@ describe("registry result card", () => {
 			outcome: "ok",
 			total: 5,
 			returnedRecords: 2,
-			records: [{ kind: "tool", name: "a" }, { kind: "tool", name: "b" }],
+			records: [
+				{ kind: "tool", name: "a" },
+				{ kind: "tool", name: "b" },
+			],
 			resultBounded: true,
 			omittedRecordBlocks: 3,
-			cursor: "opaque", pageTruncated: true, continuationStatus: "available",
+			cursor: "opaque",
+			pageTruncated: true,
+			continuationStatus: "available",
 		});
-		const shown = screen(renderRegistryResult(bounded, { expanded: false, isPartial: false }, theme, { isError: false }));
+		const shown = screen(
+			renderRegistryResult(bounded, { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(shown, /ok · 2 shown of 5/);
 		assert.match(shown, /tool 2 · 3 omitted from this page · continuation available/);
-		const blocked = resultOf("x", { outcome: "ok", total: 5, returnedRecords: 0, records: [], resultBounded: true, omittedRecordBlocks: 5, pageBlocked: true, pageTruncated: true, continuationStatus: "blocked", continuationReason: "The first record exceeds the result bound." });
-		assert.match(screen(renderRegistryResult(blocked, { expanded: false, isPartial: false }, theme, { isError: false })), /first record exceeds the result bound/);
+		const blocked = resultOf("x", {
+			outcome: "ok",
+			total: 5,
+			returnedRecords: 0,
+			records: [],
+			resultBounded: true,
+			omittedRecordBlocks: 5,
+			pageBlocked: true,
+			pageTruncated: true,
+			continuationStatus: "blocked",
+			continuationReason: "The first record exceeds the result bound.",
+		});
+		assert.match(
+			screen(renderRegistryResult(blocked, { expanded: false, isPartial: false }, theme, { isError: false })),
+			/first record exceeds the result bound/,
+		);
 	});
 
 	it("distinguishes stale cursors, read errors, and invalid arguments", () => {
-		const stale = screen(renderRegistryResult(resultOf("x", { outcome: "stale_cursor", staleCursor: true, reason: "the session changed" }), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const stale = screen(
+			renderRegistryResult(
+				resultOf("x", { outcome: "stale_cursor", staleCursor: true, reason: "the session changed" }),
+				{ expanded: false, isPartial: false },
+				theme,
+				{ isError: false },
+			),
+		);
 		assert.match(stale, /stale cursor · the session changed/);
-		const io = screen(renderRegistryResult(resultOf("x", { outcome: "io_error", scanned: false, ioError: "EACCES" }), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const io = screen(
+			renderRegistryResult(
+				resultOf("x", { outcome: "io_error", scanned: false, ioError: "EACCES" }),
+				{ expanded: false, isPartial: false },
+				theme,
+				{ isError: false },
+			),
+		);
 		assert.match(io, /read error · EACCES/);
-		const invalid = screen(renderRegistryResult(resultOf("x", { outcome: "invalid_arguments", reason: "invalid_arguments" }), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const invalid = screen(
+			renderRegistryResult(
+				resultOf("x", { outcome: "invalid_arguments", reason: "invalid_arguments" }),
+				{ expanded: false, isPartial: false },
+				theme,
+				{ isError: false },
+			),
+		);
 		assert.match(invalid, /invalid arguments/);
 		assert.doesNotMatch(invalid, /· invalid_arguments/);
-		const cancelled = screen(renderRegistryResult(resultOf("x", { outcome: "cancelled", cancelled: true }), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const cancelled = screen(
+			renderRegistryResult(
+				resultOf("x", { outcome: "cancelled", cancelled: true }),
+				{ expanded: false, isPartial: false },
+				theme,
+				{ isError: false },
+			),
+		);
 		assert.match(cancelled, /cancelled/);
 	});
 
@@ -197,10 +315,17 @@ describe("registry result card", () => {
 			outcome: "ok",
 			total: 3,
 			returnedRecords: 2,
-			records: [{ kind: "model", name: "p/a" }, { kind: "model", name: "p/b" }],
-			cursor: "next", pageTruncated: true, continuationStatus: "available",
+			records: [
+				{ kind: "model", name: "p/a" },
+				{ kind: "model", name: "p/b" },
+			],
+			cursor: "next",
+			pageTruncated: true,
+			continuationStatus: "available",
 		});
-		const shown = screen(renderRegistryResult(discovery, { expanded: false, isPartial: false }, theme, { isError: false }));
+		const shown = screen(
+			renderRegistryResult(discovery, { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(shown, /ok · 2 shown of 3/);
 		assert.match(shown, /model 2 · continuation available/);
 	});
@@ -226,24 +351,60 @@ describe("registry result card", () => {
 		assert.match(shown, /ok · 1 shown of 1/);
 		assert.match(shown, /available \(cached\) · auth configured · 1M context · thinking low, high, max/);
 		assert.doesNotMatch(shown, /model 1/);
-		const tool = resultOf("x", { outcome: "ok", total: 1, returnedRecords: 1, records: [{ kind: "tool", name: "bash", configured: true, active: true }] });
-		assert.match(screen(renderRegistryResult(tool, { expanded: false, isPartial: false }, theme, { isError: false })), /configured · active/);
-		const unknown = resultOf("x", { outcome: "ok", total: 1, returnedRecords: 1, records: [{ kind: "command", name: "x" }] });
-		assert.match(screen(renderRegistryResult(unknown, { expanded: false, isPartial: false }, theme, { isError: false })), /command 1/);
+		const tool = resultOf("x", {
+			outcome: "ok",
+			total: 1,
+			returnedRecords: 1,
+			records: [{ kind: "tool", name: "bash", configured: true, active: true }],
+		});
+		assert.match(
+			screen(renderRegistryResult(tool, { expanded: false, isPartial: false }, theme, { isError: false })),
+			/configured · active/,
+		);
+		const unknown = resultOf("x", {
+			outcome: "ok",
+			total: 1,
+			returnedRecords: 1,
+			records: [{ kind: "command", name: "x" }],
+		});
+		assert.match(
+			screen(renderRegistryResult(unknown, { expanded: false, isPartial: false }, theme, { isError: false })),
+			/command 1/,
+		);
 		const many = resultOf("x", {
 			outcome: "ok",
 			total: 8,
 			returnedRecords: 8,
 			records: ["a", "b", "c", "d", "e", "f", "g", "h"].map((kind) => ({ kind, name: kind })),
 		});
-		assert.match(screen(renderRegistryResult(many, { expanded: false, isPartial: false }, theme, { isError: false })), /\+2 more/);
+		assert.match(
+			screen(renderRegistryResult(many, { expanded: false, isPartial: false }, theme, { isError: false })),
+			/\+2 more/,
+		);
 	});
 
 	it("states unknown model metadata without invented context or thinking capability", () => {
-		const unknown = resultOf("x", { outcome: "ok", total: 1, returnedRecords: 1, pageTruncated: false, continuationStatus: "complete",
-			records: [{ kind: "model", name: "provider/unknown", metadataAvailable: false, available: null, configuredAuth: null,
-				contextWindow: null, supportedThinkingLevels: null }] });
-		const shown = screen(renderRegistryResult(unknown, { expanded: false, isPartial: false }, theme, { isError: false }));
+		const unknown = resultOf("x", {
+			outcome: "ok",
+			total: 1,
+			returnedRecords: 1,
+			pageTruncated: false,
+			continuationStatus: "complete",
+			records: [
+				{
+					kind: "model",
+					name: "provider/unknown",
+					metadataAvailable: false,
+					available: null,
+					configuredAuth: null,
+					contextWindow: null,
+					supportedThinkingLevels: null,
+				},
+			],
+		});
+		const shown = screen(
+			renderRegistryResult(unknown, { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(shown, /metadata unknown/);
 		assert.match(shown, /availability unknown/);
 		assert.match(shown, /no further known match \(no reported gap\)/);
@@ -252,9 +413,18 @@ describe("registry result card", () => {
 	});
 
 	it("retains the explicit reason when continuation is unavailable", () => {
-		const partial = resultOf("x", { outcome: "partial", total: 2, returnedRecords: 1, pageTruncated: true,
-			continuationStatus: "unavailable", continuationReason: "The catalogue is incomplete.", records: [{ kind: "model", name: "provider/model" }] });
-		const shown = screen(renderRegistryResult(partial, { expanded: false, isPartial: false }, theme, { isError: false }));
+		const partial = resultOf("x", {
+			outcome: "partial",
+			total: 2,
+			returnedRecords: 1,
+			pageTruncated: true,
+			continuationStatus: "unavailable",
+			continuationReason: "The catalogue is incomplete.",
+			records: [{ kind: "model", name: "provider/model" }],
+		});
+		const shown = screen(
+			renderRegistryResult(partial, { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(shown, /continuation unavailable: The catalogue is incomplete/);
 		assert.doesNotMatch(shown, /continuation available/);
 	});
@@ -266,7 +436,10 @@ describe("registry result card", () => {
 			context: { model: "provider/model", percent: 8.1392, state: "available" },
 			counts: { tool: 1, command: 0, skill: 0, prompt: 0 },
 		});
-		assert.match(screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false })), /context 8%/);
+		assert.match(
+			screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false })),
+			/context 8%/,
+		);
 	});
 
 	it("handles partial state, errors, empty details, and malformed details", () => {
@@ -274,21 +447,57 @@ describe("registry result card", () => {
 			screen(renderRegistryResult(resultOf("", {}), { expanded: false, isPartial: true }, theme, { isError: false })),
 			/Reading the registry\.\.\./,
 		);
-		const errored = screen(renderRegistryResult(resultOf("registry failed", {}), { expanded: false, isPartial: false }, theme, { isError: true }));
+		const errored = screen(
+			renderRegistryResult(resultOf("registry failed", {}), { expanded: false, isPartial: false }, theme, {
+				isError: true,
+			}),
+		);
 		assert.match(errored, /registry failed/);
-		assert.match(screen(renderRegistryResult(resultOf("plain text", {}), { expanded: false, isPartial: false }, theme, { isError: false })), /plain text/);
-		assert.ok(screen(renderRegistryResult({ content: [], details: "broken" } as never, { expanded: false, isPartial: false }, theme, { isError: false })).trim().length > 0);
+		assert.match(
+			screen(
+				renderRegistryResult(resultOf("plain text", {}), { expanded: false, isPartial: false }, theme, {
+					isError: false,
+				}),
+			),
+			/plain text/,
+		);
+		assert.ok(
+			screen(
+				renderRegistryResult(
+					{ content: [], details: "broken" } as never,
+					{ expanded: false, isPartial: false },
+					theme,
+					{ isError: false },
+				),
+			).trim().length > 0,
+		);
 	});
 
 	it("escapes controls, expands the bounded text, and reuses the previous component", () => {
-		const hostile = screen(renderRegistryResult(resultOf("outcome=ok\x1b]52;c;d\x07\u202e", { outcome: "ok" }), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const hostile = screen(
+			renderRegistryResult(
+				resultOf("outcome=ok\x1b]52;c;d\x07\u202e", { outcome: "ok" }),
+				{ expanded: false, isPartial: false },
+				theme,
+				{ isError: false },
+			),
+		);
 		assert.doesNotMatch(hostile, /[\x1b\x07\u202e]/u);
 		const initial = renderRegistryCall({ name: "x" }, theme, { expanded: false, argsComplete: true });
-		const updated = renderRegistryCall({ name: "x" }, theme, { expanded: true, argsComplete: true, lastComponent: initial });
+		const updated = renderRegistryCall({ name: "x" }, theme, {
+			expanded: true,
+			argsComplete: true,
+			lastComponent: initial,
+		});
 		assert.equal(initial, updated);
 		assert.match(screen(updated), /"name": "x"/);
 		const long = "line\n".repeat(9000);
-		const expanded = screen(renderRegistryResult(resultOf(long, { outcome: "ok" }), { expanded: true, isPartial: false }, theme, { isError: false }), 400);
+		const expanded = screen(
+			renderRegistryResult(resultOf(long, { outcome: "ok" }), { expanded: true, isPartial: false }, theme, {
+				isError: false,
+			}),
+			400,
+		);
 		assert.match(expanded, /Display limit; full text remains in native tool history/);
 		assert.ok(expanded.length < 90_000);
 	});
@@ -297,14 +506,33 @@ describe("registry result card", () => {
 describe("registry card safety", () => {
 	const hostile = "safe\u009b\u202e\x1b[31m";
 	it("escapes C1 and bidi controls in values and expanded output", () => {
-		const result = resultOf(`outcome=ok\n${hostile}`, { outcome: hostile, total: 1, returnedRecords: 1, records: [{ kind: hostile, name: hostile }] });
-		assert.doesNotMatch(screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false })), /[\x1b\u009b\u202e]/u);
-		assert.doesNotMatch(screen(renderRegistryResult(result, { expanded: true, isPartial: false }, theme, { isError: false })), /[\x1b\u009b\u202e]/u);
-		assert.doesNotMatch(screen(renderRegistryCall({ name: hostile, kind: hostile }, theme, { expanded: true, argsComplete: true })), /[\x1b\u009b\u202e]/u);
+		const result = resultOf(`outcome=ok\n${hostile}`, {
+			outcome: hostile,
+			total: 1,
+			returnedRecords: 1,
+			records: [{ kind: hostile, name: hostile }],
+		});
+		assert.doesNotMatch(
+			screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false })),
+			/[\x1b\u009b\u202e]/u,
+		);
+		assert.doesNotMatch(
+			screen(renderRegistryResult(result, { expanded: true, isPartial: false }, theme, { isError: false })),
+			/[\x1b\u009b\u202e]/u,
+		);
+		assert.doesNotMatch(
+			screen(renderRegistryCall({ name: hostile, kind: hostile }, theme, { expanded: true, argsComplete: true })),
+			/[\x1b\u009b\u202e]/u,
+		);
 	});
 	it("labels configured snapshots and partial settings coverage on collapsed cards", () => {
-		const result = resultOf("Configuration snapshot.", { outcome: "partial", total: 1, returnedRecords: 1,
-			records: [{ kind: "setting", name: "example.count" }], settingsCoverage: { respondingSlices: ["example"] } });
+		const result = resultOf("Configuration snapshot.", {
+			outcome: "partial",
+			total: 1,
+			returnedRecords: 1,
+			records: [{ kind: "setting", name: "example.count" }],
+			settingsCoverage: { respondingSlices: ["example"] },
+		});
 		const text = screen(renderRegistryResult(result, { expanded: false, isPartial: false }, theme, { isError: false }));
 		assert.match(text, /partial configuration/);
 		assert.match(text, /configured snapshot/);

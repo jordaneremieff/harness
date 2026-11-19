@@ -44,7 +44,13 @@
 import { bool, lit, num, obj, str, type Static } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
 import { validateToolArguments } from "@earendil-works/pi-ai";
-import { ActionApprovals, actionAuthority, type ActionBinding, type ActionControl, sameActionInput } from "./action-approval.ts";
+import {
+	ActionApprovals,
+	actionAuthority,
+	type ActionBinding,
+	type ActionControl,
+	sameActionInput,
+} from "./action-approval.ts";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
@@ -73,7 +79,13 @@ import type { PolicyMode } from "./mode.ts";
 import { type PreparedPolicy, preparedPolicyFor } from "./prepared.ts";
 import { readSettings } from "./settings.ts";
 import { readFireSummary, readRecentActivity, terminalSafe } from "./panel.ts";
-import { readPanelRequest, serializeFireSummary, serializeSnapshot, type PolicyPanelAnswer, type PolicyPanelRequest } from "./panel-protocol.ts";
+import {
+	readPanelRequest,
+	serializeFireSummary,
+	serializeSnapshot,
+	type PolicyPanelAnswer,
+	type PolicyPanelRequest,
+} from "./panel-protocol.ts";
 import {
 	type EvaluationContext,
 	createEvaluationFrame,
@@ -192,7 +204,12 @@ export interface PolicyDurableContribution {
 	/** Pure presentation module a client can load without starting this contribution. */
 	readonly display?: { readonly version: 1; readonly entry: string; readonly export: string };
 	/** The panel module for the attached terminal and the command that serves it; see docs/conventions/operator-panels.md. */
-	readonly panel?: { readonly version: 1; readonly entry: string; readonly export: "operatorPanel"; readonly command: string };
+	readonly panel?: {
+		readonly version: 1;
+		readonly entry: string;
+		readonly export: "operatorPanel";
+		readonly command: string;
+	};
 	readonly commands?: readonly PolicyDurableCommand[];
 	readonly create: (host: PolicyDurableHost) => Durable.Extension | Promise<Durable.Extension>;
 }
@@ -217,7 +234,8 @@ export interface PolicyDurableCommandCall {
 /** Runtimes created by `createPolicyDurableExtension`, keyed by host, for the panel command. */
 const runtimes = new WeakMap<PolicyDurableHost, DurablePolicyRuntime>();
 
-export const POLICY_COMMAND_DESCRIPTION = "Policy registry summary as text; the attached panel sends structured reads, approvals, and controls";
+export const POLICY_COMMAND_DESCRIPTION =
+	"Policy registry summary as text; the attached panel sends structured reads, approvals, and controls";
 
 /** The panel command: text callers get a bounded summary, the attached panel its structured route. */
 export const policyPanelCommand: PolicyDurableCommand = {
@@ -452,9 +470,11 @@ export async function createPolicyDurableExtension(
 	});
 	const loaded = await registry.snapshot();
 	const loadedPolicy = preparedPolicyFor(loaded);
-	const wrappedTools = new Set([...loadedPolicy.compiled.values()].flatMap((program) => {
-		return program.program.action.kind === "require-approval" ? program.program.selector?.tools ?? [] : [];
-	}));
+	const wrappedTools = new Set(
+		[...loadedPolicy.compiled.values()].flatMap((program) => {
+			return program.program.action.kind === "require-approval" ? (program.program.selector?.tools ?? []) : [];
+		}),
+	);
 	const runtime = new DurablePolicyRuntime({
 		wrappedTools,
 		dir,
@@ -478,12 +498,15 @@ export async function createPolicyDurableExtension(
 		deferred: true,
 		replay: "safe",
 		execute: (args, api, context) => runtime.executeRules(args, api, context),
-		structuredOutputSchema: obj({
-			rules: num(),
-			pending: num(),
-			ruleStoreDegraded: bool(),
-			ruleStorePath: str(),
-		}, { open: true }),
+		structuredOutputSchema: obj(
+			{
+				rules: num(),
+				pending: num(),
+				ruleStoreDegraded: bool(),
+				ruleStorePath: str(),
+			},
+			{ open: true },
+		),
 	});
 	const proposeTool = defineTool({
 		name: "policy_propose",
@@ -492,13 +515,16 @@ export async function createPolicyDurableExtension(
 		deferred: true,
 		replay: "unsafe",
 		execute: (args, api, context) => runtime.executePropose(args, api, context),
-		structuredOutputSchema: obj({
-			proposalId: str(),
-			proposalRevision: str(),
-			state: lit("pending"),
-			operation: str(),
-			ruleId: str(),
-		}, { open: true }),
+		structuredOutputSchema: obj(
+			{
+				proposalId: str(),
+				proposalRevision: str(),
+				state: lit("pending"),
+				operation: str(),
+				ruleId: str(),
+			},
+			{ open: true },
+		),
 	});
 	const approveTool = defineTool({
 		name: "policy_approve",
@@ -507,22 +533,25 @@ export async function createPolicyDurableExtension(
 		deferred: true,
 		replay: "unsafe",
 		execute: (args, api, context) => runtime.executeApprove(args, api, context),
-		structuredOutputSchema: obj({
-			proposalId: str(),
-			proposalRevision: str(),
-			decision: lit("approved"),
-			operation: str(),
-			ruleId: str(),
-			ruleRevision: str(),
-			state: str(),
-			effect: str(),
-			matcherAvailable: bool(),
-			staleOverride: bool(),
-			scope: str(),
-			mode: str(),
-			registryHealth: str(),
-			boundary: str(),
-		}, { open: true }),
+		structuredOutputSchema: obj(
+			{
+				proposalId: str(),
+				proposalRevision: str(),
+				decision: lit("approved"),
+				operation: str(),
+				ruleId: str(),
+				ruleRevision: str(),
+				state: str(),
+				effect: str(),
+				matcherAvailable: bool(),
+				staleOverride: bool(),
+				scope: str(),
+				mode: str(),
+				registryHealth: str(),
+				boundary: str(),
+			},
+			{ open: true },
+		),
 	});
 	const controlTool = defineTool({
 		name: "policy_control",
@@ -537,7 +566,10 @@ export async function createPolicyDurableExtension(
 	return defineExtension({
 		name: "policy",
 		tools: [rulesTool, proposeTool, approveTool, controlTool],
-		wraps: [...wrappedTools].map((tool) => ({ tool, wrap: (registration: Durable.ToolRegistration) => runtime.wrapActionTool(registration) })),
+		wraps: [...wrappedTools].map((tool) => ({
+			tool,
+			wrap: (registration: Durable.ToolRegistration) => runtime.wrapActionTool(registration),
+		})),
 		sections: [
 			section(
 				"policy",
@@ -631,7 +663,10 @@ function normalizePolicyState(raw: Readonly<PolicyStateValue> | undefined): Poli
 			: [],
 		incomplete: safeInteger(value.incomplete) ?? 0,
 		stale: safeInteger(value.stale) ?? 0,
-		shellCard: typeof value.shellCard === "string" && Buffer.byteLength(value.shellCard, "utf8") <= SHELL_CARD_BYTES ? value.shellCard : null,
+		shellCard:
+			typeof value.shellCard === "string" && Buffer.byteLength(value.shellCard, "utf8") <= SHELL_CARD_BYTES
+				? value.shellCard
+				: null,
 	};
 }
 
@@ -737,7 +772,8 @@ interface DurablePolicyRuntimeOptions {
 class DurablePolicyRuntime {
 	private readonly actions = new ActionApprovals();
 	private readonly wrappedTools: ReadonlySet<string>;
-	readonly beforeToolHook: Durable.ToolHooks["beforeTool"] = (call, api, context) => this.beforeTool(call, api, context);
+	readonly beforeToolHook: Durable.ToolHooks["beforeTool"] = (call, api, context) =>
+		this.beforeTool(call, api, context);
 	private readonly dir: string;
 	private readonly registry: RuleRegistry;
 	private readonly harness: Durable.Harness;
@@ -784,19 +820,37 @@ class DurablePolicyRuntime {
 		await this.writer.close();
 	}
 
-	private actionBinding(conversationId: Durable.ConversationId, snapshot: RuleSnapshot, agent: Durable.Agent, scope: RuleMatchContext): ActionBinding {
-		return { session: this.sessionLabel(conversationId), scope: { cwd: scope.cwd, provider: scope.provider ?? null, model: scope.model ?? null },
-			authority: actionAuthority(snapshot, [...agent.tools, ...agent.callable]), mode: this.effectiveMode(snapshot) };
+	private actionBinding(
+		conversationId: Durable.ConversationId,
+		snapshot: RuleSnapshot,
+		agent: Durable.Agent,
+		scope: RuleMatchContext,
+	): ActionBinding {
+		return {
+			session: this.sessionLabel(conversationId),
+			scope: { cwd: scope.cwd, provider: scope.provider ?? null, model: scope.model ?? null },
+			authority: actionAuthority(snapshot, [...agent.tools, ...agent.callable]),
+			mode: this.effectiveMode(snapshot),
+		};
 	}
 	private actionSafety(agent: Durable.Agent, name: string, args: Record<string, unknown>): string | undefined {
 		const tool = [...agent.tools, ...agent.callable].find((entry) => entry.name === name);
 		if (!tool) return "[policy] Exact-action tool registration is unavailable.";
-		if (tool.replay === "safe") return "[policy] Exact-action approval refuses replay:safe tools; external writes require unsafe replay.";
+		if (tool.replay === "safe")
+			return "[policy] Exact-action approval refuses replay:safe tools; external writes require unsafe replay.";
 		try {
 			// The caller's sameActionInput check already established complete strict JSON.
-			const final = validateToolArguments(tool, { type: "toolCall", id: "policy-normalization", name, arguments: args as ToolCall["arguments"] });
-			if (!sameActionInput(args, final)) return "[policy] Host validation changes the final candidate; retry with exact normalized arguments.";
-		} catch { return "[policy] Final host validation is unavailable or rejects the exact candidate."; }
+			const final = validateToolArguments(tool, {
+				type: "toolCall",
+				id: "policy-normalization",
+				name,
+				arguments: args as ToolCall["arguments"],
+			});
+			if (!sameActionInput(args, final))
+				return "[policy] Host validation changes the final candidate; retry with exact normalized arguments.";
+		} catch {
+			return "[policy] Final host validation is unavailable or rejects the exact candidate.";
+		}
 		return undefined;
 	}
 	private async actionControl(params: ActionControl, surface: PolicySurface, context: Context): Promise<unknown> {
@@ -806,42 +860,79 @@ class DurablePolicyRuntime {
 	}
 	private uncoveredApproval(plan: InputPlan, name: string, rules: readonly ProgramRule[]): boolean {
 		if (!this.wrappedTools.has(name)) return true;
-		return plan.evaluations.filter((entry) => entry.action.kind === "require-approval" && entry.deny)
+		return plan.evaluations
+			.filter((entry) => entry.action.kind === "require-approval" && entry.deny)
 			.some((entry) => !rules.find((rule) => rule.id === entry.id)?.program.selector?.tools?.includes(name));
 	}
-	private finalActionReason(plan: InputPlan, observed: ObservedCall, memo: PolicyCallMemo | undefined, agent: Durable.Agent, binding: ActionBinding): string | undefined {
+	private finalActionReason(
+		plan: InputPlan,
+		observed: ObservedCall,
+		memo: PolicyCallMemo | undefined,
+		agent: Durable.Agent,
+		binding: ActionBinding,
+	): string | undefined {
 		if (!observed.input || !sameActionInput(observed.input, plan.candidate))
 			return "[policy] Final execution input is unavailable or needs a correction; retry the exact final payload.";
-		const gatedBefore = memo?.inputEvaluations.some((entry) => objectValue(entry)?.action === "require-approval" && objectValue(entry)?.truth === true);
+		const gatedBefore = memo?.inputEvaluations.some(
+			(entry) => objectValue(entry)?.action === "require-approval" && objectValue(entry)?.truth === true,
+		);
 		const gatedNow = plan.evaluations.some((entry) => entry.action.kind === "require-approval" && entry.deny);
-		if (gatedBefore && !gatedNow) return "[policy] The approval gate changed after preflight; retry and inspect the current action.";
+		if (gatedBefore && !gatedNow)
+			return "[policy] The approval gate changed after preflight; retry and inspect the current action.";
 		if (gatedNow) {
-			if (this.uncoveredApproval(plan, observed.tool, observed.rules)) return "[policy] Native approval requires loaded wrappers and explicit selector.tools for every gate; reload policy after a new exact-tool rule.";
-			const reason = this.actionSafety(agent, observed.tool, plan.candidate) ?? this.actions.gate(plan, observed.tool, binding);
+			if (this.uncoveredApproval(plan, observed.tool, observed.rules))
+				return "[policy] Native approval requires loaded wrappers and explicit selector.tools for every gate; reload policy after a new exact-tool rule.";
+			const reason =
+				this.actionSafety(agent, observed.tool, plan.candidate) ?? this.actions.gate(plan, observed.tool, binding);
 			if (reason) return reason;
 		}
 		return plan.denied || !plan.valid ? "[policy] Final approved input checks refused this action." : undefined;
 	}
 	wrapActionTool(tool: Durable.ToolRegistration): Durable.ToolRegistration {
-		return { ...tool, execute: async (args, api, context) => {
-			const surface = this.toolSurface(api);
-			const agent = await api.agent(context);
-			const turn = await this.turnOf(api.conversationId, context);
-			const base = await this.readState(surface, context, (state) => ({ state, observation: this.observationOf(state) }));
-			const memo = await api.memo<PolicyCallMemo>("policy.call", context);
-			// The final rule read is the admission boundary; no await separates it from consumption.
-			const snapshot = await this.snapshot();
-			const { scope, rules, installed } = this.selectedRules(snapshot, agent);
-			if (this.effectiveMode(snapshot) !== "enforce") return tool.execute(args, api, context);
-			const now = Date.now();
-			base.observation.sync(rules, now);
-			const observed = this.makeObservedCall(tool.name, api.callId, args, rules, snapshot, agent, scope, base.observation, turn, now, api.conversationId, installed);
-			observed.generation = base.state.generation;
-			const plan = this.inputPlan(observed, base.observation, now, true);
-			const reason = this.finalActionReason(plan, observed, memo, agent, this.actionBinding(api.conversationId, snapshot, agent, scope));
-			if (reason) return { isError: true, output: [{ type: "text", text: reason }] };
-			return tool.execute(plan.candidate as Durable.JsonObject, api, context);
-		} };
+		return {
+			...tool,
+			execute: async (args, api, context) => {
+				const surface = this.toolSurface(api);
+				const agent = await api.agent(context);
+				const turn = await this.turnOf(api.conversationId, context);
+				const base = await this.readState(surface, context, (state) => ({
+					state,
+					observation: this.observationOf(state),
+				}));
+				const memo = await api.memo<PolicyCallMemo>("policy.call", context);
+				// The final rule read is the admission boundary; no await separates it from consumption.
+				const snapshot = await this.snapshot();
+				const { scope, rules, installed } = this.selectedRules(snapshot, agent);
+				if (this.effectiveMode(snapshot) !== "enforce") return tool.execute(args, api, context);
+				const now = Date.now();
+				base.observation.sync(rules, now);
+				const observed = this.makeObservedCall(
+					tool.name,
+					api.callId,
+					args,
+					rules,
+					snapshot,
+					agent,
+					scope,
+					base.observation,
+					turn,
+					now,
+					api.conversationId,
+					installed,
+				);
+				observed.generation = base.state.generation;
+				const plan = this.inputPlan(observed, base.observation, now, true);
+				const reason = this.finalActionReason(
+					plan,
+					observed,
+					memo,
+					agent,
+					this.actionBinding(api.conversationId, snapshot, agent, scope),
+				);
+				if (reason) return { isError: true, output: [{ type: "text", text: reason }] };
+				return tool.execute(plan.candidate as Durable.JsonObject, api, context);
+			},
+		};
 	}
 	getMode(): PolicyMode {
 		return this.mode;
@@ -852,7 +943,10 @@ class DurablePolicyRuntime {
 			const snapshot = await this.registry.snapshot();
 			if (this.effectiveMode(snapshot) !== "enforce") this.actions.clear();
 			return snapshot;
-		} catch (error) { this.actions.clear(); throw error; }
+		} catch (error) {
+			this.actions.clear();
+			throw error;
+		}
 	}
 
 	private sessionLabel(conversationId: Durable.ConversationId): string {
@@ -921,7 +1015,9 @@ class DurablePolicyRuntime {
 	}
 
 	private observationOf(state: PolicyStateValue): ObservationState {
-		return ObservationState.fromJSON(state.observation, this.observationClock) ?? new ObservationState(this.observationClock);
+		return (
+			ObservationState.fromJSON(state.observation, this.observationClock) ?? new ObservationState(this.observationClock)
+		);
 	}
 
 	private retainedGuidanceOf(state: PolicyStateValue): StoredRetainedGuidance[] {
@@ -992,12 +1088,21 @@ class DurablePolicyRuntime {
 	private async activeRules(
 		surface: PolicySurface,
 		context: Context,
-	): Promise<{ snapshot: RuleSnapshot; agent: Durable.Agent; scope: RuleMatchContext; rules: ProgramRule[]; installed: string[] }> {
+	): Promise<{
+		snapshot: RuleSnapshot;
+		agent: Durable.Agent;
+		scope: RuleMatchContext;
+		rules: ProgramRule[];
+		installed: string[];
+	}> {
 		const snapshot = await this.snapshot();
 		const agent = await surface.agent(context);
 		return { snapshot, agent, ...this.selectedRules(snapshot, agent) };
 	}
-	private selectedRules(snapshot: RuleSnapshot, agent: Durable.Agent): { scope: RuleMatchContext; rules: ProgramRule[]; installed: string[] } {
+	private selectedRules(
+		snapshot: RuleSnapshot,
+		agent: Durable.Agent,
+	): { scope: RuleMatchContext; rules: ProgramRule[]; installed: string[] } {
 		const installed = [
 			...new Set(agent.extensions.flatMap((extension) => extension.tools?.map((tool) => tool.name) ?? [])),
 		];
@@ -1110,7 +1215,10 @@ class DurablePolicyRuntime {
 	): EvaluationContext {
 		const data = call.context.namedData
 			? call.context.namedData.snapshot(now)
-			: snapshotData(Object.values(call.context.data ?? {}).flatMap((source) => (source.data ? [source.data] : [])), now);
+			: snapshotData(
+					Object.values(call.context.data ?? {}).flatMap((source) => (source.data ? [source.data] : [])),
+					now,
+				);
 		return {
 			...call.context,
 			data,
@@ -1139,9 +1247,7 @@ class DurablePolicyRuntime {
 		const captured = input ? captureFor(tool, input) : undefined;
 		const context = this.evaluationContext(tool, input, snapshot, agent, scope, state, turn, now, installed);
 		const matches = new Set(
-			[...captureProgramEvidence(rules, context, input)]
-				.filter(([, truth]) => truth === true)
-				.map(([id]) => id),
+			[...captureProgramEvidence(rules, context, input)].filter(([, truth]) => truth === true).map(([id]) => id),
 		);
 		const pins = new Map<string, StatePin>();
 		for (const rule of rules) {
@@ -1183,9 +1289,10 @@ class DurablePolicyRuntime {
 	}
 
 	private memoFor(call: ObservedCall): PolicyCallMemo {
-		const original = call.input && Buffer.byteLength(JSON.stringify(call.input), "utf8") <= MAX_MEMO_INPUT_BYTES
-			? (call.input as JsonValue)
-			: undefined;
+		const original =
+			call.input && Buffer.byteLength(JSON.stringify(call.input), "utf8") <= MAX_MEMO_INPUT_BYTES
+				? (call.input as JsonValue)
+				: undefined;
 		return {
 			tool: call.tool,
 			callId: call.callId,
@@ -1287,9 +1394,7 @@ class DurablePolicyRuntime {
 		if (!PROJECTION_MODES.includes(mode)) return undefined;
 		const eligible = evaluations.filter(
 			(evaluation) =>
-				evaluation.truth === true &&
-				evaluation.action.kind === "guide" &&
-				state.eligible(evaluation.id, now, turn),
+				evaluation.truth === true && evaluation.action.kind === "guide" && state.eligible(evaluation.id, now, turn),
 		);
 		const selected: ProgramEvaluation[] = [];
 		const lines: string[] = [];
@@ -1368,8 +1473,7 @@ class DurablePolicyRuntime {
 		for (const rule of current) {
 			const selected = observationSelected(rule, context, frame);
 			const pin = call.pins.get(rule.id);
-			if (pin && selected === true && !observation.complete(pin, frame.factsFor(rule), call.turn, now))
-				stale += 1;
+			if (pin && selected === true && !observation.complete(pin, frame.factsFor(rule), call.turn, now)) stale += 1;
 		}
 		const guides = evaluatePrograms(current, "completion", context, frame).filter(
 			(evaluation) => evaluation.action.kind === "guide",
@@ -1493,11 +1597,19 @@ class DurablePolicyRuntime {
 		now: number,
 		truncated: boolean | undefined,
 	): PolicyRecord {
-		const evaluations = [...call.inputEvaluations, ...metadata([...semantic, ...guides, ...completion, ...completionGuides])];
-		const classes = [...new Set([...call.classes, ...evaluations.flatMap((value) => {
-			const entry = value as { id: string; truth: unknown };
-			return entry.truth === true ? [entry.id] : [];
-		})])];
+		const evaluations = [
+			...call.inputEvaluations,
+			...metadata([...semantic, ...guides, ...completion, ...completionGuides]),
+		];
+		const classes = [
+			...new Set([
+				...call.classes,
+				...evaluations.flatMap((value) => {
+					const entry = value as { id: string; truth: unknown };
+					return entry.truth === true ? [entry.id] : [];
+				}),
+			]),
+		];
 		const rows = {
 			...telemetryDecisionRows(evaluations, [...call.pins.values()], classes, call.corrections),
 			corrections: boundedRows(call.corrections),
@@ -1527,9 +1639,17 @@ class DurablePolicyRuntime {
 				dataSnapshots: rows.dataSnapshots.rows,
 				metadata: rows.metadata.rows,
 				coverage: {
-					evaluations: { total: rows.evaluations.total, omitted: rows.evaluations.omitted, irrelevant: rows.evaluations.irrelevant },
+					evaluations: {
+						total: rows.evaluations.total,
+						omitted: rows.evaluations.omitted,
+						irrelevant: rows.evaluations.irrelevant,
+					},
 					corrections: { total: rows.corrections.total, omitted: rows.corrections.omitted },
-					generations: { total: rows.generations.total, omitted: rows.generations.omitted, irrelevant: rows.generations.irrelevant },
+					generations: {
+						total: rows.generations.total,
+						omitted: rows.generations.omitted,
+						irrelevant: rows.generations.irrelevant,
+					},
 					dataSnapshots: { total: rows.dataSnapshots.total, omitted: rows.dataSnapshots.omitted },
 					metadata: { total: rows.metadata.total, omitted: rows.metadata.omitted },
 				},
@@ -1557,9 +1677,21 @@ class DurablePolicyRuntime {
 		if (record) this.writer.enqueue(record);
 	}
 
-	private preflightActionReason(plan: InputPlan, name: string, snapshot: RuleSnapshot, agent: Durable.Agent, scope: RuleMatchContext, conversationId: Durable.ConversationId): string | undefined {
-		if (this.effectiveMode(snapshot) !== "enforce" || !plan.evaluations.some((entry) => entry.action.kind === "require-approval" && entry.deny)) return undefined;
-		if (this.uncoveredApproval(plan, name, this.selectedRules(snapshot, agent).rules)) return "[policy] This native approval gate needs explicit selector.tools and a loaded exact-tool wrapper; reload policy before approval.";
+	private preflightActionReason(
+		plan: InputPlan,
+		name: string,
+		snapshot: RuleSnapshot,
+		agent: Durable.Agent,
+		scope: RuleMatchContext,
+		conversationId: Durable.ConversationId,
+	): string | undefined {
+		if (
+			this.effectiveMode(snapshot) !== "enforce" ||
+			!plan.evaluations.some((entry) => entry.action.kind === "require-approval" && entry.deny)
+		)
+			return undefined;
+		if (this.uncoveredApproval(plan, name, this.selectedRules(snapshot, agent).rules))
+			return "[policy] This native approval gate needs explicit selector.tools and a loaded exact-tool wrapper; reload policy before approval.";
 		return this.actions.gate(plan, name, this.actionBinding(conversationId, snapshot, agent, scope), undefined, false);
 	}
 	async beforeTool(
@@ -1596,19 +1728,29 @@ class DurablePolicyRuntime {
 		if (!observed.input) {
 			observed.complete = false;
 			const current = this.currentRulesOf(observed, base.observation);
-			const evidence = captureProgramEvidence(current, this.contextFor(observed, base.observation, now), undefined, undefined);
-			const unavailable = evaluatePrograms(current, "input", { ...this.contextFor(observed, base.observation, now), evidence }).map(
-				markUnavailable(current),
+			const evidence = captureProgramEvidence(
+				current,
+				this.contextFor(observed, base.observation, now),
+				undefined,
+				undefined,
 			);
+			const unavailable = evaluatePrograms(current, "input", {
+				...this.contextFor(observed, base.observation, now),
+				evidence,
+			}).map(markUnavailable(current));
 			observed.evaluations.push(...unavailable);
 			observed.classes = [
-				...new Set([...observed.classes, ...unavailable.filter((entry) => entry.truth === true).map((entry) => entry.id)]),
+				...new Set([
+					...observed.classes,
+					...unavailable.filter((entry) => entry.truth === true).map((entry) => entry.id),
+				]),
 			];
 			if (mode === "enforce" && unavailable.some((entry) => entry.deny))
 				reason = "[policy] An approved input check refused unavailable input.";
 		}
 		const plan = this.inputPlan(observed, base.observation, now, mode === "enforce");
-		if (reason === undefined) reason = this.preflightActionReason(plan, call.name, snapshot, agent, scope, api.conversationId);
+		if (reason === undefined)
+			reason = this.preflightActionReason(plan, call.name, snapshot, agent, scope, api.conversationId);
 		if (reason === undefined && mode === "enforce" && (plan.denied || !plan.valid)) {
 			observed.decision =
 				this.refusalText(observed, plan, snapshot) ?? "[policy] The approved input checks refused this call.";
@@ -1638,9 +1780,17 @@ class DurablePolicyRuntime {
 		}
 		return this.checkedArguments(plan, mode, observed);
 	}
-	private checkedArguments(plan: InputPlan, mode: PolicyMode, observed: ObservedCall): { arguments: Durable.JsonObject } | undefined {
+	private checkedArguments(
+		plan: InputPlan,
+		mode: PolicyMode,
+		observed: ObservedCall,
+	): { arguments: Durable.JsonObject } | undefined {
 		if (mode !== "enforce" || !plan.valid || plan.denied) return undefined;
-		if (!plan.changed && !plan.evaluations.some((entry) => entry.action.kind === "require-approval" && entry.truth === true)) return undefined;
+		if (
+			!plan.changed &&
+			!plan.evaluations.some((entry) => entry.action.kind === "require-approval" && entry.truth === true)
+		)
+			return undefined;
 		if (plan.changed) observed.effects.policy = { ...observed.effects.policy, inputCorrected: true };
 		return { arguments: plan.candidate as Durable.JsonObject };
 	}
@@ -1705,9 +1855,7 @@ class DurablePolicyRuntime {
 			return undefined;
 		const guidance = update.guidance;
 		if (!guidance && !update.correction) return undefined;
-		const output = guidance
-			? [...(result.output ?? []), { type: "text" as const, text: guidance }]
-			: result.output;
+		const output = guidance ? [...(result.output ?? []), { type: "text" as const, text: guidance }] : result.output;
 		return {
 			...result,
 			...(update.correction ? { isError: true } : {}),
@@ -1726,10 +1874,12 @@ class DurablePolicyRuntime {
 		return this.withState(surface, context, async (state) => {
 			if (state.shellCard !== null) return state.shellCard || undefined;
 			const { snapshot, agent, scope, installed } = await this.activeRules(surface, context);
-			state.shellCard = PROJECTION_MODES.includes(this.effectiveMode(snapshot)) &&
+			state.shellCard =
+				PROJECTION_MODES.includes(this.effectiveMode(snapshot)) &&
 				[...agent.tools, ...agent.callable].some((tool) => tool.name === "bash")
-				? shellContractCard(snapshot.records.values(), scope, this.publicContext(snapshot, agent, 1, installed)) ?? ""
-				: "";
+					? (shellContractCard(snapshot.records.values(), scope, this.publicContext(snapshot, agent, 1, installed)) ??
+						"")
+					: "";
 			return state.shellCard || undefined;
 		});
 	}
@@ -1842,7 +1992,8 @@ class DurablePolicyRuntime {
 		guidance.epoch = epoch;
 		guidance.status = plan.status;
 		guidance.records = history.records as unknown as JsonValue[];
-		const notice = plan.status !== "ok" && guidance.noticeEpoch !== epoch ? this.guidanceNotice(plan.status) : undefined;
+		const notice =
+			plan.status !== "ok" && guidance.noticeEpoch !== epoch ? this.guidanceNotice(plan.status) : undefined;
 		if (notice !== undefined) guidance.noticeEpoch = epoch;
 		return {
 			...(projected.length !== messages.length ? { messages: projected as readonly Message[] } : {}),
@@ -1930,10 +2081,13 @@ class DurablePolicyRuntime {
 		if (view === "check") {
 			const draftContext: DraftCheckContext = toolScope(scope, agent.model);
 			const catalog = {
-				getAllTools: () => [...agent.tools, ...agent.callable].map((tool) => ({ name: tool.name, parameters: tool.parameters })),
+				getAllTools: () =>
+					[...agent.tools, ...agent.callable].map((tool) => ({ name: tool.name, parameters: tool.parameters })),
 				getActiveTools: () => agent.tools.map((tool) => tool.name),
 			} as unknown as Parameters<typeof checkDraft>[2];
-			return boundedInspection(JSON.stringify(await checkDraft(params, snapshot, catalog, draftContext, parseAuthoringDraft)));
+			return boundedInspection(
+				JSON.stringify(await checkDraft(params, snapshot, catalog, draftContext, parseAuthoringDraft)),
+			);
 		}
 		if (view === "catalog") return formatCatalog(this.registry, params.id);
 		if (view === "data") return formatDataView(snapshot, params.id);
@@ -2072,21 +2226,37 @@ class DurablePolicyRuntime {
 	 * conversation's scope. Every mutation carries a panel audit; the registry enforces the revisions and
 	 * target identities the operator saw exactly as on the ordinary route.
 	 */
-	async panelRequest(request: PolicyPanelRequest, conversation: Durable.Conversation, context: Context): Promise<PolicyPanelAnswer> {
+	async panelRequest(
+		request: PolicyPanelRequest,
+		conversation: Durable.Conversation,
+		context: Context,
+	): Promise<PolicyPanelAnswer> {
 		const surface = this.conversationSurface(conversation);
 		const agent = await surface.agent(context);
 		const audit = makeRuleAudit(this.auditContext(conversation.id, agent), "panel");
 		const signal = context.abortSignal;
-		const settled = async (outcome: string, op: "approve" | "reject" | "lifecycle" | "effect" | "reset"): Promise<PolicyPanelAnswer> => ({ op, outcome, snapshot: serializeSnapshot(await this.snapshot()) });
+		const settled = async (
+			outcome: string,
+			op: "approve" | "reject" | "lifecycle" | "effect" | "reset",
+		): Promise<PolicyPanelAnswer> => ({ op, outcome, snapshot: serializeSnapshot(await this.snapshot()) });
 		switch (request.op) {
 			case "load": {
 				const snapshot = await this.snapshot();
 				const [fireSummary, activity] = await Promise.all([readFireSummary(this.dir), readRecentActivity(this.dir)]);
-				return { op: "load", snapshot: serializeSnapshot(snapshot), fireSummary: serializeFireSummary(fireSummary), activity, scope: this.selectedRules(snapshot, agent).scope };
+				return {
+					op: "load",
+					snapshot: serializeSnapshot(snapshot),
+					fireSummary: serializeFireSummary(fireSummary),
+					activity,
+					scope: this.selectedRules(snapshot, agent).scope,
+				};
 			}
-			case "refresh": return { op: "refresh", snapshot: serializeSnapshot(await this.snapshot()) };
+			case "refresh":
+				return { op: "refresh", snapshot: serializeSnapshot(await this.snapshot()) };
 			case "inspect": {
-				const text = boundedInspection(await this.inspect(request.view, request.id === undefined ? {} : { id: request.id }, surface, context));
+				const text = boundedInspection(
+					await this.inspect(request.view, request.id === undefined ? {} : { id: request.id }, surface, context),
+				);
 				return { op: "inspect", text, snapshot: serializeSnapshot(await this.snapshot()) };
 			}
 			case "approve":
@@ -2096,19 +2266,35 @@ class DurablePolicyRuntime {
 				await this.registry.decide(request.proposalId, "rejected", undefined, audit, request.revision, signal);
 				return settled(`Rejected proposal ${request.proposalId}.`, "reject");
 			case "lifecycle": {
-				if (request.verb === "disable") await this.registry.disable(request.id, request.reason, audit, request.expectedIdentity, signal);
-				else if (request.verb === "enable") await this.registry.enable(request.id, request.reason, audit, request.expectedIdentity, signal);
+				if (request.verb === "disable")
+					await this.registry.disable(request.id, request.reason, audit, request.expectedIdentity, signal);
+				else if (request.verb === "enable")
+					await this.registry.enable(request.id, request.reason, audit, request.expectedIdentity, signal);
 				else await this.registry.retire(request.id, request.reason, audit, request.expectedIdentity, signal);
-				return settled(`${request.verb === "retire" ? "Retired" : request.verb === "disable" ? "Disabled" : "Enabled"} ${request.id}.`, "lifecycle");
+				return settled(
+					`${request.verb === "retire" ? "Retired" : request.verb === "disable" ? "Disabled" : "Enabled"} ${request.id}.`,
+					"lifecycle",
+				);
 			}
 			case "effect":
-				await this.registry.setEffect(request.id, request.effect, request.reason, audit, request.expectedIdentity, signal);
+				await this.registry.setEffect(
+					request.id,
+					request.effect,
+					request.reason,
+					audit,
+					request.expectedIdentity,
+					signal,
+				);
 				return settled(`Set ${request.id} effect to ${request.effect}.`, "effect");
 			case "reset-revision": {
 				// Persist the synced periods first, so the revision shown binds the reset that follows it.
 				const now = Date.now();
 				const { rules } = await this.activeRules(surface, context);
-				await this.withState(surface, context, (state) => { const observation = this.observationOf(state); observation.sync(rules, now); state.observation = observation.toJSON() as unknown as JsonValue; });
+				await this.withState(surface, context, (state) => {
+					const observation = this.observationOf(state);
+					observation.sync(rules, now);
+					state.observation = observation.toJSON() as unknown as JsonValue;
+				});
 				return { op: "reset-revision", revision: await this.resetRevision(request.id, surface, context) };
 			}
 			case "reset":
@@ -2124,15 +2310,24 @@ class DurablePolicyRuntime {
 	 * A change answers with its complete review unless the arguments already carry its exact approval;
 	 * applying then rechecks the binding revision, the reread file, and the artifact revision.
 	 */
-	private async panelData(args: string, audit: ReturnType<typeof makeRuleAudit<"panel">>, cwd: string): Promise<PolicyPanelAnswer> {
+	private async panelData(
+		args: string,
+		audit: ReturnType<typeof makeRuleAudit<"panel">>,
+		cwd: string,
+	): Promise<PolicyPanelAnswer> {
 		const prepared = await prepareDataCommand(this.registry, args, audit, cwd);
-		if ("text" in prepared) return { op: "data", outcome: prepared.text, snapshot: serializeSnapshot(await this.snapshot()) };
+		if ("text" in prepared)
+			return { op: "data", outcome: prepared.text, snapshot: serializeSnapshot(await this.snapshot()) };
 		if (prepared.approved) {
 			const outcome = await prepared.apply();
 			return { op: "data", outcome, snapshot: serializeSnapshot(await this.snapshot()) };
 		}
 		const action = prepared.title === "Remove policy data" ? "Remove policy data" : "Set policy data";
-		return { op: "data", review: { title: prepared.title, text: prepared.review, approval: prepared.approval, action }, snapshot: serializeSnapshot(await this.snapshot()) };
+		return {
+			op: "data",
+			review: { title: prepared.title, text: prepared.review, approval: prepared.approval, action },
+			snapshot: serializeSnapshot(await this.snapshot()),
+		};
 	}
 
 	private deps(surface: PolicySurface, context: Context): ToolDeps {
@@ -2298,9 +2493,20 @@ class DurablePolicyRuntime {
 				projection: "full transcript with retained guidance, no new turn",
 			};
 		}
-		if (view === "explain") return this.inspectExplain(params, snapshot, reading.state, reading.observation, now, surface);
+		if (view === "explain")
+			return this.inspectExplain(params, snapshot, reading.state, reading.observation, now, surface);
 		if (view === "preview")
-			return this.inspectPreview(params, snapshot, agent, scope, reading.state, reading.observation, now, surface, installed);
+			return this.inspectPreview(
+				params,
+				snapshot,
+				agent,
+				scope,
+				reading.state,
+				reading.observation,
+				now,
+				surface,
+				installed,
+			);
 		throw new Error(`Unknown policy view: ${view}`);
 	}
 
@@ -2393,9 +2599,7 @@ class DurablePolicyRuntime {
 		const result = objectValue(params.result);
 		const results = result
 			? this.previewResultPlan(call, observation, mode, now, {
-					content: Array.isArray(result.content)
-						? (result.content as ContentLike[])
-						: undefined,
+					content: Array.isArray(result.content) ? (result.content as ContentLike[]) : undefined,
 					details: result.details,
 					isError: result.isError === true,
 				})
@@ -2451,4 +2655,3 @@ class DurablePolicyRuntime {
 		return { correction, semantic, guides };
 	}
 }
-

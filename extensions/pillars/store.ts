@@ -5,28 +5,47 @@ import { lstat, mkdir, open, readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getHeapStatistics } from "node:v8";
 import {
-	dayNumber, inWindow, LIMITS, planCommit, validateBatch, validateShard, validateSnapshot,
-	type Batch, type CommitStatus, type Shard, type Snapshot,
+	dayNumber,
+	inWindow,
+	LIMITS,
+	planCommit,
+	validateBatch,
+	validateShard,
+	validateSnapshot,
+	type Batch,
+	type CommitStatus,
+	type Shard,
+	type Snapshot,
 } from "./capacity.ts";
 
 export class StoreUnavailableError extends Error {
-	constructor(message = "store_unreadable") { super(message); this.name = "StoreUnavailableError"; }
+	constructor(message = "store_unreadable") {
+		super(message);
+		this.name = "StoreUnavailableError";
+	}
 }
 
 export class StoreBusyError extends StoreUnavailableError {
 	constructor() {
-		super("Pillars aggregate writer is busy. The next publication event retries. This writer never removes the lock file. Do not remove it.");
+		super(
+			"Pillars aggregate writer is busy. The next publication event retries. This writer never removes the lock file. Do not remove it.",
+		);
 		this.name = "StoreBusyError";
 	}
 }
 export class StoreLockIdentityError extends StoreUnavailableError {
 	constructor() {
-		super("Pillars lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.");
+		super(
+			"Pillars lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.",
+		);
 		this.name = "StoreLockIdentityError";
 	}
 }
 export class StorePlatformError extends StoreUnavailableError {
-	constructor() { super("Pillars aggregate writes require macOS."); this.name = "StorePlatformError"; }
+	constructor() {
+		super("Pillars aggregate writes require macOS.");
+		this.name = "StorePlatformError";
+	}
 }
 interface ExclusiveLease {
 	readonly descriptor: number;
@@ -43,10 +62,17 @@ const O_EXLOCK = 0x20;
 const REJECTIONS = ["clock_rollback", "store_corrupt", "response_overflow"];
 const NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 
-interface Scan { slots: Map<string, number>; pending: boolean }
+interface Scan {
+	slots: Map<string, number>;
+	pending: boolean;
+}
 
-function aborted(): Error { return new DOMException("The operation was aborted", "AbortError"); }
-function corrupt(): Error { return new Error("store_corrupt"); }
+function aborted(): Error {
+	return new DOMException("The operation was aborted", "AbortError");
+}
+function corrupt(): Error {
+	return new Error("store_corrupt");
+}
 function code(error: unknown): string | undefined {
 	return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : undefined;
 }
@@ -55,8 +81,12 @@ function owner(): number | undefined {
 }
 function memoryGuard(start: NodeJS.MemoryUsage): void {
 	const used = process.memoryUsage();
-	if (used.heapUsed - start.heapUsed > 192 * 1024 * 1024 || used.rss - start.rss > 256 * 1024 * 1024 ||
-		getHeapStatistics().heap_size_limit - used.heapUsed < 128 * 1024 * 1024) throw new Error("response_overflow");
+	if (
+		used.heapUsed - start.heapUsed > 192 * 1024 * 1024 ||
+		used.rss - start.rss > 256 * 1024 * 1024 ||
+		getHeapStatistics().heap_size_limit - used.heapUsed < 128 * 1024 * 1024
+	)
+		throw new Error("response_overflow");
 }
 
 /**
@@ -103,7 +133,11 @@ async function verifyChain(root: string): Promise<boolean> {
 
 async function syncDirectory(root: string): Promise<void> {
 	const handle = await open(root, "r");
-	try { await handle.sync(); } finally { await handle.close(); }
+	try {
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
 }
 
 /** One transaction at a time per instance; readers never create, write, or remove a file. */
@@ -112,7 +146,9 @@ export class PillarsStore {
 	private active = false;
 	private heldLock: ExclusiveLease | undefined;
 	private pendingIdentity: { dev: number; ino: number } | undefined;
-	constructor(root: string) { this.root = root; }
+	constructor(root: string) {
+		this.root = root;
+	}
 
 	async capture(today: string, signal?: AbortSignal): Promise<Snapshot> {
 		return this.transaction(today, signal, (start) => this.read(today, start, signal));
@@ -125,7 +161,11 @@ export class PillarsStore {
 		return this.transaction(today, signal, (start) => this.write(sealed, today, start, signal));
 	}
 
-	private async transaction<T>(today: string, signal: AbortSignal | undefined, run: (start: NodeJS.MemoryUsage) => Promise<T>): Promise<T> {
+	private async transaction<T>(
+		today: string,
+		signal: AbortSignal | undefined,
+		run: (start: NodeJS.MemoryUsage) => Promise<T>,
+	): Promise<T> {
 		dayNumber(today);
 		if (signal?.aborted) throw aborted();
 		if (this.active) throw new StoreUnavailableError();
@@ -135,11 +175,18 @@ export class PillarsStore {
 			memoryGuard(start);
 			return await run(start);
 		} catch (error) {
-			if (error instanceof StoreBusyError || error instanceof StoreLockIdentityError || error instanceof StorePlatformError) throw error;
+			if (
+				error instanceof StoreBusyError ||
+				error instanceof StoreLockIdentityError ||
+				error instanceof StorePlatformError
+			)
+				throw error;
 			if (signal?.aborted) throw aborted();
 			if (error instanceof Error && REJECTIONS.includes(error.message)) throw error;
 			throw new StoreUnavailableError();
-		} finally { this.active = false; }
+		} finally {
+			this.active = false;
+		}
 	}
 
 	private async read(today: string, start: NodeJS.MemoryUsage, signal?: AbortSignal): Promise<Snapshot> {
@@ -160,12 +207,20 @@ export class PillarsStore {
 
 	private async confirmNoPublication(status: CommitStatus): Promise<CommitStatus> {
 		if (status !== "duplicate") return status;
-		try { await syncDirectory(this.root); }
-		catch { return "publication_failed"; }
+		try {
+			await syncDirectory(this.root);
+		} catch {
+			return "publication_failed";
+		}
 		return status;
 	}
 
-	private async write(batch: Batch, today: string, start: NodeJS.MemoryUsage, signal?: AbortSignal): Promise<CommitStatus> {
+	private async write(
+		batch: Batch,
+		today: string,
+		start: NodeJS.MemoryUsage,
+		signal?: AbortSignal,
+	): Promise<CommitStatus> {
 		if (process.platform !== "darwin") throw new StorePlatformError();
 		await mkdir(this.root, { recursive: true, mode: 0o700 });
 		if (!(await verifyChain(this.root))) throw new StoreUnavailableError();
@@ -182,7 +237,11 @@ export class PillarsStore {
 			}
 			if (signal?.aborted) throw aborted();
 			const snapshot = await this.load(scan, start);
-			try { validateSnapshot(snapshot); } catch { throw corrupt(); }
+			try {
+				validateSnapshot(snapshot);
+			} catch {
+				throw corrupt();
+			}
 			const plan = planCommit(snapshot, batch, today);
 			if (!plan.candidate || !plan.slot) {
 				this.heldLock.assertNamed();
@@ -219,34 +278,63 @@ export class PillarsStore {
 		const path = join(this.root, LOCK);
 		let descriptor: number;
 		try {
-			descriptor = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | NO_FOLLOW | O_EXLOCK, 0o600);
+			descriptor = openSync(
+				path,
+				constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | NO_FOLLOW | O_EXLOCK,
+				0o600,
+			);
 		} catch (error) {
 			if (code(error) === "EAGAIN") throw new StoreBusyError();
 			throw new StoreUnavailableError();
 		}
-		let closed = false, poisoned = false;
+		let closed = false,
+			poisoned = false;
 		try {
 			const info = fstatSync(descriptor);
-			if (!info.isFile() || info.nlink < 1 || owner() === undefined || info.uid !== owner() ||
-				(info.mode & 0o077) !== 0 || info.size > LIMITS.controlBytes) throw new StoreUnavailableError();
+			if (
+				!info.isFile() ||
+				info.nlink < 1 ||
+				owner() === undefined ||
+				info.uid !== owner() ||
+				(info.mode & 0o077) !== 0 ||
+				info.size > LIMITS.controlBytes
+			)
+				throw new StoreUnavailableError();
 			const lease: ExclusiveLease = {
-				descriptor, device: info.dev, inode: info.ino,
+				descriptor,
+				device: info.dev,
+				inode: info.ino,
 				assertNamed() {
 					if (closed || poisoned) throw new StoreLockIdentityError();
 					try {
-						const held = fstatSync(descriptor), named = lstatSync(path);
-						if (!named.isFile() || held.dev !== info.dev || held.ino !== info.ino ||
-							named.dev !== held.dev || named.ino !== held.ino) throw new StoreLockIdentityError();
+						const held = fstatSync(descriptor),
+							named = lstatSync(path);
+						if (
+							!named.isFile() ||
+							held.dev !== info.dev ||
+							held.ino !== info.ino ||
+							named.dev !== held.dev ||
+							named.ino !== held.ino
+						)
+							throw new StoreLockIdentityError();
 					} catch {
 						poisoned = true;
 						throw new StoreLockIdentityError();
 					}
 				},
-				release() { if (!closed) { closed = true; closeSync(descriptor); } },
+				release() {
+					if (!closed) {
+						closed = true;
+						closeSync(descriptor);
+					}
+				},
 			};
 			lease.assertNamed();
 			return lease;
-		} catch (error) { closeSync(descriptor); throw error; }
+		} catch (error) {
+			closeSync(descriptor);
+			throw error;
+		}
 	}
 
 	private async entryStats(name: string, uid: number | undefined): Promise<Stats> {
@@ -301,7 +389,9 @@ export class PillarsStore {
 				if (bytesRead === 0) throw new StoreUnavailableError();
 				read += bytesRead;
 			}
-		} finally { await handle.close(); }
+		} finally {
+			await handle.close();
+		}
 		let value: unknown;
 		try {
 			value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
@@ -310,7 +400,11 @@ export class PillarsStore {
 			throw error;
 		}
 		memoryGuard(start);
-		try { validateShard(value, slot); } catch { throw corrupt(); }
+		try {
+			validateShard(value, slot);
+		} catch {
+			throw corrupt();
+		}
 		return value;
 	}
 
@@ -326,7 +420,9 @@ export class PillarsStore {
 				written += bytesWritten;
 			}
 			await handle.sync();
-		} finally { await handle.close(); }
+		} finally {
+			await handle.close();
+		}
 	}
 
 	private lease(): ExclusiveLease {
@@ -343,7 +439,9 @@ export class PillarsStore {
 				lease.assertNamed();
 				unlinkSync(join(this.root, expired));
 				removed = true;
-			} catch (error) { if (code(error) !== "ENOENT") throw error; }
+			} catch (error) {
+				if (code(error) !== "ENOENT") throw error;
+			}
 		}
 		if (removed) await syncDirectory(this.root);
 	}
@@ -355,11 +453,14 @@ export class PillarsStore {
 			if (named.dev !== this.pendingIdentity.dev || named.ino !== this.pendingIdentity.ino) return;
 			lease.assertNamed();
 			unlinkSync(pending);
-		} catch (error) { if (error instanceof StoreLockIdentityError) throw error; }
+		} catch (error) {
+			if (error instanceof StoreLockIdentityError) throw error;
+		}
 	}
 
 	private async publish(payload: Buffer, slot: string, expiredSlots: readonly string[]): Promise<boolean> {
-		const pending = join(this.root, PENDING), lease = this.lease();
+		const pending = join(this.root, PENDING),
+			lease = this.lease();
 		let renamed = false;
 		this.pendingIdentity = undefined;
 		try {

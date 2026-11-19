@@ -4,7 +4,9 @@ import type { CollaborationList, CollaborationPage } from "./collaboration-contr
 /** One call to the collaboration owner, through the host's agent_collaborate route. */
 export type Collaborate = (input: Record<string, unknown>) => Promise<unknown>;
 /** One discovery page: thread summaries plus the storages that hold more. */
-export type ThreadDiscovery = CollaborationList & { sources?: Array<{ sessionId: string; omitted: number; unavailable: boolean }> };
+export type ThreadDiscovery = CollaborationList & {
+	sources?: Array<{ sessionId: string; omitted: number; unavailable: boolean }>;
+};
 
 /** A draft post to one thread. It stays until the owner retains it. */
 export interface ThreadDraft {
@@ -28,8 +30,10 @@ export function createThreadsState(): ThreadsState {
 }
 
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object";
-const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
-const number = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+const strings = (value: unknown): value is string[] =>
+	Array.isArray(value) && value.every((item) => typeof item === "string");
+const number = (value: unknown): value is number =>
+	typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
 function summary(value: unknown): boolean {
 	return (
@@ -55,13 +59,27 @@ export function threadDiscovery(value: unknown): value is ThreadDiscovery {
 		(value.coverage.unavailable === undefined || number(value.coverage.unavailable)) &&
 		(value.sources === undefined ||
 			(Array.isArray(value.sources) &&
-				value.sources.every((item) => object(item) && typeof item.sessionId === "string" && number(item.omitted) && typeof item.unavailable === "boolean")))
+				value.sources.every(
+					(item) =>
+						object(item) &&
+						typeof item.sessionId === "string" &&
+						number(item.omitted) &&
+						typeof item.unavailable === "boolean",
+				)))
 	);
 }
 
 /** A thread page in the owner's shape; anything else is refused, never adapted. */
 export function threadPage(value: unknown): value is CollaborationPage {
-	if (!object(value) || value.direction !== undefined || !object(value.thread) || !Array.isArray(value.events) || value.events.length > 20 || !object(value.coverage)) return false;
+	if (
+		!object(value) ||
+		value.direction !== undefined ||
+		!object(value.thread) ||
+		!Array.isArray(value.events) ||
+		value.events.length > 20 ||
+		!object(value.coverage)
+	)
+		return false;
 	const thread = value.thread;
 	return (
 		["id", "title", "purpose", "authority", "source", "restrictions", "acceptance", "integrator", "creator"].every(
@@ -83,9 +101,14 @@ export function threadPage(value: unknown): value is CollaborationPage {
 		value.events.every(
 			(event) =>
 				object(event) &&
-				["threadId", "sender", "kind", "message", "source"].every((key) => typeof event[key] === "string" && event[key].length <= 48 * 1024) &&
+				["threadId", "sender", "kind", "message", "source"].every(
+					(key) => typeof event[key] === "string" && event[key].length <= 48 * 1024,
+				) &&
 				(event.atUtc === null || typeof event.atUtc === "string") &&
-				(event.frameOmitted === undefined || (event.kind === "create" && event.message === "" && event.frameOmitted === "current-frame-returned-separately")) &&
+				(event.frameOmitted === undefined ||
+					(event.kind === "create" &&
+						event.message === "" &&
+						event.frameOmitted === "current-frame-returned-separately")) &&
 				(event.origin === "operator" || event.origin === "model") &&
 				["sequence", "at", "revision"].every((key) => number(event[key])) &&
 				(event.replyTo === null || number(event.replyTo)) &&
@@ -121,7 +144,11 @@ export function memberDeclarationLines(thread: CollaborationPage["thread"], name
 			(member) =>
 				`${plainThreadText(nameFor(member.identity).slice(0, 512)).replace(/\s+/g, " ")} [${plainThreadText(member.identity)}]: ${plainThreadText(member.contribution).replace(/\s+/g, " ").trim() || "No contribution declared"}`,
 		),
-		...(thread.members.length > visible.length ? [`${thread.members.length - visible.length} member declarations omitted by display bound. Read the thread with agent_collaborate.`] : []),
+		...(thread.members.length > visible.length
+			? [
+					`${thread.members.length - visible.length} member declarations omitted by display bound. Read the thread with agent_collaborate.`,
+				]
+			: []),
 		...(visible.length ? [] : ["No member declarations in this read"]),
 	];
 }

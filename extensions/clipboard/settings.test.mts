@@ -29,9 +29,10 @@ test("clipboard directory selects environment, document, or the host default", a
 			assert.equal(invalid.values.dir, join(agentDir, "clipboard"));
 			assert.equal(invalid.records[0].origin, "default");
 			assert.equal(invalid.records[0].status, "invalid");
-			assert.deepEqual(invalid.diagnostics.map(({ field, source, code }) => ({ field, source, code })), [
-				{ field: "clipboard.dir", source: "env", code: "invalid" },
-			]);
+			assert.deepEqual(
+				invalid.diagnostics.map(({ field, source, code }) => ({ field, source, code })),
+				[{ field: "clipboard.dir", source: "env", code: "invalid" }],
+			);
 			assert.ok(!JSON.stringify(invalid.diagnostics).includes(value) || value === "");
 		}
 		for (const value of [null, false, 7, [], {}, "", "bad\npath"]) {
@@ -62,16 +63,33 @@ test("ordinary publication refreshes and native archive reads remain host-isolat
 	let shutdown = () => {};
 	let nativeClose = () => {};
 	let contribution: DurableContribution | undefined;
-	bus.on("durable:contribution", (value: DurableContribution) => { contribution = value; });
+	bus.on("durable:contribution", (value: DurableContribution) => {
+		contribution = value;
+	});
 	try {
 		await Promise.all([mkdir(ordinaryDir), mkdir(nativeDir)]);
 		process.env.PI_CODING_AGENT_DIR = ordinaryDir;
 		delete process.env.PI_HARNESS_FILE;
 		delete process.env.PI_CLIPBOARD_DIR;
-		await writeFile(join(ordinaryDir, "harness.json"), JSON.stringify({ version: 1, clipboard: { dir: "ordinary-archive" } }));
-		await writeFile(join(nativeDir, "harness.json"), JSON.stringify({ version: 1, clipboard: { dir: "native-archive" } }));
-		assert.equal(await appendEntry(join(ordinaryDir, "ordinary-archive"), makeEntry("ordinary", undefined, new Date(), "ordinary-entry")), null);
-		assert.equal(await appendEntry(join(nativeDir, "native-archive"), makeEntry("native", undefined, new Date(), "native-entry")), null);
+		await writeFile(
+			join(ordinaryDir, "harness.json"),
+			JSON.stringify({ version: 1, clipboard: { dir: "ordinary-archive" } }),
+		);
+		await writeFile(
+			join(nativeDir, "harness.json"),
+			JSON.stringify({ version: 1, clipboard: { dir: "native-archive" } }),
+		);
+		assert.equal(
+			await appendEntry(
+				join(ordinaryDir, "ordinary-archive"),
+				makeEntry("ordinary", undefined, new Date(), "ordinary-entry"),
+			),
+			null,
+		);
+		assert.equal(
+			await appendEntry(join(nativeDir, "native-archive"), makeEntry("native", undefined, new Date(), "native-entry")),
+			null,
+		);
 		bus.on("harness:settings:publish", (publication: SettingsPublication) => {
 			assert.equal(bus.listenerCount("harness:settings:request"), 1);
 			publications.push(publication);
@@ -83,10 +101,14 @@ test("ordinary publication refreshes and native archive reads remain host-isolat
 				if (event === "session_shutdown") shutdown = handler;
 			},
 			events: {
-				emit: (event: string, value: unknown) => { bus.emit(event, value); },
+				emit: (event: string, value: unknown) => {
+					bus.emit(event, value);
+				},
 				on: (event: string, handler: (value: unknown) => void) => {
 					bus.on(event, handler);
-					return () => { bus.off(event, handler); };
+					return () => {
+						bus.off(event, handler);
+					};
 				},
 			},
 		} as unknown as ExtensionAPI);
@@ -103,14 +125,20 @@ test("ordinary publication refreshes and native archive reads remain host-isolat
 		const native = await contribution.create({
 			durable: Durable,
 			agentDir: nativeDir,
-			onClose: (dispose) => { nativeClose = dispose as () => void; },
+			onClose: (dispose) => {
+				nativeClose = dispose as () => void;
+			},
 		});
 		assert.equal(publications.length, 2);
 		assert.equal(publications[1].source.path, join(nativeDir, "harness.json"));
 		assert.equal(publications[1].records[0].value, join(nativeDir, "native-archive"));
 		const nativeList = native.tools?.find((tool) => tool.name === "clipboard_list");
 		assert.ok(nativeList);
-		const nativeResult = await nativeList.execute({}, {} as never, { abortSignal: new AbortController().signal } as never);
+		const nativeResult = await nativeList.execute(
+			{},
+			{} as never,
+			{ abortSignal: new AbortController().signal } as never,
+		);
 		assert.match(JSON.stringify(nativeResult), /native-entry/);
 		assert.doesNotMatch(JSON.stringify(nativeResult), /ordinary-entry/);
 		for (const request of [null, {}, { version: 2 }]) bus.emit("harness:settings:request", request);
@@ -124,10 +152,16 @@ test("ordinary publication refreshes and native archive reads remain host-isolat
 		assert.equal(publications.at(-1)?.records[0].value, join(nativeDir, "clipboard"));
 		assert.equal(publications.at(-1)?.diagnostics[0].source, "env");
 		delete process.env.PI_CLIPBOARD_DIR;
-		await writeFile(join(ordinaryDir, "harness.json"), JSON.stringify({ version: 1, clipboard: { dir: "changed-archive" } }));
+		await writeFile(
+			join(ordinaryDir, "harness.json"),
+			JSON.stringify({ version: 1, clipboard: { dir: "changed-archive" } }),
+		);
 		bus.emit("harness:settings:request", { version: 1 });
 		assert.equal(publications.at(-1)?.records[0].value, join(nativeDir, "native-archive"));
-		await writeFile(join(nativeDir, "harness.json"), JSON.stringify({ version: 1, clipboard: { dir: "changed-archive" } }));
+		await writeFile(
+			join(nativeDir, "harness.json"),
+			JSON.stringify({ version: 1, clipboard: { dir: "changed-archive" } }),
+		);
 		bus.emit("harness:settings:request", { version: 1 });
 		assert.equal(publications.at(-1)?.records[0].value, join(nativeDir, "changed-archive"));
 		shutdown();
@@ -165,22 +199,31 @@ test("unknown diagnostics bound their key text and retain publication records", 
 	const options = { agentDir, env: {} };
 	await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, clipboard: { dir: 7 } }));
 	const baseline = readSettings(options);
-	await writeFile(join(agentDir, "harness.json"), JSON.stringify({
-		version: 1,
-		clipboard: { dir: 7, otherUnknown: true, ...Object.fromEntries(keys.map((key) => [key, true])) },
-	}));
+	await writeFile(
+		join(agentDir, "harness.json"),
+		JSON.stringify({
+			version: 1,
+			clipboard: { dir: 7, otherUnknown: true, ...Object.fromEntries(keys.map((key) => [key, true])) },
+		}),
+	);
 	const snapshot = readSettings(options);
 	assert.deepEqual(snapshot.records, baseline.records);
-	assert.deepEqual(snapshot.diagnostics.filter((item) => item.code !== "unknown"), baseline.diagnostics);
-	assert.deepEqual(snapshot.diagnostics.filter((item) => item.code === "unknown").map((item) => item.field), [
-		`${prefix}otherUnknown`,
-		`${prefix}${"a".repeat(63)}`,
-		`${prefix}${"a".repeat(64)}`,
-		`${prefix}${"a".repeat(62)}😀`,
-		`${prefix}${"😀".repeat(32)}`,
-		`${prefix}<invalid-key>`,
-		`${prefix}<invalid-key>`,
-	]);
+	assert.deepEqual(
+		snapshot.diagnostics.filter((item) => item.code !== "unknown"),
+		baseline.diagnostics,
+	);
+	assert.deepEqual(
+		snapshot.diagnostics.filter((item) => item.code === "unknown").map((item) => item.field),
+		[
+			`${prefix}otherUnknown`,
+			`${prefix}${"a".repeat(63)}`,
+			`${prefix}${"a".repeat(64)}`,
+			`${prefix}${"a".repeat(62)}😀`,
+			`${prefix}${"😀".repeat(32)}`,
+			`${prefix}<invalid-key>`,
+			`${prefix}<invalid-key>`,
+		],
+	);
 	for (const item of snapshot.diagnostics) {
 		assert.ok(item.field.startsWith(prefix));
 		assert.ok(item.field.slice(prefix.length).length <= 64);

@@ -22,8 +22,15 @@ import {
 	CAPACITY_NOTICE_HEADER,
 	capacityConfig,
 	capacityDirectiveLines,
-	band, continuityTools, effectiveCheckpointPercent, gate, gateState, gateStatus, piAutoThreshold,
-	type GateState, type Measure,
+	band,
+	continuityTools,
+	effectiveCheckpointPercent,
+	gate,
+	gateState,
+	gateStatus,
+	piAutoThreshold,
+	type GateState,
+	type Measure,
 } from "./capacity.ts";
 import {
 	buildDistillPrompt,
@@ -79,7 +86,14 @@ import {
 	writeReplayableStash,
 } from "./store.ts";
 import { boundedOutput, sanitizeTerminalText } from "./text.ts";
-import { budgetAction, budgetNotice, budgetStatus, conversationCost, type BudgetCost, type SessionBudget } from "./budget.ts";
+import {
+	budgetAction,
+	budgetNotice,
+	budgetStatus,
+	conversationCost,
+	type BudgetCost,
+	type SessionBudget,
+} from "./budget.ts";
 
 /** What the host supplies to one Durable extension instance. */
 export interface StashDurableHost {
@@ -128,7 +142,12 @@ export interface StashDurableContribution {
 	/** Presentation-only module the standalone Agent terminal imports locally; see docs/conventions/tool-display.md. */
 	readonly display?: { readonly version: 1; readonly entry: string; readonly export: string };
 	/** The browser module for the attached terminal and the command that serves it; see docs/conventions/operator-panels.md. */
-	readonly panel?: { readonly version: 1; readonly entry: string; readonly export: "operatorPanel"; readonly command: string };
+	readonly panel?: {
+		readonly version: 1;
+		readonly entry: string;
+		readonly export: "operatorPanel";
+		readonly command: string;
+	};
 	create(host: StashDurableHost): Durable.Extension;
 	readonly commands?: readonly StashDurableCommand[];
 }
@@ -390,19 +409,37 @@ type CapturedCreation = { input?: Durable.JsonObject };
 
 type DistillTaskState =
 	| { phase: "generate"; attempt: number }
-	| { phase: "write"; plan?: StashPublication; payload: DistillPayload; redactions: RedactionReport; createdAtMs: number };
+	| {
+			phase: "write";
+			plan?: StashPublication;
+			payload: DistillPayload;
+			redactions: RedactionReport;
+			createdAtMs: number;
+	  };
 
 function sourceLocator(host: StashDurableHost, conversationId: Durable.ConversationId): string {
 	return conversationId === host.durable.ROOT_CONVERSATION_ID ? host.storageId : `${host.storageId}:${conversationId}`;
 }
 
 function unexecuted(diagnostics: readonly { code?: string }[] | undefined): boolean {
-	return diagnostics?.some((diagnostic) => diagnostic.code === "blocked" || diagnostic.code === "tool_unavailable" || diagnostic.code === "invalid_arguments") === true;
+	return (
+		diagnostics?.some(
+			(diagnostic) =>
+				diagnostic.code === "blocked" ||
+				diagnostic.code === "tool_unavailable" ||
+				diagnostic.code === "invalid_arguments",
+		) === true
+	);
 }
 
 type NativeGateRead = { through?: Durable.EntryId };
 
-async function refusedNativeRound(host: StashDurableHost, results: readonly Durable.EntryId[], api: Durable.HookApi, context: Context): Promise<boolean> {
+async function refusedNativeRound(
+	host: StashDurableHost,
+	results: readonly Durable.EntryId[],
+	api: Durable.HookApi,
+	context: Context,
+): Promise<boolean> {
 	if (results.length === 0) return false;
 	for (const id of results) {
 		const entry = await capacityRead(context, (bounded) => api.entry(host.durable.ToolResultEntry, id, bounded));
@@ -411,7 +448,12 @@ async function refusedNativeRound(host: StashDurableHost, results: readonly Dura
 	return true;
 }
 
-async function restoreNativeRefusals(state: GateState, host: StashDurableHost, api: Durable.HookApi, context: Context): Promise<void> {
+async function restoreNativeRefusals(
+	state: GateState,
+	host: StashDurableHost,
+	api: Durable.HookApi,
+	context: Context,
+): Promise<void> {
 	const blockedRounds = state.blockedRounds;
 	state.blockedRounds = 0;
 	if (blockedRounds === 0 || state.released) return;
@@ -424,7 +466,7 @@ function nativeMeasure(host: StashDurableHost, message: AssistantMessage): Measu
 	const window = providerContextWindow(message.provider, message.model, host.services.modelRuntime);
 	const tokens = calculateContextTokens(message.usage);
 	return window && Number.isFinite(tokens) && tokens > 0
-		? { kind: "known", tokens, contextWindow: window, percent: tokens / window * 100 }
+		? { kind: "known", tokens, contextWindow: window, percent: (tokens / window) * 100 }
 		: { kind: "unknown" };
 }
 
@@ -436,7 +478,13 @@ function observeNativeGateBoundary(states: Map<string, GateState>, key: string, 
 }
 
 /** Read only the unexamined interval, once per response, under one deadline. */
-async function refreshNativeGate(states: Map<string, GateState>, read: NativeGateRead, measure: Measure, api: Durable.HookApi, parent: Context): Promise<void> {
+async function refreshNativeGate(
+	states: Map<string, GateState>,
+	read: NativeGateRead,
+	measure: Measure,
+	api: Durable.HookApi,
+	parent: Context,
+): Promise<void> {
 	const key = String(api.conversationId);
 	const complete = await capacityRead(parent, async (context) => {
 		const tail = (await api.entries({ order: "descending" }, 1, undefined, context)).items[0];
@@ -479,7 +527,10 @@ function checkCapacityCancellation(context: Context): void {
 
 async function capacityRead<T>(parent: Context, read: (context: Context) => Promise<T>): Promise<T | undefined> {
 	const child = withCancel(parent);
-	const timer = setTimeout(() => child.cancel(new Error("Stash capacity read deadline reached")), CAPACITY_READ_TIMEOUT_MS);
+	const timer = setTimeout(
+		() => child.cancel(new Error("Stash capacity read deadline reached")),
+		CAPACITY_READ_TIMEOUT_MS,
+	);
 	try {
 		return await awaitWithContext(read(child.context), child.context);
 	} catch (error) {
@@ -565,12 +616,26 @@ async function runStashCommand(call: StashDurableCommandCall): Promise<string | 
 			const observation = await capacityRead(call.context, async (context) => {
 				const view = await call.conversation.context(context);
 				checkCapacityCancellation(context);
-				const cost = conversationCost(await call.harness.snapshot(call.host.durable.UsageDoc, call.conversation.id, context));
+				const cost = conversationCost(
+					await call.harness.snapshot(call.host.durable.UsageDoc, call.conversation.id, context),
+				);
 				checkCapacityCancellation(context);
 				return { estimate: estimateContext(view.messages, call.host.services.modelRuntime, undefined), cost };
 			});
-			const cost: BudgetCost = observation?.cost ?? { kind: "unavailable", reason: "the conversation usage counter is unavailable" };
-			return [budgetStatus(budget, "command"), budgetNotice(budget, observation ? { kind: "request_estimate", tokens: observation.estimate.estimatedTokens } : { kind: "unavailable" }, cost)].join("\n");
+			const cost: BudgetCost = observation?.cost ?? {
+				kind: "unavailable",
+				reason: "the conversation usage counter is unavailable",
+			};
+			return [
+				budgetStatus(budget, "command"),
+				budgetNotice(
+					budget,
+					observation
+						? { kind: "request_estimate", tokens: observation.estimate.estimatedTokens }
+						: { kind: "unavailable" },
+					cost,
+				),
+			].join("\n");
 		}
 		case "help":
 		case undefined:
@@ -678,7 +743,12 @@ async function pickupCommand(binding: StashBinding, call: StashDurableCommandCal
 }
 
 /** Activate one record and queue its handover as the bound conversation's next input; the invocation keys the submission. */
-async function pickupStash(binding: StashBinding, call: StashDurableCommandCall, id: string, note: string | undefined): Promise<string> {
+async function pickupStash(
+	binding: StashBinding,
+	call: StashDurableCommandCall,
+	id: string,
+	note: string | undefined,
+): Promise<string> {
 	const { conversation, context, invocationId } = call;
 	const activated = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
 		transitionStash(dir, targetId, { action: "activate" }, undefined, context.abortSignal),
@@ -724,7 +794,12 @@ async function lifecycleCommand(
 	return changeStash(binding, context, verb, id);
 }
 
-async function changeStash(binding: StashBinding, context: Context, verb: "release" | "reopen" | "rotate", id: string): Promise<string> {
+async function changeStash(
+	binding: StashBinding,
+	context: Context,
+	verb: "release" | "reopen" | "rotate",
+	id: string,
+): Promise<string> {
 	if (verb === "rotate") {
 		const rotated = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
 			rotateStash(dir, targetId, context.abortSignal),
@@ -738,26 +813,56 @@ async function changeStash(binding: StashBinding, context: Context, verb: "relea
 }
 
 /** The attached browser's requests: views and entries as data, effects as receipts; each effect is one deliberate control. */
-async function browserAnswer(binding: StashBinding, call: StashDurableCommandCall): Promise<{ text: string; data: JsonValue }> {
+async function browserAnswer(
+	binding: StashBinding,
+	call: StashDurableCommandCall,
+): Promise<{ text: string; data: JsonValue }> {
 	const request = readPanelRequest(call.data);
 	const signal = call.context.abortSignal;
 	const answer = await browserRequestAnswer(binding, call, request, signal);
-	const text = "view" in answer ? `${answer.view.entries.length}${answer.view.hasMore ? "+" : ""} ${answer.view.scope} stashes` : "entry" in answer ? `stash ${answer.entry.meta.id}` : answer.text;
+	const text =
+		"view" in answer
+			? `${answer.view.entries.length}${answer.view.hasMore ? "+" : ""} ${answer.view.scope} stashes`
+			: "entry" in answer
+				? `stash ${answer.entry.meta.id}`
+				: answer.text;
 	return { text, data: JSON.parse(JSON.stringify(answer)) as JsonValue };
 }
 
-async function browserRequestAnswer(binding: StashBinding, call: StashDurableCommandCall, request: StashPanelRequest, signal: AbortSignal | undefined): Promise<StashPanelAnswer> {
+async function browserRequestAnswer(
+	binding: StashBinding,
+	call: StashDurableCommandCall,
+	request: StashPanelRequest,
+	signal: AbortSignal | undefined,
+): Promise<StashPanelAnswer> {
 	switch (request.op) {
-		case "recent": return { op: "recent", view: await loadRecent(binding.storeDir, signal) };
-		case "archive": return { op: "archive", view: await loadArchive(binding.storeDir, request.query, request.cursor, undefined, signal) };
+		case "recent":
+			return { op: "recent", view: await loadRecent(binding.storeDir, signal) };
+		case "archive":
+			return {
+				op: "archive",
+				view: await loadArchive(binding.storeDir, request.query, request.cursor, undefined, signal),
+			};
 		case "preview": {
 			const located = await resolveStash(binding.storeDir, request.id, signal);
 			if ("error" in located) throw readFailure(located);
-			return { op: "preview", entry: await loadSelectedPreview(binding.storeDir, { meta: { id: located.id } } as StashEntry, signal) };
+			return {
+				op: "preview",
+				entry: await loadSelectedPreview(binding.storeDir, { meta: { id: located.id } } as StashEntry, signal),
+			};
 		}
-		case "pickup": return { op: "pickup", id: request.id, text: await pickupStash(binding, call, request.id, request.note) };
-		case "close": return { op: "close", id: request.id, text: await closeStash(binding, call.context, request.id, request.outcome) };
-		case "release": case "reopen": case "rotate": return { op: request.op, id: request.id, text: await changeStash(binding, call.context, request.op, request.id) };
+		case "pickup":
+			return { op: "pickup", id: request.id, text: await pickupStash(binding, call, request.id, request.note) };
+		case "close":
+			return {
+				op: "close",
+				id: request.id,
+				text: await closeStash(binding, call.context, request.id, request.outcome),
+			};
+		case "release":
+		case "reopen":
+		case "rotate":
+			return { op: request.op, id: request.id, text: await changeStash(binding, call.context, request.op, request.id) };
 	}
 }
 
@@ -766,7 +871,8 @@ function observeReleaseBoundaries(binding: StashBinding, harness: Durable.Harnes
 	const observation = harness.observeCommits({
 		advance: (publication) => {
 			for (const change of publication.changes) {
-				if (change.type !== "entry" || (change.value.kind !== "pi.compaction" && change.value.kind !== "pi.reset")) continue;
+				if (change.type !== "entry" || (change.value.kind !== "pi.compaction" && change.value.kind !== "pi.reset"))
+					continue;
 				const key = String(change.value.conversationId);
 				const current = binding.gates.get(key);
 				if (current && (current.episode === null || Number(current.episode) < change.value.id)) {
@@ -799,12 +905,14 @@ async function capacityCommand(
 	}
 	if (parts[1] === "release") {
 		observeReleaseBoundaries(binding, harness, host);
-		const released = await capacityRead(context, (bounded) => conversation.commit(async (tx) => {
-			const marker = await tx.latestHeadMarker(conversation.id);
-			checkCapacityCancellation(bounded);
-			gateState(binding.gates, String(conversation.id), marker ? String(marker.id) : null).released = true;
-			return true;
-		}, bounded));
+		const released = await capacityRead(context, (bounded) =>
+			conversation.commit(async (tx) => {
+				const marker = await tx.latestHeadMarker(conversation.id);
+				checkCapacityCancellation(bounded);
+				gateState(binding.gates, String(conversation.id), marker ? String(marker.id) : null).released = true;
+				return true;
+			}, bounded),
+		);
 		if (!released) throw new Error("Stash capacity release could not read the current context boundary.");
 		return "Stash stop and decision round released until the next compaction in this session. Reload restores them.";
 	}
@@ -910,7 +1018,8 @@ export function stashDurableContribution(
 		commands: [
 			{
 				name: "stash",
-				description: "Create, get, complete, release, reopen, rotate, or inspect stashed efforts; the attached browser sends structured requests",
+				description:
+					"Create, get, complete, release, reopen, rotate, or inspect stashed efforts; the attached browser sends structured requests",
 				run: runStashCommand,
 			},
 		],
@@ -927,16 +1036,26 @@ async function publicationPlan(
 	const plan = await api.memo<StashPublication>("stash.publication", context);
 	const pending = await api.memo<{ createdAtMs: number }>("stash.write", context);
 	if (plan) return plan;
-	if (pending) throw new Error(`Unsupported pending timestamp-only publication (${pending.createdAtMs}). This resumed attempt made no new publication. The earlier outcome, original destination and artifact identity are unknown. Inspect the retained result and original destination/archive before creating a new write. Reuse an existing artifact when its identity is established. This refusal settles the task; switching source does not resume it.`);
+	if (pending)
+		throw new Error(
+			`Unsupported pending timestamp-only publication (${pending.createdAtMs}). This resumed attempt made no new publication. The earlier outcome, original destination and artifact identity are unknown. Inspect the retained result and original destination/archive before creating a new write. Reuse an existing artifact when its identity is established. This refusal settles the task; switching source does not resume it.`,
+		);
 	const agent = await api.agent(context);
 	const cwd = api.env?.cwd ?? agent.cwd ?? host.cwd;
 	const branch = await gitBranch(api.env, context);
 	const destination = params.checkpoint
 		? await checkpointDirectory(readSettings({ agentDir: host.agentDir }).values.checkpointDir, storeDir)
 		: storeDir;
-	return api.memo("stash.publication", planStashPublication(
-		destination, { ...params, project: cwd, branch, sessionId: sourceLocator(host, api.conversationId) }, new Date(api.now()), params.checkpoint,
-	), context);
+	return api.memo(
+		"stash.publication",
+		planStashPublication(
+			destination,
+			{ ...params, project: cwd, branch, sessionId: sourceLocator(host, api.conversationId) },
+			new Date(api.now()),
+			params.checkpoint,
+		),
+		context,
+	);
 }
 
 /** Build the native Durable extension for one session host. */
@@ -944,17 +1063,27 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 	let capacityErrorReported = false;
 	const readCapacityConfig = (report = false) => {
 		const values = readSettings({ agentDir: host.agentDir }).values;
-		try { return capacityConfig(values); }
-		catch (error) {
-			if (report && !capacityErrorReported) { capacityErrorReported = true; throw error; }
+		try {
+			return capacityConfig(values);
+		} catch (error) {
+			if (report && !capacityErrorReported) {
+				capacityErrorReported = true;
+				throw error;
+			}
 			return capacityConfig({ ...values, capacity: false });
 		}
 	};
 	const gates = new Map<string, GateState>();
 	const budgets = new Map<string, SessionBudget>();
 	const gateReads = new Map<string, NativeGateRead>();
-	const currentGate = (api: Durable.HookApi) => gates.get(String(api.conversationId)) ?? gateState(gates, String(api.conversationId), null);
-	host.onClose(() => { gates.clear(); budgets.clear(); gateReads.clear(); bindings.delete(host); });
+	const currentGate = (api: Durable.HookApi) =>
+		gates.get(String(api.conversationId)) ?? gateState(gates, String(api.conversationId), null);
+	host.onClose(() => {
+		gates.clear();
+		budgets.clear();
+		gateReads.clear();
+		bindings.delete(host);
+	});
 	const storeDir = resolveStoreDir(process.env, host.agentDir);
 
 	const capacityDoc = host.durable.defineDoc<CapacityDocState>({
@@ -1010,7 +1139,9 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					`Stashed "${safeLine(record.title)}" as ${record.id}`,
 					safeLine(path),
 					"",
-					...(archived ? ["The original artifact is archived; its current body and state are preserved."] : ["Resume in a new session:", `  ${resumeCommand(record.id)}`]),
+					...(archived
+						? ["The original artifact is archived; its current body and state are preserved."]
+						: ["Resume in a new session:", `  ${resumeCommand(record.id)}`]),
 					...(redactions.count ? [redactionNotice(redactions)] : []),
 				].join("\n");
 				return {
@@ -1199,13 +1330,22 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 							}
 							return;
 						case "payload": {
-							const scanned = redactPayloadWithReport({ ...parsed.payload, project: task.input.project, branch: task.input.branch, sessionId: task.input.sessionId });
+							const scanned = redactPayloadWithReport({
+								...parsed.payload,
+								project: task.input.project,
+								branch: task.input.branch,
+								sessionId: task.input.sessionId,
+							});
 							const redactions = mergeRedactionReports(task.input.redactions, scanned.report);
 							const notice = redactionNotice(redactions);
-							const plan = planStashPublication(task.input.storeDir, {
-								...scanned.payload,
-								summary: `${scanned.payload.summary}${notice ? `\n\n## Redaction notice\n\n${notice}` : ""}`,
-							}, new Date(runtime.now()));
+							const plan = planStashPublication(
+								task.input.storeDir,
+								{
+									...scanned.payload,
+									summary: `${scanned.payload.summary}${notice ? `\n\n## Redaction notice\n\n${notice}` : ""}`,
+								},
+								new Date(runtime.now()),
+							);
 							await runtime.commit(
 								() => ({
 									status: "running",
@@ -1234,12 +1374,11 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 				const state = task.state.checkpoint;
 				const redactions = state.redactions;
 				try {
-					if (!state.plan) throw new Error(`Unsupported pending distillation publication at ${task.input.storeDir} (${state.createdAtMs}). This resumed attempt made no new publication. The earlier outcome and artifact identity are unknown. Inspect the retained result, captured destination ${task.input.storeDir} and its .trash archive before creating a new write. Reuse an existing artifact when its identity is established. This refusal settles the task; switching source does not resume it.`);
-					const {
-						record,
-						path,
-						redactions: published,
-					} = await writeReplayableStash(state.plan);
+					if (!state.plan)
+						throw new Error(
+							`Unsupported pending distillation publication at ${task.input.storeDir} (${state.createdAtMs}). This resumed attempt made no new publication. The earlier outcome and artifact identity are unknown. Inspect the retained result, captured destination ${task.input.storeDir} and its .trash archive before creating a new write. Reuse an existing artifact when its identity is established. This refusal settles the task; switching source does not resume it.`,
+						);
+					const { record, path, redactions: published } = await writeReplayableStash(state.plan);
 					await finishDistill(runtime, context, {
 						status: "completed",
 						id: record.id,
@@ -1315,9 +1454,16 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					const config = readCapacityConfig();
 					if (!config.enabled) return undefined;
 					const state = currentGate(api);
-					const decision = gate({ measure: state.measure ?? { kind: "unknown" }, toolName: call.name, args: call.arguments,
-						config, declared: continuityTools(bus), released: state.released,
-						decisionRoundOpen: !state.decisionRoundUsed, blockedRounds: state.blockedRounds });
+					const decision = gate({
+						measure: state.measure ?? { kind: "unknown" },
+						toolName: call.name,
+						args: call.arguments,
+						config,
+						declared: continuityTools(bus),
+						released: state.released,
+						decisionRoundOpen: !state.decisionRoundUsed,
+						blockedRounds: state.blockedRounds,
+					});
 					if (decision.kind === "block") {
 						if (band(state.measure ?? { kind: "unknown" }, config) === "decision") state.decisionRoundOpen = true;
 						return { block: decision.reason };
@@ -1328,8 +1474,17 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					const config = readCapacityConfig();
 					if (!config.enabled) return undefined;
 					const state = currentGate(api);
-					if (result.diagnostics?.some((diagnostic) => diagnostic.code === "aborted" || diagnostic.code === "abandoned")) state.blockedRounds = 0;
-					if (config.enabled && !state.released && band(state.measure ?? { kind: "unknown" }, config) === "stop" && state.blockedRounds >= 2 && unexecuted(result.diagnostics)) {
+					if (
+						result.diagnostics?.some((diagnostic) => diagnostic.code === "aborted" || diagnostic.code === "abandoned")
+					)
+						state.blockedRounds = 0;
+					if (
+						config.enabled &&
+						!state.released &&
+						band(state.measure ?? { kind: "unknown" }, config) === "stop" &&
+						state.blockedRounds >= 2 &&
+						unexecuted(result.diagnostics)
+					) {
 						return { ...result, control: { ...result.control, terminate: true } };
 					}
 					return undefined;
@@ -1348,7 +1503,7 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 						state.blockedRounds = 0;
 						return;
 					}
-					state.blockedRounds = await refusedNativeRound(host, results, api, context) ? state.blockedRounds + 1 : 0;
+					state.blockedRounds = (await refusedNativeRound(host, results, api, context)) ? state.blockedRounds + 1 : 0;
 				},
 
 				afterResponse: async (message, api, context) => {
@@ -1384,28 +1539,42 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 						const agent = await api.snapshot(host.durable.AgentDoc, api.conversationId, context);
 						checkCapacityCancellation(context);
 						const estimate = estimateContext(request.messages, host.services.modelRuntime, agent?.model);
-						const model = agent?.model && host.services.modelRuntime.getModel(agent.model.provider, agent.model.modelId);
+						const model =
+							agent?.model && host.services.modelRuntime.getModel(agent.model.provider, agent.model.modelId);
 						const threshold = piAutoThreshold(host.services.settingsManager.getCompactionSettings(model), model);
-						const crossing = capacityRequest(estimate, latches, { ...config, checkpointPercent: effectiveCheckpointPercent(config, threshold) });
+						const crossing = capacityRequest(estimate, latches, {
+							...config,
+							checkpointPercent: effectiveCheckpointPercent(config, threshold),
+						});
 						if (!crossing.checkpoint && !crossing.decision) return undefined;
 						await api.memo(
 							"capacity",
-							{ episode, conversation, text: [capacityNoticeText(estimate, crossing, episode, conversation, config.stopPercent), compactionLeadText(config, threshold)].filter(Boolean).join("\n") },
+							{
+								episode,
+								conversation,
+								text: [
+									capacityNoticeText(estimate, crossing, episode, conversation, config.stopPercent),
+									compactionLeadText(config, threshold),
+								]
+									.filter(Boolean)
+									.join("\n"),
+							},
 							context,
 						);
 						return undefined;
 					});
 				},
-				onYield: async (_answer: AssistantMessage, api, parent) => capacityRead(parent, async (context) => {
-					const pending = await api.memo<CapacityMemo>("capacity", context);
-					checkCapacityCancellation(context);
-					if (pending === undefined) return undefined;
-					const doc = await api.snapshot(capacityDoc, api.conversationId, context);
-					checkCapacityCancellation(context);
-					const episode = doc?.episode ?? 1;
-					if (pending.episode !== episode || pending.conversation !== String(api.conversationId)) return undefined;
-					return { continue: pending.text };
-				}),
+				onYield: async (_answer: AssistantMessage, api, parent) =>
+					capacityRead(parent, async (context) => {
+						const pending = await api.memo<CapacityMemo>("capacity", context);
+						checkCapacityCancellation(context);
+						if (pending === undefined) return undefined;
+						const doc = await api.snapshot(capacityDoc, api.conversationId, context);
+						checkCapacityCancellation(context);
+						const episode = doc?.episode ?? 1;
+						if (pending.episode !== episode || pending.conversation !== String(api.conversationId)) return undefined;
+						return { continue: pending.text };
+					}),
 			}),
 		],
 		tasks: [distillTask],

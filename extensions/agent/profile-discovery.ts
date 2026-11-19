@@ -8,8 +8,12 @@ import type { ClaimObservation } from "./claims.ts";
 const nullableText = union([str(), nul()]);
 const ProfiledListRowSchema = obj({
 	...ListRowProperties,
-	handle: nullableText, role: nullableText,
-	profile: union([obj({ revision: str(), hasExpertise: bool(), updatedAt: union([num(), nul()]), source: lit("retained") }), nul()]),
+	handle: nullableText,
+	role: nullableText,
+	profile: union([
+		obj({ revision: str(), hasExpertise: bool(), updatedAt: union([num(), nul()]), source: lit("retained") }),
+		nul(),
+	]),
 	profileCoverage: union([lit("retained"), lit("unknown")]),
 });
 /** Frontend composite; the base host list operation keeps its independent schema. */
@@ -24,14 +28,28 @@ export const ProfiledListOutputSchema = obj({
 
 /** Retained profile hints enrich frontend rows, never the base host wire schema. */
 export function composeListRow<T extends { identity: string; name?: string; firstMessage?: string }>(
-	row: T, hints: ProfileHints | undefined, cwd: string, storageId: string,
+	row: T,
+	hints: ProfileHints | undefined,
+	cwd: string,
+	storageId: string,
 ) {
 	const hint = hints?.rows.find((item) => item.identity === row.identity);
 	return {
-		...row, sessionId: row.identity, storageId, cwd,
-		handle: hint?.handle ?? null, role: hint?.role ?? null,
-		profile: hint ? { revision: hint.revision, hasExpertise: hint.hasExpertise, updatedAt: hint.updatedAt, source: "retained" as const } : null,
-		profileCoverage: hint ? "retained" as const : "unknown" as const,
+		...row,
+		sessionId: row.identity,
+		storageId,
+		cwd,
+		handle: hint?.handle ?? null,
+		role: hint?.role ?? null,
+		profile: hint
+			? {
+					revision: hint.revision,
+					hasExpertise: hint.hasExpertise,
+					updatedAt: hint.updatedAt,
+					source: "retained" as const,
+				}
+			: null,
+		profileCoverage: hint ? ("retained" as const) : ("unknown" as const),
 	};
 }
 
@@ -41,10 +59,24 @@ function matchesHandle(handle: string | null | undefined, query: string): boolea
 }
 
 /** Literal discovery includes concern addresses and roles without a host read. */
-export function matchesListRow(row: { identity: string; name?: string; firstMessage?: string; cwd: string; handle?: string | null; role?: string | null }, query: string): boolean {
+export function matchesListRow(
+	row: {
+		identity: string;
+		name?: string;
+		firstMessage?: string;
+		cwd: string;
+		handle?: string | null;
+		role?: string | null;
+	},
+	query: string,
+): boolean {
 	const term = query.toLocaleLowerCase();
-	return matchesHandle(row.handle, query) || [row.identity, row.name, row.firstMessage, row.cwd, row.handle, row.role]
-		.some((value) => value?.toLocaleLowerCase().includes(term));
+	return (
+		matchesHandle(row.handle, query) ||
+		[row.identity, row.name, row.firstMessage, row.cwd, row.handle, row.role].some((value) =>
+			value?.toLocaleLowerCase().includes(term),
+		)
+	);
 }
 
 /**
@@ -61,8 +93,10 @@ function recordCarriesQuery(record: CatalogRecord, term: string): boolean {
 	const texts: Array<string | null | undefined> = [record.storageId, record.cwd, record.name];
 	for (const row of record.view?.rows ?? []) texts.push(row.id, row.name, row.firstMessage);
 	for (const hint of record.view?.profiles?.rows ?? []) texts.push(hint.handle, hint.role);
-	return (record.view?.profiles?.rows ?? []).some((hint) => matchesHandle(hint.handle, term)) ||
-		texts.some((value) => value?.toLocaleLowerCase().includes(term));
+	return (
+		(record.view?.profiles?.rows ?? []).some((hint) => matchesHandle(hint.handle, term)) ||
+		texts.some((value) => value?.toLocaleLowerCase().includes(term))
+	);
 }
 
 /**
@@ -83,13 +117,25 @@ function recordCarriesQuery(record: CatalogRecord, term: string): boolean {
 export function classifyListStorage(record: CatalogRecord, claim: ClaimObservation, query: string): ListStorageClass {
 	if (!query) return "candidate";
 	const view = record.view;
-	if (!view || view.unavailable !== undefined || view.coverage.omitted > 0 || view.rows.length === 0 || record.recoveryDue !== false) return "candidate";
+	if (
+		!view ||
+		view.unavailable !== undefined ||
+		view.coverage.omitted > 0 ||
+		view.rows.length === 0 ||
+		record.recoveryDue !== false
+	)
+		return "candidate";
 	if (recordCarriesQuery(record, query.toLocaleLowerCase())) return "candidate";
-	return claim.kind === "dead" && claim.endedAt !== undefined && view.updatedAt <= claim.endedAt ? "settled" : "remainder";
+	return claim.kind === "dead" && claim.endedAt !== undefined && view.updatedAt <= claim.endedAt
+		? "settled"
+		: "remainder";
 }
 
 /** One storage a pass observes; a missing record marks an unreadable catalog file. */
-export interface ListScanStep { storageId: string; record?: CatalogRecord }
+export interface ListScanStep {
+	storageId: string;
+	record?: CatalogRecord;
+}
 export interface ListScanPlan {
 	/** Readable catalog records in scope. */
 	storages: number;
@@ -100,8 +146,14 @@ export interface ListScanPlan {
 }
 
 /** The query order also compares continuation positions; exact handles precede other identities. */
-export function compareListStorages(facts: ReadonlyMap<string, CatalogFact | null>, query: string, left: string, right: string): number {
-	const exact = (id: string) => facts.get(id)?.record.view?.profiles?.rows.some((hint) => matchesHandle(hint.handle, query)) ?? false;
+export function compareListStorages(
+	facts: ReadonlyMap<string, CatalogFact | null>,
+	query: string,
+	left: string,
+	right: string,
+): number {
+	const exact = (id: string) =>
+		facts.get(id)?.record.view?.profiles?.rows.some((hint) => matchesHandle(hint.handle, query)) ?? false;
 	return Number(exact(right)) - Number(exact(left)) || (left < right ? -1 : left > right ? 1 : 0);
 }
 
@@ -112,19 +164,41 @@ export function compareListStorages(facts: ReadonlyMap<string, CatalogFact | nul
  * after `since`, the start of the discovery: the candidates pass can have read an earlier record that was no
  * candidate. Such a storage can be observed in both passes.
  */
-export function planListScan(facts: ReadonlyMap<string, CatalogFact | null>, query: string, cwd: string, since: number): ListScanPlan {
-	const plan: ListScanPlan = { storages: 0, settled: 0, candidates: [], remainder: [], profileHints: { complete: true, unknownStorages: 0, omitted: 0 } };
+export function planListScan(
+	facts: ReadonlyMap<string, CatalogFact | null>,
+	query: string,
+	cwd: string,
+	since: number,
+): ListScanPlan {
+	const plan: ListScanPlan = {
+		storages: 0,
+		settled: 0,
+		candidates: [],
+		remainder: [],
+		profileHints: { complete: true, unknownStorages: 0, omitted: 0 },
+	};
 	for (const storageId of [...facts.keys()].sort((left, right) => compareListStorages(facts, query, left, right))) {
 		const fact = facts.get(storageId);
-		if (!fact) { plan.candidates.push({ storageId }); continue; }
+		if (!fact) {
+			plan.candidates.push({ storageId });
+			continue;
+		}
 		const { record } = fact;
 		if (cwd && record.cwd !== cwd) continue;
 		plan.storages++;
 		const hints = record.view?.profiles;
-		if (!hints) { plan.profileHints.complete = false; plan.profileHints.unknownStorages++; }
-		else { plan.profileHints.complete &&= hints.coverage.complete; plan.profileHints.omitted += hints.coverage.omitted; }
+		if (!hints) {
+			plan.profileHints.complete = false;
+			plan.profileHints.unknownStorages++;
+		} else {
+			plan.profileHints.complete &&= hints.coverage.complete;
+			plan.profileHints.omitted += hints.coverage.omitted;
+		}
 		const kind = classifyListStorage(record, fact.claim, query);
-		if (kind === "settled") { plan.settled++; continue; }
+		if (kind === "settled") {
+			plan.settled++;
+			continue;
+		}
 		if (kind === "candidate") plan.candidates.push({ storageId, record });
 		if (kind === "remainder" || (query && fact.modifiedAt >= since)) plan.remainder.push({ storageId, record });
 	}
@@ -145,7 +219,10 @@ export function listCoverageBasis(state: { query: string; pass: ListPass; pendin
 	return `Every storage in scope was observed or settled. ${settled} settled storage${settled === 1 ? " was" : "s were"} not observed: a settled storage has a complete publication without a match from a writer that ended cleanly.`;
 }
 
-export function enrichDashboardRow(row: AgentConversationSummary, hints: ProfileHints | undefined): AgentConversationSummary {
+export function enrichDashboardRow(
+	row: AgentConversationSummary,
+	hints: ProfileHints | undefined,
+): AgentConversationSummary {
 	const profile = hints?.rows.find((hint) => hint.identity === row.id);
 	return profile ? { ...row, profile } : row;
 }

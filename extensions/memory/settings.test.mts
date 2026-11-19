@@ -225,22 +225,31 @@ test("unknown diagnostics bound their key text and retain publication records", 
 	const options = { agentDir, env: {} };
 	writeFileSync(join(agentDir, "harness.json"), JSON.stringify({ version: 1, memory: { dir: 7 } }));
 	const baseline = readSettings(options);
-	writeFileSync(join(agentDir, "harness.json"), JSON.stringify({
-		version: 1,
-		memory: { dir: 7, otherUnknown: true, ...Object.fromEntries(keys.map((key) => [key, true])) },
-	}));
+	writeFileSync(
+		join(agentDir, "harness.json"),
+		JSON.stringify({
+			version: 1,
+			memory: { dir: 7, otherUnknown: true, ...Object.fromEntries(keys.map((key) => [key, true])) },
+		}),
+	);
 	const snapshot = readSettings(options);
 	assert.deepEqual(snapshot.records, baseline.records);
-	assert.deepEqual(snapshot.diagnostics.filter((item) => item.code !== "unknown"), baseline.diagnostics);
-	assert.deepEqual(snapshot.diagnostics.filter((item) => item.code === "unknown").map((item) => item.field), [
-		`${prefix}otherUnknown`,
-		`${prefix}${"a".repeat(63)}`,
-		`${prefix}${"a".repeat(64)}`,
-		`${prefix}${"a".repeat(62)}😀`,
-		`${prefix}${"😀".repeat(32)}`,
-		`${prefix}<invalid-key>`,
-		`${prefix}<invalid-key>`,
-	]);
+	assert.deepEqual(
+		snapshot.diagnostics.filter((item) => item.code !== "unknown"),
+		baseline.diagnostics,
+	);
+	assert.deepEqual(
+		snapshot.diagnostics.filter((item) => item.code === "unknown").map((item) => item.field),
+		[
+			`${prefix}otherUnknown`,
+			`${prefix}${"a".repeat(63)}`,
+			`${prefix}${"a".repeat(64)}`,
+			`${prefix}${"a".repeat(62)}😀`,
+			`${prefix}${"😀".repeat(32)}`,
+			`${prefix}<invalid-key>`,
+			`${prefix}<invalid-key>`,
+		],
+	);
 	for (const item of snapshot.diagnostics) {
 		assert.ok(item.field.startsWith(prefix));
 		assert.ok(item.field.slice(prefix.length).length <= 64);

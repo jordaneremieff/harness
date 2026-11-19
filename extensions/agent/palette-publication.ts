@@ -13,12 +13,22 @@ export const agentPaletteCommands = [
 	{ id: "agent.open", title: "Open an Agent…", description: "Open a Durable conversation in the agent work view." },
 	{ id: "agent.message", title: "Message an Agent…", description: "Send operator input to a Durable conversation." },
 ] as const;
-export const paletteEnvironmentKeys = ["PI_AGENT_DIR", "PI_AGENT_SESSIONS_DIR", "PI_CODING_AGENT_DIR", "PI_MANAGED_INSTALL_ROOT", "PI_HARNESS_FILE", "TMPDIR"] as const;
-export type PalettePaths = Record<typeof paletteEnvironmentKeys[number], string>;
+export const paletteEnvironmentKeys = [
+	"PI_AGENT_DIR",
+	"PI_AGENT_SESSIONS_DIR",
+	"PI_CODING_AGENT_DIR",
+	"PI_MANAGED_INSTALL_ROOT",
+	"PI_HARNESS_FILE",
+	"TMPDIR",
+] as const;
+export type PalettePaths = Record<(typeof paletteEnvironmentKeys)[number], string>;
 
 function managedInstallRoot(): string | undefined {
-	try { return managedRelease().root; }
-	catch { return undefined; }
+	try {
+		return managedRelease().root;
+	} catch {
+		return undefined;
+	}
 }
 
 function paletteCommands(codingAgentDir: string): PaletteCommand[] {
@@ -34,7 +44,8 @@ function paletteCommands(codingAgentDir: string): PaletteCommand[] {
 		TMPDIR: resolve(tmpdir()),
 	};
 	return agentPaletteCommands.map((command) => ({
-		...command, argv: [process.execPath, commandFile, ...paletteEnvironmentKeys.map((key) => paths[key])],
+		...command,
+		argv: [process.execPath, commandFile, ...paletteEnvironmentKeys.map((key) => paths[key])],
 	}));
 }
 

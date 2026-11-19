@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { createEventBus, initTheme, ToolExecutionComponent, type ExtensionAPI, type ToolDefinition, type ToolRenderers } from "@earendil-works/pi-coding-agent";
+import {
+	createEventBus,
+	initTheme,
+	ToolExecutionComponent,
+	type ExtensionAPI,
+	type ToolDefinition,
+	type ToolRenderers,
+} from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { collectToolDisplay, publishToolDisplay } from "./tool-display.ts";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
@@ -31,16 +38,27 @@ class FakeBus {
 					this.handlers.set(channel, handlers);
 				}
 				handlers.add(handler);
-				const release = () => { handlers.delete(handler); };
+				const release = () => {
+					handlers.delete(handler);
+				};
 				releases.push(release);
 				return release;
 			},
 		};
-		return { events, invalidate: () => { for (const release of releases) release(); } };
+		return {
+			events,
+			invalidate: () => {
+				for (const release of releases) release();
+			},
+		};
 	}
 }
 
-function fakePublisher(events: ExtensionAPI["events"], name = "fixture_tool", presentation: ToolRenderers = { renderCall, renderResult }) {
+function fakePublisher(
+	events: ExtensionAPI["events"],
+	name = "fixture_tool",
+	presentation: ToolRenderers = { renderCall, renderResult },
+) {
 	const publish = () => events.emit("harness:tool-display:publish", { version: 1, tools: [{ name, ...presentation }] });
 	events.on("harness:tool-display:request", (data) => {
 		if ((data as { version?: unknown } | null)?.version === 1) publish();
@@ -58,7 +76,15 @@ it("the public Pi event bus completes synchronous publication responses before r
 
 /** The expanded native card for one retained display definition. */
 function expandedText(definition: ToolDefinition): string {
-	const tool = new ToolExecutionComponent(definition.name, "call", {}, { showImages: false }, definition, { requestRender() {} } as TUI, "/work");
+	const tool = new ToolExecutionComponent(
+		definition.name,
+		"call",
+		{},
+		{ showImages: false },
+		definition,
+		{ requestRender() {} } as TUI,
+		"/work",
+	);
 	tool.setExpanded(true);
 	return stripVTControlCharacters(tool.render(80).join("\n"));
 }
@@ -73,8 +99,19 @@ it("collects fake publishers in either factory load order and uses their native 
 		assert.equal(lookup("fixture_tool")?.renderCall, renderCall);
 		assert.equal(lookup("fixture_tool")?.renderResult, renderResult);
 		const definition = createDashboardToolDefinitions("/work", lookup)("fixture_tool");
-		await assert.rejects(definition.execute("display", {}, undefined, undefined, {} as never), /Transcript tools cannot execute/u);
-		const tool = new ToolExecutionComponent("fixture_tool", "call", {}, { showImages: false }, definition, { requestRender() {} } as TUI, "/work");
+		await assert.rejects(
+			definition.execute("display", {}, undefined, undefined, {} as never),
+			/Transcript tools cannot execute/u,
+		);
+		const tool = new ToolExecutionComponent(
+			"fixture_tool",
+			"call",
+			{},
+			{ showImages: false },
+			definition,
+			{ requestRender() {} } as TUI,
+			"/work",
+		);
 		tool.updateResult({ content: [{ type: "text", text: "Unformatted result" }], isError: false });
 		const collapsed = stripVTControlCharacters(tool.render(80).join("\n"));
 		assert.equal(definition.renderCall, renderCall);
@@ -109,14 +146,21 @@ it("replaces same-name publication and reconstructs registry after tracked-handl
 	const reloaded = collectToolDisplay(consumer.events);
 	assert.equal(reloaded("fixture_tool")?.renderCall, replacement);
 	assert.match(expandedText(createDashboardToolDefinitions("/work", reloaded)("fixture_tool")), /Replacement/u);
-	assert.match(expandedText(retainedDefinition), /Published call/u, "a retained definition keeps the renderer it was built with");
+	assert.match(
+		expandedText(retainedDefinition),
+		/Published call/u,
+		"a retained definition keeps the renderer it was built with",
+	);
 	assert.equal(bus.handlers.get("harness:tool-display:publish")?.size, 1);
 	assert.equal(bus.handlers.get("harness:tool-display:request")?.size, 1);
 	consumer.invalidate();
 	publisher.invalidate();
 	const empty = collectToolDisplay(bus.scope().events);
 	assert.equal(empty("fixture_tool"), undefined);
-	assert.doesNotMatch(expandedText(createDashboardToolDefinitions("/work", empty)("fixture_tool")), /Published call|Replacement/u);
+	assert.doesNotMatch(
+		expandedText(createDashboardToolDefinitions("/work", empty)("fixture_tool")),
+		/Published call|Replacement/u,
+	);
 	fakePublisher(bus.scope().events, "fresh_tool");
 	assert.equal(empty("fresh_tool")?.renderCall, renderCall);
 	assert.equal(oldLookup("fresh_tool"), undefined);
@@ -127,14 +171,45 @@ it("copies only checked renderer fields, rejects malformed publications and neve
 	const bus = new FakeBus();
 	const { events } = bus.scope();
 	const lookup = collectToolDisplay(events);
-	for (const payload of [null, [], {}, { version: 2, tools: [{ name: "wrong", renderCall }] }, { version: 1, tools: {} }]) events.emit("harness:tool-display:publish", payload);
-	const published = { name: "fixture_tool", renderCall, renderResult, renderShell: "self", prepareLoadout() { throw new Error("unused"); }, get execute() { throw new Error("must not read"); } };
-	events.emit("harness:tool-display:publish", { version: 1, tools: [published, null, {}, { name: "" }, { name: "empty" }, { name: "bad-call", renderCall: true }, { name: "bad-result", renderResult: true }, { name: "bad-shell", renderCall, renderShell: "bad" }] });
+	for (const payload of [
+		null,
+		[],
+		{},
+		{ version: 2, tools: [{ name: "wrong", renderCall }] },
+		{ version: 1, tools: {} },
+	])
+		events.emit("harness:tool-display:publish", payload);
+	const published = {
+		name: "fixture_tool",
+		renderCall,
+		renderResult,
+		renderShell: "self",
+		prepareLoadout() {
+			throw new Error("unused");
+		},
+		get execute() {
+			throw new Error("must not read");
+		},
+	};
+	events.emit("harness:tool-display:publish", {
+		version: 1,
+		tools: [
+			published,
+			null,
+			{},
+			{ name: "" },
+			{ name: "empty" },
+			{ name: "bad-call", renderCall: true },
+			{ name: "bad-result", renderResult: true },
+			{ name: "bad-shell", renderCall, renderShell: "bad" },
+		],
+	});
 	assert.deepEqual(lookup("fixture_tool"), { renderCall, renderResult, renderShell: "self" });
 	assert.ok(Object.isFrozen(lookup("fixture_tool")));
 	published.renderCall = () => new Text("mutated", 0, 0);
 	assert.equal(lookup("fixture_tool")?.renderCall, renderCall);
-	for (const name of ["wrong", "empty", "bad-call", "bad-result", "bad-shell", "toString"]) assert.equal(lookup(name), undefined);
+	for (const name of ["wrong", "empty", "bad-call", "bad-result", "bad-shell", "toString"])
+		assert.equal(lookup(name), undefined);
 });
 
 it("native builtin, codemode and agent cards take precedence over published names", () => {
@@ -144,7 +219,8 @@ it("native builtin, codemode and agent cards take precedence over published name
 	for (const name of ["read", "codemode", "agent_send"]) fakePublisher(events, name);
 	const define = createDashboardToolDefinitions("/work", lookup);
 	for (const name of ["read", "codemode", "agent_send"]) {
-		if (name !== "agent_send") assert.doesNotMatch(expandedText(define(name)), /Published call/u, `${name} keeps its own card`);
+		if (name !== "agent_send")
+			assert.doesNotMatch(expandedText(define(name)), /Published call/u, `${name} keeps its own card`);
 		assert.equal(typeof define(name).renderCall, "function");
 		assert.notEqual(define(name).renderCall, renderCall);
 	}
@@ -160,7 +236,10 @@ it("agent publication emits only card fields and responds only to current reques
 	publishToolDisplay(events, [{ name: "fixture_tool", renderCall, renderResult, renderShell: "default" }]);
 	const first = bus.emitted[0];
 	assert.equal(first.channel, "harness:tool-display:publish");
-	assert.deepEqual(first.data, { version: 1, tools: [{ name: "fixture_tool", renderCall, renderResult, renderShell: "default" }] });
+	assert.deepEqual(first.data, {
+		version: 1,
+		tools: [{ name: "fixture_tool", renderCall, renderResult, renderShell: "default" }],
+	});
 	for (const request of [null, {}, { version: 2 }]) events.emit("harness:tool-display:request", request);
 	assert.equal(bus.emitted.filter((event) => event.channel === first.channel).length, 1);
 	events.emit("harness:tool-display:request", { version: 1 });
@@ -189,16 +268,28 @@ it("agent factory collects before requests and publishes actual registered card 
 	const definitions: ToolDefinition[] = [];
 	await registerAgentExtension({
 		events,
-		on() {}, registerToolRenderer() {}, registerShortcut() {}, registerMessageRenderer() {}, registerCommand() {},
+		on() {},
+		registerToolRenderer() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		registerCommand() {},
 		registerTool: (definition: ToolDefinition) => definitions.push(definition),
 	} as unknown as ExtensionAPI);
-	assert.deepEqual(collectorsAtRequest, [1], "the collector exists before the single display request, independent of unrelated bus events");
+	assert.deepEqual(
+		collectorsAtRequest,
+		[1],
+		"the collector exists before the single display request, independent of unrelated bus events",
+	);
 	const displaySequence = bus.emitted
-		.filter((event) => event.channel === "harness:tool-display:request" || event.channel === "harness:tool-display:publish")
+		.filter(
+			(event) => event.channel === "harness:tool-display:request" || event.channel === "harness:tool-display:publish",
+		)
 		.map((event) => event.channel);
 	assert.deepEqual(displaySequence, ["harness:tool-display:request", "harness:tool-display:publish"]);
 	assert.equal(bus.handlers.get("harness:tool-display:publish")?.size, 1);
-	const publication = bus.emitted.find((event) => event.channel === "harness:tool-display:publish")?.data as { tools: Array<{ name: string } & ToolRenderers> };
+	const publication = bus.emitted.find((event) => event.channel === "harness:tool-display:publish")?.data as {
+		tools: Array<{ name: string } & ToolRenderers>;
+	};
 	assert.ok(publication);
 	for (const definition of definitions.filter((tool) => tool.renderCall || tool.renderResult)) {
 		const display = publication.tools.find((tool) => tool.name === definition.name);

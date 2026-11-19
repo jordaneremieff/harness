@@ -8,7 +8,17 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { manualClock } from "./observation-clock-fixture.mts";
-import { fixture, formsHost, source, row, page, turn, deferred, conversationFrame, type FormCall } from "./dashboard-test-fixture.mts";
+import {
+	fixture,
+	formsHost,
+	source,
+	row,
+	page,
+	turn,
+	deferred,
+	conversationFrame,
+	type FormCall,
+} from "./dashboard-test-fixture.mts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { sessionFigures } from "./footer.ts";
@@ -20,9 +30,23 @@ import { NATIVE_COMPACTION_SEED } from "./control-guidance.ts";
 type Fixture = ReturnType<typeof fixture>;
 
 /** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
-const visible = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+const visible = (lines: string[]) =>
+	lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
 const shown = (f: Fixture) => visible(f.ui.render(f.tui.terminal.columns)).join("\n");
-const click = (x: number, y: number, width: number, height: number): TuiMouseEvent => ({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
+const click = (x: number, y: number, width: number, height: number): TuiMouseEvent => ({
+	type: "click",
+	button: "left",
+	x,
+	y,
+	screenX: x,
+	screenY: y,
+	width,
+	height,
+	shift: false,
+	alt: false,
+	ctrl: false,
+	clickCount: 1,
+});
 
 /** Deliver keys one at a time with a paint before each, as a terminal does. */
 function press(f: Fixture, ...keys: string[]): void {
@@ -70,7 +94,10 @@ async function settle(condition: () => boolean): Promise<void> {
 it("keeps open-work facts out of the quiet view while the compaction seed preserves owed reports", async () => {
 	const observed = source([row("one", { state: "idle", openWorkCount: 2, openWorkOldest: 300000 })]);
 	let notify = () => {};
-	observed.subscribe = (listener) => { notify = listener; return () => {}; };
+	observed.subscribe = (listener) => {
+		notify = listener;
+		return () => {};
+	};
 	const base = conversationFrame({ observedAt: new Date().toISOString() });
 	const status = { ...base.status, busy: false, openWorkCount: 2, openWorkOldest: 300000 };
 	let frame: ConversationFrame = { ...base, status };
@@ -83,19 +110,29 @@ it("keeps open-work facts out of the quiet view while the compaction seed preser
 		const text = shown(f);
 		assert.doesNotMatch(text, /work open:|oldest:/u, "the list and header omit open-work facts");
 		assert.match(targetHeader(f)[0] ?? "", /○ Idle · .*ago/u);
-		assert.match(NATIVE_COMPACTION_SEED, /Preserve each owed final report with its request, reply recipient, dependencies, and next action/u);
+		assert.match(
+			NATIVE_COMPACTION_SEED,
+			/Preserve each owed final report with its request, reply recipient, dependencies, and next action/u,
+		);
 		const closed = { ...status, openWorkCount: 0, openWorkOldest: 0 };
 		frame = { ...frame, revision: 2, status: closed };
-		notify(); clock.advance(50); await turn();
+		notify();
+		clock.advance(50);
+		await turn();
 		assert.doesNotMatch(shown(f), /work open:/u);
 		frame = { ...frame, revision: 3, status: { ...base.status, busy: false } };
-		notify(); clock.advance(50); await turn();
+		notify();
+		clock.advance(50);
+		await turn();
 		assert.doesNotMatch(shown(f), /work open:/u, "an absent source field does not invent open work");
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 /** The target header state follows the name on the same row. */
-const STATE_LINE = /[◌●○✓!■↯·?] (Starting|Working|Idle|Done|Failed|Stopped|Interrupted|New|Unavailable)(?: · [^\r\n]*)?\s*$/u;
+const STATE_LINE =
+	/[◌●○✓!■↯·?] (Starting|Working|Idle|Done|Failed|Stopped|Interrupted|New|Unavailable)(?: · [^\r\n]*)?\s*$/u;
 
 /** The rows right of the list divider, or every row when the list is a strip above the pane. */
 function paneLines(f: Fixture): { lines: string[]; title: number } {
@@ -123,7 +160,12 @@ function targetHeader(f: Fixture): string[] {
 function answering(answer: (call: FormCall) => Promise<ActionResult>, patch: Parameters<typeof formsHost>[4] = {}) {
 	const state = createDashboardState();
 	const calls: FormCall[] = [];
-	return { state, calls, forms: (observed: ReturnType<typeof source>) => (target: Parameters<typeof formsHost>[0]) => formsHost(target, state, observed, calls, patch, answer) };
+	return {
+		state,
+		calls,
+		forms: (observed: ReturnType<typeof source>) => (target: Parameters<typeof formsHost>[0]) =>
+			formsHost(target, state, observed, calls, patch, answer),
+	};
 }
 
 it("Help shows the current machine file, digest, default preset and models without terminal controls", async (t) => {
@@ -136,7 +178,16 @@ it("Help shows the current machine file, digest, default preset and models witho
 		else process.env.PI_HARNESS_FILE = previous;
 		rmSync(directory, { recursive: true, force: true });
 	});
-	for (const content of [undefined, JSON.stringify(machineConfig({ presets: { standard: { model: "acme/model-x\u001b[2J" }, economy: { model: "other/model-y" } }, preferences: { defaultPreset: "standard" } })), "malformed"]) {
+	for (const content of [
+		undefined,
+		JSON.stringify(
+			machineConfig({
+				presets: { standard: { model: "acme/model-x\u001b[2J" }, economy: { model: "other/model-y" } },
+				preferences: { defaultPreset: "standard" },
+			}),
+		),
+		"malformed",
+	]) {
 		if (content !== undefined) writeFileSync(path, content);
 		const f = fixture(80, 100, source([row("one")]));
 		try {
@@ -190,7 +241,7 @@ for (const [width, height] of [
 				frame = { ...frame, revision: frame.revision + 1, status: { ...frame.status, busy } };
 				notify();
 				clock.advance(50);
-			await turn();
+				await turn();
 				const screen = shown(f);
 				assert.match(screen, /╭─ To one ─+┄*╮/u);
 				assert.doesNotMatch(screen, /Correction at next step|New message/u);
@@ -246,7 +297,11 @@ for (const [width, height] of [
 		});
 	}
 	it(`Find selects and previews the first match, and Escape clears it without moving the selection at ${width}`, async () => {
-		const observed = source([row("one", { name: "Audit" }), row("two", { name: "Build" }), row("three", { name: "Build more" })]);
+		const observed = source([
+			row("one", { name: "Audit" }),
+			row("two", { name: "Build" }),
+			row("three", { name: "Build more" }),
+		]);
 		const selected: Array<string | undefined> = [];
 		observed.select = (id) => selected.push(id);
 		observed.snapshot = async (id) => ({
@@ -333,7 +388,12 @@ for (const [width, height] of [
 	});
 	for (const name of ["abort", "attach", "release"]) {
 		it(`an owner refusal stays visible in the ${name} form at ${width}`, async () => {
-			const observed = source([row("one", { state: name === "abort" ? "working" : "idle", health: name === "attach" ? { lastError: "lost" } : undefined })]);
+			const observed = source([
+				row("one", {
+					state: name === "abort" ? "working" : "idle",
+					health: name === "attach" ? { lastError: "lost" } : undefined,
+				}),
+			]);
 			const host = answering(async () => {
 				throw new Error("Host refusal marker");
 			});
@@ -346,7 +406,10 @@ for (const [width, height] of [
 				press(f, "\r", "\r");
 				await until(f, /Host refusal marker/u);
 				assert.equal(f.ui.focus.inspector, title, "the refused form stays open");
-				assert.deepEqual(host.calls.map((call) => call.target), ["one"]);
+				assert.deepEqual(
+					host.calls.map((call) => call.target),
+					["one"],
+				);
 			} finally {
 				f.ui.dispose();
 			}
@@ -374,7 +437,10 @@ for (const [width, height] of [
 					press(f, "\r");
 				} else press(f, "\r", "\r");
 				await settle(() => f.state.selected === "branch");
-				assert.deepEqual(host.calls.map((call) => call.name), [action]);
+				assert.deepEqual(
+					host.calls.map((call) => call.name),
+					[action],
+				);
 				const screen = await until(f, /To New branch/u);
 				assert.match(screen, /╭─ To New branch ─+┄*╮/u);
 				assert.match(targetHeader(f).join("\n"), /Idle/u);
@@ -405,11 +471,37 @@ for (const [width, height] of [
 }
 
 for (const [patch, reason, recovery] of [
-	[{ owner: "unavailable" as const, state: "unavailable" as const, error: "Claim conflict marker" }, "Unavailable: Claim conflict marker", "Reconnect starts the host when the storage is readable"],
-	[{ state: "idle" as const, health: { lastError: "Host error marker" } }, "Host error: Host error marker", "Reconnect starts the host; unfinished work resumes"],
-	[{ state: "idle" as const, health: { compactionFailure: { trigger: "manual" as const, at: "now", errorMessage: "Compaction error marker" } } }, "Compaction failed (manual): Compaction error marker", "Reconnect starts the host; unfinished work resumes"],
-	[{ state: "idle" as const, health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "Exhausted retry marker" } } }, "Retries exhausted: Exhausted retry marker", "Reconnect starts the host; unfinished work resumes"],
-	[{ state: "failed" as const, error: "Work failure marker" }, "Work failure marker", "A new message runs the work again"],
+	[
+		{ owner: "unavailable" as const, state: "unavailable" as const, error: "Claim conflict marker" },
+		"Unavailable: Claim conflict marker",
+		"Reconnect starts the host when the storage is readable",
+	],
+	[
+		{ state: "idle" as const, health: { lastError: "Host error marker" } },
+		"Host error: Host error marker",
+		"Reconnect starts the host; unfinished work resumes",
+	],
+	[
+		{
+			state: "idle" as const,
+			health: { compactionFailure: { trigger: "manual" as const, at: "now", errorMessage: "Compaction error marker" } },
+		},
+		"Compaction failed (manual): Compaction error marker",
+		"Reconnect starts the host; unfinished work resumes",
+	],
+	[
+		{
+			state: "idle" as const,
+			health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "Exhausted retry marker" } },
+		},
+		"Retries exhausted: Exhausted retry marker",
+		"Reconnect starts the host; unfinished work resumes",
+	],
+	[
+		{ state: "failed" as const, error: "Work failure marker" },
+		"Work failure marker",
+		"A new message runs the work again",
+	],
 ] as const) {
 	it(`the selected agent's header states its stored error and the way forward (${JSON.stringify(patch)})`, async () => {
 		const f = fixture(240, 45, source([row("one", patch)]));
@@ -427,7 +519,12 @@ for (const [patch, reason, recovery] of [
 
 it("an unavailable row without a stored error names its unreadable storage", async () => {
 	const observed = source([row("one", { owner: "unavailable", state: "unavailable" })]);
-	observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: "Check the task", timestamp: 0 }] }], partial: true, revision: "1", nextBefore: null });
+	observed.snapshot = async () => ({
+		entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: "Check the task", timestamp: 0 }] }],
+		partial: true,
+		revision: "1",
+		nextBefore: null,
+	});
 	const f = fixture(140, 45, observed);
 	try {
 		await turn();
@@ -443,7 +540,11 @@ it("an unavailable row without a stored error names its unreadable storage", asy
 });
 
 it("the errors key filters agents and its key or Escape restores every agent", async () => {
-	const rows = [row("ok", { name: "Okay", modifiedAt: 3 }), row("bad", { name: "Broken", state: "failed", error: "quota limit", modifiedAt: 2 }), row("sad", { name: "Host fault", health: { lastError: "Host error" }, modifiedAt: 1 })];
+	const rows = [
+		row("ok", { name: "Okay", modifiedAt: 3 }),
+		row("bad", { name: "Broken", state: "failed", error: "quota limit", modifiedAt: 2 }),
+		row("sad", { name: "Host fault", health: { lastError: "Host error" }, modifiedAt: 1 }),
+	];
 	const f = fixture(120, 30, source(rows));
 	/** The whole screen and the list column alone; the pane keeps the selected agent while the list narrows. */
 	const read = () => {
@@ -477,7 +578,11 @@ it("the errors key filters agents and its key or Escape restores every agent", a
 });
 
 it("Home and End select the first and last agent", async () => {
-	const f = fixture(120, 30, source([row("first", { modifiedAt: 3 }), row("middle", { modifiedAt: 2 }), row("last", { modifiedAt: 1 })]));
+	const f = fixture(
+		120,
+		30,
+		source([row("first", { modifiedAt: 3 }), row("middle", { modifiedAt: 2 }), row("last", { modifiedAt: 1 })]),
+	);
 	try {
 		await turn();
 		await turn();
@@ -529,13 +634,19 @@ it("a created branch outside the published roster receives the next message, nev
 	const sent: string[] = [];
 	const observed = source([row("one")]);
 	const host = answering(async () => ({ text: "Forked", sessionId: "branch" }));
-	const f = fixture(80, 24, observed, {
-		forms: host.forms(observed),
-		submit: async (input) => {
-			sent.push(input.id);
-			return { text: "admitted" };
+	const f = fixture(
+		80,
+		24,
+		observed,
+		{
+			forms: host.forms(observed),
+			submit: async (input) => {
+				sent.push(input.id);
+				return { text: "admitted" };
+			},
 		},
-	}, host.state);
+		host.state,
+	);
 	try {
 		await turn();
 		f.ui.openNamedAction("fork");
@@ -626,12 +737,33 @@ it("a late new conversation completion respects a later list selection", async (
 });
 
 it("with no related work the list shows every agent, and a chosen Related scope states its whole reason", async () => {
-	const f = fixture(120, 30, source([row("unrelated", { storageId: "unrelated", creatingOwnerId: "someone-else", name: "Unrelated worker" })]), undefined, undefined, undefined, "caller-session");
+	const f = fixture(
+		120,
+		30,
+		source([row("unrelated", { storageId: "unrelated", creatingOwnerId: "someone-else", name: "Unrelated worker" })]),
+		undefined,
+		undefined,
+		undefined,
+		"caller-session",
+	);
 	try {
 		await settle(() => /Unrelated worker/u.test(shown(f)));
 		const findRow = visible(f.ui.render(120))[1] ?? "";
 		const x = findRow.indexOf(" Related ") + 1;
-		f.ui.handleMouse({ type: "click", button: "left", x, y: 1, screenX: x, screenY: 1, width: 120, height: 30, shift: false, alt: false, ctrl: false, clickCount: 1 });
+		f.ui.handleMouse({
+			type: "click",
+			button: "left",
+			x,
+			y: 1,
+			screenX: x,
+			screenY: 1,
+			width: 120,
+			height: 30,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 1,
+		});
 		await settle(() => /No related agents yet/u.test(shown(f)));
 		const lines = visible(f.ui.render(120));
 		const divider = lines[1]?.indexOf("\u2502") ?? 0;
@@ -767,7 +899,10 @@ it("a new conversation selects its purpose and starting state before host readin
 			assert.match(screen, /◌ Starting/u);
 			assert.match(screen, /Write the startup note/u);
 			assert.match(screen, /model │/u);
-			assert.doesNotMatch(screen, /Conversation unavailable|Unavailable|Attention|need attention|model \?|reasoning \?/u);
+			assert.doesNotMatch(
+				screen,
+				/Conversation unavailable|Unavailable|Attention|need attention|model \?|reasoning \?/u,
+			);
 		}
 		f.resize(140, 45);
 		assert.match(shown(f), /╭─ To Write the startup note ─+┄*╮/u);
@@ -881,7 +1016,13 @@ it("a retained conversation reattaches and rereads when a stopped host restarts"
 	observed.snapshot = async () => {
 		reads++;
 		return {
-			entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: reads === 1 ? "Stored task" : "Restarted task", timestamp: 0 }] }],
+			entries: [
+				{
+					id: "1",
+					kind: "pi.user",
+					model: [{ role: "user", content: reads === 1 ? "Stored task" : "Restarted task", timestamp: 0 }],
+				},
+			],
 			partial: false,
 			revision: "2",
 			nextBefore: null,
@@ -918,8 +1059,20 @@ it("Load more is selected before it reads, and loaded coverage survives reconcil
 	const observed = source();
 	let rosterChange = () => {};
 	const calls: Array<string | undefined> = [];
-	const inventory = { candidates: 4, inspected: 4, unreadable: 1, unknownClaims: 0, returned: 1, remaining: 0, priorityRemaining: 0,
-		remainingRows: 0, priorityRemainingRows: 0, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 2 };
+	const inventory = {
+		candidates: 4,
+		inspected: 4,
+		unreadable: 1,
+		unknownClaims: 0,
+		returned: 1,
+		remaining: 0,
+		priorityRemaining: 0,
+		remainingRows: 0,
+		priorityRemainingRows: 0,
+		recordByteLimit: 32768,
+		claimByteLimit: 16384,
+		outputLimit: 2,
+	};
 	observed.subscribeRoster = (listener) => {
 		rosterChange = listener;
 		return () => {};
@@ -929,17 +1082,32 @@ it("Load more is selected before it reads, and loaded coverage survives reconcil
 		return input?.cursor
 			? {
 					...page([row("c")]),
-					coverage: { complete: false, storagesVisited: 4, skipped: 2, omitted: 0, nextCursor: null, inventory,
-						projections: { c: { skipped: 1, omitted: 0 } } },
+					coverage: {
+						complete: false,
+						storagesVisited: 4,
+						skipped: 2,
+						omitted: 0,
+						nextCursor: null,
+						inventory,
+						projections: { c: { skipped: 1, omitted: 0 } },
+					},
 				}
 			: {
 					...page([row("a"), row("b")]),
-					coverage: { complete: false, storagesVisited: 4, skipped: 1, omitted: 0, nextCursor: "more",
+					coverage: {
+						complete: false,
+						storagesVisited: 4,
+						skipped: 1,
+						omitted: 0,
+						nextCursor: "more",
 						inventory: { ...inventory, returned: 2, remaining: 1, remainingRows: 1 },
-						projections: { a: { skipped: 0, omitted: 0 }, b: { skipped: 0, omitted: 0 } } },
+						projections: { a: { skipped: 0, omitted: 0 }, b: { skipped: 0, omitted: 0 } },
+					},
 				};
 	};
-	const f = fixture(100, 24, observed, { sessionFigures: async (roster) => sessionFigures(roster.rows, "primary", () => "primary") });
+	const f = fixture(100, 24, observed, {
+		sessionFigures: async (roster) => sessionFigures(roster.rows, "primary", () => "primary"),
+	});
 	try {
 		await turn();
 		f.ui.handleInput("\x1b[B");
@@ -969,14 +1137,37 @@ it("Tasks Refresh retries a declined attachment without reopening the view", asy
 	let releases = 0;
 	const observed = createAgentObservationSource({
 		list: base.list,
-		snapshot: async () => ({ ...(await base.snapshot(storageId)), nextBefore: null, coverage: { complete: true, entries: 0, bytes: 0, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false } }),
+		snapshot: async () => ({
+			...(await base.snapshot(storageId)),
+			nextBefore: null,
+			coverage: {
+				complete: true,
+				entries: 0,
+				bytes: 0,
+				hiddenExcluded: 0,
+				entryLimitReached: false,
+				byteLimitReached: false,
+			},
+		}),
 		subscribeRoster: base.subscribeRoster,
 		observeLive: async (id, scope, listener) => {
 			if (scope !== "tasks") return () => {};
 			attaches++;
 			if (attaches === 1) return undefined;
 			await Promise.resolve();
-			listener({ scope: "tasks", storageId: id, revision: 1, observedAt: new Date(0).toISOString(), tasks: [], labels: [], coverage: { complete: true, live: true } }, true, "live");
+			listener(
+				{
+					scope: "tasks",
+					storageId: id,
+					revision: 1,
+					observedAt: new Date(0).toISOString(),
+					tasks: [],
+					labels: [],
+					coverage: { complete: true, live: true },
+				},
+				true,
+				"live",
+			);
 			return () => {
 				releases++;
 			};
@@ -1026,7 +1217,19 @@ it("Tasks opens a resolved unloaded conversation and releases its graph", async 
 			observedAt: new Date(0).toISOString(),
 			coverage: { complete: true, live: true },
 			labels: [{ conversationId: 2, identity: "storage:2", name: "Child" }],
-			tasks: [{ id: 1, kind: "turn", conversationId: 2, background: false, abortRequested: false, status: "running", phase: "model", waitsOn: [], conversations: [2] }],
+			tasks: [
+				{
+					id: 1,
+					kind: "turn",
+					conversationId: 2,
+					background: false,
+					abortRequested: false,
+					status: "running",
+					phase: "model",
+					waitsOn: [],
+					conversations: [2],
+				},
+			],
 		};
 	};
 	const f = fixture(80, 24, observed);
@@ -1054,8 +1257,39 @@ it("Tasks opens a resolved unloaded conversation and releases its graph", async 
 
 for (const width of [80, 164]) {
 	it(`the cached roster leaves one selected-model lookup per render at ${width}`, async () => {
-		const observed = source([row("one"), row("two", { model: { provider: "other", modelId: "second", thinkingLevel: "high" } })]);
-		observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage: { input: 160, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] }], partial: false, revision: "1" });
+		const observed = source([
+			row("one"),
+			row("two", { model: { provider: "other", modelId: "second", thinkingLevel: "high" } }),
+		]);
+		observed.snapshot = async () => ({
+			entries: [
+				{
+					id: "1",
+					kind: "pi.assistant",
+					model: [
+						{
+							role: "assistant",
+							api: "openai-responses",
+							provider: "test",
+							model: "model",
+							content: [],
+							timestamp: 0,
+							stopReason: "stop",
+							usage: {
+								input: 160,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 160,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+						},
+					],
+				},
+			],
+			partial: false,
+			revision: "1",
+		});
 		const lookups: Array<[string, string]> = [];
 		let capacity: number | undefined = 1000;
 		const f = fixture(width, 30, observed, {
@@ -1104,7 +1338,11 @@ for (const width of [80, 164]) {
 			assert.doesNotMatch(header.join("\n"), /Model|Tokens|Context|Cost|\$\?/u);
 			const { lines } = paneLines(f);
 			const composerBottom = lines.findIndex((line) => line.startsWith("╰─"));
-			assert.match(lines[composerBottom + 1] ?? "", /^ \/work/u, "the directory follows the composer without an empty metrics line");
+			assert.match(
+				lines[composerBottom + 1] ?? "",
+				/^ \/work/u,
+				"the directory follows the composer without an empty metrics line",
+			);
 		} finally {
 			f.ui.dispose();
 		}
@@ -1144,7 +1382,12 @@ it("x and a click on the footer's More control show the same actions", async () 
 			const rows = visible(f.ui.render(120));
 			const heading = rows.findIndex((line) => line.trimEnd().startsWith("More"));
 			assert.ok(heading >= 0, `${mode} opens More`);
-			menus.push(rows.slice(heading, heading + 3).map((line) => line.trim()).join("|"));
+			menus.push(
+				rows
+					.slice(heading, heading + 3)
+					.map((line) => line.trim())
+					.join("|"),
+			);
 		} finally {
 			f.ui.dispose();
 		}
@@ -1188,7 +1431,10 @@ it("footer targets follow a resize", async () => {
 		assert.equal(f.ui.focus.inspector, undefined, "the old position opens nothing");
 		f.ui.handleMouse(click(narrowFooter.indexOf("x more") + 1, narrow.length - 1, 80, 24));
 		const menu = visible(f.ui.render(80));
-		assert.ok(menu.some((line) => line.includes("Help")), "the drawn More control lists the hidden action");
+		assert.ok(
+			menu.some((line) => line.includes("Help")),
+			"the drawn More control lists the hidden action",
+		);
 	} finally {
 		f.ui.dispose();
 	}

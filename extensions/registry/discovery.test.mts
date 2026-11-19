@@ -2,7 +2,12 @@ import { bool, obj, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ExtensionToolContext,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import registerRegistry, { type RegistryParams } from "./index.ts";
 import { lookup } from "./lookup.ts";
 import { readModels } from "./models.ts";
@@ -10,34 +15,79 @@ import { parseQuery } from "./query.ts";
 import type { HostSnapshot } from "./records.ts";
 import { ObservationStore } from "./observer.ts";
 
-const sourceInfo = { path: "/fixtures/worktree/index.ts", source: "fixture", scope: "temporary" as const, origin: "top-level" as const };
-const model = (id: string, reasoning = true): Model<Api> => ({ provider: "fixture", id, name: `Reasoner ${id}`, api: "openai-completions",
-	baseUrl: "https://private.invalid/?token=secret-url", headers: { Authorization: "secret-header" },
-	reasoning, input: ["text", "image"], contextWindow: 10000, maxTokens: 1000,
-	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, thinkingLevelMap: { xhigh: "xhigh", max: null } });
+const sourceInfo = {
+	path: "/fixtures/worktree/index.ts",
+	source: "fixture",
+	scope: "temporary" as const,
+	origin: "top-level" as const,
+};
+const model = (id: string, reasoning = true): Model<Api> => ({
+	provider: "fixture",
+	id,
+	name: `Reasoner ${id}`,
+	api: "openai-completions",
+	baseUrl: "https://private.invalid/?token=secret-url",
+	headers: { Authorization: "secret-header" },
+	reasoning,
+	input: ["text", "image"],
+	contextWindow: 10000,
+	maxTokens: 1000,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	thinkingLevelMap: { xhigh: "xhigh", max: null },
+});
 function context() {
 	const catalog = [model("a"), model("b", false)];
-	const base = { model: catalog[0], thinkingLevel: "high", scopedModels: [{ model: catalog[0], thinkingLevel: "medium" }],
-		modelRegistry: { getAll: () => catalog, getAvailable: () => [catalog[0]], getError: () => undefined,
-			hasConfiguredAuth: (m: Model<Api>) => m.id === "a", getRegisteredProviderIds: () => [],
-			getProviderAuth: () => { throw new Error("must not resolve auth"); },
-			refresh: () => { throw new Error("must not refresh"); } },
+	const base = {
+		model: catalog[0],
+		thinkingLevel: "high",
+		scopedModels: [{ model: catalog[0], thinkingLevel: "medium" }],
+		modelRegistry: {
+			getAll: () => catalog,
+			getAvailable: () => [catalog[0]],
+			getError: () => undefined,
+			hasConfiguredAuth: (m: Model<Api>) => m.id === "a",
+			getRegisteredProviderIds: () => [],
+			getProviderAuth: () => {
+				throw new Error("must not resolve auth");
+			},
+			refresh: () => {
+				throw new Error("must not refresh");
+			},
+		},
 	} as unknown as ExtensionContext;
 	const ctx = {
 		...base,
 		tools: [],
-		executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+		executeTool: async () => {
+			throw new Error("Unexpected nested tool call");
+		},
 	} satisfies ExtensionToolContext;
 	return { ctx, catalog };
 }
 function host(): HostSnapshot {
-	return { tools: [{ name: "inspect", description: "Read document contents", parameters: obj({ path: str() }, { open: true }),
-		promptGuidelines: ["Use inspect for documents."], sourceInfo }], activeTools: [], commands: [], observation: null,
-		availability: { tools: true, commands: true, activeTools: true }, at: 1000 };
+	return {
+		tools: [
+			{
+				name: "inspect",
+				description: "Read document contents",
+				parameters: obj({ path: str() }, { open: true }),
+				promptGuidelines: ["Use inspect for documents."],
+				sourceInfo,
+			},
+		],
+		activeTools: [],
+		commands: [],
+		observation: null,
+		availability: { tools: true, commands: true, activeTools: true },
+		at: 1000,
+	};
 }
 const records = (result: { details: Record<string, unknown> }) => result.details.records as Record<string, unknown>[];
-const run = (params: Parameters<typeof lookup>[0]["params"], snapshot = host(), models?: ReturnType<typeof readModels>) =>
-	lookup({ params, snapshot, models, session: {}, epoch: "fixture" });
+const run = (
+	params: Parameters<typeof lookup>[0]["params"],
+	snapshot = host(),
+	models?: ReturnType<typeof readModels>,
+) => lookup({ params, snapshot, models, session: {}, epoch: "fixture" });
 
 describe("model discovery", () => {
 	it("projects catalog, auth configuration, selected reasoning and scope without private fields", async () => {
@@ -89,18 +139,28 @@ describe("model discovery", () => {
 		assert.doesNotMatch(tool.text, /Chat models only/);
 	});
 	it("filters canonical names, provider, display purpose and availability", async () => {
-		const { ctx } = context(); const models = readModels(ctx, 1);
+		const { ctx } = context();
+		const models = readModels(ctx, 1);
 		assert.equal(records(await run({ kind: "model", name: "fixture/a" }, host(), models)).length, 1);
-		assert.equal(records(await run({ kind: "model", provider: "fixture", available: false }, host(), models))[0].id, "b");
+		assert.equal(
+			records(await run({ kind: "model", provider: "fixture", available: false }, host(), models))[0].id,
+			"b",
+		);
 		assert.equal(records(await run({ kind: "model", search: "REASONER a" }, host(), models))[0].id, "a");
 		assert.equal((await run({ kind: "model", name: "a" }, host(), models)).outcome, "missing");
 	});
 	it("keeps unavailable, catalog errors, and selected-outside-catalog evidence distinct", async () => {
 		const { ctx, catalog } = context();
-		ctx.modelRegistry.getAll = () => { throw new Error("secret-catalog"); };
-		ctx.modelRegistry.getAvailable = () => { throw new Error("secret-availability"); };
+		ctx.modelRegistry.getAll = () => {
+			throw new Error("secret-catalog");
+		};
+		ctx.modelRegistry.getAvailable = () => {
+			throw new Error("secret-availability");
+		};
 		ctx.modelRegistry.getError = () => "secret-error";
-		ctx.modelRegistry.hasConfiguredAuth = () => { throw new Error("secret-auth"); };
+		ctx.modelRegistry.hasConfiguredAuth = () => {
+			throw new Error("secret-auth");
+		};
 		let result = await run({ kind: "model" }, host(), readModels(ctx, 1));
 		assert.equal(result.outcome, "unavailable");
 		assert.match(String(result.structuredContent.catalogBoundary), /Classifier and image models are not queried/);
@@ -129,7 +189,8 @@ describe("model discovery", () => {
 		const cursor = first.details.cursor as string;
 		assert.equal(records(first)[0].at, 1);
 		const second = await run({ cursor }, { ...host(), at: 2000 }, readModels(ctx, 2));
-		assert.equal(second.outcome, "ok"); assert.equal(records(second)[0].id, "b");
+		assert.equal(second.outcome, "ok");
+		assert.equal(records(second)[0].id, "b");
 		assert.equal(second.details.catalogBoundary, first.details.catalogBoundary);
 		assert.equal(records(second)[0].at, 2);
 		ctx.modelRegistry.getAvailable = () => [];
@@ -145,10 +206,22 @@ describe("model discovery", () => {
 		assert.equal(typeof first.details.cursor, "string");
 		ctx.scopedModels = [...ctx.scopedModels].reverse();
 		const reordered = readModels(ctx, 1);
-		assert.deepEqual(reordered.records.map((record) => record.name), models.records.map((record) => record.name));
-		assert.deepEqual(reordered.records.map((record) => record.inScope), [true, true]);
-		assert.deepEqual(models.records.map((record) => record.scopeIndex), [0, 1]);
-		assert.deepEqual(reordered.records.map((record) => record.scopeIndex), [1, 0]);
+		assert.deepEqual(
+			reordered.records.map((record) => record.name),
+			models.records.map((record) => record.name),
+		);
+		assert.deepEqual(
+			reordered.records.map((record) => record.inScope),
+			[true, true],
+		);
+		assert.deepEqual(
+			models.records.map((record) => record.scopeIndex),
+			[0, 1],
+		);
+		assert.deepEqual(
+			reordered.records.map((record) => record.scopeIndex),
+			[1, 0],
+		);
 		const next = await run({ cursor: first.details.cursor as string }, host(), reordered);
 		assert.equal(next.outcome, "stale_cursor");
 		assert.deepEqual(records(next), []);
@@ -166,13 +239,15 @@ describe("model discovery", () => {
 		assert.equal((await run({ cursor: first.details.cursor as string }, host(), reordered)).outcome, "stale_cursor");
 	});
 	it("keeps scope positions in the hashed record metadata", async () => {
-		const { ctx } = context(); const models = readModels(ctx, 1);
+		const { ctx } = context();
+		const models = readModels(ctx, 1);
 		const first = await run({ kind: "model", limit: 1 }, host(), models);
 		models.records[0].scopeIndex = 1;
 		assert.equal((await run({ cursor: first.details.cursor as string }, host(), models)).outcome, "stale_cursor");
 	});
 	it("hashes a null scope order differently from an empty scope order", async () => {
-		const { ctx } = context(); ctx.scopedModels = [];
+		const { ctx } = context();
+		ctx.scopedModels = [];
 		const models = readModels(ctx, 1);
 		assert.equal(models.scopeOrder, null);
 		const first = await run({ kind: "model", limit: 1 }, host(), models);
@@ -184,12 +259,23 @@ describe("model discovery", () => {
 		const { ctx } = context();
 		const first = await run({ kind: "model", limit: 1 }, host(), readModels(ctx, 1));
 		ctx.modelRegistry.getRegisteredProviderIds = () => ["fixture"];
-		assert.equal((await run({ cursor: first.details.cursor as string }, host(), readModels(ctx, 1))).outcome, "stale_cursor");
+		assert.equal(
+			(await run({ cursor: first.details.cursor as string }, host(), readModels(ctx, 1))).outcome,
+			"stale_cursor",
+		);
 	});
 	it("uses the model context through the registered tool, including cursor-only continuation", async () => {
 		let tool: ToolDefinition<typeof RegistryParams, Record<string, unknown>> | undefined;
-		registerRegistry({ on: () => {}, events: { emit: () => {}, on: () => () => {} }, registerTool: (value: typeof tool) => { tool = value; },
-			getAllTools: () => [], getCommands: () => [], getActiveTools: () => [] } as unknown as ExtensionAPI);
+		registerRegistry({
+			on: () => {},
+			events: { emit: () => {}, on: () => () => {} },
+			registerTool: (value: typeof tool) => {
+				tool = value;
+			},
+			getAllTools: () => [],
+			getCommands: () => [],
+			getActiveTools: () => [],
+		} as unknown as ExtensionAPI);
 		assert.ok(tool);
 		const { ctx } = context();
 		const first = await tool.execute("one", { kind: "model", limit: 1 }, undefined, undefined, ctx);
@@ -228,7 +314,13 @@ describe("metadata and tool detail", () => {
 		const snapshot = host();
 		const schema = {
 			type: "object",
-			properties: { "key\u202e\u009d": { type: "string", const: "const\u009d\u202e", description: "field \u202e \u009d line\u2028next\u2029paragraph" } },
+			properties: {
+				"key\u202e\u009d": {
+					type: "string",
+					const: "const\u009d\u202e",
+					description: "field \u202e \u009d line\u2028next\u2029paragraph",
+				},
+			},
 		};
 		const guidelines = ["Use inspect \u202e for \u009d documents.\u2028Next line.\u2029Next paragraph."];
 		snapshot.tools[0].parameters = schema as unknown as HostSnapshot["tools"][number]["parameters"];
@@ -268,7 +360,10 @@ describe("metadata and tool detail", () => {
 			assert.equal(result.outcome, "missing", kind);
 			assert.match(result.text, /No record holds every search term in the searched metadata/);
 			assert.match(result.text, /does not establish that no resource supports the task/);
-			assert.match(result.text, /Search requires every term as literal text in names or descriptions, not task meaning\./);
+			assert.match(
+				result.text,
+				/Search requires every term as literal text in names or descriptions, not task meaning\./,
+			);
 			assert.doesNotMatch(result.text, /usage guidelines/);
 		}
 	});
@@ -283,15 +378,24 @@ describe("metadata and tool detail", () => {
 		assert.equal(next.outcome, "stale_cursor");
 	});
 	it("validates detail and model selector combinations after schema validation", () => {
-		for (const params of [{ detail: true }, { kind: "tool", name: "x", detail: true, search: "x" },
-			{ kind: "tool", name: "x", detail: true, match: "substring" }, { provider: "x" }, { available: false },
-			{ kind: "model", contains: "x" }, { kind: "context_file", contains: "x" }, { search: "" }, { detail: "true" }]) {
+		for (const params of [
+			{ detail: true },
+			{ kind: "tool", name: "x", detail: true, search: "x" },
+			{ kind: "tool", name: "x", detail: true, match: "substring" },
+			{ provider: "x" },
+			{ available: false },
+			{ kind: "model", contains: "x" },
+			{ kind: "context_file", contains: "x" },
+			{ search: "" },
+			{ detail: "true" },
+		]) {
 			assert.throws(() => parseQuery(params as Parameters<typeof parseQuery>[0]));
 		}
 	});
 	it("invalidates metadata and active-state cursors", async () => {
 		for (const change of ["description", "parameters", "promptGuidelines", "active"] as const) {
-			const snapshot = host(); snapshot.tools.push({ ...snapshot.tools[0], name: "inspect2" });
+			const snapshot = host();
+			snapshot.tools.push({ ...snapshot.tools[0], name: "inspect2" });
 			const first = await run({ kind: "tool", limit: 1 }, snapshot);
 			if (change === "description") snapshot.tools[0].description = "changed";
 			if (change === "parameters") snapshot.tools[0].parameters = obj({ changed: bool() }, { open: true });
@@ -301,16 +405,26 @@ describe("metadata and tool detail", () => {
 		}
 	});
 	it("bounds an oversized exact schema and preserves incomplete-domain records", async () => {
-		const snapshot = host(); snapshot.tools[0].parameters = obj({ large: str({ description: "x".repeat(100000) }) }, { open: true });
+		const snapshot = host();
+		snapshot.tools[0].parameters = obj({ large: str({ description: "x".repeat(100000) }) }, { open: true });
 		const result = await run({ kind: "tool", name: "inspect", detail: true }, snapshot);
 		assert.equal(result.details.pageBlocked, true);
-		assert.ok(Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: result.text }], details: result.details })) <= 50 * 1024);
+		assert.ok(
+			Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: result.text }], details: result.details })) <=
+				50 * 1024,
+		);
 		snapshot.availability.commands = false;
 		const partial = await run({ search: "document" }, snapshot);
-		assert.equal(partial.outcome, "unavailable"); assert.equal(records(partial)[0].name, "inspect");
+		assert.equal(partial.outcome, "unavailable");
+		assert.equal(records(partial)[0].name, "inspect");
 	});
 	it("labels command/prompt collision and missing-domain limits", async () => {
-		const snapshot = host(); snapshot.commands = ["extension", "prompt"].map((source) => ({ name: "same", source: source as "extension" | "prompt", sourceInfo }));
+		const snapshot = host();
+		snapshot.commands = ["extension", "prompt"].map((source) => ({
+			name: "same",
+			source: source as "extension" | "prompt",
+			sourceInfo,
+		}));
 		const result = await run({ name: "same" }, snapshot);
 		assert.equal(records(result).length, 2);
 		assert.match(result.text, /shadow same-name prompts/);
@@ -323,16 +437,24 @@ describe("metadata and tool detail", () => {
 describe("observed context paths", () => {
 	it("resumes across observation timestamps, retains fresh times, and rejects changed paths or coverage", async () => {
 		const store = new ObservationStore();
-		const options = { cwd: "/fixtures", contextFiles: [{ path: "/fixtures/A.md", content: "secret-context" }, { path: "/fixtures/B.md", content: "secret-context" }] };
+		const options = {
+			cwd: "/fixtures",
+			contextFiles: [
+				{ path: "/fixtures/A.md", content: "secret-context" },
+				{ path: "/fixtures/B.md", content: "secret-context" },
+			],
+		};
 		store.observe(options, 1);
-		const snapshot = host(); snapshot.observation = store.snapshot();
+		const snapshot = host();
+		snapshot.observation = store.snapshot();
 		const first = await run({ kind: "context_file", limit: 1 }, snapshot);
 		assert.equal(records(first)[0].path, "/fixtures/A.md");
 		assert.equal(records(first)[0].at, 1);
 		assert.equal(records(first)[0].evidence, "observation");
 		assert.doesNotMatch(JSON.stringify(first), /secret-context|sourceInfo/);
 		assert.equal((await run({ cursor: first.details.cursor as string }, snapshot)).outcome, "ok");
-		store.observe(options, 2); snapshot.observation = store.snapshot();
+		store.observe(options, 2);
+		snapshot.observation = store.snapshot();
 		const next = await run({ cursor: first.details.cursor as string }, snapshot);
 		assert.equal(next.outcome, "ok");
 		assert.equal(records(next)[0].path, "/fixtures/B.md");
@@ -350,11 +472,15 @@ describe("observed context paths", () => {
 	});
 	it("never treats absent or overflowed observation as established absence", async () => {
 		const absent = await run({ kind: "context_file" });
-		assert.equal(absent.outcome, "unavailable"); assert.match(absent.text, /not_yet_observed/);
-		const store = new ObservationStore(); store.observe({ cwd: "/fixtures" }, 1);
-		const snapshot = host(); snapshot.observation = store.snapshot();
+		assert.equal(absent.outcome, "unavailable");
+		assert.match(absent.text, /not_yet_observed/);
+		const store = new ObservationStore();
+		store.observe({ cwd: "/fixtures" }, 1);
+		const snapshot = host();
+		snapshot.observation = store.snapshot();
 		assert.equal((await run({ kind: "context_file" }, snapshot)).outcome, "missing");
-		assert.ok(snapshot.observation); snapshot.observation.overflowBytes = true;
+		assert.ok(snapshot.observation);
+		snapshot.observation.overflowBytes = true;
 		assert.equal((await run({ kind: "context_file" }, snapshot)).outcome, "partial");
 	});
 });

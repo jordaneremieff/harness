@@ -8,8 +8,25 @@ import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { connectTransport, createTransportServer, type TransportClient } from "../../transport/index.ts";
 import { HOST_SOCKET_PATH_LIMIT_BYTES, HostError, hostPaths } from "./host-protocol.ts";
-import { acquireHost, connectHost, HostBusyEndpointUnavailableError, HostReadinessUnavailableError, observeOwnedHostExit, snapshotHost, waitForHostRelease, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
-import { fixtureMetadata, readFixtureState, eventLog, waitForFixtureState, waitForConnectionClose } from "./host-fixture.mts";
+import {
+	acquireHost,
+	connectHost,
+	HostBusyEndpointUnavailableError,
+	HostReadinessUnavailableError,
+	observeOwnedHostExit,
+	snapshotHost,
+	waitForHostRelease,
+	type HostConnection,
+	type HostLaunchOptions,
+	type HostObservationScope,
+} from "./host-client.ts";
+import {
+	fixtureMetadata,
+	readFixtureState,
+	eventLog,
+	waitForFixtureState,
+	waitForConnectionClose,
+} from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { HOST_CONTRACT, type RuntimeContract } from "./version-contract.ts";
 import { fixtureTeardown, markerFixture, waitForProcessGone } from "./durable-runtime-fixture.mts";
@@ -23,7 +40,9 @@ function launch(extra: Partial<HostLaunchOptions> = {}): HostLaunchOptions {
 }
 
 const fixtureRoots = new Set<string>();
-after(() => { for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true }); });
+after(() => {
+	for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
+});
 
 function fixtureRoot(_t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "host-client-"));
@@ -42,7 +61,11 @@ function track(t: { after(fn: () => void | Promise<void>): void }, pid: number):
 	});
 }
 
-async function openHost(t: { after(fn: () => void): void }, root: string, options: HostLaunchOptions = launch()): Promise<HostConnection> {
+async function openHost(
+	t: { after(fn: () => void): void },
+	root: string,
+	options: HostLaunchOptions = launch(),
+): Promise<HostConnection> {
 	const connection = await acquireHost(fixtureMetadata(root), options);
 	track(t, connection.pid);
 	return connection;
@@ -59,72 +82,107 @@ async function observeFrames(connection: HostConnection, scope: HostObservationS
 }
 
 /** A transport fixture with independently declared operation contracts. */
-async function openVersionedHost(root: string, contract: RuntimeContract | undefined, status?: JsonValue, hello?: { value: unknown }): Promise<{ readonly metadata: ReturnType<typeof fixtureMetadata>; calls: string[]; close(): Promise<void> }> {
+async function openVersionedHost(
+	root: string,
+	contract: RuntimeContract | undefined,
+	status?: JsonValue,
+	hello?: { value: unknown },
+): Promise<{ readonly metadata: ReturnType<typeof fixtureMetadata>; calls: string[]; close(): Promise<void> }> {
 	const metadata = fixtureMetadata(root);
 	const paths = hostPaths(metadata);
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
 	writeFileSync(
 		paths.claim,
-		JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: metadata.storageId, cwd: metadata.cwd, createdAt: new Date().toISOString() }),
+		JSON.stringify({
+			token: randomUUID(),
+			pid: process.pid,
+			host: hostname(),
+			sessionId: metadata.storageId,
+			cwd: metadata.cwd,
+			createdAt: new Date().toISOString(),
+		}),
 		{ mode: 0o600 },
 	);
 	const calls: string[] = [];
 	const writerId = randomUUID();
 	const server = createTransportServer({
-		serverId: paths.serverId, path: paths.socket,
+		serverId: paths.serverId,
+		path: paths.socket,
 		request: async (request) => {
 			calls.push(request.method);
-			if (contract && request.method === "runtime-contract") return hello ? hello.value : { format: "pi.agent.host-hello/1", writerId, contract };
+			if (contract && request.method === "runtime-contract")
+				return hello ? hello.value : { format: "pi.agent.host-hello/1", writerId, contract };
 			if (status !== undefined && request.method === "status") return status;
 			if (request.method === "close") return {};
 			throw new Error(`unknown durable host method ${request.method}`);
 		},
 	});
 	await server.start();
-	return { metadata, calls, close: async () => { await server.close().catch(() => undefined); } };
+	return {
+		metadata,
+		calls,
+		close: async () => {
+			await server.close().catch(() => undefined);
+		},
+	};
 }
 
 it("refuses a peer without the current negotiation contract before dispatch", async (t) => {
- const root = fixtureRoot(t);
- const peer = await openVersionedHost(root, undefined);
- t.after(() => peer.close());
- await assert.rejects(connectHost(peer.metadata, launch()), /current operation contract.*Restart/u);
- assert.deepEqual(peer.calls, ["runtime-contract"]);
-});
-
-for (const value of [HOST_CONTRACT, { format: "pi.agent.host-hello/1", contract: HOST_CONTRACT }, { format: "pi.agent.host-hello/1", writerId: "", contract: HOST_CONTRACT }]) it("refuses a peer without the required current writer hello before dispatch", { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t);
-	const peer = await openVersionedHost(root, HOST_CONTRACT, undefined, { value });
+	const peer = await openVersionedHost(root, undefined);
 	t.after(() => peer.close());
-	await assert.rejects(connectHost(peer.metadata), /current operation contract.*Restart/u);
+	await assert.rejects(connectHost(peer.metadata, launch()), /current operation contract.*Restart/u);
 	assert.deepEqual(peer.calls, ["runtime-contract"]);
 });
 
+for (const value of [
+	HOST_CONTRACT,
+	{ format: "pi.agent.host-hello/1", contract: HOST_CONTRACT },
+	{ format: "pi.agent.host-hello/1", writerId: "", contract: HOST_CONTRACT },
+])
+	it("refuses a peer without the required current writer hello before dispatch", { timeout: 10000 }, async (t) => {
+		const root = fixtureRoot(t);
+		const peer = await openVersionedHost(root, HOST_CONTRACT, undefined, { value });
+		t.after(() => peer.close());
+		await assert.rejects(connectHost(peer.metadata), /current operation contract.*Restart/u);
+		assert.deepEqual(peer.calls, ["runtime-contract"]);
+	});
+
 it("admits unchanged operations across releases and refuses only changed contracts", async (t) => {
- const root = fixtureRoot(t);
- const contract = structuredClone(HOST_CONTRACT);
- const altered: RuntimeContract = { ...contract, release: "9.0.0", operations: { ...contract.operations, submit: { request: "submit/2.0.0", response: "submit/2.0.0" } } };
- const status: JsonValue = { conversation: { conversationId: 1 } };
- const peer = await openVersionedHost(root, altered, status);
- t.after(() => peer.close());
- const client = await connectHost(peer.metadata, { retryAttempts: 0 });
- t.after(() => client.close());
- assert.deepEqual(await client.request("status"), status);
- await assert.rejects(client.request("submit", { message: "task" }), /submit request contract.*Restart/u);
- assert.equal(peer.calls.includes("submit"), false);
- assert.equal(client.closed, false);
+	const root = fixtureRoot(t);
+	const contract = structuredClone(HOST_CONTRACT);
+	const altered: RuntimeContract = {
+		...contract,
+		release: "9.0.0",
+		operations: { ...contract.operations, submit: { request: "submit/2.0.0", response: "submit/2.0.0" } },
+	};
+	const status: JsonValue = { conversation: { conversationId: 1 } };
+	const peer = await openVersionedHost(root, altered, status);
+	t.after(() => peer.close());
+	const client = await connectHost(peer.metadata, { retryAttempts: 0 });
+	t.after(() => client.close());
+	assert.deepEqual(await client.request("status"), status);
+	await assert.rejects(client.request("submit", { message: "task" }), /submit request contract.*Restart/u);
+	assert.equal(peer.calls.includes("submit"), false);
+	assert.equal(client.closed, false);
 });
 
 it("refuses a changed observation contract before its payload reaches a schema parser", async (t) => {
- const root = fixtureRoot(t);
- const contract: RuntimeContract = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, status: { ...HOST_CONTRACT.operations.status, response: "different-shape" } } };
- const peer = await openVersionedHost(root, contract, { different: true });
- t.after(() => peer.close());
- const client = await connectHost(peer.metadata);
- t.after(() => client.close());
- await assert.rejects(client.request("status"), /status response contract.*Restart/u);
- assert.equal(peer.calls.includes("status"), false);
+	const root = fixtureRoot(t);
+	const contract: RuntimeContract = {
+		...HOST_CONTRACT,
+		operations: {
+			...HOST_CONTRACT.operations,
+			status: { ...HOST_CONTRACT.operations.status, response: "different-shape" },
+		},
+	};
+	const peer = await openVersionedHost(root, contract, { different: true });
+	t.after(() => peer.close());
+	const client = await connectHost(peer.metadata);
+	t.after(() => client.close());
+	await assert.rejects(client.request("status"), /status response contract.*Restart/u);
+	assert.equal(peer.calls.includes("status"), false);
 });
 
 it("waits for an owned launch's readiness frame instead of probing its socket", { timeout: 15000 }, async (t) => {
@@ -142,12 +200,29 @@ it("waits for an owned launch's readiness frame instead of probing its socket", 
 		process.stdout.write(formatHostReady(ready));
 		await host.done;
 	`;
-	const started = acquireHost(config, { runner: "--input-type=module", runnerArgs: ["--eval", code], launchTimeoutMs: 5000, env: { DURABLE_TEST_NOTIFY: markers.notifyPath } });
-	t.after(async () => { release(); const client = await started.catch(() => undefined); if (client) { await client.request("close").catch(() => undefined); await client.close(); } });
+	const started = acquireHost(config, {
+		runner: "--input-type=module",
+		runnerArgs: ["--eval", code],
+		launchTimeoutMs: 5000,
+		env: { DURABLE_TEST_NOTIFY: markers.notifyPath },
+	});
+	t.after(async () => {
+		release();
+		const client = await started.catch(() => undefined);
+		if (client) {
+			await client.request("close").catch(() => undefined);
+			await client.close();
+		}
+	});
 	await markers.marker("ready");
 	let attached = false;
-	const attaching = connectHost(config).then((client) => { attached = true; return client; });
-	t.after(async () => { await (await attaching).close(); });
+	const attaching = connectHost(config).then((client) => {
+		attached = true;
+		return client;
+	});
+	t.after(async () => {
+		await (await attaching).close();
+	});
 	const paths = hostPaths(config);
 	const raw = await connectTransport({ serverId: paths.serverId, path: paths.socket });
 	t.after(() => raw.dispose());
@@ -158,15 +233,21 @@ it("waits for an owned launch's readiness frame instead of probing its socket", 
 	assert.equal(first.pid, second.pid);
 });
 
-it("refuses a retired changes operation without a feed fallback", { timeout: 10000 }, async t => {
+it("refuses a retired changes operation without a feed fallback", { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t);
-	const altered = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, changes: { request: "changes/1.0.0", response: "changes/1.0.0" } } };
+	const altered = {
+		...HOST_CONTRACT,
+		operations: { ...HOST_CONTRACT.operations, changes: { request: "changes/1.0.0", response: "changes/1.0.0" } },
+	};
 	const peer = await openVersionedHost(root, altered);
 	t.after(() => peer.close());
 	const client = await connectHost(peer.metadata);
 	t.after(() => client.close());
 	assert.ok(client.subscribeChanges);
-	await assert.rejects(client.subscribeChanges(() => {}), /changes.*contract/u);
+	await assert.rejects(
+		client.subscribeChanges(() => {}),
+		/changes.*contract/u,
+	);
 	assert.equal(client.ownerEvidence?.kind, "unknown");
 	assert.deepEqual(peer.calls, ["runtime-contract"]);
 });
@@ -176,7 +257,18 @@ it("an unrelated live PID is diagnostic, not native ownership or release evidenc
 	const config = fixtureMetadata(root);
 	const paths = hostPaths(config);
 	mkdirSync(dirname(paths.claim), { recursive: true });
-	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: config.storageId, cwd: config.cwd, createdAt: new Date().toISOString() }), { mode: 0o600 });
+	writeFileSync(
+		paths.claim,
+		JSON.stringify({
+			token: randomUUID(),
+			pid: process.pid,
+			host: hostname(),
+			sessionId: config.storageId,
+			cwd: config.cwd,
+			createdAt: new Date().toISOString(),
+		}),
+		{ mode: 0o600 },
+	);
 	const inode = lstatSync(paths.claim).ino;
 	const claim = JSON.parse(readFileSync(paths.claim, "utf8"));
 	writeFileSync(paths.claim, JSON.stringify({ ...claim, endedAt: claim.createdAt }));
@@ -234,7 +326,9 @@ it("names a removed Node executable and requires a Pi restart before host launch
 			assert.match(error.message, /Restart Pi/u);
 			return true;
 		});
-	} finally { process.execPath = executable; }
+	} finally {
+		process.execPath = executable;
+	}
 	assert.equal(existsSync(join(root, "state.json")), false, "no replacement runtime started");
 });
 
@@ -357,7 +451,10 @@ it("keeps change listeners independent when one callback throws", { timeout: 100
 	t.after(() => connection.close());
 	const changes = eventLog<void>();
 	let failures = 0;
-	await subscribeChanges(connection, () => { failures++; throw new Error("listener failed"); });
+	await subscribeChanges(connection, () => {
+		failures++;
+		throw new Error("listener failed");
+	});
 	await subscribeChanges(connection, () => changes.push(undefined));
 	await changes.waitForCount(1);
 	await connection.request("report");
@@ -371,13 +468,19 @@ it("notifies every close listener even when one callback throws", { timeout: 100
 	const connection = await openHost(t, root);
 	t.after(() => connection.close());
 	let notified = 0;
-	connection.onClose(() => { throw new Error("listener failed"); });
-	connection.onClose(() => { notified++; });
+	connection.onClose(() => {
+		throw new Error("listener failed");
+	});
+	connection.onClose(() => {
+		notified++;
+	});
 	await assert.doesNotReject(connection.close());
 	assert.equal(notified, 1);
 	await connection.close();
 	assert.equal(notified, 1, "close notification stays once-only");
-	connection.onClose(() => { throw new Error("late listener failed"); });
+	connection.onClose(() => {
+		throw new Error("late listener failed");
+	});
 	await new Promise<void>((resolve) => connection.onClose(resolve));
 });
 
@@ -403,7 +506,8 @@ it("rebinds change subscriptions after an owned failed exit with retryable work"
 	await changes.waitForCount(2);
 	assert.notEqual(connection.writerId, writerId);
 	assert.equal(connection.ownerEvidence?.kind, "verified", "the rebound initial publication belongs to the new hello");
-	if (connection.ownerEvidence?.kind === "verified") assert.equal(connection.ownerEvidence.view?.storageId, connection.storageId);
+	if (connection.ownerEvidence?.kind === "verified")
+		assert.equal(connection.ownerEvidence.view?.storageId, connection.storageId);
 	unsubscribe();
 	assert.equal(connection.ownerEvidence?.kind, "unknown", "the last publication subscription ended");
 	const stopped = changes.length;
@@ -413,32 +517,55 @@ it("rebinds change subscriptions after an owned failed exit with retryable work"
 	await connection.close();
 });
 
-for (const close of ["local", "owner"] as const) it(`invalidates current-host publication on ${close} close`, { timeout: 10000 }, async t => {
-	const root = fixtureRoot(t), metadata = fixtureMetadata(root);
-	const listeners = new Set<() => void>();
-	const view = { storageId: metadata.storageId, updatedAt: "2026-01-01T00:00:00.000Z", rows: [], coverage: { complete: true, omitted: 0 } };
-	const host = await runHost(() => ({ publishedView: view, request: async () => ({}), close: async () => {}, isIdle: () => false, onChange: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; } }), { metadata, idleMs: 0, announceReady() {} });
-	t.after(() => host.close());
-	const client = await connectHost(metadata);
-	t.after(() => client.close());
-	const changes = eventLog<void>();
-	assert.ok(client.subscribeChanges);
-	await client.subscribeChanges(() => changes.push(undefined));
-	await changes.waitForCount(1);
-	const kind = () => client.ownerEvidence?.kind;
-	assert.equal(kind(), "verified");
-	if (client.ownerEvidence?.kind === "verified") assert.deepEqual(client.ownerEvidence.view, view);
-	if (close === "owner") await client.request("close"); else await client.close();
-	assert.equal(kind(), "unavailable");
-	const count = changes.length;
-	for (const notify of listeners) notify();
-	await new Promise<void>(resolve => setImmediate(resolve));
-	assert.equal(changes.length, count, "old callbacks do not restore a closed owner's publication");
-	assert.equal(kind(), "unavailable");
-});
+for (const close of ["local", "owner"] as const)
+	it(`invalidates current-host publication on ${close} close`, { timeout: 10000 }, async (t) => {
+		const root = fixtureRoot(t),
+			metadata = fixtureMetadata(root);
+		const listeners = new Set<() => void>();
+		const view = {
+			storageId: metadata.storageId,
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			rows: [],
+			coverage: { complete: true, omitted: 0 },
+		};
+		const host = await runHost(
+			() => ({
+				publishedView: view,
+				request: async () => ({}),
+				close: async () => {},
+				isIdle: () => false,
+				onChange: (listener) => {
+					listeners.add(listener);
+					return () => {
+						listeners.delete(listener);
+					};
+				},
+			}),
+			{ metadata, idleMs: 0, announceReady() {} },
+		);
+		t.after(() => host.close());
+		const client = await connectHost(metadata);
+		t.after(() => client.close());
+		const changes = eventLog<void>();
+		assert.ok(client.subscribeChanges);
+		await client.subscribeChanges(() => changes.push(undefined));
+		await changes.waitForCount(1);
+		const kind = () => client.ownerEvidence?.kind;
+		assert.equal(kind(), "verified");
+		if (client.ownerEvidence?.kind === "verified") assert.deepEqual(client.ownerEvidence.view, view);
+		if (close === "owner") await client.request("close");
+		else await client.close();
+		assert.equal(kind(), "unavailable");
+		const count = changes.length;
+		for (const notify of listeners) notify();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(changes.length, count, "old callbacks do not restore a closed owner's publication");
+		assert.equal(kind(), "unavailable");
+	});
 
-it("a busy runner causes one endpoint negotiation without a native runtime open", { timeout: 10000 }, async t => {
-	const root = fixtureRoot(t), metadata = fixtureMetadata(root);
+it("a busy runner causes one endpoint negotiation without a native runtime open", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t),
+		metadata = fixtureMetadata(root);
 	const evidence = join(root, "busy-peer.json");
 	const source = `
 		import { writeFileSync } from 'node:fs';
@@ -453,17 +580,28 @@ it("a busy runner causes one endpoint negotiation without a native runtime open"
 		const server = createTransportServer({serverId:paths.serverId,path:paths.socket,request:async request => {calls++;save();return {format:'pi.agent.host-hello/1',writerId,contract:HOST_CONTRACT};}});
 		await server.start(); save(); process.stdout.write(formatHostBusy({storageId:metadata.storageId,socketPath:paths.socket}));`;
 	t.after(async () => {
-		try { const saved = JSON.parse(readFileSync(evidence, "utf8")); process.kill(saved.pid, "SIGKILL"); } catch {}
+		try {
+			const saved = JSON.parse(readFileSync(evidence, "utf8"));
+			process.kill(saved.pid, "SIGKILL");
+		} catch {}
 		await observeOwnedHostExit(metadata);
 	});
-	const client = await acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", source], launchTimeoutMs: 5000 });
+	const client = await acquireHost(metadata, {
+		runner: "--input-type=module",
+		runnerArgs: ["--eval", source],
+		launchTimeoutMs: 5000,
+	});
 	t.after(() => client.close());
 	assert.equal(JSON.parse(readFileSync(evidence, "utf8")).calls, 1);
 	assert.equal(client.ownedExit, undefined, "busy supplies no owned writer identity");
 });
 
-it("reports a real BUSY lease without a verified endpoint as distinct unavailable evidence", { timeout: 10000 }, async t => {
-	const root = fixtureRoot(t), metadata = fixtureMetadata(root), paths = hostPaths(metadata);
+it("reports a real BUSY lease without a verified endpoint as distinct unavailable evidence", {
+	timeout: 10000,
+}, async (t) => {
+	const root = fixtureRoot(t),
+		metadata = fixtureMetadata(root),
+		paths = hostPaths(metadata);
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
 	const held = tryNativeWriterLease(paths.claim);
 	assert.equal(held.kind, "held");
@@ -478,7 +616,7 @@ it("reports a real BUSY lease without a verified endpoint as distinct unavailabl
 		}
 		await observeOwnedHostExit(metadata);
 	});
-	await assert.rejects(attempted, error => {
+	await assert.rejects(attempted, (error) => {
 		assert.ok(error instanceof HostBusyEndpointUnavailableError);
 		assert.equal(error instanceof HostReadinessUnavailableError, false);
 		assert.match(error.message, /runner reported BUSY.*no native host endpoint was verified/u);
@@ -539,7 +677,18 @@ it("does not infer a native writer from a diagnostic hostname", { timeout: 30000
 	const config = fixtureMetadata(root);
 	const paths = hostPaths(config);
 	mkdirSync(dirname(paths.claim), { recursive: true });
-	writeFileSync(paths.claim, JSON.stringify({ token: "other", pid: process.pid, host: "another-machine", sessionId: config.storageId, cwd: config.cwd, createdAt: new Date().toISOString() }), { mode: 0o600 });
+	writeFileSync(
+		paths.claim,
+		JSON.stringify({
+			token: "other",
+			pid: process.pid,
+			host: "another-machine",
+			sessionId: config.storageId,
+			cwd: config.cwd,
+			createdAt: new Date().toISOString(),
+		}),
+		{ mode: 0o600 },
+	);
 	const original = lstatSync(paths.claim).ino;
 	const connection = await acquireHost(config, launch());
 	track(t, connection.pid);
@@ -608,24 +757,43 @@ it("pushes live conversation frames and stops on observation close", { timeout: 
 	assert.equal(base.scope, "conversation");
 	if (base.scope !== "conversation") assert.fail("expected a conversation frame");
 	assert.equal(base.conversationId, 1);
-	await connection.request("submit", { sessionId: config.storageId, message: "transport prompt", requestId: "observation-1" });
-	await frames.waitFor((items) => items.some((frame) => frame.entries.some((entry) => entry.kind === "pi.assistant")), 30000);
+	await connection.request("submit", {
+		sessionId: config.storageId,
+		message: "transport prompt",
+		requestId: "observation-1",
+	});
+	await frames.waitFor(
+		(items) => items.some((frame) => frame.entries.some((entry) => entry.kind === "pi.assistant")),
+		30000,
+	);
 	const answered = frames[frames.length - 1];
 	assert.ok(answered !== undefined && answered.scope === "conversation");
 	assert.ok(answered.revision > base.revision, "the published frame advances the revision");
 	assert.equal(answered.status.lastTextRole, "assistant");
 	const revisions = frames.map((frame) => frame.revision);
 	assert.equal(new Set(revisions).size, revisions.length, "a coalesced publisher never repeats a revision");
-	assert.ok(revisions.every((revision, index) => index === 0 || revision > (revisions[index - 1] ?? 0)), "published revisions strictly increase");
+	assert.ok(
+		revisions.every((revision, index) => index === 0 || revision > (revisions[index - 1] ?? 0)),
+		"published revisions strictly increase",
+	);
 
 	await observation.close();
 	const settled = frames.length;
 	const witness = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
 	t.after(() => witness.close());
 	const witnessed = eventLog<ConversationFrame>();
-	witness.onFrame((frame) => { if (frame?.scope === "conversation") witnessed.push(frame); });
-	await connection.request("submit", { sessionId: config.storageId, message: "after close", requestId: "observation-2" });
-	await witnessed.waitFor((items) => items.some((frame) => frame.entries.filter((entry) => entry.kind === "pi.assistant").length >= 2), 30000);
+	witness.onFrame((frame) => {
+		if (frame?.scope === "conversation") witnessed.push(frame);
+	});
+	await connection.request("submit", {
+		sessionId: config.storageId,
+		message: "after close",
+		requestId: "observation-2",
+	});
+	await witnessed.waitFor(
+		(items) => items.some((frame) => frame.entries.filter((entry) => entry.kind === "pi.assistant").length >= 2),
+		30000,
+	);
 	await witness.close();
 	assert.equal(frames.length, settled, "a closed observation receives no further frames");
 });
@@ -652,33 +820,54 @@ it("signals unavailable without relaunching after a host kill while observing", 
 });
 
 it("keeps a task observation live after an owned failed exit and reconnect", { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t), markers = markerFixture(t, root), config = fixtureMetadata(root);
+	const root = fixtureRoot(t),
+		markers = markerFixture(t, root),
+		config = fixtureMetadata(root);
 	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_NOTIFY: markers.notifyPath } }));
-	track(t, connection.pid); t.after(() => connection.close());
+	track(t, connection.pid);
+	t.after(() => connection.close());
 	const observation = await observeFrames(connection, { scope: "tasks", sessionId: config.storageId });
-	const firstPid = connection.pid, frames = eventLog<{ fresh: boolean; state?: string }>();
+	const firstPid = connection.pid,
+		frames = eventLog<{ fresh: boolean; state?: string }>();
 	observation.onFrame((_frame, fresh, state) => frames.push({ fresh, state }));
 	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
 	await markers.marker("snapshot-gated");
 	process.kill(firstPid, "SIGKILL");
 	await pending;
 	track(t, connection.pid);
-	await frames.waitFor((items) => connection.pid !== firstPid && items.filter((item) => item.fresh && item.state === "live").length >= 2);
+	await frames.waitFor(
+		(items) => connection.pid !== firstPid && items.filter((item) => item.fresh && item.state === "live").length >= 2,
+	);
 	assert.equal(connection.closed, false);
 	const baseline = observation.frame.revision;
 	const changed = eventLog<number>();
-	observation.onFrame((frame, fresh, state) => { if (state === "live" && !fresh && frame?.scope === "tasks") changed.push(frame.revision); });
-	await connection.request("submit", { sessionId: config.storageId, message: "after reconnect", requestId: "tasks-reconnected" });
+	observation.onFrame((frame, fresh, state) => {
+		if (state === "live" && !fresh && frame?.scope === "tasks") changed.push(frame.revision);
+	});
+	await connection.request("submit", {
+		sessionId: config.storageId,
+		message: "after reconnect",
+		requestId: "tasks-reconnected",
+	});
 	await changed.waitFor((items) => items.some((revision) => revision > baseline));
 	await observation.close();
 });
 
-it("marks a refused observation reopen unavailable without closing the recovered connection", { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t), markers = markerFixture(t, root), config = fixtureMetadata(root);
-	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_OBSERVATION_REOPEN: "fail", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
-	track(t, connection.pid); t.after(() => connection.close());
+it("marks a refused observation reopen unavailable without closing the recovered connection", {
+	timeout: 10000,
+}, async (t) => {
+	const root = fixtureRoot(t),
+		markers = markerFixture(t, root),
+		config = fixtureMetadata(root);
+	const connection = await acquireHost(
+		config,
+		observationLaunch({ env: { DURABLE_TEST_OBSERVATION_REOPEN: "fail", DURABLE_TEST_NOTIFY: markers.notifyPath } }),
+	);
+	track(t, connection.pid);
+	t.after(() => connection.close());
 	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
-	const firstPid = connection.pid, states = eventLog<string | undefined>();
+	const firstPid = connection.pid,
+		states = eventLog<string | undefined>();
 	observation.onFrame((_frame, _fresh, state) => states.push(state));
 	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
 	await markers.marker("snapshot-gated");
@@ -697,43 +886,46 @@ it("marks a refused observation reopen unavailable without closing the recovered
 	await observation.close();
 });
 
-for (const scope of ["tasks", "conversation"] as const) it(`attach-only ${scope} observation never launches after host loss`,  { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const markers = markerFixture(t, root);
-	const config = fixtureMetadata(root);
-	const owner = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_NOTIFY: markers.notifyPath } }));
-	t.after(() => owner.close());
-	const connection = await connectHost(config, observationLaunch());
-	track(t, connection.pid);
-	t.after(() => connection.close());
-	const observation = await observeFrames(connection, { scope, sessionId: config.storageId });
-	const firstPid = connection.pid;
-	let unavailable!: () => void;
-	const lost = new Promise<void>((resolve) => { unavailable = resolve; });
-	let failures = 0;
-	observation.onFrame((frame, fresh, state) => {
-		if (state !== "unavailable") return;
-		failures += 1;
-		assert.equal(frame?.scope, scope);
-		assert.equal(fresh, false);
-		unavailable();
+for (const scope of ["tasks", "conversation"] as const)
+	it(`attach-only ${scope} observation never launches after host loss`, { timeout: 10000 }, async (t) => {
+		const root = fixtureRoot(t);
+		const markers = markerFixture(t, root);
+		const config = fixtureMetadata(root);
+		const owner = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_NOTIFY: markers.notifyPath } }));
+		t.after(() => owner.close());
+		const connection = await connectHost(config, observationLaunch());
+		track(t, connection.pid);
+		t.after(() => connection.close());
+		const observation = await observeFrames(connection, { scope, sessionId: config.storageId });
+		const firstPid = connection.pid;
+		let unavailable!: () => void;
+		const lost = new Promise<void>((resolve) => {
+			unavailable = resolve;
+		});
+		let failures = 0;
+		observation.onFrame((frame, fresh, state) => {
+			if (state !== "unavailable") return;
+			failures += 1;
+			assert.equal(frame?.scope, scope);
+			assert.equal(fresh, false);
+			unavailable();
+		});
+		const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
+		const refused = assert.rejects(pending, /unavailable|closed|connect|disconnected/iu);
+		await markers.marker("snapshot-gated");
+		process.kill(firstPid, "SIGKILL");
+		await refused;
+		await lost;
+		assert.equal(connection.pid, firstPid);
+		assert.equal(connection.closed, true);
+		const late: Array<string | undefined> = [];
+		observation.onFrame((_frame, _fresh, state) => late.push(state));
+		assert.deepEqual(late, ["unavailable"], "a late listener never receives a stale live baseline");
+		await assert.rejects(connection.request("status", { sessionId: config.storageId }), /closed/u);
+		await observation.close();
+		await connection.close();
+		assert.equal(failures, 1, "the failed observation receives one unavailable event");
 	});
-	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
-	const refused = assert.rejects(pending, /unavailable|closed|connect|disconnected/iu);
-	await markers.marker("snapshot-gated");
-	process.kill(firstPid, "SIGKILL");
-	await refused;
-	await lost;
-	assert.equal(connection.pid, firstPid);
-	assert.equal(connection.closed, true);
-	const late: Array<string | undefined> = [];
-	observation.onFrame((_frame, _fresh, state) => late.push(state));
-	assert.deepEqual(late, ["unavailable"], "a late listener never receives a stale live baseline");
-	await assert.rejects(connection.request("status", { sessionId: config.storageId }), /closed/u);
-	await observation.close();
-	await connection.close();
-	assert.equal(failures, 1, "the failed observation receives one unavailable event");
-});
 
 it("a successful owner close differs from local transport disposal", async (t) => {
 	const peer = await openVersionedHost(fixtureRoot(t), HOST_CONTRACT, {});
@@ -749,10 +941,15 @@ it("a successful owner close differs from local transport disposal", async (t) =
 });
 
 it("close during a held observation rebind prevents every late live callback", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
+	const root = fixtureRoot(t),
+		markers = markerFixture(t, root),
+		metadata = fixtureMetadata(root);
 	const release = markers.hold("observation-reopen-held");
 	t.after(release);
-	const connection = await acquireHost(metadata, observationLaunch({ env: { DURABLE_TEST_OBSERVATION_REOPEN: "hold", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
+	const connection = await acquireHost(
+		metadata,
+		observationLaunch({ env: { DURABLE_TEST_OBSERVATION_REOPEN: "hold", DURABLE_TEST_NOTIFY: markers.notifyPath } }),
+	);
 	track(t, connection.pid);
 	t.after(() => connection.close());
 	const observation = await observeFrames(connection, { scope: "conversation", sessionId: metadata.storageId });
@@ -822,96 +1019,163 @@ function lifecycleRunner(mode: string): string {
 }
 
 it("a foreign writer never inherits a retired child's failed-exit evidence", { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
-	const releaseRetire = markers.hold("retire"), releaseExit = markers.hold("writer-released");
-	t.after(releaseRetire); t.after(releaseExit);
-	const owner = await acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", lifecycleRunner("retire-held")], env: { DURABLE_TEST_NOTIFY: markers.notifyPath } });
+	const root = fixtureRoot(t),
+		markers = markerFixture(t, root),
+		metadata = fixtureMetadata(root);
+	const releaseRetire = markers.hold("retire"),
+		releaseExit = markers.hold("writer-released");
+	t.after(releaseRetire);
+	t.after(releaseExit);
+	const owner = await acquireHost(metadata, {
+		runner: "--input-type=module",
+		runnerArgs: ["--eval", lifecycleRunner("retire-held")],
+		env: { DURABLE_TEST_NOTIFY: markers.notifyPath },
+	});
 	const exited = owner.ownedExit;
 	assert.ok(exited);
-	t.after(async () => { releaseRetire(); releaseExit(); await owner.close(); await exited; });
+	t.after(async () => {
+		releaseRetire();
+		releaseExit();
+		await owner.close();
+		await exited;
+	});
 	await owner.close();
 	assert.equal(owner.ownerReleased, false, "local disposal does not report writer release");
 	await markers.marker("retire");
 	releaseRetire();
 	await markers.marker("writer-released");
-	const foreign = await runHost(() => ({ request: async () => ({ writer: "foreign" }), close: async () => {}, isIdle: () => false }), { metadata, idleMs: 0, announceReady() {} });
+	const foreign = await runHost(
+		() => ({ request: async () => ({ writer: "foreign" }), close: async () => {}, isIdle: () => false }),
+		{ metadata, idleMs: 0, announceReady() {} },
+	);
 	t.after(() => foreign.close());
 	const attached = await acquireHost(metadata, launch());
 	t.after(() => attached.close());
 	const inherited = attached.ownedExit;
 	assert.deepEqual(await attached.request("status"), { writer: "foreign" });
 	releaseExit();
-	assert.equal((await exited).failed, true, "the retired child exits with failure while the foreign writer remains usable");
+	assert.equal(
+		(await exited).failed,
+		true,
+		"the retired child exits with failure while the foreign writer remains usable",
+	);
 	assert.deepEqual(await attached.request("status"), { writer: "foreign" });
 	assert.equal(inherited, undefined, "the current foreign endpoint has no owned-child exit source");
 });
 
 it("wrong-path readiness never establishes an owned-exit source for attachment", { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
+	const root = fixtureRoot(t),
+		markers = markerFixture(t, root),
+		metadata = fixtureMetadata(root);
 	const release = markers.hold("ready");
 	t.after(release);
-	const pending = acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", lifecycleRunner("wrong-path")], env: { DURABLE_TEST_NOTIFY: markers.notifyPath } });
+	const pending = acquireHost(metadata, {
+		runner: "--input-type=module",
+		runnerArgs: ["--eval", lifecycleRunner("wrong-path")],
+		env: { DURABLE_TEST_NOTIFY: markers.notifyPath },
+	});
 	const refused = assert.rejects(pending, /owned runner remains unconfirmed/u);
 	await markers.marker("ready");
 	release();
 	await refused;
 	const exited = observeOwnedHostExit(metadata);
 	const attached = await connectHost(metadata);
-	t.after(async () => { await attached.request("close").catch(() => undefined); await attached.close(); await exited; });
+	t.after(async () => {
+		await attached.request("close").catch(() => undefined);
+		await attached.close();
+		await exited;
+	});
 	assert.deepEqual(await attached.request("timer-list"), { starts: 1, alive: true });
 	assert.equal(attached.ownedExit, undefined, "a rejected readiness identity is not owned-writer evidence");
 });
 
-for (const mode of ["invalid", "wrong-path", "connect-failure", "deadline", "cancel"] as const) it(`${mode} startup observation never kills a resumed runtime`, { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t), metadata = fixtureMetadata(root), createdAt = Date.now();
-	t.after(async () => {
-		await fixtureTeardown(root, metadata.agentDir, createdAt, t);
-		await observeOwnedHostExit(metadata);
+for (const mode of ["invalid", "wrong-path", "connect-failure", "deadline", "cancel"] as const)
+	it(`${mode} startup observation never kills a resumed runtime`, { timeout: 15000 }, async (t) => {
+		const root = fixtureRoot(t),
+			metadata = fixtureMetadata(root),
+			createdAt = Date.now();
+		t.after(async () => {
+			await fixtureTeardown(root, metadata.agentDir, createdAt, t);
+			await observeOwnedHostExit(metadata);
+		});
+		const markers = markerFixture(t, root);
+		const release = markers.hold("ready");
+		t.after(release);
+		const restore = markers.hold("restore");
+		t.after(restore);
+		const controller = new AbortController();
+		const pending = acquireHost(metadata, {
+			runner: "--input-type=module",
+			runnerArgs: ["--eval", lifecycleRunner(mode)],
+			launchTimeoutMs: mode === "deadline" ? 3000 : 10000,
+			signal: controller.signal,
+			env: { DURABLE_TEST_NOTIFY: markers.notifyPath },
+		});
+		const rejected = assert.rejects(pending);
+		await markers.marker("ready");
+		if (mode === "cancel") controller.abort(new Error("withdrawn"));
+		if (mode === "invalid" || mode === "wrong-path" || mode === "connect-failure") release();
+		await rejected;
+		release();
+		if (mode === "connect-failure") {
+			restore();
+			await markers.marker("restored");
+		}
+		const surviving = await connectHost(metadata);
+		track(t, surviving.pid);
+		t.after(() => surviving.close());
+		assert.deepEqual(await surviving.request("timer-list"), { starts: 1, alive: true });
+		await surviving.request("close").catch(() => undefined);
 	});
-	const markers = markerFixture(t, root);
-	const release = markers.hold("ready");
-	t.after(release);
-	const restore = markers.hold("restore");
-	t.after(restore);
-	const controller = new AbortController();
-	const pending = acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", lifecycleRunner(mode)], launchTimeoutMs: mode === "deadline" ? 3000 : 10000, signal: controller.signal, env: { DURABLE_TEST_NOTIFY: markers.notifyPath } });
-	const rejected = assert.rejects(pending);
-	await markers.marker("ready");
-	if (mode === "cancel") controller.abort(new Error("withdrawn"));
-	if (mode === "invalid" || mode === "wrong-path" || mode === "connect-failure") release();
-	await rejected;
-	release();
-	if (mode === "connect-failure") { restore(); await markers.marker("restored"); }
-	const surviving = await connectHost(metadata);
-	track(t, surviving.pid);
-	t.after(() => surviving.close());
-	assert.deepEqual(await surviving.request("timer-list"), { starts: 1, alive: true });
-	await surviving.request("close").catch(() => undefined);
-});
 
-it("settles every pending call when the replacement link closes during old-link disposal", { timeout: 10000 }, async t => {
+it("settles every pending call when the replacement link closes during old-link disposal", {
+	timeout: 10000,
+}, async (t) => {
 	const metadata = fixtureMetadata(fixtureRoot(t));
 	const requests = eventLog<string>();
-	let releaseRequests = () => {}, releaseDisposal = () => {}, enteredDisposal = () => {};
-	const heldRequests = new Promise<void>(resolve => { releaseRequests = resolve; });
-	const heldDisposal = new Promise<void>(resolve => { releaseDisposal = resolve; });
-	const disposalEntered = new Promise<void>(resolve => { enteredDisposal = resolve; });
-	const host = await runHost(() => ({
-		request: async method => { requests.push(method); await heldRequests; return {}; },
-		close: async () => {}, isIdle: () => false,
-	}), { metadata, idleMs: 0, announceReady() {} });
+	let releaseRequests = () => {},
+		releaseDisposal = () => {},
+		enteredDisposal = () => {};
+	const heldRequests = new Promise<void>((resolve) => {
+		releaseRequests = resolve;
+	});
+	const heldDisposal = new Promise<void>((resolve) => {
+		releaseDisposal = resolve;
+	});
+	const disposalEntered = new Promise<void>((resolve) => {
+		enteredDisposal = resolve;
+	});
+	const host = await runHost(
+		() => ({
+			request: async (method) => {
+				requests.push(method);
+				await heldRequests;
+				return {};
+			},
+			close: async () => {},
+			isIdle: () => false,
+		}),
+		{ metadata, idleMs: 0, announceReady() {} },
+	);
 	const connection = await connectHost(metadata);
 	// Hold only cleanup of the original transport, not connection recovery itself.
 	const transport = () => (connection as unknown as { client: TransportClient }).client;
-	const first = transport(), disposeFirst = first.dispose.bind(first);
-	first.dispose = async () => { enteredDisposal(); await heldDisposal; await disposeFirst(); };
+	const first = transport(),
+		disposeFirst = first.dispose.bind(first);
+	first.dispose = async () => {
+		enteredDisposal();
+		await heldDisposal;
+		await disposeFirst();
+	};
 	let closed = 0;
-	connection.onClose(() => { closed++; });
+	connection.onClose(() => {
+		closed++;
+	});
 	const unavailable = (error: unknown): boolean => error instanceof HostError && error.code === "unavailable";
 	try {
 		const safe = assert.rejects(connection.request("status", {}, { signal: AbortSignal.timeout(2000) }), unavailable);
 		const unsafe = assert.rejects(connection.request("configure", {}, { signal: AbortSignal.timeout(2000) }));
-		await requests.waitFor(values => values.includes("status") && values.includes("configure"));
+		await requests.waitFor((values) => values.includes("status") && values.includes("configure"));
 		const disconnected = disposeFirst();
 		await disposalEntered;
 		const replacement = transport();
@@ -921,19 +1185,33 @@ it("settles every pending call when the replacement link closes during old-link 
 		await Promise.all([safe, unsafe, disconnected]);
 		assert.equal(connection.closed, true);
 		assert.equal(closed, 1, "the manager receives final connection loss once");
-		assert.equal(requests.filter(method => method === "configure").length, 1, "the unsafe mutation is never replayed");
+		assert.equal(
+			requests.filter((method) => method === "configure").length,
+			1,
+			"the unsafe mutation is never replayed",
+		);
 	} finally {
-		releaseDisposal(); releaseRequests();
+		releaseDisposal();
+		releaseRequests();
 		await connection.close();
 		await host.close();
 	}
 });
 
-it("close during held recovery never installs a late link or stops its independent host", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
+it("close during held recovery never installs a late link or stops its independent host", {
+	timeout: 15000,
+}, async (t) => {
+	const root = fixtureRoot(t),
+		markers = markerFixture(t, root),
+		metadata = fixtureMetadata(root);
 	const release = markers.hold("ready");
 	t.after(release);
-	const connection = await acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", lifecycleRunner("recovery")], launchTimeoutMs: 10000, env: { DURABLE_TEST_NOTIFY: markers.notifyPath } });
+	const connection = await acquireHost(metadata, {
+		runner: "--input-type=module",
+		runnerArgs: ["--eval", lifecycleRunner("recovery")],
+		launchTimeoutMs: 10000,
+		env: { DURABLE_TEST_NOTIFY: markers.notifyPath },
+	});
 	track(t, connection.pid);
 	t.after(() => connection.close());
 	const pending = connection.request("receipts", { fixtureGate: true });
@@ -954,8 +1232,13 @@ it("close during held recovery never installs a late link or stops its independe
 });
 
 it("a clean owned exit does not automatically resume a pending read", { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
-	const connection = await acquireHost(metadata, observationLaunch({ env: { DURABLE_TEST_RETIRE: "clean", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
+	const root = fixtureRoot(t),
+		markers = markerFixture(t, root),
+		metadata = fixtureMetadata(root);
+	const connection = await acquireHost(
+		metadata,
+		observationLaunch({ env: { DURABLE_TEST_RETIRE: "clean", DURABLE_TEST_NOTIFY: markers.notifyPath } }),
+	);
 	track(t, connection.pid);
 	t.after(() => connection.close());
 	const firstPid = connection.pid;
@@ -963,7 +1246,9 @@ it("a clean owned exit does not automatically resume a pending read", { timeout:
 	const rejected = assert.rejects(pending);
 	await markers.marker("snapshot-gated");
 	await rejected;
-	await new Promise<void>((resolve) => { connection.onClose(resolve); });
+	await new Promise<void>((resolve) => {
+		connection.onClose(resolve);
+	});
 	assert.equal(connection.closed, true);
 	assert.equal(connection.pid, firstPid);
 	assert.ok(connection.ownedExit);

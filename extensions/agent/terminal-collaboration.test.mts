@@ -10,70 +10,118 @@ import { projectCollaboration } from "./collaboration.ts";
 import { createSibling, terminalHostFixture } from "./terminal-host-fixture.mts";
 import { theme } from "./dashboard-test-fixture.mts";
 
-for (const nonroot of [false, true]) it(`native terminal discovers, reads and posts threads as its ${nonroot ? "nonroot" : "root"} target without a provider request`, { timeout: 20000 }, async (t) => {
-	const f = terminalHostFixture(t);
-	const host = await f.host("Current native work");
-	const child = await createSibling(host);
-	await createSibling(host);
-	const actor = nonroot ? child : host.record.storageId;
-	const manager = f.manager();
-	const caller = { id: actor, cwd: f.root };
-	const receipt = await manager.collaborate({ action: "create", sessionId: host.record.storageId, title: "Native task review", purpose: "Read the retained work", authority: "Operator request", source: "Synthetic brief", restrictions: "No provider execution", acceptance: "Read and navigate", origin: "operator" }, caller) as { threadId: string };
-	await manager.collaborate({ action: "join", threadId: receipt.threadId, origin: "operator", participation: "Review the task" }, { ...caller, id: nonroot ? host.record.storageId : child });
-	await host.publish();
-	const catalog = new AgentCatalog(f.agentDir);
-	const record = catalog.read(host.record.storageId);
-	assert.ok(record.view);
-	catalog.updateView(record.storageId, record.view, await projectCollaboration(host.durable.harness, BACKGROUND_CONTEXT));
-	const controller = new TerminalController({ manager, caller: { id: "terminal-local", cwd: f.root } });
-	let screen!: TerminalScreen;
-	const waiters = new Set<() => void>();
-	const tui = { terminal: { columns: 100, rows: 30 }, requestRender() { for (const check of [...waiters]) check(); } } as unknown as TUI;
-	screen = new TerminalScreen(tui, theme, terminalKeys(), controller, () => {});
-	t.after(async () => { screen.dispose(); await controller.close(); });
-	const text = () => stripVTControlCharacters(screen.render(100).join("\n"));
-	const waitFor = (predicate: () => boolean) => new Promise<void>((resolve) => {
-		const check = () => { if (predicate()) { waiters.delete(check); resolve(); } };
-		waiters.add(check); check();
+for (const nonroot of [false, true])
+	it(`native terminal discovers, reads and posts threads as its ${nonroot ? "nonroot" : "root"} target without a provider request`, {
+		timeout: 20000,
+	}, async (t) => {
+		const f = terminalHostFixture(t);
+		const host = await f.host("Current native work");
+		const child = await createSibling(host);
+		await createSibling(host);
+		const actor = nonroot ? child : host.record.storageId;
+		const manager = f.manager();
+		const caller = { id: actor, cwd: f.root };
+		const receipt = (await manager.collaborate(
+			{
+				action: "create",
+				sessionId: host.record.storageId,
+				title: "Native task review",
+				purpose: "Read the retained work",
+				authority: "Operator request",
+				source: "Synthetic brief",
+				restrictions: "No provider execution",
+				acceptance: "Read and navigate",
+				origin: "operator",
+			},
+			caller,
+		)) as { threadId: string };
+		await manager.collaborate(
+			{ action: "join", threadId: receipt.threadId, origin: "operator", participation: "Review the task" },
+			{ ...caller, id: nonroot ? host.record.storageId : child },
+		);
+		await host.publish();
+		const catalog = new AgentCatalog(f.agentDir);
+		const record = catalog.read(host.record.storageId);
+		assert.ok(record.view);
+		catalog.updateView(
+			record.storageId,
+			record.view,
+			await projectCollaboration(host.durable.harness, BACKGROUND_CONTEXT),
+		);
+		const controller = new TerminalController({ manager, caller: { id: "terminal-local", cwd: f.root } });
+		let screen!: TerminalScreen;
+		const waiters = new Set<() => void>();
+		const tui = {
+			terminal: { columns: 100, rows: 30 },
+			requestRender() {
+				for (const check of [...waiters]) check();
+			},
+		} as unknown as TUI;
+		screen = new TerminalScreen(tui, theme, terminalKeys(), controller, () => {});
+		t.after(async () => {
+			screen.dispose();
+			await controller.close();
+		});
+		const text = () => stripVTControlCharacters(screen.render(100).join("\n"));
+		const waitFor = (predicate: () => boolean) =>
+			new Promise<void>((resolve) => {
+				const check = () => {
+					if (predicate()) {
+						waiters.delete(check);
+						resolve();
+					}
+				};
+				waiters.add(check);
+				check();
+			});
+		screen.view.selectIdentity(actor);
+		await waitFor(() => text().includes("Current native work"));
+		await waitFor(() => /(?:Recent|Earlier) 3/u.test(text()));
+		const heading = text().split("\n")[0];
+		assert.match(heading, /Agents.*Threads/u);
+		assert.doesNotMatch(heading, /3 agents|Efforts/u, "the heading keeps only the primary tabs");
+		assert.equal(controller.selected, actor, "the terminal's target is the selected conversation");
+		screen.view.openNamedAction("threads");
+		await waitFor(() => text().includes("Native task review"));
+		screen.handleInput("\x1b[B");
+		screen.handleInput("m");
+		await waitFor(() => text().includes("Review the task"));
+		screen.handleInput("\x1b");
+		screen.handleInput("\r");
+		screen.handleInput("Operator review note");
+		screen.handleInput("\r");
+		await waitFor(() => text().includes("Posted."));
+		const page = (await manager.collaborate(
+			{ action: "read", threadId: receipt.threadId },
+			caller,
+		)) as CollaborationPage;
+		const note = page.events.find((event) => event.message === "Operator review note");
+		assert.equal(note?.sender, actor, "a terminal post comes from the selected conversation");
+		assert.equal(note?.origin, "operator");
+		const forward = (await manager.collaborate(
+			{ action: "read", threadId: receipt.threadId, after: 0, knownFrameRevision: page.thread.revision, limit: 1 },
+			caller,
+		)) as CollaborationForwardPage;
+		assert.equal(forward.direction, "forward");
+		assert.equal(forward.thread, undefined);
+		assert.equal(forward.events[0].sequence, 1);
+		assert.ok(forward.events[0].atUtc);
+		assert.ok(forward.next);
+		const { tool: _tool, ...call } = forward.next;
+		const next = (await manager.collaborate(call, caller)) as CollaborationForwardPage;
+		assert.equal(next.events[0].sequence, 2);
+		screen.handleInput("\x1b[Z");
+		screen.handleInput("m");
+		screen.handleInput("\x1b[F");
+		screen.handleInput("\r");
+		assert.equal(
+			controller.state.selected,
+			nonroot ? host.record.storageId : child,
+			"a participant opens as the selected conversation",
+		);
+		screen.handleInput("\x1b");
+		screen.handleInput("\x1b");
+		assert.equal(screen.view.focus.surface, "threads", "leaving the participant returns to its thread");
+		assert.equal(text().includes("open its conversation"), true);
+		assert.equal(host.requests.length, 0, "nothing here asks a provider for a turn");
 	});
-	screen.view.selectIdentity(actor);
-	await waitFor(() => text().includes("Current native work"));
-	await waitFor(() => /(?:Recent|Earlier) 3/u.test(text()));
-	const heading = text().split("\n")[0];
-	assert.match(heading, /Agents.*Threads/u);
-	assert.doesNotMatch(heading, /3 agents|Efforts/u, "the heading keeps only the primary tabs");
-	assert.equal(controller.selected, actor, "the terminal's target is the selected conversation");
-	screen.view.openNamedAction("threads");
-	await waitFor(() => text().includes("Native task review"));
-	screen.handleInput("\x1b[B");
-	screen.handleInput("m");
-	await waitFor(() => text().includes("Review the task"));
-	screen.handleInput("\x1b");
-	screen.handleInput("\r");
-	screen.handleInput("Operator review note");
-	screen.handleInput("\r");
-	await waitFor(() => text().includes("Posted."));
-	const page = await manager.collaborate({ action: "read", threadId: receipt.threadId }, caller) as CollaborationPage;
-	const note = page.events.find((event) => event.message === "Operator review note");
-	assert.equal(note?.sender, actor, "a terminal post comes from the selected conversation");
-	assert.equal(note?.origin, "operator");
-	const forward = await manager.collaborate({ action: "read", threadId: receipt.threadId, after: 0, knownFrameRevision: page.thread.revision, limit: 1 }, caller) as CollaborationForwardPage;
-	assert.equal(forward.direction, "forward");
-	assert.equal(forward.thread, undefined);
-	assert.equal(forward.events[0].sequence, 1);
-	assert.ok(forward.events[0].atUtc);
-	assert.ok(forward.next);
-	const { tool: _tool, ...call } = forward.next;
-	const next = await manager.collaborate(call, caller) as CollaborationForwardPage;
-	assert.equal(next.events[0].sequence, 2);
-	screen.handleInput("\x1b[Z");
-	screen.handleInput("m");
-	screen.handleInput("\x1b[F");
-	screen.handleInput("\r");
-	assert.equal(controller.state.selected, nonroot ? host.record.storageId : child, "a participant opens as the selected conversation");
-	screen.handleInput("\x1b");
-	screen.handleInput("\x1b");
-	assert.equal(screen.view.focus.surface, "threads", "leaving the participant returns to its thread");
-	assert.equal(text().includes("open its conversation"), true);
-	assert.equal(host.requests.length, 0, "nothing here asks a provider for a turn");
-});

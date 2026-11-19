@@ -9,50 +9,128 @@ import { AgentManager } from "./manager.ts";
 
 it("the ordinary abort tool dispatches release and rejects timer combinations", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "agent-release-entry-"));
-	const previousAgent = process.env.PI_AGENT_DIR, previousSessions = process.env.PI_AGENT_SESSIONS_DIR;
+	const previousAgent = process.env.PI_AGENT_DIR,
+		previousSessions = process.env.PI_AGENT_SESSIONS_DIR;
 	process.env.PI_AGENT_DIR = root;
 	process.env.PI_AGENT_SESSIONS_DIR = join(root, "sessions");
 	const original = AgentManager.prototype.control;
 	const originalStatus = AgentManager.prototype.status;
 	AgentManager.prototype.status = async () => ({ conversation: { name: "target" } });
 	const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
-	let response: { retiring: boolean; blockers: string[]; writesPlaced?: number } = { retiring: true, blockers: [], writesPlaced: 0 };
+	let response: { retiring: boolean; blockers: string[]; writesPlaced?: number } = {
+		retiring: true,
+		blockers: [],
+		writesPlaced: 0,
+	};
 	let controlError: Error | undefined;
-	AgentManager.prototype.control = async (method, input) => { calls.push({ method, input }); if (controlError) throw controlError; return response; };
+	AgentManager.prototype.control = async (method, input) => {
+		calls.push({ method, input });
+		if (controlError) throw controlError;
+		return response;
+	};
 	t.after(() => {
 		AgentManager.prototype.control = original;
 		AgentManager.prototype.status = originalStatus;
-		if (previousAgent === undefined) delete process.env.PI_AGENT_DIR; else process.env.PI_AGENT_DIR = previousAgent;
-		if (previousSessions === undefined) delete process.env.PI_AGENT_SESSIONS_DIR; else process.env.PI_AGENT_SESSIONS_DIR = previousSessions;
+		if (previousAgent === undefined) delete process.env.PI_AGENT_DIR;
+		else process.env.PI_AGENT_DIR = previousAgent;
+		if (previousSessions === undefined) delete process.env.PI_AGENT_SESSIONS_DIR;
+		else process.env.PI_AGENT_SESSIONS_DIR = previousSessions;
 		rmSync(root, { recursive: true, force: true });
 	});
 	const tools = new Map<string, { execute: (...args: never[]) => Promise<unknown> }>();
 	let command: { handler: (input: string, ctx: never) => Promise<void> } | undefined;
-	const pi = { events: { on: () => () => {}, emit() {} }, on() {}, registerShortcut() {}, registerToolRenderer() {}, registerMessageRenderer() {}, registerCommand(name: string, value: typeof command) { if (name === "agent") command = value; }, getThinkingLevel: () => "off", registerTool(tool: { name: string }) { tools.set(tool.name, tool as never); } } as unknown as ExtensionAPI;
+	const pi = {
+		events: { on: () => () => {}, emit() {} },
+		on() {},
+		registerShortcut() {},
+		registerToolRenderer() {},
+		registerMessageRenderer() {},
+		registerCommand(name: string, value: typeof command) {
+			if (name === "agent") command = value;
+		},
+		getThinkingLevel: () => "off",
+		registerTool(tool: { name: string }) {
+			tools.set(tool.name, tool as never);
+		},
+	} as unknown as ExtensionAPI;
 	await registerAgentExtension(pi);
 	const execute = tools.get("agent_abort")?.execute;
 	assert.ok(execute);
-	const ctx = { cwd: root, sessionManager: { getSessionId: () => "primary", getSessionName: () => undefined }, modelRegistry: { find: () => undefined, getAll: () => [] } };
-	await execute("call" as never, { sessionId: "target", release: true } as never, undefined as never, undefined as never, ctx as never);
+	const ctx = {
+		cwd: root,
+		sessionManager: { getSessionId: () => "primary", getSessionName: () => undefined },
+		modelRegistry: { find: () => undefined, getAll: () => [] },
+	};
+	await execute(
+		"call" as never,
+		{ sessionId: "target", release: true } as never,
+		undefined as never,
+		undefined as never,
+		ctx as never,
+	);
 	assert.deepEqual(calls, [{ method: "release", input: { sessionId: "target" } }]);
-	await assert.rejects(execute("call" as never, { sessionId: "target", release: true, timerId: 2 } as never, undefined as never, undefined as never, ctx as never), /cannot be combined/u);
-	await assert.rejects(execute("call" as never, { sessionId: "target", release: true, background: true } as never, undefined as never, undefined as never, ctx as never), /release cannot be combined with background; abort with background first, then release/u);
+	await assert.rejects(
+		execute(
+			"call" as never,
+			{ sessionId: "target", release: true, timerId: 2 } as never,
+			undefined as never,
+			undefined as never,
+			ctx as never,
+		),
+		/cannot be combined/u,
+	);
+	await assert.rejects(
+		execute(
+			"call" as never,
+			{ sessionId: "target", release: true, background: true } as never,
+			undefined as never,
+			undefined as never,
+			ctx as never,
+		),
+		/release cannot be combined with background; abort with background first, then release/u,
+	);
 	assert.equal(calls.length, 1);
-	await execute("call" as never, { sessionId: "target", background: true } as never, undefined as never, undefined as never, ctx as never);
+	await execute(
+		"call" as never,
+		{ sessionId: "target", background: true } as never,
+		undefined as never,
+		undefined as never,
+		ctx as never,
+	);
 	assert.deepEqual(calls.at(-1), { method: "abort", input: { sessionId: "target", background: true } });
 	assert.ok(command);
 	const messages: string[] = [];
 	const levels: Array<string | undefined> = [];
-	const commandContext = { ...ctx, ui: { notify: (message: string, level?: string) => { messages.push(message); levels.push(level); } } } as never;
+	const commandContext = {
+		...ctx,
+		ui: {
+			notify: (message: string, level?: string) => {
+				messages.push(message);
+				levels.push(level);
+			},
+		},
+	} as never;
 	await command.handler("abort target release", commandContext);
 	assert.deepEqual(calls.at(-1), { method: "release", input: { sessionId: "target" } });
 	assert.equal(messages.at(-1), "Released “target”; its host is retiring.");
 	response = { retiring: false, blockers: ["pending timer", "active work"], writesPlaced: 2 };
 	await command.handler("abort target release", commandContext);
-	assert.equal(messages.at(-1), "Stopped “target”; the host stays up: pending timer; active work. Placed 2 leftover writes.");
+	assert.equal(
+		messages.at(-1),
+		"Stopped “target”; the host stays up: pending timer; active work. Placed 2 leftover writes.",
+	);
 	const attachmentError = new Error("Fixture host attachment is unavailable");
 	controlError = attachmentError;
-	await assert.rejects(execute("unavailable" as never, { sessionId: "target", release: true } as never, undefined as never, undefined as never, ctx as never), (error: unknown) => error === attachmentError);
+	await assert.rejects(
+		execute(
+			"unavailable" as never,
+			{ sessionId: "target", release: true } as never,
+			undefined as never,
+			undefined as never,
+			ctx as never,
+		),
+		(error: unknown) => error === attachmentError,
+	);
 	assert.deepEqual(calls.at(-1), { method: "release", input: { sessionId: "target" } });
 	await command.handler("abort target release", commandContext);
 	assert.deepEqual(calls.at(-1), { method: "release", input: { sessionId: "target" } });

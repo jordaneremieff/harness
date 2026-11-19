@@ -150,7 +150,12 @@ const CARD_PADDING = 3;
  * One row split at half height between two card colours, so a card's padding is half a row; undefined
  * is the terminal's own background. A colour the escape does not name as a background keeps a full row.
  */
-function halfRow(theme: Theme, upper: typeof CARD_HEADER | typeof CARD_BODY | undefined, lower: typeof CARD_HEADER | typeof CARD_BODY | undefined, width: number): string {
+function halfRow(
+	theme: Theme,
+	upper: typeof CARD_HEADER | typeof CARD_BODY | undefined,
+	lower: typeof CARD_HEADER | typeof CARD_BODY | undefined,
+	width: number,
+): string {
 	const foreground = (token: typeof CARD_HEADER | typeof CARD_BODY) => {
 		const sequence = theme.getBgAnsi(token);
 		const match = /^\x1b\[(\d+)((?:;\d+)*)m$/u.exec(sequence);
@@ -159,7 +164,8 @@ function halfRow(theme: Theme, upper: typeof CARD_HEADER | typeof CARD_BODY | un
 		if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) return `\x1b[${code - 10}m`;
 		return undefined;
 	};
-	const run = (glyph: string, colour: string | undefined, background = "") => (colour ? `${colour}${background}${glyph.repeat(width)}\x1b[39;49m` : undefined);
+	const run = (glyph: string, colour: string | undefined, background = "") =>
+		colour ? `${colour}${background}${glyph.repeat(width)}\x1b[39;49m` : undefined;
 	if (upper && lower) return run("▀", foreground(upper), theme.getBgAnsi(lower)) ?? theme.bg(lower, " ".repeat(width));
 	if (upper) return run("▀", foreground(upper)) ?? theme.bg(upper, " ".repeat(width));
 	if (lower) return run("▄", foreground(lower)) ?? theme.bg(lower, " ".repeat(width));
@@ -181,7 +187,11 @@ function mergeNewest(previous: ThreadRead | undefined, page: CollaborationPage):
 	for (const event of page.events) events.set(event.sequence, event);
 	const last = previous?.events.at(-1)?.sequence ?? 0;
 	const joined = Boolean(previous) && page.events.some((event) => event.sequence <= last);
-	return { page, events: [...events.values()].sort(bySequence), nextBefore: joined && previous ? previous.nextBefore : page.nextBefore };
+	return {
+		page,
+		events: [...events.values()].sort(bySequence),
+		nextBefore: joined && previous ? previous.nextBefore : page.nextBefore,
+	};
 }
 
 /**
@@ -222,7 +232,10 @@ export class ThreadsView {
 	private closedExpanded = false;
 	private closedFocused = false;
 	/** Derived lines, keyed by content signature, width and display state (spec 4.5). */
-	private listCache?: { key: string; value: { lines: string[]; blocks: Array<{ id: string; start: number; size: number }>; disclosure?: number } };
+	private listCache?: {
+		key: string;
+		value: { lines: string[]; blocks: Array<{ id: string; start: number; size: number }>; disclosure?: number };
+	};
 	private exchangeCache?: { key: string; lines: Map<number, EventRows> };
 	/** Long posts the operator opened or closed against the view's default; Ctrl+O flips the default. */
 	private readonly postChoices = new Set<string>();
@@ -347,7 +360,10 @@ export class ThreadsView {
 		}
 	}
 
-	private async collect(generation: number, facts: DiscoveryRead): Promise<Map<string, CollaborationSummary> | undefined> {
+	private async collect(
+		generation: number,
+		facts: DiscoveryRead,
+	): Promise<Map<string, CollaborationSummary> | undefined> {
 		const found = new Map<string, CollaborationSummary>();
 		const sources = new Map<string, number>();
 		await this.pages(generation, undefined, MAX_PAGES, found, sources, facts);
@@ -374,10 +390,21 @@ export class ThreadsView {
 		void this.discover(true);
 	}
 
-	private async pages(generation: number, sessionId: string | undefined, limit: number, found: Map<string, CollaborationSummary>, sources: Map<string, number>, facts: DiscoveryRead): Promise<void> {
+	private async pages(
+		generation: number,
+		sessionId: string | undefined,
+		limit: number,
+		found: Map<string, CollaborationSummary>,
+		sources: Map<string, number>,
+		facts: DiscoveryRead,
+	): Promise<void> {
 		let cursor: string | undefined;
 		for (let page = 0; page < limit; page++) {
-			const result = await this.call({ action: "list", ...(sessionId ? { sessionId } : {}), ...(cursor ? { cursor } : {}) });
+			const result = await this.call({
+				action: "list",
+				...(sessionId ? { sessionId } : {}),
+				...(cursor ? { cursor } : {}),
+			});
 			if (!this.current(generation)) return;
 			if (!threadDiscovery(result)) throw new Error("the host returned an invalid thread list");
 			this.absorb(result, sessionId === undefined, found, sources);
@@ -399,12 +426,20 @@ export class ThreadsView {
 		facts.omitted += discovery.coverage.omitted;
 		facts.unavailable += discovery.coverage.unavailable ?? 0;
 		facts.complete &&= discovery.coverage.complete;
-		for (const source of discovery.sources ?? []) if (source.unavailable) facts.sourcesUnavailable.add(source.sessionId);
+		for (const source of discovery.sources ?? [])
+			if (source.unavailable) facts.sourcesUnavailable.add(source.sessionId);
 	}
 
-	private absorb(discovery: ThreadDiscovery, root: boolean, found: Map<string, CollaborationSummary>, sources: Map<string, number>): void {
+	private absorb(
+		discovery: ThreadDiscovery,
+		root: boolean,
+		found: Map<string, CollaborationSummary>,
+		sources: Map<string, number>,
+	): void {
 		for (const item of discovery.items) found.set(item.id, item);
-		if (root) for (const source of discovery.sources ?? []) if (source.omitted > 0 && !source.unavailable) sources.set(source.sessionId, source.omitted);
+		if (root)
+			for (const source of discovery.sources ?? [])
+				if (source.omitted > 0 && !source.unavailable) sources.set(source.sessionId, source.omitted);
 		// The first discovery shows each page as it arrives, so a long read never looks empty.
 		if (this.loadedOnce) return;
 		for (const [id, thread] of found) this.threads.set(id, thread);
@@ -440,19 +475,28 @@ export class ThreadsView {
 	private async readThread(threadId: string): Promise<void> {
 		const generation = ++this.readGeneration;
 		this.readAt.set(threadId, generation);
-		const current = () => !this.disposed && generation === this.readGeneration && this.options.state.selected === threadId;
+		const current = () =>
+			!this.disposed && generation === this.readGeneration && this.options.state.selected === threadId;
 		try {
 			const result = await this.call({ action: "read", threadId });
 			if (!current()) return;
-			if (!threadPage(result) || result.thread.id !== threadId) throw new Error("the host returned an invalid thread page");
+			if (!threadPage(result) || result.thread.id !== threadId)
+				throw new Error("the host returned an invalid thread page");
 			this.reads.set(threadId, mergeNewest(this.reads.get(threadId), result));
 			this.notice = undefined;
 			this.readErrors.delete(threadId);
 			const summary = this.threads.get(threadId);
-			if (summary) this.threads.set(threadId, { ...summary, updatedAt: result.thread.updatedAt, closed: result.thread.closed, members: result.thread.members.length });
+			if (summary)
+				this.threads.set(threadId, {
+					...summary,
+					updatedAt: result.thread.updatedAt,
+					closed: result.thread.closed,
+					members: result.thread.members.length,
+				});
 		} catch (error) {
 			// A failure belongs to the thread it read, even after the operator moves elsewhere.
-			if (!this.disposed && this.readAt.get(threadId) === generation) this.readErrors.set(threadId, `The thread could not be read: ${reason(error)}`);
+			if (!this.disposed && this.readAt.get(threadId) === generation)
+				this.readErrors.set(threadId, `The thread could not be read: ${reason(error)}`);
 		} finally {
 			if (!this.disposed) this.options.redraw();
 		}
@@ -469,14 +513,18 @@ export class ThreadsView {
 			const result = await this.call({ action: "read", threadId, before });
 			const current = this.reads.get(threadId);
 			if (this.disposed || this.options.state.selected !== threadId || current?.nextBefore !== before) return;
-			if (!threadPage(result) || result.thread.id !== threadId) throw new Error("the host returned an invalid thread page");
+			if (!threadPage(result) || result.thread.id !== threadId)
+				throw new Error("the host returned an invalid thread page");
 			const known = new Set(current.events.map((event) => event.sequence));
-			current.events = [...result.events.filter((event) => !known.has(event.sequence)), ...current.events].sort(bySequence);
+			current.events = [...result.events.filter((event) => !known.has(event.sequence)), ...current.events].sort(
+				bySequence,
+			);
 			current.nextBefore = result.nextBefore;
 			this.notice = undefined;
 			this.readErrors.delete(threadId);
 		} catch (error) {
-			if (!this.disposed && this.reads.get(threadId)?.nextBefore === before) this.readErrors.set(threadId, `Earlier messages could not be read: ${reason(error)}`);
+			if (!this.disposed && this.reads.get(threadId)?.nextBefore === before)
+				this.readErrors.set(threadId, `Earlier messages could not be read: ${reason(error)}`);
 		} finally {
 			this.earlierReads.delete(threadId);
 			if (!this.disposed) this.options.redraw();
@@ -534,7 +582,10 @@ export class ThreadsView {
 			this.posted(draft, revision, threadId);
 		} catch (error) {
 			// The result belongs to the thread that sent it, never to whichever thread is showing.
-			this.receipts.set(threadId, { text: `The post was not confirmed: ${reason(error)}. Your draft stays; Send retries it once.`, kind: "error" });
+			this.receipts.set(threadId, {
+				text: `The post was not confirmed: ${reason(error)}. Your draft stays; Send retries it once.`,
+				kind: "error",
+			});
 		} finally {
 			draft.pending = false;
 			if (!this.disposed) this.options.redraw();
@@ -586,7 +637,11 @@ export class ThreadsView {
 
 	/** Resolve ambiguity once per render, including display names that changed since the last read. */
 	private resolveMainAuthors(): void {
-		const authors = new Set(this.selectedRead()?.events.filter(replyable).map((event) => event.sender) ?? []);
+		const authors = new Set(
+			this.selectedRead()
+				?.events.filter(replyable)
+				.map((event) => event.sender) ?? [],
+		);
 		const unknown = [...authors].filter((id) => {
 			const name = oneLine(this.options.nameFor(id));
 			return !id.includes(":") && (!name || name === id);
@@ -595,7 +650,8 @@ export class ThreadsView {
 		if (unknown.length < 2) return;
 		for (const id of unknown) {
 			let length = 8;
-			while (length < id.length && unknown.some((other) => other !== id && other.startsWith(id.slice(0, length)))) length++;
+			while (length < id.length && unknown.some((other) => other !== id && other.startsWith(id.slice(0, length))))
+				length++;
 			this.mainAuthorIds.set(id, id.slice(0, length));
 		}
 	}
@@ -671,13 +727,50 @@ export class ThreadsView {
 		const closed = missing ?? (this.canPost() ? undefined : "This thread is closed; posting is off.");
 		const expand = this.options.keys.getKeys("app.tools.expand")[0] ?? "ctrl+o";
 		return [
-			{ id: "members", label: this.panel === "members" ? "Exchange" : "Members", key: "m", disabled: missing, run: () => this.showPanel("members") },
-			{ id: "details", label: this.panel === "details" ? "Exchange" : "Details", key: "d", disabled: missing, run: () => this.showPanel("details") },
-			{ id: "replies", label: this.panel === "replies" ? "Exchange" : "Reply", key: "r", disabled: closed, run: () => this.showPanel("replies") },
-			{ id: "posts", label: this.postsOpen ? "Close posts" : "Open posts", key: expand, run: () => this.toggleAllPosts() },
-			{ id: "write", label: "Write", key: "enter", disabled: closed, run: () => { this.region = "composer"; } },
+			{
+				id: "members",
+				label: this.panel === "members" ? "Exchange" : "Members",
+				key: "m",
+				disabled: missing,
+				run: () => this.showPanel("members"),
+			},
+			{
+				id: "details",
+				label: this.panel === "details" ? "Exchange" : "Details",
+				key: "d",
+				disabled: missing,
+				run: () => this.showPanel("details"),
+			},
+			{
+				id: "replies",
+				label: this.panel === "replies" ? "Exchange" : "Reply",
+				key: "r",
+				disabled: closed,
+				run: () => this.showPanel("replies"),
+			},
+			{
+				id: "posts",
+				label: this.postsOpen ? "Close posts" : "Open posts",
+				key: expand,
+				run: () => this.toggleAllPosts(),
+			},
+			{
+				id: "write",
+				label: "Write",
+				key: "enter",
+				disabled: closed,
+				run: () => {
+					this.region = "composer";
+				},
+			},
 			{ id: "wake", label: "Wake on post", key: "space", disabled: closed, run: () => this.toggleSelectedMember() },
-			{ id: "retry", label: this.retryNeeded() ? "Retry read" : "Read again", short: this.retryNeeded() ? "retry" : "read again", key: "ctrl+r", run: () => this.retry() },
+			{
+				id: "retry",
+				label: this.retryNeeded() ? "Retry read" : "Read again",
+				short: this.retryNeeded() ? "retry" : "read again",
+				key: "ctrl+r",
+				run: () => this.retry(),
+			},
 		];
 	}
 
@@ -693,8 +786,13 @@ export class ThreadsView {
 
 	private actionKey(data: string): boolean {
 		const focus = this.focus();
-		const available = focus === "list" || focus === "exchange" ? ["members", "details", "replies", "posts", "retry", ...(focus === "exchange" ? ["write"] : [])] : this.shownActions(focus);
-		const action = this.actions().find((item) => available.includes(item.id) && item.key !== undefined && keyMatches(data, item.key));
+		const available =
+			focus === "list" || focus === "exchange"
+				? ["members", "details", "replies", "posts", "retry", ...(focus === "exchange" ? ["write"] : [])]
+				: this.shownActions(focus);
+		const action = this.actions().find(
+			(item) => available.includes(item.id) && item.key !== undefined && keyMatches(data, item.key),
+		);
 		if (!action) return false;
 		this.invoke(action.id);
 		return true;
@@ -745,9 +843,16 @@ export class ThreadsView {
 
 	/** Secondary reading controls stay available without crowding the footer. */
 	private readingMenu(focus: "list" | "exchange"): Control[] {
-		const menu = this.actions().filter((action) => ["members", "details", "posts", "retry"].includes(action.id)).map((action) => menuControl(action, (chosen) => this.invoke(chosen)));
+		const menu = this.actions()
+			.filter((action) => ["members", "details", "posts", "retry"].includes(action.id))
+			.map((action) => menuControl(action, (chosen) => this.invoke(chosen)));
 		menu.push(this.hint("tab", ["tab"], "focus", 3));
-		if (focus === "exchange") menu.push(this.hint("page", ["pageUp", "pageDown"], "page", 2), this.hint("earlier", ["home"], "earlier", 2), this.hint("latest", ["end"], "latest", 2));
+		if (focus === "exchange")
+			menu.push(
+				this.hint("page", ["pageUp", "pageDown"], "page", 2),
+				this.hint("earlier", ["home"], "earlier", 2),
+				this.hint("latest", ["end"], "latest", 2),
+			);
 		return menu;
 	}
 
@@ -761,13 +866,19 @@ export class ThreadsView {
 			case "exchange":
 				return [this.hint("scroll", ["up", "down"], "scroll", 0)];
 			case "members":
-				return [this.hint("choose", ["up", "down"], "choose", 0), this.hint("open-member", ["enter"], "open conversation", 1)];
+				return [
+					this.hint("choose", ["up", "down"], "choose", 0),
+					this.hint("open-member", ["enter"], "open conversation", 1),
+				];
 			case "details":
 				return [this.hint("scroll", ["up", "down"], "scroll", 0), this.hint("page", ["pageUp", "pageDown"], "page", 2)];
 			case "replies":
 				return [this.hint("choose", ["up", "down"], "choose", 0), this.hint("mark", ["enter"], "reply", 1)];
 			case "composer":
-				return [this.hint("post", ["enter"], "send", 1), { id: "newline", keys: this.newlineKeys(), label: "newline", priority: 2, run: (key) => this.sendHint(key) }];
+				return [
+					this.hint("post", ["enter"], "send", 1),
+					{ id: "newline", keys: this.newlineKeys(), label: "newline", priority: 2, run: (key) => this.sendHint(key) },
+				];
 		}
 	}
 
@@ -851,7 +962,8 @@ export class ThreadsView {
 		const maxStart = Math.max(0, count - this.memberRows);
 		this.memberStart = Math.max(0, Math.min(this.memberStart, maxStart));
 		if (this.memberIndex < this.memberStart) this.memberStart = this.memberIndex;
-		else if (this.memberIndex >= this.memberStart + this.memberRows) this.memberStart = this.memberIndex - this.memberRows + 1;
+		else if (this.memberIndex >= this.memberStart + this.memberRows)
+			this.memberStart = this.memberIndex - this.memberRows + 1;
 		this.memberStart = Math.max(0, Math.min(this.memberStart, maxStart));
 	}
 
@@ -882,7 +994,8 @@ export class ThreadsView {
 		const maxStart = Math.max(0, count - this.replyRows);
 		this.replyStart = Math.max(0, Math.min(this.replyStart, maxStart));
 		if (this.replyIndex < this.replyStart) this.replyStart = this.replyIndex;
-		else if (this.replyIndex >= this.replyStart + this.replyRows) this.replyStart = this.replyIndex - this.replyRows + 1;
+		else if (this.replyIndex >= this.replyStart + this.replyRows)
+			this.replyStart = this.replyIndex - this.replyRows + 1;
 		this.replyStart = Math.max(0, Math.min(this.replyStart, maxStart));
 	}
 
@@ -1088,7 +1201,10 @@ export class ThreadsView {
 			const list = this.renderList(0, listWidth - 1, bodyHeight);
 			const pane = this.renderThread(listWidth + 1, width - listWidth - 1, bodyHeight);
 			const divider = this.options.theme.fg(this.region === "list" ? "accent" : "borderMuted", "│");
-			body = Array.from({ length: bodyHeight }, (_, row) => fitLine(list[row] ?? "", listWidth) + divider + fitLine(pane[row] ?? "", width - listWidth - 1));
+			body = Array.from(
+				{ length: bodyHeight },
+				(_, row) => fitLine(list[row] ?? "", listWidth) + divider + fitLine(pane[row] ?? "", width - listWidth - 1),
+			);
 		} else if (this.threadShown()) body = this.renderThread(0, width, bodyHeight, true);
 		else body = this.renderList(0, width, bodyHeight);
 		return body.map((line) => fitLine(line, width));
@@ -1103,7 +1219,15 @@ export class ThreadsView {
 		const theme = this.options.theme;
 		this.find.focused = this.region === "find";
 		const findLine = this.find.render(width, theme, 0, "/ Find");
-		this.hits.add({ x: x0, y: 0, width, height: 1, click: () => { this.focusFind(); } });
+		this.hits.add({
+			x: x0,
+			y: 0,
+			width,
+			height: 1,
+			click: () => {
+				this.focusFind();
+			},
+		});
 		const rows = this.sorted();
 		const room = Math.max(1, height - 2);
 		const { lines, blocks, disclosure } = this.listLines(rows, width);
@@ -1126,20 +1250,55 @@ export class ThreadsView {
 			if (summary) {
 				const time = this.threadBlock(summary, width);
 				const y = 1 + top + time.timeLine;
-				if (y >= 1 && y < 1 + room && time.timeWidth > 0) this.hits.add({ x: x0 + time.timeX, y, width: time.timeWidth, height: 1, click: () => { this.options.toggleTime(); } });
+				if (y >= 1 && y < 1 + room && time.timeWidth > 0)
+					this.hits.add({
+						x: x0 + time.timeX,
+						y,
+						width: time.timeWidth,
+						height: 1,
+						click: () => {
+							this.options.toggleTime();
+						},
+					});
 			}
 		}
 		if (disclosure !== undefined) {
 			const top = disclosure - this.listScroll;
-			if (top >= 0 && top < room) this.hits.add({ x: x0, y: 1 + top, width, height: 1, click: () => { this.closedExpanded = !this.closedExpanded; this.closedFocused = false; this.listReveal = true; } });
+			if (top >= 0 && top < room)
+				this.hits.add({
+					x: x0,
+					y: 1 + top,
+					width,
+					height: 1,
+					click: () => {
+						this.closedExpanded = !this.closedExpanded;
+						this.closedFocused = false;
+						this.listReveal = true;
+					},
+				});
 		}
-		this.hits.add({ x: x0, y: 1, width, height: room, wheel: (delta) => { this.listScroll = Math.max(0, this.listScroll + delta); } });
+		this.hits.add({
+			x: x0,
+			y: 1,
+			width,
+			height: room,
+			wheel: (delta) => {
+				this.listScroll = Math.max(0, this.listScroll + delta);
+			},
+		});
 		const visible = lines.slice(this.listScroll, this.listScroll + room);
-		return [findLine, ...Array.from({ length: room }, (_, row) => visible[row] ?? ""), this.listFooter(rows.length, width)].map((line) => fitLine(line, width));
+		return [
+			findLine,
+			...Array.from({ length: room }, (_, row) => visible[row] ?? ""),
+			this.listFooter(rows.length, width),
+		].map((line) => fitLine(line, width));
 	}
 
 	/** Open threads first, then the closed disclosure and its expanded group. Find reveals every match. */
-	private listLines(rows: readonly CollaborationSummary[], width: number): { lines: string[]; blocks: Array<{ id: string; start: number; size: number }>; disclosure?: number } {
+	private listLines(
+		rows: readonly CollaborationSummary[],
+		width: number,
+	): { lines: string[]; blocks: Array<{ id: string; start: number; size: number }>; disclosure?: number } {
 		const key = this.listKey(rows, width);
 		if (this.listCache?.key === key) return this.listCache.value;
 		const lines: string[] = [];
@@ -1170,8 +1329,19 @@ export class ThreadsView {
 
 	/** Content, width, selection, disclosure, Find, exact time and the relative-time minute. */
 	private listKey(rows: readonly CollaborationSummary[], width: number): string {
-		const contents = rows.map((row) => `${row.id}:${row.updatedAt}:${row.closed}:${row.members}:${row.title}:${row.purpose}`).join("|");
-		return [contents, width, this.options.state.selected, this.closedExpanded, this.closedFocused, this.find.value, this.options.exactTime(), Math.floor(Date.now() / 60_000)].join("#");
+		const contents = rows
+			.map((row) => `${row.id}:${row.updatedAt}:${row.closed}:${row.members}:${row.title}:${row.purpose}`)
+			.join("|");
+		return [
+			contents,
+			width,
+			this.options.state.selected,
+			this.closedExpanded,
+			this.closedFocused,
+			this.find.value,
+			this.options.exactTime(),
+			Math.floor(Date.now() / 60_000),
+		].join("#");
 	}
 
 	/** One muted disclosure row for the closed group; accent while it owns keyboard focus. */
@@ -1183,12 +1353,20 @@ export class ThreadsView {
 	}
 
 	/** After a selection change the list scrolls just enough to show the selected thread or the disclosure. */
-	private revealSelection(blocks: ReadonlyArray<{ id: string; start: number; size: number }>, room: number, disclosure?: number): void {
+	private revealSelection(
+		blocks: ReadonlyArray<{ id: string; start: number; size: number }>,
+		room: number,
+		disclosure?: number,
+	): void {
 		if (!this.listReveal) return;
-		const selected = this.closedFocused && disclosure !== undefined ? { start: disclosure, size: 1 } : blocks.find((block) => block.id === this.options.state.selected);
+		const selected =
+			this.closedFocused && disclosure !== undefined
+				? { start: disclosure, size: 1 }
+				: blocks.find((block) => block.id === this.options.state.selected);
 		if (!selected) return;
 		if (selected.start < this.listScroll) this.listScroll = Math.max(0, selected.start - 1);
-		else if (selected.start + selected.size > this.listScroll + room) this.listScroll = selected.start + selected.size - room;
+		else if (selected.start + selected.size > this.listScroll + room)
+			this.listScroll = selected.start + selected.size - room;
 		this.listReveal = false;
 	}
 
@@ -1218,8 +1396,10 @@ export class ThreadsView {
 		if (!read) return "";
 		const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 		const parts: string[] = [];
-		if (read.sourcesUnavailable.size) parts.push(`${plural(read.sourcesUnavailable.size, "source storage is", "source storages are")} unavailable`);
-		if (read.sourcesSkipped.size) parts.push(`${plural(read.sourcesSkipped.size, "source storage was", "source storages were")} not read`);
+		if (read.sourcesUnavailable.size)
+			parts.push(`${plural(read.sourcesUnavailable.size, "source storage is", "source storages are")} unavailable`);
+		if (read.sourcesSkipped.size)
+			parts.push(`${plural(read.sourcesSkipped.size, "source storage was", "source storages were")} not read`);
 		if (read.omitted) parts.push(`${plural(read.omitted, "thread is", "threads are")} omitted`);
 		if (read.unavailable) parts.push(`${plural(read.unavailable, "record is", "records are")} unavailable`);
 		if (read.bounded) parts.push("the page limit is reached");
@@ -1232,7 +1412,10 @@ export class ThreadsView {
 	 * One quiet line per thread: the state mark, the title and, at the right, the age of its latest
 	 * activity. The exchange's header carries the purpose.
 	 */
-	private threadBlock(row: CollaborationSummary, width: number): { lines: string[]; timeLine: number; timeX: number; timeWidth: number } {
+	private threadBlock(
+		row: CollaborationSummary,
+		width: number,
+	): { lines: string[]; timeLine: number; timeX: number; timeWidth: number } {
 		const theme = this.options.theme;
 		const chosen = row.id === this.options.state.selected && !this.closedFocused;
 		const time = dashboardTime(row.updatedAt, this.options.exactTime());
@@ -1241,7 +1424,12 @@ export class ThreadsView {
 		const label = chosen ? theme.bold(theme.fg("text", title)) : theme.fg(row.closed ? "muted" : "text", title);
 		const left = `${chosen ? theme.fg("accent", "▌") : " "} ${theme.fg(row.closed ? "dim" : "success", row.closed ? "○" : "●")} ${label}`;
 		const line = `${fitLine(left, width - timeWidth)}${theme.fg("dim", truncateToWidth(time, timeWidth, ""))}`;
-		return { lines: [chosen ? highlightRow(line, width, 2, theme) : fitLine(line, width)], timeLine: 0, timeX: width - timeWidth, timeWidth };
+		return {
+			lines: [chosen ? highlightRow(line, width, 2, theme) : fitLine(line, width)],
+			timeLine: 0,
+			timeX: width - timeWidth,
+			timeWidth,
+		};
 	}
 
 	private renderThread(x0: number, width: number, height: number, narrow = false): string[] {
@@ -1255,17 +1443,36 @@ export class ThreadsView {
 		const middleHeight = Math.max(1, height - header.length - composer.length);
 		const middle = this.threadMiddle(read, x0, header.length, width, middleHeight);
 		if (composer.length && !closed) this.composerHits(x0, header.length + middleHeight, width, composer.length);
-		return [...header, ...Array.from({ length: middleHeight }, (_, row) => middle[row] ?? ""), ...composer].slice(0, height);
+		return [...header, ...Array.from({ length: middleHeight }, (_, row) => middle[row] ?? ""), ...composer].slice(
+			0,
+			height,
+		);
 	}
 
 	/**
 	 * The thread header: the full title, then the state and counts, then the purpose. A title too long
 	 * for one row wraps onto a second. Commands belong to the footer.
 	 */
-	private threadHeader(read: ThreadRead | undefined, summary: CollaborationSummary | undefined, x0: number, width: number, narrow: boolean, closed: boolean): string[] {
+	private threadHeader(
+		read: ThreadRead | undefined,
+		summary: CollaborationSummary | undefined,
+		x0: number,
+		width: number,
+		narrow: boolean,
+		closed: boolean,
+	): string[] {
 		const theme = this.options.theme;
 		const back = narrow ? "‹ Threads " : "";
-		if (narrow) this.hits.add({ x: x0, y: 0, width: visibleWidth(back), height: 1, click: () => { this.region = "list"; } });
+		if (narrow)
+			this.hits.add({
+				x: x0,
+				y: 0,
+				width: visibleWidth(back),
+				height: 1,
+				click: () => {
+					this.region = "list";
+				},
+			});
 		const thread = read?.page.thread;
 		const title = oneLine(thread?.title ?? summary?.title ?? "Thread");
 		const members = thread?.members.length ?? summary?.members ?? 0;
@@ -1287,7 +1494,11 @@ export class ThreadsView {
 	}
 
 	/** The header's state line: a view notice, this thread's read failure, or its own facts. */
-	private headerFacts(id: string, closed: boolean, members: number): { text: string; colour: "error" | "warning" | "muted" } {
+	private headerFacts(
+		id: string,
+		closed: boolean,
+		members: number,
+	): { text: string; colour: "error" | "warning" | "muted" } {
 		if (this.notice) {
 			const colour = this.notice.kind === "error" ? "error" : this.notice.kind === "warning" ? "warning" : "muted";
 			return { text: oneLine(this.notice.text), colour };
@@ -1310,7 +1521,8 @@ export class ThreadsView {
 		if (rows.length > PURPOSE_ROWS) {
 			const more = "…";
 			rows.length = PURPOSE_ROWS;
-			rows[PURPOSE_ROWS - 1] = `${truncateToWidth(rows[PURPOSE_ROWS - 1] ?? "", Math.max(1, room - visibleWidth(more) - 1), "")} ${more}`;
+			rows[PURPOSE_ROWS - 1] =
+				`${truncateToWidth(rows[PURPOSE_ROWS - 1] ?? "", Math.max(1, room - visibleWidth(more) - 1), "")} ${more}`;
 		}
 		return rows.map((row) => theme.fg("muted", ` ${row}`));
 	}
@@ -1329,9 +1541,16 @@ export class ThreadsView {
 		let detail: string;
 		if (this.listError) detail = this.listError;
 		else if (!this.loadedOnce) detail = "Reading threads…";
-		else if (this.threads.size) detail = partial ? `Select a thread in the list to read it. The thread list is partial: ${this.readGap()}; press ctrl+r to read it again.` : "Select a thread in the list to read it.";
-		else if (partial) detail = `No threads in the pages read. The read is partial: ${this.readGap()}; press ctrl+r to read the list again.`;
-		else detail = this.find.value ? "No thread matches Find." : "No threads yet. Agents create threads when they collaborate.";
+		else if (this.threads.size)
+			detail = partial
+				? `Select a thread in the list to read it. The thread list is partial: ${this.readGap()}; press ctrl+r to read it again.`
+				: "Select a thread in the list to read it.";
+		else if (partial)
+			detail = `No threads in the pages read. The read is partial: ${this.readGap()}; press ctrl+r to read the list again.`;
+		else
+			detail = this.find.value
+				? "No thread matches Find."
+				: "No threads yet. Agents create threads when they collaborate.";
 		const rows = wrapTextWithAnsi(detail, Math.max(1, width - 1));
 		const colour = this.listError || partial ? "warning" : "muted";
 		const lines = [
@@ -1356,7 +1575,8 @@ export class ThreadsView {
 		const start = this.exchangeRow(this.exchangeTop);
 		this.exchangeStart = start;
 		const visible = lines.slice(start, start + height);
-		if (start === 0 && read.nextBefore) this.hits.add({ x: x0, y: y0, width, height: 1, click: () => void this.earlier() });
+		if (start === 0 && read.nextBefore)
+			this.hits.add({ x: x0, y: y0, width, height: 1, click: () => void this.earlier() });
 		const area = { x0, y0, width, height, start };
 		this.postHits(spans, area);
 		this.exchangeEdges(visible, lines.length, area);
@@ -1389,7 +1609,13 @@ export class ThreadsView {
 			const rendered = cache.get(event.sequence) ?? this.eventLines(event, width);
 			cache.set(event.sequence, rendered);
 			lines.push(...rendered.lines);
-			spans.push({ start, end: lines.length, event, header: rendered.header === undefined ? undefined : start + rendered.header, toggle: rendered.toggle === undefined ? undefined : start + rendered.toggle });
+			spans.push({
+				start,
+				end: lines.length,
+				event,
+				header: rendered.header === undefined ? undefined : start + rendered.header,
+				toggle: rendered.toggle === undefined ? undefined : start + rendered.toggle,
+			});
 		}
 		if (!read.events.length) lines.push("", theme.fg("muted", `${pad}No messages yet.`));
 		lines.push("");
@@ -1402,13 +1628,38 @@ export class ThreadsView {
 		for (const span of spans) {
 			const header = row(span.header);
 			if (header >= 0 && header < area.height) {
-				this.hits.add({ x: area.x0, y: area.y0 + header, width: area.width, height: 1, click: () => { this.replyTo(span.event); } });
+				this.hits.add({
+					x: area.x0,
+					y: area.y0 + header,
+					width: area.width,
+					height: 1,
+					click: () => {
+						this.replyTo(span.event);
+					},
+				});
 				const { margin } = readingGeometry(area.width);
 				const timeWidth = visibleWidth(dashboardTime(span.event.at, this.options.exactTime()));
-				this.hits.add({ x: area.x0 + margin + cardWidth(area.width) - CARD_PADDING - timeWidth, y: area.y0 + header, width: timeWidth, height: 1, click: () => { this.options.toggleTime(); } });
+				this.hits.add({
+					x: area.x0 + margin + cardWidth(area.width) - CARD_PADDING - timeWidth,
+					y: area.y0 + header,
+					width: timeWidth,
+					height: 1,
+					click: () => {
+						this.options.toggleTime();
+					},
+				});
 			}
 			const toggle = row(span.toggle);
-			if (toggle >= 0 && toggle < area.height) this.hits.add({ x: area.x0, y: area.y0 + toggle, width: area.width, height: 1, click: () => { this.togglePost(`${this.options.state.selected ?? ""}#${span.event.sequence}`); } });
+			if (toggle >= 0 && toggle < area.height)
+				this.hits.add({
+					x: area.x0,
+					y: area.y0 + toggle,
+					width: area.width,
+					height: 1,
+					click: () => {
+						this.togglePost(`${this.options.state.selected ?? ""}#${span.event.sequence}`);
+					},
+				});
 		}
 	}
 
@@ -1422,8 +1673,20 @@ export class ThreadsView {
 		const pad = " ".repeat(readingGeometry(area.width).margin);
 		const below = total - (area.start + area.height);
 		if (below <= 0) return;
-		visible[area.height - 1] = theme.fg("muted", `${pad}↓ ${below} line${below === 1 ? "" : "s"} below · End shows the latest`);
-		this.hits.add({ x: area.x0, y: area.y0 + area.height - 1, width: area.width, height: 1, click: () => { this.exchangeTop = undefined; this.exchangeStart = this.exchangeMax; } });
+		visible[area.height - 1] = theme.fg(
+			"muted",
+			`${pad}↓ ${below} line${below === 1 ? "" : "s"} below · End shows the latest`,
+		);
+		this.hits.add({
+			x: area.x0,
+			y: area.y0 + area.height - 1,
+			width: area.width,
+			height: 1,
+			click: () => {
+				this.exchangeTop = undefined;
+				this.exchangeStart = this.exchangeMax;
+			},
+		});
 	}
 
 	/**
@@ -1434,7 +1697,10 @@ export class ThreadsView {
 		// A close keeps its muted state line and shows why the thread ended as post text.
 		if (event.kind === "close") {
 			const body = this.postBody(event, width);
-			return { lines: [...(this.structuralEventLine(event, width) ?? []), ...body.lines], ...(body.toggle === undefined ? {} : { toggle: body.toggle + 1 }) };
+			return {
+				lines: [...(this.structuralEventLine(event, width) ?? []), ...body.lines],
+				...(body.toggle === undefined ? {} : { toggle: body.toggle + 1 }),
+			};
 		}
 		const structural = this.structuralEventLine(event, width);
 		return structural ? { lines: structural } : this.postLines(event, width);
@@ -1485,7 +1751,8 @@ export class ThreadsView {
 		first += `${" ".repeat(Math.max(1, card - used - visibleWidth(right)))}${theme.fg("muted", right)}`;
 		const rows = [halfRow(theme, undefined, CARD_HEADER, card), theme.bg(CARD_HEADER, first)];
 		const model = this.options.modelFor?.(event.sender);
-		if (model && visibleWidth(model) <= card - 2 * CARD_PADDING) rows.push(bar(`${" ".repeat(CARD_PADDING)}${model}`, CARD_PADDING + visibleWidth(model)));
+		if (model && visibleWidth(model) <= card - 2 * CARD_PADDING)
+			rows.push(bar(`${" ".repeat(CARD_PADDING)}${model}`, CARD_PADDING + visibleWidth(model)));
 		rows.push(halfRow(theme, CARD_HEADER, CARD_BODY, card));
 		return rows;
 	}
@@ -1502,7 +1769,10 @@ export class ThreadsView {
 		const text = plainThreadText(event.message).trim();
 		if (!text) return { lines: [] };
 		// The Markdown pads and colours its own background, so each row is a full-width part of the card.
-		const rendered = new Markdown(text, CARD_PADDING, 0, getMarkdownTheme(), { color: (value) => theme.fg("text", value), bgColor: (value) => theme.bg(CARD_BODY, value) }).render(card);
+		const rendered = new Markdown(text, CARD_PADDING, 0, getMarkdownTheme(), {
+			color: (value) => theme.fg("text", value),
+			bgColor: (value) => theme.bg(CARD_BODY, value),
+		}).render(card);
 		const blank = (line: string) => stripVTControlCharacters(line).trim() === "";
 		let first = rendered.findIndex((line) => !blank(line));
 		let end = rendered.length;
@@ -1513,14 +1783,29 @@ export class ThreadsView {
 		const open = this.postOpen(`${this.options.state.selected ?? ""}#${event.sequence}`);
 		const shown = open ? body : body.slice(0, PREVIEW_LINES);
 		const control = open ? `▴ Show less` : `▸ ${body.length - PREVIEW_LINES} more lines`;
-		const controlRow = theme.bg(CARD_BODY, `${" ".repeat(CARD_PADDING)}${theme.fg("accent", control)}${" ".repeat(Math.max(0, card - CARD_PADDING - visibleWidth(control)))}`);
+		const controlRow = theme.bg(
+			CARD_BODY,
+			`${" ".repeat(CARD_PADDING)}${theme.fg("accent", control)}${" ".repeat(Math.max(0, card - CARD_PADDING - visibleWidth(control)))}`,
+		);
 		return { lines: [...shown, `${pad}${controlRow}`], toggle: shown.length };
 	}
 
 	/** Event identities, width, lead, names, post disclosure, exact time and the minute. */
 	private exchangeKey(read: ThreadRead, width: number): string {
-		const names = read.events.map((event) => `${this.name(event.sender)}:${this.options.modelFor?.(event.sender) ?? ""}`).join("|");
-		return [read.page.thread.id, read.page.thread.integrator, width, this.options.exactTime(), names, this.postsOpen, [...this.postChoices].join(","), Math.floor(Date.now() / 60_000), read.events.map((event) => event.sequence).join(",")].join("#");
+		const names = read.events
+			.map((event) => `${this.name(event.sender)}:${this.options.modelFor?.(event.sender) ?? ""}`)
+			.join("|");
+		return [
+			read.page.thread.id,
+			read.page.thread.integrator,
+			width,
+			this.options.exactTime(),
+			names,
+			this.postsOpen,
+			[...this.postChoices].join(","),
+			Math.floor(Date.now() / 60_000),
+			read.events.map((event) => event.sequence).join(","),
+		].join("#");
 	}
 
 	private renderMembers(read: ThreadRead, x0: number, y0: number, width: number, height: number): string[] {
@@ -1542,11 +1827,37 @@ export class ThreadsView {
 			const y = lines.length;
 			const box = this.canPost() ? `${ticked} ` : "";
 			const marker = this.region === "exchange" && index === this.memberIndex ? theme.fg("accent", "›") : " ";
-			lines.push(`${marker}${theme.fg("accent", box)}${theme.bold(clip(this.name(member.identity), width - 3 - visibleWidth(box)))}`);
-			lines.push(theme.fg("muted", `     ${truncateToWidth(oneLine(member.contribution) || "No contribution declared", Math.max(1, width - 6), "…")}`));
+			lines.push(
+				`${marker}${theme.fg("accent", box)}${theme.bold(clip(this.name(member.identity), width - 3 - visibleWidth(box)))}`,
+			);
+			lines.push(
+				theme.fg(
+					"muted",
+					`     ${truncateToWidth(oneLine(member.contribution) || "No contribution declared", Math.max(1, width - 6), "…")}`,
+				),
+			);
 			if (y < height) {
-				if (box) this.hits.add({ x: x0 + 1, y: y0 + y, width: 4, height: 1, click: () => { this.memberIndex = index; this.toggleNotify(member.identity); } });
-				this.hits.add({ x: x0 + 1 + visibleWidth(box), y: y0 + y, width: Math.max(1, width - 1 - visibleWidth(box)), height: 1, click: () => { this.memberIndex = index; this.options.openParticipant?.(member.identity); } });
+				if (box)
+					this.hits.add({
+						x: x0 + 1,
+						y: y0 + y,
+						width: 4,
+						height: 1,
+						click: () => {
+							this.memberIndex = index;
+							this.toggleNotify(member.identity);
+						},
+					});
+				this.hits.add({
+					x: x0 + 1 + visibleWidth(box),
+					y: y0 + y,
+					width: Math.max(1, width - 1 - visibleWidth(box)),
+					height: 1,
+					click: () => {
+						this.memberIndex = index;
+						this.options.openParticipant?.(member.identity);
+					},
+				});
 			}
 		});
 		if (!members.length) lines.push(theme.fg("muted", " No members recorded in this read."));
@@ -1558,7 +1869,10 @@ export class ThreadsView {
 	private renderReplies(x0: number, y0: number, width: number, height: number): string[] {
 		const theme = this.options.theme;
 		const targets = this.replyTargets();
-		const preamble = [theme.fg("muted", " Choose the post your next message answers."), theme.fg("muted", " Enter marks or clears it; your draft stays.")];
+		const preamble = [
+			theme.fg("muted", " Choose the post your next message answers."),
+			theme.fg("muted", " Enter marks or clears it; your draft stays."),
+		];
 		const room = Math.max(1, height - preamble.length);
 		this.replyRows = room;
 		this.replyIndex = Math.max(0, Math.min(Math.max(0, targets.length - 1), this.replyIndex));
@@ -1573,7 +1887,16 @@ export class ThreadsView {
 			const text = `${marked ? "●" : "○"} #${event.sequence} ${this.name(event.sender)} · ${clip(oneLine(event.message) || "No text", Math.max(1, width - 16))}`;
 			const row = `${chosen ? theme.fg("accent", "›") : " "} ${theme.fg(marked ? "accent" : "text", text)}${marked ? theme.fg("accent", " replying") : ""}`;
 			lines.push(chosen ? theme.bg("selectedBg", fitLine(row, width)) : fitLine(row, width));
-			this.hits.add({ x: x0, y: y0 + preamble.length + offset, width, height: 1, click: () => { this.replyIndex = index; this.replyTo(event); } });
+			this.hits.add({
+				x: x0,
+				y: y0 + preamble.length + offset,
+				width,
+				height: 1,
+				click: () => {
+					this.replyIndex = index;
+					this.replyTo(event);
+				},
+			});
 		});
 		if (!targets.length) lines.push(theme.fg("muted", " No posts to reply to yet."));
 		this.hits.add({ x: x0, y: y0, width, height, wheel: (delta) => this.replyMove(delta, targets.length) });
@@ -1583,7 +1906,13 @@ export class ThreadsView {
 	private renderDetails(read: ThreadRead, x0: number, y0: number, width: number, height: number): string[] {
 		const theme = this.options.theme;
 		const thread = read.page.thread;
-		const field = (label: string, value: string) => [theme.fg("muted", ` ${label}`), ...wrapTextWithAnsi(plainThreadText(value).trim() || "Not stated", Math.max(1, width - 3)).map((line) => `   ${line}`), ""];
+		const field = (label: string, value: string) => [
+			theme.fg("muted", ` ${label}`),
+			...wrapTextWithAnsi(plainThreadText(value).trim() || "Not stated", Math.max(1, width - 3)).map(
+				(line) => `   ${line}`,
+			),
+			"",
+		];
 		const lines = [
 			...field("Purpose", thread.purpose),
 			...field("Operator direction (as carried)", thread.authority),
@@ -1591,11 +1920,24 @@ export class ThreadsView {
 			...field("Restrictions", thread.restrictions),
 			...field("Acceptance", thread.acceptance),
 			...field("Integrator", this.name(thread.integrator)),
-			...field("Created by", `${this.name(thread.creator)} · ${dashboardTime(thread.createdAt, this.options.exactTime())}`),
-			...memberDeclarationLines(thread, (id) => this.name(id)).map((line, index) => (index === 0 ? theme.fg("muted", ` ${line}`) : `   ${line}`)),
+			...field(
+				"Created by",
+				`${this.name(thread.creator)} · ${dashboardTime(thread.createdAt, this.options.exactTime())}`,
+			),
+			...memberDeclarationLines(thread, (id) => this.name(id)).map((line, index) =>
+				index === 0 ? theme.fg("muted", ` ${line}`) : `   ${line}`,
+			),
 		].flatMap((line) => (visibleWidth(line) > width ? wrapTextWithAnsi(line, width) : [line]));
 		this.detailsOffset = Math.max(0, Math.min(this.detailsOffset, Math.max(0, lines.length - height)));
-		this.hits.add({ x: x0, y: y0, width, height, wheel: (delta) => { this.detailsOffset = Math.max(0, this.detailsOffset + delta); } });
+		this.hits.add({
+			x: x0,
+			y: y0,
+			width,
+			height,
+			wheel: (delta) => {
+				this.detailsOffset = Math.max(0, this.detailsOffset + delta);
+			},
+		});
 		return lines.slice(this.detailsOffset, this.detailsOffset + height).map((line) => fitLine(line, width));
 	}
 
@@ -1612,7 +1954,7 @@ export class ThreadsView {
 		if (draft?.notify.length) parts.push(`wakes ${draft.notify.length}`);
 		const caption = `Post to ${title}`;
 		const receipt = this.options.state.selected ? this.receipts.get(this.options.state.selected) : undefined;
-		return this.composer.render(width, caption, parts.join(" · "), draft?.pending ? "Posting…" : receipt?.text ?? "");
+		return this.composer.render(width, caption, parts.join(" · "), draft?.pending ? "Posting…" : (receipt?.text ?? ""));
 	}
 
 	/** The composer takes focus on a click; the footer's `enter post` control posts the draft. */

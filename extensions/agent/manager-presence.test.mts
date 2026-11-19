@@ -13,15 +13,36 @@ it("samples activity writes and keeps observed purpose separate from declared in
 	const root = mkdtempSync(join(tmpdir(), "effort-manager-"));
 	let channel: PrimaryChannel | undefined;
 	let touches = 0;
-	const manager = new AgentManager({ root, agentDir: join(root, "agent"), packageDir: root, createPrimary: async (options) => {
-		const created = await createPrimaryChannel(options);
-		channel = created;
-		return { ...created, touch: (at) => { touches++; created.touch(at); } };
-	} });
+	const manager = new AgentManager({
+		root,
+		agentDir: join(root, "agent"),
+		packageDir: root,
+		createPrimary: async (options) => {
+			const created = await createPrimaryChannel(options);
+			channel = created;
+			return {
+				...created,
+				touch: (at) => {
+					touches++;
+					created.touch(at);
+				},
+			};
+		},
+	});
 	const signal = new AbortController();
-	t.after(async () => { signal.abort(); await manager.close(); await channel?.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => {
+		signal.abort();
+		await manager.close();
+		await channel?.close();
+		rmSync(root, { recursive: true, force: true });
+	});
 	const id = randomUUID();
-	await manager.registerPrimary(id, { signal: signal.signal, cwd: root, send: () => {}, observedInput: "Review the parser" });
+	await manager.registerPrimary(id, {
+		signal: signal.signal,
+		cwd: root,
+		send: () => {},
+		observedInput: "Review the parser",
+	});
 	assert.ok(channel);
 	assert.equal(channel.info().observedPurpose?.source, "interactive-input");
 	const lastActivityAt = channel.info().lastActivityAt;
@@ -33,7 +54,12 @@ it("samples activity writes and keeps observed purpose separate from declared in
 	manager.touchPrimary(id, at + 60_000);
 	manager.touchPrimary(id, at + 60_001);
 	assert.equal(touches, 1);
-	const intent = { purpose: "Declared review", integration: "Run one full gate", authority: "Operator permits this review", scope: { paths: ["src"], branches: ["work"], fullGate: true } };
+	const intent = {
+		purpose: "Declared review",
+		integration: "Run one full gate",
+		authority: "Operator permits this review",
+		scope: { paths: ["src"], branches: ["work"], fullGate: true },
+	};
 	const result = await manager.publishIntent(id, intent);
 	assert.equal(result.published.intentClaim?.purpose, intent.purpose);
 	assert.equal(result.awareness.self.intentClaim?.scope.fullGate, true);
@@ -51,17 +77,33 @@ it("samples activity writes and keeps observed purpose separate from declared in
 it("does not replace unvisited first-input provenance after resume", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "effort-resume-"));
 	let channel: PrimaryChannel | undefined;
-	const manager = new AgentManager({ root, agentDir: root, packageDir: root, createPrimary: async (options) => {
-		channel = await createPrimaryChannel(options);
-		return channel;
-	} });
-	t.after(async () => { await manager.close(); await channel?.close(); rmSync(root, { recursive: true, force: true }); });
+	const manager = new AgentManager({
+		root,
+		agentDir: root,
+		packageDir: root,
+		createPrimary: async (options) => {
+			channel = await createPrimaryChannel(options);
+			return channel;
+		},
+	});
+	t.after(async () => {
+		await manager.close();
+		await channel?.close();
+		rmSync(root, { recursive: true, force: true });
+	});
 	const session = SessionManager.inMemory(root);
 	session.appendCustomEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: "Original task" });
 	for (let i = 0; i < 256; i++) session.appendCustomEntry("other");
 	const purpose = retainedPurpose(session);
 	const id = randomUUID();
-	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send: () => {}, observedInput: purpose.text, observedInputComplete: purpose.complete, observedInputCanCapture: purpose.canCapture });
+	await manager.registerPrimary(id, {
+		signal: new AbortController().signal,
+		cwd: root,
+		send: () => {},
+		observedInput: purpose.text,
+		observedInputComplete: purpose.complete,
+		observedInputCanCapture: purpose.canCapture,
+	});
 	assert.equal(manager.recordPrimaryInput(id, "A later task", "interactive"), false);
 	const view = await manager.awareness(id);
 	assert.equal(view.self.observedPurpose, undefined);
@@ -75,13 +117,43 @@ it("does not replace unvisited first-input provenance after resume", async (t) =
 it("carries the current primary name and published purpose on direct session messages", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "primary-sender-"));
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
-	const senderId = randomUUID(), recipientId = randomUUID();
+	const senderId = randomUUID(),
+		recipientId = randomUUID();
 	const senderSignal = new AbortController();
 	const received: Array<{ details?: unknown; replyTo?: string; text: string }> = [];
-	const recipient = await createPrimaryChannel({ id: recipientId, cwd: root, sessionsRoot: root, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
-	t.after(async () => { senderSignal.abort(); await manager.close(); await recipient.close(); rmSync(root, { recursive: true, force: true }); });
-	await manager.registerPrimary(senderId, { signal: senderSignal.signal, cwd: root, send: () => {}, name: "Registered source", observedInput: "Review the parser" });
-	await manager.control("submit", { sessionId: recipientId, message: "Direct message", requestId: "named", replyTo: senderId, origin: "operator" }, { id: senderId, cwd: root, name: "Current source", model: { provider: "provider", modelId: "model" }, thinkingLevel: "high" });
+	const recipient = await createPrimaryChannel({
+		id: recipientId,
+		cwd: root,
+		sessionsRoot: root,
+		deliver: (message) => {
+			received.push(message);
+		},
+		promptTrust: async () => undefined,
+	});
+	t.after(async () => {
+		senderSignal.abort();
+		await manager.close();
+		await recipient.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	await manager.registerPrimary(senderId, {
+		signal: senderSignal.signal,
+		cwd: root,
+		send: () => {},
+		name: "Registered source",
+		observedInput: "Review the parser",
+	});
+	await manager.control(
+		"submit",
+		{ sessionId: recipientId, message: "Direct message", requestId: "named", replyTo: senderId, origin: "operator" },
+		{
+			id: senderId,
+			cwd: root,
+			name: "Current source",
+			model: { provider: "provider", modelId: "model" },
+			thinkingLevel: "high",
+		},
+	);
 	const named = received[0]?.details as Record<string, unknown>;
 	assert.equal(named.name, "Current source");
 	assert.equal(named.kind, "message");
@@ -94,15 +166,27 @@ it("carries the current primary name and published purpose on direct session mes
 	assert.equal(received[0]?.replyTo, senderId);
 	assert.equal(received[0]?.text, "Direct message");
 	manager.updatePrimary(senderId, { name: undefined });
-	await manager.control("submit", { sessionId: recipientId, message: "Purpose message", requestId: "purpose", origin: "operator" }, { id: senderId, cwd: root });
+	await manager.control(
+		"submit",
+		{ sessionId: recipientId, message: "Purpose message", requestId: "purpose", origin: "operator" },
+		{ id: senderId, cwd: root },
+	);
 	const purpose = received[1]?.details as Record<string, unknown>;
 	assert.equal(purpose.name, undefined);
 	assert.equal(purpose.observedPurpose, "Review the parser");
 	assert.equal(purpose.provider, undefined);
 	assert.equal(purpose.modelId, undefined);
 	assert.equal(purpose.thinkingLevel, undefined);
-	const receipt = await manager.control("report", { sessionId: recipientId, message: "Explicit report", requestId: "report", origin: "model" }, { id: senderId, cwd: root }) as { boundary: string };
-	assert.doesNotMatch(receipt.boundary, /waits.*run to end/u, "a primary receipt does not claim Durable follow-up delivery");
+	const receipt = (await manager.control(
+		"report",
+		{ sessionId: recipientId, message: "Explicit report", requestId: "report", origin: "model" },
+		{ id: senderId, cwd: root },
+	)) as { boundary: string };
+	assert.doesNotMatch(
+		receipt.boundary,
+		/waits.*run to end/u,
+		"a primary receipt does not claim Durable follow-up delivery",
+	);
 	const report = received[2]?.details as Record<string, unknown>;
 	assert.equal(report.kind, "report");
 	assert.equal(report.wake, true);

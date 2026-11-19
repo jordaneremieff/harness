@@ -105,7 +105,8 @@ function releaseNotesBlock(releases: PiReleaseSection[]): string[] {
  */
 function alignmentSettled(release: PiReleaseIntake): boolean {
 	const { graph, publication } = release;
-	if (publication.state !== "observed" || graph.state !== "observed" || !isReleaseVersion(release.installedVersion)) return false;
+	if (publication.state !== "observed" || graph.state !== "observed" || !isReleaseVersion(release.installedVersion))
+		return false;
 	const published = new Map(publication.packages.map((entry) => [entry.name, knownVersion(entry)]));
 	if (published.get(PI_HOST_PACKAGE) !== release.installedVersion) return false;
 	return graph.packages.every(
@@ -119,7 +120,11 @@ function alignmentSettled(release: PiReleaseIntake): boolean {
 }
 
 /** Checking is the command's job; dependency changes precede directed work only where that work needs them. */
-function latestPiAlignment(origin: EvoInvocationOrigin, release: PiReleaseIntake | undefined, directed: boolean): string[] {
+function latestPiAlignment(
+	origin: EvoInvocationOrigin,
+	release: PiReleaseIntake | undefined,
+	directed: boolean,
+): string[] {
 	if (release && alignmentSettled(release)) {
 		return [
 			"Latest Pi alignment:",
@@ -232,10 +237,14 @@ function publicationComparison(graph: PiCheckoutGraph, publication: PiPublicatio
 	const lines: string[] = [];
 	if (behind.length > 0) lines.push(`- The checkout graph is behind the published versions: ${behind.join(", ")}.`);
 	if (ahead.length > 0) {
-		lines.push(`- The checkout graph resolves versions newer than the ${jsonString(publication.tag)} tag: ${ahead.join(", ")}.`);
+		lines.push(
+			`- The checkout graph resolves versions newer than the ${jsonString(publication.tag)} tag: ${ahead.join(", ")}.`,
+		);
 	}
 	if (unknown.length > 0) lines.push(`- Not compared with published versions: ${unknown.join(", ")}.`);
-	return lines.length > 0 ? lines : ["- The checkout graph resolves the latest published version of every declared package."];
+	return lines.length > 0
+		? lines
+		: ["- The checkout graph resolves the latest published version of every declared package."];
 }
 
 function hostGraphComparison(graph: PiCheckoutGraph, host: string): string[] {
@@ -256,7 +265,9 @@ function hostGraphComparison(graph: PiCheckoutGraph, host: string): string[] {
 function graphComparisons(release: PiReleaseIntake): string[] {
 	const { graph } = release;
 	if (graph.state === "unavailable") {
-		return ["- Checkout graph: not compared with the published versions or the running host, because it is unavailable."];
+		return [
+			"- Checkout graph: not compared with the published versions or the running host, because it is unavailable.",
+		];
 	}
 	if (graph.packages.length === 0) return [];
 	const ranges = graph.packages
@@ -265,7 +276,9 @@ function graphComparisons(release: PiReleaseIntake): string[] {
 	return [
 		...publicationComparison(graph, release.publication),
 		...hostGraphComparison(graph, release.installedVersion),
-		...(ranges.length > 0 ? [`- Declared ranges other than "*": ${ranges.join(", ")}. Keep wildcard Pi declarations.`] : []),
+		...(ranges.length > 0
+			? [`- Declared ranges other than "*": ${ranges.join(", ")}. Keep wildcard Pi declarations.`]
+			: []),
 	];
 }
 

@@ -3,16 +3,15 @@ import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import {
-	renderProposeCall,
-	renderProposeResult,
-	renderRulesCall,
-	renderRulesResult,
-} from "./presentation.ts";
+import { renderProposeCall, renderProposeResult, renderRulesCall, renderRulesResult } from "./presentation.ts";
 
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }, width = 100) =>
-	component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n").replace(/^\n+/, "");
+	component
+		.render(width)
+		.map((line) => stripVTControlCharacters(line).trimEnd())
+		.join("\n")
+		.replace(/^\n+/, "");
 const raw = (component: { render(width: number): string[] }, width = 1000) => component.render(width).join("\n");
 const text = (value: string, details?: unknown) => ({ content: [{ type: "text" as const, text: value }], details });
 const collapsed = { expanded: false, isError: false };
@@ -37,7 +36,12 @@ describe("policy_rules call cards", () => {
 
 	it("summarizes a draft check with effect and case count", () => {
 		const card = renderRulesCall(
-			{ view: "check", draft: { operation: "add", id: "local.file-reader" }, effect: "steer", cases: [{ name: "a" }, { name: "b" }] },
+			{
+				view: "check",
+				draft: { operation: "add", id: "local.file-reader" },
+				effect: "steer",
+				cases: [{ name: "a" }, { name: "b" }],
+			},
 			theme,
 			collapsed,
 		);
@@ -135,13 +139,21 @@ describe("policy_rules result cards", () => {
 		const output = JSON.stringify({
 			check: true,
 			admitted: true,
-			diagnostics: [{ severity: "warning", message: "scope" }, { severity: "warning", message: "mode" }],
+			diagnostics: [
+				{ severity: "warning", message: "scope" },
+				{ severity: "warning", message: "mode" },
+			],
 			cases: [],
 		});
-		const card = renderRulesResult(text(output, { rules: 0, pending: 0 }), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			args: { view: "check" },
-		});
+		const card = renderRulesResult(
+			text(output, { rules: 0, pending: 0 }),
+			{ expanded: false, isPartial: false },
+			theme,
+			{
+				...collapsed,
+				args: { view: "check" },
+			},
+		);
 		assert.match(screen(card), /check: admitted · 2 warnings/);
 	});
 
@@ -152,10 +164,15 @@ describe("policy_rules result cards", () => {
 			diagnostics: [{ severity: "error", message: "Draft does not satisfy the policy_propose schema" }],
 			cases: [],
 		});
-		const card = renderRulesResult(text(output, { rules: 0, pending: 0 }), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			args: { view: "check", draft: { operation: "add" } },
-		});
+		const card = renderRulesResult(
+			text(output, { rules: 0, pending: 0 }),
+			{ expanded: false, isPartial: false },
+			theme,
+			{
+				...collapsed,
+				args: { view: "check", draft: { operation: "add" } },
+			},
+		);
 		assert.match(screen(card), /check: not admitted · 1 error/);
 	});
 
@@ -168,15 +185,34 @@ describe("policy_rules result cards", () => {
 			input: { matches: ["routing.cat-read"] },
 			boundary: "No simulated tool executes.",
 		});
-		const card = renderRulesResult(text(denied, { rules: 5, pending: 0 }), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			args: { view: "preview", tool: "bash" },
-		});
+		const card = renderRulesResult(
+			text(denied, { rules: 5, pending: 0 }),
+			{ expanded: false, isPartial: false },
+			theme,
+			{
+				...collapsed,
+				args: { view: "preview", tool: "bash" },
+			},
+		);
 		assert.match(screen(card), /^preview: denied by routing\.cat-read · 2 non-matching rules/);
 		assert.ok(!screen(card).includes("No simulated tool executes."));
 
-		const allowed = JSON.stringify({ decision: { denied: false, resultCorrected: false }, preview: true, wouldCorrectInput: false, nonMatchingRules: 0, input: { matches: [] } });
-		assert.match(screen(renderRulesResult(text(allowed, { rules: 1, pending: 0 }), { expanded: false, isPartial: false }, theme, { ...collapsed, args: { view: "preview" } })), /^preview: allowed/);
+		const allowed = JSON.stringify({
+			decision: { denied: false, resultCorrected: false },
+			preview: true,
+			wouldCorrectInput: false,
+			nonMatchingRules: 0,
+			input: { matches: [] },
+		});
+		assert.match(
+			screen(
+				renderRulesResult(text(allowed, { rules: 1, pending: 0 }), { expanded: false, isPartial: false }, theme, {
+					...collapsed,
+					args: { view: "preview" },
+				}),
+			),
+			/^preview: allowed/,
+		);
 
 		const corrected = JSON.stringify({
 			decision: { denied: false, resultCorrected: false },
@@ -185,15 +221,42 @@ describe("policy_rules result cards", () => {
 			nonMatchingRules: 0,
 			input: { matches: ["routing.alias"], corrections: [{ id: "routing.alias", stage: "values", path: ["command"] }] },
 		});
-		assert.match(screen(renderRulesResult(text(corrected, { rules: 1, pending: 0 }), { expanded: false, isPartial: false }, theme, { ...collapsed, args: { view: "preview" } })), /^preview: input corrected by routing\.alias/);
+		assert.match(
+			screen(
+				renderRulesResult(text(corrected, { rules: 1, pending: 0 }), { expanded: false, isPartial: false }, theme, {
+					...collapsed,
+					args: { view: "preview" },
+				}),
+			),
+			/^preview: input corrected by routing\.alias/,
+		);
 
-		const resultCorrected = JSON.stringify({ decision: { denied: false, resultCorrected: true }, preview: true, wouldCorrectInput: false, nonMatchingRules: 0, input: { matches: [] } });
-		assert.match(screen(renderRulesResult(text(resultCorrected, { rules: 1, pending: 0 }), { expanded: false, isPartial: false }, theme, { ...collapsed, args: { view: "preview" } })), /^preview: result corrected/);
+		const resultCorrected = JSON.stringify({
+			decision: { denied: false, resultCorrected: true },
+			preview: true,
+			wouldCorrectInput: false,
+			nonMatchingRules: 0,
+			input: { matches: [] },
+		});
+		assert.match(
+			screen(
+				renderRulesResult(
+					text(resultCorrected, { rules: 1, pending: 0 }),
+					{ expanded: false, isPartial: false },
+					theme,
+					{ ...collapsed, args: { view: "preview" } },
+				),
+			),
+			/^preview: result corrected/,
+		);
 	});
 
 	it("summarizes JSON views by top-level field", () => {
 		const health = renderRulesResult(
-			text('{\n  "authority": { "status": "ok" },\n  "telemetry": { "status": "ready" },\n  "observations": { "incomplete": 0, "pending": 0 }\n}', { rules: 0, pending: 0 }),
+			text(
+				'{\n  "authority": { "status": "ok" },\n  "telemetry": { "status": "ready" },\n  "observations": { "incomplete": 0, "pending": 0 }\n}',
+				{ rules: 0, pending: 0 },
+			),
 			{ expanded: false, isPartial: false },
 			theme,
 			{ ...collapsed, args: { view: "health" } },
@@ -206,34 +269,54 @@ describe("policy_rules result cards", () => {
 			{ ...collapsed, args: { view: "catalog" } },
 		);
 		assert.equal(screen(catalog).split("\n")[0], "source · rules");
-		const guide = renderRulesResult(text("# Policy authoring guide\n\nUse views.", {}), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			args: { view: "authoring" },
-		});
+		const guide = renderRulesResult(
+			text("# Policy authoring guide\n\nUse views.", {}),
+			{ expanded: false, isPartial: false },
+			theme,
+			{
+				...collapsed,
+				args: { view: "authoring" },
+			},
+		);
 		assert.match(screen(guide), /# Policy authoring guide/);
 	});
 
 	it("leads the rules view with the selected rule and keeps a missing-rule message", () => {
 		const listing =
 			"SESSION CONTEXT\nmodel provider: test\ncwd: /project\nrecord count: 4 | pending proposal count: 0\n\nRULES\nlocal.shell | source=package | purpose=Bound output | state=active | effect=block | note=Use sample.\n  definition: revision=1 state=active effect=block\n\nPENDING PROPOSALS\n(none)";
-		const card = renderRulesResult(text(listing, { rules: 4, pending: 0 }), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			args: { view: "rules", id: "local.shell" },
-		});
+		const card = renderRulesResult(
+			text(listing, { rules: 4, pending: 0 }),
+			{ expanded: false, isPartial: false },
+			theme,
+			{
+				...collapsed,
+				args: { view: "rules", id: "local.shell" },
+			},
+		);
 		assert.equal(screen(card).split("\n")[0], "local.shell · active · block");
-		const missing = renderRulesResult(text("No rule named local.gone.", { rules: 4, pending: 0 }), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			args: { view: "rules", id: "local.gone" },
-		});
+		const missing = renderRulesResult(
+			text("No rule named local.gone.", { rules: 4, pending: 0 }),
+			{ expanded: false, isPartial: false },
+			theme,
+			{
+				...collapsed,
+				args: { view: "rules", id: "local.gone" },
+			},
+		);
 		assert.equal(screen(missing).split("\n")[0], "No rule named local.gone.");
 	});
 
 	it("escapes bidi and C1 controls in expanded result text", () => {
 		const output = "rule \u202e body \u009b tail";
-		const card = renderRulesResult(text(output, { rules: 1, pending: 0 }), { expanded: true, isPartial: false }, theme, {
-			...expanded,
-			args: { view: "rules" },
-		});
+		const card = renderRulesResult(
+			text(output, { rules: 1, pending: 0 }),
+			{ expanded: true, isPartial: false },
+			theme,
+			{
+				...expanded,
+				args: { view: "rules" },
+			},
+		);
 		assert.ok(!raw(card).includes("\u202e"));
 		assert.ok(!raw(card).includes("\u009b"));
 		assert.match(screen(card, 1000), /\\u\{202e\}/);
@@ -261,11 +344,16 @@ describe("policy_rules result cards", () => {
 	});
 
 	it("styles errors and partial results", () => {
-		const error = renderRulesResult(text("unknown policy inspection view"), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			isError: true,
-			args: { view: "nope" },
-		});
+		const error = renderRulesResult(
+			text("unknown policy inspection view"),
+			{ expanded: false, isPartial: false },
+			theme,
+			{
+				...collapsed,
+				isError: true,
+				args: { view: "nope" },
+			},
+		);
 		assert.equal(screen(error), "policy_rules: unknown policy inspection view");
 		const partial = renderRulesResult(text(""), { expanded: true, isPartial: true }, theme, collapsed);
 		assert.equal(screen(partial), "Inspecting policy...");
@@ -311,10 +399,24 @@ describe("policy_propose call cards", () => {
 	});
 
 	it("names predicate and facts-program forms", () => {
-		const predicate = renderProposeCall({ operation: "add", id: "local.reader", authority: "exact", predicate: "routing.cat-read" }, theme, collapsed);
+		const predicate = renderProposeCall(
+			{ operation: "add", id: "local.reader", authority: "exact", predicate: "routing.cat-read" },
+			theme,
+			collapsed,
+		);
 		assert.match(screen(predicate), /predicate routing\.cat-read/);
 		const program = renderProposeCall(
-			{ operation: "add", id: "local.reader", authority: "exact", program: { phase: "input", when: { op: "exists", path: ["input"] }, action: { kind: "deny" }, onUnavailable: "skip" } },
+			{
+				operation: "add",
+				id: "local.reader",
+				authority: "exact",
+				program: {
+					phase: "input",
+					when: { op: "exists", path: ["input"] },
+					action: { kind: "deny" },
+					onUnavailable: "skip",
+				},
+			},
 			theme,
 			collapsed,
 		);
@@ -367,15 +469,25 @@ describe("policy_propose result cards", () => {
 	});
 
 	it("falls back to the receipt text when details are malformed", () => {
-		const card = renderProposeResult(text("Pending proposal prop-9: add local.x.", {}), { expanded: false, isPartial: false }, theme, collapsed);
+		const card = renderProposeResult(
+			text("Pending proposal prop-9: add local.x.", {}),
+			{ expanded: false, isPartial: false },
+			theme,
+			collapsed,
+		);
 		assert.match(screen(card), /Pending proposal prop-9: add local\.x\./);
 	});
 
 	it("styles errors and partial results", () => {
-		const error = renderProposeResult(text("Draft does not satisfy the policy_propose schema"), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			isError: true,
-		});
+		const error = renderProposeResult(
+			text("Draft does not satisfy the policy_propose schema"),
+			{ expanded: false, isPartial: false },
+			theme,
+			{
+				...collapsed,
+				isError: true,
+			},
+		);
 		assert.equal(screen(error), "policy_propose: Draft does not satisfy the policy_propose schema");
 		const partial = renderProposeResult(text(""), { expanded: false, isPartial: true }, theme, collapsed);
 		assert.equal(screen(partial), "Submitting proposal...");
@@ -406,7 +518,11 @@ describe("error diagnostics and host key hints", () => {
 	const open = { expanded: true, isPartial: false };
 
 	it("collapses to the first line with an expansion hint when more diagnostics are retained", () => {
-		const card = renderRulesResult(text(multiline), idle, theme, { ...collapsed, isError: true, keyText: () => "ctrl+x" });
+		const card = renderRulesResult(text(multiline), idle, theme, {
+			...collapsed,
+			isError: true,
+			keyText: () => "ctrl+x",
+		});
 		const rendered = screen(card);
 		assert.match(rendered, /^policy_rules: policy_rules failed: store unreadable\nctrl\+x to expand diagnostics/);
 		assert.doesNotMatch(rendered, /line two/);
@@ -428,7 +544,10 @@ describe("error diagnostics and host key hints", () => {
 	});
 
 	it("uses neutral wording when the host supplies no binding", () => {
-		const card = renderRulesResult(text("{}", { rules: 1, pending: 0 }), idle, theme, { ...collapsed, args: { view: "rules" } });
+		const card = renderRulesResult(text("{}", { rules: 1, pending: 0 }), idle, theme, {
+			...collapsed,
+			args: { view: "rules" },
+		});
 		assert.match(screen(card), /Expand for full result/);
 		const bound = renderRulesResult(text("{}", { rules: 1, pending: 0 }), idle, theme, {
 			...collapsed,

@@ -126,14 +126,36 @@ function rejectUnknownFields(value: Record<string, unknown>, allowed: readonly s
 /** Strict metadata validation for spawn arguments and for the host process. */
 export function parseHostMetadata(value: unknown): HostMetadata {
 	if (!isRecord(value)) throw new Error("host metadata must be an object");
-	rejectUnknownFields(value, ["storageId", "cwd", "agentDir", "packageDir", "storagePath", "model", "thinkingLevel", "name", "trust", "ownerId", "independent"], "host metadata");
+	rejectUnknownFields(
+		value,
+		[
+			"storageId",
+			"cwd",
+			"agentDir",
+			"packageDir",
+			"storagePath",
+			"model",
+			"thinkingLevel",
+			"name",
+			"trust",
+			"ownerId",
+			"independent",
+		],
+		"host metadata",
+	);
 	if (!isRecord(value.model)) throw new Error("host metadata model must be an object");
 	rejectUnknownFields(value.model, ["provider", "modelId"], "host metadata model");
-	if (value.trust !== undefined && typeof value.trust !== "boolean") throw new Error("host metadata trust must be a boolean");
+	if (value.trust !== undefined && typeof value.trust !== "boolean")
+		throw new Error("host metadata trust must be a boolean");
 	if (value.independent !== undefined) {
 		if (!isRecord(value.independent)) throw new Error("host metadata independent must be an object");
 		rejectUnknownFields(value.independent, ["inputDigest", "projectTrusted"], "host metadata independent");
-		if (typeof value.independent.inputDigest !== "string" || !/^[a-f0-9]{64}$/u.test(value.independent.inputDigest) || typeof value.independent.projectTrusted !== "boolean") throw new Error("host metadata independent is malformed");
+		if (
+			typeof value.independent.inputDigest !== "string" ||
+			!/^[a-f0-9]{64}$/u.test(value.independent.inputDigest) ||
+			typeof value.independent.projectTrusted !== "boolean"
+		)
+			throw new Error("host metadata independent is malformed");
 	}
 	return {
 		storageId: boundedText(value.storageId, "host metadata storageId", IDENTITY_LIMIT),
@@ -148,8 +170,17 @@ export function parseHostMetadata(value: unknown): HostMetadata {
 		thinkingLevel: boundedText(value.thinkingLevel, "host metadata thinkingLevel", NAME_LIMIT),
 		...(value.name === undefined ? {} : { name: boundedText(value.name, "host metadata name", NAME_LIMIT, true) }),
 		...(value.trust === undefined ? {} : { trust: value.trust }),
-		...(value.ownerId === undefined ? {} : { ownerId: boundedText(value.ownerId, "host metadata ownerId", IDENTITY_LIMIT) }),
-		...(value.independent === undefined ? {} : { independent: { inputDigest: (value.independent as Record<string, unknown>).inputDigest as string, projectTrusted: (value.independent as Record<string, unknown>).projectTrusted as boolean } }),
+		...(value.ownerId === undefined
+			? {}
+			: { ownerId: boundedText(value.ownerId, "host metadata ownerId", IDENTITY_LIMIT) }),
+		...(value.independent === undefined
+			? {}
+			: {
+					independent: {
+						inputDigest: (value.independent as Record<string, unknown>).inputDigest as string,
+						projectTrusted: (value.independent as Record<string, unknown>).projectTrusted as boolean,
+					},
+				}),
 	};
 }
 
@@ -158,7 +189,9 @@ export function parseHostMetadata(value: unknown): HostMetadata {
  * the harness storage identity. The harness storage ID stays free-form.
  */
 function serverIdFor(storageId: string, cwd: string): string {
-	const digest = createHash("sha256").update(`pi.agent.host\u0000${storageId}\u0000${resolve(cwd)}`).digest("hex");
+	const digest = createHash("sha256")
+		.update(`pi.agent.host\u0000${storageId}\u0000${resolve(cwd)}`)
+		.digest("hex");
 	const variant = ((Number.parseInt(digest[16], 16) & 0x3) | 0x8).toString(16);
 	return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-${variant}${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 }
@@ -171,7 +204,8 @@ function serverIdFor(storageId: string, cwd: string): string {
 function socketDirectory(agentDir: string, serverId: string): string {
 	const candidates = [join(agentDir, "durable-hosts"), join(tmpdir(), "pi-hosts"), join("/tmp", "pi-hosts")];
 	for (const directory of candidates) {
-		if (Buffer.byteLength(unixSocketPath(serverId, directory), "utf8") <= HOST_SOCKET_PATH_LIMIT_BYTES) return directory;
+		if (Buffer.byteLength(unixSocketPath(serverId, directory), "utf8") <= HOST_SOCKET_PATH_LIMIT_BYTES)
+			return directory;
 	}
 	throw new Error(`no Unix socket path within ${HOST_SOCKET_PATH_LIMIT_BYTES} bytes for durable host ${serverId}`);
 }
@@ -182,11 +216,19 @@ function socketDirectory(agentDir: string, serverId: string): string {
  * storage or working directory.
  */
 export function hostPaths(metadata: Pick<HostMetadata, "agentDir" | "storageId" | "cwd">): HostPaths {
-	const key = createHash("sha256").update(`${metadata.storageId}\u0000${resolve(metadata.cwd)}`).digest("hex");
+	const key = createHash("sha256")
+		.update(`${metadata.storageId}\u0000${resolve(metadata.cwd)}`)
+		.digest("hex");
 	const directory = join(metadata.agentDir, "durable-hosts", key);
 	const identity: ClaimIdentity = { sessionId: metadata.storageId, cwd: metadata.cwd };
 	const serverId = serverIdFor(metadata.storageId, metadata.cwd);
-	return { directory, serverId, socket: unixSocketPath(serverId, socketDirectory(metadata.agentDir, serverId)), claim: claimPath(directory, identity), identity };
+	return {
+		directory,
+		serverId,
+		socket: unixSocketPath(serverId, socketDirectory(metadata.agentDir, serverId)),
+		claim: claimPath(directory, identity),
+		identity,
+	};
 }
 
 export function formatHostReady(ready: HostReady): string {
@@ -202,13 +244,21 @@ export function parseHostBusyLine(line: string): HostBusy | undefined {
 	const value: unknown = JSON.parse(line.slice(HOST_BUSY_PREFIX.length));
 	if (!isRecord(value)) throw new Error("host busy line is not an object");
 	rejectUnknownFields(value, ["storageId", "socketPath"], "host busy line");
-	return { storageId: boundedText(value.storageId, "host busy storageId", IDENTITY_LIMIT), socketPath: absolutePath(value.socketPath, "host busy socketPath") };
+	return {
+		storageId: boundedText(value.storageId, "host busy storageId", IDENTITY_LIMIT),
+		socketPath: absolutePath(value.socketPath, "host busy socketPath"),
+	};
 }
 
 /** The current endpoint identifies its own writer separately from its static operation contracts. */
 export function parseHostHello(value: unknown): HostHello {
-	if (!isRecord(value) || value.format !== "pi.agent.host-hello/1") throw new Error("host writer hello must use pi.agent.host-hello/1");
-	return { format: "pi.agent.host-hello/1", writerId: boundedText(value.writerId, "host writerId", IDENTITY_LIMIT), contract: parseRuntimeContract(value.contract) };
+	if (!isRecord(value) || value.format !== "pi.agent.host-hello/1")
+		throw new Error("host writer hello must use pi.agent.host-hello/1");
+	return {
+		format: "pi.agent.host-hello/1",
+		writerId: boundedText(value.writerId, "host writerId", IDENTITY_LIMIT),
+		contract: parseRuntimeContract(value.contract),
+	};
 }
 
 /** Parse one readiness line. A non-matching line yields undefined; a matching line with a bad body throws. */
@@ -216,8 +266,14 @@ export function parseHostReadyLine(line: string): HostReady | undefined {
 	if (!line.startsWith(HOST_READY_PREFIX)) return undefined;
 	const value: unknown = JSON.parse(line.slice(HOST_READY_PREFIX.length));
 	if (!isRecord(value)) throw new Error("host readiness line is not an object");
-	if (typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid <= 0) throw new Error("host readiness pid must be a positive integer");
-	return { pid: value.pid, socketPath: boundedText(value.socketPath, "host readiness socketPath", PATH_LIMIT), contract: parseRuntimeContract(value.contract), writerId: boundedText(value.writerId, "host writerId", IDENTITY_LIMIT) };
+	if (typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid <= 0)
+		throw new Error("host readiness pid must be a positive integer");
+	return {
+		pid: value.pid,
+		socketPath: boundedText(value.socketPath, "host readiness socketPath", PATH_LIMIT),
+		contract: parseRuntimeContract(value.contract),
+		writerId: boundedText(value.writerId, "host writerId", IDENTITY_LIMIT),
+	};
 }
 
 /**
@@ -226,7 +282,31 @@ export function parseHostReadyLine(line: string): HostReady | undefined {
  * by request ID or acknowledgement state; read methods are naturally safe.
  * Unknown methods are never retried.
  */
-const HOST_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set(["profile-read", "profile-list", "profile-update", "task-submit", "resolve-agent", "collaboration-list", "collaboration-read", "collaboration-mutate", "passive-submit", "submit", "report", "acknowledge", "inspect", "status", "list", "receipts", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "timer-list", "models"]);
+const HOST_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set([
+	"profile-read",
+	"profile-list",
+	"profile-update",
+	"task-submit",
+	"resolve-agent",
+	"collaboration-list",
+	"collaboration-read",
+	"collaboration-mutate",
+	"passive-submit",
+	"submit",
+	"report",
+	"acknowledge",
+	"inspect",
+	"status",
+	"list",
+	"receipts",
+	"dashboard",
+	"snapshot",
+	"observe-open",
+	"observe-frame",
+	"observe-close",
+	"timer-list",
+	"models",
+]);
 
 export function isRetrySafeHostMethod(method: string): boolean {
 	return HOST_RETRY_SAFE_METHODS.has(method);
@@ -237,4 +317,3 @@ export function hostRequestVersionError(method: string, contract: RuntimeContrac
 	const refusal = contractRefusal(method, contract);
 	return refusal ? new HostError(refusal.message, "unavailable") : undefined;
 }
-

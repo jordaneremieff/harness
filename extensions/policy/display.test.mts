@@ -46,7 +46,10 @@ describe("policy display module", () => {
 		const { registered } = load();
 		const publication = toolDisplay();
 		assert.equal(publication.version, 1);
-		assert.deepEqual(publication.tools.map((tool) => tool.name), ["policy_propose", "policy_rules", "policy_approve", "policy_control"]);
+		assert.deepEqual(
+			publication.tools.map((tool) => tool.name),
+			["policy_propose", "policy_rules", "policy_approve", "policy_control"],
+		);
 		for (const display of publication.tools) {
 			assert.equal(typeof display.renderCall, "function");
 			assert.equal(typeof display.renderResult, "function");
@@ -63,9 +66,9 @@ describe("policy display module", () => {
 		assert.deepEqual(specifiers.sort(), ["./presentation.ts", "@earendil-works/pi-coding-agent"]);
 		assert.doesNotMatch(source, /registerTool|events\.|process\.|readFile|getAgentDir/);
 		const presentation = await readFile(fileURLToPath(new URL("./presentation.ts", import.meta.url)), "utf8");
-		assert.deepEqual(
-			[...presentation.matchAll(/from "([^"]+)"/g)].map((match) => match[1]).sort(),
-			["@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"],
-		);
+		assert.deepEqual([...presentation.matchAll(/from "([^"]+)"/g)].map((match) => match[1]).sort(), [
+			"@earendil-works/pi-coding-agent",
+			"@earendil-works/pi-tui",
+		]);
 	});
 });

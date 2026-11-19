@@ -25,15 +25,49 @@ import { storageStatusPageInput, validateStatusSelectors } from "./storage-statu
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
 import { createHash } from "node:crypto";
 import { captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
-import { MODEL_CHOICE_TOOL_NAMES, processProviderBlockNotes, renderProviderBlockSection } from "./provider-block-notes.ts";
-import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
+import {
+	MODEL_CHOICE_TOOL_NAMES,
+	processProviderBlockNotes,
+	renderProviderBlockSection,
+} from "./provider-block-notes.ts";
+import {
+	PresetParameter,
+	presetParameter,
+	readAgentPreferences,
+	resolveExecutionPreset,
+	effectiveExecutionSelection,
+	renderAgentPreferences,
+	type PreferenceSnapshot,
+	type ExecutionSelection,
+} from "./agent-preferences.ts";
 import { forgetFailedAdmission, recordInputProvenance } from "./awaited-results.ts";
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
 import { placementOf, prepareQueuedInputs, type Placement } from "./unplaced-inputs.ts";
-import { AGENT_WORK_DESCRIPTION, AgentWorkOutputSchema, AgentWorkParams, closeOpenWork, executeAgentWork, type OpenWorkView } from "./open-work.ts";
-import { AgentMetaDoc, placementMode, publishConversationIntent, recordAdmissionMeta, recordDeliveryIntent, seededCompactionInstructions } from "./durable-controls.ts";
-import { recordAdmitted, recordRefused, recordRequested, recordScheduled, recordTimerCancelled, type OutgoingRequest } from "./continuity-admission.ts";
+import {
+	AGENT_WORK_DESCRIPTION,
+	AgentWorkOutputSchema,
+	AgentWorkParams,
+	closeOpenWork,
+	executeAgentWork,
+	type OpenWorkView,
+} from "./open-work.ts";
+import {
+	AgentMetaDoc,
+	placementMode,
+	publishConversationIntent,
+	recordAdmissionMeta,
+	recordDeliveryIntent,
+	seededCompactionInstructions,
+} from "./durable-controls.ts";
+import {
+	recordAdmitted,
+	recordRefused,
+	recordRequested,
+	recordScheduled,
+	recordTimerCancelled,
+	type OutgoingRequest,
+} from "./continuity-admission.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema, profileText } from "./profile-schema.ts";
 import { cleanupRequestContexts } from "./request-context.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
@@ -61,7 +95,16 @@ import { inputEntry, sentInputClass } from "./input-entry.ts";
 import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
-import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, FOLLOW_UP_DELIVERY_BOUNDARY, NATIVE_COMPACTION_SEED, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
+import {
+	AGENT_CONTROL_EXPOSURE,
+	AGENT_CONTROL_TOOL_NAMES,
+	FOLLOW_UP_DELIVERY_BOUNDARY,
+	NATIVE_COMPACTION_SEED,
+	MODEL_SELECTION_GUIDANCE,
+	REPORT_DELIVERY_BOUNDARY,
+	agentControlGuidanceLines,
+	type AgentControlToolName,
+} from "./control-guidance.ts";
 import { abortScopeContains, abortScopeConversations } from "./abort-scope.ts";
 import { retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
 import { TimerTask, type TimerMode } from "./durable-timers.ts";
@@ -81,7 +124,12 @@ import {
 
 /** Runtime request methods the agent-session host serves for this contribution. */
 export type AgentControlMethod =
-	| "profile-read" | "profile-update" | "profile-list" | "resolve-agent" | "task-submit" | "report"
+	| "profile-read"
+	| "profile-update"
+	| "profile-list"
+	| "resolve-agent"
+	| "task-submit"
+	| "report"
 	| "submit"
 	| "spawn"
 	| "place"
@@ -138,7 +186,10 @@ function controlGlobals(): Record<PropertyKey, unknown> {
 export function publishAgentControlDispatch(dispatch: AgentControlDispatch): () => void {
 	const globals = controlGlobals();
 	const previous = globals[AGENT_CONTROL_BINDING_KEY];
-	globals[AGENT_CONTROL_BINDING_KEY] = { version: AGENT_CONTROL_BINDING_VERSION, dispatch } satisfies AgentControlBinding;
+	globals[AGENT_CONTROL_BINDING_KEY] = {
+		version: AGENT_CONTROL_BINDING_VERSION,
+		dispatch,
+	} satisfies AgentControlBinding;
 	return () => {
 		const current = globals[AGENT_CONTROL_BINDING_KEY] as Partial<AgentControlBinding> | undefined;
 		if (current?.dispatch === dispatch) globals[AGENT_CONTROL_BINDING_KEY] = previous;
@@ -155,7 +206,8 @@ export function publishAgentControlDispatch(dispatch: AgentControlDispatch): () 
 export function resolveAgentControlDispatch(): AgentControlDispatch {
 	const raw = controlGlobals()[AGENT_CONTROL_BINDING_KEY];
 	if (raw === undefined) throw new Error("Native Durable host controls are unavailable in this process");
-	if (typeof raw !== "object" || raw === null) throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
+	if (typeof raw !== "object" || raw === null)
+		throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
 	const version = (raw as { readonly version?: unknown }).version;
 	if (typeof version !== "string" || version.length === 0 || version.length > 256)
 		throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
@@ -164,7 +216,8 @@ export function resolveAgentControlDispatch(): AgentControlDispatch {
 			`The native Durable host control binding uses version ${version}; this contribution requires version ${AGENT_CONTROL_BINDING_VERSION}. Restart the agent host to load the matching runtime.`,
 		);
 	const dispatch = (raw as { readonly dispatch?: unknown }).dispatch;
-	if (typeof dispatch !== "function") throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
+	if (typeof dispatch !== "function")
+		throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
 	return dispatch as AgentControlDispatch;
 }
 
@@ -252,21 +305,25 @@ function thinkingFacts(child: Pick<AgentChild, "thinking">): Record<string, Json
 }
 
 function selectionSnapshot(child: Pick<AgentChild, "selection">): { selection?: ExecutionSelection } {
-	return child.selection === undefined ? {} : { selection: JSON.parse(JSON.stringify(child.selection)) as ExecutionSelection };
+	return child.selection === undefined
+		? {}
+		: { selection: JSON.parse(JSON.stringify(child.selection)) as ExecutionSelection };
 }
 
 function thinkingNotice(child: Pick<AgentChild, "thinking" | "selection">): string {
-	return (child.thinking === undefined ? "" : `\nThinking level: requested ${child.thinking.requested}; effective ${child.thinking.effective}.`) + (child.selection === undefined ? "" : `\nExecution selection: ${JSON.stringify(child.selection)}`);
+	return (
+		(child.thinking === undefined
+			? ""
+			: `\nThinking level: requested ${child.thinking.requested}; effective ${child.thinking.effective}.`) +
+		(child.selection === undefined ? "" : `\nExecution selection: ${JSON.stringify(child.selection)}`)
+	);
 }
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
 type ControlDetails = Record<string, JsonValue>;
 
-function textResult(
-	text: string,
-	details: ControlDetails = {},
-): Durable.ToolExecutionResult<ControlDetails> {
+function textResult(text: string, details: ControlDetails = {}): Durable.ToolExecutionResult<ControlDetails> {
 	return { output: [{ type: "text", text }], details };
 }
 
@@ -274,9 +331,17 @@ function errorResult(text: string): Durable.ToolExecutionResult<ControlDetails> 
 	return { output: [{ type: "text", text }], isError: true };
 }
 
-function placeResult(sessionId: string, result: ControlDetails, area?: string): Durable.ToolExecutionResult<ControlDetails> {
+function placeResult(
+	sessionId: string,
+	result: ControlDetails,
+	area?: string,
+): Durable.ToolExecutionResult<ControlDetails> {
 	const owner = area === undefined ? `The place owner is ${sessionId}.` : `The owner of ${area} is ${sessionId}.`;
-	return textResult(`${owner}\n${JSON.stringify(result)}`, { ...result, sessionId, ...(area === undefined ? {} : { area }) });
+	return textResult(`${owner}\n${JSON.stringify(result)}`, {
+		...result,
+		sessionId,
+		...(area === undefined ? {} : { area }),
+	});
 }
 
 /** Control facts remain UI details and also become validated values for nested callers. */
@@ -290,7 +355,7 @@ function structuredControl<P extends Schema, D extends JsonValue>(
 		execute: async (args, api, context) => {
 			const result = await tool.execute(args, api, context);
 			if (result.isError) return result;
-			const text = result.output?.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n") ?? "";
+			const text = result.output?.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n") ?? "";
 			const native = nativeStructuredObservation(schema, result.details, text);
 			return { ...result, output: native.output, structuredOutput: native.structuredOutput };
 		},
@@ -318,28 +383,37 @@ function modelOf(value: string): Durable.ModelRef {
 
 // ─── Parameter schemas ──────────────────────────────────────────────────────
 
-const StringEnum = <const T extends readonly string[]>(values: T, options: { readonly description?: string } = {}): Schema<T[number]> => ({ type: "string", enum: [...values], ...options });
+const StringEnum = <const T extends readonly string[]>(
+	values: T,
+	options: { readonly description?: string } = {},
+): Schema<T[number]> => ({ type: "string", enum: [...values], ...options });
 
-const CheckInParams = opt(num({ minimum: 0, maximum: 35791, description: "Owner check-in interval while unanswered, in minutes. Default configured agent.checkInMinutes, which is 0 (no check-ins) unless set; results arrive without them." }));
+const CheckInParams = opt(
+	num({
+		minimum: 0,
+		maximum: 35791,
+		description:
+			"Owner check-in interval while unanswered, in minutes. Default configured agent.checkInMinutes, which is 0 (no check-ins) unless set; results arrive without them.",
+	}),
+);
 
 const SpawnParams = obj(
 	{
 		handle: opt(HandleSchema),
 		preset: PresetParameter,
-		role: opt(str({
-			maxLength: 2000,
-			description: "Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.",
-		})),
-		prompt: opt(
-			str({ description: "Initial assignment for the agent. Without one the agent stays idle." }),
+		role: opt(
+			str({
+				maxLength: 2000,
+				description:
+					"Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.",
+			}),
 		),
+		prompt: opt(str({ description: "Initial assignment for the agent. Without one the agent stays idle." })),
 		name: opt(str({ description: "Display name for the agent. Names may repeat." })),
 		cwd: opt(
 			str({ description: "Working directory for the agent. Default: inherited from the creating conversation." }),
 		),
-		model: opt(
-			str({ minLength: 3, description: MODEL_SELECTION_GUIDANCE }),
-		),
+		model: opt(str({ minLength: 3, description: MODEL_SELECTION_GUIDANCE })),
 		thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
 		checkInMinutes: CheckInParams,
 	},
@@ -366,9 +440,14 @@ const SendParams = obj(
 			}),
 		),
 		mode: opt(
-			StringEnum(["followUp", "steer", "report"], { description: "Class of the message, not a placement time. Default followUp: new work. steer corrects the recipient's current work. report is an event for the recipient." }),
+			StringEnum(["followUp", "steer", "report"], {
+				description:
+					"Class of the message, not a placement time. Default followUp: new work. steer corrects the recipient's current work. report is an event for the recipient.",
+			}),
 		),
-		passive: opt(bool({ description: "Report mode only. Enter context at the next normal boundary without attention." })),
+		passive: opt(
+			bool({ description: "Report mode only. Enter context at the next normal boundary without attention." }),
+		),
 		checkInMinutes: CheckInParams,
 	},
 	{},
@@ -394,12 +473,8 @@ const SteerParams = obj(
 const AbortParams = obj(
 	{
 		sessionId: str({ minLength: 1 }),
-		background: opt(
-			bool({ description: "Also stop background work such as anchors and reporters." }),
-		),
-		timerId: opt(
-			int({ minimum: 1, description: "Timer ID from agent_status; cancels only that scheduled input." }),
-		),
+		background: opt(bool({ description: "Also stop background work such as anchors and reporters." })),
+		timerId: opt(int({ minimum: 1, description: "Timer ID from agent_status; cancels only that scheduled input." })),
 		release: opt(bool({ description: "Request host retirement after abort." })),
 	},
 	{},
@@ -433,9 +508,7 @@ const ConfigureParams = obj(
 		preset: PresetParameter,
 		sessionId: str({ minLength: 1 }),
 		name: opt(str({ description: "Owner-visible name; stored by the session host." })),
-		model: opt(
-			str({ minLength: 3, description: MODEL_SELECTION_GUIDANCE }),
-		),
+		model: opt(str({ minLength: 3, description: MODEL_SELECTION_GUIDANCE })),
 		thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
 	},
 	{},
@@ -469,9 +542,7 @@ const ListParams = obj(
 				description: "Case-insensitive literal in stored ID, cwd, name, first user text, handle, or role.",
 			}),
 		),
-		cwd: opt(
-			str({ minLength: 1, maxLength: 4096, description: "Exact absolute working directory filter." }),
-		),
+		cwd: opt(str({ minLength: 1, maxLength: 4096, description: "Exact absolute working directory filter." })),
 		limit: opt(int({ minimum: 1, maximum: 20 })),
 		cursor: opt(str({ minLength: 1, maxLength: 1024 })),
 	},
@@ -497,10 +568,23 @@ const InspectParams = obj(
 		query: opt(str({ minLength: 1 })),
 		source: opt(StringEnum(["user", "assistant", "toolResult", "summary", "custom"])),
 		submissionId: opt(PositiveId),
-		requestId: opt(str({ minLength: 1, description: "Native request ID within the selected conversation; result view only." })),
+		requestId: opt(
+			str({ minLength: 1, description: "Native request ID within the selected conversation; result view only." }),
+		),
 		operationId: opt(str({ minLength: 1 })),
-		receiptCursor: opt(str({ minLength: 1, maxLength: 2048, description: "Recipient-reference continuation from result receiptGroup.next; separate from answer offset." })),
-		finalReport: opt(bool({ description: "Result view only: page the retained final report of the selected input's declared work instead of its answer; offset continues it." })),
+		receiptCursor: opt(
+			str({
+				minLength: 1,
+				maxLength: 2048,
+				description: "Recipient-reference continuation from result receiptGroup.next; separate from answer offset.",
+			}),
+		),
+		finalReport: opt(
+			bool({
+				description:
+					"Result view only: page the retained final report of the selected input's declared work instead of its answer; offset continues it.",
+			}),
+		),
 	},
 	{},
 );
@@ -519,9 +603,7 @@ const PlaceParams = obj(
 		preset: PresetParameter,
 		model: opt(str({ minLength: 3, description: MODEL_SELECTION_GUIDANCE })),
 		thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
-		area: opt(
-			str({ description: "Directory the owner covers. Default: the calling conversation's cwd." }),
-		),
+		area: opt(str({ description: "Directory the owner covers. Default: the calling conversation's cwd." })),
 		topic: opt(str({ description: "What the owner is for; stored as its name." })),
 		prompt: opt(str({ description: "Work to deliver to the owner." })),
 		checkInMinutes: CheckInParams,
@@ -566,11 +648,19 @@ const SECTION_PREAMBLE = [
 ];
 
 /** Store the final report of one stopped item as terminal when the same abort stopped its recipient. */
-async function withholdStoppedReport(tx: Durable.Tx, item: OpenWorkView, stoppedRecipient: (recipient: string) => boolean): Promise<void> {
+async function withholdStoppedReport(
+	tx: Durable.Tx,
+	item: OpenWorkView,
+	stoppedRecipient: (recipient: string) => boolean,
+): Promise<void> {
 	const requestId = item.close?.reportRequestId;
 	if (requestId === undefined || !stoppedRecipient(item.replyTo)) return;
 	const row = await retainedReportRequest(tx, item.replyTo, requestId);
-	if (row !== undefined && !row.acknowledged) await storeDeliveryRow(tx, "report", { ...row, delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" } });
+	if (row !== undefined && !row.acknowledged)
+		await storeDeliveryRow(tx, "report", {
+			...row,
+			delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" },
+		});
 }
 
 /** Apply this slice's exposure table to one native registration. */
@@ -598,12 +688,25 @@ export function createAgentContribution(options: AgentContributionOptions): Agen
 }
 
 /** Fleet observation stays local; no host operation or remote forwarding participates. */
-async function fleetObservation(catalogRoot: string | undefined, sessionId: string | undefined, callerId: string, created?: CreatedAgents, selection: FleetSelection = {}) {
-	const effort = { callerId, created: created?.agents.map((agent) => agent.identity) ?? [], omitted: created?.omitted ?? 0 };
+async function fleetObservation(
+	catalogRoot: string | undefined,
+	sessionId: string | undefined,
+	callerId: string,
+	created?: CreatedAgents,
+	selection: FleetSelection = {},
+) {
+	const effort = {
+		callerId,
+		created: created?.agents.map((agent) => agent.identity) ?? [],
+		omitted: created?.omitted ?? 0,
+	};
 	try {
 		if (sessionId !== undefined) throw new Error("Fleet status describes the local catalog; omit sessionId");
 		if (!catalogRoot) throw new Error("Fleet discovery requires a configured local catalog root");
-		const value = structuredObservation(StatusToolOutputSchema, await readFleetStatus(new AgentCatalog(dirname(catalogRoot)), { ...selection, effort })) as Record<string, JsonValue>;
+		const value = structuredObservation(
+			StatusToolOutputSchema,
+			await readFleetStatus(new AgentCatalog(dirname(catalogRoot)), { ...selection, effort }),
+		) as Record<string, JsonValue>;
 		return { ...nativeStructuredObservation(StatusToolOutputSchema, value, JSON.stringify(value)), details: value };
 	} catch (error) {
 		return errorResult(`Fleet status failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -615,13 +718,27 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const dispatch = options.dispatch;
 	const locations = createPrimaryLocationResolver();
 	const effortCatalog = host.catalogRoot === undefined ? undefined : new AgentCatalog(dirname(host.catalogRoot));
-	const effortResources: EffortReadResources | undefined = effortCatalog === undefined ? undefined : { catalog: effortCatalog, locations };
+	const effortResources: EffortReadResources | undefined =
+		effortCatalog === undefined ? undefined : { catalog: effortCatalog, locations };
 	const registrationPreferences = readAgentPreferences(host.agentDir, host.services.modelRuntime);
-	const presetParams = <T extends typeof SpawnParams | typeof ConfigureParams | typeof PlaceParams>(params: T): T => ({ ...params, properties: { ...(params.properties as Record<string, Schema>), preset: presetParameter(registrationPreferences).schema } });
-	const preferenceSnapshot = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context): Promise<PreferenceSnapshot> => {
+	const presetParams = <T extends typeof SpawnParams | typeof ConfigureParams | typeof PlaceParams>(params: T): T => ({
+		...params,
+		properties: {
+			...(params.properties as Record<string, Schema>),
+			preset: presetParameter(registrationPreferences).schema,
+		},
+	});
+	const preferenceSnapshot = async (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+	): Promise<PreferenceSnapshot> => {
 		const retained = await api.memo("agent-preferences", context);
 		if (retained !== undefined) return retained as unknown as PreferenceSnapshot;
-		return await api.memo("agent-preferences", JSON.parse(JSON.stringify(readAgentPreferences(host.agentDir, host.services.modelRuntime))), context) as unknown as PreferenceSnapshot;
+		return (await api.memo(
+			"agent-preferences",
+			JSON.parse(JSON.stringify(readAgentPreferences(host.agentDir, host.services.modelRuntime))),
+			context,
+		)) as unknown as PreferenceSnapshot;
 	};
 
 	/** Resolve an external identity against this storage. */
@@ -691,83 +808,175 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		try {
 			const value = await dispatch(method, params);
 			const structured = structuredObservation(schema, value) as Record<string, JsonValue>;
-			return { ...nativeStructuredObservation(schema, structured, method === "inspect" ? readableControlText(structured) : controlText(structured)), details: structured };
+			return {
+				...nativeStructuredObservation(
+					schema,
+					structured,
+					method === "inspect" ? readableControlText(structured) : controlText(structured),
+				),
+				details: structured,
+			};
 		} catch (error) {
 			return errorResult(`${failure}: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	};
 
 	const RunControl = agentRunControlDoc(durable);
-	const rememberRunInputs = (api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => api.commit(async tx => {
-		const live = await tx.doc(durable.LiveDoc, api.conversationId);
-		const state = await tx.doc(RunControl, api.conversationId, String(api.taskId), null);
-		if (!state.recorded && live.run) { state.recorded = true; state.inputs = live.run.inputs.slice(0, 200); state.complete = live.run.inputs.length <= 200; }
-		return undefined;
-	}, context);
-	const retainDispatch = (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, result?: ResultReference | null, response?: Record<string, JsonValue>, placeArea?: string) => api.commit(async tx => {
-		const state = await tx.doc(RunControl, api.conversationId, String(api.taskId), null);
-		state.dispatch = result === undefined ? "pending" : "confirmed";
-		if (result !== undefined) state.result = result;
-		if (response !== undefined) state.response = response;
-		if (placeArea !== undefined) state.placeArea = placeArea;
-		return undefined;
-	}, context);
+	const rememberRunInputs = (api: Durable.ToolExecutionApi<ControlDetails>, context: Context) =>
+		api.commit(async (tx) => {
+			const live = await tx.doc(durable.LiveDoc, api.conversationId);
+			const state = await tx.doc(RunControl, api.conversationId, String(api.taskId), null);
+			if (!state.recorded && live.run) {
+				state.recorded = true;
+				state.inputs = live.run.inputs.slice(0, 200);
+				state.complete = live.run.inputs.length <= 200;
+			}
+			return undefined;
+		}, context);
+	const retainDispatch = (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+		result?: ResultReference | null,
+		response?: Record<string, JsonValue>,
+		placeArea?: string,
+	) =>
+		api.commit(async (tx) => {
+			const state = await tx.doc(RunControl, api.conversationId, String(api.taskId), null);
+			state.dispatch = result === undefined ? "pending" : "confirmed";
+			if (result !== undefined) state.result = result;
+			if (response !== undefined) state.response = response;
+			if (placeArea !== undefined) state.placeArea = placeArea;
+			return undefined;
+		}, context);
 
 	type DispatchCapture = { api: Durable.ToolExecutionApi<ControlDetails>; context: Context };
-	const isInputDispatch = (method: AgentControlMethod, params: Readonly<Record<string, unknown>>) => method === "submit" || method === "task-submit" || (method === "resolve-agent" || method === "place") && params.prompt !== undefined;
+	const isInputDispatch = (method: AgentControlMethod, params: Readonly<Record<string, unknown>>) =>
+		method === "submit" ||
+		method === "task-submit" ||
+		((method === "resolve-agent" || method === "place") && params.prompt !== undefined);
 	const retainedPlace = async (capture: DispatchCapture, params: Readonly<Record<string, unknown>>) => {
-		const state = await capture.api.snapshot(RunControl, capture.api.conversationId, String(capture.api.taskId), capture.context);
+		const state = await capture.api.snapshot(
+			RunControl,
+			capture.api.conversationId,
+			String(capture.api.taskId),
+			capture.context,
+		);
 		if (state?.dispatch !== "confirmed") return undefined;
 		if (!state.response || !state.result) throw new Error("Confirmed place dispatch has no retained admission");
 		const area = state.placeArea;
-		if (area !== undefined && (typeof area !== "string" || !isAbsolute(area))) throw new Error("Confirmed place dispatch has an invalid retained canonical area");
+		if (area !== undefined && (typeof area !== "string" || !isAbsolute(area)))
+			throw new Error("Confirmed place dispatch has an invalid retained canonical area");
 		dispatchFacts("place", params, state.response);
 		const reference = state.response.result as ResultReference;
-		if (reference.sessionId !== state.result.sessionId || reference.submissionId !== state.result.submissionId || reference.requestId !== state.result.requestId)
+		if (
+			reference.sessionId !== state.result.sessionId ||
+			reference.submissionId !== state.result.submissionId ||
+			reference.requestId !== state.result.requestId
+		)
 			throw new Error("Retained place references disagree");
-		return { area, sessionId: reference.sessionId, result: JSON.parse(JSON.stringify(state.response)) as Record<string, JsonValue> };
+		return {
+			area,
+			sessionId: reference.sessionId,
+			result: JSON.parse(JSON.stringify(state.response)) as Record<string, JsonValue>,
+		};
 	};
 	/**
 	 * Continuity facts of the calling conversation's outgoing requests. A fact that cannot be
 	 * written becomes a diagnostic; it never fails the admission it describes.
 	 */
-	const continuityFact = async (api: Pick<Durable.ToolExecutionApi<ControlDetails>, "commit" | "diagnostic">, context: Context, write: (tx: Durable.Tx) => Promise<unknown>): Promise<void> => {
-		try { await api.commit(async (tx) => { await write(tx); return undefined; }, context); }
-		catch (error) {
+	const continuityFact = async (
+		api: Pick<Durable.ToolExecutionApi<ControlDetails>, "commit" | "diagnostic">,
+		context: Context,
+		write: (tx: Durable.Tx) => Promise<unknown>,
+	): Promise<void> => {
+		try {
+			await api.commit(async (tx) => {
+				await write(tx);
+				return undefined;
+			}, context);
+		} catch (error) {
 			if (context.abortSignal?.aborted) throw error;
-			api.diagnostic({ severity: "error", message: `Continuity fact not recorded: ${error instanceof Error ? error.message : String(error)}` });
+			api.diagnostic({
+				severity: "error",
+				message: `Continuity fact not recorded: ${error instanceof Error ? error.message : String(error)}`,
+			});
 		}
 	};
 	/** The request key known before a dispatch to a named target; a handle or a new agent has none. */
-	const outgoingRequest = (api: Durable.ToolExecutionApi<ControlDetails>, method: AgentControlMethod, params: Readonly<Record<string, unknown>>): OutgoingRequest | undefined => {
-		if ((method !== "submit" && method !== "task-submit") || typeof params.sessionId !== "string" || typeof params.requestId !== "string") return undefined;
-		return { sessionId: params.sessionId, requestId: params.requestId, replyTo: typeof params.replyTo === "string" ? params.replyTo : identity(api.conversationId) };
+	const outgoingRequest = (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		method: AgentControlMethod,
+		params: Readonly<Record<string, unknown>>,
+	): OutgoingRequest | undefined => {
+		if (
+			(method !== "submit" && method !== "task-submit") ||
+			typeof params.sessionId !== "string" ||
+			typeof params.requestId !== "string"
+		)
+			return undefined;
+		return {
+			sessionId: params.sessionId,
+			requestId: params.requestId,
+			replyTo: typeof params.replyTo === "string" ? params.replyTo : identity(api.conversationId),
+		};
 	};
 	/** Retain the pending dispatch and the request key before the target can admit anything. */
-	const beginInputDispatch = async (capture: DispatchCapture, method: AgentControlMethod, params: Readonly<Record<string, unknown>>): Promise<OutgoingRequest | undefined> => {
+	const beginInputDispatch = async (
+		capture: DispatchCapture,
+		method: AgentControlMethod,
+		params: Readonly<Record<string, unknown>>,
+	): Promise<OutgoingRequest | undefined> => {
 		const outgoing = outgoingRequest(capture.api, method, params);
 		await rememberRunInputs(capture.api, capture.context);
 		await retainDispatch(capture.api, capture.context);
-		if (outgoing !== undefined) await continuityFact(capture.api, capture.context, (tx) => recordRequested(tx, capture.api.conversationId, outgoing));
+		if (outgoing !== undefined)
+			await continuityFact(capture.api, capture.context, (tx) =>
+				recordRequested(tx, capture.api.conversationId, outgoing),
+			);
 		return outgoing;
 	};
 	/** The receipt names the admitted identity; a request without a prior key is recorded under it. */
-	const admittedFact = async (capture: DispatchCapture, outgoing: OutgoingRequest | undefined, admitted: ResultReference | undefined): Promise<void> => {
-		const request = outgoing ?? (admitted?.requestId === undefined ? undefined : { sessionId: admitted.sessionId, requestId: admitted.requestId, replyTo: identity(capture.api.conversationId) });
-		if (request !== undefined) await continuityFact(capture.api, capture.context, (tx) => recordAdmitted(tx, capture.api.conversationId, request, admitted));
+	const admittedFact = async (
+		capture: DispatchCapture,
+		outgoing: OutgoingRequest | undefined,
+		admitted: ResultReference | undefined,
+	): Promise<void> => {
+		const request =
+			outgoing ??
+			(admitted?.requestId === undefined
+				? undefined
+				: {
+						sessionId: admitted.sessionId,
+						requestId: admitted.requestId,
+						replyTo: identity(capture.api.conversationId),
+					});
+		if (request !== undefined)
+			await continuityFact(capture.api, capture.context, (tx) =>
+				recordAdmitted(tx, capture.api.conversationId, request, admitted),
+			);
 	};
-	const dispatchValue = async (perform: AgentControlDispatch, method: AgentControlMethod, params: Readonly<Record<string, unknown>>, capture?: DispatchCapture): Promise<unknown> => {
+	const dispatchValue = async (
+		perform: AgentControlDispatch,
+		method: AgentControlMethod,
+		params: Readonly<Record<string, unknown>>,
+		capture?: DispatchCapture,
+	): Promise<unknown> => {
 		const input = capture && isInputDispatch(method, params);
 		const outgoing = input ? await beginInputDispatch(capture, method, params) : undefined;
 		// A dispatch error does not prove that the target admitted nothing, so the request then stays listed as unconfirmed.
 		const value = await perform(method, params);
-		const placeArea = method === "place" ? params.area as string : undefined;
-		if (method === "submit" || method === "task-submit" || input && method === "place") dispatchFacts(method, params, value);
+		const placeArea = method === "place" ? (params.area as string) : undefined;
+		if (method === "submit" || method === "task-submit" || (input && method === "place"))
+			dispatchFacts(method, params, value);
 		if (input) {
 			const facts = structuredObservation(DispatchOutputSchema, value) as { result?: ResultReference };
-			await retainDispatch(capture.api, capture.context, facts.result ?? null,
-				method === "place" ? JSON.parse(JSON.stringify(value)) as Record<string, JsonValue> : undefined,
-				placeArea);
+			await retainDispatch(
+				capture.api,
+				capture.context,
+				facts.result ?? null,
+				method === "place" ? (JSON.parse(JSON.stringify(value)) as Record<string, JsonValue>) : undefined,
+				placeArea,
+			);
 			await admittedFact(capture, outgoing, facts.result);
 		}
 		return value;
@@ -785,7 +994,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			const raw = await dispatchValue(dispatch, method, params, capture);
 			const value = method === "report" ? projectReportReceipt(raw) : raw;
 			const shown = controlText(value);
-			return textResult(method === "report" ? `${shown}\n${REPORT_DELIVERY_BOUNDARY}` : shown, value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {});
+			return textResult(
+				method === "report" ? `${shown}\n${REPORT_DELIVERY_BOUNDARY}` : shown,
+				value !== null && typeof value === "object" && !Array.isArray(value)
+					? (value as Record<string, JsonValue>)
+					: {},
+			);
 		} catch (error) {
 			return errorResult(`${failure}: ${error instanceof Error ? error.message : String(error)}`);
 		}
@@ -803,7 +1017,13 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const Children = agentChildrenDoc(durable);
 	const ForeignSpawnReceipt = durable.defineDocFamily<{ digest?: string; outcome?: string }, null>({
-		kind: "agent.foreign-spawn-receipt", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false,
+		kind: "agent.foreign-spawn-receipt",
+		family: true,
+		version: 1,
+		scope: "conversation",
+		history: "latest",
+		fork: "initial",
+		checkpointWhen: () => false,
 		initial: () => ({}),
 	});
 
@@ -847,13 +1067,20 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	});
 
 	/** An unplaced input waits in the recipient's inbox until its current tool round ends. */
-	const placementText = (placement: Placement): string => placement === "unplaced"
-		? "\nPlacement: unplaced. The recipient is busy; the input is placed when its current tool round ends."
-		: placement === "withdrawn"
-			? "\nPlacement: withdrawn. The input is not in the recipient's inbox and not in its transcript: it left the inbox before placement. Send it again if it is still needed."
-			: "\nPlacement: placed.";
+	const placementText = (placement: Placement): string =>
+		placement === "unplaced"
+			? "\nPlacement: unplaced. The recipient is busy; the input is placed when its current tool round ends."
+			: placement === "withdrawn"
+				? "\nPlacement: withdrawn. The input is not in the recipient's inbox and not in its transcript: it left the inbox before placement. Send it again if it is still needed."
+				: "\nPlacement: placed.";
 
-	const LocalAdmission = durable.defineDoc<{ armed: boolean }>({ kind: "agent.local-admission", version: 1, scope: "task", checkpointWhen: () => false, initial: () => ({ armed: false }) });
+	const LocalAdmission = durable.defineDoc<{ armed: boolean }>({
+		kind: "agent.local-admission",
+		version: 1,
+		scope: "task",
+		checkpointWhen: () => false,
+		initial: () => ({ armed: false }),
+	});
 
 	type LocalAdmissionApi = {
 		readonly conversationId: Durable.ConversationId;
@@ -861,63 +1088,174 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		conversation(id: Durable.ConversationId, context: Context): Promise<Durable.ConversationHandle | undefined>;
 		commit(change: (tx: Durable.Tx) => Promise<undefined>, context: Context): Promise<unknown>;
 	};
-	const admitLocal = async (api: LocalAdmissionApi, context: Context, reporterTaskId: Durable.TaskId, input: ReporterInput, report: (error: unknown) => void, now: number): Promise<{ submission: Durable.Submission; result: ResultReference; placement: Placement }> => {
+	const admitLocal = async (
+		api: LocalAdmissionApi,
+		context: Context,
+		reporterTaskId: Durable.TaskId,
+		input: ReporterInput,
+		report: (error: unknown) => void,
+		now: number,
+	): Promise<{ submission: Durable.Submission; result: ResultReference; placement: Placement }> => {
 		const conversation = await api.conversation(input.conversationId, context);
 		if (conversation === undefined) throw new Error("The result producer conversation is missing");
-		const request = { requestId: `agent-deliver:${reporterTaskId}`, requester: identity(api.conversationId), replyTo: identity(input.reportTo ?? api.conversationId), origin: "model" as const };
-		const outgoing: OutgoingRequest = { sessionId: identity(input.conversationId), requestId: request.requestId, replyTo: request.replyTo };
+		const request = {
+			requestId: `agent-deliver:${reporterTaskId}`,
+			requester: identity(api.conversationId),
+			replyTo: identity(input.reportTo ?? api.conversationId),
+			origin: "model" as const,
+		};
+		const outgoing: OutgoingRequest = {
+			sessionId: identity(input.conversationId),
+			requestId: request.requestId,
+			replyTo: request.replyTo,
+		};
 		// A continuity fact shares the admission's transaction; one that cannot be written is reported and never fails the admission.
-		const fact = async (write: () => Promise<unknown>): Promise<void> => { try { await write(); } catch (error) { report(error); } };
+		const fact = async (write: () => Promise<unknown>): Promise<void> => {
+			try {
+				await write();
+			} catch (error) {
+				report(error);
+			}
+		};
 		await reconcileProfile(api, input.conversationId, context, report, host.storageId);
 		let recoveryOf: string | undefined;
 		let taskSender: TaskInputSender | undefined;
 		let deduped = false;
 		await api.commit(async (tx) => {
-			deduped = await tx.submissionByRequest(input.conversationId, request.requestId) !== undefined;
+			deduped = (await tx.submissionByRequest(input.conversationId, request.requestId)) !== undefined;
 			taskSender = taskInputSender(request.requester, (await tx.doc(AgentMetaDoc, api.conversationId)).name);
 			recoveryOf = await captureProviderRecovery(tx, input.conversationId, request.requestId);
 			await fact(() => recordRequested(tx, api.conversationId, outgoing));
-			await recordInputProvenance(tx, { conversationId: input.conversationId, requestId: request.requestId, classification: "explicit", sender: request.requester });
+			await recordInputProvenance(tx, {
+				conversationId: input.conversationId,
+				requestId: request.requestId,
+				classification: "explicit",
+				sender: request.requester,
+			});
 			return undefined;
 		}, context);
 		const inputClass = sentInputClass("model", input.whenBusy);
-		const draft = { type: "input" as const, content: input.message, whenBusy: placementMode(input.whenBusy), requestId: request.requestId, entry: inputEntry("model", request.requester, { class: inputClass, sender: request.requester, requestId: request.requestId }) };
+		const draft = {
+			type: "input" as const,
+			content: input.message,
+			whenBusy: placementMode(input.whenBusy),
+			requestId: request.requestId,
+			entry: inputEntry("model", request.requester, {
+				class: inputClass,
+				sender: request.requester,
+				requestId: request.requestId,
+			}),
+		};
 		// One commit admits the input with its delivery intent, request route, check-in and unplaced row; a refusal stores none of them.
-		await api.commit(async (tx) => {
-			const retain = await prepareQueuedInputs(tx, input.conversationId, identity(input.conversationId));
-			const admission = await tx.doc(LocalAdmission, reporterTaskId);
-			let admitted: Durable.SubmissionId | undefined;
-			await recordDeliveryIntent(tx, input.conversationId, { requestId: request.requestId, ownerId: request.replyTo, message: input.message, whenBusy: input.whenBusy, origin: request.origin, senderIdentity: request.requester, requestContext: request, checkInMinutes: 0 }, now, "retained", async () => (admitted = await conversation.submit(tx, draft)));
-			if (admitted === undefined) throw new Error("The input admission did not run");
-			await linkProviderRecovery(tx, admitted, recoveryOf);
-			await retain([{ submissionId: admitted, requestId: request.requestId, admittedAt: now, label: { class: inputClass, sender: request.requester } }]);
-			if (admission.armed) return undefined;
-			await recordAdmissionMeta(tx, input.conversationId, input.message);
-			await createCheckIn(tx, { conversationId: input.conversationId, requestId: request.requestId, ownerId: request.replyTo, senderIdentity: identity(input.conversationId), message: input.message, whenBusy: input.whenBusy, origin: "model", admittedAt: now, requester: request.requester }, api.registry.task(CheckInTask.definition.name) === undefined ? 0 : input.checkInMinutes ?? 0);
-			admission.armed = true;
-			return undefined;
-		}, context).catch(async (error: unknown) => {
-			await api.commit(async (tx) => {
-				await forgetFailedAdmission(tx, input.conversationId, request.requestId);
-				// No submission under the request ID proves that nothing was admitted.
-				if (await tx.submissionByRequest(input.conversationId, request.requestId) === undefined) await fact(() => recordRefused(tx, api.conversationId, outgoing));
+		await api
+			.commit(async (tx) => {
+				const retain = await prepareQueuedInputs(tx, input.conversationId, identity(input.conversationId));
+				const admission = await tx.doc(LocalAdmission, reporterTaskId);
+				let admitted: Durable.SubmissionId | undefined;
+				await recordDeliveryIntent(
+					tx,
+					input.conversationId,
+					{
+						requestId: request.requestId,
+						ownerId: request.replyTo,
+						message: input.message,
+						whenBusy: input.whenBusy,
+						origin: request.origin,
+						senderIdentity: request.requester,
+						requestContext: request,
+						checkInMinutes: 0,
+					},
+					now,
+					"retained",
+					async () => (admitted = await conversation.submit(tx, draft)),
+				);
+				if (admitted === undefined) throw new Error("The input admission did not run");
+				await linkProviderRecovery(tx, admitted, recoveryOf);
+				await retain([
+					{
+						submissionId: admitted,
+						requestId: request.requestId,
+						admittedAt: now,
+						label: { class: inputClass, sender: request.requester },
+					},
+				]);
+				if (admission.armed) return undefined;
+				await recordAdmissionMeta(tx, input.conversationId, input.message);
+				await createCheckIn(
+					tx,
+					{
+						conversationId: input.conversationId,
+						requestId: request.requestId,
+						ownerId: request.replyTo,
+						senderIdentity: identity(input.conversationId),
+						message: input.message,
+						whenBusy: input.whenBusy,
+						origin: "model",
+						admittedAt: now,
+						requester: request.requester,
+					},
+					api.registry.task(CheckInTask.definition.name) === undefined ? 0 : (input.checkInMinutes ?? 0),
+				);
+				admission.armed = true;
 				return undefined;
-			}, BACKGROUND_CONTEXT);
-			throw error;
-		});
+			}, context)
+			.catch(async (error: unknown) => {
+				await api.commit(async (tx) => {
+					await forgetFailedAdmission(tx, input.conversationId, request.requestId);
+					// No submission under the request ID proves that nothing was admitted.
+					if ((await tx.submissionByRequest(input.conversationId, request.requestId)) === undefined)
+						await fact(() => recordRefused(tx, api.conversationId, outgoing));
+					return undefined;
+				}, BACKGROUND_CONTEXT);
+				throw error;
+			});
 		// The request ID is known now, so this returns the admitted submission without another write.
 		const submission = await conversation.submit(draft, context);
 		await api.commit(async (tx) => {
-			const capture = await prepareAdmittedCapture(tx, host.storageId, input.conversationId, request.requestId, submission.id, undefined, () => now, deduped, taskSender);
-			await recordInputProvenance(tx, { conversationId: input.conversationId, requestId: request.requestId, classification: "explicit", sender: request.requester });
+			const capture = await prepareAdmittedCapture(
+				tx,
+				host.storageId,
+				input.conversationId,
+				request.requestId,
+				submission.id,
+				undefined,
+				() => now,
+				deduped,
+				taskSender,
+			);
+			await recordInputProvenance(tx, {
+				conversationId: input.conversationId,
+				requestId: request.requestId,
+				classification: "explicit",
+				sender: request.requester,
+			});
 			await capture();
-			await fact(() => recordAdmitted(tx, api.conversationId, outgoing, { sessionId: outgoing.sessionId, requestId: outgoing.requestId, submissionId: submission.id }));
+			await fact(() =>
+				recordAdmitted(tx, api.conversationId, outgoing, {
+					sessionId: outgoing.sessionId,
+					requestId: outgoing.requestId,
+					submissionId: submission.id,
+				}),
+			);
 			return undefined;
 		}, context);
 		const status = await submission.status(context);
-		if (status.id !== submission.id || status.requestId !== request.requestId || status.conversationId !== input.conversationId) throw new Error("Native admission identifiers disagree");
+		if (
+			status.id !== submission.id ||
+			status.requestId !== request.requestId ||
+			status.conversationId !== input.conversationId
+		)
+			throw new Error("Native admission identifiers disagree");
 		const placement: Placement = placementOf(status, input.conversationId);
-		return { submission, result: admittedResult(identity(input.conversationId), { submissionId: submission.id, conversationId: status.conversationId, requestId: status.requestId }, request.requestId), placement };
+		return {
+			submission,
+			result: admittedResult(
+				identity(input.conversationId),
+				{ submissionId: submission.id, conversationId: status.conversationId, requestId: status.requestId },
+				request.requestId,
+			),
+			placement,
+		};
 	};
 
 	const Reporter = durable.defineTask<ReporterInput, ReporterState, null>({
@@ -926,7 +1264,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		initial: () => ({ phase: "deliver" }),
 		phases: {
 			deliver: async (reporter, runtime, context) => {
-				const { submission } = await admitLocal(runtime, context, reporter.id, reporter.input, (error) => runtime.report(error), runtime.now());
+				const { submission } = await admitLocal(
+					runtime,
+					context,
+					reporter.id,
+					reporter.input,
+					(error) => runtime.report(error),
+					runtime.now(),
+				);
 				await submission.wait(context);
 				await runtime.commit(async (tx) => {
 					await cleanupRequestContexts(tx, reporter.input.conversationId);
@@ -975,15 +1320,25 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (model === undefined) return { kind: "error", message: "The owner conversation has no model configured." };
 		const requested = thinkingLevelOverride ?? parent.thinkingLevel;
 		const catalog = host.services.modelRuntime.getModel(model.provider, model.modelId);
-		if (catalog === undefined) return { kind: "error", message: `Model is not in the configured catalog: ${model.provider}/${model.modelId}` };
+		if (catalog === undefined)
+			return { kind: "error", message: `Model is not in the configured catalog: ${model.provider}/${model.modelId}` };
 		const effective = clampThinkingLevel(catalog, requested);
 		return {
 			kind: "ok",
-			values: { model, thinkingLevel: effective, ...(selection === undefined ? {} : { selection: effectiveExecutionSelection(selection, effective) }), ...(effective === requested ? {} : { thinking: { requested, effective } }) },
+			values: {
+				model,
+				thinkingLevel: effective,
+				...(selection === undefined ? {} : { selection: effectiveExecutionSelection(selection, effective) }),
+				...(effective === requested ? {} : { thinking: { requested, effective } }),
+			},
 		};
 	};
 
-	const initializeChildProfile = async (tx: Durable.Tx, conversationId: Durable.ConversationId, role: string | undefined): Promise<void> => {
+	const initializeChildProfile = async (
+		tx: Durable.Tx,
+		conversationId: Durable.ConversationId,
+		role: string | undefined,
+	): Promise<void> => {
 		await initializeProfile(tx, conversationId, host.storageId);
 		if (role === undefined) return;
 		const profile = await tx.doc(ProfileDoc, conversationId);
@@ -1014,7 +1369,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			thinkingLevel: parent.thinkingLevel,
 			...(cwd === undefined ? {} : { cwd }),
 		};
-		const child = { ...await createChild(tx, api.conversationId, args.name ?? "agent", api.taskId, change), ...selectionSnapshot(parent), ...(parent.thinking === undefined ? {} : { thinking: parent.thinking }) };
+		const child = {
+			...(await createChild(tx, api.conversationId, args.name ?? "agent", api.taskId, change)),
+			...selectionSnapshot(parent),
+			...(parent.thinking === undefined ? {} : { thinking: parent.thinking }),
+		};
 		const meta = await tx.doc(AgentMetaDoc, child.conversationId);
 		meta.name = args.name ?? "agent";
 		meta.owner = identity(api.conversationId);
@@ -1023,7 +1382,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (args.prompt !== undefined) {
 			const reporter = await tx.createTask(
 				Reporter,
-				reporterInput(child.name, child.conversationId, args.prompt, "followUp", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir)),
+				reporterInput(
+					child.name,
+					child.conversationId,
+					args.prompt,
+					"followUp",
+					undefined,
+					checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir),
+				),
 				{ ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true },
 			);
 			registry.reporters[String(api.taskId)] = reporter;
@@ -1031,22 +1397,61 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return { kind: "local", child, deduped: false };
 	};
 
-	const retainedForeignSpawn = (child: AgentChild, sessionId: string, prompt: string | undefined): { kind: "foreign"; child: AgentChild; sessionId: string; deduped: boolean } | { kind: "error"; message: string } => {
-		if (prompt !== undefined && child.result === undefined) return { kind: "error", message: "The retained prompted dispatch has no result reference" };
+	const retainedForeignSpawn = (
+		child: AgentChild,
+		sessionId: string,
+		prompt: string | undefined,
+	):
+		| { kind: "foreign"; child: AgentChild; sessionId: string; deduped: boolean }
+		| { kind: "error"; message: string } => {
+		if (prompt !== undefined && child.result === undefined)
+			return { kind: "error", message: "The retained prompted dispatch has no result reference" };
 		return { kind: "foreign", child, sessionId, deduped: true };
 	};
 
-	type ForeignCreationOutcome = { kind: "foreign"; child: AgentChild; sessionId: string; deduped: boolean } | { kind: "error"; message: string };
-	const foreignSpawnDigest = (api: Durable.ToolExecutionApi<ControlDetails>, args: SpawnInput): string => createHash("sha256").update(JSON.stringify([
-		identity(api.conversationId), args.handle, args.cwd, args.name, args.role, args.prompt, args.preset, args.model, args.thinkingLevel, args.checkInMinutes,
-	])).digest("hex");
-	const retainForeignCreation = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, args: SpawnInput, cwd: string, result: unknown): Promise<ForeignCreationOutcome> => {
+	type ForeignCreationOutcome =
+		| { kind: "foreign"; child: AgentChild; sessionId: string; deduped: boolean }
+		| { kind: "error"; message: string };
+	const foreignSpawnDigest = (api: Durable.ToolExecutionApi<ControlDetails>, args: SpawnInput): string =>
+		createHash("sha256")
+			.update(
+				JSON.stringify([
+					identity(api.conversationId),
+					args.handle,
+					args.cwd,
+					args.name,
+					args.role,
+					args.prompt,
+					args.preset,
+					args.model,
+					args.thinkingLevel,
+					args.checkInMinutes,
+				]),
+			)
+			.digest("hex");
+	const retainForeignCreation = async (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+		args: SpawnInput,
+		cwd: string,
+		result: unknown,
+	): Promise<ForeignCreationOutcome> => {
 		const sessionId = sessionIdOf(result);
 		if (sessionId === undefined) return { kind: "error", message: "Host spawn returned no sessionId." };
 		const thinking = (result as { thinking?: { requested: string; effective: string } }).thinking;
 		let reference: ResultReference | undefined;
-		try { reference = args.prompt === undefined ? undefined : admittedResult(sessionId, (result as Record<string, unknown>).result, `spawn:${host.storageId}:${api.taskId}`); }
-		catch (error) { return { kind: "error", message: String(error) }; }
+		try {
+			reference =
+				args.prompt === undefined
+					? undefined
+					: admittedResult(
+							sessionId,
+							(result as Record<string, unknown>).result,
+							`spawn:${host.storageId}:${api.taskId}`,
+						);
+		} catch (error) {
+			return { kind: "error", message: String(error) };
+		}
 		if (args.prompt !== undefined) await retainDispatch(api, context, reference ?? null);
 		const digest = foreignSpawnDigest(api, args);
 		const describeCreation = () => {
@@ -1063,7 +1468,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		};
 		const outcome = await api.commit(async (tx): Promise<ForeignCreationOutcome> => {
 			const receipt = await tx.doc(ForeignSpawnReceipt, api.conversationId, String(api.taskId), null);
-			if (receipt.outcome !== undefined) return receipt.digest === digest ? (JSON.parse(receipt.outcome) as { outcome: ForeignCreationOutcome }).outcome : { kind: "error", message: "Spawn request ID belongs to different inputs" };
+			if (receipt.outcome !== undefined)
+				return receipt.digest === digest
+					? (JSON.parse(receipt.outcome) as { outcome: ForeignCreationOutcome }).outcome
+					: { kind: "error", message: "Spawn request ID belongs to different inputs" };
 			const registry = await tx.doc(Children, api.conversationId);
 			const created = describeCreation();
 			registry.children.push(created.child);
@@ -1073,7 +1481,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		}, context);
 		// The new agent has no identity before its creation, so its prompt has no record before the dispatch.
 		if (reference?.requestId !== undefined) {
-			const request = { sessionId: reference.sessionId, requestId: reference.requestId, replyTo: identity(api.conversationId) };
+			const request = {
+				sessionId: reference.sessionId,
+				requestId: reference.requestId,
+				replyTo: identity(api.conversationId),
+			};
 			await continuityFact(api, context, (tx) => recordAdmitted(tx, api.conversationId, request, reference));
 		}
 		return outcome;
@@ -1112,32 +1524,76 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return retainForeignCreation(api, context, args, cwd, result);
 	};
 
-	const foreignSpawnResult = (outcome: ForeignCreationOutcome, args: SpawnInput, cwd: string): Durable.ToolExecutionResult<ControlDetails> => {
+	const foreignSpawnResult = (
+		outcome: ForeignCreationOutcome,
+		args: SpawnInput,
+		cwd: string,
+	): Durable.ToolExecutionResult<ControlDetails> => {
 		if (outcome.kind === "error") return errorResult(outcome.message);
 		return textResult(
 			(outcome.deduped
 				? `Reused the agent created by this call: ${outcome.child.name} (${outcome.sessionId}).`
-				: `Spawned ${outcome.child.name} in ${cwd} as ${outcome.sessionId} with its own storage and host.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (outcome.child.result === undefined ? "" : `\nResult: ${JSON.stringify(outcome.child.result)}`) + thinkingNotice(outcome.child),
-			{ sessionId: outcome.sessionId, name: outcome.child.name, ...(outcome.child.selection === undefined ? {} : { selection: JSON.parse(JSON.stringify(outcome.child.selection)) }), ...thinkingFacts(outcome.child), ...(outcome.child.result === undefined ? {} : { result: outcome.child.result }) },
+				: `Spawned ${outcome.child.name} in ${cwd} as ${outcome.sessionId} with its own storage and host.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) +
+				(outcome.child.result === undefined ? "" : `\nResult: ${JSON.stringify(outcome.child.result)}`) +
+				thinkingNotice(outcome.child),
+			{
+				sessionId: outcome.sessionId,
+				name: outcome.child.name,
+				...(outcome.child.selection === undefined
+					? {}
+					: { selection: JSON.parse(JSON.stringify(outcome.child.selection)) }),
+				...thinkingFacts(outcome.child),
+				...(outcome.child.result === undefined ? {} : { result: outcome.child.result }),
+			},
 		);
 	};
 
-	const admissionOwner = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context): Promise<Durable.TaskId> => {
+	const admissionOwner = async (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+	): Promise<Durable.TaskId> => {
 		const reporter = (await api.snapshot(Children, api.conversationId, context))?.reporters[String(api.taskId)];
 		if (reporter === undefined) throw new Error("The prompted dispatch has no native admission owner");
 		return reporter as Durable.TaskId;
 	};
 
-	const localSpawn = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, args: SpawnInput, cwd: string | undefined): Promise<Awaited<ReturnType<typeof spawnLocalInCommit>>> => {
-		const retained = (await api.snapshot(Children, api.conversationId, context))?.children.find((child) => child.createdBy === api.taskId);
+	const localSpawn = async (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+		args: SpawnInput,
+		cwd: string | undefined,
+	): Promise<Awaited<ReturnType<typeof spawnLocalInCommit>>> => {
+		const retained = (await api.snapshot(Children, api.conversationId, context))?.children.find(
+			(child) => child.createdBy === api.taskId,
+		);
 		if (retained !== undefined) {
-			if (retained.conversationId === undefined || retained.anchorTaskId === undefined) return { kind: "error", message: "This call already created an agent in another storage." };
-			return { kind: "local", child: { ...retained, conversationId: retained.conversationId, anchorTaskId: retained.anchorTaskId }, deduped: true };
+			if (retained.conversationId === undefined || retained.anchorTaskId === undefined)
+				return { kind: "error", message: "This call already created an agent in another storage." };
+			return {
+				kind: "local",
+				child: { ...retained, conversationId: retained.conversationId, anchorTaskId: retained.anchorTaskId },
+				deduped: true,
+			};
 		}
-		const selection = resolveExecutionPreset(await preferenceSnapshot(api, context), args, {}, { creation: true, role: args.role !== undefined, checkIn: args.prompt !== undefined });
-		if (args.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined, "model", host.agentDir); selection.origins.checkInMinutes = "default"; }
-		if (selection.values.model === undefined || selection.values.thinkingLevel === undefined) throw new Error("Creation has no resolved model or thinking level");
-		const parent = await resolveChildAgent(api, context, selection.values.model, selection.values.thinkingLevel as ModelThinkingLevel, selection);
+		const selection = resolveExecutionPreset(
+			await preferenceSnapshot(api, context),
+			args,
+			{},
+			{ creation: true, role: args.role !== undefined, checkIn: args.prompt !== undefined },
+		);
+		if (args.prompt !== undefined && selection.values.checkInMinutes === undefined) {
+			selection.values.checkInMinutes = checkInMinutes(undefined, "model", host.agentDir);
+			selection.origins.checkInMinutes = "default";
+		}
+		if (selection.values.model === undefined || selection.values.thinkingLevel === undefined)
+			throw new Error("Creation has no resolved model or thinking level");
+		const parent = await resolveChildAgent(
+			api,
+			context,
+			selection.values.model,
+			selection.values.thinkingLevel as ModelThinkingLevel,
+			selection,
+		);
 		if (parent.kind === "error") return parent;
 		return api.commit((tx) => spawnLocalInCommit(tx, api, args, cwd, parent.values), context);
 	};
@@ -1151,12 +1607,41 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const outcome = await localSpawn(api, context, args, cwd);
 		if (outcome.kind === "error") return errorResult(outcome.message);
 		const child = outcome.child;
-		const admission = args.prompt === undefined ? undefined : await admitLocal(api, context, await admissionOwner(api, context), reporterInput(child.name, child.conversationId, args.prompt, "followUp", undefined, checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir)), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
+		const admission =
+			args.prompt === undefined
+				? undefined
+				: await admitLocal(
+						api,
+						context,
+						await admissionOwner(api, context),
+						reporterInput(
+							child.name,
+							child.conversationId,
+							args.prompt,
+							"followUp",
+							undefined,
+							checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir),
+						),
+						(error) => api.diagnostic({ severity: "error", message: String(error) }),
+						Date.now(),
+					);
 		return textResult(
 			(outcome.deduped
 				? `Reused the agent created by this call: ${child.name} (${identity(child.conversationId)}).`
-				: `Spawned ${child.name} as conversation ${identity(child.conversationId)} in your storage.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) + (admission === undefined ? "" : `\nResult: ${JSON.stringify(admission.result)}${placementText(admission.placement)}`) + thinkingNotice(child),
-			{ sessionId: identity(child.conversationId), conversationId: child.conversationId, name: child.name, anchorTaskId: child.anchorTaskId, ...selectionSnapshot(child), ...thinkingFacts(child), ...(admission === undefined ? {} : { result: admission.result, placement: admission.placement }) },
+				: `Spawned ${child.name} as conversation ${identity(child.conversationId)} in your storage.${args.prompt === undefined ? "" : " The prompt was admitted and the answer will report back."}`) +
+				(admission === undefined
+					? ""
+					: `\nResult: ${JSON.stringify(admission.result)}${placementText(admission.placement)}`) +
+				thinkingNotice(child),
+			{
+				sessionId: identity(child.conversationId),
+				conversationId: child.conversationId,
+				name: child.name,
+				anchorTaskId: child.anchorTaskId,
+				...selectionSnapshot(child),
+				...thinkingFacts(child),
+				...(admission === undefined ? {} : { result: admission.result, placement: admission.placement }),
+			},
 		);
 	};
 
@@ -1169,28 +1654,43 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		}
 	};
 
-	const spawnTool = { ...durable.defineTool({
-		name: "agent_spawn",
-		description:
-			"Create an agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts an agent in a new storage. Answers report back to you. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. Names may repeat.",
-		parameters: presetParams(SpawnParams),
-		replay: "safe",
-		execute: async (args: SpawnInput, api, context) => {
-			const receipt = await api.snapshot(ForeignSpawnReceipt, api.conversationId, String(api.taskId), context);
-			if (receipt?.outcome !== undefined) {
-				if (receipt.digest !== foreignSpawnDigest(api, args)) return errorResult("Spawn request ID belongs to different inputs");
-				const retained = JSON.parse(receipt.outcome) as { outcome: ForeignCreationOutcome; cwd: string };
-				return foreignSpawnResult(retained.outcome, args, retained.cwd);
-			}
-			await rememberRunInputs(api, context);
-			if (args.handle !== undefined) return dispatchControl("resolve-agent", { ...args, preferenceSnapshot: await preferenceSnapshot(api, context), origin: "model", senderIdentity: identity(api.conversationId), requestId: `resolve:${host.storageId}:${api.taskId}` }, "Handle resolution failed", { api, context });
-			const hostCwd = resolve(host.cwd);
-			const requestedCwd = args.cwd === undefined ? undefined : resolve(host.cwd, args.cwd);
-			return requestedCwd !== undefined && !sharesSpawnDirectory(requestedCwd, hostCwd)
-				? foreignSpawnResult(await spawnForeign(api, context, args, requestedCwd), args, requestedCwd)
-				: localSpawnResult(api, context, args, requestedCwd);
-		},
-	}) };
+	const spawnTool = {
+		...durable.defineTool({
+			name: "agent_spawn",
+			description:
+				"Create an agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts an agent in a new storage. Answers report back to you. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. Names may repeat.",
+			parameters: presetParams(SpawnParams),
+			replay: "safe",
+			execute: async (args: SpawnInput, api, context) => {
+				const receipt = await api.snapshot(ForeignSpawnReceipt, api.conversationId, String(api.taskId), context);
+				if (receipt?.outcome !== undefined) {
+					if (receipt.digest !== foreignSpawnDigest(api, args))
+						return errorResult("Spawn request ID belongs to different inputs");
+					const retained = JSON.parse(receipt.outcome) as { outcome: ForeignCreationOutcome; cwd: string };
+					return foreignSpawnResult(retained.outcome, args, retained.cwd);
+				}
+				await rememberRunInputs(api, context);
+				if (args.handle !== undefined)
+					return dispatchControl(
+						"resolve-agent",
+						{
+							...args,
+							preferenceSnapshot: await preferenceSnapshot(api, context),
+							origin: "model",
+							senderIdentity: identity(api.conversationId),
+							requestId: `resolve:${host.storageId}:${api.taskId}`,
+						},
+						"Handle resolution failed",
+						{ api, context },
+					);
+				const hostCwd = resolve(host.cwd);
+				const requestedCwd = args.cwd === undefined ? undefined : resolve(host.cwd, args.cwd);
+				return requestedCwd !== undefined && !sharesSpawnDirectory(requestedCwd, hostCwd)
+					? foreignSpawnResult(await spawnForeign(api, context, args, requestedCwd), args, requestedCwd)
+					: localSpawnResult(api, context, args, requestedCwd);
+			},
+		}),
+	};
 
 	const sendReporter = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
@@ -1207,18 +1707,35 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			const key = String(api.taskId);
 			const existing = registry.reporters[key];
 			if (existing !== undefined) return { reporterTaskId: existing };
-			const reporter = await tx.createTask(Reporter, reporterInput(name, conversationId, message, whenBusy, reportTo, minutes), {
-				ownership: { kind: "conversation" },
-				conversationId: api.conversationId,
-				background: true,
-			});
+			const reporter = await tx.createTask(
+				Reporter,
+				reporterInput(name, conversationId, message, whenBusy, reportTo, minutes),
+				{
+					ownership: { kind: "conversation" },
+					conversationId: api.conversationId,
+					background: true,
+				},
+			);
 			registry.reporters[key] = reporter;
 			return { reporterTaskId: reporter };
 		}, context);
-		const admission = await admitLocal(api, context, result.reporterTaskId as Durable.TaskId, reporterInput(name, conversationId, message, whenBusy, reportTo, minutes), (error) => api.diagnostic({ severity: "error", message: String(error) }), Date.now());
-		return textResult(`Admitted to ${name}; the answer will report back. Result: ${JSON.stringify(admission.result)}${placementText(admission.placement)}`, {
-			conversationId, submissionId: admission.result.submissionId, result: admission.result, placement: admission.placement,
-		});
+		const admission = await admitLocal(
+			api,
+			context,
+			result.reporterTaskId as Durable.TaskId,
+			reporterInput(name, conversationId, message, whenBusy, reportTo, minutes),
+			(error) => api.diagnostic({ severity: "error", message: String(error) }),
+			Date.now(),
+		);
+		return textResult(
+			`Admitted to ${name}; the answer will report back. Result: ${JSON.stringify(admission.result)}${placementText(admission.placement)}`,
+			{
+				conversationId,
+				submissionId: admission.result.submissionId,
+				result: admission.result,
+				placement: admission.placement,
+			},
+		);
 	};
 
 	const sendForeign = async (
@@ -1262,7 +1779,22 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (conversationId === undefined) return errorResult(`Cannot resolve session ${sessionId}.`);
 		let reportTo: Durable.ConversationId | undefined;
 		if (replyTo !== undefined) {
-			if (target(replyTo).kind === "foreign") return dispatchControl("task-submit", { sessionId, message, requester: identity(api.conversationId), replyTo, whenBusy, origin: "model", checkInMinutes: minutes, requestId: `agent-deliver:${host.storageId}:${api.taskId}` }, "Task delivery failed", { api, context });
+			if (target(replyTo).kind === "foreign")
+				return dispatchControl(
+					"task-submit",
+					{
+						sessionId,
+						message,
+						requester: identity(api.conversationId),
+						replyTo,
+						whenBusy,
+						origin: "model",
+						checkInMinutes: minutes,
+						requestId: `agent-deliver:${host.storageId}:${api.taskId}`,
+					},
+					"Task delivery failed",
+					{ api, context },
+				);
 			reportTo = localConversation(replyTo, api.conversationId);
 			if (reportTo === undefined) return errorResult(`Cannot resolve reply target ${replyTo}.`);
 		}
@@ -1292,10 +1824,22 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	 * deadline admits the input at most once.
 	 */
 	/** A retained timer lists its input for the caller under the target's canonical identity. */
-	const scheduledFact = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, scheduled: Durable.ToolExecutionResult<ControlDetails>, requestId: string): Promise<void> => {
+	const scheduledFact = async (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+		scheduled: Durable.ToolExecutionResult<ControlDetails>,
+		requestId: string,
+	): Promise<void> => {
 		const { identity: targetIdentity, timerId } = scheduled.details ?? {};
 		if (scheduled.isError === true || typeof targetIdentity !== "string" || typeof timerId !== "number") return;
-		await continuityFact(api, context, (tx) => recordScheduled(tx, api.conversationId, { sessionId: targetIdentity, requestId, replyTo: identity(api.conversationId) }, timerId));
+		await continuityFact(api, context, (tx) =>
+			recordScheduled(
+				tx,
+				api.conversationId,
+				{ sessionId: targetIdentity, requestId, replyTo: identity(api.conversationId) },
+				timerId,
+			),
+		);
 	};
 	const scheduleSend = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
@@ -1303,7 +1847,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		args: SendInput,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		if (args.deliverAt === undefined) return errorResult("deliverAt is required for a scheduled input.");
-		if (args.replyTo !== undefined) return errorResult("replyTo cannot be combined with deliverAt; the answer reports to this conversation.");
+		if (args.replyTo !== undefined)
+			return errorResult("replyTo cannot be combined with deliverAt; the answer reports to this conversation.");
 		let deadline: number;
 		try {
 			deadline = parseDeliverAt(args.deliverAt);
@@ -1334,17 +1879,38 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const sendTool = durable.defineTool({
 		name: "agent_send",
-		description:
-			`Send a message to an agent conversation. A busy conversation receives it at its next tool boundary, the end of its current tool round; mode is the class of the message, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Reports request attention by default. For progress that asks for no action, set mode:'report',passive:true. Passive reports enter context at the next result or normal boundary. They do not wake the recipient. Keep questions, blockers, corrections and capacity interventions active. Send explicit instructions as followUp or steer, not passive reports. Task answers report back to you. With deliverAt, schedule the input instead of admitting it now. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool.`,
+		description: `Send a message to an agent conversation. A busy conversation receives it at its next tool boundary, the end of its current tool round; mode is the class of the message, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Reports request attention by default. For progress that asks for no action, set mode:'report',passive:true. Passive reports enter context at the next result or normal boundary. They do not wake the recipient. Keep questions, blockers, corrections and capacity interventions active. Send explicit instructions as followUp or steer, not passive reports. Task answers report back to you. With deliverAt, schedule the input instead of admitting it now. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool.`,
 		parameters: SendParams,
 		replay: "safe",
 		execute: async (args: SendInput, api, context) => {
-			if (args.passive !== undefined && args.mode !== "report") return errorResult("passive is valid only for report mode");
+			if (args.passive !== undefined && args.mode !== "report")
+				return errorResult("passive is valid only for report mode");
 			if (args.mode === "report") {
-				if (args.deliverAt !== undefined || args.replyTo !== undefined || args.checkInMinutes !== undefined) return errorResult("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
-				return dispatchControl("report", { sessionId: args.sessionId, senderIdentity: identity(api.conversationId), message: args.message, requestId: `report:${host.storageId}:${api.taskId}`, ...(args.passive === undefined ? {} : { passive: args.passive }) }, "Report delivery failed");
+				if (args.deliverAt !== undefined || args.replyTo !== undefined || args.checkInMinutes !== undefined)
+					return errorResult("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
+				return dispatchControl(
+					"report",
+					{
+						sessionId: args.sessionId,
+						senderIdentity: identity(api.conversationId),
+						message: args.message,
+						requestId: `report:${host.storageId}:${api.taskId}`,
+						...(args.passive === undefined ? {} : { passive: args.passive }),
+					},
+					"Report delivery failed",
+				);
 			}
-			return args.deliverAt === undefined ? sendTarget(api, context, args.sessionId, args.message, args.mode ?? "followUp", args.replyTo, checkInMinutes(args.checkInMinutes, "model", host.agentDir)) : scheduleSend(api, context, args);
+			return args.deliverAt === undefined
+				? sendTarget(
+						api,
+						context,
+						args.sessionId,
+						args.message,
+						args.mode ?? "followUp",
+						args.replyTo,
+						checkInMinutes(args.checkInMinutes, "model", host.agentDir),
+					)
+				: scheduleSend(api, context, args);
 		},
 	});
 
@@ -1362,28 +1928,45 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	 * Close the declared work of every conversation that one abort stopped. A final report whose recipient the same
 	 * abort stopped is not delivered: it would start that conversation again.
 	 */
-	const closeStoppedWork = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, scope: readonly Durable.ConversationId[]): Promise<void> => {
+	const closeStoppedWork = async (
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+		scope: readonly Durable.ConversationId[],
+	): Promise<void> => {
 		const stopped = new Set(scope);
 		const stoppedRecipient = (recipient: string): boolean => {
 			const local = localConversation(recipient, api.conversationId);
 			return local !== undefined && stopped.has(local);
 		};
-		for (const id of scope) await api.commit(async (tx) => {
-			for (const item of await closeOpenWork(tx, host.storageId, id, "stopped", api.now())) await withholdStoppedReport(tx, item, stoppedRecipient);
-			return undefined;
-		}, context);
+		for (const id of scope)
+			await api.commit(async (tx) => {
+				for (const item of await closeOpenWork(tx, host.storageId, id, "stopped", api.now()))
+					await withholdStoppedReport(tx, item, stoppedRecipient);
+				return undefined;
+			}, context);
 	};
 
 	const abortLocal = async (args: AbortInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
 		const conversationId = localConversation(args.sessionId, api.conversationId);
 		if (conversationId === undefined) return errorResult(`Cannot resolve session ${args.sessionId}.`);
-		const includesCaller = await api.commit((tx) => abortScopeContains(tx, api.conversationId, conversationId, args.background === true), context);
+		const includesCaller = await api.commit(
+			(tx) => abortScopeContains(tx, api.conversationId, conversationId, args.background === true),
+			context,
+		);
 		if (includesCaller) return errorResult("The target's abort scope includes the calling conversation.");
-		if (args.release === true) return dispatchControl("release", { sessionId: identity(conversationId), ...(args.background === true ? { background: true } : {}) }, `Release of ${args.sessionId} failed`);
+		if (args.release === true)
+			return dispatchControl(
+				"release",
+				{ sessionId: identity(conversationId), ...(args.background === true ? { background: true } : {}) },
+				`Release of ${args.sessionId} failed`,
+			);
 		const conversation = await api.conversation(conversationId, context);
 		if (conversation === undefined) return errorResult(`Conversation ${conversationId} is not retained.`);
 		// Read the scope before the abort, while the owning tasks are retained.
-		const scope = await api.commit((tx) => abortScopeConversations(tx, conversationId, args.background === true), context);
+		const scope = await api.commit(
+			(tx) => abortScopeConversations(tx, conversationId, args.background === true),
+			context,
+		);
 		await conversation.abort(context, args.background === true ? { background: true } : undefined);
 		await closeStoppedWork(api, context, scope);
 		return textResult(`Aborted ${args.sessionId}.`, { conversationId });
@@ -1397,12 +1980,20 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	};
 
 	const abortResolved = async (args: AbortInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
-		if (args.sessionId === identity(api.conversationId)) return errorResult("The target's abort scope includes the calling conversation.");
+		if (args.sessionId === identity(api.conversationId))
+			return errorResult("The target's abort scope includes the calling conversation.");
 		let resolved: string;
-		try { resolved = await resolveAbortTarget(args.sessionId, context); }
-		catch (error) { return errorResult(`Target resolution failed: ${error instanceof Error ? error.message : String(error)}`); }
+		try {
+			resolved = await resolveAbortTarget(args.sessionId, context);
+		} catch (error) {
+			return errorResult(`Target resolution failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
 		if (target(resolved).kind !== "foreign") return abortLocal({ ...args, sessionId: resolved }, api, context);
-		return dispatchControl(args.release === true ? "release" : "abort", { sessionId: resolved, ...(args.background === true ? { background: true } : {}) }, `Abort of ${resolved} failed`);
+		return dispatchControl(
+			args.release === true ? "release" : "abort",
+			{ sessionId: resolved, ...(args.background === true ? { background: true } : {}) },
+			`Abort of ${resolved} failed`,
+		);
 	};
 
 	const abortTool = durable.defineTool({
@@ -1412,8 +2003,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		parameters: AbortParams,
 		replay: "unsafe",
 		execute: async (args: AbortInput, api, context) => {
-			if (args.release === true && args.background === true) return errorResult("release cannot be combined with background; abort with background first, then release");
-			if (args.timerId !== undefined && args.release === true) return errorResult("release cannot be combined with timerId");
+			if (args.release === true && args.background === true)
+				return errorResult("release cannot be combined with background; abort with background first, then release");
+			if (args.timerId !== undefined && args.release === true)
+				return errorResult("release cannot be combined with timerId");
 			if (args.timerId !== undefined) {
 				const timerId = args.timerId;
 				const cancelled = await dispatchControl(
@@ -1558,15 +2151,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 						kind: "error",
 						message: `Entry ${entry} has no visible predecessor in conversation ${source}.`,
 					} as const;
-				return forkInCommit(
-					tx,
-					api,
-					source,
-					predecessor.id,
-					args.name ?? "rewind",
-					args.correction,
-					parent.values,
-				);
+				return forkInCommit(tx, api, source, predecessor.id, args.name ?? "rewind", args.correction, parent.values);
 			}, context);
 			if (result.kind === "error") return errorResult(result.message);
 			return textResult(
@@ -1628,8 +2213,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const compactTool = {
 		...durable.defineTool({
 			name: "agent_compact",
-			description:
-				`Compact a conversation. For the calling conversation the summary applies after the whole tool batch and the run continues; another conversation goes through the session host. The summarizer first receives this fixed text, then your instructions: ${NATIVE_COMPACTION_SEED}`,
+			description: `Compact a conversation. For the calling conversation the summary applies after the whole tool batch and the run continues; another conversation goes through the session host. The summarizer first receives this fixed text, then your instructions: ${NATIVE_COMPACTION_SEED}`,
 			parameters: CompactParams,
 			replay: "unsafe",
 			execute: async (args: CompactInput, api, context) => {
@@ -1679,7 +2263,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const publicStatus = (value: unknown): Durable.ToolExecutionResult<ControlDetails> => {
 		const structured = structuredObservation(StatusToolOutputSchema, value) as Record<string, JsonValue>;
-		return { ...nativeStructuredObservation(StatusToolOutputSchema, structured, controlText(structured)), details: structured };
+		return {
+			...nativeStructuredObservation(StatusToolOutputSchema, structured, controlText(structured)),
+			details: structured,
+		};
 	};
 
 	const readStoragePage = async (args: StatusInput): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
@@ -1696,12 +2283,27 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return publicStatus(projected);
 	};
 
-	const readStatus = async (args: StatusInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context, selection: FleetSelection) => {
+	const readStatus = async (
+		args: StatusInput,
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+		selection: FleetSelection,
+	) => {
 		if (args.view === "fleet") {
-			const created = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
+			const created = await readCreatedAgents(
+				api,
+				Children,
+				{ storageId: host.storageId, conversationId: api.conversationId },
+				context,
+			);
 			return fleetObservation(host.catalogRoot, args.sessionId, identity(api.conversationId), created, selection);
 		}
-		return hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusToolOutputSchema);
+		return hostObservation(
+			"status",
+			defined(args, ["sessionId"]),
+			`Status of ${args.sessionId ?? "the storage"} failed`,
+			StatusToolOutputSchema,
+		);
 	};
 
 	const statusTool = {
@@ -1716,10 +2318,13 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				try {
 					validateStatusSelectors(args);
 					validateStatusDetail(args);
-					if (args.view === "storage-page") { storageStatusPageInput(args); selection = {}; }
-					else selection = validateFleetSelection(args);
+					if (args.view === "storage-page") {
+						storageStatusPageInput(args);
+						selection = {};
+					} else selection = validateFleetSelection(args);
+				} catch (error) {
+					return errorResult(error instanceof Error ? error.message : String(error));
 				}
-				catch (error) { return errorResult(error instanceof Error ? error.message : String(error)); }
 				if (args.view === "storage-page") return readStoragePage(args);
 				const result = await readStatus(args, api, context, selection);
 				if (result.isError || args.view === "fleet") return result;
@@ -1733,7 +2338,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const listTool = {
 		...durable.defineTool({
 			name: "agent_list",
-			description: "Discover retained conversations through the session host's common observation. An exact retained handle match comes first, with or without the leading @. A query then observes other storages whose catalog record carries it. While coverage.complete is false, a page without rows is not absence: call agent_list again with the fields of coverage.next.",
+			description:
+				"Discover retained conversations through the session host's common observation. An exact retained handle match comes first, with or without the leading @. A query then observes other storages whose catalog record carries it. While coverage.complete is false, a page without rows is not absence: call agent_list again with the fields of coverage.next.",
 			parameters: ListParams,
 			replay: "safe",
 			execute: async (args: ListInput) =>
@@ -1755,8 +2361,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			parameters: InspectParams,
 			replay: "safe",
 			execute: async (args: InspectInput) => {
-				if (args.receiptCursor !== undefined && args.view !== "result") return errorResult("receiptCursor selects only the result view");
-				if (args.finalReport !== undefined && args.view !== "result") return errorResult("finalReport selects only the result view");
+				if (args.receiptCursor !== undefined && args.view !== "result")
+					return errorResult("receiptCursor selects only the result view");
+				if (args.finalReport !== undefined && args.view !== "result")
+					return errorResult("finalReport selects only the result view");
 				return hostObservation(
 					"inspect",
 					{
@@ -1804,20 +2412,27 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		area: string,
 		args: PlaceInput,
 		context: Context,
-	): Promise<{ kind: "ok"; sessionId: string; result: Record<string, JsonValue> } | { kind: "error"; message: string }> => {
+	): Promise<
+		{ kind: "ok"; sessionId: string; result: Record<string, JsonValue> } | { kind: "error"; message: string }
+	> => {
 		if (dispatch === undefined) return { kind: "error", message: "agent_place needs the host dispatch callback." };
 		let result: unknown;
 		try {
-			result = await dispatchValue(dispatch, "place", {
-				area,
-				...defined(args, ["model", "thinkingLevel", "preset"]),
-				preferenceSnapshot: await preferenceSnapshot(api, context),
-				...(args.topic === undefined ? {} : { topic: args.topic }),
-				...(args.prompt === undefined || args.prompt === "" ? {} : defined(args, ["prompt", "checkInMinutes"])),
-				origin: "model",
-				senderIdentity: identity(api.conversationId),
-				requestId: `place:${host.storageId}:${api.taskId}`,
-			}, { api, context });
+			result = await dispatchValue(
+				dispatch,
+				"place",
+				{
+					area,
+					...defined(args, ["model", "thinkingLevel", "preset"]),
+					preferenceSnapshot: await preferenceSnapshot(api, context),
+					...(args.topic === undefined ? {} : { topic: args.topic }),
+					...(args.prompt === undefined || args.prompt === "" ? {} : defined(args, ["prompt", "checkInMinutes"])),
+					origin: "model",
+					senderIdentity: identity(api.conversationId),
+					requestId: `place:${host.storageId}:${api.taskId}`,
+				},
+				{ api, context },
+			);
 		} catch (error) {
 			return {
 				kind: "error",
@@ -1872,43 +2487,86 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const intentTool = durable.defineTool({
 		name: "agent_intent",
-		description: "Publish or clear this native conversation's purpose, integration intent, scope, carried operator direction and contact thread. Intent is a session claim, not verified authority or a lock. Returns the current published claim and bounded related efforts. No model wake.",
+		description:
+			"Publish or clear this native conversation's purpose, integration intent, scope, carried operator direction and contact thread. Intent is a session claim, not verified authority or a lock. Returns the current published claim and bounded related efforts. No model wake.",
 		parameters: IntentParams,
 		replay: "safe",
 		execute: async (args, api, context) => {
 			validateIntentInput(args);
-			if (host.catalogRoot === undefined || effortResources === undefined) return errorResult("Native intent requires the host's selected catalogue root");
+			if (host.catalogRoot === undefined || effortResources === undefined)
+				return errorResult("Native intent requires the host's selected catalogue root");
 			const agent = await api.agent(context);
 			const location = await locations.resolve(agent.cwd ?? host.cwd);
 			const stamp = await api.memo("agent-intent-time", new Date(api.now()).toISOString(), context);
 			const { action, ...fields } = args;
-			const claim = action === "clear" ? null : { ...fields, updatedAt: stamp } as import("./effort-presence.ts").PrimaryIntentClaim;
+			const claim =
+				action === "clear"
+					? null
+					: ({ ...fields, updatedAt: stamp } as import("./effort-presence.ts").PrimaryIntentClaim);
 			const cwd = agent.cwd ?? host.cwd;
-			const metadata = await api.commit(tx => publishConversationIntent(tx, api.conversationId, { claim, ...location, cwd, repository: location.repository ?? null, hostname: hostname(), startedAt: stamp, taskId: api.taskId }), context);
+			const metadata = await api.commit(
+				(tx) =>
+					publishConversationIntent(tx, api.conversationId, {
+						claim,
+						...location,
+						cwd,
+						repository: location.repository ?? null,
+						hostname: hostname(),
+						startedAt: stamp,
+						taskId: api.taskId,
+					}),
+				context,
+			);
 			const published = nativeIntentSelf(identity(api.conversationId), cwd, metadata);
 			const value = { published, awareness: await readEffortAwareness(effortResources, published, "reported") };
 			return textResult(JSON.stringify(value), JSON.parse(JSON.stringify(value)));
 		},
 	});
 
-	const profileTool = { ...durable.defineTool({
-		name: "agent_profile",
-		description: "Read or revision-check an agent's durable role and sourced expertise. Default target: yourself. Profile edits work at a busy tool boundary and start no model turn. Saved expertise is evidence, not fresh authority.",
-		parameters: ProfileParams,
-		replay: "safe",
-		execute: async (args, api) => hostObservation(args.action === "read" ? "profile-read" : "profile-update", { ...args, sessionId: args.sessionId ?? identity(api.conversationId), senderIdentity: identity(api.conversationId), requestId: `profile:${host.storageId}:${api.taskId}` }, "Profile operation failed", ProfileOutputSchema),
-	}), structuredOutputSchema: ProfileOutputSchema };
+	const profileTool = {
+		...durable.defineTool({
+			name: "agent_profile",
+			description:
+				"Read or revision-check an agent's durable role and sourced expertise. Default target: yourself. Profile edits work at a busy tool boundary and start no model turn. Saved expertise is evidence, not fresh authority.",
+			parameters: ProfileParams,
+			replay: "safe",
+			execute: async (args, api) =>
+				hostObservation(
+					args.action === "read" ? "profile-read" : "profile-update",
+					{
+						...args,
+						sessionId: args.sessionId ?? identity(api.conversationId),
+						senderIdentity: identity(api.conversationId),
+						requestId: `profile:${host.storageId}:${api.taskId}`,
+					},
+					"Profile operation failed",
+					ProfileOutputSchema,
+				),
+		}),
+		structuredOutputSchema: ProfileOutputSchema,
+	};
 
 	const collaborateTool = durable.defineTool({
 		name: "agent_collaborate",
-		description: "Discover, form and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator. Join or leave freely; post contribution or sourced carried-authority. Joining opts into passive notices at existing boundaries. Posts wake only explicit notify recipients. Read returns the frame, members and paged exchange. No automatic replies or check-ins.",
+		description:
+			"Discover, form and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator. Join or leave freely; post contribution or sourced carried-authority. Joining opts into passive notices at existing boundaries. Posts wake only explicit notify recipients. Read returns the frame, members and paged exchange. No automatic replies or check-ins.",
 		parameters: CollaborationParams,
 		replay: "safe",
-		execute: async (args, api) => dispatchControl(
-			args.action === "list" ? "collaboration-list" : args.action === "read" ? "collaboration-read" : "collaboration-mutate",
-			{ ...args, senderIdentity: identity(api.conversationId), origin: "model", requestId: `collaboration:${host.storageId}:${api.taskId}` },
-			"Collaboration request failed",
-		),
+		execute: async (args, api) =>
+			dispatchControl(
+				args.action === "list"
+					? "collaboration-list"
+					: args.action === "read"
+						? "collaboration-read"
+						: "collaboration-mutate",
+				{
+					...args,
+					senderIdentity: identity(api.conversationId),
+					origin: "model",
+					requestId: `collaboration:${host.storageId}:${api.taskId}`,
+				},
+				"Collaboration request failed",
+			),
 	});
 
 	const workTool = durable.defineTool({
@@ -1916,7 +2574,17 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		description: AGENT_WORK_DESCRIPTION,
 		parameters: AgentWorkParams,
 		replay: "safe",
-		execute: async (args, api, context) => executeAgentWork(args, { harness: api, storageId: host.storageId, conversationId: api.conversationId, now: await api.memo("agent-work-time", api.now(), context) }, context),
+		execute: async (args, api, context) =>
+			executeAgentWork(
+				args,
+				{
+					harness: api,
+					storageId: host.storageId,
+					conversationId: api.conversationId,
+					now: await api.memo("agent-work-time", api.now(), context),
+				},
+				context,
+			),
 	});
 
 	const guidance = durable.section("agent-controls", (input) => {
@@ -1926,13 +2594,19 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return [...SECTION_PREAMBLE, ...agentControlGuidanceLines(selected)].join("\n");
 	});
 
-	const preferences = durable.section("agent-preferences", () => renderAgentPreferences(readAgentPreferences(host.agentDir, host.services.modelRuntime)));
+	const preferences = durable.section("agent-preferences", () =>
+		renderAgentPreferences(readAgentPreferences(host.agentDir, host.services.modelRuntime)),
+	);
 
 	const efforts = durable.section("agent-efforts", async (input, context) => {
 		if (effortResources === undefined) return undefined;
 		try {
 			const meta = await input.read.snapshot(AgentMetaDoc, input.conversationId, context);
-			const self = nativeIntentSelf(identity(input.conversationId), input.agent.cwd ?? host.cwd, meta === undefined ? null : meta.intent);
+			const self = nativeIntentSelf(
+				identity(input.conversationId),
+				input.agent.cwd ?? host.cwd,
+				meta === undefined ? null : meta.intent,
+			);
 			return formatEffortAwareness(await readEffortAwareness(effortResources, self, "reported"), "prompt");
 		} catch {
 			return "Current effort and active thread awareness is unavailable. Read agent_status for a new bounded observation. Earlier notices describe changes, not current state.";
@@ -1942,8 +2616,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	// Model choices happen in conversations that can spawn, place or configure agents; others carry no section.
 	const providerBlocks = durable.section("agent-provider-blocks", (input) => {
 		if (!input.agent.tools.some((tool) => MODEL_CHOICE_TOOL_NAMES.has(tool.name))) return undefined;
-		try { return renderProviderBlockSection(processProviderBlockNotes(), Date.now()); }
-		catch { return undefined; }
+		try {
+			return renderProviderBlockSection(processProviderBlockNotes(), Date.now());
+		} catch {
+			return undefined;
+		}
 	});
 
 	return durable.defineExtension({

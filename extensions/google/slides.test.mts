@@ -135,11 +135,12 @@ test("slides_get refuses a slide offset after the deck changed and requires the 
 	try {
 		const first = (await fake.tool("slides_get", { presentationId: "p1" })).data as SlidesData;
 		const offset = first.externalData.slides?.[1].offset ?? 0;
+		assert.equal(errorCode(await fake.tool("slides_get", { presentationId: "p1", offset })), "INVALID_ARGUMENT");
 		assert.equal(
-			errorCode(await fake.tool("slides_get", { presentationId: "p1", offset })),
-			"INVALID_ARGUMENT",
+			methodCalls(await fake.calls(), GET).length,
+			1,
+			"a missing sourceId is refused before Google is called",
 		);
-		assert.equal(methodCalls(await fake.calls(), GET).length, 1, "a missing sourceId is refused before Google is called");
 		const changed = await fake.tool("slides_get", {
 			presentationId: "p1",
 			offset,

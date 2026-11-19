@@ -134,7 +134,12 @@ it("keeps valid structured settings and env presets usable beside invalid select
 
 it("retains structured settings within contract byte bounds without a second document limit", (t) => {
 	const agentDir = fixture(t);
-	const presets = Object.fromEntries(Array.from({ length: 28 }, (_, i) => [`p${i}`, { model: "acme/model-x", role: "x".repeat(2000), notes: "y".repeat(2000) }]));
+	const presets = Object.fromEntries(
+		Array.from({ length: 28 }, (_, i) => [
+			`p${i}`,
+			{ model: "acme/model-x", role: "x".repeat(2000), notes: "y".repeat(2000) },
+		]),
+	);
 	const input = JSON.stringify(presets);
 	assert.ok(Buffer.byteLength(input) > 65536);
 	const snapshot = readAgentPreferences(agentDir, undefined, { PI_AGENT_PRESETS: input });
@@ -155,7 +160,8 @@ it("rejects invalid declared defaults before selected input without exposing val
 			field.default = invalid;
 			for (const env of [{}, { [field.env]: input }]) {
 				assert.throws(() => readSettings({ agentDir, env }), {
-					name: "Error", message: `Invalid default for agent.${key}`,
+					name: "Error",
+					message: `Invalid default for agent.${key}`,
 				});
 			}
 		} finally {
@@ -182,10 +188,14 @@ it("rejects unbounded or unsafe structured input without leaking parser or valid
 	for (const input of inputs) {
 		const snapshot = readSettings({ agentDir, env: { PI_AGENT_PRESETS: input } });
 		assert.deepEqual(snapshot.values.presets, {});
-		assert.deepEqual(snapshot.diagnostics, [{
-			field: "agent.presets", source: "env", code: "invalid",
-			message: "Selected input is invalid; the safe default is in effect.",
-		}]);
+		assert.deepEqual(snapshot.diagnostics, [
+			{
+				field: "agent.presets",
+				source: "env",
+				code: "invalid",
+				message: "Selected input is invalid; the safe default is in effect.",
+			},
+		]);
 	}
 });
 
@@ -200,7 +210,13 @@ it("isolates default objects, rejects non-JSON numbers, and bounds unknown diagn
 		assert.equal(result.records[0].status, "invalid");
 	}
 	assert.equal(readSettings({ agentDir, env: { PI_AGENT_IDLE_MINUTES: "1.25e1" } }).values.idleMinutes, 12.5);
-	writeFileSync(join(agentDir, "harness.json"), JSON.stringify({ version: 1, agent: Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`extra${i}`, true])) }));
+	writeFileSync(
+		join(agentDir, "harness.json"),
+		JSON.stringify({
+			version: 1,
+			agent: Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`extra${i}`, true])),
+		}),
+	);
 	const crowded = readSettings({ agentDir, env: {} });
 	assert.equal(crowded.diagnostics.length, 257);
 	assert.equal(crowded.diagnostics.at(-1)?.code, "coverage");
@@ -282,7 +298,9 @@ it("replaces the factory publisher with the native host directory and keeps clea
 		registerToolRenderer() {},
 	} as unknown as ExtensionAPI);
 	let publications: SettingsPublication[] = [];
-	const stopObserving = events.on("harness:settings:publish", (value) => publications.push(value as SettingsPublication));
+	const stopObserving = events.on("harness:settings:publish", (value) =>
+		publications.push(value as SettingsPublication),
+	);
 	t.after(stopObserving);
 	const collector = {
 		refresh() {
@@ -348,7 +366,10 @@ it("unknown diagnostic fields stay bounded and preserve Unicode and publication 
 			assert.equal(publications.length, 1);
 			const publication = publications[0];
 			assert.deepEqual(publication.records, baseline.records);
-			assert.deepEqual(publication.diagnostics.filter((issue) => issue.code !== "unknown"), baseline.diagnostics);
+			assert.deepEqual(
+				publication.diagnostics.filter((issue) => issue.code !== "unknown"),
+				baseline.diagnostics,
+			);
 			const unknown = publication.diagnostics.filter((issue) => issue.code === "unknown");
 			assert.equal(unknown.length, 1);
 			assert.equal(unknown[0].field, expected);

@@ -38,7 +38,15 @@ const ANCESTOR_LIMIT = 256;
 
 function gitEnvironment(): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = { ...process.env, LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" };
-	for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"]) delete env[key];
+	for (const key of [
+		"GIT_DIR",
+		"GIT_WORK_TREE",
+		"GIT_COMMON_DIR",
+		"GIT_INDEX_FILE",
+		"GIT_OBJECT_DIRECTORY",
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	])
+		delete env[key];
 	return env;
 }
 
@@ -54,13 +62,24 @@ function discoveryEnvironment(): string {
 /** Resolve one location without a shell, with bounded Git output and execution time. */
 export async function discoverPrimaryLocation(cwd: string): Promise<PrimaryLocation> {
 	let canonical: string;
-	try { canonical = await realpath(cwd); }
-	catch { return { cwd: resolve(cwd), repositoryState: "unknown" }; }
+	try {
+		canonical = await realpath(cwd);
+	} catch {
+		return { cwd: resolve(cwd), repositoryState: "unknown" };
+	}
 	const result = await new Promise<{ common?: string; state: PrimaryRepositoryState }>((done) => {
-		execFile("git", ["rev-parse", "--git-common-dir"], { cwd: canonical, timeout: 1000, maxBuffer: MARKER_BYTES, encoding: "utf8", env: gitEnvironment() }, (error, stdout, stderr) => {
-			if (!error && stdout.trim()) done({ common: stdout.trim(), state: "git" });
-			else done({ state: error?.code === 128 && stderr.startsWith("fatal: not a git repository") ? "outside-git" : "unknown" });
-		});
+		execFile(
+			"git",
+			["rev-parse", "--git-common-dir"],
+			{ cwd: canonical, timeout: 1000, maxBuffer: MARKER_BYTES, encoding: "utf8", env: gitEnvironment() },
+			(error, stdout, stderr) => {
+				if (!error && stdout.trim()) done({ common: stdout.trim(), state: "git" });
+				else
+					done({
+						state: error?.code === 128 && stderr.startsWith("fatal: not a git repository") ? "outside-git" : "unknown",
+					});
+			},
+		);
 	});
 	if (!result.common) return { cwd: canonical, repositoryState: result.state };
 	try {
@@ -94,8 +113,11 @@ type MemberKind = "absent" | "directory" | "other";
 /** Read one marker file without following a symlink or reading past its bound. */
 function readMarker(path: string): string | undefined {
 	let fd: number;
-	try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-	catch { return undefined; }
+	try {
+		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	} catch {
+		return undefined;
+	}
 	try {
 		const info = fstatSync(fd);
 		if (!info.isFile() || info.size > MARKER_BYTES) return undefined;
@@ -108,15 +130,21 @@ function readMarker(path: string): string | undefined {
 		}
 		if (length > MARKER_BYTES) return undefined;
 		return bytes.toString("utf8", 0, length);
-	} catch { return undefined; }
-	finally { closeSync(fd); }
+	} catch {
+		return undefined;
+	} finally {
+		closeSync(fd);
+	}
 }
 
 /** Classify one required marker path; an unmodelled or uninspectable entry is uncertain. */
 function memberKind(path: string): MemberKind | undefined {
 	let info: BigIntStats | undefined;
-	try { info = lstatSync(path, { bigint: true, throwIfNoEntry: false }); }
-	catch { return undefined; }
+	try {
+		info = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+	} catch {
+		return undefined;
+	}
 	if (info === undefined) return "absent";
 	if (info.isDirectory()) return "directory";
 	if (info.isFile()) return "other";
@@ -126,8 +154,11 @@ function memberKind(path: string): MemberKind | undefined {
 /** Read HEAD exactly as stored; null means absent and undefined means its content could not be read. */
 function headContents(path: string): string | null | undefined {
 	let info: BigIntStats | undefined;
-	try { info = lstatSync(path, { bigint: true, throwIfNoEntry: false }); }
-	catch { return undefined; }
+	try {
+		info = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+	} catch {
+		return undefined;
+	}
 	if (info === undefined) return null;
 	if (!info.isFile()) return undefined;
 	return readMarker(path);
@@ -144,8 +175,11 @@ interface CommonMarkers {
 function commonMarkers(path: string, text: string): CommonMarkers | undefined {
 	const target = resolve(path, text.replace(/[\r\n]+$/u, ""));
 	let resolved: string;
-	try { resolved = realpathSync(target); }
-	catch { return undefined; }
+	try {
+		resolved = realpathSync(target);
+	} catch {
+		return undefined;
+	}
 	const identity = repositoryIdentity(resolved);
 	if (identity === undefined) return undefined;
 	const objects = memberKind(join(resolved, "objects"));
@@ -170,8 +204,11 @@ function directoryMarkers(path: string): string | undefined {
 	if (objects === undefined || refs === undefined) return undefined;
 	const pointer = join(path, "commondir");
 	let pointerInfo: BigIntStats | undefined;
-	try { pointerInfo = lstatSync(pointer, { bigint: true, throwIfNoEntry: false }); }
-	catch { return undefined; }
+	try {
+		pointerInfo = lstatSync(pointer, { bigint: true, throwIfNoEntry: false });
+	} catch {
+		return undefined;
+	}
 	let commondir: string | null = null;
 	let common: CommonMarkers | undefined;
 	if (pointerInfo !== undefined) {
@@ -188,7 +225,9 @@ function directoryMarkers(path: string): string | undefined {
 function markerAt(candidate: string, info: BigIntStats, directory: string): MarkerStamp | undefined {
 	if (info.isDirectory()) {
 		const markers = directoryMarkers(candidate);
-		return markers === undefined ? undefined : { kind: "directory", path: candidate, revision: identityOf(info), validity: markers };
+		return markers === undefined
+			? undefined
+			: { kind: "directory", path: candidate, revision: identityOf(info), validity: markers };
 	}
 	if (!info.isFile()) return undefined;
 	const text = readMarker(candidate);
@@ -263,7 +302,7 @@ class RepositoryLocationResolver implements PrimaryLocationResolver {
 	async resolve(cwd: string): Promise<PrimaryLocation> {
 		const key = resolve(cwd);
 		const cached = this.completed.get(key);
-		if (cached !== undefined && await this.valid(key, cached)) {
+		if (cached !== undefined && (await this.valid(key, cached))) {
 			this.completed.delete(key);
 			this.completed.set(key, cached);
 			return { ...cached.location };
@@ -274,18 +313,34 @@ class RepositoryLocationResolver implements PrimaryLocationResolver {
 		const generation = this.generation;
 		const load = this.load(key, generation);
 		this.pending.set(key, load);
-		try { return { ...(await load) }; }
-		finally { if (this.pending.get(key) === load) this.pending.delete(key); }
+		try {
+			return { ...(await load) };
+		} finally {
+			if (this.pending.get(key) === load) this.pending.delete(key);
+		}
 	}
 
 	invalidate(cwd?: string): void {
 		this.generation++;
-		if (cwd === undefined) { this.completed.clear(); return; }
+		if (cwd === undefined) {
+			this.completed.clear();
+			return;
+		}
 		const key = resolve(cwd);
 		let canonical = key;
-		try { canonical = realpathSync(cwd); } catch { /* A missing path still invalidates its requested key. */ }
+		try {
+			canonical = realpathSync(cwd);
+		} catch {
+			/* A missing path still invalidates its requested key. */
+		}
 		for (const [candidate, entry] of this.completed) {
-			if (candidate === key || candidate === canonical || entry.location.cwd === canonical || entry.location.cwd === key) this.completed.delete(candidate);
+			if (
+				candidate === key ||
+				candidate === canonical ||
+				entry.location.cwd === canonical ||
+				entry.location.cwd === key
+			)
+				this.completed.delete(candidate);
 		}
 	}
 
@@ -297,13 +352,18 @@ class RepositoryLocationResolver implements PrimaryLocationResolver {
 	/** Capture the inputs a discovery result must stay paired with. */
 	private async inputs(path: string): Promise<DiscoveryInputs | undefined> {
 		let canonical: string;
-		try { canonical = await realpath(path); }
-		catch { return undefined; }
+		try {
+			canonical = await realpath(path);
+		} catch {
+			return undefined;
+		}
 		const environment = discoveryEnvironment();
 		try {
 			const stamp = markerStamp(canonical);
 			return stamp === undefined ? undefined : { canonical, environment, stamp: JSON.stringify(stamp) };
-		} catch { return undefined; }
+		} catch {
+			return undefined;
+		}
 	}
 
 	private async load(key: string, generation: number): Promise<PrimaryLocation> {
@@ -311,28 +371,51 @@ class RepositoryLocationResolver implements PrimaryLocationResolver {
 		const location = await discoverPrimaryLocation(key);
 		if (generation !== this.generation || location.repositoryState === "unknown") return location;
 		const after = before === undefined ? undefined : await this.inputs(location.cwd);
-		if (before === undefined || after === undefined || after.canonical !== before.canonical || after.environment !== before.environment || after.stamp !== before.stamp) return location;
+		if (
+			before === undefined ||
+			after === undefined ||
+			after.canonical !== before.canonical ||
+			after.environment !== before.environment ||
+			after.stamp !== before.stamp
+		)
+			return location;
 		try {
-			const repositoryRevision = location.repository === undefined ? undefined : repositoryIdentity(location.repository);
+			const repositoryRevision =
+				location.repository === undefined ? undefined : repositoryIdentity(location.repository);
 			if (location.repositoryState === "git" && repositoryRevision === undefined) return location;
-			this.remember(key, { environment: after.environment, stamp: after.stamp, ...(repositoryRevision === undefined ? {} : { repositoryRevision }), location });
-		} catch { /* A result without a trustworthy revision stays uncached. */ }
+			this.remember(key, {
+				environment: after.environment,
+				stamp: after.stamp,
+				...(repositoryRevision === undefined ? {} : { repositoryRevision }),
+				location,
+			});
+		} catch {
+			/* A result without a trustworthy revision stays uncached. */
+		}
 		return location;
 	}
 
 	private async valid(key: string, entry: CompletedLocation): Promise<boolean> {
 		if (entry.environment !== discoveryEnvironment()) return false;
 		let canonical: string;
-		try { canonical = await realpath(key); }
-		catch { return false; }
+		try {
+			canonical = await realpath(key);
+		} catch {
+			return false;
+		}
 		if (canonical !== entry.location.cwd) return false;
 		try {
 			const stamp = markerStamp(canonical);
 			if (stamp === undefined || JSON.stringify(stamp) !== entry.stamp) return false;
 			if (entry.location.repositoryState !== "git") return true;
-			return entry.location.repository !== undefined && entry.repositoryRevision !== undefined &&
-				repositoryIdentity(entry.location.repository) === entry.repositoryRevision;
-		} catch { return false; }
+			return (
+				entry.location.repository !== undefined &&
+				entry.repositoryRevision !== undefined &&
+				repositoryIdentity(entry.location.repository) === entry.repositoryRevision
+			);
+		} catch {
+			return false;
+		}
 	}
 
 	private remember(key: string, entry: CompletedLocation): void {

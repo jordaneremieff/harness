@@ -26,20 +26,17 @@ export const AUTHORING_LIMITS = {
 	outputBytes: 24576,
 };
 const StringLiteral = <const V extends string>(value: V): Schema<V> => ({ type: "string", const: value });
-const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({ ...union(schemas), type: "object" });
+const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({
+	...union(schemas),
+	type: "object",
+});
 const AnyJson: Schema<unknown> = { type: ["object", "array", "string", "number", "boolean", "null"] };
 const ResultSchema = obj(
 	{
 		isError: bool(),
 		details: opt(AnyJson),
 		content: opt(
-			arr(
-				obj(
-					{ type: StringLiteral("text"), text: str({ maxLength: 65536 }) },
-					{ open: false },
-				),
-				{ maxItems: 64 },
-			),
+			arr(obj({ type: StringLiteral("text"), text: str({ maxLength: 65536 }) }, { open: false }), { maxItems: 64 }),
 		),
 	},
 	{ open: false },
@@ -80,7 +77,9 @@ export const DraftCasesSchema = arr(
 							...StepFields,
 							tool: str({ minLength: 1, maxLength: 200 }),
 							input: {
-								type: "object", patternProperties: { "^.*$": {} }, maxProperties: 128,
+								type: "object",
+								patternProperties: { "^.*$": {} },
+								maxProperties: 128,
 							} as Schema<Record<string, unknown>>,
 							result: opt(ResultSchema),
 						},
@@ -366,7 +365,11 @@ async function runCase(
 			guidance: latest?.annotated === true,
 		};
 		const evaluations = (latest?.policy?.evaluations ?? []) as Array<{
-			id: string; phase: string; truth: unknown; unavailable: boolean; deny: boolean;
+			id: string;
+			phase: string;
+			truth: unknown;
+			unavailable: boolean;
+			deny: boolean;
 		}>;
 		const relevant = relevantEvaluations(evaluations);
 		const relevantIds = new Set(relevant.map((entry) => entry.id));
@@ -379,7 +382,8 @@ async function runCase(
 			inputEvaluations: relevant.filter((entry) => entry.phase === "input"),
 			resultEvaluations: relevant.filter((entry) => entry.phase === "result"),
 			completionEvaluations: relevant.filter((entry) => entry.phase === "completion"),
-			nonMatchingRules: new Set(evaluations.filter((entry) => !relevantIds.has(entry.id)).map((entry) => entry.id)).size,
+			nonMatchingRules: new Set(evaluations.filter((entry) => !relevantIds.has(entry.id)).map((entry) => entry.id))
+				.size,
 			coverage: latest?.policy?.coverage,
 			corrections: latest?.policy?.corrections,
 			metadata: latest?.policy?.metadata,
@@ -387,7 +391,7 @@ async function runCase(
 			mismatches: expectations(step, actual),
 		});
 	}
-	const state = await runtime.inspect("state", {}, context) as {
+	const state = (await runtime.inspect("state", {}, context)) as {
 		observationPeriods: Array<{ id: string }>;
 		retainedGuidance: Array<{ id: string }>;
 	};

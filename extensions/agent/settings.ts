@@ -177,7 +177,9 @@ function boundedJson(value: unknown): boolean {
 		if (typeof item === "string") return item.length <= DOCUMENT_MAX_BYTES && !/[\u0000\ud800-\udfff]/u.test(item);
 		if (Array.isArray(item)) return item.every((child) => visit(child, depth + 1));
 		if (!plainObject(item)) return false;
-		return Object.entries(item).every(([key, child]) => textValid(key) && key.length <= 4096 && visit(child, depth + 1));
+		return Object.entries(item).every(
+			([key, child]) => textValid(key) && key.length <= 4096 && visit(child, depth + 1),
+		);
 	}
 	return visit(value, 0) && Buffer.byteLength(JSON.stringify(value)) <= DOCUMENT_MAX_BYTES;
 }
@@ -198,7 +200,12 @@ function environmentValue(type: "number" | "json", raw: string): unknown {
 	return Number(raw);
 }
 
-function selectField(key: keyof SettingsValues, env: Environment, section: Record<string, unknown>, add: (fact: Diagnostic) => void) {
+function selectField(
+	key: keyof SettingsValues,
+	env: Environment,
+	section: Record<string, unknown>,
+	add: (fact: Diagnostic) => void,
+) {
 	const field = settings.fields[key];
 	let origin: Origin = env[field.env] !== undefined ? "env" : Object.hasOwn(section, key) ? "file" : "default";
 	let value: unknown;
@@ -220,7 +227,10 @@ function selectField(key: keyof SettingsValues, env: Environment, section: Recor
 	}
 	return { value, origin, status };
 }
-function readSection(document: Record<string, unknown> | undefined, diagnostics: Diagnostic[]): Record<string, unknown> {
+function readSection(
+	document: Record<string, unknown> | undefined,
+	diagnostics: Diagnostic[],
+): Record<string, unknown> {
 	if (!document || !Object.hasOwn(document, "agent")) return {};
 	if (object(document.agent)) return document.agent;
 	diagnostics.push(diagnostic("agent", "file", "invalid"));
@@ -233,11 +243,11 @@ export function readSettings(options: ReadOptions): Snapshot {
 	const section = readSection(document, diagnostics);
 	const add = (fact: Diagnostic) => {
 		if (diagnostics.length < 256) diagnostics.push(fact);
-		else if (!diagnostics.some((item) => item.code === "coverage")) diagnostics.push(diagnostic("coverage", "file", "coverage"));
+		else if (!diagnostics.some((item) => item.code === "coverage"))
+			diagnostics.push(diagnostic("coverage", "file", "coverage"));
 	};
 	for (const key of Object.keys(section)) {
-		if (!Object.hasOwn(settings.fields, key))
-			add(diagnostic(`agent.${unknownKey(key)}`, "file", "unknown"));
+		if (!Object.hasOwn(settings.fields, key)) add(diagnostic(`agent.${unknownKey(key)}`, "file", "unknown"));
 	}
 	const values: Record<string, unknown> = Object.create(null);
 	const records: SettingRecord[] = [];
@@ -245,7 +255,17 @@ export function readSettings(options: ReadOptions): Snapshot {
 		const field = settings.fields[key];
 		const { value, origin, status } = selectField(key, env, section, add);
 		values[key] = value;
-		records.push({ name: `agent.${key}`, key, type: field.type, description: field.description, env: field.env, secret: false, origin, status, value: structuredClone(value) });
+		records.push({
+			name: `agent.${key}`,
+			key,
+			type: field.type,
+			description: field.description,
+			env: field.env,
+			secret: false,
+			origin,
+			status,
+			value: structuredClone(value),
+		});
 	}
 	return { version: 1, slice: "agent", source, values: values as SettingsValues, records, diagnostics };
 }
@@ -254,7 +274,8 @@ export function publishSettings(bus: SettingsBus, options: ReadOptions): () => v
 	const publish = () => {
 		const { version, slice, source, records, diagnostics } = readSettings(options);
 		const publication: SettingsPublication = { version, slice, source, records, diagnostics };
-		if (Buffer.byteLength(JSON.stringify(publication)) > 262144) throw new Error("Settings publication exceeds byte limit");
+		if (Buffer.byteLength(JSON.stringify(publication)) > 262144)
+			throw new Error("Settings publication exceeds byte limit");
 		bus.emit("harness:settings:publish", publication);
 	};
 	const unsubscribe = bus.on("harness:settings:request", (value) => {

@@ -24,18 +24,41 @@ test("tiled pane reports an intersecting front layer", () => {
 	assert.deepEqual(paneStacking(view(), "pane"), { version: 1, pane: half, above: [overlap] });
 });
 test("floating pane reports later layers but not earlier layers", () => {
-	const layout = view([layer("base", full, "tiled"), layer("earlier", overlap), layer("pane", overlap), layer("later", overlap)]);
+	const layout = view([
+		layer("base", full, "tiled"),
+		layer("earlier", overlap),
+		layer("pane", overlap),
+		layer("later", overlap),
+	]);
 	assert.deepEqual(paneStacking(layout, "pane"), { version: 1, pane: overlap, above: [overlap] });
 	assert.deepEqual(paneStacking(layout, "later"), { version: 1, pane: overlap, above: [] });
 });
 test("non-intersecting layers and edge contact do not cover a pane", () => {
-	assert.deepEqual(paneStacking(view([layer("pane", half, "tiled"), layer("right", [0.5, 0, 0.5, 1])]), "pane"), { version: 1, pane: half, above: [] });
+	assert.deepEqual(paneStacking(view([layer("pane", half, "tiled"), layer("right", [0.5, 0, 0.5, 1])]), "pane"), {
+		version: 1,
+		pane: half,
+		above: [],
+	});
 });
 test("a different zoomed tiled block covers the whole pane", () => {
-	const layout = { windows: [{ zoomed_block_id: "other", layers: [
-		{ kind: "tiled", bounds: full, layout: { rect: full, split: { before: { block_id: "pane", rect: half }, after: { block_id: "other", rect: [0.5, 0, 0.5, 1] } } } },
-		layer("float", overlap),
-	] }] };
+	const layout = {
+		windows: [
+			{
+				zoomed_block_id: "other",
+				layers: [
+					{
+						kind: "tiled",
+						bounds: full,
+						layout: {
+							rect: full,
+							split: { before: { block_id: "pane", rect: half }, after: { block_id: "other", rect: [0.5, 0, 0.5, 1] } },
+						},
+					},
+					layer("float", overlap),
+				],
+			},
+		],
+	};
 	assert.deepEqual(paneStacking(layout, "pane"), { version: 1, pane: half, above: [full] });
 	assert.deepEqual(paneStacking(layout, "float"), { version: 1, pane: overlap, above: [] });
 });
@@ -47,7 +70,10 @@ test("absent blocks have no pane", () => {
 	assert.deepEqual(paneStacking(null, "pane"), { version: 1, pane: null });
 });
 test("rectangles clamp to fractions, unknown layers act as floating, and coverage stops at 64", () => {
-	const layout = view([layer("pane", [-1, -1, 2, 2], "tiled"), ...Array.from({ length: 70 }, (_, i) => layer(`front${i}`, overlap, "unknown"))]);
+	const layout = view([
+		layer("pane", [-1, -1, 2, 2], "tiled"),
+		...Array.from({ length: 70 }, (_, i) => layer(`front${i}`, overlap, "unknown")),
+	]);
 	const report = paneStacking(layout, "pane");
 	assert.notEqual(report.pane, null);
 	if (report.pane) {
@@ -61,7 +87,9 @@ async function helperFixture(t: test.TestContext, options: { failures?: number; 
 	const sockets = new Set<Socket>();
 	let events!: Socket;
 	let connected!: () => void;
-	const ready = new Promise<void>((resolve) => { connected = resolve; });
+	const ready = new Promise<void>((resolve) => {
+		connected = resolve;
+	});
 	const calls: string[][] = [];
 	const state = { view: view(), hold: false, pending: [] as Socket[], failures: options.failures ?? 0 };
 	const server = createServer((socket) => {
@@ -69,12 +97,17 @@ async function helperFixture(t: test.TestContext, options: { failures?: number; 
 		socket.once("close", () => sockets.delete(socket));
 		socket.once("data", (data) => {
 			const message = JSON.parse(data.toString());
-			if (message.kind === "events") { events = socket; connected(); server.emit("events", socket); }
-			else {
+			if (message.kind === "events") {
+				events = socket;
+				connected();
+				server.emit("events", socket);
+			} else {
 				calls.push(message.args);
 				if (state.hold) state.pending.push(socket);
-				else if (state.failures > 0) { state.failures -= 1; socket.end("not a view"); }
-				else socket.end(JSON.stringify(state.view));
+				else if (state.failures > 0) {
+					state.failures -= 1;
+					socket.end("not a view");
+				} else socket.end(JSON.stringify(state.view));
 				server.emit("view");
 			}
 		});
@@ -82,21 +115,34 @@ async function helperFixture(t: test.TestContext, options: { failures?: number; 
 	const socketPath = join(root, "control.sock");
 	server.listen(socketPath);
 	await once(server, "listening");
-	await writeFile(join(root, "rex"), `#!${process.execPath}
+	await writeFile(
+		join(root, "rex"),
+		`#!${process.execPath}
 const net = require('node:net');
 const args = process.argv.slice(2);
 const streaming = args.includes('events');
 const socket = net.connect(process.env.STACKING_SOCKET, () => socket.write(JSON.stringify({kind: streaming ? 'events' : 'view', args})));
 socket.on('data', data => process.stdout.write(data));
 socket.on('end', () => process.exit(streaming ? ${options.eventExitCode ?? 0} : 0));
-`, { mode: 0o755 });
+`,
+		{ mode: 0o755 },
+	);
 	const child = spawn(process.execPath, [fileURLToPath(new URL("./pane-stacking.mts", import.meta.url))], {
-		env: { ...process.env, REX_SESSION: "session:test", REX_BLOCK: "pane", REX_SERVER: "unix:///test", REX_BIN_DIR: root, STACKING_SOCKET: socketPath },
+		env: {
+			...process.env,
+			REX_SESSION: "session:test",
+			REX_BLOCK: "pane",
+			REX_SERVER: "unix:///test",
+			REX_BIN_DIR: root,
+			STACKING_SOCKET: socketPath,
+		},
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	const closed = once(child, "close");
 	let stderr = "";
-	child.stderr.on("data", (chunk) => { stderr += chunk; });
+	child.stderr.on("data", (chunk) => {
+		stderr += chunk;
+	});
 	const lines = createInterface({ input: child.stdout });
 	const output: string[] = [];
 	lines.on("line", (line) => output.push(line));
@@ -110,16 +156,41 @@ socket.on('end', () => process.exit(streaming ? ${options.eventExitCode ?? 0} : 
 	await ready;
 	if (!output.length) await once(lines, "line");
 	return {
-		root, state, calls, output, get events() { return events; }, lines, child, closed, server,
+		root,
+		state,
+		calls,
+		output,
+		get events() {
+			return events;
+		},
+		lines,
+		child,
+		closed,
+		server,
 		stderr: () => stderr,
-		event(revision: number) { events.write(`${JSON.stringify({ payload: { event: { type: "session_view_changed", payload: { revision } } } })}\n`); },
+		event(revision: number) {
+			events.write(
+				`${JSON.stringify({ payload: { event: { type: "session_view_changed", payload: { revision } } } })}\n`,
+			);
+		},
 	};
 }
 
-test("helper emits only changed reports, ignores old revisions and exits on stdin EOF", { timeout: 10000 }, async (t) => {
+test("helper emits only changed reports, ignores old revisions and exits on stdin EOF", {
+	timeout: 10000,
+}, async (t) => {
 	const f = await helperFixture(t);
 	assert.deepEqual(JSON.parse(f.output[0] ?? ""), paneStacking(f.state.view, "pane"));
-	assert.deepEqual(f.calls[0], ["--autostart=false", "--color=never", "--server", "unix:///test", "api", "call", "session.view", '{"session_id":"session:test"}']);
+	assert.deepEqual(f.calls[0], [
+		"--autostart=false",
+		"--color=never",
+		"--server",
+		"unix:///test",
+		"api",
+		"call",
+		"session.view",
+		'{"session_id":"session:test"}',
+	]);
 	f.state.view.revision = 2;
 	const unchanged = once(f.server, "view");
 	f.event(2);
@@ -140,7 +211,9 @@ test("helper emits only changed reports, ignores old revisions and exits on stdi
 	assert.equal(f.stderr(), "");
 });
 
-test("helper reconnects after event exit, refreshes a restarted revision and receives new events", { timeout: 10000 }, async (t) => {
+test("helper reconnects after event exit, refreshes a restarted revision and receives new events", {
+	timeout: 10000,
+}, async (t) => {
 	const f = await helperFixture(t);
 	f.state.view = { ...view([layer("pane", overlap)]), revision: 8 };
 	const oldReport = once(f.lines, "line");
@@ -164,7 +237,9 @@ test("helper reconnects after event exit, refreshes a restarted revision and rec
 	assert.equal(f.stderr(), "");
 });
 
-test("a lower recovered view clears old pending revisions without an event reconnect", { timeout: 10000 }, async (t) => {
+test("a lower recovered view clears old pending revisions without an event reconnect", {
+	timeout: 10000,
+}, async (t) => {
 	const f = await helperFixture(t);
 	f.state.view = { ...view([layer("pane", overlap)]), revision: 8 };
 	let changed = once(f.lines, "line");
@@ -207,7 +282,9 @@ test("helper retries an event spawn error and resumes after the executable retur
 	f.events.end();
 	let timer: ReturnType<typeof setTimeout>;
 	const restored = new Promise<void>((resolve, reject) => {
-		timer = setTimeout(() => { rename(disabled, executable).then(resolve, reject); }, 1500);
+		timer = setTimeout(() => {
+			rename(disabled, executable).then(resolve, reject);
+		}, 1500);
 	});
 	t.after(() => clearTimeout(timer));
 	await Promise.all([connected, restored]);
@@ -227,7 +304,9 @@ test("helper exits at input EOF during event reconnect backoff", { timeout: 1000
 	assert.equal(f.stderr(), "");
 });
 
-test("helper terminates its event child on interrupt, termination and hangup signals", { timeout: 10000 }, async (t) => {
+test("helper terminates its event child on interrupt, termination and hangup signals", {
+	timeout: 10000,
+}, async (t) => {
 	for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 		const f = await helperFixture(t);
 		const disconnected = once(f.events, "close");

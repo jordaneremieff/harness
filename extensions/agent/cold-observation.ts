@@ -115,9 +115,15 @@ interface ColdFileState {
 function fileState(path: string): ColdFileState {
 	try {
 		const stat = statSync(path, { bigint: true });
-		return { state: "file", key: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`, size: Number(stat.size) };
+		return {
+			state: "file",
+			key: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`,
+			size: Number(stat.size),
+		};
 	} catch (error) {
-		return errnoCode(error) === "ENOENT" ? { state: "absent", key: "absent" } : { state: "error", key: `error:${errnoCode(error) ?? "unknown"}` };
+		return errnoCode(error) === "ENOENT"
+			? { state: "absent", key: "absent" }
+			: { state: "error", key: `error:${errnoCode(error) ?? "unknown"}` };
 	}
 }
 
@@ -144,7 +150,10 @@ function stableKey(value: unknown): string {
 	if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined";
 	if (Array.isArray(value)) return `[${value.map(stableKey).join(",")}]`;
 	const record = value as Record<string, unknown>;
-	return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableKey(record[key])}`).join(",")}}`;
+	return `{${Object.keys(record)
+		.sort()
+		.map((key) => `${JSON.stringify(key)}:${stableKey(record[key])}`)
+		.join(",")}}`;
 }
 
 function resultKey(method: string, params: Record<string, unknown>): string {
@@ -160,12 +169,19 @@ function resultBytes(value: unknown): number {
 }
 
 /** Claim state pins the owner classification into the cache identity. */
-function claimState(metadata: HostMetadata): { readonly pin: string; readonly classification: ColdOwnerClassification } {
+function claimState(metadata: HostMetadata): {
+	readonly pin: string;
+	readonly classification: ColdOwnerClassification;
+} {
 	try {
 		const paths = hostPaths(metadata);
 		const claim = observeClaim(paths.claim, paths.identity);
-		if (claim.kind === "absent" || claim.kind === "dead") return { pin: claim.kind, classification: { owner: "unknown" } };
-		return { pin: `${claim.kind}:${claim.label ?? ""}`, classification: { owner: "unavailable", ...(claim.label === undefined ? {} : { label: claim.label }) } };
+		if (claim.kind === "absent" || claim.kind === "dead")
+			return { pin: claim.kind, classification: { owner: "unknown" } };
+		return {
+			pin: `${claim.kind}:${claim.label ?? ""}`,
+			classification: { owner: "unavailable", ...(claim.label === undefined ? {} : { label: claim.label }) },
+		};
 	} catch {
 		return { pin: "error", classification: { owner: "unavailable" } };
 	}
@@ -174,13 +190,16 @@ function claimState(metadata: HostMetadata): { readonly pin: string; readonly cl
 /** The default public snapshot opener: no services, no model runtime, no resume. */
 export async function openColdObservationSnapshot(input: ColdOpenInput): Promise<ColdObservationHandle> {
 	const { createModels, createRegistry, DurableObservation } = await loadColdObservationRuntime();
-	const observation = await DurableObservation.open({
-		backupFrom: input.storagePath,
-		storageId: input.storageId,
-		models: createModels(),
-		registry: createRegistry(),
-		...(input.classifyOwner === undefined ? {} : { classifyOwner: input.classifyOwner }),
-	}, BACKGROUND_CONTEXT);
+	const observation = await DurableObservation.open(
+		{
+			backupFrom: input.storagePath,
+			storageId: input.storageId,
+			models: createModels(),
+			registry: createRegistry(),
+			...(input.classifyOwner === undefined ? {} : { classifyOwner: input.classifyOwner }),
+		},
+		BACKGROUND_CONTEXT,
+	);
 	return {
 		request: (method, params) => observation.request(method, params),
 		close: () => observation.close(),
@@ -191,7 +210,10 @@ export async function openColdObservationSnapshot(input: ColdOpenInput): Promise
 let cacheQueue: Promise<void> = Promise.resolve();
 function runExclusive<T>(action: () => Promise<T>): Promise<T> {
 	const result = cacheQueue.then(action, action);
-	cacheQueue = result.then(() => undefined, () => undefined);
+	cacheQueue = result.then(
+		() => undefined,
+		() => undefined,
+	);
 	return result;
 }
 
@@ -213,7 +235,13 @@ export function createColdObservationCache() {
 	}
 
 	/** Open one snapshot and retain it only when the source stayed stable across the copy. */
-	async function openEntry(storagePath: string, storageId: string, claimPin: string, hooks: ColdObservationHooks | undefined, classifyOwner: () => ColdOwnerClassification): Promise<ColdEntry> {
+	async function openEntry(
+		storagePath: string,
+		storageId: string,
+		claimPin: string,
+		hooks: ColdObservationHooks | undefined,
+		classifyOwner: () => ColdOwnerClassification,
+	): Promise<ColdEntry> {
 		const pre = sourceState(storagePath);
 		const existing = entries.get(storagePath);
 		if (existing !== undefined) {
@@ -236,7 +264,13 @@ export function createColdObservationCache() {
 	}
 
 	/** Reuse one snapshot when the current source identity equals the identity captured after its open. */
-	async function acquireEntry(storagePath: string, storageId: string, claimPin: string, hooks: ColdObservationHooks | undefined, classifyOwner: () => ColdOwnerClassification): Promise<ColdEntry> {
+	async function acquireEntry(
+		storagePath: string,
+		storageId: string,
+		claimPin: string,
+		hooks: ColdObservationHooks | undefined,
+		classifyOwner: () => ColdOwnerClassification,
+	): Promise<ColdEntry> {
 		const existing = entries.get(storagePath);
 		const desired = `${sourceState(storagePath).key}|claim:${claimPin}`;
 		if (existing !== undefined && existing.key === desired) {
@@ -283,7 +317,12 @@ export function createColdObservationCache() {
 	 * snapshot and the exact result. A failed open retains no snapshot; a failed
 	 * request retains no result.
 	 */
-	async function observe(metadata: HostMetadata, method: string, params: Record<string, unknown> = {}, options: ColdObservationOptions = {}): Promise<unknown> {
+	async function observe(
+		metadata: HostMetadata,
+		method: string,
+		params: Record<string, unknown> = {},
+		options: ColdObservationOptions = {},
+	): Promise<unknown> {
 		if (closed) throw new Error("Cold observation cache is closed");
 		const storagePath = resolve(metadata.storagePath);
 		return await runExclusive(async () => {

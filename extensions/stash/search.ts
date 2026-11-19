@@ -1,6 +1,12 @@
 /** Bounded, read-only discovery over one explicit flat artifact collection. */
 import { createHash } from "node:crypto";
-import { CHECKPOINT_NOTICE, checkpointMetadata, collectionFilter, collectionId, type StashCollection } from "./collection.ts";
+import {
+	CHECKPOINT_NOTICE,
+	checkpointMetadata,
+	collectionFilter,
+	collectionId,
+	type StashCollection,
+} from "./collection.ts";
 import type { Dirent, Stats } from "node:fs";
 import { lstat, opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -137,13 +143,7 @@ function encodeCursor(value: Cursor): string {
 	return Buffer.from(JSON.stringify({ ...payload, checksum: digest(payload) })).toString("base64url");
 }
 function sameDirectory(a: Stats, b: Stats): boolean {
-	return (
-		b.isDirectory() &&
-		!b.isSymbolicLink() &&
-		a.dev === b.dev &&
-		a.ino === b.ino &&
-		a.mtimeMs === b.mtimeMs
-	);
+	return b.isDirectory() && !b.isSymbolicLink() && a.dev === b.dev && a.ino === b.ino && a.mtimeMs === b.mtimeMs;
 }
 
 function entryKind(entry: Dirent): string {
@@ -322,9 +322,12 @@ function inspectCandidate(
 			return {
 				filtered: false,
 				match: {
-					id: collectionId(meta.id, options.collection), title: shortTitle(safeField(meta.title)),
+					id: collectionId(meta.id, options.collection),
+					title: shortTitle(safeField(meta.title)),
 					state: options.collection === "checkpoints" ? "provisional" : meta.state,
-					...(options.collection === "checkpoints" ? checkpointMetadata(meta) : {}), field, ...hit,
+					...(options.collection === "checkpoints" ? checkpointMetadata(meta) : {}),
+					field,
+					...hit,
 				},
 			};
 	}
@@ -365,7 +368,10 @@ async function consumeCandidate(
 		result = inspectCandidate(name, text, options, pattern);
 	} catch (error) {
 		cancelled(signal);
-		page.skipped.push({ id: collectionId(safeField(name.slice(0, -3)), options.collection), reason: skipReason(error) });
+		page.skipped.push({
+			id: collectionId(safeField(name.slice(0, -3)), options.collection),
+			reason: skipReason(error),
+		});
 		page.coverage.skippedTotal++;
 		page.coverage.next++;
 		return true;

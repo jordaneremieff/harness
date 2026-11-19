@@ -99,13 +99,22 @@ it("selection reads follow key dispatch instead of blocking it", async () => {
 function liveSource(ids: string[]) {
 	const observed = source(ids.map((id) => row(id)));
 	let notify = () => {};
-	observed.subscribe = (listener) => { notify = listener; return () => {}; };
+	observed.subscribe = (listener) => {
+		notify = listener;
+		return () => {};
+	};
 	const frames = new Map<string, ReturnType<typeof conversationFrame>>();
 	let selected: string | undefined;
 	const reads: string[] = [];
-	observed.select = (id) => { selected = id; };
-	observed.frame = (id) => { reads.push(id); return id === selected ? frames.get(id) : undefined; };
-	observed.availability = (id) => (id === selected && frames.has(id) ? { state: "live", at: new Date(0).toISOString() } : undefined);
+	observed.select = (id) => {
+		selected = id;
+	};
+	observed.frame = (id) => {
+		reads.push(id);
+		return id === selected ? frames.get(id) : undefined;
+	};
+	observed.availability = (id) =>
+		id === selected && frames.has(id) ? { state: "live", at: new Date(0).toISOString() } : undefined;
 	return { observed, notify: () => notify(), frames, reads };
 }
 
@@ -126,12 +135,17 @@ it("sustained frame updates apply the newest frame at most twenty times a second
 		const applications = live.reads.length - baseline;
 		assert.ok(applications <= 20, `one simulated second applied ${applications} frames`);
 		assert.ok(applications >= 10, "updates still reach the view");
-		live.frames.set("one", conversationFrame({ revision: 500, status: { ...conversationFrame().status, busy: false } }));
+		live.frames.set(
+			"one",
+			conversationFrame({ revision: 500, status: { ...conversationFrame().status, busy: false } }),
+		);
 		live.notify();
 		clock.advance(50);
 		await turn();
 		assert.match(visible(f.ui.render(100)), /Idle/u, "the final state is presented");
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 it("the first frame of a selection applies at once", async () => {
@@ -143,7 +157,9 @@ it("the first frame of a selection applies at once", async () => {
 		await turn();
 		assert.equal(clock.pending, 0, "the first application waited for no timer");
 		assert.ok(live.reads.length > 0);
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 it("a pending application never reaches a different selection", async () => {
@@ -163,9 +179,15 @@ it("a pending application never reaches a different selection", async () => {
 		const before = live.reads.filter((id) => id === "one").length;
 		clock.advance(1000);
 		await turn();
-		assert.equal(live.reads.filter((id) => id === "one").length, before, "the earlier conversation is never read after the selection moved");
+		assert.equal(
+			live.reads.filter((id) => id === "one").length,
+			before,
+			"the earlier conversation is never read after the selection moved",
+		);
 		assert.equal(clock.pending, 0);
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 it("closing the view cancels a pending application", async () => {
@@ -209,8 +231,15 @@ it("unchanged history skips reconciliation and committed usage while live facts 
 		const usages = usage.mock.callCount();
 		const snapshots = historyEntries.mock.callCount();
 		const currentUsage = { models: {}, tools: {} } as NonNullable<typeof initial.status.usage>;
-		live.frames.set("one", { ...initial, revision: 2, live: [userEntry("live:message", "New live output")], status: { ...initial.status, busy: false, usage: currentUsage } });
-		live.notify(); clock.advance(50); await turn();
+		live.frames.set("one", {
+			...initial,
+			revision: 2,
+			live: [userEntry("live:message", "New live output")],
+			status: { ...initial.status, busy: false, usage: currentUsage },
+		});
+		live.notify();
+		clock.advance(50);
+		await turn();
 		assert.equal(tail.mock.callCount(), tails);
 		assert.equal(usage.mock.callCount(), usages);
 		assert.equal(historyEntries.mock.callCount(), snapshots, "the committed snapshot is not rebuilt");
@@ -222,13 +251,21 @@ it("unchanged history skips reconciliation and committed usage while live facts 
 			const previous = live.frames.get("one");
 			assert.ok(previous);
 			live.frames.set("one", { ...previous, ...patch, revision: previous.revision + 1 });
-			live.notify(); clock.advance(50); await turn();
+			live.notify();
+			clock.advance(50);
+			await turn();
 		}
 		assert.equal(tail.mock.callCount(), tails + 2, "coverage and cursor changes each reconcile history");
 		assert.equal(usage.mock.callCount(), usages, "coverage and cursor changes do not recompute committed usage");
-		assert.doesNotMatch(visible(f.ui.render(120)), /Partial history/u, "the idle header does not repeat history coverage");
+		assert.doesNotMatch(
+			visible(f.ui.render(120)),
+			/Partial history/u,
+			"the idle header does not repeat history coverage",
+		);
 		assert.equal(console.status, "Partial history");
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 it("append and truncated history frames render identically with shared or rebuilt history", async () => {
@@ -248,17 +285,37 @@ it("append and truncated history frames render identically with shared or rebuil
 		for (const frame of [
 			{ ...initial, revision: 2, live: [userEntry("live:message", "Text append")] },
 			{ ...initial, revision: 3, entries: appended },
-			{ ...initial, revision: 4, entries: appended.slice(1), coverage: { ...initial.coverage, complete: false }, nextBefore: 2 },
-			{ ...initial, revision: 5, entries: appended.slice(1), live: [userEntry("live:message", "Final live state")], coverage: { ...initial.coverage, complete: false }, nextBefore: 2 },
+			{
+				...initial,
+				revision: 4,
+				entries: appended.slice(1),
+				coverage: { ...initial.coverage, complete: false },
+				nextBefore: 2,
+			},
+			{
+				...initial,
+				revision: 5,
+				entries: appended.slice(1),
+				live: [userEntry("live:message", "Final live state")],
+				coverage: { ...initial.coverage, complete: false },
+				nextBefore: 2,
+			},
 		]) {
 			shared.frames.set("one", frame);
 			rebuilt.frames.set("one", structuredClone(frame));
-			shared.notify(); rebuilt.notify(); clock.advance(50); otherClock.advance(50); await turn();
+			shared.notify();
+			rebuilt.notify();
+			clock.advance(50);
+			otherClock.advance(50);
+			await turn();
 			assert.deepEqual(f.ui.render(120), reference.ui.render(120));
 		}
 		assert.match(visible(f.ui.render(120)), /Appended message/u);
 		assert.match(visible(f.ui.render(120)), /Final live state/u);
-	} finally { f.ui.dispose(); reference.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+		reference.ui.dispose();
+	}
 });
 
 it("live slot removal finalises a partial card without a history reconciliation", async (t) => {
@@ -268,48 +325,92 @@ it("live slot removal finalises a partial card without a history reconciliation"
 	const clock = manualClock();
 	const initial = conversationFrame({
 		entries: [userEntry("1", "Read the file")],
-		live: buildLiveEntries({ nestedTools: [{ callId: "outer/call", parentCallId: "outer", parentTaskId: 10, taskId: 11, name: "read", arguments: { path: "file.ts" }, status: "running", output: "partial text" }] }, []),
+		live: buildLiveEntries(
+			{
+				nestedTools: [
+					{
+						callId: "outer/call",
+						parentCallId: "outer",
+						parentTaskId: 10,
+						taskId: 11,
+						name: "read",
+						arguments: { path: "file.ts" },
+						status: "running",
+						output: "partial text",
+					},
+				],
+			},
+			[],
+		),
 	});
 	live.frames.set("one", initial);
 	const f = fixture(120, 40, live.observed, undefined, undefined, theme, undefined, clock);
 	try {
-		await turn(); f.ui.render(120);
+		await turn();
+		f.ui.render(120);
 		const tails = tail.mock.callCount();
 		const calls = updates.mock.callCount();
-		assert.ok(updates.mock.calls.some((call) => call.arguments[1] === true), "the live slot starts a partial card");
+		assert.ok(
+			updates.mock.calls.some((call) => call.arguments[1] === true),
+			"the live slot starts a partial card",
+		);
 		live.frames.set("one", { ...initial, revision: 2, live: [] });
-		live.notify(); clock.advance(50); await turn(); f.ui.render(120);
+		live.notify();
+		clock.advance(50);
+		await turn();
+		f.ui.render(120);
 		assert.equal(tail.mock.callCount(), tails);
-		assert.ok(updates.mock.calls.slice(calls).some((call) => call.arguments[1] !== true), "removal sends a non-partial result to release renderer timers");
+		assert.ok(
+			updates.mock.calls.slice(calls).some((call) => call.arguments[1] !== true),
+			"removal sends a non-partial result to release renderer timers",
+		);
 		assert.doesNotMatch(visible(f.ui.render(120)), /file.ts/u);
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 it("history navigation invalidates retained history without losing the loaded window", async (t) => {
 	const tail = t.mock.method(ConversationHistory.prototype, "tail");
 	const live = liveSource(["one"]);
 	const clock = manualClock();
-	const initial = conversationFrame({ entries: [userEntry("2", "Current message")], nextBefore: 2, coverage: { ...conversationFrame().coverage, complete: false } });
+	const initial = conversationFrame({
+		entries: [userEntry("2", "Current message")],
+		nextBefore: 2,
+		coverage: { ...conversationFrame().coverage, complete: false },
+	});
 	live.frames.set("one", initial);
 	let reads = 0;
 	live.observed.earlier = async (_id, before) => {
 		reads++;
 		assert.equal(before, 2);
-		return { entries: [userEntry("1", "Earlier message")], partial: false, revision: "earlier", nextBefore: null, coverage: { ...initial.coverage, complete: true } };
+		return {
+			entries: [userEntry("1", "Earlier message")],
+			partial: false,
+			revision: "earlier",
+			nextBefore: null,
+			coverage: { ...initial.coverage, complete: true },
+		};
 	};
 	const f = fixture(120, 40, live.observed, undefined, undefined, theme, undefined, clock);
 	try {
-		await turn(); f.ui.render(120);
+		await turn();
+		f.ui.render(120);
 		const before = tail.mock.callCount();
-		f.ui.handleInput("\x1b[5~"); await turn();
+		f.ui.handleInput("\x1b[5~");
+		await turn();
 		assert.equal(reads, 1);
 		assert.match(visible(f.ui.render(120)), /Earlier message/u);
 		live.frames.set("one", { ...initial, revision: 2 });
-		live.notify(); clock.advance(50); await turn();
+		live.notify();
+		clock.advance(50);
+		await turn();
 		assert.equal(tail.mock.callCount(), before + 1);
 		assert.match(visible(f.ui.render(120)), /Earlier message/u);
 		assert.match(visible(f.ui.render(120)), /Current message/u);
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 it("reconnect and selection changes clear retained history references", async (t) => {
@@ -317,20 +418,34 @@ it("reconnect and selection changes clear retained history references", async (t
 	const live = liveSource(["one", "two"]);
 	const clock = manualClock();
 	const initial = conversationFrame({ entries: [userEntry("1", "Retained message")] });
-	live.frames.set("one", initial); live.frames.set("two", initial);
+	live.frames.set("one", initial);
+	live.frames.set("two", initial);
 	let state: "live" | "unavailable" = "live";
 	live.observed.availability = () => ({ state, at: new Date(0).toISOString() });
 	const f = fixture(120, 40, live.observed, undefined, undefined, theme, undefined, clock);
 	try {
 		await turn();
-		state = "unavailable"; live.notify(); clock.advance(50); await turn();
+		state = "unavailable";
+		live.notify();
+		clock.advance(50);
+		await turn();
 		assert.match(visible(f.ui.render(120)), /Connection lost/u);
 		const before = tail.mock.callCount();
-		state = "live"; live.notify(); clock.advance(50); await turn();
-		assert.equal(tail.mock.callCount(), before + 1, "the first reconnected frame reconciles even with the same entries");
+		state = "live";
+		live.notify();
+		clock.advance(50);
+		await turn();
+		assert.equal(
+			tail.mock.callCount(),
+			before + 1,
+			"the first reconnected frame reconciles even with the same entries",
+		);
 		assert.doesNotMatch(visible(f.ui.render(120)), /Connection lost/u);
 		assert.match(visible(f.ui.render(120)), /Retained message/u);
-		f.ui.handleInput("\x1b[B"); await turn();
+		f.ui.handleInput("\x1b[B");
+		await turn();
 		assert.equal(tail.mock.callCount(), before + 2, "another selection does not inherit the retained reference");
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });

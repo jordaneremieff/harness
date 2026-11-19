@@ -18,7 +18,12 @@ import { settingQuery, settingsReader } from "./configuration.ts";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
-import { REGISTRY_DESCRIPTION, REGISTRY_PROMPT_GUIDELINES, REGISTRY_PROMPT_SNIPPET, RegistryParams } from "./contract.ts";
+import {
+	REGISTRY_DESCRIPTION,
+	REGISTRY_PROMPT_GUIDELINES,
+	REGISTRY_PROMPT_SNIPPET,
+	RegistryParams,
+} from "./contract.ts";
 import { createRegistryDurableContribution } from "./durable.ts";
 import { lookup, lookupIsError } from "./lookup.ts";
 import { RegistryOutputSchema } from "./output.ts";
@@ -36,7 +41,12 @@ export { RegistryParams };
  * Each surface is probed independently so one absent accessor is reported as
  * unavailable instead of collapsing the whole snapshot into an empty result.
  */
-export function readSnapshot(pi: ExtensionAPI, observation: ObservationSnapshot | null, at: number, ctx?: Pick<ExtensionToolContext, "tools">): HostSnapshot {
+export function readSnapshot(
+	pi: ExtensionAPI,
+	observation: ObservationSnapshot | null,
+	at: number,
+	ctx?: Pick<ExtensionToolContext, "tools">,
+): HostSnapshot {
 	const availability: SurfaceAvailability = { tools: false, activeTools: false, commands: false };
 	let tools: HostSnapshot["tools"] = [];
 	let activeTools: string[] = [];
@@ -49,7 +59,9 @@ export function readSnapshot(pi: ExtensionAPI, observation: ObservationSnapshot 
 				callableTools = callable.map((tool) => tool.name);
 				availability.callableTools = true;
 			}
-		} catch { /* A missing callable snapshot is not an empty callable set. */ }
+		} catch {
+			/* A missing callable snapshot is not an empty callable set. */
+		}
 	}
 	let commands: HostSnapshot["commands"] = [];
 	try {
@@ -113,10 +125,16 @@ function sessionFacts(ctx: ExtensionContext) {
 	} catch {
 		// An unavailable trust probe stays unavailable rather than guessing a value.
 	}
-	try { facts.sessionId = ctx.sessionManager.getSessionId(); }
-	catch { /* Session metadata remains unavailable when its accessor fails. */ }
-	try { facts.sessionFile = ctx.sessionManager.getSessionFile() ?? null; }
-	catch { /* An unavailable accessor is not an ephemeral session. */ }
+	try {
+		facts.sessionId = ctx.sessionManager.getSessionId();
+	} catch {
+		/* Session metadata remains unavailable when its accessor fails. */
+	}
+	try {
+		facts.sessionFile = ctx.sessionManager.getSessionFile() ?? null;
+	} catch {
+		/* An unavailable accessor is not an ephemeral session. */
+	}
 	return facts;
 }
 
@@ -136,20 +154,31 @@ export default function registerRegistry(pi: ExtensionAPI) {
 	const configuredSettings = settingsReader(pi.events);
 	configuredSettings.read();
 	let noteCwd = "";
-	const notes = new RegistryNotes(() => {
-		const resources = ordinaryNoteResources(readSnapshot(pi, null, Date.now()));
-		return noteKnowledge(noteCwd, agentDir, resources, configuredSettings.peek());
-	}, () => configuredSettings.read(), () => readSettings({ agentDir }).values.notes);
+	const notes = new RegistryNotes(
+		() => {
+			const resources = ordinaryNoteResources(readSnapshot(pi, null, Date.now()));
+			return noteKnowledge(noteCwd, agentDir, resources, configuredSettings.peek());
+		},
+		() => configuredSettings.read(),
+		() => readSettings({ agentDir }).values.notes,
+	);
 	pi.on("tool_result", async (event, ctx) => {
 		noteCwd = ctx.cwd;
-		const appended = notes.result({ name: event.toolName, input: event.input }, event.toolCallId,
-			event.parentToolCallId);
+		const appended = notes.result(
+			{ name: event.toolName, input: event.input },
+			event.toolCallId,
+			event.parentToolCallId,
+		);
 		if (!appended.length) return;
-		return { content: [...event.content, ...appended.map((text) => ({ type: "text" as const, text }))],
-			structuredContent: event.structuredContent };
+		return {
+			content: [...event.content, ...appended.map((text) => ({ type: "text" as const, text }))],
+			structuredContent: event.structuredContent,
+		};
 	});
 	// Notes own their session lifecycle, separate from the lookup's cursor and observation state.
-	pi.on("session_start", async () => { notes.reset(); });
+	pi.on("session_start", async () => {
+		notes.reset();
+	});
 	pi.on("session_shutdown", async () => {
 		notes.reset();
 		stopPublishing();
@@ -171,7 +200,9 @@ export default function registerRegistry(pi: ExtensionAPI) {
 		else observations.clear();
 	});
 
-	pi.on("session_start", async () => { reset(); });
+	pi.on("session_start", async () => {
+		reset();
+	});
 
 	pi.on("session_shutdown", async () => {
 		reset();
@@ -195,17 +226,34 @@ export default function registerRegistry(pi: ExtensionAPI) {
 			const abortSignal = signal ? AbortSignal.any([signal, sessionAbort.signal]) : sessionAbort.signal;
 			if (abortSignal.aborted) {
 				const result = await lookup({
-					params: params as RawParams, epoch, signal: abortSignal, session: {},
-					snapshot: { tools: [], activeTools: [], commands: [], observation: null,
-						availability: { tools: false, activeTools: false, commands: false }, at },
+					params: params as RawParams,
+					epoch,
+					signal: abortSignal,
+					session: {},
+					snapshot: {
+						tools: [],
+						activeTools: [],
+						commands: [],
+						observation: null,
+						availability: { tools: false, activeTools: false, commands: false },
+						at,
+					},
 				});
-				return { content: [{ type: "text" as const, text: result.text }], details: result.details, structuredContent: result.structuredContent, isError: lookupIsError(result.outcome) };
+				return {
+					content: [{ type: "text" as const, text: result.text }],
+					details: result.details,
+					structuredContent: result.structuredContent,
+					isError: lookupIsError(result.outcome),
+				};
 			}
 			const snapshot = readSnapshot(pi, observations.snapshot(), at, ctx);
 			let modelQuery = params.kind === "model";
 			if (params.cursor !== undefined) {
-				try { modelQuery = decodeCursor(params.cursor).query.kind === "model"; }
-				catch { /* The query layer returns the bounded validation error. */ }
+				try {
+					modelQuery = decodeCursor(params.cursor).query.kind === "model";
+				} catch {
+					/* The query layer returns the bounded validation error. */
+				}
 			}
 			const result = await lookup({
 				...(modelQuery ? { models: readModels(ctx, at) } : {}),
@@ -217,7 +265,12 @@ export default function registerRegistry(pi: ExtensionAPI) {
 				epoch,
 				signal: abortSignal,
 			});
-			return { content: [{ type: "text" as const, text: result.text }], details: result.details, structuredContent: result.structuredContent, isError: lookupIsError(result.outcome) };
+			return {
+				content: [{ type: "text" as const, text: result.text }],
+				details: result.details,
+				structuredContent: result.structuredContent,
+				isError: lookupIsError(result.outcome),
+			};
 		},
 	});
 	publish();

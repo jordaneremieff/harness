@@ -86,7 +86,10 @@ export interface TabLabelProjectorOptions {
 }
 
 export function sanitizeTabLabel(value: string): string {
-	const clean = value.replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, "").replace(/\s+/gu, " ").trim();
+	const clean = value
+		.replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, "")
+		.replace(/\s+/gu, " ")
+		.trim();
 	return Array.from(clean).slice(0, 128).join("").trim();
 }
 
@@ -167,10 +170,13 @@ class Projector implements TabLabelProjector {
 		const running = this.running;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
-			if (running) await Promise.race([
-				running,
-				new Promise<void>((resolve) => { timer = setTimeout(resolve, SHUTDOWN_DRAIN_MS); }),
-			]);
+			if (running)
+				await Promise.race([
+					running,
+					new Promise<void>((resolve) => {
+						timer = setTimeout(resolve, SHUTDOWN_DRAIN_MS);
+					}),
+				]);
 		} finally {
 			if (timer) clearTimeout(timer);
 		}
@@ -214,7 +220,10 @@ class Projector implements TabLabelProjector {
 		const run = { generation: this.generation, ctx, controller, transport };
 		// Demands made while this pass runs belong to a later pass: they receive
 		// their own observation rather than this one's acknowledgement.
-		const covered: RefreshCoverage = { inputRevision: this.demand.inputRevision, nameRevision: this.demand.nameRevision };
+		const covered: RefreshCoverage = {
+			inputRevision: this.demand.inputRevision,
+			nameRevision: this.demand.nameRevision,
+		};
 		try {
 			const coverage = await this.update(run, covered);
 			if (coverage && this.current(run) && this.coversDemand(coverage)) this.dirty = false;
@@ -239,7 +248,7 @@ class Projector implements TabLabelProjector {
 		if (!sessionId || !blockId) return covered;
 		const identity = await this.serverIdentity(run);
 		if (!this.current(run)) return undefined;
-		if (!await this.foregroundMatches(run, sessionId, blockId)) return this.current(run) ? covered : undefined;
+		if (!(await this.foregroundMatches(run, sessionId, blockId))) return this.current(run) ? covered : undefined;
 		const selected = await this.containingWindow(run, sessionId, blockId);
 		if (!this.current(run)) return undefined;
 		if (!selected) return covered;
@@ -256,17 +265,25 @@ class Projector implements TabLabelProjector {
 	private async serverIdentity(run: Run): Promise<{ hostId: string; instanceId: string }> {
 		await this.retryWithdrawals();
 		const identity = object(await this.json(run, ["whoami", "--json"]));
-		if (!text(identity.host_id) || !text(identity.instance_id)) throw new Error("Rex did not report its host and instance IDs.");
+		if (!text(identity.host_id) || !text(identity.instance_id))
+			throw new Error("Rex did not report its host and instance IDs.");
 		return { hostId: identity.host_id, instanceId: identity.instance_id };
 	}
 
 	private async foregroundMatches(run: Run, sessionId: string, blockId: string): Promise<boolean> {
-		const processes = object(await this.api(run, "com.superlogical.terminal.process", { session_id: sessionId, block_id: blockId, args: {} }));
-		const foreground = processes.foreground === null || processes.foreground === undefined ? undefined : object(processes.foreground);
+		const processes = object(
+			await this.api(run, "com.superlogical.terminal.process", { session_id: sessionId, block_id: blockId, args: {} }),
+		);
+		const foreground =
+			processes.foreground === null || processes.foreground === undefined ? undefined : object(processes.foreground);
 		return foreground?.pid === this.pid;
 	}
 
-	private async containingWindow(run: Run, sessionId: string, blockId: string): Promise<{ windowId: string; currentLabel: string } | undefined> {
+	private async containingWindow(
+		run: Run,
+		sessionId: string,
+		blockId: string,
+	): Promise<{ windowId: string; currentLabel: string } | undefined> {
 		const view = object(await this.api(run, "session.view", { session_id: sessionId }));
 		return locateWindow(view, blockId);
 	}
@@ -330,7 +347,11 @@ class Projector implements TabLabelProjector {
 			return;
 		}
 		try {
-			await this.api(run, "session.set_window_label", { session_id: key.sessionId, window_id: key.windowId, label: desired });
+			await this.api(run, "session.set_window_label", {
+				session_id: key.sessionId,
+				window_id: key.windowId,
+				label: desired,
+			});
 		} catch (error) {
 			if (!(error instanceof CliCallError) || error.started) throw error;
 			let withdrawal: unknown;
@@ -347,20 +368,35 @@ class Projector implements TabLabelProjector {
 	}
 
 	private desiredIsCurrent(run: Run, key: ResourceKey, desired: string, server: string | undefined): boolean {
-		return this.current(run) && this.env.REX_SERVER === server && this.env.REX_SESSION === key.sessionId &&
-			this.env.REX_BLOCK === key.blockId && this.label(this.ctx ?? run.ctx) === desired;
+		return (
+			this.current(run) &&
+			this.env.REX_SERVER === server &&
+			this.env.REX_SESSION === key.sessionId &&
+			this.env.REX_BLOCK === key.blockId &&
+			this.label(this.ctx ?? run.ctx) === desired
+		);
 	}
 
-	private async dispatchEligible(run: Run, key: ResourceKey, claim: Claim, desired: string, server: string | undefined): Promise<boolean> {
+	private async dispatchEligible(
+		run: Run,
+		key: ResourceKey,
+		claim: Claim,
+		desired: string,
+		server: string | undefined,
+	): Promise<boolean> {
 		const currentName = () => this.desiredIsCurrent(run, key, desired, server);
 		if (!currentName()) return false;
 		const identity = await this.serverIdentity(run);
 		if (!currentName() || identity.hostId !== key.hostId || identity.instanceId !== key.instanceId) return false;
-		if (!await this.foregroundMatches(run, key.sessionId, key.blockId) || !currentName()) return false;
+		if (!(await this.foregroundMatches(run, key.sessionId, key.blockId)) || !currentName()) return false;
 		const selected = await this.containingWindow(run, key.sessionId, key.blockId);
 		const observed = claim.label ?? `Window ${key.windowId.slice(-8)}`;
-		if (!currentName() || selected?.windowId !== key.windowId ||
-			(selected.currentLabel !== observed && selected.currentLabel !== claim.pending)) return false;
+		if (
+			!currentName() ||
+			selected?.windowId !== key.windowId ||
+			(selected.currentLabel !== observed && selected.currentLabel !== claim.pending)
+		)
+			return false;
 		const outcome = await this.withRecordStep(key, run, async (step) => {
 			const record = await step.read();
 			return record?.attempt === claim.attempt && record.pending === desired;
@@ -402,8 +438,11 @@ class Projector implements TabLabelProjector {
 	private async retryWithdrawals(): Promise<void> {
 		let failure: unknown;
 		for (const { key, attempt } of [...this.withdrawals.values()]) {
-			try { await this.withdrawClaim(key, attempt); }
-			catch (error) { failure ??= error; }
+			try {
+				await this.withdrawClaim(key, attempt);
+			} catch (error) {
+				failure ??= error;
+			}
 		}
 		if (failure) throw failure;
 	}
@@ -414,7 +453,11 @@ class Projector implements TabLabelProjector {
 	 * record between the decision's read and its write. A step never holds the lock across
 	 * a Rex call and never acquires a second record's lock.
 	 */
-	private async withRecordStep<T>(key: ResourceKey, run: Run | undefined, decide: (step: RecordStep) => Promise<T>): Promise<StepOutcome<T>> {
+	private async withRecordStep<T>(
+		key: ResourceKey,
+		run: Run | undefined,
+		decide: (step: RecordStep) => Promise<T>,
+	): Promise<StepOutcome<T>> {
 		await mkdir(this.directory, { recursive: true, mode: 0o700 });
 		const recordPath = this.path(key);
 		const lock = await RecordLock.acquire(recordPath);
@@ -455,7 +498,12 @@ class Projector implements TabLabelProjector {
 	}
 
 	private prefix(): string[] {
-		return ["--autostart=false", "--color=never", "--timeout=10s", ...(this.env.REX_SERVER ? ["--server", this.env.REX_SERVER] : [])];
+		return [
+			"--autostart=false",
+			"--color=never",
+			"--timeout=10s",
+			...(this.env.REX_SERVER ? ["--server", this.env.REX_SERVER] : []),
+		];
 	}
 
 	private api(run: Run, method: string, args: Record<string, unknown>): Promise<unknown> {
@@ -470,7 +518,8 @@ class Projector implements TabLabelProjector {
 			timeoutMs: this.options.settings.maxWaitMs,
 			maxOutputBytes: this.options.settings.maxOutputBytes,
 		});
-		if (response.outcome !== "exited" || response.exitCode !== 0 || response.truncated) throw new CliCallError(cliError(response), response.started);
+		if (response.outcome !== "exited" || response.exitCode !== 0 || response.truncated)
+			throw new CliCallError(cliError(response), response.started);
 		try {
 			return JSON.parse(response.stdout);
 		} catch {
@@ -539,10 +588,12 @@ class Projector implements TabLabelProjector {
 	private async prune(current: string): Promise<void> {
 		const names = (await readdir(this.directory)).filter((name) => /^[a-f0-9]{64}\.json$/.test(name));
 		if (names.length <= this.maxRecords) return;
-		const records = await Promise.all(names.map(async (name) => ({
-			name,
-			mtime: (await stat(join(this.directory, name))).mtimeMs,
-		})));
+		const records = await Promise.all(
+			names.map(async (name) => ({
+				name,
+				mtime: (await stat(join(this.directory, name))).mtimeMs,
+			})),
+		);
 		records.sort((left, right) => left.mtime - right.mtime || left.name.localeCompare(right.name));
 		let remaining = names.length - this.maxRecords;
 		for (const record of records) {
@@ -569,7 +620,9 @@ class Projector implements TabLabelProjector {
 	}
 
 	private async removeRecord(key: ResourceKey): Promise<void> {
-		await unlink(this.path(key)).catch((error) => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
+		await unlink(this.path(key)).catch((error) => {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		});
 	}
 }
 
@@ -647,7 +700,10 @@ class RecordLock {
 	}
 }
 
-function locateWindow(view: Record<string, unknown>, blockId: string): { windowId: string; currentLabel: string } | undefined {
+function locateWindow(
+	view: Record<string, unknown>,
+	blockId: string,
+): { windowId: string; currentLabel: string } | undefined {
 	const windows = Array.isArray(view.windows) ? view.windows : [];
 	for (const candidate of windows) {
 		const window = object(candidate);
@@ -665,7 +721,8 @@ function locateWindow(view: Record<string, unknown>, blockId: string): { windowI
 }
 
 function object(value: unknown): Record<string, unknown> {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Rex returned an invalid object.");
+	if (value === null || typeof value !== "object" || Array.isArray(value))
+		throw new Error("Rex returned an invalid object.");
 	return value as Record<string, unknown>;
 }
 
@@ -676,13 +733,19 @@ function text(value: unknown): value is string {
 function validRecord(value: unknown, key: ResourceKey): value is StoredRecord {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
 	const record = value as Record<string, unknown>;
-	return record.version === 1 &&
-		record.hostId === key.hostId && record.instanceId === key.instanceId &&
-		record.sessionId === key.sessionId && record.windowId === key.windowId && record.blockId === key.blockId &&
-		text(record.updatedAt) && record.updatedAt.length <= 64 &&
+	return (
+		record.version === 1 &&
+		record.hostId === key.hostId &&
+		record.instanceId === key.instanceId &&
+		record.sessionId === key.sessionId &&
+		record.windowId === key.windowId &&
+		record.blockId === key.blockId &&
+		text(record.updatedAt) &&
+		record.updatedAt.length <= 64 &&
 		(record.label === undefined || validStoredLabel(record.label)) &&
 		(record.pending === undefined || validStoredLabel(record.pending)) &&
-		(record.attempt === undefined || validAttempt(record.attempt));
+		(record.attempt === undefined || validAttempt(record.attempt))
+	);
 }
 
 function validAttempt(value: unknown): value is string {
@@ -694,7 +757,14 @@ function validStoredLabel(value: unknown): value is string {
 }
 
 function sanitizeDiagnostic(value: string): string {
-	return Array.from(value.replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, " ").replace(/\s+/gu, " ").trim()).slice(0, 240).join("");
+	return Array.from(
+		value
+			.replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, " ")
+			.replace(/\s+/gu, " ")
+			.trim(),
+	)
+		.slice(0, 240)
+		.join("");
 }
 
 /** A failed Rex CLI call. `started` separates a write that never began from an uncertain one. */

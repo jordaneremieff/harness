@@ -10,12 +10,7 @@
  * move to a new tail and are never evicted while their anchor is active.
  */
 import { createHash } from "node:crypto";
-import {
-	GUIDANCE_BYTES,
-	GUIDANCE_PREFIX,
-	type ProgramEvaluation,
-	PROGRAM_LIMITS,
-} from "./program.ts";
+import { GUIDANCE_BYTES, GUIDANCE_PREFIX, type ProgramEvaluation, PROGRAM_LIMITS } from "./program.ts";
 import type { ObservationState, StatePin } from "./state.ts";
 
 /** Bounds for one active context's retained guidance. */
@@ -370,11 +365,7 @@ export function guidanceRecordId(
 }
 
 /** Build the record for one prepared selection at one anchor. */
-export function guidanceRecord(
-	anchor: GuidanceAnchor,
-	timestamp: number,
-	prepared: PreparedGuidance,
-): GuidanceRecord {
+export function guidanceRecord(anchor: GuidanceAnchor, timestamp: number, prepared: PreparedGuidance): GuidanceRecord {
 	return {
 		id: guidanceRecordId(anchor.epoch, anchor, prepared.pins, prepared.text),
 		anchor,
@@ -463,8 +454,7 @@ export function parseGuidanceRecord(value: unknown): GuidanceRecord | undefined 
 	const entry = objectValue(value);
 	if (!entry) return undefined;
 	if (typeof entry.id !== "string" || !entry.id || entry.id.length > 128) return undefined;
-	if (typeof entry.timestamp !== "number" || !Number.isFinite(entry.timestamp) || entry.timestamp < 0)
-		return undefined;
+	if (typeof entry.timestamp !== "number" || !Number.isFinite(entry.timestamp) || entry.timestamp < 0) return undefined;
 	const text = entry.text;
 	if (typeof text !== "string" || !text || Buffer.byteLength(text, "utf8") > GUIDANCE_HISTORY_LIMITS.bytes)
 		return undefined;
@@ -533,11 +523,7 @@ function locatorFor<M extends { role: string }>(
 	history: GuidanceHistory,
 	isOwn?: (message: M) => boolean,
 ): RequestLocator {
-	return new RequestLocator(
-		messages,
-		sources,
-		basePositions(messages, isOwn ?? ownMessageMatcher(history.records)),
-	);
+	return new RequestLocator(messages, sources, basePositions(messages, isOwn ?? ownMessageMatcher(history.records)));
 }
 
 /**

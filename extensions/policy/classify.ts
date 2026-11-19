@@ -269,8 +269,12 @@ function declarativeStageTruth(
 		cli = decoded.get(stage);
 		if (cli === undefined) cli = { status: "unknown", reason: "option-limit" };
 	}
-	if (spec.cli && (COMMAND_OPERAND_WRAPPERS.has(stage.command) ||
-		(stage.command === "find" && (stage.args.some((arg) => FIND_EXEC_ACTIONS.has(arg)) || stage.argLiterals?.includes(false)))))
+	if (
+		spec.cli &&
+		(COMMAND_OPERAND_WRAPPERS.has(stage.command) ||
+			(stage.command === "find" &&
+				(stage.args.some((arg) => FIND_EXEC_ACTIONS.has(arg)) || stage.argLiterals?.includes(false))))
+	)
 		return { truth: "unknown", reason: "opaque-command-operand" };
 	const indirect =
 		spec.cli &&
@@ -314,7 +318,10 @@ function evaluateDeclarativeRecord(
 	parsed: ShellEvidence,
 	onMatch: (stage: Stage) => void,
 ): { applies: Truth; reasons: string[] } {
-	const spec = record.matcher.kind === "declarative" && record.matcher.language === "command-shape/v1" ? record.matcher.spec : undefined;
+	const spec =
+		record.matcher.kind === "declarative" && record.matcher.language === "command-shape/v1"
+			? record.matcher.spec
+			: undefined;
 	if (!spec) return { applies: false, reasons: [] };
 	const reasons = new Set<string>();
 	let applies: Truth = false;

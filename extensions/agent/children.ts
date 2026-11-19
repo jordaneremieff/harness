@@ -17,5 +17,13 @@ export type AgentChildrenState = { children: AgentChild[]; reporters: Record<str
 
 /** Native creation and reporter records remain the authority for delegated-work lineage. */
 export function agentChildrenDoc(durable: typeof Durable) {
-	return durable.defineDoc<AgentChildrenState>({ kind: "agent.children", version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ children: [], reporters: {} }), checkpointWhen: () => false });
+	return durable.defineDoc<AgentChildrenState>({
+		kind: "agent.children",
+		version: 1,
+		scope: "conversation",
+		history: "latest",
+		fork: "initial",
+		initial: () => ({ children: [], reporters: {} }),
+		checkpointWhen: () => false,
+	});
 }

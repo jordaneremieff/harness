@@ -178,8 +178,12 @@ test("serves every clipboard tool to a Durable model and classifies replay", { t
 			assert.match(textOf(restore), /Restored seeded-entry to clipboard \(1 lines, 11 chars\)\./u);
 			assert.equal(await readFile(clipboardFile, "utf8"), "seeded body");
 			assert.equal(detailsOf(restore).archiveError, undefined, "a restore reports no archive write");
-			const restored = (await readEntries(archive, { limit: 5, contentChars: 32 }));
-			assert.deepEqual(restored.map((entry) => entry.id), [copiedId, "seeded-entry"], "a restore adds no archive record");
+			const restored = await readEntries(archive, { limit: 5, contentChars: 32 });
+			assert.deepEqual(
+				restored.map((entry) => entry.id),
+				[copiedId, "seeded-entry"],
+				"a restore adds no archive record",
+			);
 			assert.equal(restored[1]?.label, "seed", "the restored record keeps its own label");
 
 			assert.ok((extension.tools ?? []).every((tool) => tool.structuredOutputSchema === undefined));

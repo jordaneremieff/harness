@@ -264,7 +264,16 @@ export function planStashPublication(
 	const serialized = serializeArtifact(recordFor(id, created, scanned.payload));
 	const bytes = Buffer.byteLength(serialized, "utf8");
 	if (bytes > MAX_STASH_BYTES) throw new Error(`stash artifact is ${bytes} bytes; maximum is ${MAX_STASH_BYTES}`);
-	return { version: 1, operationId, directory: resolve(directory), createdAtMs: now.getTime(), checkpoint, serialized, redactions: scanned.report, id };
+	return {
+		version: 1,
+		operationId,
+		directory: resolve(directory),
+		createdAtMs: now.getTime(),
+		checkpoint,
+		serialized,
+		redactions: scanned.report,
+		id,
+	};
 }
 
 async function reacquirePublication(plan: StashPublication) {
@@ -277,8 +286,15 @@ async function reacquirePublication(plan: StashPublication) {
 			const artifact = await readMutationSource(candidate, "readable");
 			const parsed = parseFrontmatter(artifact.content);
 			if (headerUnclosed(artifact.content) || parsed.meta.id !== plan.id)
-				throw new Error(`Publication identity is unavailable at ${candidate}. This attempt made no new publication; the earlier outcome is unknown. Inspect the retained result and both publication locations before creating a new write.`);
-			return { record: normalizeMeta(`${plan.id}.md`, parsed.meta), path: candidate, redactions: plan.redactions, archived: candidate !== path };
+				throw new Error(
+					`Publication identity is unavailable at ${candidate}. This attempt made no new publication; the earlier outcome is unknown. Inspect the retained result and both publication locations before creating a new write.`,
+				);
+			return {
+				record: normalizeMeta(`${plan.id}.md`, parsed.meta),
+				path: candidate,
+				redactions: plan.redactions,
+				archived: candidate !== path,
+			};
 		} catch (error) {
 			if (!hasCode(error, "ENOENT")) throw error;
 		}
@@ -291,21 +307,34 @@ export async function writeReplayableStash(
 	plan: StashPublication,
 ): Promise<{ record: StashMeta; path: string; redactions: RedactionReport; archived: boolean }> {
 	if (plan.version !== 1 || !SAFE_STEM.test(plan.id) || !plan.id.endsWith(`-${plan.operationId}`))
-		throw new Error("Unsupported stash publication plan. This attempt made no new publication; the earlier outcome is unknown. Inspect the retained result and original destination/archive before creating a new write.");
+		throw new Error(
+			"Unsupported stash publication plan. This attempt made no new publication; the earlier outcome is unknown. Inspect the retained result and original destination/archive before creating a new write.",
+		);
 	const dir = plan.directory;
 	await validateStore(dir, true);
-	return withArtifactLock(dir, plan.id, undefined, async () => {
-		const path = join(dir, `${plan.id}.md`);
-		const existing = await reacquirePublication(plan);
-		if (existing) return existing;
-		const temporary = join(dir, `.${plan.id}.${randomUUID()}.tmp`);
-		if (await publishArtifact(temporary, path, plan.serialized)) {
-			return { record: normalizeMeta(`${plan.id}.md`, parseFrontmatter(plan.serialized).meta), path, redactions: plan.redactions, archived: false };
-		}
-		const winner = await reacquirePublication(plan);
-		if (winner) return winner;
-		throw new Error(`Publication identity disappeared at ${path}; no replacement was published.`);
-	}, `stash ${plan.id} is busy; mutation lock exists at ${join(dir, `.${plan.id}.lock`)}. This attempt made no new publication; an earlier attempt may have published. Inspect ${join(dir, `${plan.id}.md`)} and ${join(dir, ROTATED_STORE_NAME, `${plan.id}.md`)} for this identity. An artifact with this identity is this operation's publication; reuse it instead of creating a new write. Remove this exact lock only after confirming no stash mutation remains active. This refusal does not schedule another attempt.`);
+	return withArtifactLock(
+		dir,
+		plan.id,
+		undefined,
+		async () => {
+			const path = join(dir, `${plan.id}.md`);
+			const existing = await reacquirePublication(plan);
+			if (existing) return existing;
+			const temporary = join(dir, `.${plan.id}.${randomUUID()}.tmp`);
+			if (await publishArtifact(temporary, path, plan.serialized)) {
+				return {
+					record: normalizeMeta(`${plan.id}.md`, parseFrontmatter(plan.serialized).meta),
+					path,
+					redactions: plan.redactions,
+					archived: false,
+				};
+			}
+			const winner = await reacquirePublication(plan);
+			if (winner) return winner;
+			throw new Error(`Publication identity disappeared at ${path}; no replacement was published.`);
+		},
+		`stash ${plan.id} is busy; mutation lock exists at ${join(dir, `.${plan.id}.lock`)}. This attempt made no new publication; an earlier attempt may have published. Inspect ${join(dir, `${plan.id}.md`)} and ${join(dir, ROTATED_STORE_NAME, `${plan.id}.md`)} for this identity. An artifact with this identity is this operation's publication; reuse it instead of creating a new write. Remove this exact lock only after confirming no stash mutation remains active. This refusal does not schedule another attempt.`,
+	);
 }
 
 interface ListOptions {
@@ -643,7 +672,8 @@ async function withArtifactLock<T>(
 	} catch (error) {
 		if (hasCode(error, "EEXIST")) {
 			throw new Error(
-				busyMessage ?? `stash ${id} is busy; mutation lock exists at ${lockPath}. Retry after the mutation ends. If its process stopped, remove this exact lock only after confirming no mutation remains active.`,
+				busyMessage ??
+					`stash ${id} is busy; mutation lock exists at ${lockPath}. Retry after the mutation ends. If its process stopped, remove this exact lock only after confirming no mutation remains active.`,
 			);
 		}
 		throw error;

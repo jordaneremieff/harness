@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	linkSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -99,19 +110,34 @@ it("an owned child exit releases the same stable inode", { ...native, timeout: 1
 		process.send({ ready: true });
 		process.on("message", () => {});
 	`;
-	const child = spawn(process.execPath, ["--input-type=module", "--eval", code, path], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+	const child = spawn(process.execPath, ["--input-type=module", "--eval", code, path], {
+		stdio: ["ignore", "ignore", "pipe", "ipc"],
+	});
 	let stderr = "";
-	child.stderr?.on("data", (value: Buffer) => { stderr = `${stderr}${value.toString()}`.slice(-4096); });
+	child.stderr?.on("data", (value: Buffer) => {
+		stderr = `${stderr}${value.toString()}`.slice(-4096);
+	});
 	const exited = once(child, "exit");
-	t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await exited; });
-	await Promise.race([once(child, "message"), exited.then(() => { throw new Error(`Lease holder exited before readiness: ${stderr}`); })]);
+	t.after(async () => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+		await exited;
+	});
+	await Promise.race([
+		once(child, "message"),
+		exited.then(() => {
+			throw new Error(`Lease holder exited before readiness: ${stderr}`);
+		}),
+	]);
 	const inode = lstatSync(path).ino;
 	assert.deepEqual(tryNativeWriterLease(path), { kind: "busy" });
 	child.kill("SIGKILL");
 	await exited;
 	const next = tryNativeWriterLease(path);
 	assert.equal(next.kind, "held");
-	if (next.kind === "held") { assert.equal(next.lease.ino, inode); next.lease.release(); }
+	if (next.kind === "held") {
+		assert.equal(next.lease.ino, inode);
+		next.lease.release();
+	}
 });
 
 it("unsupported platforms refuse before touching a path", { skip: process.platform === "darwin" }, (t) => {

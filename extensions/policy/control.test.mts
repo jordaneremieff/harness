@@ -155,20 +155,28 @@ it("names unexpected, missing and invalid fields for the selected control operat
 		[{ operation: "reject", proposalId: rejection.proposalId, authorization }, /Missing required fields: "revision"/],
 		[{ operation: "reject", proposalId: rejection.proposalId }, /Missing required fields: "authorization", "revision"/],
 		[{ ...rejection, authorization: " " }, /Invalid fields: "authorization"/],
-		[{ operation: "inspect", revision: rejection.revision }, /Unexpected fields: "revision"\. Missing required fields: "id"/],
+		[
+			{ operation: "inspect", revision: rejection.revision },
+			/Unexpected fields: "revision"\. Missing required fields: "id"/,
+		],
 		[{ operation: "inspect", id: 42 }, /Missing required fields: none\. Invalid fields: "id"/],
 		[{ operation: "mode", reason: "Not a mutation." }, /Unexpected fields: "reason"\. Missing required fields: none/],
 	] as const) {
 		assert.throws(() => validateControl(input), expected);
 	}
-	assert.throws(() => validateControl({ ...rejection, reason: "Not selected." }), /exact revision and nonblank operator authorization/);
+	assert.throws(
+		() => validateControl({ ...rejection, reason: "Not selected." }),
+		/exact revision and nonblank operator authorization/,
+	);
 	validateControl(rejection);
 });
 
 it("reports the relevant alternative fields for read operations", () => {
 	assert.throws(
 		() => validateControl({ operation: "data-preview" }),
-		(error: Error) => /Missing required fields: "artifact"/.test(error.message) && /Missing required fields: "path"/.test(error.message),
+		(error: Error) =>
+			/Missing required fields: "artifact"/.test(error.message) &&
+			/Missing required fields: "path"/.test(error.message),
 	);
 	assert.throws(
 		() => validateControl({ operation: "data-preview", path: 42 }),
@@ -188,7 +196,12 @@ it("explains the required telemetry selection when a continuation omits it", () 
 		/Invalid policy control fields for telemetry; use from and to, or since and until.*Repeat the same selection on every page/,
 	);
 	validateControl({ operation: "telemetry", from: "2026-11-10", to: "2026-11-17", cursor: "page" });
-	validateControl({ operation: "telemetry", since: "2026-11-10T00:00:00Z", until: "2026-11-17T00:00:00Z", cursor: "page" });
+	validateControl({
+		operation: "telemetry",
+		since: "2026-11-10T00:00:00Z",
+		until: "2026-11-17T00:00:00Z",
+		cursor: "page",
+	});
 	assert.throws(
 		() => validateControl({ operation: "telemetry", from: "2026-11-10", to: "2026-11-17", authorization }),
 		/This read accepts no authorization or mutation fields/,
@@ -268,8 +281,10 @@ it("imports the reviewed plan and refuses changed override targets", async (t) =
 	assert.equal(allPlan.rows.length, (await f.registry.snapshot()).records.size);
 	assert.equal(allPlan.current.length, allPlan.rows.length);
 	assert.ok(allPlan.revision);
-	const allText = all.content[0]; assert.equal(allText.type, "text");
-	if (allText.type === "text") t.diagnostic(`Complete bundled all-import preview: ${Buffer.byteLength(allText.text)} bytes`);
+	const allText = all.content[0];
+	assert.equal(allText.type, "text");
+	if (allText.type === "text")
+		t.diagnostic(`Complete bundled all-import preview: ${Buffer.byteLength(allText.text)} bytes`);
 	const selection = "routing.cat-read";
 	const preview = await f.call({ operation: "import-preview", selection });
 	const revision = (preview.details as { revision: string }).revision;

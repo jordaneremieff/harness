@@ -8,7 +8,17 @@ import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { awaitWithContext, BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
-import { AssistantEntry, ROOT_CONVERSATION_ID, ToolTask, defineExtension, defineTool, type JsonObject, type NestedToolExecutionResult, type Registry, type RegistryReader } from "@earendil-works/pi-durable";
+import {
+	AssistantEntry,
+	ROOT_CONVERSATION_ID,
+	ToolTask,
+	defineExtension,
+	defineTool,
+	type JsonObject,
+	type NestedToolExecutionResult,
+	type Registry,
+	type RegistryReader,
+} from "@earendil-works/pi-durable";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 
 import { DurableHost } from "./durable-host.ts";
@@ -19,40 +29,115 @@ import { createPrimaryChannel, type PrimaryChannel, type PrimaryDelivery } from 
 import type { OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
-it("native peer tools read ordinary retained work and errors without admitting primary work or acquiring its host", { timeout: 20000 }, async (t) => {
+it("native peer tools read ordinary retained work and errors without admitting primary work or acquiring its host", {
+	timeout: 20000,
+}, async (t) => {
 	// Keep the primary socket below the platform pathname limit.
 	const root = mkdtempSync("/tmp/pi-oo-");
 	let runtime: Awaited<ReturnType<typeof createDurableRuntime>> | undefined;
 	let channel: PrimaryChannel | undefined;
 	t.after(async () => {
-		try { await runtime?.close(); }
-		finally { try { await channel?.close(); } finally { rmSync(root, { recursive: true, force: true }); } }
+		try {
+			await runtime?.close();
+		} finally {
+			try {
+				await channel?.close();
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}
 	});
 	const context = withAbortSignal(AbortSignal.timeout(10000), BACKGROUND_CONTEXT);
 	const agentDir = join(root, "agent");
 	const cwd = join(root, "work");
-	mkdirSync(agentDir); mkdirSync(cwd);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions: [fileURLToPath(new URL("./index.ts", import.meta.url))], cacheWarming: "off", retry: { enabled: false } }));
+	mkdirSync(agentDir);
+	mkdirSync(cwd);
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		JSON.stringify({
+			extensions: [fileURLToPath(new URL("./index.ts", import.meta.url))],
+			cacheWarming: "off",
+			retry: { enabled: false },
+		}),
+	);
 	const models = await createTestRuntime();
-	const stream = t.mock.method(models, "stream", () => { throw new Error("Observation must not request a provider"); });
-	const streamSimple = t.mock.method(models, "streamSimple", () => { throw new Error("Observation must not request a provider"); });
+	const stream = t.mock.method(models, "stream", () => {
+		throw new Error("Observation must not request a provider");
+	});
+	const streamSimple = t.mock.method(models, "streamSimple", () => {
+		throw new Error("Observation must not request a provider");
+	});
 	const catalog = new AgentCatalog(root);
-	const record = catalog.create({ cwd, agentDir, packageDir: getPackageDir(), model: { provider: testModel.provider, modelId: testModel.id }, thinkingLevel: "off", trust: true });
+	const record = catalog.create({
+		cwd,
+		agentDir,
+		packageDir: getPackageDir(),
+		model: { provider: testModel.provider, modelId: testModel.id },
+		thinkingLevel: "off",
+		trust: true,
+	});
 	const ordinaryId = randomUUID();
 	const sessionFile = join(root, "ordinary.jsonl");
 	const timestamp = "2026-01-01T00:00:00.000Z";
 	const retained = `${[
 		{ type: "session", version: 3, id: ordinaryId, timestamp, cwd },
-		{ type: "message", id: "11111111", parentId: null, timestamp, message: { role: "user", content: "Check the parser boundary", timestamp: 0 } },
-		{ type: "message", id: "22222222", parentId: "11111111", timestamp, message: { role: "toolResult", toolName: "bash", toolCallId: "parser-call", content: [{ type: "text", text: "Parser test failed: unexpected token" }], isError: true, timestamp: 1 } },
-		{ type: "message", id: "33333333", parentId: "22222222", timestamp, message: { role: "assistant", content: [{ type: "text", text: `${"Report line.".repeat(400)}FINAL_REPORT_MARKER` }], stopReason: "stop", timestamp: 2 } },
-	].map((value) => JSON.stringify(value)).join("\n")}\n`;
+		{
+			type: "message",
+			id: "11111111",
+			parentId: null,
+			timestamp,
+			message: { role: "user", content: "Check the parser boundary", timestamp: 0 },
+		},
+		{
+			type: "message",
+			id: "22222222",
+			parentId: "11111111",
+			timestamp,
+			message: {
+				role: "toolResult",
+				toolName: "bash",
+				toolCallId: "parser-call",
+				content: [{ type: "text", text: "Parser test failed: unexpected token" }],
+				isError: true,
+				timestamp: 1,
+			},
+		},
+		{
+			type: "message",
+			id: "33333333",
+			parentId: "22222222",
+			timestamp,
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: `${"Report line.".repeat(400)}FINAL_REPORT_MARKER` }],
+				stopReason: "stop",
+				timestamp: 2,
+			},
+		},
+	]
+		.map((value) => JSON.stringify(value))
+		.join("\n")}\n`;
 	writeFileSync(sessionFile, retained);
 	const delivered: PrimaryDelivery[] = [];
 	let resolveDelivery!: () => void;
-	const delivery = new Promise<void>((resolve) => { resolveDelivery = resolve; });
+	const delivery = new Promise<void>((resolve) => {
+		resolveDelivery = resolve;
+	});
 	let trustCalls = 0;
-	channel = await createPrimaryChannel({ id: ordinaryId, cwd, sessionFile, sessionsRoot: root, deliver: (message) => { delivered.push(message); resolveDelivery(); }, promptTrust: async () => { trustCalls++; return undefined; } });
+	channel = await createPrimaryChannel({
+		id: ordinaryId,
+		cwd,
+		sessionFile,
+		sessionsRoot: root,
+		deliver: (message) => {
+			delivered.push(message);
+			resolveDelivery();
+		},
+		promptTrust: async () => {
+			trustCalls++;
+			return undefined;
+		},
+	});
 	const open = DurableHost.open.bind(DurableHost);
 	let native: DurableHost | undefined;
 	let registry: RegistryReader | undefined;
@@ -76,7 +161,8 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		return native;
 	});
 	runtime = await createDurableRuntime(hostMetadata(record), { modelRuntime: models });
-	assert.ok(native); assert.ok(registry);
+	assert.ok(native);
+	assert.ok(registry);
 	const peer = native;
 	const tools = registry.snapshot().extension("agent")?.tools;
 	assert.ok(tools);
@@ -86,7 +172,11 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		const message = toolCallMessage(driver.name, { name, args });
 		const taskId = await peer.harness.commit(async (tx) => {
 			const assistant = await tx.appendEntry(AssistantEntry, ROOT_CONVERSATION_ID, { model: [message] });
-			return tx.createTask(ToolTask, { kind: "model", assistant: assistant.id, callId: `fixture-call-${driver.name}` }, { ownership: { kind: "conversation" }, conversationId: ROOT_CONVERSATION_ID });
+			return tx.createTask(
+				ToolTask,
+				{ kind: "model", assistant: assistant.id, callId: `fixture-call-${driver.name}` },
+				{ ownership: { kind: "conversation" }, conversationId: ROOT_CONVERSATION_ID },
+			);
 		}, context);
 		const task = await peer.harness.waitForTask(taskId, context);
 		assert.equal(task.state.outcome.status, "completed");
@@ -103,10 +193,18 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		assert.ok(nested, "executeTool returns the native program result");
 		return nested;
 	};
-	for (const [name, view] of [["agent_status", "status"], ["agent_inspect", "activity"], ["agent_inspect", "history"]] as const) {
-		const result = await invoke(name, { sessionId: ordinaryId, ...(name === "agent_status" ? { detail: true } : { view }) });
+	for (const [name, view] of [
+		["agent_status", "status"],
+		["agent_inspect", "activity"],
+		["agent_inspect", "history"],
+	] as const) {
+		const result = await invoke(name, {
+			sessionId: ordinaryId,
+			...(name === "agent_status" ? { detail: true } : { view }),
+		});
 		assert.equal(result.isError, false, JSON.stringify(result));
-		const schema = (tools.find((tool) => tool.name === name) as { structuredOutputSchema?: Schema } | undefined)?.structuredOutputSchema;
+		const schema = (tools.find((tool) => tool.name === name) as { structuredOutputSchema?: Schema } | undefined)
+			?.structuredOutputSchema;
 		assert.ok(schema);
 		const observed = structuredObservation(schema, result.structuredOutput) as OrdinaryPrimaryObservation;
 		assert.equal(observed.kind, "ordinary-primary");
@@ -116,11 +214,20 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		assert.equal(observed.unknown.idle, "unknown");
 		assert.equal(observed.unknown.selectedLeaf, "unknown");
 		assert.ok(observed.entries.some((entry) => entry.text?.includes("Check the parser boundary")));
-		assert.ok(observed.entries.some((entry) => entry.id === "22222222" && entry.isError && entry.text?.includes("Parser test failed")));
+		assert.ok(
+			observed.entries.some(
+				(entry) => entry.id === "22222222" && entry.isError && entry.text?.includes("Parser test failed"),
+			),
+		);
 	}
-	const inspectSchema = (tools.find((tool) => tool.name === "agent_inspect") as { structuredOutputSchema?: Schema } | undefined)?.structuredOutputSchema;
+	const inspectSchema = (
+		tools.find((tool) => tool.name === "agent_inspect") as { structuredOutputSchema?: Schema } | undefined
+	)?.structuredOutputSchema;
 	assert.ok(inspectSchema);
-	const activity = structuredObservation(inspectSchema, (await invoke("agent_inspect", { sessionId: ordinaryId, view: "activity" })).structuredOutput) as OrdinaryPrimaryObservation;
+	const activity = structuredObservation(
+		inspectSchema,
+		(await invoke("agent_inspect", { sessionId: ordinaryId, view: "activity" })).structuredOutput,
+	) as OrdinaryPrimaryObservation;
 	const textCursor = activity.entries.find((entry) => entry.id === "33333333")?.textCursor;
 	assert.ok(textCursor, "a clipped entry carries its text cursor through the native route");
 	let full = "";
@@ -150,40 +257,63 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	assert.equal(stream.mock.callCount(), 0);
 	assert.equal(streamSimple.mock.callCount(), 0);
 
-	const frame = { title: "Parser review", purpose: "Check the parser boundary", authority: "Review the requested parser behavior", source: "Parser task", restrictions: "No external changes", acceptance: "Retained peer evidence identifies the parser error" };
+	const frame = {
+		title: "Parser review",
+		purpose: "Check the parser boundary",
+		authority: "Review the requested parser behavior",
+		source: "Parser task",
+		restrictions: "No external changes",
+		acceptance: "Retained peer evidence identifies the parser error",
+	};
 	const invalidIdentities: { field: string; fields: JsonObject }[] = [
 		{ field: "sessionId", fields: { sessionId: "not-an-identity" } },
 		{ field: "integrator", fields: { integrator: "not-an-identity" } },
 		{ field: "notify[1]", fields: { notify: [ordinaryId, "not-an-identity"] } },
 	];
-	for (const { field, fields } of invalidIdentities) await t.test(`native collaboration identifies invalid ${field}`, async () => {
-		const result = await invoke("agent_collaborate", { action: "create", sessionId: record.storageId, ...frame, ...fields });
-		assert.equal(result.isError, true);
-		const text = JSON.stringify(result.structuredOutput);
-		assert.ok(text.includes(`${field} requires an exact discovered identity`), text);
-		assert.match(text, /canonical lowercase UUID for a bare root/u);
-		assert.match(text, /UUID:positive nonroot conversation ID/u);
-		assert.equal((await peer.harness.inspect(context)).submissions.length, 0);
-		assert.equal((await readRetainedDelivery(peer.harness, context, true))?.reports.length ?? 0, 0);
-		assert.equal(delivered.length, 0);
-	});
+	for (const { field, fields } of invalidIdentities)
+		await t.test(`native collaboration identifies invalid ${field}`, async () => {
+			const result = await invoke("agent_collaborate", {
+				action: "create",
+				sessionId: record.storageId,
+				...frame,
+				...fields,
+			});
+			assert.equal(result.isError, true);
+			const text = JSON.stringify(result.structuredOutput);
+			assert.ok(text.includes(`${field} requires an exact discovered identity`), text);
+			assert.match(text, /canonical lowercase UUID for a bare root/u);
+			assert.match(text, /UUID:positive nonroot conversation ID/u);
+			assert.equal((await peer.harness.inspect(context)).submissions.length, 0);
+			assert.equal((await readRetainedDelivery(peer.harness, context, true))?.reports.length ?? 0, 0);
+			assert.equal(delivered.length, 0);
+		});
 	const invalidHandles: { field: string; fields: JsonObject }[] = [
 		{ field: "sessionId", fields: { sessionId: "@missing-agent" } },
 		{ field: "integrator", fields: { integrator: "@missing-agent" } },
 		{ field: "notify[1]", fields: { notify: [ordinaryId, "@missing-agent"] } },
 	];
-	for (const { field, fields } of invalidHandles) await t.test(`native collaboration identifies an unavailable handle in ${field}`, async () => {
-		const result = await invoke("agent_collaborate", { action: "create", sessionId: record.storageId, ...frame, ...fields });
-		assert.equal(result.isError, true);
-		const text = JSON.stringify(result.structuredOutput);
-		assert.ok(text.includes(`${field}: handle resolution failed`), text);
-		assert.equal((await peer.harness.inspect(context)).submissions.length, 0);
-		assert.equal((await readRetainedDelivery(peer.harness, context, true))?.reports.length ?? 0, 0);
-		assert.equal(delivered.length, 0);
-	});
+	for (const { field, fields } of invalidHandles)
+		await t.test(`native collaboration identifies an unavailable handle in ${field}`, async () => {
+			const result = await invoke("agent_collaborate", {
+				action: "create",
+				sessionId: record.storageId,
+				...frame,
+				...fields,
+			});
+			assert.equal(result.isError, true);
+			const text = JSON.stringify(result.structuredOutput);
+			assert.ok(text.includes(`${field}: handle resolution failed`), text);
+			assert.equal((await peer.harness.inspect(context)).submissions.length, 0);
+			assert.equal((await readRetainedDelivery(peer.harness, context, true))?.reports.length ?? 0, 0);
+			assert.equal(delivered.length, 0);
+		});
 	await t.test("native collaboration identifies a required source", async () => {
 		const { source: _source, ...withoutSource } = frame;
-		const result = await invoke("agent_collaborate", { action: "create", sessionId: record.storageId, ...withoutSource });
+		const result = await invoke("agent_collaborate", {
+			action: "create",
+			sessionId: record.storageId,
+			...withoutSource,
+		});
 		assert.equal(result.isError, true);
 		assert.match(JSON.stringify(result.structuredOutput), /source is required and must be nonblank text/u);
 	});
@@ -191,7 +321,11 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	assert.equal(trustCalls, 0);
 
 	await t.test("default native send remains separate from ordinary observation", async () => {
-		const sent = await invoke("agent_send", { sessionId: ordinaryId, message: "Separate delivery after observation", checkInMinutes: 0 });
+		const sent = await invoke("agent_send", {
+			sessionId: ordinaryId,
+			message: "Separate delivery after observation",
+			checkInMinutes: 0,
+		});
 		assert.equal(sent.isError, false, JSON.stringify(sent));
 		const receipt = sent.structuredOutput as Record<string, unknown>;
 		assert.ok(receipt);

@@ -8,10 +8,39 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { LiveDoc, SessionFailed, type Storage, type ConversationId, type EntryId, type HarnessInspection, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
+import {
+	LiveDoc,
+	SessionFailed,
+	type Storage,
+	type ConversationId,
+	type EntryId,
+	type HarnessInspection,
+	type SubmissionId,
+	type TaskGraph,
+} from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
-import { DurableHost, sessionIsIdle, type ConfigurationResult, type DurableCommandHost, type DurableHostOptions } from "./durable-host.ts";
-import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, reasoningRuntime, redactedAnswerMessage, scriptedRuntime, slowEffectTool, toolCallMessage } from "./durable-host-fixture.mts";
+import {
+	DurableHost,
+	sessionIsIdle,
+	type ConfigurationResult,
+	type DurableCommandHost,
+	type DurableHostOptions,
+} from "./durable-host.ts";
+import {
+	answerMessage,
+	fixtureModelId,
+	fixtureProvider,
+	fixtureRegistry,
+	fixtureRuntime,
+	fixtureStorageId,
+	gateTool,
+	hostOptions,
+	reasoningRuntime,
+	redactedAnswerMessage,
+	scriptedRuntime,
+	slowEffectTool,
+	toolCallMessage,
+} from "./durable-host-fixture.mts";
 
 const fixturePath = fileURLToPath(new URL("./durable-host-fixture.mts", import.meta.url));
 /** Byte bound for captured child output; oldest bytes drop first. */
@@ -39,7 +68,8 @@ function readyFrom(child: ReturnType<typeof spawn>, timeoutMs = 20000): Promise<
 		let stdout: Buffer = Buffer.alloc(0);
 		let stderr: Buffer = Buffer.alloc(0);
 		let settled = false;
-		const detail = (message: string) => `${message}\nstdout=${stdout.toString("utf8")}\nstderr=${stderr.toString("utf8")}`;
+		const detail = (message: string) =>
+			`${message}\nstdout=${stdout.toString("utf8")}\nstderr=${stderr.toString("utf8")}`;
 		const timer = setTimeout(() => {
 			if (settled) return;
 			settled = true;
@@ -99,9 +129,23 @@ async function wait(host: DurableHost, submissionId: SubmissionId) {
 it("requests retirement after abort and reports its blockers", async (t) => {
 	const root = fixtureRoot(t);
 	let calls = 0;
-	const host = await DurableHost.open({ ...hostOptions(join(root, "release.sqlite"), await fixtureRuntime("answer"), fixtureRegistry()), requestRelease: async () => { calls++; return { retiring: false, blockers: ["pending timer"] }; } }, BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		{
+			...hostOptions(join(root, "release.sqlite"), await fixtureRuntime("answer"), fixtureRegistry()),
+			requestRelease: async () => {
+				calls++;
+				return { retiring: false, blockers: ["pending timer"] };
+			},
+		},
+		BACKGROUND_CONTEXT,
+	);
 	t.after(() => host.close());
-	const outcome = await host.request("release", {}, BACKGROUND_CONTEXT) as { aborted: { identity: string }; writesPlaced: number; retiring: boolean; blockers: string[] };
+	const outcome = (await host.request("release", {}, BACKGROUND_CONTEXT)) as {
+		aborted: { identity: string };
+		writesPlaced: number;
+		retiring: boolean;
+		blockers: string[];
+	};
 	assert.equal(outcome.aborted.identity, fixtureStorageId);
 	assert.equal(outcome.writesPlaced, 0);
 	assert.equal(outcome.retiring, false);
@@ -111,15 +155,23 @@ it("requests retirement after abort and reports its blockers", async (t) => {
 	assert.equal(calls, 1);
 });
 
-it("preserves malformed tool arguments through the provider boundary and refuses their parsed prefix", { timeout: 15000 }, async (t) => {
+it("preserves malformed tool arguments through the provider boundary and refuses their parsed prefix", {
+	timeout: 15000,
+}, async (t) => {
 	const root = fixtureRoot(t);
 	const effect = join(root, "effect.txt");
 	const message = toolCallMessage();
 	const call = message.content.find((part) => part.type === "toolCall");
 	assert.ok(call);
 	call.argumentsError = "Malformed JSON after the parsed prefix";
-	const host = await DurableHost.open(hostOptions(join(root, "arguments.sqlite"),
-		await scriptedRuntime([message, answerMessage("Invalid call observed")]), fixtureRegistry([slowEffectTool(effect, undefined, false)])), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			join(root, "arguments.sqlite"),
+			await scriptedRuntime([message, answerMessage("Invalid call observed")]),
+			fixtureRegistry([slowEffectTool(effect, undefined, false)]),
+		),
+		BACKGROUND_CONTEXT,
+	);
 	t.after(() => host.close());
 	const submitted = await host.submit({ message: "Try the malformed call", requestId: "invalid-arguments" });
 	assert.equal((await wait(host, submitted.submissionId)).status, "done");
@@ -127,57 +179,129 @@ it("preserves malformed tool arguments through the provider boundary and refuses
 	const conversation = await host.harness.root(BACKGROUND_CONTEXT);
 	const retained = await conversation.context(BACKGROUND_CONTEXT);
 	const parts = retained.entries.flatMap((entry) => entry.model ?? []);
-	assert.ok(parts.some((entry) => entry.role === "assistant" && entry.content.some((part) => part.type === "toolCall" && part.argumentsError === call.argumentsError)));
-	assert.ok(parts.some((entry) => entry.role === "toolResult" && entry.isError && JSON.stringify(entry.content).includes("Malformed JSON after the parsed prefix")));
+	assert.ok(
+		parts.some(
+			(entry) =>
+				entry.role === "assistant" &&
+				entry.content.some((part) => part.type === "toolCall" && part.argumentsError === call.argumentsError),
+		),
+	);
+	assert.ok(
+		parts.some(
+			(entry) =>
+				entry.role === "toolResult" &&
+				entry.isError &&
+				JSON.stringify(entry.content).includes("Malformed JSON after the parsed prefix"),
+		),
+	);
 });
 
 it("clears a native retry after the next attempt settles the same exact input", { timeout: 15000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "retry.sqlite");
 	let now = Date.now();
-	const error = { ...answerMessage(), content: [], stopReason: "error" as const, errorMessage: "429 rate limit: too many requests" };
+	const error = {
+		...answerMessage(),
+		content: [],
+		stopReason: "error" as const,
+		errorMessage: "429 rate limit: too many requests",
+	};
 	const models = await scriptedRuntime([error, answerMessage("recovered")]);
-	const options = { ...hostOptions(storagePath, models, fixtureRegistry()), now: () => now, settings: { retry: { enabled: true, maxRetries: 20, baseDelayMs: 300000, maxAgentDelayMs: 300000 } }, retryMaxAttempts: 21 };
+	const options = {
+		...hostOptions(storagePath, models, fixtureRegistry()),
+		now: () => now,
+		settings: { retry: { enabled: true, maxRetries: 20, baseDelayMs: 300000, maxAgentDelayMs: 300000 } },
+		retryMaxAttempts: 21,
+	};
 	let host = await DurableHost.open(options, BACKGROUND_CONTEXT);
 	try {
-		let ready!: () => void; const retryReady = new Promise<void>((resolve) => { ready = resolve; });
-		const stop = onStoredCommit(host.harness, () => { void host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT).then((live) => { if (live?.generation?.retry) ready(); }); });
+		let ready!: () => void;
+		const retryReady = new Promise<void>((resolve) => {
+			ready = resolve;
+		});
+		const stop = onStoredCommit(host.harness, () => {
+			void host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT).then((live) => {
+				if (live?.generation?.retry) ready();
+			});
+		});
 		const submitted = await host.submit({ message: "task", requestId: "native-retry" });
-		await retryReady; stop();
+		await retryReady;
+		stop();
 		const before = await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT);
 		assert.equal(before?.generation?.attempt, 1);
 		assert.ok(before?.generation?.retry);
 		assert.ok(before.run?.inputs.includes(submitted.submissionId), "the retry belongs to the original input");
 		now = before.generation.retry.at + 1;
-		await host.close(); host = await DurableHost.open(options, BACKGROUND_CONTEXT);
+		await host.close();
+		host = await DurableHost.open(options, BACKGROUND_CONTEXT);
 		assert.equal((await wait(host, submitted.submissionId)).status, "done");
-		assert.equal((await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT))?.generation?.retry, undefined);
-	} finally { await host.close(); }
+		assert.equal(
+			(await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT))?.generation?.retry,
+			undefined,
+		);
+	} finally {
+		await host.close();
+	}
 });
 
-it("recovers through explicit abort, idle configuration, and a new exact input without changing the old result", { timeout: 15000 }, async (t) => {
+it("recovers through explicit abort, idle configuration, and a new exact input without changing the old result", {
+	timeout: 15000,
+}, async (t) => {
 	const storagePath = join(fixtureRoot(t), "manual-recovery.sqlite");
-	const error = { ...answerMessage(), content: [], stopReason: "error" as const, errorMessage: "429 rate limit: too many requests" };
-	const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([error, answerMessage("continued task")]), fixtureRegistry()), settings: { retry: { enabled: true, maxRetries: 20, baseDelayMs: 300000, maxAgentDelayMs: 300000 } } }, BACKGROUND_CONTEXT);
+	const error = {
+		...answerMessage(),
+		content: [],
+		stopReason: "error" as const,
+		errorMessage: "429 rate limit: too many requests",
+	};
+	const host = await DurableHost.open(
+		{
+			...hostOptions(storagePath, await scriptedRuntime([error, answerMessage("continued task")]), fixtureRegistry()),
+			settings: { retry: { enabled: true, maxRetries: 20, baseDelayMs: 300000, maxAgentDelayMs: 300000 } },
+		},
+		BACKGROUND_CONTEXT,
+	);
 	try {
-		let ready!: () => void; const retryReady = new Promise<void>((resolve) => { ready = resolve; });
-		const stop = onStoredCommit(host.harness, () => { void host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT).then((live) => { if (live?.generation?.retry) ready(); }); });
+		let ready!: () => void;
+		const retryReady = new Promise<void>((resolve) => {
+			ready = resolve;
+		});
+		const stop = onStoredCommit(host.harness, () => {
+			void host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT).then((live) => {
+				if (live?.generation?.retry) ready();
+			});
+		});
 		const original = await host.submit({ message: "ordinary task", requestId: "original-task" });
-		await retryReady; stop();
+		await retryReady;
+		stop();
 		await assert.rejects(host.request("configure", { thinkingLevel: "high" }), /busy/u);
 		await host.request("abort", {});
 		assert.equal((await wait(host, original.submissionId)).status, "unanswered");
-		await host.request("configure", { model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "high" });
-		const continued = await host.submit({ message: "Continue the original task with the retained brief.", requestId: "continued-task" });
+		await host.request("configure", {
+			model: { provider: fixtureProvider, modelId: fixtureModelId },
+			thinkingLevel: "high",
+		});
+		const continued = await host.submit({
+			message: "Continue the original task with the retained brief.",
+			requestId: "continued-task",
+		});
 		assert.notEqual(continued.submissionId, original.submissionId);
 		assert.equal((await wait(host, continued.submissionId)).status, "done");
 		assert.equal((await wait(host, original.submissionId)).status, "unanswered");
-		assert.equal((await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT))?.generation?.retry, undefined);
-	} finally { await host.close(); }
+		assert.equal(
+			(await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT))?.generation?.retry,
+			undefined,
+		);
+	} finally {
+		await host.close();
+	}
 });
 
 it("runs a durable task and retains its answer, source IDs, and usage across reopen", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const first = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const first = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	const submitted = await first.submit({ message: "do the task", requestId: "run-stable" });
 	const outcome = await wait(first, submitted.submissionId);
 	if (outcome.status !== "done") assert.fail(`expected a completed run, received ${outcome.reason}`);
@@ -185,9 +309,15 @@ it("runs a durable task and retains its answer, source IDs, and usage across reo
 	assert.equal(outcome.submissionId, submitted.submissionId);
 	assert.ok(outcome.entryId !== undefined, "the placed input entry ID is retained");
 	assert.ok(outcome.answerEntryId !== undefined, "the answer entry ID is retained");
-	assert.ok(Object.keys(outcome.usage.models).some((key) => key.includes("agent-test")), "usage records the model bucket");
+	assert.ok(
+		Object.keys(outcome.usage.models).some((key) => key.includes("agent-test")),
+		"usage records the model bucket",
+	);
 	await first.close();
-	const second = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const second = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const retained = await wait(second, submitted.submissionId);
 		if (retained.status !== "done") assert.fail(`expected the retained outcome, received ${retained.reason}`);
@@ -200,7 +330,10 @@ it("runs a durable task and retains its answer, source IDs, and usage across reo
 
 it("dedupes one submission when the prompt is submitted twice under the same request ID", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const first = await host.submit({ message: "do the task", requestId: "run-dedupe" });
 		const second = await host.submit({ message: "do the task", requestId: "run-dedupe" });
@@ -218,16 +351,25 @@ it("dedupes one submission when the prompt is submitted twice under the same req
 it("closes storage through a cleanup context after the caller context is cancelled", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
 	const controller = new AbortController();
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), withAbortSignal(controller.signal, BACKGROUND_CONTEXT));
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
+	);
 	controller.abort();
 	await host.close();
 });
 
 it("bounds transcript output by an explicit byte cap", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
-		await wait(host, (await host.submit({ message: `do the task ${"x".repeat(200)}`, requestId: "run-bounded" })).submissionId);
+		await wait(
+			host,
+			(await host.submit({ message: `do the task ${"x".repeat(200)}`, requestId: "run-bounded" })).submissionId,
+		);
 		for (const maxBytes of [0, 1, 8, 64, 256]) {
 			const text = await host.transcript(200, maxBytes);
 			assert.ok(Buffer.byteLength(text) <= maxBytes, `${maxBytes}: stays within the byte cap`);
@@ -240,9 +382,15 @@ it("bounds transcript output by an explicit byte cap", async (t) => {
 
 it("holds the byte cap for Unicode transcript content", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
-		await wait(host, (await host.submit({ message: `café 世界 ${"🧭".repeat(200)}`, requestId: "run-unicode" })).submissionId);
+		await wait(
+			host,
+			(await host.submit({ message: `café 世界 ${"🧭".repeat(200)}`, requestId: "run-unicode" })).submissionId,
+		);
 		for (const maxBytes of [1, 8, 64, 256]) {
 			const text = await host.transcript(200, maxBytes);
 			assert.ok(Buffer.byteLength(text) <= maxBytes, `${maxBytes}: bounded`);
@@ -255,7 +403,10 @@ it("holds the byte cap for Unicode transcript content", async (t) => {
 
 it("distinguishes a count-bound omission in the transcript notice", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		await wait(host, (await host.submit({ message: "do the task", requestId: "run-count" })).submissionId);
 		const text = await host.transcript(1, 4096);
@@ -268,9 +419,20 @@ it("distinguishes a count-bound omission in the transcript notice", async (t) =>
 
 it("rejects out-of-range transcript bounds", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
-		for (const [limit, maxBytes] of [[-1, 100], [1.5, 100], [Number.NaN, 100], [200, -1], [200, 1.5], [200, Number.NaN], [200, Number.POSITIVE_INFINITY]]) {
+		for (const [limit, maxBytes] of [
+			[-1, 100],
+			[1.5, 100],
+			[Number.NaN, 100],
+			[200, -1],
+			[200, 1.5],
+			[200, Number.NaN],
+			[200, Number.POSITIVE_INFINITY],
+		]) {
 			await assert.rejects(host.transcript(limit, maxBytes), RangeError, `${String(limit)}/${String(maxBytes)}`);
 		}
 	} finally {
@@ -280,9 +442,15 @@ it("rejects out-of-range transcript bounds", async (t) => {
 
 it("refuses an owned submission without an origin and names the restart", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
-		await assert.rejects(host.request("submit", { message: "from an older window", requestId: "old-window-1", ownerId: "owner-old" }), /calling Pi runs older agent code\. Restart that Pi window/);
+		await assert.rejects(
+			host.request("submit", { message: "from an older window", requestId: "old-window-1", ownerId: "owner-old" }),
+			/calling Pi runs older agent code\. Restart that Pi window/,
+		);
 		const receipts = (await host.request("receipts", { ownerId: "owner-old" })) as { receipts: readonly unknown[] };
 		assert.equal(receipts.receipts.length, 0, "a refused admission leaves no delivery intent");
 	} finally {
@@ -292,12 +460,31 @@ it("refuses an owned submission without an origin and names the restart", async 
 
 it("serves submit, receipts, and acknowledge through request dispatch", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
-		const submitted = (await host.request("submit", { message: "report me", requestId: "receipt-1", ownerId: "owner-a", operationId: "op-9", origin: "operator" })) as { submissionId: SubmissionId; identity: string };
+		const submitted = (await host.request("submit", {
+			message: "report me",
+			requestId: "receipt-1",
+			ownerId: "owner-a",
+			operationId: "op-9",
+			origin: "operator",
+		})) as { submissionId: SubmissionId; identity: string };
 		assert.equal(submitted.identity, fixtureStorageId);
 		await wait(host, submitted.submissionId);
-		const waiting = (await host.request("receipts", { ownerId: "owner-a" })) as { receipts: readonly { submissionId: SubmissionId; status: string; answerEntryId: number | null; operationId: string | null; identity: string }[]; reports: readonly unknown[]; pending: number };
+		const waiting = (await host.request("receipts", { ownerId: "owner-a" })) as {
+			receipts: readonly {
+				submissionId: SubmissionId;
+				status: string;
+				answerEntryId: number | null;
+				operationId: string | null;
+				identity: string;
+			}[];
+			reports: readonly unknown[];
+			pending: number;
+		};
 		assert.equal(waiting.receipts.length, 1);
 		const receipt = waiting.receipts[0];
 		assert.ok(receipt);
@@ -305,7 +492,10 @@ it("serves submit, receipts, and acknowledge through request dispatch", async (t
 		assert.equal(receipt.status, "done");
 		assert.ok(receipt.answerEntryId !== null, "the receipt retains the answer entry ID");
 		assert.equal(receipt.operationId, "op-9");
-		const acknowledged = (await host.request("acknowledge", { ownerId: "owner-a", submissionIds: [submitted.submissionId] })) as { acknowledged: SubmissionId[] };
+		const acknowledged = (await host.request("acknowledge", {
+			ownerId: "owner-a",
+			submissionIds: [submitted.submissionId],
+		})) as { acknowledged: SubmissionId[] };
 		assert.deepEqual(acknowledged.acknowledged, [submitted.submissionId]);
 		const after = (await host.request("receipts", { ownerId: "owner-a" })) as { receipts: readonly unknown[] };
 		assert.equal(after.receipts.length, 0, "acknowledged receipts stay out of the undelivered set");
@@ -316,20 +506,49 @@ it("serves submit, receipts, and acknowledge through request dispatch", async (t
 
 it("reconciles an intent written before its submission and never overwrites an acknowledgement", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const first = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const first = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	// Simulate a crash after the intent commit and before submission admission.
-	await first.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
-		const state = deliveryFixtureState;
-		state.intents.push({ requestId: "recover-1", ownerId: "owner-r", conversationId: 1 as ConversationId, message: "recovered task", whenBusy: null, operationId: null, submissionId: null, origin: "operator" });
-	}), BACKGROUND_CONTEXT);
-	const submitted = await first.submit({ message: "recovered task", requestId: "recover-1", ownerId: "owner-r", origin: "operator" });
+	await first.harness.commit(
+		async (tx) =>
+			editDeliveryFixture(tx, async (deliveryFixtureState) => {
+				const state = deliveryFixtureState;
+				state.intents.push({
+					requestId: "recover-1",
+					ownerId: "owner-r",
+					conversationId: 1 as ConversationId,
+					message: "recovered task",
+					whenBusy: null,
+					operationId: null,
+					submissionId: null,
+					origin: "operator",
+				});
+			}),
+		BACKGROUND_CONTEXT,
+	);
+	const submitted = await first.submit({
+		message: "recovered task",
+		requestId: "recover-1",
+		ownerId: "owner-r",
+		origin: "operator",
+	});
 	await wait(first, submitted.submissionId);
 	await first.request("acknowledge", { ownerId: "owner-r", submissionIds: [submitted.submissionId] });
 	await first.close();
 
-	const second = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const second = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
-		const repeated = (await second.request("submit", { message: "recovered task", requestId: "recover-1", ownerId: "owner-r", origin: "operator" })) as { submissionId: SubmissionId; deduped: boolean };
+		const repeated = (await second.request("submit", {
+			message: "recovered task",
+			requestId: "recover-1",
+			ownerId: "owner-r",
+			origin: "operator",
+		})) as { submissionId: SubmissionId; deduped: boolean };
 		assert.equal(repeated.submissionId, submitted.submissionId, "Durable deduplication reuses the submission");
 		assert.equal(repeated.deduped, true);
 		const receipts = (await second.request("receipts", { ownerId: "owner-r" })) as { receipts: readonly unknown[] };
@@ -344,7 +563,14 @@ it("admits a busy steer and settles both inputs on the run's answer", async (t) 
 	const started = defer();
 	const release = defer();
 	const registry = fixtureRegistry([gateTool(release.promise, started.resolve)]);
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("steered answer")]), registry), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([toolCallMessage("gate"), answerMessage("steered answer")]),
+			registry,
+		),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const first = await host.submit({ message: "start the run", requestId: "steer-1" });
 		await started.promise;
@@ -368,7 +594,14 @@ it("aborts a live run and reports the unanswered input", async (t) => {
 	const started = defer();
 	const release = defer();
 	const registry = fixtureRegistry([gateTool(release.promise, started.resolve)]);
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("never reached")]), registry), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([toolCallMessage("gate"), answerMessage("never reached")]),
+			registry,
+		),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await host.submit({ message: "run forever", requestId: "abort-1" });
 		await started.promise;
@@ -385,7 +618,14 @@ it("aborts a live run and reports the unanswered input", async (t) => {
 
 it("forks at one entry and rewinds a decision into a corrected fork", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("first answer"), answerMessage("corrected answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([answerMessage("first answer"), answerMessage("corrected answer")]),
+			fixtureRegistry(),
+		),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await host.submit({ message: "first prompt", requestId: "fork-1" });
 		await wait(host, submitted.submissionId);
@@ -394,19 +634,28 @@ it("forks at one entry and rewinds a decision into a corrected fork", async (t) 
 		assert.ok(assistant, "the first answer is retained");
 		const assistantId = assistant.id;
 
-		const fork = (await host.request("fork", { entryId: assistantId })) as { conversationId: ConversationId; identity: string };
+		const fork = (await host.request("fork", { entryId: assistantId })) as {
+			conversationId: ConversationId;
+			identity: string;
+		};
 		assert.equal(fork.identity, `${fixtureStorageId}:${fork.conversationId}`);
 		const forked = await host.conversation(fork.conversationId);
 		assert.ok(forked);
 		const forkedKinds = (await forked.entries({}, 20, undefined, BACKGROUND_CONTEXT)).items.map((entry) => entry.kind);
 		assert.ok(forkedKinds.includes("pi.assistant"), "the fork keeps entries through the fork point");
 
-		const rewind = (await host.request("rewind", { entryId: assistantId, correction: "corrected prompt" })) as { conversationId: ConversationId; submissionId: SubmissionId; predecessorEntryId: EntryId };
+		const rewind = (await host.request("rewind", { entryId: assistantId, correction: "corrected prompt" })) as {
+			conversationId: ConversationId;
+			submissionId: SubmissionId;
+			predecessorEntryId: EntryId;
+		};
 		const corrected = await wait(host, rewind.submissionId);
 		if (corrected.status !== "done") assert.fail(`expected the correction to finish, received ${corrected.reason}`);
 		assert.equal(corrected.answer, "corrected answer");
 		assert.equal(corrected.conversationId, rewind.conversationId);
-		const source = await host.root().entries({ minEntryId: assistantId, maxEntryId: assistantId }, 1, undefined, BACKGROUND_CONTEXT);
+		const source = await host
+			.root()
+			.entries({ minEntryId: assistantId, maxEntryId: assistantId }, 1, undefined, BACKGROUND_CONTEXT);
 		assert.equal(source.items.length, 1, "the source conversation keeps the rewound decision");
 	} finally {
 		await host.close();
@@ -415,7 +664,10 @@ it("forks at one entry and rewinds a decision into a corrected fork", async (t) 
 
 it("reports a fresh host idle before any mutation", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		assert.equal(host.isIdle(), true, "the open host establishes its idle cache before returning");
 	} finally {
@@ -428,10 +680,15 @@ it("configures an idle conversation and refuses a busy one", async (t) => {
 	const started = defer();
 	const release = defer();
 	const registry = fixtureRegistry([gateTool(release.promise, started.resolve)]);
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("done")]), registry), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("done")]), registry),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		await host.request("configure", { thinkingLevel: "high", name: "renamed agent" });
-		const status = (await host.request("status", {})) as { conversations: readonly { name?: string; agent: { thinkingLevel: string } }[] };
+		const status = (await host.request("status", {})) as {
+			conversations: readonly { name?: string; agent: { thinkingLevel: string } }[];
+		};
 		const firstStatus = status.conversations[0];
 		assert.ok(firstStatus);
 		assert.equal(firstStatus.name, "renamed agent");
@@ -453,13 +710,24 @@ it("configures an idle conversation and refuses a busy one", async (t) => {
 
 it("returns the full configure outcome with the model-clamped reasoning level", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await reasoningRuntime(), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await reasoningRuntime(), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
-		const first = (await host.request("configure", { model: { provider: fixtureProvider, modelId: "plain" }, thinkingLevel: "high", name: "clamped agent" })) as ConfigurationResult;
+		const first = (await host.request("configure", {
+			model: { provider: fixtureProvider, modelId: "plain" },
+			thinkingLevel: "high",
+			name: "clamped agent",
+		})) as ConfigurationResult;
 		assert.equal(first.sessionId, fixtureStorageId);
 		assert.equal(first.outcome, "applied");
 		assert.deepEqual(first.before, { name: "", model: `${fixtureProvider}/${fixtureModelId}`, thinkingLevel: "off" });
-		assert.deepEqual(first.requested, { name: "clamped agent", model: `${fixtureProvider}/plain`, thinkingLevel: "high" });
+		assert.deepEqual(first.requested, {
+			name: "clamped agent",
+			model: `${fixtureProvider}/plain`,
+			thinkingLevel: "high",
+		});
 		assert.deepEqual(first.after, { name: "clamped agent", model: `${fixtureProvider}/plain`, thinkingLevel: "off" });
 		assert.deepEqual(first.reasoning, { requested: "high", effective: "off", clamped: true });
 		assert.equal(first.hookErrors.count, 0);
@@ -467,7 +735,10 @@ it("returns the full configure outcome with the model-clamped reasoning level", 
 		assert.equal(first.persistence.fileExists, true);
 		assert.equal(first.truncated, undefined);
 
-		const minimal = (await host.request("configure", { model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "minimal" })) as ConfigurationResult;
+		const minimal = (await host.request("configure", {
+			model: { provider: fixtureProvider, modelId: fixtureModelId },
+			thinkingLevel: "minimal",
+		})) as ConfigurationResult;
 		assert.deepEqual(minimal.reasoning, { requested: "minimal", effective: "low", clamped: true });
 		assert.equal(minimal.after.thinkingLevel, "low");
 
@@ -477,7 +748,10 @@ it("returns the full configure outcome with the model-clamped reasoning level", 
 		assert.equal(named.after.name, "renamed again");
 		assert.equal(named.after.model, `${fixtureProvider}/${fixtureModelId}`);
 
-		const missing = (await host.request("configure", { model: { provider: "absent", modelId: "model" }, thinkingLevel: "high" })) as ConfigurationResult;
+		const missing = (await host.request("configure", {
+			model: { provider: "absent", modelId: "model" },
+			thinkingLevel: "high",
+		})) as ConfigurationResult;
 		assert.equal(missing.outcome, "failed");
 		assert.deepEqual(missing.after, missing.before);
 		assert.equal(missing.persistence.nativeWrites, "not-attempted");
@@ -492,21 +766,47 @@ it("compacts without aborting active work or withdrawing queued input", { timeou
 	const started = defer();
 	const release = defer();
 	const registry = fixtureRegistry([gateTool(release.promise, started.resolve)]);
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("summary answer"), answerMessage("work answer"), answerMessage("queued answer")]), registry), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([
+				toolCallMessage("gate"),
+				answerMessage("summary answer"),
+				answerMessage("work answer"),
+				answerMessage("queued answer"),
+			]),
+			registry,
+		),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await host.submit({ message: "busy work", requestId: "compact-busy" });
 		await started.promise;
 		const queued = await host.submit({ message: "later work", requestId: "compact-queued", whenBusy: "followUp" });
-		const compacted = (await host.request("compact", { instructions: "condense the work", wait: false })) as { status: string; taskId: number };
+		const compacted = (await host.request("compact", { instructions: "condense the work", wait: false })) as {
+			status: string;
+			taskId: number;
+		};
 		assert.equal(compacted.status, "task");
 		const inspection = await host.inspect();
-		assert.equal(inspection.submissions.find(item => item.id === submitted.submissionId)?.status, "placed");
-		assert.equal(inspection.submissions.find(item => item.id === queued.submissionId)?.status, "queued");
-		assert.equal(inspection.tasks.some(item => item.record.abortRequested), false);
+		assert.equal(inspection.submissions.find((item) => item.id === submitted.submissionId)?.status, "placed");
+		assert.equal(inspection.submissions.find((item) => item.id === queued.submissionId)?.status, "queued");
+		assert.equal(
+			inspection.tasks.some((item) => item.record.abortRequested),
+			false,
+		);
 		release.resolve();
 		assert.equal((await wait(host, submitted.submissionId)).status, "done");
 		assert.equal((await wait(host, queued.submissionId)).status, "done");
-		assert.equal((await host.harness.waitForTask(compacted.taskId as import("@earendil-works/pi-durable").TaskId, BACKGROUND_CONTEXT)).state.outcome.status, "completed");
+		assert.equal(
+			(
+				await host.harness.waitForTask(
+					compacted.taskId as import("@earendil-works/pi-durable").TaskId,
+					BACKGROUND_CONTEXT,
+				)
+			).state.outcome.status,
+			"completed",
+		);
 	} finally {
 		release.resolve();
 		await host.close();
@@ -516,33 +816,66 @@ it("compacts without aborting active work or withdrawing queued input", { timeou
 it("returns observed compaction configuration and the retained summary text size", async (t) => {
 	const runtime = await fixtureRuntime("answer");
 	const options = hostOptions(join(fixtureRoot(t), "compact.sqlite"), runtime, fixtureRegistry());
-	const host = await DurableHost.open({ ...options, settings: { ...options.settings, compaction: { keepRecentTokens: 0, reserveTokens: 128 } } }, BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		{ ...options, settings: { ...options.settings, compaction: { keepRecentTokens: 0, reserveTokens: 128 } } },
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		await host.request("configure", { name: "Other parser" });
 		const submitted = await host.submit({ message: "Retain the original task", requestId: "context" });
 		await wait(host, submitted.submissionId);
-		const outcome = await host.request("compact", { wait: true }) as { status: string; summaryChars?: number; compaction: { identity: string; name: string; provider: string; modelId: string; thinkingLevel: string; before: { contextWindow: number; tokens?: number }; summaryChars?: number } };
+		const outcome = (await host.request("compact", { wait: true })) as {
+			status: string;
+			summaryChars?: number;
+			compaction: {
+				identity: string;
+				name: string;
+				provider: string;
+				modelId: string;
+				thinkingLevel: string;
+				before: { contextWindow: number; tokens?: number };
+				summaryChars?: number;
+			};
+		};
 		assert.equal(outcome.status, "completed");
 		assert.equal(outcome.compaction.identity, host.storageId);
 		assert.equal(outcome.compaction.name, "Other parser");
 		assert.equal(outcome.compaction.provider, fixtureProvider);
 		assert.equal(outcome.compaction.modelId, fixtureModelId);
-		assert.equal(outcome.compaction.before.contextWindow, runtime.getModel(fixtureProvider, fixtureModelId)?.contextWindow);
+		assert.equal(
+			outcome.compaction.before.contextWindow,
+			runtime.getModel(fixtureProvider, fixtureModelId)?.contextWindow,
+		);
 		assert.equal(Object.hasOwn(outcome.compaction.before, "tokens"), false, "cumulative usage is not context size");
 		assert.ok((outcome.summaryChars ?? 0) > 0);
 		assert.equal(outcome.compaction.summaryChars, outcome.summaryChars);
 		const marker = (await host.root().context(BACKGROUND_CONTEXT)).head?.model?.[0];
 		assert.equal(marker?.role, "user");
-		const retainedText = typeof marker?.content === "string" ? marker.content : marker?.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+		const retainedText =
+			typeof marker?.content === "string"
+				? marker.content
+				: marker?.content
+						.filter((part) => part.type === "text")
+						.map((part) => part.text)
+						.join("");
 		assert.equal(outcome.summaryChars, retainedText?.length, "size measures the actual retained wrapped summary");
 		await host.request("configure", { name: "Later name" });
 		assert.equal(outcome.compaction.name, "Other parser", "the execution facts stay fixed");
-	} finally { await host.close(); }
+	} finally {
+		await host.close();
+	}
 });
 
 it("keeps compaction operational when optional name metadata is unreadable", async (t) => {
-	const options = hostOptions(join(fixtureRoot(t), "metadata.sqlite"), await fixtureRuntime("answer"), fixtureRegistry());
-	const host = await DurableHost.open({ ...options, settings: { ...options.settings, compaction: { keepRecentTokens: 0, reserveTokens: 128 } } }, BACKGROUND_CONTEXT);
+	const options = hostOptions(
+		join(fixtureRoot(t), "metadata.sqlite"),
+		await fixtureRuntime("answer"),
+		fixtureRegistry(),
+	);
+	const host = await DurableHost.open(
+		{ ...options, settings: { ...options.settings, compaction: { keepRecentTokens: 0, reserveTokens: 128 } } },
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await host.submit({ message: "Retain the task", requestId: "source" });
 		await wait(host, submitted.submissionId);
@@ -551,11 +884,16 @@ it("keeps compaction operational when optional name metadata is unreadable", asy
 			if ((args[0] as unknown) === AgentMetaDoc) throw new Error("name metadata read failed");
 			return snapshot(...args);
 		});
-		const outcome = await host.request("compact", { wait: true }) as { status: string; compaction: { name?: string; metadataError?: string } };
+		const outcome = (await host.request("compact", { wait: true })) as {
+			status: string;
+			compaction: { name?: string; metadataError?: string };
+		};
 		assert.equal(outcome.status, "completed");
 		assert.equal(outcome.compaction.name, undefined);
 		assert.equal(outcome.compaction.metadataError, "name metadata read failed");
-	} finally { await host.close(); }
+	} finally {
+		await host.close();
+	}
 });
 
 it("runs a contributed command with its host bindings", async (t) => {
@@ -580,26 +918,50 @@ it("runs a contributed command with its host bindings", async (t) => {
 				description: "Echo arguments",
 				run: async (call) => {
 					assert.equal(call.harness, opened?.harness, "the command call carries the open Harness");
-					if (call.data !== undefined) return { text: `structured for ${call.origin ?? "unstated"}`, data: { echoed: call.data, origin: call.origin ?? null } };
+					if (call.data !== undefined)
+						return {
+							text: `structured for ${call.origin ?? "unstated"}`,
+							data: { echoed: call.data, origin: call.origin ?? null },
+						};
 					return `${call.args}:${call.host.storageId}:${call.conversation.id}:${call.invocationId}${call.origin ? `:${call.origin}` : ""}`;
 				},
 			},
-			{ name: "silent", description: "Answers without text", run: async () => ({ text: 1 } as unknown as string) },
+			{ name: "silent", description: "Answers without text", run: async () => ({ text: 1 }) as unknown as string },
 		],
 	};
 	const host = await DurableHost.open(options, BACKGROUND_CONTEXT);
 	opened = host;
 	try {
-		const result = (await host.request("command", { name: "echo", args: "hello", invocationId: "inv-1" })) as { name: string; text: string };
+		const result = (await host.request("command", { name: "echo", args: "hello", invocationId: "inv-1" })) as {
+			name: string;
+			text: string;
+		};
 		assert.equal(result.name, "echo");
 		assert.equal(result.text, `hello:contribution-storage:${String(host.root().id)}:inv-1`);
 		assert.equal("data" in result, false, "a text answer carries no data field");
 		await assert.rejects(host.request("command", { name: "echo", args: "hello" }), /invocationId/u);
 		await assert.rejects(host.request("command", { name: "missing", invocationId: "inv-2" }), /not registered/u);
-		const operator = (await host.request("command", { name: "echo", args: "hello", invocationId: "inv-3", origin: "operator" })) as { text: string };
-		assert.equal(operator.text, `hello:contribution-storage:${String(host.root().id)}:inv-3:operator`, "a stated origin reaches the command");
-		await assert.rejects(host.request("command", { name: "echo", invocationId: "inv-4", origin: "panel" }), /origin must be operator or model/u);
-		const structured = (await host.request("command", { name: "echo", invocationId: "inv-5", origin: "model", data: { op: "recent", limit: 2 } })) as { text: string; data?: unknown };
+		const operator = (await host.request("command", {
+			name: "echo",
+			args: "hello",
+			invocationId: "inv-3",
+			origin: "operator",
+		})) as { text: string };
+		assert.equal(
+			operator.text,
+			`hello:contribution-storage:${String(host.root().id)}:inv-3:operator`,
+			"a stated origin reaches the command",
+		);
+		await assert.rejects(
+			host.request("command", { name: "echo", invocationId: "inv-4", origin: "panel" }),
+			/origin must be operator or model/u,
+		);
+		const structured = (await host.request("command", {
+			name: "echo",
+			invocationId: "inv-5",
+			origin: "model",
+			data: { op: "recent", limit: 2 },
+		})) as { text: string; data?: unknown };
 		assert.equal(structured.text, "structured for model");
 		assert.deepEqual(structured.data, { echoed: { op: "recent", limit: 2 }, origin: "model" });
 		await assert.rejects(host.request("command", { name: "silent", invocationId: "inv-6" }), /returned no text/u);
@@ -610,14 +972,23 @@ it("runs a contributed command with its host bindings", async (t) => {
 
 it("omits provider signatures, image payloads, and redacted thinking from inspection text", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([redactedAnswerMessage("redacted kept")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime([redactedAnswerMessage("redacted kept")]), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		await wait(host, (await host.submit({ message: "show me", requestId: "redact-1" })).submissionId);
 		const entries = await host.root().entries({}, 20, undefined, BACKGROUND_CONTEXT);
 		const assistant = entries.items.find((entry) => entry.kind === "pi.assistant");
 		assert.ok(assistant);
-		const exact = (await host.request("inspect", { view: "exact", entryId: assistant.id })) as { text: string; omissions?: { providerSignatures: number; imagePayloads: number; redactedThinking: number } };
-		assert.doesNotMatch(exact.text, /opaque-thinking-signature|opaque-redacted-payload|opaque-text-signature|opaque-tool-signature/u);
+		const exact = (await host.request("inspect", { view: "exact", entryId: assistant.id })) as {
+			text: string;
+			omissions?: { providerSignatures: number; imagePayloads: number; redactedThinking: number };
+		};
+		assert.doesNotMatch(
+			exact.text,
+			/opaque-thinking-signature|opaque-redacted-payload|opaque-text-signature|opaque-tool-signature/u,
+		);
 		assert.match(exact.text, /\[omitted: provider signature\]/u);
 		assert.match(exact.text, /\[omitted: redacted thinking\]/u);
 		assert.ok((exact.omissions?.providerSignatures ?? 0) >= 3, "every opaque signature is counted");
@@ -629,30 +1000,52 @@ it("omits provider signatures, image payloads, and redacted thinking from inspec
 
 it("retains an outbound report and acknowledges it by source ID", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	const started = Date.now();
 	try {
-		const report = (await host.request("report", { ownerId: "owner-z", senderIdentity: "agent-x", requestId: "rep-1", message: "progress note", replyTo: "op-1" })) as { sourceId: string; requestId: string; acknowledged: boolean; createdAt: number };
+		const report = (await host.request("report", {
+			ownerId: "owner-z",
+			senderIdentity: "agent-x",
+			requestId: "rep-1",
+			message: "progress note",
+			replyTo: "op-1",
+		})) as { sourceId: string; requestId: string; acknowledged: boolean; createdAt: number };
 		assert.equal(report.sourceId, "report:rep-1");
 		assert.equal(report.acknowledged, false);
 		assert.ok(report.createdAt >= started);
-		const again = (await host.request("report", { ownerId: "owner-z", senderIdentity: "agent-x", requestId: "rep-1", message: "progress note" })) as { sourceId: string };
+		const again = (await host.request("report", {
+			ownerId: "owner-z",
+			senderIdentity: "agent-x",
+			requestId: "rep-1",
+			message: "progress note",
+		})) as { sourceId: string };
 		assert.equal(again.sourceId, report.sourceId, "a repeated request ID returns the retained report");
-		const waiting = (await host.request("receipts", { ownerId: "owner-z" })) as { receipts: readonly unknown[]; reports: readonly { sourceId: string; senderIdentity: string; message: string; replyTo: string | null }[] };
+		const waiting = (await host.request("receipts", { ownerId: "owner-z" })) as {
+			receipts: readonly unknown[];
+			reports: readonly { sourceId: string; senderIdentity: string; message: string; replyTo: string | null }[];
+		};
 		assert.equal(waiting.reports.length, 1);
 		const received = waiting.reports[0];
 		assert.ok(received);
 		assert.equal(received.senderIdentity, "agent-x");
 		assert.equal(received.message, "progress note");
 		assert.equal(received.replyTo, "op-1");
-		const acknowledged = (await host.request("acknowledge", { ownerId: "owner-z", sourceIds: ["report:rep-1"] })) as { acknowledgedReports: string[] };
+		const acknowledged = (await host.request("acknowledge", { ownerId: "owner-z", sourceIds: ["report:rep-1"] })) as {
+			acknowledgedReports: string[];
+		};
 		assert.deepEqual(acknowledged.acknowledgedReports, ["report:rep-1"]);
 		const after = (await host.request("receipts", { ownerId: "owner-z" })) as { reports: readonly unknown[] };
 		assert.equal(after.reports.length, 0, "acknowledged reports stay out of the undelivered set");
 	} finally {
 		await host.close();
 	}
-	const reopened = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const reopened = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const retained = (await reopened.request("receipts", { ownerId: "owner-z" })) as { reports: readonly unknown[] };
 		assert.equal(retained.reports.length, 0, "the acknowledgement survives reopen");
@@ -662,7 +1055,12 @@ it("retains an outbound report and acknowledges it by source ID", async (t) => {
 });
 
 it("classifies idle work without excluding waiting tasks", () => {
-	const node = (id: number, conversationId: number, state: Record<string, unknown>, conversations: number[] = []): Record<string, unknown> => ({
+	const node = (
+		id: number,
+		conversationId: number,
+		state: Record<string, unknown>,
+		conversations: number[] = [],
+	): Record<string, unknown> => ({
 		id,
 		kind: "test.task",
 		conversationId,
@@ -671,37 +1069,106 @@ it("classifies idle work without excluding waiting tasks", () => {
 		state,
 		conversations,
 	});
-	const graph = (...nodes: Record<string, unknown>[]) => ({ tasks: Object.fromEntries(nodes.map((task, index) => [String(index + 1), task])) }) as unknown as TaskGraph;
-	const inspection = (submissions: number) => ({ scheduling: "running", tasks: [], submissions: Array.from({ length: submissions }, (_, index) => ({ id: index + 1 })) }) as unknown as HarnessInspection;
+	const graph = (...nodes: Record<string, unknown>[]) =>
+		({ tasks: Object.fromEntries(nodes.map((task, index) => [String(index + 1), task])) }) as unknown as TaskGraph;
+	const inspection = (submissions: number) =>
+		({
+			scheduling: "running",
+			tasks: [],
+			submissions: Array.from({ length: submissions }, (_, index) => ({ id: index + 1 })),
+		}) as unknown as HarnessInspection;
 	assert.equal(sessionIsIdle(graph(), inspection(0)), true, "an empty session is idle");
-	assert.equal(sessionIsIdle(graph(node(1, 1, { status: "running", phase: "work" })), inspection(0)), false, "a running task is work");
-	assert.equal(sessionIsIdle(graph(node(1, 1, { status: "pending", phase: "work" })), inspection(0)), false, "a pending task is work");
-	assert.equal(sessionIsIdle(graph(node(1, 1, { status: "completing", outcome: "completed" })), inspection(0)), false, "a completing task is work");
-	assert.equal(sessionIsIdle(graph(node(1, 1, { status: "waiting", phase: "wait", on: [2], policy: "allSettled" })), inspection(0)), false, "a task waiting on work is work");
-	assert.equal(sessionIsIdle(graph(node(1, 1, { status: "waiting", phase: "hold", on: [], policy: "allSettled" }, [7])), inspection(0)), false, "a task waiting with no dependencies may await an external effect and counts");
-	assert.equal(sessionIsIdle(graph(node(1, 1, { status: "waiting", phase: "hold", on: [], policy: "allSettled" }, [7]), node(2, 7, { status: "running", phase: "work" })), inspection(0)), false, "owned live work counts");
-	assert.equal(sessionIsIdle(graph(node(1, 1, { status: "waiting", phase: "hold", on: [], policy: "allSettled" }, [7])), inspection(1)), false, "an unsettled submission is work");
+	assert.equal(
+		sessionIsIdle(graph(node(1, 1, { status: "running", phase: "work" })), inspection(0)),
+		false,
+		"a running task is work",
+	);
+	assert.equal(
+		sessionIsIdle(graph(node(1, 1, { status: "pending", phase: "work" })), inspection(0)),
+		false,
+		"a pending task is work",
+	);
+	assert.equal(
+		sessionIsIdle(graph(node(1, 1, { status: "completing", outcome: "completed" })), inspection(0)),
+		false,
+		"a completing task is work",
+	);
+	assert.equal(
+		sessionIsIdle(
+			graph(node(1, 1, { status: "waiting", phase: "wait", on: [2], policy: "allSettled" })),
+			inspection(0),
+		),
+		false,
+		"a task waiting on work is work",
+	);
+	assert.equal(
+		sessionIsIdle(
+			graph(node(1, 1, { status: "waiting", phase: "hold", on: [], policy: "allSettled" }, [7])),
+			inspection(0),
+		),
+		false,
+		"a task waiting with no dependencies may await an external effect and counts",
+	);
+	assert.equal(
+		sessionIsIdle(
+			graph(
+				node(1, 1, { status: "waiting", phase: "hold", on: [], policy: "allSettled" }, [7]),
+				node(2, 7, { status: "running", phase: "work" }),
+			),
+			inspection(0),
+		),
+		false,
+		"owned live work counts",
+	);
+	assert.equal(
+		sessionIsIdle(
+			graph(node(1, 1, { status: "waiting", phase: "hold", on: [], policy: "allSettled" }, [7])),
+			inspection(1),
+		),
+		false,
+		"an unsettled submission is work",
+	);
 });
 
 it("reads receipts and selected input state without waiting for a held run", { timeout: 15000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
 	const started = defer();
 	const release = defer();
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("done")]), fixtureRegistry([gateTool(release.promise, started.resolve)])), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([toolCallMessage("gate"), answerMessage("done")]),
+			fixtureRegistry([gateTool(release.promise, started.resolve)]),
+		),
+		BACKGROUND_CONTEXT,
+	);
 	try {
-		const submitted = await host.submit({ message: "hold", requestId: "immediate-receipt", ownerId: "owner", origin: "operator" });
+		const submitted = await host.submit({
+			message: "hold",
+			requestId: "immediate-receipt",
+			ownerId: "owner",
+			origin: "operator",
+		});
 		await started.promise;
-		const empty = await host.request("receipts", { ownerId: "owner", wait: true }) as { receipts: unknown[]; reports: unknown[]; pending: number };
+		const empty = (await host.request("receipts", { ownerId: "owner", wait: true })) as {
+			receipts: unknown[];
+			reports: unknown[];
+			pending: number;
+		};
 		assert.deepEqual(empty.receipts, []);
 		assert.deepEqual(empty.reports, []);
 		assert.equal(empty.pending, 1);
-		const selected = await host.request("receipts", { ownerId: "owner", wait: true, result: { sessionId: host.storageId, submissionId: submitted.submissionId, requestId: "immediate-receipt" } }) as { outcome: { status: string; answer?: string }; delivery?: unknown };
+		const selected = (await host.request("receipts", {
+			ownerId: "owner",
+			wait: true,
+			result: { sessionId: host.storageId, submissionId: submitted.submissionId, requestId: "immediate-receipt" },
+		})) as { outcome: { status: string; answer?: string }; delivery?: unknown };
 		assert.equal(selected.outcome.status, "placed");
 		assert.equal(selected.outcome.answer, undefined);
 		assert.equal(selected.delivery, undefined);
 		release.resolve();
 		assert.equal((await wait(host, submitted.submissionId)).status, "done");
-		const settled = await host.request("receipts", { ownerId: "owner" }) as { receipts: { status: string }[] };
+		const settled = (await host.request("receipts", { ownerId: "owner" })) as { receipts: { status: string }[] };
 		assert.equal(settled.receipts[0]?.status, "done");
 		await host.close();
 		await assert.rejects(host.request("receipts", { ownerId: "owner" }), /durable host is closed/u);
@@ -713,7 +1180,14 @@ it("reads receipts and selected input state without waiting for a held run", { t
 
 it("returns the retained fork and rewind for a repeated request key", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("first answer"), answerMessage("corrected answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([answerMessage("first answer"), answerMessage("corrected answer")]),
+			fixtureRegistry(),
+		),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await host.submit({ message: "first prompt", requestId: "fork-key-1" });
 		await wait(host, submitted.submissionId);
@@ -721,20 +1195,46 @@ it("returns the retained fork and rewind for a repeated request key", async (t) 
 		const assistant = entries.items.find((entry) => entry.kind === "pi.assistant");
 		assert.ok(assistant);
 
-		const firstFork = (await host.request("fork", { entryId: assistant.id, requestId: "fork:store:task" })) as { conversationId: ConversationId; deduped: boolean };
-		const secondFork = (await host.request("fork", { entryId: assistant.id, requestId: "fork:store:task" })) as { conversationId: ConversationId; deduped: boolean };
-		assert.equal(secondFork.conversationId, firstFork.conversationId, "the repeated fork key returns the retained fork");
+		const firstFork = (await host.request("fork", { entryId: assistant.id, requestId: "fork:store:task" })) as {
+			conversationId: ConversationId;
+			deduped: boolean;
+		};
+		const secondFork = (await host.request("fork", { entryId: assistant.id, requestId: "fork:store:task" })) as {
+			conversationId: ConversationId;
+			deduped: boolean;
+		};
+		assert.equal(
+			secondFork.conversationId,
+			firstFork.conversationId,
+			"the repeated fork key returns the retained fork",
+		);
 		assert.equal(firstFork.deduped, false);
 		assert.equal(secondFork.deduped, true);
 		const afterFork = (await host.request("list")) as { items: readonly unknown[] };
 		assert.equal(afterFork.items.length, 2, "one fork was created");
 
-		const firstRewind = (await host.request("rewind", { entryId: assistant.id, correction: "corrected prompt", requestId: "rewind:store:task" })) as { conversationId: ConversationId; submissionId: SubmissionId; deduped: boolean };
+		const firstRewind = (await host.request("rewind", {
+			entryId: assistant.id,
+			correction: "corrected prompt",
+			requestId: "rewind:store:task",
+		})) as { conversationId: ConversationId; submissionId: SubmissionId; deduped: boolean };
 		const corrected = await wait(host, firstRewind.submissionId);
 		if (corrected.status !== "done") assert.fail(`expected the correction to finish, received ${corrected.reason}`);
-		const secondRewind = (await host.request("rewind", { entryId: assistant.id, correction: "corrected prompt", requestId: "rewind:store:task" })) as { conversationId: ConversationId; submissionId: SubmissionId; deduped: boolean };
-		assert.equal(secondRewind.conversationId, firstRewind.conversationId, "the repeated rewind key returns the retained fork");
-		assert.equal(secondRewind.submissionId, firstRewind.submissionId, "the repeated rewind reuses the retained admission");
+		const secondRewind = (await host.request("rewind", {
+			entryId: assistant.id,
+			correction: "corrected prompt",
+			requestId: "rewind:store:task",
+		})) as { conversationId: ConversationId; submissionId: SubmissionId; deduped: boolean };
+		assert.equal(
+			secondRewind.conversationId,
+			firstRewind.conversationId,
+			"the repeated rewind key returns the retained fork",
+		);
+		assert.equal(
+			secondRewind.submissionId,
+			firstRewind.submissionId,
+			"the repeated rewind reuses the retained admission",
+		);
 		assert.equal(secondRewind.deduped, true);
 		const afterRewind = (await host.request("list")) as { items: readonly unknown[] };
 		assert.equal(afterRewind.items.length, 3, "no duplicate rewind fork was created");
@@ -745,7 +1245,10 @@ it("returns the retained fork and rewind for a repeated request key", async (t) 
 
 it("creates one fork for concurrent requests with the same key", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("concurrent answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime([answerMessage("concurrent answer")]), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await host.submit({ message: "concurrent prompt", requestId: "concurrent-1" });
 		await wait(host, submitted.submissionId);
@@ -767,17 +1270,36 @@ it("creates one fork for concurrent requests with the same key", async (t) => {
 
 it("treats unnamed rewinds as distinct invocations", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("first answer"), answerMessage("correction one"), answerMessage("correction two")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([
+				answerMessage("first answer"),
+				answerMessage("correction one"),
+				answerMessage("correction two"),
+			]),
+			fixtureRegistry(),
+		),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await host.submit({ message: "first prompt", requestId: "rewind-nokey-1" });
 		await wait(host, submitted.submissionId);
 		const entries = await host.root().entries({}, 20, undefined, BACKGROUND_CONTEXT);
 		const assistant = entries.items.find((entry) => entry.kind === "pi.assistant");
 		assert.ok(assistant);
-		const first = (await host.request("rewind", { entryId: assistant.id, correction: "correction one" })) as { conversationId: ConversationId; submissionId: SubmissionId; deduped: boolean };
+		const first = (await host.request("rewind", { entryId: assistant.id, correction: "correction one" })) as {
+			conversationId: ConversationId;
+			submissionId: SubmissionId;
+			deduped: boolean;
+		};
 		const firstOutcome = await wait(host, first.submissionId);
 		assert.equal(firstOutcome.status, "done");
-		const second = (await host.request("rewind", { entryId: assistant.id, correction: "correction two" })) as { conversationId: ConversationId; submissionId: SubmissionId; deduped: boolean };
+		const second = (await host.request("rewind", { entryId: assistant.id, correction: "correction two" })) as {
+			conversationId: ConversationId;
+			submissionId: SubmissionId;
+			deduped: boolean;
+		};
 		const secondOutcome = await wait(host, second.submissionId);
 		assert.equal(secondOutcome.status, "done");
 		if (secondOutcome.status === "done") assert.equal(secondOutcome.answer, "correction two");
@@ -793,7 +1315,10 @@ it("treats unnamed rewinds as distinct invocations", async (t) => {
 
 it("reports a freshly opened host as idle without waiting for a commit", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		assert.equal(host.isIdle(), true, "open establishes the idle cache before any commit");
 		assert.equal(await host.refreshIdle(), true);
@@ -803,7 +1328,14 @@ it("reports a freshly opened host as idle without waiting for a commit", async (
 	const busyPath = join(fixtureRoot(t), "busy.sqlite");
 	const started = defer();
 	const release = defer();
-	const busy = await DurableHost.open(hostOptions(busyPath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("done")]), fixtureRegistry([gateTool(release.promise, started.resolve)])), BACKGROUND_CONTEXT);
+	const busy = await DurableHost.open(
+		hostOptions(
+			busyPath,
+			await scriptedRuntime([toolCallMessage("gate"), answerMessage("done")]),
+			fixtureRegistry([gateTool(release.promise, started.resolve)]),
+		),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await busy.submit({ message: "busy", requestId: "idle-fresh-1" });
 		await started.promise;
@@ -825,7 +1357,9 @@ async function crashAndResume(mode: "request" | "effect"): Promise<void> {
 	const effectPath = join(root, "effect.txt");
 	const rerunPath = join(root, "rerun.txt");
 	const runId = `crash-${mode}`;
-	const child = spawn(process.execPath, [fixturePath, storagePath, mode, effectPath, rerunPath, "do the task", runId], { stdio: ["ignore", "pipe", "pipe"] });
+	const child = spawn(process.execPath, [fixturePath, storagePath, mode, effectPath, rerunPath, "do the task", runId], {
+		stdio: ["ignore", "pipe", "pipe"],
+	});
 	let host: DurableHost | undefined;
 	try {
 		const output = await readyFrom(child);
@@ -835,20 +1369,34 @@ async function crashAndResume(mode: "request" | "effect"): Promise<void> {
 		child.kill("SIGKILL");
 		await death;
 		const tools = mode === "effect" ? [slowEffectTool(effectPath, rerunPath, false)] : [];
-		host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry(tools)), BACKGROUND_CONTEXT);
-		const admitted = await host.submit({ message: "do the task", requestId: runId, ownerId: "fixture-owner", origin: "operator" });
+		host = await DurableHost.open(
+			hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry(tools)),
+			BACKGROUND_CONTEXT,
+		);
+		const admitted = await host.submit({
+			message: "do the task",
+			requestId: runId,
+			ownerId: "fixture-owner",
+			origin: "operator",
+		});
 		assert.equal(String(admitted.submissionId), childSubmission, "the restart reuses the retained submission");
 		assert.equal(admitted.deduped, true, "the child's intent resolves through the retained submission");
 		const outcome = await wait(host, admitted.submissionId);
 		if (outcome.status !== "done") assert.fail(`expected a completed run, received ${outcome.reason}`);
 		assert.equal(outcome.answer, "durable answer");
-		const receipts = (await host.request("receipts", { ownerId: "fixture-owner" })) as { receipts: readonly { status: string; answerEntryId: number | null }[] };
+		const receipts = (await host.request("receipts", { ownerId: "fixture-owner" })) as {
+			receipts: readonly { status: string; answerEntryId: number | null }[];
+		};
 		const receipt = receipts.receipts[0];
 		assert.ok(receipt);
 		assert.equal(receipt.status, "done", "the owner receipt survives the kill");
 		assert.equal(receipt.answerEntryId, outcome.answerEntryId);
 		const transcript = await host.transcript();
-		assert.equal(transcript.split("\n").filter((line) => line.startsWith("pi.user")).length, 1, "the prompt is admitted once");
+		assert.equal(
+			transcript.split("\n").filter((line) => line.startsWith("pi.user")).length,
+			1,
+			"the prompt is admitted once",
+		);
 		if (mode === "effect") {
 			assert.equal(readFileSync(effectPath, "utf8").trim().split("\n").length, 1, "the unsafe effect ran exactly once");
 			assert.equal(existsSync(rerunPath), false, "the interrupted tool did not rerun");
@@ -867,14 +1415,22 @@ async function crashAndResume(mode: "request" | "effect"): Promise<void> {
 
 it("seals host admission and idle retirement after a fatal Session storage read", { timeout: 10000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "failed.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	t.after(() => host.close());
 	assert.equal(host.isIdle(), true);
 	const cause = new Error("synthetic host storage failure");
 	const storage = (host as unknown as { storage: Storage }).storage;
-	storage.conversation = async () => { throw cause; };
+	storage.conversation = async () => {
+		throw cause;
+	};
 	const failed = (error: unknown) => error instanceof SessionFailed && error.cause === cause;
-	await assert.rejects(host.harness.conversation(999 as ConversationId, BACKGROUND_CONTEXT), (error) => error === cause);
+	await assert.rejects(
+		host.harness.conversation(999 as ConversationId, BACKGROUND_CONTEXT),
+		(error) => error === cause,
+	);
 	assert.equal(host.sessionEnded, true);
 	assert.equal(host.isIdle(), false);
 	assert.equal(await host.refreshIdle(), false);

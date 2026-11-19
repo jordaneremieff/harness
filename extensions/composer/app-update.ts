@@ -1,6 +1,16 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fstatSync,
+	mkdirSync,
+	openSync,
+	readSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -39,22 +49,40 @@ function readRecord(path: string): Record<string, unknown> | undefined {
 		}
 		if (length > MANIFEST_LIMIT) return;
 		const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)));
-		return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-	} catch { return undefined; }
-	finally { if (fd !== undefined) closeSync(fd); }
+		return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+	} catch {
+		return undefined;
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
 }
 
 function readBuild(app: string): BuildInputs | undefined {
 	const manifest = readRecord(`${app}/Contents/Resources/build.json`);
-	if (manifest?.contract !== 1 || manifest.composer !== 1 || typeof manifest.sourceDigest !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(manifest.sourceDigest)) return;
+	if (
+		manifest?.contract !== 1 ||
+		manifest.composer !== 1 ||
+		typeof manifest.sourceDigest !== "string" ||
+		!/^sha256:[0-9a-f]{64}$/u.test(manifest.sourceDigest)
+	)
+		return;
 	const source = manifest.source as Partial<Source> | undefined;
 	return {
 		digest: manifest.sourceDigest,
-		...(source && typeof source.commit === "string" && /^[a-f0-9]{40,64}$/u.test(source.commit) && typeof source.modified === "boolean" ? { source: { commit: source.commit, modified: source.modified } } : {}),
+		...(source &&
+		typeof source.commit === "string" &&
+		/^[a-f0-9]{40,64}$/u.test(source.commit) &&
+		typeof source.modified === "boolean"
+			? { source: { commit: source.commit, modified: source.modified } }
+			: {}),
 	};
 }
 
-function needsInstall(installed: BuildInputs | undefined, loaded: BuildInputs, ancestor: AppRuntime["ancestor"]): boolean {
+function needsInstall(
+	installed: BuildInputs | undefined,
+	loaded: BuildInputs,
+	ancestor: AppRuntime["ancestor"],
+): boolean {
 	if (!installed) return true;
 	if (installed.digest === loaded.digest || !loaded.source) return false;
 	if (!installed.source) return true;
@@ -65,22 +93,35 @@ const runtime: AppRuntime = {
 	// Load only on the interactive macOS path, not at extension discovery.
 	load: () => import(BUILD_SCRIPT.href),
 	ancestor(older, newer) {
-		return spawnSync("git", ["-C", dirname(fileURLToPath(import.meta.url)), "merge-base", "--is-ancestor", older, newer], { timeout: 3000, stdio: "ignore" }).status === 0;
+		return (
+			spawnSync("git", ["-C", dirname(fileURLToPath(import.meta.url)), "merge-base", "--is-ancestor", older, newer], {
+				timeout: 3000,
+				stdio: "ignore",
+			}).status === 0
+		);
 	},
 	async install(app, busyCode) {
 		mkdirSync(dirname(app), { recursive: true, mode: 0o700 });
-		const log = openSync(`${app}.update.log`, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
+		const log = openSync(
+			`${app}.update.log`,
+			constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW,
+			0o600,
+		);
 		try {
 			const child = spawn(process.execPath, [fileURLToPath(BUILD_SCRIPT)], {
-				cwd: dirname(fileURLToPath(BUILD_SCRIPT)), detached: true,
-				stdio: ["ignore", log, log], env: { ...process.env, PI_COMPOSER_APP: app },
+				cwd: dirname(fileURLToPath(BUILD_SCRIPT)),
+				detached: true,
+				stdio: ["ignore", log, log],
+				env: { ...process.env, PI_COMPOSER_APP: app },
 			});
 			child.unref();
-			return await new Promise(resolve => {
+			return await new Promise((resolve) => {
 				child.once("error", () => resolve("failed"));
-				child.once("exit", code => resolve(code === 0 ? "installed" : code === busyCode ? "busy" : "failed"));
+				child.once("exit", (code) => resolve(code === 0 ? "installed" : code === busyCode ? "busy" : "failed"));
 			});
-		} finally { closeSync(log); }
+		} finally {
+			closeSync(log);
+		}
 	},
 };
 
@@ -90,15 +131,21 @@ export class ComposerApp {
 	private inputs?: Promise<{ loaded: BuildInputs; busyCode: number }>;
 
 	private readonly build: AppRuntime;
-	constructor(build: AppRuntime = runtime) { this.build = build; }
+	constructor(build: AppRuntime = runtime) {
+		this.build = build;
+	}
 
 	private loaded(): Promise<{ loaded: BuildInputs; busyCode: number }> {
-		this.inputs ??= this.build.load().then(builder => ({
-			loaded: { digest: builder.sourceDigest(), source: builder.sourceRecord() }, busyCode: builder.INSTALL_BUSY,
-		})).catch(() => {
-			this.inputs = undefined;
-			throw new Error("The composer app build is unavailable in this checkout.");
-		});
+		this.inputs ??= this.build
+			.load()
+			.then((builder) => ({
+				loaded: { digest: builder.sourceDigest(), source: builder.sourceRecord() },
+				busyCode: builder.INSTALL_BUSY,
+			}))
+			.catch(() => {
+				this.inputs = undefined;
+				throw new Error("The composer app build is unavailable in this checkout.");
+			});
 		return this.inputs;
 	}
 
@@ -110,33 +157,54 @@ export class ComposerApp {
 		const failure = `${app}.update-failure.json`;
 		const attempt = this.attempted.get(app);
 		if (!explicit) {
-			if (readRecord(failure)?.digest === loaded.digest || (attempt?.digest === loaded.digest && attempt.outcome === "failed")) return OLD_FAILURE;
-			if (attempt?.digest === loaded.digest) return attempt.outcome === "busy" ? INSTALLING : "The composer app is not current. Use /composer update to rebuild it.";
+			if (
+				readRecord(failure)?.digest === loaded.digest ||
+				(attempt?.digest === loaded.digest && attempt.outcome === "failed")
+			)
+				return OLD_FAILURE;
+			if (attempt?.digest === loaded.digest)
+				return attempt.outcome === "busy"
+					? INSTALLING
+					: "The composer app is not current. Use /composer update to rebuild it.";
 		}
 		const next: { digest: string; outcome?: InstallOutcome } = { digest: loaded.digest };
 		this.attempted.set(app, next);
 		this.running.add(app);
 		notify(`The composer app is being installed in the background. Log: ${app}.update.log`);
-		void this.build.install(app, busyCode).catch((): InstallOutcome => "failed").then(outcome => {
-			next.outcome = outcome;
-			this.running.delete(app);
-			if (outcome === "busy") {
-				notify("Another composer app install is in progress.");
-				return;
-			}
-			if (outcome === "installed" && readBuild(app)) {
-				try { rmSync(failure, { force: true }); } catch { /* The valid app remains usable. */ }
-				return;
-			}
-			next.outcome = "failed";
-			const temp = `${failure}.${randomUUID()}`;
-			try {
-				writeFileSync(temp, JSON.stringify({ digest: loaded.digest }), { mode: 0o600, flag: "wx" });
-				renameSync(temp, failure);
-			} catch { /* The in-memory attempt still suppresses automatic retries. */ }
-			finally { try { rmSync(temp, { force: true }); } catch { /* Best effort. */ } }
-			notify(`The composer app build failed. Log: ${app}.update.log. Use /composer update to try again.`, true);
-		});
+		void this.build
+			.install(app, busyCode)
+			.catch((): InstallOutcome => "failed")
+			.then((outcome) => {
+				next.outcome = outcome;
+				this.running.delete(app);
+				if (outcome === "busy") {
+					notify("Another composer app install is in progress.");
+					return;
+				}
+				if (outcome === "installed" && readBuild(app)) {
+					try {
+						rmSync(failure, { force: true });
+					} catch {
+						/* The valid app remains usable. */
+					}
+					return;
+				}
+				next.outcome = "failed";
+				const temp = `${failure}.${randomUUID()}`;
+				try {
+					writeFileSync(temp, JSON.stringify({ digest: loaded.digest }), { mode: 0o600, flag: "wx" });
+					renameSync(temp, failure);
+				} catch {
+					/* The in-memory attempt still suppresses automatic retries. */
+				} finally {
+					try {
+						rmSync(temp, { force: true });
+					} catch {
+						/* Best effort. */
+					}
+				}
+				notify(`The composer app build failed. Log: ${app}.update.log. Use /composer update to try again.`, true);
+			});
 		return INSTALLING;
 	}
 }

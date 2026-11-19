@@ -3,7 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage, type ToolCall } from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	InMemoryCredentialStore,
+	type AssistantMessage,
+	type ToolCall,
+} from "@earendil-works/pi-ai";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
@@ -74,7 +79,9 @@ function decode(writes: string[], jobId: string): string[] {
 	const messages: string[] = [];
 	for (const text of writes) {
 		const fields = new Map(
-			(/^\x1b\]7501;(.*)\x1b\\$/su.exec(text)?.[1] ?? "").split(":").map((pair) => pair.split("=", 2) as [string, string]),
+			(/^\x1b\]7501;(.*)\x1b\\$/su.exec(text)?.[1] ?? "")
+				.split(":")
+				.map((pair) => pair.split("=", 2) as [string, string]),
 		);
 		if (fields.get("id") !== id) continue;
 		const msg = fields.get("msg");
@@ -121,7 +128,14 @@ async function harness(options: { failSend?: boolean } = {}) {
 			content: call ? [call] : [{ type: "text", text: "Done." }],
 			stopReason: call ? "toolUse" : "stop",
 			timestamp: Date.now(),
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 		};
 		void (async () => {
 			await wait;
@@ -152,13 +166,13 @@ async function harness(options: { failSend?: boolean } = {}) {
 			(pi) => {
 				const api = options.failSend
 					? new Proxy(pi, {
-						get: (target, key, receiver) =>
-							key === "sendMessage"
-								? () => {
-									throw new Error("send refused");
-								}
-								: Reflect.get(target, key, receiver),
-					})
+							get: (target, key, receiver) =>
+								key === "sendMessage"
+									? () => {
+											throw new Error("send refused");
+										}
+									: Reflect.get(target, key, receiver),
+						})
 					: pi;
 				registerJobs(api as ExtensionAPI, activity);
 			},
@@ -178,7 +192,8 @@ async function harness(options: { failSend?: boolean } = {}) {
 					await current.opened.promise;
 					if (current.outcome === "throw") throw new Error("gate refused");
 					// An invalid tool selection makes Pi's run preparation throw after this handler returns.
-					if (current.outcome === "break") (event.systemPromptOptions as { selectedTools?: unknown }).selectedTools = undefined;
+					if (current.outcome === "break")
+						(event.systemPromptOptions as { selectedTools?: unknown }).selectedTools = undefined;
 				});
 			},
 		],
@@ -208,14 +223,19 @@ async function harness(options: { failSend?: boolean } = {}) {
 		writes,
 		errors,
 		/** Starts a background job through a model tool call and returns its id once the run settles. */
-		async launch(command: string, gateReply = false): Promise<{ jobId: string; run: Promise<void>; replyOpen: Deferred }> {
+		async launch(
+			command: string,
+			gateReply = false,
+		): Promise<{ jobId: string; run: Promise<void>; replyOpen: Deferred }> {
 			const id = `fixture-${++sequence}`;
 			pending = { type: "toolCall", id, name: "bash", arguments: { command, background: true } };
 			const replyOpen = deferred();
 			if (gateReply) replyGate = replyOpen.promise;
 			else replyOpen.resolve();
 			const run = session.prompt(`Execute fixture step ${sequence}.`, { source: "rpc" });
-			await this.until(() => session.messages.some((message) => message.role === "toolResult" && message.toolCallId === id));
+			await this.until(() =>
+				session.messages.some((message) => message.role === "toolResult" && message.toolCallId === id),
+			);
 			const result = session.messages.find((message) => message.role === "toolResult" && message.toolCallId === id);
 			assert.ok(result && result.role === "toolResult" && !result.isError, JSON.stringify(result));
 			const jobId = (result.details as { job: { id: string } }).job.id;
@@ -251,7 +271,9 @@ async function harness(options: { failSend?: boolean } = {}) {
 		},
 		/** Completion entries for this job on the current branch of the session. */
 		retained(jobId: string) {
-			return session.sessionManager.getBranch().filter((entry) => entry.type === "custom_message" && completionJobId(entry) === jobId).length;
+			return session.sessionManager
+				.getBranch()
+				.filter((entry) => entry.type === "custom_message" && completionJobId(entry) === jobId).length;
 		},
 		async dispose() {
 			await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
@@ -275,7 +297,9 @@ async function settleDuringPreparation(h: Harness, outcome: GateOutcome) {
 }
 
 describe("completion delivery state against a real AgentSession", () => {
-	it("shows a completion queued during run preparation as in the conversation once the run delivers it", { timeout: TIMEOUT }, async () => {
+	it("shows a completion queued during run preparation as in the conversation once the run delivers it", {
+		timeout: TIMEOUT,
+	}, async () => {
 		const h = await harness();
 		try {
 			const { jobId, run, open } = await settleDuringPreparation(h, "continue");
@@ -290,7 +314,9 @@ describe("completion delivery state against a real AgentSession", () => {
 		}
 	});
 
-	it("does not claim addition when an abort ends the run before the queued completion arrives", { timeout: TIMEOUT }, async () => {
+	it("does not claim addition when an abort ends the run before the queued completion arrives", {
+		timeout: TIMEOUT,
+	}, async () => {
 		const h = await harness();
 		try {
 			const { jobId, run, open } = await settleDuringPreparation(h, "continue");
@@ -309,7 +335,9 @@ describe("completion delivery state against a real AgentSession", () => {
 		}
 	});
 
-	it("does not claim addition when Escape clears the queue that holds the completion", { timeout: TIMEOUT }, async () => {
+	it("does not claim addition when Escape clears the queue that holds the completion", {
+		timeout: TIMEOUT,
+	}, async () => {
 		const h = await harness();
 		try {
 			const { jobId, run, open } = await settleDuringPreparation(h, "continue");
@@ -327,7 +355,9 @@ describe("completion delivery state against a real AgentSession", () => {
 		}
 	});
 
-	it("keeps the record and the entries in agreement when a before_agent_start handler throws", { timeout: TIMEOUT }, async () => {
+	it("keeps the record and the entries in agreement when a before_agent_start handler throws", {
+		timeout: TIMEOUT,
+	}, async () => {
 		const h = await harness();
 		try {
 			const { jobId, run, open } = await settleDuringPreparation(h, "throw");
@@ -335,7 +365,10 @@ describe("completion delivery state against a real AgentSession", () => {
 			await run;
 			assert.equal(h.retained(jobId), 1, "Pi reports the handler error and continues the run");
 			assert.deepEqual(h.records(jobId), ["Background job running", QUEUED, ADDED]);
-			assert.deepEqual(h.errors.map((error) => error.event), ["before_agent_start"]);
+			assert.deepEqual(
+				h.errors.map((error) => error.event),
+				["before_agent_start"],
+			);
 		} finally {
 			await h.dispose();
 		}
@@ -369,7 +402,9 @@ describe("completion delivery state against a real AgentSession", () => {
 		}
 	});
 
-	it("shows a completion queued during a streaming turn as in the conversation after the turn", { timeout: TIMEOUT }, async () => {
+	it("shows a completion queued during a streaming turn as in the conversation after the turn", {
+		timeout: TIMEOUT,
+	}, async () => {
 		const h = await harness();
 		try {
 			const { jobId, run, replyOpen } = await h.launch("exit 0", true);
@@ -384,7 +419,9 @@ describe("completion delivery state against a real AgentSession", () => {
 		}
 	});
 
-	it("shows a completion sent while idle as in the conversation once its run delivers it", { timeout: TIMEOUT }, async () => {
+	it("shows a completion sent while idle as in the conversation once its run delivers it", {
+		timeout: TIMEOUT,
+	}, async () => {
 		const h = await harness();
 		try {
 			const { jobId, run } = await h.launch(WAIT_FOR_RELEASE);

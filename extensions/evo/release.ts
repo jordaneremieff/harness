@@ -144,7 +144,9 @@ function failure(error: unknown): string {
 }
 
 function observedAt(now: () => Date): string {
-	return now().toISOString().replace(/\.\d{3}Z$/, "Z");
+	return now()
+		.toISOString()
+		.replace(/\.\d{3}Z$/, "Z");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -268,7 +270,10 @@ function collectReleases(changelog: string, baseline: string, installed: string)
 	}
 	const releases: PiReleaseSection[] = [];
 	for (const [index, heading] of headings.entries()) {
-		if (compareReleaseVersions(heading.version, baseline) <= 0 || compareReleaseVersions(heading.version, installed) > 0) {
+		if (
+			compareReleaseVersions(heading.version, baseline) <= 0 ||
+			compareReleaseVersions(heading.version, installed) > 0
+		) {
 			continue;
 		}
 		const endLine = (headings[index + 1]?.line ?? lines.length + 1) - 1;
@@ -386,7 +391,10 @@ function resolvedPackages(lockfile: string, declared: DeclaredPackage[]): PiDecl
 		const resolved =
 			recorded !== undefined && isReleaseVersion(recorded)
 				? { version: recorded }
-				: { reason: packages[top] === undefined ? "absent from the lockfile" : "the lockfile records no supported version" };
+				: {
+						reason:
+							packages[top] === undefined ? "absent from the lockfile" : "the lockfile records no supported version",
+					};
 		return { ...entry, ...resolved, ...nestedCopies(packages, top, recorded) };
 	});
 }
@@ -399,7 +407,13 @@ async function readCheckoutGraph(
 ): Promise<PiCheckoutGraph> {
 	const graph = { manifestPath: PI_MANIFEST_PATH, lockfilePath: PI_LOCKFILE_PATH };
 	if (main.commit === undefined) {
-		return { ...graph, state: "unavailable", observedAt: observedAt(now), packages: [], reason: `local main: ${main.error}` };
+		return {
+			...graph,
+			state: "unavailable",
+			observedAt: observedAt(now),
+			packages: [],
+			reason: `local main: ${main.error}`,
+		};
 	}
 	if (declared.error !== undefined) {
 		const reason = `${PI_MANIFEST_PATH} at ${main.commit}: ${declared.error}`;
@@ -415,7 +429,12 @@ async function readCheckoutGraph(
 			state: "unavailable",
 			commit: main.commit,
 			observedAt: observedAt(now),
-			packages: declared.packages.map((entry) => ({ ...entry, reason: "lockfile unavailable", nested: [], nestedOmitted: 0 })),
+			packages: declared.packages.map((entry) => ({
+				...entry,
+				reason: "lockfile unavailable",
+				nested: [],
+				nestedOmitted: 0,
+			})),
 			reason: `${PI_LOCKFILE_PATH} at ${main.commit}: ${failure(error)}`,
 		};
 	}
@@ -528,7 +547,9 @@ async function readPublication(
 	const unanswered = options.signal?.aborted
 		? "The caller cancelled the read."
 		: `No registry answer within ${options.deadlineMs} ms.`;
-	const packages = facts.map((fact) => (fact.version === undefined && fact.reason === undefined ? { ...fact, reason: unanswered } : fact));
+	const packages = facts.map((fact) =>
+		fact.version === undefined && fact.reason === undefined ? { ...fact, reason: unanswered } : fact,
+	);
 	const observed = packages.filter((fact) => fact.version !== undefined).length;
 	const publication: PiPublication = {
 		state: observed === packages.length ? "observed" : observed === 0 ? "unavailable" : "partial",
@@ -568,7 +589,9 @@ export async function readPiReleaseIntake(options: PiReleaseIntakeOptions): Prom
 	const declared: { packages: DeclaredPackage[]; error?: string } = { packages: [] };
 	if (main.commit !== undefined) {
 		try {
-			declared.packages = declaredPiPackages(await git(options.harnessRoot, ["show", `${main.commit}:${PI_MANIFEST_PATH}`]));
+			declared.packages = declaredPiPackages(
+				await git(options.harnessRoot, ["show", `${main.commit}:${PI_MANIFEST_PATH}`]),
+			);
 		} catch (error) {
 			declared.error = failure(error);
 		}

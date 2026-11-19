@@ -2,14 +2,49 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { focusPane, parseFocusRequest, parsePaneRequest, parseResizeRequest, resizePane, splitPane, type PaneFocusRequest, type PaneRequest, type PaneResizeRequest } from "./terminal-pane.ts";
+import {
+	focusPane,
+	parseFocusRequest,
+	parsePaneRequest,
+	parseResizeRequest,
+	resizePane,
+	splitPane,
+	type PaneFocusRequest,
+	type PaneRequest,
+	type PaneResizeRequest,
+} from "./terminal-pane.ts";
 import { trustedRexExecutable, type Runner } from "./terminal-origin.ts";
 
-const exact = { server: "unix:///private/rex.sock", hostId: "11111111-1111-1111-1111-111111111111", instanceId: "22222222-2222-2222-2222-222222222222", sessionId: "session:33333333-3333-3333-3333-333333333333", blockId: "block:44444444-4444-4444-4444-444444444444" };
+const exact = {
+	server: "unix:///private/rex.sock",
+	hostId: "11111111-1111-1111-1111-111111111111",
+	instanceId: "22222222-2222-2222-2222-222222222222",
+	sessionId: "session:33333333-3333-3333-3333-333333333333",
+	blockId: "block:44444444-4444-4444-4444-444444444444",
+};
 const env = { REX_SERVER: exact.server, REX_SESSION: exact.sessionId, REX_BLOCK: exact.blockId };
-const origin = { version: 1 as const, terminal: "Rex" as const, application: { bundleId: "com.superlogical.rex" as const }, exact };
-const request = (): PaneRequest => ({ version: 1, origin, argv: ["/Applications/Reader.app/Contents/MacOS/Reader", "--pane", "/store/opens/quoted name $(false).json"], cwd: "/work/project" });
-const receipt = { server: exact.server, hostId: exact.hostId, instanceId: exact.instanceId, sessionId: exact.sessionId, anchorId: exact.blockId, windowId: "window:55555555-5555-5555-5555-555555555555", blockId: "block:66666666-6666-6666-6666-666666666666", direction: "horizontal" as const };
+const origin = {
+	version: 1 as const,
+	terminal: "Rex" as const,
+	application: { bundleId: "com.superlogical.rex" as const },
+	exact,
+};
+const request = (): PaneRequest => ({
+	version: 1,
+	origin,
+	argv: ["/Applications/Reader.app/Contents/MacOS/Reader", "--pane", "/store/opens/quoted name $(false).json"],
+	cwd: "/work/project",
+});
+const receipt = {
+	server: exact.server,
+	hostId: exact.hostId,
+	instanceId: exact.instanceId,
+	sessionId: exact.sessionId,
+	anchorId: exact.blockId,
+	windowId: "window:55555555-5555-5555-5555-555555555555",
+	blockId: "block:66666666-6666-6666-6666-666666666666",
+	direction: "horizontal" as const,
+};
 
 test("the fixed helper preserves literal argv and exact inherited IDs in one guarded mutation", async () => {
 	let calls = 0;
@@ -31,37 +66,86 @@ test("the fixed helper preserves literal argv and exact inherited IDs in one gua
 		assert.match(script, /shell="none", command=a\.argv/u);
 		assert.match(script, /anchorWindow ~= paneWindow/u);
 		assert.match(script, /focus=false/u);
-		assert.equal(Object.keys(options.env).some((key) => key.startsWith("REX_")), false);
+		assert.equal(
+			Object.keys(options.env).some((key) => key.startsWith("REX_")),
+			false,
+		);
 		return { code: 0, stderr: "", stdout: JSON.stringify({ outcome: "created", detail: "Created.", receipt }) };
 	};
-	assert.deepEqual(await splitPane(request(), env, run), { version: 1, outcome: "created", detail: "Created.", receipt });
+	assert.deepEqual(await splitPane(request(), env, run), {
+		version: 1,
+		outcome: "created",
+		detail: "Created.",
+		receipt,
+	});
 	assert.equal(calls, 1);
 });
 
 test("absent, application-only and mismatched launch context never create", async () => {
 	let calls = 0;
-	const run: Runner = async () => { calls++; throw new Error("not called"); };
+	const run: Runner = async () => {
+		calls++;
+		throw new Error("not called");
+	};
 	assert.equal((await splitPane({ ...request(), origin: null }, env, run)).outcome, "unavailable");
-	assert.equal((await splitPane({ ...request(), origin: { version: 1, terminal: "Rex", application: origin.application } }, env, run)).outcome, "unavailable");
-	for (const changed of [{}, { ...env, REX_BLOCK: "other" }, { ...env, REX_SERVER: "other" }, { ...env, REX_SESSION: "other" }]) {
+	assert.equal(
+		(
+			await splitPane(
+				{ ...request(), origin: { version: 1, terminal: "Rex", application: origin.application } },
+				env,
+				run,
+			)
+		).outcome,
+		"unavailable",
+	);
+	for (const changed of [
+		{},
+		{ ...env, REX_BLOCK: "other" },
+		{ ...env, REX_SERVER: "other" },
+		{ ...env, REX_SESSION: "other" },
+	]) {
 		assert.equal((await splitPane(request(), changed, run)).outcome, "stale");
 	}
 	assert.equal(calls, 0);
 });
 
-for (const outcome of ["stale", "unavailable", "uncertain"] as const) test(`${outcome} stays explicit and triggers no retry`, async () => {
-	let calls = 0;
-	const run: Runner = async () => { calls++; return { code: 0, stderr: "", stdout: JSON.stringify({ outcome, detail: "Target not confirmed.", ...(outcome === "uncertain" ? { receipt } : {}) }) }; };
-	const observed = await splitPane(request(), env, run);
-	assert.equal(observed.outcome, outcome);
-	if (outcome === "uncertain") assert.deepEqual(observed.receipt, receipt);
-	assert.equal(calls, 1);
-});
+for (const outcome of ["stale", "unavailable", "uncertain"] as const)
+	test(`${outcome} stays explicit and triggers no retry`, async () => {
+		let calls = 0;
+		const run: Runner = async () => {
+			calls++;
+			return {
+				code: 0,
+				stderr: "",
+				stdout: JSON.stringify({
+					outcome,
+					detail: "Target not confirmed.",
+					...(outcome === "uncertain" ? { receipt } : {}),
+				}),
+			};
+		};
+		const observed = await splitPane(request(), env, run);
+		assert.equal(observed.outcome, outcome);
+		if (outcome === "uncertain") assert.deepEqual(observed.receipt, receipt);
+		assert.equal(calls, 1);
+	});
 
 test("timeout, malformed acknowledgement and missing receipt remain uncertain without retry", async () => {
-	for (const response of [{ code: null, failure: "timeout" as const, stdout: "", stderr: "" }, { code: 0, stdout: "not JSON", stderr: "" }, { code: 0, stdout: JSON.stringify({ outcome: "created", detail: "Created." }), stderr: "" }, { code: 0, stdout: JSON.stringify({ outcome: "created", detail: "Created.", receipt: { ...receipt, anchorId: "other" } }), stderr: "" }]) {
+	for (const response of [
+		{ code: null, failure: "timeout" as const, stdout: "", stderr: "" },
+		{ code: 0, stdout: "not JSON", stderr: "" },
+		{ code: 0, stdout: JSON.stringify({ outcome: "created", detail: "Created." }), stderr: "" },
+		{
+			code: 0,
+			stdout: JSON.stringify({ outcome: "created", detail: "Created.", receipt: { ...receipt, anchorId: "other" } }),
+			stderr: "",
+		},
+	]) {
 		let calls = 0;
-		const observed = await splitPane(request(), env, async () => { calls++; return response; });
+		const observed = await splitPane(request(), env, async () => {
+			calls++;
+			return response;
+		});
 		assert.equal(observed.outcome, "uncertain");
 		assert.equal(calls, 1);
 	}
@@ -69,21 +153,41 @@ test("timeout, malformed acknowledgement and missing receipt remain uncertain wi
 
 test("the subprocess reads bounded stdin and refuses a missing origin before terminal access", async () => {
 	const observed = await new Promise<string>((resolve, reject) => {
-		const child = execFile(process.execPath, [fileURLToPath(new URL("./terminal-pane.ts", import.meta.url)), "split"], { timeout: 7000, maxBuffer: 32768, encoding: "utf8" }, (error, stdout) => { if (error) reject(error); else resolve(stdout); });
+		const child = execFile(
+			process.execPath,
+			[fileURLToPath(new URL("./terminal-pane.ts", import.meta.url)), "split"],
+			{ timeout: 7000, maxBuffer: 32768, encoding: "utf8" },
+			(error, stdout) => {
+				if (error) reject(error);
+				else resolve(stdout);
+			},
+		);
 		child.stdin?.end(JSON.stringify({ ...request(), origin: null }));
 	});
 	assert.equal(JSON.parse(observed).outcome, "unavailable");
 });
 
 test("request admission bounds argv, rejects NUL and requires absolute program/cwd", () => {
-	for (const change of [{ argv: [] }, { argv: ["relative"] }, { argv: ["/bin/program", "\0"] }, { argv: ["/bin/program", "x".repeat(4097)] }, { argv: Array(65).fill("/bin/program") }, { cwd: "relative" }, { extra: true }, { origin: {} }]) assert.throws(() => parsePaneRequest(JSON.stringify({ ...request(), ...change })));
+	for (const change of [
+		{ argv: [] },
+		{ argv: ["relative"] },
+		{ argv: ["/bin/program", "\0"] },
+		{ argv: ["/bin/program", "x".repeat(4097)] },
+		{ argv: Array(65).fill("/bin/program") },
+		{ cwd: "relative" },
+		{ extra: true },
+		{ origin: {} },
+	])
+		assert.throws(() => parsePaneRequest(JSON.stringify({ ...request(), ...change })));
 	assert.throws(() => parsePaneRequest(" ".repeat(16385)), /exceeds/u);
 	assert.deepEqual(parsePaneRequest(JSON.stringify(request())).argv, request().argv);
 });
 
 test("placement and label admission preserves absent defaults and accepts the inclusive share range", () => {
 	for (const share of [0.15, 0.5, 0.85]) {
-		const parsed = parsePaneRequest(JSON.stringify({ ...request(), placement: { side: "below", share }, label: "Reader 2" }));
+		const parsed = parsePaneRequest(
+			JSON.stringify({ ...request(), placement: { side: "below", share }, label: "Reader 2" }),
+		);
 		assert.deepEqual(parsed.placement, { side: "below", share });
 		assert.equal(parsed.label, "Reader 2");
 	}
@@ -107,7 +211,8 @@ test("placement and label admission preserves absent defaults and accepts the in
 		{ label: "\u0000" },
 		{ label: "\u200b" },
 		{ label: "\ud800" },
-	]) assert.throws(() => parsePaneRequest(JSON.stringify({ ...request(), ...change })));
+	])
+		assert.throws(() => parsePaneRequest(JSON.stringify({ ...request(), ...change })));
 	const emoji = "😀".repeat(32);
 	assert.equal([...emoji].length, 32);
 	assert.equal(parsePaneRequest(JSON.stringify({ ...request(), label: emoji })).label, emoji);
@@ -122,7 +227,15 @@ test("defaults and explicit placement map to Rex direction, side, ratio and labe
 			calls++;
 			script = args[args.indexOf("-e") + 1] ?? "";
 			payload = JSON.parse(args[args.indexOf("--args") + 1]) as Record<string, unknown>;
-			return { code: 0, stderr: "", stdout: JSON.stringify({ outcome: "created", detail: "Created.", receipt: { ...receipt, direction: payload.direction } }) };
+			return {
+				code: 0,
+				stderr: "",
+				stdout: JSON.stringify({
+					outcome: "created",
+					detail: "Created.",
+					receipt: { ...receipt, direction: payload.direction },
+				}),
+			};
 		};
 		assert.equal((await splitPane({ ...request(), ...change }, env, run)).outcome, "created");
 		assert.equal(calls, 1);
@@ -161,8 +274,14 @@ test("resize matches the receipt window and asks Rex to move one ordered split",
 		assert.deepEqual(JSON.parse(args[args.indexOf("--args") + 1]), { ...request.receipt, ratio: 0.815 });
 		const script = args[args.indexOf("-e") + 1];
 		assert.match(script, /s\.host_id ~= a\.hostId or s\.instance_id ~= a\.instanceId/u);
-		assert.match(script, /placement\(view, a\.anchorId\) ~= a\.windowId or placement\(view, a\.blockId\) ~= a\.windowId/u);
-		assert.match(script, /"session\.resize_pane".*before_block_id=a\.anchorId, after_block_id=a\.blockId, direction=a\.direction, ratio=a\.ratio/u);
+		assert.match(
+			script,
+			/placement\(view, a\.anchorId\) ~= a\.windowId or placement\(view, a\.blockId\) ~= a\.windowId/u,
+		);
+		assert.match(
+			script,
+			/"session\.resize_pane".*before_block_id=a\.anchorId, after_block_id=a\.blockId, direction=a\.direction, ratio=a\.ratio/u,
+		);
 		return { code: 0, stdout: JSON.stringify({ outcome: "resized", detail: "Resized." }), stderr: "" };
 	};
 	assert.equal((await resizePane(request, env, run)).outcome, "resized");
@@ -173,7 +292,14 @@ test("resize matches the receipt window and asks Rex to move one ordered split",
 test("resize rejects bad receipts and shares, and does not retry uncertain effects", async () => {
 	const request: PaneResizeRequest = { version: 1, receipt, share: 0.5 };
 	for (const share of [0.1, 0.9]) assert.equal(parseResizeRequest(JSON.stringify({ ...request, share })).share, share);
-	for (const invalid of [{ share: 0.099 }, { share: 0.901 }, { share: "0.5" }, { receipt: { ...receipt, direction: undefined } }, { receipt: { ...receipt, blockId: receipt.anchorId } }, { receipt: { ...receipt, windowId: "window:other" } }]) {
+	for (const invalid of [
+		{ share: 0.099 },
+		{ share: 0.901 },
+		{ share: "0.5" },
+		{ receipt: { ...receipt, direction: undefined } },
+		{ receipt: { ...receipt, blockId: receipt.anchorId } },
+		{ receipt: { ...receipt, windowId: "window:other" } },
+	]) {
 		assert.throws(() => parseResizeRequest(JSON.stringify({ ...request, ...invalid })));
 	}
 	for (const outcome of ["stale", "unavailable", "uncertain"] as const) {
@@ -201,7 +327,10 @@ test("focus moves Rex focus to the receipt anchor only in the window the session
 		assert.deepEqual(JSON.parse(args[args.indexOf("--args") + 1]), request.receipt);
 		const script = args[args.indexOf("-e") + 1];
 		assert.match(script, /s\.host_id ~= a\.hostId or s\.instance_id ~= a\.instanceId/u);
-		assert.match(script, /placement\(view, a\.anchorId\) ~= a\.windowId or placement\(view, a\.blockId\) ~= a\.windowId/u);
+		assert.match(
+			script,
+			/placement\(view, a\.anchorId\) ~= a\.windowId or placement\(view, a\.blockId\) ~= a\.windowId/u,
+		);
 		assert.match(script, /view\.active_window_id ~= a\.windowId/u);
 		assert.match(script, /"session\.focus_block", \{session_id=a\.sessionId, block_id=a\.anchorId\}/u);
 		return { code: 0, stdout: JSON.stringify({ outcome: "focused", detail: "Focused." }), stderr: "" };
@@ -214,7 +343,13 @@ test("focus moves Rex focus to the receipt anchor only in the window the session
 test("focus rejects bad receipts and extra fields, and does not retry uncertain effects", async () => {
 	const request: PaneFocusRequest = { version: 1, receipt };
 	assert.deepEqual(parseFocusRequest(JSON.stringify(request)), request);
-	for (const invalid of [{ version: 2 }, { share: 0.5 }, { receipt: { ...receipt, anchorId: "block:other" } }, { receipt: { ...receipt, blockId: receipt.anchorId } }, { receipt: undefined }]) {
+	for (const invalid of [
+		{ version: 2 },
+		{ share: 0.5 },
+		{ receipt: { ...receipt, anchorId: "block:other" } },
+		{ receipt: { ...receipt, blockId: receipt.anchorId } },
+		{ receipt: undefined },
+	]) {
 		assert.throws(() => parseFocusRequest(JSON.stringify({ ...request, ...invalid })));
 	}
 	for (const outcome of ["stale", "unavailable", "uncertain"] as const) {

@@ -17,21 +17,24 @@ export const settings = {
 			env: "PI_POLICY_MODE",
 			choices: ["observe", "notice", "annotate", "enforce"],
 			default: "observe",
-			description: "Machine mode. observe records facts and candidate effects only; notice adds operator notices; annotate adds model guidance; enforce also applies approved denials and corrections. No mode unloads the extension. An ordinary --policy-mode flag overrides it for that session.",
+			description:
+				"Machine mode. observe records facts and candidate effects only; notice adds operator notices; annotate adds model guidance; enforce also applies approved denials and corrections. No mode unloads the extension. An ordinary --policy-mode flag overrides it for that session.",
 		},
 		telemetryMaxBytes: {
 			type: "integer",
 			env: "PI_POLICY_TELEMETRY_MAX_BYTES",
 			default: 1073741824,
 			min: 33554432,
-			description: "Byte budget for retained telemetry segments. A write removes the oldest segments to stay within it. A rotated segment needs at least one segment of room.",
+			description:
+				"Byte budget for retained telemetry segments. A write removes the oldest segments to stay within it. A rotated segment needs at least one segment of room.",
 		},
 		telemetryMaxAgeDays: {
 			type: "integer",
 			env: "PI_POLICY_TELEMETRY_MAX_AGE_DAYS",
 			default: 30,
 			min: 1,
-			description: "Retention age for telemetry segments, in writer-local calendar days. A write removes older segments.",
+			description:
+				"Retention age for telemetry segments, in writer-local calendar days. A write removes older segments.",
 		},
 	},
 } as const;
@@ -196,8 +199,7 @@ function readSection(options: ReadOptions) {
 			diagnostics.push(diagnostic("coverage", "file", "coverage"));
 	};
 	for (const key of Object.keys(section)) {
-		if (!Object.hasOwn(settings.fields, key))
-			add(diagnostic(unknownField(key), "file", "unknown"));
+		if (!Object.hasOwn(settings.fields, key)) add(diagnostic(unknownField(key), "file", "unknown"));
 	}
 	return { source, section, diagnostics, add };
 }
@@ -228,7 +230,8 @@ function selectField(
 function selectInput(key: Key, input: unknown): unknown {
 	if (typeof input !== "string" || (key !== "telemetryMaxBytes" && key !== "telemetryMaxAgeDays")) return input;
 	return /^(?:0|[1-9]\d*)$/.test(input) ? Number(input) : Number.NaN;
-}function settingRecord(key: Key, selected: Selection): SettingRecord {
+}
+function settingRecord(key: Key, selected: Selection): SettingRecord {
 	const field = settings.fields[key];
 	const record: SettingRecord = {
 		name: `${settings.slice}.${key}`,

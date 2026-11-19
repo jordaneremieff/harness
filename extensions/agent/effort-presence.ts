@@ -10,7 +10,19 @@ import { hostPaths } from "./host-protocol.ts";
 import { observeClaim, type ClaimObservation } from "./claims.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
 
-type EffortFacts = Pick<PrimaryInfo, "id" | "cwd" | "name" | "repository" | "repositoryState" | "startedAt" | "lastActivityAt" | "intentClaim" | "observedPurpose" | "hostname">;
+type EffortFacts = Pick<
+	PrimaryInfo,
+	| "id"
+	| "cwd"
+	| "name"
+	| "repository"
+	| "repositoryState"
+	| "startedAt"
+	| "lastActivityAt"
+	| "intentClaim"
+	| "observedPurpose"
+	| "hostname"
+>;
 
 /** Session-written intent, never a verified host fact or a grant to its reader. */
 export type PrimaryIntentClaim = {
@@ -22,7 +34,10 @@ export type PrimaryIntentClaim = {
 	readonly updatedAt: string;
 };
 
-export type EffortPresenceSelf = Pick<PrimaryInfo, "id" | "cwd" | "repository" | "repositoryState" | "intentClaim" | "observedPurpose">;
+export type EffortPresenceSelf = Pick<
+	PrimaryInfo,
+	"id" | "cwd" | "repository" | "repositoryState" | "intentClaim" | "observedPurpose"
+>;
 export interface RelatedEffort {
 	readonly id: string;
 	readonly cwd: string;
@@ -66,8 +81,14 @@ export interface EffortReadResources {
 }
 
 /** Observed origin text is a fallback, never a competing declared purpose. */
-export function observedPurposeFallback(value: { intentClaim?: PrimaryIntentClaim; purposeClaim?: string; observedPurpose?: PrimaryObservedPurpose }): Pick<RelatedEffort, "observedPurpose"> {
-	return value.intentClaim !== undefined || value.purposeClaim !== undefined || value.observedPurpose === undefined ? {} : { observedPurpose: value.observedPurpose };
+export function observedPurposeFallback(value: {
+	intentClaim?: PrimaryIntentClaim;
+	purposeClaim?: string;
+	observedPurpose?: PrimaryObservedPurpose;
+}): Pick<RelatedEffort, "observedPurpose"> {
+	return value.intentClaim !== undefined || value.purposeClaim !== undefined || value.observedPurpose === undefined
+		? {}
+		: { observedPurpose: value.observedPurpose };
 }
 
 /** Exact paths and component-boundary prefixes only; wildcard strings are not interpreted. */
@@ -80,13 +101,17 @@ function pathIntersection(a: string, b: string): string | undefined {
 	return undefined;
 }
 
-function claimOverlap(self: PrimaryIntentClaim | undefined, other: PrimaryIntentClaim | undefined): RelatedEffort["overlap"] {
+function claimOverlap(
+	self: PrimaryIntentClaim | undefined,
+	other: PrimaryIntentClaim | undefined,
+): RelatedEffort["overlap"] {
 	if (!self || !other) return undefined;
 	const paths = new Set<string>();
-	for (const a of self.scope.paths) for (const b of other.scope.paths) {
-		const match = pathIntersection(a, b);
-		if (match && paths.size < 32) paths.add(match);
-	}
+	for (const a of self.scope.paths)
+		for (const b of other.scope.paths) {
+			const match = pathIntersection(a, b);
+			if (match && paths.size < 32) paths.add(match);
+		}
 	const branches = [...new Set(self.scope.branches.filter((branch) => other.scope.branches.includes(branch)))];
 	return paths.size || branches.length ? { basis: "intentClaim", paths: [...paths], branches } : undefined;
 }
@@ -102,25 +127,45 @@ function markPartial(page: EffortPresencePage, reason: string): void {
 	if (!page.coverage.reasons.includes(reason)) page.coverage.reasons.push(reason);
 }
 
-function projectIntent(claim: PrimaryIntentClaim | undefined, relationship: RelatedEffort["relationship"]): Pick<RelatedEffort, "intentClaim" | "purposeClaim" | "contactThreadClaim" | "intentUpdatedAt"> {
+function projectIntent(
+	claim: PrimaryIntentClaim | undefined,
+	relationship: RelatedEffort["relationship"],
+): Pick<RelatedEffort, "intentClaim" | "purposeClaim" | "contactThreadClaim" | "intentUpdatedAt"> {
 	if (!claim) return {};
 	if (relationship !== "machine") return { intentClaim: claim };
-	return { purposeClaim: claim.purpose, ...(claim.contactThread === undefined ? {} : { contactThreadClaim: claim.contactThread }), intentUpdatedAt: claim.updatedAt };
+	return {
+		purposeClaim: claim.purpose,
+		...(claim.contactThread === undefined ? {} : { contactThreadClaim: claim.contactThread }),
+		intentUpdatedAt: claim.updatedAt,
+	};
 }
 
-function sharedSubstrates(self: EffortPresenceSelf, other: Pick<PrimaryInfo, "cwd" | "repository" | "intentClaim" | "hostname">): NonNullable<RelatedEffort["sharedSubstrates"]> {
+function sharedSubstrates(
+	self: EffortPresenceSelf,
+	other: Pick<PrimaryInfo, "cwd" | "repository" | "intentClaim" | "hostname">,
+): NonNullable<RelatedEffort["sharedSubstrates"]> {
 	const shared: NonNullable<RelatedEffort["sharedSubstrates"]> = [];
 	if (self.repository && self.repository === other.repository) shared.push("repository");
 	if (self.cwd === other.cwd) shared.push("cwd");
-	if (other.hostname === hostname() && (self.intentClaim?.scope.fullGate || other.intentClaim?.scope.fullGate)) shared.push("machine-gates");
+	if (other.hostname === hostname() && (self.intentClaim?.scope.fullGate || other.intentClaim?.scope.fullGate))
+		shared.push("machine-gates");
 	return shared;
 }
 
-function effortRow(info: EffortFacts, self: EffortPresenceSelf, liveness: RelatedEffort["liveness"], relationship: RelatedEffort["relationship"]): RelatedEffort {
+function effortRow(
+	info: EffortFacts,
+	self: EffortPresenceSelf,
+	liveness: RelatedEffort["liveness"],
+	relationship: RelatedEffort["relationship"],
+): RelatedEffort {
 	const { id, cwd, name, repository, repositoryState, startedAt, lastActivityAt, intentClaim, observedPurpose } = info;
 	const overlap = relationship === "machine" ? undefined : claimOverlap(self.intentClaim, intentClaim);
 	return {
-		id, cwd, startedAt, liveness, relationship,
+		id,
+		cwd,
+		startedAt,
+		liveness,
+		relationship,
 		...(name === undefined ? {} : { name }),
 		...(repository === undefined ? {} : { repository }),
 		...(repositoryState === undefined ? {} : { repositoryState }),
@@ -133,8 +178,12 @@ function effortRow(info: EffortFacts, self: EffortPresenceSelf, liveness: Relate
 }
 
 function appendEffort(page: EffortPresencePage, row: RelatedEffort): void {
-	const reason = page.efforts.length >= page.limits.results ? "result-limit"
-		: Buffer.byteLength(JSON.stringify([...page.efforts, row])) > page.limits.bytes - 1024 ? "byte-limit" : undefined;
+	const reason =
+		page.efforts.length >= page.limits.results
+			? "result-limit"
+			: Buffer.byteLength(JSON.stringify([...page.efforts, row])) > page.limits.bytes - 1024
+				? "byte-limit"
+				: undefined;
 	if (reason) {
 		page.coverage.omitted += 1;
 		markPartial(page, reason);
@@ -159,65 +208,136 @@ function visitEntry(sessionsRoot: string, self: EffortPresenceSelf, page: Effort
 	}
 	if (descriptor.info.repositoryState === "unknown") markPartial(page, "repository-unknown");
 	const relationship = relation(self, descriptor.info);
-	if (!relationship) { page.coverage.unrelated += 1; return; }
+	if (!relationship) {
+		page.coverage.unrelated += 1;
+		return;
+	}
 	appendEffort(page, effortRow(descriptor.info, self, descriptor.state, relationship));
 }
 
-async function visitDirectory(path: string, page: EffortPresencePage, visit: (entry: Dirent) => void | Promise<void>): Promise<void> {
+async function visitDirectory(
+	path: string,
+	page: EffortPresencePage,
+	visit: (entry: Dirent) => void | Promise<void>,
+): Promise<void> {
 	let directory: Awaited<ReturnType<typeof opendir>>;
-	try { directory = await opendir(path, { bufferSize: 16 }); }
-	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") markPartial(page, "directory-unreadable"); return; }
+	try {
+		directory = await opendir(path, { bufferSize: 16 });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") markPartial(page, "directory-unreadable");
+		return;
+	}
 	try {
 		for await (const entry of directory) {
-			if (page.coverage.visited >= page.limits.visits) { markPartial(page, "visit-limit"); break; }
+			if (page.coverage.visited >= page.limits.visits) {
+				markPartial(page, "visit-limit");
+				break;
+			}
 			page.coverage.visited++;
 			await visit(entry);
-			if (page.coverage.visited >= page.limits.visits) { markPartial(page, "visit-limit"); break; }
+			if (page.coverage.visited >= page.limits.visits) {
+				markPartial(page, "visit-limit");
+				break;
+			}
 		}
-	} catch { markPartial(page, "directory-unreadable"); }
+	} catch {
+		markPartial(page, "directory-unreadable");
+	}
 }
-function nativeRow(record: CatalogRecord, id: string, metadata: NativeIntentMetadata, self: EffortPresenceSelf, page: EffortPresencePage, claims: Map<string, ClaimObservation>): void {
-	if (!metadata.claim || id === self.id) { page.coverage.unrelated++; return; }
-	const info: EffortFacts = { id, cwd: metadata.cwd, hostname: metadata.hostname, startedAt: metadata.startedAt, repositoryState: metadata.repositoryState, intentClaim: metadata.claim,
+function nativeRow(
+	record: CatalogRecord,
+	id: string,
+	metadata: NativeIntentMetadata,
+	self: EffortPresenceSelf,
+	page: EffortPresencePage,
+	claims: Map<string, ClaimObservation>,
+): void {
+	if (!metadata.claim || id === self.id) {
+		page.coverage.unrelated++;
+		return;
+	}
+	const info: EffortFacts = {
+		id,
+		cwd: metadata.cwd,
+		hostname: metadata.hostname,
+		startedAt: metadata.startedAt,
+		repositoryState: metadata.repositoryState,
+		intentClaim: metadata.claim,
 		...(metadata.repository === null ? {} : { repository: metadata.repository }),
-		...(record.view?.rows.find(row => row.id === id)?.name === undefined ? {} : { name: record.view.rows.find(row => row.id === id)?.name }) };
+		...(record.view?.rows.find((row) => row.id === id)?.name === undefined
+			? {}
+			: { name: record.view.rows.find((row) => row.id === id)?.name }),
+	};
 	if (info.repositoryState === "unknown") markPartial(page, "repository-unknown");
 	const relationship = relation(self, info);
-	if (!relationship) { page.coverage.unrelated++; return; }
+	if (!relationship) {
+		page.coverage.unrelated++;
+		return;
+	}
 	let ownership = claims.get(record.storageId);
 	if (ownership === undefined) {
 		const paths = hostPaths(record);
 		ownership = observeClaim(paths.claim, paths.identity);
 		claims.set(record.storageId, ownership);
 	}
-	if (ownership.kind === "absent" || ownership.kind === "dead") { page.coverage.dead++; return; }
+	if (ownership.kind === "absent" || ownership.kind === "dead") {
+		page.coverage.dead++;
+		return;
+	}
 	appendEffort(page, effortRow(info, self, ownership.kind === "live" ? "live" : "unknown", relationship));
 }
-function visitNativeRecord(catalog: AgentCatalog, entry: Dirent, self: EffortPresenceSelf, page: EffortPresencePage, claims: Map<string, ClaimObservation>): void {
-	if (!entry.isFile() || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u.test(entry.name)) { page.coverage.unrelated++; return; }
+function visitNativeRecord(
+	catalog: AgentCatalog,
+	entry: Dirent,
+	self: EffortPresenceSelf,
+	page: EffortPresencePage,
+	claims: Map<string, ClaimObservation>,
+): void {
+	if (!entry.isFile() || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u.test(entry.name)) {
+		page.coverage.unrelated++;
+		return;
+	}
 	let record: CatalogRecord;
-	try { record = catalog.read(entry.name.slice(0, -5)); }
-	catch { page.coverage.unreadable++; markPartial(page, "native-record-unreadable"); return; }
+	try {
+		record = catalog.read(entry.name.slice(0, -5));
+	} catch {
+		page.coverage.unreadable++;
+		markPartial(page, "native-record-unreadable");
+		return;
+	}
 	const claimRows = record.view?.intentClaims;
-	if (!claimRows) { page.coverage.unsupported = (page.coverage.unsupported ?? 0) + 1; return; }
+	if (!claimRows) {
+		page.coverage.unsupported = (page.coverage.unsupported ?? 0) + 1;
+		return;
+	}
 	page.coverage.unrelated++;
 	page.coverage.omitted += claimRows.coverage.omitted;
 	if (!claimRows.coverage.complete) markPartial(page, "native-intent-incomplete");
 	for (const [id, metadata] of Object.entries(claimRows.rows)) {
-		if (page.coverage.visited >= page.limits.visits) { markPartial(page, "visit-limit"); break; }
+		if (page.coverage.visited >= page.limits.visits) {
+			markPartial(page, "visit-limit");
+			break;
+		}
 		page.coverage.visited++;
 		if (metadata === null) page.coverage.unrelated++;
 		else nativeRow(record, id, metadata, self, page, claims);
 	}
 }
-async function visitNativeRoot(catalog: AgentCatalog, self: EffortPresenceSelf, page: EffortPresencePage): Promise<void> {
+async function visitNativeRoot(
+	catalog: AgentCatalog,
+	self: EffortPresenceSelf,
+	page: EffortPresencePage,
+): Promise<void> {
 	// One writer claim observation serves every claim row in this record during one pass.
 	const claims = new Map<string, ClaimObservation>();
-	await visitDirectory(catalog.root, page, entry => visitNativeRecord(catalog, entry, self, page, claims));
+	await visitDirectory(catalog.root, page, (entry) => visitNativeRecord(catalog, entry, self, page, claims));
 }
 
 /** Read-only presence page; ordinary records and native projections share all visit, result and byte caps. */
-export async function readRelatedEfforts(resources: EffortReadResources, self: EffortPresenceSelf): Promise<EffortPresencePage> {
+export async function readRelatedEfforts(
+	resources: EffortReadResources,
+	self: EffortPresenceSelf,
+): Promise<EffortPresencePage> {
 	const sessionsRoot = dirname(resources.catalog.root);
 	const page: EffortPresencePage = {
 		efforts: [],
@@ -225,7 +345,7 @@ export async function readRelatedEfforts(resources: EffortReadResources, self: E
 		limits: EFFORT_PRESENCE_LIMITS,
 	};
 	if (self.repositoryState === "unknown") markPartial(page, "repository-unknown");
-	await visitDirectory(join(sessionsRoot, ".primaries"), page, entry => visitEntry(sessionsRoot, self, page, entry));
+	await visitDirectory(join(sessionsRoot, ".primaries"), page, (entry) => visitEntry(sessionsRoot, self, page, entry));
 	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(resources.catalog, self, page);
 	page.efforts.sort((a, b) => a.id.localeCompare(b.id));
 	return page;

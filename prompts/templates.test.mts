@@ -109,7 +109,10 @@ it("a recap candidate expands selections, focus, and comparisons through Pi's ar
 			["/recap export work; publish it now", "export work; publish it now"],
 			['/recap "literal $1 and $ARGUMENTS"', "literal $1 and $ARGUMENTS"],
 		]) {
-			assert.equal(expandPromptTemplate(invocation, prompts), recap.content.replace("$ARGUMENTS", () => selection));
+			assert.equal(
+				expandPromptTemplate(invocation, prompts),
+				recap.content.replace("$ARGUMENTS", () => selection),
+			);
 		}
 	} finally {
 		await rm(root, { recursive: true, force: true });
@@ -133,7 +136,10 @@ it("a tldr candidate expands optional focus, scope, form, and action text throug
 		await loader.reload();
 		const { prompts, diagnostics } = loader.getPrompts();
 		assert.deepEqual(diagnostics, []);
-		assert.deepEqual(prompts.map((prompt) => prompt.name), ["tldr"]);
+		assert.deepEqual(
+			prompts.map((prompt) => prompt.name),
+			["tldr"],
+		);
 		const tldr = prompts[0];
 		assert.ok(tldr);
 		assert.equal(tldr.filePath, join(repositoryRoot, "prompts", "tldr.md"));
@@ -156,7 +162,10 @@ it("a tldr candidate expands optional focus, scope, form, and action text throug
 			["/tldr the fix, then push it", "the fix, then push it"],
 			['/tldr "literal $1 and $ARGUMENTS"', "literal $1 and $ARGUMENTS"],
 		]) {
-			assert.equal(expandPromptTemplate(invocation, prompts), tldr.content.replace("$ARGUMENTS", () => hint));
+			assert.equal(
+				expandPromptTemplate(invocation, prompts),
+				tldr.content.replace("$ARGUMENTS", () => hint),
+			);
 			assert.equal(expandPromptTemplate(invocation, [{ name: "tldr", content: "tldr $ARGUMENTS" }]), `tldr ${hint}`);
 		}
 	} finally {

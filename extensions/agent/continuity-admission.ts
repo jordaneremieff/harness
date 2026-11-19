@@ -18,12 +18,20 @@ export interface OutgoingRequest {
 }
 
 function representable(fact: ContinuityFact): boolean {
-	try { validateContinuityFact(fact); return true; }
-	catch { return false; }
+	try {
+		validateContinuityFact(fact);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /** Write before dispatch. Returns false for a target that is not a canonical identity; its admission still records. */
-export async function recordRequested(tx: Tx, conversationId: ConversationId, request: OutgoingRequest): Promise<boolean> {
+export async function recordRequested(
+	tx: Tx,
+	conversationId: ConversationId,
+	request: OutgoingRequest,
+): Promise<boolean> {
 	const fact: ContinuityFact = { phase: "requested", ...request };
 	if (!representable(fact)) return false;
 	await recordContinuityFact(tx, conversationId, fact);
@@ -35,10 +43,24 @@ export async function recordRequested(tx: Tx, conversationId: ConversationId, re
  * admission, so only the provisional record closes. A provisional key that differs from the
  * admitted identity closes too, so one request never stays listed under two keys.
  */
-export async function recordAdmitted(tx: Tx, conversationId: ConversationId, request: OutgoingRequest, result: ResultReference | undefined): Promise<void> {
-	const admitted: ContinuityFact | undefined = result?.requestId === undefined ? undefined
-		: { phase: "admitted", sessionId: result.sessionId, requestId: result.requestId, replyTo: request.replyTo, submissionId: result.submissionId };
-	if (admitted === undefined || admitted.sessionId !== request.sessionId || admitted.requestId !== request.requestId) await recordRefused(tx, conversationId, request);
+export async function recordAdmitted(
+	tx: Tx,
+	conversationId: ConversationId,
+	request: OutgoingRequest,
+	result: ResultReference | undefined,
+): Promise<void> {
+	const admitted: ContinuityFact | undefined =
+		result?.requestId === undefined
+			? undefined
+			: {
+					phase: "admitted",
+					sessionId: result.sessionId,
+					requestId: result.requestId,
+					replyTo: request.replyTo,
+					submissionId: result.submissionId,
+				};
+	if (admitted === undefined || admitted.sessionId !== request.sessionId || admitted.requestId !== request.requestId)
+		await recordRefused(tx, conversationId, request);
 	if (admitted !== undefined && representable(admitted)) await recordContinuityFact(tx, conversationId, admitted);
 }
 
@@ -49,7 +71,12 @@ export async function recordRefused(tx: Tx, conversationId: ConversationId, requ
 }
 
 /** A scheduled input stays listed with its timer until its result is delivered or its timer is cancelled before firing. */
-export async function recordScheduled(tx: Tx, conversationId: ConversationId, request: OutgoingRequest, timerId: number): Promise<void> {
+export async function recordScheduled(
+	tx: Tx,
+	conversationId: ConversationId,
+	request: OutgoingRequest,
+	timerId: number,
+): Promise<void> {
 	const fact: ContinuityFact = { phase: "requested", ...request, timerId };
 	if (representable(fact)) await recordContinuityFact(tx, conversationId, fact);
 }
@@ -60,8 +87,16 @@ export async function recordScheduled(tx: Tx, conversationId: ConversationId, re
  * cancelling host resolved, in the form its schedule receipt gave. A request listed under another
  * identity stays listed.
  */
-export async function recordTimerCancelled(tx: Tx, conversationId: ConversationId, sessionId: string, timerId: number): Promise<void> {
+export async function recordTimerCancelled(
+	tx: Tx,
+	conversationId: ConversationId,
+	sessionId: string,
+	timerId: number,
+): Promise<void> {
 	const state = await tx.doc(ContinuityDoc, conversationId);
-	const scheduled = state.events.filter((event) => event.phase === "requested" && event.timerId === timerId && event.sessionId === sessionId);
-	for (const { requestId, replyTo } of scheduled) await recordRefused(tx, conversationId, { sessionId, requestId, replyTo });
+	const scheduled = state.events.filter(
+		(event) => event.phase === "requested" && event.timerId === timerId && event.sessionId === sessionId,
+	);
+	for (const { requestId, replyTo } of scheduled)
+		await recordRefused(tx, conversationId, { sessionId, requestId, replyTo });
 }

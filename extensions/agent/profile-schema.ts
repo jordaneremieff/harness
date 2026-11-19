@@ -1,9 +1,25 @@
-import { str, num, int, bool, nul, lit, union, arr, opt, obj, type Schema, type Static } from "@earendil-works/pi-schema";
+import {
+	str,
+	num,
+	int,
+	bool,
+	nul,
+	lit,
+	union,
+	arr,
+	opt,
+	obj,
+	type Schema,
+	type Static,
+} from "@earendil-works/pi-schema";
 import { HANDLE_PATTERN } from "./identity.ts";
 
 const nullableText = union([str(), nul()]);
 const nullableTime = union([num(), nul()]);
-const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({
+	type: "string",
+	enum: [...values],
+});
 export const ProfileParams = obj({
 	sessionId: opt(str({ minLength: 1, maxLength: 256 })),
 	action: StringEnum(["read", "update"]),
@@ -13,30 +29,61 @@ export const ProfileParams = obj({
 });
 export const HandleSchema = str({ pattern: HANDLE_PATTERN, maxLength: 64 });
 export const ProfileHintSchema = obj({
-	identity: str(), handle: nullableText, role: str(), revision: str(), hasExpertise: bool(), updatedAt: nullableTime,
+	identity: str(),
+	handle: nullableText,
+	role: str(),
+	revision: str(),
+	hasExpertise: bool(),
+	updatedAt: nullableTime,
 });
 export const ProfileHintsSchema = obj({
-	rows: arr(ProfileHintSchema), coverage: obj({ complete: bool(), omitted: int({ minimum: 0 }) }),
+	rows: arr(ProfileHintSchema),
+	coverage: obj({ complete: bool(), omitted: int({ minimum: 0 }) }),
 });
 export type ProfileHint = Static<typeof ProfileHintSchema>;
 export type ProfileHints = Static<typeof ProfileHintsSchema>;
 export const AgentProfileSchema = obj({
-	identity: str(), handle: nullableText, name: nullableText, role: str(), expertise: str(), revision: str(),
-	updatedAt: nullableTime, updatedBy: nullableText, creator: nullableText,
+	identity: str(),
+	handle: nullableText,
+	name: nullableText,
+	role: str(),
+	expertise: str(),
+	revision: str(),
+	updatedAt: nullableTime,
+	updatedBy: nullableText,
+	creator: nullableText,
 	model: union([obj({ provider: str(), modelId: str() }), nul()]),
-	thinkingLevel: nullableText, cwd: nullableText, live: bool(),
+	thinkingLevel: nullableText,
+	cwd: nullableText,
+	live: bool(),
 	requestsOmitted: opt(int({ minimum: 0 })),
-	requests: arr(obj({ requestId: str(), requester: str(), replyTo: str(), origin: union([lit("operator"), lit("model")]), status: union([lit("admitting"), lit("queued"), lit("placed")]) })),
+	requests: arr(
+		obj({
+			requestId: str(),
+			requester: str(),
+			replyTo: str(),
+			origin: union([lit("operator"), lit("model")]),
+			status: union([lit("admitting"), lit("queued"), lit("placed")]),
+		}),
+	),
 });
 export type AgentProfile = Static<typeof AgentProfileSchema>;
 export const ProfileUpdateSchema = obj({
-	outcome: union([lit("applied"), lit("conflict")]), deduped: bool(), profile: AgentProfileSchema,
+	outcome: union([lit("applied"), lit("conflict")]),
+	deduped: bool(),
+	profile: AgentProfileSchema,
 });
 export const ProfileOutputSchema = union([AgentProfileSchema, ProfileUpdateSchema]);
 
 export function profileText(value: unknown, field: "role" | "expertise"): string {
 	const limit = field === "role" ? 2000 : 16384;
-	if (typeof value !== "string" || /[\u0000\ud800-\udfff]/u.test(value) || (field === "role" ? [...value].length : Buffer.byteLength(value)) > limit) throw new Error(`${field} must be well-formed text within ${limit} ${field === "role" ? "characters" : "UTF-8 bytes"}`);
+	if (
+		typeof value !== "string" ||
+		/[\u0000\ud800-\udfff]/u.test(value) ||
+		(field === "role" ? [...value].length : Buffer.byteLength(value)) > limit
+	)
+		throw new Error(
+			`${field} must be well-formed text within ${limit} ${field === "role" ? "characters" : "UTF-8 bytes"}`,
+		);
 	return value;
 }
-

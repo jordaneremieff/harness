@@ -31,11 +31,20 @@ it("subscription reads do not retry attachments and explicit refresh stops after
 	const refreshed: string[] = [];
 	let reads = 0;
 	const view = new AgentTasksView({
-		theme, id: "storage:2",
+		theme,
+		id: "storage:2",
 		source: {
-			tasks: async () => { reads++; return frame; },
-			refreshTasks: (id) => { refreshed.push(id); },
-			subscribe: (listener) => { notify = listener; return () => {}; },
+			tasks: async () => {
+				reads++;
+				return frame;
+			},
+			refreshTasks: (id) => {
+				refreshed.push(id);
+			},
+			subscribe: (listener) => {
+				notify = listener;
+				return () => {};
+			},
 		},
 	});
 	try {
@@ -47,7 +56,9 @@ it("subscription reads do not retry attachments and explicit refresh stops after
 		await view.refresh();
 		assert.deepEqual(refreshed, ["storage:2"]);
 		assert.equal(reads, 3);
-	} finally { view.dispose(); }
+	} finally {
+		view.dispose();
+	}
 	notify();
 	await view.refresh();
 	assert.equal(reads, 3);
@@ -58,13 +69,19 @@ it("shows sleeping deadlines and blocked task reasons as distinct native states"
 		{ ...frame.tasks[0], status: "sleeping", phase: "wait", until: 5000 },
 		{ ...frame.tasks[0], id: 2, blocked: "missing_task" },
 	];
-	const view = new AgentTasksView({ theme, id: "storage", source: { refreshTasks() {}, tasks: async () => ({ ...frame, tasks }) } });
+	const view = new AgentTasksView({
+		theme,
+		id: "storage",
+		source: { refreshTasks() {}, tasks: async () => ({ ...frame, tasks }) },
+	});
 	try {
 		await view.refresh();
 		const text = view.render(140, 10).join("\n");
 		assert.match(text, /sleeping until 1970-01-01T00:00:05\.000Z/u);
 		assert.match(text, /blocked: missing_task/u);
-	} finally { view.dispose(); }
+	} finally {
+		view.dispose();
+	}
 });
 
 for (const [width, height] of [
@@ -77,7 +94,11 @@ for (const [width, height] of [
 			id: index + 1,
 			kind: `task-${index + 1}`,
 		}));
-		const view = new AgentTasksView({ theme, id: "storage", source: { refreshTasks() {}, tasks: async () => ({ ...frame, tasks }) } });
+		const view = new AgentTasksView({
+			theme,
+			id: "storage",
+			source: { refreshTasks() {}, tasks: async () => ({ ...frame, tasks }) },
+		});
 		try {
 			await view.refresh();
 			for (const position of [0, 49, 99]) {
@@ -182,7 +203,10 @@ it("an unresolved conversation does not dispatch a numeric ID", async () => {
 	const view = new AgentTasksView({
 		theme,
 		id: "storage",
-		source: { refreshTasks() {}, tasks: async () => ({ ...frame, labels: [], tasks: [{ ...frame.tasks[0], conversations: [] }] }) },
+		source: {
+			refreshTasks() {},
+			tasks: async () => ({ ...frame, labels: [], tasks: [{ ...frame.tasks[0], conversations: [] }] }),
+		},
 		onSelectConversation: (id) => identities.push(id),
 		onNotice: (text) => notices.push(text),
 	});

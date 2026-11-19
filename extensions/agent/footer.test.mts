@@ -45,7 +45,10 @@ test("hides cost below half a cent and rounds the summed estimate to cents", () 
 	}
 	assert.equal(formatDurableFooter([row("a", { cost: 0.005 })]), "agents: 0/1 active · ~$0.01");
 	assert.equal(formatDurableFooter([row("a", { cost: 0.0099 })]), "agents: 0/1 active · ~$0.01");
-	assert.equal(formatDurableFooter([row("a", { cost: 0.003 }), row("b", { cost: 0.003 })]), "agents: 0/2 active · ~$0.01");
+	assert.equal(
+		formatDurableFooter([row("a", { cost: 0.003 }), row("b", { cost: 0.003 })]),
+		"agents: 0/2 active · ~$0.01",
+	);
 	assert.equal(formatDurableFooter([row("a", { cost: 0.1 }), row("b", { cost: 0.2 })]), "agents: 0/2 active · ~$0.30");
 });
 
@@ -55,7 +58,14 @@ test("sums only readable nonnegative costs without a completeness marker", () =>
 		formatDurableFooter([row("a", { cost: 0.25 }), row("b", { cost: 0.75, partial: true })]),
 		"agents: 0/2 active · ~$1.00",
 	);
-	assert.equal(formatDurableFooter([row("a", { cost: Number.NaN }), row("b", { cost: -1 }), row("c", { cost: Number.POSITIVE_INFINITY })]), "agents: 0/3 active");
+	assert.equal(
+		formatDurableFooter([
+			row("a", { cost: Number.NaN }),
+			row("b", { cost: -1 }),
+			row("c", { cost: Number.POSITIVE_INFINITY }),
+		]),
+		"agents: 0/3 active",
+	);
 	assert.doesNotMatch(formatDurableFooter([row("a", { state: "working" })]), /detached/);
 });
 
@@ -64,7 +74,10 @@ test("session figures ignore unrelated rows and owners", () => {
 		row("own", { storageId: "own", state: "working", cost: 0.25 }),
 		row("other", { storageId: "other", cost: Number.NaN, partial: true }),
 	];
-	const owners = new Map([["own", "primary"], ["other", "other-primary"]]);
+	const owners = new Map([
+		["own", "primary"],
+		["other", "other-primary"],
+	]);
 	const owner = (storageId: string) => owners.get(storageId);
 	assert.equal(sessionFigures(rows, "primary", owner), "agents: 1/1 active · ~$0.25");
 	assert.equal(sessionFigures(rows, "other-primary", owner), "agents: 0/1 active");
@@ -81,10 +94,16 @@ test("each primary counts only its created agents and descendants through conver
 		row("second", { storageId: "second", state: "working", cost: 8 }),
 	];
 	const owners = new Map([
-		["first", "primary-a"], ["child", "first:7"], ["grandchild", "child:2"], ["second", "primary-b"],
+		["first", "primary-a"],
+		["child", "first:7"],
+		["grandchild", "child:2"],
+		["second", "primary-b"],
 	]);
 	const reads: string[] = [];
-	const readOwner = (storageId: string) => { reads.push(storageId); return owners.get(storageId); };
+	const readOwner = (storageId: string) => {
+		reads.push(storageId);
+		return owners.get(storageId);
+	};
 	assert.equal(sessionFigures(rows, "primary-a", readOwner), "agents: 2/4 active · ~$10.00");
 	assert.equal(reads.filter((id) => id === "first").length, 1, "forks reuse one creating-owner read");
 	assert.equal(sessionFigures(rows, "primary-b", readOwner), "agents: 1/1 active · ~$8.00");
@@ -93,7 +112,10 @@ test("each primary counts only its created agents and descendants through conver
 
 test("owner traversal reads ancestors absent from the roster and preserves exact conversation identity", () => {
 	const rows = [row("descendant", { storageId: "descendant", cost: 0.5 })];
-	const owners = new Map([["descendant", "ancestor:5"], ["ancestor", "primary:2"]]);
+	const owners = new Map([
+		["descendant", "ancestor:5"],
+		["ancestor", "primary:2"],
+	]);
 	const readOwner = (storageId: string) => owners.get(storageId);
 	assert.equal(sessionFigures(rows, "primary:2", readOwner), "agents: 0/1 active · ~$0.50");
 	assert.equal(sessionFigures(rows, "primary:3", readOwner), "");
@@ -110,14 +132,32 @@ test("sent-work scope keeps exact reused targets and only working creation desce
 		row("old", { storageId: "old", state: "done", cost: 100 }),
 		row("owned", { storageId: "owned", cost: 0.25 }),
 	];
-	const owners = new Map([["reused", "other-primary"], ["child", "reused:2"], ["grandchild", "child:4"], ["old", "reused:2"], ["owned", "primary"]]);
+	const owners = new Map([
+		["reused", "other-primary"],
+		["child", "reused:2"],
+		["grandchild", "child:4"],
+		["old", "reused:2"],
+		["owned", "primary"],
+	]);
 	const sent = new Set(["reused:2", "owned"]);
-	assert.equal(sessionFigures(rows, "primary", (id) => owners.get(id), sent), "agents: 2/4 active · ~$0.25");
-	assert.equal(sessionFigures(rows.slice(0, 6), "primary", (id) => owners.get(id), sent), "agents: 2/3 active");
-	assert.equal(sessionFigures(rows, "other", (id) => owners.get(id)), "");
+	assert.equal(
+		sessionFigures(rows, "primary", (id) => owners.get(id), sent),
+		"agents: 2/4 active · ~$0.25",
+	);
+	assert.equal(
+		sessionFigures(rows.slice(0, 6), "primary", (id) => owners.get(id), sent),
+		"agents: 2/3 active",
+	);
+	assert.equal(
+		sessionFigures(rows, "other", (id) => owners.get(id)),
+		"",
+	);
 	rows[2].state = "idle";
 	rows[4].state = "interrupted";
-	assert.equal(sessionFigures(rows, "primary", (id) => owners.get(id), sent), "agents: 0/2 active · ~$0.25");
+	assert.equal(
+		sessionFigures(rows, "primary", (id) => owners.get(id), sent),
+		"agents: 0/2 active · ~$0.25",
+	);
 });
 
 test("sent-work roots include only working same-storage delegates; non-root targets exclude siblings and reused cost", () => {
@@ -128,25 +168,56 @@ test("sent-work roots include only working same-storage delegates; non-root targ
 		row("reused:4", { storageId: "reused", state: "interrupted", cost: 80 }),
 		row("owned", { storageId: "owned", cost: 0.25 }),
 	];
-	const owner = (id: string) => id === "owned" ? "primary" : "other-primary";
+	const owner = (id: string) => (id === "owned" ? "primary" : "other-primary");
 	assert.equal(sessionFigures(rows, "primary", owner, new Set(["reused"])), "agents: 1/3 active · ~$0.25");
-	assert.equal(sessionFigures(rows.slice(1), "primary", owner, new Set(["reused"])), "agents: 1/2 active · ~$0.25", "root scope does not require the root row to be present");
+	assert.equal(
+		sessionFigures(rows.slice(1), "primary", owner, new Set(["reused"])),
+		"agents: 1/2 active · ~$0.25",
+		"root scope does not require the root row to be present",
+	);
 	rows[0].state = "working";
-	assert.equal(sessionFigures(rows, "primary", owner, new Set(["reused:3"])), "agents: 0/2 active · ~$0.25", "a non-root target excludes its working root and siblings");
-	assert.equal(sessionFigures(rows.slice(0, 4), "primary", owner, new Set(["reused"])), "agents: 2/2 active", "same-storage reused scope never contributes lifetime cost");
+	assert.equal(
+		sessionFigures(rows, "primary", owner, new Set(["reused:3"])),
+		"agents: 0/2 active · ~$0.25",
+		"a non-root target excludes its working root and siblings",
+	);
+	assert.equal(
+		sessionFigures(rows.slice(0, 4), "primary", owner, new Set(["reused"])),
+		"agents: 2/2 active",
+		"same-storage reused scope never contributes lifetime cost",
+	);
 });
 
 test("creation lineage keeps idle reused descendants and cost when both scope rules apply", () => {
 	const rows = [row("created:2", { storageId: "created", cost: 1 }), row("child", { storageId: "child", cost: 2 })];
-	const owners = new Map([["created", "primary"], ["child", "created:2"]]);
-	assert.equal(sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["created:2"])), "agents: 0/2 active · ~$3.00");
+	const owners = new Map([
+		["created", "primary"],
+		["child", "created:2"],
+	]);
+	assert.equal(
+		sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["created:2"])),
+		"agents: 0/2 active · ~$3.00",
+	);
 });
 
 test("working reused descendants follow exact ancestors absent from the roster and terminate cycles", () => {
-	const owners = new Map([["child", "absent:4"], ["absent", "reused:2"], ["cycle", "cycle:3"]]);
-	const rows = [row("child", { storageId: "child", state: "working", cost: 10 }), row("cycle", { storageId: "cycle", state: "working" })];
-	assert.equal(sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["reused:2"])), "agents: 1/1 active");
-	assert.equal(sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["reused:3"])), "");
+	const owners = new Map([
+		["child", "absent:4"],
+		["absent", "reused:2"],
+		["cycle", "cycle:3"],
+	]);
+	const rows = [
+		row("child", { storageId: "child", state: "working", cost: 10 }),
+		row("cycle", { storageId: "cycle", state: "working" }),
+	];
+	assert.equal(
+		sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["reused:2"])),
+		"agents: 1/1 active",
+	);
+	assert.equal(
+		sessionFigures(rows, "primary", (id) => owners.get(id), new Set(["reused:3"])),
+		"",
+	);
 });
 
 test("cycles terminate without importing unrelated agents into a primary scope", () => {
@@ -156,21 +227,31 @@ test("cycles terminate without importing unrelated agents into a primary scope",
 		row("self", { storageId: "self", cost: 4 }),
 		row("owned", { storageId: "owned", cost: 8 }),
 	];
-	const owners = new Map([["a", "b:2"], ["b", "a"], ["self", "self:9"], ["owned", "primary"]]);
+	const owners = new Map([
+		["a", "b:2"],
+		["b", "a"],
+		["self", "self:9"],
+		["owned", "primary"],
+	]);
 	let reads = 0;
-	const text = sessionFigures(rows, "primary", (storageId) => { reads++; return owners.get(storageId); });
+	const text = sessionFigures(rows, "primary", (storageId) => {
+		reads++;
+		return owners.get(storageId);
+	});
 	assert.equal(text, "agents: 0/1 active · ~$8.00");
 	assert.equal(reads, 4);
 });
 
 test("owner traversal stops at a fixed depth and excludes unproven descendants", () => {
 	let reads = 0;
-	const text = sessionFigures([
-		row("owned", { storageId: "owned", cost: 1 }), row("0", { storageId: "0", cost: 2 }),
-	], "primary", (storageId) => {
-		reads++;
-		return storageId === "owned" ? "primary" : String(Number(storageId) + 1);
-	});
+	const text = sessionFigures(
+		[row("owned", { storageId: "owned", cost: 1 }), row("0", { storageId: "0", cost: 2 })],
+		"primary",
+		(storageId) => {
+			reads++;
+			return storageId === "owned" ? "primary" : String(Number(storageId) + 1);
+		},
+	);
 	assert.equal(reads, 65);
 	assert.equal(text, "agents: 0/1 active · ~$1.00");
 });
@@ -178,72 +259,127 @@ test("owner traversal stops at a fixed depth and excludes unproven descendants",
 test("owner reads have a total bound across unrelated chains", () => {
 	let reads = 0;
 	const rows = Array.from({ length: 1100 }, (_, index) => row(String(index), { storageId: String(index) }));
-	const text = sessionFigures(rows, "primary", () => { reads++; return "primary"; });
+	const text = sessionFigures(rows, "primary", () => {
+		reads++;
+		return "primary";
+	});
 	assert.equal(reads, 1024);
 	assert.equal(text, "agents: 0/1024 active");
 });
 
 for (const kind of ["incomplete", "omitted", "unavailable", "missing", "empty", "partial"] as const) {
-	for (const inScope of [false, true]) test(`manager estimates readable costs for ${kind} views within owner scope (in scope: ${inScope})`, async (t) => {
-		const root = mkdtempSync(join(tmpdir(), "agent-footer-coverage-"));
-		t.after(() => rmSync(root, { recursive: true, force: true }));
-		const manager = new AgentManager({
-			root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
-			acquire: async () => { throw new Error("A footer read must not launch a host"); },
-			observe: async () => { throw new Error("A footer read must not observe native storage"); },
+	for (const inScope of [false, true])
+		test(`manager estimates readable costs for ${kind} views within owner scope (in scope: ${inScope})`, async (t) => {
+			const root = mkdtempSync(join(tmpdir(), "agent-footer-coverage-"));
+			t.after(() => rmSync(root, { recursive: true, force: true }));
+			const manager = new AgentManager({
+				root,
+				agentDir: join(root, "agent"),
+				packageDir: join(root, "package"),
+				acquire: async () => {
+					throw new Error("A footer read must not launch a host");
+				},
+				observe: async () => {
+					throw new Error("A footer read must not observe native storage");
+				},
+			});
+			t.after(() => manager.close());
+			const create = (ownerId: string) =>
+				manager.catalog.create({
+					cwd: root,
+					agentDir: join(root, "agent"),
+					packageDir: join(root, "package"),
+					model: { provider: "test", modelId: "model" },
+					thinkingLevel: "off",
+					ownerId,
+				});
+			const known = create("primary");
+			manager.catalog.updateView(known.storageId, {
+				updatedAt: new Date().toISOString(),
+				coverage: { complete: true, omitted: 0 },
+				rows: [row(known.storageId, { storageId: known.storageId, cost: 0.25 })],
+			});
+			const affected = create(inScope ? `${known.storageId}:2` : "other-primary");
+			if (kind !== "missing")
+				manager.catalog.updateView(affected.storageId, {
+					updatedAt: new Date().toISOString(),
+					coverage: {
+						complete: !["incomplete", "empty", "unavailable"].includes(kind),
+						omitted: ["omitted", "empty"].includes(kind) ? 2 : 0,
+					},
+					rows: ["empty", "unavailable"].includes(kind)
+						? []
+						: [row(affected.storageId, { storageId: affected.storageId, cost: 0.5, partial: kind === "partial" })],
+					...(kind === "unavailable" ? { unavailable: "Fixture view unavailable" } : {}),
+				});
+			const observed = await manager.dashboardPage();
+			assert.equal(observed.coverage.inventory.unreadable, 0);
+			assert.equal(observed.coverage.inventory.unknownClaims, 0);
+			assert.equal(observed.coverage.inventory.remaining, 0);
+			assert.equal(
+				observed.coverage.complete,
+				kind === "partial",
+				"presentation includes projection uncertainty without changing raw inventory coverage",
+			);
+			const count = !inScope || kind === "empty" ? 1 : 2;
+			const cost = inScope && ["incomplete", "omitted", "partial"].includes(kind) ? "0.75" : "0.25";
+			const expected = `agents: 0/${count}${observed.coverage.complete ? "" : "+"} active · ~$${cost}`;
+			assert.equal(await manager.sessionFigures("primary", observed), expected);
+			assert.equal(
+				await manager.sessionFigures("primary"),
+				expected,
+				"footer and dashboard reuse the same scoped rows",
+			);
 		});
-		t.after(() => manager.close());
-		const create = (ownerId: string) => manager.catalog.create({
-			cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
-			model: { provider: "test", modelId: "model" }, thinkingLevel: "off", ownerId,
-		});
-		const known = create("primary");
-		manager.catalog.updateView(known.storageId, {
-			updatedAt: new Date().toISOString(), coverage: { complete: true, omitted: 0 },
-			rows: [row(known.storageId, { storageId: known.storageId, cost: 0.25 })],
-		});
-		const affected = create(inScope ? `${known.storageId}:2` : "other-primary");
-		if (kind !== "missing") manager.catalog.updateView(affected.storageId, {
-			updatedAt: new Date().toISOString(),
-			coverage: { complete: !["incomplete", "empty", "unavailable"].includes(kind), omitted: ["omitted", "empty"].includes(kind) ? 2 : 0 },
-			rows: ["empty", "unavailable"].includes(kind) ? [] : [row(affected.storageId, { storageId: affected.storageId, cost: 0.5, partial: kind === "partial" })],
-			...(kind === "unavailable" ? { unavailable: "Fixture view unavailable" } : {}),
-		});
-		const observed = await manager.dashboardPage();
-		assert.equal(observed.coverage.inventory.unreadable, 0);
-		assert.equal(observed.coverage.inventory.unknownClaims, 0);
-		assert.equal(observed.coverage.inventory.remaining, 0);
-		assert.equal(observed.coverage.complete, kind === "partial", "presentation includes projection uncertainty without changing raw inventory coverage");
-		const count = !inScope || kind === "empty" ? 1 : 2;
-		const cost = inScope && ["incomplete", "omitted", "partial"].includes(kind) ? "0.75" : "0.25";
-		const expected = `agents: 0/${count}${observed.coverage.complete ? "" : "+"} active · ~$${cost}`;
-		assert.equal(await manager.sessionFigures("primary", observed), expected);
-		assert.equal(await manager.sessionFigures("primary"), expected, "footer and dashboard reuse the same scoped rows");
-	});
 }
 
 test("manager supplies distinct primary footers and the same UI-local figures without host reads", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "agent-session-footer-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const manager = new AgentManager({
-		root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
+		root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
 		createPrimary: async (options) => ({
-			id: options.id, socketPath: "unused",
-			info: () => ({ id: options.id, cwd: root, hostname: "test-host", pid: process.pid, socketPath: "unused", startedAt: new Date().toISOString() }),
-			update: () => {}, publishIntent: () => {}, touch: () => {}, setObservedPurpose: () => {}, close: async () => {},
+			id: options.id,
+			socketPath: "unused",
+			info: () => ({
+				id: options.id,
+				cwd: root,
+				hostname: "test-host",
+				pid: process.pid,
+				socketPath: "unused",
+				startedAt: new Date().toISOString(),
+			}),
+			update: () => {},
+			publishIntent: () => {},
+			touch: () => {},
+			setObservedPurpose: () => {},
+			close: async () => {},
 		}),
-		acquire: async () => { throw new Error("A footer read must not launch a host"); },
-		observe: async () => { throw new Error("A footer read must not observe native storage"); },
+		acquire: async () => {
+			throw new Error("A footer read must not launch a host");
+		},
+		observe: async () => {
+			throw new Error("A footer read must not observe native storage");
+		},
 	});
 	t.after(() => manager.close());
 	function create(ownerId: string, costs: number[]) {
 		const record = manager.catalog.create({
-			cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
-			model: { provider: "test", modelId: "model" }, thinkingLevel: "off", ownerId,
+			cwd: root,
+			agentDir: join(root, "agent"),
+			packageDir: join(root, "package"),
+			model: { provider: "test", modelId: "model" },
+			thinkingLevel: "off",
+			ownerId,
 		});
 		manager.catalog.updateView(record.storageId, {
-			updatedAt: new Date().toISOString(), coverage: { complete: true, omitted: 0 },
-			rows: costs.map((cost, index) => row(index === 0 ? record.storageId : `${record.storageId}:${index + 1}`, { storageId: record.storageId, cost })),
+			updatedAt: new Date().toISOString(),
+			coverage: { complete: true, omitted: 0 },
+			rows: costs.map((cost, index) =>
+				row(index === 0 ? record.storageId : `${record.storageId}:${index + 1}`, { storageId: record.storageId, cost }),
+			),
 		});
 		return record.storageId;
 	}
@@ -253,7 +389,11 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 	const statuses = new Map<string, string | undefined>();
 	for (const ownerId of ["primary-a", "primary-b", "empty-primary"]) {
 		await manager.registerPrimary(ownerId, {
-			signal: new AbortController().signal, send: () => {}, status: (text) => { statuses.set(ownerId, text); },
+			signal: new AbortController().signal,
+			send: () => {},
+			status: (text) => {
+				statuses.set(ownerId, text);
+			},
 		});
 	}
 	assert.equal(statuses.get("primary-a"), "agents: 0/3 active · ~$6.00");

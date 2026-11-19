@@ -7,8 +7,16 @@ import { bindInstallationPackages } from "./installation-binding.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import { tryNativeWriterLease } from "./native-lease.ts";
 
-interface Input { sourceRoot: string; syntheticRoot: string; metadata: HostMetadata }
-interface Command { id: number; method: string; params?: unknown }
+interface Input {
+	sourceRoot: string;
+	syntheticRoot: string;
+	metadata: HostMetadata;
+}
+interface Command {
+	id: number;
+	method: string;
+	params?: unknown;
+}
 const input = JSON.parse(process.argv[2]) as Input;
 const root = realpathSync(input.syntheticRoot);
 for (const path of [input.metadata.agentDir, input.metadata.cwd, input.metadata.storagePath]) {
@@ -17,13 +25,31 @@ for (const path of [input.metadata.agentDir, input.metadata.cwd, input.metadata.
 }
 bindInstallationPackages(input.metadata.packageDir, pathToFileURL(`${input.sourceRoot}/extensions/agent/`));
 const moduleUrl = (name: string) => pathToFileURL(join(input.sourceRoot, "extensions", "agent", name)).href;
-const { connectHost, waitForHostRelease } = await import(moduleUrl("host-client.ts")) as typeof import("./host-client.ts");
-const { parseHostReadyLine, hostPaths } = await import(moduleUrl("host-protocol.ts")) as typeof import("./host-protocol.ts");
-const { eventLog, waitForProcessExit } = await import(moduleUrl("host-fixture.mts")) as typeof import("./host-fixture.mts");
-const runner = spawn(process.execPath, [join(input.sourceRoot, "extensions", "agent", "durable-runner.ts"), JSON.stringify(input.metadata)], {
-	cwd: input.metadata.cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"],
-});
-const events = eventLog<{ ready?: NonNullable<ReturnType<typeof parseHostReadyLine>>; error?: string; exited?: boolean; code?: number | null; signal?: NodeJS.Signals | null }>();
+const { connectHost, waitForHostRelease } = (await import(
+	moduleUrl("host-client.ts")
+)) as typeof import("./host-client.ts");
+const { parseHostReadyLine, hostPaths } = (await import(
+	moduleUrl("host-protocol.ts")
+)) as typeof import("./host-protocol.ts");
+const { eventLog, waitForProcessExit } = (await import(
+	moduleUrl("host-fixture.mts")
+)) as typeof import("./host-fixture.mts");
+const runner = spawn(
+	process.execPath,
+	[join(input.sourceRoot, "extensions", "agent", "durable-runner.ts"), JSON.stringify(input.metadata)],
+	{
+		cwd: input.metadata.cwd,
+		env: process.env,
+		stdio: ["ignore", "pipe", "pipe"],
+	},
+);
+const events = eventLog<{
+	ready?: NonNullable<ReturnType<typeof parseHostReadyLine>>;
+	error?: string;
+	exited?: boolean;
+	code?: number | null;
+	signal?: NodeJS.Signals | null;
+}>();
 let output = "";
 let pendingLine = "";
 runner.stdout.on("data", (chunk: Buffer) => {
@@ -33,12 +59,19 @@ runner.stdout.on("data", (chunk: Buffer) => {
 	for (;;) {
 		const newline = pendingLine.indexOf("\n");
 		if (newline < 0) break;
-		const line = pendingLine.slice(0, newline); pendingLine = pendingLine.slice(newline + 1);
-		try { const ready = parseHostReadyLine(line); if (ready) events.push({ ready }); }
-		catch (error) { events.push({ error: String(error) }); }
+		const line = pendingLine.slice(0, newline);
+		pendingLine = pendingLine.slice(newline + 1);
+		try {
+			const ready = parseHostReadyLine(line);
+			if (ready) events.push({ ready });
+		} catch (error) {
+			events.push({ error: String(error) });
+		}
 	}
 });
-runner.stderr.on("data", (chunk: Buffer) => { output = (output + chunk.toString()).slice(-65536); });
+runner.stderr.on("data", (chunk: Buffer) => {
+	output = (output + chunk.toString()).slice(-65536);
+});
 runner.on("error", (error) => events.push({ error: String(error) }));
 runner.on("exit", (code, signal) => events.push({ exited: true, code, signal }));
 let client: Awaited<ReturnType<typeof connectHost>> | undefined;
@@ -56,12 +89,16 @@ async function waitForReceipt(connection: NonNullable<typeof client>, raw: unkno
 		for (;;) {
 			signal.throwIfAborted();
 			const next = changes.length + 1;
-			const page = await connection.request("receipts", { ownerId: params.ownerId }, { signal }) as { receipts: { submissionId: number }[] };
+			const page = (await connection.request("receipts", { ownerId: params.ownerId }, { signal })) as {
+				receipts: { submissionId: number }[];
+			};
 			const receipt = page.receipts.find((row) => row.submissionId === params.submissionId);
 			if (receipt) return receipt;
 			await changes.waitForCount(next, Math.max(1, deadline - performance.now()));
 		}
-	} finally { unsubscribe(); }
+	} finally {
+		unsubscribe();
+	}
 }
 
 async function drain(connection: NonNullable<typeof client>) {
@@ -71,11 +108,17 @@ async function drain(connection: NonNullable<typeof client>) {
 	try {
 		for (;;) {
 			const next = changes.length + 1;
-			const state = await connection.request("recovery-state") as { workPending: boolean; deliveriesPending: boolean; deliveriesActive: boolean };
+			const state = (await connection.request("recovery-state")) as {
+				workPending: boolean;
+				deliveriesPending: boolean;
+				deliveriesActive: boolean;
+			};
 			if (!state.workPending && !state.deliveriesPending && !state.deliveriesActive) return state;
 			await changes.waitForCount(next, 30000);
 		}
-	} finally { unsubscribe(); }
+	} finally {
+		unsubscribe();
+	}
 }
 
 async function stop() {
@@ -85,7 +128,9 @@ async function stop() {
 		await waitForProcessExit(runner);
 	}
 }
-process.once("disconnect", () => { void stop(); });
+process.once("disconnect", () => {
+	void stop();
+});
 try {
 	await events.waitFor((rows) => rows.some((row) => row.ready || row.error || row.exited), 30000);
 	const ready = events.find((row) => row.ready)?.ready;
@@ -105,7 +150,11 @@ try {
 					result = await drain(client);
 				} else if (command.method === "close-host") {
 					const state = await client.request("recovery-state");
-					assert.deepEqual(state, { workPending: false, deliveriesPending: false, deliveriesActive: false }, "Close requires drained work and deliveries");
+					assert.deepEqual(
+						state,
+						{ workPending: false, deliveriesPending: false, deliveriesActive: false },
+						"Close requires drained work and deliveries",
+					);
 					const closing = client.request("close");
 					await waitForHostRelease(input.metadata, { after: closing });
 					await closing.catch(() => {});
@@ -119,7 +168,9 @@ try {
 					result = { pid: runner.pid, exited: true, claimReleased: true };
 				} else result = await client.request(command.method, command.params);
 				process.send?.({ kind: "result", id: command.id, result });
-			} catch (error) { process.send?.({ kind: "error", id: command.id, error: String(error), output }); }
+			} catch (error) {
+				process.send?.({ kind: "error", id: command.id, error: String(error), output });
+			}
 		});
 	});
 } catch (error) {

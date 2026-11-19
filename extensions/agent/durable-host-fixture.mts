@@ -9,7 +9,14 @@ import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type AssistantMessage, type Models } from "@earendil-works/pi-ai";
-import { createRegistry, defineExtension, defineTool, type JsonObject, type Registry, type ToolRegistration } from "@earendil-works/pi-durable";
+import {
+	createRegistry,
+	defineExtension,
+	defineTool,
+	type JsonObject,
+	type Registry,
+	type ToolRegistration,
+} from "@earendil-works/pi-durable";
 import { obj } from "@earendil-works/pi-schema";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { DurableHost, type DurableHostOptions } from "./durable-host.ts";
@@ -19,10 +26,26 @@ export const fixtureProvider = testModel.provider;
 export const fixtureModelId = testModel.id;
 export const fixtureStorageId = "fixture-agent";
 
-const usage = { input: 5, output: 7, cacheRead: 0, cacheWrite: 0, totalTokens: 12, cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 } };
+const usage = {
+	input: 5,
+	output: 7,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 12,
+	cost: { input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03 },
+};
 
 export function answerMessage(text = "durable answer"): AssistantMessage {
-	return { role: "assistant", content: [{ type: "text", text }], api: "openai-completions", provider: fixtureProvider, model: fixtureModelId, usage, stopReason: "stop", timestamp: Date.now() };
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "openai-completions",
+		provider: fixtureProvider,
+		model: fixtureModelId,
+		usage,
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
 }
 
 /** An answer that carries opaque provider fields and redacted thinking for omission tests. */
@@ -45,7 +68,16 @@ export function redactedAnswerMessage(text = "durable answer"): AssistantMessage
 }
 
 export function toolCallMessage(name = "slow-effect", args: JsonObject = {}): AssistantMessage {
-	return { role: "assistant", content: [{ type: "toolCall", id: `fixture-call-${name}`, name, arguments: args }], api: "openai-completions", provider: fixtureProvider, model: fixtureModelId, usage, stopReason: "toolUse", timestamp: Date.now() };
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", id: `fixture-call-${name}`, name, arguments: args }],
+		api: "openai-completions",
+		provider: fixtureProvider,
+		model: fixtureModelId,
+		usage,
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	};
 }
 
 export function completed(message: AssistantMessage) {
@@ -184,15 +216,31 @@ export function hostOptions(storagePath: string, models: Models, registry: Regis
 		...(cwd === undefined ? {} : { cwd }),
 		models,
 		registry,
-		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId }, modelTools: { add: registry.snapshot().installed().flatMap(entry => (entry.tools ?? []).filter(tool => tool.deferred === true)) } },
+		agent: {
+			model: { provider: fixtureProvider, modelId: fixtureModelId },
+			modelTools: {
+				add: registry
+					.snapshot()
+					.installed()
+					.flatMap((entry) => (entry.tools ?? []).filter((tool) => tool.deferred === true)),
+			},
+		},
 	};
 }
 
 async function main(): Promise<number> {
 	const [storagePath, mode, effectPath, , prompt, runId] = process.argv.slice(2);
 	const tools = mode === "effect" ? [slowEffectTool(effectPath)] : [];
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime(mode as FixtureMode), fixtureRegistry(tools)), BACKGROUND_CONTEXT);
-	const submission = await host.submit({ message: prompt, requestId: runId, ownerId: "fixture-owner", origin: "operator" });
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime(mode as FixtureMode), fixtureRegistry(tools)),
+		BACKGROUND_CONTEXT,
+	);
+	const submission = await host.submit({
+		message: prompt,
+		requestId: runId,
+		ownerId: "fixture-owner",
+		origin: "operator",
+	});
 	process.stdout.write(`SUBMISSION ${String(submission.submissionId)}\n`);
 	const keepAlive = setInterval(() => {}, 1 << 30);
 	await new Promise(() => {});

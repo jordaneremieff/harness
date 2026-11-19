@@ -14,5 +14,14 @@ export type RunControlState = {
 
 /** Native input and task links remain available after a generation settles. */
 export function agentRunControlDoc(durable: typeof Native) {
-	return durable.defineDocFamily<RunControlState, null>({ kind: "agent.run-control", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", initial: () => ({ recorded: false, inputs: [], complete: true }), checkpointWhen: () => false });
+	return durable.defineDocFamily<RunControlState, null>({
+		kind: "agent.run-control",
+		family: true,
+		version: 1,
+		scope: "conversation",
+		history: "latest",
+		fork: "initial",
+		initial: () => ({ recorded: false, inputs: [], complete: true }),
+		checkpointWhen: () => false,
+	});
 }

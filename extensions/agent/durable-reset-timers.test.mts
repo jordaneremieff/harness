@@ -18,11 +18,52 @@ function stubControl(calls: ControlCall[]): (method: string, input: Record<strin
 		calls.push({ method, input });
 		switch (method) {
 			case "reset":
-				return { conversationId: 1, requestId: input.requestId, submissionId: 4, status: "queued", entryId: null, reason: null, deduped: false };
+				return {
+					conversationId: 1,
+					requestId: input.requestId,
+					submissionId: 4,
+					status: "queued",
+					entryId: null,
+					reason: null,
+					deduped: false,
+				};
 			case "timer-schedule":
-				return { timerId: 7, conversationId: 1, identity: "storage-a", deadline: input.deliverAt, mode: input.mode, origin: input.origin, scheduleId: input.scheduleId, deduped: false, disposition: "scheduled", status: "pending" };
+				return {
+					timerId: 7,
+					conversationId: 1,
+					identity: "storage-a",
+					deadline: input.deliverAt,
+					mode: input.mode,
+					origin: input.origin,
+					scheduleId: input.scheduleId,
+					deduped: false,
+					disposition: "scheduled",
+					status: "pending",
+				};
 			case "timer-list":
-				return { timers: [{ timerId: 7, scheduleId: "s", conversationId: 1, identity: "storage-a", messagePreview: "later", deadline: Date.now() + 60000, mode: "followUp", origin: "operator", ownerId: "owner", requestId: "r", createdAt: Date.now(), status: "pending", firedAt: null, overdueMs: null, submissionId: null, settledAt: null, live: true }] };
+				return {
+					timers: [
+						{
+							timerId: 7,
+							scheduleId: "s",
+							conversationId: 1,
+							identity: "storage-a",
+							messagePreview: "later",
+							deadline: Date.now() + 60000,
+							mode: "followUp",
+							origin: "operator",
+							ownerId: "owner",
+							requestId: "r",
+							createdAt: Date.now(),
+							status: "pending",
+							firedAt: null,
+							overdueMs: null,
+							submissionId: null,
+							settledAt: null,
+							live: true,
+						},
+					],
+				};
 			case "timer-cancel":
 				return { timerId: input.timerId, outcome: "marked", status: "cancelled" };
 			default:
@@ -38,22 +79,53 @@ function surface(calls: ControlCall[]) {
 it("passes the optional self-owned schedule flag only when the caller supplies it", async () => {
 	const calls: ControlCall[] = [];
 	for (const selfOwned of [undefined, false, true]) {
-		await scheduleAgentInput(surface(calls), { sessionId: "storage-a", message: "later", deliverAt: Date.now(), ...(selfOwned === undefined ? {} : { selfOwned }) });
+		await scheduleAgentInput(surface(calls), {
+			sessionId: "storage-a",
+			message: "later",
+			deliverAt: Date.now(),
+			...(selfOwned === undefined ? {} : { selfOwned }),
+		});
 		assert.equal(calls.at(-1)?.input.selfOwned, selfOwned);
 		assert.equal(Object.hasOwn(calls.at(-1)?.input ?? {}, "selfOwned"), selfOwned !== undefined);
 	}
 });
 
 it("shows a retained terminal timer without claiming a new pending schedule", async () => {
-	const result = await scheduleAgentInput({ label: async () => "alpha", control: async () => ({ timerId: 7, disposition: "retained", status: "terminal", outcome: { status: "aborted" } }) }, { sessionId: "storage-a", message: "later", deliverAt: Date.now() });
+	const result = await scheduleAgentInput(
+		{
+			label: async () => "alpha",
+			control: async () => ({
+				timerId: 7,
+				disposition: "retained",
+				status: "terminal",
+				outcome: { status: "aborted" },
+			}),
+		},
+		{ sessionId: "storage-a", message: "later", deliverAt: Date.now() },
+	);
 	assert.match(result.text, /Retained timer #7.*aborted.*No new timer/u);
 	assert.doesNotMatch(result.text, /Scheduled timer|host must run/u);
 });
 
 it("registers the separate reset tool and leaves timers to agent_status and agent_abort", async () => {
 	const calls: ControlCall[] = [];
-	const tools = new Map<string, { execute: (callId: string, params: Record<string, unknown>, signal: undefined, update: undefined, ctx: unknown) => Promise<unknown>; renderCall?: unknown; renderResult?: unknown }>();
-	const pi = { registerTool: (tool: { name: string }) => tools.set(tool.name, tool as never) } as unknown as ExtensionAPI;
+	const tools = new Map<
+		string,
+		{
+			execute: (
+				callId: string,
+				params: Record<string, unknown>,
+				signal: undefined,
+				update: undefined,
+				ctx: unknown,
+			) => Promise<unknown>;
+			renderCall?: unknown;
+			renderResult?: unknown;
+		}
+	>();
+	const pi = {
+		registerTool: (tool: { name: string }) => tools.set(tool.name, tool as never),
+	} as unknown as ExtensionAPI;
 	registerResetTimerTools(pi, () => surface(calls));
 	assert.deepEqual([...tools.keys()], ["agent_reset"]);
 	const tool = tools.get("agent_reset");
@@ -77,14 +149,20 @@ it("runs the operator reset, schedule, list, and cancel actions with operator or
 	assert.match(reset.text, /Reset queued/u);
 	assert.equal(calls.at(-1)?.method, "reset");
 	assert.equal(calls.at(-1)?.input.handoff, "fresh start");
-	const schedule = (await run("schedule", ["storage-a", "2026-10-03T09:00:00+10:00", "check", "back"])) as { text: string };
+	const schedule = (await run("schedule", ["storage-a", "2026-10-03T09:00:00+10:00", "check", "back"])) as {
+		text: string;
+	};
 	assert.match(schedule.text, /Scheduled timer #7/u);
 	const scheduled = calls.at(-1);
 	assert.equal(scheduled?.method, "timer-schedule");
 	assert.equal(scheduled?.input.message, "check back");
 	assert.equal(scheduled?.input.mode, "followUp");
 	assert.equal(scheduled?.input.origin, "operator");
-	assert.equal(Object.hasOwn(scheduled?.input ?? {}, "selfOwned"), false, "primary and dashboard operator actions do not opt in");
+	assert.equal(
+		Object.hasOwn(scheduled?.input ?? {}, "selfOwned"),
+		false,
+		"primary and dashboard operator actions do not opt in",
+	);
 	assert.equal(scheduled?.input.deliverAt, Date.parse("2026-10-03T09:00:00+10:00"));
 	assert.equal(typeof scheduled?.input.scheduleId, "string");
 	assert.equal(typeof scheduled?.input.requestId, "string");

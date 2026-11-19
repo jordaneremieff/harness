@@ -17,15 +17,31 @@ it("retains exact retry acknowledgment after SQLite close and reopen", { timeout
 	const options = { models: createModels(), registry: createRegistry() };
 	let harness = await Harness.open(await openNodeSqliteStorage(file), options, context);
 	const root = await harness.root(context);
-	const retry = { state: "provider-retry" as const, runId: 9, results: [{ sessionId: "producer", submissionId: 10, requestId: "exact" }], attempt: 1, nextRetryAt: 100, error: "native transport interruption", errorTruncated: false };
+	const retry = {
+		state: "provider-retry" as const,
+		runId: 9,
+		results: [{ sessionId: "producer", submissionId: 10, requestId: "exact" }],
+		attempt: 1,
+		nextRetryAt: 100,
+		error: "native transport interruption",
+		errorTruncated: false,
+	};
 	assert.equal(await harness.commit((tx) => claimProviderRetryVisibility(tx, root.id, [42], retry), context), true);
 	await harness.close(context);
 	harness = await Harness.open(await openNodeSqliteStorage(file), options, context);
 	try {
 		assert.equal(await harness.commit((tx) => claimProviderRetryVisibility(tx, root.id, [42], retry), context), false);
-		assert.equal(await harness.commit((tx) => claimProviderRetryVisibility(tx, root.id, [42], { ...retry, attempt: 2, nextRetryAt: 200 }), context), true);
+		assert.equal(
+			await harness.commit(
+				(tx) => claimProviderRetryVisibility(tx, root.id, [42], { ...retry, attempt: 2, nextRetryAt: 200 }),
+				context,
+			),
+			true,
+		);
 		assert.equal(await harness.commit((tx) => claimProviderRetryVisibility(tx, root.id, [42], retry), context), false);
 		assert.equal(await harness.commit((tx) => claimProviderRetryVisibility(tx, root.id, [43], retry), context), true);
 		assert.equal((await harness.snapshot(AwaitDoc, context))?.retryVisibility?.length, 2);
-	} finally { await harness.close(context); }
+	} finally {
+		await harness.close(context);
+	}
 });

@@ -15,7 +15,8 @@ const suite: EvaluationSuite = {
 	subject: {
 		adapter: "pi-sdk",
 		kind: "skill",
-		description: "Run the ordinary request with the same synthetic facts and read-only tool, without the candidate skill or slash invocation.",
+		description:
+			"Run the ordinary request with the same synthetic facts and read-only tool, without the candidate skill or slash invocation.",
 		config: {
 			invocation: "plain-request-baseline",
 			baseline: "This arm never includes the candidate skill or its direct command token.",
@@ -55,7 +56,8 @@ const suite: EvaluationSuite = {
 			"The comparison records scope, evidence, units, unknowns, and causal restraint separately from the output bound.",
 		],
 		metadata: {
-			comparisonArm: "The baseline prompt is the operator's ordinary request, not a request for the candidate's method or report form.",
+			comparisonArm:
+				"The baseline prompt is the operator's ordinary request, not a request for the candidate's method or report form.",
 		},
 	},
 };

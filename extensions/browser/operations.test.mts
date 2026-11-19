@@ -306,10 +306,7 @@ it("refuses every targeted operation when another process now owns the tab id", 
 		assert.equal(obj(reportOf(result).target).pid, 5);
 	}
 	const after = requests.slice(before);
-	assert.equal(
-		after.filter((request) => request.op === "navigate" || request.op === "windows").length,
-		0,
-	);
+	assert.equal(after.filter((request) => request.op === "navigate" || request.op === "windows").length, 0);
 	assert.deepEqual(captured, []);
 	assert.deepEqual(saves, []);
 });
@@ -768,8 +765,7 @@ it("keeps the scheduled action when a page read returns no result", async () => 
 
 it("keeps the action unknown when its own page reply has no readable result and the page has no record", async () => {
 	const run = actRunner(
-		() =>
-			executed({ kind: "ok", page: PAGE, action: null, condition: { met: false, checks: [] }, responses: [] }),
+		() => executed({ kind: "ok", page: PAGE, action: null, condition: { met: false, checks: [] }, responses: [] }),
 		() => ok({ window: "1", url: "https://a.example/page", title: "Example", result: null }),
 	);
 	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
@@ -1354,7 +1350,10 @@ it("keeps an outcome unknown when no record or read settles it, and never reruns
 
 	const cleared = pageWorld();
 	const clearedDeps = fakes(cleared.run, { access: { chrome: "interact" } });
-	const params = { ...AWAITED, expression: "(shared.effects += 1, globalThis.__piBrowser.runs.clear(), Promise.resolve(1))" };
+	const params = {
+		...AWAITED,
+		expression: "(shared.effects += 1, globalThis.__piBrowser.runs.clear(), Promise.resolve(1))",
+	};
 	const missing = await browserEvaluate(params, undefined, clearedDeps.deps);
 	assert.equal(missing.details.status, "unknown");
 	assert.equal(count(clearedDeps.requests, "start"), 1);

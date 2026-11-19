@@ -272,7 +272,7 @@ export function createBridge(
 		}
 		return { ok: true, status: "admitted" };
 	}
-	function saveState(state: ExplorerRequests['state.save'][0]) {
+	function saveState(state: ExplorerRequests["state.save"][0]) {
 		const { draft, ...position } = state;
 		if (draft !== undefined && position.path) {
 			if (draft === null) cardDrafts.delete(position.path);

@@ -9,13 +9,25 @@ import {
 	getMarkdownTheme,
 	type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import {
+	Text,
+	truncateToWidth,
+	visibleWidth,
+	type Component,
+	type TUI,
+	type TuiMouseEvent,
+} from "@earendil-works/pi-tui";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
 import { readingGeometry } from "./dashboard-layout.ts";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import type { AgentReadingState } from "./dashboard-state.ts";
 import { parseCommunicationView, type Communication } from "./communication.ts";
-import { bindCardDisclosure, compactCommunicationRenderer, createAgentToolCards, type AgentCardLookup } from "./tool-cards.ts";
+import {
+	bindCardDisclosure,
+	compactCommunicationRenderer,
+	createAgentToolCards,
+	type AgentCardLookup,
+} from "./tool-cards.ts";
 
 const agentCardNames = new Set(Object.keys(createAgentToolCards()));
 
@@ -100,7 +112,14 @@ class ReadingToolComponent extends ToolExecutionComponent {
 	}
 }
 function isItemClick(event: TuiMouseEvent): boolean {
-	return event.type === "click" && event.button === "left" && !event.shift && !event.alt && !event.ctrl && (event.clickCount ?? 1) === 1;
+	return (
+		event.type === "click" &&
+		event.button === "left" &&
+		!event.shift &&
+		!event.alt &&
+		!event.ctrl &&
+		(event.clickCount ?? 1) === 1
+	);
 }
 
 function contentText(content: Message["content"]): string {
@@ -152,13 +171,18 @@ export function renderableEntries(entries: readonly AgentConversationEntry[]): A
  * which a click opens. Ctrl+T and More › Show thinking reveal every message's reasoning.
  */
 function thinkingLabel(message: AssistantMessage): string {
-	const visible = message.content.some((part) => (part.type === "text" && part.text.trim().length > 0) || part.type === "toolCall")
-		|| message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length";
+	const visible =
+		message.content.some((part) => (part.type === "text" && part.text.trim().length > 0) || part.type === "toolCall") ||
+		message.stopReason === "error" ||
+		message.stopReason === "aborted" ||
+		message.stopReason === "length";
 	return visible ? "" : "▸ Thinking";
 }
 
 function liveNestedTool(entry: AgentConversationEntry): NestedToolSlot | undefined {
-	return entry.id.startsWith("live:") ? (entry.data as { nestedTool?: NestedToolSlot } | undefined)?.nestedTool : undefined;
+	return entry.id.startsWith("live:")
+		? (entry.data as { nestedTool?: NestedToolSlot } | undefined)?.nestedTool
+		: undefined;
 }
 
 function entryTimestamp(entry: AgentConversationEntry): number {
@@ -233,14 +257,19 @@ export class AgentConversation {
 		entries.forEach((entry, index) => {
 			const cached = this.entryBlocks.get(entry.id);
 			const start = this.blocks.length;
-			const result = (entry.model ?? []).some((message) => message.role === "toolResult") || liveNestedTool(entry) !== undefined;
+			const result =
+				(entry.model ?? []).some((message) => message.role === "toolResult") || liveNestedTool(entry) !== undefined;
 			if (cached?.signature === signatures[index] && !result) {
 				this.blocks.push(...cached.blocks);
 				this.restoreEntryTools(entry);
 			} else this.appendEntry(entry);
 			next.set(entry.id, { signature: signatures[index], blocks: this.blocks.slice(start) });
 		});
-		const resultIds = new Set(entries.flatMap((entry) => (entry.model ?? []).flatMap((message) => message.role === "toolResult" ? [message.toolCallId] : [])));
+		const resultIds = new Set(
+			entries.flatMap((entry) =>
+				(entry.model ?? []).flatMap((message) => (message.role === "toolResult" ? [message.toolCallId] : [])),
+			),
+		);
 		for (const [id, tool] of this.tools) {
 			if (!this.resultKeys.has(tool) || resultIds.has(id)) continue;
 			tool.updateResult({ content: [], isError: false }, true);
@@ -263,7 +292,8 @@ export class AgentConversation {
 		this.expanded = expanded;
 		this.reading.toolExpanded.clear();
 		for (const { component } of this.blocks) {
-			if (component instanceof ToolExecutionComponent || component instanceof CustomMessageComponent) component.setExpanded(expanded);
+			if (component instanceof ToolExecutionComponent || component instanceof CustomMessageComponent)
+				component.setExpanded(expanded);
 		}
 		this.clearLayoutCache();
 	}
@@ -312,7 +342,12 @@ export class AgentConversation {
 
 	private pruneComponents(): void {
 		const retained = new Set(this.blocks.map((block) => block.component));
-		const caches: Array<{ keys(): Iterable<Component>; delete(component: Component): boolean }> = [this.agentCards, this.noticeCards, this.rendered, this.rows];
+		const caches: Array<{ keys(): Iterable<Component>; delete(component: Component): boolean }> = [
+			this.agentCards,
+			this.noticeCards,
+			this.rendered,
+			this.rows,
+		];
 		for (const cache of caches) {
 			for (const component of [...cache.keys()]) if (!retained.has(component)) cache.delete(component);
 		}
@@ -345,7 +380,12 @@ export class AgentConversation {
 		if (!component) return;
 		const fallback = this.definitions(name, false);
 		const known = this.definitions(name);
-		if (fallback.renderCall === known.renderCall && fallback.renderResult === known.renderResult && fallback.renderShell === known.renderShell) return component;
+		if (
+			fallback.renderCall === known.renderCall &&
+			fallback.renderResult === known.renderResult &&
+			fallback.renderShell === known.renderShell
+		)
+			return component;
 		// Pi has no definition setter. A newly available native renderer requires one replacement.
 		this.unmatched.delete(id);
 		return undefined;
@@ -382,7 +422,11 @@ export class AgentConversation {
 			this.blocks.push({ id: source.id, component: this.communicationCard(source.id, communication.value) });
 			return;
 		}
-		if (communication?.state === "unavailable") this.blocks.push({ id: `${source.id}:communication`, component: new Text(`[Communication metadata unavailable: ${communication.reason}]`, 0, 0) });
+		if (communication?.state === "unavailable")
+			this.blocks.push({
+				id: `${source.id}:communication`,
+				component: new Text(`[Communication metadata unavailable: ${communication.reason}]`, 0, 0),
+			});
 		const entry = displayValue(source) as AgentConversationEntry;
 		const nested = liveNestedTool(entry);
 		if (nested) {
@@ -425,9 +469,16 @@ export class AgentConversation {
 		const key = `communication:${id}`;
 		bindCardDisclosure(message, {
 			get: () => this.reading.toolExpanded.get(key),
-			set: (expanded) => { this.reading.toolExpanded.set(key, expanded); },
+			set: (expanded) => {
+				this.reading.toolExpanded.set(key, expanded);
+			},
 		});
-		const component = new CustomMessageComponent(message, compactCommunicationRenderer(this.lookup), getMarkdownTheme(), 0);
+		const component = new CustomMessageComponent(
+			message,
+			compactCommunicationRenderer(this.lookup),
+			getMarkdownTheme(),
+			0,
+		);
 		component.setExpanded(this.expanded);
 		this.noticeCards.add(component);
 		return component;
@@ -452,7 +503,10 @@ export class AgentConversation {
 	private tool(name: string, id: string, args: unknown, known = true): ReadingToolComponent {
 		const definition = this.definitions(name, known);
 		const tool = new ReadingToolComponent(name, id, args, { showImages: false }, definition, this.tui, this.cwd);
-		tool.onInvalidate = () => { this.rendered.delete(tool); this.rows.delete(tool); };
+		tool.onInvalidate = () => {
+			this.rendered.delete(tool);
+			this.rows.delete(tool);
+		};
 		if (agentCardNames.has(name)) this.agentCards.add(tool);
 		tool.setExpanded(this.reading.toolExpanded.get(id) ?? this.expanded);
 		return tool;
@@ -500,15 +554,32 @@ export class AgentConversation {
 		tool.updateArgs(slot.arguments);
 		tool.setArgsComplete();
 		if (slot.status !== "pending") tool.markExecutionStarted();
-		const status = slot.status !== "done" ? slot.status : slot.summary ? slot.summary.isError ? "error" : "ok" : "done (result unavailable)";
+		const status =
+			slot.status !== "done"
+				? slot.status
+				: slot.summary
+					? slot.summary.isError
+						? "error"
+						: "ok"
+					: "done (result unavailable)";
 		const duration = slot.summary?.durationMs === undefined ? "" : ` ${slot.summary.durationMs}ms`;
-		this.blocks.push({ id: `${id}:parent`, component: new Text(`Nested tool ${slot.callId} under ${slot.parentCallId}: ${status}${duration}`, 0, 0) });
-		tool.updateResult({
-			content: slot.output ? [{ type: "text", text: slot.output }] : slot.summary?.error ? [{ type: "text", text: slot.summary.error }] : [],
-			details: slot.details,
-			isError: slot.summary?.isError ?? false,
-			...(slot.summary?.durationMs === undefined ? {} : { durationMs: slot.summary.durationMs }),
-		}, slot.status !== "done");
+		this.blocks.push({
+			id: `${id}:parent`,
+			component: new Text(`Nested tool ${slot.callId} under ${slot.parentCallId}: ${status}${duration}`, 0, 0),
+		});
+		tool.updateResult(
+			{
+				content: slot.output
+					? [{ type: "text", text: slot.output }]
+					: slot.summary?.error
+						? [{ type: "text", text: slot.summary.error }]
+						: [],
+				details: slot.details,
+				isError: slot.summary?.isError ?? false,
+				...(slot.summary?.durationMs === undefined ? {} : { durationMs: slot.summary.durationMs }),
+			},
+			slot.status !== "done",
+		);
 		this.tools.set(slot.callId, tool);
 		this.blocks.push({ id, component: tool });
 		this.rendered.delete(tool);
@@ -519,7 +590,9 @@ export class AgentConversation {
 		let tool = this.tools.get(message.toolCallId);
 		if (!tool) {
 			tool =
-				this.callCards.get(message.toolCallId)?.component ?? this.unmatched.get(message.toolCallId) ?? this.tool(message.toolName, message.toolCallId, undefined, false);
+				this.callCards.get(message.toolCallId)?.component ??
+				this.unmatched.get(message.toolCallId) ??
+				this.tool(message.toolName, message.toolCallId, undefined, false);
 			this.unmatched.set(message.toolCallId, tool);
 			this.tools.set(message.toolCallId, tool);
 			this.blocks.push({ id, component: tool });
@@ -647,7 +720,12 @@ export class AgentConversation {
 			if (end >= nearStart && start <= nearEnd) this.blockLines(component, width);
 		});
 	}
-	private anchorTop(width: number, anchors: ConversationDocument["anchors"], anchor: AgentReadingState["anchor"], requested: number): number {
+	private anchorTop(
+		width: number,
+		anchors: ConversationDocument["anchors"],
+		anchor: AgentReadingState["anchor"],
+		requested: number,
+	): number {
 		const entry = anchor ? anchors.find((item) => item.id === anchor.id) : undefined;
 		if (!entry || !anchor) return requested;
 		const index = this.blocks.findIndex((block) => block.id === entry.id);
@@ -723,14 +801,21 @@ export class AgentConversation {
 		return true;
 	}
 	/** The item a measured block reports for one local click, in document coordinates. */
-	private itemFor(component: Component, event: TuiMouseEvent, id: string, line: number, top: number): { id: string; line: number; targetOffset?: number } | undefined {
+	private itemFor(
+		component: Component,
+		event: TuiMouseEvent,
+		id: string,
+		line: number,
+		top: number,
+	): { id: string; line: number; targetOffset?: number } | undefined {
 		if (component instanceof ReadingToolComponent) return this.toolClick(component, event) ? { id, line } : undefined;
 		if (component instanceof AssistantMessageComponent) {
 			const dispatched = component.handleMouse(event);
 			if (!dispatched?.handled) return undefined;
 			return { id, line, targetOffset: dispatched.target.originY - (event.screenY - event.y) - top };
 		}
-		if (component instanceof CustomMessageComponent) return component.handleMouse(event)?.handled ? { id, line } : undefined;
+		if (component instanceof CustomMessageComponent)
+			return component.handleMouse(event)?.handled ? { id, line } : undefined;
 		return undefined;
 	}
 	/** Only measured blocks receive clicks; the shared gap row belongs to no block. */
@@ -739,7 +824,11 @@ export class AgentConversation {
 		const layout = this.layout(event.width);
 		const index = layout.anchors.findIndex((anchor, index) => {
 			const measured = this.rendered.get(this.blocks[index].component);
-			return measured?.width === event.width && event.y >= anchor.line && event.y < anchor.line + this.blockHeight(index, event.width);
+			return (
+				measured?.width === event.width &&
+				event.y >= anchor.line &&
+				event.y < anchor.line + this.blockHeight(index, event.width)
+			);
 		});
 		if (index < 0) return;
 		const { id, component } = this.blocks[index];
@@ -750,7 +839,13 @@ export class AgentConversation {
 		const localY = event.y - line - gap;
 		if (localY < 0) return;
 		const { margin, textWidth } = this.componentWidth(component, event.width);
-		const local = { ...event, x: event.x - margin, y: localY + measured.top, width: textWidth, height: measured.lines.length + measured.top };
+		const local = {
+			...event,
+			x: event.x - margin,
+			y: localY + measured.top,
+			width: textWidth,
+			height: measured.lines.length + measured.top,
+		};
 		if (local.x < 0) return;
 		const item = this.itemFor(component, local, id, line, measured.top);
 		if (!item) return;

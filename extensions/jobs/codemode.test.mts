@@ -99,7 +99,10 @@ test("native codemode composes Bash and managed jobs in an ordinary session", { 
 		const deadline = Date.now() + 10_000;
 		for (;;) {
 			const message = session.messages.find(
-				(entry) => entry.role === "custom" && entry.customType === JOB_COMPLETION_MESSAGE && (entry.details as JobCompletionDetails).job.id === id,
+				(entry) =>
+					entry.role === "custom" &&
+					entry.customType === JOB_COMPLETION_MESSAGE &&
+					(entry.details as JobCompletionDetails).job.id === id,
 			);
 			if (message?.role === "custom" && session.isIdle) return message.details as JobCompletionDetails;
 			assert.ok(Date.now() < deadline, "the completion message starts and settles a turn before the deadline");

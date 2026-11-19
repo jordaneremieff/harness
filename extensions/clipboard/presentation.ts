@@ -15,9 +15,7 @@ interface CardContext extends Partial<KeybindingHints> {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function stringField(value: unknown, key: string): string {
@@ -54,7 +52,12 @@ function textContent(result: AgentToolResult<unknown>): string {
 }
 
 function firstLine(output: string): string {
-	return output.split("\n").find((line) => line.trim().length > 0)?.trim() ?? "";
+	return (
+		output
+			.split("\n")
+			.find((line) => line.trim().length > 0)
+			?.trim() ?? ""
+	);
 }
 
 /** Collapsed errors show the first diagnostic line; expanded errors reveal the retained text. */
@@ -117,7 +120,8 @@ function continuationNote(next: number | undefined): string {
 
 function archiveNote(details: Record<string, unknown>, theme: Theme): string {
 	const error = details.archiveError;
-	if (typeof error === "string" && error) return theme.fg("warning", ` · archive write failed: ${displayValue(error, 160)}`);
+	if (typeof error === "string" && error)
+		return theme.fg("warning", ` · archive write failed: ${displayValue(error, 160)}`);
 	return details.archived === false ? theme.fg("dim", " · not archived") : "";
 }
 
@@ -143,16 +147,18 @@ export function renderCopyResult(
 	theme: Theme,
 	context: CardContext,
 ): Component {
-	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Copying to the clipboard...")}`, context.lastComponent);
+	if (options.isPartial)
+		return textComponent(`\n${theme.fg("warning", "Copying to the clipboard...")}`, context.lastComponent);
 	const output = textContent(result);
-	if (context.isError)
-		return errorCard("clipboard_copy", output, "copy failed", theme, options.expanded, context);
+	if (context.isError) return errorCard("clipboard_copy", output, "copy failed", theme, options.expanded, context);
 	const details = asRecord(result.details);
 	let text = `\n${theme.fg("success", `copied ${sizeLine(numberField(details, "lines"), numberField(details, "chars"))}`)}`;
 	const id = stringField(details, "id");
 	if (id) text += theme.fg("dim", ` · id ${displayValue(id, 80)}`);
 	text += archiveNote(details, theme);
-	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result", context))}`;
+	text += options.expanded
+		? `\n${theme.fg("toolOutput", boundedDisplay(output))}`
+		: `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
 }
 
@@ -176,17 +182,19 @@ export function renderPasteResult(
 	theme: Theme,
 	context: CardContext,
 ): Component {
-	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Reading the clipboard...")}`, context.lastComponent);
+	if (options.isPartial)
+		return textComponent(`\n${theme.fg("warning", "Reading the clipboard...")}`, context.lastComponent);
 	const output = textContent(result);
-	if (context.isError)
-		return errorCard("clipboard_paste", output, "paste failed", theme, options.expanded, context);
+	if (context.isError) return errorCard("clipboard_paste", output, "paste failed", theme, options.expanded, context);
 	const details = asRecord(result.details);
 	const chars = numberField(details, "chars");
 	if (chars === 0) return textComponent(`\n${theme.fg("success", "clipboard is empty")}`, context.lastComponent);
 	const page = continuationNote(numberField(details, "nextOffset"));
 	let text = `\n${theme.fg("success", `clipboard ${sizeLine(numberField(details, "lines"), chars)}${page ? ` · ${page}` : ""}`)}`;
 	if (booleanField(details, "controlsEscaped") === true) text += theme.fg("dim", " · controls escaped");
-	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result", context))}`;
+	text += options.expanded
+		? `\n${theme.fg("toolOutput", boundedDisplay(output))}`
+		: `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
 }
 
@@ -212,10 +220,10 @@ export function renderListResult(
 	theme: Theme,
 	context: CardContext,
 ): Component {
-	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Listing clipboard history...")}`, context.lastComponent);
+	if (options.isPartial)
+		return textComponent(`\n${theme.fg("warning", "Listing clipboard history...")}`, context.lastComponent);
 	const output = textContent(result);
-	if (context.isError)
-		return errorCard("clipboard_list", output, "list failed", theme, options.expanded, context);
+	if (context.isError) return errorCard("clipboard_list", output, "list failed", theme, options.expanded, context);
 	const searching = stringField(context.args, "query") !== "";
 	const details = asRecord(result.details);
 	const count = numberField(details, "count") ?? 0;
@@ -226,7 +234,9 @@ export function renderListResult(
 	else if (searching) lead += " · end of scan";
 	let text = `\n${theme.fg("success", lead)}`;
 	if (stringField(details, "nextCursor")) text += theme.fg("dim", " · continuation");
-	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result", context))}`;
+	text += options.expanded
+		? `\n${theme.fg("toolOutput", boundedDisplay(output))}`
+		: `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
 }
 
@@ -252,10 +262,10 @@ export function renderGetResult(
 	theme: Theme,
 	context: CardContext,
 ): Component {
-	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Reading the entry...")}`, context.lastComponent);
+	if (options.isPartial)
+		return textComponent(`\n${theme.fg("warning", "Reading the entry...")}`, context.lastComponent);
 	const output = textContent(result);
-	if (context.isError)
-		return errorCard("clipboard_get", output, "read failed", theme, options.expanded, context);
+	if (context.isError) return errorCard("clipboard_get", output, "read failed", theme, options.expanded, context);
 	const details = asRecord(result.details);
 	const page = continuationNote(numberField(details, "nextOffset"));
 	let text = `\n${theme.fg(
@@ -263,7 +273,9 @@ export function renderGetResult(
 		`${sizeLine(numberField(details, "lines"), numberField(details, "chars"))}${page ? ` · ${page}` : ""}`,
 	)}`;
 	if (booleanField(details, "controlsEscaped") === true) text += theme.fg("dim", " · controls escaped");
-	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result", context))}`;
+	text += options.expanded
+		? `\n${theme.fg("toolOutput", boundedDisplay(output))}`
+		: `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
 }
 

@@ -1,8 +1,13 @@
 (() => {
 	const maxRows = 12;
 	interface Extents {
-		draft: number; editorPadding: number; line: number; chrome: number;
-		queue: number; images: number; gap: number;
+		draft: number;
+		editorPadding: number;
+		line: number;
+		chrome: number;
+		queue: number;
+		images: number;
+		gap: number;
 	}
 	function rows(count: number): number {
 		return Math.min(maxRows, Math.max(1, count));
@@ -23,7 +28,11 @@
 		if (!node) throw Error(`Missing composer element: ${selector}`);
 		return node;
 	}
-	function mount(input: HTMLTextAreaElement, report: (height: number) => Promise<Record<string, unknown>>, revealCaret?: () => void) {
+	function mount(
+		input: HTMLTextAreaElement,
+		report: (height: number) => Promise<Record<string, unknown>>,
+		revealCaret?: () => void,
+	) {
 		const panel = element<HTMLElement>(".composer");
 		const area = element<HTMLElement>(".edit-area");
 		const measure = element<HTMLTextAreaElement>("#measure");
@@ -37,14 +46,29 @@
 		const block = (el: HTMLElement) => el.getBoundingClientRect().height;
 		const px = (value: string) => Number.parseFloat(value) || 0;
 		const padding = (style: CSSStyleDeclaration) => px(style.paddingTop) + px(style.paddingBottom);
-		const edges = (style: CSSStyleDeclaration) => padding(style) + px(style.borderTopWidth) + px(style.borderBottomWidth);
+		const edges = (style: CSSStyleDeclaration) =>
+			padding(style) + px(style.borderTopWidth) + px(style.borderBottomWidth);
 		function extents(): Extents {
-			const style = getComputedStyle(measure), writerStyle = getComputedStyle(writer), insetStyle = getComputedStyle(inset);
+			const style = getComputedStyle(measure),
+				writerStyle = getComputedStyle(writer),
+				insetStyle = getComputedStyle(inset);
 			const gap = px(writerStyle.rowGap);
-			const chrome = edges(writerStyle) + edges(insetStyle) + px(insetStyle.rowGap) + block(footer) + block(shelf) + gap;
-			return { draft: block(measure), chrome, gap, editorPadding: padding(style), line: px(style.lineHeight), queue: block(queue), images: block(images) };
+			const chrome =
+				edges(writerStyle) + edges(insetStyle) + px(insetStyle.rowGap) + block(footer) + block(shelf) + gap;
+			return {
+				draft: block(measure),
+				chrome,
+				gap,
+				editorPadding: padding(style),
+				line: px(style.lineHeight),
+				queue: block(queue),
+				images: block(images),
+			};
 		}
-		let pane = 0, growth = 0, predicted = 0, revision = 0;
+		let pane = 0,
+			growth = 0,
+			predicted = 0,
+			revision = 0;
 		// A draft that shrinks a pane it sized draws the smaller box at once. The paper keeps that
 		// height until the pane follows, or until the deadline if the pane keeps its height.
 		let collapse: { height: number; from: number; timer: ReturnType<typeof setTimeout> } | undefined;
@@ -54,7 +78,8 @@
 			collapse = undefined;
 		}
 		function updateFades() {
-			const top = input.scrollTop, bottom = input.scrollHeight - input.clientHeight - top;
+			const top = input.scrollTop,
+				bottom = input.scrollHeight - input.clientHeight - top;
 			area.toggleAttribute("data-clipped-top", top > 1);
 			area.toggleAttribute("data-clipped-bottom", bottom > 1);
 		}
@@ -101,7 +126,8 @@
 			if (!pane) return;
 			const text = input.value;
 			panel.removeAttribute("data-tight");
-			const parts = extents(), confirmed = pane + growth;
+			const parts = extents(),
+				confirmed = pane + growth;
 			const height = requestedHeight(text, parts, confirmed);
 			const changed = height !== last;
 			if (changed) plan(height, confirmed, text);
@@ -109,7 +135,10 @@
 			if (!changed) return;
 			last = height;
 			const id = ++revision;
-			void report(height).then(reply => settle(id, reply.above), () => settle(id, growth));
+			void report(height).then(
+				(reply) => settle(id, reply.above),
+				() => settle(id, growth),
+			);
 		}
 		const observer = new ResizeObserver(measureLayout);
 		for (const el of [panel, queue, images, measure, footer, shelf, input]) observer.observe(el);

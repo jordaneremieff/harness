@@ -524,7 +524,10 @@
 	function commandReply(m: Fields, fields: Fields) {
 		if (fields.name === "pickImage") imageReply(m);
 		if (fields.name === "readClipboard")
-			ensure(typeof m.text === "string" && encoder.encode(m.text).length <= SOURCE, "Clipboard text exceeds its byte limit.");
+			ensure(
+				typeof m.text === "string" && encoder.encode(m.text).length <= SOURCE,
+				"Clipboard text exceeds its byte limit.",
+			);
 		if (fields.name === "chooseStore") {
 			ensure(typeof m.changed === "boolean");
 			if (m.store !== undefined) store(m.store);

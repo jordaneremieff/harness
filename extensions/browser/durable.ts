@@ -189,11 +189,16 @@ export function browserDurableContribution(
 			return defineExtension({
 				name: "browser",
 				tools,
-				sections: tools.length === 0 ? [] : [section("browser-guidance", (input) => {
-					const offered = new Set(input.agent.tools.map((tool) => tool.name));
-					const names = (Object.keys(TOOL_TEXT) as ToolName[]).filter((name) => offered.has(name));
-					return names.length === 0 ? undefined : guidanceSection(names);
-				})],
+				sections:
+					tools.length === 0
+						? []
+						: [
+								section("browser-guidance", (input) => {
+									const offered = new Set(input.agent.tools.map((tool) => tool.name));
+									const names = (Object.keys(TOOL_TEXT) as ToolName[]).filter((name) => offered.has(name));
+									return names.length === 0 ? undefined : guidanceSection(names);
+								}),
+							],
 			});
 		},
 	};

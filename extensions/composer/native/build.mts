@@ -1,6 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	copyFileSync,
+	existsSync,
+	linkSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { stripTypeScriptTypes } from "node:module";
@@ -23,14 +33,22 @@ function files(root: string, dir: string): string[] {
 export function sourceDigest(root = packageDir): string {
 	const hash = createHash("sha256");
 	for (const path of [...manifests, ...trees.flatMap((dir) => files(root, dir))].sort()) {
-		hash.update(`${path}\0`).update(readFileSync(join(root, path))).update("\0");
+		hash
+			.update(`${path}\0`)
+			.update(readFileSync(join(root, path)))
+			.update("\0");
 	}
 	return `sha256:${hash.digest("hex")}`;
 }
 
 export function sourceRecord(root = packageDir): { commit: string; modified: boolean } | undefined {
 	function git(...args: string[]): string | undefined {
-		const result = spawnSync("git", args, { cwd: root, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
+		const result = spawnSync("git", args, {
+			cwd: root,
+			encoding: "utf8",
+			timeout: 10_000,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
 		return result.status === 0 ? result.stdout.trim() : undefined;
 	}
 	const commit = git("rev-parse", "--verify", "HEAD");
@@ -43,12 +61,17 @@ export function lockHolder(parent: string): { pid: number; startedAt: string } |
 	try {
 		const { pid, startedAt } = JSON.parse(readFileSync(join(parent, "install.lock"), "utf8"));
 		const started = Date.parse(startedAt);
-		if (!Number.isInteger(pid) || pid <= 0 || !Number.isFinite(started) || Date.now() - started > 3_600_000) return undefined;
-		try { process.kill(pid, 0); } catch (error) {
+		if (!Number.isInteger(pid) || pid <= 0 || !Number.isFinite(started) || Date.now() - started > 3_600_000)
+			return undefined;
+		try {
+			process.kill(pid, 0);
+		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EPERM") return undefined;
 		}
 		return { pid, startedAt };
-	} catch { return undefined; }
+	} catch {
+		return undefined;
+	}
 }
 
 function lock(parent: string, id: string): (() => void) | undefined {
@@ -61,8 +84,11 @@ function lock(parent: string, id: string): (() => void) | undefined {
 			try {
 				linkSync(claim, path);
 				return () => {
-					try { if (readFileSync(path, "utf8") === record) rmSync(path, { force: true }); }
-					catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+					try {
+						if (readFileSync(path, "utf8") === record) rmSync(path, { force: true });
+					} catch (error) {
+						if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					}
 				};
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -72,7 +98,9 @@ function lock(parent: string, id: string): (() => void) | undefined {
 			rmSync(path, { force: true });
 		}
 		return undefined;
-	} finally { rmSync(claim, { force: true }); }
+	} finally {
+		rmSync(claim, { force: true });
+	}
 }
 
 function destination(): string {
@@ -87,12 +115,17 @@ function destination(): string {
 		}
 	}
 	if (app === undefined) return join(home, "composer", "Composer.app");
-	if (typeof app !== "string" || !isAbsolute(app) || !app.endsWith(".app")) throw new Error("composer.app must be an absolute .app path");
+	if (typeof app !== "string" || !isAbsolute(app) || !app.endsWith(".app"))
+		throw new Error("composer.app must be an absolute .app path");
 	return app;
 }
 
 function run(command: string, args: string[], cwd = packageDir, capture = false): string {
-	const result = spawnSync(command, args, { cwd, encoding: "utf8", stdio: ["ignore", capture ? "pipe" : "inherit", "inherit"] });
+	const result = spawnSync(command, args, {
+		cwd,
+		encoding: "utf8",
+		stdio: ["ignore", capture ? "pipe" : "inherit", "inherit"],
+	});
 	if (result.error) throw result.error;
 	if (result.status !== 0) throw new Error(`${command} ${args[0]} failed (${result.status ?? result.signal})`);
 	return result.stdout?.trim() ?? "";
@@ -101,10 +134,25 @@ function run(command: string, args: string[], cwd = packageDir, capture = false)
 function test(): void {
 	const framework = join(run("xcode-select", ["-p"], packageDir, true), "Library/Developer/Frameworks");
 	const args = ["test", "--no-parallel"];
-	if (existsSync(join(framework, "Testing.framework"))) args.push(
-		"-Xswiftc", "-F", "-Xswiftc", framework, "-Xswiftc", "-Xfrontend", "-Xswiftc", "-disable-cross-import-overlays",
-		"-Xlinker", "-F", "-Xlinker", framework, "-Xlinker", "-rpath", "-Xlinker", framework,
-	);
+	if (existsSync(join(framework, "Testing.framework")))
+		args.push(
+			"-Xswiftc",
+			"-F",
+			"-Xswiftc",
+			framework,
+			"-Xswiftc",
+			"-Xfrontend",
+			"-Xswiftc",
+			"-disable-cross-import-overlays",
+			"-Xlinker",
+			"-F",
+			"-Xlinker",
+			framework,
+			"-Xlinker",
+			"-rpath",
+			"-Xlinker",
+			framework,
+		);
 	run("swift", args, join(packageDir, shared));
 	run("swift", args);
 }
@@ -115,7 +163,8 @@ function stageWeb(resources: string): void {
 		const target = join(resources, path.replace(/\.ts$/u, ".js"));
 		mkdirSync(dirname(target), { recursive: true });
 		const source = join(packageDir, path);
-		if (path.endsWith(".ts")) writeFileSync(target, stripTypeScriptTypes(readFileSync(source, "utf8"), { mode: "strip" }));
+		if (path.endsWith(".ts"))
+			writeFileSync(target, stripTypeScriptTypes(readFileSync(source, "utf8"), { mode: "strip" }));
 		else copyFileSync(source, target);
 	}
 }
@@ -130,7 +179,12 @@ function install(app: string): number {
 	const previous = join(parent, `.composer-previous-${id}.app`);
 	try {
 		if (existsSync(app)) {
-			const identity = run("/usr/libexec/PlistBuddy", ["-c", "Print CFBundleIdentifier", join(app, "Contents/Info.plist")], packageDir, true);
+			const identity = run(
+				"/usr/libexec/PlistBuddy",
+				["-c", "Print CFBundleIdentifier", join(app, "Contents/Info.plist")],
+				packageDir,
+				true,
+			);
 			if (identity !== "local.harness.composer") throw new Error(`Refusing to replace another app at ${app}`);
 		}
 		const digest = sourceDigest();
@@ -145,8 +199,13 @@ function install(app: string): number {
 		copyFileSync(binary, join(macOS, "Composer"));
 		stageWeb(resources);
 		if (sourceDigest() !== digest) throw new Error("Composer sources changed during the build");
-		writeFileSync(join(resources, "build.json"), `${JSON.stringify({ contract: 1, composer: 1, sourceDigest: digest, source }, null, 2)}\n`);
-		writeFileSync(join(staged, "Contents/Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+		writeFileSync(
+			join(resources, "build.json"),
+			`${JSON.stringify({ contract: 1, composer: 1, sourceDigest: digest, source }, null, 2)}\n`,
+		);
+		writeFileSync(
+			join(staged, "Contents/Info.plist"),
+			`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>local.harness.composer</string>
@@ -157,11 +216,14 @@ function install(app: string): number {
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>
-</dict></plist>\n`);
+</dict></plist>\n`,
+		);
 		run("codesign", ["--force", "--sign", "-", staged]);
 		const hadApp = existsSync(app);
 		if (hadApp) renameSync(app, previous);
-		try { renameSync(staged, app); } catch (error) {
+		try {
+			renameSync(staged, app);
+		} catch (error) {
 			if (hadApp) renameSync(previous, app);
 			throw error;
 		}
@@ -179,6 +241,12 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
 		if (process.platform !== "darwin") throw new Error("Composer builds only on macOS");
 		if (process.argv.length === 2) process.exitCode = install(destination());
 		else if (process.argv.length === 3 && process.argv[2] === "test") test();
-		else { console.error("usage: node build.mts [test]"); process.exitCode = 2; }
-	} catch (error) { console.error(error); process.exitCode = 1; }
+		else {
+			console.error("usage: node build.mts [test]");
+			process.exitCode = 2;
+		}
+	} catch (error) {
+		console.error(error);
+		process.exitCode = 1;
+	}
 }

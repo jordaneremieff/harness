@@ -19,7 +19,16 @@ import {
 	type CollaborationPage,
 	type CollaborationThread,
 } from "./collaboration-contract.ts";
-import { CollaborationEvents, CollaborationIndex, CollaborationThreads, collaborationIdentity, listCollaboration, mutateCollaboration, projectCollaboration, readCollaboration } from "./collaboration.ts";
+import {
+	CollaborationEvents,
+	CollaborationIndex,
+	CollaborationThreads,
+	collaborationIdentity,
+	listCollaboration,
+	mutateCollaboration,
+	projectCollaboration,
+	readCollaboration,
+} from "./collaboration.ts";
 import { ThreadDeliveryDoc, acknowledgeReports } from "./durable-controls.ts";
 import { DurableHost } from "./durable-host.ts";
 import { DurableObservation, readConversationStatus } from "./durable-observation.ts";
@@ -31,7 +40,14 @@ import { threadPage } from "./thread-data.ts";
 const context = BACKGROUND_CONTEXT;
 const actor = randomUUID();
 const peer = randomUUID();
-const frame = { title: "Protocol design", purpose: "Keep peers useful across process restarts", authority: "Implement the requested current contracts", source: "Operator task source", restrictions: "Do not change external systems", acceptance: "A peer exchange survives host replacement" };
+const frame = {
+	title: "Protocol design",
+	purpose: "Keep peers useful across process restarts",
+	authority: "Implement the requested current contracts",
+	source: "Operator task source",
+	restrictions: "Do not change external systems",
+	acceptance: "A peer exchange survives host replacement",
+};
 
 async function fixture(t: { after(fn: () => void | Promise<void>): void }) {
 	const root = mkdtempSync(join(tmpdir(), "agent-collaboration-"));
@@ -39,8 +55,23 @@ async function fixture(t: { after(fn: () => void | Promise<void>): void }) {
 	const storagePath = join(root, "host.sqlite");
 	const options = { ...hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), storageId };
 	let host = await DurableHost.open(options, context);
-	t.after(async () => { await host.close(); rmSync(root, { recursive: true, force: true }); });
-	return { root, storageId, storagePath, get host() { return host; }, async reopen() { await host.close(); host = await DurableHost.open(options, context); return host; } };
+	t.after(async () => {
+		await host.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	return {
+		root,
+		storageId,
+		storagePath,
+		get host() {
+			return host;
+		},
+		async reopen() {
+			await host.close();
+			host = await DurableHost.open(options, context);
+			return host;
+		},
+	};
 }
 function mutation(action: string, requestId: string, fields: Record<string, unknown> = {}) {
 	return { action, requestId, senderIdentity: actor, origin: "model", ...fields };
@@ -48,16 +79,59 @@ function mutation(action: string, requestId: string, fields: Record<string, unkn
 
 function retainedReadFixture() {
 	const id = `${actor}/${"a".repeat(32)}`;
-	const thread: CollaborationThread = { ...frame, id, creator: actor, integrator: actor, createdAt: 1, updatedAt: 1, revision: 1, closed: false, sequence: 1, members: [{ identity: actor, contribution: "", joinedAt: 1 }] };
-	const event: CollaborationEvent = { threadId: id, sequence: 1, at: 1, sender: actor, origin: "model", kind: "create", message: JSON.stringify(frame), source: frame.source, replyTo: null, revision: 1, notify: [] };
-	const state = { index: { keys: [id] } as unknown, threads: new Map<string, unknown>([[id, { thread }]]), events: new Map<string, unknown>([[`${id}:1`, { event }]]), delivery: undefined as unknown, reads: [] as string[] };
-	const session = { snapshot: async (doc: unknown, key: unknown) => {
-		if (doc === CollaborationIndex) { state.reads.push("index"); return state.index; }
-		if (doc === CollaborationThreads && typeof key === "string") { state.reads.push(`thread:${key}`); return state.threads.get(key); }
-		if (doc === CollaborationEvents && typeof key === "string") { state.reads.push(`event:${key}`); return state.events.get(key); }
-		if (doc === ThreadDeliveryDoc) { state.reads.push("delivery"); return state.delivery; }
-		throw new Error("Unexpected collaboration snapshot");
-	} } as unknown as Session;
+	const thread: CollaborationThread = {
+		...frame,
+		id,
+		creator: actor,
+		integrator: actor,
+		createdAt: 1,
+		updatedAt: 1,
+		revision: 1,
+		closed: false,
+		sequence: 1,
+		members: [{ identity: actor, contribution: "", joinedAt: 1 }],
+	};
+	const event: CollaborationEvent = {
+		threadId: id,
+		sequence: 1,
+		at: 1,
+		sender: actor,
+		origin: "model",
+		kind: "create",
+		message: JSON.stringify(frame),
+		source: frame.source,
+		replyTo: null,
+		revision: 1,
+		notify: [],
+	};
+	const state = {
+		index: { keys: [id] } as unknown,
+		threads: new Map<string, unknown>([[id, { thread }]]),
+		events: new Map<string, unknown>([[`${id}:1`, { event }]]),
+		delivery: undefined as unknown,
+		reads: [] as string[],
+	};
+	const session = {
+		snapshot: async (doc: unknown, key: unknown) => {
+			if (doc === CollaborationIndex) {
+				state.reads.push("index");
+				return state.index;
+			}
+			if (doc === CollaborationThreads && typeof key === "string") {
+				state.reads.push(`thread:${key}`);
+				return state.threads.get(key);
+			}
+			if (doc === CollaborationEvents && typeof key === "string") {
+				state.reads.push(`event:${key}`);
+				return state.events.get(key);
+			}
+			if (doc === ThreadDeliveryDoc) {
+				state.reads.push("delivery");
+				return state.delivery;
+			}
+			throw new Error("Unexpected collaboration snapshot");
+		},
+	} as unknown as Session;
 	return { id, thread, event, state, session };
 }
 function collaborationReadError(code: CollaborationReadError["code"]) {
@@ -72,7 +146,11 @@ function collaborationReadError(code: CollaborationReadError["code"]) {
 it("treats only an absent index as empty and reads a new index on every request", async () => {
 	const f = retainedReadFixture();
 	f.state.index = undefined;
-	assert.deepEqual(await listCollaboration(f.session, {}, context), { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } });
+	assert.deepEqual(await listCollaboration(f.session, {}, context), {
+		items: [],
+		nextCursor: null,
+		coverage: { complete: true, visited: 0, omitted: 0 },
+	});
 	const projection = await projectCollaboration(f.session, context);
 	assert.deepEqual(projection.items, []);
 	assert.equal(projection.omitted, 0);
@@ -86,7 +164,22 @@ it("treats only an absent index as empty and reads a new index on every request"
 it("rejects malformed present indexes before a frame lookup", async () => {
 	const f = retainedReadFixture();
 	const oversized = Array.from({ length: 257 }, (_, index) => `${actor}/${index.toString(16).padStart(32, "0")}`);
-	for (const index of [null, [], {}, { keys: undefined }, { keys: null }, { keys: {} }, { keys: f.id }, { keys: [1] }, { keys: [f.id.toUpperCase()] }, { keys: [`${f.id}\n`] }, { keys: [`${f.id}:2`] }, { keys: [f.id, f.id] }, { keys: Array<string>(1) }, { keys: oversized }]) {
+	for (const index of [
+		null,
+		[],
+		{},
+		{ keys: undefined },
+		{ keys: null },
+		{ keys: {} },
+		{ keys: f.id },
+		{ keys: [1] },
+		{ keys: [f.id.toUpperCase()] },
+		{ keys: [`${f.id}\n`] },
+		{ keys: [`${f.id}:2`] },
+		{ keys: [f.id, f.id] },
+		{ keys: Array<string>(1) },
+		{ keys: oversized },
+	]) {
 		f.state.index = index;
 		f.state.reads.length = 0;
 		await assert.rejects(listCollaboration(f.session, {}, context), collaborationReadError("source_unreadable"));
@@ -97,14 +190,21 @@ it("rejects malformed present indexes before a frame lookup", async () => {
 
 it("confines selected storage indexes before query filters and accepts nonroot selectors", async () => {
 	const f = retainedReadFixture();
-	for (const sessionId of [actor, `${actor}:${ROOT_CONVERSATION_ID + 1}`]) assert.equal((await listCollaboration(f.session, { sessionId }, context)).items[0].id, f.id);
+	for (const sessionId of [actor, `${actor}:${ROOT_CONVERSATION_ID + 1}`])
+		assert.equal((await listCollaboration(f.session, { sessionId }, context)).items[0].id, f.id);
 	for (const sessionId of [null, "invalid", `${actor}:${ROOT_CONVERSATION_ID}`, `${actor}\n`]) {
 		f.state.reads.length = 0;
-		await assert.rejects(listCollaboration(f.session, { sessionId }, context), collaborationReadError("invalid_request"));
+		await assert.rejects(
+			listCollaboration(f.session, { sessionId }, context),
+			collaborationReadError("invalid_request"),
+		);
 		assert.deepEqual(f.state.reads, []);
 	}
 	f.state.reads.length = 0;
-	await assert.rejects(listCollaboration(f.session, { sessionId: peer, query: "no-match" }, context), collaborationReadError("source_unreadable"));
+	await assert.rejects(
+		listCollaboration(f.session, { sessionId: peer, query: "no-match" }, context),
+		collaborationReadError("source_unreadable"),
+	);
 	assert.deepEqual(f.state.reads, ["index"]);
 	assert.equal((await listCollaboration(f.session, { query: "no-match" }, context)).coverage.complete, true);
 });
@@ -113,42 +213,97 @@ it("distinguishes absent requested frames from unavailable indexed frames", asyn
 	const f = retainedReadFixture();
 	for (const snapshot of [undefined, { thread: null }]) {
 		f.state.threads.set(f.id, snapshot);
-		await assert.rejects(readCollaboration(f.session, { threadId: f.id }, context), collaborationReadError("not_found"));
+		await assert.rejects(
+			readCollaboration(f.session, { threadId: f.id }, context),
+			collaborationReadError("not_found"),
+		);
 		await assert.rejects(listCollaboration(f.session, {}, context), collaborationReadError("source_unreadable"));
 	}
 	for (const snapshot of [null, {}, { thread: undefined }, { thread: false }]) {
 		f.state.threads.set(f.id, snapshot);
-		await assert.rejects(readCollaboration(f.session, { threadId: f.id }, context), collaborationReadError("source_unreadable"));
+		await assert.rejects(
+			readCollaboration(f.session, { threadId: f.id }, context),
+			collaborationReadError("source_unreadable"),
+		);
 		await assert.rejects(listCollaboration(f.session, {}, context), collaborationReadError("source_unreadable"));
 	}
 });
 
 it("rejects invalid read parameters with typed request errors", async () => {
 	const f = retainedReadFixture();
-	for (const threadId of [undefined, null, 1, "", " ", "not-a-thread", f.id.toUpperCase(), `${f.id}\n`, "x".repeat(129)]) await assert.rejects(readCollaboration(f.session, { threadId }, context), collaborationReadError("invalid_request"));
+	for (const threadId of [
+		undefined,
+		null,
+		1,
+		"",
+		" ",
+		"not-a-thread",
+		f.id.toUpperCase(),
+		`${f.id}\n`,
+		"x".repeat(129),
+	])
+		await assert.rejects(
+			readCollaboration(f.session, { threadId }, context),
+			collaborationReadError("invalid_request"),
+		);
 	for (const limit of [null, "1", 0, -1, 21, 1.5, NaN, Infinity]) {
-		await assert.rejects(readCollaboration(f.session, { threadId: f.id, limit }, context), collaborationReadError("invalid_request"));
+		await assert.rejects(
+			readCollaboration(f.session, { threadId: f.id, limit }, context),
+			collaborationReadError("invalid_request"),
+		);
 		await assert.rejects(listCollaboration(f.session, { limit }, context), collaborationReadError("invalid_request"));
 	}
-	for (const before of [null, "1", 0, -1, 1.5, 3, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) await assert.rejects(readCollaboration(f.session, { threadId: f.id, before }, context), collaborationReadError("invalid_request"));
-	for (const cursor of [null, 1, "", "01", "+1", "1.0", "1e0", "-1", " 1", "2", "9007199254740992", "0".repeat(2049)]) await assert.rejects(listCollaboration(f.session, { cursor }, context), collaborationReadError("invalid_request"));
-	for (const query of [null, 1, "", " ", "x".repeat(257)]) await assert.rejects(listCollaboration(f.session, { query }, context), collaborationReadError("invalid_request"));
+	for (const before of [null, "1", 0, -1, 1.5, 3, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])
+		await assert.rejects(
+			readCollaboration(f.session, { threadId: f.id, before }, context),
+			collaborationReadError("invalid_request"),
+		);
+	for (const cursor of [null, 1, "", "01", "+1", "1.0", "1e0", "-1", " 1", "2", "9007199254740992", "0".repeat(2049)])
+		await assert.rejects(listCollaboration(f.session, { cursor }, context), collaborationReadError("invalid_request"));
+	for (const query of [null, 1, "", " ", "x".repeat(257)])
+		await assert.rejects(listCollaboration(f.session, { query }, context), collaborationReadError("invalid_request"));
 });
 
 it("validates frame identity, counters, members, and persisted frame bytes before cursor comparisons", async () => {
 	const f = retainedReadFixture();
 	const malformed = [
-		{ id: `${peer}/${"a".repeat(32)}` }, { title: " " }, { purpose: 1 }, { authority: "x".repeat(4001) }, { source: "" }, { restrictions: null }, { acceptance: undefined },
-		{ creator: "not-an-identity" }, { creator: `${actor}\n` }, { integrator: `${actor}:1` }, { createdAt: -1 }, { updatedAt: "1" }, { revision: 0 }, { revision: 2 }, { sequence: -1 }, { sequence: "1" }, { sequence: 1.5 }, { closed: "false" },
-		{ members: null }, { members: Array.from({ length: 65 }, () => f.thread.members[0]) }, { members: [{ identity: actor, contribution: 1, joinedAt: 1 }] },
-		{ members: [{ identity: actor, contribution: " ", joinedAt: 1 }] }, { members: [{ identity: "invalid", contribution: "", joinedAt: 1 }] },
-		{ members: [{ identity: actor, contribution: "", joinedAt: -1 }] }, { members: [f.thread.members[0], f.thread.members[0]] },
+		{ id: `${peer}/${"a".repeat(32)}` },
+		{ title: " " },
+		{ purpose: 1 },
+		{ authority: "x".repeat(4001) },
+		{ source: "" },
+		{ restrictions: null },
+		{ acceptance: undefined },
+		{ creator: "not-an-identity" },
+		{ creator: `${actor}\n` },
+		{ integrator: `${actor}:1` },
+		{ createdAt: -1 },
+		{ updatedAt: "1" },
+		{ revision: 0 },
+		{ revision: 2 },
+		{ sequence: -1 },
+		{ sequence: "1" },
+		{ sequence: 1.5 },
+		{ closed: "false" },
+		{ members: null },
+		{ members: Array.from({ length: 65 }, () => f.thread.members[0]) },
+		{ members: [{ identity: actor, contribution: 1, joinedAt: 1 }] },
+		{ members: [{ identity: actor, contribution: " ", joinedAt: 1 }] },
+		{ members: [{ identity: "invalid", contribution: "", joinedAt: 1 }] },
+		{ members: [{ identity: actor, contribution: "", joinedAt: -1 }] },
+		{ members: [f.thread.members[0], f.thread.members[0]] },
 		{ purpose: "\u0001".repeat(4000), authority: "\u0001".repeat(4000) },
 	];
 	for (const patch of malformed) {
 		f.state.threads.set(f.id, { thread: { ...f.thread, ...patch } });
-		await assert.rejects(readCollaboration(f.session, { threadId: f.id, before: 2 }, context), collaborationReadError("source_unreadable"));
-		await assert.rejects(listCollaboration(f.session, { query: "not-a-match" }, context), collaborationReadError("source_unreadable"));
+		await assert.rejects(
+			readCollaboration(f.session, { threadId: f.id, before: 2 }, context),
+			collaborationReadError("source_unreadable"),
+		);
+		await assert.rejects(
+			listCollaboration(f.session, { query: "not-a-match" }, context),
+			collaborationReadError("source_unreadable"),
+		);
 	}
 });
 
@@ -170,37 +325,69 @@ it("rejects missing and malformed referenced events with typed source errors", a
 	const f = retainedReadFixture();
 	for (const snapshot of [undefined, null, {}, { event: null }, { event: false }]) {
 		f.state.events.set(`${f.id}:1`, snapshot);
-		await assert.rejects(readCollaboration(f.session, { threadId: f.id }, context), collaborationReadError("source_unreadable"));
+		await assert.rejects(
+			readCollaboration(f.session, { threadId: f.id }, context),
+			collaborationReadError("source_unreadable"),
+		);
 	}
 	const malformed = [
-		{ threadId: `${peer}/${"a".repeat(32)}` }, { sequence: 2 }, { at: -1 }, { sender: `${actor}:1` }, { origin: "other" }, { kind: "post" },
-		{ message: null }, { message: " " }, { kind: "contribution", message: "x".repeat(8001) }, { kind: "carried-authority", source: "" }, { source: "x".repeat(2001) },
-		{ replyTo: undefined }, { replyTo: 0 }, { replyTo: 1 }, { replyTo: "1" }, { revision: 0 }, { revision: 2 }, { notify: null },
-		{ notify: Array.from({ length: 17 }, () => peer) }, { notify: ["invalid"] }, { notify: [actor] }, { notify: [peer, peer] },
+		{ threadId: `${peer}/${"a".repeat(32)}` },
+		{ sequence: 2 },
+		{ at: -1 },
+		{ sender: `${actor}:1` },
+		{ origin: "other" },
+		{ kind: "post" },
+		{ message: null },
+		{ message: " " },
+		{ kind: "contribution", message: "x".repeat(8001) },
+		{ kind: "carried-authority", source: "" },
+		{ source: "x".repeat(2001) },
+		{ replyTo: undefined },
+		{ replyTo: 0 },
+		{ replyTo: 1 },
+		{ replyTo: "1" },
+		{ revision: 0 },
+		{ revision: 2 },
+		{ notify: null },
+		{ notify: Array.from({ length: 17 }, () => peer) },
+		{ notify: ["invalid"] },
+		{ notify: [actor] },
+		{ notify: [peer, peer] },
 		{ kind: "contribution", message: "\u0001".repeat(4000) },
 	];
 	for (const patch of malformed) {
 		f.state.events.set(`${f.id}:1`, { event: { ...f.event, ...patch } });
-		await assert.rejects(readCollaboration(f.session, { threadId: f.id }, context), collaborationReadError("source_unreadable"));
+		await assert.rejects(
+			readCollaboration(f.session, { threadId: f.id }, context),
+			collaborationReadError("source_unreadable"),
+		);
 	}
 });
 
 it("retains closed and nonmember reads, legal page shapes, and the exclusive before cursor", async () => {
 	const f = retainedReadFixture();
 	Object.assign(f.thread, { closed: true, members: [], sequence: 2, createdAt: 5, updatedAt: 2 });
-	f.state.events.set(`${f.id}:2`, { event: { ...f.event, sequence: 2, at: 0, sender: peer, kind: "close", message: "The purpose reached its outcome." } });
+	f.state.events.set(`${f.id}:2`, {
+		event: { ...f.event, sequence: 2, at: 0, sender: peer, kind: "close", message: "The purpose reached its outcome." },
+	});
 	const latest = await readCollaboration(f.session, { threadId: f.id, limit: 1 }, context);
 	assert.equal(latest.thread.closed, true);
 	assert.ok(latest.thread.updatedAt < latest.thread.createdAt);
 	assert.equal(latest.events[0].at, 0);
 	assert.deepEqual(latest.thread.members, []);
-	assert.deepEqual(latest.events.map((event) => event.sequence), [2]);
+	assert.deepEqual(
+		latest.events.map((event) => event.sequence),
+		[2],
+	);
 	assert.equal(latest.nextBefore, 2);
 	assert.equal(latest.pending, 0);
 	assert.equal(latest.coverage.complete, false);
 	assert.equal(latest.coverage.bytes, Buffer.byteLength(JSON.stringify(latest)));
 	const older = await readCollaboration(f.session, { threadId: f.id, before: 2, limit: 20 }, context);
-	assert.deepEqual(older.events.map((event) => event.sequence), [1]);
+	assert.deepEqual(
+		older.events.map((event) => event.sequence),
+		[1],
+	);
 	assert.equal(older.nextBefore, null);
 	assert.equal(older.coverage.complete, true);
 	assert.deepEqual((await readCollaboration(f.session, { threadId: f.id, before: 1 }, context)).events, []);
@@ -224,7 +411,10 @@ it("bounds index visits and list rows with canonical decimal offsets", async () 
 	const last = await listCollaboration(f.session, { cursor: "250", query: "no-match" }, context);
 	assert.deepEqual(last, { items: [], nextCursor: null, coverage: { complete: true, visited: 6, omitted: 0 } });
 	assert.equal((await listCollaboration(f.session, { cursor: "256" }, context)).coverage.visited, 0);
-	await assert.rejects(listCollaboration(f.session, { cursor: "257" }, context), collaborationReadError("invalid_request"));
+	await assert.rejects(
+		listCollaboration(f.session, { cursor: "257" }, context),
+		collaborationReadError("invalid_request"),
+	);
 	assert.equal((await listCollaboration(f.session, { query: "PROTOCOL" }, context)).items.length, 10);
 });
 
@@ -232,13 +422,23 @@ it("validates retained delivery counts without classifying arbitrary snapshot fa
 	const f = retainedReadFixture();
 	for (const delivery of [null, {}, { pending: -1 }, { pending: "1" }, { pending: 1.5 }]) {
 		f.state.delivery = delivery;
-		await assert.rejects(readCollaboration(f.session, { threadId: f.id }, context), collaborationReadError("source_unreadable"));
+		await assert.rejects(
+			readCollaboration(f.session, { threadId: f.id }, context),
+			collaborationReadError("source_unreadable"),
+		);
 	}
 	f.state.delivery = { pending: 3 };
 	assert.equal((await readCollaboration(f.session, { threadId: f.id }, context)).pending, 3);
 	const failure = new Error("Snapshot transport failed");
-	const unavailable = { snapshot: async () => { throw failure; } } as unknown as Session;
-	await assert.rejects(readCollaboration(unavailable, { threadId: f.id }, context), (error: unknown) => error === failure);
+	const unavailable = {
+		snapshot: async () => {
+			throw failure;
+		},
+	} as unknown as Session;
+	await assert.rejects(
+		readCollaboration(unavailable, { threadId: f.id }, context),
+		(error: unknown) => error === failure,
+	);
 	await assert.rejects(listCollaboration(unavailable, {}, context), (error: unknown) => error === failure);
 });
 
@@ -250,7 +450,10 @@ it("retains a shared frame and deduplicates the same mutation without any model 
 	assert.deepEqual(replay, { ...first, deduped: true });
 	assert.equal((await f.host.harness.inspect(context)).submissions.length, 0);
 	assert.equal((await readRetainedDelivery(f.host.harness, context, true))?.reports.length ?? 0, 0);
-	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, { ...input, title: "Changed" }, context), /different content/u);
+	await assert.rejects(
+		mutateCollaboration(f.host.harness, f.storageId, { ...input, title: "Changed" }, context),
+		/different content/u,
+	);
 	await f.reopen();
 	const page = await readCollaboration(f.host.harness, { threadId: first.threadId }, context);
 	assert.equal(page.thread.purpose, frame.purpose);
@@ -262,40 +465,96 @@ it("retains a shared frame and deduplicates the same mutation without any model 
 it("delivers actionable length errors after Pi argument validation without relaxing stored caps", async (t) => {
 	const f = await fixture(t);
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
-	for (const [key, limit, action] of [["participation", 256, "join"], ["message", 8000, "post"]] as const) {
+	for (const [key, limit, action] of [
+		["participation", 256, "join"],
+		["message", 8000, "post"],
+	] as const) {
 		const args = { action, threadId: created.threadId, [key]: "x".repeat(limit + 1) };
-		const checked = validateToolArguments({ name: "agent_collaborate", description: "Thread", parameters: CollaborationParams }, { type: "toolCall", id: "length-check", name: "agent_collaborate", arguments: args });
+		const checked = validateToolArguments(
+			{ name: "agent_collaborate", description: "Thread", parameters: CollaborationParams },
+			{ type: "toolCall", id: "length-check", name: "agent_collaborate", arguments: args },
+		);
 		assert.deepEqual(checked, args, "Pi lets the bounded handler own the actionable length error");
-		await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation(action, `oversized-${key}`, checked), context), { message: `${key} exceeds the maximum length of ${limit} characters; write the full content to a file and post its path` });
+		await assert.rejects(
+			mutateCollaboration(f.host.harness, f.storageId, mutation(action, `oversized-${key}`, checked), context),
+			{
+				message: `${key} exceeds the maximum length of ${limit} characters; write the full content to a file and post its path`,
+			},
+		);
 		for (const call of [
-			() => mutateCollaboration(f.host.harness, f.storageId, mutation(action, `unused-${key}`, { threadId: created.threadId, [key]: "x".repeat(limit + 1) }), context),
+			() =>
+				mutateCollaboration(
+					f.host.harness,
+					f.storageId,
+					mutation(action, `unused-${key}`, { threadId: created.threadId, [key]: "x".repeat(limit + 1) }),
+					context,
+				),
 			() => readCollaboration(f.host.harness, { threadId: created.threadId, [key]: "x".repeat(limit + 1) }, context),
 			() => listCollaboration(f.host.harness, { [key]: "x".repeat(limit + 1) }, context),
-		]) await assert.rejects(call(), /write the full content to a file and post its path/u);
-		await mutateCollaboration(f.host.harness, f.storageId, mutation(action, `boundary-${key}`, { ...args, [key]: "x".repeat(limit) }), context);
+		])
+			await assert.rejects(call(), /write the full content to a file and post its path/u);
+		await mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation(action, `boundary-${key}`, { ...args, [key]: "x".repeat(limit) }),
+			context,
+		);
 	}
 });
 
 it("names recovery calls for participation, titles, and integrators", async (t) => {
 	const f = await fixture(t);
 	for (const [index, title] of [undefined, " ", "x".repeat(161)].entries()) {
-		const message = index === 2
-			? "title exceeds the maximum length of 160 characters; shorten title to at most 160 characters and repeat the call"
-			: "title is required and must be nonblank text; supply title as nonblank text in the create or revise call";
-		await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("create", `bad-title-${index}`, { ...frame, title }), context), { message });
+		const message =
+			index === 2
+				? "title exceeds the maximum length of 160 characters; shorten title to at most 160 characters and repeat the call"
+				: "title is required and must be nonblank text; supply title as nonblank text in the create or revise call";
+		await assert.rejects(
+			mutateCollaboration(
+				f.host.harness,
+				f.storageId,
+				mutation("create", `bad-title-${index}`, { ...frame, title }),
+				context,
+			),
+			{ message },
+		);
 	}
-	assert.throws(() => collaborationIdentity("name", "integrator"), /Call agent_list and copy the discovered identity into integrator; omit integrator to use the caller/u);
+	assert.throws(
+		() => collaborationIdentity("name", "integrator"),
+		/Call agent_list and copy the discovered identity into integrator; omit integrator to use the caller/u,
+	);
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
 	const threadId = created.threadId;
 	for (const action of ["post", "leave", "close"]) {
-		await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation(action, `not-joined-${action}`, { threadId, senderIdentity: peer, message: "Proposal" }), context), {
-			message: `Join the thread before changing it; call agent_collaborate with action: join and threadId: ${threadId}, then repeat action: ${action}`,
-		});
+		await assert.rejects(
+			mutateCollaboration(
+				f.host.harness,
+				f.storageId,
+				mutation(action, `not-joined-${action}`, { threadId, senderIdentity: peer, message: "Proposal" }),
+				context,
+			),
+			{
+				message: `Join the thread before changing it; call agent_collaborate with action: join and threadId: ${threadId}, then repeat action: ${action}`,
+			},
+		);
 	}
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "join", { threadId, senderIdentity: peer }), context);
-	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("revise", "not-integrator", { ...frame, threadId, senderIdentity: peer }), context), {
-		message: `Only the creator, integrator or operator revises the governing frame; call agent_collaborate with action: post, threadId: ${threadId}, and message containing your proposal`,
-	});
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("join", "join", { threadId, senderIdentity: peer }),
+		context,
+	);
+	await assert.rejects(
+		mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("revise", "not-integrator", { ...frame, threadId, senderIdentity: peer }),
+			context,
+		),
+		{
+			message: `Only the creator, integrator or operator revises the governing frame; call agent_collaborate with action: post, threadId: ${threadId}, and message containing your proposal`,
+		},
+	);
 });
 
 it("recovers from full and closed threads by reading their frame and creating another thread", async (t) => {
@@ -305,77 +564,181 @@ it("recovers from full and closed threads by reading their frame and creating an
 	await f.host.harness.commit(async (tx) => {
 		const stored = await tx.doc(CollaborationThreads, threadId, null);
 		assert.ok(stored.thread);
-		stored.thread.members = Array.from({ length: 64 }, (_, index) => ({ identity: index === 0 ? actor : `${actor}:${index + 1}`, contribution: "", joinedAt: 1 }));
+		stored.thread.members = Array.from({ length: 64 }, (_, index) => ({
+			identity: index === 0 ? actor : `${actor}:${index + 1}`,
+			contribution: "",
+			joinedAt: 1,
+		}));
 	}, context);
 	for (const closed of [false, true]) {
-		if (closed) await f.host.request("collaboration-mutate", mutation("close", "close", { threadId, message: "Done" }), context);
+		if (closed)
+			await f.host.request("collaboration-mutate", mutation("close", "close", { threadId, message: "Done" }), context);
 		const message = closed
 			? `This thread is closed; call agent_collaborate with action: read and threadId: ${threadId}, then action: create with sessionId: ${f.storageId} and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`
 			: `The thread reached its participant bound; call agent_collaborate with action: read and threadId: ${threadId}, then action: create with sessionId set to a discovered Durable agent and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`;
-		await assert.rejects(f.host.request("collaboration-mutate", mutation("join", `refused-${closed}`, { threadId, senderIdentity: peer }), context), { message });
-		const original = await f.host.request("collaboration-read", { threadId }, context) as CollaborationPage;
+		await assert.rejects(
+			f.host.request(
+				"collaboration-mutate",
+				mutation("join", `refused-${closed}`, { threadId, senderIdentity: peer }),
+				context,
+			),
+			{ message },
+		);
+		const original = (await f.host.request("collaboration-read", { threadId }, context)) as CollaborationPage;
 		const { title, purpose, authority, source, restrictions, acceptance } = original.thread;
-		const recovered = await f.host.request("collaboration-mutate", mutation("create", `recover-${closed}`, {
-			senderIdentity: peer, sessionId: f.storageId, title, purpose, authority, source, restrictions, acceptance,
-		}), context) as { threadId: string };
-		const page = await f.host.request("collaboration-read", { threadId: recovered.threadId }, context) as CollaborationPage;
+		const recovered = (await f.host.request(
+			"collaboration-mutate",
+			mutation("create", `recover-${closed}`, {
+				senderIdentity: peer,
+				sessionId: f.storageId,
+				title,
+				purpose,
+				authority,
+				source,
+				restrictions,
+				acceptance,
+			}),
+			context,
+		)) as { threadId: string };
+		const page = (await f.host.request(
+			"collaboration-read",
+			{ threadId: recovered.threadId },
+			context,
+		)) as CollaborationPage;
 		assert.notEqual(page.thread.id, threadId);
-		assert.deepEqual({ title: page.thread.title, purpose: page.thread.purpose, authority: page.thread.authority, source: page.thread.source, restrictions: page.thread.restrictions, acceptance: page.thread.acceptance }, frame);
+		assert.deepEqual(
+			{
+				title: page.thread.title,
+				purpose: page.thread.purpose,
+				authority: page.thread.authority,
+				source: page.thread.source,
+				restrictions: page.thread.restrictions,
+				acceptance: page.thread.acceptance,
+			},
+			frame,
+		);
 		assert.equal(page.thread.integrator, peer);
 		assert.equal(page.thread.closed, false);
-		assert.deepEqual(page.thread.members.map((member) => member.identity), [peer]);
+		assert.deepEqual(
+			page.thread.members.map((member) => member.identity),
+			[peer],
+		);
 		assert.deepEqual(await f.host.request("collaboration-read", { threadId }, context), original);
 	}
 });
 
 it("recovers an unauthorised nonmember revise by joining and posting a proposal", async (t) => {
 	const f = await fixture(t);
-	const { threadId } = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
+	const { threadId } = await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("create", "create", frame),
+		context,
+	);
 	const revise = { ...frame, threadId, senderIdentity: peer, purpose: "Proposed purpose" };
 	await assert.rejects(f.host.request("collaboration-mutate", mutation("revise", "refused", revise), context), {
 		message: `Join the thread before proposing a frame change; call agent_collaborate with action: join and threadId: ${threadId}, then action: post with the same threadId and message containing your proposal`,
 	});
-	await f.host.request("collaboration-mutate", mutation("join", "recover-join", { threadId, senderIdentity: peer }), context);
-	await f.host.request("collaboration-mutate", mutation("post", "recover-proposal", { threadId, senderIdentity: peer, message: "Proposed purpose" }), context);
-	const page = await f.host.request("collaboration-read", { threadId }, context) as CollaborationPage;
+	await f.host.request(
+		"collaboration-mutate",
+		mutation("join", "recover-join", { threadId, senderIdentity: peer }),
+		context,
+	);
+	await f.host.request(
+		"collaboration-mutate",
+		mutation("post", "recover-proposal", { threadId, senderIdentity: peer, message: "Proposed purpose" }),
+		context,
+	);
+	const page = (await f.host.request("collaboration-read", { threadId }, context)) as CollaborationPage;
 	assert.equal(page.thread.revision, 1);
 	assert.equal(page.thread.purpose, frame.purpose);
-	assert.deepEqual(page.events.map((event) => event.kind), ["create", "join", "contribution"]);
+	assert.deepEqual(
+		page.events.map((event) => event.kind),
+		["create", "join", "contribution"],
+	);
 	assert.equal(page.events.at(-1)?.message, "Proposed purpose");
 	assert.equal(page.events.at(-1)?.sender, peer);
-	await assert.rejects(f.host.request("collaboration-mutate", mutation("revise", "still-refused", revise), context), /Only the creator, integrator or operator revises/u);
+	await assert.rejects(
+		f.host.request("collaboration-mutate", mutation("revise", "still-refused", revise), context),
+		/Only the creator, integrator or operator revises/u,
+	);
 });
 
-for (const role of ["creator", "integrator"] as const) it(`recovers a nonmember ${role} revise by joining and repeating the revision`, async (t) => {
-	const f = await fixture(t);
-	const { threadId } = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", { ...frame, integrator: peer }), context);
-	const senderIdentity = role === "creator" ? actor : peer;
-	if (role === "creator") await f.host.request("collaboration-mutate", mutation("leave", "leave", { threadId }), context);
-	const revise = { ...frame, integrator: peer, threadId, senderIdentity, purpose: "Revised purpose" };
-	await assert.rejects(f.host.request("collaboration-mutate", mutation("revise", "refused", revise), context), {
-		message: `Join the thread before changing it; call agent_collaborate with action: join and threadId: ${threadId}, then repeat action: revise`,
+for (const role of ["creator", "integrator"] as const)
+	it(`recovers a nonmember ${role} revise by joining and repeating the revision`, async (t) => {
+		const f = await fixture(t);
+		const { threadId } = await mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("create", "create", { ...frame, integrator: peer }),
+			context,
+		);
+		const senderIdentity = role === "creator" ? actor : peer;
+		if (role === "creator")
+			await f.host.request("collaboration-mutate", mutation("leave", "leave", { threadId }), context);
+		const revise = { ...frame, integrator: peer, threadId, senderIdentity, purpose: "Revised purpose" };
+		await assert.rejects(f.host.request("collaboration-mutate", mutation("revise", "refused", revise), context), {
+			message: `Join the thread before changing it; call agent_collaborate with action: join and threadId: ${threadId}, then repeat action: revise`,
+		});
+		await f.host.request(
+			"collaboration-mutate",
+			mutation("join", "recover-join", { threadId, senderIdentity }),
+			context,
+		);
+		await f.host.request("collaboration-mutate", mutation("revise", "recover-revise", revise), context);
+		const page = (await f.host.request("collaboration-read", { threadId }, context)) as CollaborationPage;
+		assert.equal(page.thread.revision, 2);
+		assert.equal(page.thread.purpose, "Revised purpose");
+		assert.equal(page.events.at(-1)?.kind, "revise");
+		assert.equal(page.events.at(-1)?.sender, senderIdentity);
 	});
-	await f.host.request("collaboration-mutate", mutation("join", "recover-join", { threadId, senderIdentity }), context);
-	await f.host.request("collaboration-mutate", mutation("revise", "recover-revise", revise), context);
-	const page = await f.host.request("collaboration-read", { threadId }, context) as CollaborationPage;
-	assert.equal(page.thread.revision, 2);
-	assert.equal(page.thread.purpose, "Revised purpose");
-	assert.equal(page.events.at(-1)?.kind, "revise");
-	assert.equal(page.events.at(-1)?.sender, senderIdentity);
-});
 
 it("keeps request IDs distinct across peer storages and permits self-chosen contribution changes", async (t) => {
 	const f = await fixture(t);
-	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "same-task", frame), context);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "same-task", { threadId: created.threadId, senderIdentity: peer, participation: "Challenge the method contracts" }), context);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "revise-participation", { threadId: created.threadId, senderIdentity: peer, participation: "Test independent restarts" }), context);
+	const created = await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("create", "same-task", frame),
+		context,
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("join", "same-task", {
+			threadId: created.threadId,
+			senderIdentity: peer,
+			participation: "Challenge the method contracts",
+		}),
+		context,
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("join", "revise-participation", {
+			threadId: created.threadId,
+			senderIdentity: peer,
+			participation: "Test independent restarts",
+		}),
+		context,
+	);
 	let page = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
 	assert.equal(page.thread.members.length, 2);
 	assert.equal(page.thread.members[1].contribution, "Test independent restarts");
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("leave", "leave", { threadId: created.threadId, senderIdentity: peer }), context);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("leave", "leave", { threadId: created.threadId, senderIdentity: peer }),
+		context,
+	);
 	page = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
-	assert.deepEqual(page.thread.members.map((member) => member.identity), [actor]);
-	assert.deepEqual(page.events.map((event) => event.kind), ["create", "join", "join", "leave"]);
+	assert.deepEqual(
+		page.thread.members.map((member) => member.identity),
+		[actor],
+	);
+	assert.deepEqual(
+		page.events.map((event) => event.kind),
+		["create", "join", "join", "leave"],
+	);
 });
 
 it("rejoin replaces only the caller contribution and retains independent holds and normal join events", async (t) => {
@@ -383,46 +746,124 @@ it("rejoin replaces only the caller contribution and retains independent holds a
 	const hold = "Hold heavy tests until the verification release. Source: verification-window exchange.";
 	const peerHold = "Hold my gate until the dependency release. Source: dependency exchange.";
 	const release = "Verification released; publication needs a separate window. Source: release event.";
-	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", { ...frame, participation: hold }), context);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "peer-hold", { threadId: created.threadId, senderIdentity: peer, participation: peerHold }), context);
+	const created = await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("create", "create", { ...frame, participation: hold }),
+		context,
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("join", "peer-hold", { threadId: created.threadId, senderIdentity: peer, participation: peerHold }),
+		context,
+	);
 	const before = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
-	const receipt = await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "actor-release", { threadId: created.threadId, participation: release, source: "Verification release event" }), context);
+	const receipt = await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("join", "actor-release", {
+			threadId: created.threadId,
+			participation: release,
+			source: "Verification release event",
+		}),
+		context,
+	);
 	let page = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
-	assert.deepEqual(page.thread.members, before.thread.members.map((member) => member.identity === actor ? { ...member, contribution: release } : member));
+	assert.deepEqual(
+		page.thread.members,
+		before.thread.members.map((member) => (member.identity === actor ? { ...member, contribution: release } : member)),
+	);
 	assert.equal(page.thread.revision, before.thread.revision);
 	assert.equal(page.thread.acceptance, frame.acceptance);
 	assert.equal(page.thread.closed, false);
 	assert.deepEqual(page.events.slice(0, 2), before.events);
-	assert.deepEqual(page.events.at(-1), { threadId: created.threadId, sequence: receipt.sequence, at: page.thread.updatedAt, atUtc: new Date(page.thread.updatedAt).toISOString(), sender: actor, origin: "model", kind: "join", message: release, source: "Verification release event", replyTo: null, revision: 1, notify: [] });
+	assert.deepEqual(page.events.at(-1), {
+		threadId: created.threadId,
+		sequence: receipt.sequence,
+		at: page.thread.updatedAt,
+		atUtc: new Date(page.thread.updatedAt).toISOString(),
+		sender: actor,
+		origin: "model",
+		kind: "join",
+		message: release,
+		source: "Verification release event",
+		replyTo: null,
+		revision: 1,
+		notify: [],
+	});
 	const ledger = await readRetainedDelivery(f.host.harness, context, true);
 	const notice = ledger?.reports.find((report) => report.senderIdentity === actor && report.ownerId === peer);
 	assert.equal(notice?.passive, true);
 	assert.equal(notice?.steer, false);
-	assert.equal(notice?.operatorMessage, `${release}\n\nSource: Verification release event`, "The display copy says what the member declared");
+	assert.equal(
+		notice?.operatorMessage,
+		`${release}\n\nSource: Verification release event`,
+		"The display copy says what the member declared",
+	);
 	assert.ok(!notice?.message.includes(release), "Passive model facts carry no discussion excerpt");
 	await f.reopen();
 	assert.deepEqual(await readCollaboration(f.host.harness, { threadId: created.threadId }, context), page);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "peer-release", { threadId: created.threadId, senderIdentity: peer, participation: "Dependency released. Source: dependency release event." }), context);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("join", "peer-release", {
+			threadId: created.threadId,
+			senderIdentity: peer,
+			participation: "Dependency released. Source: dependency release event.",
+		}),
+		context,
+	);
 	page = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
 	assert.equal(page.thread.members[0].contribution, release);
 	assert.equal(page.thread.members[1].contribution, "Dependency released. Source: dependency release event.");
-	assert.deepEqual(page.thread.members.map((member) => member.joinedAt), before.thread.members.map((member) => member.joinedAt));
-	assert.deepEqual(page.events.map((event) => [event.kind, event.sender]), [["create", actor], ["join", peer], ["join", actor], ["join", peer]]);
+	assert.deepEqual(
+		page.thread.members.map((member) => member.joinedAt),
+		before.thread.members.map((member) => member.joinedAt),
+	);
+	assert.deepEqual(
+		page.events.map((event) => [event.kind, event.sender]),
+		[
+			["create", actor],
+			["join", peer],
+			["join", actor],
+			["join", peer],
+		],
+	);
 });
 
 it("names each identity field and states the accepted canonical root and nonroot forms", () => {
 	const uuid = "abcdefab-1234-5678-90ab-abcdefabcdef";
-	const invalid = [undefined, null, 2, "", " ", "not-an-identity", uuid.toUpperCase(), `${uuid}:${ROOT_CONVERSATION_ID}`, `${uuid}:0`, `${uuid}:-2`, `${uuid}:02`, `${uuid}:2.5`, `${uuid}:9007199254740992`];
+	const invalid = [
+		undefined,
+		null,
+		2,
+		"",
+		" ",
+		"not-an-identity",
+		uuid.toUpperCase(),
+		`${uuid}:${ROOT_CONVERSATION_ID}`,
+		`${uuid}:0`,
+		`${uuid}:-2`,
+		`${uuid}:02`,
+		`${uuid}:2.5`,
+		`${uuid}:9007199254740992`,
+	];
 	for (const field of ["sessionId", "integrator", "notify[1]", "senderIdentity"]) {
-		for (const value of invalid) assert.throws(() => collaborationIdentity(value, field), (error: unknown) => {
-			assert.ok(error instanceof Error);
-			assert.ok(error.message.startsWith(`${field} requires an exact discovered identity:`));
-			assert.match(error.message, /canonical lowercase UUID for a bare root/u);
-			assert.match(error.message, /UUID:positive nonroot conversation ID/u);
-			assert.match(error.message, new RegExp(`safe integer greater than ${ROOT_CONVERSATION_ID}`, "u"));
-			return true;
-		});
-		for (const value of [uuid, `${uuid}:${ROOT_CONVERSATION_ID + 1}`, `${uuid}:9007199254740991`]) assert.equal(collaborationIdentity(value, field), value);
+		for (const value of invalid)
+			assert.throws(
+				() => collaborationIdentity(value, field),
+				(error: unknown) => {
+					assert.ok(error instanceof Error);
+					assert.ok(error.message.startsWith(`${field} requires an exact discovered identity:`));
+					assert.match(error.message, /canonical lowercase UUID for a bare root/u);
+					assert.match(error.message, /UUID:positive nonroot conversation ID/u);
+					assert.match(error.message, new RegExp(`safe integer greater than ${ROOT_CONVERSATION_ID}`, "u"));
+					return true;
+				},
+			);
+		for (const value of [uuid, `${uuid}:${ROOT_CONVERSATION_ID + 1}`, `${uuid}:9007199254740991`])
+			assert.equal(collaborationIdentity(value, field), value);
 	}
 });
 
@@ -440,19 +881,43 @@ it("rejects invalid integrator, senderIdentity and indexed notify values without
 		{ action: "post", fields: { notify: [peer, `${peer}:9007199254740992`] }, prefix: "notify[1]" },
 	];
 	for (const [index, test] of cases.entries()) {
-		await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation(test.action, `invalid-${index}`, { ...(test.action === "create" ? {} : { threadId: created.threadId }), ...(test.action === "post" ? { message: "No write" } : {}), ...test.fields }), context), (error: unknown) => {
-			assert.ok(error instanceof Error);
-			assert.ok(error.message.startsWith(`${test.prefix} requires an exact discovered identity:`));
-			assert.match(error.message, /canonical lowercase UUID for a bare root/u);
-			assert.match(error.message, /UUID:positive nonroot conversation ID/u);
-			return true;
-		});
+		await assert.rejects(
+			mutateCollaboration(
+				f.host.harness,
+				f.storageId,
+				mutation(test.action, `invalid-${index}`, {
+					...(test.action === "create" ? {} : { threadId: created.threadId }),
+					...(test.action === "post" ? { message: "No write" } : {}),
+					...test.fields,
+				}),
+				context,
+			),
+			(error: unknown) => {
+				assert.ok(error instanceof Error);
+				assert.ok(error.message.startsWith(`${test.prefix} requires an exact discovered identity:`));
+				assert.match(error.message, /canonical lowercase UUID for a bare root/u);
+				assert.match(error.message, /UUID:positive nonroot conversation ID/u);
+				return true;
+			},
+		);
 	}
 	assert.deepEqual(await readCollaboration(f.host.harness, { threadId: created.threadId }, context), before);
 	assert.equal((await listCollaboration(f.host.harness, {}, context)).items.length, 1);
 	assert.equal((await readRetainedDelivery(f.host.harness, context, true))?.reports.length ?? 0, 0);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("revise", "valid-integrator", { ...frame, threadId: created.threadId, integrator: `${peer}:${ROOT_CONVERSATION_ID + 1}` }), context);
-	assert.equal((await readCollaboration(f.host.harness, { threadId: created.threadId }, context)).thread.integrator, `${peer}:${ROOT_CONVERSATION_ID + 1}`);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("revise", "valid-integrator", {
+			...frame,
+			threadId: created.threadId,
+			integrator: `${peer}:${ROOT_CONVERSATION_ID + 1}`,
+		}),
+		context,
+	);
+	assert.equal(
+		(await readCollaboration(f.host.harness, { threadId: created.threadId }, context)).thread.integrator,
+		`${peer}:${ROOT_CONVERSATION_ID + 1}`,
+	);
 });
 
 it("distinguishes required source text from excessive length and preserves optional-source behavior", async (t) => {
@@ -460,15 +925,46 @@ it("distinguishes required source text from excessive length and preserves optio
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
 	for (const action of ["create", "revise", "post"]) {
 		for (const [index, source] of [undefined, "", " ", "x".repeat(2001)].entries()) {
-			const message = index === 3 ? "source exceeds the maximum length of 2000 characters" : "source is required and must be nonblank text";
-			await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation(action, `${action}-source-${index}`, { ...(action === "post" ? { threadId: created.threadId, message: "Carried direction", kind: "carried-authority" } : { ...frame, ...(action === "revise" ? { threadId: created.threadId } : {}) }), source }), context), { message });
+			const message =
+				index === 3
+					? "source exceeds the maximum length of 2000 characters"
+					: "source is required and must be nonblank text";
+			await assert.rejects(
+				mutateCollaboration(
+					f.host.harness,
+					f.storageId,
+					mutation(action, `${action}-source-${index}`, {
+						...(action === "post"
+							? { threadId: created.threadId, message: "Carried direction", kind: "carried-authority" }
+							: { ...frame, ...(action === "revise" ? { threadId: created.threadId } : {}) }),
+						source,
+					}),
+					context,
+				),
+				{ message },
+			);
 		}
 	}
 	assert.equal((await readCollaboration(f.host.harness, { threadId: created.threadId }, context)).thread.sequence, 1);
 	assert.equal((await listCollaboration(f.host.harness, {}, context)).items.length, 1);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("post", "optional-source", { threadId: created.threadId, message: "Contribution without a source" }), context);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("post", "optional-source", { threadId: created.threadId, message: "Contribution without a source" }),
+		context,
+	);
 	const source = ` ${"x".repeat(1998)} `;
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("post", "boundary-source", { threadId: created.threadId, message: "Carried direction", kind: "carried-authority", source }), context);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("post", "boundary-source", {
+			threadId: created.threadId,
+			message: "Carried direction",
+			kind: "carried-authority",
+			source,
+		}),
+		context,
+	);
 	const page = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
 	assert.equal(page.events[1].source, "");
 	assert.equal(page.events[2].source, source);
@@ -477,8 +973,25 @@ it("distinguishes required source text from excessive length and preserves optio
 it("writes notification intents with the event and retains source-qualified deduplication after reopen", async (t) => {
 	const f = await fixture(t);
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
-	for (const invalid of [`${actor}:1`, `${peer}:9007199254740992`]) await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("post", `invalid-${invalid}`, { threadId: created.threadId, message: "Invalid recipient", notify: [invalid] }), context), /exact discovered identity/u);
-	const post = mutation("post", "post", { threadId: created.threadId, message: "Please challenge this boundary.", notify: [peer, actor] });
+	for (const invalid of [`${actor}:1`, `${peer}:9007199254740992`])
+		await assert.rejects(
+			mutateCollaboration(
+				f.host.harness,
+				f.storageId,
+				mutation("post", `invalid-${invalid}`, {
+					threadId: created.threadId,
+					message: "Invalid recipient",
+					notify: [invalid],
+				}),
+				context,
+			),
+			/exact discovered identity/u,
+		);
+	const post = mutation("post", "post", {
+		threadId: created.threadId,
+		message: "Please challenge this boundary.",
+		notify: [peer, actor],
+	});
 	const receipt = await mutateCollaboration(f.host.harness, f.storageId, post, context);
 	let ledger = await readRetainedDelivery(f.host.harness, context, true);
 	assert.equal(ledger?.reports.length, 1);
@@ -509,11 +1022,52 @@ it("writes notification intents with the event and retains source-qualified dedu
 it("distinguishes carried authority from claims and keeps governing revisions and restrictions visible", async (t) => {
 	const f = await fixture(t);
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
-	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("post", "bad-authority", { threadId: created.threadId, message: "Approved", kind: "carried-authority" }), context), /source/u);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("post", "authority", { threadId: created.threadId, message: "The operator retains the publication restriction.", kind: "carried-authority", source: "Operator task, restriction paragraph" }), context);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "join", { threadId: created.threadId, senderIdentity: peer }), context);
-	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("revise", "bad-frame", { ...frame, threadId: created.threadId, senderIdentity: peer }), context), /creator, integrator or operator/u);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("revise", "frame", { ...frame, threadId: created.threadId, purpose: "Verify compatible current contracts", integrator: peer }), context);
+	await assert.rejects(
+		mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("post", "bad-authority", { threadId: created.threadId, message: "Approved", kind: "carried-authority" }),
+			context,
+		),
+		/source/u,
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("post", "authority", {
+			threadId: created.threadId,
+			message: "The operator retains the publication restriction.",
+			kind: "carried-authority",
+			source: "Operator task, restriction paragraph",
+		}),
+		context,
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("join", "join", { threadId: created.threadId, senderIdentity: peer }),
+		context,
+	);
+	await assert.rejects(
+		mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("revise", "bad-frame", { ...frame, threadId: created.threadId, senderIdentity: peer }),
+			context,
+		),
+		/creator, integrator or operator/u,
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("revise", "frame", {
+			...frame,
+			threadId: created.threadId,
+			purpose: "Verify compatible current contracts",
+			integrator: peer,
+		}),
+		context,
+	);
 	const page = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
 	assert.equal(page.thread.revision, 2);
 	assert.equal(page.thread.restrictions, frame.restrictions);
@@ -525,20 +1079,51 @@ it("distinguishes carried authority from claims and keeps governing revisions an
 it("pages the retained exchange, rejects invalid references atomically and retains closed threads", async (t) => {
 	const f = await fixture(t);
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
-	for (let n = 0; n < 6; n++) await mutateCollaboration(f.host.harness, f.storageId, mutation("post", `post-${n}`, { threadId: created.threadId, message: "x".repeat(8000), replyTo: 1 }), context);
+	for (let n = 0; n < 6; n++)
+		await mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("post", `post-${n}`, { threadId: created.threadId, message: "x".repeat(8000), replyTo: 1 }),
+			context,
+		);
 	const latest = await readCollaboration(f.host.harness, { threadId: created.threadId, limit: 20 }, context);
 	assert.ok(latest.nextBefore !== null);
 	assert.ok(latest.coverage.bytes <= 48 * 1024);
-	const older = await readCollaboration(f.host.harness, { threadId: created.threadId, before: latest.nextBefore, limit: 20 }, context);
+	const older = await readCollaboration(
+		f.host.harness,
+		{ threadId: created.threadId, before: latest.nextBefore, limit: 20 },
+		context,
+	);
 	assert.equal(older.events[0].sequence, 1);
 	const lastOlder = older.events.at(-1);
 	assert.ok(lastOlder);
 	assert.equal(lastOlder.sequence + 1, latest.events[0].sequence);
-	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("post", "invalid-reply", { threadId: created.threadId, message: "Bad reference", replyTo: 500 }), context), /earlier event/u);
+	await assert.rejects(
+		mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("post", "invalid-reply", { threadId: created.threadId, message: "Bad reference", replyTo: 500 }),
+			context,
+		),
+		/earlier event/u,
+	);
 	assert.equal((await readCollaboration(f.host.harness, { threadId: created.threadId }, context)).thread.sequence, 7);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("close", "close", { threadId: created.threadId, message: "The arrangement reached its outcome." }), context);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("close", "close", { threadId: created.threadId, message: "The arrangement reached its outcome." }),
+		context,
+	);
 	assert.equal((await readCollaboration(f.host.harness, { threadId: created.threadId }, context)).thread.closed, true);
-	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("post", "after-close", { threadId: created.threadId, message: "No" }), context), /closed/u);
+	await assert.rejects(
+		mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("post", "after-close", { threadId: created.threadId, message: "No" }),
+			context,
+		),
+		/closed/u,
+	);
 	assert.equal((await listCollaboration(f.host.harness, {}, context)).items[0].closed, true);
 });
 
@@ -546,22 +1131,48 @@ it("reads retained threads through the cold observation path without scheduling 
 	const f = await fixture(t);
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
 	await f.host.close();
-	const cold = await DurableObservation.open({ backupFrom: f.storagePath, storageId: f.storageId, models: await fixtureRuntime("answer"), registry: fixtureRegistry() }, context);
+	const cold = await DurableObservation.open(
+		{
+			backupFrom: f.storagePath,
+			storageId: f.storageId,
+			models: await fixtureRuntime("answer"),
+			registry: fixtureRegistry(),
+		},
+		context,
+	);
 	try {
-		const page = await cold.request("collaboration-read", { threadId: created.threadId }) as CollaborationPage;
+		const page = (await cold.request("collaboration-read", { threadId: created.threadId })) as CollaborationPage;
 		assert.equal(page.thread.title, frame.title);
 		assert.equal(page.events.length, 1);
 		await assert.rejects(cold.request("collaboration-mutate", {}), /does not support/u);
-	} finally { await cold.close(); }
+	} finally {
+		await cold.close();
+	}
 });
 
 it("discovers bounded purpose hints without opening hosts and names omitted stores for scoped continuation", async (t) => {
 	const f = await fixture(t);
 	const catalog = new AgentCatalog(f.root);
-	const record = catalog.create({ cwd: f.root, agentDir: f.root, packageDir: f.root, model: { provider: "test", modelId: "test" }, thinkingLevel: "off" });
-	for (let n = 0; n < 10; n++) await mutateCollaboration(f.host.harness, record.storageId, mutation("create", `create-${n}`, { ...frame, title: `Thread ${n}` }), context);
+	const record = catalog.create({
+		cwd: f.root,
+		agentDir: f.root,
+		packageDir: f.root,
+		model: { provider: "test", modelId: "test" },
+		thinkingLevel: "off",
+	});
+	for (let n = 0; n < 10; n++)
+		await mutateCollaboration(
+			f.host.harness,
+			record.storageId,
+			mutation("create", `create-${n}`, { ...frame, title: `Thread ${n}` }),
+			context,
+		);
 	const projection = await projectCollaboration(f.host.harness, context);
-	catalog.updateView(record.storageId, { updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } }, projection);
+	catalog.updateView(
+		record.storageId,
+		{ updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } },
+		projection,
+	);
 	const page = await discoverCollaboration(catalog, { limit: 2 });
 	assert.equal(page.items.length, 2);
 	assert.equal(page.coverage.omitted, 2);
@@ -578,9 +1189,30 @@ it("continues discovery across storages while another writer publishes views", a
 	const catalog = new AgentCatalog(f.root);
 	const writer = new AgentCatalog(f.root);
 	const view = { updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } };
-	const records = Array.from({ length: 10 }, () => catalog.create({ cwd: f.root, agentDir: f.root, packageDir: f.root, model: { provider: "test", modelId: "test" }, thinkingLevel: "off" }));
+	const records = Array.from({ length: 10 }, () =>
+		catalog.create({
+			cwd: f.root,
+			agentDir: f.root,
+			packageDir: f.root,
+			model: { provider: "test", modelId: "test" },
+			thinkingLevel: "off",
+		}),
+	);
 	for (const record of records) {
-		catalog.updateView(record.storageId, view, { updatedAt: view.updatedAt, omitted: 0, items: [{ id: `${record.storageId}/${"a".repeat(32)}`, title: "Shared purpose", purpose: "Compare evidence", updatedAt: 1, closed: false, members: 1 }] });
+		catalog.updateView(record.storageId, view, {
+			updatedAt: view.updatedAt,
+			omitted: 0,
+			items: [
+				{
+					id: `${record.storageId}/${"a".repeat(32)}`,
+					title: "Shared purpose",
+					purpose: "Compare evidence",
+					updatedAt: 1,
+					closed: false,
+					members: 1,
+				},
+			],
+		});
 	}
 	const seen: string[] = [];
 	let cursor: string | null = null;
@@ -598,14 +1230,32 @@ it("continues discovery across storages while another writer publishes views", a
 it("bounds serialized event and read bytes independently of character and row counts", async (t) => {
 	const f = await fixture(t);
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
-	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("post", "oversized", { threadId: created.threadId, message: "\u0001".repeat(8000), notify: [peer] }), context), /byte bound/u);
+	await assert.rejects(
+		mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("post", "oversized", { threadId: created.threadId, message: "\u0001".repeat(8000), notify: [peer] }),
+			context,
+		),
+		/byte bound/u,
+	);
 	assert.equal((await readCollaboration(f.host.harness, { threadId: created.threadId }, context)).thread.sequence, 1);
 	assert.equal((await readRetainedDelivery(f.host.harness, context, true))?.reports.length ?? 0, 0);
-	for (let index = 0; index < 12; index++) await mutateCollaboration(f.host.harness, f.storageId, mutation("post", `post-${index}`, { threadId: created.threadId, message: "x".repeat(8000) }), context);
+	for (let index = 0; index < 12; index++)
+		await mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("post", `post-${index}`, { threadId: created.threadId, message: "x".repeat(8000) }),
+			context,
+		);
 	let before: number | undefined;
 	const sequences: number[] = [];
 	for (let pageIndex = 0; pageIndex < 4; pageIndex++) {
-		const page = await readCollaboration(f.host.harness, { threadId: created.threadId, limit: 20, ...(before === undefined ? {} : { before }) }, context);
+		const page = await readCollaboration(
+			f.host.harness,
+			{ threadId: created.threadId, limit: 20, ...(before === undefined ? {} : { before }) },
+			context,
+		);
 		const bytes = Buffer.byteLength(JSON.stringify(page));
 		assert.ok(bytes <= 48 * 1024);
 		assert.equal(page.coverage.bytes, bytes);
@@ -613,33 +1263,66 @@ it("bounds serialized event and read bytes independently of character and row co
 		if (page.nextBefore === null) break;
 		before = page.nextBefore;
 	}
-	assert.deepEqual(sequences, Array.from({ length: 13 }, (_, index) => index + 1));
+	assert.deepEqual(
+		sequences,
+		Array.from({ length: 13 }, (_, index) => index + 1),
+	);
 });
 
 it("uses native passive writes without a model turn and deduplicates replay", async (t) => {
 	const f = await fixture(t);
-	const input = { message: "A joined thread has a new contribution. Read its current frame.", requestId: "thread-notice" };
-	const first = await f.host.request("passive-submit", input) as { submissionId: number };
-	const replay = await f.host.request("passive-submit", input) as { submissionId: number };
+	const input = {
+		message: "A joined thread has a new contribution. Read its current frame.",
+		requestId: "thread-notice",
+	};
+	const first = (await f.host.request("passive-submit", input)) as { submissionId: number };
+	const replay = (await f.host.request("passive-submit", input)) as { submissionId: number };
 	assert.equal(replay.submissionId, first.submissionId);
 	const conversation = await f.host.harness.conversation(ROOT_CONVERSATION_ID, context);
 	assert.ok(conversation);
 	const entries = await conversation.entries({}, 20, undefined, context);
 	assert.equal(entries.items.filter((entry) => entry.kind === "agent.thread-notice").length, 1);
-	assert.equal(entries.items.some((entry) => entry.kind === "pi.assistant"), false);
+	assert.equal(
+		entries.items.some((entry) => entry.kind === "pi.assistant"),
+		false,
+	);
 	assert.equal((await f.host.harness.inspect(context)).tasks.length, 0);
 	await f.reopen();
-	const retained = await f.host.request("passive-submit", input) as { submissionId: number };
+	const retained = (await f.host.request("passive-submit", input)) as { submissionId: number };
 	assert.equal(retained.submissionId, first.submissionId);
 });
 
 it("joining subscribes to bounded passive notices while explicit attention remains distinct", async (t) => {
 	const f = await fixture(t);
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "join", { threadId: created.threadId, senderIdentity: peer }), context);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("post", "quiet-post", { threadId: created.threadId, message: "x".repeat(8000) }), context);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("post", "attention", { threadId: created.threadId, message: "Please challenge this decision.", notify: [peer] }), context);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("revise", "governing-attention", { ...frame, threadId: created.threadId, notify: [peer] }), context);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("join", "join", { threadId: created.threadId, senderIdentity: peer }),
+		context,
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("post", "quiet-post", { threadId: created.threadId, message: "x".repeat(8000) }),
+		context,
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("post", "attention", {
+			threadId: created.threadId,
+			message: "Please challenge this decision.",
+			notify: [peer],
+		}),
+		context,
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("revise", "governing-attention", { ...frame, threadId: created.threadId, notify: [peer] }),
+		context,
+	);
 	const ledger = await readRetainedDelivery(f.host.harness, context, true);
 	assert.ok(ledger);
 	const notices = ledger.reports.filter((report) => report.ownerId === peer);
@@ -659,7 +1342,10 @@ it("publishes valid status while a provider retains parsing scratch on a live to
 	const message = toolCallMessage("read", { path: "file" });
 	const block = message.content[0];
 	Object.assign(block, { partialJson: '{"path":', customInput: { property: "code", jsonBuffer: "{" } });
-	await f.host.harness.commit(async (tx) => { const live = await tx.doc(LiveDoc, ROOT_CONVERSATION_ID); live.generation = JSON.parse(JSON.stringify({ attempt: 1, message })); }, context);
+	await f.host.harness.commit(async (tx) => {
+		const live = await tx.doc(LiveDoc, ROOT_CONVERSATION_ID);
+		live.generation = JSON.parse(JSON.stringify({ attempt: 1, message }));
+	}, context);
 	const status = await readConversationStatus(f.host.harness, f.storageId, ROOT_CONVERSATION_ID, {}, context);
 	assert.ok(status);
 	assert.doesNotThrow(() => structuredObservation(ConversationStatusSchema, status));
@@ -676,11 +1362,17 @@ it("keeps registered collaboration parameters at an object root with visible pro
 	assert.ok(CollaborationParams.properties && typeof CollaborationParams.properties === "object");
 	assert.ok(Object.keys(CollaborationParams.properties).length > 0);
 	for (const keyword of ["anyOf", "oneOf", "allOf"]) assert.equal(Object.hasOwn(CollaborationParams, keyword), false);
-	assert.ok(Array.isArray(CollaborationActionParams.anyOf), "Closed branches validate execution rather than registered root parameters");
+	assert.ok(
+		Array.isArray(CollaborationActionParams.anyOf),
+		"Closed branches validate execution rather than registered root parameters",
+	);
 });
 it("requires action-specific public fields and rejects discussion bodies on joins", () => {
 	const validate = (args: Parameters<typeof validateToolArguments>[1]["arguments"]) => {
-		const checked = validateToolArguments({ name: "agent_collaborate", description: "Thread", parameters: CollaborationParams }, { type: "toolCall", id: "action-check", name: "agent_collaborate", arguments: args });
+		const checked = validateToolArguments(
+			{ name: "agent_collaborate", description: "Thread", parameters: CollaborationParams },
+			{ type: "toolCall", id: "action-check", name: "agent_collaborate", arguments: args },
+		);
 		validateCollaborationAction(checked);
 		return checked;
 	};
@@ -711,53 +1403,139 @@ it("requires action-specific public fields and rejects discussion bodies on join
 });
 it("retains exact mutation receipts while unchanged joins preserve sequence, time, membership and notices", async (t) => {
 	const f = await fixture(t);
-	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", { ...frame, participation: "Hold for evidence" }), context);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "peer", { threadId: created.threadId, senderIdentity: peer }), context);
+	const created = await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("create", "create", { ...frame, participation: "Hold for evidence" }),
+		context,
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("join", "peer", { threadId: created.threadId, senderIdentity: peer }),
+		context,
+	);
 	const before = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
 	const ledger = await readRetainedDelivery(f.host.harness, context, true);
-	for (const [requestId, participation] of [["omit", undefined], ["same", "Hold for evidence"]] as const) {
-		const input = mutation("join", requestId, { threadId: created.threadId, ...(participation === undefined ? {} : { participation }) });
+	for (const [requestId, participation] of [
+		["omit", undefined],
+		["same", "Hold for evidence"],
+	] as const) {
+		const input = mutation("join", requestId, {
+			threadId: created.threadId,
+			...(participation === undefined ? {} : { participation }),
+		});
 		const receipt = await mutateCollaboration(f.host.harness, f.storageId, input, context);
 		assert.equal(receipt.sequence, before.thread.sequence);
 		assert.equal(receipt.deduped, false);
-		assert.deepEqual(await mutateCollaboration(f.host.harness, f.storageId, input, context), { ...receipt, deduped: true });
+		assert.deepEqual(await mutateCollaboration(f.host.harness, f.storageId, input, context), {
+			...receipt,
+			deduped: true,
+		});
 		assert.deepEqual(await readCollaboration(f.host.harness, { threadId: created.threadId }, context), before);
 		assert.deepEqual(await readRetainedDelivery(f.host.harness, context, true), ledger);
-		await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, { ...input, participation: "Different declaration" }, context), /different content/u);
+		await assert.rejects(
+			mutateCollaboration(f.host.harness, f.storageId, { ...input, participation: "Different declaration" }, context),
+			/different content/u,
+		);
 	}
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "clear", { threadId: created.threadId, participation: "" }), context);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("join", "clear", { threadId: created.threadId, participation: "" }),
+		context,
+	);
 	const cleared = await readCollaboration(f.host.harness, { threadId: created.threadId }, context);
 	assert.equal(cleared.thread.members[0].contribution, "");
 	assert.equal(cleared.thread.members[0].joinedAt, before.thread.members[0].joinedAt);
 	assert.equal(cleared.thread.sequence, before.thread.sequence + 1);
 	assert.equal(cleared.thread.revision, before.thread.revision);
-	const changedDeclaration = await readCollaboration(f.host.harness, { threadId: created.threadId, after: before.thread.sequence, knownFrameRevision: before.thread.revision }, context);
+	const changedDeclaration = await readCollaboration(
+		f.host.harness,
+		{ threadId: created.threadId, after: before.thread.sequence, knownFrameRevision: before.thread.revision },
+		context,
+	);
 	assert.equal(changedDeclaration.thread, undefined);
-	assert.deepEqual(changedDeclaration.events.map((event) => event.kind), ["join"]);
-	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("join", "bad-message", { threadId: created.threadId, message: "Discussion" }), context), /message is not valid/u);
-	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("post", "bad-participation", { threadId: created.threadId, participation: "Hold", message: "Discussion" }), context), /participation is not valid/u);
+	assert.deepEqual(
+		changedDeclaration.events.map((event) => event.kind),
+		["join"],
+	);
+	await assert.rejects(
+		mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("join", "bad-message", { threadId: created.threadId, message: "Discussion" }),
+			context,
+		),
+		/message is not valid/u,
+	);
+	await assert.rejects(
+		mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("post", "bad-participation", {
+				threadId: created.threadId,
+				participation: "Hold",
+				message: "Discussion",
+			}),
+			context,
+		),
+		/participation is not valid/u,
+	);
 });
 it("reads forward with ascending events, page-local coverage, exact next calls and optional known frame", async (t) => {
 	const f = await fixture(t);
-	const { threadId } = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
-	for (let n = 0; n < 4; n++) await mutateCollaboration(f.host.harness, f.storageId, mutation("post", `post-${n}`, { threadId, message: `Event ${n}` }), context);
+	const { threadId } = await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("create", "create", frame),
+		context,
+	);
+	for (let n = 0; n < 4; n++)
+		await mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("post", `post-${n}`, { threadId, message: `Event ${n}` }),
+			context,
+		);
 	const first = await readCollaboration(f.host.harness, { threadId, after: 0, limit: 2 }, context);
 	assert.equal(first.direction, "forward");
 	assert.equal(first.thread?.purpose, frame.purpose);
 	assert.equal(first.sequence, 5);
-	assert.deepEqual(first.events.map((event) => event.sequence), [1, 2]);
-	assert.deepEqual(first.next, { tool: "agent_collaborate", action: "read", threadId, after: 2, knownFrameRevision: 1, limit: 2 });
+	assert.deepEqual(
+		first.events.map((event) => event.sequence),
+		[1, 2],
+	);
+	assert.deepEqual(first.next, {
+		tool: "agent_collaborate",
+		action: "read",
+		threadId,
+		after: 2,
+		knownFrameRevision: 1,
+		limit: 2,
+	});
 	assert.ok(first.next);
 	const { tool: _tool, ...call } = first.next;
 	const second = await readCollaboration(f.host.harness, call, context);
 	assert.equal(second.thread, undefined);
-	assert.deepEqual(second.events.map((event) => event.sequence), [3, 4]);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("post", "append", { threadId, message: "New tail" }), context);
+	assert.deepEqual(
+		second.events.map((event) => event.sequence),
+		[3, 4],
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("post", "append", { threadId, message: "New tail" }),
+		context,
+	);
 	assert.ok(second.next);
 	const { tool: _nextTool, ...nextCall } = second.next;
 	const tail = await readCollaboration(f.host.harness, nextCall, context);
 	assert.equal(tail.sequence, 6, "each page captures its current tail");
-	assert.deepEqual(tail.events.map((event) => event.sequence), [5, 6]);
+	assert.deepEqual(
+		tail.events.map((event) => event.sequence),
+		[5, 6],
+	);
 	assert.equal(tail.next, null);
 	assert.equal(tail.coverage.complete, true);
 	assert.equal(tail.coverage.bytes, Buffer.byteLength(JSON.stringify(tail)));
@@ -765,8 +1543,18 @@ it("reads forward with ascending events, page-local coverage, exact next calls a
 	assert.deepEqual(empty.events, []);
 	assert.equal(empty.thread, undefined);
 	assert.equal(empty.next, null);
-	assert.deepEqual(empty.coverage, { after: 6, through: 6, complete: true, bytes: Buffer.byteLength(JSON.stringify(empty)) });
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("revise", "revision", { ...frame, threadId, purpose: "New governing purpose" }), context);
+	assert.deepEqual(empty.coverage, {
+		after: 6,
+		through: 6,
+		complete: true,
+		bytes: Buffer.byteLength(JSON.stringify(empty)),
+	});
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("revise", "revision", { ...frame, threadId, purpose: "New governing purpose" }),
+		context,
+	);
 	const changed = await readCollaboration(f.host.harness, { threadId, after: 6, knownFrameRevision: 1 }, context);
 	assert.equal(changed.thread?.purpose, "New governing purpose");
 	assert.equal(changed.frameRevision, 2);
@@ -776,16 +1564,38 @@ it("reads forward with ascending events, page-local coverage, exact next calls a
 it("rejects invalid forward cursors and missing events without false progress", async () => {
 	const f = retainedReadFixture();
 	for (const input of [
-		{ after: -1 }, { after: 1.5 }, { after: 2 }, { after: 0, before: 1 },
-		{ knownFrameRevision: 1 }, { after: 0, knownFrameRevision: 0 }, { after: 0, knownFrameRevision: 2 },
-	]) await assert.rejects(readCollaboration(f.session, { threadId: f.id, ...input }, context), collaborationReadError("invalid_request"));
+		{ after: -1 },
+		{ after: 1.5 },
+		{ after: 2 },
+		{ after: 0, before: 1 },
+		{ knownFrameRevision: 1 },
+		{ after: 0, knownFrameRevision: 0 },
+		{ after: 0, knownFrameRevision: 2 },
+	])
+		await assert.rejects(
+			readCollaboration(f.session, { threadId: f.id, ...input }, context),
+			collaborationReadError("invalid_request"),
+		);
 	f.thread.sequence = 2;
-	await assert.rejects(readCollaboration(f.session, { threadId: f.id, after: 1 }, context), collaborationReadError("source_unreadable"));
+	await assert.rejects(
+		readCollaboration(f.session, { threadId: f.id, after: 1 }, context),
+		collaborationReadError("source_unreadable"),
+	);
 });
 it("omits only the create-frame copy, preserves retained source text, and derives UTC on real read output", async (t) => {
 	const f = await fixture(t);
-	const { threadId } = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
-	await mutateCollaboration(f.host.harness, f.storageId, mutation("post", "post", { threadId, message: "Retained post" }), context);
+	const { threadId } = await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("create", "create", frame),
+		context,
+	);
+	await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("post", "post", { threadId, message: "Retained post" }),
+		context,
+	);
 	const stored = await f.host.harness.snapshot(CollaborationEvents, `${threadId}:1`, context);
 	const page = await readCollaboration(f.host.harness, { threadId }, context);
 	assert.equal(page.events[0].message, "");
@@ -797,7 +1607,8 @@ it("omits only the create-frame copy, preserves retained source text, and derive
 	for (const event of page.events) assert.equal(event.atUtc, utcTime(event.at));
 	await f.host.harness.commit(async (tx) => {
 		const row = await tx.doc(CollaborationEvents, `${threadId}:2`, null);
-		assert.ok(row.event); row.event.at = Number.MAX_SAFE_INTEGER;
+		assert.ok(row.event);
+		row.event.at = Number.MAX_SAFE_INTEGER;
 	}, context);
 	const unavailable = await readCollaboration(f.host.harness, { threadId, before: 3, limit: 1 }, context);
 	assert.equal(unavailable.events[0].at, Number.MAX_SAFE_INTEGER);
@@ -805,8 +1616,19 @@ it("omits only the create-frame copy, preserves retained source text, and derive
 });
 it("fits byte-bounded forward and backward pages and recovers complete active text by the emitted event call", async (t) => {
 	const f = await fixture(t);
-	const { threadId } = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
-	for (let n = 0; n < 8; n++) await mutateCollaboration(f.host.harness, f.storageId, mutation("post", `post-${n}`, { threadId, message: "word ".repeat(1500), notify: n === 7 ? [peer] : [] }), context);
+	const { threadId } = await mutateCollaboration(
+		f.host.harness,
+		f.storageId,
+		mutation("create", "create", frame),
+		context,
+	);
+	for (let n = 0; n < 8; n++)
+		await mutateCollaboration(
+			f.host.harness,
+			f.storageId,
+			mutation("post", `post-${n}`, { threadId, message: "word ".repeat(1500), notify: n === 7 ? [peer] : [] }),
+			context,
+		);
 	const forward = await readCollaboration(f.host.harness, { threadId, after: 0, limit: 20 }, context);
 	assert.ok(forward.next && forward.next.after > 0);
 	assert.ok(forward.coverage.bytes <= 48 * 1024);

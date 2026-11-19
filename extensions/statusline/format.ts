@@ -270,7 +270,11 @@ function fitProject(project: Line2Project, width: number, visibleWidth: (s: stri
 		branch = available >= 1 ? truncateToWidth(branch, available, "…") : undefined;
 		if (branch === undefined) folder = shortenFolder(project.folder, Math.max(1, width), visibleWidth);
 	}
-	folder = shortenFolder(folder, Math.max(1, width - (branch !== undefined ? visibleWidth(branch) + 3 : 0)), visibleWidth);
+	folder = shortenFolder(
+		folder,
+		Math.max(1, width - (branch !== undefined ? visibleWidth(branch) + 3 : 0)),
+		visibleWidth,
+	);
 	return `${fg("muted", folder)}${RESET}${branch !== undefined ? `${fg("dim", ` (${branch})`)}${RESET}` : ""}`;
 }
 
@@ -315,7 +319,12 @@ export function composeLine2(
 }
 
 /** Attach the count span to a composed line. */
-function line2Layout(line: string, countCell: string | undefined, hidden: number, visibleWidth: (s: string) => number): Line2Layout {
+function line2Layout(
+	line: string,
+	countCell: string | undefined,
+	hidden: number,
+	visibleWidth: (s: string) => number,
+): Line2Layout {
 	const result: Line2Layout = { line };
 	if (countCell !== undefined && line.endsWith(countCell)) {
 		const cellWidth = visibleWidth(countCell);
@@ -325,8 +334,15 @@ function line2Layout(line: string, countCell: string | undefined, hidden: number
 }
 
 /** Nothing left to shed: the count alone when it fits, otherwise the shortened project. */
-function minimalLine2(countCell: string | undefined, label: string, hidden: number, width: number, visibleWidth: (s: string) => number): Line2Layout {
-	if (countCell !== undefined && visibleWidth(countCell) <= width) return line2Layout(countCell, countCell, hidden, visibleWidth);
+function minimalLine2(
+	countCell: string | undefined,
+	label: string,
+	hidden: number,
+	width: number,
+	visibleWidth: (s: string) => number,
+): Line2Layout {
+	if (countCell !== undefined && visibleWidth(countCell) <= width)
+		return line2Layout(countCell, countCell, hidden, visibleWidth);
 	if (countCell !== undefined) return { line: truncateToWidth(countCell, Math.max(0, width), "") };
 	return { line: truncateToWidth(label, Math.max(0, width), "\u2026") };
 }

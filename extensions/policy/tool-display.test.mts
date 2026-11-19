@@ -17,7 +17,9 @@ it("publishes only its registered display fields at load and on current requests
 			on(channel: string, handler: (data: unknown) => void) {
 				if (channel.startsWith("harness:tool-display:")) order.push(channel);
 				listeners.set(channel, handler);
-				const unsubscribe = () => { listeners.delete(channel); };
+				const unsubscribe = () => {
+					listeners.delete(channel);
+				};
 				cleanups.push(unsubscribe);
 				return unsubscribe;
 			},
@@ -29,7 +31,9 @@ it("publishes only its registered display fields at load and on current requests
 				listeners.get(channel)?.(data);
 			},
 		},
-		registerTool(definition: ToolDefinition) { registered.set(definition.name, definition); },
+		registerTool(definition: ToolDefinition) {
+			registered.set(definition.name, definition);
+		},
 		on() {},
 		registerCommand() {},
 		registerShortcut() {},
@@ -43,8 +47,16 @@ it("publishes only its registered display fields at load and on current requests
 	const verify = (publication: Publication) => {
 		assert.deepEqual(Object.keys(publication).sort(), ["tools", "version"]);
 		assert.equal(publication.version, 1);
-		assert.deepEqual(publication.tools.map((tool) => tool.name), ["policy_approve", "policy_control", "policy_propose", "policy_rules"]);
-		assert.equal(publication.tools.length, [...registered.values()].filter((tool) => tool.renderCall !== undefined || tool.renderResult !== undefined || tool.renderShell !== undefined).length);
+		assert.deepEqual(
+			publication.tools.map((tool) => tool.name),
+			["policy_approve", "policy_control", "policy_propose", "policy_rules"],
+		);
+		assert.equal(
+			publication.tools.length,
+			[...registered.values()].filter(
+				(tool) => tool.renderCall !== undefined || tool.renderResult !== undefined || tool.renderShell !== undefined,
+			).length,
+		);
 		for (const display of publication.tools) {
 			const definition = registered.get(display.name);
 			assert.ok(definition);
@@ -53,7 +65,15 @@ it("publishes only its registered display fields at load and on current requests
 			assert.equal(display.renderCall, definition.renderCall);
 			assert.equal(display.renderResult, definition.renderResult);
 			assert.equal(display.renderShell, definition.renderShell);
-			assert.deepEqual(Object.keys(display).sort(), ["name", ...["renderCall", "renderResult", "renderShell"].filter((key) => definition[key as keyof Display] !== undefined)].sort());
+			assert.deepEqual(
+				Object.keys(display).sort(),
+				[
+					"name",
+					...["renderCall", "renderResult", "renderShell"].filter(
+						(key) => definition[key as keyof Display] !== undefined,
+					),
+				].sort(),
+			);
 		}
 	};
 	verify(publications[0]);

@@ -1,14 +1,46 @@
 (() => {
-	interface Edit { start: number; end: number; text: string; cursor?: number }
-	interface Selection { start: number; end: number; direction: HTMLTextAreaElement["selectionDirection"] }
-	interface Point { left: number; top: number }
-	const menuGap = 6, menuInset = 6, menuMaxHeight = 360;
-	interface Match { path: string; start: number; end: number }
-	interface Item { value: string; label: string; description?: string }
+	interface Edit {
+		start: number;
+		end: number;
+		text: string;
+		cursor?: number;
+	}
+	interface Selection {
+		start: number;
+		end: number;
+		direction: HTMLTextAreaElement["selectionDirection"];
+	}
+	interface Point {
+		left: number;
+		top: number;
+	}
+	const menuGap = 6,
+		menuInset = 6,
+		menuMaxHeight = 360;
+	interface Match {
+		path: string;
+		start: number;
+		end: number;
+	}
+	interface Item {
+		value: string;
+		label: string;
+		description?: string;
+	}
 	interface Assistance {
 		completionTrigger(text: string, cursor: number): boolean;
 		completionEdit(before: string, result: string, cursor: number): Edit | null;
-		historyStep(context: { entries: string[]; index: number | null; text: string; base: string; selectionStart: number; selectionEnd: number }, direction: -1 | 1): { index: number | null; text: string } | null;
+		historyStep(
+			context: {
+				entries: string[];
+				index: number | null;
+				text: string;
+				base: string;
+				selectionStart: number;
+				selectionEnd: number;
+			},
+			direction: -1 | 1,
+		): { index: number | null; text: string } | null;
 		imagePaths(text: string): Match[];
 		syntaxParts(text: string): { text: string; kind?: string }[];
 	}
@@ -27,8 +59,16 @@
 		queued?: { behavior: string; text: string }[];
 		since?: number;
 	}
-	interface Model { provider: string; id: string; name: string; current?: boolean }
-	const root = globalThis as typeof globalThis & { composerAssistance: Assistance; mountComposerControls?: typeof mount };
+	interface Model {
+		provider: string;
+		id: string;
+		name: string;
+		current?: boolean;
+	}
+	const root = globalThis as typeof globalThis & {
+		composerAssistance: Assistance;
+		mountComposerControls?: typeof mount;
+	};
 	function get<T extends HTMLElement = HTMLElement>(id: string): T {
 		const node = document.getElementById(id);
 		if (!node) throw new Error(`Missing composer control: ${id}`);
@@ -39,26 +79,45 @@
 		node.type = "button";
 		node.textContent = text;
 		if (name) node.setAttribute("aria-label", name);
-		node.addEventListener("click", () => { action(); });
+		node.addEventListener("click", () => {
+			action();
+		});
 		return node;
 	}
 	function mount(host: Host) {
 		const { input, request, edit, notice, icon, preferences } = host;
 		const assist = root.composerAssistance;
-		const pane = get("composer"), menu = get("menu"), backdrop = get("highlight"), images = get("images"), queued = get("queued");
-		const model = get<HTMLButtonElement>("model"), add = get<HTMLButtonElement>("add");
+		const pane = get("composer"),
+			menu = get("menu"),
+			backdrop = get("highlight"),
+			images = get("images"),
+			queued = get("queued");
+		const model = get<HTMLButtonElement>("model"),
+			add = get<HTMLButtonElement>("add");
 		const anchors = [add, model];
 		const imageCache = new Map<string, string | null>();
-		let current: State = {}, connected = false, entries: string[] = [], recalled: number | null = null;
-		let mode = "", selected = 0, options: HTMLButtonElement[] = [], epoch = 0, timer: ReturnType<typeof setTimeout> | undefined;
+		let current: State = {},
+			connected = false,
+			entries: string[] = [],
+			recalled: number | null = null;
+		let mode = "",
+			selected = 0,
+			options: HTMLButtonElement[] = [],
+			epoch = 0,
+			timer: ReturnType<typeof setTimeout> | undefined;
 		let queueKey = "";
 		let menuAnchor: HTMLElement | undefined, contextPoint: Point | undefined;
-		let wantedAbove = 0, appliedAbove = 0, overlayRevision = 0;
+		let wantedAbove = 0,
+			appliedAbove = 0,
+			overlayRevision = 0;
 		let pendingAbove: number | undefined;
 		let placement: { bottom: number; left: number; height: number; base: number } | undefined;
-		let modelCache: Model[] | undefined, fetching: Promise<void> | undefined, prefetched = false;
+		let modelCache: Model[] | undefined,
+			fetching: Promise<void> | undefined,
+			prefetched = false;
 		let cachedHeight = menuMaxHeight;
-		let recoveryLabel = "", recovering = false;
+		let recoveryLabel = "",
+			recovering = false;
 		let imageSignature = "";
 		let imageTimer: ReturnType<typeof setTimeout> | undefined;
 		const fail = (error: unknown) => notice(error instanceof Error ? error.message : String(error));
@@ -70,15 +129,22 @@
 			wantedAbove = above;
 			pendingAbove = above;
 			const revision = ++overlayRevision;
-			void request("overlay", { above }).then(reply => {
-				if (revision !== overlayRevision) return;
-				pendingAbove = undefined;
-				if (typeof reply.above === "number" && Number.isFinite(reply.above) && reply.above >= 0) viewport(reply.above);
-			}, error => {
-				if (revision !== overlayRevision) return;
-				pendingAbove = undefined;
-				if (mode) { closeMenu(); fail(error); }
-			});
+			void request("overlay", { above }).then(
+				(reply) => {
+					if (revision !== overlayRevision) return;
+					pendingAbove = undefined;
+					if (typeof reply.above === "number" && Number.isFinite(reply.above) && reply.above >= 0)
+						viewport(reply.above);
+				},
+				(error) => {
+					if (revision !== overlayRevision) return;
+					pendingAbove = undefined;
+					if (mode) {
+						closeMenu();
+						fail(error);
+					}
+				},
+			);
 		}
 		function resetMenu() {
 			epoch++;
@@ -160,7 +226,8 @@
 		function revealCaret() {
 			if (document.activeElement !== input) return;
 			backdrop.scrollTop = input.scrollTop;
-			const line = caretLine(), box = input.getBoundingClientRect();
+			const line = caretLine(),
+				box = input.getBoundingClientRect();
 			if (!line) return;
 			if (line.bottom > box.bottom) input.scrollTop += Math.ceil(line.bottom - box.bottom);
 			else if (line.top < box.top) input.scrollTop -= Math.ceil(box.top - line.top);
@@ -177,7 +244,10 @@
 			const box = input.getBoundingClientRect();
 			const visible = line.bottom > box.top && line.top < box.bottom;
 			const top = visible && line.top < box.top + line.height && input.scrollTop > 1;
-			const bottom = visible && line.bottom > box.bottom - line.height && input.scrollTop + input.clientHeight < input.scrollHeight - 1;
+			const bottom =
+				visible &&
+				line.bottom > box.bottom - line.height &&
+				input.scrollTop + input.clientHeight < input.scrollHeight - 1;
 			// Leave a context row at the active edge. In very short panes, protect the caret instead.
 			if (scroll && box.height >= 3 * line.height && (top || bottom)) {
 				input.scrollTop += bottom ? line.height : -line.height;
@@ -188,9 +258,11 @@
 		function anchorPoint(): Point | undefined {
 			if (menuAnchor) return menuAnchor.getBoundingClientRect();
 			const editor = input.getBoundingClientRect();
-			if (mode === "context" && contextPoint) return { left: editor.left + contextPoint.left, top: editor.top + contextPoint.top };
+			if (mode === "context" && contextPoint)
+				return { left: editor.left + contextPoint.left, top: editor.top + contextPoint.top };
 			const line = caretLine();
-			if (line && line.bottom > editor.top && line.top < editor.bottom) return { left: editor.left, top: Math.max(line.top, editor.top) };
+			if (line && line.bottom > editor.top && line.top < editor.bottom)
+				return { left: editor.left, top: Math.max(line.top, editor.top) };
 		}
 		function menuHeight() {
 			// Only the list scrolls between the filter and the level selector.
@@ -201,7 +273,10 @@
 		function positionMenu(opening = false) {
 			if (!mode || menu.hidden) return;
 			const point = anchorPoint();
-			if (!point) { closeMenu(); return; }
+			if (!point) {
+				closeMenu();
+				return;
+			}
 			const height = menu.style.height ? parseFloat(menu.style.height) : menuHeight();
 			const paper = pane.getBoundingClientRect();
 			const bottom = paper.bottom - point.top + menuGap;
@@ -267,7 +342,9 @@
 				if (typeof result.text !== "string" || typeof result.cursor !== "number") return;
 				const change = assist.completionEdit(text, result.text, result.cursor);
 				if (change) edit(change);
-			} catch (error) { fail(error); }
+			} catch (error) {
+				fail(error);
+			}
 		}
 		function completionName(item: Item, prefix: string) {
 			const marker = prefix[0];
@@ -276,36 +353,57 @@
 		}
 		function complete(force = false) {
 			clearTimeout(timer);
-			const version = ++epoch, text = input.value, cursor = input.selectionEnd;
+			const version = ++epoch,
+				text = input.value,
+				cursor = input.selectionEnd;
 			if (!connected || input.readOnly || (!force && !assist.completionTrigger(text, cursor))) {
 				if (mode === "completion") closeMenu();
 				return;
 			}
-			timer = setTimeout(() => {
-				// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Discard stale replies before constructing menu rows.
-				void request("complete", { text, cursor, force }).then((result) => {
-					if (version !== epoch || input.value !== text || input.selectionEnd !== cursor) return;
-					const items = result.items as Item[] | undefined;
-					const prefix = typeof result.prefix === "string" ? result.prefix : "";
-					if (!items?.length) { if (mode === "completion") closeMenu(); return; }
-					openMenu("completion", text.startsWith("/") ? "Pi commands" : "Pi completions");
-					for (const item of items.slice(0, 50)) row(completionName(item, prefix), item.description ?? "", () => apply(item, prefix, text, cursor));
-					showMenu();
-					options[0]?.classList.add("current");
-				}, () => { if (force && version === epoch) notice("Pi did not return completions."); });
-			}, force ? 0 : 80);
+			timer = setTimeout(
+				() => {
+					void request("complete", { text, cursor, force }).then(
+						// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Discard stale replies before constructing menu rows.
+						(result) => {
+							if (version !== epoch || input.value !== text || input.selectionEnd !== cursor) return;
+							const items = result.items as Item[] | undefined;
+							const prefix = typeof result.prefix === "string" ? result.prefix : "";
+							if (!items?.length) {
+								if (mode === "completion") closeMenu();
+								return;
+							}
+							openMenu("completion", text.startsWith("/") ? "Pi commands" : "Pi completions");
+							for (const item of items.slice(0, 50))
+								row(completionName(item, prefix), item.description ?? "", () => apply(item, prefix, text, cursor));
+							showMenu();
+							options[0]?.classList.add("current");
+						},
+						() => {
+							if (force && version === epoch) notice("Pi did not return completions.");
+						},
+					);
+				},
+				force ? 0 : 80,
+			);
 		}
 		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Ordered guards preserve menu and caret state.
 		function addPaths(paths: unknown) {
 			if (!Array.isArray(paths) || !paths.every((path) => typeof path === "string" && path.startsWith("/"))) return;
 			if (paths.length === 0) return;
-			const range = removeSelection(), shell = input.value.startsWith("!");
+			const range = removeSelection(),
+				shell = input.value.startsWith("!");
 			const separator = range.start > 0 && !/\s$/u.test(input.value.slice(0, range.start)) ? (shell ? " " : "\n") : "";
-			const value = paths.map((path: string) => shell ? `'${path.replaceAll("'", "'\\''")}'` : path).join(shell ? " " : "\n");
+			const value = paths
+				.map((path: string) => (shell ? `'${path.replaceAll("'", "'\\''")}'` : path))
+				.join(shell ? " " : "\n");
 			edit({ ...range, text: separator + value });
 		}
 		async function addFiles(type: string, fields?: Record<string, unknown>) {
-			try { addPaths((await request(type, fields)).paths); } catch (error) { fail(error); }
+			try {
+				addPaths((await request(type, fields)).paths);
+			} catch (error) {
+				fail(error);
+			}
 		}
 		function mentionFile() {
 			closeMenu();
@@ -314,15 +412,22 @@
 		function openAdd() {
 			openMenu("add", "Add to message", add);
 			if (offerRestore()) row(`Restore draft from ${recoveryLabel}`, "", restore);
-			row("Image or file…", "", () => { closeMenu(); void addFiles("pick"); });
-			if (connected) row("Mention a file", "@", mentionFile);
-			if (connected) row("Pi commands", "/", () => {
+			row("Image or file…", "", () => {
 				closeMenu();
-				if (input.value.length === 0) whole("/");
-				complete(true);
+				void addFiles("pick");
 			});
+			if (connected) row("Mention a file", "@", mentionFile);
+			if (connected)
+				row("Pi commands", "/", () => {
+					closeMenu();
+					if (input.value.length === 0) whole("/");
+					complete(true);
+				});
 			if (entries.length > 0) row("Recent messages", "", openHistory);
-			row("Send key", preferences().sendKey === "command" ? "⌘⏎" : "⏎", () => { preferences().toggleSendKey(); openAdd(); });
+			row("Send key", preferences().sendKey === "command" ? "⌘⏎" : "⏎", () => {
+				preferences().toggleSendKey();
+				openAdd();
+			});
 			menu.append(sizeActions());
 			showMenu();
 		}
@@ -333,8 +438,11 @@
 			try {
 				const { text } = await request("pasteText");
 				if (typeof text !== "string" || !text || input.readOnly || mode || document.activeElement !== input) return;
-				if (value === input.value && selection.start === input.selectionStart && selection.end === input.selectionEnd) edit({ ...selection, text });
-			} catch (error) { fail(error); }
+				if (value === input.value && selection.start === input.selectionStart && selection.end === input.selectionEnd)
+					edit({ ...selection, text });
+			} catch (error) {
+				fail(error);
+			}
 		}
 		function clipboardCommand(command: "cut" | "copy") {
 			// Run in the menu gesture so WebKit grants clipboard access and keeps cut in its undo stack.
@@ -343,9 +451,12 @@
 		function openContext(event: MouseEvent) {
 			event.preventDefault();
 			const selection = { ...removeSelection(), direction: input.selectionDirection };
-			const value = input.value, editable = !input.readOnly, selectedText = selection.start !== selection.end;
+			const value = input.value,
+				editable = !input.readOnly,
+				selectedText = selection.start !== selection.end;
 			const editor = input.getBoundingClientRect();
-			const point = event.clientX || event.clientY ? { left: event.clientX, top: event.clientY } : caretLine() ?? editor;
+			const point =
+				event.clientX || event.clientY ? { left: event.clientX, top: event.clientY } : (caretLine() ?? editor);
 			contextPoint = { left: point.left - editor.left, top: Math.max(0, point.top - editor.top) };
 			input.focus({ preventScroll: true });
 			restoreSelection(selection);
@@ -370,25 +481,33 @@
 			showMenu();
 		}
 		function sizeActions() {
-			const sizes = document.createElement("div"), value = document.createElement("span");
+			const sizes = document.createElement("div"),
+				value = document.createElement("span");
 			sizes.className = "size-actions";
 			value.textContent = `${Math.round(preferences().size)} pt`;
-			for (const [glyph, label, step] of [["smaller", "Smaller text", -1], ["reset", "Reset text size", 0], ["larger", "Larger text", 1]] as const) {
-				sizes.append(iconButton(glyph, label, () => {
-					preferences().resize(step);
-					value.textContent = `${Math.round(preferences().size)} pt`;
-				}));
+			for (const [glyph, label, step] of [
+				["smaller", "Smaller text", -1],
+				["reset", "Reset text size", 0],
+				["larger", "Larger text", 1],
+			] as const) {
+				sizes.append(
+					iconButton(glyph, label, () => {
+						preferences().resize(step);
+						value.textContent = `${Math.round(preferences().size)} pt`;
+					}),
+				);
 			}
 			sizes.append(value);
 			return sizes;
 		}
 		function openHistory() {
 			openMenu("history", "Recent messages", add);
-			for (const entry of entries.slice().reverse()) row(entry.split("\n")[0], "", () => {
-				closeMenu();
-				const index = entries.lastIndexOf(entry);
-				if (whole(entry)) recalled = index;
-			});
+			for (const entry of entries.slice().reverse())
+				row(entry.split("\n")[0], "", () => {
+					closeMenu();
+					const index = entries.lastIndexOf(entry);
+					if (whole(entry)) recalled = index;
+				});
 			showMenu();
 		}
 		function thinkingChoices() {
@@ -416,14 +535,20 @@
 					current = { ...current, thinking: result.level };
 					paintModel(current.model?.name, result.level);
 				}
-			} catch (error) { fail(error); }
+			} catch (error) {
+				fail(error);
+			}
 		}
 		function loadModels() {
-			fetching ??= request("models").then(result => {
-				if (!Array.isArray(result.models)) throw Error("Pi did not return models.");
-				const next = result.models as Model[];
-				if (JSON.stringify(next) !== JSON.stringify(modelCache)) modelCache = next;
-			}).finally(() => { fetching = undefined; });
+			fetching ??= request("models")
+				.then((result) => {
+					if (!Array.isArray(result.models)) throw Error("Pi did not return models.");
+					const next = result.models as Model[];
+					if (JSON.stringify(next) !== JSON.stringify(modelCache)) modelCache = next;
+				})
+				.finally(() => {
+					fetching = undefined;
+				});
 			return fetching;
 		}
 		function prefetch() {
@@ -459,23 +584,37 @@
 			cachedHeight = placement?.height ?? cachedHeight;
 			// Reserve this opening's height. Background changes scroll inside the model list.
 			menu.style.height = `${cachedHeight}px`;
-			filter.addEventListener("input", () => { paint(); list.scrollTop = 0; });
-			void loadModels().then(() => {
-				if (version === epoch && previous !== modelCache) paint();
-			}, error => { if (version === epoch && !modelCache) { closeMenu(); fail(error); } });
+			filter.addEventListener("input", () => {
+				paint();
+				list.scrollTop = 0;
+			});
+			void loadModels().then(
+				() => {
+					if (version === epoch && previous !== modelCache) paint();
+				},
+				(error) => {
+					if (version === epoch && !modelCache) {
+						closeMenu();
+						fail(error);
+					}
+				},
+			);
 		}
 		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Ordered guards preserve menu and caret state.
 		function modelRows(list: HTMLElement, models: Model[], filter: string) {
 			list.replaceChildren();
 			options = [];
 			const query = filter.toLowerCase().trim();
-			const filtered = models.filter((entry) => `${entry.provider} ${entry.name} ${entry.id}`.toLowerCase().includes(query));
+			const filtered = models.filter((entry) =>
+				`${entry.provider} ${entry.name} ${entry.id}`.toLowerCase().includes(query),
+			);
 			for (const provider of new Set(filtered.map((entry) => entry.provider))) {
 				const heading = document.createElement("div");
 				heading.className = "menu-group";
 				heading.textContent = provider;
 				list.append(heading);
-				for (const entry of filtered.filter((item) => item.provider === provider)) row(entry.name, entry.current ? "✓ Current" : "", () => selectModel(entry), list);
+				for (const entry of filtered.filter((item) => item.provider === provider))
+					row(entry.name, entry.current ? "✓ Current" : "", () => selectModel(entry), list);
 			}
 			if (options.length === 0) list.textContent = "No matching models";
 			else options[0].classList.add("current");
@@ -486,9 +625,13 @@
 			try {
 				const result = await request("setModel", { provider: entry.provider, id: entry.id });
 				if (result.applied !== true) notice(String(result.message ?? "Pi did not select this model."));
-			} catch (error) { fail(error); }
+			} catch (error) {
+				fail(error);
+			}
 		}
-		function offerRestore() { return recoveryLabel && !input.value && !recovering; }
+		function offerRestore() {
+			return recoveryLabel && !input.value && !recovering;
+		}
 		async function restore() {
 			closeMenu();
 			if (input.value || recovering || !recoveryLabel) return;
@@ -496,8 +639,11 @@
 			try {
 				const result = await request("restore");
 				if (!input.value && recoveryLabel && typeof result.text === "string" && whole(result.text)) recoveryLabel = "";
-			} catch (error) { fail(error); }
-			finally { recovering = false; }
+			} catch (error) {
+				fail(error);
+			} finally {
+				recovering = false;
+			}
 		}
 		function paintModel(name = "Model", level = "") {
 			get("model-name").textContent = name;
@@ -512,7 +658,8 @@
 			connected = connection === "connected";
 			model.disabled = !connected;
 			paintModel(next.model?.name, next.thinking);
-			const messages = next.queued ?? [], signature = JSON.stringify(messages);
+			const messages = next.queued ?? [],
+				signature = JSON.stringify(messages);
 			if (signature !== queueKey) {
 				queueKey = signature;
 				queued.replaceChildren();
@@ -531,13 +678,15 @@
 				tag.textContent = message.behavior === "steer" ? "Steer" : "Queue";
 				const text = document.createElement("span");
 				text.textContent = message.text;
-				const takeBack = iconButton("edit", "Edit queued messages", () => { void request("dequeue").catch(fail); });
+				const takeBack = iconButton("edit", "Edit queued messages", () => {
+					void request("dequeue").catch(fail);
+				});
 				line.append(icon(message.behavior === "steer" ? "steer" : "queue"), tag, text, takeBack);
 				queued.append(line);
 			}
 		}
 		let coloured: string | undefined;
-		function updateSpan(span: HTMLElement, part: {text: string; kind?: string}) {
+		function updateSpan(span: HTMLElement, part: { text: string; kind?: string }) {
 			if (span.textContent !== part.text) span.textContent = part.text;
 			if (span.dataset.syntax !== part.kind) {
 				if (part.kind) span.dataset.syntax = part.kind;
@@ -552,11 +701,15 @@
 			const parts = assist.syntaxParts(coloured);
 			let node = backdrop.firstElementChild;
 			for (const part of parts) {
-				const span = node as HTMLElement | null ?? document.createElement("span");
+				const span = (node as HTMLElement | null) ?? document.createElement("span");
 				node = span.nextElementSibling;
 				updateSpan(span, part);
 			}
-			while (node) { const next = node.nextElementSibling; node.remove(); node = next; }
+			while (node) {
+				const next = node.nextElementSibling;
+				node.remove();
+				node = next;
+			}
 			if (backdrop.lastChild?.nodeType !== Node.TEXT_NODE) backdrop.append("\u200b");
 		}
 		function imageStrip() {
@@ -574,20 +727,26 @@
 		function fetchThumbnail(path: string) {
 			if (imageCache.size > 80) imageCache.clear();
 			imageCache.set(path, null);
-			void request("thumbnail", { path }).then((result) => {
-				if (typeof result.url === "string" && result.url.startsWith("data:image/png;base64,")) {
-					imageCache.set(path, result.url);
-					imageStrip();
-				}
-			}, () => {});
+			void request("thumbnail", { path }).then(
+				(result) => {
+					if (typeof result.url === "string" && result.url.startsWith("data:image/png;base64,")) {
+						imageCache.set(path, result.url);
+						imageStrip();
+					}
+				},
+				() => {},
+			);
 		}
 		function imageTile(match: Match, url: string) {
-			const tile = document.createElement("div"), image = document.createElement("img");
+			const tile = document.createElement("div"),
+				image = document.createElement("img");
 			tile.className = "thumbnail";
 			image.src = url;
 			image.alt = match.path.split("/").at(-1) ?? "Image";
 			const remove = iconButton("close", `Remove ${image.alt}`, () => {
-				const latest = assist.imagePaths(input.value).find((item) => item.path === match.path && item.start === match.start);
+				const latest = assist
+					.imagePaths(input.value)
+					.find((item) => item.path === match.path && item.start === match.start);
 				if (latest) edit({ ...latest, text: "" });
 			});
 			tile.append(image, remove);
@@ -603,8 +762,19 @@
 			if (person && (!mode || mode === "completion")) complete();
 		}
 		function historyKey(event: KeyboardEvent) {
-			if (!['ArrowUp', 'ArrowDown'].includes(event.key) || event.metaKey || event.altKey || event.shiftKey) return false;
-			const next = assist.historyStep({ entries, index: recalled, text: input.value, base: "", selectionStart: input.selectionStart, selectionEnd: input.selectionEnd }, event.key === "ArrowUp" ? -1 : 1);
+			if (!["ArrowUp", "ArrowDown"].includes(event.key) || event.metaKey || event.altKey || event.shiftKey)
+				return false;
+			const next = assist.historyStep(
+				{
+					entries,
+					index: recalled,
+					text: input.value,
+					base: "",
+					selectionStart: input.selectionStart,
+					selectionEnd: input.selectionEnd,
+				},
+				event.key === "ArrowUp" ? -1 : 1,
+			);
 			if (!next) return false;
 			if (whole(next.text)) recalled = next.index;
 			return true;
@@ -612,12 +782,32 @@
 		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Ordered guards preserve menu and caret state.
 		function key(event: KeyboardEvent) {
 			if (event.isComposing) return false;
-			if (mode && event.key === "Escape") { closeMenu(); return true; }
-			if ((input.readOnly && mode !== "context") || (mode && event.target instanceof HTMLButtonElement) || (event.key === "Tab" && mode && mode !== "completion")) return false;
-			if (mode && event.key === "ArrowUp") { move(selected - 1); return true; }
-			if (mode && event.key === "ArrowDown") { move(selected + 1); return true; }
-			if (mode && (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) && options[selected]) { options[selected].click(); return true; }
-			if (event.key === "Tab" && !event.shiftKey && document.activeElement === input && connected) { complete(true); return true; }
+			if (mode && event.key === "Escape") {
+				closeMenu();
+				return true;
+			}
+			if (
+				(input.readOnly && mode !== "context") ||
+				(mode && event.target instanceof HTMLButtonElement) ||
+				(event.key === "Tab" && mode && mode !== "completion")
+			)
+				return false;
+			if (mode && event.key === "ArrowUp") {
+				move(selected - 1);
+				return true;
+			}
+			if (mode && event.key === "ArrowDown") {
+				move(selected + 1);
+				return true;
+			}
+			if (mode && (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey)) && options[selected]) {
+				options[selected].click();
+				return true;
+			}
+			if (event.key === "Tab" && !event.shiftKey && document.activeElement === input && connected) {
+				complete(true);
+				return true;
+			}
 			return document.activeElement === input && historyKey(event);
 		}
 		function drop(event: DragEvent) {
@@ -637,11 +827,15 @@
 			});
 			return ((await request("image", { data })).paths as string[]) ?? [];
 		}
-		menu.addEventListener("keydown", (event) => { if (key(event)) event.preventDefault(); });
+		menu.addEventListener("keydown", (event) => {
+			if (key(event)) event.preventDefault();
+		});
 		function contextGesture(event: MouseEvent) {
 			return event.button === 2 || (event.button === 0 && event.ctrlKey);
 		}
-		input.addEventListener("pointerdown", (event) => { if (contextGesture(event)) event.preventDefault(); });
+		input.addEventListener("pointerdown", (event) => {
+			if (contextGesture(event)) event.preventDefault();
+		});
 		input.addEventListener("contextmenu", openContext);
 		document.addEventListener("pointerdown", (event) => {
 			const target = event.target as Node;
@@ -651,10 +845,22 @@
 			closeMenu();
 		});
 		input.addEventListener("selectionchange", () => protectCaret(true));
-		input.addEventListener("scroll", () => { backdrop.scrollLeft = input.scrollLeft; backdrop.scrollTop = input.scrollTop; protectCaret(false); if (mode === "completion") positionMenu(); });
-		input.addEventListener("select", () => { if (mode === "completion") positionMenu(); });
-		new ResizeObserver(() => { protectCaret(true); positionMenu(); }).observe(input);
-		document.addEventListener("dragover", (event) => { if (event.dataTransfer?.types.includes("Files")) event.preventDefault(); });
+		input.addEventListener("scroll", () => {
+			backdrop.scrollLeft = input.scrollLeft;
+			backdrop.scrollTop = input.scrollTop;
+			protectCaret(false);
+			if (mode === "completion") positionMenu();
+		});
+		input.addEventListener("select", () => {
+			if (mode === "completion") positionMenu();
+		});
+		new ResizeObserver(() => {
+			protectCaret(true);
+			positionMenu();
+		}).observe(input);
+		document.addEventListener("dragover", (event) => {
+			if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+		});
 		document.addEventListener("drop", drop);
 		window.addEventListener("resize", () => positionMenu());
 		input.addEventListener("paste", (event) => {
@@ -663,14 +869,34 @@
 				void addFiles("pasteFiles");
 			}
 		});
-		add.addEventListener("click", () => { if (mode === "add") closeMenu(); else openAdd(); });
-		model.addEventListener("click", () => { if (mode === "model") closeMenu(); else void openModels(); });
+		add.addEventListener("click", () => {
+			if (mode === "add") closeMenu();
+			else openAdd();
+		});
+		model.addEventListener("click", () => {
+			if (mode === "model") closeMenu();
+			else void openModels();
+		});
 		return {
-			key, sync, updated, viewport, revealCaret, prefetch, paste: (paths: unknown) => addPaths(paths),
-			history(next: string[]) { entries = next; recalled = null; },
-			recovery(label: string) { recoveryLabel = label; if (mode === "add") openAdd(); },
+			key,
+			sync,
+			updated,
+			viewport,
+			revealCaret,
+			prefetch,
+			paste: (paths: unknown) => addPaths(paths),
+			history(next: string[]) {
+				entries = next;
+				recalled = null;
+			},
+			recovery(label: string) {
+				recoveryLabel = label;
+				if (mode === "add") openAdd();
+			},
 			models: openModels,
-			get mode() { return mode; },
+			get mode() {
+				return mode;
+			},
 		};
 	}
 	root.mountComposerControls = mount;

@@ -723,10 +723,7 @@ describe("named data controls", () => {
 		const shownData = shown?.data;
 		assert.ok(shownData);
 		assert.equal(shownData.revision, namedDataRevision(shownData));
-		assert.equal(
-			snapshotData([shownData], Date.parse(operator.at) + 100000000000)[request.data.name].status,
-			"ready",
-		);
+		assert.equal(snapshotData([shownData], Date.parse(operator.at) + 100000000000)[request.data.name].status, "ready");
 		assert.deepEqual((await reg.snapshot()).data.get(request.data.name), shownData);
 	});
 
@@ -947,7 +944,11 @@ describe("bounded tools and operator panel", () => {
 			inspected.push(view);
 			return { view, tool: params.tool, message: "x".repeat(100000) };
 		});
-		const result = await call(toolOf(registered, "policy_rules"), { view: "preview", tool: "sample", input: { old: 1 } });
+		const result = await call(toolOf(registered, "policy_rules"), {
+			view: "preview",
+			tool: "sample",
+			input: { old: 1 },
+		});
 		assert.deepEqual(inspected, ["preview"]);
 		assert.ok(Buffer.byteLength(result.content[0].text) <= 50 * 1024);
 		assert.match(result.content[0].text, /truncated/);
@@ -964,7 +965,12 @@ describe("bounded tools and operator panel", () => {
 		const snapshot = await reg.snapshot();
 		let result: [string, string | undefined, string | undefined] | undefined;
 		const ops: PolicyOperations = {
-			load: async () => ({ snapshot, fireSummary: summary, activity: { records: [], partial: false, byteLimited: false, recordLimited: false, bytesRead: 0 }, scope: { cwd: "/work" } }),
+			load: async () => ({
+				snapshot,
+				fireSummary: summary,
+				activity: { records: [], partial: false, byteLimited: false, recordLimited: false, bytesRead: 0 },
+				scope: { cwd: "/work" },
+			}),
 			refresh: async () => snapshot,
 			inspect: async () => assert.fail("no inspection"),
 			approve: async (id, effect, revision) => {
@@ -986,11 +992,11 @@ describe("bounded tools and operator panel", () => {
 		assert.equal(frame.depth(), 2, "an exact proposal opens its review directly, with no effect choice");
 		const review = frame.screen(120, 60);
 		assert.match(review, /rename-key/);
-		for (const line of JSON.stringify(snapshot.pending[0], null, 2).split("\n")) assert.ok(review.includes(line), `artifact line missing: ${line}`);
+		for (const line of JSON.stringify(snapshot.pending[0], null, 2).split("\n"))
+			assert.ok(review.includes(line), `artifact line missing: ${line}`);
 		frame.readAll();
 		frame.action("Approve add").run();
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.deepEqual(result, [proposal.id, undefined, proposalRevision(proposal)]);
 	});
 });
-

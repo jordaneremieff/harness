@@ -20,7 +20,12 @@ import {
 	capacityStatus,
 	capacityTurnEnd,
 	readCapacityState,
-	band, gate, continuityTools, isContinuityCall, piAutoThreshold, effectiveCheckpointPercent,
+	band,
+	gate,
+	continuityTools,
+	isContinuityCall,
+	piAutoThreshold,
+	effectiveCheckpointPercent,
 } from "./capacity.ts";
 import { transcriptEntries } from "./test-fixtures.mts";
 
@@ -113,9 +118,18 @@ function requestContent(result: BoundaryResult | undefined): string {
 describe("capacity tool gate", () => {
 	const known = (percent: number) => ({ kind: "known" as const, tokens: percent * 10, contextWindow: 1000, percent });
 	it("opens on unknown usage and gates one decision round and consecutive stop rounds", () => {
-		const input = { config: defaults, declared: new Map(), released: false, decisionRoundOpen: true, blockedRounds: 0, toolName: "read", args: {} };
+		const input = {
+			config: defaults,
+			declared: new Map(),
+			released: false,
+			decisionRoundOpen: true,
+			blockedRounds: 0,
+			toolName: "read",
+			args: {},
+		};
 		assert.equal(band({ kind: "unknown" }, defaults), "normal");
-		for (const measure of [{ kind: "unknown" as const }, known(89)]) assert.equal(gate({ ...input, measure }).kind, "allow");
+		for (const measure of [{ kind: "unknown" as const }, known(89)])
+			assert.equal(gate({ ...input, measure }).kind, "allow");
 		assert.equal(gate({ ...input, measure: known(91) }).kind, "block");
 		assert.equal(gate({ ...input, measure: known(91), decisionRoundOpen: false }).kind, "allow");
 		for (const name of ["read", "stash_read", "stash_list", "stash_edit", "stash_complete", "stash_rotate"]) {
@@ -131,41 +145,81 @@ describe("capacity tool gate", () => {
 	});
 	it("uses exact producer acceptance and ignores asynchronous declarations", async () => {
 		let late: (() => void) | undefined;
-		const declared = continuityTools({ emit(_channel, value) {
-			const request = value as { declare(tool: { name: string; act: "compaction" | "worker-resolution"; accepts?: (args: unknown) => boolean }): void };
-			request.declare({ name: "compact", act: "compaction" });
-			request.declare({ name: "resolve", act: "worker-resolution", accepts: (args) => args === "yes" });
-			request.declare({ name: "missing", act: "worker-resolution" });
-			request.declare({ name: "throws", act: "worker-resolution", accepts: () => { throw new Error("refuse"); } });
-			request.declare({ name: "truthy", act: "worker-resolution", accepts: (() => 1) as unknown as () => boolean });
-			late = () => request.declare({ name: "late", act: "compaction" });
-		} });
+		const declared = continuityTools({
+			emit(_channel, value) {
+				const request = value as {
+					declare(tool: {
+						name: string;
+						act: "compaction" | "worker-resolution";
+						accepts?: (args: unknown) => boolean;
+					}): void;
+				};
+				request.declare({ name: "compact", act: "compaction" });
+				request.declare({ name: "resolve", act: "worker-resolution", accepts: (args) => args === "yes" });
+				request.declare({ name: "missing", act: "worker-resolution" });
+				request.declare({
+					name: "throws",
+					act: "worker-resolution",
+					accepts: () => {
+						throw new Error("refuse");
+					},
+				});
+				request.declare({ name: "truthy", act: "worker-resolution", accepts: (() => 1) as unknown as () => boolean });
+				late = () => request.declare({ name: "late", act: "compaction" });
+			},
+		});
 		await Promise.resolve();
 		late?.();
 		assert.equal(declared.has("late"), false);
 		assert.equal(isContinuityCall("compact", {}, declared), true);
 		assert.equal(isContinuityCall("resolve", "yes", declared), true);
 		assert.equal(isContinuityCall("resolve", "no", declared), false);
-		for (const name of ["missing", "throws", "truthy", "late", "codemode", "tool_search"]) assert.equal(isContinuityCall(name, {}, declared), false);
+		for (const name of ["missing", "throws", "truthy", "late", "codemode", "tool_search"])
+			assert.equal(isContinuityCall(name, {}, declared), false);
 	});
 	it("admits only accepted work-completion forms at the stop and names the completion tool", () => {
-		const declared = continuityTools({ emit(_channel, value) {
-			const request = value as { declare(tool: { name: string; act: string; accepts?: (args: unknown) => boolean }): void };
-			request.declare({ name: "compact", act: "compaction" });
-			request.declare({ name: "finish", act: "work-completion", accepts: (args) => (args as { action?: string }).action === "complete" });
-			request.declare({ name: "unchecked", act: "work-completion" });
-			request.declare({ name: "future", act: "future-act", accepts: () => true });
-		} });
+		const declared = continuityTools({
+			emit(_channel, value) {
+				const request = value as {
+					declare(tool: { name: string; act: string; accepts?: (args: unknown) => boolean }): void;
+				};
+				request.declare({ name: "compact", act: "compaction" });
+				request.declare({
+					name: "finish",
+					act: "work-completion",
+					accepts: (args) => (args as { action?: string }).action === "complete",
+				});
+				request.declare({ name: "unchecked", act: "work-completion" });
+				request.declare({ name: "future", act: "future-act", accepts: () => true });
+			},
+		});
 		assert.deepEqual([...declared.keys()], ["compact", "finish", "unchecked"]);
 		const input = { config: defaults, declared, released: false, decisionRoundOpen: true, blockedRounds: 0 };
 		for (const percent of [91, 96]) {
-			assert.equal(gate({ ...input, measure: known(percent), toolName: "finish", args: { action: "complete" } }).kind, "allow");
-			for (const [toolName, args] of [["finish", { action: "continue" }], ["finish", undefined], ["unchecked", { action: "complete" }], ["future", {}], ["read", { path: "x" }]] as const) {
+			assert.equal(
+				gate({ ...input, measure: known(percent), toolName: "finish", args: { action: "complete" } }).kind,
+				"allow",
+			);
+			for (const [toolName, args] of [
+				["finish", { action: "continue" }],
+				["finish", undefined],
+				["unchecked", { action: "complete" }],
+				["future", {}],
+				["read", { path: "x" }],
+			] as const) {
 				const result = gate({ ...input, measure: known(percent), toolName, args });
 				assert.equal(result.kind, "block", `${toolName} at ${percent}%`);
 				if (result.kind !== "block") continue;
-				assert.match(result.reason, /close that work before the answer with a declared work-completion tool \(finish, unchecked\); it sends the final report/);
-				assert.equal(result.reason.includes(`${toolName} is a declared continuity tool, but its producer does not accept this argument form.`), declared.has(toolName));
+				assert.match(
+					result.reason,
+					/close that work before the answer with a declared work-completion tool \(finish, unchecked\); it sends the final report/,
+				);
+				assert.equal(
+					result.reason.includes(
+						`${toolName} is a declared continuity tool, but its producer does not accept this argument form.`,
+					),
+					declared.has(toolName),
+				);
 			}
 		}
 		const none = gate({ ...input, declared: new Map(), measure: known(96), toolName: "read", args: {} });
@@ -175,7 +229,10 @@ describe("capacity tool gate", () => {
 		const model = { provider: "fixture", id: "model", contextWindow: 100000 };
 		assert.equal(piAutoThreshold(undefined, model), 83.616);
 		assert.equal(piAutoThreshold({ enabled: false }, model), undefined);
-		assert.equal(piAutoThreshold({ reserveTokens: 10000, modelOverrides: { "fixture/model": { reserveTokens: 20000 } } }, model), 80);
+		assert.equal(
+			piAutoThreshold({ reserveTokens: 10000, modelOverrides: { "fixture/model": { reserveTokens: 20000 } } }, model),
+			80,
+		);
 		assert.equal(effectiveCheckpointPercent(defaults, 80), 75);
 		assert.equal(effectiveCheckpointPercent(defaults, 4), 85);
 	});
@@ -208,8 +265,12 @@ describe("capacity configuration", () => {
 			{ PI_STASH_DECISION_PERCENT: "101" },
 			{ PI_STASH_INTAKE_TOKEN_BUDGET: "1.5" },
 			{ PI_STASH_INTAKE_TOKEN_BUDGET: "Infinity" },
-		]) assert.deepEqual(capacityConfig(env), defaults);
-		assert.throws(() => capacityConfig({ PI_STASH_CHECKPOINT_PERCENT: "90" }), /stash.checkpointPercent.*stash.decisionPercent/);
+		])
+			assert.deepEqual(capacityConfig(env), defaults);
+		assert.throws(
+			() => capacityConfig({ PI_STASH_CHECKPOINT_PERCENT: "90" }),
+			/stash.checkpointPercent.*stash.decisionPercent/,
+		);
 	});
 });
 

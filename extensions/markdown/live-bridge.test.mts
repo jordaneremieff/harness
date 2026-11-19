@@ -68,11 +68,14 @@ test("the broker binds prompts and unsaved reads to one authenticated conversati
 });
 test("the broker forwards a large batch as one prompt and enforces the UTF-8 limit", { timeout: 10000 }, async () => {
 	const calls: string[] = [];
-	const bridge = new LiveBridge({ submit: async (text) => {
-		calls.push(text);
-		return { status: "requested" };
-	} });
-	const config = await bridge.start(), pane = binding();
+	const bridge = new LiveBridge({
+		submit: async (text) => {
+			calls.push(text);
+			return { status: "requested" };
+		},
+	});
+	const config = await bridge.start(),
+		pane = binding();
 	try {
 		await post(config, "/connect", pane);
 		const text = "😀".repeat(32768);

@@ -1,4 +1,10 @@
-import { getMarkdownTheme, type EntryRenderer, type MessageRenderer, type MessageRenderOptions, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+	getMarkdownTheme,
+	type EntryRenderer,
+	type MessageRenderer,
+	type MessageRenderOptions,
+	type Theme,
+} from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, MouseRegion, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { judgmentRequestOf, type JudgmentRequest } from "./commands.ts";
@@ -26,13 +32,17 @@ const TITLES: Record<JudgmentRequest["action"], string> = {
 
 /** Displayed text keeps newlines and tabs and drops terminal controls and other control or format characters. */
 function displayText(text: string): string {
-	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (character) => (character === "\n" || character === "\t" ? character : ""));
+	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (character) =>
+		character === "\n" || character === "\t" ? character : "",
+	);
 }
 
 const oneLine = (text: string) => displayText(text).replace(/\s+/gu, " ").trim();
 
 function contentText(content: Parameters<MessageRenderer>[0]["content"]): string {
-	return typeof content === "string" ? content : content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+	return typeof content === "string"
+		? content
+		: content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
 
 /** The card header and the body text a collapsed request previews: the operator hint, or how the subject is found. */
@@ -48,7 +58,10 @@ export function requestSummary(text: string): { label: string; facts: string[]; 
 
 /** One row at most `width` wide; a clipped row ends in `…` in the colour of the text it cuts and keeps the row background. */
 function clipRow(line: string, width: number): string {
-	return truncateToWidth(line, Math.max(0, width), "…").replace(/\x1b\[0m…\x1b\[0m$/u, "…\x1b[22;23;24;25;27;28;29;39m");
+	return truncateToWidth(line, Math.max(0, width), "…").replace(
+		/\x1b\[0m…\x1b\[0m$/u,
+		"…\x1b[22;23;24;25;27;28;29;39m",
+	);
 }
 
 /** Pi's tool-card hint, `... (2 more lines, ctrl+o to expand)`, with the key from Pi's `keyHint` and the rest muted. */
@@ -56,7 +69,9 @@ function expansionHint(theme: Theme, options: MessageRenderOptions, hidden: numb
 	const key = typeof options.keyText === "function" ? options.keyText("app.tools.expand") : "";
 	const action = !key
 		? theme.fg("muted", "click to expand")
-		: typeof options.keyHint === "function" ? options.keyHint("app.tools.expand", "to expand") : theme.fg("dim", key) + theme.fg("muted", " to expand");
+		: typeof options.keyHint === "function"
+			? options.keyHint("app.tools.expand", "to expand")
+			: theme.fg("dim", key) + theme.fg("muted", " to expand");
 	return theme.fg("muted", `... (${hidden} more line${hidden === 1 ? "" : "s"}, `) + action + theme.fg("muted", ")");
 }
 
@@ -69,7 +84,10 @@ function trimBlank(lines: string[]): string[] {
 	return lines.slice(start, end);
 }
 
-const markdown = (text: string, theme: Theme) => new Markdown(displayText(text).trim() || "(no text)", 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("text", value) });
+const markdown = (text: string, theme: Theme) =>
+	new Markdown(displayText(text).trim() || "(no text)", 0, 0, getMarkdownTheme(), {
+		color: (value) => theme.fg("text", value),
+	});
 
 interface Header {
 	label: string;
@@ -80,7 +98,10 @@ interface Header {
 /** The `[pillars]` line, the muted facts line when facts are known, and a blank line. */
 function headerLines(header: Header, theme: Theme, width: number): string[] {
 	const subject = header.subject ? theme.fg("text", ` · ${oneLine(header.subject)}`) : "";
-	const title = clipRow(`${theme.fg("customMessageLabel", theme.bold("[pillars]"))} ${theme.fg("text", theme.bold(oneLine(header.label)))}${subject}`, width);
+	const title = clipRow(
+		`${theme.fg("customMessageLabel", theme.bold("[pillars]"))} ${theme.fg("text", theme.bold(oneLine(header.label)))}${subject}`,
+		width,
+	);
 	const facts = header.facts.map(oneLine).filter(Boolean);
 	return [title, ...(facts.length ? [clipRow(theme.fg("muted", facts.join(" · ")), width)] : []), ""];
 }
@@ -119,7 +140,14 @@ class RequestBody implements Component {
 	private readonly options: MessageRenderOptions;
 	private readonly message: object;
 	private expanded: boolean;
-	constructor(message: object, header: Header, preview: string, content: string, theme: Theme, options: MessageRenderOptions) {
+	constructor(
+		message: object,
+		header: Header,
+		preview: string,
+		content: string,
+		theme: Theme,
+		options: MessageRenderOptions,
+	) {
 		this.message = message;
 		this.header = header;
 		this.theme = theme;
@@ -143,7 +171,11 @@ class RequestBody implements Component {
 		else {
 			const preview = trimBlank(trimBlank(this.preview.render(width)).slice(0, REQUEST_PREVIEW_LINES));
 			const hidden = Math.max(0, full.length - preview.length);
-			lines = [...head, ...preview, ...(hidden > 0 ? [clipRow(expansionHint(this.theme, this.options, hidden), width)] : [])];
+			lines = [
+				...head,
+				...preview,
+				...(hidden > 0 ? [clipRow(expansionHint(this.theme, this.options, hidden), width)] : []),
+			];
 		}
 		this.cache = { width, lines };
 		return lines;
@@ -175,7 +207,12 @@ class ViewBody implements Component {
 
 function messageBox(theme: Theme, padding: number, child: Component): Box {
 	const background = theme.getBgAnsi("customMessageBg");
-	const box = new Box(padding, 1, (line) => theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background)));
+	const box = new Box(padding, 1, (line) =>
+		theme.bg(
+			"customMessageBg",
+			line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background),
+		),
+	);
 	box.addChild(child);
 	return box;
 }
@@ -184,7 +221,11 @@ function messageBox(theme: Theme, padding: number, child: Component): Box {
 export const renderJudgmentRequestMessage: MessageRenderer = (message, options, theme) => {
 	const content = contentText(message.content);
 	const { label, facts, preview } = requestSummary(content);
-	return messageBox(theme, options.outputPad, clickToggle(new RequestBody(message, { label, facts }, preview, content, theme, options)));
+	return messageBox(
+		theme,
+		options.outputPad,
+		clickToggle(new RequestBody(message, { label, facts }, preview, content, theme, options)),
+	);
 };
 
 /** A `pillars-view` entry: `[pillars] Source · governance`, then the command's Markdown output. */
@@ -196,5 +237,9 @@ export const renderViewEntry: EntryRenderer<ViewEntryData> = (entry, _options, t
 		...(typeof data?.subject === "string" && data.subject.trim() ? { subject: data.subject } : {}),
 		facts,
 	};
-	return messageBox(theme, 1, new ViewBody(header, typeof data?.text === "string" ? data.text : "Pillars view unavailable.", theme));
+	return messageBox(
+		theme,
+		1,
+		new ViewBody(header, typeof data?.text === "string" ? data.text : "Pillars view unavailable.", theme),
+	);
 };

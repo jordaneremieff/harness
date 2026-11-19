@@ -1,19 +1,32 @@
 import { execFile } from "node:child_process";
 
 export type AgentBranchReader = (cwd: string, signal: AbortSignal) => Promise<string | undefined>;
-export const readAgentBranch: AgentBranchReader = (cwd, signal) => new Promise((resolve) => {
-	const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
-	env.LC_ALL = "C";
-	env.GIT_OPTIONAL_LOCKS = "0";
-	if (signal.aborted) { resolve(undefined); return; }
-	const child = execFile("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd, env, timeout: 1000, maxBuffer: 4096, encoding: "utf8" }, (error, stdout) => {
-		signal.removeEventListener("abort", stop);
-		resolve(error || signal.aborted ? undefined : stdout.trim() || undefined);
+export const readAgentBranch: AgentBranchReader = (cwd, signal) =>
+	new Promise((resolve) => {
+		const env: NodeJS.ProcessEnv = Object.fromEntries(
+			Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+		);
+		env.LC_ALL = "C";
+		env.GIT_OPTIONAL_LOCKS = "0";
+		if (signal.aborted) {
+			resolve(undefined);
+			return;
+		}
+		const child = execFile(
+			"git",
+			["symbolic-ref", "--quiet", "--short", "HEAD"],
+			{ cwd, env, timeout: 1000, maxBuffer: 4096, encoding: "utf8" },
+			(error, stdout) => {
+				signal.removeEventListener("abort", stop);
+				resolve(error || signal.aborted ? undefined : stdout.trim() || undefined);
+			},
+		);
+		// A failed spawn has no PID; do not signal an unstarted process handle.
+		const stop = () => {
+			if (child.pid) child.kill("SIGTERM");
+		};
+		signal.addEventListener("abort", stop, { once: true });
 	});
-	// A failed spawn has no PID; do not signal an unstarted process handle.
-	const stop = () => { if (child.pid) child.kill("SIGTERM"); };
-	signal.addEventListener("abort", stop, { once: true });
-});
 interface BranchEntry {
 	event: string;
 	value?: string;
@@ -25,8 +38,13 @@ export class AgentBranchCache {
 	private closed = false;
 	private readonly read?: AgentBranchReader;
 	private readonly redraw: () => void;
-	constructor(read: AgentBranchReader | undefined, redraw: () => void) { this.read = read; this.redraw = redraw; }
-	get(cwd: string): string | undefined { return this.entries.get(cwd)?.value; }
+	constructor(read: AgentBranchReader | undefined, redraw: () => void) {
+		this.read = read;
+		this.redraw = redraw;
+	}
+	get(cwd: string): string | undefined {
+		return this.entries.get(cwd)?.value;
+	}
 	refresh(cwd: string, event: string): void {
 		if (this.closed || !this.read || !cwd) return;
 		let entry = this.entries.get(cwd);
@@ -46,13 +64,15 @@ export class AgentBranchCache {
 		const event = entry.event;
 		const controller = new AbortController();
 		entry.pending = controller;
-		void this.read?.(cwd, controller.signal).catch(() => undefined).then((branch) => {
-			if (this.closed || controller.signal.aborted || this.entries.get(cwd) !== entry) return;
-			entry.pending = undefined;
-			entry.value = branch;
-			this.redraw();
-			if (entry.event !== event) this.load(cwd, entry);
-		});
+		void this.read?.(cwd, controller.signal)
+			.catch(() => undefined)
+			.then((branch) => {
+				if (this.closed || controller.signal.aborted || this.entries.get(cwd) !== entry) return;
+				entry.pending = undefined;
+				entry.value = branch;
+				this.redraw();
+				if (entry.event !== event) this.load(cwd, entry);
+			});
 	}
 	dispose(): void {
 		this.closed = true;

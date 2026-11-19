@@ -87,19 +87,25 @@ export function eventLog<T>(): EventLog<T> {
 				if (error) reject(error);
 				else resolve();
 			};
-			const check = (): void => { if (predicate(events)) finish(); };
+			const check = (): void => {
+				if (predicate(events)) finish();
+			};
 			const timer = setTimeout(() => finish(new Error("fixture producer event did not arrive")), timeoutMs);
 			listeners.add(check);
 		});
 	};
 	Object.defineProperties(events, {
-		push: { value: (...values: T[]) => {
-			const length = Array.prototype.push.apply(events, values);
-			for (const listener of [...listeners]) listener();
-			return length;
-		} },
+		push: {
+			value: (...values: T[]) => {
+				const length = Array.prototype.push.apply(events, values);
+				for (const listener of [...listeners]) listener();
+				return length;
+			},
+		},
 		waitFor: { value: waitFor },
-		waitForCount: { value: (count: number, timeoutMs?: number) => waitFor((items) => items.length >= count, timeoutMs) },
+		waitForCount: {
+			value: (count: number, timeoutMs?: number) => waitFor((items) => items.length >= count, timeoutMs),
+		},
 	});
 	return events as EventLog<T>;
 }
@@ -127,14 +133,30 @@ export function waitForProcessExit(child: ChildProcess, timeoutMs = 10000): Prom
 export function waitForConnectionClose(host: HostConnection, timeoutMs = 10000): Promise<void> {
 	if (host.closed) return Promise.resolve();
 	return new Promise((resolve, reject) => {
-		const timer = setTimeout(() => { unsubscribe(); reject(new Error("fixture connection did not close")); }, timeoutMs);
-		const unsubscribe = host.onClose(() => { clearTimeout(timer); unsubscribe(); resolve(); });
-		if (host.closed) { clearTimeout(timer); unsubscribe(); resolve(); }
+		const timer = setTimeout(() => {
+			unsubscribe();
+			reject(new Error("fixture connection did not close"));
+		}, timeoutMs);
+		const unsubscribe = host.onClose(() => {
+			clearTimeout(timer);
+			unsubscribe();
+			resolve();
+		});
+		if (host.closed) {
+			clearTimeout(timer);
+			unsubscribe();
+			resolve();
+		}
 	});
 }
 
 /** Recheck persistent fixture state only on real host change notifications. */
-export async function waitForFixtureState(host: Pick<HostConnection, "subscribeChanges">, path: string, predicate: (state: FixtureState) => boolean, timeoutMs = 5000): Promise<void> {
+export async function waitForFixtureState(
+	host: Pick<HostConnection, "subscribeChanges">,
+	path: string,
+	predicate: (state: FixtureState) => boolean,
+	timeoutMs = 5000,
+): Promise<void> {
 	if (!host.subscribeChanges) throw new Error("fixture host has no change notifications");
 	let unsubscribe: (() => void) | undefined;
 	let settled = false;
@@ -152,10 +174,14 @@ export async function waitForFixtureState(host: Pick<HostConnection, "subscribeC
 	});
 	void completed.catch(() => {});
 	try {
-		unsubscribe = await host.subscribeChanges(() => { if (predicate(readFixtureState(path))) finish(); });
+		unsubscribe = await host.subscribeChanges(() => {
+			if (predicate(readFixtureState(path))) finish();
+		});
 		if (settled) unsubscribe();
 		else if (predicate(readFixtureState(path))) finish();
-	} catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+	} catch (error) {
+		finish(error instanceof Error ? error : new Error(String(error)));
+	}
 	await completed;
 }
 
@@ -181,15 +207,20 @@ export function createFixtureRuntime(statePath: string): HostRuntime {
 		return new Promise((resolve, reject) => {
 			const waiter = (value: unknown) => resolve(value);
 			waiters.push(waiter);
-			signal?.addEventListener("abort", () => {
-				const index = waiters.indexOf(waiter);
-				if (index >= 0) waiters.splice(index, 1);
-				publishState({ waitsCancelled: (readFixtureState(statePath).waitsCancelled ?? 0) + 1 });
-				reject(signal.reason instanceof Error ? signal.reason : new Error("fixture wait cancelled"));
-			}, { once: true });
+			signal?.addEventListener(
+				"abort",
+				() => {
+					const index = waiters.indexOf(waiter);
+					if (index >= 0) waiters.splice(index, 1);
+					publishState({ waitsCancelled: (readFixtureState(statePath).waitsCancelled ?? 0) + 1 });
+					reject(signal.reason instanceof Error ? signal.reason : new Error("fixture wait cancelled"));
+				},
+				{ once: true },
+			);
 		});
 	};
-	const receipts = (params: unknown, signal?: AbortSignal) => isRecord(params) && params.fixtureGate === true ? startWait(signal) : { receipts: [], reports: [], pending: 0 };
+	const receipts = (params: unknown, signal?: AbortSignal) =>
+		isRecord(params) && params.fixtureGate === true ? startWait(signal) : { receipts: [], reports: [], pending: 0 };
 	return {
 		request: async (method, params, requestId, signal) => {
 			switch (method) {
@@ -217,7 +248,10 @@ export function createFixtureRuntime(statePath: string): HostRuntime {
 					return { effect: true };
 				}
 				case "abort":
-					publishState({ hangsStarted: (readFixtureState(statePath).hangsStarted ?? 0) + 1, ...(signal === undefined ? {} : { hangsSignaled: true }) });
+					publishState({
+						hangsStarted: (readFixtureState(statePath).hangsStarted ?? 0) + 1,
+						...(signal === undefined ? {} : { hangsSignaled: true }),
+					});
 					return new Promise(() => {});
 				case "report":
 					for (const listener of [...changeListeners]) listener();
@@ -255,7 +289,22 @@ async function main(): Promise<void> {
 	const metadata = parseHostMetadata(JSON.parse(metadataJson));
 	const statePath = join(dirname(metadata.storagePath), "state.json");
 	writeFixtureState(statePath, { starts: (readFixtureState(statePath).starts ?? 0) + 1 });
-	const host = await runHost(() => ({ ...createFixtureRuntime(statePath), ...(process.env.HOST_FIXTURE_PUBLICATION === "1" ? { publishedView: { storageId: metadata.storageId, updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } } } : {}) }), { metadata });
+	const host = await runHost(
+		() => ({
+			...createFixtureRuntime(statePath),
+			...(process.env.HOST_FIXTURE_PUBLICATION === "1"
+				? {
+						publishedView: {
+							storageId: metadata.storageId,
+							updatedAt: new Date().toISOString(),
+							rows: [],
+							coverage: { complete: true, omitted: 0 },
+						},
+					}
+				: {}),
+		}),
+		{ metadata },
+	);
 	await host.done;
 }
 

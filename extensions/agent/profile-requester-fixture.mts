@@ -7,14 +7,18 @@ const root = process.env.PI_AGENT_SESSIONS_DIR;
 const agentDir = process.env.PI_AGENT_DIR;
 const cwd = process.env.PROFILE_TEST_CWD;
 const id = process.env.PROFILE_TEST_REQUESTER;
-if (!root || !agentDir || !cwd || !id || !process.send) throw new Error("The requester fixture requires isolated paths and an IPC parent");
+if (!root || !agentDir || !cwd || !id || !process.send)
+	throw new Error("The requester fixture requires isolated paths and an IPC parent");
 const connections = new Map<string, HostConnection>();
 const controller = new AbortController();
 const caller = { id, cwd, model: { provider: "profile-process-fixture", modelId: "expert" }, thinkingLevel: "off" };
 const manager = new AgentManager({
-	root, agentDir, packageDir: getPackageDir(),
+	root,
+	agentDir,
+	packageDir: getPackageDir(),
 	validateModel: (value) => {
-		if (value.provider !== caller.model.provider || value.modelId !== caller.model.modelId) throw new Error("Fixture has no such model");
+		if (value.provider !== caller.model.provider || value.modelId !== caller.model.modelId)
+			throw new Error("Fixture has no such model");
 	},
 	acquire: async (metadata, options) => {
 		const connection = await acquireHost(metadata, options);
@@ -24,17 +28,32 @@ const manager = new AgentManager({
 	},
 });
 await manager.registerPrimary(id, {
-	signal: controller.signal, ...caller,
+	signal: controller.signal,
+	...caller,
 	send: (text, details) => process.send?.({ event: "notice", text, details }),
 });
 
-interface Command { id: number; method: string; params: Record<string, unknown> }
+interface Command {
+	id: number;
+	method: string;
+	params: Record<string, unknown>;
+}
 async function dispatch({ method, params }: Command): Promise<unknown> {
-	if (method === "spawn") return manager.spawn({ ...params, model: params.model === undefined ? `${caller.model.provider}/${caller.model.modelId}` : String(params.model) }, caller);
-	if (method === "control") return manager.control(String(params.method), params.input as Record<string, unknown>, caller);
+	if (method === "spawn")
+		return manager.spawn(
+			{
+				...params,
+				model: params.model === undefined ? `${caller.model.provider}/${caller.model.modelId}` : String(params.model),
+			},
+			caller,
+		);
+	if (method === "control")
+		return manager.control(String(params.method), params.input as Record<string, unknown>, caller);
 	if (method === "metadata") return hostMetadata(manager.catalog.read(String(params.sessionId)));
 	if (method === "release") {
-		await waitForHostRelease(hostMetadata(manager.catalog.read(String(params.sessionId))), { signal: AbortSignal.timeout(30000) });
+		await waitForHostRelease(hostMetadata(manager.catalog.read(String(params.sessionId))), {
+			signal: AbortSignal.timeout(30000),
+		});
 		return { released: true };
 	}
 	if (method === "raw") {
@@ -62,5 +81,9 @@ process.on("message", (input: Command) => {
 		(error: unknown) => process.send?.({ id: input.id, error: error instanceof Error ? error.message : String(error) }),
 	);
 });
-process.once("disconnect", () => { controller.abort(); void manager.close(); process.exit(0); });
+process.once("disconnect", () => {
+	controller.abort();
+	void manager.close();
+	process.exit(0);
+});
 process.send({ event: "ready", pid: process.pid, identity: id });

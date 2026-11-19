@@ -19,7 +19,8 @@ export function manualClock(start = 0): ManualClock {
 	const timers = new Map<number, Timer>();
 	const earliestDue = (): number | undefined => {
 		let found: number | undefined;
-		for (const [id, timer] of timers) if (timer.due <= now && (found === undefined || timer.due < (timers.get(found)?.due ?? Infinity))) found = id;
+		for (const [id, timer] of timers)
+			if (timer.due <= now && (found === undefined || timer.due < (timers.get(found)?.due ?? Infinity))) found = id;
 		return found;
 	};
 	return {
@@ -27,7 +28,9 @@ export function manualClock(start = 0): ManualClock {
 		after(delayMs, run) {
 			const id = ++next;
 			timers.set(id, { due: now + Math.max(0, delayMs), run });
-			return () => { timers.delete(id); };
+			return () => {
+				timers.delete(id);
+			};
 		},
 		advance(ms) {
 			now += ms;

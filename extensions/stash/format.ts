@@ -205,7 +205,10 @@ export function parseFrontmatter(md: string): ParsedArtifact {
 		if (!key) continue;
 		try {
 			Object.defineProperty(meta, key, {
-				value: JSON.parse(raw), enumerable: true, configurable: true, writable: true,
+				value: JSON.parse(raw),
+				enumerable: true,
+				configurable: true,
+				writable: true,
 			});
 		} catch {
 			// A malformed later occurrence must not leave an earlier lifecycle value usable.

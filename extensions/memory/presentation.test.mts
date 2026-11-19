@@ -334,14 +334,25 @@ describe("memory review and retirement cards", () => {
 
 describe("memory_search result cards", () => {
 	it("renders compact matches and material freshness without inventing missing declarations", () => {
-		const details = { ...indexPage, detail: false, notes: [{
-			slug: "editor", title: "Editor", lifecycle: { status: "active", supersededBy: null },
-			matched: ["editor", "choice"], freshness: {
-				deadline: "due", reviewAfter: "2026-09-01", evaluatedOn: "2026-09-29",
-				concern: { date: "2026-09-28", reason: "One disputed claim.", sources: "Synthetic source." },
-				problems: ["Invalid review_policy"],
-			},
-		}] };
+		const details = {
+			...indexPage,
+			detail: false,
+			notes: [
+				{
+					slug: "editor",
+					title: "Editor",
+					lifecycle: { status: "active", supersededBy: null },
+					matched: ["editor", "choice"],
+					freshness: {
+						deadline: "due",
+						reviewAfter: "2026-09-01",
+						evaluatedOn: "2026-09-29",
+						concern: { date: "2026-09-28", reason: "One disputed claim.", sources: "Synthetic source." },
+						problems: ["Invalid review_policy"],
+					},
+				},
+			],
+		};
 		const shown = screen(renderResult("memory_search", result("t", details), expandedView, theme, okContext), 200);
 		assert.match(shown, /Matched: editor; choice/);
 		assert.match(shown, /Review deadline: due/);
@@ -668,7 +679,7 @@ describe("memory_read result cards", () => {
 			renderResult(
 				"memory_read",
 				result(
-					"Error: note source changed since the supplied digest: provider-lessons.md. Restart memory_read with {\"slug\":\"provider-lessons\",\"offset\":0} without digest for the current note and digest. If the slug is absent, use memory_search; do not continue the previous page",
+					'Error: note source changed since the supplied digest: provider-lessons.md. Restart memory_read with {"slug":"provider-lessons","offset":0} without digest for the current note and digest. If the slug is absent, use memory_search; do not continue the previous page',
 					undefined,
 				),
 				collapsed,
@@ -1062,7 +1073,12 @@ describe("renderer hygiene", () => {
 				/ctrl\+g to expand arguments/,
 			);
 			assert.match(
-				screen(renderResult("memory_read", result("t", { slug: "s" }), collapsed, theme, { ...okContext, keyText: () => "ctrl+g" })),
+				screen(
+					renderResult("memory_read", result("t", { slug: "s" }), collapsed, theme, {
+						...okContext,
+						keyText: () => "ctrl+g",
+					}),
+				),
 				/ctrl\+g to expand result/,
 			);
 			for (const neutral of [{ ...call }, { ...call, keyText: () => "" }]) {
@@ -1123,7 +1139,11 @@ describe("renderer hygiene", () => {
 				assert.ok(rows.length <= 4, `card rows at width ${width}: ${rows.length}`);
 			}
 			const shown = screen(view, 100);
-			assert.match(shown, /status superseded · replacement replacement/, "lifecycle outranks the revision prefix in a crowded row");
+			assert.match(
+				shown,
+				/status superseded · replacement replacement/,
+				"lifecycle outranks the revision prefix in a crowded row",
+			);
 			assert.doesNotMatch(shown, /revision 2026/, "the revision prefix yields to the budget");
 			const expanded = screen(renderResult("memory_read", result("t", details), expandedView, theme, okContext), 300);
 			assert.match(expanded, /Revision: 20260101T120000000Z-0{60}/, "the expanded evidence keeps the exact revision");

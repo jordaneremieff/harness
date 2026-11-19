@@ -92,8 +92,14 @@ test("the load CLI ignores ambient local and global extensions", async (t) => {
 	const home = join(root, "home");
 	await mkdir(join(work, ".pi", "extensions"), { recursive: true });
 	await mkdir(join(home, ".pi", "agent", "extensions"), { recursive: true });
-	await writeFile(join(work, ".pi", "extensions", "local.ts"), "export default function () { throw new Error('ambient local extension'); }\n");
-	await writeFile(join(home, ".pi", "agent", "extensions", "global.ts"), "export default function () { throw new Error('ambient global extension'); }\n");
+	await writeFile(
+		join(work, ".pi", "extensions", "local.ts"),
+		"export default function () { throw new Error('ambient local extension'); }\n",
+	);
+	await writeFile(
+		join(home, ".pi", "agent", "extensions", "global.ts"),
+		"export default function () { throw new Error('ambient global extension'); }\n",
+	);
 	const extension = join(root, "requested.ts");
 	await writeFile(extension, "export default function () {}\n");
 	const script = fileURLToPath(new URL("./extension-load-check.mts", import.meta.url));
@@ -115,7 +121,10 @@ test("the load CLI accepts one shared-channel listener per extension without a l
 		extensions.push(extension);
 	}
 	const script = fileURLToPath(new URL("./extension-load-check.mts", import.meta.url));
-	const { stdout, stderr } = await promisify(execFile)(process.execPath, [script, ...extensions], { cwd: root, timeout: 20_000 });
+	const { stdout, stderr } = await promisify(execFile)(process.execPath, [script, ...extensions], {
+		cwd: root,
+		timeout: 20_000,
+	});
 	assert.match(stdout, /Loaded 12 extensions/);
 	assert.doesNotMatch(stderr, /MaxListenersExceededWarning/);
 });

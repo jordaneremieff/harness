@@ -415,16 +415,19 @@ export default function markdown(pi: ExtensionAPI): void {
 			publishDisplay();
 	});
 	publishDisplay();
-	const publishPalette = () => pi.events.emit("harness:palette:publish", {
-		version: 1,
-		source: "markdown",
-		commands: [{
-			id: "markdown.read",
-			title: "Read a Document…",
-			description: "Open a stored Markdown document in a reader pane",
-			argv: [process.execPath, fileURLToPath(new URL("./palette-command.ts", import.meta.url)), dir, app],
-		}],
-	} satisfies PalettePublication);
+	const publishPalette = () =>
+		pi.events.emit("harness:palette:publish", {
+			version: 1,
+			source: "markdown",
+			commands: [
+				{
+					id: "markdown.read",
+					title: "Read a Document…",
+					description: "Open a stored Markdown document in a reader pane",
+					argv: [process.execPath, fileURLToPath(new URL("./palette-command.ts", import.meta.url)), dir, app],
+				},
+			],
+		} satisfies PalettePublication);
 	const stopPalette = pi.events.on("harness:palette:request", (request) => {
 		if (typeof request === "object" && request !== null && (request as Partial<PaletteRequestEvent>).version === 1)
 			publishPalette();

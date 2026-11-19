@@ -20,15 +20,23 @@ export const settings = {
 			description: "Private directory for Markdown documents.",
 		},
 		checks: {
-			type: "enum", env: "PI_MARKDOWN_CHECKS", choices: ["off", "warn", "block"], default: "block",
-			description: "Writing checks for new Markdown publications and updates. off skips validation, warn saves and reports findings, and block refuses a publication with findings. Exact captures and saved replays are unchanged.",
+			type: "enum",
+			env: "PI_MARKDOWN_CHECKS",
+			choices: ["off", "warn", "block"],
+			default: "block",
+			description:
+				"Writing checks for new Markdown publications and updates. off skips validation, warn saves and reports findings, and block refuses a publication with findings. Exact captures and saved replays are unchanged.",
 		},
 		checksRules: {
-			type: "json", env: "PI_MARKDOWN_CHECKS_RULES", default: {},
+			type: "json",
+			env: "PI_MARKDOWN_CHECKS_RULES",
+			default: {},
 			description: "Rule overrides and an optional lexicon path for publication checks and the writing brief.",
 		},
 		readerFile: {
-			type: "path", env: "PI_MARKDOWN_READER_FILE", defaultText: "<agentDir>/markdown-reader.md",
+			type: "path",
+			env: "PI_MARKDOWN_READER_FILE",
+			defaultText: "<agentDir>/markdown-reader.md",
 			description: "Optional plain Markdown reader profile for the writing brief.",
 		},
 		agentPane: {
@@ -53,7 +61,14 @@ type EnumKey = "agentPane" | "checks";
 export type CheckMode = Choice<"checks">;
 type Choice<K extends EnumKey> = (typeof settings.fields)[K]["choices"][number];
 export type AgentPane = Choice<"agentPane">;
-type Values = { app: string; dir: string; agentPane: AgentPane; checks: CheckMode; checksRules: CheckOverrides; readerFile: string };
+type Values = {
+	app: string;
+	dir: string;
+	agentPane: AgentPane;
+	checks: CheckMode;
+	checksRules: CheckOverrides;
+	readerFile: string;
+};
 export type Diagnostic = {
 	field: string;
 	source: Origin;
@@ -173,7 +188,13 @@ function checked(value: unknown, agentDir: string): string {
 }
 function defaultPath(agentDir: string, key: Exclude<Key, EnumKey | "checksRules">): string {
 	try {
-		return checked(resolve(agentDir, { dir: "markdown", app: "markdown-reader/Markdown Reader.app", readerFile: "markdown-reader.md" }[key]), agentDir);
+		return checked(
+			resolve(
+				agentDir,
+				{ dir: "markdown", app: "markdown-reader/Markdown Reader.app", readerFile: "markdown-reader.md" }[key],
+			),
+			agentDir,
+		);
 	} catch {
 		throw new Error(`Invalid default for markdown.${key}`);
 	}
@@ -199,8 +220,7 @@ function readSection(options: ReadOptions) {
 			diagnostics.push(diagnostic("coverage", "file", "coverage"));
 	};
 	for (const key of Object.keys(section)) {
-		if (!Object.hasOwn(settings.fields, key))
-			add(diagnostic(unknownField(key), "file", "unknown"));
+		if (!Object.hasOwn(settings.fields, key)) add(diagnostic(unknownField(key), "file", "unknown"));
 	}
 	return { source, section, diagnostics, add };
 }
@@ -250,11 +270,17 @@ function boundedJson(input: unknown): boolean {
 		if (typeof value === "number") return Number.isFinite(value);
 		if (typeof value === "string") return value.length <= DOCUMENT_MAX_BYTES && !/[\u0000\ud800-\udfff]/u.test(value);
 		if (Array.isArray(value)) return value.every((child) => visit(child, depth + 1));
-		return object(value) && Object.entries(value).every(([key, child]) => textValid(key) && key.length <= 4096 && visit(child, depth + 1));
+		return (
+			object(value) &&
+			Object.entries(value).every(([key, child]) => textValid(key) && key.length <= 4096 && visit(child, depth + 1))
+		);
 	}
 	return visit(input, 0) && Buffer.byteLength(JSON.stringify(input)) <= DOCUMENT_MAX_BYTES;
 }
-function selectRuleOverrides(section: Record<string, unknown>, env: Environment): { value: CheckOverrides; origin: Origin; issue?: string; invalid: boolean } {
+function selectRuleOverrides(
+	section: Record<string, unknown>,
+	env: Environment,
+): { value: CheckOverrides; origin: Origin; issue?: string; invalid: boolean } {
 	const raw = env[settings.fields.checksRules.env];
 	const origin = raw !== undefined ? "env" : Object.hasOwn(section, "checksRules") ? "file" : "default";
 	if (origin === "default") return { value: {}, origin, invalid: false };
@@ -266,7 +292,9 @@ function selectRuleOverrides(section: Record<string, unknown>, env: Environment)
 		const invalid = invalidCheckField(input);
 		if (!invalid) return { value: input as CheckOverrides, origin, invalid: false };
 		field = invalid;
-	} catch { /* Reject the selected input without echoing it. */ }
+	} catch {
+		/* Reject the selected input without echoing it. */
+	}
 	return { value: {}, origin, invalid: true, issue: field };
 }
 export function readSettings(options: ReadOptions): Snapshot {
@@ -293,7 +321,19 @@ export function readSettings(options: ReadOptions): Snapshot {
 		checksRules: overrides.value,
 		readerFile: selectedValues.readerFile,
 	};
-	return { version: 1, slice: settings.slice, source, values, records, diagnostics, ...(overrides.issue ? { checksIssue: `${overrides.origin === "env" ? settings.fields.checksRules.env : source.path}: markdown.${overrides.issue}` } : {}) };
+	return {
+		version: 1,
+		slice: settings.slice,
+		source,
+		values,
+		records,
+		diagnostics,
+		...(overrides.issue
+			? {
+					checksIssue: `${overrides.origin === "env" ? settings.fields.checksRules.env : source.path}: markdown.${overrides.issue}`,
+				}
+			: {}),
+	};
 }
 export type SettingsBus = {
 	emit: (channel: string, data: unknown) => void;

@@ -1,4 +1,22 @@
-import { str, num, int, bool, nul, lit, union, arr, opt, obj, nullable, map, unknown, type Static, type StaticObject, type Properties, type Schema } from "@earendil-works/pi-schema";
+import {
+	str,
+	num,
+	int,
+	bool,
+	nul,
+	lit,
+	union,
+	arr,
+	opt,
+	obj,
+	nullable,
+	map,
+	unknown,
+	type Static,
+	type StaticObject,
+	type Properties,
+	type Schema,
+} from "@earendil-works/pi-schema";
 /**
  * Exact JSON schemas for the native Durable observation surface.
  *
@@ -42,7 +60,9 @@ const textRoles = ["user", "assistant", "toolResult", "system"] as const;
 
 /** Exact JSON value; no arbitrary unknown leaves. */
 export const JsonValueSchema: Schema<JsonValue> = {
-	$defs: { Json: { $id: "Json", anyOf: [nul(), boolean, number, string, arr({ $ref: "Json" }), map({ $ref: "Json" })] } },
+	$defs: {
+		Json: { $id: "Json", anyOf: [nul(), boolean, number, string, arr({ $ref: "Json" }), map({ $ref: "Json" })] },
+	},
 	$ref: "Json",
 };
 const jsonObject = map(JsonValueSchema);
@@ -50,23 +70,69 @@ const cursorSchema = jsonObject;
 
 const storageStatusId = str({ pattern: STORAGE_STATUS_ID_PATTERN });
 const storageStatusLimit = int({ minimum: 1, maximum: 50 });
-export const StorageStatusPageInputSchema = obj({ view: lit("storage-page"), storageId: storageStatusId, cursor: opt(cursorSchema), limit: opt(storageStatusLimit) });
+export const StorageStatusPageInputSchema = obj({
+	view: lit("storage-page"),
+	storageId: storageStatusId,
+	cursor: opt(cursorSchema),
+	limit: opt(storageStatusLimit),
+});
 /** Object-root parameters survive provider conversion; execution validates selector combinations. */
 export const StatusToolInputSchema = obj({
 	sessionId: opt(str({ minLength: 1, description: "Select one conversation. Omit for the existing overview scope." })),
-	detail: opt(bool({ description: "Request full selected status with true and an explicit sessionId. False is equivalent to omission on every view." })),
-	view: opt<Schema<"fleet" | "storage-page">>({ type: "string", enum: ["fleet", "storage-page"], description: "Read sampled machine-local model evidence with fleet, without a sessionId. Optional exact model/provider filters select published evidence, not provider health. Use storage-page for one exact storageId." }),
+	detail: opt(
+		bool({
+			description:
+				"Request full selected status with true and an explicit sessionId. False is equivalent to omission on every view.",
+		}),
+	),
+	view: opt<Schema<"fleet" | "storage-page">>({
+		type: "string",
+		enum: ["fleet", "storage-page"],
+		description:
+			"Read sampled machine-local model evidence with fleet, without a sessionId. Optional exact model/provider filters select published evidence, not provider health. Use storage-page for one exact storageId.",
+	}),
 	...FleetSelectionProperties,
-	storageId: opt(str({ pattern: STORAGE_STATUS_ID_PATTERN, description: "Exact bare storage ID. Only with view: storage-page." })),
-	cursor: opt(map(unknown(), { description: "Opaque backend cursor. Pass the returned cursor object unchanged. Only with view: storage-page." })),
-	limit: opt(int({ minimum: 1, maximum: 50, description: "Rows per storage page; default 50. Only with view: storage-page. Every other view is already bounded and takes no limit." })),
+	storageId: opt(
+		str({ pattern: STORAGE_STATUS_ID_PATTERN, description: "Exact bare storage ID. Only with view: storage-page." }),
+	),
+	cursor: opt(
+		map(unknown(), {
+			description: "Opaque backend cursor. Pass the returned cursor object unchanged. Only with view: storage-page.",
+		}),
+	),
+	limit: opt(
+		int({
+			minimum: 1,
+			maximum: 50,
+			description:
+				"Rows per storage page; default 50. Only with view: storage-page. Every other view is already bounded and takes no limit.",
+		}),
+	),
 });
 export const StorageStatusCoverageSchema = obj({
-	complete: boolean, returned: count, scanned: count,
-	next: union([nul(), obj({ tool: lit("agent_status"), view: lit("storage-page"), storageId: storageStatusId, cursor: cursorSchema, limit: storageStatusLimit })]),
+	complete: boolean,
+	returned: count,
+	scanned: count,
+	next: union([
+		nul(),
+		obj({
+			tool: lit("agent_status"),
+			view: lit("storage-page"),
+			storageId: storageStatusId,
+			cursor: cursorSchema,
+			limit: storageStatusLimit,
+		}),
+	]),
 });
 
-const modelCost = obj({ input: number, output: number, cacheRead: number, cacheWrite: number, total: number, totalFromProvider: opt(boolean) });
+const modelCost = obj({
+	input: number,
+	output: number,
+	cacheRead: number,
+	cacheWrite: number,
+	total: number,
+	totalFromProvider: opt(boolean),
+});
 export const UsageSchema = obj({
 	input: number,
 	output: number,
@@ -81,13 +147,44 @@ export const UsageStateSchema = obj({ models: map(UsageSchema), tools: map(Usage
 
 const textContent = obj({ type: lit("text"), text: string, textSignature: opt(string) });
 const imageContent = obj({ type: lit("image"), data: string, mimeType: string });
-const thinkingContent = obj({ type: lit("thinking"), thinking: string, thinkingSignature: opt(string), redacted: opt(boolean) });
-const toolCallContent = obj({ type: lit("toolCall"), id: string, name: string, arguments: jsonObject, argumentsError: opt(string), thoughtSignature: opt(string), namespace: opt(string) });
+const thinkingContent = obj({
+	type: lit("thinking"),
+	thinking: string,
+	thinkingSignature: opt(string),
+	redacted: opt(boolean),
+});
+const toolCallContent = obj({
+	type: lit("toolCall"),
+	id: string,
+	name: string,
+	arguments: jsonObject,
+	argumentsError: opt(string),
+	thoughtSignature: opt(string),
+	namespace: opt(string),
+});
 const userInputContent = union([string, arr(union([textContent, imageContent]))]);
 
-const diagnosticError = obj({ name: opt(string), message: string, stack: opt(string), code: opt(union([string, number])) });
-const assistantDiagnostic = obj({ type: string, timestamp: number, error: opt(diagnosticError), details: opt(jsonObject) });
-const deferredHandle = obj({ provider: string, modelId: string, api: string, id: string, expiresAt: opt(number), pollAfterMs: opt(number), data: opt(JsonValueSchema) });
+const diagnosticError = obj({
+	name: opt(string),
+	message: string,
+	stack: opt(string),
+	code: opt(union([string, number])),
+});
+const assistantDiagnostic = obj({
+	type: string,
+	timestamp: number,
+	error: opt(diagnosticError),
+	details: opt(jsonObject),
+});
+const deferredHandle = obj({
+	provider: string,
+	modelId: string,
+	api: string,
+	id: string,
+	expiresAt: opt(number),
+	pollAfterMs: opt(number),
+	data: opt(JsonValueSchema),
+});
 export const AssistantMessageSchema = obj({
 	role: lit("assistant"),
 	content: arr(union([textContent, thinkingContent, toolCallContent])),
@@ -109,7 +206,11 @@ export const AssistantMessageSchema = obj({
 	durationMs: opt(count),
 });
 
-const toolDiagnostic = obj({ severity: union([lit("info"), lit("warn"), lit("error")]), message: string, code: opt(string) });
+const toolDiagnostic = obj({
+	severity: union([lit("info"), lit("warn"), lit("error")]),
+	message: string,
+	code: opt(string),
+});
 const toolSlot = obj({
 	callId: string,
 	name: string,
@@ -139,7 +240,18 @@ const nestedToolSlot = obj({
 	summary: opt(obj({ isError: boolean, durationMs: opt(number), usage: opt(UsageSchema), error: opt(string) })),
 });
 const compactionTrigger = union([lit("manual"), lit("threshold"), lit("overflow")]);
-const runFailureReasons = ["model_error", "no_model", "aborted", "reset", "faulted", "orphaned", "interrupted", "restart_limit", "nothing_to_answer", "turn_limit"] as const;
+const runFailureReasons = [
+	"model_error",
+	"no_model",
+	"aborted",
+	"reset",
+	"faulted",
+	"orphaned",
+	"interrupted",
+	"restart_limit",
+	"nothing_to_answer",
+	"turn_limit",
+] as const;
 const compactionStatus = obj({
 	taskId: id,
 	trigger: compactionTrigger,
@@ -148,7 +260,9 @@ const compactionStatus = obj({
 	retry: opt(obj({ at: number, error: string })),
 });
 export const LiveStateSchema = obj({
-	run: opt(obj({ taskId: id, inputs: arr(id), turns: count, first: opt(id), afterRun: opt(obj({ tasks: opt(arr(id)) })) })),
+	run: opt(
+		obj({ taskId: id, inputs: arr(id), turns: count, first: opt(id), afterRun: opt(obj({ tasks: opt(arr(id)) })) }),
+	),
 	generation: opt(
 		obj({
 			attempt: count,
@@ -161,7 +275,15 @@ export const LiveStateSchema = obj({
 	nestedTools: opt(arr(nestedToolSlot)),
 	compactions: opt(arr(compactionStatus)),
 	compactionFailure: opt(obj({ taskId: id, trigger: compactionTrigger, error: string })),
-	runFailure: opt(obj({ taskId: id, inputs: arr(id), reason: union(runFailureReasons.map((reason) => lit(reason))), detail: opt(string), first: opt(id) })),
+	runFailure: opt(
+		obj({
+			taskId: id,
+			inputs: arr(id),
+			reason: union(runFailureReasons.map((reason) => lit(reason))),
+			detail: opt(string),
+			first: opt(id),
+		}),
+	),
 });
 
 const inboxItem = union([
@@ -215,7 +337,14 @@ export const ConversationStatusSchema = obj({
 		obj({
 			id,
 			kind: string,
-			status: union([lit("running"), lit("pending"), lit("waiting"), lit("sleeping"), lit("completing"), lit("blocked")]),
+			status: union([
+				lit("running"),
+				lit("pending"),
+				lit("waiting"),
+				lit("sleeping"),
+				lit("completing"),
+				lit("blocked"),
+			]),
 			background: boolean,
 			owner: opt(id),
 			abortRequested: boolean,
@@ -244,7 +373,11 @@ export const ConversationStatusSchema = obj({
 
 const compactionFailure = obj({ trigger: compactionTrigger, errorMessage: opt(string), at: opt(string) });
 const autoRetry = obj({ attempt: count, maxAttempts: count, delayMs: count, errorMessage: string });
-const dashboardHealth = obj({ lastError: opt(string), compactionFailure: opt(compactionFailure), autoRetry: opt(autoRetry) });
+const dashboardHealth = obj({
+	lastError: opt(string),
+	compactionFailure: opt(compactionFailure),
+	autoRetry: opt(autoRetry),
+});
 
 /** One dashboard roster row, including host startup and unavailable storage. */
 export const AgentConversationSummaryProperties = {
@@ -257,7 +390,17 @@ export const AgentConversationSummaryProperties = {
 	modifiedAt: number,
 	owner: union([lit("here"), lit("unavailable"), lit("unknown")]),
 	ownerLabel: opt(string),
-	state: union([lit("starting"), lit("working"), lit("idle"), lit("done"), lit("failed"), lit("stopped"), lit("interrupted"), lit("new"), lit("unavailable")]),
+	state: union([
+		lit("starting"),
+		lit("working"),
+		lit("idle"),
+		lit("done"),
+		lit("failed"),
+		lit("stopped"),
+		lit("interrupted"),
+		lit("new"),
+		lit("unavailable"),
+	]),
 	cost: number,
 	partial: boolean,
 	latestReply: opt(string),
@@ -286,13 +429,15 @@ export type ToolOverviewRow = Static<typeof ToolOverviewRowSchema>;
 
 /** What one session host installed, as reported by status. */
 export const DurableInventorySchema = obj({
-	contributions: arr(obj({
-		name: string,
-		source: string,
-		commands: arr(obj({ name: string, description: string })),
-		display: opt(obj({ version: lit(1), entry: string, export: lit("toolDisplay") })),
-		panel: opt(obj({ version: lit(1), entry: string, export: lit("operatorPanel"), command: string })),
-	})),
+	contributions: arr(
+		obj({
+			name: string,
+			source: string,
+			commands: arr(obj({ name: string, description: string })),
+			display: opt(obj({ version: lit(1), entry: string, export: lit("toolDisplay") })),
+			panel: opt(obj({ version: lit(1), entry: string, export: lit("operatorPanel"), command: string })),
+		}),
+	),
 	ordinaryOnly: arr(string),
 	/** Present only when at least one configured extension failed to load. */
 	failed: opt(arr(obj({ path: string, error: string }))),
@@ -300,7 +445,9 @@ export const DurableInventorySchema = obj({
 
 /** Models the host's configured runtime currently reports as available, from its last-known snapshot. */
 export const ModelChoicesSchema = obj({
-	models: arr(obj({ provider: string, modelId: string, name: opt(string), reasoning: boolean, contextWindow: opt(number) })),
+	models: arr(
+		obj({ provider: string, modelId: string, name: opt(string), reasoning: boolean, contextWindow: opt(number) }),
+	),
 	/** The runtime read this list came from; it performs no credential or network probe. */
 	source: lit("available-snapshot"),
 	/** The runtime's last availability error, when it reported one. */
@@ -346,7 +493,9 @@ export const ListCoverageProperties = {
 	catalog: obj({ storages: count, pass: union([lit("candidates"), lit("remainder")]), pending: count, settled: count }),
 	basis: string,
 	/** The exact continuation: call the named tool with the remaining fields. Null when discovery is complete. */
-	next: nullable(obj({ tool: lit("agent_list"), query: opt(string), cwd: opt(string), limit: opt(id), cursor: string })),
+	next: nullable(
+		obj({ tool: lit("agent_list"), query: opt(string), cwd: opt(string), limit: opt(id), cursor: string }),
+	),
 };
 export const ListOutputProperties = {
 	rows: arr(ListRowSchema),
@@ -357,10 +506,33 @@ export const ListOutputProperties = {
 };
 export const ListOutputSchema = obj(ListOutputProperties);
 
-const catalogPriorityCoverage = obj({ candidates: count, inspected: count, unreadable: count, unknownClaims: count, returned: count, remaining: count, priorityRemaining: count,
-	remainingRows: count, priorityRemainingRows: count, recordByteLimit: count, claimByteLimit: count, outputLimit: count });
+const catalogPriorityCoverage = obj({
+	candidates: count,
+	inspected: count,
+	unreadable: count,
+	unknownClaims: count,
+	returned: count,
+	remaining: count,
+	priorityRemaining: count,
+	remainingRows: count,
+	priorityRemainingRows: count,
+	recordByteLimit: count,
+	claimByteLimit: count,
+	outputLimit: count,
+});
 
-const statusOverviewCoverage = { complete: boolean, storagesVisited: count, skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: nul(), reasons: arr(string) };
+const statusOverviewCoverage = {
+	complete: boolean,
+	storagesVisited: count,
+	skipped: count,
+	omitted: count,
+	omittedPrimaries: count,
+	omittedFailures: count,
+	bytes: count,
+	byteLimitReached: boolean,
+	nextCursor: nul(),
+	reasons: arr(string),
+};
 const overviewSampleSummaryProperties = {
 	primaries: obj({ observed: count, summarized: count }),
 	failures: obj({ observed: count, summarized: count }),
@@ -421,7 +593,12 @@ export const StatusOutputSchema = union([
  * Component objects are open so they can coexist; a `propertyNames` guard closes each complete alternative,
  * and properties declared `never` state the exclusions between components.
  */
-type Intersection<S extends readonly Schema[]> = S extends readonly [infer Head extends Schema, ...infer Tail extends readonly Schema[]] ? Static<Head> & Intersection<Tail> : unknown;
+type Intersection<S extends readonly Schema[]> = S extends readonly [
+	infer Head extends Schema,
+	...infer Tail extends readonly Schema[],
+]
+	? Static<Head> & Intersection<Tail>
+	: unknown;
 
 /** An object whose listed properties are required unless `opt()`, and which tolerates other properties. */
 function partial<const P extends Properties>(properties: P): Schema<StaticObject<P>> {
@@ -438,51 +615,125 @@ function onlyKeys(keys: readonly string[]): Schema {
 /** A property that must be absent. */
 const absent = opt(false as unknown as Schema<never>);
 
-const toolCoverageProperties = { ...statusOverviewCoverage, inventory: catalogPriorityCoverage, omittedPriorityRows: count, omittedPriorityRecords: count, omittedOpenWorkRows: count };
+const toolCoverageProperties = {
+	...statusOverviewCoverage,
+	inventory: catalogPriorityCoverage,
+	omittedPriorityRows: count,
+	omittedPriorityRecords: count,
+	omittedOpenWorkRows: count,
+};
 const toolOverviewProperties = {
-	...overviewProperties, sessions: arr(ToolOverviewRowSchema), coverage: obj(toolCoverageProperties),
+	...overviewProperties,
+	sessions: arr(ToolOverviewRowSchema),
+	coverage: obj(toolCoverageProperties),
 	summary: obj({
-		sessions: obj({ observed: count, working: count, attention: count, unavailable: count, quiet: count, summarizedUnavailable: count, summarizedQuiet: count }),
+		sessions: obj({
+			observed: count,
+			working: count,
+			attention: count,
+			unavailable: count,
+			quiet: count,
+			summarizedUnavailable: count,
+			summarizedQuiet: count,
+		}),
 		...overviewSampleSummaryProperties,
 	}),
 };
 const awarenessProperties = { awareness: opt(EffortAwarenessSchema) };
 const singleProperties = { ...singlePayload, conversations: absent, createdAgents: absent, coverage: absent };
-const pluralProperties = { ...pluralPayload, storageId: string, conversation: absent, createdAgents: opt(CreatedAgentsSchema) };
+const pluralProperties = {
+	...pluralPayload,
+	storageId: string,
+	conversation: absent,
+	createdAgents: opt(CreatedAgentsSchema),
+};
 const liveProperties = { ...liveEnvelope, live: absent };
 const coldProperties = { ...coldEnvelope, inventory: absent, pid: absent };
 const bareProperties = { inventory: absent, pid: absent, live: absent, storageId: absent, deliveryError: absent };
 
-const toolOverview = all([partial(toolOverviewProperties), onlyKeys([...Object.keys(toolOverviewProperties), "awareness"])]);
+const toolOverview = all([
+	partial(toolOverviewProperties),
+	onlyKeys([...Object.keys(toolOverviewProperties), "awareness"]),
+]);
 const toolSelected = all([
 	union([partial(singleProperties), partial(pluralProperties)]),
 	union([partial(liveProperties), partial(coldProperties), partial(bareProperties)]),
-	onlyKeys(["awareness", "conversation", "conversations", "coverage", "createdAgents", "inventory", "pid", "live", "storageId", "deliveryError"]),
+	onlyKeys([
+		"awareness",
+		"conversation",
+		"conversations",
+		"coverage",
+		"createdAgents",
+		"inventory",
+		"pid",
+		"live",
+		"storageId",
+		"deliveryError",
+	]),
 ]);
 const ToolStatusSchema = all([partial(awarenessProperties), union([toolOverview, toolSelected])]);
 export const StatusDetailCallSchema = obj({ tool: lit("agent_status"), sessionId: string, detail: lit(true) });
 export const CompactConversationSchema = obj({
-	identity: string, conversationId: opt(id), busy: nullable(boolean),
+	identity: string,
+	conversationId: opt(id),
+	busy: nullable(boolean),
 	availability: union([lit("live"), lit("retained"), lit("unknown")]),
-	name: opt(string), model: opt(obj({ provider: string, modelId: string })), thinkingLevel: opt(string),
-	runId: opt(id), queue: obj({ inbox: nullableCount, submissions: nullableCount }), timers: nullableCount,
-	unplaced: opt(count), oldest: opt(count), openWorkCount: opt(count), openWorkOldest: opt(count), ageObservedAt: opt(count),
+	name: opt(string),
+	model: opt(obj({ provider: string, modelId: string })),
+	thinkingLevel: opt(string),
+	runId: opt(id),
+	queue: obj({ inbox: nullableCount, submissions: nullableCount }),
+	timers: nullableCount,
+	unplaced: opt(count),
+	oldest: opt(count),
+	openWorkCount: opt(count),
+	openWorkOldest: opt(count),
+	ageObservedAt: opt(count),
 	providerBlock: opt(obj({ blockId: string, recovery: string })),
-	runFailure: opt(obj({ reason: str({ maxLength: 128 }), detail: opt(str({ maxLength: 512 })), reasonTruncated: opt(lit(true)), detailTruncated: opt(lit(true)) })),
-	context: lit("unknown"), omitted: arr(string), detail: StatusDetailCallSchema,
+	runFailure: opt(
+		obj({
+			reason: str({ maxLength: 128 }),
+			detail: opt(str({ maxLength: 512 })),
+			reasonTruncated: opt(lit(true)),
+			detailTruncated: opt(lit(true)),
+		}),
+	),
+	context: lit("unknown"),
+	omitted: arr(string),
+	detail: StatusDetailCallSchema,
 });
-export const PresentationRefusalSchema = obj({ format: lit("refused"), cause: union([lit("byte-limit"), lit("source")]), reason: string, byteLimit: count });
+export const PresentationRefusalSchema = obj({
+	format: lit("refused"),
+	cause: union([lit("byte-limit"), lit("source")]),
+	reason: string,
+	byteLimit: count,
+});
 const compactEnvelope = {
-	format: lit("compact"), storageId: opt(string), live: opt(boolean), omitted: arr(string),
+	format: lit("compact"),
+	storageId: opt(string),
+	live: opt(boolean),
+	omitted: arr(string),
 };
 export const CompactSelectedStatusSchema = obj({
-	...compactEnvelope, conversation: CompactConversationSchema,
-	deliveryError: opt(str({ maxLength: 512 })), deliveryErrorTruncated: opt(lit(true)),
+	...compactEnvelope,
+	conversation: CompactConversationSchema,
+	deliveryError: opt(str({ maxLength: 512 })),
+	deliveryErrorTruncated: opt(lit(true)),
 });
 export const CompactStorageStatusSchema = obj({
-	...compactEnvelope, storageId: string, conversations: arr(CompactConversationSchema), coverage: StorageStatusCoverageSchema,
+	...compactEnvelope,
+	storageId: string,
+	conversations: arr(CompactConversationSchema),
+	coverage: StorageStatusCoverageSchema,
 });
-export const StatusToolOutputSchema = union([ToolStatusSchema, FleetStatusSchema, OrdinaryPrimaryObservationSchema, CompactSelectedStatusSchema, CompactStorageStatusSchema, PresentationRefusalSchema]);
+export const StatusToolOutputSchema = union([
+	ToolStatusSchema,
+	FleetStatusSchema,
+	OrdinaryPrimaryObservationSchema,
+	CompactSelectedStatusSchema,
+	CompactStorageStatusSchema,
+	PresentationRefusalSchema,
+]);
 
 const entrySource = union([lit("user"), lit("assistant"), lit("toolResult"), lit("summary"), lit("custom")]);
 const messageRole = union([lit("system"), lit("user"), lit("assistant"), lit("toolResult")]);
@@ -508,8 +759,22 @@ export const CompactEntryRowSchema = obj({
 	communication: CommunicationViewSchema,
 	format: lit("compact"),
 	nextOffset: nul(),
-	toolCalls: opt(arr(obj({ callId: opt(string), name: string, arguments: string, truncated: boolean }), { maxItems: 8 })),
-	toolResults: opt(arr(obj({ callId: opt(string), name: string, text: string, isError: boolean, truncated: boolean, durationMs: opt(count) }), { maxItems: 8 })),
+	toolCalls: opt(
+		arr(obj({ callId: opt(string), name: string, arguments: string, truncated: boolean }), { maxItems: 8 }),
+	),
+	toolResults: opt(
+		arr(
+			obj({
+				callId: opt(string),
+				name: string,
+				text: string,
+				isError: boolean,
+				truncated: boolean,
+				durationMs: opt(count),
+			}),
+			{ maxItems: 8 },
+		),
+	),
 	omittedParts: opt(count),
 });
 export const DurableEntryRowSchema = union([CompactEntryRowSchema, rawEntryRow]);
@@ -527,7 +792,15 @@ export const HistoryOutputSchema = union([
 	obj({ ...historyFields, view: lit("branch"), entries: arr(rawEntryRow) }),
 ]);
 
-const searchMatch = obj({ entryId: id, kind: string, source: entrySource, matchOffset: count, excerpt: string, excerptText: string, truncated: boolean });
+const searchMatch = obj({
+	entryId: id,
+	kind: string,
+	source: entrySource,
+	matchOffset: count,
+	excerpt: string,
+	excerptText: string,
+	truncated: boolean,
+});
 const searchCursor = obj({ cursor: nullable(cursorSchema), skip: count, scannedBytes: count });
 export const SearchOutputSchema = obj({
 	view: lit("search"),
@@ -594,13 +867,26 @@ export const ActivityOutputSchema = obj({
 });
 
 export const AnswerContinuationSchema = obj({
-	tool: lit("agent_inspect"), view: lit("result"), sessionId: string, submissionId: id, requestId: opt(string), offset: count,
+	tool: lit("agent_inspect"),
+	view: lit("result"),
+	sessionId: string,
+	submissionId: id,
+	requestId: opt(string),
+	offset: count,
 });
 export const ReceiptContinuationSchema = obj({
-	tool: lit("agent_inspect"), view: lit("result"), sessionId: string, submissionId: id, requestId: opt(string), receiptCursor: str({ minLength: 1, maxLength: 2048 }),
+	tool: lit("agent_inspect"),
+	view: lit("result"),
+	sessionId: string,
+	submissionId: id,
+	requestId: opt(string),
+	receiptCursor: str({ minLength: 1, maxLength: 2048 }),
 });
 export const ReceiptGroupSchema = obj({
-	recipient: string, results: arr(ResultReferenceSchema, { maxItems: 16 }), complete: boolean, next: nullable(ReceiptContinuationSchema),
+	recipient: string,
+	results: arr(ResultReferenceSchema, { maxItems: 16 }),
+	complete: boolean,
+	next: nullable(ReceiptContinuationSchema),
 });
 export type AnswerContinuation = Static<typeof AnswerContinuationSchema>;
 export type ReceiptContinuation = Static<typeof ReceiptContinuationSchema>;
@@ -620,14 +906,32 @@ const retainedResultProperties = {
 	answerEntryId: opt(id),
 	reason: opt(string),
 	answer: opt(string),
-	offset: opt(count), nextOffset: opt(nullableCount), truncated: opt(boolean),
-	answerContinuation: opt(AnswerContinuationSchema), receiptGroup: opt(ReceiptGroupSchema),
+	offset: opt(count),
+	nextOffset: opt(nullableCount),
+	truncated: opt(boolean),
+	answerContinuation: opt(AnswerContinuationSchema),
+	receiptGroup: opt(ReceiptGroupSchema),
 	/** `answer` and `label` are present only for an input that settled with an answer. */
-	work: opt(obj({ state: union([lit("open"), lit("closed")]), answer: opt(lit("state-note")), label: opt(string), finalReport: opt(FinalReportFactSchema) })),
-	finalReport: opt(obj({
-		requestId: string, ownerId: string, status: opt(union([lit("done"), lit("failed"), lit("stopped"), lit("reset")])),
-		text: string, length: count, offset: count, nextOffset: nullableCount, truncated: boolean,
-	})),
+	work: opt(
+		obj({
+			state: union([lit("open"), lit("closed")]),
+			answer: opt(lit("state-note")),
+			label: opt(string),
+			finalReport: opt(FinalReportFactSchema),
+		}),
+	),
+	finalReport: opt(
+		obj({
+			requestId: string,
+			ownerId: string,
+			status: opt(union([lit("done"), lit("failed"), lit("stopped"), lit("reset")])),
+			text: string,
+			length: count,
+			offset: count,
+			nextOffset: nullableCount,
+			truncated: boolean,
+		}),
+	),
 	finalReportContinuation: opt(FinalReportReadSchema),
 	usage: UsageStateSchema,
 };
@@ -648,7 +952,13 @@ export const ResultOutputSchema = union([RetainedResultOutputSchema, Unavailable
 export const ResultToolOutputSchema = ResultOutputSchema;
 
 /** `agent_inspect` output: one shape per view, selected by the `view` property. */
-export const InspectOutputSchema = union([HistoryOutputSchema, SearchOutputSchema, ExactOutputSchema, ActivityOutputSchema, ResultOutputSchema]);
+export const InspectOutputSchema = union([
+	HistoryOutputSchema,
+	SearchOutputSchema,
+	ExactOutputSchema,
+	ActivityOutputSchema,
+	ResultOutputSchema,
+]);
 /** Tool routing also accepts ordinary retained evidence; the native host contract stays separate. */
 export const InspectToolOutputSchema = union([InspectOutputSchema, OrdinaryPrimaryObservationSchema]);
 
@@ -669,7 +979,8 @@ type DiagnosticBranch = Schema & { anyOf?: Schema[]; properties?: Record<string,
 
 function diagnosticSchema(schema: object, value: unknown): object {
 	const branch = schema as DiagnosticBranch;
-	if (!Array.isArray(branch.anyOf) || value === null || typeof value !== "object" || Array.isArray(value)) return schema;
+	if (!Array.isArray(branch.anyOf) || value === null || typeof value !== "object" || Array.isArray(value))
+		return schema;
 	const record = value as Record<string, unknown>;
 	const candidates = (branch.anyOf as DiagnosticBranch[]).filter((candidate) => candidate.properties);
 	candidates.sort((left, right) => diagnosticScore(right, record) - diagnosticScore(left, record));
@@ -681,7 +992,11 @@ function diagnosticScore(schema: DiagnosticBranch, record: Record<string, unknow
 	for (const key of schema.required ?? []) score += Object.hasOwn(record, key) ? 2 : -2;
 	for (const [key, property] of Object.entries(schema.properties as Record<string, Schema>)) {
 		if (!Object.hasOwn(record, key)) continue;
-		score += Object.hasOwn(property, "const") ? record[key] === (property as Schema & { const?: unknown }).const ? 100 : -100 : 1;
+		score += Object.hasOwn(property, "const")
+			? record[key] === (property as Schema & { const?: unknown }).const
+				? 100
+				: -100
+			: 1;
 	}
 	return score;
 }
@@ -723,11 +1038,17 @@ function statusEnvelope(value: Record<string, unknown>, plural: boolean): "live"
 function selectedStatusDiagnostic(value: Record<string, unknown>, limit: number): ObservationDiagnostic {
 	const plural = has(value, "conversations");
 	if (!plural && !has(value, "conversation")) {
-		return { variant: "unrecognized", errors: ["/ expected sessions (overview), conversation or conversations (selected status), view \"fleet\", or kind \"ordinary-primary\""] };
+		return {
+			variant: "unrecognized",
+			errors: [
+				'/ expected sessions (overview), conversation or conversations (selected status), view "fleet", or kind "ordinary-primary"',
+			],
+		};
 	}
 	const conflicts: string[] = [];
 	if (plural && has(value, "conversation")) conflicts.push("/conversations cannot be combined with /conversation");
-	if (statusEnvelope(value, plural) === "live" && has(value, "live")) conflicts.push("/live cannot be combined with /inventory or /pid");
+	if (statusEnvelope(value, plural) === "live" && has(value, "live"))
+		conflicts.push("/live cannot be combined with /inventory or /pid");
 	const envelope = statusEnvelope(value, plural);
 	const variant = `${plural ? "plural" : "single"}-${envelope}`;
 	const payload = plural ? { ...pluralPayload, createdAgents: opt(CreatedAgentsSchema) } : singlePayload;
@@ -737,12 +1058,29 @@ function selectedStatusDiagnostic(value: Record<string, unknown>, limit: number)
 }
 
 function statusToolDiagnostic(value: Record<string, unknown>, limit: number): ObservationDiagnostic {
-	if (value.format === "refused") return { variant: "refused", errors: schemaErrors(PresentationRefusalSchema, value, limit) };
-	if (value.format === "compact") return { variant: "compact", errors: schemaErrors(has(value, "conversations") ? CompactStorageStatusSchema : CompactSelectedStatusSchema, value, limit) };
-	if (value.kind === "ordinary-primary") return { variant: "ordinary-primary", errors: schemaErrors(OrdinaryPrimaryObservationSchema, value, limit) };
+	if (value.format === "refused")
+		return { variant: "refused", errors: schemaErrors(PresentationRefusalSchema, value, limit) };
+	if (value.format === "compact")
+		return {
+			variant: "compact",
+			errors: schemaErrors(
+				has(value, "conversations") ? CompactStorageStatusSchema : CompactSelectedStatusSchema,
+				value,
+				limit,
+			),
+		};
+	if (value.kind === "ordinary-primary")
+		return { variant: "ordinary-primary", errors: schemaErrors(OrdinaryPrimaryObservationSchema, value, limit) };
 	if (value.view === "fleet") return { variant: "fleet", errors: schemaErrors(FleetStatusSchema, value, limit) };
 	if (OVERVIEW_KEYS.some((key) => has(value, key))) {
-		return { variant: "overview", errors: schemaErrors(statusCandidate("overview", () => toolOverviewProperties), value, limit) };
+		return {
+			variant: "overview",
+			errors: schemaErrors(
+				statusCandidate("overview", () => toolOverviewProperties),
+				value,
+				limit,
+			),
+		};
 	}
 	return selectedStatusDiagnostic(value, limit);
 }
@@ -755,7 +1093,8 @@ diagnosticResolvers.set(StatusToolOutputSchema, statusToolDiagnostic);
  */
 export function observationDiagnostic(schema: object, value: unknown, limit = 5): ObservationDiagnostic {
 	const resolver = diagnosticResolvers.get(schema);
-	if (resolver !== undefined && value !== null && typeof value === "object" && !Array.isArray(value)) return resolver(value as Record<string, unknown>, limit);
+	if (resolver !== undefined && value !== null && typeof value === "object" && !Array.isArray(value))
+		return resolver(value as Record<string, unknown>, limit);
 	return { variant: "schema", errors: schemaErrors(diagnosticSchema(schema, value), value, limit) };
 }
 
@@ -770,7 +1109,11 @@ export function structuredObservation<T extends object>(schema: T, value: unknow
 }
 
 /** Keep model text and validated program output on the native result's separate channels. */
-export function nativeStructuredObservation<T extends object>(schema: T, value: unknown, text: string): ToolExecutionResult & { readonly structuredOutput: Static<T> } {
+export function nativeStructuredObservation<T extends object>(
+	schema: T,
+	value: unknown,
+	text: string,
+): ToolExecutionResult & { readonly structuredOutput: Static<T> } {
 	return {
 		output: [{ type: "text", text }],
 		structuredOutput: structuredObservation(schema, value) as Static<T> & JsonValue,

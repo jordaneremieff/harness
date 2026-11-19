@@ -36,7 +36,8 @@ function lineReader(stream: NodeJS.ReadableStream): LineReader {
 		next(expected: string): Promise<void> {
 			return new Promise<void>((resolve, reject) => {
 				waiters.push({
-					resolve: (line) => (line === expected ? resolve() : reject(new Error(`Expected ${expected}, received ${line}`))),
+					resolve: (line) =>
+						line === expected ? resolve() : reject(new Error(`Expected ${expected}, received ${line}`)),
 					reject,
 				});
 				flush();
@@ -134,7 +135,10 @@ test("a cooperative child ends from the timeout term signal inside the caller bu
 	const transport = new CliTransport(process.execPath);
 	try {
 		const result = await transport.run(
-			["-e", "process.on('SIGTERM',()=>{console.log('term');process.exit(0)});console.log('ready');setInterval(()=>{},10000)"],
+			[
+				"-e",
+				"process.on('SIGTERM',()=>{console.log('term');process.exit(0)});console.log('ready');setInterval(()=>{},10000)",
+			],
 			{ timeoutMs: 1000, maxOutputBytes: 1024 },
 		);
 		assert.equal(result.outcome, "timeout");
@@ -157,7 +161,10 @@ test("a child that ignores the term signal is killed within its total allowance"
 		assert.equal(result.outcome, "timeout");
 		assert.equal(result.signal, "SIGKILL");
 		assert.match(result.stdout, /ready/);
-		assert.ok(performance.now() - startedAt < 1200, "termination adds no separate grace interval; scheduler tolerance is 200 ms");
+		assert.ok(
+			performance.now() - startedAt < 1200,
+			"termination adds no separate grace interval; scheduler tolerance is 200 ms",
+		);
 	} finally {
 		transport.dispose();
 	}
@@ -168,17 +175,14 @@ test("a finalise signal shortens a long timeout and settles as killed", async ()
 	const transport = new CliTransport(process.execPath);
 	const startedAt = performance.now();
 	try {
-		const result = await transport.run(
-			["-e", "console.log('ready');setInterval(()=>{},10000)"],
-			{
-				finaliseSignal: finalise.signal,
-				timeoutMs: 5000,
-				maxOutputBytes: 1024,
-				onLine: (line) => {
-					if (line === "ready") finalise.abort();
-				},
+		const result = await transport.run(["-e", "console.log('ready');setInterval(()=>{},10000)"], {
+			finaliseSignal: finalise.signal,
+			timeoutMs: 5000,
+			maxOutputBytes: 1024,
+			onLine: (line) => {
+				if (line === "ready") finalise.abort();
 			},
-		);
+		});
 		const elapsed = performance.now() - startedAt;
 		assert.equal(result.outcome, "cancelled");
 		assert.equal(result.signal, "SIGKILL");

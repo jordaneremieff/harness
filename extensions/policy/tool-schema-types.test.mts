@@ -14,10 +14,12 @@ function untypedNodes(node: unknown, path: string, out: string[]): void {
 	if (node === null || typeof node !== "object") return;
 	const schema = node as Record<string, unknown>;
 	if (schema.type === undefined) out.push(path || "(root)");
-	for (const [name, child] of Object.entries((schema.properties ?? {}) as Record<string, unknown>)) untypedNodes(child, `${path}.properties.${name}`, out);
+	for (const [name, child] of Object.entries((schema.properties ?? {}) as Record<string, unknown>))
+		untypedNodes(child, `${path}.properties.${name}`, out);
 	if (schema.items !== undefined) untypedNodes(schema.items, `${path}.items`, out);
 	for (const branch of ["anyOf", "oneOf", "allOf"] as const) {
-		for (const [index, child] of ((schema[branch] ?? []) as unknown[]).entries()) untypedNodes(child, `${path}.${branch}[${index}]`, out);
+		for (const [index, child] of ((schema[branch] ?? []) as unknown[]).entries())
+			untypedNodes(child, `${path}.${branch}[${index}]`, out);
 	}
 }
 

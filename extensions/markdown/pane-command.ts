@@ -31,7 +31,12 @@ export type PaneCommand = { show: string[]; paneInput?: string } | { showUnavail
  * otherwise the result names the reason and the build command instead of a command.
  * If the build lacks direct revision selection, the returned command opens current only.
  */
-export function paneCommand(app: string | undefined, root: string, documentId: string, pin?: { revision: number; digest: string }): PaneCommand {
+export function paneCommand(
+	app: string | undefined,
+	root: string,
+	documentId: string,
+	pin?: { revision: number; digest: string },
+): PaneCommand {
 	if (!app) return { showUnavailable: `No reader app is configured. ${BUILD_REMEDY}` };
 	let build: unknown;
 	try {
@@ -39,12 +44,13 @@ export function paneCommand(app: string | undefined, root: string, documentId: s
 	} catch {
 		return { showUnavailable: `The reader app is not installed at ${app}. ${BUILD_REMEDY}` };
 	}
-	const manifest = typeof build === "object" && build !== null ? build as Record<string, unknown> : {};
+	const manifest = typeof build === "object" && build !== null ? (build as Record<string, unknown>) : {};
 	if (manifest.contract !== 1 || manifest.pane !== PANE_MODE) {
 		return { showUnavailable: `The installed reader app cannot show documents in a pane. ${BUILD_REMEDY}` };
 	}
 	const show = [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", root, documentId];
-	if (pin && manifest.paneRevision === PANE_REVISION) return { show: [...show, "--revision", String(pin.revision), "--digest", pin.digest] };
+	if (pin && manifest.paneRevision === PANE_REVISION)
+		return { show: [...show, "--revision", String(pin.revision), "--digest", pin.digest] };
 	return manifest.paneOpen === PANE_OPEN ? { show, paneInput: `:open ${documentId}\r` } : { show };
 }
 
@@ -56,29 +62,58 @@ export function hasPaneRevision(show: string[]): boolean {
 /** Opens a revision selected in an existing pinned request file. */
 export function paneRequestCommand(app: string, request: string): PaneCommand {
 	let build: unknown;
-	try { build = JSON.parse(readFileSync(join(app, "Contents", "Resources", "build.json"), "utf8")); }
-	catch { return { showUnavailable: `The reader app is not installed. ${BUILD_REMEDY}` }; }
-	const manifest = typeof build === "object" && build !== null ? build as Record<string, unknown> : {};
-	if (manifest.contract !== 1 || manifest.pane !== PANE_MODE || manifest.paneOpenRequest !== PANE_OPEN_REQUEST) return { showUnavailable: `The reader app cannot accept a pinned request in a pane. ${BUILD_REMEDY}` };
+	try {
+		build = JSON.parse(readFileSync(join(app, "Contents", "Resources", "build.json"), "utf8"));
+	} catch {
+		return { showUnavailable: `The reader app is not installed. ${BUILD_REMEDY}` };
+	}
+	const manifest = typeof build === "object" && build !== null ? (build as Record<string, unknown>) : {};
+	if (manifest.contract !== 1 || manifest.pane !== PANE_MODE || manifest.paneOpenRequest !== PANE_OPEN_REQUEST)
+		return { showUnavailable: `The reader app cannot accept a pinned request in a pane. ${BUILD_REMEDY}` };
 	return { show: [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", request] };
 }
 
 /** Only a compatible installed app accepts an explicit editor action. Source content never supplies a command. */
-export function editorCommand(app: string, root: string, intent: EditorOpenIntent, surface: "pane" | "window", input?: string, origin?: unknown): PaneCommand {
+export function editorCommand(
+	app: string,
+	root: string,
+	intent: EditorOpenIntent,
+	surface: "pane" | "window",
+	input?: string,
+	origin?: unknown,
+): PaneCommand {
 	let build: unknown;
 	try {
 		const path = join(app, "Contents", "Resources", "build.json");
 		const info = lstatSync(path);
 		if (!info.isFile() || info.size > 16384) throw new Error("Invalid app manifest");
 		build = JSON.parse(readFileSync(path, "utf8"));
-	} catch { return { showUnavailable: `The editor app is missing or incomplete. ${BUILD_REMEDY}` }; }
-	const manifest = typeof build === "object" && build !== null ? build as Record<string, unknown> : {};
-	if (manifest.contract !== 1 || manifest.editorOpen !== EDITOR_OPEN || (surface === "pane" && manifest.pane !== PANE_MODE)) return { showUnavailable: `The installed app cannot open an editor on this surface. ${BUILD_REMEDY}` };
-	if ((intent === "scratchpad") !== (input === undefined)) return { showUnavailable: "Scratchpad takes no input; file, edit and copy require an explicit input." };
-	const show = [join(app, "Contents", "MacOS", "MarkdownReader"), "--editor", "--surface", surface, "--store", root, "--intent", intent];
+	} catch {
+		return { showUnavailable: `The editor app is missing or incomplete. ${BUILD_REMEDY}` };
+	}
+	const manifest = typeof build === "object" && build !== null ? (build as Record<string, unknown>) : {};
+	if (
+		manifest.contract !== 1 ||
+		manifest.editorOpen !== EDITOR_OPEN ||
+		(surface === "pane" && manifest.pane !== PANE_MODE)
+	)
+		return { showUnavailable: `The installed app cannot open an editor on this surface. ${BUILD_REMEDY}` };
+	if ((intent === "scratchpad") !== (input === undefined))
+		return { showUnavailable: "Scratchpad takes no input; file, edit and copy require an explicit input." };
+	const show = [
+		join(app, "Contents", "MacOS", "MarkdownReader"),
+		"--editor",
+		"--surface",
+		surface,
+		"--store",
+		root,
+		"--intent",
+		intent,
+	];
 	if (origin !== undefined && origin !== null) {
 		const value = JSON.stringify(origin);
-		if (Buffer.byteLength(value) > 8192) return { showUnavailable: "The terminal return context exceeds the input limit." };
+		if (Buffer.byteLength(value) > 8192)
+			return { showUnavailable: "The terminal return context exceeds the input limit." };
 		show.push("--origin", value);
 	}
 	if (input !== undefined) show.push(input);

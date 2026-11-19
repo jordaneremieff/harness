@@ -79,7 +79,18 @@ export class QueryError extends Error {
 	}
 }
 
-const SELECTOR_KEYS = ["name", "match", "kind", "contains", "limit", "search", "detail", "provider", "available", "health"] as const;
+const SELECTOR_KEYS = [
+	"name",
+	"match",
+	"kind",
+	"contains",
+	"limit",
+	"search",
+	"detail",
+	"provider",
+	"available",
+	"health",
+] as const;
 
 export function hasAnySelector(params: RawParams): boolean {
 	return SELECTOR_KEYS.some((key) => params[key] !== undefined);
@@ -131,12 +142,21 @@ function assertSelectorShape(params: RawParams): void {
 			params.contains !== undefined ||
 			params.search !== undefined)
 	) {
-		throw new QueryError("invalid_arguments", "detail requires kind tool and an exact name, without search or contains");
+		throw new QueryError(
+			"invalid_arguments",
+			"detail requires kind tool and an exact name, without search or contains",
+		);
 	}
-	if ((params.provider !== undefined || params.available !== undefined || params.health !== undefined) && params.kind !== "model") {
+	if (
+		(params.provider !== undefined || params.available !== undefined || params.health !== undefined) &&
+		params.kind !== "model"
+	) {
 		throw new QueryError("invalid_arguments", "provider, available, and health require kind model");
 	}
-	if (params.contains !== undefined && (params.kind === "model" || params.kind === "context_file" || params.kind === "setting")) {
+	if (
+		params.contains !== undefined &&
+		(params.kind === "model" || params.kind === "context_file" || params.kind === "setting")
+	) {
 		throw new QueryError("invalid_arguments", "contains accepts only file-backed skills or prompts");
 	}
 }
@@ -203,11 +223,19 @@ export function matchesSearch(search: string, fields: readonly string[]): boolea
 export function selectRecords(records: ResourceRecord[], query: Query): ResourceRecord[] {
 	const search = query.search;
 	return records
-		.filter((record) => (query.kind === undefined || record.kind === query.kind) && matchesName(record, query) &&
-			(search === undefined || matchesSearch(search, [record.name, record.description ?? "",
-				...(record.kind === "tool" ? [
-					...(record.promptGuidelines ?? []), record.namespace?.name ?? "", ...(record.namespace?.aliases ?? []),
-				] : [])])))
+		.filter(
+			(record) =>
+				(query.kind === undefined || record.kind === query.kind) &&
+				matchesName(record, query) &&
+				(search === undefined ||
+					matchesSearch(search, [
+						record.name,
+						record.description ?? "",
+						...(record.kind === "tool"
+							? [...(record.promptGuidelines ?? []), record.namespace?.name ?? "", ...(record.namespace?.aliases ?? [])]
+							: []),
+					])),
+		)
 		.sort(compareRecords);
 }
 
@@ -217,12 +245,16 @@ export function fingerprintRecords(records: ResourceRecord[]): string {
 	const hash = createHash("sha256");
 	for (const record of [...records].sort(compareRecords)) {
 		const { at: _at, modelInvocable, baseDir, ...metadata } = record;
-		hash.update(JSON.stringify({
-			...metadata,
-			// Attestation times describe freshness, not the identity of the evidence.
-			...(modelInvocable === undefined ? {} : { modelInvocable: { value: modelInvocable.value, evidence: modelInvocable.evidence } }),
-			...(baseDir === undefined ? {} : { baseDir: { value: baseDir.value, evidence: baseDir.evidence } }),
-		}));
+		hash.update(
+			JSON.stringify({
+				...metadata,
+				// Attestation times describe freshness, not the identity of the evidence.
+				...(modelInvocable === undefined
+					? {}
+					: { modelInvocable: { value: modelInvocable.value, evidence: modelInvocable.evidence } }),
+				...(baseDir === undefined ? {} : { baseDir: { value: baseDir.value, evidence: baseDir.evidence } }),
+			}),
+		);
 		hash.update(record.kind);
 		hash.update("\u0000");
 		hash.update(record.name);
@@ -244,8 +276,15 @@ export function fingerprintRecords(records: ResourceRecord[]): string {
 export function stampsEqual(a: FileStamp | undefined, b: FileStamp | undefined): boolean {
 	if (a === undefined && b === undefined) return true;
 	if (a === undefined || b === undefined) return false;
-	return a.path === b.path && a.size === b.size && a.mtimeMs === b.mtimeMs &&
-		a.ctimeMs === b.ctimeMs && a.ino === b.ino && a.dev === b.dev && a.digest === b.digest;
+	return (
+		a.path === b.path &&
+		a.size === b.size &&
+		a.mtimeMs === b.mtimeMs &&
+		a.ctimeMs === b.ctimeMs &&
+		a.ino === b.ino &&
+		a.dev === b.dev &&
+		a.digest === b.digest
+	);
 }
 
 export function encodeCursor(state: CursorState): string {
@@ -281,8 +320,14 @@ export function decodeCursor(cursor: string): CursorState {
 		throw new QueryError("invalid_arguments", "cursor is not a cursor this tool issued");
 	}
 	const raw = parsed as Record<string, unknown>;
-	if (raw.v !== 1 || typeof raw.f !== "string" || typeof raw.e !== "string" || raw.e.length === 0 ||
-		!Number.isSafeInteger(raw.o) || (raw.o as number) < 0) {
+	if (
+		raw.v !== 1 ||
+		typeof raw.f !== "string" ||
+		typeof raw.e !== "string" ||
+		raw.e.length === 0 ||
+		!Number.isSafeInteger(raw.o) ||
+		(raw.o as number) < 0
+	) {
 		throw new QueryError("invalid_arguments", "cursor is not a cursor this tool issued");
 	}
 	const encoded = raw.q as RawParams | undefined;
@@ -298,12 +343,24 @@ export function decodeCursor(cursor: string): CursorState {
 	};
 	const stamp = raw.s as FileStamp | undefined;
 	if (raw.s !== undefined) {
-		if (!stamp || typeof stamp.path !== "string" || typeof stamp.digest !== "string" ||
-			![stamp.size, stamp.mtimeMs, stamp.ctimeMs, stamp.ino, stamp.dev].every(Number.isFinite) || stamp.size < 0) {
+		if (
+			!stamp ||
+			typeof stamp.path !== "string" ||
+			typeof stamp.digest !== "string" ||
+			![stamp.size, stamp.mtimeMs, stamp.ctimeMs, stamp.ino, stamp.dev].every(Number.isFinite) ||
+			stamp.size < 0
+		) {
 			throw new QueryError("invalid_arguments", "cursor carries an invalid file stamp");
 		}
-		state.file = { path: stamp.path, size: stamp.size, mtimeMs: stamp.mtimeMs,
-			ctimeMs: stamp.ctimeMs, ino: stamp.ino, dev: stamp.dev, digest: stamp.digest };
+		state.file = {
+			path: stamp.path,
+			size: stamp.size,
+			mtimeMs: stamp.mtimeMs,
+			ctimeMs: stamp.ctimeMs,
+			ino: stamp.ino,
+			dev: stamp.dev,
+			digest: stamp.digest,
+		};
 	}
 	return state;
 }

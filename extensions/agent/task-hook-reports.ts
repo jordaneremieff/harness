@@ -171,7 +171,10 @@ export class TaskHookReports {
 			const { conversationId, data } = item;
 			this.writing = true;
 			try {
-				await harness.commit((tx) => tx.appendEntry(conversationId, { kind: TASK_HOOK_REPORT_KIND, data }), BACKGROUND_CONTEXT);
+				await harness.commit(
+					(tx) => tx.appendEntry(conversationId, { kind: TASK_HOOK_REPORT_KIND, data }),
+					BACKGROUND_CONTEXT,
+				);
 			} catch (error) {
 				this.disable(error);
 				return;

@@ -18,8 +18,23 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentSystemMessage, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
-import { CustomMessageComponent, DefaultResourceLoader, SessionManager, SettingsManager, createAgentSession, initTheme, type AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	createAssistantMessageEventStream,
+	getCurrentSystemPrompt,
+	getCurrentSystemMessage,
+	type AssistantMessage,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
+import {
+	CustomMessageComponent,
+	DefaultResourceLoader,
+	SessionManager,
+	SettingsManager,
+	createAgentSession,
+	initTheme,
+	type AgentSession,
+	type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import { eventLog, type EventLog } from "./host-fixture.mts";
 import { AgentManager, type AgentCaller } from "./manager.ts";
 import { connectPrimaryChannel, createPrimaryChannel } from "./primary-channel.ts";
@@ -31,61 +46,113 @@ import { AgentCatalog } from "./catalog.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { renderAgentPeerMessage } from "./tool-cards.ts";
 
-
 const INDEX_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
 const WRAPPER = `import register from ${JSON.stringify(INDEX_PATH)};\nexport default async function (pi) {\n\tawait register(pi);\n}\n`;
 const MESSAGE_LIMIT_MS = 10_000;
 
-for (const tool of ["agent_send", "agent_place"] as const) it(`admits a model-issued primary ${tool} and delivers its automatic check-in`, { timeout: 60000 }, async (t) => {
-	const epoch = Date.now();
-	let now = epoch;
-	const worker = await scheduleFixture(t, { agentExtension: true, deferAnswers: true, storageId: randomUUID(), now: () => now });
-	const primary = await noticeFixture(t, worker.storageId, tool);
-	primary.sessionManager.appendSessionInfo("Delegating primary");
-	t.mock.method(Date, "now", () => epoch);
-	const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
-	delete process.env.PI_AGENT_CHECK_IN_MINUTES;
-	t.after(() => { if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES; else process.env.PI_AGENT_CHECK_IN_MINUTES = prior; });
-	const managers = (globalThis as Record<PropertyKey, unknown>)[Symbol.for("pi.extension.agent.owners")] as { managers: Map<string, AgentManager> };
-	const manager = managers.managers.get(realpathSync(primary.sessionsRoot));
-	assert.ok(manager);
-	const bridge = (input: Record<string, unknown>, caller: AgentCaller) => {
-		assert.equal(input.checkInMinutes, 30, "the real primary tool preserves its selected interval");
-		assert.equal(caller.name, "Delegating primary", "the real primary tool carries the current session name");
-		return worker.host.request("submit", { ...input, message: input.message ?? input.prompt, sessionId: worker.storageId, ownerId: caller.id, requestId: "primary-check-in" });
-	};
-	if (tool === "agent_place") t.mock.method(manager, "place", (input: Record<string, unknown>, caller: AgentCaller) => bridge(input, caller));
-	else t.mock.method(manager, "control", (method: string, input: Record<string, unknown>, caller: AgentCaller) => {
-		assert.equal(method, "submit");
-		return bridge(input, caller);
+for (const tool of ["agent_send", "agent_place"] as const)
+	it(`admits a model-issued primary ${tool} and delivers its automatic check-in`, { timeout: 60000 }, async (t) => {
+		const epoch = Date.now();
+		let now = epoch;
+		const worker = await scheduleFixture(t, {
+			agentExtension: true,
+			deferAnswers: true,
+			storageId: randomUUID(),
+			now: () => now,
+		});
+		const primary = await noticeFixture(t, worker.storageId, tool);
+		primary.sessionManager.appendSessionInfo("Delegating primary");
+		t.mock.method(Date, "now", () => epoch);
+		const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
+		delete process.env.PI_AGENT_CHECK_IN_MINUTES;
+		t.after(() => {
+			if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES;
+			else process.env.PI_AGENT_CHECK_IN_MINUTES = prior;
+		});
+		const managers = (globalThis as Record<PropertyKey, unknown>)[Symbol.for("pi.extension.agent.owners")] as {
+			managers: Map<string, AgentManager>;
+		};
+		const manager = managers.managers.get(realpathSync(primary.sessionsRoot));
+		assert.ok(manager);
+		const bridge = (input: Record<string, unknown>, caller: AgentCaller) => {
+			assert.equal(input.checkInMinutes, 30, "the real primary tool preserves its selected interval");
+			assert.equal(caller.name, "Delegating primary", "the real primary tool carries the current session name");
+			return worker.host.request("submit", {
+				...input,
+				message: input.message ?? input.prompt,
+				sessionId: worker.storageId,
+				ownerId: caller.id,
+				requestId: "primary-check-in",
+			});
+		};
+		if (tool === "agent_place")
+			t.mock.method(manager, "place", (input: Record<string, unknown>, caller: AgentCaller) => bridge(input, caller));
+		else
+			t.mock.method(manager, "control", (method: string, input: Record<string, unknown>, caller: AgentCaller) => {
+				assert.equal(method, "submit");
+				return bridge(input, caller);
+			});
+		const controller = new AbortController();
+		let delivery: ReturnType<typeof startDurableDelivery> | undefined;
+		try {
+			await primary.session.prompt("Delegate the local source review");
+			now += 1800000;
+			await worker.reopen();
+			delivery = startDurableDelivery({
+				host: worker.host,
+				metadata: {
+					storageId: worker.storageId,
+					cwd: worker.root,
+					agentDir: join(worker.root, "agent"),
+					storagePath: worker.storagePath,
+					packageDir: join(worker.root, "package"),
+					model: { provider: testModel.provider, modelId: testModel.id },
+					thinkingLevel: "off",
+				},
+				catalog: new AgentCatalog(join(worker.root, "catalog")),
+				sessionsRoot: primary.sessionsRoot,
+				signal: controller.signal,
+			});
+			await primary.requests
+				.waitFor(
+					(requests) =>
+						requests.some((request) => JSON.stringify(request.messages).includes("still working, not finished")),
+					MESSAGE_LIMIT_MS,
+				)
+				.catch(async (error) => {
+					t.diagnostic(
+						JSON.stringify({
+							entries: primary.sessionManager
+								.getEntries()
+								.filter((entry) => entry.type === "message" && entry.message.role === "toolResult"),
+							reports: await worker.host.request("receipts", { ownerId: primary.sessionManager.getSessionId() }),
+						}),
+					);
+					throw error;
+				});
+			const entries = primary.customEntries();
+			const notice = entries.find(
+				(entry) => typeof entry.content === "string" && entry.content.includes("still working, not finished"),
+			);
+			assert.ok(notice);
+			assert.match(String(notice.content), /30m.*elapsed.*conversation total/u);
+			assert.match(String(notice.content), /Latest reply excerpt \(not a result\)/u);
+			const details = notice.details as { wake?: boolean; checkIn?: unknown };
+			assert.equal(details.wake, true);
+			assert.ok(details.checkIn);
+			t.diagnostic(String(notice.content));
+		} finally {
+			controller.abort();
+			await delivery?.close();
+			worker.releaseAnswer();
+			await worker.host.harness.waitForIdle(BACKGROUND_CONTEXT);
+		}
 	});
-	const controller = new AbortController();
-	let delivery: ReturnType<typeof startDurableDelivery> | undefined;
-	try {
-		await primary.session.prompt("Delegate the local source review");
-		now += 1800000;
-		await worker.reopen();
-		delivery = startDurableDelivery({ host: worker.host, metadata: { storageId: worker.storageId, cwd: worker.root, agentDir: join(worker.root, "agent"), storagePath: worker.storagePath, packageDir: join(worker.root, "package"), model: { provider: testModel.provider, modelId: testModel.id }, thinkingLevel: "off" }, catalog: new AgentCatalog(join(worker.root, "catalog")), sessionsRoot: primary.sessionsRoot, signal: controller.signal });
-		await primary.requests.waitFor((requests) => requests.some((request) => JSON.stringify(request.messages).includes("still working, not finished")), MESSAGE_LIMIT_MS).catch(async (error) => { t.diagnostic(JSON.stringify({ entries: primary.sessionManager.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "toolResult"), reports: await worker.host.request("receipts", { ownerId: primary.sessionManager.getSessionId() }) })); throw error; });
-		const entries = primary.customEntries();
-		const notice = entries.find((entry) => typeof entry.content === "string" && entry.content.includes("still working, not finished"));
-		assert.ok(notice);
-		assert.match(String(notice.content), /30m.*elapsed.*conversation total/u);
-		assert.match(String(notice.content), /Latest reply excerpt \(not a result\)/u);
-		const details = notice.details as { wake?: boolean; checkIn?: unknown };
-		assert.equal(details.wake, true);
-		assert.ok(details.checkIn);
-		t.diagnostic(String(notice.content));
-	} finally {
-		controller.abort();
-		await delivery?.close();
-		worker.releaseAnswer();
-		await worker.host.harness.waitForIdle(BACKGROUND_CONTEXT);
-	}
-});
 /** The extension's process-local manager registry; `bindExtensions` starts it and no public teardown exists. */
 function closeAgentManagers(): void {
-	const owners = (globalThis as Record<PropertyKey, unknown>)[Symbol.for("pi.extension.agent.owners")] as { managers?: Map<string, { close(): void }> } | undefined;
+	const owners = (globalThis as Record<PropertyKey, unknown>)[Symbol.for("pi.extension.agent.owners")] as
+		| { managers?: Map<string, { close(): void }> }
+		| undefined;
 	for (const manager of owners?.managers?.values() ?? []) manager.close();
 	owners?.managers?.clear();
 }
@@ -114,11 +181,22 @@ function assistantMessage(text: string): AssistantMessage {
 		content: [{ type: "text", text }],
 		stopReason: "stop",
 		timestamp: Date.now(),
-		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
 	};
 }
 
-async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: string, delegateTool: "agent_send" | "agent_place" = "agent_send"): Promise<NoticeFixture> {
+async function noticeFixture(
+	t: { after(fn: () => void): void },
+	toolTarget?: string,
+	delegateTool: "agent_send" | "agent_place" = "agent_send",
+): Promise<NoticeFixture> {
 	const root = mkdtempSync(join(tmpdir(), "primary-notice-"));
 	const cwd = join(root, "work");
 	const agentDir = join(root, "agent");
@@ -166,7 +244,17 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 	const stream = (_model: unknown, context: TranscriptContext) => {
 		const message = assistantMessage("DELIVERY_COMPLETE");
 		if (firstRequest && toolTarget !== undefined) {
-			message.content = [{ type: "toolCall", id: "primary-check-in-tool", name: delegateTool, arguments: delegateTool === "agent_place" ? { area: ".", prompt: "Review the local source", checkInMinutes: 30 } : { sessionId: toolTarget, message: "Review the local source", checkInMinutes: 30 } }];
+			message.content = [
+				{
+					type: "toolCall",
+					id: "primary-check-in-tool",
+					name: delegateTool,
+					arguments:
+						delegateTool === "agent_place"
+							? { area: ".", prompt: "Review the local source", checkInMinutes: 30 }
+							: { sessionId: toolTarget, message: "Review the local source", checkInMinutes: 30 },
+				},
+			];
 			message.stopReason = "toolUse";
 		}
 		firstRequest = false;
@@ -182,7 +270,10 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 			else void gate.then(emit);
 		};
 		if (requestGate === undefined) begin();
-		else { requestHeld?.(); void requestGate.then(begin); }
+		else {
+			requestHeld?.();
+			void requestGate.then(begin);
+		}
 		return events;
 	};
 	runtime.registerNativeProvider({
@@ -194,23 +285,58 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 		streamSimple: stream,
 	});
 	const settingsManager = SettingsManager.create(cwd, agentDir);
-	const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, additionalExtensionPaths: [join(root, "notice.ts")] });
+	const loader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		additionalExtensionPaths: [join(root, "notice.ts")],
+	});
 	await loader.reload();
 	let promptStarts = 0;
 	const promptHandlers = loader.getExtensions().extensions[0]?.handlers.get("before_agent_start");
 	assert.ok(promptHandlers);
-	promptHandlers.push(async () => { promptStarts++; });
-	session = (await createAgentSession({ cwd, agentDir, modelRuntime: runtime, settingsManager, sessionManager, model: testModel, resourceLoader: loader })).session;
+	promptHandlers.push(async () => {
+		promptStarts++;
+	});
+	session = (
+		await createAgentSession({
+			cwd,
+			agentDir,
+			modelRuntime: runtime,
+			settingsManager,
+			sessionManager,
+			model: testModel,
+			resourceLoader: loader,
+		})
+	).session;
 	await session.bindExtensions({});
 	// Placement and configuration controls are deferred; activating them declares them to the model.
 	session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "agent_place", "agent_configure"])]);
 	const id = sessionManager.getSessionId();
-	assert.equal(existsSync(join(sessionsRoot, ".primaries", `${id}.json`)), true, "bindExtensions awaits primary registration");
+	assert.equal(
+		existsSync(join(sessionsRoot, ".primaries", `${id}.json`)),
+		true,
+		"bindExtensions awaits primary registration",
+	);
 
 	const deliver = async (sourceId: string, text: string, wake: boolean): Promise<void> => {
 		const connection = await connectPrimaryChannel({ id, sessionsRoot });
 		try {
-			await connection.deliver({ sourceId, text, requireRetained: false, details: { sourceId, wake, identity: "storage-a", label: "poem task", status: "done", provider: "test-provider", modelId: "test-model", thinkingLevel: "high" } });
+			await connection.deliver({
+				sourceId,
+				text,
+				requireRetained: false,
+				details: {
+					sourceId,
+					wake,
+					identity: "storage-a",
+					label: "poem task",
+					status: "done",
+					provider: "test-provider",
+					modelId: "test-model",
+					thinkingLevel: "high",
+				},
+			});
 		} finally {
 			await connection.close().catch(() => undefined);
 		}
@@ -223,11 +349,19 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 		promptStarts: () => promptStarts,
 		holdRequest: () => {
 			const held = eventLog<void>();
-			requestGate = new Promise<void>((resolve) => { releaseRequest = resolve; });
-			requestHeld = () => { held.push(undefined); };
+			requestGate = new Promise<void>((resolve) => {
+				releaseRequest = resolve;
+			});
+			requestHeld = () => {
+				held.push(undefined);
+			};
 			return {
 				held: held.waitForCount(1, MESSAGE_LIMIT_MS),
-				release: () => { releaseRequest?.(); requestGate = undefined; requestHeld = undefined; },
+				release: () => {
+					releaseRequest?.();
+					requestGate = undefined;
+					requestHeld = undefined;
+				},
 			};
 		},
 		armGate: () => {
@@ -246,7 +380,9 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 	};
 }
 
-it("appends a full wake-false notice and its source details without a primary model turn", { timeout: 30000 }, async (t) => {
+it("appends a full wake-false notice and its source details without a primary model turn", {
+	timeout: 30000,
+}, async (t) => {
 	const fixture = await noticeFixture(t);
 	const body = `operator notice body\n${"Retained result line.\n".repeat(1800)}FINAL_RESULT`;
 	await fixture.deliver("operator:1", body, false);
@@ -255,20 +391,43 @@ it("appends a full wake-false notice and its source details without a primary mo
 	assert.equal(entries.length, 1, "the notice is present in Pi's session context");
 	assert.equal(entries[0]?.customType, "agent.peer");
 	assert.equal(entries[0]?.content, body);
-	assert.deepEqual(entries[0]?.details, { sourceId: "operator:1", wake: false, identity: "storage-a", label: "poem task", status: "done", provider: "test-provider", modelId: "test-model", thinkingLevel: "high" });
+	assert.deepEqual(entries[0]?.details, {
+		sourceId: "operator:1",
+		wake: false,
+		identity: "storage-a",
+		label: "poem task",
+		status: "done",
+		provider: "test-provider",
+		modelId: "test-model",
+		thinkingLevel: "high",
+	});
 	assert.equal(fixture.requests.length, 0, "a wake-false notice starts no provider request");
 	initTheme("dark", false);
-	const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content: body, details: entries[0]?.details };
+	const message = {
+		role: "custom" as const,
+		customType: "agent.peer",
+		display: true,
+		timestamp: 0,
+		content: body,
+		details: entries[0]?.details,
+	};
 	const component = new CustomMessageComponent(message, renderAgentPeerMessage);
 	const collapsed = component.render(160).map((line) => stripVTControlCharacters(line).trim());
 	const first = collapsed.findIndex((line) => line.startsWith("[agent]"));
 	assert.equal(collapsed[first + 2], "");
-	assert.deepEqual(collapsed.slice(first + 3, first + 6), ["operator notice body", "Retained result line.", "Retained result line."]);
+	assert.deepEqual(collapsed.slice(first + 3, first + 6), [
+		"operator notice body",
+		"Retained result line.",
+		"Retained result line.",
+	]);
 	assert.equal(collapsed.filter((line) => /^\.\.\. \(\d+ more lines?, click to expand\)$/u.test(line)).length, 1);
 	assert.equal(collapsed.filter(Boolean).length, 6);
 	assert.equal(collapsed.includes("FINAL_RESULT"), false);
 	component.setExpanded(true);
-	const expanded = component.render(160).map((line) => stripVTControlCharacters(line)).join("\n");
+	const expanded = component
+		.render(160)
+		.map((line) => stripVTControlCharacters(line))
+		.join("\n");
 	assert.match(expanded, /FINAL_RESULT/u);
 	assert.doesNotMatch(expanded, /to expand|expand for full/u);
 	assert.equal(fixture.customEntries()[0]?.content, body);
@@ -279,7 +438,9 @@ it("keeps a provider request consumer pending until the provider leaves its gate
 	const fixture = await noticeFixture(t);
 	const gate = fixture.holdRequest();
 	let requested = false;
-	const pending = fixture.requests.waitForCount(1, MESSAGE_LIMIT_MS).then(() => { requested = true; });
+	const pending = fixture.requests.waitForCount(1, MESSAGE_LIMIT_MS).then(() => {
+		requested = true;
+	});
 	await fixture.deliver("model:held", "held notice", true);
 	await gate.held;
 	assert.equal(requested, false);
@@ -291,19 +452,33 @@ it("keeps a provider request consumer pending until the provider leaves its gate
 	assert.equal(fixture.requests.length, 1);
 });
 
-it("refreshes preset descriptions and guidance through the peer-message prompt-start hook", { timeout: 30000 }, async (t) => {
+it("refreshes preset descriptions and guidance through the peer-message prompt-start hook", {
+	timeout: 30000,
+}, async (t) => {
 	const f = await noticeFixture(t);
-	const dependency = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.resolve("@earendil-works/pi-coding-agent"))), "utf8")) as { version: string };
+	const dependency = JSON.parse(
+		readFileSync(
+			fileURLToPath(new URL("../package.json", import.meta.resolve("@earendil-works/pi-coding-agent"))),
+			"utf8",
+		),
+	) as { version: string };
 	t.diagnostic(`Coding-agent runtime dependency: ${dependency.version}`);
 	const path = join(f.sessionsRoot, "..", "agent", "harness.json");
-	const write = (key: string, model: string) => writeFileSync(path, JSON.stringify(machineConfig({ presets: { [key]: { model } }, preferences: { defaultPreset: key } })));
+	const write = (key: string, model: string) =>
+		writeFileSync(
+			path,
+			JSON.stringify(machineConfig({ presets: { [key]: { model } }, preferences: { defaultPreset: key } })),
+		);
 	const assertPresetGuidance = (request: TranscriptContext, key: string) => {
 		const prompt = getCurrentSystemPrompt(request.messages);
 		assert.match(prompt, /Use preset to select execution settings/u);
 		assert.match(prompt, /Omit model and preset to use the machine defaultPreset on creation/u);
 		assert.ok(prompt.includes(`Default preset: ${key};`), "the provider sees the current default preset");
 	};
-	for (const [index, key, model] of [[1, "standard", "acme/model-x"], [2, "economy", "other/model-y"]] as const) {
+	for (const [index, key, model] of [
+		[1, "standard", "acme/model-x"],
+		[2, "economy", "other/model-y"],
+	] as const) {
 		write(key, model);
 		const starts = f.promptStarts();
 		await f.deliver(`model:preset:${index}`, "Review the result", true);
@@ -316,7 +491,9 @@ it("refreshes preset descriptions and guidance through the peer-message prompt-s
 		for (const name of ["agent_spawn", "agent_place", "agent_configure"]) {
 			const declaration = f.session.getAllTools().find((tool) => tool.name === name);
 			assert.ok(declaration);
-			const description = String((declaration.parameters as { properties: { preset: { description: string } } }).properties.preset.description);
+			const description = String(
+				(declaration.parameters as { properties: { preset: { description: string } } }).properties.preset.description,
+			);
 			assert.ok(description.includes(`["${key}"]`), description);
 			assert.match(description, /digest [a-f0-9]{64}/u);
 			const actual = getCurrentSystemMessage(request.messages)?.toolsAdded?.find((tool) => tool.name === name);
@@ -337,7 +514,9 @@ it("refreshes preset descriptions and guidance through the peer-message prompt-s
 	await f.deliver("model:preset:error", "Review another result", true);
 	await f.requests.waitForCount(4, MESSAGE_LIMIT_MS);
 	await f.session.waitForIdle();
-	const declarations = f.session.getAllTools().filter((tool) => ["agent_spawn", "agent_place", "agent_configure"].includes(tool.name));
+	const declarations = f.session
+		.getAllTools()
+		.filter((tool) => ["agent_spawn", "agent_place", "agent_configure"].includes(tool.name));
 	for (const declaration of declarations) {
 		const text = JSON.stringify(declaration.parameters);
 		assert.match(text, /Presets: \[\]/u);
@@ -362,7 +541,11 @@ it("defers a wake-false notice to the turn boundary while the primary streams", 
 	await fixture.requests.waitForCount(1, MESSAGE_LIMIT_MS);
 	assert.equal(fixture.session.isStreaming, true, "the held provider request occurs during the active turn");
 	await fixture.deliver("operator:stream", "streamed operator notice", false);
-	assert.equal(fixture.customEntries().length, 0, "the notice waits for the turn boundary instead of steering the running turn");
+	assert.equal(
+		fixture.customEntries().length,
+		0,
+		"the notice waits for the turn boundary instead of steering the running turn",
+	);
 	assert.equal(fixture.requests.length, 1, "the deferred notice starts no second provider request while streaming");
 	fixture.release();
 	await run;
@@ -375,16 +558,28 @@ it("defers a wake-false notice to the turn boundary while the primary streams", 
 
 it("keeps ordinary effort context to one line after the last live peer closes", { timeout: 30000 }, async (t) => {
 	const fixture = await noticeFixture(t);
-	const channel = await createPrimaryChannel({ id: randomUUID(), sessionsRoot: fixture.sessionsRoot, cwd: fixture.sessionManager.getCwd(), observedPurpose: { source: "session-name", text: "PEER-PURPOSE" }, deliver: () => {}, promptTrust: async () => undefined });
+	const channel = await createPrimaryChannel({
+		id: randomUUID(),
+		sessionsRoot: fixture.sessionsRoot,
+		cwd: fixture.sessionManager.getCwd(),
+		observedPurpose: { source: "session-name", text: "PEER-PURPOSE" },
+		deliver: () => {},
+		promptTrust: async () => undefined,
+	});
 	try {
 		await fixture.session.prompt("Read current efforts");
 		assert.ok(getCurrentSystemPrompt(fixture.requests.at(-1)?.messages ?? []).includes("PEER-PURPOSE"));
-	} finally { await channel.close(); }
+	} finally {
+		await channel.close();
+	}
 	await fixture.session.prompt("Read current efforts again");
 	const prompt = getCurrentSystemPrompt(fixture.requests.at(-1)?.messages ?? []);
 	assert.equal(prompt.includes("PEER-PURPOSE"), false);
 	const body = prompt.match(/<agent-efforts>\n([\s\S]*?)\n<\/agent-efforts>/u)?.[1];
-	assert.equal(body, "No other live effort is shown. Read agent_status for current coverage and active thread hints; omitted sources remain unknown.");
+	assert.equal(
+		body,
+		"No other live effort is shown. Read agent_status for current coverage and active thread hints; omitted sources remain unknown.",
+	);
 });
 
 it("refreshes the registered primary identity on model, thinking, and name changes", async (t) => {
@@ -407,7 +602,8 @@ it("refreshes the registered primary identity on model, thinking, and name chang
 	await registerAgentExtension({
 		events: { emit() {}, on: () => () => {} },
 		registerTool() {},
-		registerMessageRenderer() {}, registerToolRenderer() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
 		registerShortcut() {},
 		registerCommand() {},
 		on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => {

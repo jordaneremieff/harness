@@ -88,7 +88,14 @@ export function prepareBuildCache(cache: string, root: string = packageDir): boo
 /** Digest of the files that define the build: manifest, lockfile, sources, licence notices and the embedded helper. */
 export function sourceDigest(root: string = packageDir): string {
 	const hash = createHash("sha256");
-	const files: string[] = ["Package.swift", "Package.resolved", "build.mts", "../pane-command.ts", "../../../package-lock.json", `${sharedPane}/Package.swift`];
+	const files: string[] = [
+		"Package.swift",
+		"Package.resolved",
+		"build.mts",
+		"../pane-command.ts",
+		"../../../package-lock.json",
+		`${sharedPane}/Package.swift`,
+	];
 	const walk = (dir: string): void => {
 		for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
 			if (entry.name.startsWith(".")) continue;
@@ -118,7 +125,11 @@ export interface SourceRecord {
 export type GitRunner = (cwd: string, args: string[]) => string | undefined;
 
 const runGit: GitRunner = (cwd, args) => {
-	const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
+	const result = spawnSync("git", ["-C", cwd, ...args], {
+		encoding: "utf8",
+		timeout: 10_000,
+		stdio: ["ignore", "pipe", "ignore"],
+	});
 	return result.status === 0 ? result.stdout.trim() : undefined;
 };
 
@@ -129,7 +140,15 @@ const runGit: GitRunner = (cwd, args) => {
 export function sourceRecord(root: string = packageDir, git: GitRunner = runGit): SourceRecord | undefined {
 	const commit = git(root, ["rev-parse", "--verify", "HEAD"]);
 	if (!commit || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u.test(commit)) return undefined;
-	const inputs = [".", "../pane-command.ts", "../../../package-lock.json", "../../rex/terminal-origin.ts", `${sharedPane}/Package.swift`, `${sharedPane}/Sources`, ...EDITOR_WRITER_SOURCES.map((name) => `../${name}`)];
+	const inputs = [
+		".",
+		"../pane-command.ts",
+		"../../../package-lock.json",
+		"../../rex/terminal-origin.ts",
+		`${sharedPane}/Package.swift`,
+		`${sharedPane}/Sources`,
+		...EDITOR_WRITER_SOURCES.map((name) => `../${name}`),
+	];
 	const status = git(root, ["status", "--porcelain", "--untracked-files=all", "--", ...inputs]);
 	if (status === undefined) return undefined;
 	return { commit, modified: status.length > 0 };
@@ -174,7 +193,11 @@ function processAlive(pid: number): boolean {
 }
 
 /** The process that holds an install lock, while it still runs; otherwise undefined. */
-export function lockHolder(parent: string, alive: (pid: number) => boolean = processAlive, now: number = Date.now()): { pid: number; startedAt: string } | undefined {
+export function lockHolder(
+	parent: string,
+	alive: (pid: number) => boolean = processAlive,
+	now: number = Date.now(),
+): { pid: number; startedAt: string } | undefined {
 	let holder: unknown;
 	try {
 		holder = JSON.parse(readFileSync(join(parent, "install.lock"), "utf8"));
@@ -197,7 +220,10 @@ export function lockInstall(parent: string, alive: (pid: number) => boolean = pr
 	const path = join(parent, "install.lock");
 	for (let attempt = 0; attempt < 2; attempt++) {
 		try {
-			writeFileSync(path, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, { flag: "wx", mode: 0o600 });
+			writeFileSync(path, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`, {
+				flag: "wx",
+				mode: 0o600,
+			});
 			return () => rmSync(path, { force: true });
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -344,7 +370,9 @@ function copyWebDirectory(from: string, to: string, root: string): void {
 			copyWebEntry(from, to, entry.name, root);
 			entry = directory.readSync();
 		}
-	} finally { directory.closeSync(); }
+	} finally {
+		directory.closeSync();
+	}
 }
 
 /** The Markdown-owned editor writer sources, shipped beside the helper as stripped .mjs modules. */
@@ -375,7 +403,10 @@ export function editorWriterMetadata(node: string = stableNode()): { version: 1;
  * node_modules.
  */
 function shippedModule(name: string, writerSourceDir: string): string {
-	const stripped = stripTypeScriptTypes(readFileSync(join(writerSourceDir, name), "utf8"), { mode: "strip", sourceMap: false });
+	const stripped = stripTypeScriptTypes(readFileSync(join(writerSourceDir, name), "utf8"), {
+		mode: "strip",
+		sourceMap: false,
+	});
 	const rewritten = stripped.replace(/(\.\.?\/[A-Za-z0-9._/-]*)\.ts(?=["'])/gu, "$1.mjs");
 	if (rewritten.includes(".ts")) throw new Error(`${name} still names a .ts module after stripping.`);
 	return rewritten;
@@ -402,11 +433,20 @@ interface WriterPackage {
 function writerPackage(path: string): WriterPackage {
 	if (lstatSync(path).size > 64 * 1024) throw new Error("A writer dependency manifest exceeds the byte limit.");
 	const value = JSON.parse(readFileSync(path, "utf8")) as Partial<WriterPackage>;
-	if (!value || typeof value !== "object" || typeof value.name !== "string" || typeof value.version !== "string"
-		|| typeof value.license !== "string" || typeof value.main !== "string") {
+	if (
+		!value ||
+		typeof value !== "object" ||
+		typeof value.name !== "string" ||
+		typeof value.version !== "string" ||
+		typeof value.license !== "string" ||
+		typeof value.main !== "string"
+	) {
 		throw new Error("A writer dependency manifest has an unexpected shape.");
 	}
-	if (value.dependencies !== undefined && (!value.dependencies || typeof value.dependencies !== "object" || Array.isArray(value.dependencies))) {
+	if (
+		value.dependencies !== undefined &&
+		(!value.dependencies || typeof value.dependencies !== "object" || Array.isArray(value.dependencies))
+	) {
 		throw new Error("A writer dependency manifest has invalid dependencies.");
 	}
 	return value as WriterPackage;
@@ -419,7 +459,10 @@ function copyWriterPackage(source: string, destination: string): void {
 	const copyEntry = (input: string, output: string): void => {
 		const stat = lstatSync(input);
 		if (stat.isSymbolicLink()) throw new Error("A writer dependency contains a symbolic link.");
-		if (stat.isDirectory()) { copy(input, output); return; }
+		if (stat.isDirectory()) {
+			copy(input, output);
+			return;
+		}
 		if (!stat.isFile()) throw new Error("A writer dependency contains a non-regular file.");
 		bytes += stat.size;
 		if (stat.size > EDITOR_WRITER_LIMITS.fileBytes || bytes > EDITOR_WRITER_LIMITS.packageBytes) {
@@ -437,7 +480,9 @@ function copyWriterPackage(source: string, destination: string): void {
 				if (entry.name !== "node_modules") copyEntry(join(from, entry.name), join(to, entry.name));
 				entry = directory.readSync();
 			}
-		} finally { directory.closeSync(); }
+		} finally {
+			directory.closeSync();
+		}
 	};
 	copy(source, destination);
 }
@@ -461,7 +506,8 @@ function stageEditorWriterDependencies(writer: string): void {
 		}
 		const manifest = writerPackage(manifestPath);
 		const dependencies = Object.keys(manifest.dependencies ?? {});
-		if (dependencies.length > EDITOR_WRITER_LIMITS.packages) throw new Error("A writer dependency exceeds the dependency limit.");
+		if (dependencies.length > EDITOR_WRITER_LIMITS.packages)
+			throw new Error("A writer dependency exceeds the dependency limit.");
 		staged.add(source);
 		copyWriterPackage(source, join(stagedRoot, packagePath));
 		const resolver = createRequire(manifestPath);
@@ -563,11 +609,14 @@ function main(): void {
 	const release = lockInstall(parent);
 	if (!release) {
 		const holder = lockHolder(parent);
-		console.error(`Another Markdown Reader install is running${holder ? ` (process ${holder.pid})` : ""}. The installed app is unchanged.`);
+		console.error(
+			`Another Markdown Reader install is running${holder ? ` (process ${holder.pid})` : ""}. The installed app is unchanged.`,
+		);
 		process.exit(INSTALL_BUSY);
 	}
 	try {
-		for (const name of removeAbandoned(parent, destination)) console.log(`Removed ${name}, left by an interrupted install.`);
+		for (const name of removeAbandoned(parent, destination))
+			console.log(`Removed ${name}, left by an interrupted install.`);
 		install(destination, store, webSourceDir);
 	} finally {
 		release();
@@ -584,7 +633,9 @@ function install(destination: string, store: string, webSourceDir: string): void
 			?.trim() ?? "unknown";
 	const cache = buildCache(destination);
 	if (prepareBuildCache(cache)) console.log(`Build cache ${cache} now serves ${packageDir}.`);
-	const described = source ? `, commit ${source.commit.slice(0, 12)}${source.modified ? " with local changes" : ""}` : "";
+	const described = source
+		? `, commit ${source.commit.slice(0, 12)}${source.modified ? " with local changes" : ""}`
+		: "";
 	console.log(`Building Markdown Reader (${digest.slice(0, 19)}${described}) with ${swiftVersion}`);
 	run("swift", ["build", "-c", "release", "--product", "MarkdownReader", "--scratch-path", cache]);
 	run("swift", ["build", "-c", "release", "--product", "markdown-core", "--scratch-path", cache]);
@@ -638,7 +689,9 @@ function install(destination: string, store: string, webSourceDir: string): void
 	console.log(`Build contract ${BUILD_CONTRACT}, source ${digest}`);
 	const running = runningReaders(destination);
 	if (running > 0) {
-		console.log(`${running === 1 ? "A Markdown Reader instance is" : `${running} Markdown Reader instances are`} running. Each keeps its old code until you quit it.`);
+		console.log(
+			`${running === 1 ? "A Markdown Reader instance is" : `${running} Markdown Reader instances are`} running. Each keeps its old code until you quit it.`,
+		);
 	}
 }
 

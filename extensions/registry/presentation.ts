@@ -11,12 +11,7 @@
  * evidence boundaries.
  */
 
-import type {
-	AgentToolResult,
-	KeybindingHints,
-	Theme,
-	ToolRenderResultOptions,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { type Component, Text } from "@earendil-works/pi-tui";
 
 const DISPLAY_LIMIT = 32_000;
@@ -70,9 +65,7 @@ function expandHint(subject: string, keys: Partial<KeybindingHints>): string {
 }
 
 function record(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function textComponent(text: string, previous?: Component): Text {
@@ -104,7 +97,8 @@ function callCard(
 	theme: Theme,
 	context: CallContext,
 ): Text {
-	const heading = theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${rowSafe(subject)}`) : "");
+	const heading =
+		theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${rowSafe(subject)}`) : "");
 	if (context.expanded) {
 		return textComponent(
 			[heading, theme.fg("toolOutput", boundedBody(JSON.stringify(args ?? {}, null, 2)))].join("\n"),
@@ -195,7 +189,10 @@ function kindTally(records: unknown[]): string {
 		if (typeof kind === "string") counts.set(kind, (counts.get(kind) ?? 0) + 1);
 	}
 	const entries = [...counts.entries()];
-	const shown = entries.slice(0, 6).map(([kind, count]) => `${kind} ${count}`).join(", ");
+	const shown = entries
+		.slice(0, 6)
+		.map(([kind, count]) => `${kind} ${count}`)
+		.join(", ");
 	const omitted = entries.length - 6;
 	if (omitted > 0) return `${shown}, +${omitted} more`;
 	return shown;
@@ -205,7 +202,8 @@ function continuationOf(details: Record<string, unknown>): string {
 	if (details.continuationStatus === "available") return "continuation available";
 	if (details.continuationStatus === "complete") return "no further known match (no reported gap)";
 	if (details.continuationStatus !== "unavailable" && details.continuationStatus !== "blocked") return "";
-	const reason = typeof details.continuationReason === "string" ? `: ${previewMark(details.continuationReason, 140).text}` : "";
+	const reason =
+		typeof details.continuationReason === "string" ? `: ${previewMark(details.continuationReason, 140).text}` : "";
 	return `continuation ${details.continuationStatus}${reason}`;
 }
 
@@ -224,7 +222,8 @@ function modelFacts(entry: Record<string, unknown>): string {
 	else parts.push("availability unknown");
 	if (entry.configuredAuth === true) parts.push("auth configured");
 	else if (entry.configuredAuth === false) parts.push("no configured auth");
-	if (typeof entry.contextWindow === "number" && entry.contextWindow > 0) parts.push(`${compactCount(entry.contextWindow)} context`);
+	if (typeof entry.contextWindow === "number" && entry.contextWindow > 0)
+		parts.push(`${compactCount(entry.contextWindow)} context`);
 	if (Array.isArray(entry.supportedThinkingLevels) && entry.supportedThinkingLevels.length > 0) {
 		const levels = entry.supportedThinkingLevels.filter((level) => typeof level === "string");
 		if (levels.length > 0) parts.push(`thinking ${levels.join(", ")}`);
@@ -233,7 +232,8 @@ function modelFacts(entry: Record<string, unknown>): string {
 }
 
 function toolFacts(entry: Record<string, unknown>): string {
-	const configured = entry.configured === true ? "configured" : entry.configured === false ? "not configured" : "configured unknown";
+	const configured =
+		entry.configured === true ? "configured" : entry.configured === false ? "not configured" : "configured unknown";
 	const active = entry.active === true ? "active" : entry.active === false ? "inactive" : "active unknown";
 	return `${configured} · ${active}`;
 }
@@ -285,8 +285,13 @@ function listingSummary(details: Record<string, unknown>): Summary {
 	const tally = singleRecordFacts(records) || kindTally(records);
 	return {
 		line: `${outcomeWord(details)} · ${shown} shown of ${total}${chatOnly ? " · chat models only" : ""}`,
-		second: joined([tally, chatOnly && total === 0 ? "Classifier/image discovery: codemode models.*" : "",
-			details.settingsCoverage !== undefined ? "configured snapshot · responding publishers only" : "", boundsOf(details), continuationOf(details)]),
+		second: joined([
+			tally,
+			chatOnly && total === 0 ? "Classifier/image discovery: codemode models.*" : "",
+			details.settingsCoverage !== undefined ? "configured snapshot · responding publishers only" : "",
+			boundsOf(details),
+			continuationOf(details),
+		]),
 		hint: total > 0 || chatOnly || details.settingsCoverage !== undefined,
 	};
 }
@@ -307,7 +312,8 @@ function scannedSummary(details: Record<string, unknown>): Summary {
 }
 
 function simpleSummary(details: Record<string, unknown>): Summary {
-	const raw = typeof details.reason === "string" ? details.reason : typeof details.ioError === "string" ? details.ioError : "";
+	const raw =
+		typeof details.reason === "string" ? details.reason : typeof details.ioError === "string" ? details.ioError : "";
 	const reason = raw && raw !== details.outcome ? previewMark(raw, 140).text : "";
 	const records = Array.isArray(details.records) ? details.records : [];
 	return {
@@ -340,7 +346,8 @@ function modeQualifiers(args: Record<string, unknown>): string[] {
 	const qualifiers: string[] = [];
 	if (args?.match === "substring") qualifiers.push("substring");
 	if (args?.detail === true) qualifiers.push("detail");
-	if (typeof args?.provider === "string" && args.provider) qualifiers.push(`provider ${previewMark(args.provider, 48).text}`);
+	if (typeof args?.provider === "string" && args.provider)
+		qualifiers.push(`provider ${previewMark(args.provider, 48).text}`);
 	if (args?.available === true) qualifiers.push("available only");
 	if (args?.health === true) qualifiers.push("catalog health");
 	if (typeof args?.limit === "number") qualifiers.push(`limit ${args.limit}`);
@@ -358,11 +365,7 @@ function queryQualifiers(args: Record<string, unknown>, subject: string): string
 }
 
 /** The subject names the lookup; the qualifier row carries the mode switches. */
-export function renderRegistryCall(
-	args: unknown,
-	theme: Theme,
-	context: CallContext,
-): Component {
+export function renderRegistryCall(args: unknown, theme: Theme, context: CallContext): Component {
 	const displayArgs = record(args);
 	const { subject, hint } = subjectOf(displayArgs);
 	const qualifiers = [...queryQualifiers(displayArgs, subject), ...modeQualifiers(displayArgs)];
@@ -389,13 +392,14 @@ export function renderRegistryResult(
 			context,
 		);
 	}
-	const summary = details.host === true
-		? hostSummary(details)
-		: details.scanned === true
-			? scannedSummary(details)
-			: Array.isArray(details.records)
-				? listingSummary(details)
-				: simpleSummary(details);
+	const summary =
+		details.host === true
+			? hostSummary(details)
+			: details.scanned === true
+				? scannedSummary(details)
+				: Array.isArray(details.records)
+					? listingSummary(details)
+					: simpleSummary(details);
 	return resultCard(
 		{ color: outcomeColor(details, context.isError), line: summary.line },
 		summary.second,

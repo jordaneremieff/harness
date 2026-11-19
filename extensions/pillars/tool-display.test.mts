@@ -20,30 +20,47 @@ it("publishes the display module's records at load and on current requests, and 
 			on(channel: string, handler: (data: unknown) => void) {
 				order.push(channel);
 				listeners.set(channel, handler);
-				return () => { listeners.delete(channel); };
+				return () => {
+					listeners.delete(channel);
+				};
 			},
 			emit(channel: string, data: unknown) {
-				if (channel === "harness:tool-display:publish") { order.push(channel); publications.push(data as Publication); }
+				if (channel === "harness:tool-display:publish") {
+					order.push(channel);
+					publications.push(data as Publication);
+				}
 				if (channel === "durable:contribution") contributions.push(data as Contribution);
 				listeners.get(channel)?.(data);
 			},
 		},
-		registerTool(definition: ToolDefinition) { registered.set(definition.name, definition); },
-		on(name: string, handler: (event: unknown, ctx: unknown) => unknown) { handlers.set(name, handler); return () => handlers.delete(name); },
+		registerTool(definition: ToolDefinition) {
+			registered.set(definition.name, definition);
+		},
+		on(name: string, handler: (event: unknown, ctx: unknown) => unknown) {
+			handlers.set(name, handler);
+			return () => handlers.delete(name);
+		},
 		registerCommand() {},
 		registerShortcut() {},
-		registerEntryRenderer() {}, registerMessageRenderer() {},
+		registerEntryRenderer() {},
+		registerMessageRenderer() {},
 		registerFlag() {},
 		getFlag() {},
 	} as unknown as ExtensionAPI;
 	register(pi);
-	assert.deepEqual(order.filter((channel) => channel.startsWith("harness:tool-display:")), ["harness:tool-display:request", "harness:tool-display:publish"]);
+	assert.deepEqual(
+		order.filter((channel) => channel.startsWith("harness:tool-display:")),
+		["harness:tool-display:request", "harness:tool-display:publish"],
+	);
 	assert.equal(publications.length, 1);
 	const verify = (publication: Publication) => {
 		assert.deepEqual(Object.keys(publication).sort(), ["tools", "version"]);
 		assert.equal(publication.version, 1);
 		const records = toolDisplay().tools;
-		assert.deepEqual(publication.tools.map((tool) => tool.name), records.map((tool) => tool.name));
+		assert.deepEqual(
+			publication.tools.map((tool) => tool.name),
+			records.map((tool) => tool.name),
+		);
 		for (const display of publication.tools) {
 			const definition = registered.get(display.name);
 			assert.ok(definition);
@@ -55,7 +72,13 @@ it("publishes the display module's records at load and on current requests, and 
 			assert.equal(display.renderShell, record.renderShell);
 			assert.equal(definition.renderCall, record.renderCall);
 			assert.equal(definition.renderResult, record.renderResult);
-			assert.deepEqual(Object.keys(display).sort(), ["name", ...["renderCall", "renderResult", "renderShell"].filter((key) => record[key as keyof Display] !== undefined)].sort());
+			assert.deepEqual(
+				Object.keys(display).sort(),
+				[
+					"name",
+					...["renderCall", "renderResult", "renderShell"].filter((key) => record[key as keyof Display] !== undefined),
+				].sort(),
+			);
 		}
 	};
 	verify(publications[0]);

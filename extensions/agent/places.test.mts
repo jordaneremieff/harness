@@ -116,23 +116,32 @@ describe("place bindings", () => {
 		const root = base();
 		try {
 			const book = new PlaceBook(root);
-			const raw = JSON.stringify({ places: [
-				{ area: "/work/area", sessionId: "ok", boundAt: "2026-01-01T00:00:00.000Z" },
-				{ area: "/work/other" },
-				null,
-			] });
+			const raw = JSON.stringify({
+				places: [
+					{ area: "/work/area", sessionId: "ok", boundAt: "2026-01-01T00:00:00.000Z" },
+					{ area: "/work/other" },
+					null,
+				],
+			});
 			writeFileSync(book.file, raw);
-			assert.deepEqual(book.read().map((binding) => binding.sessionId), ["ok"], "lookups retain usable bindings");
+			assert.deepEqual(
+				book.read().map((binding) => binding.sessionId),
+				["ok"],
+				"lookups retain usable bindings",
+			);
 			assert.equal(book.readState().kind, "corrupt");
 			assert.throws(() => book.bind("/work/new", "new"), PlaceBookError);
 			assert.equal(readFileSync(book.file, "utf8"), raw);
 			assert.throws(() => book.unbind("/work/area"), PlaceBookError);
 			assert.equal(readFileSync(book.file, "utf8"), raw);
 			let invoked = false;
-			await assert.rejects(book.withArea("/work/new", async () => {
-				invoked = true;
-				return { sessionId: "new", value: undefined };
-			}), PlaceBookError);
+			await assert.rejects(
+				book.withArea("/work/new", async () => {
+					invoked = true;
+					return { sessionId: "new", value: undefined };
+				}),
+				PlaceBookError,
+			);
 			assert.equal(invoked, false, "a corrupt book never starts a place operation");
 			assert.equal(readFileSync(book.file, "utf8"), raw);
 			assert.equal(existsSync(`${book.file}.lock`), false);

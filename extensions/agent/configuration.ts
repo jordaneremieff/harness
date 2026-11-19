@@ -1,17 +1,36 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ThinkingLevel[];
+export const THINKING_LEVELS = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const satisfies readonly ThinkingLevel[];
 export const CONFIGURATION_LIMITS = { name: 256, model: 512, sessionId: 256 } as const;
-export const CONFIGURATION_SYNTAX = "/agent configure <session> name [text] | model <provider/model> [level] | thinking <level>";
+export const CONFIGURATION_SYNTAX =
+	"/agent configure <session> name [text] | model <provider/model> [level] | thinking <level>";
 
 export interface ConfigurationPatch {
 	name?: string;
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
 }
-export interface ConfigurationModel { provider: string; modelId: string }
-export interface ConfigurationCommand { sessionId: string; patch: ConfigurationPatch }
-export interface ConfigurationState { name: string; model: string | null; thinkingLevel: ThinkingLevel | null }
+export interface ConfigurationModel {
+	provider: string;
+	modelId: string;
+}
+export interface ConfigurationCommand {
+	sessionId: string;
+	patch: ConfigurationPatch;
+}
+export interface ConfigurationState {
+	name: string;
+	model: string | null;
+	thinkingLevel: ThinkingLevel | null;
+}
 export interface ConfigurationResult {
 	sessionId: string;
 	outcome: "applied" | "failed";
@@ -36,7 +55,11 @@ export function boundedConfigurationResult(result: ConfigurationResult): Configu
 			truncated.push(`${label}.${field}`);
 			return text.slice(0, CONFIGURATION_LIMITS[field]).replace(/[\ud800-\udbff]$/u, "");
 		};
-		return { name: bound(value.name, "name") ?? "", model: bound(value.model, "model"), thinkingLevel: value.thinkingLevel };
+		return {
+			name: bound(value.name, "name") ?? "",
+			model: bound(value.model, "model"),
+			thinkingLevel: value.thinkingLevel,
+		};
 	};
 	const before = state(result.before, "before");
 	const after = state(result.after, "after");
@@ -52,7 +75,9 @@ export function isThinkingLevel(value: unknown): value is ThinkingLevel {
 
 function boundedText(value: unknown, field: keyof typeof CONFIGURATION_LIMITS): string {
 	if (typeof value !== "string" || value.length > CONFIGURATION_LIMITS[field] || invalidText.test(value)) {
-		throw new Error(`${field} must be well-formed, single-line text of at most ${CONFIGURATION_LIMITS[field]} UTF-16 code units, without control characters`);
+		throw new Error(
+			`${field} must be well-formed, single-line text of at most ${CONFIGURATION_LIMITS[field]} UTF-16 code units, without control characters`,
+		);
 	}
 	return value;
 }
@@ -82,7 +107,8 @@ export function validateConfigurationPatch(value: unknown): ConfigurationPatch {
 		patch.model = input.model as string;
 	}
 	if (Object.hasOwn(input, "thinkingLevel") && input.thinkingLevel !== undefined) {
-		if (!isThinkingLevel(input.thinkingLevel)) throw new Error(`thinkingLevel must be one of ${THINKING_LEVELS.join(", ")}`);
+		if (!isThinkingLevel(input.thinkingLevel))
+			throw new Error(`thinkingLevel must be one of ${THINKING_LEVELS.join(", ")}`);
 		patch.thinkingLevel = input.thinkingLevel;
 	}
 	if (!Object.keys(patch).length) throw new Error(`configuration requires at least one of ${fields.join(", ")}`);
@@ -93,7 +119,8 @@ export function validateConfigurationPatch(value: unknown): ConfigurationPatch {
 export function configurationThinkingLevel(patch: ConfigurationPatch, current: unknown): ThinkingLevel | undefined {
 	if (patch.thinkingLevel !== undefined) return patch.thinkingLevel;
 	if (patch.model === undefined) return undefined;
-	if (!isThinkingLevel(current)) throw new Error("the session has no retained reasoning level; supply thinkingLevel with the model");
+	if (!isThinkingLevel(current))
+		throw new Error("the session has no retained reasoning level; supply thinkingLevel with the model");
 	return current;
 }
 

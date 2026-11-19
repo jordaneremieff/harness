@@ -12,7 +12,10 @@ export default function register(pi: ExtensionAPI): void {
 		description: "Start a background check whose completion arrives as a later message.",
 		parameters: obj({}),
 		async execute() {
-			pi.sendMessage({ customType: "fixture.completion", content: FOLLOW_UP_TEXT, display: true }, { deliverAs: "followUp", triggerTurn: true });
+			pi.sendMessage(
+				{ customType: "fixture.completion", content: FOLLOW_UP_TEXT, display: true },
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
 			return { content: [{ type: "text", text: "Started the background check." }], details: {} };
 		},
 	});
@@ -23,7 +26,10 @@ export default function register(pi: ExtensionAPI): void {
 		description: "Ask a reviewer whose reply arrives as a later message from another session.",
 		parameters: obj({}),
 		async execute() {
-			pi.sendMessage({ customType: "agent.peer", content: PEER_TEXT, display: true }, { deliverAs: "followUp", triggerTurn: true });
+			pi.sendMessage(
+				{ customType: "agent.peer", content: PEER_TEXT, display: true },
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
 			return { content: [{ type: "text", text: "Asked the reviewer." }], details: {} };
 		},
 	});

@@ -55,7 +55,8 @@ export const settings = {
 		capacity: {
 			type: "boolean",
 			env: "PI_STASH_CAPACITY",
-			description: "Context-capacity observation and continuity requests. false turns off only this feature; other stash tools and commands stay available.",
+			description:
+				"Context-capacity observation and continuity requests. false turns off only this feature; other stash tools and commands stay available.",
 			default: true,
 		},
 		checkpointPercent: {
@@ -245,10 +246,7 @@ function ownSection(document: Record<string, unknown> | undefined, diagnostics: 
 	}
 	for (const key of Object.keys(value)) {
 		if (!Object.hasOwn(settings.fields, key))
-			addDiagnostic(
-				diagnostics,
-				diagnostic(`${settings.slice}.${unknownKey(key)}`, "file", "unknown"),
-			);
+			addDiagnostic(diagnostics, diagnostic(`${settings.slice}.${unknownKey(key)}`, "file", "unknown"));
 	}
 	return value;
 }

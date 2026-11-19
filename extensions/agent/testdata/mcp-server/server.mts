@@ -23,7 +23,10 @@ import { createInterface } from "node:readline";
 
 const silent = process.env.MCP_FIXTURE_MODE === "silent";
 const ignoreClose = process.env.MCP_FIXTURE_IGNORE_CLOSE === "true";
-if (ignoreClose) { process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); }
+if (ignoreClose) {
+	process.on("SIGTERM", () => {});
+	setInterval(() => {}, 1000);
+}
 const port = Number(process.env.MCP_FIXTURE_EVENTS_PORT);
 const events = Number.isInteger(port) && port > 0 ? connect(port, "127.0.0.1") : undefined;
 events?.on("error", () => undefined);
@@ -34,10 +37,15 @@ const report = (line: string) => {
 };
 report(`started ${process.pid}`);
 
-const send = (message: Record<string, unknown>) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+const send = (message: Record<string, unknown>) =>
+	process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
 const emptyInput = { type: "object", properties: {} };
 const tools = [
-	{ name: "lookup-doc", description: "Look up one documentation topic", inputSchema: { type: "object", properties: { topic: { type: "string" } }, required: ["topic"] } },
+	{
+		name: "lookup-doc",
+		description: "Look up one documentation topic",
+		inputSchema: { type: "object", properties: { topic: { type: "string" } }, required: ["topic"] },
+	},
 	{ name: "lookup_doc", description: "Second tool whose name differs only by - and _", inputSchema: emptyInput },
 	{ name: "list-topics", description: "List documentation topics", inputSchema: emptyInput },
 ];
@@ -45,17 +53,38 @@ const tools = [
 const input = createInterface({ input: process.stdin });
 input.on("line", (line) => {
 	if (!line.trim()) return;
-	const request = JSON.parse(line) as { id?: number; method?: string; params?: { protocolVersion?: string; name?: string; arguments?: unknown } };
+	const request = JSON.parse(line) as {
+		id?: number;
+		method?: string;
+		params?: { protocolVersion?: string; name?: string; arguments?: unknown };
+	};
 	if (request.method === "initialize") report("initialize");
 	if (silent) return;
 	if (request.method === "initialize") {
-		send({ id: request.id, result: { protocolVersion: request.params?.protocolVersion ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "dev-docs-fixture", version: "1.0.0" }, instructions: "Documentation fixture server. Use lookup-doc with a topic string." } });
+		send({
+			id: request.id,
+			result: {
+				protocolVersion: request.params?.protocolVersion ?? "2025-06-18",
+				capabilities: { tools: {} },
+				serverInfo: { name: "dev-docs-fixture", version: "1.0.0" },
+				instructions: "Documentation fixture server. Use lookup-doc with a topic string.",
+			},
+		});
 	} else if (request.method === "tools/list") {
 		send({ id: request.id, result: { tools } });
 	} else if (request.method === "tools/call") {
-		send({ id: request.id, result: { content: [{ type: "text", text: `called ${request.params?.name} ${JSON.stringify(request.params?.arguments ?? {})}` }] } });
+		send({
+			id: request.id,
+			result: {
+				content: [
+					{ type: "text", text: `called ${request.params?.name} ${JSON.stringify(request.params?.arguments ?? {})}` },
+				],
+			},
+		});
 	} else if (request.id !== undefined) {
 		send({ id: request.id, error: { code: -32601, message: "method not found" } });
 	}
 });
-input.on("close", () => { if (!ignoreClose) process.exit(0); });
+input.on("close", () => {
+	if (!ignoreClose) process.exit(0);
+});

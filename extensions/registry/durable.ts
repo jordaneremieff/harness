@@ -21,7 +21,12 @@ import { settingQuery, settingsReader } from "./configuration.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Usage } from "@earendil-works/pi-ai";
 import { calculateContextTokens, type SourceInfo } from "@earendil-works/pi-coding-agent";
-import { REGISTRY_DESCRIPTION, REGISTRY_PROMPT_GUIDELINES, REGISTRY_PROMPT_SNIPPET, RegistryParams } from "./contract.ts";
+import {
+	REGISTRY_DESCRIPTION,
+	REGISTRY_PROMPT_GUIDELINES,
+	REGISTRY_PROMPT_SNIPPET,
+	RegistryParams,
+} from "./contract.ts";
 import type { ContextSnapshot } from "./host.ts";
 import { type DurableLookupContext, lookup, lookupIsError } from "./lookup.ts";
 import { readDurableModels, readSettingsScope, type DurableModelReader } from "./models.ts";
@@ -131,11 +136,15 @@ function durableNoteResources(services: RegistryDurableServices): NoteResource[]
 	try {
 		const loader = services.resourceLoader;
 		return [
-			...loader.getExtensions().extensions.map((extension) => noteResource("extension", "", extension.sourceInfo, extension.resolvedPath)),
+			...loader
+				.getExtensions()
+				.extensions.map((extension) => noteResource("extension", "", extension.sourceInfo, extension.resolvedPath)),
 			...loader.getSkills().skills.map((skill) => noteResource("skill", skill.name, skill.sourceInfo, skill.filePath)),
 			...loader.getPrompts().prompts.map((prompt) => noteResource("prompt", prompt.name, prompt.sourceInfo)),
 		].filter((resource) => resource !== undefined);
-	} catch { return null; }
+	} catch {
+		return null;
+	}
 }
 
 /** Pi-registered provenance for a contribution's absolute source, or a synthetic label. */
@@ -312,7 +321,10 @@ async function newestAssistantUsage(
 }
 
 /** What one newest-first page establishes: a usage, a context head, or nothing yet. */
-type PageUsage = { readonly kind: "usage"; readonly usage: Usage } | { readonly kind: "head" } | { readonly kind: "none" };
+type PageUsage =
+	| { readonly kind: "usage"; readonly usage: Usage }
+	| { readonly kind: "head" }
+	| { readonly kind: "none" };
 
 function usageInPage(host: RegistryDurableHost, entries: readonly Durable.EntryRecord[]): PageUsage {
 	for (const entry of entries) {
@@ -394,7 +406,8 @@ function durableLookupContext(host: RegistryDurableHost): DurableLookupContext {
 	};
 	return {
 		coverage,
-		recordSourceLine: "source: Durable registry snapshot, resolved agent tools, host resource loader, and contribution inventory",
+		recordSourceLine:
+			"source: Durable registry snapshot, resolved agent tools, host resource loader, and contribution inventory",
 		commandSurface: "resource loader and contribution inventory",
 		boundaries: {
 			toolSchema:
@@ -475,15 +488,23 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 			const conversationNotes = (id: string) => {
 				let state = notes.get(id);
 				if (!state) {
-					state = new RegistryNotes(() => {
-						const resources = durableNoteResources(host.services);
-						return noteKnowledge(host.cwd, host.agentDir, resources, configuredSettings.peek());
-					}, () => configuredSettings.read(), () => readSettings({ agentDir: host.agentDir }).values.notes);
+					state = new RegistryNotes(
+						() => {
+							const resources = durableNoteResources(host.services);
+							return noteKnowledge(host.cwd, host.agentDir, resources, configuredSettings.peek());
+						},
+						() => configuredSettings.read(),
+						() => readSettings({ agentDir: host.agentDir }).values.notes,
+					);
 					notes.set(id, state);
 				}
 				return state;
 			};
-			host.onClose(() => { configuredSettings.dispose(); stopPublishing(); notes.clear(); });
+			host.onClose(() => {
+				configuredSettings.dispose();
+				stopPublishing();
+				notes.clear();
+			});
 			const tool = durable.defineTool({
 				name: "registry",
 				description: REGISTRY_DESCRIPTION,
@@ -513,8 +534,14 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 						readContext: () => contextSnapshot ?? durableContext(agent, at),
 						contextBoundary: DURABLE_CONTEXT_BOUNDARY,
 						...(modelQueryOf(args) && !signal.aborted
-							? { models: readDurableModels(host.services.modelRuntime, agent ?? {}, at,
-								readSettingsScope(host.cwd, host.agentDir, at, host.services.settingsManager.isProjectTrusted())) }
+							? {
+									models: readDurableModels(
+										host.services.modelRuntime,
+										agent ?? {},
+										at,
+										readSettingsScope(host.cwd, host.agentDir, at, host.services.settingsManager.isProjectTrusted()),
+									),
+								}
 							: {}),
 						epoch: `${hostEpoch}:${String(api.conversationId)}`,
 						signal,
@@ -522,7 +549,12 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 					});
 					const details = JSON.parse(JSON.stringify(result.details)) as Durable.JsonObject;
 					const structuredOutput = JSON.parse(JSON.stringify(result.structuredContent)) as Durable.JsonObject;
-					return { output: [{ type: "text", text: result.text }], structuredOutput, details, isError: lookupIsError(result.outcome) };
+					return {
+						output: [{ type: "text", text: result.text }],
+						structuredOutput,
+						details,
+						isError: lookupIsError(result.outcome),
+					};
 				},
 			});
 			const guidance = durable.section("registry", (input) =>
@@ -534,15 +566,23 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 				name: "registry",
 				tools: [tool],
 				sections: [guidance],
-				hooks: [durable.hook(durable.ToolTask, {
-					afterTool(call, result, api) {
-						if (!Array.isArray(result.output) && call.parent === undefined) return;
-						const appended = conversationNotes(String(api.conversationId)).result(
-							{ name: call.name, input: call.arguments }, call.id, call.parent?.callId);
-						if (!appended.length || !Array.isArray(result.output)) return;
-						return { ...result, output: [...result.output, ...appended.map((text) => ({ type: "text" as const, text }))] };
-					},
-				})],
+				hooks: [
+					durable.hook(durable.ToolTask, {
+						afterTool(call, result, api) {
+							if (!Array.isArray(result.output) && call.parent === undefined) return;
+							const appended = conversationNotes(String(api.conversationId)).result(
+								{ name: call.name, input: call.arguments },
+								call.id,
+								call.parent?.callId,
+							);
+							if (!appended.length || !Array.isArray(result.output)) return;
+							return {
+								...result,
+								output: [...result.output, ...appended.map((text) => ({ type: "text" as const, text }))],
+							};
+						},
+					}),
+				],
 			});
 		},
 	};

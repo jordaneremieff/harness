@@ -77,10 +77,14 @@ export interface ContextSnapshot {
 /** Read on demand. Pi owns the estimate and its post-compaction unknown state. */
 export function readContext(ctx: ExtensionContext, at: number): ContextSnapshot {
 	const snapshot: ContextSnapshot = {
-		at, evidence: "host_estimate", state: "unavailable",
+		at,
+		evidence: "host_estimate",
+		state: "unavailable",
 		model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null,
 		thinkingLevel: ctx.thinkingLevel ?? null,
-		tokens: null, contextWindow: null, percent: null,
+		tokens: null,
+		contextWindow: null,
+		percent: null,
 	};
 	try {
 		const usage = ctx.getContextUsage();
@@ -88,16 +92,24 @@ export function readContext(ctx: ExtensionContext, at: number): ContextSnapshot 
 		snapshot.contextWindow = usage.contextWindow;
 		if (usage.tokens === null || usage.percent === null) {
 			snapshot.state = "unknown";
-		} else if (Number.isFinite(usage.tokens) && usage.tokens >= 0 && Number.isFinite(usage.percent) && usage.percent >= 0) {
+		} else if (
+			Number.isFinite(usage.tokens) &&
+			usage.tokens >= 0 &&
+			Number.isFinite(usage.percent) &&
+			usage.percent >= 0
+		) {
 			snapshot.state = "available";
 			snapshot.tokens = usage.tokens;
 			snapshot.percent = usage.percent;
 		}
-	} catch { /* Access failure does not establish an empty context. */ }
+	} catch {
+		/* Access failure does not establish an empty context. */
+	}
 	return snapshot;
 }
 
-export const CONTEXT_BOUNDARY = "Pi estimates context from assistant usage and trailing messages; unknown usage can follow compaction. This is not a safe remaining budget, a final provider payload count, or a compaction threshold.";
+export const CONTEXT_BOUNDARY =
+	"Pi estimates context from assistant usage and trailing messages; unknown usage can follow compaction. This is not a safe remaining budget, a final provider payload count, or a compaction threshold.";
 
 export function contextLines(context: ContextSnapshot, boundary: string = CONTEXT_BOUNDARY): string[] {
 	return [
@@ -158,8 +170,11 @@ export function hostFacts(session: SessionFacts, accessors: HostAccessors = inst
 			value: typeof session.projectTrusted === "boolean" ? String(session.projectTrusted) : null,
 		},
 		{ key: "sessionId", value: session.sessionId ?? null },
-		{ key: "sessionFile", value: session.sessionFile === null ? "(ephemeral)" : session.sessionFile ?? null,
-			note: "ephemeral only if the accessor answered without a file" },
+		{
+			key: "sessionFile",
+			value: session.sessionFile === null ? "(ephemeral)" : (session.sessionFile ?? null),
+			note: "ephemeral only if the accessor answered without a file",
+		},
 		...identityFacts(session),
 		fact("installedVersion", accessors.version),
 		fact("packageDir", accessors.packageDir, exists),

@@ -9,12 +9,20 @@ import { after, it } from "node:test";
 
 const preferenceOverride = process.env.PI_HARNESS_FILE;
 delete process.env.PI_HARNESS_FILE;
-after(() => { if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride; });
+after(() => {
+	if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride;
+});
 import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
 import { publishCatalogChange } from "./catalog-events.ts";
 import { dashboardText } from "./dashboard-roster.ts";
-import { connectHost, HostBusyEndpointUnavailableError, HostReadinessUnavailableError, type HostConnection, type OwnedHostExit } from "./host-client.ts";
+import {
+	connectHost,
+	HostBusyEndpointUnavailableError,
+	HostReadinessUnavailableError,
+	type HostConnection,
+	type OwnedHostExit,
+} from "./host-client.ts";
 import { runHost } from "./host-process.ts";
 import { HostError, hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { HOST_CONTRACT, contractRefusal, type RuntimeContract } from "./version-contract.ts";
@@ -23,17 +31,29 @@ import type { ContinuityFact } from "./continuity-facts.ts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
 import { PLACE_FILE_MAX_BYTES } from "./places.ts";
 import type { ExecutionSelection } from "./agent-preferences.ts";
-import { connectPrimaryChannel, type PrimaryChannel, type PrimaryChannelOptions, type PrimaryInfo } from "./primary-channel.ts";
+import {
+	connectPrimaryChannel,
+	type PrimaryChannel,
+	type PrimaryChannelOptions,
+	type PrimaryInfo,
+} from "./primary-channel.ts";
 import type { createPrimaryChannel } from "./primary-channel.ts";
 
 const fixtureRoots = new Set<string>();
-after(() => { for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true }); });
+after(() => {
+	for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
+});
 
 function fixtureRoot(_t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "agent-manager-"));
 	fixtureRoots.add(root);
 	mkdirSync(join(root, "agent"));
-	writeFileSync(join(root, "agent", "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: "acme/model-x" } }, preferences: { defaultPreset: "standard" } })));
+	writeFileSync(
+		join(root, "agent", "harness.json"),
+		JSON.stringify(
+			machineConfig({ presets: { standard: { model: "acme/model-x" } }, preferences: { defaultPreset: "standard" } }),
+		),
+	);
 	return root;
 }
 
@@ -54,7 +74,14 @@ function createRecord(manager: AgentManager, root: string, ownerId = "owner-1") 
 
 /** One syntactically valid writer claim owned by `pid` on this host. */
 function claimFor(record: CatalogRecord, pid: number): unknown {
-	return { token: randomUUID(), sessionId: record.storageId, cwd: resolve(record.cwd), host: hostname(), pid, createdAt: new Date().toISOString() };
+	return {
+		token: randomUUID(),
+		sessionId: record.storageId,
+		cwd: resolve(record.cwd),
+		host: hostname(),
+		pid,
+		createdAt: new Date().toISOString(),
+	};
 }
 
 /** Write a claim file a startup scan would observe as live, dead, or unknown. */
@@ -77,12 +104,21 @@ interface FakeConnection extends HostConnection {
 	exit(outcome: OwnedHostExit): Promise<void>;
 }
 
-function fakeConnection(metadata: HostMetadata, handler: (method: string, params: unknown) => Promise<unknown>, runtimeContract: RuntimeContract = HOST_CONTRACT, owned = false): FakeConnection {
+function fakeConnection(
+	metadata: HostMetadata,
+	handler: (method: string, params: unknown) => Promise<unknown>,
+	runtimeContract: RuntimeContract = HOST_CONTRACT,
+	owned = false,
+): FakeConnection {
 	let closed = false;
 	const listeners = new Set<() => void>();
 	const changes = new Set<() => void>();
 	let resolveExit: ((outcome: OwnedHostExit) => void) | undefined;
-	const ownedExit = owned ? new Promise<OwnedHostExit>((resolve) => { resolveExit = resolve; }) : undefined;
+	const ownedExit = owned
+		? new Promise<OwnedHostExit>((resolve) => {
+				resolveExit = resolve;
+			})
+		: undefined;
 	const close = async () => {
 		if (closed) return;
 		closed = true;
@@ -102,7 +138,10 @@ function fakeConnection(metadata: HostMetadata, handler: (method: string, params
 			return handler(method, params);
 		},
 		onClose(callback) {
-			if (closed) { queueMicrotask(callback); return () => {}; }
+			if (closed) {
+				queueMicrotask(callback);
+				return () => {};
+			}
 			listeners.add(callback);
 			return () => {
 				listeners.delete(callback);
@@ -169,67 +208,130 @@ const BASE_SUBMIT_CONTRACT: RuntimeContract = { ...HOST_CONTRACT, operations: ba
 function nativeAdmission(params: unknown, submissionId = 9): Record<string, unknown> {
 	const input = params as Record<string, unknown>;
 	const sessionId = String(input.sessionId);
-	return { submissionId, identity: sessionId, requestId: input.requestId, result: { sessionId, submissionId, requestId: input.requestId } };
+	return {
+		submissionId,
+		identity: sessionId,
+		requestId: input.requestId,
+		result: { sessionId, submissionId, requestId: input.requestId },
+	};
 }
 
-for (const failure of ["persistence", "status", "listener"] as const) it(`keeps successful admission and in-memory scope after a sent-work ${failure} callback throws`, async (t) => {
-	const root = fixtureRoot(t);
-	let failCallbacks = false;
-	const scope = new Set<string>();
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-			assert.equal(method, "task-submit");
-			failCallbacks = true;
-			return nativeAdmission(params);
-		}),
-	}));
-	let unsubscribe = () => {};
-	t.after(async () => { failCallbacks = false; unsubscribe(); await manager.close(); });
-	const target = createRecord(manager, root, "other-primary").storageId;
-	manager.catalog.updateView(target, {
-		updatedAt: new Date().toISOString(), coverage: { complete: true, omitted: 0 },
-		rows: [{ id: `${target}:2`, storageId: target, cwd: root, modifiedAt: 1, owner: "unknown", state: "idle", cost: 50, partial: false }],
+for (const failure of ["persistence", "status", "listener"] as const)
+	it(`keeps successful admission and in-memory scope after a sent-work ${failure} callback throws`, async (t) => {
+		const root = fixtureRoot(t);
+		let failCallbacks = false;
+		const scope = new Set<string>();
+		const manager = new AgentManager(
+			managerOptions(root, {
+				createPrimary: primaryFactory().factory,
+				acquire: async (metadata) =>
+					fakeConnection(metadata, async (method, params) => {
+						assert.equal(method, "task-submit");
+						failCallbacks = true;
+						return nativeAdmission(params);
+					}),
+			}),
+		);
+		let unsubscribe = () => {};
+		t.after(async () => {
+			failCallbacks = false;
+			unsubscribe();
+			await manager.close();
+		});
+		const target = createRecord(manager, root, "other-primary").storageId;
+		manager.catalog.updateView(target, {
+			updatedAt: new Date().toISOString(),
+			coverage: { complete: true, omitted: 0 },
+			rows: [
+				{
+					id: `${target}:2`,
+					storageId: target,
+					cwd: root,
+					modifiedAt: 1,
+					owner: "unknown",
+					state: "idle",
+					cost: 50,
+					partial: false,
+				},
+			],
+		});
+		await manager.registerPrimary("primary", {
+			signal: new AbortController().signal,
+			send() {},
+			sentWork: scope,
+			retainSentWork: () => {
+				if (failCallbacks && failure === "persistence") throw new Error("marker write failed");
+			},
+			status: () => {
+				if (failCallbacks && failure === "status") throw new Error("status callback failed");
+			},
+		});
+		unsubscribe = manager.subscribeRoster(() => {
+			if (failCallbacks && failure === "listener") throw new Error("roster callback failed");
+		});
+		const outcome = (await manager.control(
+			"submit",
+			{ sessionId: `${target}:2`, message: "Task", requestId: "admission" },
+			{ id: "primary", cwd: root },
+		)) as { result: unknown; submissionId: number };
+		assert.equal(outcome.submissionId, 9);
+		assert.deepEqual(outcome.result, { sessionId: `${target}:2`, submissionId: 9, requestId: "admission" });
+		assert.deepEqual([...scope], [`${target}:2`]);
+		const page = await manager.dashboardPage();
+		assert.equal(
+			await manager.sessionFigures("primary", page),
+			"agents: 0/1 active",
+			"admitted scope survives callback failure and excludes reused cost",
+		);
+		const overview = (await manager.status()) as { failures: Array<{ error: string }> };
+		assert.ok(
+			overview.failures.some(({ error }) =>
+				error.includes(
+					failure === "persistence"
+						? "marker write failed"
+						: `${failure === "status" ? "status" : "roster"} callback failed`,
+				),
+			),
+		);
 	});
-	await manager.registerPrimary("primary", {
-		signal: new AbortController().signal, send() {}, sentWork: scope,
-		retainSentWork: () => { if (failCallbacks && failure === "persistence") throw new Error("marker write failed"); },
-		status: () => { if (failCallbacks && failure === "status") throw new Error("status callback failed"); },
-	});
-	unsubscribe = manager.subscribeRoster(() => { if (failCallbacks && failure === "listener") throw new Error("roster callback failed"); });
-	const outcome = await manager.control("submit", { sessionId: `${target}:2`, message: "Task", requestId: "admission" }, { id: "primary", cwd: root }) as { result: unknown; submissionId: number };
-	assert.equal(outcome.submissionId, 9);
-	assert.deepEqual(outcome.result, { sessionId: `${target}:2`, submissionId: 9, requestId: "admission" });
-	assert.deepEqual([...scope], [`${target}:2`]);
-	const page = await manager.dashboardPage();
-	assert.equal(await manager.sessionFigures("primary", page), "agents: 0/1 active", "admitted scope survives callback failure and excludes reused cost");
-	const overview = await manager.status() as { failures: Array<{ error: string }> };
-	assert.ok(overview.failures.some(({ error }) => error.includes(failure === "persistence" ? "marker write failed" : `${failure === "status" ? "status" : "roster"} callback failed`)));
-});
 
 it("a withdrawn command carries its signal to the host connection and settles without the host answer", async (t) => {
 	const root = fixtureRoot(t);
 	const seen: Array<{ method: string; signal?: AbortSignal }> = [];
 	let answers = 0;
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => {
-			const connection = fakeConnection(metadata, async () => undefined);
-			// The real connection rejects a withdrawn call locally and drops a later answer; unsafe work is never cancelled on the wire.
-			connection.request = (method, _params, options) => {
-				seen.push({ method, signal: options?.signal });
-				return new Promise((_resolve, reject) => {
-					options?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
-					setTimeout(() => { answers++; }, 50);
-				});
-			};
-			return connection;
-		},
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: async (metadata) => {
+				const connection = fakeConnection(metadata, async () => undefined);
+				// The real connection rejects a withdrawn call locally and drops a later answer; unsafe work is never cancelled on the wire.
+				connection.request = (method, _params, options) => {
+					seen.push({ method, signal: options?.signal });
+					return new Promise((_resolve, reject) => {
+						options?.signal?.addEventListener(
+							"abort",
+							() => reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+							{ once: true },
+						);
+						setTimeout(() => {
+							answers++;
+						}, 50);
+					});
+				};
+				return connection;
+			},
+		}),
+	);
 	t.after(() => manager.close());
 	const target = createRecord(manager, root, "owner").storageId;
 	const withdraw = new AbortController();
-	const pending = manager.control("command", { sessionId: target, name: "browse", data: { op: "recent" }, origin: "operator", invocationId: "one" }, { id: "terminal", cwd: root }, { signal: withdraw.signal });
-	for (let step = 0; step < 20 && !seen.some((call) => call.method === "command"); step++) await new Promise((resolve) => setImmediate(resolve));
+	const pending = manager.control(
+		"command",
+		{ sessionId: target, name: "browse", data: { op: "recent" }, origin: "operator", invocationId: "one" },
+		{ id: "terminal", cwd: root },
+		{ signal: withdraw.signal },
+	);
+	for (let step = 0; step < 20 && !seen.some((call) => call.method === "command"); step++)
+		await new Promise((resolve) => setImmediate(resolve));
 	const command = seen.find((call) => call.method === "command");
 	assert.ok(command?.signal, "the manager passes the caller's signal to the host connection request");
 	withdraw.abort();
@@ -241,21 +343,38 @@ it("a withdrawn command carries its signal to the host connection and settles wi
 it("refuses a full place book before catalogue creation or host launch", async (t) => {
 	const root = fixtureRoot(t);
 	let launches = 0;
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory, validateModel: () => {},
-		acquire: async () => { launches += 1; throw new Error("unexpected launch"); },
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			validateModel: () => {},
+			acquire: async () => {
+				launches += 1;
+				throw new Error("unexpected launch");
+			},
+		}),
+	);
 	t.after(() => manager.close());
 	mkdirSync(manager.catalog.root, { recursive: true });
-	const places = Array.from({ length: 2500 }, (_, index) => ({ area: `/other/${index}`, sessionId: "s".repeat(36), topic: "x".repeat(256), boundAt: "2026-01-01T00:00:00.000Z" }));
+	const places = Array.from({ length: 2500 }, (_, index) => ({
+		area: `/other/${index}`,
+		sessionId: "s".repeat(36),
+		topic: "x".repeat(256),
+		boundAt: "2026-01-01T00:00:00.000Z",
+	}));
 	let raw = `${JSON.stringify({ places }, null, 2)}\n`;
-	while (Buffer.byteLength(raw) > PLACE_FILE_MAX_BYTES - 128) { places.pop(); raw = `${JSON.stringify({ places }, null, 2)}\n`; }
+	while (Buffer.byteLength(raw) > PLACE_FILE_MAX_BYTES - 128) {
+		places.pop();
+		raw = `${JSON.stringify({ places }, null, 2)}\n`;
+	}
 	const remaining = PLACE_FILE_MAX_BYTES - Buffer.byteLength(raw);
 	places[0].topic += "x".repeat(remaining);
 	writeFileSync(manager.places.file, `${JSON.stringify({ places }, null, 2)}\n`);
 	await assert.rejects(manager.place({ area: root, topic: "x".repeat(256) }, { id: "primary", cwd: root }), /exceeds/u);
 	assert.equal(launches, 0);
-	assert.equal(readdirSync(manager.catalog.root).filter((name) => name.endsWith(".json") && name !== "places.json").length, 0);
+	assert.equal(
+		readdirSync(manager.catalog.root).filter((name) => name.endsWith(".json") && name !== "places.json").length,
+		0,
+	);
 	assert.equal(manager.places.readState().kind, "ok");
 });
 
@@ -263,20 +382,30 @@ it("saves a handle-less spawn role before prompt admission and preserves it on r
 	const root = fixtureRoot(t);
 	const calls: string[] = [];
 	let role = "";
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory, validateModel: () => {},
-		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-			calls.push(method);
-			if (method === "profile-read") return { role, revision: "a".repeat(64) };
-			if (method === "profile-update") { role = (params as { role: string }).role; return { outcome: "applied" }; }
-			if (method === "task-submit") { assert.equal(role, "Review source"); return nativeAdmission(params); }
-			return {};
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			validateModel: () => {},
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method, params) => {
+					calls.push(method);
+					if (method === "profile-read") return { role, revision: "a".repeat(64) };
+					if (method === "profile-update") {
+						role = (params as { role: string }).role;
+						return { outcome: "applied" };
+					}
+					if (method === "task-submit") {
+						assert.equal(role, "Review source");
+						return nativeAdmission(params);
+					}
+					return {};
+				}),
 		}),
-	}));
+	);
 	t.after(() => manager.close());
 	const input = { role: "Review source", prompt: "Task", requestId: "spawn-role" };
 	const caller = { id: "primary", cwd: root };
-	const first = await manager.spawn(input, caller) as { sessionId: string; selection: ExecutionSelection };
+	const first = (await manager.spawn(input, caller)) as { sessionId: string; selection: ExecutionSelection };
 	assert.equal(first.selection.values.role, input.role);
 	assert.equal(first.selection.unapplied.includes("role"), false);
 	assert.ok(calls.indexOf("profile-update") < calls.indexOf("task-submit"));
@@ -287,47 +416,68 @@ it("saves a handle-less spawn role before prompt admission and preserves it on r
 it("names the peer's older loaded code and replacement steps on strict observation failure", async (t) => {
 	const root = fixtureRoot(t);
 	const peer = { ...HOST_CONTRACT, upstream: { ...HOST_CONTRACT.upstream, codingAgent: "1.3.0", durable: "1.3.0" } };
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => fakeConnection(metadata, async () => ({ retiredShape: true }), peer),
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: async (metadata) => fakeConnection(metadata, async () => ({ retiredShape: true }), peer),
+		}),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
 	await manager.control("attach", { sessionId: record.storageId }, { id: "primary", cwd: root });
-	await assert.rejects(manager.control("inspect", { sessionId: record.storageId, view: "history" }, { id: "primary", cwd: root }), (error: unknown) => {
-		assert.ok(error instanceof Error);
-		assert.match(error.message, /peer runs older code/u);
-		assert.match(error.message, /Pi 1\.3\.0/u);
-		assert.match(error.message, /agent_abort with release: true.*agent_attach/u);
-		assert.match(error.message, /Observation output does not match its schema/u);
-		return true;
-	});
+	await assert.rejects(
+		manager.control("inspect", { sessionId: record.storageId, view: "history" }, { id: "primary", cwd: root }),
+		(error: unknown) => {
+			assert.ok(error instanceof Error);
+			assert.match(error.message, /peer runs older code/u);
+			assert.match(error.message, /Pi 1\.3\.0/u);
+			assert.match(error.message, /agent_abort with release: true.*agent_attach/u);
+			assert.match(error.message, /Observation output does not match its schema/u);
+			return true;
+		},
+	);
 });
 
 it("retains successful work targets across manager submission paths, not reports, attachment, or failed admissions", async (t) => {
 	const root = fixtureRoot(t);
 	const retained: string[] = [];
 	const primary = fakePrimary(new AbortController().signal);
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory, validateModel: () => {},
-		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-			const input = params as Record<string, unknown>;
-			switch (method) {
-				case "task-submit":
-					if (input.message === "fail") throw new Error("admission refused");
-					return nativeAdmission(params);
-				case "profile-read": return { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: "off" };
-				case "rewind": return { identity: `${metadata.storageId}:5`, submissionId: 10 };
-				case "timer-schedule": return { identity: `${metadata.storageId}:6`, timerId: 1 };
-				default: return {};
-			}
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			validateModel: () => {},
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method, params) => {
+					const input = params as Record<string, unknown>;
+					switch (method) {
+						case "task-submit":
+							if (input.message === "fail") throw new Error("admission refused");
+							return nativeAdmission(params);
+						case "profile-read":
+							return { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: "off" };
+						case "rewind":
+							return { identity: `${metadata.storageId}:5`, submissionId: 10 };
+						case "timer-schedule":
+							return { identity: `${metadata.storageId}:6`, timerId: 1 };
+						default:
+							return {};
+					}
+				}),
 		}),
-	}));
+	);
 	t.after(() => manager.close());
 	await manager.registerPrimary("primary", { ...primary.client, retainSentWork: (id) => retained.push(id) });
 	const caller = { id: "primary", cwd: root };
 	const target = createRecord(manager, root, "other-primary").storageId;
-	for (const [method, suffix, whenBusy] of [["submit", 2, "followUp"], ["submit", 3, "steer"], ["task-submit", 4, "followUp"]] as const) {
-		await manager.control(method, { sessionId: `${target}:${suffix}`, message: "Task", whenBusy, replyTo: "another-primary" }, caller);
+	for (const [method, suffix, whenBusy] of [
+		["submit", 2, "followUp"],
+		["submit", 3, "steer"],
+		["task-submit", 4, "followUp"],
+	] as const) {
+		await manager.control(
+			method,
+			{ sessionId: `${target}:${suffix}`, message: "Task", whenBusy, replyTo: "another-primary" },
+			caller,
+		);
 		assert.ok(retained.includes(`${target}:${suffix}`));
 	}
 	await manager.control("rewind", { sessionId: target, correction: "Correction", entryId: "1" }, caller);
@@ -341,14 +491,16 @@ it("retains successful work targets across manager submission paths, not reports
 	await assert.rejects(manager.control("submit", { sessionId: target, message: "fail" }, caller), /admission refused/u);
 	await manager.spawn({}, caller);
 	assert.equal(retained.length, beforeIdle, "duplicate targets and non-work controls add no markers");
-	const spawned = await manager.spawn({ prompt: "Task" }, caller) as { sessionId: string };
+	const spawned = (await manager.spawn({ prompt: "Task" }, caller)) as { sessionId: string };
 	assert.ok(retained.includes(spawned.sessionId));
-	const handled = await manager.spawn({ handle: "reviewer", role: "Review", prompt: "Task" }, caller) as { sessionId: string };
+	const handled = (await manager.spawn({ handle: "reviewer", role: "Review", prompt: "Task" }, caller)) as {
+		sessionId: string;
+	};
 	assert.ok(retained.includes(handled.sessionId));
 	const count = retained.length;
 	await manager.spawn({ handle: "reviewer", prompt: "Again" }, caller);
 	assert.equal(retained.length, count);
-	const placed = await manager.place({ area: root, prompt: "Task" }, caller) as { sessionId: string };
+	const placed = (await manager.place({ area: root, prompt: "Task" }, caller)) as { sessionId: string };
 	assert.ok(retained.includes(placed.sessionId));
 	const placeCount = retained.length;
 	await manager.place({ area: root, prompt: "Again" }, caller);
@@ -361,67 +513,122 @@ it("retains successful work targets across manager submission paths, not reports
 	assert.equal(retained.includes(target), false, "one primary never adopts another primary's work");
 });
 
-for (const operation of ["submit", "task-submit"] as const) for (const minutes of [undefined, 0, 2.5]) it(`preserves the place model interval ${minutes} through ${operation} on create and reuse`, async (t) => {
-	const root = fixtureRoot(t);
-	const submits: Array<Record<string, unknown>> = [];
-	const manager = new AgentManager(managerOptions(root, { validateModel: () => {}, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-		if (method === operation) { submits.push(params as Record<string, unknown>); return nativeAdmission(params, submits.length); }
-		return { busy: false };
-	}, operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT) }));
-	t.after(() => manager.close());
-	const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
-	process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
-	t.after(() => { if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES; else process.env.PI_AGENT_CHECK_IN_MINUTES = prior; });
-	const caller = { id: "owner-1", cwd: root, model: { provider: "acme", modelId: "model-x" }, thinkingLevel: "off" };
-	const input = { area: root, prompt: "Task", origin: "model" as const, checkInMinutes: minutes };
-	if (operation === "submit") {
-		await assert.rejects(manager.place(input, caller), /does not advertise task-submit/u);
-		assert.equal(submits.length, 0, "no fallback admission occurs");
-		return;
-	}
-	await manager.place(input, caller);
-	await manager.place(input, caller);
-	assert.equal(submits.length, 2);
-	assert.deepEqual(submits.map((params) => params.checkInMinutes), [minutes ?? 7, minutes ?? 7]);
-	assert.deepEqual(submits.map((params) => params.origin), ["model", "model"]);
-	assert.deepEqual(submits.map((params) => params.requester), [caller.id, caller.id]);
-	await manager.place({ area: root, prompt: "Operator task", origin: "operator" }, caller);
-	assert.equal(submits[2]?.checkInMinutes, 0);
-});
+for (const operation of ["submit", "task-submit"] as const)
+	for (const minutes of [undefined, 0, 2.5])
+		it(`preserves the place model interval ${minutes} through ${operation} on create and reuse`, async (t) => {
+			const root = fixtureRoot(t);
+			const submits: Array<Record<string, unknown>> = [];
+			const manager = new AgentManager(
+				managerOptions(root, {
+					validateModel: () => {},
+					acquire: async (metadata) =>
+						fakeConnection(
+							metadata,
+							async (method, params) => {
+								if (method === operation) {
+									submits.push(params as Record<string, unknown>);
+									return nativeAdmission(params, submits.length);
+								}
+								return { busy: false };
+							},
+							operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT,
+						),
+				}),
+			);
+			t.after(() => manager.close());
+			const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
+			process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
+			t.after(() => {
+				if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES;
+				else process.env.PI_AGENT_CHECK_IN_MINUTES = prior;
+			});
+			const caller = {
+				id: "owner-1",
+				cwd: root,
+				model: { provider: "acme", modelId: "model-x" },
+				thinkingLevel: "off",
+			};
+			const input = { area: root, prompt: "Task", origin: "model" as const, checkInMinutes: minutes };
+			if (operation === "submit") {
+				await assert.rejects(manager.place(input, caller), /does not advertise task-submit/u);
+				assert.equal(submits.length, 0, "no fallback admission occurs");
+				return;
+			}
+			await manager.place(input, caller);
+			await manager.place(input, caller);
+			assert.equal(submits.length, 2);
+			assert.deepEqual(
+				submits.map((params) => params.checkInMinutes),
+				[minutes ?? 7, minutes ?? 7],
+			);
+			assert.deepEqual(
+				submits.map((params) => params.origin),
+				["model", "model"],
+			);
+			assert.deepEqual(
+				submits.map((params) => params.requester),
+				[caller.id, caller.id],
+			);
+			await manager.place({ area: root, prompt: "Operator task", origin: "operator" }, caller);
+			assert.equal(submits[2]?.checkInMinutes, 0);
+		});
 
-for (const prompt of [undefined, "", "  keep this prompt  "]) it(`normalises place prompt ${JSON.stringify(prompt)} identically for creation and reuse`, async t => {
-	const root = fixtureRoot(t);
-	const submits: Record<string, unknown>[] = [];
-	const manager = new AgentManager(managerOptions(root, { validateModel: () => {}, acquire: async metadata => fakeConnection(metadata, async (method, params) => {
-		if (method === "task-submit") { submits.push(params as Record<string, unknown>); return nativeAdmission(params, submits.length); }
-		return { busy: false };
-	}) }));
-	t.after(() => manager.close());
-	const caller = { id: "owner-1", cwd: root, model: { provider: "acme", modelId: "model-x" }, thinkingLevel: "off" };
-	for (const requestId of ["place-create", "place-reuse"]) {
-		const receipt = await manager.place({ area: root, prompt, requestId, origin: "model", checkInMinutes: 0 }, caller) as { sessionId: string; result?: { sessionId: string; submissionId: number; requestId: string } };
-		if (prompt) {
-			assert.equal(receipt.result?.sessionId, receipt.sessionId);
-			assert.equal(receipt.result?.requestId, requestId);
-			assert.equal(submits.at(-1)?.message, prompt);
-		} else assert.equal(receipt.result, undefined);
-	}
-	assert.equal(submits.length, prompt ? 2 : 0);
-});
+for (const prompt of [undefined, "", "  keep this prompt  "])
+	it(`normalises place prompt ${JSON.stringify(prompt)} identically for creation and reuse`, async (t) => {
+		const root = fixtureRoot(t);
+		const submits: Record<string, unknown>[] = [];
+		const manager = new AgentManager(
+			managerOptions(root, {
+				validateModel: () => {},
+				acquire: async (metadata) =>
+					fakeConnection(metadata, async (method, params) => {
+						if (method === "task-submit") {
+							submits.push(params as Record<string, unknown>);
+							return nativeAdmission(params, submits.length);
+						}
+						return { busy: false };
+					}),
+			}),
+		);
+		t.after(() => manager.close());
+		const caller = { id: "owner-1", cwd: root, model: { provider: "acme", modelId: "model-x" }, thinkingLevel: "off" };
+		for (const requestId of ["place-create", "place-reuse"]) {
+			const receipt = (await manager.place(
+				{ area: root, prompt, requestId, origin: "model", checkInMinutes: 0 },
+				caller,
+			)) as { sessionId: string; result?: { sessionId: string; submissionId: number; requestId: string } };
+			if (prompt) {
+				assert.equal(receipt.result?.sessionId, receipt.sessionId);
+				assert.equal(receipt.result?.requestId, requestId);
+				assert.equal(submits.at(-1)?.message, prompt);
+			} else assert.equal(receipt.result, undefined);
+		}
+		assert.equal(submits.length, prompt ? 2 : 0);
+	});
 
 it("retains exact prompted handle references across creation and reuse", async (t) => {
 	const root = fixtureRoot(t);
 	const seen: Record<string, unknown>[] = [];
-	const manager = new AgentManager(managerOptions(root, { validateModel: () => {}, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-		if (method === "profile-read") return { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel };
-		assert.equal(method, "task-submit");
-		seen.push(params as Record<string, unknown>);
-		return nativeAdmission(params, seen.length);
-	}) }));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			validateModel: () => {},
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method, params) => {
+					if (method === "profile-read")
+						return { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel };
+					assert.equal(method, "task-submit");
+					seen.push(params as Record<string, unknown>);
+					return nativeAdmission(params, seen.length);
+				}),
+		}),
+	);
 	t.after(() => manager.close());
 	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "model-x" } };
 	for (const [index, requestId] of ["handle:first", "handle:next"].entries()) {
-		const outcome = await manager.spawn({ handle: "reviewer", role: "Review work", prompt: "Task", requestId }, caller) as { sessionId: string; created: boolean; result: unknown };
+		const outcome = (await manager.spawn(
+			{ handle: "reviewer", role: "Review work", prompt: "Task", requestId },
+			caller,
+		)) as { sessionId: string; created: boolean; result: unknown };
 		assert.equal(outcome.created, index === 0);
 		assert.deepEqual(outcome.result, { sessionId: outcome.sessionId, submissionId: index + 1, requestId });
 	}
@@ -431,7 +638,11 @@ it("retains exact prompted handle references across creation and reuse", async (
 interface CapturedPrimaryChannel {
 	readonly closedEvent: Promise<void>;
 	readonly options: PrimaryChannelOptions;
-	readonly updates: Array<{ name: string | undefined; model: { provider: string; modelId: string } | undefined; thinkingLevel: string | undefined }>;
+	readonly updates: Array<{
+		name: string | undefined;
+		model: { provider: string; modelId: string } | undefined;
+		thinkingLevel: string | undefined;
+	}>;
 	closed: boolean;
 }
 
@@ -473,150 +684,254 @@ function primaryFactory(onClose?: (channel: CapturedPrimaryChannel, invocation: 
 			},
 		};
 	};
-	return { channels, factory: factory as typeof createPrimaryChannel, get invocations() { return invocations; } };
+	return {
+		channels,
+		factory: factory as typeof createPrimaryChannel,
+		get invocations() {
+			return invocations;
+		},
+	};
 }
 
 const noHost = async () => {
 	throw new Error("no live host");
 };
 
-for (const writer of ["absent", "dead"] as const) it(`preserves unavailable release without acquisition for ${writer} metadata`, async t => {
-	const root = fixtureRoot(t);
-	let acquisitions = 0;
-	const manager = new AgentManager(managerOptions(root, { acquire: async () => { acquisitions++; throw new Error("release acquisition is forbidden"); }, connect: noHost }));
-	t.after(() => manager.close());
-	const record = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(record.storageId, true);
-	if (writer === "dead") writeClaim(record, claimFor(record, deadProcessId()));
-	await assert.rejects(manager.control("release", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }), /no live host/u);
-	assert.equal(acquisitions, 0);
-	assert.equal(manager.catalog.read(record.storageId).recoveryDue, true, "release does not resume or discard retained work");
-});
+for (const writer of ["absent", "dead"] as const)
+	it(`preserves unavailable release without acquisition for ${writer} metadata`, async (t) => {
+		const root = fixtureRoot(t);
+		let acquisitions = 0;
+		const manager = new AgentManager(
+			managerOptions(root, {
+				acquire: async () => {
+					acquisitions++;
+					throw new Error("release acquisition is forbidden");
+				},
+				connect: noHost,
+			}),
+		);
+		t.after(() => manager.close());
+		const record = createRecord(manager, root);
+		manager.catalog.markRecoveryDue(record.storageId, true);
+		if (writer === "dead") writeClaim(record, claimFor(record, deadProcessId()));
+		await assert.rejects(
+			manager.control("release", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }),
+			/no live host/u,
+		);
+		assert.equal(acquisitions, 0);
+		assert.equal(
+			manager.catalog.read(record.storageId).recoveryDue,
+			true,
+			"release does not resume or discard retained work",
+		);
+	});
 
-for (const writer of ["live", "unknown"] as const) it(`preserves attachment failure on release when the writer is ${writer}`, async t => {
-	const root = fixtureRoot(t);
-	let acquisitions = 0;
-	const manager = new AgentManager(managerOptions(root, { acquire: async () => { acquisitions++; throw new Error("release acquisition is forbidden"); }, connect: noHost }));
-	t.after(() => manager.close());
-	const record = createRecord(manager, root);
-	writeClaim(record, writer === "live" ? claimFor(record, process.pid) : "unreadable claim");
-	await assert.rejects(manager.control("release", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }), /no live host/u);
-	assert.equal(acquisitions, 0);
-});
+for (const writer of ["live", "unknown"] as const)
+	it(`preserves attachment failure on release when the writer is ${writer}`, async (t) => {
+		const root = fixtureRoot(t);
+		let acquisitions = 0;
+		const manager = new AgentManager(
+			managerOptions(root, {
+				acquire: async () => {
+					acquisitions++;
+					throw new Error("release acquisition is forbidden");
+				},
+				connect: noHost,
+			}),
+		);
+		t.after(() => manager.close());
+		const record = createRecord(manager, root);
+		writeClaim(record, writer === "live" ? claimFor(record, process.pid) : "unreadable claim");
+		await assert.rejects(
+			manager.control("release", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }),
+			/no live host/u,
+		);
+		assert.equal(acquisitions, 0);
+	});
 
 it("preserves a successful spawn admission when its status snapshot fails", async (t) => {
 	const root = fixtureRoot(t);
-	const manager = new AgentManager(managerOptions(root, {
-		validateModel: () => {},
-		acquire: async (metadata) => fakeConnection(metadata, async (method) => {
-			if (method === "status") throw new Error("snapshot unavailable");
-			return { submissionId: 9, deduped: false };
+	const manager = new AgentManager(
+		managerOptions(root, {
+			validateModel: () => {},
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method) => {
+					if (method === "status") throw new Error("snapshot unavailable");
+					return { submissionId: 9, deduped: false };
+				}),
 		}),
-	}));
+	);
 	try {
-		const outcome = await manager.spawn({ prompt: "work" }, { id: "owner", cwd: root, model: { provider: "acme", modelId: "model-x" } }) as { sessionId: string; admission: { submissionId: number }; snapshotError: string };
+		const outcome = (await manager.spawn(
+			{ prompt: "work" },
+			{ id: "owner", cwd: root, model: { provider: "acme", modelId: "model-x" } },
+		)) as { sessionId: string; admission: { submissionId: number }; snapshotError: string };
 		assert.equal(outcome.admission.submissionId, 9);
 		assert.equal(outcome.snapshotError, "snapshot unavailable");
 		assert.equal(manager.catalog.read(outcome.sessionId).storageId, outcome.sessionId);
-	} finally { await manager.close(); }
+	} finally {
+		await manager.close();
+	}
 });
 
-for (const placement of ["placed", "unplaced"] as const) it(`labels a forwarded report as an event and preserves its ${placement} receipt`, async (t) => {
-	const root = fixtureRoot(t);
-	const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-			seen.push({ method, params: params as Record<string, unknown> });
-			return { submissionId: 7, placement };
-		}),
-	}));
-	t.after(() => manager.close());
-	const record = createRecord(manager, root);
-	const receipt = await manager.control("report", { sessionId: record.storageId, message: "Progress", requestId: "report-progress" }, { id: "caller", cwd: root }) as { submissionId: number; placement: string; boundary: string };
-	assert.equal(receipt.submissionId, 7);
-	assert.equal(receipt.placement, placement);
-	assert.match(receipt.boundary, /report to a running agent is placed at the recipient's next tool boundary, not at the end of its run/u);
-	assert.match(receipt.boundary, /does not interrupt a running tool, and it starts no answer-bearing task/u);
-	assert.match(receipt.boundary, /A report is an event for the recipient: it reads the report and continues/u);
-	assert.match(receipt.boundary, /Use steer when the recipient must change its current work/u);
-	assert.doesNotMatch(receipt.boundary, /agent_await|normally waits for the current run to end/u);
-	const admission = seen.find((call) => call.method === "submit");
-	assert.deepEqual(admission?.params, {
-		sessionId: record.storageId, message: "Report from caller:\nProgress", requestId: "report-progress",
-		whenBusy: "followUp", inputClass: "report", inputSender: "caller",
+for (const placement of ["placed", "unplaced"] as const)
+	it(`labels a forwarded report as an event and preserves its ${placement} receipt`, async (t) => {
+		const root = fixtureRoot(t);
+		const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+		const manager = new AgentManager(
+			managerOptions(root, {
+				acquire: async (metadata) =>
+					fakeConnection(metadata, async (method, params) => {
+						seen.push({ method, params: params as Record<string, unknown> });
+						return { submissionId: 7, placement };
+					}),
+			}),
+		);
+		t.after(() => manager.close());
+		const record = createRecord(manager, root);
+		const receipt = (await manager.control(
+			"report",
+			{ sessionId: record.storageId, message: "Progress", requestId: "report-progress" },
+			{ id: "caller", cwd: root },
+		)) as { submissionId: number; placement: string; boundary: string };
+		assert.equal(receipt.submissionId, 7);
+		assert.equal(receipt.placement, placement);
+		assert.match(
+			receipt.boundary,
+			/report to a running agent is placed at the recipient's next tool boundary, not at the end of its run/u,
+		);
+		assert.match(receipt.boundary, /does not interrupt a running tool, and it starts no answer-bearing task/u);
+		assert.match(receipt.boundary, /A report is an event for the recipient: it reads the report and continues/u);
+		assert.match(receipt.boundary, /Use steer when the recipient must change its current work/u);
+		assert.doesNotMatch(receipt.boundary, /agent_await|normally waits for the current run to end/u);
+		const admission = seen.find((call) => call.method === "submit");
+		assert.deepEqual(admission?.params, {
+			sessionId: record.storageId,
+			message: "Report from caller:\nProgress",
+			requestId: "report-progress",
+			whenBusy: "followUp",
+			inputClass: "report",
+			inputSender: "caller",
+		});
 	});
-});
 
-for (const operation of ["submit", "task-submit"] as const) it(`preserves caller admission keys and creates absent keys through ${operation}`, async (t) => {
-	const root = fixtureRoot(t);
-	const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-			seen.push({ method, params: params as Record<string, unknown> });
-			return method === "task-submit" ? nativeAdmission(params) : {};
-		}, operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT),
-	}));
-	const record = createRecord(manager, root);
-	try {
-		if (operation === "submit") {
-			await assert.rejects(manager.control("submit", { sessionId: record.storageId, requestId: "stable:submit" }, { id: "caller", cwd: root }), /does not advertise task-submit/u);
-			assert.equal(seen.length, 0);
+for (const operation of ["submit", "task-submit"] as const)
+	it(`preserves caller admission keys and creates absent keys through ${operation}`, async (t) => {
+		const root = fixtureRoot(t);
+		const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+		const manager = new AgentManager(
+			managerOptions(root, {
+				acquire: async (metadata) =>
+					fakeConnection(
+						metadata,
+						async (method, params) => {
+							seen.push({ method, params: params as Record<string, unknown> });
+							return method === "task-submit" ? nativeAdmission(params) : {};
+						},
+						operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT,
+					),
+			}),
+		);
+		const record = createRecord(manager, root);
+		try {
+			if (operation === "submit") {
+				await assert.rejects(
+					manager.control(
+						"submit",
+						{ sessionId: record.storageId, requestId: "stable:submit" },
+						{ id: "caller", cwd: root },
+					),
+					/does not advertise task-submit/u,
+				);
+				assert.equal(seen.length, 0);
+				return;
+			}
+			for (const method of ["submit", "rewind", "fork"]) {
+				await manager.control(
+					method,
+					{ sessionId: record.storageId, requestId: `stable:${method}`, operationId: `operation:${method}` },
+					{ id: "caller", cwd: root },
+				);
+				await manager.control(method, { sessionId: record.storageId }, { id: "caller", cwd: root });
+			}
+			const mutations = seen.filter((entry) => entry.method !== "status");
+			assert.equal(mutations.length, 6);
+			assert.deepEqual(
+				mutations.map((entry) => entry.method),
+				[operation, operation, "rewind", "rewind", "fork", "fork"],
+			);
+			const callerMethods = ["submit", "rewind", "fork"];
+			for (let index = 0; index < mutations.length; index += 2) {
+				assert.equal(mutations[index].params.requestId, `stable:${callerMethods[index / 2]}`);
+				assert.equal(mutations[index].params.operationId, `operation:${callerMethods[index / 2]}`);
+				assert.equal(typeof mutations[index + 1].params.requestId, "string");
+				assert.notEqual(mutations[index + 1].params.requestId, mutations[index].params.requestId);
+			}
+			assert.ok(
+				seen.some((entry) => entry.method === "status"),
+				"mutation snapshots add filtered status requests",
+			);
+		} finally {
+			await manager.close();
+		}
+	});
+
+for (const rich of [false, true])
+	it(`preserves an explicit reply recipient or reports the missing rich admission contract (${rich})`, async (t) => {
+		const root = fixtureRoot(t);
+		const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+		const manager = new AgentManager(
+			managerOptions(root, {
+				acquire: async (metadata) =>
+					fakeConnection(
+						metadata,
+						async (method, params) => {
+							seen.push({ method, params: params as Record<string, unknown> });
+							return { submissionId: 9 };
+						},
+						rich ? HOST_CONTRACT : BASE_SUBMIT_CONTRACT,
+					),
+			}),
+		);
+		t.after(() => manager.close());
+		const record = createRecord(manager, root);
+		const send = manager.control(
+			"submit",
+			{ sessionId: record.storageId, message: "Task", replyTo: "recipient-c", origin: "model", requestId: "routed" },
+			{ id: "requester-b", cwd: root },
+		);
+		if (!rich) {
+			await assert.rejects(send, /task-submit|replyTo|request context|unavailable/iu);
+			assert.equal(seen.length, 0, "an unavailable route guarantee admits no base input");
 			return;
 		}
-		for (const method of ["submit", "rewind", "fork"]) {
-			await manager.control(method, { sessionId: record.storageId, requestId: `stable:${method}`, operationId: `operation:${method}` }, { id: "caller", cwd: root });
-			await manager.control(method, { sessionId: record.storageId }, { id: "caller", cwd: root });
-		}
-		const mutations = seen.filter((entry) => entry.method !== "status");
-		assert.equal(mutations.length, 6);
-		assert.deepEqual(mutations.map((entry) => entry.method), [operation, operation, "rewind", "rewind", "fork", "fork"]);
-		const callerMethods = ["submit", "rewind", "fork"];
-		for (let index = 0; index < mutations.length; index += 2) {
-			assert.equal(mutations[index].params.requestId, `stable:${callerMethods[index / 2]}`);
-			assert.equal(mutations[index].params.operationId, `operation:${callerMethods[index / 2]}`);
-			assert.equal(typeof mutations[index + 1].params.requestId, "string");
-			assert.notEqual(mutations[index + 1].params.requestId, mutations[index].params.requestId);
-		}
-		assert.ok(seen.some((entry) => entry.method === "status"), "mutation snapshots add filtered status requests");
-	} finally { await manager.close(); }
-});
-
-for (const rich of [false, true]) it(`preserves an explicit reply recipient or reports the missing rich admission contract (${rich})`, async (t) => {
-	const root = fixtureRoot(t);
-	const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
-	const manager = new AgentManager(managerOptions(root, { acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-		seen.push({ method, params: params as Record<string, unknown> });
-		return { submissionId: 9 };
-	}, rich ? HOST_CONTRACT : BASE_SUBMIT_CONTRACT) }));
-	t.after(() => manager.close());
-	const record = createRecord(manager, root);
-	const send = manager.control("submit", { sessionId: record.storageId, message: "Task", replyTo: "recipient-c", origin: "model", requestId: "routed" }, { id: "requester-b", cwd: root });
-	if (!rich) {
-		await assert.rejects(send, /task-submit|replyTo|request context|unavailable/iu);
-		assert.equal(seen.length, 0, "an unavailable route guarantee admits no base input");
-		return;
-	}
-	await send;
-	assert.deepEqual(seen.map((entry) => entry.method), ["task-submit"]);
-	assert.equal(seen[0].params.requester, "requester-b");
-	assert.equal(seen[0].params.replyTo, "recipient-c");
-	assert.equal(seen[0].params.requestId, "routed");
-	assert.equal(seen[0].params.origin, "model");
-});
+		await send;
+		assert.deepEqual(
+			seen.map((entry) => entry.method),
+			["task-submit"],
+		);
+		assert.equal(seen[0].params.requester, "requester-b");
+		assert.equal(seen[0].params.replyTo, "recipient-c");
+		assert.equal(seen[0].params.requestId, "routed");
+		assert.equal(seen[0].params.origin, "model");
+	});
 
 it("closes a host opened for a primary that aborts mid-registration", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	let release: ((connection: HostConnection) => void) | undefined;
 	const openingStarted = deferred();
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: () => new Promise<HostConnection>((resolve) => {
-			release = resolve;
-			openingStarted.resolve();
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: () =>
+				new Promise<HostConnection>((resolve) => {
+					release = resolve;
+					openingStarted.resolve();
+				}),
+			connect: noHost,
+			observe: async () => ({ conversations: [{ busy: true }] }),
+			createPrimary: primaryFactory().factory,
 		}),
-		connect: noHost,
-		observe: async () => ({ conversations: [{ busy: true }] }),
-		createPrimary: primaryFactory().factory,
-	}));
+	);
 	const record = createRecord(manager, root);
 	manager.catalog.markRecoveryDue(record.storageId, true);
 	const controller = new AbortController();
@@ -644,12 +959,24 @@ it("dedups primary channel deliveries by source ID within the bounded memory", a
 		assert.ok(channel, "registration creates one primary channel");
 		await channel.options.deliver({ sourceId: "s1", text: "one" });
 		await channel.options.deliver({ sourceId: "s1", text: "one again" });
-		assert.deepEqual(primary.sent.map((message) => message.text), ["one"]);
+		assert.deepEqual(
+			primary.sent.map((message) => message.text),
+			["one"],
+		);
 		await channel.options.deliver({ sourceId: "s2", text: "two" });
-		assert.deepEqual(primary.sent.map((message) => message.text), ["one", "two"]);
+		assert.deepEqual(
+			primary.sent.map((message) => message.text),
+			["one", "two"],
+		);
 		await channel.options.deliver({ sourceId: "s1", text: "one after eviction" });
-		assert.deepEqual(primary.sent.map((message) => message.text), ["one", "two", "one after eviction"], "the bounded memory evicts the oldest source ID");
-	} finally { await manager.close(); }
+		assert.deepEqual(
+			primary.sent.map((message) => message.text),
+			["one", "two", "one after eviction"],
+			"the bounded memory evicts the oldest source ID",
+		);
+	} finally {
+		await manager.close();
+	}
 });
 
 it("dedups the same source ID once per recipient when every primary receives it", async (t) => {
@@ -668,13 +995,31 @@ it("dedups the same source ID once per recipient when every primary receives it"
 		const delivery = { sourceId: "report:shared", text: "broadcast" };
 		await firstChannel.options.deliver(delivery);
 		await secondChannel.options.deliver(delivery);
-		assert.deepEqual(first.sent.map((message) => message.text), ["broadcast"], "the first recipient receives the broadcast once");
-		assert.deepEqual(second.sent.map((message) => message.text), ["broadcast"], "the second recipient receives the same source ID once");
+		assert.deepEqual(
+			first.sent.map((message) => message.text),
+			["broadcast"],
+			"the first recipient receives the broadcast once",
+		);
+		assert.deepEqual(
+			second.sent.map((message) => message.text),
+			["broadcast"],
+			"the second recipient receives the same source ID once",
+		);
 		await firstChannel.options.deliver(delivery);
 		await secondChannel.options.deliver(delivery);
-		assert.deepEqual(first.sent.map((message) => message.text), ["broadcast"], "a repeated delivery dedups on the first recipient");
-		assert.deepEqual(second.sent.map((message) => message.text), ["broadcast"], "a repeated delivery dedups on the second recipient");
-	} finally { await manager.close(); }
+		assert.deepEqual(
+			first.sent.map((message) => message.text),
+			["broadcast"],
+			"a repeated delivery dedups on the first recipient",
+		);
+		assert.deepEqual(
+			second.sent.map((message) => message.text),
+			["broadcast"],
+			"a repeated delivery dedups on the second recipient",
+		);
+	} finally {
+		await manager.close();
+	}
 });
 
 it("clears the footer and closes the primary channel when the primary aborts", { timeout: 15000 }, async (t) => {
@@ -693,8 +1038,14 @@ it("clears the footer and closes the primary channel when the primary aborts", {
 		await channel.closedEvent;
 		assert.equal(primary.statuses.at(-1), undefined, "abort clears the durable footer");
 		assert.throws(() => channel.options.deliver({ sourceId: "s2", text: "after" }), /closed/u);
-		assert.deepEqual(primary.sent.map((message) => message.text), ["before"], "no delivery reaches a released primary");
-	} finally { await manager.close(); }
+		assert.deepEqual(
+			primary.sent.map((message) => message.text),
+			["before"],
+			"no delivery reaches a released primary",
+		);
+	} finally {
+		await manager.close();
+	}
 });
 
 it("awaits the previous channel close before re-registering the same primary", async (t) => {
@@ -733,7 +1084,10 @@ it("awaits the previous channel close before re-registering the same primary", a
 		const secondChannel = factory.channels[1];
 		assert.ok(secondChannel);
 		await secondChannel.options.deliver({ sourceId: "s1", text: "after re-register" });
-		assert.deepEqual(second.sent.map((message) => message.text), ["after re-register"]);
+		assert.deepEqual(
+			second.sent.map((message) => message.text),
+			["after re-register"],
+		);
 	} finally {
 		closeGate.resolve();
 		await manager.close();
@@ -757,39 +1111,58 @@ it("re-registers the same owner with the real primary channel after abort", { ti
 		} finally {
 			await connection.close();
 		}
-		assert.deepEqual(second.sent.map((message) => message.text), ["real channel"]);
+		assert.deepEqual(
+			second.sent.map((message) => message.text),
+			["real channel"],
+		);
 	} finally {
 		await manager.close();
 	}
 });
 
-it("refreshes the durable footer from published views at startup and after a host change", { timeout: 15000 }, async (t) => {
+it("refreshes the durable footer from published views at startup and after a host change", {
+	timeout: 15000,
+}, async (t) => {
 	const root = fixtureRoot(t);
 	const factory = primaryFactory();
 	const methods: string[] = [];
 	let connection: FakeConnection | undefined;
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: factory.factory,
-		acquire: async (metadata) => {
-			connection = fakeConnection(metadata, async (method) => {
-				methods.push(method);
-				if (method === "recovery-state") return { workPending: true, deliveriesPending: true };
-				return {};
-			});
-			return connection;
-		},
-		observe: async () => {
-			throw new Error("the footer must read catalog views, not native state");
-		},
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: factory.factory,
+			acquire: async (metadata) => {
+				connection = fakeConnection(metadata, async (method) => {
+					methods.push(method);
+					if (method === "recovery-state") return { workPending: true, deliveriesPending: true };
+					return {};
+				});
+				return connection;
+			},
+			observe: async () => {
+				throw new Error("the footer must read catalog views, not native state");
+			},
+		}),
+	);
 	const record = createRecord(manager, root);
 	manager.catalog.markRecoveryDue(record.storageId, true);
 	writeClaim(record, claimFor(record, process.pid));
-	const publish = (state: string) => manager.catalog.updateView(record.storageId, {
-		updatedAt: new Date().toISOString(),
-		rows: [{ id: `${record.storageId}:1`, storageId: record.storageId, cwd: record.cwd, modifiedAt: 1, owner: "here", state, cost: 0, partial: false }],
-		coverage: { complete: true, omitted: 0 },
-	});
+	const publish = (state: string) =>
+		manager.catalog.updateView(record.storageId, {
+			updatedAt: new Date().toISOString(),
+			rows: [
+				{
+					id: `${record.storageId}:1`,
+					storageId: record.storageId,
+					cwd: record.cwd,
+					modifiedAt: 1,
+					owner: "here",
+					state,
+					cost: 0,
+					partial: false,
+				},
+			],
+			coverage: { complete: true, omitted: 0 },
+		});
 	publish("working");
 	const primary = fakePrimary(new AbortController().signal);
 	try {
@@ -799,7 +1172,10 @@ it("refreshes the durable footer from published views at startup and after a hos
 		publish("idle");
 		let changes = 0;
 		const changed = deferred();
-		const unsubscribe = manager.subscribeRoster(() => { changes++; changed.resolve(); });
+		const unsubscribe = manager.subscribeRoster(() => {
+			changes++;
+			changed.resolve();
+		});
 		connection.change();
 		await changed.promise;
 		assert.ok(changes > 0);
@@ -809,62 +1185,125 @@ it("refreshes the durable footer from published views at startup and after a hos
 		assert.equal(changes, afterClose);
 		await primary.statuses.waitFor((items) => items.includes("agents: 0/1+ active"));
 		assert.equal(methods.includes("dashboard"), false, "the footer never requests native dashboard state");
-	} finally { await manager.close(); }
-});
-
-for (const scope of ["creation", "sent-work"] as const) it(`refreshes ${scope} footer counts from external catalog publications without a dashboard or host connection`, { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		acquire: async () => { throw new Error("Footer observation must not acquire a host"); },
-		connect: async () => { throw new Error("Footer observation must not connect to a host"); },
-		observe: async () => { throw new Error("Footer observation must not read native state"); },
-	}));
-	t.after(() => manager.close());
-	const record = createRecord(manager, root, scope === "creation" ? "primary" : "other-primary");
-	writeClaim(record, claimFor(record, process.pid));
-	const unrelated = createRecord(manager, root, "unrelated-primary");
-	writeClaim(unrelated, claimFor(unrelated, process.pid));
-	const writer = new AgentCatalog(root);
-	const publish = (state: "idle" | "working") => writer.updateView(record.storageId, {
-		updatedAt: new Date().toISOString(), coverage: { complete: true, omitted: 0 },
-		rows: [
-			{ id: record.storageId, storageId: record.storageId, cwd: root, owner: "here", state: "idle", modifiedAt: 1, cost: 0.25, partial: false },
-			{ id: `${record.storageId}:2`, storageId: record.storageId, cwd: root, owner: "here", state, modifiedAt: 1, cost: 0.5, partial: false },
-		],
-	});
-	writer.updateView(unrelated.storageId, {
-		updatedAt: new Date().toISOString(), coverage: { complete: true, omitted: 0 },
-		rows: [{ id: unrelated.storageId, storageId: unrelated.storageId, cwd: root, owner: "here", state: "working", modifiedAt: 1, cost: 50, partial: false }],
-	});
-	publish("idle");
-	const primary = fakePrimary(new AbortController().signal);
-	await manager.registerPrimary("primary", { ...primary.client, ...(scope === "sent-work" ? { sentWork: new Set([record.storageId]) } : {}) });
-	const idle = scope === "creation" ? "agents: 0/2+ active · ~$0.75" : "agents: 0/1+ active";
-	assert.equal(primary.statuses.at(-1), idle);
-	const notices = eventLog<void>();
-	const off = manager.subscribeRoster(() => notices.push(undefined));
-	t.after(off);
-	for (const state of ["working", "idle"] as const) {
-		const before = notices.length;
-		publish(state);
-		await notices.waitForCount(before + 1);
-		assert.equal(primary.statuses.at(-1), idle, "metadata does not establish an active native writer");
+	} finally {
+		await manager.close();
 	}
-	assert.deepEqual(manager.connectedStorageIds(), []);
 });
 
-it("shares catalog observation across primary reload, replacement, and roster teardown", { timeout: 15000 }, async (t) => {
+for (const scope of ["creation", "sent-work"] as const)
+	it(`refreshes ${scope} footer counts from external catalog publications without a dashboard or host connection`, {
+		timeout: 15000,
+	}, async (t) => {
+		const root = fixtureRoot(t);
+		const manager = new AgentManager(
+			managerOptions(root, {
+				createPrimary: primaryFactory().factory,
+				acquire: async () => {
+					throw new Error("Footer observation must not acquire a host");
+				},
+				connect: async () => {
+					throw new Error("Footer observation must not connect to a host");
+				},
+				observe: async () => {
+					throw new Error("Footer observation must not read native state");
+				},
+			}),
+		);
+		t.after(() => manager.close());
+		const record = createRecord(manager, root, scope === "creation" ? "primary" : "other-primary");
+		writeClaim(record, claimFor(record, process.pid));
+		const unrelated = createRecord(manager, root, "unrelated-primary");
+		writeClaim(unrelated, claimFor(unrelated, process.pid));
+		const writer = new AgentCatalog(root);
+		const publish = (state: "idle" | "working") =>
+			writer.updateView(record.storageId, {
+				updatedAt: new Date().toISOString(),
+				coverage: { complete: true, omitted: 0 },
+				rows: [
+					{
+						id: record.storageId,
+						storageId: record.storageId,
+						cwd: root,
+						owner: "here",
+						state: "idle",
+						modifiedAt: 1,
+						cost: 0.25,
+						partial: false,
+					},
+					{
+						id: `${record.storageId}:2`,
+						storageId: record.storageId,
+						cwd: root,
+						owner: "here",
+						state,
+						modifiedAt: 1,
+						cost: 0.5,
+						partial: false,
+					},
+				],
+			});
+		writer.updateView(unrelated.storageId, {
+			updatedAt: new Date().toISOString(),
+			coverage: { complete: true, omitted: 0 },
+			rows: [
+				{
+					id: unrelated.storageId,
+					storageId: unrelated.storageId,
+					cwd: root,
+					owner: "here",
+					state: "working",
+					modifiedAt: 1,
+					cost: 50,
+					partial: false,
+				},
+			],
+		});
+		publish("idle");
+		const primary = fakePrimary(new AbortController().signal);
+		await manager.registerPrimary("primary", {
+			...primary.client,
+			...(scope === "sent-work" ? { sentWork: new Set([record.storageId]) } : {}),
+		});
+		const idle = scope === "creation" ? "agents: 0/2+ active · ~$0.75" : "agents: 0/1+ active";
+		assert.equal(primary.statuses.at(-1), idle);
+		const notices = eventLog<void>();
+		const off = manager.subscribeRoster(() => notices.push(undefined));
+		t.after(off);
+		for (const state of ["working", "idle"] as const) {
+			const before = notices.length;
+			publish(state);
+			await notices.waitForCount(before + 1);
+			assert.equal(primary.statuses.at(-1), idle, "metadata does not establish an active native writer");
+		}
+		assert.deepEqual(manager.connectedStorageIds(), []);
+	});
+
+it("shares catalog observation across primary reload, replacement, and roster teardown", {
+	timeout: 15000,
+}, async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory }));
 	t.after(() => manager.close());
 	const record = createRecord(manager, root, "primary");
 	writeClaim(record, claimFor(record, process.pid));
 	const writer = new AgentCatalog(root);
-	const publish = (state: "idle" | "working") => writer.updateView(record.storageId, {
-		updatedAt: new Date().toISOString(), coverage: { complete: true, omitted: 0 },
-		rows: [{ id: record.storageId, storageId: record.storageId, cwd: root, owner: "here", state, modifiedAt: 1, cost: 0, partial: false }],
-	});
+	const publish = (state: "idle" | "working") =>
+		writer.updateView(record.storageId, {
+			updatedAt: new Date().toISOString(),
+			coverage: { complete: true, omitted: 0 },
+			rows: [
+				{
+					id: record.storageId,
+					storageId: record.storageId,
+					cwd: root,
+					owner: "here",
+					state,
+					modifiedAt: 1,
+					cost: 0,
+					partial: false,
+				},
+			],
+		});
 	publish("idle");
 	const registrations = () => readdirSync(join(manager.catalog.root, ".observers"));
 	const oldAbort = new AbortController();
@@ -917,79 +1356,163 @@ it("clears a catalog observation startup failure after a successful subscription
 	const observers = join(manager.catalog.root, ".observers");
 	writeFileSync(observers, "blocked");
 	await manager.registerPrimary("primary", fakePrimary(new AbortController().signal).client);
-	const failures = async () => (await manager.status() as { failures: Array<{ storageId: string; error: string }> }).failures;
-	assert.ok((await failures()).some((failure) => failure.storageId === "catalog-observation" && failure.error.includes("Catalog updates are unavailable")));
+	const failures = async () =>
+		((await manager.status()) as { failures: Array<{ storageId: string; error: string }> }).failures;
+	assert.ok(
+		(await failures()).some(
+			(failure) =>
+				failure.storageId === "catalog-observation" && failure.error.includes("Catalog updates are unavailable"),
+		),
+	);
 	rmSync(observers);
 	const off = manager.subscribeRoster(() => {});
 	t.after(off);
 	assert.equal(readdirSync(observers).length, 1, "a later consumer retries subscription after the blocked path clears");
-	assert.equal((await failures()).some((failure) => failure.storageId === "catalog-observation"), false, "successful observation clears the stale failure without releasing its primary");
+	assert.equal(
+		(await failures()).some((failure) => failure.storageId === "catalog-observation"),
+		false,
+		"successful observation clears the stale failure without releasing its primary",
+	);
 });
 
 it("resolves ordinary presets once for creation and preserves replay after file edits", async (t) => {
-	const root = fixtureRoot(t); const options = managerOptions(root);
+	const root = fixtureRoot(t);
+	const options = managerOptions(root);
 	mkdirSync(options.agentDir, { recursive: true });
 	const path = join(options.agentDir, "harness.json");
-	writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", thinkingLevel: "high", role: "Review", checkInMinutes: 2 } } })));
+	writeFileSync(
+		path,
+		JSON.stringify(
+			machineConfig({
+				presets: { review: { model: "acme/model-x", thinkingLevel: "high", role: "Review", checkInMinutes: 2 } },
+			}),
+		),
+	);
 	const admitted: Record<string, unknown>[] = [];
-	const manager = new AgentManager({ ...options, validateModel: () => "off", acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-		if (method === "task-submit") { admitted.push(params as Record<string, unknown>); return nativeAdmission(params); }
-		return {};
-	}) });
+	const manager = new AgentManager({
+		...options,
+		validateModel: () => "off",
+		acquire: async (metadata) =>
+			fakeConnection(metadata, async (method, params) => {
+				if (method === "task-submit") {
+					admitted.push(params as Record<string, unknown>);
+					return nativeAdmission(params);
+				}
+				return {};
+			}),
+	});
 	t.after(() => manager.close());
 	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "parent" }, thinkingLevel: "low" };
 	const args = { preset: "review", requestId: "preset-create", prompt: "Review", origin: "model" as const };
-	const first = await manager.spawn(args, caller) as { sessionId: string; selection: ExecutionSelection };
+	const first = (await manager.spawn(args, caller)) as { sessionId: string; selection: ExecutionSelection };
 	assert.equal(manager.catalog.read(first.sessionId).model.modelId, "model-x");
 	assert.equal(first.selection.origins.model, "preset");
 	assert.deepEqual(first.selection.unapplied, ["role"]);
 	assert.deepEqual(first.selection.thinking, { requested: "high", effective: "off" });
 	assert.equal(admitted[0].checkInMinutes, 2);
 	writeFileSync(path, "malformed");
-	const replay = await manager.spawn({ ...args, selection: first.selection }, caller) as typeof first;
+	const replay = (await manager.spawn({ ...args, selection: first.selection }, caller)) as typeof first;
 	assert.deepEqual(replay.selection, first.selection);
 	assert.equal(replay.sessionId, first.sessionId);
 	assert.equal(admitted[1].checkInMinutes, 2);
 	await assert.rejects(manager.spawn({ preset: "review" }, caller), /review.*harness.json/u);
-	await assert.rejects(manager.spawn({ ...args, thinkingLevel: "off", selection: first.selection }, caller), /different execution inputs/u);
+	await assert.rejects(
+		manager.spawn({ ...args, thinkingLevel: "off", selection: first.selection }, caller),
+		/different execution inputs/u,
+	);
 });
 
-for (const kind of ["handle", "place"] as const) it(`awaits ${kind} selection retention before downstream admission`, async (t) => {
-	const root = fixtureRoot(t); const options = managerOptions(root);
-	let admissions = 0;
-	const manager = new AgentManager({ ...options, validateModel: () => "off", acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-		if (method === "task-submit" || method === "submit") { admissions++; return nativeAdmission(params); }
-		return method === "profile-read" ? { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel } : {};
-	}) });
-	t.after(() => manager.close());
-	const entered = deferred(); const release = deferred();
-	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "model-x" }, retainExecutionSelection: async () => { entered.resolve(); await release.promise; } };
-	const run = () => kind === "handle" ? manager.spawn({ handle: "reviewer", prompt: "Work" }, caller) : manager.place({ area: root, prompt: "Work" }, caller);
-	const pending = run();
-	await entered.promise;
-	assert.equal(admissions, 0);
-	release.resolve(); await pending;
-	assert.equal(admissions, 1);
-	caller.retainExecutionSelection = async () => { throw new Error("Selection commit failed"); };
-	await assert.rejects(run(), /Selection commit failed/u);
-	assert.equal(admissions, 1, "a failed selection commit cannot admit another task");
-});
+for (const kind of ["handle", "place"] as const)
+	it(`awaits ${kind} selection retention before downstream admission`, async (t) => {
+		const root = fixtureRoot(t);
+		const options = managerOptions(root);
+		let admissions = 0;
+		const manager = new AgentManager({
+			...options,
+			validateModel: () => "off",
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method, params) => {
+					if (method === "task-submit" || method === "submit") {
+						admissions++;
+						return nativeAdmission(params);
+					}
+					return method === "profile-read"
+						? { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel }
+						: {};
+				}),
+		});
+		t.after(() => manager.close());
+		const entered = deferred();
+		const release = deferred();
+		const caller = {
+			id: "owner",
+			cwd: root,
+			model: { provider: "acme", modelId: "model-x" },
+			retainExecutionSelection: async () => {
+				entered.resolve();
+				await release.promise;
+			},
+		};
+		const run = () =>
+			kind === "handle"
+				? manager.spawn({ handle: "reviewer", prompt: "Work" }, caller)
+				: manager.place({ area: root, prompt: "Work" }, caller);
+		const pending = run();
+		await entered.promise;
+		assert.equal(admissions, 0);
+		release.resolve();
+		await pending;
+		assert.equal(admissions, 1);
+		caller.retainExecutionSelection = async () => {
+			throw new Error("Selection commit failed");
+		};
+		await assert.rejects(run(), /Selection commit failed/u);
+		assert.equal(admissions, 1, "a failed selection commit cannot admit another task");
+	});
 
 it("reports preset creation fields as unapplied for reused handles and places", async (t) => {
-	const root = fixtureRoot(t); const options = managerOptions(root);
+	const root = fixtureRoot(t);
+	const options = managerOptions(root);
 	mkdirSync(options.agentDir, { recursive: true });
-	writeFileSync(join(options.agentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", thinkingLevel: "high", role: "Review", checkInMinutes: 2 } } })));
-	const manager = new AgentManager({ ...options, validateModel: () => "off", acquire: async (metadata) => fakeConnection(metadata, async (method, params) => method === "profile-read" ? { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel } : method === "task-submit" ? nativeAdmission(params) : {}) });
+	writeFileSync(
+		join(options.agentDir, "harness.json"),
+		JSON.stringify(
+			machineConfig({
+				presets: { review: { model: "acme/model-x", thinkingLevel: "high", role: "Review", checkInMinutes: 2 } },
+			}),
+		),
+	);
+	const manager = new AgentManager({
+		...options,
+		validateModel: () => "off",
+		acquire: async (metadata) =>
+			fakeConnection(metadata, async (method, params) =>
+				method === "profile-read"
+					? { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel }
+					: method === "task-submit"
+						? nativeAdmission(params)
+						: {},
+			),
+	});
 	t.after(() => manager.close());
 	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "parent" } };
-	const first = await manager.spawn({ handle: "reviewer", preset: "review", prompt: "Work" }, caller) as { sessionId: string; selection: ExecutionSelection };
+	const first = (await manager.spawn({ handle: "reviewer", preset: "review", prompt: "Work" }, caller)) as {
+		sessionId: string;
+		selection: ExecutionSelection;
+	};
 	assert.equal(manager.catalog.read(first.sessionId).view?.profileSeed?.role, "Review");
-	const reused = await manager.spawn({ handle: "reviewer", preset: "review", model: "acme/override", prompt: "More" }, caller) as typeof first;
+	const reused = (await manager.spawn(
+		{ handle: "reviewer", preset: "review", model: "acme/override", prompt: "More" },
+		caller,
+	)) as typeof first;
 	assert.deepEqual(reused.selection.unapplied, ["model", "thinkingLevel", "role"]);
 	assert.equal(reused.selection.values.model, "acme/model-x");
-	const placed = await manager.place({ area: root, preset: "review", model: "acme/explicit", prompt: "Work" }, caller) as typeof first;
+	const placed = (await manager.place(
+		{ area: root, preset: "review", model: "acme/explicit", prompt: "Work" },
+		caller,
+	)) as typeof first;
 	assert.equal(manager.catalog.read(placed.sessionId).model.modelId, "explicit");
-	const again = await manager.place({ area: root, preset: "review", prompt: "More" }, caller) as typeof first;
+	const again = (await manager.place({ area: root, preset: "review", prompt: "More" }, caller)) as typeof first;
 	assert.deepEqual(again.selection.unapplied, ["model", "thinkingLevel", "role"]);
 	assert.equal(again.selection.values.model, "acme/explicit");
 });
@@ -999,25 +1522,45 @@ it("ordinary spawn and place creation share defaults, errors, override receipts,
 	const options = managerOptions(root);
 	const path = join(options.agentDir, "harness.json");
 	const validated: Array<{ model: string; level: string }> = [];
-	const manager = new AgentManager({ ...options, validateModel: (model, level) => { validated.push({ model: `${model.provider}/${model.modelId}`, level }); return level; }, acquire: async (metadata) => fakeConnection(metadata, async (method) => method === "profile-read" ? { model: metadata.model, thinkingLevel: metadata.thinkingLevel } : {}) });
+	const manager = new AgentManager({
+		...options,
+		validateModel: (model, level) => {
+			validated.push({ model: `${model.provider}/${model.modelId}`, level });
+			return level;
+		},
+		acquire: async (metadata) =>
+			fakeConnection(metadata, async (method) =>
+				method === "profile-read" ? { model: metadata.model, thinkingLevel: metadata.thinkingLevel } : {},
+			),
+	});
 	t.after(() => manager.close());
 	const caller = { id: "owner", cwd: root, model: { provider: "parent", modelId: "model-z" }, thinkingLevel: "max" };
-	const document = (enforceRoster = false) => ({ version: 1, presets: { standard: { model: "acme/model-x" } }, preferences: { defaultPreset: "standard", enforceRoster } });
+	const document = (enforceRoster = false) => ({
+		version: 1,
+		presets: { standard: { model: "acme/model-x" } },
+		preferences: { defaultPreset: "standard", enforceRoster },
+	});
 	writeFileSync(path, JSON.stringify(machineConfig(document())));
 	for (const method of ["spawn", "place"] as const) {
-		const first = await manager[method]({}, caller) as { sessionId: string; selection: ExecutionSelection };
+		const first = (await manager[method]({}, caller)) as { sessionId: string; selection: ExecutionSelection };
 		assert.equal(first.selection.origins.model, "defaultPreset");
 		assert.deepEqual(first.selection.values, { model: "acme/model-x", thinkingLevel: "off" });
 		assert.deepEqual(first.selection.presetNames, ["standard"]);
 		assert.match(first.selection.source.digest ?? "", /^[a-f0-9]{64}$/u);
 	}
-	assert.deepEqual(validated, [{ model: "acme/model-x", level: "off" }, { model: "acme/model-x", level: "off" }]);
-	const override = await manager.spawn({ model: "other/model-y" }, caller) as { selection: ExecutionSelection };
+	assert.deepEqual(validated, [
+		{ model: "acme/model-x", level: "off" },
+		{ model: "acme/model-x", level: "off" },
+	]);
+	const override = (await manager.spawn({ model: "other/model-y" }, caller)) as { selection: ExecutionSelection };
 	assert.equal(override.selection.origins.model, "explicit");
 	assert.match(override.selection.diagnostics[0].message, /Explicit model override.*matches no preset/u);
 	writeFileSync(path, JSON.stringify(machineConfig(document(true))));
-	await assert.rejects(manager.spawn({ model: "other/model-y" }, caller), /enforceRoster.*Presets: \["standard"\].*digest/u);
-	const reused = await manager.place({ model: "other/model-y" }, caller) as { selection: ExecutionSelection };
+	await assert.rejects(
+		manager.spawn({ model: "other/model-y" }, caller),
+		/enforceRoster.*Presets: \["standard"\].*digest/u,
+	);
+	const reused = (await manager.place({ model: "other/model-y" }, caller)) as { selection: ExecutionSelection };
 	assert.equal(reused.selection.origins.model, "retained");
 	assert.ok(reused.selection.unapplied.includes("model"));
 	for (const content of [JSON.stringify(machineConfig({ presets: {} })), "malformed"]) {
@@ -1026,165 +1569,295 @@ it("ordinary spawn and place creation share defaults, errors, override receipts,
 	}
 	rmSync(path);
 	await assert.rejects(manager.spawn({}, caller), /defaultPreset.*harness.json/u);
-	const explicit = await manager.spawn({ model: "acme/model-x" }, caller) as { selection: ExecutionSelection };
+	const explicit = (await manager.spawn({ model: "acme/model-x" }, caller)) as { selection: ExecutionSelection };
 	assert.equal(explicit.selection.source.status, "missing");
 	assert.deepEqual(explicit.selection.presetNames, []);
 });
 
 it("retains ordinary reuse selections before dispatch and reports a raced handle as reused", async (t) => {
-	const root = fixtureRoot(t); const options = managerOptions(root);
+	const root = fixtureRoot(t);
+	const options = managerOptions(root);
 	mkdirSync(options.agentDir, { recursive: true });
 	const path = join(options.agentDir, "harness.json");
-	writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", role: "Review", checkInMinutes: 2 } } })));
-	const entered = deferred(); const release = deferred(); let validation = 0;
+	writeFileSync(
+		path,
+		JSON.stringify(
+			machineConfig({ presets: { review: { model: "acme/model-x", role: "Review", checkInMinutes: 2 } } }),
+		),
+	);
+	const entered = deferred();
+	const release = deferred();
+	let validation = 0;
 	const selections: ExecutionSelection[] = [];
-	const manager = new AgentManager({ ...options, validateModel: async () => { if (++validation === 1) { entered.resolve(); await release.promise; } return "off"; }, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => method === "profile-read" ? { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel } : method === "task-submit" ? nativeAdmission(params) : {}) });
+	const manager = new AgentManager({
+		...options,
+		validateModel: async () => {
+			if (++validation === 1) {
+				entered.resolve();
+				await release.promise;
+			}
+			return "off";
+		},
+		acquire: async (metadata) =>
+			fakeConnection(metadata, async (method, params) =>
+				method === "profile-read"
+					? { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel }
+					: method === "task-submit"
+						? nativeAdmission(params)
+						: {},
+			),
+	});
 	t.after(() => manager.close());
-	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "parent" }, retainExecutionSelection: async (selection: ExecutionSelection) => { selections.push(structuredClone(selection)); } };
-	const losing = manager.spawn({ handle: "reviewer", preset: "review", prompt: "Task" }, caller) as Promise<{ selection: ExecutionSelection; created: boolean }>;
+	const caller = {
+		id: "owner",
+		cwd: root,
+		model: { provider: "acme", modelId: "parent" },
+		retainExecutionSelection: async (selection: ExecutionSelection) => {
+			selections.push(structuredClone(selection));
+		},
+	};
+	const losing = manager.spawn({ handle: "reviewer", preset: "review", prompt: "Task" }, caller) as Promise<{
+		selection: ExecutionSelection;
+		created: boolean;
+	}>;
 	await entered.promise;
 	await manager.spawn({ handle: "reviewer", model: "acme/winner", prompt: "Winner" }, caller);
-	writeFileSync(path, "malformed"); release.resolve();
+	writeFileSync(path, "malformed");
+	release.resolve();
 	const raced = await losing;
 	assert.equal(raced.created, false);
 	assert.equal(raced.selection.values.model, "acme/winner");
 	assert.equal(raced.selection.values.checkInMinutes, 2);
 	assert.deepEqual(raced.selection.unapplied, ["model", "role"]);
-	const replay = await manager.spawn({ handle: "reviewer", preset: "review", prompt: "Task", selection: selections.at(-1) }, caller) as typeof raced;
+	const replay = (await manager.spawn(
+		{ handle: "reviewer", preset: "review", prompt: "Task", selection: selections.at(-1) },
+		caller,
+	)) as typeof raced;
 	assert.deepEqual(replay.selection, raced.selection);
-	writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", checkInMinutes: 3 } } })));
+	writeFileSync(
+		path,
+		JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", checkInMinutes: 3 } } })),
+	);
 	await manager.place({ area: root, preset: "review" }, caller);
-	const placed = await manager.place({ area: root, preset: "review", prompt: "Work" }, caller) as typeof raced;
+	const placed = (await manager.place({ area: root, preset: "review", prompt: "Work" }, caller)) as typeof raced;
 	writeFileSync(path, "malformed");
-	const placedReplay = await manager.place({ area: root, preset: "review", prompt: "Work", selection: selections.at(-1) }, caller) as typeof raced;
+	const placedReplay = (await manager.place(
+		{ area: root, preset: "review", prompt: "Work", selection: selections.at(-1) },
+		caller,
+	)) as typeof raced;
 	assert.deepEqual(placedReplay.selection, placed.selection);
 	assert.equal(placedReplay.selection.values.checkInMinutes, 3);
 });
 
 it("a fresh admission selects a replacement provider after a valid preset edit without retuning earlier agents", async (t) => {
-	const root = fixtureRoot(t); const options = managerOptions(root); mkdirSync(options.agentDir, { recursive: true });
+	const root = fixtureRoot(t);
+	const options = managerOptions(root);
+	mkdirSync(options.agentDir, { recursive: true });
 	const path = join(options.agentDir, "harness.json");
-	const writePreset = (model: string) => writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model }, alternate: { model: "other/model-y" } }, preferences: { excludedProviders: ["acme"], quotaSubstitutionOrder: ["alternate", "review"] } })));
+	const writePreset = (model: string) =>
+		writeFileSync(
+			path,
+			JSON.stringify(
+				machineConfig({
+					presets: { review: { model }, alternate: { model: "other/model-y" } },
+					preferences: { excludedProviders: ["acme"], quotaSubstitutionOrder: ["alternate", "review"] },
+				}),
+			),
+		);
 	const validated: string[] = [];
-	const manager = new AgentManager({ ...options, validateModel: (model) => { validated.push(`${model.provider}/${model.modelId}`); return "off"; }, acquire: async (metadata) => fakeConnection(metadata, async () => ({})) });
+	const manager = new AgentManager({
+		...options,
+		validateModel: (model) => {
+			validated.push(`${model.provider}/${model.modelId}`);
+			return "off";
+		},
+		acquire: async (metadata) => fakeConnection(metadata, async () => ({})),
+	});
 	t.after(() => manager.close());
 	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "parent" } };
 	writePreset("acme/model-x");
-	const first = await manager.spawn({ preset: "review", requestId: "first" }, caller) as { sessionId: string; selection: ExecutionSelection };
-	assert.equal(first.selection.values.model, "acme/model-x", "exclusion and substitution guidance do not replace the selected provider");
+	const first = (await manager.spawn({ preset: "review", requestId: "first" }, caller)) as {
+		sessionId: string;
+		selection: ExecutionSelection;
+	};
+	assert.equal(
+		first.selection.values.model,
+		"acme/model-x",
+		"exclusion and substitution guidance do not replace the selected provider",
+	);
 	writePreset("other/model-y");
-	const second = await manager.spawn({ preset: "review", requestId: "second" }, caller) as typeof first;
+	const second = (await manager.spawn({ preset: "review", requestId: "second" }, caller)) as typeof first;
 	assert.equal(second.selection.values.model, "other/model-y");
 	assert.notEqual(first.selection.source.digest, second.selection.source.digest);
 	assert.notEqual(first.sessionId, second.sessionId);
 	assert.deepEqual(manager.catalog.read(first.sessionId).model, { provider: "acme", modelId: "model-x" });
 	assert.deepEqual(manager.catalog.read(second.sessionId).model, { provider: "other", modelId: "model-y" });
-	const replay = await manager.spawn({ preset: "review", requestId: "first", selection: first.selection }, caller) as typeof first;
+	const replay = (await manager.spawn(
+		{ preset: "review", requestId: "first", selection: first.selection },
+		caller,
+	)) as typeof first;
 	assert.deepEqual(replay.selection, first.selection);
 	assert.deepEqual(validated, ["acme/model-x", "other/model-y"]);
 });
 
 it("handle and place reuse report current configured evidence rather than immutable creation metadata", async (t) => {
-	const root = fixtureRoot(t); const options = managerOptions(root); mkdirSync(options.agentDir, { recursive: true });
-	writeFileSync(join(options.agentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", thinkingLevel: "high" } } })));
+	const root = fixtureRoot(t);
+	const options = managerOptions(root);
+	mkdirSync(options.agentDir, { recursive: true });
+	writeFileSync(
+		join(options.agentDir, "harness.json"),
+		JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x", thinkingLevel: "high" } } })),
+	);
 	const current = new Map<string, { model: { provider: string; modelId: string }; thinkingLevel: string }>();
 	let evidenceUnavailable = false;
-	const manager = new AgentManager({ ...options, validateModel: (_model, level) => level, acquire: async (metadata) => {
-		const state = { model: metadata.model, thinkingLevel: metadata.thinkingLevel }; current.set(metadata.storageId, state);
-		return fakeConnection(metadata, async (method, params) => {
-			if (method === "configure") { state.model = { provider: "other", modelId: "model-y" }; state.thinkingLevel = "low"; return { outcome: "applied" }; }
-			if (method === "profile-read") { if (evidenceUnavailable) throw new Error("profile unavailable"); return { handle: "@reviewer", live: true, ...state }; }
-			if (method === "task-submit") return nativeAdmission(params);
-			return {};
-		});
-	} });
+	const manager = new AgentManager({
+		...options,
+		validateModel: (_model, level) => level,
+		acquire: async (metadata) => {
+			const state = { model: metadata.model, thinkingLevel: metadata.thinkingLevel };
+			current.set(metadata.storageId, state);
+			return fakeConnection(metadata, async (method, params) => {
+				if (method === "configure") {
+					state.model = { provider: "other", modelId: "model-y" };
+					state.thinkingLevel = "low";
+					return { outcome: "applied" };
+				}
+				if (method === "profile-read") {
+					if (evidenceUnavailable) throw new Error("profile unavailable");
+					return { handle: "@reviewer", live: true, ...state };
+				}
+				if (method === "task-submit") return nativeAdmission(params);
+				return {};
+			});
+		},
+	});
 	t.after(() => manager.close());
 	const caller = { id: "owner", cwd: root, model: { provider: "acme", modelId: "parent" } };
-	const handle = await manager.spawn({ handle: "reviewer", preset: "review" }, caller) as { sessionId: string };
-	const place = await manager.place({ area: root, preset: "review" }, caller) as typeof handle;
+	const handle = (await manager.spawn({ handle: "reviewer", preset: "review" }, caller)) as { sessionId: string };
+	const place = (await manager.place({ area: root, preset: "review" }, caller)) as typeof handle;
 	for (const target of [handle, place]) {
-		await manager.control("configure", { sessionId: target.sessionId, model: "other/model-y", thinkingLevel: "low" }, caller);
+		await manager.control(
+			"configure",
+			{ sessionId: target.sessionId, model: "other/model-y", thinkingLevel: "low" },
+			caller,
+		);
 		assert.deepEqual(manager.catalog.read(target.sessionId).model, { provider: "acme", modelId: "model-x" });
 	}
-	const reusedHandle = await manager.spawn({ handle: "reviewer", preset: "review", prompt: "Task" }, caller) as { selection: ExecutionSelection };
-	const reusedPlace = await manager.place({ area: root, preset: "review" }, caller) as typeof reusedHandle;
+	const reusedHandle = (await manager.spawn({ handle: "reviewer", preset: "review", prompt: "Task" }, caller)) as {
+		selection: ExecutionSelection;
+	};
+	const reusedPlace = (await manager.place({ area: root, preset: "review" }, caller)) as typeof reusedHandle;
 	for (const { selection } of [reusedHandle, reusedPlace]) {
-		assert.equal(selection.values.model, "other/model-y"); assert.equal(selection.values.thinkingLevel, "low");
+		assert.equal(selection.values.model, "other/model-y");
+		assert.equal(selection.values.thinkingLevel, "low");
 		assert.deepEqual(selection.thinking, { requested: "low", effective: "low" });
-		assert.equal(selection.origins.model, "retained"); assert.equal(selection.origins.thinkingLevel, "retained");
+		assert.equal(selection.origins.model, "retained");
+		assert.equal(selection.origins.thinkingLevel, "retained");
 		assert.deepEqual(selection.unapplied, ["model", "thinkingLevel"]);
 	}
-	for (const state of current.values()) assert.deepEqual(state, { model: { provider: "other", modelId: "model-y" }, thinkingLevel: "low" });
+	for (const state of current.values())
+		assert.deepEqual(state, { model: { provider: "other", modelId: "model-y" }, thinkingLevel: "low" });
 	evidenceUnavailable = true;
-	const unavailable = await manager.place({ area: root, preset: "review" }, caller) as typeof reusedHandle;
-	assert.equal(unavailable.selection.values.model, undefined); assert.equal(unavailable.selection.values.thinkingLevel, undefined);
-	assert.ok(unavailable.selection.diagnostics.some((fact) => fact.field === "retained" && /unavailable/u.test(fact.message)));
+	const unavailable = (await manager.place({ area: root, preset: "review" }, caller)) as typeof reusedHandle;
+	assert.equal(unavailable.selection.values.model, undefined);
+	assert.equal(unavailable.selection.values.thinkingLevel, undefined);
+	assert.ok(
+		unavailable.selection.diagnostics.some((fact) => fact.field === "retained" && /unavailable/u.test(fact.message)),
+	);
 });
 
 it("validates the spawn model before writing a catalog record", async (t) => {
 	const root = fixtureRoot(t);
-	const manager = new AgentManager(managerOptions(root, {
-		validateModel: () => {
-			throw new Error("model is not in the configured catalog");
-		},
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			validateModel: () => {
+				throw new Error("model is not in the configured catalog");
+			},
+		}),
+	);
 	try {
 		await assert.rejects(manager.spawn({ model: "acme/missing" }, { id: "caller", cwd: root }), /configured catalog/u);
 		const page = await manager.catalog.page({});
 		assert.equal(page.records.length, 0, "no catalog record is written before validation");
-	} finally { await manager.close(); }
+	} finally {
+		await manager.close();
+	}
 });
 
 it("stores and reports the effective thinking level before ordinary dispatch", async (t) => {
 	const root = fixtureRoot(t);
 	const levels: string[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		validateModel: (_model, requested) => { assert.equal(requested, "max"); return "off"; },
-		acquire: async (metadata) => {
-			levels.push(metadata.thinkingLevel);
-			return fakeConnection(metadata, async () => ({}));
-		},
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			validateModel: (_model, requested) => {
+				assert.equal(requested, "max");
+				return "off";
+			},
+			acquire: async (metadata) => {
+				levels.push(metadata.thinkingLevel);
+				return fakeConnection(metadata, async () => ({}));
+			},
+		}),
+	);
 	try {
 		const caller = { id: "caller", cwd: root, model: { provider: "acme", modelId: "plain" } };
-		const outcome = await manager.spawn({ thinkingLevel: "max" }, caller) as { sessionId: string; thinking: unknown };
+		const outcome = (await manager.spawn({ thinkingLevel: "max" }, caller)) as { sessionId: string; thinking: unknown };
 		assert.deepEqual(outcome.thinking, { requested: "max", effective: "off" });
 		assert.deepEqual(levels, ["off"]);
 		assert.equal(manager.catalog.read(outcome.sessionId).thinkingLevel, "off");
-	} finally { await manager.close(); }
+	} finally {
+		await manager.close();
+	}
 });
 
 it("discards its own catalog record when the first acquire fails", async (t) => {
 	const root = fixtureRoot(t);
-	const manager = new AgentManager(managerOptions(root, {
-		validateModel: () => undefined,
-		acquire: async () => {
-			throw new Error("host process failed to start");
-		},
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			validateModel: () => undefined,
+			acquire: async () => {
+				throw new Error("host process failed to start");
+			},
+		}),
+	);
 	try {
-		await assert.rejects(manager.spawn({ model: "acme/model-x", prompt: "start" }, { id: "caller", cwd: root }), /host process failed to start/u);
+		await assert.rejects(
+			manager.spawn({ model: "acme/model-x", prompt: "start" }, { id: "caller", cwd: root }),
+			/host process failed to start/u,
+		);
 		const page = await manager.catalog.page({});
 		assert.equal(page.records.length, 0, "the unopened record is discarded");
-	} finally { await manager.close(); }
+	} finally {
+		await manager.close();
+	}
 });
 
 it("returns a failed attach configuration instead of a recovery status", async (t) => {
 	const root = fixtureRoot(t);
-	const manager = new AgentManager(managerOptions(root, {
-		connect: noHost,
-		acquire: async (metadata) => fakeConnection(metadata, async (method) => {
-			if (method === "configure") return { sessionId: metadata.storageId, outcome: "failed", error: "model unavailable" };
-			if (method === "status") return { conversations: [] };
-			return {};
+	const manager = new AgentManager(
+		managerOptions(root, {
+			connect: noHost,
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method) => {
+					if (method === "configure")
+						return { sessionId: metadata.storageId, outcome: "failed", error: "model unavailable" };
+					if (method === "status") return { conversations: [] };
+					return {};
+				}),
 		}),
-	}));
+	);
 	const record = createRecord(manager, root);
 	try {
-		const outcome = await manager.control("attach", { sessionId: record.storageId, model: { provider: "acme", modelId: "missing" } }, { id: "caller", cwd: root }) as { outcome?: string; recovery?: string };
+		const outcome = (await manager.control(
+			"attach",
+			{ sessionId: record.storageId, model: { provider: "acme", modelId: "missing" } },
+			{ id: "caller", cwd: root },
+		)) as { outcome?: string; recovery?: string };
 		assert.equal(outcome.outcome, "failed");
 		assert.equal(outcome.recovery, undefined);
-	} finally { await manager.close(); }
+	} finally {
+		await manager.close();
+	}
 });
 
 for (const [kind, error] of [
@@ -1193,37 +1866,55 @@ for (const [kind, error] of [
 	["protocol", new HostError("Host identity is malformed", "invalid")],
 	["abort", Object.assign(new Error("Acquisition aborted"), { name: "AbortError" })],
 	["other", new Error("Host launch failed")],
-] as const) it(`qualifies the initial recovery acquisition outcome: ${kind}`, { timeout: 10000 }, async t => {
-	const root = fixtureRoot(t);
-	let acquisitions = 0;
-	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory, acquire: async () => { acquisitions++; throw error; } }));
-	t.after(() => manager.close());
-	const record = createRecord(manager, root);
-	manager.catalog.markRecoveryDue(record.storageId, true);
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
-	await settleCatalogueRecovery(manager);
-	const page = await manager.dashboardPage(), row = page.rows.find(value => value.id === record.storageId);
-	const status = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
-	assert.equal(acquisitions, 1, "qualification adds no acquire or retry");
-	if (kind === "busy") {
-		assert.match(row?.ownerLabel ?? "", /runner reported BUSY.*no native host endpoint was verified/u);
-		assert.equal(row?.health?.lastError, undefined);
-		assert.deepEqual(status.failures, []);
-	} else {
-		assert.equal(row?.health?.lastError, error.message);
-		assert.deepEqual(status.failures, [{ storageId: record.storageId, error: error.message }]);
-	}
-});
+] as const)
+	it(`qualifies the initial recovery acquisition outcome: ${kind}`, { timeout: 10000 }, async (t) => {
+		const root = fixtureRoot(t);
+		let acquisitions = 0;
+		const manager = new AgentManager(
+			managerOptions(root, {
+				createPrimary: primaryFactory().factory,
+				acquire: async () => {
+					acquisitions++;
+					throw error;
+				},
+			}),
+		);
+		t.after(() => manager.close());
+		const record = createRecord(manager, root);
+		manager.catalog.markRecoveryDue(record.storageId, true);
+		await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+		await settleCatalogueRecovery(manager);
+		const page = await manager.dashboardPage(),
+			row = page.rows.find((value) => value.id === record.storageId);
+		const status = (await manager.status()) as { failures: Array<{ storageId: string; error: string }> };
+		assert.equal(acquisitions, 1, "qualification adds no acquire or retry");
+		if (kind === "busy") {
+			assert.match(row?.ownerLabel ?? "", /runner reported BUSY.*no native host endpoint was verified/u);
+			assert.equal(row?.health?.lastError, undefined);
+			assert.deepEqual(status.failures, []);
+		} else {
+			assert.equal(row?.health?.lastError, error.message);
+			assert.deepEqual(status.failures, [{ storageId: record.storageId, error: error.message }]);
+		}
+	});
 
-it("a BUSY recovery note preserves an earlier genuine error until successful recovery", { timeout: 10000 }, async t => {
+it("a BUSY recovery note preserves an earlier genuine error until successful recovery", {
+	timeout: 10000,
+}, async (t) => {
 	const root = fixtureRoot(t);
 	let acquisitions = 0;
-	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory, acquire: async metadata => {
-		acquisitions++;
-		if (acquisitions === 1) throw new Error("Owned launch failed");
-		if (acquisitions === 2) throw new HostBusyEndpointUnavailableError(metadata.storageId, new Error("endpoint unavailable"));
-		return fakeConnection(metadata, async () => ({ workPending: true, deliveriesActive: true }));
-	} }));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata) => {
+				acquisitions++;
+				if (acquisitions === 1) throw new Error("Owned launch failed");
+				if (acquisitions === 2)
+					throw new HostBusyEndpointUnavailableError(metadata.storageId, new Error("endpoint unavailable"));
+				return fakeConnection(metadata, async () => ({ workPending: true, deliveriesActive: true }));
+			},
+		}),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
 	manager.catalog.markRecoveryDue(record.storageId, true);
@@ -1231,95 +1922,174 @@ it("a BUSY recovery note preserves an earlier genuine error until successful rec
 		await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 		await settleCatalogueRecovery(manager);
 	}
-	const busy = (await manager.dashboardPage()).rows.find(row => row.id === record.storageId);
+	const busy = (await manager.dashboardPage()).rows.find((row) => row.id === record.storageId);
 	assert.match(busy?.ownerLabel ?? "", /runner reported BUSY/u);
 	assert.equal(busy?.health?.lastError, "Owned launch failed");
-	assert.deepEqual((await manager.status() as { failures: unknown[] }).failures, [{ storageId: record.storageId, error: "Owned launch failed" }]);
+	assert.deepEqual(((await manager.status()) as { failures: unknown[] }).failures, [
+		{ storageId: record.storageId, error: "Owned launch failed" },
+	]);
 	await manager.registerPrimary("third", fakePrimary(new AbortController().signal).client);
 	await settleCatalogueRecovery(manager);
-	const recovered = (await manager.dashboardPage()).rows.find(row => row.id === record.storageId);
+	const recovered = (await manager.dashboardPage()).rows.find((row) => row.id === record.storageId);
 	assert.equal(recovered?.health?.lastError, undefined);
 	assert.doesNotMatch(recovered?.ownerLabel ?? "", /reported BUSY/u);
-	assert.deepEqual((await manager.status() as { failures: unknown[] }).failures, []);
+	assert.deepEqual(((await manager.status()) as { failures: unknown[] }).failures, []);
 	assert.equal(acquisitions, 3);
 });
 
-for (const cached of [false, true]) it(`keeps a live host's recovery contract difference neutral (${cached ? "cached" : "transient"} link)`, { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t);
-	let current = false;
-	const recoveryReads = eventLog<void>();
-	let openings = 0;
-	const clients: HostConnection[] = [];
-	const open = async (metadata: HostMetadata): Promise<HostConnection> => {
-		openings++;
-		const client = await connectHost(metadata, { retryAttempts: 0 });
-		const subscribeChanges = client.subscribeChanges;
-		assert.ok(subscribeChanges);
-		const peer = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, "recovery-state": { ...HOST_CONTRACT.operations["recovery-state"], response: "recovery-state/1.0.0" } } };
-		// Control the handshake snapshot and its local refusal while preserving the real live transport.
-		const connection: HostConnection = current ? client : {
-			pid: client.pid, socketPath: client.socketPath, storageId: client.storageId, metadata: client.metadata, runtimeContract: peer,
-			get closed() { return client.closed; },
-			request: async (method, params, options) => { const refusal = contractRefusal(method, peer); if (refusal) throw refusal; return client.request(method, params, options); },
-			onClose: (listener) => client.onClose(listener), subscribeChanges: (listener, signal) => subscribeChanges.call(client, listener, signal), close: () => client.close(),
+for (const cached of [false, true])
+	it(`keeps a live host's recovery contract difference neutral (${cached ? "cached" : "transient"} link)`, {
+		timeout: 15000,
+	}, async (t) => {
+		const root = fixtureRoot(t);
+		let current = false;
+		const recoveryReads = eventLog<void>();
+		let openings = 0;
+		const clients: HostConnection[] = [];
+		const open = async (metadata: HostMetadata): Promise<HostConnection> => {
+			openings++;
+			const client = await connectHost(metadata, { retryAttempts: 0 });
+			const subscribeChanges = client.subscribeChanges;
+			assert.ok(subscribeChanges);
+			const peer = {
+				...HOST_CONTRACT,
+				operations: {
+					...HOST_CONTRACT.operations,
+					"recovery-state": { ...HOST_CONTRACT.operations["recovery-state"], response: "recovery-state/1.0.0" },
+				},
+			};
+			// Control the handshake snapshot and its local refusal while preserving the real live transport.
+			const connection: HostConnection = current
+				? client
+				: {
+						pid: client.pid,
+						socketPath: client.socketPath,
+						storageId: client.storageId,
+						metadata: client.metadata,
+						runtimeContract: peer,
+						get closed() {
+							return client.closed;
+						},
+						request: async (method, params, options) => {
+							const refusal = contractRefusal(method, peer);
+							if (refusal) throw refusal;
+							return client.request(method, params, options);
+						},
+						onClose: (listener) => client.onClose(listener),
+						subscribeChanges: (listener, signal) => subscribeChanges.call(client, listener, signal),
+						close: () => client.close(),
+					};
+			clients.push(connection);
+			return connection;
 		};
-		clients.push(connection);
-		return connection;
-	};
-	const manager = new AgentManager(managerOptions(root, { connect: open, acquire: open, createPrimary: primaryFactory().factory }));
-	t.after(() => manager.close());
-	t.after(() => Promise.all(clients.map((client) => client.close())).then(() => {}));
-	const record = createRecord(manager, root);
-	manager.catalog.updateView(record.storageId, { updatedAt: new Date().toISOString(), rows: [{ id: record.storageId, storageId: record.storageId, cwd: root, modifiedAt: 1, owner: "here", state: "working", cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } });
-	const runtime = { request: async (method: string) => {
-		if (method === "recovery-state") { recoveryReads.push(undefined); return { workPending: !current, deliveriesPending: false, deliveriesActive: false }; }
-		return { busy: !current };
-	}, close: async () => {}, isIdle: () => false };
-	const host = await runHost(() => runtime, { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
-	t.after(() => host.close());
-	if (cached) await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
-	manager.catalog.markRecoveryDue(record.storageId, true);
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
-	const crashes = (manager as unknown as { crashes: { entries: Iterable<unknown> } }).crashes;
-	assert.equal([...crashes.entries].length, 0, "an operation refusal is not a host loss");
-	assert.equal(openings, 1);
-	assert.equal(recoveryReads.length, 0, "the caller never requests a response shape it cannot read");
-	const page = await manager.dashboardPage();
-	assert.equal(page.rows[0]?.state, "unavailable");
-	assert.equal(page.rows[0]?.health?.lastError, undefined);
-	assert.match(page.rows[0]?.ownerLabel ?? "", /recovery-state.*1\.0\.0.*next start/iu);
-	const status = await manager.status() as { sessions: Array<{ ownerLabel?: string }>; failures: unknown[] };
-	assert.deepEqual(status.failures, []);
-	assert.match(status.sessions[0]?.ownerLabel ?? "", /next start/u);
-	await host.close();
-	await Promise.all(clients.map((client) => waitForConnectionClose(client)));
-	current = true;
-	const updated = await runHost(() => runtime, { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
-	t.after(() => updated.close());
-	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
-	await recoveryReads.waitForCount(1);
-	assert.equal([...crashes.entries].length, 0);
-	assert.doesNotMatch((await manager.dashboardPage()).rows[0]?.ownerLabel ?? "", /next start/u);
-});
+		const manager = new AgentManager(
+			managerOptions(root, { connect: open, acquire: open, createPrimary: primaryFactory().factory }),
+		);
+		t.after(() => manager.close());
+		t.after(() => Promise.all(clients.map((client) => client.close())).then(() => {}));
+		const record = createRecord(manager, root);
+		manager.catalog.updateView(record.storageId, {
+			updatedAt: new Date().toISOString(),
+			rows: [
+				{
+					id: record.storageId,
+					storageId: record.storageId,
+					cwd: root,
+					modifiedAt: 1,
+					owner: "here",
+					state: "working",
+					cost: 0,
+					partial: false,
+				},
+			],
+			coverage: { complete: true, omitted: 0 },
+		});
+		const runtime = {
+			request: async (method: string) => {
+				if (method === "recovery-state") {
+					recoveryReads.push(undefined);
+					return { workPending: !current, deliveriesPending: false, deliveriesActive: false };
+				}
+				return { busy: !current };
+			},
+			close: async () => {},
+			isIdle: () => false,
+		};
+		const host = await runHost(() => runtime, { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
+		t.after(() => host.close());
+		if (cached) await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+		manager.catalog.markRecoveryDue(record.storageId, true);
+		await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+		const crashes = (manager as unknown as { crashes: { entries: Iterable<unknown> } }).crashes;
+		assert.equal([...crashes.entries].length, 0, "an operation refusal is not a host loss");
+		assert.equal(openings, 1);
+		assert.equal(recoveryReads.length, 0, "the caller never requests a response shape it cannot read");
+		const page = await manager.dashboardPage();
+		assert.equal(page.rows[0]?.state, "unavailable");
+		assert.equal(page.rows[0]?.health?.lastError, undefined);
+		assert.match(page.rows[0]?.ownerLabel ?? "", /recovery-state.*1\.0\.0.*next start/iu);
+		const status = (await manager.status()) as { sessions: Array<{ ownerLabel?: string }>; failures: unknown[] };
+		assert.deepEqual(status.failures, []);
+		assert.match(status.sessions[0]?.ownerLabel ?? "", /next start/u);
+		await host.close();
+		await Promise.all(clients.map((client) => waitForConnectionClose(client)));
+		current = true;
+		const updated = await runHost(() => runtime, {
+			metadata: hostMetadata(record),
+			idleMs: 0,
+			announceReady: () => {},
+		});
+		t.after(() => updated.close());
+		await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
+		await recoveryReads.waitForCount(1);
+		assert.equal([...crashes.entries].length, 0);
+		assert.doesNotMatch((await manager.dashboardPage()).rows[0]?.ownerLabel ?? "", /next start/u);
+	});
 
 it("stops repeated live host losses in Attention and permits an explicit attach retry", async (t) => {
 	const root = fixtureRoot(t);
 	const packageDir = join(root, "caller-installation");
 	const connections = eventLog<FakeConnection>();
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		packageDir,
-		acquire: async (metadata, options) => {
-			assert.equal(metadata.packageDir, packageDir, "explicit acquisition and loss recovery use the caller installation");
-			assert.equal(options?.retryAttempts, 0);
-			const client = fakeConnection(metadata, async (method) => method === "recovery-state" ? { workPending: true, deliveriesPending: true } : {}, HOST_CONTRACT, true);
-			connections.push(client);
-			return client;
-		},
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			packageDir,
+			acquire: async (metadata, options) => {
+				assert.equal(
+					metadata.packageDir,
+					packageDir,
+					"explicit acquisition and loss recovery use the caller installation",
+				);
+				assert.equal(options?.retryAttempts, 0);
+				const client = fakeConnection(
+					metadata,
+					async (method) => (method === "recovery-state" ? { workPending: true, deliveriesPending: true } : {}),
+					HOST_CONTRACT,
+					true,
+				);
+				connections.push(client);
+				return client;
+			},
+		}),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	manager.catalog.updateView(record.storageId, { updatedAt: new Date().toISOString(), rows: [{ id: record.storageId, storageId: record.storageId, cwd: root, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } });
+	manager.catalog.updateView(record.storageId, {
+		updatedAt: new Date().toISOString(),
+		rows: [
+			{
+				id: record.storageId,
+				storageId: record.storageId,
+				cwd: root,
+				modifiedAt: 1,
+				owner: "unknown",
+				state: "idle",
+				cost: 0,
+				partial: false,
+			},
+		],
+		coverage: { complete: true, omitted: 0 },
+	});
 	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
 	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
 	manager.catalog.markRecoveryDue(record.storageId, true);
@@ -1333,60 +2103,92 @@ it("stops repeated live host losses in Attention and permits an explicit attach 
 	assert.equal(connections.length, 4, "three replacements exhaust the short-window budget");
 	const stopped = await manager.dashboardPage();
 	assert.match(stopped.rows[0]?.health?.lastError ?? "", /Automatic recovery stopped/u);
-	assert.match(stopped.rows[0]?.health?.lastError ?? "", /error output is not retained; use agent_attach to retry/u, "the notice names only an action that exists");
+	assert.match(
+		stopped.rows[0]?.health?.lastError ?? "",
+		/error output is not retained; use agent_attach to retry/u,
+		"the notice names only an action that exists",
+	);
 	assert.match(dashboardText({ observedAt: Date.now(), sessions: stopped.rows }), /1 need attention/u);
 	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
 	assert.equal(connections.length, 5);
 	assert.equal((await manager.dashboardPage()).rows[0]?.health?.lastError, undefined);
 });
 
-for (const entry of ["cached", "recovery"] as const) for (const loss of ["foreign", "clean", "released"] as const) it(`catalogue recovery preserves ${loss} loss refusal for a ${entry} link`, { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t), connections = eventLog<FakeConnection>();
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		observe: async () => ({ conversations: [] }), connect: noHost,
-		acquire: async (metadata) => {
-			const client = fakeConnection(metadata, async (method) => method === "recovery-state" ? { workPending: true, deliveriesPending: true, deliveriesActive: true } : {}, HOST_CONTRACT, loss !== "foreign");
-			connections.push(client);
-			return client;
-		},
-	}));
-	t.after(() => manager.close());
-	const record = createRecord(manager, root), unrelated = createRecord(manager, root, "unrelated");
-	if (entry === "recovery") manager.catalog.markRecoveryDue(record.storageId, true);
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
-	if (entry === "cached") {
-		await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
-		manager.catalog.markRecoveryDue(record.storageId, true);
-	}
-	await settleCatalogueRecovery(manager);
-	assert.equal(connections.length, 1, "initial registration or explicit attachment opens one link");
-	const first = connections[0];
-	assert.ok(first);
-	if (loss === "released") Object.defineProperty(first, "ownerReleased", { value: true });
-	if (loss === "foreign") await first.close();
-	else await first.exit({ code: loss === "clean" ? 0 : 1, signal: null, failed: loss !== "clean" });
-	await settleCatalogueRecovery(manager);
-	assert.equal(connections.length, 1, "the close notification does not authorise acquisition");
-	if (loss === "foreign") assert.match((await manager.dashboardPage()).rows.find(row => row.id === record.storageId)?.health?.lastError ?? "", /without an owned child-exit event/u);
-	(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([unrelated.storageId]);
-	await settleCatalogueRecovery(manager);
-	assert.equal(connections.length, 1, "an unrelated catalogue change does not authorise acquisition");
-	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
-	assert.equal(connections.length, 2, "explicit agent_attach retains acquisition authority");
-});
+for (const entry of ["cached", "recovery"] as const)
+	for (const loss of ["foreign", "clean", "released"] as const)
+		it(`catalogue recovery preserves ${loss} loss refusal for a ${entry} link`, { timeout: 10000 }, async (t) => {
+			const root = fixtureRoot(t),
+				connections = eventLog<FakeConnection>();
+			const manager = new AgentManager(
+				managerOptions(root, {
+					createPrimary: primaryFactory().factory,
+					observe: async () => ({ conversations: [] }),
+					connect: noHost,
+					acquire: async (metadata) => {
+						const client = fakeConnection(
+							metadata,
+							async (method) =>
+								method === "recovery-state"
+									? { workPending: true, deliveriesPending: true, deliveriesActive: true }
+									: {},
+							HOST_CONTRACT,
+							loss !== "foreign",
+						);
+						connections.push(client);
+						return client;
+					},
+				}),
+			);
+			t.after(() => manager.close());
+			const record = createRecord(manager, root),
+				unrelated = createRecord(manager, root, "unrelated");
+			if (entry === "recovery") manager.catalog.markRecoveryDue(record.storageId, true);
+			await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+			if (entry === "cached") {
+				await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+				manager.catalog.markRecoveryDue(record.storageId, true);
+			}
+			await settleCatalogueRecovery(manager);
+			assert.equal(connections.length, 1, "initial registration or explicit attachment opens one link");
+			const first = connections[0];
+			assert.ok(first);
+			if (loss === "released") Object.defineProperty(first, "ownerReleased", { value: true });
+			if (loss === "foreign") await first.close();
+			else await first.exit({ code: loss === "clean" ? 0 : 1, signal: null, failed: loss !== "clean" });
+			await settleCatalogueRecovery(manager);
+			assert.equal(connections.length, 1, "the close notification does not authorise acquisition");
+			if (loss === "foreign")
+				assert.match(
+					(await manager.dashboardPage()).rows.find((row) => row.id === record.storageId)?.health?.lastError ?? "",
+					/without an owned child-exit event/u,
+				);
+			(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([unrelated.storageId]);
+			await settleCatalogueRecovery(manager);
+			assert.equal(connections.length, 1, "an unrelated catalogue change does not authorise acquisition");
+			await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+			assert.equal(connections.length, 2, "explicit agent_attach retains acquisition authority");
+		});
 
 it("catalogue recovery waits for the current owned failed-exit source", { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t), connections = eventLog<FakeConnection>();
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		observe: async () => ({ conversations: [] }), connect: noHost,
-		acquire: async (metadata) => {
-			const client = fakeConnection(metadata, async () => ({ workPending: true, deliveriesPending: true, deliveriesActive: true }), HOST_CONTRACT, true);
-			connections.push(client);
-			return client;
-		},
-	}));
+	const root = fixtureRoot(t),
+		connections = eventLog<FakeConnection>();
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+			acquire: async (metadata) => {
+				const client = fakeConnection(
+					metadata,
+					async () => ({ workPending: true, deliveriesPending: true, deliveriesActive: true }),
+					HOST_CONTRACT,
+					true,
+				);
+				connections.push(client);
+				return client;
+			},
+		}),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
 	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
@@ -1396,7 +2198,15 @@ it("catalogue recovery waits for the current owned failed-exit source", { timeou
 	const first = connections[0];
 	assert.ok(first);
 	Object.defineProperty(first, "writerId", { value: "writer" });
-	writeClaim(record, { token: "writer", sessionId: record.storageId, cwd: record.cwd, host: hostname(), pid: process.pid, createdAt: "2026-01-01T00:00:00.000Z", endedAt: "2026-01-01T00:00:01.000Z" });
+	writeClaim(record, {
+		token: "writer",
+		sessionId: record.storageId,
+		cwd: record.cwd,
+		host: hostname(),
+		pid: process.pid,
+		createdAt: "2026-01-01T00:00:00.000Z",
+		endedAt: "2026-01-01T00:00:01.000Z",
+	});
 	await first.close();
 	await settleCatalogueRecovery(manager);
 	assert.equal(connections.length, 1, "catalogue scans and end metadata do not bypass a pending exit observation");
@@ -1406,16 +2216,25 @@ it("catalogue recovery waits for the current owned failed-exit source", { timeou
 });
 
 it("an older owned exit cannot release a newer foreign loss hold", { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t), connections = eventLog<FakeConnection>();
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		observe: async () => ({ conversations: [] }), connect: noHost,
-		acquire: async (metadata) => {
-			const client = fakeConnection(metadata, async () => ({ workPending: true, deliveriesPending: true, deliveriesActive: true }), HOST_CONTRACT, connections.length === 0);
-			connections.push(client);
-			return client;
-		},
-	}));
+	const root = fixtureRoot(t),
+		connections = eventLog<FakeConnection>();
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+			acquire: async (metadata) => {
+				const client = fakeConnection(
+					metadata,
+					async () => ({ workPending: true, deliveriesPending: true, deliveriesActive: true }),
+					HOST_CONTRACT,
+					connections.length === 0,
+				);
+				connections.push(client);
+				return client;
+			},
+		}),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
 	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
@@ -1435,17 +2254,27 @@ it("an older owned exit cannot release a newer foreign loss hold", { timeout: 10
 	await older.exit({ code: 1, signal: null, failed: true });
 	(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([record.storageId]);
 	await settleCatalogueRecovery(manager);
-	assert.equal(connections.length, 2, "an obsolete child outcome does not authorise replacement of the current foreign link");
+	assert.equal(
+		connections.length,
+		2,
+		"an obsolete child outcome does not authorise replacement of the current foreign link",
+	);
 });
 
 it("does not relaunch an unmarked host or a host released with the last primary", async (t) => {
 	const root = fixtureRoot(t);
 	const connections = eventLog<FakeConnection>();
 	const controller = new AbortController();
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		acquire: async (metadata) => { const client = fakeConnection(metadata, async () => ({})); connections.push(client); return client; },
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata) => {
+				const client = fakeConnection(metadata, async () => ({}));
+				connections.push(client);
+				return client;
+			},
+		}),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
 	await manager.registerPrimary("owner-1", fakePrimary(controller.signal).client);
@@ -1466,17 +2295,19 @@ it("keeps hundreds of clean catalog records out of board reads and host launches
 	let acquires = 0;
 	let observes = 0;
 	const factory = primaryFactory();
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: factory.factory,
-		acquire: async (metadata) => {
-			acquires += 1;
-			return fakeConnection(metadata, async () => ({}));
-		},
-		observe: async () => {
-			observes += 1;
-			return [];
-		},
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: factory.factory,
+			acquire: async (metadata) => {
+				acquires += 1;
+				return fakeConnection(metadata, async () => ({}));
+			},
+			observe: async () => {
+				observes += 1;
+				return [];
+			},
+		}),
+	);
 	t.after(() => manager.close());
 	for (let index = 0; index < 240; index += 1) createRecord(manager, root, `owner-${index}`);
 	const primary = fakePrimary(new AbortController().signal);
@@ -1484,7 +2315,9 @@ it("keeps hundreds of clean catalog records out of board reads and host launches
 	assert.equal(acquires, 0, "clean records launch no host at startup");
 	assert.equal(observes, 0, "startup reads no native host state");
 	assert.equal(factory.invocations, 1, "the primary channel is the only startup work");
-	const page = (await manager.dashboardPage()) as unknown as { rows: Array<{ storageId: string; state: string; owner: string; partial: boolean }> };
+	const page = (await manager.dashboardPage()) as unknown as {
+		rows: Array<{ storageId: string; state: string; owner: string; partial: boolean }>;
+	};
 	assert.equal(acquires, 0, "clean records launch no host");
 	assert.equal(observes, 0, "the board reads no native host state");
 	assert.equal(page.rows.length, 240, "every clean record has one explicit metadata row");
@@ -1494,25 +2327,39 @@ it("keeps hundreds of clean catalog records out of board reads and host launches
 		assert.equal(row.partial, true);
 	}
 	const again = (await manager.dashboardPage()) as unknown as { rows: Array<{ storageId: string; state: string }> };
-	assert.deepEqual(again.rows.map((row) => row.storageId).sort(), page.rows.map((row) => row.storageId).sort(), "the second refresh returns the same records");
+	assert.deepEqual(
+		again.rows.map((row) => row.storageId).sort(),
+		page.rows.map((row) => row.storageId).sort(),
+		"the second refresh returns the same records",
+	);
 	assert.equal(acquires, 0);
 	assert.equal(observes, 0);
 });
 
-it("keeps unrelated registrations cold and wakes parked delivery only for its exact primary", { timeout: 15000 }, async (t) => {
+it("keeps unrelated registrations cold and wakes parked delivery only for its exact primary", {
+	timeout: 15000,
+}, async (t) => {
 	const root = fixtureRoot(t);
 	const links: FakeConnection[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		acquire: async (metadata) => {
-			const link = fakeConnection(metadata, async () => ({ workPending: false, deliveriesPending: true, deliveriesActive: false }));
-			links.push(link);
-			return link;
-		},
-		observe: async () => ({ conversations: [] }), connect: noHost,
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata) => {
+				const link = fakeConnection(metadata, async () => ({
+					workPending: false,
+					deliveriesPending: true,
+					deliveriesActive: false,
+				}));
+				links.push(link);
+				return link;
+			},
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+		}),
+	);
 	t.after(() => manager.close());
-	const owner = randomUUID(), record = createRecord(manager, root, owner);
+	const owner = randomUUID(),
+		record = createRecord(manager, root, owner);
 	manager.catalog.markRecoveryDue(record.storageId, false);
 	writeDeliveryWake(root, record.storageId, [owner]);
 	await manager.registerPrimary(randomUUID(), fakePrimary(new AbortController().signal).client);
@@ -1525,14 +2372,25 @@ it("keeps unrelated registrations cold and wakes parked delivery only for its ex
 	assert.equal(links.length, 1);
 });
 
-it("wakes a source when its exact native recipient gains a catalogue record", { timeout: 15000 }, async t => {
-	const root = fixtureRoot(t), acquired = eventLog<string>();
-	const manager = new AgentManager(managerOptions(root, { acquire: async metadata => {
-		acquired.push(metadata.storageId);
-		return fakeConnection(metadata, async () => ({ workPending: false, deliveriesPending: false, deliveriesActive: false }));
-	}, connect: noHost }));
+it("wakes a source when its exact native recipient gains a catalogue record", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t),
+		acquired = eventLog<string>();
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: async (metadata) => {
+				acquired.push(metadata.storageId);
+				return fakeConnection(metadata, async () => ({
+					workPending: false,
+					deliveriesPending: false,
+					deliveriesActive: false,
+				}));
+			},
+			connect: noHost,
+		}),
+	);
 	t.after(() => manager.close());
-	const source = createRecord(manager, root), target = createRecord(manager, root);
+	const source = createRecord(manager, root),
+		target = createRecord(manager, root);
 	unlinkSync(manager.catalog.path(target.storageId));
 	manager.catalog.markRecoveryDue(source.storageId, false);
 	writeDeliveryWake(root, source.storageId, [`${target.storageId}:7`]);
@@ -1544,24 +2402,42 @@ it("wakes a source when its exact native recipient gains a catalogue record", { 
 	assert.deepEqual([...acquired], [source.storageId]);
 });
 
-it("persists failed recipient availability across fresh primary managers and wakes once after a change", { timeout: 15000 }, async t => {
-	const root = fixtureRoot(t), acquired: string[] = [];
+it("persists failed recipient availability across fresh primary managers and wakes once after a change", {
+	timeout: 15000,
+}, async (t) => {
+	const root = fixtureRoot(t),
+		acquired: string[] = [];
 	let target!: CatalogRecord;
-	const fingerprint = () => createHash("sha256").update(JSON.stringify(hostMetadata(target, join(root, "package")))).digest("hex");
-	const options = managerOptions(root, { createPrimary: primaryFactory().factory, acquire: async metadata => {
-		acquired.push(metadata.storageId);
-		writeDeliveryWake(root, metadata.storageId, [target.storageId], () => fingerprint());
-		return fakeConnection(metadata, async () => ({ workPending: false, deliveriesPending: true, deliveriesActive: false }));
-	}, connect: noHost });
-	const first = new AgentManager(options); t.after(() => first.close());
-	const source = createRecord(first, root); target = createRecord(first, root);
+	const fingerprint = () =>
+		createHash("sha256")
+			.update(JSON.stringify(hostMetadata(target, join(root, "package"))))
+			.digest("hex");
+	const options = managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		acquire: async (metadata) => {
+			acquired.push(metadata.storageId);
+			writeDeliveryWake(root, metadata.storageId, [target.storageId], () => fingerprint());
+			return fakeConnection(metadata, async () => ({
+				workPending: false,
+				deliveriesPending: true,
+				deliveriesActive: false,
+			}));
+		},
+		connect: noHost,
+	});
+	const first = new AgentManager(options);
+	t.after(() => first.close());
+	const source = createRecord(first, root);
+	target = createRecord(first, root);
 	first.catalog.markRecoveryDue(source.storageId, false);
 	writeDeliveryWake(root, source.storageId, [target.storageId], () => fingerprint());
-	const register = (manager: AgentManager) => manager.registerPrimary(target.storageId, fakePrimary(new AbortController().signal).client);
+	const register = (manager: AgentManager) =>
+		manager.registerPrimary(target.storageId, fakePrimary(new AbortController().signal).client);
 	await register(first);
 	assert.equal(acquired.length, 0);
 	await first.close();
-	const second = new AgentManager(options); t.after(() => second.close());
+	const second = new AgentManager(options);
+	t.after(() => second.close());
 	await register(second);
 	assert.equal(acquired.length, 0);
 	target = { ...target, model: { ...target.model, modelId: "model-y" } };
@@ -1571,27 +2447,50 @@ it("persists failed recipient availability across fresh primary managers and wak
 	await register(second);
 	assert.deepEqual(acquired, [source.storageId]);
 	await second.close();
-	const third = new AgentManager(options); t.after(() => third.close());
+	const third = new AgentManager(options);
+	t.after(() => third.close());
 	await register(third);
 	assert.deepEqual(acquired, [source.storageId]);
 });
 
-it("does not repeat a parked wake for unchanged recipient availability at primary registration", { timeout: 15000 }, async t => {
-	const root = fixtureRoot(t), acquired: string[] = [];
-	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory, acquire: async metadata => {
-		acquired.push(metadata.storageId);
-		writeDeliveryWake(root, metadata.storageId, [target.storageId], () => createHash("sha256").update(JSON.stringify(hostMetadata(target, join(root, "package")))).digest("hex"));
-		return fakeConnection(metadata, async () => ({ workPending: false, deliveriesPending: true, deliveriesActive: false }));
-	}, connect: noHost }));
+it("does not repeat a parked wake for unchanged recipient availability at primary registration", {
+	timeout: 15000,
+}, async (t) => {
+	const root = fixtureRoot(t),
+		acquired: string[] = [];
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata) => {
+				acquired.push(metadata.storageId);
+				writeDeliveryWake(root, metadata.storageId, [target.storageId], () =>
+					createHash("sha256")
+						.update(JSON.stringify(hostMetadata(target, join(root, "package"))))
+						.digest("hex"),
+				);
+				return fakeConnection(metadata, async () => ({
+					workPending: false,
+					deliveriesPending: true,
+					deliveriesActive: false,
+				}));
+			},
+			connect: noHost,
+		}),
+	);
 	t.after(() => manager.close());
-	const source = createRecord(manager, root), target = createRecord(manager, root);
+	const source = createRecord(manager, root),
+		target = createRecord(manager, root);
 	manager.catalog.markRecoveryDue(source.storageId, false);
 	writeDeliveryWake(root, source.storageId, [target.storageId]);
 	const register = () => manager.registerPrimary(target.storageId, fakePrimary(new AbortController().signal).client);
 	await register();
 	await register();
 	assert.deepEqual(acquired, [source.storageId]);
-	manager.catalog.updateView(target.storageId, { updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } });
+	manager.catalog.updateView(target.storageId, {
+		updatedAt: new Date().toISOString(),
+		rows: [],
+		coverage: { complete: true, omitted: 0 },
+	});
 	await register();
 	assert.deepEqual(acquired, [source.storageId], "a view publication is not new host availability");
 });
@@ -1601,17 +2500,20 @@ it("refreshes an existing recovery link at another primary registration", { time
 	let connection: FakeConnection | undefined;
 	let active = true;
 	let reads = 0;
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		acquire: async (metadata) => {
-			connection = fakeConnection(metadata, async (method) => {
-				if (method === "recovery-state") reads++;
-				return { workPending: false, deliveriesPending: true, deliveriesActive: active };
-			});
-			return connection;
-		},
-		observe: async () => ({ conversations: [] }), connect: noHost,
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata) => {
+				connection = fakeConnection(metadata, async (method) => {
+					if (method === "recovery-state") reads++;
+					return { workPending: false, deliveriesPending: true, deliveriesActive: active };
+				});
+				return connection;
+			},
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+		}),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root, "recovering");
 	manager.catalog.markRecoveryDue(record.storageId, true);
@@ -1631,27 +2533,33 @@ it("launches only marked-due records and caps concurrent recovery at two", { tim
 	const activity = { active: 0, peak: 0 };
 	let flowing = false;
 	const packageDir = join(root, "caller-installation");
-	const manager = new AgentManager(managerOptions(root, {
-		packageDir,
-		createPrimary: primaryFactory().factory,
-		acquire: async (metadata) => {
-			assert.equal(metadata.packageDir, packageDir, "startup recovery uses the caller installation");
-			const storageId = metadata.storageId;
-			acquired.push(storageId);
-			activity.active += 1;
-			activity.peak = Math.max(activity.peak, activity.active);
-			if (!flowing) {
-				await new Promise<void>((release) => gates.set(storageId, () => {
-					flowing = true;
-					release();
-				}));
-			}
-			activity.active -= 1;
-			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false, deliveriesActive: false } : {}));
-		},
-		observe: async () => ({ conversations: [] }),
-		connect: noHost,
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			packageDir,
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata) => {
+				assert.equal(metadata.packageDir, packageDir, "startup recovery uses the caller installation");
+				const storageId = metadata.storageId;
+				acquired.push(storageId);
+				activity.active += 1;
+				activity.peak = Math.max(activity.peak, activity.active);
+				if (!flowing) {
+					await new Promise<void>((release) =>
+						gates.set(storageId, () => {
+							flowing = true;
+							release();
+						}),
+					);
+				}
+				activity.active -= 1;
+				return fakeConnection(metadata, async (method) =>
+					method === "recovery-state" ? { workPending: false, deliveriesPending: false, deliveriesActive: false } : {},
+				);
+			},
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+		}),
+	);
 	t.after(() => manager.close());
 	const due = Array.from({ length: 5 }, (_, index) => {
 		const record = createRecord(manager, root, `due-${index}`);
@@ -1666,7 +2574,11 @@ it("launches only marked-due records and caps concurrent recovery at two", { tim
 	assert.equal(acquired.length, 2, "the queue holds the other due records until a slot frees");
 	for (const gate of [...gates.values()]) gate();
 	await registering;
-	assert.deepEqual(acquired.slice().sort(), due.map((record) => record.storageId).sort(), "every due record recovers once and the clean record never launches");
+	assert.deepEqual(
+		acquired.slice().sort(),
+		due.map((record) => record.storageId).sort(),
+		"every due record recovers once and the clean record never launches",
+	);
 	assert.equal(acquired.includes(clean.storageId), false);
 	assert.deepEqual(manager.connectedStorageIds(), [], "delivery-only recovery stays out of the persistent client map");
 });
@@ -1677,25 +2589,31 @@ it("serializes simultaneous primary registrations without duplicate recovery", {
 	const gates = new Map<string, () => void>();
 	const activity = { active: 0, peak: 0 };
 	let flowing = false;
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		acquire: async (metadata) => {
-			const storageId = metadata.storageId;
-			launched.push(storageId);
-			activity.active += 1;
-			activity.peak = Math.max(activity.peak, activity.active);
-			if (!flowing) {
-				await new Promise<void>((release) => gates.set(`${storageId}:${launched.length}`, () => {
-					flowing = true;
-					release();
-				}));
-			}
-			activity.active -= 1;
-			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: true, deliveriesPending: true, deliveriesActive: true } : {}));
-		},
-		observe: async () => ({ conversations: [] }),
-		connect: noHost,
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata) => {
+				const storageId = metadata.storageId;
+				launched.push(storageId);
+				activity.active += 1;
+				activity.peak = Math.max(activity.peak, activity.active);
+				if (!flowing) {
+					await new Promise<void>((release) =>
+						gates.set(`${storageId}:${launched.length}`, () => {
+							flowing = true;
+							release();
+						}),
+					);
+				}
+				activity.active -= 1;
+				return fakeConnection(metadata, async (method) =>
+					method === "recovery-state" ? { workPending: true, deliveriesPending: true, deliveriesActive: true } : {},
+				);
+			},
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+		}),
+	);
 	t.after(() => manager.close());
 	const due = Array.from({ length: 5 }, (_, index) => {
 		const record = createRecord(manager, root, `due-${index}`);
@@ -1714,27 +2632,39 @@ it("serializes simultaneous primary registrations without duplicate recovery", {
 	assert.equal(launched.length, 2, "the queue holds the remaining due records until a slot frees");
 	for (const gate of [...gates.values()]) gate();
 	await registering;
-	assert.deepEqual(launched.slice().sort(), due.map((record) => record.storageId).sort(), "each due record launches exactly once across both registrations");
+	assert.deepEqual(
+		launched.slice().sort(),
+		due.map((record) => record.storageId).sort(),
+		"each due record launches exactly once across both registrations",
+	);
 	assert.equal(new Set(launched).size, launched.length, "no duplicate launch");
 	assert.equal(launched.includes(clean.storageId), false, "the clean control record never launches");
 });
 
-it("delegates marked recovery to acquisition without diagnostic ownership assumptions", { timeout: 30000 }, async (t) => {
+it("delegates marked recovery to acquisition without diagnostic ownership assumptions", {
+	timeout: 30000,
+}, async (t) => {
 	const root = fixtureRoot(t);
 	const acquired = eventLog<string>();
 	const connected: string[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		acquire: async (metadata) => {
-			acquired.push(metadata.storageId);
-			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false, deliveriesActive: false } : {}));
-		},
-		connect: async (metadata) => {
-			connected.push(metadata.storageId);
-			return fakeConnection(metadata, async (method) => (method === "recovery-state" ? { workPending: false, deliveriesPending: false, deliveriesActive: false } : {}));
-		},
-		observe: async () => ({ conversations: [] }),
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata) => {
+				acquired.push(metadata.storageId);
+				return fakeConnection(metadata, async (method) =>
+					method === "recovery-state" ? { workPending: false, deliveriesPending: false, deliveriesActive: false } : {},
+				);
+			},
+			connect: async (metadata) => {
+				connected.push(metadata.storageId);
+				return fakeConnection(metadata, async (method) =>
+					method === "recovery-state" ? { workPending: false, deliveriesPending: false, deliveriesActive: false } : {},
+				);
+			},
+			observe: async () => ({ conversations: [] }),
+		}),
+	);
 	t.after(() => manager.close());
 	const absent = createRecord(manager, root, "absent");
 	manager.catalog.markRecoveryDue(absent.storageId, true);
@@ -1749,7 +2679,10 @@ it("delegates marked recovery to acquisition without diagnostic ownership assump
 	writeClaim(live, claimFor(live, process.pid));
 	const primary = fakePrimary(new AbortController().signal);
 	await manager.registerPrimary("owner-1", primary.client);
-	assert.deepEqual(acquired.slice().sort(), [absent.storageId, dead.storageId, unknown.storageId, live.storageId].sort());
+	assert.deepEqual(
+		acquired.slice().sort(),
+		[absent.storageId, dead.storageId, unknown.storageId, live.storageId].sort(),
+	);
 	assert.deepEqual(connected, [], "the acquiring boundary owns attach-first and kernel exclusion");
 });
 
@@ -1757,15 +2690,17 @@ it("closes a delivery-only recovery connection when no work remains", { timeout:
 	const root = fixtureRoot(t);
 	let recoveryState = { workPending: false, deliveriesPending: true, deliveriesActive: true };
 	let connection: FakeConnection | undefined;
-	const manager = new AgentManager(managerOptions(root, {
-		createPrimary: primaryFactory().factory,
-		acquire: async (metadata) => {
-			connection = fakeConnection(metadata, async (method) => (method === "recovery-state" ? recoveryState : {}));
-			return connection;
-		},
-		observe: async () => ({ conversations: [] }),
-		connect: noHost,
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata) => {
+				connection = fakeConnection(metadata, async (method) => (method === "recovery-state" ? recoveryState : {}));
+				return connection;
+			},
+			observe: async () => ({ conversations: [] }),
+			connect: noHost,
+		}),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
 	manager.catalog.markRecoveryDue(record.storageId, true);
@@ -1787,82 +2722,132 @@ it("pages list rows and reports unavailable storages", { timeout: 15000 }, async
 	const first = createRecord(bootstrap, root, "owner-a");
 	createRecord(bootstrap, root, "owner-a");
 	await bootstrap.close();
-	const manager = new AgentManager(managerOptions(root, {
-		connect: noHost,
-		observe: async (metadata, method, params) => {
-			if (method !== "list") return { conversations: [] };
-			if (metadata.storageId === first.storageId) {
-				const cursor = (params as { cursor?: string }).cursor;
-				return cursor === "next" ? { items: [{ identity: `${metadata.storageId}:2` }] } : { items: [{ identity: `${metadata.storageId}:1` }], next: "next" };
-			}
-			throw new Error("storage is unavailable");
-		},
-	}));
-	const result = await manager.list({ limit: 5 }) as { rows: Array<{ identity: string; storageId: string }>; coverage: { unavailable: Array<{ storageId: string }> } };
-	assert.deepEqual(result.rows.map((row) => row.identity), [`${first.storageId}:1`, `${first.storageId}:2`]);
-	assert.equal(result.rows.every((row) => row.storageId === first.storageId), true);
+	const manager = new AgentManager(
+		managerOptions(root, {
+			connect: noHost,
+			observe: async (metadata, method, params) => {
+				if (method !== "list") return { conversations: [] };
+				if (metadata.storageId === first.storageId) {
+					const cursor = (params as { cursor?: string }).cursor;
+					return cursor === "next"
+						? { items: [{ identity: `${metadata.storageId}:2` }] }
+						: { items: [{ identity: `${metadata.storageId}:1` }], next: "next" };
+				}
+				throw new Error("storage is unavailable");
+			},
+		}),
+	);
+	const result = (await manager.list({ limit: 5 })) as {
+		rows: Array<{ identity: string; storageId: string }>;
+		coverage: { unavailable: Array<{ storageId: string }> };
+	};
+	assert.deepEqual(
+		result.rows.map((row) => row.identity),
+		[`${first.storageId}:1`, `${first.storageId}:2`],
+	);
+	assert.equal(
+		result.rows.every((row) => row.storageId === first.storageId),
+		true,
+	);
 	assert.equal(result.coverage.unavailable.length, 1);
 	await manager.close();
 });
 
-for (const operation of ["submit", "task-submit"] as const) it(`preserves explicit origins and uses the ${operation} contract for absent origin`, async (t) => {
-	const root = fixtureRoot(t);
-	const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
-	const manager = new AgentManager(managerOptions(root, {
-		validateModel: () => {},
-		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-			seen.push({ method, params: params as Record<string, unknown> });
-			return { submissionId: 9 };
-		}, operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT),
-	}));
-	const record = createRecord(manager, root);
-	const caller = { id: "caller", cwd: root, model: { provider: "acme", modelId: "model-x" } };
-	const previous = process.env.PI_AGENT_CHECK_IN_MINUTES;
-	process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
-	try {
-		if (operation === "submit") {
-			await assert.rejects(manager.control("submit", { sessionId: record.storageId, message: "operator task", origin: "operator" }, caller), /does not advertise task-submit/u);
-			await assert.rejects(manager.spawn({ prompt: "task" }, caller), /does not advertise task-submit/u);
-			assert.equal(seen.length, 0);
-			return;
+for (const operation of ["submit", "task-submit"] as const)
+	it(`preserves explicit origins and uses the ${operation} contract for absent origin`, async (t) => {
+		const root = fixtureRoot(t);
+		const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
+		const manager = new AgentManager(
+			managerOptions(root, {
+				validateModel: () => {},
+				acquire: async (metadata) =>
+					fakeConnection(
+						metadata,
+						async (method, params) => {
+							seen.push({ method, params: params as Record<string, unknown> });
+							return { submissionId: 9 };
+						},
+						operation === "submit" ? BASE_SUBMIT_CONTRACT : HOST_CONTRACT,
+					),
+			}),
+		);
+		const record = createRecord(manager, root);
+		const caller = { id: "caller", cwd: root, model: { provider: "acme", modelId: "model-x" } };
+		const previous = process.env.PI_AGENT_CHECK_IN_MINUTES;
+		process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
+		try {
+			if (operation === "submit") {
+				await assert.rejects(
+					manager.control(
+						"submit",
+						{ sessionId: record.storageId, message: "operator task", origin: "operator" },
+						caller,
+					),
+					/does not advertise task-submit/u,
+				);
+				await assert.rejects(manager.spawn({ prompt: "task" }, caller), /does not advertise task-submit/u);
+				assert.equal(seen.length, 0);
+				return;
+			}
+			await manager.control(
+				"submit",
+				{ sessionId: record.storageId, message: "operator task", origin: "operator" },
+				caller,
+			);
+			await manager.control("submit", { sessionId: record.storageId, message: "model task", origin: "model" }, caller);
+			await manager.control("submit", { sessionId: record.storageId, message: "absent origin" }, caller);
+			await manager.spawn({ prompt: "board task", origin: "operator" }, caller);
+			await manager.spawn({ prompt: "model task", origin: "model" }, caller);
+			await manager.spawn({ prompt: "opt out", origin: "model", checkInMinutes: 0 }, caller);
+			await manager.spawn({ prompt: "unspecified origin" }, caller);
+			await manager.spawn({ origin: "model" }, caller);
+			const submits = seen.filter((entry) => entry.method === operation);
+			assert.equal(submits[0]?.params.origin, "operator");
+			assert.equal(submits[1]?.params.origin, "model");
+			assert.equal(submits[2]?.params.origin, "operator");
+			assert.equal(submits[3]?.params.origin, "operator");
+			assert.equal(submits[3]?.params.checkInMinutes, 0);
+			assert.equal(submits[4]?.params.checkInMinutes, 7);
+			assert.equal(submits[5]?.params.checkInMinutes, 0);
+			assert.equal(submits[6]?.params.origin, "operator");
+			assert.equal(submits[6]?.params.checkInMinutes, 0);
+			assert.equal(submits.length, 7, "a promptless spawn arms no task");
+			assert.ok(submits.every((entry) => entry.params.requester === caller.id));
+		} finally {
+			await manager.close();
+			if (previous === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES;
+			else process.env.PI_AGENT_CHECK_IN_MINUTES = previous;
 		}
-		await manager.control("submit", { sessionId: record.storageId, message: "operator task", origin: "operator" }, caller);
-		await manager.control("submit", { sessionId: record.storageId, message: "model task", origin: "model" }, caller);
-		await manager.control("submit", { sessionId: record.storageId, message: "absent origin" }, caller);
-		await manager.spawn({ prompt: "board task", origin: "operator" }, caller);
-		await manager.spawn({ prompt: "model task", origin: "model" }, caller);
-		await manager.spawn({ prompt: "opt out", origin: "model", checkInMinutes: 0 }, caller);
-		await manager.spawn({ prompt: "unspecified origin" }, caller);
-		await manager.spawn({ origin: "model" }, caller);
-		const submits = seen.filter((entry) => entry.method === operation);
-		assert.equal(submits[0]?.params.origin, "operator");
-		assert.equal(submits[1]?.params.origin, "model");
-		assert.equal(submits[2]?.params.origin, "operator");
-		assert.equal(submits[3]?.params.origin, "operator");
-		assert.equal(submits[3]?.params.checkInMinutes, 0);
-		assert.equal(submits[4]?.params.checkInMinutes, 7);
-		assert.equal(submits[5]?.params.checkInMinutes, 0);
-		assert.equal(submits[6]?.params.origin, "operator");
-		assert.equal(submits[6]?.params.checkInMinutes, 0);
-		assert.equal(submits.length, 7, "a promptless spawn arms no task");
-		assert.ok(submits.every((entry) => entry.params.requester === caller.id));
-	} finally {
-		await manager.close();
-		if (previous === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES;
-		else process.env.PI_AGENT_CHECK_IN_MINUTES = previous;
-	}
-});
+	});
 
 it("preserves the resolved identity and supplied handle on configure refusals", async (t) => {
 	const root = fixtureRoot(t);
-	const manager = new AgentManager(managerOptions(root, {
-		acquire: async (metadata) => fakeConnection(metadata, async () => { throw new Error(`conversation ${metadata.storageId} is busy; configuration requires an idle conversation`); }),
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async () => {
+					throw new Error(`conversation ${metadata.storageId} is busy; configuration requires an idle conversation`);
+				}),
+		}),
+	);
 	t.after(() => manager.close());
-	const created = manager.catalog.createHandled({ cwd: root, agentDir: root, packageDir: root, model: { provider: "acme", modelId: "model-x" }, thinkingLevel: "off" }, "reviewer", "Review source");
-	await assert.rejects(manager.control("configure", { sessionId: "@reviewer", name: "Review" }, { id: "caller", cwd: root }), {
-		message: `Configure of ${created.record.storageId} (@reviewer) failed: conversation ${created.record.storageId} is busy; configuration requires an idle conversation`,
-	});
+	const created = manager.catalog.createHandled(
+		{
+			cwd: root,
+			agentDir: root,
+			packageDir: root,
+			model: { provider: "acme", modelId: "model-x" },
+			thinkingLevel: "off",
+		},
+		"reviewer",
+		"Review source",
+	);
+	await assert.rejects(
+		manager.control("configure", { sessionId: "@reviewer", name: "Review" }, { id: "caller", cwd: root }),
+		{
+			message: `Configure of ${created.record.storageId} (@reviewer) failed: conversation ${created.record.storageId} is busy; configuration requires an idle conversation`,
+		},
+	);
 });
 
 it("names a Durable target recovery when collaboration targets an ordinary primary", async (t) => {
@@ -1872,7 +2857,8 @@ it("names a Durable target recovery when collaboration targets an ordinary prima
 	const id = randomUUID();
 	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send() {} });
 	await assert.rejects(manager.collaborate({ action: "create", sessionId: id }, { id: randomUUID(), cwd: root }), {
-		message: "A registered primary accepts messages, not Durable session controls; call agent_list, then repeat agent_collaborate with sessionId set to a discovered Durable agent identity, not this primary",
+		message:
+			"A registered primary accepts messages, not Durable session controls; call agent_list, then repeat agent_collaborate with sessionId set to a discovered Durable agent identity, not this primary",
 	});
 });
 
@@ -1887,7 +2873,12 @@ it("returns a compact status snapshot from a mutation instead of the full status
 			cwd: root,
 			busy: false,
 			lastText: "working on it",
-			agent: { model: { provider: "acme", modelId: "model-x" }, thinkingLevel: "high", tools: ["bash", "write"], extensions: ["agent", "other"] },
+			agent: {
+				model: { provider: "acme", modelId: "model-x" },
+				thinkingLevel: "high",
+				tools: ["bash", "write"],
+				extensions: ["agent", "other"],
+			},
 			live: { run: { taskId: 4 }, tools: [{ name: "bash", status: "running" }] },
 			submissions: [{ id: 1, type: "input", status: "done" }],
 		},
@@ -1895,13 +2886,28 @@ it("returns a compact status snapshot from a mutation instead of the full status
 		pid: 42,
 		storageId: "storage-a",
 	};
-	const manager = new AgentManager(managerOptions(root, {
-		validateModel: () => {},
-		acquire: async (metadata) => fakeConnection(metadata, async (method) => (method === "status" ? fullStatus : { submissionId: 5 })),
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			validateModel: () => {},
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method) => (method === "status" ? fullStatus : { submissionId: 5 })),
+		}),
+	);
 	try {
-		const outcome = await manager.spawn({ prompt: "review the parser", origin: "operator" }, { id: "caller", cwd: root, model: { provider: "acme", modelId: "model-x" } }) as {
-			status: { identity: string; conversationId: number; name?: string; cwd?: string; busy: boolean; state: string; agent: { model?: { provider: string; modelId: string }; thinkingLevel: string }; limits?: { ordinaryOnly: string[] } };
+		const outcome = (await manager.spawn(
+			{ prompt: "review the parser", origin: "operator" },
+			{ id: "caller", cwd: root, model: { provider: "acme", modelId: "model-x" } },
+		)) as {
+			status: {
+				identity: string;
+				conversationId: number;
+				name?: string;
+				cwd?: string;
+				busy: boolean;
+				state: string;
+				agent: { model?: { provider: string; modelId: string }; thinkingLevel: string };
+				limits?: { ordinaryOnly: string[] };
+			};
 		};
 		assert.equal(outcome.status.identity, "storage-a");
 		assert.equal(outcome.status.conversationId, 1);
@@ -1916,8 +2922,13 @@ it("returns a compact status snapshot from a mutation instead of the full status
 		assert.equal(serialized.includes("firstMessage"), false, "the prompt excerpt does not repeat in the spawn result");
 		assert.equal(serialized.includes("lastText"), false, "live assistant text stays out of the spawn result");
 		assert.equal(serialized.includes("submissions"), false, "the submission inventory stays out of the spawn result");
-		assert.ok(JSON.stringify(outcome.status).length < 1024, "the compact status stays bounded independently of execution selection evidence");
-	} finally { await manager.close(); }
+		assert.ok(
+			JSON.stringify(outcome.status).length < 1024,
+			"the compact status stays bounded independently of execution selection evidence",
+		);
+	} finally {
+		await manager.close();
+	}
 });
 
 it("shares one real attach across concurrent reads and a canceled live selection", { timeout: 15000 }, async (t) => {
@@ -1926,15 +2937,46 @@ it("shares one real attach across concurrent reads and a canceled live selection
 	const gate = deferred();
 	const links: HostConnection[] = [];
 	let acquisitions = 0;
-	const manager = new AgentManager(managerOptions(root, {
-		connect: async (metadata) => { const link = await connectHost(metadata, { retryAttempts: 0 }); links.push(link); entered.resolve(); await gate.promise; return link; },
-		acquire: async () => { acquisitions++; throw new Error("observation must not launch"); },
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			connect: async (metadata) => {
+				const link = await connectHost(metadata, { retryAttempts: 0 });
+				links.push(link);
+				entered.resolve();
+				await gate.promise;
+				return link;
+			},
+			acquire: async () => {
+				acquisitions++;
+				throw new Error("observation must not launch");
+			},
+		}),
+	);
 	const record = createRecord(manager, root);
-	const host = await runHost(() => ({ request: async () => ({ conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, live: false, storageId: record.storageId }), close: async () => {}, isIdle: () => true }), { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
-	t.after(async () => { gate.resolve(); await manager.close(); await host.close(); });
+	const host = await runHost(
+		() => ({
+			request: async () => ({
+				conversations: [],
+				coverage: { complete: true, returned: 0, scanned: 0, next: null },
+				live: false,
+				storageId: record.storageId,
+			}),
+			close: async () => {},
+			isIdle: () => true,
+		}),
+		{ metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} },
+	);
+	t.after(async () => {
+		gate.resolve();
+		await manager.close();
+		await host.close();
+	});
 	const cancel = new AbortController();
-	const reads = Promise.all([manager.status(record.storageId), manager.snapshot(record.storageId), manager.observeLive(record.storageId, "conversation", () => {}, cancel.signal)]);
+	const reads = Promise.all([
+		manager.status(record.storageId),
+		manager.snapshot(record.storageId),
+		manager.observeLive(record.storageId, "conversation", () => {}, cancel.signal),
+	]);
 	await entered.promise;
 	assert.equal(links.length, 1);
 	cancel.abort();
@@ -1945,66 +2987,136 @@ it("shares one real attach across concurrent reads and a canceled live selection
 	assert.equal(acquisitions, 0);
 	await manager.close();
 	await waitForConnectionClose(links[0]);
-	assert.equal(links.every((link) => link.closed), true);
+	assert.equal(
+		links.every((link) => link.closed),
+		true,
+	);
 });
 
 it("retains a healthy attachment when its optional change subscription fails", async (t) => {
 	const root = fixtureRoot(t);
 	const links: FakeConnection[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		connect: async (metadata) => { const link = fakeConnection(metadata, async () => ({ conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, live: false, storageId: metadata.storageId })); link.subscribeChanges = async () => { throw new Error("subscription rejected"); }; links.push(link); return link; },
-		acquire: noHost, observe: async () => ({}),
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			connect: async (metadata) => {
+				const link = fakeConnection(metadata, async () => ({
+					conversations: [],
+					coverage: { complete: true, returned: 0, scanned: 0, next: null },
+					live: false,
+					storageId: metadata.storageId,
+				}));
+				link.subscribeChanges = async () => {
+					throw new Error("subscription rejected");
+				};
+				links.push(link);
+				return link;
+			},
+			acquire: noHost,
+			observe: async () => ({}),
+		}),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
 	await manager.status(record.storageId);
 	assert.equal(links.length, 1);
 	assert.equal(links[0].closed, false);
 	assert.deepEqual(manager.connectedStorageIds(), [record.storageId]);
-	const overview = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
-	assert.ok(overview.failures.some((failure) => failure.storageId === `changes:${record.storageId}` && /Live change notices.*Restart/u.test(failure.error)));
+	const overview = (await manager.status()) as { failures: Array<{ storageId: string; error: string }> };
+	assert.ok(
+		overview.failures.some(
+			(failure) =>
+				failure.storageId === `changes:${record.storageId}` && /Live change notices.*Restart/u.test(failure.error),
+		),
+	);
 });
 
 it("keeps acquired clients usable when only their current change contracts disagree", async (t) => {
 	const root = fixtureRoot(t);
 	const { changes: _changes, ...withoutChanges } = HOST_CONTRACT.operations;
 	const peers: RuntimeContract[] = [
-		{ ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, changes: { ...HOST_CONTRACT.operations.changes, request: "changes/2.0.0" } } },
-		{ ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, changes: { ...HOST_CONTRACT.operations.changes, response: "changes/2.0.0" } } },
+		{
+			...HOST_CONTRACT,
+			operations: {
+				...HOST_CONTRACT.operations,
+				changes: { ...HOST_CONTRACT.operations.changes, request: "changes/2.0.0" },
+			},
+		},
+		{
+			...HOST_CONTRACT,
+			operations: {
+				...HOST_CONTRACT.operations,
+				changes: { ...HOST_CONTRACT.operations.changes, response: "changes/2.0.0" },
+			},
+		},
 		{ ...HOST_CONTRACT, operations: withoutChanges },
 	];
 	for (const remote of peers) {
 		let acquisitions = 0;
 		let link: FakeConnection | undefined;
 		const methods: string[] = [];
-		const manager = new AgentManager(managerOptions(root, {
-			acquire: async (metadata) => {
-				acquisitions++;
-				link = fakeConnection(metadata, async (method) => {
-					assert.equal(contractRefusal(method, remote), undefined);
-					methods.push(method);
-					return method === "task-submit" ? { submissionId: 7 } : { conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, live: false, storageId: metadata.storageId };
-				}, remote);
-				link.subscribeChanges = async () => { throw contractRefusal("changes", remote); };
-				return link;
-			},
-			connect: noHost,
-		}));
+		const manager = new AgentManager(
+			managerOptions(root, {
+				acquire: async (metadata) => {
+					acquisitions++;
+					link = fakeConnection(
+						metadata,
+						async (method) => {
+							assert.equal(contractRefusal(method, remote), undefined);
+							methods.push(method);
+							return method === "task-submit"
+								? { submissionId: 7 }
+								: {
+										conversations: [],
+										coverage: { complete: true, returned: 0, scanned: 0, next: null },
+										live: false,
+										storageId: metadata.storageId,
+									};
+						},
+						remote,
+					);
+					link.subscribeChanges = async () => {
+						throw contractRefusal("changes", remote);
+					};
+					return link;
+				},
+				connect: noHost,
+			}),
+		);
 		t.after(() => manager.close());
 		const record = createRecord(manager, root);
-		assert.deepEqual(await manager.control("submit", { sessionId: record.storageId, message: "Compatible work", requestId: "compatible" }, { id: "caller", cwd: root }), { submissionId: 7, result: { sessionId: record.storageId, submissionId: 7, requestId: "compatible" } });
+		assert.deepEqual(
+			await manager.control(
+				"submit",
+				{ sessionId: record.storageId, message: "Compatible work", requestId: "compatible" },
+				{ id: "caller", cwd: root },
+			),
+			{ submissionId: 7, result: { sessionId: record.storageId, submissionId: 7, requestId: "compatible" } },
+		);
 		assert.ok(link);
 		assert.equal(link.closed, false);
 		assert.equal(acquisitions, 1);
 		assert.deepEqual(manager.connectedStorageIds(), [record.storageId]);
-		assert.deepEqual(await manager.status(record.storageId), { conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, live: false, storageId: record.storageId });
+		assert.deepEqual(await manager.status(record.storageId), {
+			conversations: [],
+			coverage: { complete: true, returned: 0, scanned: 0, next: null },
+			live: false,
+			storageId: record.storageId,
+		});
 		assert.deepEqual(methods, ["task-submit", "status"]);
-		const overview = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
-		assert.ok(overview.failures.some((failure) => failure.storageId === `changes:${record.storageId}` && /Live change notices.*Restart/u.test(failure.error)));
+		const overview = (await manager.status()) as { failures: Array<{ storageId: string; error: string }> };
+		assert.ok(
+			overview.failures.some(
+				(failure) =>
+					failure.storageId === `changes:${record.storageId}` && /Live change notices.*Restart/u.test(failure.error),
+			),
+		);
 		await link.close();
 		assert.deepEqual(manager.connectedStorageIds(), []);
-		const afterClose = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
-		assert.equal(afterClose.failures.some((failure) => failure.storageId === `changes:${record.storageId}`), false);
+		const afterClose = (await manager.status()) as { failures: Array<{ storageId: string; error: string }> };
+		assert.equal(
+			afterClose.failures.some((failure) => failure.storageId === `changes:${record.storageId}`),
+			false,
+		);
 		await manager.close();
 	}
 });
@@ -2012,14 +3124,20 @@ it("keeps acquired clients usable when only their current change contracts disag
 it("releases a genuinely closed attachment when its change subscription fails", async (t) => {
 	const root = fixtureRoot(t);
 	let link: FakeConnection | undefined;
-	const manager = new AgentManager(managerOptions(root, {
-		connect: async (metadata) => {
-			link = fakeConnection(metadata, async () => ({}));
-			link.subscribeChanges = async () => { await link?.close(); throw new Error("connection closed during subscription"); };
-			return link;
-		},
-		acquire: noHost, observe: async () => ({}),
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			connect: async (metadata) => {
+				link = fakeConnection(metadata, async () => ({}));
+				link.subscribeChanges = async () => {
+					await link?.close();
+					throw new Error("connection closed during subscription");
+				};
+				return link;
+			},
+			acquire: noHost,
+			observe: async () => ({}),
+		}),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
 	await manager.status(record.storageId);
@@ -2032,11 +3150,22 @@ it("closes a shared attachment that completes after manager shutdown", async (t)
 	const entered = deferred();
 	const gate = deferred();
 	const links: FakeConnection[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		connect: async (metadata) => { const link = fakeConnection(metadata, async () => ({})); links.push(link); entered.resolve(); await gate.promise; return link; },
-		acquire: noHost,
-	}));
-	t.after(async () => { gate.resolve(); await manager.close(); });
+	const manager = new AgentManager(
+		managerOptions(root, {
+			connect: async (metadata) => {
+				const link = fakeConnection(metadata, async () => ({}));
+				links.push(link);
+				entered.resolve();
+				await gate.promise;
+				return link;
+			},
+			acquire: noHost,
+		}),
+	);
+	t.after(async () => {
+		gate.resolve();
+		await manager.close();
+	});
 	const record = createRecord(manager, root);
 	const reading = manager.status(record.storageId);
 	await entered.promise;
@@ -2053,12 +3182,24 @@ it("lets explicit acquisition follow a failed shared attachment without making t
 	const entered = deferred();
 	const gate = deferred();
 	let acquisitions = 0;
-	const manager = new AgentManager(managerOptions(root, {
-		connect: async () => { entered.resolve(); await gate.promise; throw new Error("absent"); },
-		acquire: async (metadata) => { acquisitions++; return fakeConnection(metadata, async () => ({})); },
-		observe: async () => ({}),
-	}));
-	t.after(async () => { gate.resolve(); await manager.close(); });
+	const manager = new AgentManager(
+		managerOptions(root, {
+			connect: async () => {
+				entered.resolve();
+				await gate.promise;
+				throw new Error("absent");
+			},
+			acquire: async (metadata) => {
+				acquisitions++;
+				return fakeConnection(metadata, async () => ({}));
+			},
+			observe: async () => ({}),
+		}),
+	);
+	t.after(async () => {
+		gate.resolve();
+		await manager.close();
+	});
 	const record = createRecord(manager, root);
 	const read = manager.status(record.storageId);
 	await entered.promise;
@@ -2069,28 +3210,71 @@ it("lets explicit acquisition follow a failed shared attachment without making t
 	assert.equal(acquisitions, 1);
 });
 
-it("shows current-host publications without changing raw claim coverage", { timeout: 15000 }, async t => {
+it("shows current-host publications without changing raw claim coverage", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const clients: HostConnection[] = [];
-	const open = async (metadata: HostMetadata) => { const client = await connectHost(metadata, { retryAttempts: 0 }); clients.push(client); return client; };
+	const open = async (metadata: HostMetadata) => {
+		const client = await connectHost(metadata, { retryAttempts: 0 });
+		clients.push(client);
+		return client;
+	};
 	const manager = new AgentManager(managerOptions(root, { connect: open, acquire: open }));
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	const retained = { storageId: record.storageId, updatedAt: "2026-01-01T00:00:00.000Z", rows: [{ id: record.storageId, storageId: record.storageId, cwd: root, modifiedAt: 1, owner: "here", state: "working", currentTool: { name: "read", argument: "retained" }, cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } };
+	const retained = {
+		storageId: record.storageId,
+		updatedAt: "2026-01-01T00:00:00.000Z",
+		rows: [
+			{
+				id: record.storageId,
+				storageId: record.storageId,
+				cwd: root,
+				modifiedAt: 1,
+				owner: "here",
+				state: "working",
+				currentTool: { name: "read", argument: "retained" },
+				cost: 0,
+				partial: false,
+			},
+		],
+		coverage: { complete: true, omitted: 0 },
+	};
 	manager.catalog.updateView(record.storageId, retained);
 	let publishedView: import("./catalog-view.ts").CatalogView | undefined;
 	const changes = new Set<() => void>();
-	const host = await runHost(() => ({ request: async () => ({}), close: async () => {}, isIdle: () => false, get publishedView() { return publishedView; }, onChange: listener => { changes.add(listener); return () => { changes.delete(listener); }; } }), { metadata: hostMetadata(record), idleMs: 0, announceReady() {} });
+	const host = await runHost(
+		() => ({
+			request: async () => ({}),
+			close: async () => {},
+			isIdle: () => false,
+			get publishedView() {
+				return publishedView;
+			},
+			onChange: (listener) => {
+				changes.add(listener);
+				return () => {
+					changes.delete(listener);
+				};
+			},
+		}),
+		{ metadata: hostMetadata(record), idleMs: 0, announceReady() {} },
+	);
 	t.after(() => host.close());
 	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
 	const initial = await manager.dashboardPage();
 	assert.equal(initial.rows[0].state, "unavailable");
 	assert.match(initial.rows[0].error ?? "", /no successful bounded publication/u);
 	assert.equal(initial.coverage.complete, false);
-	publishedView = { ...retained, updatedAt: "2026-01-01T00:00:01.000Z", rows: [{ ...retained.rows[0], currentTool: { name: "write", argument: "current" } }] };
+	publishedView = {
+		...retained,
+		updatedAt: "2026-01-01T00:00:01.000Z",
+		rows: [{ ...retained.rows[0], currentTool: { name: "write", argument: "current" } }],
+	};
 	const received = eventLog<void>();
 	assert.ok(clients[0].subscribeChanges);
-	const stop = await clients[0].subscribeChanges(frame => { if (frame.view?.updatedAt === publishedView?.updatedAt) received.push(undefined); });
+	const stop = await clients[0].subscribeChanges((frame) => {
+		if (frame.view?.updatedAt === publishedView?.updatedAt) received.push(undefined);
+	});
 	for (const notify of changes) notify();
 	await received.waitForCount(1);
 	stop();
@@ -2101,33 +3285,98 @@ it("shows current-host publications without changing raw claim coverage", { time
 	assert.equal(current.coverage.inventory.unknownClaims, 1);
 	assert.equal(current.coverage.complete, true);
 	assert.equal(await manager.sessionFigures("owner-1", current), "agents: 1/1 active");
-	const projection = manager as unknown as { catalogRows(record: CatalogRecord, claim: import("./claims.ts").ClaimObservation, observedAt: string): Promise<{ rows: Array<{ state: string; currentTool?: unknown }> }> };
-	const end = { kind: "dead" as const, label: "ended", writerId: clients[0].writerId, endedAt: "2026-01-01T00:00:02.000Z" };
-	assert.equal((await projection.catalogRows(manager.catalog.read(record.storageId), end, end.endedAt)).rows[0].state, "interrupted", "the exact end overrides a retiring connected link");
-	assert.equal((await projection.catalogRows(manager.catalog.read(record.storageId), { ...end, writerId: "previous" }, end.endedAt)).rows[0].state, "working", "a previous generation does not end this link");
+	const projection = manager as unknown as {
+		catalogRows(
+			record: CatalogRecord,
+			claim: import("./claims.ts").ClaimObservation,
+			observedAt: string,
+		): Promise<{ rows: Array<{ state: string; currentTool?: unknown }> }>;
+	};
+	const end = {
+		kind: "dead" as const,
+		label: "ended",
+		writerId: clients[0].writerId,
+		endedAt: "2026-01-01T00:00:02.000Z",
+	};
+	assert.equal(
+		(await projection.catalogRows(manager.catalog.read(record.storageId), end, end.endedAt)).rows[0].state,
+		"interrupted",
+		"the exact end overrides a retiring connected link",
+	);
+	assert.equal(
+		(
+			await projection.catalogRows(
+				manager.catalog.read(record.storageId),
+				{ ...end, writerId: "previous" },
+				end.endedAt,
+			)
+		).rows[0].state,
+		"working",
+		"a previous generation does not end this link",
+	);
 	const unknown = createRecord(manager, root);
 	writeClaim(unknown, "invalid");
-	manager.catalog.updateView(unknown.storageId, { ...retained, storageId: unknown.storageId, rows: [{ ...retained.rows[0], id: unknown.storageId, storageId: unknown.storageId }] });
+	manager.catalog.updateView(unknown.storageId, {
+		...retained,
+		storageId: unknown.storageId,
+		rows: [{ ...retained.rows[0], id: unknown.storageId, storageId: unknown.storageId }],
+	});
 	publishCatalogChange(root, unknown.storageId);
 	assert.equal((await manager.dashboardPage()).coverage.complete, false);
 	await clients[0].close();
-	assert.equal((await manager.dashboardPage()).rows.find(row => row.id === record.storageId)?.currentTool, undefined);
+	assert.equal((await manager.dashboardPage()).rows.find((row) => row.id === record.storageId)?.currentTool, undefined);
 	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
-	const rebound = (await manager.dashboardPage()).rows.find(row => row.id === record.storageId);
+	const rebound = (await manager.dashboardPage()).rows.find((row) => row.id === record.storageId);
 	assert.equal(rebound?.state, "working", "a new link consumes the retained initial frame without another write");
 	assert.equal(rebound?.currentTool?.argument, "current");
 });
 
-it("uses a startup recovery link publication before explicit attachment", { timeout: 15000 }, async t => {
-	const root = fixtureRoot(t), connections = eventLog<HostConnection>(), requests: string[] = [];
-	const open = async (metadata: HostMetadata) => { const client = await connectHost(metadata, { retryAttempts: 0 }); connections.push(client); return client; };
-	const manager = new AgentManager(managerOptions(root, { connect: open, acquire: open, createPrimary: primaryFactory().factory }));
+it("uses a startup recovery link publication before explicit attachment", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t),
+		connections = eventLog<HostConnection>(),
+		requests: string[] = [];
+	const open = async (metadata: HostMetadata) => {
+		const client = await connectHost(metadata, { retryAttempts: 0 });
+		connections.push(client);
+		return client;
+	};
+	const manager = new AgentManager(
+		managerOptions(root, { connect: open, acquire: open, createPrimary: primaryFactory().factory }),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	const view = { storageId: record.storageId, updatedAt: "2026-01-01T00:00:00.000Z", rows: [{ id: record.storageId, storageId: record.storageId, cwd: root, modifiedAt: 1, owner: "here", state: "working", currentTool: { name: "read", argument: "recovery publication" }, cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } };
+	const view = {
+		storageId: record.storageId,
+		updatedAt: "2026-01-01T00:00:00.000Z",
+		rows: [
+			{
+				id: record.storageId,
+				storageId: record.storageId,
+				cwd: root,
+				modifiedAt: 1,
+				owner: "here",
+				state: "working",
+				currentTool: { name: "read", argument: "recovery publication" },
+				cost: 0,
+				partial: false,
+			},
+		],
+		coverage: { complete: true, omitted: 0 },
+	};
 	manager.catalog.updateView(record.storageId, view);
 	manager.catalog.markRecoveryDue(record.storageId, true);
-	const host = await runHost(() => ({ request: async method => { requests.push(method); return { workPending: true, deliveriesActive: true }; }, publishedView: view, close: async () => {}, isIdle: () => false }), { metadata: hostMetadata(record), idleMs: 0, announceReady() {} });
+	const host = await runHost(
+		() => ({
+			request: async (method) => {
+				requests.push(method);
+				return { workPending: true, deliveriesActive: true };
+			},
+			publishedView: view,
+			close: async () => {},
+			isIdle: () => false,
+		}),
+		{ metadata: hostMetadata(record), idleMs: 0, announceReady() {} },
+	);
 	t.after(() => host.close());
 	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
 	await settleCatalogueRecovery(manager);
@@ -2138,13 +3387,22 @@ it("uses a startup recovery link publication before explicit attachment", { time
 	assert.equal(page.coverage.inventory.unknownClaims, 1);
 	assert.equal(page.coverage.complete, true);
 	assert.equal(await manager.sessionFigures("owner-1", page), "agents: 1/1 active");
-	assert.ok(requests.every(method => method === "recovery-state"), "presentation uses the existing recovery feed without a status request");
+	assert.ok(
+		requests.every((method) => method === "recovery-state"),
+		"presentation uses the existing recovery feed without a status request",
+	);
 	const regular = fakeConnection(hostMetadata(record), async () => ({}));
-	Object.defineProperty(regular, "ownerEvidence", { value: { kind: "verified", storageId: record.storageId, socketPath: "synthetic", writerId: "newer-writer" } });
+	Object.defineProperty(regular, "ownerEvidence", {
+		value: { kind: "verified", storageId: record.storageId, socketPath: "synthetic", writerId: "newer-writer" },
+	});
 	const currentClients = (manager as unknown as { clients: Map<string, HostConnection> }).clients;
 	currentClients.set(record.storageId, regular);
 	const newer = await manager.dashboardPage();
-	assert.equal(newer.rows[0].state, "unavailable", "a regular writer without a publication never uses an older recovery snapshot");
+	assert.equal(
+		newer.rows[0].state,
+		"unavailable",
+		"a regular writer without a publication never uses an older recovery snapshot",
+	);
 	assert.equal(newer.rows[0].currentTool, undefined);
 	currentClients.delete(record.storageId);
 	await regular.close();
@@ -2156,15 +3414,28 @@ it("uses a startup recovery link publication before explicit attachment", { time
 	assert.equal(connections.length, 1, "loss of a foreign recovery link grants no replacement authority");
 });
 
-it("a clean exact foreign retirement does not report a recovery fault", { timeout: 15000 }, async t => {
+it("a clean exact foreign retirement does not report a recovery fault", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const connections = eventLog<HostConnection>();
-	const open = async (metadata: HostMetadata) => { const client = await connectHost(metadata, { retryAttempts: 0 }); connections.push(client); return client; };
-	const manager = new AgentManager(managerOptions(root, { connect: open, acquire: open, createPrimary: primaryFactory().factory }));
+	const open = async (metadata: HostMetadata) => {
+		const client = await connectHost(metadata, { retryAttempts: 0 });
+		connections.push(client);
+		return client;
+	};
+	const manager = new AgentManager(
+		managerOptions(root, { connect: open, acquire: open, createPrimary: primaryFactory().factory }),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
 	manager.catalog.markRecoveryDue(record.storageId, true);
-	const host = await runHost(() => ({ request: async () => ({ workPending: true, deliveriesActive: true }), close: async () => {}, isIdle: () => false }), { metadata: hostMetadata(record), idleMs: 0, announceReady() {} });
+	const host = await runHost(
+		() => ({
+			request: async () => ({ workPending: true, deliveriesActive: true }),
+			close: async () => {},
+			isIdle: () => false,
+		}),
+		{ metadata: hostMetadata(record), idleMs: 0, announceReady() {} },
+	);
 	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
 	await connections.waitForCount(1);
 	await host.close();
@@ -2172,7 +3443,7 @@ it("a clean exact foreign retirement does not report a recovery fault", { timeou
 	await settleCatalogueRecovery(manager);
 	assert.equal(connections.length, 1);
 	assert.equal((await manager.dashboardPage()).rows[0]?.health?.lastError, undefined);
-	const status = await manager.status() as { failures: unknown[] };
+	const status = (await manager.status()) as { failures: unknown[] };
 	assert.deepEqual(status.failures, []);
 });
 
@@ -2188,39 +3459,104 @@ it("refreshes the registered primary identity after model, thinking, and name ch
 		manager.updatePrimary("owner-1", { model: { provider: "anthropic", modelId: "claude-opus-5-5" } });
 		manager.updatePrimary("owner-1", { thinkingLevel: "xhigh" });
 		manager.updatePrimary("owner-1", { name: "primary review" });
-		assert.deepEqual(channel.updates.at(-1), { name: "primary review", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" });
-		const status = await manager.status() as { primaries: Array<{ sessionId: string; name?: string; model?: { provider: string; modelId: string }; thinkingLevel?: string }> };
-		assert.deepEqual(status.primaries, [{ sessionId: "owner-1", cwd: process.cwd(), name: "primary review", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" }]);
-	} finally { await manager.close(); }
+		assert.deepEqual(channel.updates.at(-1), {
+			name: "primary review",
+			model: { provider: "anthropic", modelId: "claude-opus-5-5" },
+			thinkingLevel: "xhigh",
+		});
+		const status = (await manager.status()) as {
+			primaries: Array<{
+				sessionId: string;
+				name?: string;
+				model?: { provider: string; modelId: string };
+				thinkingLevel?: string;
+			}>;
+		};
+		assert.deepEqual(status.primaries, [
+			{
+				sessionId: "owner-1",
+				cwd: process.cwd(),
+				name: "primary review",
+				model: { provider: "anthropic", modelId: "claude-opus-5-5" },
+				thinkingLevel: "xhigh",
+			},
+		]);
+	} finally {
+		await manager.close();
+	}
 });
 
 it("retains a primary's admission phases for both spawn forms, a send and a steer", async (t) => {
 	const root = fixtureRoot(t);
 	const facts: ContinuityFact[] = [];
 	let submissions = 0;
-	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory, validateModel: () => {}, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-		if (method === "profile-read") return { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel };
-		if (method !== "task-submit") return {};
-		const { requestId, requester } = params as { requestId: string; requester: string };
-		if (requester === "primary") assert.deepEqual([facts.at(-1)?.phase, facts.at(-1)?.requestId], ["requested", requestId], "the request is retained before the host call");
-		return nativeAdmission(params, ++submissions);
-	}) }));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			validateModel: () => {},
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method, params) => {
+					if (method === "profile-read")
+						return { handle: "@reviewer", live: true, model: metadata.model, thinkingLevel: metadata.thinkingLevel };
+					if (method !== "task-submit") return {};
+					const { requestId, requester } = params as { requestId: string; requester: string };
+					if (requester === "primary")
+						assert.deepEqual(
+							[facts.at(-1)?.phase, facts.at(-1)?.requestId],
+							["requested", requestId],
+							"the request is retained before the host call",
+						);
+					return nativeAdmission(params, ++submissions);
+				}),
+		}),
+	);
 	t.after(() => manager.close());
-	await manager.registerPrimary("primary", { signal: new AbortController().signal, send() {}, retainContinuity: (fact) => { facts.push(fact); } });
+	await manager.registerPrimary("primary", {
+		signal: new AbortController().signal,
+		send() {},
+		retainContinuity: (fact) => {
+			facts.push(fact);
+		},
+	});
 	const caller = { id: "primary", cwd: root, model: { provider: "acme", modelId: "model-x" } };
-	const plain = await manager.spawn({ prompt: "Task", requestId: "spawn:plain" }, caller) as { sessionId: string };
-	const handled = await manager.spawn({ handle: "reviewer", prompt: "Task", requestId: "spawn:handle" }, caller) as { sessionId: string };
-	await manager.control("submit", { sessionId: plain.sessionId, message: "Send", requestId: "send", whenBusy: "followUp", replyTo: `${handled.sessionId}:1` }, caller);
-	await manager.control("submit", { sessionId: `${plain.sessionId}:2`, message: "Steer", requestId: "steer", whenBusy: "steer" }, caller);
+	const plain = (await manager.spawn({ prompt: "Task", requestId: "spawn:plain" }, caller)) as { sessionId: string };
+	const handled = (await manager.spawn({ handle: "reviewer", prompt: "Task", requestId: "spawn:handle" }, caller)) as {
+		sessionId: string;
+	};
+	await manager.control(
+		"submit",
+		{
+			sessionId: plain.sessionId,
+			message: "Send",
+			requestId: "send",
+			whenBusy: "followUp",
+			replyTo: `${handled.sessionId}:1`,
+		},
+		caller,
+	);
+	await manager.control(
+		"submit",
+		{ sessionId: `${plain.sessionId}:2`, message: "Steer", requestId: "steer", whenBusy: "steer" },
+		caller,
+	);
 	const route = (sessionId: string, requestId: string, replyTo = "primary") => ({ sessionId, requestId, replyTo });
-	const pair = (sessionId: string, requestId: string, submissionId: number, replyTo?: string) => [{ phase: "requested", ...route(sessionId, requestId, replyTo) }, { phase: "admitted", ...route(sessionId, requestId, replyTo), submissionId }];
+	const pair = (sessionId: string, requestId: string, submissionId: number, replyTo?: string) => [
+		{ phase: "requested", ...route(sessionId, requestId, replyTo) },
+		{ phase: "admitted", ...route(sessionId, requestId, replyTo), submissionId },
+	];
 	assert.deepEqual(facts, [
-		...pair(plain.sessionId, "spawn:plain", 1), ...pair(handled.sessionId, "spawn:handle", 2),
-		...pair(plain.sessionId, "send", 3, handled.sessionId), ...pair(`${plain.sessionId}:2`, "steer", 4),
+		...pair(plain.sessionId, "spawn:plain", 1),
+		...pair(handled.sessionId, "spawn:handle", 2),
+		...pair(plain.sessionId, "send", 3, handled.sessionId),
+		...pair(`${plain.sessionId}:2`, "steer", 4),
 	]);
 	await manager.spawn({ requestId: "spawn:idle" }, caller);
 	await manager.control("report", { sessionId: plain.sessionId, message: "Note", requestId: "report" }, caller);
-	await manager.control("submit", { sessionId: plain.sessionId, message: "Other caller", requestId: "unregistered" }, { id: "terminal", cwd: root });
+	await manager.control(
+		"submit",
+		{ sessionId: plain.sessionId, message: "Other caller", requestId: "unregistered" },
+		{ id: "terminal", cwd: root },
+	);
 	assert.equal(facts.length, 8, "a spawn without a prompt, a report and an unregistered caller retain no fact");
 });
 
@@ -2228,59 +3564,140 @@ it("closes a refused request, keeps an unconfirmed one, and keeps an admission w
 	const root = fixtureRoot(t);
 	const facts: ContinuityFact[] = [];
 	const answers = new Map<string, () => unknown>([
-		["refused", () => { throw new HostError("Unknown conversation", "invalid"); }],
-		["unavailable", () => { throw new HostError("Host observation deadline reached", "unavailable"); }],
-		["claim", () => { throw new HostError("Storage claim is held", "claim"); }],
-		["internal", () => { throw new HostError("Host failed"); }],
-		["transport", () => { throw new Error("Host connection closed"); }],
+		[
+			"refused",
+			() => {
+				throw new HostError("Unknown conversation", "invalid");
+			},
+		],
+		[
+			"unavailable",
+			() => {
+				throw new HostError("Host observation deadline reached", "unavailable");
+			},
+		],
+		[
+			"claim",
+			() => {
+				throw new HostError("Storage claim is held", "claim");
+			},
+		],
+		[
+			"internal",
+			() => {
+				throw new HostError("Host failed");
+			},
+		],
+		[
+			"transport",
+			() => {
+				throw new Error("Host connection closed");
+			},
+		],
 		["disagrees", () => ({ submissionId: 6, identity: "another-producer", requestId: "disagrees" })],
 	]);
-	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory, acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
-		assert.equal(method, "task-submit");
-		return answers.get((params as { requestId: string }).requestId)?.() ?? nativeAdmission(params);
-	}) }));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method, params) => {
+					assert.equal(method, "task-submit");
+					return answers.get((params as { requestId: string }).requestId)?.() ?? nativeAdmission(params);
+				}),
+		}),
+	);
 	t.after(() => manager.close());
 	let failWrite = false;
-	await manager.registerPrimary("primary", { signal: new AbortController().signal, send() {}, retainContinuity: (fact) => { if (failWrite) throw new Error("entry write failed"); facts.push(fact); } });
+	await manager.registerPrimary("primary", {
+		signal: new AbortController().signal,
+		send() {},
+		retainContinuity: (fact) => {
+			if (failWrite) throw new Error("entry write failed");
+			facts.push(fact);
+		},
+	});
 	const target = createRecord(manager, root, "primary").storageId;
-	const send = (requestId: string) => manager.control("submit", { sessionId: target, message: "Task", requestId }, { id: "primary", cwd: root });
-	for (const [requestId, error] of [["refused", /Unknown conversation/u], ["unavailable", /deadline/u], ["claim", /claim is held/u], ["internal", /Host failed/u], ["transport", /connection closed/u], ["disagrees", /Admission identity disagrees/u]] as const) await assert.rejects(send(requestId), error);
+	const send = (requestId: string) =>
+		manager.control("submit", { sessionId: target, message: "Task", requestId }, { id: "primary", cwd: root });
+	for (const [requestId, error] of [
+		["refused", /Unknown conversation/u],
+		["unavailable", /deadline/u],
+		["claim", /claim is held/u],
+		["internal", /Host failed/u],
+		["transport", /connection closed/u],
+		["disagrees", /Admission identity disagrees/u],
+	] as const)
+		await assert.rejects(send(requestId), error);
 	const phases = (requestId: string) => facts.filter((fact) => fact.requestId === requestId).map((fact) => fact.phase);
 	assert.deepEqual(phases("refused"), ["requested", "refused"]);
-	for (const requestId of ["unavailable", "claim", "internal", "transport"]) assert.deepEqual(phases(requestId), ["requested"], requestId);
-	assert.deepEqual(phases("disagrees"), ["requested", "admitted"], "a failure after admission keeps the request listed");
+	for (const requestId of ["unavailable", "claim", "internal", "transport"])
+		assert.deepEqual(phases(requestId), ["requested"], requestId);
+	assert.deepEqual(
+		phases("disagrees"),
+		["requested", "admitted"],
+		"a failure after admission keeps the request listed",
+	);
 	failWrite = true;
-	const outcome = await send("unsaved") as { submissionId: number };
+	const outcome = (await send("unsaved")) as { submissionId: number };
 	assert.equal(outcome.submissionId, 9, "a fact that is not saved does not change the admission");
-	const failures = async () => (await manager.status() as { failures: Array<{ storageId: string; error: string }> }).failures;
-	assert.ok((await failures()).some((failure) => failure.storageId === "continuity:primary" && failure.error.includes("entry write failed")));
+	const failures = async () =>
+		((await manager.status()) as { failures: Array<{ storageId: string; error: string }> }).failures;
+	assert.ok(
+		(await failures()).some(
+			(failure) => failure.storageId === "continuity:primary" && failure.error.includes("entry write failed"),
+		),
+	);
 	manager.continuityNoteFailure("primary", "The continuity note for context head abc was not inserted: head-message");
-	assert.ok((await failures()).some((failure) => failure.storageId === "continuity-note:primary" && failure.error.includes("head-message")));
+	assert.ok(
+		(await failures()).some(
+			(failure) => failure.storageId === "continuity-note:primary" && failure.error.includes("head-message"),
+		),
+	);
 	manager.continuityNoteFailure("primary", undefined);
-	assert.equal((await failures()).some((failure) => failure.storageId === "continuity-note:primary"), false);
+	assert.equal(
+		(await failures()).some((failure) => failure.storageId === "continuity-note:primary"),
+		false,
+	);
 });
 
 it("ends a cold status read's wait when the caller's signal aborts", async (t) => {
 	const root = fixtureRoot(t);
 	let finish: (value: unknown) => void = () => {};
 	const reads: string[] = [];
-	const manager = new AgentManager(managerOptions(root, {
-		connect: noHost,
-		observe: async (_metadata, method) => {
-			reads.push(method);
-			return new Promise((resolve) => { finish = resolve; });
-		},
-	}));
+	const manager = new AgentManager(
+		managerOptions(root, {
+			connect: noHost,
+			observe: async (_metadata, method) => {
+				reads.push(method);
+				return new Promise((resolve) => {
+					finish = resolve;
+				});
+			},
+		}),
+	);
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
 	const controller = new AbortController();
-	const read = manager.control("status", { sessionId: record.storageId }, { id: "owner-1", cwd: root }, { signal: controller.signal });
+	const read = manager.control(
+		"status",
+		{ sessionId: record.storageId },
+		{ id: "owner-1", cwd: root },
+		{ signal: controller.signal },
+	);
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.deepEqual(reads, ["status"]);
 	controller.abort(new Error("another conversation was selected"));
 	await assert.rejects(read, /another conversation was selected/u);
 	finish({ conversation: {} });
-	await assert.rejects(manager.control("inspect", { sessionId: record.storageId, view: "result", submissionId: 1 }, { id: "owner-1", cwd: root }, { signal: controller.signal }), /another conversation was selected/u);
+	await assert.rejects(
+		manager.control(
+			"inspect",
+			{ sessionId: record.storageId, view: "result", submissionId: 1 },
+			{ id: "owner-1", cwd: root },
+			{ signal: controller.signal },
+		),
+		/another conversation was selected/u,
+	);
 	assert.deepEqual(reads, ["status"], "an aborted signal starts no read");
 });
 
@@ -2293,10 +3710,17 @@ it("passes the caller's signal to a live host's result read", async (t) => {
 	const signals: Array<AbortSignal | undefined> = [];
 	connection.request = (_method, _params, options) => {
 		signals.push(options?.signal);
-		return new Promise((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }));
+		return new Promise((_resolve, reject) =>
+			options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }),
+		);
 	};
 	const controller = new AbortController();
-	const read = manager.control("inspect", { sessionId: record.storageId, view: "result", submissionId: 4, finalReport: true, offset: 0 }, { id: "owner-1", cwd: root }, { signal: controller.signal });
+	const read = manager.control(
+		"inspect",
+		{ sessionId: record.storageId, view: "result", submissionId: 4, finalReport: true, offset: 0 },
+		{ id: "owner-1", cwd: root },
+		{ signal: controller.signal },
+	);
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.equal(signals.length, 1);
 	assert.equal(signals[0]?.aborted, false);

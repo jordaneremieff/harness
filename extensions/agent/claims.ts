@@ -107,31 +107,52 @@ export async function observeClaimAsync(path: string, identity: ClaimIdentity): 
 		return unreadableClaim(error);
 	}
 }
-export function validClaim(claim: unknown, identity: ClaimIdentity): claim is Record<string, unknown> & { host: string; pid: number } {
-	return record(claim) && claim.sessionId === identity.sessionId && claim.cwd === resolve(identity.cwd)
-		&& typeof claim.host === "string" && claim.host.length > 0 && timestamp(claim.createdAt)
-		&& Number.isSafeInteger(claim.pid) && Number(claim.pid) > 0 && Number(claim.pid) <= MAX_PID;
+export function validClaim(
+	claim: unknown,
+	identity: ClaimIdentity,
+): claim is Record<string, unknown> & { host: string; pid: number } {
+	return (
+		record(claim) &&
+		claim.sessionId === identity.sessionId &&
+		claim.cwd === resolve(identity.cwd) &&
+		typeof claim.host === "string" &&
+		claim.host.length > 0 &&
+		timestamp(claim.createdAt) &&
+		Number.isSafeInteger(claim.pid) &&
+		Number(claim.pid) > 0 &&
+		Number(claim.pid) <= MAX_PID
+	);
 }
 
 /** Native identities qualify generation-end evidence, never lease possession. */
 export function validNativeWriterId(value: unknown): value is string {
-	return typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\u0000-\u0020\u007f-\u009f\ud800-\udfff]/u.test(value);
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		value.length <= 256 &&
+		!/[\u0000-\u0020\u007f-\u009f\ud800-\udfff]/u.test(value)
+	);
 }
 
 /** Diagnostic metadata can end its recorded generation, never establish a current lease holder. */
 export function classifyClaim(claim: unknown, identity: ClaimIdentity): ClaimObservation {
-	if (!validClaim(claim, identity) || !validNativeWriterId(claim.token)) return { kind: "unknown", error: "Writer claim is invalid" };
-	if (claim.host !== hostname()) return { kind: "unknown", label: claim.host, error: "Writer claim belongs to another host" };
+	if (!validClaim(claim, identity) || !validNativeWriterId(claim.token))
+		return { kind: "unknown", error: "Writer claim is invalid" };
+	if (claim.host !== hostname())
+		return { kind: "unknown", label: claim.host, error: "Writer claim belongs to another host" };
 	const label = `PID ${claim.pid}`;
 	if (claim.endedAt !== undefined) {
-		if (!timestamp(claim.endedAt) || claim.endedAt < String(claim.createdAt)) return { kind: "unknown", label, error: "Writer claim has an invalid end marker" };
+		if (!timestamp(claim.endedAt) || claim.endedAt < String(claim.createdAt))
+			return { kind: "unknown", label, error: "Writer claim has an invalid end marker" };
 		return { kind: "dead", label, writerId: claim.token, endedAt: claim.endedAt };
 	}
-	try { process.kill(claim.pid, 0); }
-	catch (error) {
+	try {
+		process.kill(claim.pid, 0);
+	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ESRCH") return { kind: "dead", label, writerId: claim.token };
-		if (code !== "EPERM") return { kind: "unknown", label, error: `Writer process check failed (${code ?? "unknown"})` };
+		if (code !== "EPERM")
+			return { kind: "unknown", label, error: `Writer process check failed (${code ?? "unknown"})` };
 	}
 	return { kind: "unknown", label, error: "Native claim metadata does not establish a live writer" };
 }

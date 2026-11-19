@@ -12,15 +12,38 @@ import {
 	initTheme,
 } from "@earendil-works/pi-coding-agent";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
-import { KeybindingsManager, ProcessTerminal, TuiAltScreen, TUI_KEYBINDINGS, setKeybindings, type Component, type ProgramStatus, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import {
+	KeybindingsManager,
+	ProcessTerminal,
+	TuiAltScreen,
+	TUI_KEYBINDINGS,
+	setKeybindings,
+	type Component,
+	type ProgramStatus,
+	type TUI,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+} from "@earendil-works/pi-tui";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { Action, ViewHost } from "./view-model.ts";
 import { type Choice, Form } from "./view-form.ts";
 import { plainLine } from "./view-text.ts";
 import { AgentManager, type AgentCaller } from "./manager.ts";
 import { createAgentObservationSource, type AgentObservationSource } from "./agent-observation.ts";
-import { AgentDashboard, type DashboardOperations, type DashboardResult, type NewAgentDefaults, type NewAgentInput } from "./dashboard.ts";
-import { agentState, createDashboardState, notifyAgentState, updateDraft, type DashboardState } from "./dashboard-state.ts";
+import {
+	AgentDashboard,
+	type DashboardOperations,
+	type DashboardResult,
+	type NewAgentDefaults,
+	type NewAgentInput,
+} from "./dashboard.ts";
+import {
+	agentState,
+	createDashboardState,
+	notifyAgentState,
+	updateDraft,
+	type DashboardState,
+} from "./dashboard-state.ts";
 import type { AgentModelInfo } from "./agent-footer.ts";
 import { TerminalProgramStatus } from "./terminal-status.ts";
 import { ModelChoicesSchema } from "./observation-schema.ts";
@@ -33,14 +56,24 @@ import { admittedResult } from "./result-reference.ts";
 import { agentDisplayName } from "./action-outcome.ts";
 import { presetChoices, readAgentPreferences, type PreferenceCatalog } from "./agent-preferences.ts";
 import { isThinkingLevel, type ConfigurationPatch } from "./configuration.ts";
-import { cancelAgentTimer, readAgentTimerRows, resetAgentContext, scheduleAgentInput, type ResetTimerDeps } from "./durable-reset-timers.ts";
+import {
+	cancelAgentTimer,
+	readAgentTimerRows,
+	resetAgentContext,
+	scheduleAgentInput,
+	type ResetTimerDeps,
+} from "./durable-reset-timers.ts";
 import type { ActionResult, AgentFormHost } from "./agent-forms.ts";
 import type { ProfileDraft } from "./profile-dialog.ts";
 
 /** The placement that a receipt states: whether the input is in the recipient's context. Empty when the receipt states none. */
 export function placementText(receipt: unknown): string {
 	const placement = (receipt as { placement?: unknown } | null)?.placement;
-	return placement === "placed" ? "placed" : placement === "unplaced" ? "unplaced, the agent reads it at its next tool boundary" : "";
+	return placement === "placed"
+		? "placed"
+		: placement === "unplaced"
+			? "unplaced, the agent reads it at its next tool boundary"
+			: "";
 }
 
 export function terminalAdmission(receipt: unknown, id: string, mode: "steer" | "followUp"): string {
@@ -50,7 +83,10 @@ export function terminalAdmission(receipt: unknown, id: string, mode: "steer" | 
 	return `Input ${deduped ? "already admitted" : "admitted"} for ${reference.sessionId} (submission ${reference.submissionId}; requested ${mode === "followUp" ? "follow-up" : "steer"}${placement ? `; ${placement}` : ""})`;
 }
 
-export type TerminalManager = Pick<AgentManager, "resolveTarget" | "control" | "snapshot" | "dashboardPage" | "observeLive" | "subscribeRoster" | "close"> &
+export type TerminalManager = Pick<
+	AgentManager,
+	"resolveTarget" | "control" | "snapshot" | "dashboardPage" | "observeLive" | "subscribeRoster" | "close"
+> &
 	Partial<Pick<AgentManager, "collaborate" | "spawn">>;
 export interface UnconfirmedTerminalInput {
 	readonly text: string;
@@ -179,7 +215,12 @@ export class TerminalController {
 			const read = await this.manager.control("models", { sessionId: id }, this.caller, { launch: false });
 			if (!matchesSchema(ModelChoicesSchema, read)) return catalog;
 			for (const model of read.models)
-				if (model.contextWindow !== undefined) catalog.set(`${model.provider}/${model.modelId}`, { name: model.name ?? model.modelId, reasoning: model.reasoning, contextWindow: model.contextWindow });
+				if (model.contextWindow !== undefined)
+					catalog.set(`${model.provider}/${model.modelId}`, {
+						name: model.name ?? model.modelId,
+						reasoning: model.reasoning,
+						contextWindow: model.contextWindow,
+					});
 		} catch {
 			// The status line shows the model identifier without a context window.
 		}
@@ -190,19 +231,42 @@ export class TerminalController {
 	private async loadModules(id: string): Promise<{ display: DisplayModules; panels: PanelModules }> {
 		try {
 			const status = (await this.manager.control("status", { sessionId: id }, this.caller)) as { inventory?: unknown };
-			if (status?.inventory === undefined) return { display: { lookup: noDisplayModules.lookup, diagnostics: [] }, panels: noPanelModules };
-			const [display, panels] = await Promise.all([loadDisplayModules(status.inventory, this.importModule), loadPanelModules(status.inventory, this.importModule)]);
+			if (status?.inventory === undefined)
+				return { display: { lookup: noDisplayModules.lookup, diagnostics: [] }, panels: noPanelModules };
+			const [display, panels] = await Promise.all([
+				loadDisplayModules(status.inventory, this.importModule),
+				loadPanelModules(status.inventory, this.importModule),
+			]);
 			return { display, panels };
 		} catch (error) {
-			return { display: { lookup: noDisplayModules.lookup, diagnostics: [`Owner cards unavailable (${String(error instanceof Error ? error.message : error).slice(0, 120)}); standard tool cards are used.`] }, panels: noPanelModules };
+			return {
+				display: {
+					lookup: noDisplayModules.lookup,
+					diagnostics: [
+						`Owner cards unavailable (${String(error instanceof Error ? error.message : error).slice(0, 120)}); standard tool cards are used.`,
+					],
+				},
+				panels: noPanelModules,
+			};
 		}
 	}
 
 	/** One owner request to the target captured when its view opened; the signal withdraws the wait. */
-	async panelRequest(target: string, command: string, data: JsonValue, signal?: AbortSignal): Promise<{ text: string; data?: JsonValue }> {
+	async panelRequest(
+		target: string,
+		command: string,
+		data: JsonValue,
+		signal?: AbortSignal,
+	): Promise<{ text: string; data?: JsonValue }> {
 		if (this.closed) throw new Error("Terminal is closed");
-		if (signal?.aborted) throw new Error("The owner request was withdrawn before it was sent", { cause: signal.reason });
-		const answer = (await this.manager.control("command", { sessionId: target, name: command, data, origin: "operator", invocationId: randomUUID() }, this.caller, signal ? { signal } : undefined)) as { text?: unknown; data?: JsonValue };
+		if (signal?.aborted)
+			throw new Error("The owner request was withdrawn before it was sent", { cause: signal.reason });
+		const answer = (await this.manager.control(
+			"command",
+			{ sessionId: target, name: command, data, origin: "operator", invocationId: randomUUID() },
+			this.caller,
+			signal ? { signal } : undefined,
+		)) as { text?: unknown; data?: JsonValue };
 		if (typeof answer?.text !== "string") throw new Error("The host answered without command text");
 		return { text: answer.text, ...(answer.data === undefined ? {} : { data: answer.data }) };
 	}
@@ -219,7 +283,11 @@ export class TerminalController {
 	async admit(id: string, text: string, mode: "steer" | "followUp"): Promise<{ raw: unknown; text: string }> {
 		if (this.closed) throw new Error("Terminal is closed");
 		try {
-			const raw = await this.manager.control("submit", { sessionId: id, message: text, whenBusy: mode, origin: "operator", replyTo: id }, this.caller);
+			const raw = await this.manager.control(
+				"submit",
+				{ sessionId: id, message: text, whenBusy: mode, origin: "operator", replyTo: id },
+				this.caller,
+			);
 			return { raw, text: terminalAdmission(raw, id, mode) };
 		} catch (error) {
 			const inputs = this.failedInputs.get(id) ?? [];
@@ -232,14 +300,24 @@ export class TerminalController {
 	/** Put an unconfirmed input back into the target's draft only while the draft is unchanged. Nothing is sent. */
 	restoreUnconfirmed(id: string, input: UnconfirmedTerminalInput, revision: number, mode: "steer" | "followUp"): void {
 		const state = agentState(this.state, id);
-		if (this.closed || state.pending || state.draftRevision !== revision || state.mode !== mode || !this.unconfirmed(id).includes(input)) throw new Error("The target draft changed. Inspect again before restoring.");
+		if (
+			this.closed ||
+			state.pending ||
+			state.draftRevision !== revision ||
+			state.mode !== mode ||
+			!this.unconfirmed(id).includes(input)
+		)
+			throw new Error("The target draft changed. Inspect again before restoring.");
 		state.mode = input.mode;
 		updateDraft(state, input.text);
 		this.notify();
 	}
 
 	discardUnconfirmed(id: string, input: UnconfirmedTerminalInput): void {
-		this.failedInputs.set(id, this.unconfirmed(id).filter((item) => item !== input));
+		this.failedInputs.set(
+			id,
+			this.unconfirmed(id).filter((item) => item !== input),
+		);
 	}
 
 	/** Explicitly connect: start the host if needed; retained unfinished work resumes. */
@@ -261,10 +339,21 @@ export class TerminalController {
 	async create(input: NewAgentInput & { requestId: string; trust?: boolean }): Promise<DashboardResult> {
 		const creation = this.creation;
 		const spawn = this.manager.spawn?.bind(this.manager);
-		if (!creation || !spawn) throw new Error("Creation needs the configured model catalogue; it is unavailable in this terminal.");
-		const creator: AgentCaller = { ...this.caller, preferenceCatalog: creation.catalog, validateModel: (model, level) => creation.validateModel(model, level) };
+		if (!creation || !spawn)
+			throw new Error("Creation needs the configured model catalogue; it is unavailable in this terminal.");
+		const creator: AgentCaller = {
+			...this.caller,
+			preferenceCatalog: creation.catalog,
+			validateModel: (model, level) => creation.validateModel(model, level),
+		};
 		const created = (await spawn(
-			{ ...(input.preset ? { preset: input.preset } : {}), ...(input.cwd ? { cwd: input.cwd } : {}), ...(input.trust === undefined ? {} : { trust: input.trust }), origin: "operator", requestId: input.requestId },
+			{
+				...(input.preset ? { preset: input.preset } : {}),
+				...(input.cwd ? { cwd: input.cwd } : {}),
+				...(input.trust === undefined ? {} : { trust: input.trust }),
+				origin: "operator",
+				requestId: input.requestId,
+			},
 			creator,
 			input.onCreated,
 		)) as { sessionId: string; cwd?: string };
@@ -281,7 +370,10 @@ export class TerminalController {
 			updateDraft(state, prompt);
 			state.receipt = this.failureReceipt(id, error);
 			notifyAgentState(state);
-			return { text: `Created the conversation in ${place}, but its first message was not confirmed. The text is in its message field; check the conversation before sending again.`, sessionId: id };
+			return {
+				text: `Created the conversation in ${place}, but its first message was not confirmed. The text is in its message field; check the conversation before sending again.`,
+				sessionId: id,
+			};
 		}
 	}
 
@@ -332,33 +424,63 @@ export function terminalKeys(): KeybindingsManager {
 }
 
 const failure = (value: unknown) => {
-	const reason = (value as { reason?: unknown; error?: unknown } | null)?.reason ?? (value as { error?: unknown } | null)?.error;
+	const reason =
+		(value as { reason?: unknown; error?: unknown } | null)?.reason ?? (value as { error?: unknown } | null)?.error;
 	return typeof reason === "string" && reason ? `: ${reason.slice(0, 200)}` : "";
 };
 
 /** Forms for one captured target through the terminal's own caller. */
-export function terminalForms(controller: TerminalController, drafts: Map<string, ProfileDraft>, target: AgentConversationSummary): AgentFormHost {
+export function terminalForms(
+	controller: TerminalController,
+	drafts: Map<string, ProfileDraft>,
+	target: AgentConversationSummary,
+): AgentFormHost {
 	const label = agentDisplayName(target);
-	const control = (method: string, input: Record<string, unknown> = {}) => controller.manager.control(method, { sessionId: target.id, ...input }, controller.caller);
-	const deps: ResetTimerDeps = { control: (method, input) => controller.manager.control(method, input, controller.caller), label: async () => label };
+	const control = (method: string, input: Record<string, unknown> = {}) =>
+		controller.manager.control(method, { sessionId: target.id, ...input }, controller.caller);
+	const deps: ResetTimerDeps = {
+		control: (method, input) => controller.manager.control(method, input, controller.caller),
+		label: async () => label,
+	};
 	const outcome = (text: string, sessionId = target.id) => ({ text, sessionId });
 	const runners: Record<string, (args: string[]) => Promise<ActionResult>> = {
 		fork: async (args) => {
-			const forked = (await control("fork", args[0] ? { entryId: args[0] } : {})) as { identity?: string; status?: { name?: string } };
+			const forked = (await control("fork", args[0] ? { entryId: args[0] } : {})) as {
+				identity?: string;
+				status?: { name?: string };
+			};
 			return outcome(`Created branch “${forked.status?.name ?? label}”`, forked.identity ?? target.id);
 		},
 		rewind: async (args) => {
-			const result = (await control("rewind", { entryId: args[0], correction: args[1], origin: "operator", selfOwned: true })) as { identity?: string };
+			const result = (await control("rewind", {
+				entryId: args[0],
+				correction: args[1],
+				origin: "operator",
+				selfOwned: true,
+			})) as { identity?: string };
 			return outcome(`Rewound “${label}” before the selected entry`, result.identity ?? target.id);
 		},
 		reset: (args) => resetAgentContext(deps, { sessionId: target.id, ...(args[0] ? { handoff: args[0] } : {}) }),
 		compact: async (args) => {
 			const result = (await control("compact", args[0] ? { instructions: args[0] } : {})) as { status?: string };
-			return outcome(result?.status === "completed" ? `Compacted “${label}”` : `Compaction ${result?.status ?? "requested"} for “${label}”`);
+			return outcome(
+				result?.status === "completed"
+					? `Compacted “${label}”`
+					: `Compaction ${result?.status ?? "requested"} for “${label}”`,
+			);
 		},
 		command: async (args) => {
-			const result = (await control("command", { name: args[0], args: args[1] ?? "", origin: "operator", invocationId: randomUUID() })) as { reloaded?: boolean; text?: string };
-			return outcome(result?.reloaded ? `Reloaded host registrations for “${label}”` : `Ran command ${args[0]} on “${label}”${result?.text ? `: ${result.text}` : ""}`);
+			const result = (await control("command", {
+				name: args[0],
+				args: args[1] ?? "",
+				origin: "operator",
+				invocationId: randomUUID(),
+			})) as { reloaded?: boolean; text?: string };
+			return outcome(
+				result?.reloaded
+					? `Reloaded host registrations for “${label}”`
+					: `Ran command ${args[0]} on “${label}”${result?.text ? `: ${result.text}` : ""}`,
+			);
 		},
 		"timer-cancel": (args) => cancelAgentTimer(deps, { sessionId: target.id, timerId: Number(args[0]) }),
 		abort: async () => {
@@ -392,28 +514,49 @@ export function terminalForms(controller: TerminalController, drafts: Map<string
 			} catch (error) {
 				throw new Error(`Model list unavailable: ${error instanceof Error ? error.message : String(error)}`);
 			}
-			if (!matchesSchema(ModelChoicesSchema, read)) throw new Error("Model list unavailable: the host answered with an unreadable list");
-			return read.models.map((model) => ({ identity: `${model.provider}/${model.modelId}`, ...(model.name ? { name: model.name } : {}) }));
+			if (!matchesSchema(ModelChoicesSchema, read))
+				throw new Error("Model list unavailable: the host answered with an unreadable list");
+			return read.models.map((model) => ({
+				identity: `${model.provider}/${model.modelId}`,
+				...(model.name ? { name: model.name } : {}),
+			}));
 		},
 		configure: async (patch: ConfigurationPatch) => {
 			// The native request takes the model as an object; the form stores the exact identity string.
 			const { model: identity, ...rest } = patch;
 			const split = identity?.indexOf("/") ?? -1;
-			const fields = { ...rest, ...(identity === undefined ? {} : { model: { provider: identity.slice(0, split), modelId: identity.slice(split + 1) } }) };
+			const fields = {
+				...rest,
+				...(identity === undefined
+					? {}
+					: { model: { provider: identity.slice(0, split), modelId: identity.slice(split + 1) } }),
+			};
 			const result = (await control("configure", fields)) as { outcome?: string };
 			if (result?.outcome === "failed") throw new Error(`Configuration failed for “${label}”${failure(result)}`);
 			return outcome(`Updated configuration for “${label}”`);
 		},
 		commands: async () => {
-			const status = (await control("status")) as { inventory?: { contributions?: Array<{ commands?: Array<{ name: string; description: string }> }> } };
+			const status = (await control("status")) as {
+				inventory?: { contributions?: Array<{ commands?: Array<{ name: string; description: string }> }> };
+			};
 			if (!status.inventory) return undefined;
 			const commands = status.inventory.contributions?.flatMap((contribution) => contribution.commands ?? []) ?? [];
-			return [...commands.map((command) => ({ value: command.name, label: command.name, description: command.description })), { value: "reload", label: "reload", description: "Reload host registrations (needs an idle storage)" }];
+			return [
+				...commands.map((command) => ({ value: command.name, label: command.name, description: command.description })),
+				{ value: "reload", label: "reload", description: "Reload host registrations (needs an idle storage)" },
+			];
 		},
 		profile: (method, input) => controller.manager.control(method, input, controller.caller),
 		profileDrafts: drafts,
-		status: (signal) => controller.manager.control("status", { sessionId: target.id }, controller.caller, signal ? { signal } : undefined),
-		inspect: (params, signal) => controller.manager.control("inspect", params, controller.caller, signal ? { signal } : undefined),
+		status: (signal) =>
+			controller.manager.control(
+				"status",
+				{ sessionId: target.id },
+				controller.caller,
+				signal ? { signal } : undefined,
+			),
+		inspect: (params, signal) =>
+			controller.manager.control("inspect", params, controller.caller, signal ? { signal } : undefined),
 		outcome: () => {},
 	};
 }
@@ -424,11 +567,15 @@ function recoverView(controller: TerminalController, id: string, host: ViewHost)
 	const state = agentState(controller.state, id);
 	const revision = state.draftRevision;
 	const mode = state.mode;
-	const choices: Choice[] = inputs.map((input, index) => ({ value: String(index), label: `requested ${input.mode} · ${plainLine(input.text).slice(0, 80)}` }));
+	const choices: Choice[] = inputs.map((input, index) => ({
+		value: String(index),
+		label: `requested ${input.mode} · ${plainLine(input.text).slice(0, 80)}`,
+	}));
 	return new Form({
 		title: "Recover input",
 		heading: `Unconfirmed input for ${id}`,
-		intro: "A transport error does not prove that admission failed: read the conversation before sending again. Restore replaces the current draft and sends nothing.",
+		intro:
+			"A transport error does not prove that admission failed: read the conversation before sending again. Restore replaces the current draft and sends nothing.",
 		fields: [{ kind: "choice", id: "input", label: "Input", choices, rows: 6 }],
 		action: { label: "Restore to the draft" },
 		host,
@@ -452,7 +599,15 @@ export class TerminalScreen implements Component {
 	private disposed = false;
 	private readonly keys: KeybindingsManager;
 
-	constructor(tui: TUI, theme: import("@earendil-works/pi-coding-agent").Theme, keys: KeybindingsManager, controller: TerminalController, done: () => void, publishStatus?: (status: ProgramStatus) => void, publishTitle?: (title: string) => void) {
+	constructor(
+		tui: TUI,
+		theme: import("@earendil-works/pi-coding-agent").Theme,
+		keys: KeybindingsManager,
+		controller: TerminalController,
+		done: () => void,
+		publishStatus?: (status: ProgramStatus) => void,
+		publishTitle?: (title: string) => void,
+	) {
 		this.controller = controller;
 		this.keys = keys;
 		if (publishStatus) this.programStatus = new TerminalProgramStatus(publishStatus, publishTitle);
@@ -465,8 +620,12 @@ export class TerminalScreen implements Component {
 			collaborate: collaborate
 				? (input) => {
 						const id = controller.selected;
-						if (!["list", "read"].includes(String(input.action)) && !id) return Promise.reject(new Error("Select a conversation before posting to a thread."));
-						return collaborate({ ...input, origin: "operator" }, { ...controller.caller, id: id ?? controller.caller.id });
+						if (!["list", "read"].includes(String(input.action)) && !id)
+							return Promise.reject(new Error("Select a conversation before posting to a thread."));
+						return collaborate(
+							{ ...input, origin: "operator" },
+							{ ...controller.caller, id: id ?? controller.caller.id },
+						);
 					}
 				: undefined,
 			modelInfo: (provider, modelId) => controller.modelInfo(provider, modelId),
@@ -482,7 +641,9 @@ export class TerminalScreen implements Component {
 			panels: async (target) => {
 				if (controller.selected !== target.id) controller.select(target.id);
 				await controller.displaySettled();
-				return ownerViews(controller.panels, target.id, (command, data, signal) => controller.panelRequest(target.id, command, data, signal));
+				return ownerViews(controller.panels, target.id, (command, data, signal) =>
+					controller.panelRequest(target.id, command, data, signal),
+				);
 			},
 			observed: (row) => {
 				controller.select(row?.id);
@@ -519,7 +680,10 @@ export class TerminalScreen implements Component {
 	private async create(input: NewAgentInput): Promise<DashboardResult> {
 		const cwd = resolve(this.controller.caller.cwd, input.cwd ?? ".");
 		if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`Not a directory: ${cwd}`);
-		if (this.controller.creation?.trustUndecided(cwd)) throw new Error(`${cwd} has project resources and no saved trust decision. Decide in an ordinary Pi window opened there, or start in another directory.`);
+		if (this.controller.creation?.trustUndecided(cwd))
+			throw new Error(
+				`${cwd} has project resources and no saved trust decision. Decide in an ordinary Pi window opened there, or start in another directory.`,
+			);
 		const result = await this.controller.create({ ...input, cwd, requestId: this.creationId });
 		this.creationId = randomUUID();
 		return result;
@@ -538,25 +702,45 @@ export class TerminalScreen implements Component {
 				if (!words[2]) throw new Error("Use /agent enter <agent ID or @handle>.");
 				this.view.selectIdentity(await this.controller.manager.resolveTarget(words[2]));
 				break;
-			case "browse": this.view.openNamedAction("browse"); break;
-			case "new": this.view.openNamedAction("new"); break;
-			case "recover": this.recover(target); break;
-			case "help": this.view.openNamedAction("help"); break;
-			default: this.view.notify("Unknown /agent action here. Use /agent help for dashboard Help.", "warning");
+			case "browse":
+				this.view.openNamedAction("browse");
+				break;
+			case "new":
+				this.view.openNamedAction("new");
+				break;
+			case "recover":
+				this.recover(target);
+				break;
+			case "help":
+				this.view.openNamedAction("help");
+				break;
+			default:
+				this.view.notify("Unknown /agent action here. Use /agent help for dashboard Help.", "warning");
 		}
 		return true;
 	}
 
 	/** Review unconfirmed input of one target; recovery restores a draft and sends nothing. */
 	private recover(id: string | undefined): void {
-		if (id && this.controller.unconfirmed(id).length) this.view.openViewAction("Recover input", (host) => recoverView(this.controller, id, host));
+		if (id && this.controller.unconfirmed(id).length)
+			this.view.openViewAction("Recover input", (host) => recoverView(this.controller, id, host));
 		else this.view.notify("This conversation has no unconfirmed input", "info");
 	}
 
 	private extraActions(target: AgentConversationSummary): Action[] {
 		const inputs = this.controller.unconfirmed(target.id);
 		if (!inputs.length) return [];
-		return [{ id: "recover", label: `Recover input (${inputs.length})`, key: "u", short: `recover input (${inputs.length})`, primary: true, description: "Restore an unconfirmed input to the draft without sending", run: () => this.recover(target.id) }];
+		return [
+			{
+				id: "recover",
+				label: `Recover input (${inputs.length})`,
+				key: "u",
+				short: `recover input (${inputs.length})`,
+				primary: true,
+				description: "Restore an unconfirmed input to the draft without sending",
+				run: () => this.recover(target.id),
+			},
+		];
 	}
 
 	private changed(): void {
@@ -570,7 +754,14 @@ export class TerminalScreen implements Component {
 	private projectStatus(row: AgentConversationSummary | undefined): void {
 		const id = this.controller.selected;
 		const live = id !== undefined && this.controller.source.availability(id)?.state === "live";
-		this.programStatus?.update({ target: id, revision: this.controller.revision, live, busy: row?.id === id ? row?.state === "working" : undefined, name: row?.name, cwd: row?.cwd });
+		this.programStatus?.update({
+			target: id,
+			revision: this.controller.revision,
+			live,
+			busy: row?.id === id ? row?.state === "working" : undefined,
+			name: row?.name,
+			cwd: row?.cwd,
+		});
 	}
 
 	render(width: number): string[] {
@@ -588,7 +779,9 @@ export class TerminalScreen implements Component {
 	private emptyMessage(): boolean {
 		const { region, surface } = this.view.focus;
 		const id = this.controller.selected;
-		return surface === "work" && region === "composer" && id !== undefined && !agentState(this.controller.state, id).draft;
+		return (
+			surface === "work" && region === "composer" && id !== undefined && !agentState(this.controller.state, id).draft
+		);
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		return this.view.handleMouse(event);
@@ -611,18 +804,25 @@ export function parseTerminalArgs(args: string[]): { session?: string; selectedT
 	for (let i = 0; i < args.length; i++) {
 		const name = args[i];
 		const value = args[++i];
-		if (!value || !["--session", "--theme"].includes(name)) throw new Error(`Unknown or incomplete terminal argument: ${name}`);
+		if (!value || !["--session", "--theme"].includes(name))
+			throw new Error(`Unknown or incomplete terminal argument: ${name}`);
 		if (name === "--session") session = value;
 		else selectedTheme = value;
 	}
-	if (selectedTheme !== "dark" && selectedTheme !== "light") throw new Error("Theme must be dark or light; automatic/system theme is not supported.");
+	if (selectedTheme !== "dark" && selectedTheme !== "light")
+		throw new Error("Theme must be dark or light; automatic/system theme is not supported.");
 	return { session, selectedTheme };
 }
 
 /** The public services creation needs in this process: the configured catalogue and trust facts. */
 async function creationServices(agentDir: string): Promise<TerminalCreation | undefined> {
 	try {
-		const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false, refreshOnCreate: false });
+		const runtime = await ModelRuntime.create({
+			authPath: join(agentDir, "auth.json"),
+			modelsPath: join(agentDir, "models.json"),
+			allowModelNetwork: false,
+			refreshOnCreate: false,
+		});
 		const trust = new ProjectTrustStore(agentDir);
 		return {
 			agentDir,
@@ -653,17 +853,29 @@ async function creationServices(agentDir: string): Promise<TerminalCreation | un
 export function suppressProcessWarnings(): () => void {
 	const emitWarning = process.emitWarning;
 	process.emitWarning = () => {};
-	return () => { process.emitWarning = emitWarning; };
+	return () => {
+		process.emitWarning = emitWarning;
+	};
 }
 
 export async function runTerminal(args: string[]): Promise<void> {
 	const { session, selectedTheme } = parseTerminalArgs(args);
-	if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("This attachment requires an interactive terminal");
+	if (!process.stdin.isTTY || !process.stdout.isTTY)
+		throw new Error("This attachment requires an interactive terminal");
 	const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
 	const root = resolve(process.env.PI_AGENT_SESSIONS_DIR ?? join(agentDir, "agent-sessions"));
 	mkdirSync(root, { recursive: true, mode: 0o700 });
 	const remembered = terminalTargetFile(root);
-	const loader = new DefaultResourceLoader({ cwd: process.cwd(), agentDir, settingsManager: SettingsManager.inMemory({}), noExtensions: true, noSkills: true, noPromptTemplates: true, noContextFiles: true, additionalThemePaths: [join(getPackageDir(), "dist", "modes", "interactive", "theme", `${selectedTheme}.json`)] });
+	const loader = new DefaultResourceLoader({
+		cwd: process.cwd(),
+		agentDir,
+		settingsManager: SettingsManager.inMemory({}),
+		noExtensions: true,
+		noSkills: true,
+		noPromptTemplates: true,
+		noContextFiles: true,
+		additionalThemePaths: [join(getPackageDir(), "dist", "modes", "interactive", "theme", `${selectedTheme}.json`)],
+	});
 	await loader.reload();
 	const theme = loader.getThemes().themes.find((item) => item.name === selectedTheme);
 	if (!theme) throw new Error(`Shipped ${selectedTheme} theme did not load`);
@@ -671,14 +883,27 @@ export async function runTerminal(args: string[]): Promise<void> {
 	const keys = terminalKeys();
 	setKeybindings(keys);
 	const manager = new AgentManager({ root: realpathSync(root), agentDir, packageDir: getPackageDir() });
-	const controller = new TerminalController({ manager, caller: { id: `terminal:${randomUUID()}`, cwd: process.cwd() }, remember: (id) => remembered.write(id), creation: await creationServices(agentDir) });
+	const controller = new TerminalController({
+		manager,
+		caller: { id: `terminal:${randomUUID()}`, cwd: process.cwd() },
+		remember: (id) => remembered.write(id),
+		creation: await creationServices(agentDir),
+	});
 	const terminal = new ProcessTerminal();
 	const tui = new TuiAltScreen(terminal);
 	let finish!: () => void;
 	const finished = new Promise<void>((resolveDone) => {
 		finish = resolveDone;
 	});
-	const screen = new TerminalScreen(tui, theme, keys, controller, finish, (status) => terminal.setProgramStatus(status), (title) => terminal.setTitle(title));
+	const screen = new TerminalScreen(
+		tui,
+		theme,
+		keys,
+		controller,
+		finish,
+		(status) => terminal.setProgramStatus(status),
+		(title) => terminal.setTitle(title),
+	);
 	const close = () => finish();
 	process.once("SIGINT", close);
 	process.once("SIGTERM", close);

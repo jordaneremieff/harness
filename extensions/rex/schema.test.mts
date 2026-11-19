@@ -1,17 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { convertTools, resolveGoogleFunctionCallingMode, supportsGoogleStrictToolSampling } from "@earendil-works/pi-ai/api/google-shared";
-import { createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, createEventBus, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+	convertTools,
+	resolveGoogleFunctionCallingMode,
+	supportsGoogleStrictToolSampling,
+} from "@earendil-works/pi-ai/api/google-shared";
+import {
+	createEditToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
+	createEventBus,
+	type ExtensionAPI,
+	type ExtensionToolContext,
+	type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { compile, type Schema } from "@earendil-works/pi-schema";
 import { registerRex } from "./index.ts";
 import { requestVariants, ResultSchema, toolSpecs, validateRequest } from "./schema.ts";
 import type { RexResult } from "./core.ts";
 
-const strictBuiltins = [createReadToolDefinition("/test"), createEditToolDefinition("/test"), createWriteToolDefinition("/test")];
+const strictBuiltins = [
+	createReadToolDefinition("/test"),
+	createEditToolDefinition("/test"),
+	createWriteToolDefinition("/test"),
+];
 
 test("every provider declaration is a plain object root even when a strict built-in selects validated Google tool calling", () => {
 	for (const spec of toolSpecs) {
-		const schema = JSON.parse(JSON.stringify(spec.parameters)) as { type?: string; anyOf?: unknown; oneOf?: unknown; required?: string[]; properties: Record<string, { type?: string; enum?: string[]; patternProperties?: unknown }> };
+		const schema = JSON.parse(JSON.stringify(spec.parameters)) as {
+			type?: string;
+			anyOf?: unknown;
+			oneOf?: unknown;
+			required?: string[];
+			properties: Record<string, { type?: string; enum?: string[]; patternProperties?: unknown }>;
+		};
 		assert.equal(schema.type, "object", spec.name);
 		assert.equal(schema.anyOf, undefined, spec.name);
 		assert.equal(schema.oneOf, undefined, spec.name);
@@ -23,12 +45,18 @@ test("every provider declaration is a plain object root even when a strict built
 		}
 	}
 	for (const modelId of ["gemini-4-argon", "gemini-3.8-flash"]) {
-		const tools = [...strictBuiltins, ...toolSpecs.map((spec) => ({ name: spec.name, description: spec.description, parameters: spec.parameters }))];
+		const tools = [
+			...strictBuiltins,
+			...toolSpecs.map((spec) => ({ name: spec.name, description: spec.description, parameters: spec.parameters })),
+		];
 		const strict = supportsGoogleStrictToolSampling(modelId);
 		assert.equal(strict, true);
 		assert.equal(resolveGoogleFunctionCallingMode(tools, undefined, strict), "VALIDATED");
 		const declarations = convertTools(tools, false, strict)?.[0]?.functionDeclarations ?? [];
-		assert.deepEqual(declarations.map((declaration) => declaration.name), tools.map((tool) => tool.name));
+		assert.deepEqual(
+			declarations.map((declaration) => declaration.name),
+			tools.map((tool) => tool.name),
+		);
 		for (const declaration of declarations) {
 			const parameters = declaration.parametersJsonSchema as { type?: string; anyOf?: unknown };
 			assert.equal(parameters.type, "object", `${modelId} ${declaration.name}`);
@@ -47,7 +75,11 @@ test("the provider declaration accepts exactly the union of its operation shapes
 		assert.deepEqual(new Set(declared), new Set(shapes), spec.name);
 	}
 	const owned = toolSpecs.find((spec) => spec.name === "rex_owned");
-	assert.deepEqual(owned?.parameters.required, ["op"], "cleanup's required recordId is enforced by the runtime boundary, not the widened declaration");
+	assert.deepEqual(
+		owned?.parameters.required,
+		["op"],
+		"cleanup's required recordId is enforced by the runtime boundary, not the widened declaration",
+	);
 	assert.deepEqual(toolSpecs.find((spec) => spec.name === "rex_native")?.parameters.required, ["op", "kind"]);
 });
 
@@ -80,20 +112,44 @@ test("runtime validation enforces each operation shape", () => {
 		["rex_owned", { op: "cleanup", recordId: "call-1", forget: true }],
 		["rex_status", { op: "snapshot", timeoutMs: 1000 }],
 		["rex_status", { op: "unbind", timeoutMs: 1000 }],
-		["rex_status", { op: "bind", timeoutMs: 1000, target: { server: "unix:///rex", session, block: "block:00000000-0000-0000-0000-000000000002" } }],
+		[
+			"rex_status",
+			{
+				op: "bind",
+				timeoutMs: 1000,
+				target: { server: "unix:///rex", session, block: "block:00000000-0000-0000-0000-000000000002" },
+			},
+		],
 	];
 	for (const [tool, args] of accepted) {
 		const declaration = toolSpecs.find((spec) => spec.name === tool);
 		assert.ok(declaration);
-		assert.equal(compile(declaration.parameters).check(args), true, `${tool} provider declaration accepts ${JSON.stringify(args)}`);
+		assert.equal(
+			compile(declaration.parameters).check(args),
+			true,
+			`${tool} provider declaration accepts ${JSON.stringify(args)}`,
+		);
 		const validated = validateRequest(tool, args);
-		assert.equal(validated.ok, true, `${tool} ${JSON.stringify(args)} ${(validated as { error?: string }).error ?? ""}`);
-		if (validated.ok) assert.equal(validated.request, args, "validation returns the same arguments, so policy saw exactly what executes");
+		assert.equal(
+			validated.ok,
+			true,
+			`${tool} ${JSON.stringify(args)} ${(validated as { error?: string }).error ?? ""}`,
+		);
+		if (validated.ok)
+			assert.equal(
+				validated.request,
+				args,
+				"validation returns the same arguments, so policy saw exactly what executes",
+			);
 	}
 	const rejected: Array<[keyof typeof requestVariants, unknown, RegExp]> = [
 		["rex_environment", { op: "create", kind: "session", label: "x" }, /op must be one of environment, resolve/],
 		["rex_environment", { op: "resolve" }, /\/kind missing/],
-		["rex_environment", { op: "resolve", kind: "split" }, /kind must be one of session, window, block, client for the selected resolve/],
+		[
+			"rex_environment",
+			{ op: "resolve", kind: "split" },
+			/kind must be one of session, window, block, client for the selected resolve/,
+		],
 		["rex_environment", { op: "environment", query: "x" }, /\/query unknown field/],
 		["rex_environment", { op: "environment", target: { session, pane: "1" } }, /\/target\/pane unknown field/],
 		["rex_environment", { op: "environment", target: { source: "ambient" } }, /\/target\/source/],
@@ -154,14 +210,25 @@ test("runtime validation enforces each operation shape", () => {
 test("result validation keeps the envelope closed and nested result objects open", () => {
 	const validate = compile(ResultSchema);
 	const result = {
-		ok: true, outcome: "observed",
+		ok: true,
+		outcome: "observed",
 		records: [{ recordId: "call", server: {}, resources: [], extra: "record metadata" }],
 		effects: { state: "none", extra: "effect metadata" },
-		coverage: { bounded: true, extra: "coverage metadata", deadline: { effectiveMs: 1000, elapsedMs: 1200, phase: "finalise", overrunMs: 200 } },
+		coverage: {
+			bounded: true,
+			extra: "coverage metadata",
+			deadline: { effectiveMs: 1000, elapsedMs: 1200, phase: "finalise", overrunMs: 200 },
+		},
 	};
 	assert.equal(validate.check(result), true);
 	for (const invalid of [{ effectiveMs: 0 }, { elapsedMs: -1 }, { phase: "other" }, { overrunMs: -1 }]) {
-		assert.equal(validate.check({ ...result, coverage: { ...result.coverage, deadline: { ...result.coverage.deadline, ...invalid } } }), false);
+		assert.equal(
+			validate.check({
+				...result,
+				coverage: { ...result.coverage, deadline: { ...result.coverage.deadline, ...invalid } },
+			}),
+			false,
+		);
 	}
 	assert.equal(validate.check({ ...result, extra: true }), false);
 	assert.equal(validate.check({ ...result, effects: { state: "other" } }), false);
@@ -176,13 +243,31 @@ test("ordinary tools reject invalid requests before any core, ownership or statu
 	const appended: unknown[] = [];
 	const pi = {
 		events: createEventBus(),
-		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {},
+		on: (name: string, handler: () => unknown) => {
+			handlers.set(name, handler);
+			return () => handlers.delete(name);
+		},
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerCommand: () => {},
 		appendEntry: (type: string, data: unknown) => appended.push({ type, data }),
 	} as unknown as ExtensionAPI;
 	let cores = 0;
-	registerRex(pi, { createCore: () => { cores++; return { dispose: () => {}, execute: async () => { throw new Error("Invalid requests must not reach the core."); } }; } });
-	const ctx = { cwd: "/test", isIdle: () => true, sessionManager: { getSessionId: () => "validation-session", getEntries: () => [], getSessionFile: () => undefined } } as unknown as ExtensionToolContext;
+	registerRex(pi, {
+		createCore: () => {
+			cores++;
+			return {
+				dispose: () => {},
+				execute: async () => {
+					throw new Error("Invalid requests must not reach the core.");
+				},
+			};
+		},
+	});
+	const ctx = {
+		cwd: "/test",
+		isIdle: () => true,
+		sessionManager: { getSessionId: () => "validation-session", getEntries: () => [], getSessionFile: () => undefined },
+	} as unknown as ExtensionToolContext;
 	try {
 		const cases: Array<[string, unknown]> = [
 			["rex_owned", { op: "cleanup" }],
@@ -200,9 +285,14 @@ test("ordinary tools reject invalid requests before any core, ownership or statu
 			assert.equal(value.outcome, "invalid_request");
 			assert.equal(value.effects.state, "none");
 			assert.deepEqual(result.details, { outcome: "invalid_request", effects: "none" });
-			assert.equal(JSON.parse(result.content.map((part) => (part.type === "text" ? part.text : "")).join("")).error, value.error);
+			assert.equal(
+				JSON.parse(result.content.map((part) => (part.type === "text" ? part.text : "")).join("")).error,
+				value.error,
+			);
 		}
 		assert.equal(cores, 0, "no core is created for an invalid request");
 		assert.deepEqual(appended, [], "no ownership or status entry is written for an invalid request");
-	} finally { await handlers.get("session_shutdown")?.(); }
+	} finally {
+		await handlers.get("session_shutdown")?.();
+	}
 });

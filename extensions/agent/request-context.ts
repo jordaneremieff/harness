@@ -5,7 +5,18 @@ import type { Message } from "@earendil-works/pi-ai";
 import { inputLabel, isInputKind, sentInputClass } from "./input-entry.ts";
 import { retainedIntent } from "./delivery-store.ts";
 import { RequestRouteState, type RouteNote, type UserPrefix } from "./request-route-state.ts";
-import { defineDoc, LiveDoc, section, type ConversationId, type GenerationHooks, type Harness, type HookApi, type PromptSection, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
+import {
+	defineDoc,
+	LiveDoc,
+	section,
+	type ConversationId,
+	type GenerationHooks,
+	type Harness,
+	type HookApi,
+	type PromptSection,
+	type SubmissionId,
+	type Tx,
+} from "@earendil-works/pi-durable";
 
 export type RequestContext = {
 	readonly requestId: string;
@@ -32,17 +43,33 @@ export const REQUEST_CONTEXT_LIMIT = 128;
 export function validateRequestContext(request: RequestContext): void {
 	for (const key of ["requestId", "requester", "replyTo", "origin"] as const) {
 		const value = request[key];
-		if (typeof value !== "string" || value.trim() === "" || value.length > (key === "requestId" ? 1024 : 256) || /[\u0000-\u001f\u007f]/u.test(value))
+		if (
+			typeof value !== "string" ||
+			value.trim() === "" ||
+			value.length > (key === "requestId" ? 1024 : 256) ||
+			/[\u0000-\u001f\u007f]/u.test(value)
+		)
 			throw new Error(`Invalid request context ${key}`);
 	}
 	if (request.origin !== "model" && request.origin !== "operator") throw new Error("Invalid request context origin");
 }
 
 type RequestEvidence = { route: ActiveRequestContext; submissionId?: SubmissionId };
-async function unfinishedRequest(tx: Tx, conversationId: ConversationId, request: RequestContext): Promise<RequestEvidence | undefined> {
+async function unfinishedRequest(
+	tx: Tx,
+	conversationId: ConversationId,
+	request: RequestContext,
+): Promise<RequestEvidence | undefined> {
 	const submission = await tx.submissionByRequest(conversationId, request.requestId);
-	if (submission !== undefined && (submission.type !== "input" || submission.status === "done" || submission.status === "unanswered")) return undefined;
-	return { route: { ...request, status: submission?.status ?? "admitting" }, ...(submission === undefined ? {} : { submissionId: submission.id }) };
+	if (
+		submission !== undefined &&
+		(submission.type !== "input" || submission.status === "done" || submission.status === "unanswered")
+	)
+		return undefined;
+	return {
+		route: { ...request, status: submission?.status ?? "admitting" },
+		...(submission === undefined ? {} : { submissionId: submission.id }),
+	};
 }
 
 async function activeRequests(tx: Tx, conversationId: ConversationId): Promise<RequestEvidence[]> {
@@ -60,18 +87,36 @@ async function activeRequests(tx: Tx, conversationId: ConversationId): Promise<R
 }
 
 /** Call before native admission, in the same commit as the delivery intent or Reporter checkpoint. */
-export async function recordRequestContext(tx: Tx, conversationId: ConversationId, request: RequestContext, admission: "new" | "retained" = "new"): Promise<void> {
+export async function recordRequestContext(
+	tx: Tx,
+	conversationId: ConversationId,
+	request: RequestContext,
+	admission: "new" | "retained" = "new",
+): Promise<void> {
 	if (admission === "new") validateRequestContext(request);
 	const state = await tx.doc(RequestContextDoc, conversationId);
 	const prior = state.requests.find((candidate) => candidate.requestId === request.requestId);
-	if (prior !== undefined && (prior.requester !== request.requester || prior.replyTo !== request.replyTo || prior.origin !== request.origin))
+	if (
+		prior !== undefined &&
+		(prior.requester !== request.requester || prior.replyTo !== request.replyTo || prior.origin !== request.origin)
+	)
 		throw new Error("The request ID already identifies a different request route");
 	await activeRequests(tx, conversationId);
 	if (prior !== undefined) return;
 	const submission = await tx.submissionByRequest(conversationId, request.requestId);
-	if (submission !== undefined && (submission.type !== "input" || submission.status === "done" || submission.status === "unanswered")) return;
-	if (admission === "new" && submission === undefined && state.requests.length >= REQUEST_CONTEXT_LIMIT) throw new Error(`The conversation already has ${REQUEST_CONTEXT_LIMIT} unfinished request routes`);
-	state.requests.push({ requestId: request.requestId, requester: request.requester, replyTo: request.replyTo, origin: request.origin });
+	if (
+		submission !== undefined &&
+		(submission.type !== "input" || submission.status === "done" || submission.status === "unanswered")
+	)
+		return;
+	if (admission === "new" && submission === undefined && state.requests.length >= REQUEST_CONTEXT_LIMIT)
+		throw new Error(`The conversation already has ${REQUEST_CONTEXT_LIMIT} unfinished request routes`);
+	state.requests.push({
+		requestId: request.requestId,
+		requester: request.requester,
+		replyTo: request.replyTo,
+		origin: request.origin,
+	});
 }
 
 /** Cleanup is driven by native terminal submissions, including reset and abort, never elapsed time. */
@@ -80,18 +125,30 @@ export async function cleanupRequestContexts(tx: Tx, conversationId: Conversatio
 }
 
 /** Profile reads expose pending admissions and queued inputs without calling them the current run. */
-export async function readRequestContexts(harness: Harness, conversationId: ConversationId, context: Context): Promise<ActiveRequestContext[]> {
+export async function readRequestContexts(
+	harness: Harness,
+	conversationId: ConversationId,
+	context: Context,
+): Promise<ActiveRequestContext[]> {
 	return harness.commit(async (tx) => (await activeRequests(tx, conversationId)).map(({ route }) => route), context);
 }
 
 /** Base delivery fields need not fit the explicit-route bounds. Never shorten an identity. */
 function projectable(request: RequestContext): boolean {
-	try { validateRequestContext(request); return true; }
-	catch { return false; }
+	try {
+		validateRequestContext(request);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /** The profile is a bounded view, not a capacity restriction on accepted work. */
-export async function readRequestContextPage(harness: Harness, conversationId: ConversationId, context: Context): Promise<{ requests: ActiveRequestContext[]; omitted: number }> {
+export async function readRequestContextPage(
+	harness: Harness,
+	conversationId: ConversationId,
+	context: Context,
+): Promise<{ requests: ActiveRequestContext[]; omitted: number }> {
 	const requests: ActiveRequestContext[] = [];
 	let omitted = 0;
 	for (const request of await readRequestContexts(harness, conversationId, context)) {
@@ -113,7 +170,10 @@ async function requestRouteTag(harness: Harness, conversationId: ConversationId,
 	return harness.commit(async (tx) => {
 		const state = await tx.doc(RequestRouteAuthDoc);
 		state.secret ??= randomBytes(32).toString("hex");
-		return createHmac("sha256", Buffer.from(state.secret, "hex")).update(String(conversationId)).digest("hex").slice(0, 16);
+		return createHmac("sha256", Buffer.from(state.secret, "hex"))
+			.update(String(conversationId))
+			.digest("hex")
+			.slice(0, 16);
 	}, context);
 }
 
@@ -183,28 +243,48 @@ function noteText(tag: string, value: Record<string, unknown>): string {
 /** An input without a retained route is an event: its note names the class and sender, and no reply recipient. */
 function eventNoteValue(entry: InputEntryRecord, requestId: string): Record<string, unknown> | undefined {
 	const event = entry.kind === "pi.user" ? undefined : inputLabel(entry, requestId);
-	return event === undefined ? undefined : { requestId, class: event.class, ...(event.sender === undefined ? {} : { sender: event.sender }) };
+	return event === undefined
+		? undefined
+		: { requestId, class: event.class, ...(event.sender === undefined ? {} : { sender: event.sender }) };
 }
 
-async function routedNoteValue(tx: Tx, conversationId: ConversationId, entry: InputEntryRecord, route: ActiveRequestContext): Promise<Record<string, unknown>> {
+async function routedNoteValue(
+	tx: Tx,
+	conversationId: ConversationId,
+	entry: InputEntryRecord,
+	route: ActiveRequestContext,
+): Promise<Record<string, unknown>> {
 	const { requestId, requester, replyTo, origin } = route;
 	const label = inputLabel(entry, requestId, requester);
 	// A native operator entry has no data; its retained delivery intent keeps the busy mode that selects its class.
-	const inputClass = entry.kind === "pi.user" ? sentInputClass("operator", (await retainedIntent(tx, conversationId, requestId))?.whenBusy) : label?.class;
-	const labelled = label === undefined || inputClass === undefined ? {} : { class: inputClass, sender: label.sender ?? requester };
+	const inputClass =
+		entry.kind === "pi.user"
+			? sentInputClass("operator", (await retainedIntent(tx, conversationId, requestId))?.whenBusy)
+			: label?.class;
+	const labelled =
+		label === undefined || inputClass === undefined ? {} : { class: inputClass, sender: label.sender ?? requester };
 	return { requestId, requester, replyTo, origin, ...labelled };
 }
 
 /** The note of one input of the current run, or none when the input has neither a projectable route nor a label. */
-async function inputNote(tx: Tx, conversationId: ConversationId, tag: string, id: SubmissionId, route: ActiveRequestContext | undefined): Promise<RouteNote | undefined> {
+async function inputNote(
+	tx: Tx,
+	conversationId: ConversationId,
+	tag: string,
+	id: SubmissionId,
+	route: ActiveRequestContext | undefined,
+): Promise<RouteNote | undefined> {
 	if (route !== undefined && !projectable(route)) return undefined;
 	const known = route?.requestId ?? (await tx.submission(id))?.requestId;
 	if (known === undefined || known.length > 1024) return undefined;
 	const entry = await requestInputEntry(tx, conversationId, id, known);
 	const message = entry?.model?.findLast((item) => item.role === "user");
 	if (!entry || !message) return undefined;
-	const value = route === undefined ? eventNoteValue(entry, known) : await routedNoteValue(tx, conversationId, entry, route);
-	return value === undefined ? undefined : { digest: inputDigest(message), entryId: entry.id, text: noteText(tag, value) };
+	const value =
+		route === undefined ? eventNoteValue(entry, known) : await routedNoteValue(tx, conversationId, entry, route);
+	return value === undefined
+		? undefined
+		: { digest: inputDigest(message), entryId: entry.id, text: noteText(tag, value) };
 }
 
 async function newRouteNotes(harness: Harness, api: HookApi, context: Context): Promise<RouteNote[]> {
@@ -221,7 +301,13 @@ async function newRouteNotes(harness: Harness, api: HookApi, context: Context): 
 	}, context);
 }
 
-async function nativePositions(harness: Harness, api: HookApi, users: Map<string, UserInput[]>, nativeDigests: Set<string>, context: Context): Promise<Map<number, UserInput>> {
+async function nativePositions(
+	harness: Harness,
+	api: HookApi,
+	users: Map<string, UserInput[]>,
+	nativeDigests: Set<string>,
+	context: Context,
+): Promise<Map<number, UserInput>> {
 	const positions = new Map<number, UserInput>();
 	const conversation = await harness.conversation(api.conversationId, context);
 	if (!conversation) return positions;
@@ -244,14 +330,24 @@ async function nativePositions(harness: Harness, api: HookApi, users: Map<string
 	return positions;
 }
 
-async function placeNotes(harness: Harness, api: HookApi, users: Map<string, UserInput[]>, notes: RouteNote[], continuous: boolean, context: Context): Promise<Placement[]> {
+async function placeNotes(
+	harness: Harness,
+	api: HookApi,
+	users: Map<string, UserInput[]>,
+	notes: RouteNote[],
+	continuous: boolean,
+	context: Context,
+): Promise<Placement[]> {
 	const counts = new Map<string, number>();
 	for (const note of notes) counts.set(note.digest, (counts.get(note.digest) ?? 0) + 1);
 	const nativeDigests = new Set<string>();
 	for (const [digest, count] of counts) {
-		if (users.has(digest) && (!continuous || count > 1 || (users.get(digest)?.length ?? 0) > 1)) nativeDigests.add(digest);
+		if (users.has(digest) && (!continuous || count > 1 || (users.get(digest)?.length ?? 0) > 1))
+			nativeDigests.add(digest);
 	}
-	const positions = nativeDigests.size ? await nativePositions(harness, api, users, nativeDigests, context) : new Map<number, UserInput>();
+	const positions = nativeDigests.size
+		? await nativePositions(harness, api, users, nativeDigests, context)
+		: new Map<number, UserInput>();
 	return notes.flatMap((note) => {
 		const match = nativeDigests.has(note.digest) ? positions.get(note.entryId) : users.get(note.digest)?.[0];
 		return match ? [{ ...match, note }] : [];
@@ -264,7 +360,12 @@ function insertRouteNotes(messages: readonly Message[], placements: Placement[])
 	for (let index = 0; index < messages.length; index++) {
 		result.push(messages[index]);
 		const placement = byIndex.get(index);
-		if (placement) result.push({ role: "user", content: [{ type: "text", text: placement.note.text }], timestamp: placement.message.timestamp });
+		if (placement)
+			result.push({
+				role: "user",
+				content: [{ type: "text", text: placement.note.text }],
+				timestamp: placement.message.timestamp,
+			});
 	}
 	return result;
 }
@@ -272,15 +373,23 @@ function insertRouteNotes(messages: readonly Message[], placements: Placement[])
 function boundNotes(notes: RouteNote[], active: Set<number>): RouteNote[] {
 	let count = notes.length;
 	let bytes = Buffer.byteLength(JSON.stringify(notes));
-	return [...notes].sort((left, right) => left.entryId - right.entryId).filter((note) => {
-		if (active.has(note.entryId) || (count <= REQUEST_NOTE_LIMIT && bytes <= REQUEST_NOTE_BYTES)) return true;
-		count--;
-		bytes -= Buffer.byteLength(JSON.stringify(note)) + (count ? 1 : 0);
-		return false;
-	});
+	return [...notes]
+		.sort((left, right) => left.entryId - right.entryId)
+		.filter((note) => {
+			if (active.has(note.entryId) || (count <= REQUEST_NOTE_LIMIT && bytes <= REQUEST_NOTE_BYTES)) return true;
+			count--;
+			bytes -= Buffer.byteLength(JSON.stringify(note)) + (count ? 1 : 0);
+			return false;
+		});
 }
 
-async function taskNotes(harness: Harness, api: HookApi, users: Map<string, UserInput[]>, prior: RouteNote[], context: Context): Promise<RouteNote[]> {
+async function taskNotes(
+	harness: Harness,
+	api: HookApi,
+	users: Map<string, UserInput[]>,
+	prior: RouteNote[],
+	context: Context,
+): Promise<RouteNote[]> {
 	const saved = await api.memo<RouteNote[]>("agent:request-routes", context);
 	if (saved !== undefined) return saved;
 	const retained = prior.filter((note) => users.has(note.digest));
@@ -292,7 +401,10 @@ async function taskNotes(harness: Harness, api: HookApi, users: Map<string, User
 }
 
 /** Task memos freeze note sets, never positions; compaction can change identical inputs' order on a retry. */
-export function requestContextHooks(source: Harness | (() => Harness), conversations = new RequestRouteState()): Partial<GenerationHooks> {
+export function requestContextHooks(
+	source: Harness | (() => Harness),
+	conversations = new RequestRouteState(),
+): Partial<GenerationHooks> {
 	return {
 		async beforeRequest(request, api, context) {
 			try {
@@ -300,8 +412,18 @@ export function requestContextHooks(source: Harness | (() => Harness), conversat
 				const sequence = userInputs(request.messages);
 				const previous = conversations.get(api.conversationId);
 				const notes = await taskNotes(harness, api, sequence.users, previous?.notes ?? [], context);
-				const placements = await placeNotes(harness, api, sequence.users, notes, prefixHolds(sequence, previous?.prefix), context);
-				conversations.set(api.conversationId, { notes: placements.map(({ note }) => note), prefix: notedPrefix(sequence, placements) });
+				const placements = await placeNotes(
+					harness,
+					api,
+					sequence.users,
+					notes,
+					prefixHolds(sequence, previous?.prefix),
+					context,
+				);
+				conversations.set(api.conversationId, {
+					notes: placements.map(({ note }) => note),
+					prefix: notedPrefix(sequence, placements),
+				});
 				return placements.length ? { messages: insertRouteNotes(request.messages, placements) } : undefined;
 			} catch (error) {
 				if (context.abortSignal?.aborted) throw error;

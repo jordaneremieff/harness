@@ -6,14 +6,32 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
 import { toolDisplayRecord } from "./display.ts";
-import { MAX_RULE_EVENT_BYTES, makeRuleAudit, PolicyMutationCancelledError, proposalRevision, ruleAbsenceMessage, targetIdentity } from "./local-rules.ts";
+import {
+	MAX_RULE_EVENT_BYTES,
+	makeRuleAudit,
+	PolicyMutationCancelledError,
+	proposalRevision,
+	ruleAbsenceMessage,
+	targetIdentity,
+} from "./local-rules.ts";
 import { contentRevision, effectiveEffect, effectiveState, type OperatorRuleAudit } from "./rule.ts";
-import { formatTelemetry, TELEMETRY_CURSOR_PATTERN, TELEMETRY_INSTANT_PATTERN, type TelemetrySummary } from "./telemetry.ts";
+import {
+	formatTelemetry,
+	TELEMETRY_CURSOR_PATTERN,
+	TELEMETRY_INSTANT_PATTERN,
+	type TelemetrySummary,
+} from "./telemetry.ts";
 import type { PolicyToolContext, ToolDeps } from "./tools.ts";
 
-const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({
+	type: "string",
+	enum: [...values],
+});
 const StringLiteral = <const V extends string>(value: V): Schema<V> => ({ type: "string", const: value });
-const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({ ...union(schemas), type: "object" });
+const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({
+	...union(schemas),
+	type: "object",
+});
 const Id = str({ minLength: 1, maxLength: 80, pattern: "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$" });
 const Revision = str({ pattern: "^[a-f0-9]{12}$" });
 const Authorization = str({ minLength: 1, maxLength: 1000 });
@@ -42,7 +60,12 @@ const variants = [
 	obj({ operation: StringLiteral("data-preview"), path: { ...Path } }),
 	obj({ operation: StringLiteral("reset-preview"), id: { ...Selection } }),
 	obj({ operation: StringLiteral("mode") }),
-	obj({ operation: StringLiteral("telemetry"), from: { ...TelemetryDate }, to: { ...TelemetryDate }, cursor: opt(TelemetryCursor) }),
+	obj({
+		operation: StringLiteral("telemetry"),
+		from: { ...TelemetryDate },
+		to: { ...TelemetryDate },
+		cursor: opt(TelemetryCursor),
+	}),
 	obj({
 		operation: StringLiteral("telemetry"),
 		since: { ...TelemetryInstant },
@@ -51,7 +74,13 @@ const variants = [
 	}),
 	obj({ operation: StringLiteral("reject"), proposalId: { ...ActionId }, ...authority }),
 	obj({ operation: StringEnum(["disable", "enable", "retire"]), id: { ...Id }, ...authority, ...reason }),
-	obj({ operation: StringLiteral("effect"), id: { ...Id }, effect: StringEnum(["steer", "block"]), ...authority, ...reason }),
+	obj({
+		operation: StringLiteral("effect"),
+		id: { ...Id },
+		effect: StringEnum(["steer", "block"]),
+		...authority,
+		...reason,
+	}),
 	obj({ operation: StringLiteral("reset"), id: { ...Selection }, ...authority, ...reason }),
 	obj({ operation: StringLiteral("import"), selection: { ...Selection }, ...authority }),
 	obj({ operation: StringLiteral("data-set"), artifact: { ...Artifact }, ...authority }),
@@ -65,7 +94,28 @@ type Input = Static<typeof ControlContract>;
 /** Provider adapters retain object properties; execution enforces the closed operation variants. */
 export const PolicyControlParams = obj(
 	{
-		operation: StringEnum(["actions", "action-inspect", "action-approve", "action-reject", "inspect", "import-preview", "data-preview", "reset-preview", "mode", "telemetry", "reject", "disable", "enable", "retire", "effect", "reset", "import", "data-set", "data-set-file", "data-remove"]),
+		operation: StringEnum([
+			"actions",
+			"action-inspect",
+			"action-approve",
+			"action-reject",
+			"inspect",
+			"import-preview",
+			"data-preview",
+			"reset-preview",
+			"mode",
+			"telemetry",
+			"reject",
+			"disable",
+			"enable",
+			"retire",
+			"effect",
+			"reset",
+			"import",
+			"data-set",
+			"data-set-file",
+			"data-remove",
+		]),
 		actionId: opt(ActionId),
 		id: opt(Selection),
 		selection: opt(Selection),
@@ -91,7 +141,10 @@ export const PolicyControlParams = obj(
 );
 
 /** Schema of every control result's structured value: the same object that `details` carries. */
-export const PolicyControlOutput: Schema<Record<string, unknown>> = { type: "object", patternProperties: { "^.*$": {} } };
+export const PolicyControlOutput: Schema<Record<string, unknown>> = {
+	type: "object",
+	patternProperties: { "^.*$": {} },
+};
 
 export function controlResult(value: unknown, limit = 48 * 1024) {
 	const text = safeJson(value);
@@ -104,16 +157,15 @@ export function controlResult(value: unknown, limit = 48 * 1024) {
 
 /** Readable report text for the model, with the structured page as details and structured content. */
 export function telemetryResult(summary: TelemetrySummary) {
-	return { content: [{ type: "text" as const, text: formatTelemetry(summary) }], details: summary, structuredContent: summary };
+	return {
+		content: [{ type: "text" as const, text: formatTelemetry(summary) }],
+		details: summary,
+		structuredContent: summary,
+	};
 }
 
 /** One control call as an ordinary or native tool result. */
-export async function controlToolResult(
-	deps: ToolDeps,
-	params: Input,
-	ctx: PolicyToolContext,
-	signal?: AbortSignal,
-) {
+export async function controlToolResult(deps: ToolDeps, params: Input, ctx: PolicyToolContext, signal?: AbortSignal) {
 	if (params.operation === "telemetry") {
 		if (!deps.telemetry) throw new Error("Policy telemetry is unavailable in this host");
 		const { operation: _operation, ...request } = params;
@@ -224,13 +276,20 @@ async function applyRegularControl(
 		if (signal?.aborted) throw new PolicyMutationCancelledError();
 	};
 	checkCancelled();
-	if (params.operation === "reject") await deps.registry.decide(params.proposalId, "rejected", undefined, audit, undefined, signal);
-	else if (params.operation === "disable") await deps.registry.disable(params.id, params.reason, audit, undefined, signal);
-	else if (params.operation === "enable") await deps.registry.enable(params.id, params.reason, audit, undefined, signal);
-	else if (params.operation === "retire") await deps.registry.retire(params.id, params.reason, audit, undefined, signal);
-	else if (params.operation === "effect") await deps.registry.setEffect(params.id, params.effect, params.reason, audit, undefined, signal);
-	else if (params.operation === "import") await deps.registry.importCatalog(params.selection, params.revision, audit, signal);
-	else if (params.operation === "data-remove") await deps.registry.removeData(params.name, params.revision, audit, signal);
+	if (params.operation === "reject")
+		await deps.registry.decide(params.proposalId, "rejected", undefined, audit, undefined, signal);
+	else if (params.operation === "disable")
+		await deps.registry.disable(params.id, params.reason, audit, undefined, signal);
+	else if (params.operation === "enable")
+		await deps.registry.enable(params.id, params.reason, audit, undefined, signal);
+	else if (params.operation === "retire")
+		await deps.registry.retire(params.id, params.reason, audit, undefined, signal);
+	else if (params.operation === "effect")
+		await deps.registry.setEffect(params.id, params.effect, params.reason, audit, undefined, signal);
+	else if (params.operation === "import")
+		await deps.registry.importCatalog(params.selection, params.revision, audit, signal);
+	else if (params.operation === "data-remove")
+		await deps.registry.removeData(params.name, params.revision, audit, signal);
 	else if (params.operation === "data-set" || params.operation === "data-set-file") {
 		const artifact = await artifactFor(params, ctx);
 		if (contentRevision(artifact) !== params.revision)
@@ -274,20 +333,29 @@ async function controlReadback(
 }
 
 function controlFieldRefusal(params: unknown): string {
-	const input: Record<string, unknown> = typeof params === "object" && params !== null && !Array.isArray(params)
-		? params as Record<string, unknown>
-		: {};
+	const input: Record<string, unknown> =
+		typeof params === "object" && params !== null && !Array.isArray(params) ? (params as Record<string, unknown>) : {};
 	const propertiesOf = (schema: Schema) => schema.properties as Record<string, Schema>;
 	const selected = variants.filter((schema) => compile(propertiesOf(schema).operation).check(input.operation));
 	const reports = (selected.length ? selected : [PolicyControlParams]).map((schema) => {
 		const properties = propertiesOf(schema);
-		const unexpected = Object.keys(input).filter((name) => !Object.hasOwn(properties, name)).sort();
+		const unexpected = Object.keys(input)
+			.filter((name) => !Object.hasOwn(properties, name))
+			.sort();
 		const missing = (schema.required as string[]).filter((name) => !Object.hasOwn(input, name)).sort();
-		const invalid = Object.entries(properties).filter(([name, field]) => Object.hasOwn(input, name) && (
-			!compile(field).check(input[name]) ||
-			((name === "authorization" || name === "reason") && typeof input[name] === "string" && !input[name].trim())
-		)).map(([name]) => name).sort();
-		const names = (fields: string[]) => fields.length ? fields.map((name) => JSON.stringify(name)).join(", ") : "none";
+		const invalid = Object.entries(properties)
+			.filter(
+				([name, field]) =>
+					Object.hasOwn(input, name) &&
+					(!compile(field).check(input[name]) ||
+						((name === "authorization" || name === "reason") &&
+							typeof input[name] === "string" &&
+							!input[name].trim())),
+			)
+			.map(([name]) => name)
+			.sort();
+		const names = (fields: string[]) =>
+			fields.length ? fields.map((name) => JSON.stringify(name)).join(", ") : "none";
 		return {
 			score: unexpected.length + missing.length + invalid.length,
 			text: `Unexpected fields: ${names(unexpected)}. Missing required fields: ${names(missing)}. Invalid fields: ${names(invalid)}.`,
@@ -295,7 +363,9 @@ function controlFieldRefusal(params: unknown): string {
 	});
 	const nearest = Math.min(...reports.map(({ score }) => score));
 	const matches = reports.filter(({ score }) => score === nearest);
-	const details = matches.map(({ text }, index) => matches.length > 1 ? `Alternative ${index + 1}: ${text}` : text).join(" ");
+	const details = matches
+		.map(({ text }, index) => (matches.length > 1 ? `Alternative ${index + 1}: ${text}` : text))
+		.join(" ");
 	if (input.operation === "telemetry")
 		return `Invalid policy control fields for telemetry; use from and to, or since and until, with an optional cursor. Repeat the same selection on every page. This read accepts no authorization or mutation fields. ${details}`;
 	const operation = selected.length ? ` for ${input.operation}` : "; select a known operation and supply an object";

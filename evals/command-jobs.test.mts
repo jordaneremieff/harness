@@ -109,7 +109,9 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 	}
 	const completions = () =>
 		session?.messages.flatMap((message) =>
-			message.role === "custom" && message.customType === JOB_COMPLETION_MESSAGE ? [message.details as JobCompletionDetails] : [],
+			message.role === "custom" && message.customType === JOB_COMPLETION_MESSAGE
+				? [message.details as JobCompletionDetails]
+				: [],
 		) ?? [];
 	const runs: string[] = [];
 	try {
@@ -213,9 +215,13 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 			command: "cat input.txt; printf '%s' $$ > cancel-pid; exec sleep 30",
 			background: true,
 		});
-		assert.ok(cancelReceipt.content.some((part) =>
-			part.type === "text" && part.text === "[policy] Use the read tool for file contents, one call per file: read path=README.md.",
-		));
+		assert.ok(
+			cancelReceipt.content.some(
+				(part) =>
+					part.type === "text" &&
+					part.text === "[policy] Use the read tool for file contents, one call per file: read path=README.md.",
+			),
+		);
 		const cancel = JSON.parse(JSON.stringify(cancelReceipt.details)).job;
 		const cancelPid = await writtenPid("cancel-pid");
 		assert.equal((await data("jobs", { action: "cancel", id: cancel.id })).job.cancellationRequested, true);

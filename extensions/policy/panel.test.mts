@@ -240,13 +240,22 @@ describe("telemetry directory boundary", () => {
 		t.after(() => rm(dir, { recursive: true, force: true }));
 		await writeFile(join(dir, "2026-09-03.jsonl"), recordLine(activity({ classes: ["root.rule"] })));
 		await writeFile(join(dir, "2026-09-03.000001.jsonl"), recordLine(activity({ classes: ["root.rule"] })));
-		await writeFile(segmentPath(dir, "2026-09-03", 1), recordLine(activity({ classes: ["old.rule"], at: "2026-09-03T01:00:00.000Z" })));
-		await writeFile(segmentPath(dir, "2026-09-03", 2), recordLine(activity({ classes: ["new.rule"], at: "2026-09-03T02:00:00.000Z" })));
+		await writeFile(
+			segmentPath(dir, "2026-09-03", 1),
+			recordLine(activity({ classes: ["old.rule"], at: "2026-09-03T01:00:00.000Z" })),
+		);
+		await writeFile(
+			segmentPath(dir, "2026-09-03", 2),
+			recordLine(activity({ classes: ["new.rule"], at: "2026-09-03T02:00:00.000Z" })),
+		);
 		const fires = await readFireSummary(dir);
 		assert.deepEqual([...fires.fires.keys()].sort(), ["new.rule", "old.rule"]);
 		assert.equal(fires.partial, false);
 		const result = await readRecentActivity(dir);
-		assert.deepEqual(result.records.map((entry) => entry.classes[0]), ["new.rule", "old.rule"]);
+		assert.deepEqual(
+			result.records.map((entry) => entry.classes[0]),
+			["new.rule", "old.rule"],
+		);
 		assert.equal(result.partial, false);
 	});
 

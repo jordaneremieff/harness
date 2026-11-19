@@ -190,7 +190,11 @@ test("deleted modules still match literal consumers in the current tree", (t) =>
 	const { root, files } = fixture(t);
 	rmSync(join(root, "extensions/example/source.ts"));
 	assert.deepEqual(
-		selectTests(root, files.filter((path) => path !== "extensions/example/source.ts"), ["extensions/example/source.ts"]),
+		selectTests(
+			root,
+			files.filter((path) => path !== "extensions/example/source.ts"),
+			["extensions/example/source.ts"],
+		),
 		expected,
 	);
 });

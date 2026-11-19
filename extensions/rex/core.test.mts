@@ -20,7 +20,16 @@ const otherSession = "session:44444444-4444-4444-8444-444444444444";
 const target = { server: "launch", session, block, source: "explicit" as const };
 const context: RexCallContext = { ownerId: "owner", callId: "create", cwd: process.cwd() };
 function terminalEvent(name: string, blockId = block): string {
-	return JSON.stringify({ type: "session_event", payload: { session_id: session, event: { type: "block_event", payload: { block_id: blockId, creator_name: "com.superlogical.terminal", name, payload: {} } } } });
+	return JSON.stringify({
+		type: "session_event",
+		payload: {
+			session_id: session,
+			event: {
+				type: "block_event",
+				payload: { block_id: blockId, creator_name: "com.superlogical.terminal", name, payload: {} },
+			},
+		},
+	});
 }
 function reply(value: unknown): CliResult {
 	return {
@@ -106,7 +115,17 @@ function resolveReply(data: Record<string, unknown>): CliResult {
 		],
 	});
 }
-function fixture(options: { server?: string; maxRecords?: number; maxOutputBytes?: number; maxWaitMs?: number; isCallActive?: (ownerId: string, callId: string) => boolean; env?: Readonly<Record<string, string | undefined>>; launch?: { description: string; unavailable?: string } } = {}) {
+function fixture(
+	options: {
+		server?: string;
+		maxRecords?: number;
+		maxOutputBytes?: number;
+		maxWaitMs?: number;
+		isCallActive?: (ownerId: string, callId: string) => boolean;
+		env?: Readonly<Record<string, string | undefined>>;
+		launch?: { description: string; unavailable?: string };
+	} = {},
+) {
 	const store = storeFixture();
 	const transport = new FakeTransport();
 	const core = new RexCore({
@@ -158,13 +177,21 @@ test("creation retains pending intent before its external effect and refuses sam
 	assert.equal(windows[0]?.layout.block.options.login, false);
 	const wrapped = windows[0]?.layout.block.options.command as string[];
 	assert.equal(wrapped[0], "/usr/bin/env");
-	assert.equal(wrapped[1], `PI_PANE_STACKING=${JSON.stringify([process.execPath, fileURLToPath(new URL("./pane-stacking.mts", import.meta.url))])}`);
+	assert.equal(
+		wrapped[1],
+		`PI_PANE_STACKING=${JSON.stringify([process.execPath, fileURLToPath(new URL("./pane-stacking.mts", import.meta.url))])}`,
+	);
 	assert.deepEqual(wrapped.slice(2), request.command);
 	const auto = fixture();
-	await auto.core.execute({ op: "create", kind: "session", label: "auto-shell", command: ["node", "server.mjs"] }, context);
+	await auto.core.execute(
+		{ op: "create", kind: "session", label: "auto-shell", command: ["node", "server.mjs"] },
+		context,
+	);
 	const autoCreation = auto.transport.calls.find((call) => call.method === "session.create");
 	assert.ok(autoCreation);
-	const autoWindows = autoCreation.data.initial_windows as Array<{ layout: { block: { options: Record<string, unknown> } } }>;
+	const autoWindows = autoCreation.data.initial_windows as Array<{
+		layout: { block: { options: Record<string, unknown> } };
+	}>;
 	assert.equal(autoWindows[0]?.layout.block.options.login, undefined);
 	assert.equal(autoWindows[0]?.layout.block.options.shell, undefined);
 	const replay = await f.core.execute(request, context);
@@ -182,7 +209,10 @@ test("stacking offers use an unresolved absolute PATH executable and omit unavai
 	await writeFile(helper, "helper");
 	const local = "unix:///local.sock";
 	assert.deepEqual(paneStackingCommand(local, { PATH: `relative:${root}` }, "/missing/node", helper), [node, helper]);
-	assert.deepEqual(paneStackingCommand(local, { PATH: "/missing" }, process.execPath, helper), [process.execPath, helper]);
+	assert.deepEqual(paneStackingCommand(local, { PATH: "/missing" }, process.execPath, helper), [
+		process.execPath,
+		helper,
+	]);
 	assert.equal(paneStackingCommand(local, {}, "/missing/node", helper), undefined);
 	assert.equal(paneStackingCommand(local, { PATH: root }, process.execPath, join(root, "missing.mts")), undefined);
 	assert.equal(paneStackingCommand(local, { PATH: root }, process.execPath, root), undefined);
@@ -194,8 +224,10 @@ test("stacking offers use an unresolved absolute PATH executable and omit unavai
 test("network pane creation preserves the command without a stacking offer", async () => {
 	const f = fixture();
 	const run = f.transport.run.bind(f.transport);
-	f.transport.run = (args, call) => args.includes("whoami")
-		? Promise.resolve(reply({ endpoint: "tcp://remote:1234", host_id: "remote", instance_id: "instance" })) : run(args, call);
+	f.transport.run = (args, call) =>
+		args.includes("whoami")
+			? Promise.resolve(reply({ endpoint: "tcp://remote:1234", host_id: "remote", instance_id: "instance" }))
+			: run(args, call);
 	const command = ["node", "server.mjs"];
 	const response = await f.core.execute({ op: "create", kind: "session", label: "remote", command }, context);
 	assert.equal(response.outcome, "created");
@@ -314,11 +346,18 @@ test("cleanup uses exact presence without fetching oversized block descriptions"
 	const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
 	assert.equal(response.ok, true);
 	assert.equal(response.effects.recordId, "close");
-	assert.equal(f.transport.calls.some((call) => call.method === "session.describe_block"), false);
-	assert.deepEqual(f.transport.calls.filter((call) => call.method === "target.resolve").map((call) => call.data),
-		[{ kinds: ["block"], queries: [block], scope: { session } }]);
-	assert.deepEqual(f.transport.calls.filter((call) => call.method === "block.close").map((call) => call.data),
-		[{ session_id: session, block_id: block }]);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "session.describe_block"),
+		false,
+	);
+	assert.deepEqual(
+		f.transport.calls.filter((call) => call.method === "target.resolve").map((call) => call.data),
+		[{ kinds: ["block"], queries: [block], scope: { session } }],
+	);
+	assert.deepEqual(
+		f.transport.calls.filter((call) => call.method === "block.close").map((call) => call.data),
+		[{ session_id: session, block_id: block }],
+	);
 });
 
 test("cleanup refuses absent, ambiguous, unavailable and mismatched exact targets before effect admission", async () => {
@@ -327,17 +366,24 @@ test("cleanup refuses absent, ambiguous, unavailable and mismatched exact target
 		reply({ results: [{ status: "ambiguous" }] }),
 		{ ...reply({}), outcome: "timeout" as const, exitCode: null },
 		reply({ results: [{ status: "resolved", target: { block_id: block, session_id: otherSession } }] }),
-		reply({ results: [{ status: "resolved", target: { block_id: "block:55555555-5555-4555-8555-555555555555", session_id: session } }] }),
+		reply({
+			results: [
+				{ status: "resolved", target: { block_id: "block:55555555-5555-4555-8555-555555555555", session_id: session } },
+			],
+		}),
 	]) {
 		const f = fixture();
 		await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
-		f.transport.handler = (method) => method === "target.resolve" ? observed : undefined;
+		f.transport.handler = (method) => (method === "target.resolve" ? observed : undefined);
 		const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
 		assert.equal(response.ok, false);
 		assert.equal(response.effects.state, "none");
 		assert.equal(f.store.state.records.length, 1);
 		assert.equal(f.store.state.records[0]?.phase, "confirmed");
-		assert.equal(f.transport.calls.some((call) => call.method === "block.close"), false);
+		assert.equal(
+			f.transport.calls.some((call) => call.method === "block.close"),
+			false,
+		);
 	}
 });
 
@@ -345,13 +391,18 @@ test("cleanup refuses a changed server instance before target lookup or closure"
 	const f = fixture();
 	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
 	const run = f.transport.run.bind(f.transport);
-	f.transport.run = (args, call) => args.includes("whoami")
-		? Promise.resolve(reply({ endpoint: "unix:///launch", host_id: "launch-host", instance_id: "replacement" })) : run(args, call);
+	f.transport.run = (args, call) =>
+		args.includes("whoami")
+			? Promise.resolve(reply({ endpoint: "unix:///launch", host_id: "launch-host", instance_id: "replacement" }))
+			: run(args, call);
 	const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
 	assert.equal(response.ok, false);
 	assert.match(response.error ?? "", /server identity changed/);
 	assert.equal(response.effects.state, "none");
-	assert.equal(f.transport.calls.some((call) => call.method === "target.resolve" || call.method === "block.close"), false);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "target.resolve" || call.method === "block.close"),
+		false,
+	);
 });
 
 test("copied claims do not transfer cleanup rights and repeated cleanup does not race unknown effects", async () => {
@@ -472,52 +523,76 @@ test("explicit recovery distinguishes present, absent and uncertain owned blocks
 });
 
 test("an active cleanup producer prevents recovery and a second cleanup across core instances", async () => {
-  let active = true;
-  const f = fixture({ isCallActive: (_owner, callId) => active && callId === "close" });
-  await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
-  let enter!: () => void;
-  let release!: () => void;
-  const entered = new Promise<void>((resolve) => { enter = resolve; });
-  const gate = new Promise<void>((resolve) => { release = resolve; });
-  f.transport.handler = async (method) => {
-    if (method !== "block.close") return undefined;
-    enter();
-    await gate;
-    return reply({});
-  };
-  const cleanup = f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
-  await entered;
-  const other = new RexCore({ store: f.store, transport: f.transport, isCallActive: (_owner, callId) => active && callId === "close", env: { REX_SERVER: "launch" } });
-  try {
-    const recovery = await other.execute({ op: "reconcile", recordId: "create", recover: true }, { ...context, callId: "recover" });
-    assert.equal(recovery.outcome, "cleanup_still_active_or_unknown");
-    const second = await other.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "second-close" });
-    assert.equal(second.ok, false);
-    assert.equal(f.transport.calls.filter((call) => call.method === "block.close").length, 1);
-  } finally { release(); await cleanup; active = false; }
+	let active = true;
+	const f = fixture({ isCallActive: (_owner, callId) => active && callId === "close" });
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	let enter!: () => void;
+	let release!: () => void;
+	const entered = new Promise<void>((resolve) => {
+		enter = resolve;
+	});
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	f.transport.handler = async (method) => {
+		if (method !== "block.close") return undefined;
+		enter();
+		await gate;
+		return reply({});
+	};
+	const cleanup = f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
+	await entered;
+	const other = new RexCore({
+		store: f.store,
+		transport: f.transport,
+		isCallActive: (_owner, callId) => active && callId === "close",
+		env: { REX_SERVER: "launch" },
+	});
+	try {
+		const recovery = await other.execute(
+			{ op: "reconcile", recordId: "create", recover: true },
+			{ ...context, callId: "recover" },
+		);
+		assert.equal(recovery.outcome, "cleanup_still_active_or_unknown");
+		const second = await other.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "second-close" });
+		assert.equal(second.ok, false);
+		assert.equal(f.transport.calls.filter((call) => call.method === "block.close").length, 1);
+	} finally {
+		release();
+		await cleanup;
+		active = false;
+	}
 });
 
 test("cleanup refuses ownership state that changes after resource preflight", async () => {
-  const f = fixture();
-  await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
-  f.transport.handler = async (method) => {
-    if (method !== "target.resolve") return undefined;
-    await f.store.update("owner", (state) => changeOwnership(state, "create", { note: "The claim changed during preflight." }), "work");
-    return resolveReply({ kinds: ["block"] });
-  };
-  const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
-  assert.equal(response.ok, false);
-  assert.match(response.error ?? "", /ownership changed after preflight/);
-  assert.equal(f.transport.calls.some((call) => call.method === "block.close"), false);
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	f.transport.handler = async (method) => {
+		if (method !== "target.resolve") return undefined;
+		await f.store.update(
+			"owner",
+			(state) => changeOwnership(state, "create", { note: "The claim changed during preflight." }),
+			"work",
+		);
+		return resolveReply({ kinds: ["block"] });
+	};
+	const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
+	assert.equal(response.ok, false);
+	assert.match(response.error ?? "", /ownership changed after preflight/);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "block.close"),
+		false,
+	);
 });
 
 test("unmatched condition waits report no match and preserve observer diagnostics", async () => {
 	for (const failed of [false, true]) {
 		const f = fixture();
 		const run = f.transport.run.bind(f.transport);
-		f.transport.run = (args, call) => args.includes("events")
-			? Promise.resolve({ ...reply({}), exitCode: failed ? 1 : 0, stderr: failed ? "event source unavailable" : "" })
-			: run(args, call);
+		f.transport.run = (args, call) =>
+			args.includes("events")
+				? Promise.resolve({ ...reply({}), exitCode: failed ? 1 : 0, stderr: failed ? "event source unavailable" : "" })
+				: run(args, call);
 		const response = await f.core.execute({ op: "wait", condition: "status", state: "done", target }, context);
 		assert.equal(response.ok, false);
 		assert.equal(response.outcome, failed ? "observation_failed" : "observer_ended");
@@ -530,16 +605,17 @@ test("unmatched condition waits report no match and preserve observer diagnostic
 });
 
 test("child observer timeouts stay distinct from cancellation and execution failure", async () => {
-  const f = fixture({ maxOutputBytes: 4096 });
-  const run = f.transport.run.bind(f.transport);
-  for (const outcome of ["timeout", "cancelled", "spawn_error"] as const) {
-    f.transport.run = (args, call) => args.includes("wait") ? Promise.resolve({ ...reply({}), outcome, exitCode: null }) : run(args, call);
-    const response = await f.core.execute({ op: "wait", condition: "child_exit", target }, context);
-    assert.equal(response.outcome, outcome === "spawn_error" ? "observation_failed" : outcome);
-    assert.equal(response.effects.state, "none");
-    assert.match(response.error ?? "", /Inspect the target's current state/);
-    assert.match(response.error ?? "", /did not stop terminal work/);
-  }
+	const f = fixture({ maxOutputBytes: 4096 });
+	const run = f.transport.run.bind(f.transport);
+	for (const outcome of ["timeout", "cancelled", "spawn_error"] as const) {
+		f.transport.run = (args, call) =>
+			args.includes("wait") ? Promise.resolve({ ...reply({}), outcome, exitCode: null }) : run(args, call);
+		const response = await f.core.execute({ op: "wait", condition: "child_exit", target }, context);
+		assert.equal(response.outcome, outcome === "spawn_error" ? "observation_failed" : outcome);
+		assert.equal(response.effects.state, "none");
+		assert.match(response.error ?? "", /Inspect the target's current state/);
+		assert.match(response.error ?? "", /did not stop terminal work/);
+	}
 });
 
 test("reconciliation failures stay incomplete and preserve exact identities and errors", async () => {
@@ -574,7 +650,8 @@ test("owned records use bounded pages with exact omission counts", async () => {
 
 test("complete tool results omit bulk data at the aggregate cap while preserving target and effects", async () => {
 	const f = fixture({ maxOutputBytes: 4096 });
-	f.transport.handler = (method) => (method !== "target.resolve" && method !== "session.list_blocks" ? reply({ bulk: "x".repeat(60000) }) : undefined);
+	f.transport.handler = (method) =>
+		method !== "target.resolve" && method !== "session.list_blocks" ? reply({ bulk: "x".repeat(60000) }) : undefined;
 	const response = await f.core.execute({ op: "inspect", view: "summary", target }, context);
 	assert.equal(response.ok, true);
 	assert.equal(response.target?.blockId, block);
@@ -586,11 +663,14 @@ test("complete tool results omit bulk data at the aggregate cap while preserving
 
 test("odd output limits produce integer default capture and text-wait byte bounds", async () => {
 	const f = fixture({ maxOutputBytes: 4097 });
-	f.transport.handler = (method) => method === "com.superlogical.terminal.format" ? reply({ content: "ready", eof: true }) : undefined;
+	f.transport.handler = (method) =>
+		method === "com.superlogical.terminal.format" ? reply({ content: "ready", eof: true }) : undefined;
 	assert.equal((await f.core.execute({ op: "inspect", view: "summary", target }, context)).ok, true);
 	assert.equal((await f.core.execute({ op: "inspect", view: "capture", target }, context)).ok, true);
 	assert.equal((await f.core.execute({ op: "wait", condition: "text", text: "ready", target }, context)).ok, true);
-	const bounds = f.transport.calls.filter((call) => call.method === "com.superlogical.terminal.format").map((call) => (call.data.args as Record<string, unknown>).max_bytes);
+	const bounds = f.transport.calls
+		.filter((call) => call.method === "com.superlogical.terminal.format")
+		.map((call) => (call.data.args as Record<string, unknown>).max_bytes);
 	assert.ok(bounds.length >= 3);
 	assert.ok(bounds.every((bound) => bound === 1022));
 });
@@ -603,8 +683,9 @@ function longOutputFixture(lines: string[], maxBytes: number) {
 		let start = offset;
 		while (start < whole.length && ((whole[start] ?? 0) & 0xc0) === 0x80) start++;
 		let end = Math.min(whole.length, offset + budget);
-		const cost = () => Buffer.byteLength(JSON.stringify(whole.subarray(offset, end).toString())) - 2 - 2 * (start - offset);
-		while (end > start && (end < whole.length && ((whole[end] ?? 0) & 0xc0) === 0x80 || cost() > budget)) end--;
+		const cost = () =>
+			Buffer.byteLength(JSON.stringify(whole.subarray(offset, end).toString())) - 2 - 2 * (start - offset);
+		while (end > start && ((end < whole.length && ((whole[end] ?? 0) & 0xc0) === 0x80) || cost() > budget)) end--;
 		const data = whole.subarray(offset, end).toString();
 		assert.ok(cost() <= budget);
 		return { data, eof: end >= whole.length };
@@ -614,7 +695,11 @@ function longOutputFixture(lines: string[], maxBytes: number) {
 		if (method === "com.superlogical.terminal.format") {
 			assert.equal(args.max_bytes, maxBytes - 2);
 			const first = part(0, args.max_bytes);
-			return reply(first.eof ? { content: first.data, total: whole.length, eof: true } : { content: first.data, total: whole.length, id: 7 });
+			return reply(
+				first.eof
+					? { content: first.data, total: whole.length, eof: true }
+					: { content: first.data, total: whole.length, id: 7 },
+			);
 		}
 		if (method === "com.superlogical.terminal.blob_read") {
 			assert.equal(args.id, 7);
@@ -627,7 +712,10 @@ function longOutputFixture(lines: string[], maxBytes: number) {
 }
 
 test("capture returns the most recent output when scrollback exceeds the bound", async () => {
-	const lines = Array.from({ length: 400 }, (_, index) => `build output line ${index} with enough text to exceed the bound`);
+	const lines = Array.from(
+		{ length: 400 },
+		(_, index) => `build output line ${index} with enough text to exceed the bound`,
+	);
 	lines.push("READY on http://localhost:3000");
 	const f = longOutputFixture(lines, 4096);
 	const response = await f.core.execute({ op: "inspect", view: "capture", target }, context);
@@ -649,36 +737,55 @@ test("capture keeps multibyte output whole and short output unchanged", async ()
 	const lines = Array.from({ length: 300 }, (_, index) => `ééééééééééé 日本語テキスト ${index}`);
 	lines.push("END-MB");
 	const long = longOutputFixture(lines, 2048);
-	const data = (await long.core.execute({ op: "inspect", view: "capture", target }, context)).data as { content: string; start: number; end: number };
+	const data = (await long.core.execute({ op: "inspect", view: "capture", target }, context)).data as {
+		content: string;
+		start: number;
+		end: number;
+	};
 	assert.ok(data.content.endsWith("END-MB"));
 	assert.ok(!data.content.includes("\ufffd"));
 	assert.match(data.content, /^ééééééééééé 日本語テキスト \d+\n/);
 	assert.equal(data.start, long.whole.length - Buffer.byteLength(data.content));
 	const short = longOutputFixture(["$ npm test", "all green"], 2048);
 	const response = await short.core.execute({ op: "inspect", view: "capture", target }, context);
-	assert.deepEqual(response.data, { content: "$ npm test\nall green", total: short.whole.length, start: 0, end: short.whole.length });
+	assert.deepEqual(response.data, {
+		content: "$ npm test\nall green",
+		total: short.whole.length,
+		start: 0,
+		end: short.whole.length,
+	});
 	assert.equal(response.coverage.truncated, false);
-	assert.equal(short.transport.calls.some((call) => call.method === "com.superlogical.terminal.blob_read"), false);
+	assert.equal(
+		short.transport.calls.some((call) => call.method === "com.superlogical.terminal.blob_read"),
+		false,
+	);
 });
 
 test("text readiness matches a marker printed after more output than one bounded reply", async () => {
 	const lines = Array.from({ length: 400 }, (_, index) => `compiling module ${index} ... done`);
 	lines.push("Local: http://localhost:5173/");
 	const f = longOutputFixture(lines, 4096);
-	const response = await f.core.execute({ op: "wait", condition: "text", text: "Local: http://localhost:5173/", timeoutMs: 1000, target }, context);
+	const response = await f.core.execute(
+		{ op: "wait", condition: "text", text: "Local: http://localhost:5173/", timeoutMs: 1000, target },
+		context,
+	);
 	assert.equal(response.outcome, "condition_observed");
 	assert.equal(response.ok, true);
 	assert.equal(response.coverage.truncated, true);
 	const summary = await f.core.execute({ op: "inspect", view: "summary", target }, context);
-	assert.ok(((summary.data as { capture: { content: string } }).capture.content).endsWith("Local: http://localhost:5173/"));
+	assert.ok(
+		(summary.data as { capture: { content: string } }).capture.content.endsWith("Local: http://localhost:5173/"),
+	);
 });
 
 test("escaped and astral tails preserve fitting markers, encoded bounds and raw offsets across consumers", async () => {
 	for (const prefix of ["\\".repeat(5000), '\\"'.repeat(2500), "😀".repeat(1250), "\u0001".repeat(5000)]) {
 		const f = longOutputFixture([`${prefix}READY`], 1024);
 		const handler = f.transport.handler;
-		f.transport.handler = (method, data, call) => method === "com.superlogical.terminal.process"
-			? reply({ last_exit: { exit_code: 0 } }) : handler?.(method, data, call);
+		f.transport.handler = (method, data, call) =>
+			method === "com.superlogical.terminal.process"
+				? reply({ last_exit: { exit_code: 0 } })
+				: handler?.(method, data, call);
 		const captured = await f.core.execute({ op: "inspect", view: "capture", target }, context);
 		const data = captured.data as { content: string; start: number; end: number; total: number };
 		assert.equal(captured.ok, true);
@@ -689,7 +796,10 @@ test("escaped and astral tails preserve fitting markers, encoded bounds and raw 
 		assert.equal(data.total, f.whole.length);
 		assert.equal(data.start, data.total - Buffer.byteLength(data.content));
 		assert.equal(captured.coverage.truncated, true);
-		assert.equal((await f.core.execute({ op: "wait", condition: "text", text: "READY", target }, context)).outcome, "condition_observed");
+		assert.equal(
+			(await f.core.execute({ op: "wait", condition: "text", text: "READY", target }, context)).outcome,
+			"condition_observed",
+		);
 		const completed = await f.core.execute({ op: "wait", condition: "child_exit", target }, context);
 		assert.equal(completed.outcome, "child_completed");
 		assert.ok((completed.data as { capture: { content: string } }).capture.content.endsWith("READY"));
@@ -701,14 +811,17 @@ test("Unicode tails preserve every byte alignment and EOF offsets across capture
 		for (let padding = 0; padding < 4; padding++) {
 			const f = longOutputFixture([`${prefix}${"x".repeat(padding)}READY`], 1024);
 			const handler = f.transport.handler;
-			f.transport.handler = (method, data, call) => method === "com.superlogical.terminal.process"
-				? reply({ last_exit: { exit_code: 0 } }) : handler?.(method, data, call);
+			f.transport.handler = (method, data, call) =>
+				method === "com.superlogical.terminal.process"
+					? reply({ last_exit: { exit_code: 0 } })
+					: handler?.(method, data, call);
 			await f.core.execute({ op: "create", kind: "session", label: "unicode" }, context);
 			const capture = (await f.core.execute({ op: "inspect", view: "capture", target }, context)).data;
 			const completed = await f.core.execute({ op: "wait", condition: "child_exit", target }, context);
 			const observed = await f.core.execute({ op: "observe", recordId: "create", maxBytes: 1024 }, context);
 			assert.equal(observed.ok, true);
-			const owned = (observed.data as { reports: { observations: { capture: unknown }[] }[] }).reports[0]?.observations[0]?.capture;
+			const owned = (observed.data as { reports: { observations: { capture: unknown }[] }[] }).reports[0]
+				?.observations[0]?.capture;
 			for (const value of [capture, (completed.data as { capture: unknown }).capture, owned]) {
 				const data = value as { content: string; start: number; end: number; total: number };
 				assert.ok(data.content.endsWith("READY"));
@@ -718,7 +831,10 @@ test("Unicode tails preserve every byte alignment and EOF offsets across capture
 				assert.equal(data.start, data.total - Buffer.byteLength(data.content));
 				assert.equal(Buffer.compare(Buffer.from(data.content), f.whole.subarray(data.start)), 0);
 			}
-			assert.equal((await f.core.execute({ op: "wait", condition: "text", text: "READY", target }, context)).outcome, "condition_observed");
+			assert.equal(
+				(await f.core.execute({ op: "wait", condition: "text", text: "READY", target }, context)).outcome,
+				"condition_observed",
+			);
 			const reads = f.transport.calls.filter((call) => call.method === "com.superlogical.terminal.blob_read");
 			assert.ok(reads.length <= 4 * (1 + Math.ceil(Math.log2(1022))));
 			assert.ok(reads.every((call) => (call.data.args as { offset: number }).offset >= f.whole.length - 1022));
@@ -759,13 +875,18 @@ test("tail line alignment preserves a fitting final marker before blank terminal
 test("child exit results carry the most recent output and survive a capture failure", async () => {
 	const f = fixture();
 	f.transport.handler = (method) => {
-		if (method === "com.superlogical.terminal.process") return reply({ last_exit: { exit_code: 1, error: "exit status 1" } });
-		if (method === "com.superlogical.terminal.format") return reply({ content: "1 failing\n  AssertionError: expected 2 to equal 3", total: 46, eof: true });
+		if (method === "com.superlogical.terminal.process")
+			return reply({ last_exit: { exit_code: 1, error: "exit status 1" } });
+		if (method === "com.superlogical.terminal.format")
+			return reply({ content: "1 failing\n  AssertionError: expected 2 to equal 3", total: 46, eof: true });
 		return undefined;
 	};
 	const failed = await f.core.execute({ op: "wait", condition: "child_exit", target }, context);
 	assert.equal(failed.outcome, "child_failed");
-	const data = failed.data as { capture: { content: string; start: number; end: number }; process: { last_exit: { exit_code: number } } };
+	const data = failed.data as {
+		capture: { content: string; start: number; end: number };
+		process: { last_exit: { exit_code: number } };
+	};
 	assert.equal(data.process.last_exit.exit_code, 1);
 	assert.match(data.capture.content, /AssertionError/);
 	assert.equal(failed.coverage.truncated, false);
@@ -783,23 +904,46 @@ test("child exit results carry the most recent output and survive a capture fail
 
 test("creation focus is explicit for windows and splits and refused for sessions", async () => {
 	const f = fixture();
-	await f.core.execute({ op: "create", kind: "window", label: "Tests", focus: true, target: { session } }, { ...context, callId: "window" });
-	await f.core.execute({ op: "create", kind: "split", label: "Logs", target: { session, block } }, { ...context, callId: "split" });
-	await f.core.execute({ op: "create", kind: "split", label: "Shown", focus: true, target: { session, block } }, { ...context, callId: "shown" });
-	const focus = f.transport.calls.filter((call) => call.method === "session.new_window" || call.method === "session.new_split").map((call) => call.data.focus);
+	await f.core.execute(
+		{ op: "create", kind: "window", label: "Tests", focus: true, target: { session } },
+		{ ...context, callId: "window" },
+	);
+	await f.core.execute(
+		{ op: "create", kind: "split", label: "Logs", target: { session, block } },
+		{ ...context, callId: "split" },
+	);
+	await f.core.execute(
+		{ op: "create", kind: "split", label: "Shown", focus: true, target: { session, block } },
+		{ ...context, callId: "shown" },
+	);
+	const focus = f.transport.calls
+		.filter((call) => call.method === "session.new_window" || call.method === "session.new_split")
+		.map((call) => call.data.focus);
 	assert.deepEqual(focus, [true, false, true]);
-	const refused = await f.core.execute({ op: "create", kind: "session", label: "Project", focus: true }, { ...context, callId: "session" });
+	const refused = await f.core.execute(
+		{ op: "create", kind: "session", label: "Project", focus: true },
+		{ ...context, callId: "session" },
+	);
 	assert.equal(refused.ok, false);
 	assert.equal(refused.effects.state, "none");
 	assert.match(refused.error ?? "", /focus applies to window, split and float/);
-	assert.equal(f.transport.calls.some((call) => call.method === "session.create"), false);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "session.create"),
+		false,
+	);
 });
 
 test("float creation opens an owned floating pane in the anchor block's window", async () => {
 	const f = fixture();
 	const floating = "block:44444444-4444-4444-8444-444444444444";
-	f.transport.handler = (method) => (method === "session.new_layer" ? reply({ layer_id: "layer:55555555-5555-4555-8555-555555555555", block_ids: [floating], revision: 7 }) : undefined);
-	const created = await f.core.execute({ op: "create", kind: "float", label: "Document", command: ["node", "show.ts"], target: { session, block } }, { ...context, callId: "float" });
+	f.transport.handler = (method) =>
+		method === "session.new_layer"
+			? reply({ layer_id: "layer:55555555-5555-4555-8555-555555555555", block_ids: [floating], revision: 7 })
+			: undefined;
+	const created = await f.core.execute(
+		{ op: "create", kind: "float", label: "Document", command: ["node", "show.ts"], target: { session, block } },
+		{ ...context, callId: "float" },
+	);
 	assert.equal(created.ok, true);
 	assert.equal(created.outcome, "created");
 	assert.equal(created.target?.blockId, floating);
@@ -809,35 +953,84 @@ test("float creation opens an owned floating pane in the anchor block's window",
 		session_id: session,
 		window_id: window,
 		bounds: [0.1, 0.06, 0.8, 0.88],
-		layout: { block: { flavor: "com.superlogical.terminal.shell", label: "Document", options: { command: ["/usr/bin/env", `PI_PANE_STACKING=${JSON.stringify([process.execPath, fileURLToPath(new URL("./pane-stacking.mts", import.meta.url))])}`, "node", "show.ts"], exit: { on_completion: false } } } },
+		layout: {
+			block: {
+				flavor: "com.superlogical.terminal.shell",
+				label: "Document",
+				options: {
+					command: [
+						"/usr/bin/env",
+						`PI_PANE_STACKING=${JSON.stringify([process.execPath, fileURLToPath(new URL("./pane-stacking.mts", import.meta.url))])}`,
+						"node",
+						"show.ts",
+					],
+					exit: { on_completion: false },
+				},
+			},
+		},
 		focus: false,
 	});
-	await f.core.execute({ op: "create", kind: "float", label: "Shown", focus: true, bounds: [0, 0, 0.5, 1], target: { session, block } }, { ...context, callId: "shown-float" });
+	await f.core.execute(
+		{ op: "create", kind: "float", label: "Shown", focus: true, bounds: [0, 0, 0.5, 1], target: { session, block } },
+		{ ...context, callId: "shown-float" },
+	);
 	assert.deepEqual([layers()[1]?.bounds, layers()[1]?.focus], [[0, 0, 0.5, 1], true]);
 	const unwrapped = layers()[1];
 	assert.ok(unwrapped);
 	assert.equal((unwrapped.layout as { block: { options: { command?: unknown } } }).block.options.command, undefined);
-	const outside = await f.core.execute({ op: "create", kind: "float", label: "Wide", bounds: [0.5, 0, 0.6, 1], target: { session, block } }, { ...context, callId: "outside" });
+	const outside = await f.core.execute(
+		{ op: "create", kind: "float", label: "Wide", bounds: [0.5, 0, 0.6, 1], target: { session, block } },
+		{ ...context, callId: "outside" },
+	);
 	assert.equal(outside.ok, false);
 	assert.equal(outside.effects.state, "none");
 	assert.match(outside.error ?? "", /float bounds/);
-	const misplaced = await f.core.execute({ op: "create", kind: "split", label: "Split", bounds: [0, 0, 1, 1], target: { session, block } }, { ...context, callId: "misplaced" });
+	const misplaced = await f.core.execute(
+		{ op: "create", kind: "split", label: "Split", bounds: [0, 0, 1, 1], target: { session, block } },
+		{ ...context, callId: "misplaced" },
+	);
 	assert.match(misplaced.error ?? "", /bounds apply only to float creation/);
-	const pinnedSplit = await f.core.execute({ op: "create", kind: "split", label: "Split", keepFloating: true, target: { session, block } }, { ...context, callId: "pinned-split" });
+	const pinnedSplit = await f.core.execute(
+		{ op: "create", kind: "split", label: "Split", keepFloating: true, target: { session, block } },
+		{ ...context, callId: "pinned-split" },
+	);
 	assert.match(pinnedSplit.error ?? "", /keepFloating applies only to float creation/);
 	assert.equal(layers().length, 2);
 });
 
 test("keepOpen false closes a pane when its program succeeds and keeps every failure open", async () => {
 	const f = fixture();
-	f.transport.handler = (method) => (method === "session.new_layer" ? reply({ layer_id: "layer:55555555-5555-4555-8555-555555555555", block_ids: [block], revision: 7 }) : undefined);
-	await f.core.execute({ op: "create", kind: "float", label: "Viewer", command: ["node", "show.ts"], keepOpen: false, target: { session, block } }, { ...context, callId: "viewer" });
-	await f.core.execute({ op: "create", kind: "split", label: "Kept", keepOpen: true, target: { session, block } }, { ...context, callId: "kept" });
-	await f.core.execute({ op: "create", kind: "window", label: "Default", target: { session } }, { ...context, callId: "default" });
+	f.transport.handler = (method) =>
+		method === "session.new_layer"
+			? reply({ layer_id: "layer:55555555-5555-4555-8555-555555555555", block_ids: [block], revision: 7 })
+			: undefined;
+	await f.core.execute(
+		{
+			op: "create",
+			kind: "float",
+			label: "Viewer",
+			command: ["node", "show.ts"],
+			keepOpen: false,
+			target: { session, block },
+		},
+		{ ...context, callId: "viewer" },
+	);
+	await f.core.execute(
+		{ op: "create", kind: "split", label: "Kept", keepOpen: true, target: { session, block } },
+		{ ...context, callId: "kept" },
+	);
+	await f.core.execute(
+		{ op: "create", kind: "window", label: "Default", target: { session } },
+		{ ...context, callId: "default" },
+	);
 	const exits = f.transport.calls
 		.filter((call) => ["session.new_layer", "session.new_split", "session.new_window"].includes(call.method ?? ""))
 		.map((call) => (call.data.layout as { block: { options: { exit: unknown } } }).block.options.exit);
-	assert.deepEqual(exits, [{ on_completion: true, quick_exit_threshold_ms: 4294967295 }, { on_completion: false }, { on_completion: false }]);
+	assert.deepEqual(exits, [
+		{ on_completion: true, quick_exit_threshold_ms: 4294967295 },
+		{ on_completion: false },
+		{ on_completion: false },
+	]);
 });
 
 test("cleanup acknowledgement preserves released original and attempt claims without revival", async () => {
@@ -845,8 +1038,12 @@ test("cleanup acknowledgement preserves released original and attempt claims wit
 	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
 	let enter!: () => void;
 	let release!: () => void;
-	const entered = new Promise<void>((resolve) => { enter = resolve; });
-	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const entered = new Promise<void>((resolve) => {
+		enter = resolve;
+	});
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
 	f.transport.handler = async (method) => {
 		if (method !== "block.close") return undefined;
 		enter();
@@ -857,12 +1054,26 @@ test("cleanup acknowledgement preserves released original and attempt claims wit
 	await entered;
 	try {
 		for (const recordId of ["create", "close"]) {
-			const released = await f.core.execute({ op: "reconcile", recordId, release: true, note: "I release this bookkeeping claim; native work remains independent." }, { ...context, callId: `release-${recordId}` });
+			const released = await f.core.execute(
+				{
+					op: "reconcile",
+					recordId,
+					release: true,
+					note: "I release this bookkeeping claim; native work remains independent.",
+				},
+				{ ...context, callId: `release-${recordId}` },
+			);
 			assert.equal(released.ok, true);
 		}
-	} finally { release(); await cleanup; }
+	} finally {
+		release();
+		await cleanup;
+	}
 	assert.ok(f.store.state.records.every((record) => record.phase === "released"));
-	const recovery = await f.core.execute({ op: "reconcile", recordId: "create", recover: true }, { ...context, callId: "recover" });
+	const recovery = await f.core.execute(
+		{ op: "reconcile", recordId: "create", recover: true },
+		{ ...context, callId: "recover" },
+	);
 	assert.equal(recovery.ok, false);
 	assert.equal(recovery.outcome, "claim_released");
 	assert.equal(f.store.state.records[0]?.phase, "released");
@@ -872,12 +1083,19 @@ test("recovery rechecks cleanup producer activity inside the ownership transacti
 	let active = false;
 	const f = fixture({ isCallActive: (_owner, callId) => active && callId === "close" });
 	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
-	f.transport.handler = (method) => method === "block.close" ? { ...reply({}), outcome: "timeout", exitCode: null } : undefined;
+	f.transport.handler = (method) =>
+		method === "block.close" ? { ...reply({}), outcome: "timeout", exitCode: null } : undefined;
 	await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
 	f.transport.handler = undefined;
 	const update = f.store.update.bind(f.store);
-	f.store.update = (owner, change, phase) => { active = true; return update(owner, change, phase); };
-	const recovered = await f.core.execute({ op: "reconcile", recordId: "create", recover: true }, { ...context, callId: "recover" });
+	f.store.update = (owner, change, phase) => {
+		active = true;
+		return update(owner, change, phase);
+	};
+	const recovered = await f.core.execute(
+		{ op: "reconcile", recordId: "create", recover: true },
+		{ ...context, callId: "recover" },
+	);
 	assert.equal(recovered.ok, false);
 	assert.match(recovered.error ?? "", /active or unknown at recovery admission/);
 	assert.equal(f.store.state.records[0]?.phase, "unknown");
@@ -885,7 +1103,8 @@ test("recovery rechecks cleanup producer activity inside the ownership transacti
 
 test("aggregate native-data omission retains the outer-CLI-only qualification", async () => {
 	const f = fixture({ maxOutputBytes: 4096 });
-	f.transport.handler = (method) => method === "new.capability" ? reply({ failed: true, bulk: "x".repeat(200000) }) : undefined;
+	f.transport.handler = (method) =>
+		method === "new.capability" ? reply({ failed: true, bulk: "x".repeat(200000) }) : undefined;
 	const response = await f.core.execute({ op: "native", kind: "api", method: "new.capability", target }, context);
 	assert.equal(response.ok, true);
 	assert.equal(response.coverage.dataOmitted, true);
@@ -898,19 +1117,35 @@ test("queued cancellation prevents release, recovery and forgetting at state adm
 	for (const operation of ["release", "recover", "forget"] as const) {
 		const f = fixture();
 		await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
-		if (operation === "forget") await f.store.update("owner", (state) => changeOwnership(state, "create", { phase: "released" }), "work");
+		if (operation === "forget")
+			await f.store.update("owner", (state) => changeOwnership(state, "create", { phase: "released" }), "work");
 		const before = structuredClone(f.store.state);
 		let enter!: () => void;
 		let release!: () => void;
-		const entered = new Promise<void>((resolve) => { enter = resolve; });
-		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const entered = new Promise<void>((resolve) => {
+			enter = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		const update = f.store.update.bind(f.store);
-		f.store.update = async (owner, change, phase) => { enter(); await gate; return update(owner, change, phase); };
+		f.store.update = async (owner, change, phase) => {
+			enter();
+			await gate;
+			return update(owner, change, phase);
+		};
 		const controller = new AbortController();
 		const call = { ...context, callId: operation, signal: controller.signal };
-		const request = operation === "forget"
-			? { op: "cleanup" as const, recordId: "create", forget: true }
-			: { op: "reconcile" as const, recordId: "create", release: operation === "release", recover: operation === "recover", note: "I release only the retained claim." };
+		const request =
+			operation === "forget"
+				? { op: "cleanup" as const, recordId: "create", forget: true }
+				: {
+						op: "reconcile" as const,
+						recordId: "create",
+						release: operation === "release",
+						recover: operation === "recover",
+						note: "I release only the retained claim.",
+					};
 		const pending = f.core.execute(request, call);
 		await entered;
 		controller.abort();
@@ -927,24 +1162,41 @@ test("configured low wait caps supply valid defaults and bound explicit timeouts
 	const durations: number[] = [];
 	f.transport.handler = (method, _data, call) => {
 		if (method === "com.superlogical.terminal.process") return reply({ last_exit: { exit_code: 0 } });
-		if (method === "new.capability") { durations.push(call.timeoutMs); return reply({}); }
+		if (method === "new.capability") {
+			durations.push(call.timeoutMs);
+			return reply({});
+		}
 		return undefined;
 	};
 	assert.equal((await f.core.execute({ op: "wait", condition: "child_exit", target }, context)).ok, true);
-	assert.equal((await f.core.execute({ op: "native", kind: "api", method: "new.capability", target }, { ...context, callId: "native-default" })).ok, true);
+	assert.equal(
+		(
+			await f.core.execute(
+				{ op: "native", kind: "api", method: "new.capability", target },
+				{ ...context, callId: "native-default" },
+			)
+		).ok,
+		true,
+	);
 	assert.equal(durations.length, 1);
 	assert.ok(durations.every((duration) => duration > 0 && duration <= 900));
 	const cappedWait = await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 45000, target }, context);
 	assert.equal(cappedWait.ok, true);
 	assert.match(cappedWait.coverage.note ?? "", /requested 45000 ms deadline exceeded the configured 1000 ms cap/);
 	assert.equal(cappedWait.coverage.note?.match(/The requested 45000 ms deadline/g)?.length, 1);
-	const cappedNative = await f.core.execute({ op: "native", kind: "api", method: "new.capability", timeoutMs: 45000, target }, { ...context, callId: "native-explicit" });
+	const cappedNative = await f.core.execute(
+		{ op: "native", kind: "api", method: "new.capability", timeoutMs: 45000, target },
+		{ ...context, callId: "native-explicit" },
+	);
 	assert.equal(cappedNative.ok, true);
 	assert.equal(durations.length, 2);
 	assert.ok(durations.every((duration) => duration > 0 && duration <= 900));
 	assert.match(cappedNative.coverage.note ?? "", /used 1000 ms/);
 	assert.equal(cappedNative.coverage.note?.match(/The requested 45000 ms deadline/g)?.length, 1);
-	assert.equal((await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 300001, target }, context)).ok, false);
+	assert.equal(
+		(await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 300001, target }, context)).ok,
+		false,
+	);
 	assert.equal(durations.length, 2);
 	assert.ok(durations.every((duration) => duration > 0 && duration <= 900));
 });
@@ -953,7 +1205,16 @@ test("native actions distinguish absent arguments from explicit objects without 
 	const f = fixture();
 	const inputs: Array<Record<string, unknown> | undefined> = [undefined, {}, { mode: "explicit" }];
 	for (const [index, args] of inputs.entries()) {
-		const response = await f.core.execute({ op: "native", kind: "action", action: "com.superlogical.terminal.reset", target, ...(args === undefined ? {} : { args }) }, { ...context, callId: `action-${index}` });
+		const response = await f.core.execute(
+			{
+				op: "native",
+				kind: "action",
+				action: "com.superlogical.terminal.reset",
+				target,
+				...(args === undefined ? {} : { args }),
+			},
+			{ ...context, callId: `action-${index}` },
+		);
 		assert.equal(response.ok, true);
 		const command = f.transport.calls.at(-1)?.args;
 		assert.ok(command);
@@ -965,7 +1226,10 @@ test("native actions distinguish absent arguments from explicit objects without 
 		}
 	}
 	for (const [index, args] of inputs.entries()) {
-		const response = await f.core.execute({ op: "native", kind: "lua", code: "return rex.args", target, ...(args === undefined ? {} : { args }) }, { ...context, callId: `lua-${index}` });
+		const response = await f.core.execute(
+			{ op: "native", kind: "lua", code: "return rex.args", target, ...(args === undefined ? {} : { args }) },
+			{ ...context, callId: `lua-${index}` },
+		);
 		assert.equal(response.ok, true);
 		const command = f.transport.calls.at(-1)?.args;
 		assert.ok(command);
@@ -979,7 +1243,10 @@ test("the shared default accepts a full discovery response and an explicit low l
 	const f = fixture();
 	f.transport.handler = (method, _data, call) =>
 		method === "block_creator.list" ? limited(sizedReply(52579), call.maxOutputBytes) : undefined;
-	const broad = await f.core.execute({ op: "native", kind: "api", method: "block_creator.list", args: {}, target }, context);
+	const broad = await f.core.execute(
+		{ op: "native", kind: "api", method: "block_creator.list", args: {}, target },
+		context,
+	);
 	assert.equal(broad.ok, true, broad.error);
 	assert.equal(broad.outcome, "acknowledged");
 	const value = (broad.data as { value: unknown }).value;
@@ -988,20 +1255,31 @@ test("the shared default accepts a full discovery response and an explicit low l
 	f.transport.handler = (method, _data, call) =>
 		method === "block_creator.list" ? limited(sizedReply(65536), call.maxOutputBytes) : undefined;
 	assert.equal(
-		(await f.core.execute({ op: "native", kind: "api", method: "block_creator.list", args: {}, target }, { ...context, callId: "read-fit" })).ok,
+		(
+			await f.core.execute(
+				{ op: "native", kind: "api", method: "block_creator.list", args: {}, target },
+				{ ...context, callId: "read-fit" },
+			)
+		).ok,
 		true,
 		"the default retains exactly 65536 bytes",
 	);
 	f.transport.handler = (method, _data, call) =>
 		method === "block_creator.list" ? limited(sizedReply(65537), call.maxOutputBytes) : undefined;
-	const over = await f.core.execute({ op: "native", kind: "api", method: "block_creator.list", args: {}, target }, { ...context, callId: "read-over" });
+	const over = await f.core.execute(
+		{ op: "native", kind: "api", method: "block_creator.list", args: {}, target },
+		{ ...context, callId: "read-over" },
+	);
 	assert.equal(over.ok, false);
 	assert.equal(over.outcome, "output_limit", "one byte above the default still fails rather than truncating");
 
 	const low = fixture({ maxOutputBytes: 4096 });
 	low.transport.handler = (method, _data, call) =>
 		method === "block_creator.list" ? limited(sizedReply(52579), call.maxOutputBytes) : undefined;
-	const refused = await low.core.execute({ op: "native", kind: "api", method: "block_creator.list", args: {}, target }, context);
+	const refused = await low.core.execute(
+		{ op: "native", kind: "api", method: "block_creator.list", args: {}, target },
+		context,
+	);
 	assert.equal(refused.ok, false);
 	assert.equal(refused.outcome, "output_limit");
 	assert.deepEqual(low.store.state.records, []);
@@ -1011,8 +1289,19 @@ test("native Lua and actions resolve explicit inherited context for the CLI", as
 	const f = fixture();
 	for (const lua of [true, false]) {
 		const request = lua
-			? { op: "native" as const, kind: "lua" as const, code: "return rex.args", args: {}, target: { source: "inherited" as const } }
-			: { op: "native" as const, kind: "action" as const, action: "com.superlogical.terminal.reset", target: { source: "inherited" as const } };
+			? {
+					op: "native" as const,
+					kind: "lua" as const,
+					code: "return rex.args",
+					args: {},
+					target: { source: "inherited" as const },
+				}
+			: {
+					op: "native" as const,
+					kind: "action" as const,
+					action: "com.superlogical.terminal.reset",
+					target: { source: "inherited" as const },
+				};
 		const response = await f.core.execute(request, { ...context, callId: `inherited-${lua}` });
 		assert.equal(response.ok, true, response.error);
 		assert.equal(response.target?.source, "inherited");
@@ -1033,7 +1322,10 @@ test("focused native context resolves the focused block within the named session
 	);
 	assert.equal(response.ok, true, response.error);
 	const lookups = f.transport.calls.filter((call) => call.method === "target.resolve");
-	assert.deepEqual(lookups.map((call) => call.data.kinds), [["session"], ["block"]]);
+	assert.deepEqual(
+		lookups.map((call) => call.data.kinds),
+		[["session"], ["block"]],
+	);
 	const focusLookup = lookups.at(-1);
 	assert.deepEqual(focusLookup?.data.queries, [""]);
 	assert.deepEqual(focusLookup?.data.scope, { session });
@@ -1050,20 +1342,35 @@ test("missing inherited context fails instead of falling back to focus", async (
 	);
 	assert.equal(response.ok, false);
 	assert.match(response.error ?? "", /No inherited Rex session exists/);
-	assert.equal(f.transport.calls.some((call) => call.method === "target.resolve"), false);
-	assert.equal(f.transport.calls.some((call) => call.args.includes("do")), false);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "target.resolve"),
+		false,
+	);
+	assert.equal(
+		f.transport.calls.some((call) => call.args.includes("do")),
+		false,
+	);
 });
 
 test("a host's launch description names its inherited context and the remedy when it names nothing", async () => {
-	const launch = { description: "The pane of ordinary Pi session S.", unavailable: "No pane of this agent's ordinary session is known: it has ended. Request source focus." };
+	const launch = {
+		description: "The pane of ordinary Pi session S.",
+		unavailable: "No pane of this agent's ordinary session is known: it has ended. Request source focus.",
+	};
 	const f = fixture({ env: { REX_SERVER: "launch" }, launch });
 	const created = await f.core.execute({ op: "create", kind: "float", label: "reader", command: ["reader"] }, context);
 	assert.equal(created.ok, false);
 	assert.equal(created.error, launch.unavailable);
 	assert.equal(created.effects.state, "none");
-	const action = await f.core.execute({ op: "native", kind: "action", action: "com.superlogical.terminal.reset", target: { source: "inherited" } }, { ...context, callId: "action" });
+	const action = await f.core.execute(
+		{ op: "native", kind: "action", action: "com.superlogical.terminal.reset", target: { source: "inherited" } },
+		{ ...context, callId: "action" },
+	);
 	assert.equal(action.error, launch.unavailable);
-	assert.equal(f.transport.calls.some((call) => call.method === "target.resolve" || call.method === "session.new_layer"), false);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "target.resolve" || call.method === "session.new_layer"),
+		false,
+	);
 	const environment = await f.core.execute({ op: "environment" }, { ...context, callId: "environment" });
 	assert.equal(environment.ok, true, environment.error);
 	assert.equal((environment.data as { inheritedContext?: string }).inheritedContext, launch.description);
@@ -1077,14 +1384,20 @@ test("explicit native IDs stay authoritative over the launch context", async () 
 	);
 	assert.equal(response.ok, true, response.error);
 	assert.equal(response.target?.source, "explicit");
-	assert.deepEqual(f.transport.calls.filter((call) => call.method === "target.resolve").map((call) => call.data.kinds), [["block"]]);
+	assert.deepEqual(
+		f.transport.calls.filter((call) => call.method === "target.resolve").map((call) => call.data.kinds),
+		[["block"]],
+	);
 	const focused = await f.core.execute(
 		{ op: "native", kind: "lua", code: "return 1", target: { source: "focus", block } },
 		{ ...context, callId: "explicit-focus" },
 	);
 	assert.equal(focused.ok, true, focused.error);
 	assert.equal(focused.target?.source, "explicit");
-	assert.deepEqual(f.transport.calls.filter((call) => call.method === "target.resolve").map((call) => call.data.kinds), [["block"], ["block"]]);
+	assert.deepEqual(
+		f.transport.calls.filter((call) => call.method === "target.resolve").map((call) => call.data.kinds),
+		[["block"], ["block"]],
+	);
 });
 
 test("API arguments stay unchanged while requested native context is used only for conflict checks", async () => {
@@ -1102,7 +1415,13 @@ test("API arguments stay unchanged while requested native context is used only f
 	assert.equal(call.args.includes("-s"), false);
 	assert.equal(call.args.includes("-b"), false);
 	const conflict = await f.core.execute(
-		{ op: "native", kind: "api", method: "new.capability", args: { block_id: "block:55555555-5555-4555-8555-555555555555" }, target: { source: "inherited" } },
+		{
+			op: "native",
+			kind: "api",
+			method: "new.capability",
+			args: { block_id: "block:55555555-5555-4555-8555-555555555555" },
+			target: { source: "inherited" },
+		},
 		{ ...context, callId: "api-conflict" },
 	);
 	assert.equal(conflict.ok, false);
@@ -1118,9 +1437,18 @@ test("verified read-only API methods never touch ownership admission", async () 
 	f.store.update = async () => {
 		throw new Error("A verified read must not write ownership state.");
 	};
-	for (const method of ["block_creator.list", "session.view", "com.superlogical.terminal.process", "com.superlogical.terminal.list_dir", "com.superlogical.onboarding.state"]) {
+	for (const method of [
+		"block_creator.list",
+		"session.view",
+		"com.superlogical.terminal.process",
+		"com.superlogical.terminal.list_dir",
+		"com.superlogical.onboarding.state",
+	]) {
 		f.transport.handler = (candidate) => (candidate === method ? reply({ method }) : undefined);
-		const read = await f.core.execute({ op: "native", kind: "api", method, args: {}, target }, { ...context, callId: `read-${method}` });
+		const read = await f.core.execute(
+			{ op: "native", kind: "api", method, args: {}, target },
+			{ ...context, callId: `read-${method}` },
+		);
 		assert.equal(read.ok, true, read.error);
 		assert.equal(read.effects.state, "none");
 		assert.equal(read.effects.recordId, undefined);
@@ -1170,7 +1498,10 @@ test("verified reads work at the effect capacity while other native effects stil
 		assert.equal(refused.ok, false);
 		assert.match(refused.error ?? "", /record limit reached/);
 	}
-	assert.equal(f.transport.calls.some((call) => call.method === "new.capability" || call.args.includes("do")), false);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "new.capability" || call.args.includes("do")),
+		false,
+	);
 	assert.equal(f.store.state.records.length, 1);
 	const fresh = fixture();
 	await fresh.core.execute({ op: "native", kind: "api", method: "new.capability", args: {}, target }, context);
@@ -1180,10 +1511,20 @@ test("verified reads work at the effect capacity while other native effects stil
 
 test("default summary uses narrow metadata at the configured default byte budget", async () => {
 	const f = fixture({ maxOutputBytes: 32768 });
-	const metadata = { block_id: block, window_id: window, label: "project", creator_name: "com.superlogical.terminal", placement: "placed" };
+	const metadata = {
+		block_id: block,
+		window_id: window,
+		label: "project",
+		creator_name: "com.superlogical.terminal",
+		placement: "placed",
+	};
 	const handle = (method: string) => {
 		if (method === "session.list_blocks") return reply({ blocks: [metadata] });
-		if (method === "session.describe_block") return reply({ block: metadata, api: { methods: { custom: { description: "x".repeat(60000) } }, events: { changed: {} } } });
+		if (method === "session.describe_block")
+			return reply({
+				block: metadata,
+				api: { methods: { custom: { description: "x".repeat(60000) } }, events: { changed: {} } },
+			});
 		return undefined;
 	};
 	f.transport.handler = handle;
@@ -1191,11 +1532,23 @@ test("default summary uses narrow metadata at the configured default byte budget
 	assert.equal(summary.ok, true);
 	const data = summary.data as Record<string, unknown>;
 	assert.deepEqual(data.description, { block: metadata });
-	assert.equal(f.transport.calls.some((call) => call.method === "session.describe_block"), false);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "session.describe_block"),
+		false,
+	);
 	assert.equal(JSON.stringify(summary).includes('"methods"'), false);
 	const broad = fixture({ maxOutputBytes: 65536 });
 	broad.transport.handler = handle;
-	const explicit = await broad.core.execute({ op: "native", kind: "api", method: "session.describe_block", args: { session_id: session, block_id: block }, target }, { ...context, callId: "describe-explicit" });
+	const explicit = await broad.core.execute(
+		{
+			op: "native",
+			kind: "api",
+			method: "session.describe_block",
+			args: { session_id: session, block_id: block },
+			target,
+		},
+		{ ...context, callId: "describe-explicit" },
+	);
 	assert.equal(explicit.ok, true);
 	const native = explicit.data as { value: { api: { methods: { custom: { description: string } } } } };
 	assert.equal(native.value.api.methods.custom.description.length, 60000);
@@ -1209,18 +1562,24 @@ test("unsupported retained metadata is refused before any owned closure", async 
 		assert.ok(entry);
 		const resource = entry.resources[0];
 		assert.ok(resource);
-		Object.assign({ state: f.store.state, record: entry, server: entry.server, resource }[location], { unsupported: "x".repeat(200000) });
+		Object.assign({ state: f.store.state, record: entry, server: entry.server, resource }[location], {
+			unsupported: "x".repeat(200000),
+		});
 		const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
 		assert.equal(response.ok, false);
 		assert.match(response.error ?? "", /unsupported fields/);
 		assert.equal(response.effects.state, "none");
-		assert.equal(f.transport.calls.some((call) => call.method === "block.close"), false);
+		assert.equal(
+			f.transport.calls.some((call) => call.method === "block.close"),
+			false,
+		);
 	}
 });
 
 test("canonical bounds encoded diagnostics without changing post-effect outcome or identity", async () => {
 	const f = fixture({ maxOutputBytes: 32768 });
-	f.transport.handler = (method) => method === "new.capability" ? { ...reply({}), exitCode: 1, stderr: "\u0001".repeat(32768) } : undefined;
+	f.transport.handler = (method) =>
+		method === "new.capability" ? { ...reply({}), exitCode: 1, stderr: "\u0001".repeat(32768) } : undefined;
 	const response = await f.core.execute({ op: "native", kind: "api", method: "new.capability", target }, context);
 	assert.equal(response.ok, false);
 	assert.equal(response.outcome, "cli_failure");
@@ -1237,17 +1596,66 @@ test("canonical bounds encoded diagnostics without changing post-effect outcome 
 
 function maximumIdentityEnvelope(): RexResult {
 	const surrogate = "\ud800";
-	const server = { endpoint: surrogate.repeat(4096), selection: surrogate.repeat(4096), hostId: surrogate.repeat(128), instanceId: surrogate.repeat(128) };
-	const resources = Array.from({ length: 32 }, () => ({ kind: "block" as const, sessionId: session, windowId: window, blockId: block }));
-	const state = validateOwnershipState({ version: 1, records: Array.from({ length: 4 }, (_, index) => ({
-		callId: `${index}${surrogate.repeat(1023)}`, ownerId: "owner", requestDigest: "a".repeat(64), server,
-		operation: "create", phase: "unknown", resources, createdAt: "2026-11-02", updatedAt: "2026-11-02",
-	})) });
-	return { ok: true, outcome: "acknowledged", target: { server, source: "explicit", sessionId: session, windowId: window, blockId: block, clientId: "client:55555555-5555-4555-8555-555555555555" },
-		data: { bulk: "x".repeat(200000) }, error: "\u0001".repeat(32768),
-		effects: { state: "confirmed", recordId: surrogate.repeat(1024), resources, note: `Outer CLI success only. No inner application outcome was established. ${"\u0001".repeat(2048)}` },
-		records: state.records.map((record) => ({ recordId: record.callId, server: record.server, resources: record.resources })),
-		coverage: { bounded: true, pageOffset: 8, totalRecords: 256, returnedRecords: 4, omittedRecords: 252, nextOffset: 12, note: "😀".repeat(4096) } };
+	const server = {
+		endpoint: surrogate.repeat(4096),
+		selection: surrogate.repeat(4096),
+		hostId: surrogate.repeat(128),
+		instanceId: surrogate.repeat(128),
+	};
+	const resources = Array.from({ length: 32 }, () => ({
+		kind: "block" as const,
+		sessionId: session,
+		windowId: window,
+		blockId: block,
+	}));
+	const state = validateOwnershipState({
+		version: 1,
+		records: Array.from({ length: 4 }, (_, index) => ({
+			callId: `${index}${surrogate.repeat(1023)}`,
+			ownerId: "owner",
+			requestDigest: "a".repeat(64),
+			server,
+			operation: "create",
+			phase: "unknown",
+			resources,
+			createdAt: "2026-11-02",
+			updatedAt: "2026-11-02",
+		})),
+	});
+	return {
+		ok: true,
+		outcome: "acknowledged",
+		target: {
+			server,
+			source: "explicit",
+			sessionId: session,
+			windowId: window,
+			blockId: block,
+			clientId: "client:55555555-5555-4555-8555-555555555555",
+		},
+		data: { bulk: "x".repeat(200000) },
+		error: "\u0001".repeat(32768),
+		effects: {
+			state: "confirmed",
+			recordId: surrogate.repeat(1024),
+			resources,
+			note: `Outer CLI success only. No inner application outcome was established. ${"\u0001".repeat(2048)}`,
+		},
+		records: state.records.map((record) => ({
+			recordId: record.callId,
+			server: record.server,
+			resources: record.resources,
+		})),
+		coverage: {
+			bounded: true,
+			pageOffset: 8,
+			totalRecords: 256,
+			returnedRecords: 4,
+			omittedRecords: 252,
+			nextOffset: 12,
+			note: "😀".repeat(4096),
+		},
+	};
 }
 
 test("irreducible valid identity metadata fits the minimum budget with exact reference pagination", () => {
@@ -1268,7 +1676,10 @@ test("irreducible valid identity metadata fits the minimum budget with exact ref
 		const emitted = bounded.records?.length ?? 0;
 		assert.equal(bounded.coverage.emittedRecordRefs, emitted);
 		assert.equal(bounded.coverage.omittedRecordRefs, 4 - emitted);
-		assert.deepEqual(bounded.coverage.omittedRecordIds, original.records?.slice(emitted).map((record) => record.recordId));
+		assert.deepEqual(
+			bounded.coverage.omittedRecordIds,
+			original.records?.slice(emitted).map((record) => record.recordId),
+		);
 		assert.deepEqual(bounded.records, original.records?.slice(0, emitted));
 		assert.equal(bounded.coverage.returnedRecords, 4);
 		assert.equal(bounded.coverage.omittedRecords, 252);
@@ -1288,7 +1699,10 @@ test("repeated canonical reduction accumulates omitted identities without pagina
 	assert.ok((partial.records?.length ?? 0) > 0);
 	assert.ok((partial.coverage.omittedRecordRefs ?? 0) > 0);
 	const smaller = boundResult({ ...partial, data: { bulk: "x".repeat(200000) } }, resultByteLimit(4096));
-	assert.deepEqual(smaller.coverage.omittedRecordIds, original.records?.map((record) => record.recordId));
+	assert.deepEqual(
+		smaller.coverage.omittedRecordIds,
+		original.records?.map((record) => record.recordId),
+	);
 	assert.equal(smaller.coverage.omittedRecordRefs, 4);
 	assert.equal(smaller.coverage.emittedRecordRefs, 0);
 	assert.equal(smaller.coverage.nextPageOffset, 12);
@@ -1296,19 +1710,40 @@ test("repeated canonical reduction accumulates omitted identities without pagina
 	assert.equal(smaller.coverage.returnedRecords, 4);
 	assert.equal(smaller.coverage.omittedRecords, 252);
 	assert.ok(Buffer.byteLength(JSON.stringify(smaller)) <= resultByteLimit(4096));
-	const lastPage = { ...original, coverage: { ...original.coverage, totalRecords: 12, omittedRecords: 8, nextOffset: undefined } };
+	const lastPage = {
+		...original,
+		coverage: { ...original.coverage, totalRecords: 12, omittedRecords: 8, nextOffset: undefined },
+	};
 	const partialLast = boundResult(lastPage, resultByteLimit(100000));
 	const smallerLast = boundResult(partialLast, resultByteLimit(4096));
 	assert.equal(smallerLast.coverage.nextPageOffset, undefined);
 	assert.equal(smallerLast.coverage.nextOffset, 8);
-	assert.deepEqual(smallerLast.coverage.omittedRecordIds, original.records?.map((record) => record.recordId));
+	assert.deepEqual(
+		smallerLast.coverage.omittedRecordIds,
+		original.records?.map((record) => record.recordId),
+	);
 });
 
 test("reference omission preserves an earlier partial-observation continuation", () => {
 	const original = maximumIdentityEnvelope();
-	for (const [offset, observed] of [[8, 1], [0, 0]] as const) {
-		const interrupted: RexResult = { ...original, ok: false, outcome: "reconciliation_incomplete", target: undefined, effects: { state: "none" },
-			coverage: { ...original.coverage, pageOffset: offset, returnedRecords: observed, omittedRecords: 256 - observed, nextOffset: offset + observed } };
+	for (const [offset, observed] of [
+		[8, 1],
+		[0, 0],
+	] as const) {
+		const interrupted: RexResult = {
+			...original,
+			ok: false,
+			outcome: "reconciliation_incomplete",
+			target: undefined,
+			effects: { state: "none" },
+			coverage: {
+				...original.coverage,
+				pageOffset: offset,
+				returnedRecords: observed,
+				omittedRecords: 256 - observed,
+				nextOffset: offset + observed,
+			},
+		};
 		const reduced = boundResult(interrupted, resultByteLimit(100000));
 		assert.ok((reduced.coverage.emittedRecordRefs ?? 0) > observed);
 		assert.ok((reduced.coverage.omittedRecordRefs ?? 0) > 0);
@@ -1325,7 +1760,10 @@ test("unsupported irreducible metadata reports an explicit post-effect boundary 
 	const invalid = maximumIdentityEnvelope();
 	invalid.records = [];
 	if (invalid.target) invalid.target.server.endpoint = "x".repeat(200000);
-	assert.throws(() => boundResult(invalid, resultByteLimit(32768)), /Native effects may already exist: outcome=acknowledged; effectState=confirmed; recordId=/);
+	assert.throws(
+		() => boundResult(invalid, resultByteLimit(32768)),
+		/Native effects may already exist: outcome=acknowledged; effectState=confirmed; recordId=/,
+	);
 });
 
 test("raw API JSON remains lossless and conflicting native target arguments are refused", async () => {
@@ -1347,14 +1785,23 @@ test("owned lookup filters this owner's stored claims before pagination without 
 	const original = f.store.state.records[0];
 	assert.ok(original);
 	const phases = ["pending", "confirmed", "unknown", "closed", "released", "unknown"] as const;
-	f.store.state.records = phases.map((phase, index) => ({ ...original, callId: `complete-record-identity-${index}`, phase }));
+	f.store.state.records = phases.map((phase, index) => ({
+		...original,
+		callId: `complete-record-identity-${index}`,
+		phase,
+	}));
 	f.store.state.records.push({ ...original, callId: "foreign-record", ownerId: "foreign", phase: "unknown" });
 	const before = structuredClone(f.store.state);
 	f.transport.calls.length = 0;
-	f.store.update = async () => { throw new Error("Owned lookup must not write."); };
+	f.store.update = async () => {
+		throw new Error("Owned lookup must not write.");
+	};
 	const first = await f.core.execute({ op: "owned", phase: "unknown", limit: 1 }, context);
 	assert.equal(first.ok, true);
-	assert.deepEqual(first.records?.map((record) => record.recordId), ["complete-record-identity-2"]);
+	assert.deepEqual(
+		first.records?.map((record) => record.recordId),
+		["complete-record-identity-2"],
+	);
 	assert.equal(first.coverage.totalRecords, 2);
 	assert.equal(first.coverage.returnedRecords, 1);
 	assert.equal(first.coverage.omittedRecords, 1);
@@ -1363,18 +1810,32 @@ test("owned lookup filters this owner's stored claims before pagination without 
 	assert.match((first.data as { note: string }).note, /not current presence or cleanup permission/);
 	const second = await f.core.execute({ op: "owned", phase: "unknown", offset: 1, limit: 1 }, context);
 	assert.equal(second.ok, true);
-	assert.deepEqual(second.records?.map((record) => record.recordId), ["complete-record-identity-5"]);
+	assert.deepEqual(
+		second.records?.map((record) => record.recordId),
+		["complete-record-identity-5"],
+	);
 	assert.equal(second.coverage.nextOffset, undefined);
 	for (const phase of phases) {
 		const response = await f.core.execute({ op: "owned", phase }, context);
 		assert.equal(response.ok, true);
-		assert.ok((response.data as { records: Array<{ phase: string }> }).records.every((record) => record.phase === phase));
+		assert.ok(
+			(response.data as { records: Array<{ phase: string }> }).records.every((record) => record.phase === phase),
+		);
 	}
-	const exact = await f.core.execute({ op: "owned", recordId: "complete-record-identity-2", phase: "unknown" }, context);
+	const exact = await f.core.execute(
+		{ op: "owned", recordId: "complete-record-identity-2", phase: "unknown" },
+		context,
+	);
 	assert.equal(exact.ok, true);
 	assert.equal(exact.coverage.totalRecords, 1);
 	assert.equal(exact.records?.[0]?.resources[0]?.blockId, block);
-	for (const selector of [{ recordId: "missing" }, { recordId: "foreign-record" }, { recordId: "complete-record-identity" }, { recordId: "complete-record-identity-2", phase: "closed" as const }, { phase: "unknown" as const, offset: 2 }]) {
+	for (const selector of [
+		{ recordId: "missing" },
+		{ recordId: "foreign-record" },
+		{ recordId: "complete-record-identity" },
+		{ recordId: "complete-record-identity-2", phase: "closed" as const },
+		{ phase: "unknown" as const, offset: 2 },
+	]) {
 		const empty = await f.core.execute({ op: "owned", ...selector }, context);
 		assert.equal(empty.ok, true);
 		assert.deepEqual(empty.records, []);
@@ -1389,7 +1850,28 @@ function workProcess(index: number) {
 	return index === 0 ? { child: { pid: 42 }, last_exit: null } : { last_exit: { exit_code: index === 2 ? 7 : 0 } };
 }
 
-type WorkReports = { reports: Array<{ recordId: string; phase: string; observedAt: string; complete: boolean; error?: string; observations: Array<{ resource: { blockId?: string }; presence: string; childState: string; observedAt: string; process?: { child?: { pid: number }; last_exit: { exit_code: number } | null }; processError?: string; status?: unknown; statusError?: string; capture?: { content: string }; captureError?: string; error?: string }> }> };
+type WorkReports = {
+	reports: Array<{
+		recordId: string;
+		phase: string;
+		observedAt: string;
+		complete: boolean;
+		error?: string;
+		observations: Array<{
+			resource: { blockId?: string };
+			presence: string;
+			childState: string;
+			observedAt: string;
+			process?: { child?: { pid: number }; last_exit: { exit_code: number } | null };
+			processError?: string;
+			status?: unknown;
+			statusError?: string;
+			capture?: { content: string };
+			captureError?: string;
+			error?: string;
+		}>;
+	}>;
+};
 
 async function workFixture(maxOutputBytes = 32768) {
 	const f = fixture({ maxOutputBytes, maxWaitMs: 1000 });
@@ -1397,20 +1879,37 @@ async function workFixture(maxOutputBytes = 32768) {
 	const original = f.store.state.records[0];
 	assert.ok(original);
 	const ids = Array.from({ length: 5 }, (_, index) => `block:33333333-3333-4333-8333-33333333333${index}`);
-	f.store.state.records = ids.map((blockId, index) => ({ ...original, callId: `work-${index}`, resources: [{ kind: "block", sessionId: session, blockId }] }));
+	f.store.state.records = ids.map((blockId, index) => ({
+		...original,
+		callId: `work-${index}`,
+		resources: [{ kind: "block", sessionId: session, blockId }],
+	}));
 	f.transport.calls.length = 0;
 	f.transport.handler = (method, data) => {
 		if (method === "target.resolve" && (data.kinds as string[])[0] === "block") {
 			const id = (data.queries as string[])[0];
-			return reply({ results: [{ status: id === ids[3] ? "not_found" : "resolved", target: { kind: "block", block_id: id, session_id: session, window_id: window } }] });
+			return reply({
+				results: [
+					{
+						status: id === ids[3] ? "not_found" : "resolved",
+						target: { kind: "block", block_id: id, session_id: session, window_id: window },
+					},
+				],
+			});
 		}
 		const index = ids.indexOf(String(data.block_id));
 		if (method === "com.superlogical.terminal.process") return reply(workProcess(index));
-		if (method === "com.superlogical.terminal.program_status") return reply({ records: [{ state: "done", title: "not completion evidence" }] });
-		if (method === "com.superlogical.terminal.format") return index === 4 ? { ...reply({}), outcome: "timeout", exitCode: null } : reply({ content: `work-${index}-tail`, total: 11, eof: true });
+		if (method === "com.superlogical.terminal.program_status")
+			return reply({ records: [{ state: "done", title: "not completion evidence" }] });
+		if (method === "com.superlogical.terminal.format")
+			return index === 4
+				? { ...reply({}), outcome: "timeout", exitCode: null }
+				: reply({ content: `work-${index}-tail`, total: 11, eof: true });
 		return undefined;
 	};
-	f.store.update = async () => { throw new Error("Observation must not write ownership."); };
+	f.store.update = async () => {
+		throw new Error("Observation must not write ownership.");
+	};
 	return { ...f, ids };
 }
 
@@ -1425,7 +1924,10 @@ test("owned observation distinguishes running, exited and absent work without ch
 	assert.equal(response.coverage.returnedRecords, 4);
 	assert.equal(response.coverage.nextOffset, 4);
 	const { reports } = response.data as WorkReports;
-	assert.deepEqual(reports.map((report) => report.observations[0]?.childState), ["running", "exited", "exited", "unavailable"]);
+	assert.deepEqual(
+		reports.map((report) => report.observations[0]?.childState),
+		["running", "exited", "exited", "unavailable"],
+	);
 	assert.equal(reports[3]?.observations[0]?.presence, "absent");
 	for (const [index, report] of reports.entries()) {
 		assert.equal(report.recordId, `work-${index}`);
@@ -1449,8 +1951,13 @@ test("owned observation distinguishes running, exited and absent work without ch
 		}
 	}
 	assert.equal(JSON.stringify(f.store.state), before);
-	const allowed = new Set(["target.resolve", "com.superlogical.terminal.process", "com.superlogical.terminal.program_status", "com.superlogical.terminal.format"]);
-	assert.ok(f.transport.calls.every((call) => call.method ? allowed.has(call.method) : call.args.includes("whoami")));
+	const allowed = new Set([
+		"target.resolve",
+		"com.superlogical.terminal.process",
+		"com.superlogical.terminal.program_status",
+		"com.superlogical.terminal.format",
+	]);
+	assert.ok(f.transport.calls.every((call) => (call.method ? allowed.has(call.method) : call.args.includes("whoami"))));
 });
 
 test("owned observation preserves partial evidence and unresolved stored phases", async () => {
@@ -1487,9 +1994,14 @@ test("unavailable and changed servers stay unknown without erasing other observa
 		assert.ok(first);
 		first.server = { ...first.server, endpoint: "unix:///unavailable" };
 		const run = f.transport.run.bind(f.transport);
-		f.transport.run = (args, call) => args.includes("unix:///unavailable")
-			? Promise.resolve(failure === "unavailable" ? { ...reply({}), outcome: "spawn_error", exitCode: null, error: "server unavailable" } : reply({ endpoint: "unix:///unavailable", host_id: "changed", instance_id: "new-instance" }))
-			: run(args, call);
+		f.transport.run = (args, call) =>
+			args.includes("unix:///unavailable")
+				? Promise.resolve(
+						failure === "unavailable"
+							? { ...reply({}), outcome: "spawn_error", exitCode: null, error: "server unavailable" }
+							: reply({ endpoint: "unix:///unavailable", host_id: "changed", instance_id: "new-instance" }),
+					)
+				: run(args, call);
 		const response = await f.core.execute({ op: "observe", limit: 2 }, context);
 		assert.equal(response.outcome, "observation_incomplete");
 		const { reports } = response.data as WorkReports;
@@ -1503,7 +2015,10 @@ test("unavailable and changed servers stay unknown without erasing other observa
 test("observation bounds pages and shared field bytes with explicit per-field omissions", async () => {
 	const f = await workFixture(4096);
 	const handler = f.transport.handler;
-	f.transport.handler = (method, data, call) => method === "com.superlogical.terminal.program_status" ? reply({ records: [{ msg: "x".repeat(5000) }] }) : handler?.(method, data, call);
+	f.transport.handler = (method, data, call) =>
+		method === "com.superlogical.terminal.program_status"
+			? reply({ records: [{ msg: "x".repeat(5000) }] })
+			: handler?.(method, data, call);
 	const response = await f.core.execute({ op: "observe", limit: 2, maxBytes: 256 }, context);
 	assert.equal(response.ok, false);
 	assert.equal(response.coverage.truncated, true);
@@ -1525,9 +2040,11 @@ test("observation bounds pages and shared field bytes with explicit per-field om
 		return handler?.(method, data, call);
 	};
 	const shared = await f.core.execute({ op: "observe", limit: 4 }, context);
-	for (const report of (shared.data as WorkReports).reports) for (const entry of report.observations) {
-		for (const field of [entry.process, entry.status, entry.capture]) if (field !== undefined) fieldBytes += Buffer.byteLength(JSON.stringify(field));
-	}
+	for (const report of (shared.data as WorkReports).reports)
+		for (const entry of report.observations) {
+			for (const field of [entry.process, entry.status, entry.capture])
+				if (field !== undefined) fieldBytes += Buffer.byteLength(JSON.stringify(field));
+		}
 	assert.ok(fieldBytes <= 4096);
 	assert.ok((shared.data as WorkReports).reports[0]?.observations[0]?.capture?.content.endsWith("READY"));
 	assert.equal((await f.core.execute({ op: "observe", limit: 5 }, context)).ok, false);
@@ -1543,7 +2060,9 @@ test("observation cancellation and one capped page deadline stop reads, not term
 		const before = JSON.stringify(f.store.state);
 		const handler = f.transport.handler;
 		let entered!: () => void;
-		const started = new Promise<void>((resolve) => { entered = resolve; });
+		const started = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
 		let active = 0;
 		let maximum = 0;
 		f.transport.handler = (method, data, call) => {
@@ -1551,14 +2070,28 @@ test("observation cancellation and one capped page deadline stop reads, not term
 			active++;
 			maximum = Math.max(maximum, active);
 			entered();
-			return new Promise((resolve) => call.signal?.addEventListener("abort", () => { active--; resolve({ ...reply({}), outcome: "cancelled", exitCode: null }); }, { once: true }));
+			return new Promise((resolve) =>
+				call.signal?.addEventListener(
+					"abort",
+					() => {
+						active--;
+						resolve({ ...reply({}), outcome: "cancelled", exitCode: null });
+					},
+					{ once: true },
+				),
+			);
 		};
 		const controller = new AbortController();
 		const pending = f.core.execute({ op: "observe", timeoutMs: 300000 }, { ...context, signal: controller.signal });
 		await started;
-		assert.deepEqual(f.transport.calls.filter((call) => call.method).map((call) => call.method), ["target.resolve", "com.superlogical.terminal.process"], "no other native read overlaps the blocked process read");
+		assert.deepEqual(
+			f.transport.calls.filter((call) => call.method).map((call) => call.method),
+			["target.resolve", "com.superlogical.terminal.process"],
+			"no other native read overlaps the blocked process read",
+		);
 		const count = f.transport.calls.length;
-		if (stop === "cancel") controller.abort(); else t.mock.timers.tick(1000);
+		if (stop === "cancel") controller.abort();
+		else t.mock.timers.tick(1000);
 		const response = await pending;
 		assert.equal(response.outcome, stop === "cancel" ? "cancelled" : "timeout");
 		assert.match(response.coverage.note ?? "", /configured 1000 ms cap/);
@@ -1569,7 +2102,10 @@ test("observation cancellation and one capped page deadline stop reads, not term
 		assert.equal((response.data as WorkReports).reports.length, 4);
 		assert.equal((response.data as WorkReports).reports[1]?.observations[0]?.presence, "unknown");
 		assert.equal(JSON.stringify(f.store.state), before);
-		assert.equal(f.transport.calls.some((call) => call.method === "block.close" || call.method?.endsWith(".write")), false);
+		assert.equal(
+			f.transport.calls.some((call) => call.method === "block.close" || call.method?.endsWith(".write")),
+			false,
+		);
 	}
 });
 
@@ -1581,7 +2117,16 @@ test("owned filtered continuation uses filtered offsets after aggregate referenc
 	const envelope = maximumIdentityEnvelope();
 	assert.ok(envelope.target);
 	const server = envelope.target.server;
-	f.store.state.records = [original, ...Array.from({ length: 4 }, (_, index) => ({ ...original, callId: `unknown-${index}`, phase: "unknown" as const, server, resources: envelope.effects.resources ?? [] }))];
+	f.store.state.records = [
+		original,
+		...Array.from({ length: 4 }, (_, index) => ({
+			...original,
+			callId: `unknown-${index}`,
+			phase: "unknown" as const,
+			server,
+			resources: envelope.effects.resources ?? [],
+		})),
+	];
 	const before = structuredClone(f.store.state);
 	f.transport.calls.length = 0;
 	const page = await f.core.execute({ op: "owned", phase: "unknown" }, context);
@@ -1592,8 +2137,14 @@ test("owned filtered continuation uses filtered offsets after aggregate referenc
 	const emitted = page.records?.length ?? 0;
 	assert.ok(emitted > 0 && emitted < 4);
 	assert.equal(page.coverage.nextOffset, emitted);
-	assert.deepEqual(page.coverage.omittedRecordIds, Array.from({ length: 4 - emitted }, (_, index) => `unknown-${index + emitted}`));
-	const next = await f.core.execute({ op: "owned", phase: "unknown", offset: page.coverage.nextOffset, limit: 1 }, context);
+	assert.deepEqual(
+		page.coverage.omittedRecordIds,
+		Array.from({ length: 4 - emitted }, (_, index) => `unknown-${index + emitted}`),
+	);
+	const next = await f.core.execute(
+		{ op: "owned", phase: "unknown", offset: page.coverage.nextOffset, limit: 1 },
+		context,
+	);
 	assert.equal(next.records?.[0]?.recordId, `unknown-${emitted}`);
 	assert.deepEqual(f.transport.calls, []);
 	assert.deepEqual(f.store.state, before);
@@ -1602,7 +2153,13 @@ test("owned filtered continuation uses filtered offsets after aggregate referenc
 test("catalogue discovery filters literal names before bounded pages and reads fresh installed order", async () => {
 	const f = fixture();
 	const longName = `session.${"complete-name.".repeat(20)}open`;
-	let installed = ["z.method", "session.[literal]", longName, "Session.upper", ...Array.from({ length: 58 }, (_, index) => `future.method.${index}`)];
+	let installed = [
+		"z.method",
+		"session.[literal]",
+		longName,
+		"Session.upper",
+		...Array.from({ length: 58 }, (_, index) => `future.method.${index}`),
+	];
 	const run = f.transport.run.bind(f.transport);
 	let reads = 0;
 	f.transport.run = (args, call) => {
@@ -1624,7 +2181,10 @@ test("catalogue discovery filters literal names before bounded pages and reads f
 	assert.equal((first.data as { returnedMethods: number }).returnedMethods, 1);
 	assert.equal((first.data as { omittedMethods: number }).omittedMethods, 1);
 	assert.equal((first.data as { nextOffset: number }).nextOffset, 1);
-	const second = await f.core.execute({ op: "native", kind: "catalog", query: "session.", offset: 1, limit: 1 }, context);
+	const second = await f.core.execute(
+		{ op: "native", kind: "catalog", query: "session.", offset: 1, limit: 1 },
+		context,
+	);
 	assert.deepEqual((second.data as { methods: string[] }).methods, [longName]);
 	assert.equal((second.data as { nextOffset?: number }).nextOffset, undefined);
 	assert.equal((second.data as { omittedMethods: number }).omittedMethods, 1);
@@ -1659,12 +2219,23 @@ test("catalogue bounds and kind-specific fields are rejected without native effe
 		}
 	}
 	assert.deepEqual(f.transport.calls, []);
-	for (const fields of [{ query: "" }, { query: "x".repeat(257) }, { offset: -1 }, { offset: 1.5 }, { offset: 1048577 }, { limit: 0 }, { limit: 101 }]) {
+	for (const fields of [
+		{ query: "" },
+		{ query: "x".repeat(257) },
+		{ offset: -1 },
+		{ offset: 1.5 },
+		{ offset: 1048577 },
+		{ limit: 0 },
+		{ limit: 101 },
+	]) {
 		const request = { op: "native" as const, kind: "catalog" as const, ...fields };
 		assert.equal(validateRequest("rex_native", request).ok, false);
 		assert.equal((await f.core.execute(request, context)).ok, false);
 	}
-	assert.equal(validateRequest("rex_native", { op: "native", kind: "catalog", query: "[", offset: 0, limit: 100 }).ok, true);
+	assert.equal(
+		validateRequest("rex_native", { op: "native", kind: "catalog", query: "[", offset: 0, limit: 100 }).ok,
+		true,
+	);
 	assert.equal(f.store.state.records.length, 0);
 });
 
@@ -1674,11 +2245,20 @@ test("text wait refreshes output when no event announces readiness", async (t) =
 	const caller = new AbortController();
 	let captures = 0;
 	let entered!: () => void;
-	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const initial = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
 	const run = f.transport.run.bind(f.transport);
-	f.transport.run = (args, call) => args.includes("events")
-		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }))
-		: run(args, call);
+	f.transport.run = (args, call) =>
+		args.includes("events")
+			? new Promise((resolve) =>
+					call.signal?.addEventListener(
+						"abort",
+						() => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }),
+						{ once: true },
+					),
+				)
+			: run(args, call);
 	f.transport.handler = (method) => {
 		if (!method.endsWith(".format")) return undefined;
 		captures++;
@@ -1689,7 +2269,11 @@ test("text wait refreshes output when no event announces readiness", async (t) =
 		{ op: "wait", condition: "text", text: "service ready", timeoutMs: 2000, target },
 		{ ...context, signal: caller.signal },
 	);
-	t.after(async () => { caller.abort(); await pending; f.core.dispose(); });
+	t.after(async () => {
+		caller.abort();
+		await pending;
+		f.core.dispose();
+	});
 	await initial;
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	assert.equal(captures, 1);
@@ -1701,51 +2285,91 @@ test("text wait refreshes output when no event announces readiness", async (t) =
 	assert.equal(response.ok, true);
 });
 
-for (const condition of ["text", "status"] as const) test(`${condition} waits ignore unrelated events without spending snapshots`, async (t) => {
-	t.mock.timers.enable({ apis: ["setTimeout"] });
-	const f = fixture();
-	const caller = new AbortController();
-	let eventCall!: CliCall;
-	let snapshots = 0;
-	let ready = false;
-	let entered!: () => void;
-	const initial = new Promise<void>((resolve) => { entered = resolve; });
-	const run = f.transport.run.bind(f.transport);
-	f.transport.run = (args, call) => {
-		if (!args.includes("events")) return run(args, call);
-		eventCall = call;
-		return new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }));
-	};
-	f.transport.handler = (method) => {
-		if (!method.endsWith(condition === "text" ? ".format" : ".program_status")) return undefined;
-		snapshots++;
-		entered();
-		return condition === "text" ? reply({ content: ready ? "READY" : "starting", eof: true }) : reply({ records: [{ id: "service", state: ready ? "done" : "working" }] });
-	};
-	const pending = f.core.execute({ op: "wait", condition, text: condition === "text" ? "READY" : undefined, state: condition === "status" ? "done" : undefined, timeoutMs: 15000, target }, { ...context, signal: caller.signal });
-	let settled = false;
-	void pending.then(() => { settled = true; });
-	t.after(async () => { caller.abort(); await pending; f.core.dispose(); });
-	await initial;
-	await new Promise<void>((resolve) => setImmediate(resolve));
-	const unrelated = [
-		JSON.stringify({ type: "session_event", payload: { session_id: session, event: { type: "client_connected", payload: { client_id: "client:probe" } } } }),
-		JSON.stringify({ type: "session_event", payload: { session_id: session, event: { type: "client_disconnected", payload: { client_id: "client:probe" } } } }),
-		JSON.stringify({ type: "session_event", payload: { session_id: session, event: { type: "session_view_changed", payload: { revision: 1 } } } }),
-		terminalEvent("program_status_changed", "block:elsewhere"), terminalEvent("title_changed"), terminalEvent("progress_report"), "{}",
-	];
-	for (let index = 0; index < 30; index++) {
-		eventCall.onLine?.(unrelated[index % unrelated.length]);
+for (const condition of ["text", "status"] as const)
+	test(`${condition} waits ignore unrelated events without spending snapshots`, async (t) => {
+		t.mock.timers.enable({ apis: ["setTimeout"] });
+		const f = fixture();
+		const caller = new AbortController();
+		let eventCall!: CliCall;
+		let snapshots = 0;
+		let ready = false;
+		let entered!: () => void;
+		const initial = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const run = f.transport.run.bind(f.transport);
+		f.transport.run = (args, call) => {
+			if (!args.includes("events")) return run(args, call);
+			eventCall = call;
+			return new Promise((resolve) =>
+				call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), {
+					once: true,
+				}),
+			);
+		};
+		f.transport.handler = (method) => {
+			if (!method.endsWith(condition === "text" ? ".format" : ".program_status")) return undefined;
+			snapshots++;
+			entered();
+			return condition === "text"
+				? reply({ content: ready ? "READY" : "starting", eof: true })
+				: reply({ records: [{ id: "service", state: ready ? "done" : "working" }] });
+		};
+		const pending = f.core.execute(
+			{
+				op: "wait",
+				condition,
+				text: condition === "text" ? "READY" : undefined,
+				state: condition === "status" ? "done" : undefined,
+				timeoutMs: 15000,
+				target,
+			},
+			{ ...context, signal: caller.signal },
+		);
+		let settled = false;
+		void pending.then(() => {
+			settled = true;
+		});
+		t.after(async () => {
+			caller.abort();
+			await pending;
+			f.core.dispose();
+		});
+		await initial;
 		await new Promise<void>((resolve) => setImmediate(resolve));
-	}
-	assert.equal(snapshots, 1);
-	assert.equal(settled, false, "unrelated events do not end the wait before its deadline");
-	ready = true;
-	if (condition === "text") t.mock.timers.tick(250);
-	else eventCall.onLine?.(terminalEvent("program_status_changed"));
-	assert.equal((await pending).outcome, "condition_observed");
-	assert.equal(snapshots, 2);
-});
+		const unrelated = [
+			JSON.stringify({
+				type: "session_event",
+				payload: { session_id: session, event: { type: "client_connected", payload: { client_id: "client:probe" } } },
+			}),
+			JSON.stringify({
+				type: "session_event",
+				payload: {
+					session_id: session,
+					event: { type: "client_disconnected", payload: { client_id: "client:probe" } },
+				},
+			}),
+			JSON.stringify({
+				type: "session_event",
+				payload: { session_id: session, event: { type: "session_view_changed", payload: { revision: 1 } } },
+			}),
+			terminalEvent("program_status_changed", "block:elsewhere"),
+			terminalEvent("title_changed"),
+			terminalEvent("progress_report"),
+			"{}",
+		];
+		for (let index = 0; index < 30; index++) {
+			eventCall.onLine?.(unrelated[index % unrelated.length]);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+		}
+		assert.equal(snapshots, 1);
+		assert.equal(settled, false, "unrelated events do not end the wait before its deadline");
+		ready = true;
+		if (condition === "text") t.mock.timers.tick(250);
+		else eventCall.onLine?.(terminalEvent("program_status_changed"));
+		assert.equal((await pending).outcome, "condition_observed");
+		assert.equal(snapshots, 2);
+	});
 
 test("text wait returns on a direct-child exit event without the refresh delay", async (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -1755,12 +2379,18 @@ test("text wait returns on a direct-child exit event without the refresh delay",
 	let captures = 0;
 	let ready = false;
 	let entered!: () => void;
-	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const initial = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
 	const run = f.transport.run.bind(f.transport);
 	f.transport.run = (args, call) => {
 		if (!args.includes("events")) return run(args, call);
 		eventCall = call;
-		return new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }));
+		return new Promise((resolve) =>
+			call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), {
+				once: true,
+			}),
+		);
 	};
 	f.transport.handler = (method) => {
 		if (!method.endsWith(".format")) return undefined;
@@ -1772,7 +2402,11 @@ test("text wait returns on a direct-child exit event without the refresh delay",
 		{ op: "wait", condition: "text", text: "service ready", timeoutMs: 2000, target },
 		{ ...context, signal: caller.signal },
 	);
-	t.after(async () => { caller.abort(); await pending; f.core.dispose(); });
+	t.after(async () => {
+		caller.abort();
+		await pending;
+		f.core.dispose();
+	});
 	await initial;
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	ready = true;
@@ -1787,19 +2421,34 @@ test("text wait timeout keeps refresh snapshots within the deadline and count ca
 	const f = fixture();
 	let captures = 0;
 	let entered!: () => void;
-	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const initial = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
 	const run = f.transport.run.bind(f.transport);
-	f.transport.run = (args, call) => args.includes("events")
-		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }))
-		: run(args, call);
+	f.transport.run = (args, call) =>
+		args.includes("events")
+			? new Promise((resolve) =>
+					call.signal?.addEventListener(
+						"abort",
+						() => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }),
+						{ once: true },
+					),
+				)
+			: run(args, call);
 	f.transport.handler = (method) => {
 		if (!method.endsWith(".format")) return undefined;
 		captures++;
 		entered();
 		return reply({ content: "not ready", eof: true });
 	};
-	const pending = f.core.execute({ op: "wait", condition: "text", text: "READY", timeoutMs: 1000, maxSnapshots: 6, target }, context);
-	t.after(async () => { await pending; f.core.dispose(); });
+	const pending = f.core.execute(
+		{ op: "wait", condition: "text", text: "READY", timeoutMs: 1000, maxSnapshots: 6, target },
+		context,
+	);
+	t.after(async () => {
+		await pending;
+		f.core.dispose();
+	});
 	await initial;
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	for (const elapsed of [250, 250, 250, 150]) {
@@ -1820,11 +2469,20 @@ test("text wait cancellation stops the event source and scheduled refresh", asyn
 	const caller = new AbortController();
 	let captures = 0;
 	let entered!: () => void;
-	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const initial = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
 	const run = f.transport.run.bind(f.transport);
-	f.transport.run = (args, call) => args.includes("events")
-		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }))
-		: run(args, call);
+	f.transport.run = (args, call) =>
+		args.includes("events")
+			? new Promise((resolve) =>
+					call.signal?.addEventListener(
+						"abort",
+						() => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }),
+						{ once: true },
+					),
+				)
+			: run(args, call);
 	f.transport.handler = (method) => {
 		if (!method.endsWith(".format")) return undefined;
 		captures++;
@@ -1835,7 +2493,11 @@ test("text wait cancellation stops the event source and scheduled refresh", asyn
 		{ op: "wait", condition: "text", text: "READY", timeoutMs: 2000, target },
 		{ ...context, signal: caller.signal },
 	);
-	t.after(async () => { caller.abort(); await pending; f.core.dispose(); });
+	t.after(async () => {
+		caller.abort();
+		await pending;
+		f.core.dispose();
+	});
 	await initial;
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	t.mock.timers.tick(100);
@@ -1852,11 +2514,20 @@ test("text wait doubles its first refresh intervals", async (t) => {
 	const caller = new AbortController();
 	let captures = 0;
 	let entered!: () => void;
-	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const initial = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
 	const run = f.transport.run.bind(f.transport);
-	f.transport.run = (args, call) => args.includes("events")
-		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }))
-		: run(args, call);
+	f.transport.run = (args, call) =>
+		args.includes("events")
+			? new Promise((resolve) =>
+					call.signal?.addEventListener(
+						"abort",
+						() => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }),
+						{ once: true },
+					),
+				)
+			: run(args, call);
 	f.transport.handler = (method) => {
 		if (!method.endsWith(".format")) return undefined;
 		captures++;
@@ -1867,11 +2538,21 @@ test("text wait doubles its first refresh intervals", async (t) => {
 		{ op: "wait", condition: "text", text: "READY", timeoutMs: 20000, target },
 		{ ...context, signal: caller.signal },
 	);
-	t.after(async () => { caller.abort(); await pending; f.core.dispose(); });
+	t.after(async () => {
+		caller.abort();
+		await pending;
+		f.core.dispose();
+	});
 	await initial;
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	// Snapshots follow at 250 ms and 750 ms; the even spread of the rest caps the third interval below 1000 ms.
-	for (const [elapsed, expected] of [[250, 2], [250, 2], [250, 3], [500, 3], [500, 4]] as const) {
+	for (const [elapsed, expected] of [
+		[250, 2],
+		[250, 2],
+		[250, 3],
+		[500, 3],
+		[500, 4],
+	] as const) {
 		t.mock.timers.tick(elapsed);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal(captures, expected);
@@ -1882,18 +2563,32 @@ test("text wait schedules no refresh after its last allowed snapshot", async (t)
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const mocked = globalThis.setTimeout;
 	const delays: unknown[] = [];
-	globalThis.setTimeout = ((action: () => void, delay?: number) => { delays.push(delay); return mocked(action, delay); }) as typeof setTimeout;
-	t.after(() => { globalThis.setTimeout = mocked; });
+	globalThis.setTimeout = ((action: () => void, delay?: number) => {
+		delays.push(delay);
+		return mocked(action, delay);
+	}) as typeof setTimeout;
+	t.after(() => {
+		globalThis.setTimeout = mocked;
+	});
 	const f = fixture();
 	const caller = new AbortController();
 	let captures = 0;
 	let afterLast = 0;
 	let entered!: () => void;
-	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const initial = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
 	const run = f.transport.run.bind(f.transport);
-	f.transport.run = (args, call) => args.includes("events")
-		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }))
-		: run(args, call);
+	f.transport.run = (args, call) =>
+		args.includes("events")
+			? new Promise((resolve) =>
+					call.signal?.addEventListener(
+						"abort",
+						() => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }),
+						{ once: true },
+					),
+				)
+			: run(args, call);
 	f.transport.handler = (method) => {
 		if (!method.endsWith(".format")) return undefined;
 		captures++;
@@ -1906,8 +2601,14 @@ test("text wait schedules no refresh after its last allowed snapshot", async (t)
 		{ ...context, signal: caller.signal },
 	);
 	let settled = false;
-	void pending.then(() => { settled = true; });
-	t.after(async () => { caller.abort(); await pending; f.core.dispose(); });
+	void pending.then(() => {
+		settled = true;
+	});
+	t.after(async () => {
+		caller.abort();
+		await pending;
+		f.core.dispose();
+	});
 	await initial;
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	t.mock.timers.tick(250);
@@ -1924,21 +2625,36 @@ function operationTime(total = 1000, caller?: AbortSignal) {
 	const tasks = new Set<{ at: number; action: () => void }>();
 	const clock: BudgetClock = {
 		now: () => now,
-		schedule(action, milliseconds) { const task = { at: now + milliseconds, action }; tasks.add(task); return () => { tasks.delete(task); }; },
+		schedule(action, milliseconds) {
+			const task = { at: now + milliseconds, action };
+			tasks.add(task);
+			return () => {
+				tasks.delete(task);
+			};
+		},
 	};
 	const budget = createRexBudget(total, 300000, caller, clock);
-	return { budget, clock, advance(milliseconds: number) {
-		const end = now + milliseconds;
-		for (;;) {
-			const task = [...tasks].filter((entry) => entry.at <= end).sort((a, b) => a.at - b.at)[0];
-			if (!task) break;
-			now = task.at; tasks.delete(task); task.action();
-		}
-		now = end;
-	} };
+	return {
+		budget,
+		clock,
+		advance(milliseconds: number) {
+			const end = now + milliseconds;
+			for (;;) {
+				const task = [...tasks].filter((entry) => entry.at <= end).sort((a, b) => a.at - b.at)[0];
+				if (!task) break;
+				now = task.at;
+				tasks.delete(task);
+				task.action();
+			}
+			now = end;
+		},
+	};
 }
 
-for (const [total, eventAt] of [[1000, 850], [13500, 12000]] as const) {
+for (const [total, eventAt] of [
+	[1000, 850],
+	[13500, 12000],
+] as const) {
 	for (const mode of ["event", "deadline", "source_error"] as const) {
 		test(`event observation retains its ${total} ms operation allowance for ${mode}`, async () => {
 			const f = fixture();
@@ -1947,17 +2663,28 @@ for (const [total, eventAt] of [[1000, 850], [13500, 12000]] as const) {
 			let endEvent!: (result: CliResult) => void;
 			let ready = false;
 			let entered!: () => void;
-			const initial = new Promise<void>((resolve) => { entered = resolve; });
+			const initial = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
 			const run = f.transport.run.bind(f.transport);
 			f.transport.run = (args, call) => {
 				if (!args.includes("events")) return run(args, call);
 				eventCall = call;
 				return new Promise((resolve) => {
 					let done = false;
-					const finish = (value: CliResult) => { if (done) return; done = true; cancel(); call.signal?.removeEventListener("abort", abort); resolve(value); };
+					const finish = (value: CliResult) => {
+						if (done) return;
+						done = true;
+						cancel();
+						call.signal?.removeEventListener("abort", abort);
+						resolve(value);
+					};
 					const abort = () => finish({ ...reply({}), outcome: "cancelled", exitCode: null });
 					const reserve = Math.min(1000, Math.max(1, Math.floor(call.timeoutMs / 10)));
-					const cancel = time.clock.schedule(() => finish({ ...reply({}), outcome: "timeout", exitCode: null }), call.timeoutMs - reserve);
+					const cancel = time.clock.schedule(
+						() => finish({ ...reply({}), outcome: "timeout", exitCode: null }),
+						call.timeoutMs - reserve,
+					);
 					endEvent = finish;
 					call.signal?.addEventListener("abort", abort, { once: true });
 				});
@@ -1968,20 +2695,32 @@ for (const [total, eventAt] of [[1000, 850], [13500, 12000]] as const) {
 				return reply({ content: ready ? "service ready" : "no marker", eof: true });
 			};
 			try {
-				const pending = f.core.execute({ op: "wait", condition: "text", text: "service ready", timeoutMs: total, target }, { ...context, budget: time.budget });
+				const pending = f.core.execute(
+					{ op: "wait", condition: "text", text: "service ready", timeoutMs: total, target },
+					{ ...context, budget: time.budget },
+				);
 				await initial;
 				assert.equal(eventCall.timeoutMs, total);
 				assert.equal(eventCall.finaliseSignal, time.budget.finaliseSignal);
 				if (mode === "event") {
-					time.advance(eventAt); ready = true; eventCall.onLine?.(terminalEvent("child_exited"));
+					time.advance(eventAt);
+					ready = true;
+					eventCall.onLine?.(terminalEvent("child_exited"));
 				} else if (mode === "source_error") {
-					time.advance(800); endEvent({ ...reply({}), exitCode: 2, stderr: "event source failed" });
+					time.advance(800);
+					endEvent({ ...reply({}), exitCode: 2, stderr: "event source failed" });
 				} else time.advance(time.budget.workEndsAt);
 				const result = await pending;
-				assert.equal(result.outcome, mode === "event" ? "condition_observed" : mode === "deadline" ? "timeout" : "observation_failed");
+				assert.equal(
+					result.outcome,
+					mode === "event" ? "condition_observed" : mode === "deadline" ? "timeout" : "observation_failed",
+				);
 				assert.ok(time.budget.elapsed() <= total);
 				assert.ok(f.transport.calls.filter((call) => call.method?.endsWith(".format")).length <= 2);
-			} finally { time.budget.dispose(); f.core.dispose(); }
+			} finally {
+				time.budget.dispose();
+				f.core.dispose();
+			}
 		});
 	}
 }
@@ -1990,19 +2729,31 @@ test("a status deadline retains the exact block's last observed nonmatching stat
 	const f = fixture();
 	const time = operationTime(120000);
 	let entered!: () => void;
-	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const initial = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
 	const snapshot = { records: [{ id: "pi", state: "done" }] };
 	const run = f.transport.run.bind(f.transport);
-	f.transport.run = (args, call) => args.includes("events")
-		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), { once: true }))
-		: run(args, call);
+	f.transport.run = (args, call) =>
+		args.includes("events")
+			? new Promise((resolve) =>
+					call.signal?.addEventListener(
+						"abort",
+						() => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }),
+						{ once: true },
+					),
+				)
+			: run(args, call);
 	f.transport.handler = (method) => {
 		if (!method.endsWith(".program_status")) return undefined;
 		entered();
 		return reply(snapshot);
 	};
 	try {
-		const pending = f.core.execute({ op: "wait", condition: "status", state: "idle", timeoutMs: 120000, target }, { ...context, budget: time.budget });
+		const pending = f.core.execute(
+			{ op: "wait", condition: "status", state: "idle", timeoutMs: 120000, target },
+			{ ...context, budget: time.budget },
+		);
 		await initial;
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		time.advance(time.budget.workEndsAt);
@@ -2012,7 +2763,10 @@ test("a status deadline retains the exact block's last observed nonmatching stat
 		assert.deepEqual((response.data as { snapshot?: unknown }).snapshot, snapshot);
 		assert.match(JSON.stringify(response.data), /condition was not observed/);
 		assert.match(response.error ?? "", /Inspect the target's current state/);
-	} finally { time.budget.dispose(); f.core.dispose(); }
+	} finally {
+		time.budget.dispose();
+		f.core.dispose();
+	}
 });
 
 test("early cancellation bounds a non-cooperative event process with the same final signal", async () => {
@@ -2020,25 +2774,41 @@ test("early cancellation bounds a non-cooperative event process with the same fi
 	const caller = new AbortController();
 	const time = operationTime(1000, caller.signal);
 	let entered!: () => void;
-	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const initial = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
 	const run = f.transport.run.bind(f.transport);
-	f.transport.run = (args, call) => args.includes("events")
-		? new Promise((resolve) => call.finaliseSignal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", signal: "SIGKILL" }), { once: true }))
-		: run(args, call);
+	f.transport.run = (args, call) =>
+		args.includes("events")
+			? new Promise((resolve) =>
+					call.finaliseSignal?.addEventListener(
+						"abort",
+						() => resolve({ ...reply({}), outcome: "cancelled", signal: "SIGKILL" }),
+						{ once: true },
+					),
+				)
+			: run(args, call);
 	f.transport.handler = (method) => {
 		if (!method.endsWith(".format")) return undefined;
-		entered(); return reply({ content: "no marker", eof: true });
+		entered();
+		return reply({ content: "no marker", eof: true });
 	};
 	try {
-		const pending = f.core.execute({ op: "wait", condition: "text", text: "ready", timeoutMs: 1000, target }, { ...context, budget: time.budget });
+		const pending = f.core.execute(
+			{ op: "wait", condition: "text", text: "ready", timeoutMs: 1000, target },
+			{ ...context, budget: time.budget },
+		);
 		await initial;
-		time.advance(200); caller.abort();
+		time.advance(200);
+		caller.abort();
 		assert.equal(time.budget.endsAt, 300);
 		time.advance(100);
 		const result = await pending;
 		assert.equal(result.outcome, "cancelled");
 		assert.equal(time.budget.elapsed(), 300);
-	} finally { time.budget.dispose(); }
+	} finally {
+		time.budget.dispose();
+	}
 });
 
 test("escaped Unicode capture continuation cannot match after the shared work cutoff", async () => {
@@ -2047,26 +2817,36 @@ test("escaped Unicode capture continuation cannot match after the shared work cu
 	let blobs = 0;
 	const output = Buffer.from(`${"\\".repeat(20000)}😀ready`);
 	const run = f.transport.run.bind(f.transport);
-	f.transport.run = (args, call) => args.includes("events")
-		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled" }), { once: true }))
-		: run(args, call);
+	f.transport.run = (args, call) =>
+		args.includes("events")
+			? new Promise((resolve) =>
+					call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled" }), { once: true }),
+				)
+			: run(args, call);
 	f.transport.handler = (method, data) => {
 		if (method.endsWith(".format")) return reply({ id: 1, total: output.length, content: "old output", eof: false });
 		if (method.endsWith(".blob_read")) {
 			const args = data.args as { offset: number; max_bytes: number };
 			const suffix = output.subarray(args.offset).toString("utf8");
 			const eof = Buffer.byteLength(JSON.stringify(suffix)) - 2 <= args.max_bytes;
-			blobs++; time.advance(900);
+			blobs++;
+			time.advance(900);
 			return reply({ id: 1, total: output.length, data: eof ? suffix : "", eof });
 		}
 		return undefined;
 	};
 	try {
-		const result = await f.core.execute({ op: "wait", condition: "text", text: "ready", timeoutMs: 1000, target }, { ...context, budget: time.budget });
+		const result = await f.core.execute(
+			{ op: "wait", condition: "text", text: "ready", timeoutMs: 1000, target },
+			{ ...context, budget: time.budget },
+		);
 		assert.equal(result.outcome, "timeout");
 		assert.equal(blobs, 1);
 		assert.equal(time.budget.elapsed(), 900);
-	} finally { time.budget.dispose(); f.core.dispose(); }
+	} finally {
+		time.budget.dispose();
+		f.core.dispose();
+	}
 });
 
 test("native child wait leaves response room and a stopped tail preserves exit evidence", async () => {
@@ -2087,16 +2867,25 @@ test("native child wait leaves response room and a stopped tail preserves exit e
 	};
 	f.transport.handler = (method) => {
 		if (method.endsWith(".process")) return reply({ last_exit: ++processes === 1 ? null : { exit_code: 0 } });
-		if (method.endsWith(".format")) { time.advance(700); return reply({ content: "tail", eof: true }); }
+		if (method.endsWith(".format")) {
+			time.advance(700);
+			return reply({ content: "tail", eof: true });
+		}
 		return undefined;
 	};
 	try {
-		const result = await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 1000, target }, { ...context, budget: time.budget });
+		const result = await f.core.execute(
+			{ op: "wait", condition: "child_exit", timeoutMs: 1000, target },
+			{ ...context, budget: time.budget },
+		);
 		assert.equal(waitAllowance, 700);
 		assert.ok(waitMs < waitAllowance - Math.floor(waitAllowance / 10));
 		assert.equal(result.outcome, "child_completed");
 		assert.match(JSON.stringify(result.data), /captureError.*timeout/);
-	} finally { time.budget.dispose(); f.core.dispose(); }
+	} finally {
+		time.budget.dispose();
+		f.core.dispose();
+	}
 });
 
 test("cancelled effect settlement leaves one exact pending claim without a retry", async () => {
@@ -2114,7 +2903,10 @@ test("cancelled effect settlement leaves one exact pending claim without a retry
 		caller.abort();
 		return reply({ session_id: session });
 	};
-	const result = await f.core.execute({ op: "create", kind: "session", label: "work" }, { ...context, signal: caller.signal });
+	const result = await f.core.execute(
+		{ op: "create", kind: "session", label: "work" },
+		{ ...context, signal: caller.signal },
+	);
 	assert.equal(result.outcome, "cancelled");
 	assert.equal(result.effects.state, "unknown");
 	assert.equal(result.effects.recordId, context.callId);
@@ -2128,15 +2920,33 @@ test("cleanup interruption retains the completed close and all uncertain resourc
 	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
 	const record = f.store.state.records[0];
 	assert.ok(record);
-	record.resources = [block, "block:44444444-4444-4444-8444-444444444444", "block:55555555-5555-4555-8555-555555555555"].map((blockId) => ({ kind: "block", sessionId: session, blockId }));
+	record.resources = [
+		block,
+		"block:44444444-4444-4444-8444-444444444444",
+		"block:55555555-5555-4555-8555-555555555555",
+	].map((blockId) => ({ kind: "block", sessionId: session, blockId }));
 	const caller = new AbortController();
 	let closes = 0;
 	f.transport.handler = (method, data) => {
-		if (method === "target.resolve") return reply({ results: [{ status: "resolved", target: { kind: "block", session_id: session, block_id: (data.queries as string[])[0] } }] });
-		if (method === "block.close") { if (++closes === 2) caller.abort(); return reply({}); }
+		if (method === "target.resolve")
+			return reply({
+				results: [
+					{
+						status: "resolved",
+						target: { kind: "block", session_id: session, block_id: (data.queries as string[])[0] },
+					},
+				],
+			});
+		if (method === "block.close") {
+			if (++closes === 2) caller.abort();
+			return reply({});
+		}
 		return undefined;
 	};
-	const result = await f.core.execute({ op: "cleanup", recordId: context.callId }, { ...context, callId: "close-partial", signal: caller.signal });
+	const result = await f.core.execute(
+		{ op: "cleanup", recordId: context.callId },
+		{ ...context, callId: "close-partial", signal: caller.signal },
+	);
 	assert.equal(result.outcome, "cancelled");
 	assert.equal(result.effects.state, "unknown");
 	assert.equal(result.effects.recordId, "close-partial");
@@ -2156,13 +2966,18 @@ test("an admitted atomic settlement finishes and reports its deadline overrun", 
 		return result;
 	};
 	try {
-		const result = await f.core.execute({ op: "create", kind: "session", label: "work", timeoutMs: 1000 }, { ...context, budget: time.budget });
+		const result = await f.core.execute(
+			{ op: "create", kind: "session", label: "work", timeoutMs: 1000 },
+			{ ...context, budget: time.budget },
+		);
 		assert.equal(result.outcome, "created");
 		assert.equal(result.effects.state, "confirmed");
 		assert.equal(result.coverage.deadline?.elapsedMs, 1200);
 		assert.equal(result.coverage.deadline?.overrunMs, 200);
 		assert.equal(f.store.state.records[0]?.phase, "confirmed");
-	} finally { time.budget.dispose(); }
+	} finally {
+		time.budget.dispose();
+	}
 });
 
 test("an earlier event output limit survives teardown after the work cutoff", async () => {
@@ -2170,21 +2985,32 @@ test("an earlier event output limit survives teardown after the work cutoff", as
 	const time = operationTime();
 	let causeAt = -1;
 	let entered!: () => void;
-	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const initial = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
 	const run = f.transport.run.bind(f.transport);
 	f.transport.run = (args, call) => {
 		if (!args.includes("events")) return run(args, call);
 		return new Promise((resolve) => {
-			time.clock.schedule(() => { causeAt = time.budget.elapsed(); }, 800);
-			time.clock.schedule(() => resolve({ ...reply({}), outcome: "output_limit", truncated: true, exitCode: null }), 950);
+			time.clock.schedule(() => {
+				causeAt = time.budget.elapsed();
+			}, 800);
+			time.clock.schedule(
+				() => resolve({ ...reply({}), outcome: "output_limit", truncated: true, exitCode: null }),
+				950,
+			);
 		});
 	};
 	f.transport.handler = (method) => {
 		if (!method.endsWith(".format")) return undefined;
-		entered(); return reply({ content: "no marker", eof: true });
+		entered();
+		return reply({ content: "no marker", eof: true });
 	};
 	try {
-		const pending = f.core.execute({ op: "wait", condition: "text", text: "ready", timeoutMs: 1000, target }, { ...context, budget: time.budget });
+		const pending = f.core.execute(
+			{ op: "wait", condition: "text", text: "ready", timeoutMs: 1000, target },
+			{ ...context, budget: time.budget },
+		);
 		await initial;
 		time.advance(950);
 		const result = await pending;
@@ -2192,7 +3018,9 @@ test("an earlier event output limit survives teardown after the work cutoff", as
 		assert.equal(result.outcome, "observation_failed");
 		assert.equal((result.data as { cause: CliResult }).cause.outcome, "output_limit");
 		assert.equal(time.budget.elapsed(), 950);
-	} finally { time.budget.dispose(); }
+	} finally {
+		time.budget.dispose();
+	}
 });
 
 test("cleanup intent cancellation requests no close and no finalisation admission", async () => {
@@ -2207,12 +3035,18 @@ test("cleanup intent cancellation requests no close and no finalisation admissio
 		if (phase === "work") caller.abort();
 		return state;
 	};
-	const result = await f.core.execute({ op: "cleanup", recordId: context.callId }, { ...context, callId: "close-not-dispatched", signal: caller.signal });
+	const result = await f.core.execute(
+		{ op: "cleanup", recordId: context.callId },
+		{ ...context, callId: "close-not-dispatched", signal: caller.signal },
+	);
 	assert.equal(result.outcome, "cancelled");
 	assert.equal(result.effects.state, "none");
 	assert.equal(result.effects.recordId, "close-not-dispatched");
 	assert.deepEqual(phases, ["work"]);
-	assert.equal(f.transport.calls.some((call) => call.method === "block.close"), false);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "block.close"),
+		false,
+	);
 	assert.equal(f.store.state.records.find((record) => record.callId === "close-not-dispatched")?.phase, "pending");
 });
 
@@ -2226,7 +3060,10 @@ test("a rejected cleanup settlement retains uncertainty without another write", 
 		if (phase === "finalise") throw new Error("settlement unavailable");
 		return update(owner, change, phase);
 	};
-	const result = await f.core.execute({ op: "cleanup", recordId: context.callId }, { ...context, callId: "close-unsettled" });
+	const result = await f.core.execute(
+		{ op: "cleanup", recordId: context.callId },
+		{ ...context, callId: "close-unsettled" },
+	);
 	assert.equal(result.outcome, "cleanup_unknown");
 	assert.equal(result.effects.state, "unknown");
 	assert.equal(result.effects.recordId, "close-unsettled");
@@ -2243,7 +3080,7 @@ test("catalogue command and output-limit errors never become empty successful ma
 	]) {
 		const f = fixture();
 		const run = f.transport.run.bind(f.transport);
-		f.transport.run = (args, call) => args.includes("list") ? Promise.resolve(failure) : run(args, call);
+		f.transport.run = (args, call) => (args.includes("list") ? Promise.resolve(failure) : run(args, call));
 		const response = await f.core.execute({ op: "native", kind: "catalog", query: "missing" }, context);
 		assert.equal(response.ok, false);
 		assert.equal(response.outcome, failure.truncated ? "output_limit" : "cli_failure");
@@ -2264,7 +3101,14 @@ test("native Lua and action calls may run until their own allowance; other CLI r
 		const run = f.transport.calls.find((call) => call.args.includes("do"));
 		assert.ok(run);
 		const seconds = Number(/^--timeout=(\d+)s$/.exec(run.args.find((arg) => arg.startsWith("--timeout=")) ?? "")?.[1]);
-		assert.ok(seconds >= 85 && seconds <= 90, `rex do waits for the call's allowance, not the 10 s connection limit: ${seconds}`);
-		assert.ok(f.transport.calls.filter((call) => !call.args.includes("do")).every((call) => call.args.includes("--timeout=10s")));
+		assert.ok(
+			seconds >= 85 && seconds <= 90,
+			`rex do waits for the call's allowance, not the 10 s connection limit: ${seconds}`,
+		);
+		assert.ok(
+			f.transport.calls
+				.filter((call) => !call.args.includes("do"))
+				.every((call) => call.args.includes("--timeout=10s")),
+		);
 	}
 });

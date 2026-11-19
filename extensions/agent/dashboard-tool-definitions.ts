@@ -19,25 +19,38 @@ import type { ToolDisplayLookup } from "./tool-display.ts";
 /** Capture presentation only. Unexpected factory API access fails closed. */
 export function captureCodemodeRenderers(): ToolRenderers {
 	const definitions: ToolDefinition[] = [];
-	const standIn = new Proxy({
-		registerTool: ((definition: ToolDefinition) => { definitions.push(definition); }) as ExtensionAPI["registerTool"],
-	} satisfies Pick<ExtensionAPI, "registerTool">, {
-		get(target, property) {
-			if (property === "registerTool") return target.registerTool;
-			throw new Error(`Codemode capture requested unsupported API: ${String(property)}`);
+	const standIn = new Proxy(
+		{
+			registerTool: ((definition: ToolDefinition) => {
+				definitions.push(definition);
+			}) as ExtensionAPI["registerTool"],
+		} satisfies Pick<ExtensionAPI, "registerTool">,
+		{
+			get(target, property) {
+				if (property === "registerTool") return target.registerTool;
+				throw new Error(`Codemode capture requested unsupported API: ${String(property)}`);
+			},
 		},
-	});
+	);
 	const returned = createCodemodeExtension()(standIn as ExtensionAPI);
 	if (returned && typeof (returned as PromiseLike<void>).then === "function") {
 		void Promise.resolve(returned).catch(() => undefined);
 		throw new Error("Codemode renderer capture became asynchronous");
 	}
 	const definition = definitions.length === 1 ? definitions[0] : undefined;
-	if (definition?.name !== "codemode" || typeof definition.renderCall !== "function" || typeof definition.renderResult !== "function" ||
-		(definition.renderShell !== undefined && definition.renderShell !== "default" && definition.renderShell !== "self")) {
+	if (
+		definition?.name !== "codemode" ||
+		typeof definition.renderCall !== "function" ||
+		typeof definition.renderResult !== "function" ||
+		(definition.renderShell !== undefined && definition.renderShell !== "default" && definition.renderShell !== "self")
+	) {
 		throw new Error("Codemode renderer capture unavailable");
 	}
-	return { renderCall: definition.renderCall, renderResult: definition.renderResult, renderShell: definition.renderShell };
+	return {
+		renderCall: definition.renderCall,
+		renderResult: definition.renderResult,
+		renderShell: definition.renderShell,
+	};
 }
 
 let captured = false;
@@ -45,7 +58,11 @@ let codemode: ToolRenderers | undefined;
 function codemodeRenderers(): ToolRenderers | undefined {
 	if (!captured) {
 		captured = true;
-		try { codemode = captureCodemodeRenderers(); } catch { /* Pi's standard card remains available. */ }
+		try {
+			codemode = captureCodemodeRenderers();
+		} catch {
+			/* Pi's standard card remains available. */
+		}
 	}
 	return codemode;
 }
@@ -85,21 +102,36 @@ function dashboardAgentRenderers(presentation: ToolRenderers | undefined): ToolR
 	const result = presentation.renderResult;
 	const wrapped: ToolRenderers = {
 		renderShell: "self",
-		...(call ? { renderCall: (args, theme, context) => {
-			const enriched = { ...context, hideExpansionHint: true };
-			return call(args, theme, enriched);
-		} } : {}),
-		...(result ? { renderResult: (value, options, theme, context) => {
-			const enriched = { ...context, hideExpansionHint: true };
-			return result(value, options, theme, enriched);
-		} } : {}),
+		...(call
+			? {
+					renderCall: (args, theme, context) => {
+						const enriched = { ...context, hideExpansionHint: true };
+						return call(args, theme, enriched);
+					},
+				}
+			: {}),
+		...(result
+			? {
+					renderResult: (value, options, theme, context) => {
+						const enriched = { ...context, hideExpansionHint: true };
+						return result(value, options, theme, enriched);
+					},
+				}
+			: {}),
 	};
 	agentWrappers.set(presentation, wrapped);
 	return wrapped;
 }
 
 /** The shared presentation for one tool, before the dashboard shell is applied. */
-function toolPresentation(name: string, knownCall: boolean, native: ReadonlyMap<string, unknown>, agents: Record<string, ToolRenderers>, renderers: ToolRenderers | undefined, toolDisplay?: ToolDisplayLookup): ToolRenderers | undefined {
+function toolPresentation(
+	name: string,
+	knownCall: boolean,
+	native: ReadonlyMap<string, unknown>,
+	agents: Record<string, ToolRenderers>,
+	renderers: ToolRenderers | undefined,
+	toolDisplay?: ToolDisplayLookup,
+): ToolRenderers | undefined {
 	if (native.has(name)) return knownCall ? (native.get(name) as ToolDefinition | undefined) : undefined;
 	if (name === "codemode") return renderers;
 	if (Object.hasOwn(agents, name)) return agents[name];
@@ -111,19 +143,32 @@ function toolPresentation(name: string, knownCall: boolean, native: ReadonlyMap<
  * roster facts (names, applied configuration) that agent cards show for their targets; it reads no store.
  * Agent cards use their own shell; other tools keep Pi's native presentation.
  */
-export function createDashboardToolDefinitions(cwd: string, toolDisplay?: ToolDisplayLookup, rows: AgentCardLookup = () => []): (name: string, knownCall?: boolean) => ToolDefinition {
-	const native = new Map([
-		createReadToolDefinition(cwd), createBashToolDefinition(cwd), createEditToolDefinition(cwd),
-		createWriteToolDefinition(cwd), createGrepToolDefinition(cwd), createFindToolDefinition(cwd),
-		createLsToolDefinition(cwd), createPowerShellToolDefinition(cwd),
-	].map((definition) => [definition.name, definition]));
+export function createDashboardToolDefinitions(
+	cwd: string,
+	toolDisplay?: ToolDisplayLookup,
+	rows: AgentCardLookup = () => [],
+): (name: string, knownCall?: boolean) => ToolDefinition {
+	const native = new Map(
+		[
+			createReadToolDefinition(cwd),
+			createBashToolDefinition(cwd),
+			createEditToolDefinition(cwd),
+			createWriteToolDefinition(cwd),
+			createGrepToolDefinition(cwd),
+			createFindToolDefinition(cwd),
+			createLsToolDefinition(cwd),
+			createPowerShellToolDefinition(cwd),
+		].map((definition) => [definition.name, definition]),
+	);
 	const agents = createAgentToolCards(rows) as Record<string, ToolRenderers>;
 	const renderers = codemodeRenderers();
 	return (name, knownCall = true) => {
 		const builtin = knownCall ? native.get(name) : undefined;
 		const presentation = toolPresentation(name, knownCall, native, agents, renderers, toolDisplay);
 		return {
-			name, label: builtin?.label ?? name, description: builtin?.description ?? "Retained tool display",
+			name,
+			label: builtin?.label ?? name,
+			description: builtin?.description ?? "Retained tool display",
 			parameters: builtin?.parameters ?? obj({}, { open: true }),
 			...(Object.hasOwn(agents, name) ? dashboardAgentRenderers(presentation) : nativeRenderers(presentation)),
 			execute: cannotExecute,

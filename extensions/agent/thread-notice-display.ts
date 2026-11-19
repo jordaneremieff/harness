@@ -41,8 +41,11 @@ const STATEMENT_DEFAULTS: Readonly<Record<string, string>> = { join: "Joined the
 
 function frameText(message: string): string {
 	let frame: unknown;
-	try { frame = JSON.parse(message); }
-	catch { return message; }
+	try {
+		frame = JSON.parse(message);
+	} catch {
+		return message;
+	}
 	if (frame === null || typeof frame !== "object" || Array.isArray(frame)) return message;
 	const fields = frame as Record<string, unknown>;
 	return FRAME_FIELDS.flatMap(([key, label]) => {
@@ -63,7 +66,10 @@ export function threadEventDisplayText(event: Pick<CollaborationEvent, "kind" | 
 }
 
 /** The display copy of one notice: the whole event text for a notified recipient, an excerpt for a passive one. */
-export function threadNoticeDisplayText(event: Pick<CollaborationEvent, "kind" | "message" | "source">, passive: boolean): string {
+export function threadNoticeDisplayText(
+	event: Pick<CollaborationEvent, "kind" | "message" | "source">,
+	passive: boolean,
+): string {
 	const text = threadEventDisplayText(event);
 	if (!passive) return text;
 	const excerpt = threadExcerpt(text, THREAD_NOTICE_DISPLAY_UNITS);

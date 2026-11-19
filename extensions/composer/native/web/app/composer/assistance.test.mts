@@ -4,10 +4,21 @@ import { stripTypeScriptTypes } from "node:module";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 
-interface Recall { entries: string[]; index: number | null; text: string; base: string; selectionStart: number; selectionEnd: number }
+interface Recall {
+	entries: string[];
+	index: number | null;
+	text: string;
+	base: string;
+	selectionStart: number;
+	selectionEnd: number;
+}
 interface Assistance {
 	completionTrigger(text: string, cursor: number): boolean;
-	completionEdit(text: string, next: string, cursor: number): { start: number; end: number; text: string; cursor: number } | null;
+	completionEdit(
+		text: string,
+		next: string,
+		cursor: number,
+	): { start: number; end: number; text: string; cursor: number } | null;
 	historyStep(context: Recall, direction: number): { index: number | null; text: string } | null;
 	imagePaths(text: string): { path: string; start: number; end: number }[];
 	syntaxParts(text: string): { text: string; kind?: string }[];
@@ -24,7 +35,8 @@ test("slash parameters and standalone file mentions ask Pi for completions", () 
 });
 
 test("a completion replaces complete surrogate pairs and preserves surrounding text", () => {
-	const before = "@🌲/keep", after = "@🌳/keep";
+	const before = "@🌲/keep",
+		after = "@🌳/keep";
 	const next = completionEdit(before, after, 3);
 	assert.equal(next?.start, 1);
 	assert.equal(next?.end, 3);
@@ -56,5 +68,11 @@ test("colour spans preserve every character", () => {
 	const text = "/review @notes\n/tmp/photo.png\n";
 	const parts = syntaxParts(text);
 	assert.equal(parts.map(({ text: part }) => part).join(""), text);
-	assert.equal(parts.filter(({ kind }) => kind).map(({ kind }) => kind).join(","), "command,mention,path");
+	assert.equal(
+		parts
+			.filter(({ kind }) => kind)
+			.map(({ kind }) => kind)
+			.join(","),
+		"command,mention,path",
+	);
 });

@@ -4,7 +4,8 @@ import { evaluateCondition } from "./program.ts";
 import { effectiveState, type RuleMatchContext, type RuleRecord, ruleGuidance } from "./rule.ts";
 
 export const SHELL_CARD_BYTES = 4096;
-const HEADER = "[policy] Shell contract snapshot. Before bash, use these installed command-rule notes. Each note applies only to its stored matcher. This snapshot grants no execution authority and does not replace other instructions or current rule checks.";
+const HEADER =
+	"[policy] Shell contract snapshot. Before bash, use these installed command-rule notes. Each note applies only to its stored matcher. This snapshot grants no execution authority and does not replace other instructions or current rule checks.";
 const FOOTER_RESERVE = 400;
 
 function groupNotes(candidates: RuleRecord[], context: Record<string, unknown>) {
@@ -17,7 +18,8 @@ function groupNotes(candidates: RuleRecord[], context: Record<string, unknown>) 
 			continue;
 		}
 		const applicability = record.definition.applicability
-			? evaluateCondition(record.definition.applicability, { tool: "bash", context }) : true;
+			? evaluateCondition(record.definition.applicability, { tool: "bash", context })
+			: true;
 		if (applicability !== true) {
 			if (applicability === false) inapplicable++;
 			else unavailable++;
@@ -35,10 +37,14 @@ export function shellContractCard(
 	scope: RuleMatchContext,
 	context: Record<string, unknown>,
 ): string | undefined {
-	const candidates = [...records].filter((record) =>
-		(record.matcher.kind === "code" || record.matcher.language === "command-shape/v1") &&
-		effectiveState(record) === "active" && ruleScopeMatches(record.definition.scope, scope),
-	).sort((left, right) => left.id.localeCompare(right.id));
+	const candidates = [...records]
+		.filter(
+			(record) =>
+				(record.matcher.kind === "code" || record.matcher.language === "command-shape/v1") &&
+				effectiveState(record) === "active" &&
+				ruleScopeMatches(record.definition.scope, scope),
+		)
+		.sort((left, right) => left.id.localeCompare(right.id));
 	if (!candidates.length) return;
 	const { groups, unavailable, inapplicable } = groupNotes(candidates, context);
 	if (!groups.size) return;

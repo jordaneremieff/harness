@@ -64,7 +64,11 @@ async function run(count: number) {
 		sessionManager: { getSessionId: () => "session", buildContextEntries: () => [] },
 		getSystemPrompt: () => "",
 	} as unknown as ExtensionContext;
-	const writer = { enqueue: () => true, close: async () => {}, health: () => ({ state: "ok" as const, lostRecords: 0, lostBytes: 0 }) };
+	const writer = {
+		enqueue: () => true,
+		close: async () => {},
+		health: () => ({ state: "ok" as const, lostRecords: 0, lostBytes: 0 }),
+	};
 	let runtime!: PolicyRuntime;
 	runtime = new PolicyRuntime(
 		pi,

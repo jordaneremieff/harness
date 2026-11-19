@@ -36,7 +36,8 @@ function point(lines: string[], text: string) {
 	return { x: line.indexOf(text), y };
 }
 /** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
-const visible = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+const visible = (lines: string[]) =>
+	lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
 
 it("mouse regions leave selection gestures, modifiers, invalid cells and stale layouts unhandled", () => {
 	const mouse = new DashboardMouse();
@@ -164,7 +165,14 @@ for (const width of [80, 140]) {
 			assert.equal(f.ui.focus.region, "list");
 			click("d ago");
 			assert.equal(f.state.exactTime, true);
-			const exact = new Date(0).toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true });
+			const exact = new Date(0).toLocaleString("en-US", {
+				year: "numeric",
+				month: "short",
+				day: "numeric",
+				hour: "numeric",
+				minute: "2-digit",
+				hour12: true,
+			});
 			assert.ok(lines().join("\n").includes(exact));
 			click(exact);
 			assert.equal(f.state.exactTime, false, "a second click on a time switches it back");
@@ -184,7 +192,11 @@ for (const width of [80, 140]) {
 			assert.equal(f.state.agents.get("alpha")?.draft ?? "", "", "selection never moves a draft between agents");
 			assert.equal(f.state.agents.get("bravo")?.draft, "draft retained");
 			f.resize(width + 1, 30);
-			assert.equal(f.ui.handleMouse(event(p.x, p.y, width, 30)), undefined, "a click drawn for another size acts on nothing");
+			assert.equal(
+				f.ui.handleMouse(event(p.x, p.y, width, 30)),
+				undefined,
+				"a click drawn for another size acts on nothing",
+			);
 		} finally {
 			f.ui.dispose();
 		}
@@ -234,68 +246,149 @@ for (const width of [80, 140]) {
 
 for (const width of [80, 140]) {
 	it(`two-row roster clicks select the correct agent at ${width}`, async () => {
-		const f = fixture(width, 30, source([row("work", { name: "Worker", modifiedAt: 3 }), row("done", { name: "Second worker", state: "working", modifiedAt: 2 }), row("failed", { name: "Failure", state: "failed", error: "quota limit", modifiedAt: 1 })]));
+		const f = fixture(
+			width,
+			30,
+			source([
+				row("work", { name: "Worker", modifiedAt: 3 }),
+				row("done", { name: "Second worker", state: "working", modifiedAt: 2 }),
+				row("failed", { name: "Failure", state: "failed", error: "quota limit", modifiedAt: 1 }),
+			]),
+		);
 		try {
 			await turn();
 			// The side list shows all three agents; the 80-column strip shows the newest two.
 			const target = width >= 100 ? { name: "Failure", id: "failed" } : { name: "Second worker", id: "done" };
 			const lines = f.ui.render(width).map(stripVTControlCharacters);
 			const block = point(lines, target.name);
-			assert.equal(f.ui.handleMouse(event(5, block.y + 1, width, 30))?.handled, true, "a click on the model line selects its agent");
+			assert.equal(
+				f.ui.handleMouse(event(5, block.y + 1, width, 30))?.handled,
+				true,
+				"a click on the model line selects its agent",
+			);
 			assert.equal(f.state.selected, target.id);
 			await turn();
 			const next = point(f.ui.render(width).map(stripVTControlCharacters), "Worker");
-			assert.equal(f.ui.handleMouse(event(5, next.y, width, 30))?.handled, true, "a click on the name line selects its agent");
+			assert.equal(
+				f.ui.handleMouse(event(5, next.y, width, 30))?.handled,
+				true,
+				"a click on the name line selects its agent",
+			);
 			assert.equal(f.state.selected, "work");
-		} finally { f.ui.dispose(); }
+		} finally {
+			f.ui.dispose();
+		}
 	});
 }
 
-const interactiveUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const interactiveUsage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
 const interactiveEntries: AgentConversationEntry[] = [
 	{ id: "user", kind: "pi.user", model: [{ role: "user", content: "Outside card sentinel", timestamp: 1 }] },
 	// A thinking-only message keeps its hidden-thinking row; a message with a tool call shows the tool instead.
-	{ id: "thinking", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "thinking", thinking: "Thinking run sentinel" }], api: "openai-responses", provider: "test", model: "test", timestamp: 2, stopReason: "stop", usage: interactiveUsage }] },
-	{ id: "assistant", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "clicked-tool", name: "example_tool", arguments: { topic: "named" } }], api: "openai-responses", provider: "test", model: "test", timestamp: 3, stopReason: "toolUse", usage: interactiveUsage }] },
+	{
+		id: "thinking",
+		kind: "pi.assistant",
+		model: [
+			{
+				role: "assistant",
+				content: [{ type: "thinking", thinking: "Thinking run sentinel" }],
+				api: "openai-responses",
+				provider: "test",
+				model: "test",
+				timestamp: 2,
+				stopReason: "stop",
+				usage: interactiveUsage,
+			},
+		],
+	},
+	{
+		id: "assistant",
+		kind: "pi.assistant",
+		model: [
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: "clicked-tool", name: "example_tool", arguments: { topic: "named" } }],
+				api: "openai-responses",
+				provider: "test",
+				model: "test",
+				timestamp: 3,
+				stopReason: "toolUse",
+				usage: interactiveUsage,
+			},
+		],
+	},
 ];
-for (const [width, height] of [[140, 45], [80, 32]]) for (const start of ["list", "composer", "conversation"] as const) {
-	it(`single transcript clicks toggle tools and thinking from the ${start} at ${width} and move focus to the conversation`, async () => {
-		const observed = source(); observed.snapshot = async () => ({ entries: interactiveEntries, partial: false, revision: "interactive", nextBefore: null });
-		const retained = createDashboardState(); agentState(retained, "storage:1").view.showThinking = false;
-		const f = fixture(width, height, observed, undefined, retained);
-		try {
-			await turn();
-			await turn();
-			if (start === "composer") f.ui.handleInput("\r");
-			if (start === "conversation") f.ui.handleInput("\t");
-			assert.equal(f.ui.focus.region, start);
-			const read = () => visible(f.ui.render(width));
-			const tool = point(read(), "example_tool");
-			for (const patch of [{ type: "press" }, { type: "drag" }, { type: "release" }, { ctrl: true }, { shift: true }, { alt: true }, { clickCount: 2 }]) assert.equal(f.ui.handleMouse(event(tool.x, tool.y, width, height, patch as Partial<TuiMouseEvent>)), undefined);
-			assert.ok(f.ui.handleMouse(event(tool.x, tool.y, width, height))?.handled);
-			assert.equal(f.ui.focus.region, "conversation");
-			const state = agentState(retained, "storage:1").view;
-			assert.equal(state.toolExpanded.get("clicked-tool"), true);
-			assert.equal(state.follow, false);
-			const thinking = point(read(), "▸ Thinking");
-			assert.ok(f.ui.handleMouse(event(thinking.x, thinking.y, width, height))?.handled);
-			assert.match(read().join("\n"), /Thinking run sentinel/u);
-			const shown = point(read(), "Thinking run sentinel");
-			assert.ok(f.ui.handleMouse(event(shown.x, shown.y, width, height))?.handled);
-			assert.doesNotMatch(read().join("\n"), /Thinking run sentinel/u);
-			f.ui.render(width);
-			f.ui.handleInput("\x0f");
-			assert.equal(state.toolExpanded.size, 0);
-			assert.equal(state.expanded, true);
-			f.ui.handleInput("\x14");
-			assert.match(read().join("\n"), /Thinking run sentinel/u);
-			assert.equal(state.showThinking, true);
-			assert.deepEqual(f.calls, []);
-		} finally { f.ui.dispose(); }
-	});
-}
+for (const [width, height] of [
+	[140, 45],
+	[80, 32],
+])
+	for (const start of ["list", "composer", "conversation"] as const) {
+		it(`single transcript clicks toggle tools and thinking from the ${start} at ${width} and move focus to the conversation`, async () => {
+			const observed = source();
+			observed.snapshot = async () => ({
+				entries: interactiveEntries,
+				partial: false,
+				revision: "interactive",
+				nextBefore: null,
+			});
+			const retained = createDashboardState();
+			agentState(retained, "storage:1").view.showThinking = false;
+			const f = fixture(width, height, observed, undefined, retained);
+			try {
+				await turn();
+				await turn();
+				if (start === "composer") f.ui.handleInput("\r");
+				if (start === "conversation") f.ui.handleInput("\t");
+				assert.equal(f.ui.focus.region, start);
+				const read = () => visible(f.ui.render(width));
+				const tool = point(read(), "example_tool");
+				for (const patch of [
+					{ type: "press" },
+					{ type: "drag" },
+					{ type: "release" },
+					{ ctrl: true },
+					{ shift: true },
+					{ alt: true },
+					{ clickCount: 2 },
+				])
+					assert.equal(
+						f.ui.handleMouse(event(tool.x, tool.y, width, height, patch as Partial<TuiMouseEvent>)),
+						undefined,
+					);
+				assert.ok(f.ui.handleMouse(event(tool.x, tool.y, width, height))?.handled);
+				assert.equal(f.ui.focus.region, "conversation");
+				const state = agentState(retained, "storage:1").view;
+				assert.equal(state.toolExpanded.get("clicked-tool"), true);
+				assert.equal(state.follow, false);
+				const thinking = point(read(), "▸ Thinking");
+				assert.ok(f.ui.handleMouse(event(thinking.x, thinking.y, width, height))?.handled);
+				assert.match(read().join("\n"), /Thinking run sentinel/u);
+				const shown = point(read(), "Thinking run sentinel");
+				assert.ok(f.ui.handleMouse(event(shown.x, shown.y, width, height))?.handled);
+				assert.doesNotMatch(read().join("\n"), /Thinking run sentinel/u);
+				f.ui.render(width);
+				f.ui.handleInput("\x0f");
+				assert.equal(state.toolExpanded.size, 0);
+				assert.equal(state.expanded, true);
+				f.ui.handleInput("\x14");
+				assert.match(read().join("\n"), /Thinking run sentinel/u);
+				assert.equal(state.showThinking, true);
+				assert.deepEqual(f.calls, []);
+			} finally {
+				f.ui.dispose();
+			}
+		});
+	}
 it("a top region callback returning false never activates an earlier region", () => {
-	const mouse = new DashboardMouse(); mouse.reset(80, 24);
+	const mouse = new DashboardMouse();
+	mouse.reset(80, 24);
 	let earlier = 0;
 	mouse.add({ x: 0, y: 0, width: 10, height: 10, click: () => earlier++ });
 	mouse.add({ x: 0, y: 0, width: 10, height: 10, click: () => false });
@@ -304,8 +397,15 @@ it("a top region callback returning false never activates an earlier region", ()
 });
 
 it("dashboard reopen retains tool choices and anchor but not discarded thinking instances", async () => {
-	const observed = source(); observed.snapshot = async () => ({ entries: interactiveEntries, partial: false, revision: "interactive", nextBefore: null });
-	const retained = createDashboardState(); agentState(retained, "storage:1").view.showThinking = false;
+	const observed = source();
+	observed.snapshot = async () => ({
+		entries: interactiveEntries,
+		partial: false,
+		revision: "interactive",
+		nextBefore: null,
+	});
+	const retained = createDashboardState();
+	agentState(retained, "storage:1").view.showThinking = false;
 	let f = fixture(140, 45, observed, undefined, retained);
 	try {
 		await turn();
@@ -327,19 +427,35 @@ it("dashboard reopen retains tool choices and anchor but not discarded thinking 
 		assert.match(lines.join("\n"), /▸ Thinking/u);
 		assert.deepEqual(state.anchor, anchor);
 		assert.equal(state.follow, false);
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
 
-
 it("dashboard reopen uses the current runtime renderer rather than a retained definition", async () => {
-	const observed = source(); observed.snapshot = async () => ({ entries: interactiveEntries, partial: false, revision: "custom", nextBefore: null });
+	const observed = source();
+	observed.snapshot = async () => ({
+		entries: interactiveEntries,
+		partial: false,
+		revision: "custom",
+		nextBefore: null,
+	});
 	for (const title of ["first runtime", "second runtime", undefined]) {
 		const retained = createDashboardState();
-		const f = fixture(140, 45, observed, { toolDisplay: () => title ? { renderCall: () => new Text(title) } : undefined }, retained);
+		const f = fixture(
+			140,
+			45,
+			observed,
+			{ toolDisplay: () => (title ? { renderCall: () => new Text(title) } : undefined) },
+			retained,
+		);
 		try {
 			await turn();
 			const lines = f.ui.render(140).map(stripVTControlCharacters);
-			assert.ok(lines.some((line) => line.includes(title ?? "example_tool")), "the native renderer supplies the visible call");
+			assert.ok(
+				lines.some((line) => line.includes(title ?? "example_tool")),
+				"the native renderer supplies the visible call",
+			);
 			assert.doesNotMatch(lines.join("\n"), /example_tool · /u, "the view adds no summary wrapper");
 			const item = point(lines, title ?? "example_tool");
 			assert.ok(f.ui.handleMouse(event(item.x, item.y, 140, 45))?.handled);
@@ -347,6 +463,8 @@ it("dashboard reopen uses the current runtime renderer rather than a retained de
 			assert.ok(text.includes(title ?? "example_tool"));
 			if (title !== "first runtime") assert.doesNotMatch(text, /first runtime/);
 			if (title !== "second runtime") assert.doesNotMatch(text, /second runtime/);
-		} finally { f.ui.dispose(); }
+		} finally {
+			f.ui.dispose();
+		}
 	}
 });

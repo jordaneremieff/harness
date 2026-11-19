@@ -61,7 +61,8 @@ export function formatStatusRecord(record: StatusRecord): string {
 		if (msg) pairs.push(`msg=${Buffer.from(msg, "utf8").toString("base64")}`);
 	}
 	const sequence = `\x1b]7501;${pairs.join(":")}\x1b\\`;
-	if (Buffer.byteLength(sequence) >= ACTIVITY_LIMITS.sequenceBytes) throw new Error("Status record exceeds the sequence limit");
+	if (Buffer.byteLength(sequence) >= ACTIVITY_LIMITS.sequenceBytes)
+		throw new Error("Status record exceeds the sequence limit");
 	return sequence;
 }
 
@@ -95,7 +96,8 @@ export function awaitsConversation(delivery: Delivery | undefined): boolean {
 export function settledMessage(job: CompletionJob, delivery?: Delivery): string {
 	const elapsed = job.endedAt === undefined ? undefined : elapsedText(job.startedAt, job.endedAt);
 	const parts: string[] = [];
-	if (job.status === "timed_out") parts.push(elapsed === undefined ? "Background job timed out" : `Background job timed out after ${elapsed}`);
+	if (job.status === "timed_out")
+		parts.push(elapsed === undefined ? "Background job timed out" : `Background job timed out after ${elapsed}`);
 	else {
 		const outcome = job.status === "succeeded" ? "succeeded" : job.status === "lost" ? "lost" : "failed";
 		parts.push(`Background job ${outcome}`);
@@ -192,7 +194,12 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 			const record = settled.get(jobId);
 			if (closed || !record || record.delivery === delivery) return;
 			record.delivery = delivery;
-			write({ id: record.id, state: settledState(record.job), title: RECORD_TITLE, msg: settledMessage(record.job, delivery) });
+			write({
+				id: record.id,
+				state: settledState(record.job),
+				title: RECORD_TITLE,
+				msg: settledMessage(record.job, delivery),
+			});
 		},
 		/**
 		 * Moves retained records to the branch that the session now shows: a completion on it is in the

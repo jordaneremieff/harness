@@ -300,8 +300,7 @@ async function privateDirectory(path: string): Promise<void> {
 	if (typeof process.getuid === "function" && info.uid !== process.getuid())
 		throw new Error(`policy telemetry path is not owned by this user: ${path}`);
 	if (created !== undefined) await chmod(path, 0o700);
-	else if ((info.mode & 0o077) !== 0)
-		throw new Error(`policy telemetry path permissions are not private: ${path}`);
+	else if ((info.mode & 0o077) !== 0) throw new Error(`policy telemetry path permissions are not private: ${path}`);
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -332,7 +331,11 @@ function openDescriptorLock(path: string, hooks: TelemetryFileHooks | undefined)
 	if (process.platform !== "darwin") throw new Error("policy telemetry writes need the macOS descriptor lock");
 	let fd: number;
 	try {
-		fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | O_EXLOCK, 0o600);
+		fd = openSync(
+			path,
+			constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | O_EXLOCK,
+			0o600,
+		);
 	} catch (error) {
 		if (errorCode(error) === "EAGAIN") return undefined;
 		if (errorCode(error) === "ELOOP" || errorCode(error) === "EISDIR") throw notRegularLock(path);
@@ -568,8 +571,7 @@ export function serializeTelemetryRecord(record: PolicyRecord): SerializedTeleme
 	if (Number.isNaN(timestamp.getTime())) throw new Error(`invalid policy timestamp: ${record.at}`);
 	const json = JSON.stringify(record);
 	const bytes = Buffer.byteLength(json, "utf8") + 2;
-	if (bytes > MAX_TELEMETRY_RECORD_BYTES)
-		throw new Error(`policy record exceeds ${MAX_TELEMETRY_RECORD_BYTES} bytes`);
+	if (bytes > MAX_TELEMETRY_RECORD_BYTES) throw new Error(`policy record exceeds ${MAX_TELEMETRY_RECORD_BYTES} bytes`);
 	return { day: localDate(timestamp), json, bytes };
 }
 
@@ -596,11 +598,7 @@ interface AppendContext {
 	wrote: boolean;
 }
 
-async function removeSegment(
-	dir: string,
-	entry: TelemetryInventoryEntry,
-	context: AppendContext,
-): Promise<void> {
+async function removeSegment(dir: string, entry: TelemetryInventoryEntry, context: AppendContext): Promise<void> {
 	const path = join(dir, entry.name);
 	const info = await lstat(path);
 	if (
@@ -650,8 +648,7 @@ async function appendSegment(
 			const bytesWritten = context.hooks?.writeChunk
 				? await context.hooks.writeChunk(handle, buffer.subarray(written))
 				: (await handle.write(buffer, written, buffer.length - written, null)).bytesWritten;
-			if (bytesWritten <= 0)
-				throw new Error(`policy record write stopped at ${written} of ${buffer.length} bytes`);
+			if (bytesWritten <= 0) throw new Error(`policy record write stopped at ${written} of ${buffer.length} bytes`);
 			written += bytesWritten;
 		}
 		const after = await handle.stat();
@@ -666,9 +663,7 @@ interface Ledger {
 	totalBytes: number;
 }
 
-function groupByDay(
-	records: readonly SerializedTelemetryRecord[],
-): Map<string, SerializedTelemetryRecord[]> {
+function groupByDay(records: readonly SerializedTelemetryRecord[]): Map<string, SerializedTelemetryRecord[]> {
 	const groups = new Map<string, SerializedTelemetryRecord[]>();
 	for (const record of records) {
 		const group = groups.get(record.day);
@@ -747,7 +742,9 @@ async function appendGroup(
 		throw new Error(`policy telemetry batch exceeds ${TELEMETRY_SEGMENT_BYTES} bytes`);
 	const current = ledger.entries.filter((entry) => entry.day === day).at(-1);
 	const fits =
-		current !== undefined && current.size + bytes <= TELEMETRY_SEGMENT_BYTES && current.size + bytes <= retention.maxBytes;
+		current !== undefined &&
+		current.size + bytes <= TELEMETRY_SEGMENT_BYTES &&
+		current.size + bytes <= retention.maxBytes;
 	await applyRetention(dir, ledger, day, bytes, fits ? current : undefined, retention, context);
 	if (fits && current) {
 		const file = await appendSegment(dir, current, false, batch, context);

@@ -73,18 +73,60 @@ it("classifies retry-safe methods and immediate receipt reads", () => {
 	assert.deepEqual(HOST_CONTRACT.operations.receipts.request, "receipts/3.0.0");
 	assert.equal(Object.hasOwn(HOST_CONTRACT.operations, "await-state"), false);
 	assert.equal(Object.hasOwn(HOST_CONTRACT.operations, "await-release"), false);
-	for (const method of ["profile-read", "profile-list", "profile-update", "task-submit", "resolve-agent", "submit", "report", "acknowledge", "inspect", "status", "list", "receipts", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "timer-list"]) assert.equal(isRetrySafeHostMethod(method), true, method);
-	for (const method of ["abort", "compact", "configure", "command", "fork", "rewind", "reset", "timer-schedule", "timer-cancel", "unknown"]) assert.equal(isRetrySafeHostMethod(method), false, method);
+	for (const method of [
+		"profile-read",
+		"profile-list",
+		"profile-update",
+		"task-submit",
+		"resolve-agent",
+		"submit",
+		"report",
+		"acknowledge",
+		"inspect",
+		"status",
+		"list",
+		"receipts",
+		"dashboard",
+		"snapshot",
+		"observe-open",
+		"observe-frame",
+		"observe-close",
+		"timer-list",
+	])
+		assert.equal(isRetrySafeHostMethod(method), true, method);
+	for (const method of [
+		"abort",
+		"compact",
+		"configure",
+		"command",
+		"fork",
+		"rewind",
+		"reset",
+		"timer-schedule",
+		"timer-cancel",
+		"unknown",
+	])
+		assert.equal(isRetrySafeHostMethod(method), false, method);
 });
 
 it("parses readiness only with a usable current operation contract", () => {
- const ready = formatHostReady({ pid: 7, socketPath: "/tmp/host.sock", writerId: "writer-id", contract: HOST_CONTRACT });
- assert.equal(ready.endsWith("\n"), true);
- assert.deepEqual(parseHostReadyLine(ready.trimEnd()), { pid: 7, socketPath: "/tmp/host.sock", writerId: "writer-id", contract: HOST_CONTRACT });
- assert.equal(parseHostReadyLine("other output"), undefined);
- assert.throws(() => parseHostReadyLine("PI_AGENT_HOST_READY {not json}"));
- assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":0,"socketPath":"/tmp/x"}'));
- assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":7,"socketPath":"/tmp/x"}'), /contract.*Restart/u);
+	const ready = formatHostReady({
+		pid: 7,
+		socketPath: "/tmp/host.sock",
+		writerId: "writer-id",
+		contract: HOST_CONTRACT,
+	});
+	assert.equal(ready.endsWith("\n"), true);
+	assert.deepEqual(parseHostReadyLine(ready.trimEnd()), {
+		pid: 7,
+		socketPath: "/tmp/host.sock",
+		writerId: "writer-id",
+		contract: HOST_CONTRACT,
+	});
+	assert.equal(parseHostReadyLine("other output"), undefined);
+	assert.throws(() => parseHostReadyLine("PI_AGENT_HOST_READY {not json}"));
+	assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":0,"socketPath":"/tmp/x"}'));
+	assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":7,"socketPath":"/tmp/x"}'), /contract.*Restart/u);
 });
 
 it("requires bounded writer identity in readiness and the current hello envelope", () => {
@@ -92,9 +134,16 @@ it("requires bounded writer identity in readiness and the current hello envelope
 	assert.deepEqual(parseHostHello(hello), hello);
 	for (const writerId of [undefined, null, 7, "", "x".repeat(513), "bad\u0000id"]) {
 		assert.throws(() => parseHostHello({ ...hello, writerId }), /host writerId/u);
-		assert.throws(() => parseHostReadyLine(`PI_AGENT_HOST_READY ${JSON.stringify({ pid: 7, socketPath: "/tmp/x", contract: HOST_CONTRACT, writerId })}`), /host writerId/u);
+		assert.throws(
+			() =>
+				parseHostReadyLine(
+					`PI_AGENT_HOST_READY ${JSON.stringify({ pid: 7, socketPath: "/tmp/x", contract: HOST_CONTRACT, writerId })}`,
+				),
+			/host writerId/u,
+		);
 	}
-	for (const value of [null, [], HOST_CONTRACT, { ...hello, format: "other" }]) assert.throws(() => parseHostHello(value), /host writer hello/u);
+	for (const value of [null, [], HOST_CONTRACT, { ...hello, format: "other" }])
+		assert.throws(() => parseHostHello(value), /host writer hello/u);
 	assert.throws(() => parseHostHello({ ...hello, contract: undefined }), /contract.*Restart/u);
 });
 

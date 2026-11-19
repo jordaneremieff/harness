@@ -33,7 +33,8 @@ test("ownership reducers preserve caller state, reject duplicate calls and enfor
 	assert.equal(changed.records[0]?.phase, "unknown");
 	const full = beginOwnership(changed, record("second"), 2);
 	assert.throws(() => beginOwnership(full, record("third"), 2), {
-		message: 'Rex ownership record limit reached. List retained records with rex_owned {"op":"owned"}, then forget each closed, released, or confirmed record without resources with rex_owned {"op":"cleanup","recordId":"<recordId>","forget":true}. Reconcile or release other records first.',
+		message:
+			'Rex ownership record limit reached. List retained records with rex_owned {"op":"owned"}, then forget each closed, released, or confirmed record without resources with rex_owned {"op":"cleanup","recordId":"<recordId>","forget":true}. Reconcile or release other records first.',
 	});
 });
 
@@ -48,7 +49,14 @@ test("current ownership shapes reject unsupported keys and accept every legitima
 	const current = record();
 	current.note = "An owned cleanup call has pending effects.";
 	current.pendingCleanupCallId = "close";
-	current.resources = [{ kind: "block", sessionId: "session:11111111-1111-4111-8111-111111111111", windowId: "window:22222222-2222-4222-8222-222222222222", blockId: "block:33333333-3333-4333-8333-333333333333" }];
+	current.resources = [
+		{
+			kind: "block",
+			sessionId: "session:11111111-1111-4111-8111-111111111111",
+			windowId: "window:22222222-2222-4222-8222-222222222222",
+			blockId: "block:33333333-3333-4333-8333-333333333333",
+		},
+	];
 	const state = { version: 1 as const, records: [current] };
 	assert.deepEqual(validateOwnershipState(state), state);
 	for (const location of ["state", "record", "server", "resource"] as const) {
@@ -57,7 +65,9 @@ test("current ownership shapes reject unsupported keys and accept every legitima
 		assert.ok(entry);
 		const resource = entry.resources[0];
 		assert.ok(resource);
-		Object.assign({ state: candidate, record: entry, server: entry.server, resource }[location], { unsupported: "x".repeat(200000) });
+		Object.assign({ state: candidate, record: entry, server: entry.server, resource }[location], {
+			unsupported: "x".repeat(200000),
+		});
 		assert.throws(() => validateOwnershipState(candidate), /unsupported fields/);
 	}
 });

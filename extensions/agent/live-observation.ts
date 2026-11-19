@@ -8,14 +8,39 @@
  * it. Reading never resumes the Harness, schedules work, or opens storage.
  */
 import type { Context } from "@earendil-works/chord/context";
-import type { ConversationId, ConversationView, Harness, LiveState, TaskGraph, WatchHandle } from "@earendil-works/pi-durable";
+import type {
+	ConversationId,
+	ConversationView,
+	Harness,
+	LiveState,
+	TaskGraph,
+	WatchHandle,
+} from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
 import { captureCommunicationReader } from "./communication-observation.ts";
-import { durableIdentity, publicLiveState, readConversationStatus, selectWindowEntries, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_ENTRY_LIMIT, snapshotEntry } from "./durable-observation.ts";
-import { buildLiveEntries, jsonSafeFrame, taskGraphRows, type ConversationFrame, type ObservationFrame, type TaskLabel, type TasksFrame } from "./live-frames.ts";
+import {
+	durableIdentity,
+	publicLiveState,
+	readConversationStatus,
+	selectWindowEntries,
+	SNAPSHOT_BYTE_LIMIT,
+	SNAPSHOT_ENTRY_LIMIT,
+	snapshotEntry,
+} from "./durable-observation.ts";
+import {
+	buildLiveEntries,
+	jsonSafeFrame,
+	taskGraphRows,
+	type ConversationFrame,
+	type ObservationFrame,
+	type TaskLabel,
+	type TasksFrame,
+} from "./live-frames.ts";
 
 /** What one observation token reads. */
-export type ObservationScope = { readonly scope: "conversation"; readonly conversationId: ConversationId } | { readonly scope: "tasks" };
+export type ObservationScope =
+	| { readonly scope: "conversation"; readonly conversationId: ConversationId }
+	| { readonly scope: "tasks" };
 
 export interface LiveObservationOptions {
 	readonly storageId: string;
@@ -62,7 +87,10 @@ export class LiveObservationService {
 	/** Token and watch ownership change on one line, including asynchronous first-frame setup. */
 	private serialize<T>(operation: () => Promise<T>): Promise<T> {
 		const result = this.operations.then(operation);
-		this.operations = result.then(() => {}, () => {});
+		this.operations = result.then(
+			() => {},
+			() => {},
+		);
 		return result;
 	}
 
@@ -75,7 +103,9 @@ export class LiveObservationService {
 	/** Native view publications and committed invalidation wake attached frame readers. */
 	onChange(listener: () => void): () => void {
 		this.listeners.add(listener);
-		return () => { this.listeners.delete(listener); };
+		return () => {
+			this.listeners.delete(listener);
+		};
 	}
 
 	/** Open or reuse one token. Repeated calls with the same token return the current frame. */
@@ -91,7 +121,10 @@ export class LiveObservationService {
 			return frame;
 		}
 		const key = scope.scope === "conversation" ? `conversation:${scope.conversationId}` : "tasks";
-		const state = scope.scope === "conversation" ? await this.acquireConversation(scope.conversationId) : await this.acquireTaskGraph();
+		const state =
+			scope.scope === "conversation"
+				? await this.acquireConversation(scope.conversationId)
+				: await this.acquireTaskGraph();
 		state.references += 1;
 		try {
 			const frame = "conversationId" in state ? await this.conversationFrame(state) : await this.taskFrame(state);
@@ -193,9 +226,18 @@ export class LiveObservationService {
 		if (!conversation) throw new Error(`observed conversation ${conversationId} does not exist`);
 		// The window holds at least one frame's entry bound; older entries page through history.
 		const handle = await conversation.watch(this.context, { min: SNAPSHOT_ENTRY_LIMIT });
-		const state: ConversationWatchState = { conversationId, handle, revision: 1, dirty: true, references: 0, frame: undefined };
+		const state: ConversationWatchState = {
+			conversationId,
+			handle,
+			revision: 1,
+			dirty: true,
+			references: 0,
+			frame: undefined,
+		};
 		try {
-			handle.start(async () => { this.invalidateState(state); });
+			handle.start(async () => {
+				this.invalidateState(state);
+			});
 		} catch (error) {
 			await handle.stop().catch(() => undefined);
 			throw error;
@@ -209,7 +251,9 @@ export class LiveObservationService {
 		const handle = await this.harness.watchTaskGraph(this.context);
 		const state: TaskGraphWatchState = { handle, revision: 1, dirty: true, references: 0, frame: undefined };
 		try {
-			handle.start(async () => { this.invalidateState(state); });
+			handle.start(async () => {
+				this.invalidateState(state);
+			});
 		} catch (error) {
 			await handle.stop().catch(() => undefined);
 			throw error;
@@ -247,8 +291,17 @@ export class LiveObservationService {
 		const selection = selectWindowEntries(value, SNAPSHOT_ENTRY_LIMIT, SNAPSHOT_BYTE_LIMIT);
 		const views = await reader.views(selection.entries);
 		const taskSenders = await reader.taskSenders(selection.entries);
-		const entries = selection.entries.map((entry, index) => ({ ...snapshotEntry(entry), communication: views[index] ?? { state: "unavailable" as const, reason: "limit" as const } }));
-		const status = await readConversationStatus(this.harness, this.options.storageId, state.conversationId, {}, this.context);
+		const entries = selection.entries.map((entry, index) => ({
+			...snapshotEntry(entry),
+			communication: views[index] ?? { state: "unavailable" as const, reason: "limit" as const },
+		}));
+		const status = await readConversationStatus(
+			this.harness,
+			this.options.storageId,
+			state.conversationId,
+			{},
+			this.context,
+		);
 		if (!status) throw new Error(`observed conversation ${state.conversationId} has no status`);
 		const frame: ConversationFrame = jsonSafeFrame({
 			scope: "conversation",
@@ -263,7 +316,10 @@ export class LiveObservationService {
 			status,
 			coverage: selection.coverage,
 		});
-		if (state.revision === revision) { state.frame = frame; state.dirty = false; }
+		if (state.revision === revision) {
+			state.frame = frame;
+			state.dirty = false;
+		}
 		return frame;
 	}
 
@@ -280,11 +336,16 @@ export class LiveObservationService {
 			labels: await this.labelsFor(rows),
 			coverage: { complete: true, live: true },
 		});
-		if (state.revision === revision) { state.frame = frame; state.dirty = false; }
+		if (state.revision === revision) {
+			state.frame = frame;
+			state.dirty = false;
+		}
 		return frame;
 	}
 
-	private async labelsFor(rows: readonly { readonly conversationId: number; readonly conversations: readonly number[] }[]): Promise<TaskLabel[]> {
+	private async labelsFor(
+		rows: readonly { readonly conversationId: number; readonly conversations: readonly number[] }[],
+	): Promise<TaskLabel[]> {
 		const ids = new Set<ConversationId>();
 		for (const row of rows) {
 			ids.add(row.conversationId as ConversationId);
@@ -301,7 +362,10 @@ export class LiveObservationService {
 					...(typeof meta?.firstMessage === "string" ? { firstMessage: meta.firstMessage } : {}),
 				});
 			} catch {
-				labels.push({ conversationId: id, identity: durableIdentity(this.options.storageId, id === 1 ? undefined : id) });
+				labels.push({
+					conversationId: id,
+					identity: durableIdentity(this.options.storageId, id === 1 ? undefined : id),
+				});
 				// A missing label is display-only; the task row still carries the raw ID.
 			}
 		}

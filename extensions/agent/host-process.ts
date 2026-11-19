@@ -17,7 +17,18 @@ import { ChordError, PluginError, invalid, isChordError } from "@earendil-works/
 import { createTransportServer, type TransportServer, type TransportRequest } from "../../transport/index.ts";
 import { tryNativeWriterLease, type NativeWriterLease } from "./native-lease.ts";
 import { validNativeWriterId } from "./claims.ts";
-import { formatHostReady, HostError, HOST_CONTRACT_MEMBER, hostPaths, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady, type HostBusy, formatHostBusy } from "./host-protocol.ts";
+import {
+	formatHostReady,
+	HostError,
+	HOST_CONTRACT_MEMBER,
+	hostPaths,
+	parseHostMetadata,
+	type HostMetadata,
+	type HostPaths,
+	type HostReady,
+	type HostBusy,
+	formatHostBusy,
+} from "./host-protocol.ts";
 import { HOST_CONTRACT, parseOperationContract, operationContractMismatch } from "./version-contract.ts";
 import { isObservationFrame } from "./live-frames.ts";
 import type { CatalogView } from "./catalog-view.ts";
@@ -26,7 +37,10 @@ import { createObservationPump, type ObservationClock, type ObservationPump } fr
 
 function hostOperationError(error: unknown): ChordError | PluginError {
 	if (isChordError(error) || error instanceof PluginError) return error;
-	return new PluginError(error instanceof HostError ? error.code : "internal", error instanceof Error ? error.message : String(error));
+	return new PluginError(
+		error instanceof HostError ? error.code : "internal",
+		error instanceof Error ? error.message : String(error),
+	);
 }
 
 /** The host-side surface the parent runtime must supply. */
@@ -117,7 +131,9 @@ interface ClaimRecord {
 	readonly createdAt: string;
 }
 
-interface ChangeSubscription { unsubscribe: () => void }
+interface ChangeSubscription {
+	unsubscribe: () => void;
+}
 interface ObservationSubscription {
 	readonly subscriptionId: string;
 	readonly token: string;
@@ -148,9 +164,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Resolve the idle window from explicit input or the local agent settings. */
-export function resolveIdleMs(idleMs?: number, env: Readonly<Record<string, string | undefined>> = process.env, agentDir = env.PI_AGENT_DIR ?? getAgentDir()): number {
+export function resolveIdleMs(
+	idleMs?: number,
+	env: Readonly<Record<string, string | undefined>> = process.env,
+	agentDir = env.PI_AGENT_DIR ?? getAgentDir(),
+): number {
 	if (idleMs !== undefined) {
-		if (!Number.isFinite(idleMs) || idleMs < 0 || idleMs > IDLE_MINUTES_MAX * 60_000) throw new Error(`idleMs must be a finite nonnegative number no greater than ${IDLE_MINUTES_MAX} minutes`);
+		if (!Number.isFinite(idleMs) || idleMs < 0 || idleMs > IDLE_MINUTES_MAX * 60_000)
+			throw new Error(`idleMs must be a finite nonnegative number no greater than ${IDLE_MINUTES_MAX} minutes`);
 		return idleMs;
 	}
 	return readSettings({ agentDir, env }).values.idleMinutes * 60_000;
@@ -159,7 +180,8 @@ export function resolveIdleMs(idleMs?: number, env: Readonly<Record<string, stri
 function takeClaim(path: string, record: ClaimRecord): NativeWriterLease {
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	const attempt = tryNativeWriterLease(path);
-	if (attempt.kind === "busy") throw new HostClaimRefusedError("Durable host writer lease is busy; no native runtime was opened", "busy");
+	if (attempt.kind === "busy")
+		throw new HostClaimRefusedError("Durable host writer lease is busy; no native runtime was opened", "busy");
 	const lease = attempt.lease;
 	try {
 		lease.assertNamed();
@@ -215,7 +237,17 @@ class HostProcessServer implements HostProcess {
 	private readonly record: ClaimRecord;
 	private readonly writeEndRecord: NonNullable<RunHostOptions["writeEndRecord"]>;
 
-	constructor(runtime: HostRuntime, paths: HostPaths, claim: NativeWriterLease, record: ClaimRecord, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"], observationClock?: ObservationClock, exit?: () => never, writeEndRecord = writeEndClaim) {
+	constructor(
+		runtime: HostRuntime,
+		paths: HostPaths,
+		claim: NativeWriterLease,
+		record: ClaimRecord,
+		idleMs: number,
+		scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"],
+		observationClock?: ObservationClock,
+		exit?: () => never,
+		writeEndRecord = writeEndClaim,
+	) {
 		this.exit = exit;
 		this.record = record;
 		this.writerId = record.token;
@@ -231,12 +263,17 @@ class HostProcessServer implements HostProcess {
 			onError: () => undefined,
 			clock: observationClock,
 		});
-		this.scheduleIdleCheck = scheduleIdleCheck ?? ((check, delayMs) => {
-			const timer = setTimeout(check, delayMs);
-			return () => clearTimeout(timer);
-		});
+		this.scheduleIdleCheck =
+			scheduleIdleCheck ??
+			((check, delayMs) => {
+				const timer = setTimeout(check, delayMs);
+				return () => clearTimeout(timer);
+			});
 		this.socketPath = paths.socket;
-		this.closeResponseReady = new Promise((resolve, reject) => { this.resolveCloseResponse = resolve; this.rejectCloseResponse = reject; });
+		this.closeResponseReady = new Promise((resolve, reject) => {
+			this.resolveCloseResponse = resolve;
+			this.rejectCloseResponse = reject;
+		});
 		void this.closeResponseReady.catch(() => {});
 		this.done = new Promise<void>((resolve, reject) => {
 			this.resolveDone = resolve;
@@ -251,21 +288,28 @@ class HostProcessServer implements HostProcess {
 		// Construction follows exclusive writer-claim acquisition. Only that owner replaces a stale socket.
 		const prior = lstatSync(this.paths.socket, { throwIfNoEntry: false });
 		if (prior) {
-			if (!prior.isSocket() || prior.uid !== process.getuid?.()) throw new Error("Durable host endpoint is not an owned socket");
+			if (!prior.isSocket() || prior.uid !== process.getuid?.())
+				throw new Error("Durable host endpoint is not an owned socket");
 			const current = lstatSync(this.paths.socket);
-			if (current.dev !== prior.dev || current.ino !== prior.ino) throw new Error("Durable host socket changed before replacement");
+			if (current.dev !== prior.dev || current.ino !== prior.ino)
+				throw new Error("Durable host socket changed before replacement");
 			unlinkSync(this.paths.socket);
 		}
 		const server = createTransportServer({
-			serverId: this.paths.serverId, path: this.paths.socket,
+			serverId: this.paths.serverId,
+			path: this.paths.socket,
 			request: (request, peer) => this.invoke(request, this.attachment(peer)),
 			subscribe: async (kind, token, peer, publish) => {
 				const state = this.attachment(peer);
-				if (this.closing) throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
+				if (this.closing)
+					throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
 				if (kind === "changes") return this.subscribeChanges(publish, state);
 				this.beginActivity();
-				try { return await this.subscribeObservation(token ?? "", publish, state); }
-				finally { this.endActivity(); }
+				try {
+					return await this.subscribeObservation(token ?? "", publish, state);
+				} finally {
+					this.endActivity();
+				}
 			},
 			release: (peer) => this.releaseAttachment(peer),
 		});
@@ -279,7 +323,9 @@ class HostProcessServer implements HostProcess {
 			throw error;
 		}
 		const subscribeObservation = this.runtime.onObservationChange ?? this.runtime.onChange;
-		this.unsubscribeObservation = subscribeObservation?.call(this.runtime, () => { if (this.observations.size > 0) this.observationPump.markDirty(); });
+		this.unsubscribeObservation = subscribeObservation?.call(this.runtime, () => {
+			if (this.observations.size > 0) this.observationPump.markDirty();
+		});
 		const subscribeActivity = this.runtime.onActivity ?? this.runtime.onChange;
 		this.unsubscribeActivity = subscribeActivity?.call(this.runtime, () => {
 			this.shutdownIfRequired();
@@ -293,15 +339,34 @@ class HostProcessServer implements HostProcess {
 			if (this.releasePending) this.scheduleRelease();
 			else if (this.cancelIdleCheck === undefined) this.scheduleRetirement();
 		});
-		this.unsubscribeRelease = this.runtime.onReleaseRequested?.((requested) => { if (!requested) { this.cancelRelease(); return; } this.releasePending = true; this.scheduleRelease(); });
-		if (this.runtime.releaseRequested) { this.releasePending = true; this.scheduleRelease(); }
+		this.unsubscribeRelease = this.runtime.onReleaseRequested?.((requested) => {
+			if (!requested) {
+				this.cancelRelease();
+				return;
+			}
+			this.releasePending = true;
+			this.scheduleRelease();
+		});
+		if (this.runtime.releaseRequested) {
+			this.releasePending = true;
+			this.scheduleRelease();
+		}
 		announce({ pid: this.pid, socketPath: this.paths.socket, writerId: this.writerId, contract: HOST_CONTRACT });
 		this.scheduleRetirement();
 	}
 
 	private attachment(peer: string): AttachmentState {
 		let state = this.attachments.get(peer);
-		if (!state) { state = { subscriptions: new Map(), observations: new Map(), tokens: new Set(), closingTokens: new Map(), released: false }; this.attachments.set(peer, state); }
+		if (!state) {
+			state = {
+				subscriptions: new Map(),
+				observations: new Map(),
+				tokens: new Set(),
+				closingTokens: new Map(),
+				released: false,
+			};
+			this.attachments.set(peer, state);
+		}
 		return state;
 	}
 
@@ -315,7 +380,9 @@ class HostProcessServer implements HostProcess {
 		state.observations.clear();
 		for (const token of [...state.tokens]) this.closeObservationToken(token, state);
 		// A disconnected peer owns its tokens until native cleanup settles.
-		void Promise.allSettled(state.closingTokens.values()).then(() => { this.attachments.delete(peer); });
+		void Promise.allSettled(state.closingTokens.values()).then(() => {
+			this.attachments.delete(peer);
+		});
 		if (this.releaseRequesters.delete(state)) {
 			this.releaseGraceExpired = true;
 			if (this.releaseTimer !== undefined) clearTimeout(this.releaseTimer);
@@ -325,29 +392,42 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private async invoke(request: TransportRequest, state: AttachmentState): Promise<unknown> {
-		if (this.closing) throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
+		if (this.closing)
+			throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
 		const active = request.method !== HOST_CONTRACT_MEMBER && request.method !== "close";
 		if (active) this.beginActivity();
-		try { return await this.dispatch(request, state); }
-		finally { if (active) this.endActivity(); }
+		try {
+			return await this.dispatch(request, state);
+		} finally {
+			if (active) this.endActivity();
+		}
 	}
 
-	private subscribeChanges(publish: (value: unknown) => void, state: AttachmentState): { value: unknown; close: () => void } {
+	private subscribeChanges(
+		publish: (value: unknown) => void,
+		state: AttachmentState,
+	): { value: unknown; close: () => void } {
 		const id = randomUUID();
 		let sequence = 0;
 		let pending = false;
 		const entry: ChangeSubscription = { unsubscribe: () => {} };
-		entry.unsubscribe = this.runtime.onChange?.(() => {
-			if (pending) return;
-			pending = true;
-			queueMicrotask(() => {
-				pending = false;
-				if (state.subscriptions.get(id) !== entry) return;
-				publish(this.changesFrame(++sequence));
-			});
-		}) ?? (() => {});
+		entry.unsubscribe =
+			this.runtime.onChange?.(() => {
+				if (pending) return;
+				pending = true;
+				queueMicrotask(() => {
+					pending = false;
+					if (state.subscriptions.get(id) !== entry) return;
+					publish(this.changesFrame(++sequence));
+				});
+			}) ?? (() => {});
 		state.subscriptions.set(id, entry);
-		return { value: this.changesFrame(0), close: () => { if (state.subscriptions.delete(id)) entry.unsubscribe(); } };
+		return {
+			value: this.changesFrame(0),
+			close: () => {
+				if (state.subscriptions.delete(id)) entry.unsubscribe();
+			},
+		};
 	}
 
 	private changesFrame(revision: number): HostChanges {
@@ -355,14 +435,29 @@ class HostProcessServer implements HostProcess {
 		return { revision, writerId: this.writerId, ...(view === undefined ? {} : { view }) };
 	}
 
-	private async subscribeObservation(token: string, publish: (value: unknown) => void, state: AttachmentState): Promise<{ value: unknown; close: () => void }> {
+	private async subscribeObservation(
+		token: string,
+		publish: (value: unknown) => void,
+		state: AttachmentState,
+	): Promise<{ value: unknown; close: () => void }> {
 		if (!state.tokens.has(token)) throw invalid("args", `unknown observation token ${token}`);
 		let baseline: unknown;
 		try {
 			baseline = await this.runtime.request("observe-frame", { token }, randomUUID());
-			if (!isObservationFrame(baseline) || state.released || !state.tokens.has(token)) throw invalid("args", `observation token ${token} returned no frame`);
-		} catch (error) { this.closeObservationToken(token, state); throw error; }
-		const entry: ObservationSubscription = { subscriptionId: randomUUID(), token, publish, revision: baseline.revision, closed: false, close: () => {} };
+			if (!isObservationFrame(baseline) || state.released || !state.tokens.has(token))
+				throw invalid("args", `observation token ${token} returned no frame`);
+		} catch (error) {
+			this.closeObservationToken(token, state);
+			throw error;
+		}
+		const entry: ObservationSubscription = {
+			subscriptionId: randomUUID(),
+			token,
+			publish,
+			revision: baseline.revision,
+			closed: false,
+			close: () => {},
+		};
 		entry.close = () => this.closeObservationSubscription(entry, state);
 		state.observations.set(entry.subscriptionId, entry);
 		this.observations.add(entry);
@@ -386,11 +481,13 @@ class HostProcessServer implements HostProcess {
 		this.beginActivity();
 		const closing = this.runtime.request("observe-close", { token }, randomUUID());
 		state.closingTokens.set(token, closing);
-		void closing.catch(() => undefined).finally(() => {
-			state.closingTokens.delete(token);
-			state.tokens.delete(token);
-			this.endActivity();
-		});
+		void closing
+			.catch(() => undefined)
+			.finally(() => {
+				state.closingTokens.delete(token);
+				state.tokens.delete(token);
+				this.endActivity();
+			});
 	}
 
 	/** Publish one state update per subscription whose frame revision advanced. */
@@ -410,7 +507,10 @@ class HostProcessServer implements HostProcess {
 			return;
 		}
 		if (entry.closed) return;
-		if (!isObservationFrame(frame)) { await this.failObservation(entry); return; }
+		if (!isObservationFrame(frame)) {
+			await this.failObservation(entry);
+			return;
+		}
 		// The subscription or the host may have closed while the frame was built.
 		if (this.closing || entry.closed || !this.observations.has(entry)) return;
 		if (frame.revision === entry.revision) return;
@@ -430,7 +530,8 @@ class HostProcessServer implements HostProcess {
 		const { method, params, contract: rawContract } = request;
 		const requestId = request.requestId ?? randomUUID();
 		// Negotiate before parsing or dispatching an operation payload.
-		if (method === HOST_CONTRACT_MEMBER) return { format: "pi.agent.host-hello/1", writerId: this.writerId, contract: HOST_CONTRACT };
+		if (method === HOST_CONTRACT_MEMBER)
+			return { format: "pi.agent.host-hello/1", writerId: this.writerId, contract: HOST_CONTRACT };
 		this.validateOperation(method, rawContract);
 		// Process shutdown owns the transport, runtime, writer claim, and done promise.
 		if (method === "close") {
@@ -439,7 +540,8 @@ class HostProcessServer implements HostProcess {
 			await Promise.race([this.shutdown(), this.closeResponseReady]);
 			return {};
 		}
-		if (this.closing) throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
+		if (this.closing)
+			throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
 		const token = this.prepareObservationToken(method, params, state);
 		try {
 			if (method === "observe-close" && token !== undefined) await state.closingTokens.get(token);
@@ -450,26 +552,49 @@ class HostProcessServer implements HostProcess {
 		} catch (error) {
 			if (method === "observe-open" && token !== undefined) state.tokens.delete(token);
 			throw hostOperationError(error);
-		} finally { this.shutdownIfRequired(); }
+		} finally {
+			this.shutdownIfRequired();
+		}
 	}
 
 	private validateOperation(method: string, rawContract: unknown): void {
 		let mismatch: string | undefined;
-		try { mismatch = operationContractMismatch(method, parseOperationContract(rawContract)); }
-		catch { mismatch = "The caller does not provide a current operation contract."; }
-		if (mismatch) throw new ChordError({ code: "unavailable", reason: "version", message: `${mismatch} Restart the caller or host with matching current agent code; no operation was admitted.` });
+		try {
+			mismatch = operationContractMismatch(method, parseOperationContract(rawContract));
+		} catch {
+			mismatch = "The caller does not provide a current operation contract.";
+		}
+		if (mismatch)
+			throw new ChordError({
+				code: "unavailable",
+				reason: "version",
+				message: `${mismatch} Restart the caller or host with matching current agent code; no operation was admitted.`,
+			});
 	}
 
 	private assertObservationAdmission(method: string): void {
-		if (method === "observe-open" && this.releasePending) throw new ChordError({ code: "unavailable", message: "The durable host release is pending" });
+		if (method === "observe-open" && this.releasePending)
+			throw new ChordError({ code: "unavailable", message: "The durable host release is pending" });
 	}
 
 	private prepareObservationToken(method: string, params: unknown, state: AttachmentState): string | undefined {
 		this.assertObservationAdmission(method);
-		const token = params !== null && typeof params === "object" && "token" in params && typeof params.token === "string" ? params.token : undefined;
-		if (method === "observe-frame" && (token === undefined || !state.tokens.has(token) || state.closingTokens.has(token))) throw invalid("args", "The observation token does not belong to this connection");
+		const token =
+			params !== null && typeof params === "object" && "token" in params && typeof params.token === "string"
+				? params.token
+				: undefined;
+		if (
+			method === "observe-frame" &&
+			(token === undefined || !state.tokens.has(token) || state.closingTokens.has(token))
+		)
+			throw invalid("args", "The observation token does not belong to this connection");
 		if ((method === "observe-open" || method === "observe-close") && token !== undefined) {
-			if ([...this.attachments.values()].some((owner) => owner !== state && (owner.tokens.has(token) || owner.closingTokens.has(token)))) throw invalid("args", "The observation token belongs to another connection");
+			if (
+				[...this.attachments.values()].some(
+					(owner) => owner !== state && (owner.tokens.has(token) || owner.closingTokens.has(token)),
+				)
+			)
+				throw invalid("args", "The observation token belongs to another connection");
 		}
 		if (method === "observe-open" && token !== undefined) {
 			if (state.closingTokens.has(token)) throw invalid("args", "The observation token is still closing");
@@ -497,7 +622,9 @@ class HostProcessServer implements HostProcess {
 		if (!this.runtime.shutdownRequired || this.closing) return;
 		this.closing = true;
 		// Let the service response reach the client before shutdown closes transport.
-		setImmediate(() => { void this.shutdown().catch(() => {}); });
+		setImmediate(() => {
+			void this.shutdown().catch(() => {});
+		});
 	}
 
 	private beginActivity(): void {
@@ -516,14 +643,20 @@ class HostProcessServer implements HostProcess {
 	/** Give the response a bounded grace; requester disconnect ends the grace early. */
 	private scheduleRelease(): void {
 		if (this.closing || !this.releasePending || this.releaseScheduled) return;
-		if (this.releaseChecking) { this.releaseAgain = true; return; }
+		if (this.releaseChecking) {
+			this.releaseAgain = true;
+			return;
+		}
 		this.releaseScheduled = true;
-		this.releaseTimer = setTimeout(() => {
-			this.releaseTimer = undefined;
-			this.releaseGraceExpired = true;
-			this.releaseScheduled = false;
-			void this.releaseWhenQuiescent().catch(() => {});
-		}, this.releaseGraceExpired ? 0 : RELEASE_RESPONSE_GRACE_MS);
+		this.releaseTimer = setTimeout(
+			() => {
+				this.releaseTimer = undefined;
+				this.releaseGraceExpired = true;
+				this.releaseScheduled = false;
+				void this.releaseWhenQuiescent().catch(() => {});
+			},
+			this.releaseGraceExpired ? 0 : RELEASE_RESPONSE_GRACE_MS,
+		);
 	}
 
 	private cancelRelease(): void {
@@ -543,8 +676,9 @@ class HostProcessServer implements HostProcess {
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
 		const generation = this.activityGeneration;
-		try { await this.onIdleCheck(true); }
-		finally {
+		try {
+			await this.onIdleCheck(true);
+		} finally {
 			this.releaseChecking = false;
 			const again = this.releaseAgain;
 			this.releaseAgain = false;
@@ -566,16 +700,28 @@ class HostProcessServer implements HostProcess {
 	private scheduleRetirement(): void {
 		if (this.closing || this.idleMs === 0 || this.activeRequests > 0 || this.hasObservations()) return;
 		this.cancelIdleCheck?.();
-		this.cancelIdleCheck = this.scheduleIdleCheck(() => { void this.onIdleCheck(); }, Math.max(1, this.idleMs));
+		this.cancelIdleCheck = this.scheduleIdleCheck(
+			() => {
+				void this.onIdleCheck();
+			},
+			Math.max(1, this.idleMs),
+		);
 	}
 
 	private async onIdleCheck(releasing = false): Promise<void> {
 		this.cancelIdleCheck = undefined;
-		if (this.closing || this.retirementChecking || this.activeRequests > 0 || (!releasing && this.hasObservations())) return;
+		if (this.closing || this.retirementChecking || this.activeRequests > 0 || (!releasing && this.hasObservations()))
+			return;
 		this.retirementChecking = true;
 		const generation = this.activityGeneration;
 		const seal = (): boolean => {
-			if (this.closing || generation !== this.activityGeneration || this.activeRequests > 0 || (releasing ? !this.releasePending : this.hasObservations())) return false;
+			if (
+				this.closing ||
+				generation !== this.activityGeneration ||
+				this.activeRequests > 0 ||
+				(releasing ? !this.releasePending : this.hasObservations())
+			)
+				return false;
 			this.closing = true;
 			if (releasing) this.closeReleaseObservations();
 			return true;
@@ -583,11 +729,13 @@ class HostProcessServer implements HostProcess {
 		try {
 			const retired = this.runtime.tryRetire ? await this.runtime.tryRetire(seal) : this.runtime.isIdle() && seal();
 			if (retired) {
-				if (releasing) await Promise.all([...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]));
+				if (releasing)
+					await Promise.all([...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]));
 				await this.shutdown();
 			}
-		} catch { /* An unavailable check waits for the next activity or quiescent event. */ }
-		finally {
+		} catch {
+			/* An unavailable check waits for the next activity or quiescent event. */
+		} finally {
 			this.retirementChecking = false;
 			if (!this.releasePending) this.scheduleRetirement();
 			else if (!releasing) this.scheduleRelease();
@@ -636,7 +784,8 @@ class HostProcessServer implements HostProcess {
 			this.unpublishSocket();
 			this.claim.assertNamed();
 			const endedAt = new Date().toISOString();
-			if (!validNativeWriterId(this.record.token) || endedAt < this.record.createdAt) throw new Error("Writer end identity or time order is invalid");
+			if (!validNativeWriterId(this.record.token) || endedAt < this.record.createdAt)
+				throw new Error("Writer end identity or time order is invalid");
 			this.writeEndRecord(this.claim.descriptor, Buffer.from(JSON.stringify({ ...this.record, endedAt })));
 			this.claim.release();
 			this.resolveCloseResponse();
@@ -658,13 +807,20 @@ class HostProcessServer implements HostProcess {
 
 /** Keep the live claim until process death when native close cannot join pending work. */
 async function closeRuntime(runtime: HostRuntime, exit?: () => never): Promise<void> {
-	if (await runtime.close() !== "process-exit") return;
+	if ((await runtime.close()) !== "process-exit") return;
 	if (!exit) throw new Error("Busy native shutdown requires its dedicated process owner");
 	exit();
 }
 
 function claimRecord(identity: HostPaths["identity"], token: string): ClaimRecord {
-	return { token, pid: process.pid, host: hostname(), sessionId: identity.sessionId, cwd: resolve(identity.cwd), createdAt: new Date().toISOString() };
+	return {
+		token,
+		pid: process.pid,
+		host: hostname(),
+		sessionId: identity.sessionId,
+		cwd: resolve(identity.cwd),
+		createdAt: new Date().toISOString(),
+	};
 }
 
 /** Positional writes do not inherit the descriptor offset left by acquisition. */
@@ -700,24 +856,42 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
 	const record = claimRecord(paths.identity, randomUUID());
 	let claim: NativeWriterLease;
-	try { claim = takeClaim(paths.claim, record); }
-	catch (error) {
+	try {
+		claim = takeClaim(paths.claim, record);
+	} catch (error) {
 		if (error instanceof HostClaimRefusedError && error.observation === "busy") {
-			(options.announceBusy ?? ((target) => process.stdout.write(formatHostBusy(target))))({ storageId: metadata.storageId, socketPath: paths.socket });
+			(options.announceBusy ?? ((target) => process.stdout.write(formatHostBusy(target))))({
+				storageId: metadata.storageId,
+				socketPath: paths.socket,
+			});
 		}
 		throw error;
 	}
 	let runtime: HostRuntime | undefined;
 	try {
 		runtime = await createRuntime();
-		const host = new HostProcessServer(runtime, paths, claim, record, idleMs, options.scheduleIdleCheck, options.observationClock, options.exit, options.writeEndRecord);
+		const host = new HostProcessServer(
+			runtime,
+			paths,
+			claim,
+			record,
+			idleMs,
+			options.scheduleIdleCheck,
+			options.observationClock,
+			options.exit,
+			options.writeEndRecord,
+		);
 		await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
 		return host;
 	} catch (error) {
 		let releasedRuntime = false;
 		if (runtime) {
-			try { await closeRuntime(runtime, options.exit); releasedRuntime = true; }
-			catch { releasedRuntime = false; }
+			try {
+				await closeRuntime(runtime, options.exit);
+				releasedRuntime = true;
+			} catch {
+				releasedRuntime = false;
+			}
 		}
 		if (releasedRuntime) cleanupClaim(claim);
 		throw error;

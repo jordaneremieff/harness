@@ -58,7 +58,8 @@
 	const segmenter = new Intl.Segmenter(undefined, { granularity: "word" });
 	function sharedEdges(a: string[], b: string[]) {
 		const limit = Math.min(a.length, b.length);
-		let head = 0, tail = 0;
+		let head = 0,
+			tail = 0;
 		while (head < limit && a[head] === b[head]) head++;
 		while (tail < limit - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
 		return { head, tail };
@@ -77,8 +78,10 @@
 	function wordAlignment(a: string[], b: string[]) {
 		const stride = b.length + 1;
 		if ((a.length + 1) * stride > 160_000) return null;
-		const lengths = suffixLengths(a, b, stride), pairs: [number, number][] = [];
-		let i = 0, j = 0;
+		const lengths = suffixLengths(a, b, stride),
+			pairs: [number, number][] = [];
+		let i = 0,
+			j = 0;
 		while (i < a.length && j < b.length) {
 			const k = i * stride + j;
 			if (a[i] === b[j]) pairs.push([i++, j++]);
@@ -93,8 +96,11 @@
 		if (!after) return [{ kind: "removed", text: before }];
 		if (Math.max(before.length, after.length) > 32_768) return null;
 		const words = (text: string) => Array.from(segmenter.segment(text), (part) => part.segment);
-		const old = words(before), next = words(after), { head, tail } = sharedEdges(old, next);
-		const a = old.slice(head, old.length - tail), b = next.slice(head, next.length - tail);
+		const old = words(before),
+			next = words(after),
+			{ head, tail } = sharedEdges(old, next);
+		const a = old.slice(head, old.length - tail),
+			b = next.slice(head, next.length - tail);
 		const pairs = wordAlignment(a, b);
 		if (!pairs) return null;
 		const parts: ReaderDiffPart[] = [];
@@ -105,7 +111,8 @@
 			else parts.push({ kind, text });
 		};
 		add("same", old.slice(0, head).join(""));
-		let i = 0, j = 0;
+		let i = 0,
+			j = 0;
 		for (const [x, y] of pairs) {
 			add("removed", a.slice(i, x).join(""));
 			add("added", b.slice(j, y).join(""));
@@ -282,7 +289,9 @@
 		const aboveFits = above >= pane.top + margin,
 			belowFits = below + strip.height <= pane.height - margin;
 		const side =
-			aboveFits || (!belowFits && selection.top - pane.top >= pane.height - selection.bottom) ? ("above" as const) : ("below" as const);
+			aboveFits || (!belowFits && selection.top - pane.top >= pane.height - selection.bottom)
+				? ("above" as const)
+				: ("below" as const);
 		const top = side === "above" ? above : below;
 		const centre = (selection.left + selection.right) / 2 - strip.width / 2;
 		return {

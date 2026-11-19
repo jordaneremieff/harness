@@ -64,7 +64,9 @@ export function committedChoices(entries: readonly AgentConversationEntry[]): Ar
 		.map((entry) => {
 			const body = (entry.model ?? [])
 				.flatMap((message) =>
-					typeof message.content === "string" ? [message.content] : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])),
+					typeof message.content === "string"
+						? [message.content]
+						: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])),
 				)
 				.join(" ")
 				.replace(/\s+/g, " ")
@@ -75,11 +77,20 @@ export function committedChoices(entries: readonly AgentConversationEntry[]): Ar
 }
 
 function ambiguousClock(deadline: Date): boolean {
-	const clock = [deadline.getFullYear(), deadline.getMonth(), deadline.getDate(), deadline.getHours(), deadline.getMinutes()].join(":");
+	const clock = [
+		deadline.getFullYear(),
+		deadline.getMonth(),
+		deadline.getDate(),
+		deadline.getHours(),
+		deadline.getMinutes(),
+	].join(":");
 	for (let minutes = -120; minutes <= 120; minutes++) {
 		if (!minutes) continue;
 		const other = new Date(deadline.getTime() + minutes * 60000);
-		if ([other.getFullYear(), other.getMonth(), other.getDate(), other.getHours(), other.getMinutes()].join(":") === clock) return true;
+		if (
+			[other.getFullYear(), other.getMonth(), other.getDate(), other.getHours(), other.getMinutes()].join(":") === clock
+		)
+			return true;
 	}
 	return false;
 }
@@ -91,15 +102,19 @@ function localDeadline(value: string, now: number): Date {
 	deadline.setHours(Number(time[1]), Number(time[2]), 0, 0);
 	if (deadline.getTime() <= now) deadline.setDate(deadline.getDate() + 1);
 	if (ambiguousClock(deadline)) throw new Error("That local time has two offsets; use a relative time");
-	if (deadline.getHours() !== Number(time[1]) || deadline.getMinutes() !== Number(time[2])) throw new Error("That local time does not exist; use a relative time");
+	if (deadline.getHours() !== Number(time[1]) || deadline.getMinutes() !== Number(time[2]))
+		throw new Error("That local time does not exist; use a relative time");
 	return deadline;
 }
 
 /** Local clock syntax is small and explicit; the schedule form shows the exact resulting instant. */
 export function scheduleDeadline(value: string, now: number): string {
 	const relative = /^\+(\d+)(m|h)$/.exec(value.trim());
-	const deadline = relative ? new Date(now + Number(relative[1]) * (relative[2] === "m" ? 60000 : 3600000)) : localDeadline(value, now);
-	if (!Number.isFinite(deadline.getTime()) || deadline.getTime() <= now) throw new Error("The deadline must be in the future");
+	const deadline = relative
+		? new Date(now + Number(relative[1]) * (relative[2] === "m" ? 60000 : 3600000))
+		: localDeadline(value, now);
+	if (!Number.isFinite(deadline.getTime()) || deadline.getTime() <= now)
+		throw new Error("The deadline must be in the future");
 	return deadline.toISOString();
 }
 
@@ -123,18 +138,28 @@ function finish(host: AgentFormHost, name: string, result: ActionResult) {
 /** The host's models by exact identity; a current model the host does not list stays choosable. */
 function modelChoices(models: readonly ModelOption[], current: string): Choice[] {
 	const choices: Choice[] = models
-		.map((model) => ({ value: model.identity, label: plainLine(model.identity), ...(model.name && model.name !== model.identity ? { description: plainLine(model.name) } : {}) }))
+		.map((model) => ({
+			value: model.identity,
+			label: plainLine(model.identity),
+			...(model.name && model.name !== model.identity ? { description: plainLine(model.name) } : {}),
+		}))
 		.sort((a, b) => a.value.localeCompare(b.value));
-	if (current && !choices.some((choice) => choice.value === current)) choices.unshift({ value: current, label: plainLine(current), description: "current · not listed by the host" });
+	if (current && !choices.some((choice) => choice.value === current))
+		choices.unshift({ value: current, label: plainLine(current), description: "current · not listed by the host" });
 	return choices;
 }
 
 /** Only changed fields enter the patch; an unchanged form is refused before any request. */
-function configurationPatch(host: AgentFormHost, values: Readonly<Record<string, string>>, current: string): ConfigurationPatch {
+function configurationPatch(
+	host: AgentFormHost,
+	values: Readonly<Record<string, string>>,
+	current: string,
+): ConfigurationPatch {
 	const patch: ConfigurationPatch = {};
 	if (values.name !== undefined && values.name !== (host.row.name ?? "")) patch.name = values.name;
 	if (values.model && values.model !== current) patch.model = values.model;
-	if (values.thinkingLevel && values.thinkingLevel !== (host.row.model?.thinkingLevel ?? "off")) patch.thinkingLevel = values.thinkingLevel as ConfigurationPatch["thinkingLevel"];
+	if (values.thinkingLevel && values.thinkingLevel !== (host.row.model?.thinkingLevel ?? "off"))
+		patch.thinkingLevel = values.thinkingLevel as ConfigurationPatch["thinkingLevel"];
 	if (!Object.keys(patch).length) throw new Error("Nothing changed; edit a field or Cancel.");
 	return validateConfigurationPatch(patch);
 }
@@ -142,8 +167,27 @@ function configurationPatch(host: AgentFormHost, values: Readonly<Record<string,
 function executionFields(host: AgentFormHost, current: string, choices: Choice[] | undefined): FieldSpec[] {
 	return [
 		{ kind: "text", id: "name", label: "Name", value: host.row.name ?? "", placeholder: "blank clears the name" },
-		...(choices ? [{ kind: "choice" as const, id: "model", label: "Model", value: current, choices, filter: true, rows: 7, hint: "Type to narrow the host's available models" }] : []),
-		{ kind: "choice", id: "thinkingLevel", label: "Reasoning", value: host.row.model?.thinkingLevel ?? "off", choices: THINKING_LEVELS.map((level) => ({ value: level, label: level })) },
+		...(choices
+			? [
+					{
+						kind: "choice" as const,
+						id: "model",
+						label: "Model",
+						value: current,
+						choices,
+						filter: true,
+						rows: 7,
+						hint: "Type to narrow the host's available models",
+					},
+				]
+			: []),
+		{
+			kind: "choice",
+			id: "thinkingLevel",
+			label: "Reasoning",
+			value: host.row.model?.thinkingLevel ?? "off",
+			choices: THINKING_LEVELS.map((level) => ({ value: level, label: level })),
+		},
 	];
 }
 
@@ -154,11 +198,13 @@ function configureView(host: AgentFormHost, view: ViewHost): View {
 		return new Form({
 			title: "Configure",
 			heading: `Configure ${label(host)}`,
-			intro: "Changes apply together. Pi clamps reasoning to the model. If the agent starts work, configuration is refused and your fields stay.",
+			intro:
+				"Changes apply together. Pi clamps reasoning to the model. If the agent starts work, configuration is refused and your fields stay.",
 			fields: executionFields(host, current, choices),
 			action: { label: "Apply" },
 			host: view,
-			submit: async (values) => finish(host, "configure", await host.configure(configurationPatch(host, values, current))),
+			submit: async (values) =>
+				finish(host, "configure", await host.configure(configurationPatch(host, values, current))),
 		});
 	});
 }
@@ -185,15 +231,35 @@ function branchForm(host: AgentFormHost, view: ViewHost, rewind: boolean, choice
 			? "A new branch starts corrected work before the chosen message. Source history stays; files do not roll back."
 			: "An idle branch starts from the chosen committed message. The source conversation is unchanged.",
 		fields: [
-			{ kind: "choice", id: "entry", label: "Message", value: rewind ? choices[0]?.value : "", choices: [...latest, ...choices], filter: true, rows: 6 },
-			...(rewind ? [{ kind: "area" as const, id: "correction", label: "Correction", rows: 4, hint: "What the new branch should do instead" }] : []),
+			{
+				kind: "choice",
+				id: "entry",
+				label: "Message",
+				value: rewind ? choices[0]?.value : "",
+				choices: [...latest, ...choices],
+				filter: true,
+				rows: 6,
+			},
+			...(rewind
+				? [
+						{
+							kind: "area" as const,
+							id: "correction",
+							label: "Correction",
+							rows: 4,
+							hint: "What the new branch should do instead",
+						},
+					]
+				: []),
 		],
 		action: { label: rewind ? "Rewind" : "Fork", tone: rewind ? "danger" : "accent" },
 		host: view,
 		validate: (values) => (rewind && !(values.correction ?? "").trim() ? "Write the correction first." : undefined),
 		submit: async (values) => {
 			const entry = values.entry ?? "";
-			const result = rewind ? await host.run("rewind", [entry, values.correction ?? ""]) : await host.run("fork", entry ? [entry] : []);
+			const result = rewind
+				? await host.run("rewind", [entry, values.correction ?? ""])
+				: await host.run("fork", entry ? [entry] : []);
 			return finish(host, rewind ? "rewind" : "fork", result);
 		},
 	});
@@ -206,7 +272,15 @@ function branchView(host: AgentFormHost, view: ViewHost, rewind: boolean, pages 
 		const form = branchForm(host, view, rewind, choices);
 		if (!more) return form;
 		const actions = form.actions.bind(form);
-		form.actions = () => [...actions(), { id: "earlier", label: "Earlier messages", description: "Read one more page of committed messages", run: () => view.push((next) => branchView(host, next, rewind, pages + 1)) }];
+		form.actions = () => [
+			...actions(),
+			{
+				id: "earlier",
+				label: "Earlier messages",
+				description: "Read one more page of committed messages",
+				run: () => view.push((next) => branchView(host, next, rewind, pages + 1)),
+			},
+		];
 		return form;
 	});
 }
@@ -223,7 +297,11 @@ function contextView(host: AgentFormHost, view: ViewHost, reset: boolean): View 
 		host: view,
 		submit: async (values) => {
 			const value = (values.text ?? "").trim();
-			return finish(host, reset ? "reset" : "compact", await host.run(reset ? "reset" : "compact", value ? [value] : []));
+			return finish(
+				host,
+				reset ? "reset" : "compact",
+				await host.run(reset ? "reset" : "compact", value ? [value] : []),
+			);
 		},
 	});
 }
@@ -245,7 +323,8 @@ function commandView(host: AgentFormHost, view: ViewHost): View {
 			action: { label: "Run" },
 			host: view,
 			validate: (values) => ((values.name ?? "").trim() ? undefined : "Choose or type a command."),
-			submit: async (values) => finish(host, "command", await host.run("command", [values.name ?? "", values.args ?? ""])),
+			submit: async (values) =>
+				finish(host, "command", await host.run("command", [values.name ?? "", values.args ?? ""])),
 		});
 	});
 }
@@ -257,12 +336,22 @@ function scheduleView(host: AgentFormHost, view: ViewHost): View {
 	const form = new Form({
 		title: "Schedule message",
 		heading: `Schedule a message to ${label(host)}`,
-		intro: "The message is admitted at the deadline. The host must be running then. The draft stays until it is scheduled.",
+		intro:
+			"The message is admitted at the deadline. The host must be running then. The draft stays until it is scheduled.",
 		fields: [
 			{ kind: "area", id: "message", label: "Message", value: draft.message, rows: 4 },
 			{ kind: "text", id: "time", label: "Deadline", value: draft.time, placeholder: "HH:MM local or +30m" },
 			{ kind: "info", id: "at", label: "Delivers", value: (values) => deliveryText(values.time ?? "", Date.now()) },
-			{ kind: "choice", id: "mode", label: "If busy", value: draft.mode, choices: [{ value: "followUp", label: "New work, read at the next step" }, { value: "steer", label: "Correction, read at the next step" }] },
+			{
+				kind: "choice",
+				id: "mode",
+				label: "If busy",
+				value: draft.mode,
+				choices: [
+					{ value: "followUp", label: "New work, read at the next step" },
+					{ value: "steer", label: "Correction, read at the next step" },
+				],
+			},
 		],
 		action: { label: "Schedule" },
 		host: view,
@@ -282,7 +371,11 @@ function scheduleView(host: AgentFormHost, view: ViewHost): View {
 		},
 		submit: async (values) => {
 			const deliverAt = scheduleDeadline(values.time ?? "", Date.now());
-			const result = await host.schedule({ message: values.message ?? "", deliverAt, mode: values.mode === "steer" ? "steer" : "followUp" });
+			const result = await host.schedule({
+				message: values.message ?? "",
+				deliverAt,
+				mode: values.mode === "steer" ? "steer" : "followUp",
+			});
 			record.schedule = undefined;
 			return finish(host, "schedule", result);
 		},
@@ -293,8 +386,12 @@ function scheduleView(host: AgentFormHost, view: ViewHost): View {
 function timersView(host: AgentFormHost, view: ViewHost): View {
 	return new LoadingView("Scheduled messages", view, async () => {
 		const timers = await host.timers();
-		const rows = timers.map((timer) => ({ value: String(timer.timerId), label: `${new Date(timer.deadline).toLocaleString()} · ${timer.status} · ${plainLine(timer.messagePreview)}` }));
-		if (!rows.length) return new ReaderView("Scheduled messages", view, () => `No scheduled messages for ${label(host)}.`);
+		const rows = timers.map((timer) => ({
+			value: String(timer.timerId),
+			label: `${new Date(timer.deadline).toLocaleString()} · ${timer.status} · ${plainLine(timer.messagePreview)}`,
+		}));
+		if (!rows.length)
+			return new ReaderView("Scheduled messages", view, () => `No scheduled messages for ${label(host)}.`);
 		return new Form({
 			title: "Scheduled messages",
 			heading: `Scheduled messages for ${label(host)}`,
@@ -308,13 +405,27 @@ function timersView(host: AgentFormHost, view: ViewHost): View {
 	});
 }
 
-function confirmView(view: ViewHost, title: string, heading: string, intro: string, action: string, run: () => Promise<ReturnType<typeof finish>>, tone: "accent" | "danger" = "accent"): View {
+function confirmView(
+	view: ViewHost,
+	title: string,
+	heading: string,
+	intro: string,
+	action: string,
+	run: () => Promise<ReturnType<typeof finish>>,
+	tone: "accent" | "danger" = "accent",
+): View {
 	return new Form({ title, heading, intro, fields: [], action: { label: action, tone }, host: view, submit: run });
 }
 
 const hasPatch = (draft: ProfileDraft) => draft.role !== undefined || draft.expertise !== undefined;
 
-function profileEditView(host: AgentFormHost, view: ViewHost, profile: AgentProfile, draft: ProfileDraft, reread: () => void): View {
+function profileEditView(
+	host: AgentFormHost,
+	view: ViewHost,
+	profile: AgentProfile,
+	draft: ProfileDraft,
+	reread: () => void,
+): View {
 	const conflict = draft.needsRead || draft.expectedRevision !== profile.revision;
 	return new Form({
 		title: "Edit profile",
@@ -335,7 +446,8 @@ function profileEditView(host: AgentFormHost, view: ViewHost, profile: AgentProf
 		},
 		submit: async () => {
 			if (!hasPatch(draft)) throw new Error("Edit the role or the expertise before Save.");
-			if (draft.needsRead || draft.expectedRevision !== profile.revision) throw new Error("Draft kept. Read the current profile and choose its revision before Save.");
+			if (draft.needsRead || draft.expectedRevision !== profile.revision)
+				throw new Error("Draft kept. Read the current profile and choose its revision before Save.");
 			const result = await host.profile("profile-update", {
 				sessionId: profile.identity,
 				expectedRevision: draft.expectedRevision,
@@ -345,7 +457,9 @@ function profileEditView(host: AgentFormHost, view: ViewHost, profile: AgentProf
 			if (!matchesSchema(ProfileUpdateSchema, result)) throw new Error("Invalid profile update response");
 			if (result.outcome === "conflict") {
 				draft.needsRead = true;
-				throw new Error(`The profile changed to revision ${result.profile.revision}. Draft kept; read the current profile.`);
+				throw new Error(
+					`The profile changed to revision ${result.profile.revision}. Draft kept; read the current profile.`,
+				);
 			}
 			host.profileDrafts.delete(profile.identity);
 			reread();
@@ -375,21 +489,59 @@ function profileView(host: AgentFormHost, view: ViewHost): View {
 		);
 	};
 	read();
-	const draftOf = (current: AgentProfile): ProfileDraft => host.profileDrafts.get(current.identity) ?? { expectedRevision: current.revision };
+	const draftOf = (current: AgentProfile): ProfileDraft =>
+		host.profileDrafts.get(current.identity) ?? { expectedRevision: current.revision };
 	return new ReaderView(
 		"Profile",
 		view,
-		() => (profile ? profileText(profile, host.profileDrafts.get(profile.identity)) : error ? `The profile could not be read: ${error}` : "Reading the profile…"),
+		() =>
+			profile
+				? profileText(profile, host.profileDrafts.get(profile.identity))
+				: error
+					? `The profile could not be read: ${error}`
+					: "Reading the profile…",
 		() => {
 			const current = profile;
 			if (!current) return [{ id: "read", label: "Read again", key: "r", primary: true, run: read }];
 			const draft = draftOf(current);
 			const stale = draft.expectedRevision !== current.revision && !draft.needsRead;
 			return [
-				{ id: "edit", label: hasPatch(draft) ? "Continue editing" : "Edit role or expertise", key: "e", short: hasPatch(draft) ? "continue editing" : "edit", primary: true, run: () => view.push((next) => profileEditView(host, next, current, draft, read)) },
+				{
+					id: "edit",
+					label: hasPatch(draft) ? "Continue editing" : "Edit role or expertise",
+					key: "e",
+					short: hasPatch(draft) ? "continue editing" : "edit",
+					primary: true,
+					run: () => view.push((next) => profileEditView(host, next, current, draft, read)),
+				},
 				{ id: "read", label: "Read current profile", key: "r", short: "read again", primary: true, run: read },
-				...(stale ? [{ id: "revision", label: "Use current revision for the draft", key: "u", short: "use current revision", primary: true, run: () => { draft.expectedRevision = current.revision; view.requestRender(); } }] : []),
-				...(hasPatch(draft) ? [{ id: "discard", label: "Discard draft", run: () => { host.profileDrafts.delete(current.identity); view.requestRender(); } }] : []),
+				...(stale
+					? [
+							{
+								id: "revision",
+								label: "Use current revision for the draft",
+								key: "u",
+								short: "use current revision",
+								primary: true,
+								run: () => {
+									draft.expectedRevision = current.revision;
+									view.requestRender();
+								},
+							},
+						]
+					: []),
+				...(hasPatch(draft)
+					? [
+							{
+								id: "discard",
+								label: "Discard draft",
+								run: () => {
+									host.profileDrafts.delete(current.identity);
+									view.requestRender();
+								},
+							},
+						]
+					: []),
 			];
 		},
 	);
@@ -410,13 +562,20 @@ function detailsView(host: AgentFormHost, view: ViewHost): View {
 		},
 	);
 	const id = host.row.id;
-	return new ReaderView("Details", view, () => `${label(host)}\nIdentity: ${id}\nDirectory: ${host.row.cwd}\n\n${content}`);
+	return new ReaderView(
+		"Details",
+		view,
+		() => `${label(host)}\nIdentity: ${id}\nDirectory: ${host.row.cwd}\n\n${content}`,
+	);
 }
 
 /** Open one agent action as its inspector view. */
 export function actionView(name: string, host: AgentFormHost, view: ViewHost): View {
 	const who = label(host);
-	const run = (action: string, args: string[] = []) => async () => finish(host, action, await host.run(action, args));
+	const run =
+		(action: string, args: string[] = []) =>
+		async () =>
+			finish(host, action, await host.run(action, args));
 	switch (name) {
 		case "configure":
 			return configureView(host, view);
@@ -439,11 +598,34 @@ export function actionView(name: string, host: AgentFormHost, view: ViewHost): V
 		case "status":
 			return detailsView(host, view);
 		case "abort":
-			return confirmView(view, "Stop", `Stop the current work of ${who}`, "History stays. Background work is not included. The conversation stays available.", "Stop current work", run("abort"), "danger");
+			return confirmView(
+				view,
+				"Stop",
+				`Stop the current work of ${who}`,
+				"History stays. Background work is not included. The conversation stays available.",
+				"Stop current work",
+				run("abort"),
+				"danger",
+			);
 		case "release":
-			return confirmView(view, "Release", `Stop ${who} and release its host`, "This stops the conversation and requests retirement of its host. Other work stays.", "Stop and release host", run("release"), "danger");
+			return confirmView(
+				view,
+				"Release",
+				`Stop ${who} and release its host`,
+				"This stops the conversation and requests retirement of its host. Other work stays.",
+				"Stop and release host",
+				run("release"),
+				"danger",
+			);
 		case "attach":
-			return confirmView(view, "Reconnect", `Reconnect ${who}`, "This starts the host if it is not running. Retained unfinished work resumes. No new input starts.", "Reconnect", run("attach"));
+			return confirmView(
+				view,
+				"Reconnect",
+				`Reconnect ${who}`,
+				"This starts the host if it is not running. Retained unfinished work resumes. No new input starts.",
+				"Reconnect",
+				run("attach"),
+			);
 		default:
 			return new ReaderView(name, view, () => `The action ${name} has no form here.`);
 	}

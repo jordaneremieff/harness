@@ -35,11 +35,7 @@ export type ParsedMemoryHeader = {
 };
 
 export interface MemorySourceCache {
-	read(
-		root: string,
-		file: string,
-		source: Readonly<{ text: string; truncated: boolean }>,
-	): ParsedMemoryHeader;
+	read(root: string, file: string, source: Readonly<{ text: string; truncated: boolean }>): ParsedMemoryHeader;
 	invalidate(root: string, file: string): void;
 	clear(): void;
 }
@@ -199,9 +195,7 @@ function scanHeader(raw: string, truncated: boolean): HeaderSkeleton {
 			header,
 			bodyStart: raw.length,
 			metadata: truncated ? "partial" : "malformed",
-			issue: truncated
-				? "frontmatter not closed within the read window"
-				: "frontmatter has no closing delimiter",
+			issue: truncated ? "frontmatter not closed within the read window" : "frontmatter has no closing delimiter",
 		};
 	}
 	const bodyStart =
@@ -236,9 +230,7 @@ function buildHeader(skeleton: HeaderSkeleton, parse: () => void): HeaderRecord 
 	};
 	try {
 		parse();
-		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(
-			`---\n${skeleton.block ?? ""}---\n`,
-		);
+		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(`---\n${skeleton.block ?? ""}---\n`);
 		if (body !== "" || !frontmatter || typeof frontmatter !== "object" || Array.isArray(frontmatter))
 			throw new Error("Ambiguous header");
 		result.parsed = frontmatter;

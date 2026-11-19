@@ -7,7 +7,15 @@ import type { ProducerRetry } from "./await-facts.ts";
 const sessionId = "10000000-0000-4000-8000-000000000001";
 const result = { sessionId, submissionId: 4, requestId: "work" };
 it("shares semantic retry revisions and exact reference matching", () => {
-	const retry: ProducerRetry = { state: "provider-retry", runId: 7, attempt: 2, nextRetryAt: 100, error: "provider claim", errorTruncated: false, results: [result] };
+	const retry: ProducerRetry = {
+		state: "provider-retry",
+		runId: 7,
+		attempt: 2,
+		nextRetryAt: 100,
+		error: "provider claim",
+		errorTruncated: false,
+		results: [result],
+	};
 	assert.equal(referenceKey(result), `${sessionId}/4`);
 	assert.equal(sameRetryResult(result, { ...result, requestId: "other" }), false);
 	assert.equal(sameRetryResult(result, { sessionId, submissionId: 4 }), true);
@@ -25,7 +33,10 @@ it("loads ordinary retry and intervention helpers without a Durable runtime impo
 	const policy = new URL("./await-retry-policy.ts", import.meta.url).href;
 	const intervention = new URL("./report-intervention.ts", import.meta.url).href;
 	const script = `import {registerHooks} from 'node:module';let durable=0;registerHooks({resolve(specifier,context,next){if(specifier==='@earendil-works/pi-durable'||specifier.startsWith('@earendil-works/pi-durable/'))durable++;return next(specifier,context)}});await import(${JSON.stringify(policy)});await import(${JSON.stringify(intervention)});console.log(JSON.stringify({durable}));`;
-	const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 10000 });
+	const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+		encoding: "utf8",
+		timeout: 10000,
+	});
 	assert.equal(child.error, undefined);
 	assert.equal(child.status, 0, child.stderr);
 	assert.deepEqual(JSON.parse(child.stdout), { durable: 0 });

@@ -11,19 +11,34 @@ import { retainedPurpose } from "./effort-purpose.ts";
 it("does not promote a later remark after a complete resumed history scan", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "primary-resume-purpose-"));
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
-	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
 	const session = SessionManager.inMemory(root);
 	session.appendMessage({ role: "user", content: "Implement the parser", timestamp: 0 });
 	const purpose = retainedPurpose(session, "resume");
 	assert.equal(purpose.complete, true);
 	const id = randomUUID();
-	await manager.registerPrimary(id, { signal: new AbortController().signal, cwd: root, send: () => {}, observedInput: purpose.text, observedInputComplete: purpose.complete, observedInputCanCapture: purpose.canCapture });
+	await manager.registerPrimary(id, {
+		signal: new AbortController().signal,
+		cwd: root,
+		send: () => {},
+		observedInput: purpose.text,
+		observedInputComplete: purpose.complete,
+		observedInputCanCapture: purpose.canCapture,
+	});
 	assert.equal(manager.recordPrimaryInput(id, "this task is taking awhile mate.", "interactive"), false);
 	assert.equal(manager.recordPrimaryInput(id, "continue", "interactive"), false);
 	const unknown = await manager.awareness(id);
 	assert.equal(unknown.self.observedPurpose, undefined);
 	assert.equal(unknown.self.omitted, true);
-	await manager.publishIntent(id, { purpose: "Implement the parser", integration: "Review before integration", authority: "Operator request", scope: { paths: ["parser.ts"], branches: [] } });
+	await manager.publishIntent(id, {
+		purpose: "Implement the parser",
+		integration: "Review before integration",
+		authority: "Operator request",
+		scope: { paths: ["parser.ts"], branches: [] },
+	});
 	const declared = await manager.awareness(id);
 	assert.equal(declared.self.intentClaim?.purpose, "Implement the parser");
 	assert.equal(declared.self.observedPurpose, undefined);
@@ -33,9 +48,20 @@ it("does not promote a later remark after a complete resumed history scan", asyn
 it("captures only the first eligible interactive input and closes empty capture", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "primary-first-purpose-"));
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root });
-	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
-	const id = randomUUID(), emptyId = randomUUID();
-	for (const sessionId of [id, emptyId]) await manager.registerPrimary(sessionId, { signal: new AbortController().signal, cwd: root, send: () => {}, observedInputComplete: true, observedInputCanCapture: true });
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const id = randomUUID(),
+		emptyId = randomUUID();
+	for (const sessionId of [id, emptyId])
+		await manager.registerPrimary(sessionId, {
+			signal: new AbortController().signal,
+			cwd: root,
+			send: () => {},
+			observedInputComplete: true,
+			observedInputCanCapture: true,
+		});
 	assert.equal(manager.recordPrimaryInput(id, "Injected text", "extension"), false);
 	assert.equal(manager.recordPrimaryInput(id, "Build the parser", "interactive"), true);
 	assert.equal(manager.recordPrimaryInput(id, "continue", "interactive"), false);
@@ -47,12 +73,26 @@ it("captures only the first eligible interactive input and closes empty capture"
 
 it("names collaboration selectors before routing malformed identities", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "collaboration-selector-fields-"));
-	const noHost = async (): Promise<never> => { throw new Error("Malformed selectors must not contact a host"); };
+	const noHost = async (): Promise<never> => {
+		throw new Error("Malformed selectors must not contact a host");
+	};
 	const manager = new AgentManager({ root, agentDir: root, packageDir: root, acquire: noHost, connect: noHost });
-	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
 	const caller = { id: randomUUID(), cwd: root };
 	await assert.rejects(manager.collaborate({ action: "create", sessionId: "bad" }, caller), /sessionId.*canonical/u);
-	await assert.rejects(manager.collaborate({ action: "create", sessionId: randomUUID(), integrator: "bad" }, caller), /integrator.*canonical/u);
-	await assert.rejects(manager.collaborate({ action: "post", sessionId: randomUUID(), notify: [randomUUID(), "bad"] }, caller), /notify\[1\].*canonical/u);
-	await assert.rejects(manager.collaborate({ action: "create", sessionId: randomUUID(), integrator: "@missing" }, caller), /integrator: handle resolution failed/u);
+	await assert.rejects(
+		manager.collaborate({ action: "create", sessionId: randomUUID(), integrator: "bad" }, caller),
+		/integrator.*canonical/u,
+	);
+	await assert.rejects(
+		manager.collaborate({ action: "post", sessionId: randomUUID(), notify: [randomUUID(), "bad"] }, caller),
+		/notify\[1\].*canonical/u,
+	);
+	await assert.rejects(
+		manager.collaborate({ action: "create", sessionId: randomUUID(), integrator: "@missing" }, caller),
+		/integrator: handle resolution failed/u,
+	);
 });

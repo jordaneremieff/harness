@@ -168,13 +168,24 @@ export interface AgentDashboardCoverage {
 }
 
 /** Merge retained rows while counting one latest inventory scan and one projection per storage. */
-export function mergeAgentCoverage(previous: AgentDashboardCoverage, current: AgentDashboardCoverage): AgentDashboardCoverage {
+export function mergeAgentCoverage(
+	previous: AgentDashboardCoverage,
+	current: AgentDashboardCoverage,
+): AgentDashboardCoverage {
 	const projections = { ...previous.projections, ...current.projections };
-	const skipped = current.inventory.unreadable + Object.values(projections).reduce((total, item) => total + item.skipped, 0);
+	const skipped =
+		current.inventory.unreadable + Object.values(projections).reduce((total, item) => total + item.skipped, 0);
 	const omitted = Object.values(projections).reduce((total, item) => total + item.omitted, 0);
-	const unresolvedClaims = Object.values(projections).filter(item => item.unresolvedClaim === true).length;
-	return { ...current, projections, storagesVisited: current.inventory.inspected, skipped, omitted, unresolvedClaims,
-		complete: current.complete && skipped === 0 && omitted === 0 && unresolvedClaims === 0 };
+	const unresolvedClaims = Object.values(projections).filter((item) => item.unresolvedClaim === true).length;
+	return {
+		...current,
+		projections,
+		storagesVisited: current.inventory.inspected,
+		skipped,
+		omitted,
+		unresolvedClaims,
+		complete: current.complete && skipped === 0 && omitted === 0 && unresolvedClaims === 0,
+	};
 }
 
 /** One bounded dashboard page: roster rows plus the coverage of their collection. */
@@ -204,4 +215,3 @@ export interface AgentObservationSources {
 	/** Deep read of the selected conversation; the source may serve it from a cached public snapshot without services or model bootstrap. */
 	snapshot(id: string): Promise<AgentConversationSnapshot>;
 }
-

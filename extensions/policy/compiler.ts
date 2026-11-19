@@ -52,11 +52,7 @@ function makeGuidanceStep(program: FactsProgram, guidance: FactsProgram["action"
 }
 
 /** Compile an approved facts program with its effect-selected action and input guidance step. */
-function compileFactsSteps(
-	record: RuleRecord,
-	approved: FactsProgram,
-	effect: DefinitionEffect,
-): ProgramRule {
+function compileFactsSteps(record: RuleRecord, approved: FactsProgram, effect: DefinitionEffect): ProgramRule {
 	const program = structuredClone(approved);
 	applyEffectChoice(program, record, effect);
 	const guidance = program.phase === "input" && program.action.kind === "guide" ? program.action : undefined;

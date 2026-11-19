@@ -16,7 +16,14 @@ setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 
 const STASH_ENTRY = fileURLToPath(new URL("./index.ts", import.meta.url));
 const identity = (text: string) => text;
-const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: identity, italic: identity, underline: identity, strikethrough: identity } as unknown as Theme;
+const theme = {
+	fg: (_color: string, text: string) => text,
+	bg: (_color: string, text: string) => text,
+	bold: identity,
+	italic: identity,
+	underline: identity,
+	strikethrough: identity,
+} as unknown as Theme;
 
 let dir = "";
 let ancientId = "";
@@ -49,9 +56,18 @@ function command() {
 				for (const listener of [...(handlers.get(name) ?? [])]) listener(data);
 			},
 		},
-		getCommands: () => [{ name: "stash", source: "extension", sourceInfo: { path: STASH_ENTRY, source: "local", scope: "user", origin: "top-level" } }],
+		getCommands: () => [
+			{
+				name: "stash",
+				source: "extension",
+				sourceInfo: { path: STASH_ENTRY, source: "local", scope: "user", origin: "top-level" },
+			},
+		],
 		registerTool: () => {},
-		registerCommand: (name: string, definition: { handler: (args: string, ctx: ExtensionContext) => Promise<void> }) => {
+		registerCommand: (
+			name: string,
+			definition: { handler: (args: string, ctx: ExtensionContext) => Promise<void> },
+		) => {
 			if (name === "stash") handler = definition.handler;
 		},
 		registerShortcut: () => {},
@@ -80,7 +96,12 @@ function drive(script: (frame: Frame) => Promise<void>) {
 			notify: () => {},
 			custom: <T,>(factory: (tui: unknown, theme: Theme, keys: unknown, done: (value: T) => void) => unknown) =>
 				new Promise<T>((resolve, reject) => {
-					const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, theme, { getKeys: () => [] }, resolve) as Frame;
+					const frame = factory(
+						{ terminal: { rows: 40, columns: 120 }, requestRender: () => {} },
+						theme,
+						{ getKeys: () => [] },
+						resolve,
+					) as Frame;
 					script(frame).then(
 						() => frame.close(),
 						(error: unknown) => {
@@ -128,31 +149,42 @@ function search(frame: Frame, query: string): void {
 }
 
 async function seed(): Promise<void> {
-	const old = await writeStash(dir, { title: "Ancient effort", summary: `${"filler ".repeat(6000)} deep-archive-needle` }, new Date("2020-01-01T00:00:00Z"));
+	const old = await writeStash(
+		dir,
+		{ title: "Ancient effort", summary: `${"filler ".repeat(6000)} deep-archive-needle` },
+		new Date("2020-01-01T00:00:00Z"),
+	);
 	ancientId = old.record.id;
 	for (let index = 0; index < 300; index++) {
-		await writeFile(join(dir, `20260101T${String(index).padStart(6, "0")}Z-recent-${index}.md`), `---\ntitle: "Recent ${index}"\nstate: "open"\ncreated: "20260101T000000Z"\ntags: []\n---\nbody\n`, "utf8");
+		await writeFile(
+			join(dir, `20260101T${String(index).padStart(6, "0")}Z-recent-${index}.md`),
+			`---\ntitle: "Recent ${index}"\nstate: "open"\ncreated: "20260101T000000Z"\ntags: []\n---\nbody\n`,
+			"utf8",
+		);
 	}
 }
 
 describe("stash archive browsing", () => {
 	it("follows an empty bounded page with Continue to a match beyond the preload, then picks up the exact record", async () => {
 		const { handler, sent } = command();
-		await handler("", drive(async (frame) => {
-			assert.match(await until(frame, /200 stashes \(newest 200\)/), /Recent/);
-			archiveScope(frame);
-			await until(frame, /Type text, then press Enter/);
-			search(frame, "deep-archive-needle");
-			const first = await until(frame, /coverage partial/);
-			assert.match(first, /no matches on this page/);
-			assert.equal(action(frame, "Continue").disabled, undefined);
-			action(frame, "Continue").run();
-			const found = await until(frame, /Ancient effort/);
-			assert.match(found, /2020-01-01/);
-			await until(frame, /coverage complete/);
-			await until(frame, new RegExp(`id: ${ancientId}`));
-			action(frame, "Pick up").run();
-		}));
+		await handler(
+			"",
+			drive(async (frame) => {
+				assert.match(await until(frame, /200 stashes \(newest 200\)/), /Recent/);
+				archiveScope(frame);
+				await until(frame, /Type text, then press Enter/);
+				search(frame, "deep-archive-needle");
+				const first = await until(frame, /coverage partial/);
+				assert.match(first, /no matches on this page/);
+				assert.equal(action(frame, "Continue").disabled, undefined);
+				action(frame, "Continue").run();
+				const found = await until(frame, /Ancient effort/);
+				assert.match(found, /2020-01-01/);
+				await until(frame, /coverage complete/);
+				await until(frame, new RegExp(`id: ${ancientId}`));
+				action(frame, "Pick up").run();
+			}),
+		);
 		assert.equal(sent.length, 1);
 		assert.ok(sent[0]?.includes(ancientId));
 		assert.match(sent[0] ?? "", /deep-archive-needle/);
@@ -161,33 +193,39 @@ describe("stash archive browsing", () => {
 	it("marks a store change under a held cursor as stale, offers Refresh, and blocks every effect", async () => {
 		const { handler, sent } = command();
 		const before = (await listStashes(dir, { limit: 400 })).length;
-		await handler("", drive(async (frame) => {
-			await until(frame, /stashes/);
-			archiveScope(frame);
-			search(frame, "deep-archive-needle");
-			await until(frame, /coverage partial/);
-			await writeStash(dir, { title: "Arrives mid-query", summary: "new" }, new Date("2026-06-01T00:00:00Z"));
-			action(frame, "Continue").run();
-			await until(frame, /Stale:/);
-			assert.match(text(frame), /Refresh restarts/);
-			assert.equal(typeof action(frame, "Continue").disabled, "string", "a stale cursor reads no further page");
-			assert.equal(action(frame, "Refresh").disabled, undefined);
-		}));
+		await handler(
+			"",
+			drive(async (frame) => {
+				await until(frame, /stashes/);
+				archiveScope(frame);
+				search(frame, "deep-archive-needle");
+				await until(frame, /coverage partial/);
+				await writeStash(dir, { title: "Arrives mid-query", summary: "new" }, new Date("2026-06-01T00:00:00Z"));
+				action(frame, "Continue").run();
+				await until(frame, /Stale:/);
+				assert.match(text(frame), /Refresh restarts/);
+				assert.equal(typeof action(frame, "Continue").disabled, "string", "a stale cursor reads no further page");
+				assert.equal(action(frame, "Refresh").disabled, undefined);
+			}),
+		);
 		assert.equal(sent.length, 0);
 		assert.ok((await listStashes(dir, { limit: 400 })).length > before);
 	});
 
 	it("leaving the archive search without a query keeps the recent view and changes nothing", async () => {
 		const { handler, sent } = command();
-		await handler("", drive(async (frame) => {
-			await until(frame, /stashes/);
-			archiveScope(frame);
-			await until(frame, /Type text, then press Enter/);
-			frame.handleInput("\u001b[Z");
-			frame.handleInput("\u001b[D");
-			frame.handleInput("\r");
-			await until(frame, /200 stashes/);
-		}));
+		await handler(
+			"",
+			drive(async (frame) => {
+				await until(frame, /stashes/);
+				archiveScope(frame);
+				await until(frame, /Type text, then press Enter/);
+				frame.handleInput("\u001b[Z");
+				frame.handleInput("\u001b[D");
+				frame.handleInput("\r");
+				await until(frame, /200 stashes/);
+			}),
+		);
 		assert.equal(sent.length, 0);
 	});
 });

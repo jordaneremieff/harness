@@ -171,7 +171,12 @@ export class TextBudget {
 	 * small floor, so every page emits text and the returned `nextOffset` is exact for the source text
 	 * actually emitted.
 	 */
-	page(value: string, offset: number, limit: number, maxBytes: number): { text: string; nextOffset?: number; total: number } {
+	page(
+		value: string,
+		offset: number,
+		limit: number,
+		maxBytes: number,
+	): { text: string; nextOffset?: number; total: number } {
 		const cap = Math.max(Math.min(maxBytes, this.remaining), Math.min(1024, maxBytes));
 		const page = sliceCleanText(value, offset, limit, cap);
 		this.remaining = Math.max(0, this.remaining - Buffer.byteLength(page.text));

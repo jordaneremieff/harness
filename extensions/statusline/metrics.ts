@@ -107,7 +107,10 @@ export class MetricsCache {
 		}
 		for (let visited = 0; pending.cursor !== this.leaf && visited < 256; visited += 1) {
 			const entry = pending.cursor === null ? undefined : source.getEntry(pending.cursor);
-			if (!entry) { this.reset(source); return true; }
+			if (!entry) {
+				this.reset(source);
+				return true;
+			}
 			const newestCache = pending.delta.lastTurnCacheHit;
 			addEntryMetrics(pending.delta, entry);
 			if (newestCache !== null) pending.delta.lastTurnCacheHit = newestCache;

@@ -57,7 +57,12 @@
 		sendKeyNext(sendKey: SendKey): SendKey;
 		draftIsSubmittable(text: string): boolean;
 	}
-	interface Change { start: number; end: number; text: string; cursor?: number }
+	interface Change {
+		start: number;
+		end: number;
+		text: string;
+		cursor?: number;
+	}
 	interface Controls {
 		viewport(menu: number): void;
 		revealCaret(): void;
@@ -99,9 +104,22 @@
 
 	const root = globalThis as typeof globalThis & {
 		composer?: ComposerRoot;
-		composerLayout: { mount(input: HTMLTextAreaElement, report: (height: number) => Promise<Record<string, unknown>>, revealCaret: () => void): { (): void; viewport(pane: number, growth: number): void } };
+		composerLayout: {
+			mount(
+				input: HTMLTextAreaElement,
+				report: (height: number) => Promise<Record<string, unknown>>,
+				revealCaret: () => void,
+			): { (): void; viewport(pane: number, growth: number): void };
+		};
 		webkit?: { messageHandlers?: { composer?: Transport } };
-		mountComposerControls?: (host: { input: HTMLTextAreaElement; request: typeof request; edit: typeof edit; notice: (message: string) => void; icon: typeof icon; preferences: typeof preferences }) => Controls;
+		mountComposerControls?: (host: {
+			input: HTMLTextAreaElement;
+			request: typeof request;
+			edit: typeof edit;
+			notice: (message: string) => void;
+			icon: typeof icon;
+			preferences: typeof preferences;
+		}) => Controls;
 	};
 	root.composer ??= {};
 	const api = root.composer;
@@ -168,23 +186,33 @@
 	const panel = get<HTMLElement>("composer");
 	const statusText = get<HTMLElement>("status-text");
 	const statusState = get<HTMLElement>("status-state");
-	const context = get<HTMLElement>("context"), contextMeter = get<HTMLElement>("context-meter");
-	const percent = get<HTMLElement>("context-percent"), tokens = get<HTMLElement>("context-tokens");
-	const cost = get<HTMLElement>("session-cost"), folder = get<HTMLElement>("session-folder");
+	const context = get<HTMLElement>("context"),
+		contextMeter = get<HTMLElement>("context-meter");
+	const percent = get<HTMLElement>("context-percent"),
+		tokens = get<HTMLElement>("context-tokens");
+	const cost = get<HTMLElement>("session-cost"),
+		folder = get<HTMLElement>("session-folder");
 	const input = get<HTMLTextAreaElement>("input");
 	const hint = get<HTMLElement>("hint");
 	const modeButton = get<HTMLButtonElement>("mode");
-	const elapsed = get("elapsed"), writer = get("writer");
+	const elapsed = get("elapsed"),
+		writer = get("writer");
 	const returnButton = get<HTMLButtonElement>("return");
 	const actionButton = get<HTMLButtonElement>("action");
-	const notice = get<HTMLElement>("notice"), statusIcon = get("status-icon");
-	const fitEditor = root.composerLayout.mount(input, (height) => request("layout", { height }), () => controls?.revealCaret());
+	const notice = get<HTMLElement>("notice"),
+		statusIcon = get("status-icon");
+	const fitEditor = root.composerLayout.mount(
+		input,
+		(height) => request("layout", { height }),
+		() => controls?.revealCaret(),
+	);
 
 	let status: ComposerStatus = { connection: "connecting" };
 	let sendKey: SendKey = "return";
 	let delivery: Delivery = "steer";
 	const baseSize = 16;
-	let textAdjust = 0, phaseSince: number | undefined;
+	let textAdjust = 0,
+		phaseSince: number | undefined;
 	let submitting = false;
 	let handshake = false;
 	let applying = false;
@@ -193,7 +221,8 @@
 	let savedStart = 0;
 	let savedEnd = 0;
 	let actionIcon = "";
-	let geometry = { pane: 0, growth: 0, menu: 0 }, initialised = false;
+	let geometry = { pane: 0, growth: 0, menu: 0 },
+		initialised = false;
 	function applyViewport() {
 		fitEditor.viewport(geometry.pane, geometry.growth);
 		controls?.viewport(geometry.menu);
@@ -296,7 +325,10 @@
 	}
 	async function request(type: string, fields: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
 		const value = await send(type, fields);
-		if (!isRecord(value) || value.v !== 1 || value.ok !== true) throw Error(isRecord(value) && typeof value.error === "string" ? value.error : "The composer did not confirm this action.");
+		if (!isRecord(value) || value.v !== 1 || value.ok !== true)
+			throw Error(
+				isRecord(value) && typeof value.error === "string" ? value.error : "The composer did not confirm this action.",
+			);
 		return value;
 	}
 	function edit(change: Change): boolean {
@@ -321,7 +353,13 @@
 		if (!handler) return Promise.resolve({ ok: false, error: "Composer transport is unavailable." });
 		let value: unknown;
 		try {
-			value = handler.postMessage({ v: 1, type: "submit", id, text, behavior: behavior === "queue" ? "followUp" : "send" });
+			value = handler.postMessage({
+				v: 1,
+				type: "submit",
+				id,
+				text,
+				behavior: behavior === "queue" ? "followUp" : "send",
+			});
 		} catch (error) {
 			return Promise.resolve({ ok: false, error: messageOf(error) });
 		}
@@ -342,7 +380,10 @@
 		panel.removeAttribute("aria-busy");
 		applying = true;
 		try {
-			if (accepted) { hideNotice(); clearUndoably(); }
+			if (accepted) {
+				hideNotice();
+				clearUndoably();
+			}
 			for (const edit of queued.splice(0)) applyEdit(edit);
 		} finally {
 			applying = false;
@@ -361,7 +402,9 @@
 		captureSelection();
 		panel.setAttribute("aria-busy", "true");
 		render();
-		void requestSubmit(id, input.value, behavior).then(settleSubmit, (error) => settleSubmit({ ok: false, error: messageOf(error) }));
+		void requestSubmit(id, input.value, behavior).then(settleSubmit, (error) =>
+			settleSubmit({ ok: false, error: messageOf(error) }),
+		);
 	}
 	function takeInit(text: string, key: SendKey): void {
 		sendKey = key;
@@ -419,11 +462,15 @@
 		actionButton.replaceChildren(icon(kind));
 	}
 	function renderSendKey(): void {
-		hint.textContent = sendKey === "command" ? "Press Command-Return to send, or Return for a new line." : "Press Return to send, or Shift-Return for a new line.";
+		hint.textContent =
+			sendKey === "command"
+				? "Press Command-Return to send, or Return for a new line."
+				: "Press Return to send, or Shift-Return for a new line.";
 	}
 	function preferences() {
 		return {
-			sendKey, size: baseSize + textAdjust,
+			sendKey,
+			size: baseSize + textAdjust,
 			toggleSendKey() {
 				sendKey = logic.sendKeyNext(sendKey);
 				renderSendKey();
@@ -466,7 +513,9 @@
 			modeButton.dataset.mode = delivery;
 			modeButton.replaceChildren(icon(delivery));
 		}
-		input.placeholder = !running ? "Message" : `${sendKey === "command" ? "⌘⏎" : "Enter"} to ${delivery === "steer" ? "steer" : "queue a follow-up"}`;
+		input.placeholder = !running
+			? "Message"
+			: `${sendKey === "command" ? "⌘⏎" : "Enter"} to ${delivery === "steer" ? "steer" : "queue a follow-up"}`;
 	}
 	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep related surface states in a single render.
 	function render(): void {
@@ -487,7 +536,8 @@
 		actionButton.dataset.kind = action.kind;
 		actionButton.disabled = action.disabled;
 		const key = sendKey === "command" ? "⌘⏎" : "⏎";
-		actionButton.dataset.tip = kind === "stop" ? "Stop · esc" : (kind === "queue" ? "Queue " : kind === "steer" ? "Steer " : "Send ") + key;
+		actionButton.dataset.tip =
+			kind === "stop" ? "Stop · esc" : (kind === "queue" ? "Queue " : kind === "steer" ? "Steer " : "Send ") + key;
 		const labels = { stop: "Stop Pi", queue: "Queue follow-up", steer: "Send steer", send: "Send message" };
 		actionButton.setAttribute("aria-label", labels[kind]);
 		paintAction(kind === "stop" ? "stop" : "send");
@@ -507,16 +557,21 @@
 		const pct = Math.min(100, fraction ?? 0);
 		contextMeter.setAttribute("aria-valuenow", String(pct));
 		contextMeter.dataset.tone = pct >= 90 ? "error" : pct >= 75 ? "warning" : "ok";
-		Array.from(contextMeter.children).forEach((cell, i) => { cell.toggleAttribute("data-used", i < Math.round(pct / 10)); });
+		Array.from(contextMeter.children).forEach((cell, i) => {
+			cell.toggleAttribute("data-used", i < Math.round(pct / 10));
+		});
 	}
 	function paintContext(value: unknown) {
 		const usage = isRecord(value) ? value : {};
-		const used = number(usage.tokens), windowSize = number(usage.window), percentage = number(usage.percent);
-		const fraction = percentage ?? (used !== undefined && windowSize ? used / windowSize * 100 : undefined);
+		const used = number(usage.tokens),
+			windowSize = number(usage.window),
+			percentage = number(usage.percent);
+		const fraction = percentage ?? (used !== undefined && windowSize ? (used / windowSize) * 100 : undefined);
 		context.hidden = fraction === undefined && windowSize === undefined;
 		paintCells(fraction);
 		percent.textContent = fraction === undefined ? "" : `${Math.round(fraction)}%`;
-		tokens.textContent = windowSize === undefined ? "" : `${used === undefined ? "–" : tokenCount(used)}/${tokenCount(windowSize)}`;
+		tokens.textContent =
+			windowSize === undefined ? "" : `${used === undefined ? "–" : tokenCount(used)}/${tokenCount(windowSize)}`;
 		tokens.hidden = !tokens.textContent;
 	}
 	function paintMetrics(state: Record<string, unknown>) {
@@ -524,7 +579,10 @@
 		const dollars = number(state.cost);
 		cost.hidden = dollars === undefined;
 		cost.textContent = dollars === undefined ? "" : `~$${dollars.toFixed(2)}`;
-		cost.setAttribute("aria-label", dollars === undefined ? "" : `Session cost: approximately ${dollars.toFixed(2)} US dollars`);
+		cost.setAttribute(
+			"aria-label",
+			dollars === undefined ? "" : `Session cost: approximately ${dollars.toFixed(2)} US dollars`,
+		);
 		const cwd = typeof state.cwd === "string" ? state.cwd : "";
 		folder.hidden = !cwd;
 		folder.dataset.path = cwd;
@@ -555,7 +613,9 @@
 	function waitingCommand(value: unknown): string | undefined {
 		if (!isRecord(value) || !isRecord(value.waiting)) return undefined;
 		const command = value.waiting.command;
-		return typeof command === "string" && command && command.length <= 64 && !/[\p{Cc}\p{Cf}\s]/u.test(command) ? command : undefined;
+		return typeof command === "string" && command && command.length <= 64 && !/[\p{Cc}\p{Cf}\s]/u.test(command)
+			? command
+			: undefined;
 	}
 
 	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The switch validates one envelope type per branch.
@@ -579,7 +639,9 @@
 				return true;
 			}
 			case "viewport": {
-				const pane = number(value.pane), growth = number(value.growth), menu = number(value.menu);
+				const pane = number(value.pane),
+					growth = number(value.growth),
+					menu = number(value.menu);
 				if (pane === undefined || growth === undefined || menu === undefined) return false;
 				geometry = { pane, growth, menu };
 				if (initialised) applyViewport();
@@ -593,7 +655,12 @@
 				if (typeof connection !== "string" || !connections.has(connection)) return false;
 				const state = isRecord(value.state) ? value.state : {};
 				phaseSince = typeof state.since === "number" ? state.since : undefined;
-				takeStatus({ connection, state: phaseOf(value.state), command: waitingCommand(value.state), notice: typeof value.notice === "string" ? value.notice : undefined });
+				takeStatus({
+					connection,
+					state: phaseOf(value.state),
+					command: waitingCommand(value.state),
+					notice: typeof value.notice === "string" ? value.notice : undefined,
+				});
 				controls?.sync(state, connection);
 				paintMetrics(connection === "connected" ? state : {});
 				paintElapsed();
@@ -643,7 +710,11 @@
 		if (applying) return;
 		captureSelection();
 		sendDraft(true);
-		const disabled = logic.actionFor(status.state, { submitting, hasDraft: hasDraft(), connection: status.connection }).disabled;
+		const disabled = logic.actionFor(status.state, {
+			submitting,
+			hasDraft: hasDraft(),
+			connection: status.connection,
+		}).disabled;
 		if (actionButton.disabled !== disabled) actionButton.disabled = disabled;
 		fitEditor();
 	});
@@ -665,7 +736,10 @@
 	});
 	input.addEventListener("keydown", (event) => {
 		if (composing) return;
-		if (controls?.key(event)) { event.preventDefault(); return; }
+		if (controls?.key(event)) {
+			event.preventDefault();
+			return;
+		}
 		if (event.key !== "Escape" && event.key !== "Enter") return;
 		const decision = logic.keyDecision(
 			{
@@ -697,7 +771,10 @@
 
 	function handleEscape(): void {
 		if (status.connection === "connected" && ["working", "compacting"].includes(status.state ?? "")) send("abort");
-		else { send("release"); input.blur(); }
+		else {
+			send("release");
+			input.blur();
+		}
 	}
 	actionButton.addEventListener("click", () => {
 		const action = logic.actionFor(status.state, { submitting, hasDraft: hasDraft(), connection: status.connection });
@@ -719,7 +796,10 @@
 	for (const button of document.querySelectorAll("button"))
 		button.addEventListener("pointerdown", captureSelection, true);
 	get("dismiss-notice").append(icon("close"));
-	get("dismiss-notice").addEventListener("click", () => { hideNotice(); focusInput(); });
+	get("dismiss-notice").addEventListener("click", () => {
+		hideNotice();
+		focusInput();
+	});
 	get("add").append(icon("plus"));
 	const chevron = icon("chevron");
 	chevron.classList.add("chevron");
@@ -741,9 +821,10 @@
 	writer.addEventListener("pointerdown", (event) => {
 		if (event.button !== 0 || !(event.target instanceof Element) || event.target.closest("button, textarea")) return;
 		event.preventDefault();
-		const highlight = get("highlight"), rect = input.getBoundingClientRect();
-		const x = Math.max(rect.left + .5, Math.min(rect.right - .5, event.clientX));
-		const y = Math.max(rect.top + .5, Math.min(rect.bottom - .5, event.clientY));
+		const highlight = get("highlight"),
+			rect = input.getBoundingClientRect();
+		const x = Math.max(rect.left + 0.5, Math.min(rect.right - 0.5, event.clientX));
+		const y = Math.max(rect.top + 0.5, Math.min(rect.bottom - 0.5, event.clientY));
 		input.style.pointerEvents = "none";
 		highlight.style.pointerEvents = "auto";
 		const hit = document.caretRangeFromPoint(x, y);
@@ -763,7 +844,10 @@
 
 	const tip = get("tooltip");
 	let tipTimer: ReturnType<typeof setTimeout> | undefined;
-	function hideTip() { clearTimeout(tipTimer); tip.hidden = true; }
+	function hideTip() {
+		clearTimeout(tipTimer);
+		tip.hidden = true;
+	}
 	function queueTip(event: Event) {
 		const button = event.target instanceof HTMLButtonElement ? event.target : null;
 		if (!button?.dataset.tip || (event instanceof FocusEvent && !button.matches(":focus-visible"))) return;
@@ -781,10 +865,22 @@
 	}
 	document.addEventListener("pointerenter", queueTip, true);
 	document.addEventListener("focusin", queueTip);
-	document.addEventListener("pointerdown", () => {
-		requestAnimationFrame(() => { void request("focusTrace", { editor: document.activeElement === input }).catch(() => {}); });
-	}, { capture: true });
-	document.addEventListener("pointerleave", (event) => { if (event.target instanceof HTMLButtonElement) hideTip(); }, true);
+	document.addEventListener(
+		"pointerdown",
+		() => {
+			requestAnimationFrame(() => {
+				void request("focusTrace", { editor: document.activeElement === input }).catch(() => {});
+			});
+		},
+		{ capture: true },
+	);
+	document.addEventListener(
+		"pointerleave",
+		(event) => {
+			if (event.target instanceof HTMLButtonElement) hideTip();
+		},
+		true,
+	);
 	for (const type of ["focusout", "pointerdown", "keydown", "scroll"]) document.addEventListener(type, hideTip, true);
 
 	function paintElapsed() {
@@ -794,7 +890,14 @@
 		elapsed.textContent = time;
 	}
 	setInterval(paintElapsed, 1000);
-	const controls = root.mountComposerControls?.({ input, request, edit, icon, preferences, notice: (message) => showNotice(message, "warn") });
+	const controls = root.mountComposerControls?.({
+		input,
+		request,
+		edit,
+		icon,
+		preferences,
+		notice: (message) => showNotice(message, "warn"),
+	});
 	api.receive = receive;
 	renderSendKey();
 	render();

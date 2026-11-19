@@ -33,15 +33,30 @@ test("the delivery workflow routes detailed mechanisms to reachable owners", () 
 		if (anchor) assert.ok(headingAnchors(target).has(anchor), `${path}#${anchor} resolves`);
 	}
 	assertContracts(deliveryWorkflow, [
-		["delegation method owner", /\[delegate skill\]\(\.\.\/skills\/delegate\/SKILL\.md\) for delegation modes, briefs, collaboration and supervision/],
-		["declared work owner", /A native agent uses \[declared background work\]\(\.\.\/extensions\/agent\/README\.md#declared-background-work\)/],
+		[
+			"delegation method owner",
+			/\[delegate skill\]\(\.\.\/skills\/delegate\/SKILL\.md\) for delegation modes, briefs, collaboration and supervision/,
+		],
+		[
+			"declared work owner",
+			/A native agent uses \[declared background work\]\(\.\.\/extensions\/agent\/README\.md#declared-background-work\)/,
+		],
 		["result owner", /\[result contract\]\(\.\.\/extensions\/agent\/README\.md#read-peer-results\)/],
 		["supervision owner", /\[supervision guidance\]\(\.\.\/skills\/delegate\/SKILL\.md#supervise-without-polling\)/],
-		["native work declaration", /when its routed task remains incomplete after the current run.*state note is not the result; only completion of the declared work sends the final report/],
-		["ordinary event delivery", /An ordinary session has no \x60agent_work\x60.*\[ordinary yield\]\(\.\.\/extensions\/agent\/README\.md#state-note-of-an-ordinary-session\).*when only work it sent to agents remains open. Results arrive as events; do not poll/],
+		[
+			"native work declaration",
+			/when its routed task remains incomplete after the current run.*state note is not the result; only completion of the declared work sends the final report/,
+		],
+		[
+			"ordinary event delivery",
+			/An ordinary session has no \x60agent_work\x60.*\[ordinary yield\]\(\.\.\/extensions\/agent\/README\.md#state-note-of-an-ordinary-session\).*when only work it sent to agents remains open. Results arrive as events; do not poll/,
+		],
 		["recovery owner", /\[Agent recovery and delivery\]\(\.\.\/extensions\/agent\/README\.md#recovery-and-delivery\)/],
 		["host refresh owner", /\[storage host retirement\]\(pi-durable-harness\.md#storage-host-retirement\)/],
-		["current owner contract", /Read the Agent \[result contract\].*for immediate result reads, answer continuations and receipt-reference pages/],
+		[
+			"current owner contract",
+			/Read the Agent \[result contract\].*for immediate result reads, answer continuations and receipt-reference pages/,
+		],
 	]);
 	assert.doesNotMatch(deliveryWorkflow, /agent_await|await-exact-peer-results|releaseOnProviderRetry|minAttempt/);
 });
@@ -108,6 +123,9 @@ test("read-only history subjects do not prohibit expert tasks and sourced profil
 		["different requester", /subsequent questions from a different requester/],
 		["source-window scope", /Historical source windows limit evidence, not the expert's lifetime or its current task/],
 		["derived knowledge", /retained findings remain leads to eligible originals, not new historical authority/],
-		["profile updates expected", /expert is expected to update its own sourced expertise during read-only source research/],
+		[
+			"profile updates expected",
+			/expert is expected to update its own sourced expertise during read-only source research/,
+		],
 	]);
 });

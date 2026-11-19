@@ -68,12 +68,7 @@ function anchorOf(source: Source | undefined, epoch = "epoch-one"): GuidanceAnch
 	};
 }
 
-function recordAt(
-	source: Source | undefined,
-	text: string,
-	epoch = "epoch-one",
-	timestamp = 10,
-): GuidanceRecord {
+function recordAt(source: Source | undefined, text: string, epoch = "epoch-one", timestamp = 10): GuidanceRecord {
 	return {
 		id: `record-${epoch}-${source?.entryId}-${text.length}-${timestamp}`,
 		anchor: anchorOf(source, epoch),
@@ -127,10 +122,7 @@ test("record identity is deterministic for a retry at the same anchor", () => {
 	const second = guidanceRecord(anchor, 10, prepared);
 	assert.equal(first.id, second.id);
 	assert.equal(guidanceRecord(anchor, 11, prepared).id, first.id);
-	assert.notEqual(
-		guidanceRecord(anchor, 10, { ...prepared, text: "[policy] Different text." }).id,
-		first.id,
-	);
+	assert.notEqual(guidanceRecord(anchor, 10, { ...prepared, text: "[policy] Different text." }).id, first.id);
 	const other = anchorOf(sourcesOf(messages)[0], "epoch-two");
 	assert.notEqual(guidanceRecord(other, 10, prepared).id, first.id);
 	assert.notEqual(guidanceRecord({ ...anchor, entryId: "entry-9" }, 10, prepared).id, first.id);
@@ -230,7 +222,12 @@ test("a replaced source contribution retires its record even when its entry iden
 	const sources = sourcesOf(messages);
 	const record = recordAt(sources[0], "[policy] Frozen.", "epoch-one", 10);
 	const edited = [system({}, 0), user("edited", 1), messages[2] as Draft];
-	const projected = projectGuidance(edited, sourcesOf(edited), guidanceHistory([record]), crossing("epoch-one", "epoch-two"));
+	const projected = projectGuidance(
+		edited,
+		sourcesOf(edited),
+		guidanceHistory([record]),
+		crossing("epoch-one", "epoch-two"),
+	);
 	assert.deepEqual(projected.retired, [record]);
 	assert.deepEqual(projected.retained, []);
 	assert.equal(projected.messages.length, edited.length);
@@ -241,7 +238,12 @@ test("a source lost inside the validated epoch faults even when the record was c
 	const sources = sourcesOf(messages);
 	const record = recordAt(sources[0], "[policy] Frozen.", "epoch-one", 10);
 	const shorter = messages.slice(0, 1).concat(messages[2] as Draft);
-	const projected = projectGuidance(shorter, sourcesOf(shorter, ["entry-1"]), guidanceHistory([record]), same("epoch-two"));
+	const projected = projectGuidance(
+		shorter,
+		sourcesOf(shorter, ["entry-1"]),
+		guidanceHistory([record]),
+		same("epoch-two"),
+	);
 	assert.deepEqual(projected.mismatched, [record]);
 	assert.deepEqual(projected.retired, []);
 });
@@ -368,10 +370,13 @@ test("restoration checks surviving records before capacity and never selects gui
 	const sources = sourcesOf(messages);
 	const record = recordAt(sources[0], "[policy] Retained.", "epoch-one", 10);
 	const records = Array.from({ length: GUIDANCE_HISTORY_LIMITS.records + 1 }, (_, index) => ({
-		...record, id: `record-${index}`,
+		...record,
+		id: `record-${index}`,
 	}));
 	const restored = guidanceHistory(records);
-	const selection = () => { assert.fail("An oversized ledger must not select new guidance"); };
+	const selection = () => {
+		assert.fail("An oversized ledger must not select new guidance");
+	};
 	const overflow = planGuidance(messages, sources, restored, same("epoch-one"), selection, 20);
 	assert.equal(overflow.status, "capacity");
 	assert.deepEqual(overflow.history, restored);
@@ -379,8 +384,14 @@ test("restoration checks surviving records before capacity and never selects gui
 	assert.equal(overflow.addition, undefined);
 
 	const replaced = [system({}, 0), user("replacement", 1)];
-	const retired = planGuidance(replaced, sourcesOf(replaced), restored,
-		{ epoch: "epoch-two", validatedEpoch: "epoch-one" }, undefined, 20);
+	const retired = planGuidance(
+		replaced,
+		sourcesOf(replaced),
+		restored,
+		{ epoch: "epoch-two", validatedEpoch: "epoch-one" },
+		undefined,
+		20,
+	);
 	assert.equal(retired.status, "ok");
 	assert.deepEqual(retired.history.records, []);
 	assert.deepEqual(retired.messages, replaced);

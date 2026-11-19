@@ -1,7 +1,15 @@
 /** Recover queued user inputs through native passive writes, without extending a failed run. */
 import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { InboxDoc, LiveDoc, type Conversation, type ConversationId, type Harness, type Cursor, type EntryRecord } from "@earendil-works/pi-durable";
+import {
+	InboxDoc,
+	LiveDoc,
+	type Conversation,
+	type ConversationId,
+	type Harness,
+	type Cursor,
+	type EntryRecord,
+} from "@earendil-works/pi-durable";
 import { onStoredCommit } from "./commit-observation.ts";
 
 /** One failed generation identifies one replay-safe boundary write. */
@@ -20,19 +28,36 @@ export async function recoverStrandedInputs(conversation: Conversation, context:
 		if (entry?.byTaskId === undefined) return undefined;
 		const task = await tx.task(entry.byTaskId);
 		const outcome = task?.state.outcome;
-		if (outcome?.status !== "failed" || (outcome.error.detail as { reason?: unknown } | undefined)?.reason !== "model_error") return undefined;
-		return { requestId: `agent-recovery:${conversation.id}:${entry.byTaskId}`, error: outcome.error.message, timestamp: entry.model?.[0]?.timestamp ?? 0 };
+		if (
+			outcome?.status !== "failed" ||
+			(outcome.error.detail as { reason?: unknown } | undefined)?.reason !== "model_error"
+		)
+			return undefined;
+		return {
+			requestId: `agent-recovery:${conversation.id}:${entry.byTaskId}`,
+			error: outcome.error.message,
+			timestamp: entry.model?.[0]?.timestamp ?? 0,
+		};
 	}, context);
 	if (!candidate) return;
 	// A passive write admits no user work if an intervening abort withdrew the queue.
-	await conversation.submit({
-		type: "write",
-		requestId: candidate.requestId,
-		entry: {
-			kind: "agent.recovery",
-			model: [{ role: "system", content: `The previous run ended with a model error: ${JSON.stringify(candidate.error)}. Queued inputs follow. This is a host status notice, not an operator instruction.`, timestamp: candidate.timestamp }],
+	await conversation.submit(
+		{
+			type: "write",
+			requestId: candidate.requestId,
+			entry: {
+				kind: "agent.recovery",
+				model: [
+					{
+						role: "system",
+						content: `The previous run ended with a model error: ${JSON.stringify(candidate.error)}. Queued inputs follow. This is a host status notice, not an operator instruction.`,
+						timestamp: candidate.timestamp,
+					},
+				],
+			},
 		},
-	}, context);
+		context,
+	);
 }
 
 /** Place a write-only inbox at an idle boundary without starting a run. */
@@ -44,7 +69,14 @@ export async function placeLeftoverWrites(conversation: Conversation, context: C
 		return { id: inbox.items[inbox.items.length - 1].id, count: inbox.items.length };
 	}, context);
 	if (newest === undefined) return 0;
-	const boundary = await conversation.submit({ type: "write", requestId: `agent-inbox-boundary:${conversation.id}:${newest.id}`, entry: { kind: "agent.inbox-boundary", edits: [] } }, context);
+	const boundary = await conversation.submit(
+		{
+			type: "write",
+			requestId: `agent-inbox-boundary:${conversation.id}:${newest.id}`,
+			entry: { kind: "agent.inbox-boundary", edits: [] },
+		},
+		context,
+	);
 	return (await boundary.status(context)).status === "done" ? newest.count : 0;
 }
 
@@ -63,29 +95,43 @@ export class StrandedInputRecovery {
 		this.onError = onError;
 		this.context = withAbortSignal(this.lifecycle.signal, BACKGROUND_CONTEXT);
 		this.unsubscribe = onStoredCommit(harness, (publication) => {
-			const ended = new Set(publication.changes.flatMap((change) => change.type === "submission" && change.value.status === "unanswered" ? [change.value.conversationId] : []));
+			const ended = new Set(
+				publication.changes.flatMap((change) =>
+					change.type === "submission" && change.value.status === "unanswered" ? [change.value.conversationId] : [],
+				),
+			);
 			for (const id of ended) void this.recover(id);
 		});
 	}
 
 	private recover(id: ConversationId): Promise<void> {
 		const previous = this.pending.get(id) ?? Promise.resolve();
-		const next = previous.then(async () => {
-			if (this.lifecycle.signal.aborted) return;
-			const conversation = await this.harness.conversation(id, this.context);
-			if (conversation) {
-				await recoverStrandedInputs(conversation, this.context);
-				await placeLeftoverWrites(conversation, this.context);
-			}
-		}).catch((error: unknown) => { if (!this.lifecycle.signal.aborted) this.onError(error); });
+		const next = previous
+			.then(async () => {
+				if (this.lifecycle.signal.aborted) return;
+				const conversation = await this.harness.conversation(id, this.context);
+				if (conversation) {
+					await recoverStrandedInputs(conversation, this.context);
+					await placeLeftoverWrites(conversation, this.context);
+				}
+			})
+			.catch((error: unknown) => {
+				if (!this.lifecycle.signal.aborted) this.onError(error);
+			});
 		this.pending.set(id, next);
-		void next.then(() => { if (this.pending.get(id) === next) this.pending.delete(id); });
+		void next.then(() => {
+			if (this.pending.get(id) === next) this.pending.delete(id);
+		});
 		return next;
 	}
 
 	async open(context: Context): Promise<void> {
 		const inspection = await this.harness.inspect(context);
-		const ids = new Set(inspection.submissions.filter((submission) => submission.status === "queued").map((submission) => submission.conversationId));
+		const ids = new Set(
+			inspection.submissions
+				.filter((submission) => submission.status === "queued")
+				.map((submission) => submission.conversationId),
+		);
 		await Promise.all([...ids].map((id) => this.recover(id)));
 	}
 

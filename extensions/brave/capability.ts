@@ -6,13 +6,15 @@ import { PAGE_LINK_LIMITS } from "./page-link-limits.ts";
 import { formatSearchResults } from "./format.ts";
 
 /** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
-const StringEnum = <T extends readonly string[]>(values: T, options?: { description?: string; default?: T[number] }): Schema<T[number]> =>
-	({
-		type: "string",
-		enum: values,
-		...(options?.description ? { description: options.description } : {}),
-		...(options?.default ? { default: options.default } : {}),
-	});
+const StringEnum = <T extends readonly string[]>(
+	values: T,
+	options?: { description?: string; default?: T[number] },
+): Schema<T[number]> => ({
+	type: "string",
+	enum: values,
+	...(options?.description ? { description: options.description } : {}),
+	...(options?.default ? { default: options.default } : {}),
+});
 
 const FreshnessPattern = "^(pd|pw|pm|py|\\d{4}-\\d{2}-\\d{2}to\\d{4}-\\d{2}-\\d{2})$";
 
@@ -69,9 +71,7 @@ export const BRAVE_WEB_SEARCH_PARAMETERS = obj(
 				default: false,
 			}),
 		),
-		spellcheck: opt(
-			bool({ description: "Allow Brave to correct the query (default true)", default: true }),
-		),
+		spellcheck: opt(bool({ description: "Allow Brave to correct the query (default true)", default: true })),
 	},
 	{ open: false },
 );
@@ -162,7 +162,10 @@ export const BRAVE_WEB_SEARCH_GUIDELINES: readonly string[] = [
 export const SEARCH_DISPLAY_LIMITS = { sources: 3, title: 120, domain: 80 } as const;
 
 function displayText(value: string, limit: number): string {
-	const clean = value.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim();
+	const clean = value
+		.replace(/[\p{Cc}\p{Cf}]/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim();
 	const end = Math.min(clean.length, limit);
 	return clean.slice(0, /[\uD800-\uDBFF]/u.test(clean[end - 1] ?? "") ? end - 1 : end);
 }

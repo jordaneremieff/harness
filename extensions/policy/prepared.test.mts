@@ -54,10 +54,7 @@ test("a prepared generation compiles each record once and filters active availab
 		policy.rules.map((rule) => rule.id),
 		["b.result", "a.guide"],
 	);
-	assert.deepEqual(
-		[...policy.compiled.keys()],
-		["b.result", "a.guide", "c.retired", "d.unavailable"],
-	);
+	assert.deepEqual([...policy.compiled.keys()], ["b.result", "a.guide", "c.retired", "d.unavailable"]);
 	assert.deepEqual(
 		policy.byPhase.input.map((rule) => rule.id),
 		["a.guide"],

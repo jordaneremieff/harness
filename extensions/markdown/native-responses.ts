@@ -1,6 +1,14 @@
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
-import { RESPONSE_RESULTS, RESPONSE_VISITS, type RecentResponses, type ResponseSnapshot, responseRow, responseSnapshot, responseText } from "./responses.ts";
+import {
+	RESPONSE_RESULTS,
+	RESPONSE_VISITS,
+	type RecentResponses,
+	type ResponseSnapshot,
+	responseRow,
+	responseSnapshot,
+	responseText,
+} from "./responses.ts";
 
 export interface NativeSource {
 	conversation: Pick<Durable.Conversation, "id" | "entries">;
@@ -12,9 +20,19 @@ function snapshot(source: NativeSource, entry: Durable.EntryRecord): ResponseSna
 	if (!source.durable.AssistantEntry.is(entry)) return undefined;
 	const message = entry.model?.[0];
 	if (message?.role !== "assistant") return undefined;
-	return responseSnapshot(message, String(entry.id), { kind: "native-response", session: source.storageId, conversation: String(source.conversation.id), cwd: source.cwd });
+	return responseSnapshot(message, String(entry.id), {
+		kind: "native-response",
+		session: source.storageId,
+		conversation: String(source.conversation.id),
+		cwd: source.cwd,
+	});
 }
-function addRows(source: NativeSource, entries: readonly Durable.EntryRecord[], rows: RecentResponses["rows"], limit: number): void {
+function addRows(
+	source: NativeSource,
+	entries: readonly Durable.EntryRecord[],
+	rows: RecentResponses["rows"],
+	limit: number,
+): void {
 	for (const entry of entries) {
 		const response = snapshot(source, entry);
 		if (response) rows.push(responseRow(response));
@@ -22,7 +40,11 @@ function addRows(source: NativeSource, entries: readonly Durable.EntryRecord[], 
 	}
 }
 /** The first page establishes a cutoff; every continuation keeps that inclusive bound. */
-export async function recentNative(source: NativeSource, context: Context, options: { pageSize?: number; visits?: number; results?: number } = {}): Promise<RecentResponses> {
+export async function recentNative(
+	source: NativeSource,
+	context: Context,
+	options: { pageSize?: number; visits?: number; results?: number } = {},
+): Promise<RecentResponses> {
 	const visits = Math.min(RESPONSE_VISITS, Math.max(1, options.visits ?? RESPONSE_VISITS));
 	const results = Math.min(RESPONSE_RESULTS, Math.max(1, options.results ?? RESPONSE_RESULTS));
 	const size = Math.min(100, Math.max(1, options.pageSize ?? 50));
@@ -32,7 +54,12 @@ export async function recentNative(source: NativeSource, context: Context, optio
 	const rows: RecentResponses["rows"] = [];
 	do {
 		context.abortSignal?.throwIfAborted();
-		const page = await source.conversation.entries({ order: "descending", ...(cutoff === undefined ? {} : { maxEntryId: cutoff }) }, Math.min(size, visits - visited), cursor, context);
+		const page = await source.conversation.entries(
+			{ order: "descending", ...(cutoff === undefined ? {} : { maxEntryId: cutoff }) },
+			Math.min(size, visits - visited),
+			cursor,
+			context,
+		);
 		context.abortSignal?.throwIfAborted();
 		cutoff ??= page.items[0]?.id;
 		visited += page.items.length;
@@ -47,14 +74,22 @@ export async function recentNative(source: NativeSource, context: Context, optio
  * The answer before the current request: the newest assistant response with text that precedes
  * the newest user entry of the conversation.
  */
-export async function previousNative(source: NativeSource & { durable: Pick<typeof Durable, "AssistantEntry" | "UserEntry"> }, context: Context): Promise<ResponseSnapshot> {
+export async function previousNative(
+	source: NativeSource & { durable: Pick<typeof Durable, "AssistantEntry" | "UserEntry"> },
+	context: Context,
+): Promise<ResponseSnapshot> {
 	let cursor: Durable.Cursor | undefined;
 	let cutoff: Durable.EntryId | undefined;
 	let visited = 0;
 	let passedRequest = false;
 	do {
 		context.abortSignal?.throwIfAborted();
-		const page = await source.conversation.entries({ order: "descending", ...(cutoff === undefined ? {} : { maxEntryId: cutoff }) }, Math.min(50, RESPONSE_VISITS - visited), cursor, context);
+		const page = await source.conversation.entries(
+			{ order: "descending", ...(cutoff === undefined ? {} : { maxEntryId: cutoff }) },
+			Math.min(50, RESPONSE_VISITS - visited),
+			cursor,
+			context,
+		);
 		context.abortSignal?.throwIfAborted();
 		cutoff ??= page.items[0]?.id;
 		visited += page.items.length;
@@ -75,9 +110,15 @@ export async function previousNative(source: NativeSource & { durable: Pick<type
 	throw new Error("No earlier response with text is visible in this conversation within the visit limit.");
 }
 export async function readNative(source: NativeSource, entryId: string, context: Context): Promise<ResponseSnapshot> {
-	if (!/^[1-9]\d*$/u.test(entryId) || !Number.isSafeInteger(Number(entryId))) throw new Error("Invalid native entry identity.");
+	if (!/^[1-9]\d*$/u.test(entryId) || !Number.isSafeInteger(Number(entryId)))
+		throw new Error("Invalid native entry identity.");
 	const id = Number(entryId) as Durable.EntryId;
-	const page = await source.conversation.entries({ minEntryId: id, maxEntryId: id, order: "descending" }, 1, undefined, context);
+	const page = await source.conversation.entries(
+		{ minEntryId: id, maxEntryId: id, order: "descending" },
+		1,
+		undefined,
+		context,
+	);
 	context.abortSignal?.throwIfAborted();
 	const entry = page.items[0];
 	const response = entry?.id === id ? snapshot(source, entry) : undefined;

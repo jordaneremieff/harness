@@ -2,7 +2,20 @@ import assert from "node:assert/strict";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
-import { GenerationTask, Harness, MemoryStorage, createRegistry, defineExtension, hook, section, type Conversation, type EntryId, type GenerationHooks, type HarnessOptions, type ToolRegistration } from "@earendil-works/pi-durable";
+import {
+	GenerationTask,
+	Harness,
+	MemoryStorage,
+	createRegistry,
+	defineExtension,
+	hook,
+	section,
+	type Conversation,
+	type EntryId,
+	type GenerationHooks,
+	type HarnessOptions,
+	type ToolRegistration,
+} from "@earendil-works/pi-durable";
 import { answerMessage, completed, gateTool, toolCallMessage } from "./durable-host-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { ContinuityMirror } from "./continuity-mirror.ts";
@@ -27,12 +40,16 @@ async function fixture(t: TestContext, options: Options = {}) {
 	const provider: string[] = [];
 	const chain: Message[][] = [];
 	const mismatches: ContinuityMismatch[] = [];
-	const replies = [...options.replies ?? []];
+	const replies = [...(options.replies ?? [])];
 	const runtime = await createTestRuntime();
 	runtime.registerNativeProvider({
-		id: testModel.provider, name: "Continuity request fixture", getModels: () => [testModel],
+		id: testModel.provider,
+		name: "Continuity request fixture",
+		getModels: () => [testModel],
 		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
-		stream: () => { throw new Error("Unexpected stream"); },
+		stream: () => {
+			throw new Error("Unexpected stream");
+		},
 		streamSimple: (_model, input) => {
 			const request = JSON.stringify(input);
 			provider.push(request);
@@ -42,15 +59,54 @@ async function fixture(t: TestContext, options: Options = {}) {
 	});
 	const registry = createRegistry();
 	let mirror: ContinuityMirror | undefined;
-	const source = (): ContinuitySource | undefined => mirror === undefined ? undefined : options.source?.(mirror) ?? mirror;
-	registry.install(defineExtension({ name: "fixture-base", tools: options.tools ?? [], sections: [section("fixture-baseline", async () => "Fixture baseline section.")] }));
-	if (options.before !== undefined) registry.install(defineExtension({ name: "fixture-before", hooks: [hook(GenerationTask, options.before)] }));
-	registry.install(defineExtension({ name: "agent.continuity", hooks: [hook(GenerationTask, continuityRequestHooks(source, (found) => { mismatches.push(found); }))] }));
-	if (options.after !== undefined) registry.install(defineExtension({ name: "fixture-after", hooks: [hook(GenerationTask, options.after)] }));
-	registry.install(defineExtension({ name: "fixture-capture", hooks: [hook(GenerationTask, { beforeRequest(request) { chain.push(structuredClone([...request.messages])); return undefined; } })] }));
-	const harness = await Harness.open(new MemoryStorage(), { models: runtime, registry, ...(options.settings === undefined ? {} : { settings: options.settings }) }, context);
+	const source = (): ContinuitySource | undefined =>
+		mirror === undefined ? undefined : (options.source?.(mirror) ?? mirror);
+	registry.install(
+		defineExtension({
+			name: "fixture-base",
+			tools: options.tools ?? [],
+			sections: [section("fixture-baseline", async () => "Fixture baseline section.")],
+		}),
+	);
+	if (options.before !== undefined)
+		registry.install(defineExtension({ name: "fixture-before", hooks: [hook(GenerationTask, options.before)] }));
+	registry.install(
+		defineExtension({
+			name: "agent.continuity",
+			hooks: [
+				hook(
+					GenerationTask,
+					continuityRequestHooks(source, (found) => {
+						mismatches.push(found);
+					}),
+				),
+			],
+		}),
+	);
+	if (options.after !== undefined)
+		registry.install(defineExtension({ name: "fixture-after", hooks: [hook(GenerationTask, options.after)] }));
+	registry.install(
+		defineExtension({
+			name: "fixture-capture",
+			hooks: [
+				hook(GenerationTask, {
+					beforeRequest(request) {
+						chain.push(structuredClone([...request.messages]));
+						return undefined;
+					},
+				}),
+			],
+		}),
+	);
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{ models: runtime, registry, ...(options.settings === undefined ? {} : { settings: options.settings }) },
+		context,
+	);
 	t.after(() => harness.close(context));
-	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
+	const conversation = await harness.root(context, {
+		agent: { model: { provider: testModel.provider, modelId: testModel.id } },
+	});
 	mirror = new ContinuityMirror(harness, OWNER);
 	const opened = mirror;
 	t.after(() => opened.close());
@@ -61,7 +117,17 @@ async function fixture(t: TestContext, options: Options = {}) {
 		assert.equal((await submitted.wait(context)).status, "done");
 	};
 	const admit = (requestId: string, submissionId: number): Promise<void> =>
-		harness.commit((tx) => recordContinuityFact(tx, conversation.id, { phase: "admitted", sessionId: "worker:2", requestId, replyTo: OWNER, submissionId }), context);
+		harness.commit(
+			(tx) =>
+				recordContinuityFact(tx, conversation.id, {
+					phase: "admitted",
+					sessionId: "worker:2",
+					requestId,
+					replyTo: OWNER,
+					submissionId,
+				}),
+			context,
+		);
 	return { harness, conversation, mirror: opened, provider, chain, mismatches, ask, admit };
 }
 
@@ -75,11 +141,15 @@ function text(message: Message | undefined): string {
 	if (message === undefined) return "";
 	return typeof message.content === "string" ? message.content : JSON.stringify(message.content);
 }
-function leadingSystems(messages: readonly Message[]): number { return messages[0]?.role === "system" ? 1 : 0; }
-function noteIndexes(messages: readonly Message[]): number[] {
-	return messages.flatMap((message, index) => message.role === "user" && HEADER.test(text(message)) ? [index] : []);
+function leadingSystems(messages: readonly Message[]): number {
+	return messages[0]?.role === "system" ? 1 : 0;
 }
-function noteHead(message: Message | undefined): number { return Number(HEADER.exec(text(message))?.[1]); }
+function noteIndexes(messages: readonly Message[]): number[] {
+	return messages.flatMap((message, index) => (message.role === "user" && HEADER.test(text(message)) ? [index] : []));
+}
+function noteHead(message: Message | undefined): number {
+	return Number(HEADER.exec(text(message))?.[1]);
+}
 function assertPrefix(earlier: readonly Message[], later: readonly Message[]): void {
 	assert.ok(later.length > earlier.length);
 	assert.deepEqual(later.slice(0, earlier.length), earlier);
@@ -96,7 +166,9 @@ it("adds no note before a context head exists", { timeout: 20000 }, async (t) =>
 	assert.deepEqual(mismatches, []);
 });
 
-it("inserts the frozen note after a reset handoff on a first request that ends in a final answer", { timeout: 20000 }, async (t) => {
+it("inserts the frozen note after a reset handoff on a first request that ends in a final answer", {
+	timeout: 20000,
+}, async (t) => {
 	const { harness, conversation, chain, provider, ask, admit, mismatches } = await fixture(t);
 	await admit("a", 7);
 	await conversation.reset("Handoff: continue the review.", context);
@@ -115,7 +187,11 @@ it("inserts the frozen note after a reset handoff on a first request that ends i
 
 	// Facts committed after the head never change that head's bytes.
 	await admit("b", 8);
-	await harness.commit((tx) => recordContinuityDelivered(tx, conversation.id, [{ sessionId: "worker:2", requestId: "a", submissionId: 7 }]), context);
+	await harness.commit(
+		(tx) =>
+			recordContinuityDelivered(tx, conversation.id, [{ sessionId: "worker:2", requestId: "a", submissionId: 7 }]),
+		context,
+	);
 	await ask("later input");
 	assertPrefix(first, chain[1]);
 	assert.deepEqual(noteIndexes(chain[1]), [s + 1]);
@@ -123,7 +199,9 @@ it("inserts the frozen note after a reset handoff on a first request that ends i
 	assert.deepEqual(mismatches, []);
 });
 
-it("places the note before the first input after a reset without a handoff, and gives each head its own note", { timeout: 20000 }, async (t) => {
+it("places the note before the first input after a reset without a handoff, and gives each head its own note", {
+	timeout: 20000,
+}, async (t) => {
 	const { conversation, chain, ask, admit, mismatches } = await fixture(t);
 	await admit("a", 7);
 	await conversation.reset(undefined, context);
@@ -171,8 +249,12 @@ it("distinguishes two reset heads with identical handoff text by entry identity"
 	assert.deepEqual(mismatches, []);
 });
 
-it("inserts the note after a manual compaction summary on the first following request", { timeout: 20000 }, async (t) => {
-	const { harness, conversation, chain, ask, admit, mismatches } = await fixture(t, { settings: { compaction: { keepRecentTokens: 1 } } });
+it("inserts the note after a manual compaction summary on the first following request", {
+	timeout: 20000,
+}, async (t) => {
+	const { harness, conversation, chain, ask, admit, mismatches } = await fixture(t, {
+		settings: { compaction: { keepRecentTokens: 1 } },
+	});
 	await ask("work before compaction");
 	await admit("a", 7);
 	const task = await conversation.compact("Keep the purpose.", context);
@@ -194,8 +276,14 @@ it("inserts the note after a manual compaction summary on the first following re
 });
 
 it("inserts the note on the request that follows a blocking threshold compaction", { timeout: 20000 }, async (t) => {
-	const large: AssistantMessage = { ...answerMessage("large answer"), usage: { ...answerMessage().usage, input: 127000, totalTokens: 127500 } };
-	const { conversation, chain, ask, admit, mismatches } = await fixture(t, { replies: [large], settings: { compaction: { enabled: true, keepRecentTokens: 1 } } });
+	const large: AssistantMessage = {
+		...answerMessage("large answer"),
+		usage: { ...answerMessage().usage, input: 127000, totalTokens: 127500 },
+	};
+	const { conversation, chain, ask, admit, mismatches } = await fixture(t, {
+		replies: [large],
+		settings: { compaction: { enabled: true, keepRecentTokens: 1 } },
+	});
 	await ask("fill the context");
 	await admit("a", 7);
 	assert.deepEqual(noteIndexes(chain[0]), []);
@@ -207,13 +295,25 @@ it("inserts the note on the request that follows a blocking threshold compaction
 	assert.deepEqual(noteIndexes(request), [s + 1]);
 	assert.equal(noteHead(request[s + 1]), head);
 	assert.match(text(request[s + 1]), /"requestId":"a"/u);
-	assert.equal(chain.length, 2, "the generation prepares again after the summary, so one request follows the compaction");
+	assert.equal(
+		chain.length,
+		2,
+		"the generation prepares again after the summary, so one request follows the compaction",
+	);
 	assert.deepEqual(mismatches, []);
 });
 
 it("inserts the note on the request that follows an overflow compaction", { timeout: 20000 }, async (t) => {
-	const overflow: AssistantMessage = { ...answerMessage(""), content: [], stopReason: "error", errorMessage: "prompt is too long: 213462 tokens > 200000 maximum" };
-	const { conversation, chain, ask, admit, mismatches } = await fixture(t, { replies: [answerMessage("first answer"), overflow], settings: { compaction: { enabled: true, keepRecentTokens: 1 } } });
+	const overflow: AssistantMessage = {
+		...answerMessage(""),
+		content: [],
+		stopReason: "error",
+		errorMessage: "prompt is too long: 213462 tokens > 200000 maximum",
+	};
+	const { conversation, chain, ask, admit, mismatches } = await fixture(t, {
+		replies: [answerMessage("first answer"), overflow],
+		settings: { compaction: { enabled: true, keepRecentTokens: 1 } },
+	});
 	await ask("work before overflow");
 	await admit("a", 7);
 	await ask("overflowing input");
@@ -227,15 +327,28 @@ it("inserts the note on the request that follows an overflow compaction", { time
 	assert.deepEqual(mismatches, []);
 });
 
-it("carries the new head's note on the first request after a reset queued during a run", { timeout: 20000 }, async (t) => {
+it("carries the new head's note on the first request after a reset queued during a run", {
+	timeout: 20000,
+}, async (t) => {
 	let release!: () => void, started!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	const began = new Promise<void>((resolve) => { started = resolve; });
-	const { conversation, chain, ask, admit, mismatches } = await fixture(t, { replies: [toolCallMessage("gate")], tools: [gateTool(gate, started)] });
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const began = new Promise<void>((resolve) => {
+		started = resolve;
+	});
+	const { conversation, chain, ask, admit, mismatches } = await fixture(t, {
+		replies: [toolCallMessage("gate")],
+		tools: [gateTool(gate, started)],
+	});
 	await admit("a", 7);
 	const submitted = await conversation.submit({ type: "input", content: "run a tool" }, context);
 	await began;
-	const queued = await resetConversation(conversation, { requestId: "busy-reset", handoff: "Handoff placed at the boundary." }, context);
+	const queued = await resetConversation(
+		conversation,
+		{ requestId: "busy-reset", handoff: "Handoff placed at the boundary." },
+		context,
+	);
 	assert.equal(queued.status, "queued");
 	release();
 	// The boundary places the reset and ends the run; the interrupted input has no answer.
@@ -256,11 +369,21 @@ it("carries the new head's note on the first request after a reset queued during
 	assert.deepEqual(mismatches, []);
 });
 
-it("carries the note on the same run's next request after a compaction placed at a tool boundary", { timeout: 20000 }, async (t) => {
+it("carries the note on the same run's next request after a compaction placed at a tool boundary", {
+	timeout: 20000,
+}, async (t) => {
 	let release!: () => void, started!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	const began = new Promise<void>((resolve) => { started = resolve; });
-	const { harness, conversation, chain, admit, mismatches } = await fixture(t, { replies: [toolCallMessage("gate")], tools: [gateTool(gate, started)], settings: { compaction: { keepRecentTokens: 1 } } });
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const began = new Promise<void>((resolve) => {
+		started = resolve;
+	});
+	const { harness, conversation, chain, admit, mismatches } = await fixture(t, {
+		replies: [toolCallMessage("gate")],
+		tools: [gateTool(gate, started)],
+		settings: { compaction: { keepRecentTokens: 1 } },
+	});
 	await admit("a", 7);
 	const submitted = await conversation.submit({ type: "input", content: "run a tool" }, context);
 	await began;
@@ -283,26 +406,48 @@ it("keeps one final prefix when earlier and later hooks insert at the same ancho
 	const insertAfterHead = (label: string): Partial<GenerationHooks> => ({
 		beforeRequest(request) {
 			const index = leadingSystems(request.messages) + 1;
-			return { messages: [...request.messages.slice(0, index), { role: "user", content: label, timestamp: 0 }, ...request.messages.slice(index)] };
+			return {
+				messages: [
+					...request.messages.slice(0, index),
+					{ role: "user", content: label, timestamp: 0 },
+					...request.messages.slice(index),
+				],
+			};
 		},
 	});
-	const { conversation, chain, ask, mismatches } = await fixture(t, { before: insertAfterHead("earlier hook note"), after: insertAfterHead("later hook note") });
+	const { conversation, chain, ask, mismatches } = await fixture(t, {
+		before: insertAfterHead("earlier hook note"),
+		after: insertAfterHead("later hook note"),
+	});
 	await conversation.reset("Handoff.", context);
 	await ask("one");
 	await ask("two");
 	const first = chain[0];
 	const s = leadingSystems(first);
-	assert.deepEqual(first.slice(s, s + 4).map(text).map((value) => HEADER.test(value) ? "continuity" : value), ["Handoff.", "later hook note", "continuity", "earlier hook note"]);
+	assert.deepEqual(
+		first
+			.slice(s, s + 4)
+			.map(text)
+			.map((value) => (HEADER.test(value) ? "continuity" : value)),
+		["Handoff.", "later hook note", "continuity", "earlier hook note"],
+	);
 	assertPrefix(first, chain[1]);
 	assert.deepEqual(mismatches, []);
 });
 
-it("inserts nothing and reports the mismatch when the head message differs from the request", { timeout: 20000 }, async (t) => {
+it("inserts nothing and reports the mismatch when the head message differs from the request", {
+	timeout: 20000,
+}, async (t) => {
 	const { conversation, chain, ask, mismatches } = await fixture(t, {
 		source: (mirror) => ({
 			current(conversationId) {
 				const frozen = mirror.current(conversationId);
-				return frozen === undefined ? undefined : { ...frozen, head: { ...frozen.head, model: [{ role: "user", content: "another head message", timestamp: 0 }] } };
+				return frozen === undefined
+					? undefined
+					: {
+							...frozen,
+							head: { ...frozen.head, model: [{ role: "user", content: "another head message", timestamp: 0 }] },
+						};
 			},
 		}),
 	});

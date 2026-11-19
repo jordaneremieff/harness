@@ -8,16 +8,27 @@ const MAX_EVENT_BYTES = 65536;
 const MAX_VIEW_BYTES = 1048576;
 
 function object(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+	return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
-async function snapshot(transport: CliTransport, prefix: string[], session: string, signal: AbortSignal): Promise<Record<string, unknown> & { revision: number }> {
-	const result = await transport.run([...prefix, "api", "call", "session.view", JSON.stringify({ session_id: session })], {
-		timeoutMs: 5000, maxOutputBytes: MAX_VIEW_BYTES, signal,
-	});
+async function snapshot(
+	transport: CliTransport,
+	prefix: string[],
+	session: string,
+	signal: AbortSignal,
+): Promise<Record<string, unknown> & { revision: number }> {
+	const result = await transport.run(
+		[...prefix, "api", "call", "session.view", JSON.stringify({ session_id: session })],
+		{
+			timeoutMs: 5000,
+			maxOutputBytes: MAX_VIEW_BYTES,
+			signal,
+		},
+	);
 	if (result.outcome !== "exited" || result.exitCode !== 0) throw new Error("View unavailable");
 	const view = object(JSON.parse(result.stdout));
-	if (typeof view.revision !== "number" || !Number.isSafeInteger(view.revision)) throw new Error("Invalid view revision");
+	if (typeof view.revision !== "number" || !Number.isSafeInteger(view.revision))
+		throw new Error("Invalid view revision");
 	return { ...view, revision: view.revision };
 }
 
@@ -49,7 +60,10 @@ function eventLines(onLine: (line: Buffer) => void, onSkipped: () => void): (chu
 
 function writeReport(report: string, signal: AbortSignal): Promise<void> {
 	return new Promise<void>((resolve) => {
-		const done = () => { signal.removeEventListener("abort", done); resolve(); };
+		const done = () => {
+			signal.removeEventListener("abort", done);
+			resolve();
+		};
 		signal.addEventListener("abort", done, { once: true });
 		process.stdout.write(`${report}\n`, done);
 	});
@@ -61,7 +75,11 @@ export async function runPaneStacking(): Promise<void> {
 	const block = process.env.REX_BLOCK;
 	if (!session || !block) return;
 	const executable = process.env.REX_BIN_DIR ? join(process.env.REX_BIN_DIR, "rex") : "rex";
-	const prefix = ["--autostart=false", "--color=never", ...(process.env.REX_SERVER ? ["--server", process.env.REX_SERVER] : [])];
+	const prefix = [
+		"--autostart=false",
+		"--color=never",
+		...(process.env.REX_SERVER ? ["--server", process.env.REX_SERVER] : []),
+	];
 	const transport = new CliTransport(executable);
 	let events: ReturnType<typeof spawn> | undefined;
 	let reconnect: ReturnType<typeof setTimeout> | undefined;
@@ -69,12 +87,18 @@ export async function runPaneStacking(): Promise<void> {
 	let epoch = 0;
 	const killEvents = () => {
 		if (!events?.pid) return;
-		try { process.kill(-events.pid, "SIGKILL"); } catch { events.kill("SIGKILL"); }
+		try {
+			process.kill(-events.pid, "SIGKILL");
+		} catch {
+			events.kill("SIGKILL");
+		}
 		events.stdout?.destroy();
 	};
 	let stopped = false;
 	let finish!: () => void;
-	const ended = new Promise<void>((resolve) => { finish = resolve; });
+	const ended = new Promise<void>((resolve) => {
+		finish = resolve;
+	});
 	const abort = new AbortController();
 	const stop = () => {
 		if (stopped) return;
@@ -111,7 +135,10 @@ export async function runPaneStacking(): Promise<void> {
 			const startedEpoch = epoch;
 			const view = await snapshot(transport, prefix, session, abort.signal);
 			if (stopped) return;
-			if (startedEpoch !== epoch) { dirty = true; continue; }
+			if (startedEpoch !== epoch) {
+				dirty = true;
+				continue;
+			}
 			await publishView(view);
 		}
 	};
@@ -120,15 +147,27 @@ export async function runPaneStacking(): Promise<void> {
 		if (stopped || retry) return;
 		dirty = true;
 		retryDelay = retryDelay === 0 ? 1000 : Math.min(retryDelay * 2, 5000);
-		retry = setTimeout(() => { retry = undefined; startRefresh(); }, retryDelay);
+		retry = setTimeout(() => {
+			retry = undefined;
+			startRefresh();
+		}, retryDelay);
 	};
 	const startRefresh = () => {
 		if (active || stopped || retry) return;
-		active = refresh().catch(retryLater).finally(() => { active = undefined; if (dirty && !stopped && !retry) startRefresh(); });
+		active = refresh()
+			.catch(retryLater)
+			.finally(() => {
+				active = undefined;
+				if (dirty && !stopped && !retry) startRefresh();
+			});
 	};
 	const line = (bytes: Buffer) => {
 		let value: Record<string, unknown>;
-		try { value = object(JSON.parse(bytes.toString("utf8"))); } catch { return; }
+		try {
+			value = object(JSON.parse(bytes.toString("utf8")));
+		} catch {
+			return;
+		}
 		const event = object(object(value.payload).event);
 		if (event.type !== "session_view_changed") return;
 		const next = object(event.payload).revision;
@@ -140,7 +179,8 @@ export async function runPaneStacking(): Promise<void> {
 	const connect = () => {
 		if (stopped) return;
 		const child = spawn(executable, [...prefix, "events", "-s", session, "--json"], {
-			detached: true, stdio: ["ignore", "pipe", "ignore"],
+			detached: true,
+			stdio: ["ignore", "pipe", "ignore"],
 		});
 		events = child;
 		const started = performance.now();
@@ -151,18 +191,29 @@ export async function runPaneStacking(): Promise<void> {
 			killEvents();
 			if (performance.now() - started >= 5000) reconnectDelay = 0;
 			reconnectDelay = reconnectDelay === 0 ? 1000 : Math.min(reconnectDelay * 2, 5000);
-			reconnect = setTimeout(() => { reconnect = undefined; connect(); }, reconnectDelay);
+			reconnect = setTimeout(() => {
+				reconnect = undefined;
+				connect();
+			}, reconnectDelay);
 		};
 		child.once("spawn", () => {
-			if (stopped) { killEvents(); return; }
+			if (stopped) {
+				killEvents();
+				return;
+			}
 			epoch++;
 			revision = requested = -1;
 			dirty = true;
 			startRefresh();
 		});
 		// Each connection owns its line buffer; an incomplete old line never joins a new stream.
-		const split = eventLines(line, () => { dirty = true; startRefresh(); });
-		child.stdout.on("data", (chunk: Buffer) => { if (!stopped && !ended) split(chunk); });
+		const split = eventLines(line, () => {
+			dirty = true;
+			startRefresh();
+		});
+		child.stdout.on("data", (chunk: Buffer) => {
+			if (!stopped && !ended) split(chunk);
+		});
 		child.once("error", disconnected);
 		child.once("exit", disconnected);
 	};

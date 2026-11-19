@@ -355,7 +355,8 @@ export class TelemetryNotices {
 			this.stopped = true;
 			this.lossReported = true;
 			const now = performance.now();
-			if (this.stopNoticeAt !== undefined && now - this.stopNoticeAt < TELEMETRY_STOP_NOTICE_INTERVAL_MS) return undefined;
+			if (this.stopNoticeAt !== undefined && now - this.stopNoticeAt < TELEMETRY_STOP_NOTICE_INTERVAL_MS)
+				return undefined;
 			this.stopNoticeAt = now;
 			this.resumeOwed = true;
 			const uncertain = health.uncertainRecords

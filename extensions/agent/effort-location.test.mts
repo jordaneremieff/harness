@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { it } from "node:test";
@@ -19,7 +29,10 @@ function workspace(t: { after(fn: () => void): void }) {
 	chmodSync(join(bin, "git"), 0o755);
 	const previous = process.env.PATH;
 	process.env.PATH = `${bin}:${previous ?? ""}`;
-	t.after(() => { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; });
+	t.after(() => {
+		if (previous === undefined) delete process.env.PATH;
+		else process.env.PATH = previous;
+	});
 	const work = join(root, "work");
 	mkdirSync(work);
 	return { root, work, bin, log, calls: () => readFileSync(log, "utf8").split("\n").filter(Boolean).length };
@@ -68,7 +81,18 @@ it("notices a nested repository created below a cached ancestor repository", asy
 it("notices removal of the repository marker and replacement of a worktree pointer", async (t) => {
 	const { root, work } = workspace(t);
 	git(work, "init", "-q");
-	git(work, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "initial");
+	git(
+		work,
+		"-c",
+		"user.name=T",
+		"-c",
+		"user.email=t@example.invalid",
+		"commit",
+		"-q",
+		"--allow-empty",
+		"-m",
+		"initial",
+	);
 	const linked = join(root, "linked");
 	git(work, "worktree", "add", "-q", "-b", "side", linked);
 	const resolver = createPrimaryLocationResolver();
@@ -105,8 +129,11 @@ it("does not retain a failed Git discovery", async (t) => {
 	const resolver = createPrimaryLocationResolver();
 	const path = process.env.PATH;
 	process.env.PATH = "";
-	try { assert.equal((await resolver.resolve(work)).repositoryState, "unknown"); }
-	finally { process.env.PATH = path; }
+	try {
+		assert.equal((await resolver.resolve(work)).repositoryState, "unknown");
+	} finally {
+		process.env.PATH = path;
+	}
 	const after = await resolver.resolve(work);
 	assert.equal(after.repositoryState, "outside-git");
 	assert.equal(calls(), 1);
@@ -120,7 +147,10 @@ it("revalidates when the Git environment or PATH changes", async (t) => {
 	const spawned = calls();
 	const previous = process.env.GIT_CEILING_DIRECTORIES;
 	process.env.GIT_CEILING_DIRECTORIES = tmpdir();
-	t.after(() => { if (previous === undefined) delete process.env.GIT_CEILING_DIRECTORIES; else process.env.GIT_CEILING_DIRECTORIES = previous; });
+	t.after(() => {
+		if (previous === undefined) delete process.env.GIT_CEILING_DIRECTORIES;
+		else process.env.GIT_CEILING_DIRECTORIES = previous;
+	});
 	await resolver.resolve(work);
 	assert.equal(calls(), spawned + 1);
 });
@@ -191,7 +221,10 @@ it("does not cache discovery when a commondir alias cannot be resolved before Gi
 	writeFileSync(join(work, ".git", "commondir"), `${alias}\n`);
 	const trigger = join(root, "mutate");
 	writeFileSync(trigger, "");
-	writeFileSync(join(bin, "git"), `#!/bin/sh\necho call >> '${log}'\nif [ -e '${trigger}' ]; then rm -f '${trigger}' '${alias}'; ln -s '${repository}' '${alias}'; fi\nexec '${REAL_GIT}' "$@"\n`);
+	writeFileSync(
+		join(bin, "git"),
+		`#!/bin/sh\necho call >> '${log}'\nif [ -e '${trigger}' ]; then rm -f '${trigger}' '${alias}'; ln -s '${repository}' '${alias}'; fi\nexec '${REAL_GIT}' "$@"\n`,
+	);
 	const resolver = createPrimaryLocationResolver();
 	assert.equal((await resolver.resolve(work)).repository, repository);
 	assert.equal(calls(), 1);
@@ -217,7 +250,10 @@ it("does not cache discovery when a commondir alias changes while Git runs", asy
 	writeFileSync(join(work, ".git", "commondir"), `${alias}\n`);
 	const trigger = join(root, "mutate");
 	writeFileSync(trigger, "");
-	writeFileSync(join(bin, "git"), `#!/bin/sh\necho call >> '${log}'\n'${REAL_GIT}' "$@"\nstatus=$?\nif [ -e '${trigger}' ]; then rm -f '${trigger}' '${alias}'; ln -s '${second}' '${alias}'; fi\nexit $status\n`);
+	writeFileSync(
+		join(bin, "git"),
+		`#!/bin/sh\necho call >> '${log}'\n'${REAL_GIT}' "$@"\nstatus=$?\nif [ -e '${trigger}' ]; then rm -f '${trigger}' '${alias}'; ln -s '${second}' '${alias}'; fi\nexit $status\n`,
+	);
 	const resolver = createPrimaryLocationResolver();
 	assert.equal((await resolver.resolve(work)).repositoryState, "git");
 	assert.equal(calls(), 1);
@@ -315,7 +351,11 @@ it("caches a bare repository until one of its own markers changes", async (t) =>
 	mkdirSync(bare);
 	git(bare, "init", "-q", "--bare");
 	const resolver = createPrimaryLocationResolver();
-	assert.deepEqual(await resolver.resolve(bare), { cwd: realpathSync(bare), repository: realpathSync(bare), repositoryState: "git" });
+	assert.deepEqual(await resolver.resolve(bare), {
+		cwd: realpathSync(bare),
+		repository: realpathSync(bare),
+		repositoryState: "git",
+	});
 	const warm = calls();
 	assert.equal((await resolver.resolve(bare)).repositoryState, "git");
 	assert.equal(calls(), warm, "an unchanged bare repository reuses the completed result");
@@ -330,7 +370,18 @@ it("caches a bare repository until one of its own markers changes", async (t) =>
 it("notices a removed HEAD in a linked worktree's Git directory", async (t) => {
 	const { root, work } = workspace(t);
 	git(work, "init", "-q");
-	git(work, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "initial");
+	git(
+		work,
+		"-c",
+		"user.name=T",
+		"-c",
+		"user.email=t@example.invalid",
+		"commit",
+		"-q",
+		"--allow-empty",
+		"-m",
+		"initial",
+	);
 	const linked = join(root, "linked");
 	git(work, "worktree", "add", "-q", "-b", "side", linked);
 	const resolver = createPrimaryLocationResolver();
@@ -352,12 +403,19 @@ it("does not retain a result whose discovery inputs changed while Git ran", asyn
 	git(work, "init", "-q");
 	const trigger = join(root, "mutate");
 	writeFileSync(trigger, "");
-	writeFileSync(join(bin, "git"), `#!/bin/sh\necho call >> '${log}'\n'${REAL_GIT}' "$@"\nstatus=$?\nif [ -e '${trigger}' ]; then rm -f '${trigger}'; mv '${work}/.git/HEAD' '${work}/.git/HEAD.moved'; fi\nexit $status\n`);
+	writeFileSync(
+		join(bin, "git"),
+		`#!/bin/sh\necho call >> '${log}'\n'${REAL_GIT}' "$@"\nstatus=$?\nif [ -e '${trigger}' ]; then rm -f '${trigger}'; mv '${work}/.git/HEAD' '${work}/.git/HEAD.moved'; fi\nexit $status\n`,
+	);
 	chmodSync(join(bin, "git"), 0o755);
 	const resolver = createPrimaryLocationResolver();
 	assert.equal((await resolver.resolve(work)).repositoryState, "git");
 	assert.equal(calls(), 1);
-	assert.equal((await resolver.resolve(work)).repositoryState, "outside-git", "the next read follows the marker that changed during discovery");
+	assert.equal(
+		(await resolver.resolve(work)).repositoryState,
+		"outside-git",
+		"the next read follows the marker that changed during discovery",
+	);
 	assert.equal(calls(), 2);
 });
 

@@ -251,12 +251,17 @@ test("retired-only source windows preserve exact exclusions and continuation", a
 test("compact search preserves discovery evidence in substantially smaller pages", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-11-18T00:00:00.000Z") });
 	const root = corpus({});
-	for (let index = 0; index < 10; index++) writeMemory(root, {
-		slug: `editor-choice-${index}`, title: `Editor choice ${index}`, tags: ["editor", "preference"],
-		summary: "Use the plain editor for editing.",
-		details: "The operator selected the plain editor. This editing preference concerns editor choice.",
-		sources: "Synthetic fixture, not operator knowledge.", verified: false, reviewPolicy: "on-change",
-	});
+	for (let index = 0; index < 10; index++)
+		writeMemory(root, {
+			slug: `editor-choice-${index}`,
+			title: `Editor choice ${index}`,
+			tags: ["editor", "preference"],
+			summary: "Use the plain editor for editing.",
+			details: "The operator selected the plain editor. This editing preference concerns editor choice.",
+			sources: "Synthetic fixture, not operator knowledge.",
+			verified: false,
+			reviewPolicy: "on-change",
+		});
 	const query = ["editor choice", "editing preference", "plain editor"];
 	const compact = await search(root, { query });
 	const detailed = await detailedSearch(root, { query });
@@ -265,7 +270,10 @@ test("compact search preserves discovery evidence in substantially smaller pages
 	assert.equal(compact.returned, 10);
 	assert.equal(detailed.returned, 10);
 	const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
-	assert.ok(bytes(compact) <= bytes(detailed) * 0.6, `${bytes(compact)} compact bytes / ${bytes(detailed)} detailed bytes`);
+	assert.ok(
+		bytes(compact) <= bytes(detailed) * 0.6,
+		`${bytes(compact)} compact bytes / ${bytes(detailed)} detailed bytes`,
+	);
 	assert.deepEqual(compact.search, detailed.search);
 	assert.deepEqual(compact.scan, detailed.scan);
 	for (const [index, note] of notes(compact).entries()) {
@@ -277,11 +285,19 @@ test("compact search preserves discovery evidence in substantially smaller pages
 		assert.equal(note.missing, undefined);
 		assert.equal(note.status, undefined);
 		assert.equal(note.superseded_by, undefined);
-		const best = array(full.formulations).map(object).filter((item) => item.rank !== null)
+		const best = array(full.formulations)
+			.map(object)
+			.filter((item) => item.rank !== null)
 			.sort((a, b) => number(a.rank) - number(b.rank))[0];
-		assert.deepEqual(note.matched, array(best.matched).map((item) => object(item).term));
+		assert.deepEqual(
+			note.matched,
+			array(best.matched).map((item) => object(item).term),
+		);
 		assert.equal(array(full.formulations).length, query.length);
-		assert.deepEqual(full.freshness, (await read(root, { slug: string(note.slug), digest: string(note.digest) })).freshness);
+		assert.deepEqual(
+			full.freshness,
+			(await read(root, { slug: string(note.slug), digest: string(note.digest) })).freshness,
+		);
 	}
 	for (const query of [undefined, "editor choice", ["editor choice"]]) {
 		const compact = notes(await search(root, { query }))[0];
@@ -302,13 +318,17 @@ test("compact search retains concerns, due dates, retirement and metadata proble
 		"plain.md": ACTIVE,
 		"concern.md": ACTIVE.replace("---\n\n#", `review_flag: ${JSON.stringify(concern)}\n---\n\n#`),
 		"due.md": ACTIVE.replace("---\n\n#", "review_after: 2026-09-29\n---\n\n#"),
-		"retired.md": ACTIVE.replace("status: active", "status: retired")
-			.replace("---\n\n#", `retirement: ${JSON.stringify(retirement)}\n---\n\n#`),
+		"retired.md": ACTIVE.replace("status: active", "status: retired").replace(
+			"---\n\n#",
+			`retirement: ${JSON.stringify(retirement)}\n---\n\n#`,
+		),
 		"superseded.md": OLD,
 		"invalid.md": ACTIVE.replace("verified: true", "verified: unknown"),
 	});
 	const expected = new Map<string, unknown>([
-		["plain", undefined], ["concern", { concern }], ["retired", { retirement }],
+		["plain", undefined],
+		["concern", { concern }],
+		["retired", { retirement }],
 		["due", { deadline: "due", reviewAfter: "2026-09-29", evaluatedOn: "2026-09-29" }],
 	]);
 	for (const slug of ["invalid", "superseded"])
@@ -324,8 +344,10 @@ test("compact search retains concerns, due dates, retirement and metadata proble
 		}
 		assert.equal(compact.length, expected.size);
 		assert.equal(object(compact.find((note) => note.slug === "retired")?.lifecycle).status, "retired");
-		assert.deepEqual(compact.find((note) => note.slug === "superseded")?.lifecycle,
-			{ status: "superseded", supersededBy: "prefer-dark-theme" });
+		assert.deepEqual(compact.find((note) => note.slug === "superseded")?.lifecycle, {
+			status: "superseded",
+			supersededBy: "prefer-dark-theme",
+		});
 	}
 });
 
@@ -386,8 +408,7 @@ test("search and every note page expose source-specific freshness without renewi
 test("a valid cyclic alias in one note does not suppress the corpus index or search", async () => {
 	const cyclic =
 		"---\ntitle: Cyclic\nmeta: &a\n  self: *a\nstatus: active\nsuperseded_by: null\n---\n\n# Cyclic\n\ncyclicneedle body.\n";
-	const healthy =
-		"---\ntitle: Healthy\nstatus: active\nsuperseded_by: null\n---\n\n# Healthy\n\nhealthyneedle body.\n";
+	const healthy = "---\ntitle: Healthy\nstatus: active\nsuperseded_by: null\n---\n\n# Healthy\n\nhealthyneedle body.\n";
 	const root = corpus({ "README.md": README, "cyclic.md": cyclic, "healthy.md": healthy });
 	const index = await memoryIndex(root);
 	assert.match(index ?? "", /^cyclic:/m);
@@ -439,7 +460,11 @@ test("mutating returned freshness records cannot change later reads or searches"
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-29T00:00:00.000Z") });
 	const concern = { date: "2026-09-28", reason: "One claim is disputed.", sources: "Conflicting synthetic source." };
 	const lastReview = { date: "2026-09-27", digest: "a".repeat(64), sources: "Synthetic prior source." };
-	const retirement = { date: "2026-09-26", reason: "Evidence no longer applies.", sources: "Synthetic retirement source." };
+	const retirement = {
+		date: "2026-09-26",
+		reason: "Evidence no longer applies.",
+		sources: "Synthetic retirement source.",
+	};
 	const source = ACTIVE.replace(
 		"---\n\n#",
 		`review_flag: ${JSON.stringify(concern)}\nlast_review: ${JSON.stringify(lastReview)}\nretirement: ${JSON.stringify(retirement)}\n---\n\n#`,
@@ -772,7 +797,11 @@ test("binds search evidence and every continuation to the source digest", async 
 	const page = await read(root, { slug: "good", digest });
 	assert.equal(page.content, source);
 	writeFileSync(join(root, "good.md"), `${ACTIVE}\nreplacement phrase\n`);
-	await rejects(readMemory(root, { slug: "good", digest }), "changed", /Restart memory_read with \{"slug":"good","offset":0\} without digest/);
+	await rejects(
+		readMemory(root, { slug: "good", digest }),
+		"changed",
+		/Restart memory_read with \{"slug":"good","offset":0\} without digest/,
+	);
 	await rejects(readMemory(root, { slug: "good", offset: number(page.totalCodePoints), digest }), "changed", /changed/);
 	assert.equal((await search(root, { query: '"body phrase"' })).totalMatches, 0);
 	assert.equal((await search(root, { query: "replacement phrase" })).totalMatches, 1);
@@ -821,7 +850,10 @@ test("changed notes name a bounded restart call that returns current source from
 		await assert.rejects(readMemory(root, { slug, offset }), (error: unknown) => {
 			assert.ok(error instanceof MemoryRetrievalError);
 			assert.equal(error.code, "input");
-			const call = /^offset above 0 requires digest for safe continuation\. Read memory_read with (\{.*\}) for the digest, then repeat this offset with that digest$/u.exec(error.message);
+			const call =
+				/^offset above 0 requires digest for safe continuation\. Read memory_read with (\{.*\}) for the digest, then repeat this offset with that digest$/u.exec(
+					error.message,
+				);
 			assert.ok(call?.[1]);
 			firstPage = JSON.parse(call[1]) as Record<string, unknown>;
 			return true;
@@ -1105,14 +1137,38 @@ test("retrieval refusals name unknown options and rejected subjects without writ
 		readMemory(root, { slug: "good", unexpected: true } as ReadOptions),
 		searchMemory(root, { unexpected: true } as SearchOptions),
 		historyMemory(root, { slug: "good", unexpected: true } as Parameters<typeof historyMemory>[1]),
-		historyMemory(root, { slug: "good", plan: { capturedBefore: "2026-01-01T00:00:00.000Z", keepNewest: 0, unexpected: true } } as Parameters<typeof historyMemory>[1]),
-	]) await rejects(operation, "input", /^unknown option: "unexpected"$/);
-	await rejects(readMemory(root, { slug: "good.md" }), "input", /^use the note slug without the \.md extension: good\.md$/);
+		historyMemory(root, {
+			slug: "good",
+			plan: { capturedBefore: "2026-01-01T00:00:00.000Z", keepNewest: 0, unexpected: true },
+		} as Parameters<typeof historyMemory>[1]),
+	])
+		await rejects(operation, "input", /^unknown option: "unexpected"$/);
+	await rejects(
+		readMemory(root, { slug: "good.md" }),
+		"input",
+		/^use the note slug without the \.md extension: good\.md$/,
+	);
 	await rejects(readMemory(root, { slug: "bad/slug" }), "input", /^invalid note slug: bad\/slug$/);
-	await rejects(historyMemory(root, { slug: "bad/slug" }), "input", /^History requires a lowercase subject slug, not README: bad\/slug$/);
-	await rejects(readMemory(root, { slug: "absent-note" }), "corpus", /^note not found: absent-note\.md\. Use memory_search/);
-	await rejects(readMemory(root, { slug: "absent-note", revision: newRevision("a".repeat(64)) }), "corpus", /^No captured history for subject: absent-note$/);
-	await rejects(searchMemory(root, { "unusual\nkey": true } as SearchOptions), "input", /^unknown option: "unusual\\nkey"$/);
+	await rejects(
+		historyMemory(root, { slug: "bad/slug" }),
+		"input",
+		/^History requires a lowercase subject slug, not README: bad\/slug$/,
+	);
+	await rejects(
+		readMemory(root, { slug: "absent-note" }),
+		"corpus",
+		/^note not found: absent-note\.md\. Use memory_search/,
+	);
+	await rejects(
+		readMemory(root, { slug: "absent-note", revision: newRevision("a".repeat(64)) }),
+		"corpus",
+		/^No captured history for subject: absent-note$/,
+	);
+	await rejects(
+		searchMemory(root, { "unusual\nkey": true } as SearchOptions),
+		"input",
+		/^unknown option: "unusual\\nkey"$/,
+	);
 	assert.deepEqual(readdirSync(root).sort(), before);
 	assert.equal(readFileSync(join(root, "good.md"), "utf8"), ACTIVE);
 	assert.equal(readFileSync(join(root, "README.md"), "utf8"), README);
@@ -1134,13 +1190,14 @@ test("retrieval errors redact credential-shaped keys and subjects before clippin
 		() => readMemory(root, { slug: token, revision }),
 		() => searchMemory(root, { [`${"z".repeat(470)} ${token}`]: true } as SearchOptions),
 	];
-	for (const operation of operations) await assert.rejects(operation(), (error) => {
-		assert.ok(error instanceof MemoryRetrievalError);
-		assert.ok(!error.message.includes(token));
-		assert.ok(!error.message.includes("sk-"));
-		assert.ok(error.message.length <= 500);
-		return true;
-	});
+	for (const operation of operations)
+		await assert.rejects(operation(), (error) => {
+			assert.ok(error instanceof MemoryRetrievalError);
+			assert.ok(!error.message.includes(token));
+			assert.ok(!error.message.includes("sk-"));
+			assert.ok(error.message.length <= 500);
+			return true;
+		});
 	assert.deepEqual(readdirSync(root).sort(), before);
 	assert.equal(readFileSync(join(root, "good.md"), "utf8"), ACTIVE);
 });
@@ -1486,8 +1543,9 @@ test("fused passages prefer body evidence and preserve original code-point locat
 	assert.equal((JSON.stringify(subject).match(/"sourceMatch":/g) ?? []).length, 1);
 	const ranks = array(subject.formulations).map((item) => object(item).rank);
 	assert.ok(number(ranks[0]) < number(ranks[1]));
-	const compact = notes(await search(root, { query: ["metadata", "bodyneedle", "uniquemetadata"] }))
-		.find((note) => note.slug === "subject");
+	const compact = notes(await search(root, { query: ["metadata", "bodyneedle", "uniquemetadata"] })).find(
+		(note) => note.slug === "subject",
+	);
 	assert.deepEqual(compact?.matched, ["metadata"]);
 	assert.deepEqual(compact?.sourceMatch, subject.sourceMatch);
 	const metadata = notes(result).find((note) => note.slug === "metadata-only");

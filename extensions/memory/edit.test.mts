@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import fs, { closeSync, constants, lstatSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, {
+	closeSync,
+	constants,
+	lstatSync,
+	mkdtempSync,
+	openSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -531,7 +541,10 @@ test("cancellation before work and after staging leaves the note unchanged and r
 		assert.equal(readFileSync(f.path, "utf8"), f.source);
 		assert.deepEqual(readdirSync(f.root).sort(), [".memory-write.lock", "README.md", "editor-choice.md"]);
 		assert.deepEqual(refused.receipt.captured, []);
-		const held = openSync(join(f.root, ".memory-write.lock"), constants.O_RDWR | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20);
+		const held = openSync(
+			join(f.root, ".memory-write.lock"),
+			constants.O_RDWR | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20,
+		);
 		closeSync(held);
 	} finally {
 		t.mock.restoreAll();

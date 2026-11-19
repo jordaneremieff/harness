@@ -54,7 +54,9 @@ test("resource suggestions are unique, bounded, and never accept an alias", asyn
 		assert.equal("code" in result && result.code, "invalid_input");
 		assert.ok("message" in result && result.message?.includes('{"resource":"principle-example"}'));
 	}
-	const ambiguous: Catalog = { resources: [...catalog.resources, { resourceId: "principle-exampla", resourceClass: "entry", path: "unused" }] };
+	const ambiguous: Catalog = {
+		resources: [...catalog.resources, { resourceId: "principle-exampla", resourceClass: "entry", path: "unused" }],
+	};
 	const result = await access(ambiguous, { resource: "principle-examplb" });
 	assert.ok("message" in result && result.message?.includes("inventory"));
 	assert.ok("message" in result && !result.message?.includes('Send {"resource":'));
@@ -73,15 +75,23 @@ test("source offset diagnostics distinguish end-of-body and UTF-8 boundaries", a
 		await writeFile(path, body);
 		const catalog: Catalog = { resources: [{ resourceId: "inventory", resourceClass: "inventory", path }] };
 		const changed = await access(catalog, { offset: 1, referenceBodyDigest: "0".repeat(64) });
-		assert.match("message" in changed ? String(changed.message) : "", /referenceBodyDigest:.*received.*changed.*omit offset and referenceBodyDigest/);
-		for (const [offset, pattern] of [[8, /beyond.*7 bytes/], [1, /inside a UTF-8 character/]] as const) {
+		assert.match(
+			"message" in changed ? String(changed.message) : "",
+			/referenceBodyDigest:.*received.*changed.*omit offset and referenceBodyDigest/,
+		);
+		for (const [offset, pattern] of [
+			[8, /beyond.*7 bytes/],
+			[1, /inside a UTF-8 character/],
+		] as const) {
 			const result = await access(catalog, { offset, referenceBodyDigest: digest(body) });
 			const message = "message" in result ? String(result.message) : "";
 			assert.match(message, pattern);
 			assert.match(message, /offset:.*received.*nextOffset/);
 			assert.match(message, /omit offset and referenceBodyDigest/);
 		}
-	} finally { await rm(root, { recursive: true, force: true }); }
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 });
 
 const usageCases: [string, unknown, RegExp][] = [
@@ -104,7 +114,10 @@ const usageCases: [string, unknown, RegExp][] = [
 for (const [name, input, pattern] of usageCases) {
 	test(`usage diagnostic: ${name}`, async () => {
 		let captures = 0;
-		const reader = createReader(() => { captures++; return { shards: {} }; });
+		const reader = createReader(() => {
+			captures++;
+			return { shards: {} };
+		});
 		const result = await reader.read(input);
 		validateResponse(result);
 		assert.equal(result.kind, "error");
@@ -119,7 +132,10 @@ for (const [name, input, pattern] of usageCases) {
 }
 test("invalid cursor encoding and absent capture identify recovery", async () => {
 	const reader = createReader(() => ({ shards: {} }));
-	for (const [cursor, pattern] of [["abcd", /encoding/], [Buffer.from(`${"a".repeat(22)}:0`).toString("base64url"), /capture/]] as const) {
+	for (const [cursor, pattern] of [
+		["abcd", /encoding/],
+		[Buffer.from(`${"a".repeat(22)}:0`).toString("base64url"), /capture/],
+	] as const) {
 		const result = await reader.read({ cursor });
 		validateResponse(result);
 		assert.equal(result.kind, "error");

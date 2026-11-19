@@ -13,17 +13,46 @@ import { hostPaths } from "./host-protocol.ts";
 it("a cold profile read returns retained native expertise without host acquisition or a model turn", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "profile-cold-"));
 	let acquisitions = 0;
-	const manager = new AgentManager({ root, agentDir: join(root, "agent"), packageDir: root,
-		connect: async () => { throw new Error("no live host"); },
-		acquire: async () => { acquisitions++; throw new Error("a profile read must not start a host"); },
+	const manager = new AgentManager({
+		root,
+		agentDir: join(root, "agent"),
+		packageDir: root,
+		connect: async () => {
+			throw new Error("no live host");
+		},
+		acquire: async () => {
+			acquisitions++;
+			throw new Error("a profile read must not start a host");
+		},
 	});
-	const record = manager.catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: root, model: { provider: "fixture", modelId: "fixture" }, thinkingLevel: "off" });
-	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
-	const host = await DurableHost.open({ ...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry(), root), storageId: record.storageId, profileSeed: { handle: "history", role: "Review decisions" } });
+	const record = manager.catalog.create({
+		cwd: root,
+		agentDir: join(root, "agent"),
+		packageDir: root,
+		model: { provider: "fixture", modelId: "fixture" },
+		thinkingLevel: "off",
+	});
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const host = await DurableHost.open({
+		...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry(), root),
+		storageId: record.storageId,
+		profileSeed: { handle: "history", role: "Review decisions" },
+	});
 	try {
-		const initial = await host.request("profile-read", { sessionId: record.storageId }) as AgentProfile;
-		await host.request("profile-update", { sessionId: record.storageId, expectedRevision: initial.revision, expertise: "Sources: reference.md, checked 2026-01-01", requestId: "knowledge", senderIdentity: "author" });
-	} finally { await host.close(); }
+		const initial = (await host.request("profile-read", { sessionId: record.storageId })) as AgentProfile;
+		await host.request("profile-update", {
+			sessionId: record.storageId,
+			expectedRevision: initial.revision,
+			expertise: "Sources: reference.md, checked 2026-01-01",
+			requestId: "knowledge",
+			senderIdentity: "author",
+		});
+	} finally {
+		await host.close();
+	}
 	const result = await manager.control("profile-read", { sessionId: record.storageId }, { id: "reader", cwd: root });
 	assert.ok(matchesSchema(AgentProfileSchema, result));
 	assert.equal(result.live, false);
@@ -33,5 +62,8 @@ it("a cold profile read returns retained native expertise without host acquisiti
 	assert.equal(acquisitions, 0);
 	assert.equal(existsSync(hostPaths(record).socket), false);
 	const snapshot = await manager.snapshot(record.storageId);
-	assert.equal(snapshot.entries.some((entry) => entry.kind === "pi.assistant"), false);
+	assert.equal(
+		snapshot.entries.some((entry) => entry.kind === "pi.assistant"),
+		false,
+	);
 });

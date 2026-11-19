@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { it, type TestContext } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { Harness, LiveDoc, MemoryStorage, type ConversationId, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import {
+	Harness,
+	LiveDoc,
+	MemoryStorage,
+	type ConversationId,
+	type SubmissionId,
+	type TaskId,
+	type Tx,
+} from "@earendil-works/pi-durable";
 import type { TuiMouseEvent } from "@earendil-works/pi-tui";
 import { conversationFrame, deferred, fixture, formsHost, row, source, turn } from "./dashboard-test-fixture.mts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
@@ -20,7 +28,8 @@ type Fixture = ReturnType<typeof fixture>;
 const STORAGE = "storage-a";
 const DOWN = "\x1b[B";
 
-const visible = (f: Fixture) => f.ui.render(f.tui.terminal.columns).map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+const visible = (f: Fixture) =>
+	f.ui.render(f.tui.terminal.columns).map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
 const shown = (f: Fixture) => visible(f).join("\n");
 
 function press(f: Fixture, ...keys: string[]): void {
@@ -36,7 +45,20 @@ function click(f: Fixture, label: string, clickCount = 1, last = true): void {
 	for (const y of rows) {
 		const x = lines[y]?.indexOf(label) ?? -1;
 		if (x < 0) continue;
-		const event: TuiMouseEvent = { type: "click", button: "left", x: x + 1, y, screenX: x + 1, screenY: y, width: f.tui.terminal.columns, height: f.tui.terminal.rows, shift: false, alt: false, ctrl: false, clickCount };
+		const event: TuiMouseEvent = {
+			type: "click",
+			button: "left",
+			x: x + 1,
+			y,
+			screenX: x + 1,
+			screenY: y,
+			width: f.tui.terminal.columns,
+			height: f.tui.terminal.rows,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount,
+		};
 		f.ui.handleMouse(event);
 		return;
 	}
@@ -49,65 +71,156 @@ async function settle(steps = 12): Promise<void> {
 
 /** A native storage: the lead conversation declares work on two producers, one answered and one still working. */
 async function nativeScenario(t: TestContext) {
-	const harness = await Harness.open(new MemoryStorage(), { models: await fixtureRuntime("answer"), registry: fixtureRegistry() }, context);
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{ models: await fixtureRuntime("answer"), registry: fixtureRegistry() },
+		context,
+	);
 	t.after(() => harness.close(context));
 	const agent = { model: { provider: testModel.provider, modelId: testModel.id } };
 	const lead = await harness.root(context, { agent });
 	const survey = await harness.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
 	const audit = await harness.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
-	const place = (tx: Tx, conversationId: ConversationId, request: RequestContext) => placed(tx, conversationId, request);
-	const leadInput = await harness.commit((tx) => place(tx, lead.id, { requestId: "task-a", requester: "requester-b", replyTo: "recipient-c", origin: "model" }), context);
-	const surveyInput = await harness.commit((tx) => place(tx, survey.id, { requestId: "child-survey", requester: STORAGE, replyTo: STORAGE, origin: "model" }), context);
-	const auditInput = await harness.commit((tx) => place(tx, audit.id, { requestId: "child-audit", requester: STORAGE, replyTo: STORAGE, origin: "model" }), context);
+	const place = (tx: Tx, conversationId: ConversationId, request: RequestContext) =>
+		placed(tx, conversationId, request);
+	const leadInput = await harness.commit(
+		(tx) =>
+			place(tx, lead.id, { requestId: "task-a", requester: "requester-b", replyTo: "recipient-c", origin: "model" }),
+		context,
+	);
+	const surveyInput = await harness.commit(
+		(tx) => place(tx, survey.id, { requestId: "child-survey", requester: STORAGE, replyTo: STORAGE, origin: "model" }),
+		context,
+	);
+	const auditInput = await harness.commit(
+		(tx) => place(tx, audit.id, { requestId: "child-audit", requester: STORAGE, replyTo: STORAGE, origin: "model" }),
+		context,
+	);
 	const results = [
 		{ sessionId: `${STORAGE}:${survey.id}`, submissionId: surveyInput, requestId: "child-survey" },
 		{ sessionId: `${STORAGE}:${audit.id}`, submissionId: auditInput, requestId: "child-audit" },
 	];
-	const declared = await harness.commit((tx) => declareOpenWork(tx, STORAGE, lead.id, { results, note: "Combine the survey and the audit" }, Date.now()), context);
+	const declared = await harness.commit(
+		(tx) => declareOpenWork(tx, STORAGE, lead.id, { results, note: "Combine the survey and the audit" }, Date.now()),
+		context,
+	);
 	assert.ok(!("error" in declared));
-	await harness.commit((tx) => answeredWith(tx, lead.id, leadInput, "State note: the survey and the audit continue."), context);
-	await harness.commit((tx) => answeredWith(tx, survey.id, surveyInput, "Survey result: three parsers need the new grammar."), context);
-	const conversations = new Map([[STORAGE, lead.id], [`${STORAGE}:${survey.id}`, survey.id], [`${STORAGE}:${audit.id}`, audit.id]]);
+	await harness.commit(
+		(tx) => answeredWith(tx, lead.id, leadInput, "State note: the survey and the audit continue."),
+		context,
+	);
+	await harness.commit(
+		(tx) => answeredWith(tx, survey.id, surveyInput, "Survey result: three parsers need the new grammar."),
+		context,
+	);
+	const conversations = new Map([
+		[STORAGE, lead.id],
+		[`${STORAGE}:${survey.id}`, survey.id],
+		[`${STORAGE}:${audit.id}`, audit.id],
+	]);
 	const inspections: Array<Record<string, unknown>> = [];
 	const forms = {
 		status: async () => ({ conversation: await readConversationStatus(harness, STORAGE, lead.id, {}, context) }),
 		inspect: async (params: Record<string, unknown>) => {
 			inspections.push(params);
-			const conversation = await harness.conversation(conversations.get(String(params.sessionId)) as ConversationId, context);
+			const conversation = await harness.conversation(
+				conversations.get(String(params.sessionId)) as ConversationId,
+				context,
+			);
 			if (!conversation) throw new Error(`No conversation ${String(params.sessionId)}`);
 			return readInspection(harness, STORAGE, conversation, params, context);
 		},
 	};
 	const complete = async (message: string) => {
-		const done = await executeAgentWork({ action: "complete", request: "task-a", status: "done", message }, { harness, storageId: STORAGE, conversationId: lead.id, now: Date.now() }, context);
+		const done = await executeAgentWork(
+			{ action: "complete", request: "task-a", status: "done", message },
+			{ harness, storageId: STORAGE, conversationId: lead.id, now: Date.now() },
+			context,
+		);
 		assert.equal(done.isError, undefined);
 	};
 	const submissions = async () => (await harness.inspect(context)).submissions.length;
-	return { harness, lead, leadInput, surveyInput, auditInput, surveyId: `${STORAGE}:${survey.id}`, auditId: `${STORAGE}:${audit.id}`, forms, inspections, complete, submissions };
+	return {
+		harness,
+		lead,
+		leadInput,
+		surveyInput,
+		auditInput,
+		surveyId: `${STORAGE}:${survey.id}`,
+		auditId: `${STORAGE}:${audit.id}`,
+		forms,
+		inspections,
+		complete,
+		submissions,
+	};
 }
 
 async function placed(tx: Tx, conversationId: ConversationId, request: RequestContext): Promise<SubmissionId> {
 	await recordRequestContext(tx, conversationId, request);
-	const entry = await tx.appendEntry(conversationId, { kind: "pi.user", ...inputEntry(request.origin, request.requester), model: [{ role: "user", content: "Task", timestamp: 1 }] });
-	const id = (await tx.createSubmission({ conversationId, requestId: request.requestId, type: "input", status: "placed", entry: entry.id })).id;
+	const entry = await tx.appendEntry(conversationId, {
+		kind: "pi.user",
+		...inputEntry(request.origin, request.requester),
+		model: [{ role: "user", content: "Task", timestamp: 1 }],
+	});
+	const id = (
+		await tx.createSubmission({
+			conversationId,
+			requestId: request.requestId,
+			type: "input",
+			status: "placed",
+			entry: entry.id,
+		})
+	).id;
 	(await tx.doc(LiveDoc, conversationId)).run = { taskId: 123 as TaskId, inputs: [id], turns: 0 };
 	return id;
 }
 
 async function answeredWith(tx: Tx, conversationId: ConversationId, id: SubmissionId, text: string): Promise<void> {
-	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-	const answer = await tx.appendEntry(conversationId, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "test", model: "test", timestamp: 2, stopReason: "stop", usage }] });
+	const usage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const answer = await tx.appendEntry(conversationId, {
+		kind: "pi.assistant",
+		model: [
+			{
+				role: "assistant",
+				content: [{ type: "text", text }],
+				api: "openai-responses",
+				provider: "test",
+				model: "test",
+				timestamp: 2,
+				stopReason: "stop",
+				usage,
+			},
+		],
+	});
 	tx.settleSubmission(id, { status: "done", answer: answer.id });
 	delete (await tx.doc(LiveDoc, conversationId)).run;
 }
 
-const lead = (patch: Parameters<typeof row>[1] = {}) => row(STORAGE, { storageId: STORAGE, name: "Lead", state: "idle", openWorkCount: 1, openWorkOldest: 60_000, ageObservedAt: Date.now(), ...patch });
+const lead = (patch: Parameters<typeof row>[1] = {}) =>
+	row(STORAGE, {
+		storageId: STORAGE,
+		name: "Lead",
+		state: "idle",
+		openWorkCount: 1,
+		openWorkOldest: 60_000,
+		ageObservedAt: Date.now(),
+		...patch,
+	});
 
 it("opens Work with w, reads an arrived dependency, then reads the exact final report after the work closes", async (t) => {
 	const scenario = await nativeScenario(t);
 	const before = await scenario.submissions();
 	const observed = source([lead()]);
-	const f: Fixture = fixture(140, 40, observed, { forms: (target) => formsHost(target, f.state, observed, f.calls, scenario.forms) });
+	const f: Fixture = fixture(140, 40, observed, {
+		forms: (target) => formsHost(target, f.state, observed, f.calls, scenario.forms),
+	});
 	try {
 		await settle();
 		assert.doesNotMatch(visible(f).at(-1) ?? "", /w work/u, "the footer keeps only focus-specific controls");
@@ -136,13 +249,21 @@ it("opens Work with w, reads an arrived dependency, then reads the exact final r
 		screen = shown(f);
 		assert.match(screen, /Survey result: three parsers need the new grammar\./u);
 		assert.match(screen, /Input: answered/u);
-		assert.deepEqual(scenario.inspections.at(-1), { sessionId: scenario.surveyId, view: "result", submissionId: scenario.surveyInput });
+		assert.deepEqual(scenario.inspections.at(-1), {
+			sessionId: scenario.surveyId,
+			view: "result",
+			submissionId: scenario.surveyInput,
+		});
 		press(f, "\x1b");
 		assert.equal(f.ui.focus.inspector, "Work");
 
 		press(f, DOWN, "\r");
 		await settle();
-		assert.match(shown(f), /Input: placed: the producer works on it and has not answered/u, "a pending dependency reads as pending, not as a result");
+		assert.match(
+			shown(f),
+			/Input: placed: the producer works on it and has not answered/u,
+			"a pending dependency reads as pending, not as a result",
+		);
 		press(f, "\x1b");
 
 		const report = `Combined: ${"x".repeat(5000)} END`;
@@ -165,10 +286,14 @@ it("opens Work with w, reads an arrived dependency, then reads the exact final r
 		const exact = `${finalReportLabel("done", "task-a")}\n\n${report}`;
 		screen = shown(f);
 		assert.match(screen, new RegExp(`Complete: ${exact.length} characters`, "u"));
-		assert.deepEqual(scenario.inspections.slice(inspected), [
-			{ sessionId: STORAGE, view: "result", submissionId: scenario.leadInput, finalReport: true, offset: 0 },
-			{ sessionId: STORAGE, view: "result", submissionId: scenario.leadInput, finalReport: true, offset: 4096 },
-		], "the second page uses the exact continuation the first page returned");
+		assert.deepEqual(
+			scenario.inspections.slice(inspected),
+			[
+				{ sessionId: STORAGE, view: "result", submissionId: scenario.leadInput, finalReport: true, offset: 0 },
+				{ sessionId: STORAGE, view: "result", submissionId: scenario.leadInput, finalReport: true, offset: 4096 },
+			],
+			"the second page uses the exact continuation the first page returned",
+		);
 		press(f, "\x1b[F");
 		assert.match(shown(f), /END/u, "the report text joins to its end");
 		assert.deepEqual(f.calls, [], "reading sends no action");
@@ -181,7 +306,9 @@ it("opens Work with w, reads an arrived dependency, then reads the exact final r
 it("opens Work from More and reads a result from the footer control", async (t) => {
 	const scenario = await nativeScenario(t);
 	const observed = source([lead()]);
-	const f: Fixture = fixture(140, 40, observed, { forms: (target) => formsHost(target, f.state, observed, f.calls, scenario.forms) });
+	const f: Fixture = fixture(140, 40, observed, {
+		forms: (target) => formsHost(target, f.state, observed, f.calls, scenario.forms),
+	});
 	try {
 		await settle();
 		assert.doesNotMatch(shown(f), /work open: 1, oldest/u, "the header omits work statistics");
@@ -207,12 +334,13 @@ it("aborts the Work reads when another conversation is selected and shows nothin
 	const signals: AbortSignal[] = [];
 	const observed = source([lead(), row("two", { name: "Bravo", state: "idle" })]);
 	const f: Fixture = fixture(140, 40, observed, {
-		forms: (target) => formsHost(target, f.state, observed, f.calls, {
-			status: (signal?: AbortSignal) => {
-				if (signal) signals.push(signal);
-				return status.promise;
-			},
-		}),
+		forms: (target) =>
+			formsHost(target, f.state, observed, f.calls, {
+				status: (signal?: AbortSignal) => {
+					if (signal) signals.push(signal);
+					return status.promise;
+				},
+			}),
 	});
 	try {
 		await settle();
@@ -237,13 +365,14 @@ it("aborts a result read when another conversation is selected", async () => {
 	const signals: AbortSignal[] = [];
 	const observed = source([lead(), row("two", { name: "Bravo", state: "idle" })]);
 	const f: Fixture = fixture(140, 40, observed, {
-		forms: (target) => formsHost(target, f.state, observed, f.calls, {
-			status: async () => ({ conversation: { openWork: [openItem()] } }),
-			inspect: (_params: Record<string, unknown>, signal?: AbortSignal) => {
-				if (signal) signals.push(signal);
-				return new Promise(() => {});
-			},
-		}),
+		forms: (target) =>
+			formsHost(target, f.state, observed, f.calls, {
+				status: async () => ({ conversation: { openWork: [openItem()] } }),
+				inspect: (_params: Record<string, unknown>, signal?: AbortSignal) => {
+					if (signal) signals.push(signal);
+					return new Promise(() => {});
+				},
+			}),
 	});
 	try {
 		await settle();
@@ -262,17 +391,25 @@ it("aborts a result read when another conversation is selected", async () => {
 
 it("follows the live frame without a status read and shows unestablished evidence explicitly", async () => {
 	const observed: AgentObservationSource = source([lead({ state: "working" })]);
-	let frame = conversationFrame({ storageId: STORAGE, revision: 3, status: { ...conversationFrame().status, openWork: [openItem({ unavailable: true }), { requestId: "broken" }] as unknown as OpenWorkView[] } });
+	let frame = conversationFrame({
+		storageId: STORAGE,
+		revision: 3,
+		status: {
+			...conversationFrame().status,
+			openWork: [openItem({ unavailable: true }), { requestId: "broken" }] as unknown as OpenWorkView[],
+		},
+	});
 	observed.frame = () => frame;
 	observed.availability = () => ({ state: "live" }) as ReturnType<AgentObservationSource["availability"]>;
 	let reads = 0;
 	const f: Fixture = fixture(140, 40, observed, {
-		forms: (target) => formsHost(target, f.state, observed, f.calls, {
-			status: async () => {
-				reads++;
-				return {};
-			},
-		}),
+		forms: (target) =>
+			formsHost(target, f.state, observed, f.calls, {
+				status: async () => {
+					reads++;
+					return {};
+				},
+			}),
 	});
 	try {
 		await settle();
@@ -282,7 +419,11 @@ it("follows the live frame without a status read and shows unestablished evidenc
 		assert.equal(reads, 0, "a live frame supplies the items");
 		assert.match(screen, /1 open · 0 closed · live · 1 item could not be read/u);
 		assert.match(screen, /↳ not established · other-storage:/u);
-		assert.match(screen, /not established · other-storage:4 submission 9/u, "the detail keeps the exact dependency selectors");
+		assert.match(
+			screen,
+			/not established · other-storage:4 submission 9/u,
+			"the detail keeps the exact dependency selectors",
+		);
 		assert.doesNotMatch(screen, /read again/u, "a live view offers no read again");
 		press(f, DOWN);
 		assert.match(shown(f), /No committed fact establishes its state: the producer/u);
@@ -302,13 +443,22 @@ it("names a status read failure and a final report that is not retained", async 
 	let fail = true;
 	const observed = source([lead()]);
 	const f: Fixture = fixture(140, 40, observed, {
-		forms: (target) => formsHost(target, f.state, observed, f.calls, {
-			status: async () => {
-				if (fail) throw new Error("storage busy");
-				return { conversation: { openWork: [closedItem("absent")] } };
-			},
-			inspect: async () => ({ view: "result", sessionId: STORAGE, conversationId: 1, submissionId: 7, status: "done", reason: "Final report work-final:1:task-a is not retained for recipient-c", usage: { models: {}, tools: {} } }),
-		}),
+		forms: (target) =>
+			formsHost(target, f.state, observed, f.calls, {
+				status: async () => {
+					if (fail) throw new Error("storage busy");
+					return { conversation: { openWork: [closedItem("absent")] } };
+				},
+				inspect: async () => ({
+					view: "result",
+					sessionId: STORAGE,
+					conversationId: 1,
+					submissionId: 7,
+					status: "done",
+					reason: "Final report work-final:1:task-a is not retained for recipient-c",
+					usage: { models: {}, tools: {} },
+				}),
+			}),
 	});
 	try {
 		await settle();
@@ -331,7 +481,10 @@ it("names a status read failure and a final report that is not retained", async 
 
 it("orders open work before closed work and keeps every identity in its row key", () => {
 	const rows = workRows([closedItem("delivered"), openItem()]);
-	assert.deepEqual(rows.map((entry) => entry.key), ["request:task-b", "dependency:task-b:other-storage:4:9", "request:task-a", "report:task-a"]);
+	assert.deepEqual(
+		rows.map((entry) => entry.key),
+		["request:task-b", "dependency:task-b:other-storage:4:9", "request:task-a", "report:task-a"],
+	);
 	assert.deepEqual(readWork({}), { items: [], unreadable: 0 });
 	assert.deepEqual(readWork({ openWork: "x" }), { items: [], unreadable: 1 });
 	assert.throws(() => readWork(null), /names no conversation/u);
@@ -339,16 +492,58 @@ it("orders open work before closed work and keeps every identity in its row key"
 
 function openItem(options: { unavailable?: boolean } = {}): OpenWorkView {
 	return {
-		requestId: "task-b", submissionId: 8, requester: "requester-b", replyTo: "recipient-c", origin: "operator", note: "Wait for the other storage", state: "open", declaredAt: 1, updatedAt: 1,
-		dependencies: [{ sessionId: "other-storage:4", submissionId: 9, state: "open", ...(options.unavailable === false ? {} : { unavailable: "the producer is in another storage and no result of this dependency was admitted into this conversation; read it with the inspect call" }), inspect: { tool: "agent_inspect", view: "result", sessionId: "other-storage:4", submissionId: 9 } }],
+		requestId: "task-b",
+		submissionId: 8,
+		requester: "requester-b",
+		replyTo: "recipient-c",
+		origin: "operator",
+		note: "Wait for the other storage",
+		state: "open",
+		declaredAt: 1,
+		updatedAt: 1,
+		dependencies: [
+			{
+				sessionId: "other-storage:4",
+				submissionId: 9,
+				state: "open",
+				...(options.unavailable === false
+					? {}
+					: {
+							unavailable:
+								"the producer is in another storage and no result of this dependency was admitted into this conversation; read it with the inspect call",
+						}),
+				inspect: { tool: "agent_inspect", view: "result", sessionId: "other-storage:4", submissionId: 9 },
+			},
+		],
 	};
 }
 
 function closedItem(delivery: NonNullable<OpenWorkView["close"]>["delivery"]): OpenWorkView {
 	return {
-		requestId: "task-a", submissionId: 7, requester: "requester-b", replyTo: "recipient-c", origin: "model", note: "Combine the survey and the audit", state: "closed", declaredAt: 1, updatedAt: 2,
-		close: { status: "done", message: "all parts landed", at: 2, reportRequestId: "work-final:1:task-a", ...(delivery === undefined ? {} : { delivery }), read: { tool: "agent_inspect", view: "result", sessionId: STORAGE, submissionId: 7, finalReport: true, offset: 0 } },
+		requestId: "task-a",
+		submissionId: 7,
+		requester: "requester-b",
+		replyTo: "recipient-c",
+		origin: "model",
+		note: "Combine the survey and the audit",
+		state: "closed",
+		declaredAt: 1,
+		updatedAt: 2,
+		close: {
+			status: "done",
+			message: "all parts landed",
+			at: 2,
+			reportRequestId: "work-final:1:task-a",
+			...(delivery === undefined ? {} : { delivery }),
+			read: {
+				tool: "agent_inspect",
+				view: "result",
+				sessionId: STORAGE,
+				submissionId: 7,
+				finalReport: true,
+				offset: 0,
+			},
+		},
 		dependencies: [],
 	};
 }
-

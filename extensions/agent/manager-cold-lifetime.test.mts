@@ -13,32 +13,63 @@ import { TerminalController } from "./terminal-client.ts";
 
 async function fixture(t: TestContext) {
 	const base = realpathSync(mkdtempSync(join(tmpdir(), "cl-")));
-	const root = join(base, "store"), scratch = join(base, "t");
-	mkdirSync(root); mkdirSync(scratch);
+	const root = join(base, "store"),
+		scratch = join(base, "t");
+	mkdirSync(root);
+	mkdirSync(scratch);
 	const previousTmp = process.env.TMPDIR;
 	process.env.TMPDIR = scratch;
-	const options = { root, agentDir: root, packageDir: root,
-		connect: async () => { throw new Error("No live host"); },
-		acquire: async () => { throw new Error("Observation must not acquire a host"); },
+	const options = {
+		root,
+		agentDir: root,
+		packageDir: root,
+		connect: async () => {
+			throw new Error("No live host");
+		},
+		acquire: async () => {
+			throw new Error("Observation must not acquire a host");
+		},
 	};
-	const manager = new AgentManager(options), other = new AgentManager(options);
+	const manager = new AgentManager(options),
+		other = new AgentManager(options);
 	t.after(async () => {
 		await Promise.all([manager.close(), other.close()]);
-		if (previousTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previousTmp;
+		if (previousTmp === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = previousTmp;
 		rmSync(base, { recursive: true, force: true });
 	});
-	const record = manager.catalog.create({ cwd: root, agentDir: root, packageDir: root, model: { provider: "fixture", modelId: "fixture" }, thinkingLevel: "off" });
-	const source = await DurableHost.open({ ...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry()), storageId: record.storageId });
+	const record = manager.catalog.create({
+		cwd: root,
+		agentDir: root,
+		packageDir: root,
+		model: { provider: "fixture", modelId: "fixture" },
+		thinkingLevel: "off",
+	});
+	const source = await DurableHost.open({
+		...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		storageId: record.storageId,
+	});
 	try {
 		const input = await source.submit({ message: "retained cold history", requestId: "history", origin: "operator" });
 		await source.wait(input.submissionId);
-	} finally { await source.close(); }
-	return { manager, other, record, root, copies: () => readdirSync(scratch).filter((name) => name.startsWith("pi-durable-snapshot-")) };
+	} finally {
+		await source.close();
+	}
+	return {
+		manager,
+		other,
+		record,
+		root,
+		copies: () => readdirSync(scratch).filter((name) => name.startsWith("pi-durable-snapshot-")),
+	};
 }
 
-test("primary and roster owners share retention and release only after the final owner ends", { timeout: 15000 }, async (t) => {
+test("primary and roster owners share retention and release only after the final owner ends", {
+	timeout: 15000,
+}, async (t) => {
 	const { manager, record, copies } = await fixture(t);
-	const first = new AbortController(), replacement = new AbortController();
+	const first = new AbortController(),
+		replacement = new AbortController();
 	await manager.registerPrimary(randomUUID(), { signal: first.signal, send: () => {} });
 	const off = manager.subscribeRoster(() => {});
 	await manager.snapshot(record.storageId);
@@ -61,7 +92,8 @@ test("primary and roster owners share retention and release only after the final
 	const closed = deferred();
 	const original = DurableObservation.prototype.close;
 	t.mock.method(DurableObservation.prototype, "close", async function (this: DurableObservation) {
-		await original.call(this); closed.resolve();
+		await original.call(this);
+		closed.resolve();
 	});
 	active.abort();
 	await closed.promise;
@@ -74,9 +106,17 @@ test("primary and roster owners share retention and release only after the final
 	assert.deepEqual(copies(), [], "manager shutdown overrides an active primary owner");
 });
 
-test("terminal closure awaits roster disposal after borrowed reads and leaves another manager intact", { timeout: 15000 }, async (t) => {
-	const readEntered = deferred(), releaseRead = deferred(), closeEntered = deferred(), releaseClose = deferred();
-	t.after(() => { releaseRead.resolve(); releaseClose.resolve(); });
+test("terminal closure awaits roster disposal after borrowed reads and leaves another manager intact", {
+	timeout: 15000,
+}, async (t) => {
+	const readEntered = deferred(),
+		releaseRead = deferred(),
+		closeEntered = deferred(),
+		releaseClose = deferred();
+	t.after(() => {
+		releaseRead.resolve();
+		releaseClose.resolve();
+	});
 	const { manager, other, record, root, copies } = await fixture(t);
 	const controller = new TerminalController({ manager, caller: { id: "terminal", cwd: root } });
 	const off = controller.source.subscribeRoster(() => {});
@@ -86,20 +126,34 @@ test("terminal closure awaits roster disposal after borrowed reads and leaves an
 	assert.equal(copies().length, 2);
 	let borrow = true;
 	const request = DurableObservation.prototype.request;
-	t.mock.method(DurableObservation.prototype, "request", async function (this: DurableObservation, ...args: Parameters<typeof request>) {
-		if (borrow) { borrow = false; readEntered.resolve(); await releaseRead.promise; }
-		return request.apply(this, args);
-	});
+	t.mock.method(
+		DurableObservation.prototype,
+		"request",
+		async function (this: DurableObservation, ...args: Parameters<typeof request>) {
+			if (borrow) {
+				borrow = false;
+				readEntered.resolve();
+				await releaseRead.promise;
+			}
+			return request.apply(this, args);
+		},
+	);
 	let disposals = 0;
 	const close = DurableObservation.prototype.close;
 	t.mock.method(DurableObservation.prototype, "close", async function (this: DurableObservation) {
-		disposals++; closeEntered.resolve(); await releaseClose.promise; await close.call(this);
+		disposals++;
+		closeEntered.resolve();
+		await releaseClose.promise;
+		await close.call(this);
 	});
 	const borrowed = manager.snapshot(record.storageId, { limit: 1 });
 	await readEntered.promise;
-	off(); off();
+	off();
+	off();
 	let settled = false;
-	const closing = controller.close().then(() => { settled = true; });
+	const closing = controller.close().then(() => {
+		settled = true;
+	});
 	assert.equal(manager.close(), manager.close(), "manager close is idempotent while disposal is pending");
 	assert.equal(disposals, 0, "a borrowed copy stays open");
 	assert.equal(settled, false);
@@ -120,6 +174,13 @@ test("terminal closure awaits roster disposal after borrowed reads and leaves an
 
 test("a control without launch uses only a running host and never starts one", { timeout: 15000 }, async (t) => {
 	const { manager, record, root } = await fixture(t);
-	await assert.rejects(manager.control("models", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }, { launch: false }), /No live host/u);
-	await assert.rejects(manager.control("models", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }), /must not acquire a host/u, "the default still starts a host for an explicit control");
+	await assert.rejects(
+		manager.control("models", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }, { launch: false }),
+		/No live host/u,
+	);
+	await assert.rejects(
+		manager.control("models", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }),
+		/must not acquire a host/u,
+		"the default still starts a host for an explicit control",
+	);
 });

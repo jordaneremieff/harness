@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { CURSOR_MARKER, KeybindingsManager, TUI_KEYBINDINGS, getKeybindings, setKeybindings, visibleWidth, type AutocompleteProvider, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import {
+	CURSOR_MARKER,
+	KeybindingsManager,
+	TUI_KEYBINDINGS,
+	getKeybindings,
+	setKeybindings,
+	visibleWidth,
+	type AutocompleteProvider,
+	type TUI,
+	type TuiMouseEvent,
+} from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { AgentComposer } from "./agent-composer.ts";
 import { deferred, keys, theme } from "./dashboard-test-fixture.mts";
@@ -119,35 +129,80 @@ it("F and Alt events do not route to application controls", () => {
 });
 for (const rows of [5, 6, 7, 8, 12, 29]) {
 	it(`explicit ${rows}-row viewport preserves the native caret, wrapping and padding`, () => {
-		const composer = new AgentComposer({ tui: { terminal: { rows: 44, columns: 80 }, requestRender() {} } as unknown as TUI, theme, keys, onSubmit() {}, onEscape() {} });
-		composer.focused = true; composer.setViewportRows(rows);
+		const composer = new AgentComposer({
+			tui: { terminal: { rows: 44, columns: 80 }, requestRender() {} } as unknown as TUI,
+			theme,
+			keys,
+			onSubmit() {},
+			onEscape() {},
+		});
+		composer.focused = true;
+		composer.setViewportRows(rows);
 		composer.setText("短い 🧩 draft");
 		let lines = composer.render(80);
-		assert.equal(lines.length, rows + 2); assert.ok(lines.every((line) => visibleWidth(line) === 80));
+		assert.equal(lines.length, rows + 2);
+		assert.ok(lines.every((line) => visibleWidth(line) === 80));
 		assert.equal(lines.filter((line) => line.includes(CURSOR_MARKER)).length, 1);
 		assert.ok(stripVTControlCharacters(lines.at(-1) ?? "").startsWith("╰"));
 		const text = Array.from({ length: 40 }, (_, index) => `${index} 漢字 🧩`).join("\n");
-		composer.setText(text); lines = composer.render(80);
-		assert.equal(lines.length, rows + 2); assert.match(lines[0] ?? "", /↑ \d+ lines/);
+		composer.setText(text);
+		lines = composer.render(80);
+		assert.equal(lines.length, rows + 2);
+		assert.match(lines[0] ?? "", /↑ \d+ lines/);
 		assert.ok(lines[rows]?.includes(CURSOR_MARKER));
-		composer.setViewportRows(5); assert.equal(composer.render(80).length, 7); assert.equal(composer.getText(), text);
-		composer.setViewportRows(undefined); assert.equal(composer.render(80).length, 8);
+		composer.setViewportRows(5);
+		assert.equal(composer.render(80).length, 7);
+		assert.equal(composer.getText(), text);
+		composer.setViewportRows(undefined);
+		assert.equal(composer.render(80).length, 8);
 	});
 }
 it("padding precedes native autocomplete and preserves its mouse transform", async () => {
 	const ready = deferred();
-	const composer = new AgentComposer({ tui: { terminal: { rows: 44, columns: 80 }, requestRender() { ready.resolve(); } } as unknown as TUI, theme, keys, onSubmit() {}, onEscape() {} });
-	const editor = (composer as unknown as { editor: { setAutocompleteProvider(provider: AutocompleteProvider): void } }).editor;
+	const composer = new AgentComposer({
+		tui: {
+			terminal: { rows: 44, columns: 80 },
+			requestRender() {
+				ready.resolve();
+			},
+		} as unknown as TUI,
+		theme,
+		keys,
+		onSubmit() {},
+		onEscape() {},
+	});
+	const editor = (composer as unknown as { editor: { setAutocompleteProvider(provider: AutocompleteProvider): void } })
+		.editor;
 	editor.setAutocompleteProvider({
 		getSuggestions: async () => ({ prefix: "/", items: [{ value: "complete", label: "completion item" }] }),
 		applyCompletion: () => ({ lines: ["complete"], cursorLine: 0, cursorCol: 8 }),
 	});
-	composer.setViewportRows(8); composer.focused = true; composer.handleInput("/");
+	composer.setViewportRows(8);
+	composer.focused = true;
+	composer.handleInput("/");
 	await ready.promise;
-	const lines = composer.render(80); const plain = lines.map(stripVTControlCharacters);
+	const lines = composer.render(80);
+	const plain = lines.map(stripVTControlCharacters);
 	assert.ok(plain[9]?.startsWith("╰"));
-	const y = plain.findIndex((line) => line.includes("completion item")); assert.ok(y > 9);
-	assert.equal(composer.handleMouse({ type: "click", button: "left", clickCount: 1, x: 3, y, screenX: 3, screenY: y, width: 80, height: lines.length, shift: false, alt: false, ctrl: false })?.handled, true);
+	const y = plain.findIndex((line) => line.includes("completion item"));
+	assert.ok(y > 9);
+	assert.equal(
+		composer.handleMouse({
+			type: "click",
+			button: "left",
+			clickCount: 1,
+			x: 3,
+			y,
+			screenX: 3,
+			screenY: y,
+			width: 80,
+			height: lines.length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+		})?.handled,
+		true,
+	);
 	assert.equal(composer.getText(), "complete");
 });
 

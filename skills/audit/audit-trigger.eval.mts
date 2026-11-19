@@ -10,7 +10,11 @@ const triggerCases = [
 		title: "An informal loop concern selects an episode audit",
 		seed: "The conversation concerns repeated agent retries. The task has no calendar range or extension name.",
 		prompt: "Can you work out why we keep going round in circles?",
-		ledger: ["Read the audit skill.", "Select the relevant recorded episode.", "Do not require a time-period argument."],
+		ledger: [
+			"Read the audit skill.",
+			"Select the relevant recorded episode.",
+			"Do not require a time-period argument.",
+		],
 	},
 	{
 		id: "positive-tools",
@@ -18,7 +22,11 @@ const triggerCases = [
 		title: "A pronoun resolves to recently compared tools",
 		seed: "The operator just compared tool A and tool B. Tool C is not part of the discussion.",
 		prompt: "Are we actually using these?",
-		ledger: ["Resolve these to tool A and tool B.", "Collect retained use evidence for those tools.", "Do not count every installed extension."],
+		ledger: [
+			"Resolve these to tool A and tool B.",
+			"Collect retained use evidence for those tools.",
+			"Do not count every installed extension.",
+		],
 	},
 	{
 		id: "positive-comparison",
@@ -26,7 +34,11 @@ const triggerCases = [
 		title: "A change question selects comparable before and after evidence",
 		seed: "The operator describes slow agent responses since a harness update. A comparable before and after window is available.",
 		prompt: "Take a look at what changed after that update.",
-		ledger: ["Audit relevant before and after evidence.", "Use comparable units.", "Do not assume the update caused the slowdown."],
+		ledger: [
+			"Audit relevant before and after evidence.",
+			"Use comparable units.",
+			"Do not assume the update caused the slowdown.",
+		],
 	},
 	{
 		id: "positive-active-setup",
@@ -34,7 +46,11 @@ const triggerCases = [
 		title: "A bare setup request starts a bounded active audit",
 		seed: "This is an active harness session with local read-only evidence available.",
 		prompt: "Audit my setup.",
-		ledger: ["Infer a bounded active setup or session scope.", "Start without routine date questions.", "State the selected scope."],
+		ledger: [
+			"Infer a bounded active setup or session scope.",
+			"Start without routine date questions.",
+			"State the selected scope.",
+		],
 	},
 	{
 		id: "positive-worker-outcome",
@@ -42,7 +58,10 @@ const triggerCases = [
 		title: "An incomplete worker result selects delegation evidence",
 		seed: "The operator requested a complete answer from a delegated worker. The worker returned an incomplete answer. No acceptance evidence exists. No other delegation or outcome records are available.",
 		prompt: "Check how the agents handled this one.",
-		ledger: ["Inspect relevant delegation and outcome evidence.", "Do not treat provider completion as task acceptance."],
+		ledger: [
+			"Inspect relevant delegation and outcome evidence.",
+			"Do not treat provider completion as task acceptance.",
+		],
 	},
 	{
 		id: "positive-counts",
@@ -50,7 +69,11 @@ const triggerCases = [
 		title: "A numbers-only hint retains its units and gaps",
 		seed: "The operator wants local harness use counts for yesterday. The timezone is UTC. Duration and cost are not recorded.",
 		prompt: "Collect the evidence for yesterday, just the numbers.",
-		ledger: ["Collect bounded local data.", "Honor numbers-only output.", "State the UTC window and preserve missing metrics."],
+		ledger: [
+			"Collect bounded local data.",
+			"Honor numbers-only output.",
+			"State the UTC window and preserve missing metrics.",
+		],
 	},
 	{
 		id: "positive-cost",
@@ -58,7 +81,11 @@ const triggerCases = [
 		title: "A cost question uses recorded usage without invoice claims",
 		seed: "The conversation suspects that model cost increased in the named agent sessions. Recorded usage exists, but invoice totals do not.",
 		prompt: "Where is the spend coming from?",
-		ledger: ["Use recorded usage and qualified cost evidence.", "Report source gaps.", "Do not infer invoice totals from incomplete token records."],
+		ledger: [
+			"Use recorded usage and qualified cost evidence.",
+			"Report source gaps.",
+			"Do not infer invoice totals from incomplete token records.",
+		],
 	},
 	{
 		id: "positive-quick-episode",
@@ -66,7 +93,11 @@ const triggerCases = [
 		title: "A quick evidence check keeps its process bound",
 		seed: "The conversation names a recent local agent episode. The operator explicitly limits the process to a quick check with no workers.",
 		prompt: "Give me a quick evidence-based check, no workers.",
-		ledger: ["Audit the episode within the explicit process bound.", "Do not delegate.", "Use a narrower supported conclusion when evidence is costly."],
+		ledger: [
+			"Audit the episode within the explicit process bound.",
+			"Do not delegate.",
+			"Use a narrower supported conclusion when evidence is costly.",
+		],
 	},
 	{
 		id: "near-security-code",
@@ -90,7 +121,10 @@ const triggerCases = [
 		title: "Application instrumentation stays outside local session audit",
 		seed: "An application monitoring dashboard is the subject. The operator asks for an HTTP service change.",
 		prompt: "Add telemetry to our HTTP service.",
-		ledger: ["Treat this as application instrumentation work.", "Do not use the local session audit as the implementation workflow."],
+		ledger: [
+			"Treat this as application instrumentation work.",
+			"Do not use the local session audit as the implementation workflow.",
+		],
 	},
 	{
 		id: "near-definition",
@@ -159,7 +193,8 @@ const suite: EvaluationSuite = {
 	subject: {
 		adapter: "pi-sdk",
 		kind: "skill",
-		description: "Measure whether plain-language audit requests load the candidate skill without absorbing adjacent work.",
+		description:
+			"Measure whether plain-language audit requests load the candidate skill without absorbing adjacent work.",
 		config: {
 			invocation: "autonomous-trigger",
 			boundary: "A candidate read of SKILL.md is trigger evidence. Direct slash invocation is evaluated separately.",

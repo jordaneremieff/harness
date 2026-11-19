@@ -10,7 +10,19 @@ import {
 import type { OwnershipRecord, OwnershipState, OwnershipStore, ResourceRef, ServerRef } from "./ownership.ts";
 import { createRexBudget, deadlineCoverage, RexStopped, type RexBudget, type BudgetPhase } from "./deadline.ts";
 import { setTimeout as delay } from "node:timers/promises";
-import { ASK_ACTION, ASK_API_REVISION, ASK_BUDGET_LIMIT_MS, askBudget, askCliSettlement, askMeaning, askPrompt, askTrouble, askWaitMs, type AskRequest, type AskSettlement } from "./ask.ts";
+import {
+	ASK_ACTION,
+	ASK_API_REVISION,
+	ASK_BUDGET_LIMIT_MS,
+	askBudget,
+	askCliSettlement,
+	askMeaning,
+	askPrompt,
+	askTrouble,
+	askWaitMs,
+	type AskRequest,
+	type AskSettlement,
+} from "./ask.ts";
 import { paneStackingCommand, withPaneStacking } from "./pane-stacking.ts";
 import { CliTransport } from "./transport.ts";
 import type { CliResult, RexTransport } from "./transport.ts";
@@ -77,8 +89,22 @@ export type RexRequest =
 			code?: string;
 			action?: string;
 	  })
-	| (RequestBase & { op: "owned"; recordId?: string; phase?: OwnershipRecord["phase"]; offset?: number; limit?: number })
-	| { op: "observe"; recordId?: string; phase?: OwnershipRecord["phase"]; offset?: number; limit?: number; timeoutMs?: number; maxBytes?: number }
+	| (RequestBase & {
+			op: "owned";
+			recordId?: string;
+			phase?: OwnershipRecord["phase"];
+			offset?: number;
+			limit?: number;
+	  })
+	| {
+			op: "observe";
+			recordId?: string;
+			phase?: OwnershipRecord["phase"];
+			offset?: number;
+			limit?: number;
+			timeoutMs?: number;
+			maxBytes?: number;
+	  }
 	| (RequestBase & {
 			op: "reconcile";
 			recordId?: string;
@@ -170,8 +196,13 @@ export interface Capture {
 export function deadlineResult(value: RexResult, budget: RexBudget | undefined, operation: string): RexResult {
 	if (!budget) return value;
 	const stop = budget.stopReason();
-	const established = value.effects.state === "confirmed" || ["child_completed", "child_failed", "condition_observed", "observation_failed", "answered"].includes(value.outcome);
-	const stopped = stop && !established ? { ...value, ok: false, outcome: stop, data: { ...object(value.data), operation, phase: budget.phase } } : value;
+	const established =
+		value.effects.state === "confirmed" ||
+		["child_completed", "child_failed", "condition_observed", "observation_failed", "answered"].includes(value.outcome);
+	const stopped =
+		stop && !established
+			? { ...value, ok: false, outcome: stop, data: { ...object(value.data), operation, phase: budget.phase } }
+			: value;
 	return { ...stopped, coverage: { ...stopped.coverage, deadline: deadlineCoverage(budget) } };
 }
 export class RexCore {
@@ -185,7 +216,12 @@ export class RexCore {
 		this.options = options;
 		this.env = options.env ?? process.env;
 		this.transport = options.transport ?? new CliTransport(options.executable, this.env);
-		this.maxOutputBytes = boundedInteger(options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 4096, 1048576, "output bytes");
+		this.maxOutputBytes = boundedInteger(
+			options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+			4096,
+			1048576,
+			"output bytes",
+		);
 		this.maxWaitMs = boundedInteger(options.maxWaitMs ?? 120000, 1000, 300000, "wait duration");
 		this.maxRecords = boundedInteger(options.maxRecords ?? 128, 2, 256, "ownership records");
 	}
@@ -198,21 +234,32 @@ export class RexCore {
 		let owned: RexBudget | undefined;
 		const finish = (value: RexResult) => {
 			const settled = deadlineResult(value, context.budget, request.op);
-			return boundResult(request.op === "wait" ? waitDiagnostic(settled) : settled, resultByteLimit(this.maxOutputBytes));
+			return boundResult(
+				request.op === "wait" ? waitDiagnostic(settled) : settled,
+				resultByteLimit(this.maxOutputBytes),
+			);
 		};
 		try {
 			if (!boundedText(context.ownerId, 1024) || !boundedText(context.callId, 1024))
 				throw new Error("Rex requires stable owner and call identities.");
 			if (Buffer.byteLength(JSON.stringify(request), "utf8") > 131072)
 				throw new Error("Rex request exceeds its byte limit.");
-			if (!context.budget) owned = request.op === "ask" ? askBudget(request.timeoutMs, context.signal) : createRexBudget(request.timeoutMs, this.maxWaitMs, context.signal);
+			if (!context.budget)
+				owned =
+					request.op === "ask"
+						? askBudget(request.timeoutMs, context.signal)
+						: createRexBudget(request.timeoutMs, this.maxWaitMs, context.signal);
 			context = { ...context, budget: context.budget ?? owned, signal: (context.budget ?? owned)?.signal };
 			context.budget?.check("resolve");
 			const response = finish(await this.dispatch(request, context));
-			return request.op !== "ask" && request.timeoutMs !== undefined && request.timeoutMs > this.maxWaitMs ? this.cappedDeadline(response, request.timeoutMs) : response;
+			return request.op !== "ask" && request.timeoutMs !== undefined && request.timeoutMs > this.maxWaitMs
+				? this.cappedDeadline(response, request.timeoutMs)
+				: response;
 		} catch (error) {
 			return finish(executionFailure(error, context.budget));
-		} finally { owned?.dispose(); }
+		} finally {
+			owned?.dispose();
+		}
 	}
 
 	private async dispatch(request: RexRequest, context: RexCallContext): Promise<RexResult> {
@@ -220,7 +267,12 @@ export class RexCore {
 		if (request.op === "owned") return this.owned(request, context);
 		if (request.op === "observe") return this.observeOwned(request, context);
 		if (request.op === "reconcile" || request.op === "cleanup") return this.manage(request, context);
-		if (request.op === "native" && request.kind !== "catalog" && [request.query, request.offset, request.limit].some((value) => value !== undefined)) throw new Error("query, offset and limit apply only to native catalog discovery.");
+		if (
+			request.op === "native" &&
+			request.kind !== "catalog" &&
+			[request.query, request.offset, request.limit].some((value) => value !== undefined)
+		)
+			throw new Error("query, offset and limit apply only to native catalog discovery.");
 		const server = await this.selectServer(request.target, context);
 		if (request.op === "environment") return this.environment(server, context);
 		if (request.op === "resolve") {
@@ -234,7 +286,11 @@ export class RexCore {
 		return this.dispatchTarget(request, target, context);
 	}
 
-	private async requestedTarget(request: DispatchingRequest, server: ServerRef, context: RexCallContext): Promise<ResolvedTarget> {
+	private async requestedTarget(
+		request: DispatchingRequest,
+		server: ServerRef,
+		context: RexCallContext,
+	): Promise<ResolvedTarget> {
 		const need = targetNeed(request);
 		if (request.op === "native") {
 			if (request.kind === "catalog" || request.kind === "describe") return { server, source: "server" };
@@ -250,7 +306,8 @@ export class RexCore {
 	/** Lua and actions need a real session when they take inherited context; they never fall back to focus. */
 	private validateNativeContext(request: RexRequest, target: ResolvedTarget): void {
 		if (request.op !== "native" || (request.kind !== "lua" && request.kind !== "action")) return;
-		if (target.source === "inherited" && !target.sessionId) validateDefaultTarget(target.source, "session", this.options.launch?.unavailable);
+		if (target.source === "inherited" && !target.sessionId)
+			validateDefaultTarget(target.source, "session", this.options.launch?.unavailable);
 	}
 
 	private dispatchTarget(request: RexRequest, target: ResolvedTarget, context: RexCallContext): Promise<RexResult> {
@@ -272,7 +329,12 @@ export class RexCore {
 
 	/** `--timeout` bounds each connection and request; for `rex do` it also bounds how long the action may run. */
 	private prefix(server: string | undefined, timeoutSeconds = 10): string[] {
-		return ["--autostart=false", "--color=never", `--timeout=${timeoutSeconds}s`, ...(server ? ["--server", server] : [])];
+		return [
+			"--autostart=false",
+			"--color=never",
+			`--timeout=${timeoutSeconds}s`,
+			...(server ? ["--server", server] : []),
+		];
 	}
 	/**
 	 * An action call (`run.action`) may run until the call's own allowance ends, not only the connection limit; the
@@ -290,13 +352,16 @@ export class RexCore {
 		context.signal?.throwIfAborted();
 		const allowance = Math.floor(Math.min(timeoutMs, context.budget?.remaining("work") ?? this.maxWaitMs));
 		if (allowance < 1) throw new RexStopped(context.budget?.stopReason() ?? "timeout", "resolve");
-		const response = await this.transport.run([...this.prefix(server, run.action ? Math.max(10, Math.ceil(allowance / 1000)) : 10), ...args], {
-			cwd: context.cwd,
-			signal: context.signal,
-			finaliseSignal: context.budget?.finaliseSignal,
-			timeoutMs: allowance,
-			maxOutputBytes: this.maxOutputBytes,
-		});
+		const response = await this.transport.run(
+			[...this.prefix(server, run.action ? Math.max(10, Math.ceil(allowance / 1000)) : 10), ...args],
+			{
+				cwd: context.cwd,
+				signal: context.signal,
+				finaliseSignal: context.budget?.finaliseSignal,
+				timeoutMs: allowance,
+				maxOutputBytes: this.maxOutputBytes,
+			},
+		);
 		if (!run.keepResult) context.budget?.check(context.budget.phase);
 		return response;
 	}
@@ -367,7 +432,12 @@ export class RexCore {
 				await this.block("blob_read", { id: first.id, offset, max_bytes: pageBytes }, target, context),
 			);
 			context.budget?.check("observe");
-			if (part.id !== first.id || part.total !== total || typeof part.data !== "string" || typeof part.eof !== "boolean")
+			if (
+				part.id !== first.id ||
+				part.total !== total ||
+				typeof part.data !== "string" ||
+				typeof part.eof !== "boolean"
+			)
 				throw new Error("Rex returned an inconsistent capture continuation.");
 			if (part.eof) {
 				suffix = completeUtf8Suffix(part.data, total - offset);
@@ -397,14 +467,22 @@ export class RexCore {
 		return (await this.identify(intent?.server ?? this.options.server ?? this.env.REX_SERVER, context)).server;
 	}
 	/** The selected server's exact identity, with the rest of what it reports about itself. */
-	private async identify(selection: string | undefined, context: RexCallContext): Promise<{ server: ServerRef; data: Record<string, unknown> }> {
+	private async identify(
+		selection: string | undefined,
+		context: RexCallContext,
+	): Promise<{ server: ServerRef; data: Record<string, unknown> }> {
 		context.signal?.throwIfAborted();
 		if (selection !== undefined && !boundedText(selection, 4096)) throw new Error("Rex server selector is invalid.");
 		const data = object(await this.json(["whoami", "--json"], selection, context));
 		if (!boundedText(data.endpoint, 4096) || !boundedText(data.host_id, 128) || !boundedText(data.instance_id, 128))
 			throw new Error("Rex did not report an exact endpoint, host ID and server instance ID.");
 		return {
-			server: { endpoint: data.endpoint, hostId: data.host_id, instanceId: data.instance_id, selection: selection ?? "home" },
+			server: {
+				endpoint: data.endpoint,
+				hostId: data.host_id,
+				instanceId: data.instance_id,
+				selection: selection ?? "home",
+			},
 			data,
 		};
 	}
@@ -416,7 +494,8 @@ export class RexCore {
 	 */
 	private async ask(request: AskRequest, context: RexCallContext): Promise<RexResult> {
 		const question = askPrompt(request, context.asker);
-		const stopped = (target?: ResolvedTarget) => askResult(question.title, target, { outcome: context.budget?.stopReason() ?? "cancelled" });
+		const stopped = (target?: ResolvedTarget) =>
+			askResult(question.title, target, { outcome: context.budget?.stopReason() ?? "cancelled" });
 		let target: ResolvedTarget;
 		try {
 			const ready = await this.askReady(question.title, context);
@@ -425,10 +504,14 @@ export class RexCore {
 		} catch (error) {
 			if (error instanceof RexStopped || context.signal?.aborted) return stopped();
 			// Nothing has asked anybody yet: the server or the CLI was not available.
-			return askResult(question.title, undefined, { outcome: "unavailable", detail: `Rex could not be reached before the question was asked: ${error instanceof NativeFailure ? error.result.error ?? error.result.outcome : errorText(error)}` });
+			return askResult(question.title, undefined, {
+				outcome: "unavailable",
+				detail: `Rex could not be reached before the question was asked: ${error instanceof NativeFailure ? (error.result.error ?? error.result.outcome) : errorText(error)}`,
+			});
 		}
-		try { return await this.askInTurn(request, question, target, context); }
-		catch (error) {
+		try {
+			return await this.askInTurn(request, question, target, context);
+		} catch (error) {
 			// A call stopped before it started asked nobody; a stopped action closed its question in every app.
 			if (error instanceof RexStopped || context.signal?.aborted) return stopped(target);
 			throw error;
@@ -443,23 +526,43 @@ export class RexCore {
 		if (tooOld) return askResult(title, target, tooOld);
 		const listed = object(await this.json(["actions", "--json"], server.endpoint, context));
 		const actions = Array.isArray(listed.actions) ? listed.actions : [];
-		if (!actions.some((action) => object(action).name === ASK_ACTION && object(action).kind === "lua")) return askResult(title, target, { outcome: "not_configured" });
+		if (!actions.some((action) => object(action).name === ASK_ACTION && object(action).kind === "lua"))
+			return askResult(title, target, { outcome: "not_configured" });
 		context.budget?.check("observe");
 		return target;
 	}
 
 	/** Ask, and while every app shows another question, ask again for the rest of the wait, so questions queue. */
-	private async askInTurn(request: AskRequest, question: ReturnType<typeof askPrompt>, target: ResolvedTarget, context: RexCallContext): Promise<RexResult> {
+	private async askInTurn(
+		request: AskRequest,
+		question: ReturnType<typeof askPrompt>,
+		target: ResolvedTarget,
+		context: RexCallContext,
+	): Promise<RexResult> {
 		const waitMs = askWaitMs(request.timeoutMs);
 		const left = () => waitMs - (context.budget?.elapsed() ?? 0);
 		for (let attempt = 0; ; attempt++) {
-			if (left() < 1000) return askResult(question.title, target, { outcome: "timeout", detail: attempt ? "Other questions kept every Rex app busy for the whole wait." : "Rex took the whole wait before the question could be shown." });
+			if (left() < 1000)
+				return askResult(question.title, target, {
+					outcome: "timeout",
+					detail: attempt
+						? "Other questions kept every Rex app busy for the whole wait."
+						: "Rex took the whole wait before the question could be shown.",
+				});
 			const prompt = { ...question.prompt, timeout: Math.max(1, Math.ceil(left() / 1000)) };
 			// An answer that arrived as the call was stopped stands; askCliSettlement reads it from the output.
-			const raw = await this.cli(["do", ASK_ACTION, "--args", JSON.stringify({ kind: question.kind, prompt }), "--json"], target.server.endpoint, context, ASK_BUDGET_LIMIT_MS, { action: true, keepResult: true });
+			const raw = await this.cli(
+				["do", ASK_ACTION, "--args", JSON.stringify({ kind: question.kind, prompt }), "--json"],
+				target.server.endpoint,
+				context,
+				ASK_BUDGET_LIMIT_MS,
+				{ action: true, keepResult: true },
+			);
 			const settled = askCliSettlement(request, raw, context.budget?.stopReason());
 			if (settled.outcome !== "busy") return askResult(question.title, target, settled);
-			await delay(Math.max(0, Math.min(this.options.askRetryMs ?? 2000, left() - 1000)), undefined, { signal: context.signal });
+			await delay(Math.max(0, Math.min(this.options.askRetryMs ?? 2000, left() - 1000)), undefined, {
+				signal: context.signal,
+			});
 		}
 	}
 
@@ -550,7 +653,8 @@ export class RexCore {
 					block: this.env.REX_BLOCK,
 					client: this.env.REX_CLIENT,
 				},
-				inheritedContext: this.options.launch?.description ?? "Launch environment only. It is not operator focus or ownership proof.",
+				inheritedContext:
+					this.options.launch?.description ?? "Launch environment only. It is not operator focus or ownership proof.",
 				luaLocality:
 					"Lua and rex.exec run in the CLI process host. Rex API calls target the selected server; explicit rex.server calls select other configured hosts.",
 			},
@@ -560,10 +664,14 @@ export class RexCore {
 	private async startEffect(request: RexRequest, target: ResolvedTarget, context: RexCallContext): Promise<void> {
 		const record = pendingRecord(request, target, context);
 		context.budget?.check("effect");
-		await this.options.store.update(context.ownerId, (state) => {
-			context.budget?.check("effect");
-			return beginOwnership(state, record, this.maxRecords - 1);
-		}, "work");
+		await this.options.store.update(
+			context.ownerId,
+			(state) => {
+				context.budget?.check("effect");
+				return beginOwnership(state, record, this.maxRecords - 1);
+			},
+			"work",
+		);
 	}
 	private async settleEffect(
 		context: RexCallContext,
@@ -571,15 +679,19 @@ export class RexCore {
 		resources: ResourceRef[],
 		note: string,
 	): Promise<void> {
-		await this.options.store.update(context.ownerId, (state) => {
-			const record = state.records.find(
-				(entry) => entry.callId === context.callId && entry.ownerId === context.ownerId,
-			);
-			if (!record || record.phase === "released" || record.phase === "closed")
-				throw new Error("Rex effect claim was released or closed before outcome retention.");
-			context.budget?.check("finalise");
-			return changeOwnership(state, context.callId, { phase, resources, note }, this.maxRecords);
-		}, "finalise");
+		await this.options.store.update(
+			context.ownerId,
+			(state) => {
+				const record = state.records.find(
+					(entry) => entry.callId === context.callId && entry.ownerId === context.ownerId,
+				);
+				if (!record || record.phase === "released" || record.phase === "closed")
+					throw new Error("Rex effect claim was released or closed before outcome retention.");
+				context.budget?.check("finalise");
+				return changeOwnership(state, context.callId, { phase, resources, note }, this.maxRecords);
+			},
+			"finalise",
+		);
 	}
 	private async effect(
 		request: RexRequest,
@@ -624,22 +736,46 @@ export class RexCore {
 		}
 	}
 
-	private async failedEffect(error: unknown, target: ResolvedTarget, context: RexCallContext, progress: { data: unknown; refs: ResourceRef[]; dispatched: boolean; settlementAttempted: boolean }): Promise<RexResult> {
+	private async failedEffect(
+		error: unknown,
+		target: ResolvedTarget,
+		context: RexCallContext,
+		progress: { data: unknown; refs: ResourceRef[]; dispatched: boolean; settlementAttempted: boolean },
+	): Promise<RexResult> {
 		const { data, refs, dispatched, settlementAttempted } = progress;
-		if (!dispatched) return {
-			...result(false, context.budget?.stopReason() ?? "cancelled", target, undefined, errorText(error)),
-			effects: { state: "none", recordId: context.callId, note: "Intent remains retained; no CLI effect was requested." },
-		};
+		if (!dispatched)
+			return {
+				...result(false, context.budget?.stopReason() ?? "cancelled", target, undefined, errorText(error)),
+				effects: {
+					state: "none",
+					recordId: context.callId,
+					note: "Intent remains retained; no CLI effect was requested.",
+				},
+			};
 		let persistenceError = settlementAttempted ? errorText(error) : undefined;
 		try {
-			if (!settlementAttempted) await this.settleEffect(context, "unknown", refs, "Reconcile current state before any retry. Earlier effects may remain.");
-		} catch (failure) { persistenceError = errorText(failure); }
-		const failed = error instanceof NativeFailure ? error.result : result(false, "effect_error", target, data, errorText(error));
+			if (!settlementAttempted)
+				await this.settleEffect(
+					context,
+					"unknown",
+					refs,
+					"Reconcile current state before any retry. Earlier effects may remain.",
+				);
+		} catch (failure) {
+			persistenceError = errorText(failure);
+		}
+		const failed =
+			error instanceof NativeFailure ? error.result : result(false, "effect_error", target, data, errorText(error));
 		return {
-			...failed, target,
+			...failed,
+			target,
 			effects: {
-				state: "unknown", recordId: context.callId, resources: refs,
-				note: persistenceError ? `Pending intent remains; outcome persistence failed: ${persistenceError}` : "The operation was not replayed. Inspect current state before more effects.",
+				state: "unknown",
+				recordId: context.callId,
+				resources: refs,
+				note: persistenceError
+					? `Pending intent remains; outcome persistence failed: ${persistenceError}`
+					: "The operation was not replayed. Inspect current state before more effects.",
 			},
 		};
 	}
@@ -740,10 +876,21 @@ export class RexCore {
 
 	private async metadata(target: ResolvedTarget, context: RexCallContext): Promise<{ block: unknown }> {
 		requireBlock(target);
-		const response = object(await this.api("session.list_blocks", { session_id: target.sessionId }, target.server, context));
+		const response = object(
+			await this.api("session.list_blocks", { session_id: target.sessionId }, target.server, context),
+		);
 		const blocks = Array.isArray(response.blocks) ? response.blocks : [];
 		const block = blocks.find((entry: unknown) => object(entry).block_id === target.blockId);
-		if (!block) throw new NativeFailure(result(false, "target_not_found", target, undefined, "The exact Rex block is absent from the current session metadata."));
+		if (!block)
+			throw new NativeFailure(
+				result(
+					false,
+					"target_not_found",
+					target,
+					undefined,
+					"The exact Rex block is absent from the current session metadata.",
+				),
+			);
 		return { block };
 	}
 
@@ -807,7 +954,10 @@ export class RexCore {
 	}
 	private cappedDeadline(response: RexResult, requested: number | undefined): RexResult {
 		const note = `The requested ${requested} ms deadline exceeded the configured ${this.maxWaitMs} ms cap (rex.maxWaitMs); the operation used ${this.maxWaitMs} ms.`;
-		return { ...response, coverage: { ...response.coverage, note: response.coverage.note ? `${note} ${response.coverage.note}` : note } };
+		return {
+			...response,
+			coverage: { ...response.coverage, note: response.coverage.note ? `${note} ${response.coverage.note}` : note },
+		};
 	}
 
 	private async wait(
@@ -892,11 +1042,20 @@ export class RexCore {
 		let observerResult: CliResult;
 		try {
 			observation = await this.observeSnapshots(request, target, context, observer, timeoutMs, maxSnapshots);
-		} catch (error) { observationError = error; }
-		finally { observerResult = await observer.stop(); }
+		} catch (error) {
+			observationError = error;
+		} finally {
+			observerResult = await observer.stop();
+		}
 		if (!observation) {
 			if (!observer.failure) throw observationError;
-			observation = { snapshot: undefined, snapshots: 0, matched: false, deadline: context.budget?.workEndsAt ?? 0, observerEnded: true };
+			observation = {
+				snapshot: undefined,
+				snapshots: 0,
+				matched: false,
+				deadline: context.budget?.workEndsAt ?? 0,
+				observerEnded: true,
+			};
 		}
 		if (observer.failure) observation.matched = false;
 		return conditionResult(request, target, context, observation, observer, observerResult);
@@ -912,7 +1071,7 @@ export class RexCore {
 	): Promise<ConditionObservation> {
 		const deadline = context.budget?.workEndsAt ?? performance.now() + timeoutMs;
 		// The budget owns its clock; only a call without a budget reads the process clock.
-		const remainingMs = () => context.budget ? context.budget.remaining("work") : deadline - performance.now();
+		const remainingMs = () => (context.budget ? context.budget.remaining("work") : deadline - performance.now());
 		const observation: ConditionObservation = {
 			snapshot: undefined,
 			snapshots: 0,
@@ -934,9 +1093,15 @@ export class RexCore {
 			const remaining = maxSnapshots - observation.snapshots;
 			// Early refreshes double from the minimum so quick readiness shows quickly; the even
 			// spread of the remaining snapshots caps them, so the last one reaches the deadline.
-			const refreshMs = request.condition === "text" && remaining > 0
-				? Math.max(TEXT_REFRESH_MIN_MS, Math.ceil(Math.min(remainingMs() / remaining, TEXT_REFRESH_MIN_MS * 2 ** Math.min(observation.snapshots - 1, 16))))
-				: undefined;
+			const refreshMs =
+				request.condition === "text" && remaining > 0
+					? Math.max(
+							TEXT_REFRESH_MIN_MS,
+							Math.ceil(
+								Math.min(remainingMs() / remaining, TEXT_REFRESH_MIN_MS * 2 ** Math.min(observation.snapshots - 1, 16)),
+							),
+						)
+					: undefined;
 			await observer.wait(seen, context.signal, refreshMs);
 		}
 		observation.observerEnded = observer.ended;
@@ -966,7 +1131,9 @@ export class RexCore {
 		const response = verifiedRead
 			? await this.verifiedRead(request, target, context, cli, timeoutMs)
 			: await this.effect(request, target, context, async () => {
-					const raw = await this.cli(cli, target.server.endpoint, context, timeoutMs, { action: request.kind === "lua" || request.kind === "action" });
+					const raw = await this.cli(cli, target.server.endpoint, context, timeoutMs, {
+						action: request.kind === "lua" || request.kind === "action",
+					});
 					if (raw.outcome !== "exited" || raw.exitCode !== 0) throw new NativeFailure(cliResult(raw));
 					return nativeResponse(raw, request.kind);
 				});
@@ -1003,19 +1170,31 @@ export class RexCore {
 		target: ResolvedTarget,
 		context: RexCallContext,
 	): Promise<RexResult> {
-		if (request.query !== undefined && !boundedText(request.query, 256)) throw new Error("Use a nonempty literal method query within 256 characters.");
+		if (request.query !== undefined && !boundedText(request.query, 256))
+			throw new Error("Use a nonempty literal method query within 256 characters.");
 		const offset = boundedInteger(request.offset ?? 0, 0, 1048576, "catalogue offset");
 		const limit = boundedInteger(request.limit ?? 50, 1, 100, "catalogue page size");
 		const raw = await this.cli(["api", "list", "--quiet"], target.server.endpoint, context);
 		if (raw.outcome !== "exited" || raw.exitCode !== 0) throw new NativeFailure(cliResult(raw));
-		if (raw.truncated) throw new NativeFailure({ ...cliResult(raw), ok: false, outcome: "output_limit", error: "The installed method catalogue exceeded the CLI output limit. No complete catalogue was available to filter." });
+		if (raw.truncated)
+			throw new NativeFailure({
+				...cliResult(raw),
+				ok: false,
+				outcome: "output_limit",
+				error:
+					"The installed method catalogue exceeded the CLI output limit. No complete catalogue was available to filter.",
+			});
 		const installed = raw.stdout.split(/\r?\n/).filter(Boolean);
 		const query = request.query;
 		const matched = query === undefined ? installed : installed.filter((method) => method.includes(query));
 		const methods = matched.slice(offset, offset + limit);
 		const response = result(true, "catalog", target, {
-			methods, totalMethods: installed.length, matchedMethods: matched.length, returnedMethods: methods.length,
-			omittedMethods: matched.length - methods.length, offset,
+			methods,
+			totalMethods: installed.length,
+			matchedMethods: matched.length,
+			returnedMethods: methods.length,
+			omittedMethods: matched.length - methods.length,
+			offset,
 			...(offset + methods.length < matched.length ? { nextOffset: offset + methods.length } : {}),
 			note: "Follow nextOffset with the same query. Counts describe this current catalogue, not a frozen snapshot. Use describe for current schemas, examples and validation notes. Native API and Lua remain open to newly installed methods.",
 		});
@@ -1039,76 +1218,164 @@ export class RexCore {
 		};
 	}
 
-	private async observeOwned(request: Extract<RexRequest, { op: "observe" }>, context: RexCallContext): Promise<RexResult> {
+	private async observeOwned(
+		request: Extract<RexRequest, { op: "observe" }>,
+		context: RexCallContext,
+	): Promise<RexResult> {
 		this.deadline(request.timeoutMs, "observation duration");
-		const maxBytes = boundedInteger(request.maxBytes ?? this.defaultCaptureBytes(), 256, 16384, "observation tail bytes");
+		const maxBytes = boundedInteger(
+			request.maxBytes ?? this.defaultCaptureBytes(),
+			256,
+			16384,
+			"observation tail bytes",
+		);
 		context.budget?.check("observe");
 		const signal = context.signal ?? new AbortController().signal;
 		const scoped = context;
 		const budget = { remaining: this.maxOutputBytes };
 		const state = validateOwnershipState(await this.options.store.read(context.ownerId), this.maxRecords);
-		const selected = selectRecords(state.records.filter((record) => record.ownerId === context.ownerId), request);
+		const selected = selectRecords(
+			state.records.filter((record) => record.ownerId === context.ownerId),
+			request,
+		);
 		const page = recordPage(selected, request);
 		const reports: WorkReport[] = [];
 		for (const record of page.records) reports.push(await this.observeWorkRecord(record, scoped, maxBytes, budget));
 		const complete = !signal.aborted && reports.every((report) => report.complete);
 		const response: RexResult = {
-			...result(complete, complete ? "observed" : context.budget?.stopReason() ?? (signal.aborted ? "cancelled" : "observation_incomplete"), undefined, { reports, operation: "observe", phase: "observe" }),
+			...result(
+				complete,
+				complete
+					? "observed"
+					: (context.budget?.stopReason() ?? (signal.aborted ? "cancelled" : "observation_incomplete")),
+				undefined,
+				{ reports, operation: "observe", phase: "observe" },
+			),
 			records: recordRefs(page.records),
 			coverage: {
 				...pageCoverage(page, reports.length),
-				truncated: !complete || page.records.length < page.total || reports.some((report) => report.observations.some((entry) => entry.capture && captureTruncated(entry.capture))),
+				truncated:
+					!complete ||
+					page.records.length < page.total ||
+					reports.some((report) =>
+						report.observations.some((entry) => entry.capture && captureTruncated(entry.capture)),
+					),
 				note: "Read-only independent snapshots, not an atomic view. Stored phase is unchanged. Child state describes only the direct child; status and output do not establish task success. Cancellation stops observation only. Field bytes share the configured output budget; unavailable fields remain explicit. Use exact recordId or a smaller page for partial reports.",
 			},
 		};
 		return response;
 	}
 
-	private async observeWorkRecord(record: OwnershipRecord, context: RexCallContext, maxBytes: number, budget: ObservationBudget): Promise<WorkReport> {
-		const report: WorkReport = { recordId: record.callId, phase: record.phase, observedAt: new Date().toISOString(), complete: false, observations: [] };
+	private async observeWorkRecord(
+		record: OwnershipRecord,
+		context: RexCallContext,
+		maxBytes: number,
+		budget: ObservationBudget,
+	): Promise<WorkReport> {
+		const report: WorkReport = {
+			recordId: record.callId,
+			phase: record.phase,
+			observedAt: new Date().toISOString(),
+			complete: false,
+			observations: [],
+		};
 		if (record.resources.length === 0) {
-			report.error = "No acknowledged resource IDs. The retained claim remains unresolved; no absence or completion is established.";
+			report.error =
+				"No acknowledged resource IDs. The retained claim remains unresolved; no absence or completion is established.";
 			return report;
 		}
 		let server: ServerRef;
-		try { server = await this.recordServer(record, context); }
-		catch (error) {
+		try {
+			server = await this.recordServer(record, context);
+		} catch (error) {
 			report.error = observationError(error, context);
-			report.observations = record.resources.map((resource) => unavailableWork(resource, observationError(error, context)));
+			report.observations = record.resources.map((resource) =>
+				unavailableWork(resource, observationError(error, context)),
+			);
 			return report;
 		}
-		for (const resource of record.resources) report.observations.push(await this.observeWorkResource(resource, server, context, maxBytes, budget));
-		report.complete = report.observations.every((entry) => entry.presence === "absent" || entry.presence === "present" && !entry.processError && !entry.statusError && !entry.captureError && entry.childState !== "unknown");
+		for (const resource of record.resources)
+			report.observations.push(await this.observeWorkResource(resource, server, context, maxBytes, budget));
+		report.complete = report.observations.every(
+			(entry) =>
+				entry.presence === "absent" ||
+				(entry.presence === "present" &&
+					!entry.processError &&
+					!entry.statusError &&
+					!entry.captureError &&
+					entry.childState !== "unknown"),
+		);
 		return report;
 	}
 
-	private async observeWorkResource(resource: ResourceRef, server: ServerRef, context: RexCallContext, maxBytes: number, budget: ObservationBudget): Promise<WorkObservation> {
+	private async observeWorkResource(
+		resource: ResourceRef,
+		server: ServerRef,
+		context: RexCallContext,
+		maxBytes: number,
+		budget: ObservationBudget,
+	): Promise<WorkObservation> {
 		const presence = await this.observeResource(resource, server, context);
 		if (presence.error) presence.error = boundedDiagnosticText(presence.error, 512);
-		if (presence.presence !== "present") return { ...unavailableWork(resource, presence.error ?? "The exact resource is absent."), ...presence };
+		if (presence.presence !== "present")
+			return { ...unavailableWork(resource, presence.error ?? "The exact resource is absent."), ...presence };
 		const target: ResolvedTarget = { server, source: "explicit", ...presence.resource };
-		const observation: WorkObservation = { ...presence, observedAt: new Date().toISOString(), childState: "unavailable" };
+		const observation: WorkObservation = {
+			...presence,
+			observedAt: new Date().toISOString(),
+			childState: "unavailable",
+		};
 		try {
-			observation.process = await this.observationField(() => this.block("process", {}, target, context), budget, context);
+			observation.process = await this.observationField(
+				() => this.block("process", {}, target, context),
+				budget,
+				context,
+			);
 			const process = object(observation.process);
-			observation.childState = Number.isInteger(object(process.child).pid) ? "running" : Number.isInteger(object(process.last_exit).exit_code) ? "exited" : "unknown";
-		} catch (error) { observation.processError = observationError(error, context); }
-		try { observation.status = await this.observationField(() => this.block("program_status", {}, target, context), budget, context); }
-		catch (error) { observation.statusError = observationError(error, context); }
+			observation.childState = Number.isInteger(object(process.child).pid)
+				? "running"
+				: Number.isInteger(object(process.last_exit).exit_code)
+					? "exited"
+					: "unknown";
+		} catch (error) {
+			observation.processError = observationError(error, context);
+		}
+		try {
+			observation.status = await this.observationField(
+				() => this.block("program_status", {}, target, context),
+				budget,
+				context,
+			);
+		} catch (error) {
+			observation.statusError = observationError(error, context);
+		}
 		try {
 			const tailBytes = Math.min(maxBytes, this.defaultCaptureBytes(), budget.remaining - 128);
 			if (tailBytes < 256) throw new Error("The observation byte budget has no room for a bounded tail.");
-			observation.capture = await this.observationField(() => this.capture(target, context, tailBytes), budget, context, tailBytes + 128);
-		} catch (error) { observation.captureError = observationError(error, context); }
+			observation.capture = await this.observationField(
+				() => this.capture(target, context, tailBytes),
+				budget,
+				context,
+				tailBytes + 128,
+			);
+		} catch (error) {
+			observation.captureError = observationError(error, context);
+		}
 		return observation;
 	}
 
-	private async observationField<T>(read: () => Promise<T>, budget: ObservationBudget, context: RexCallContext, fieldLimit = 16384): Promise<T> {
+	private async observationField<T>(
+		read: () => Promise<T>,
+		budget: ObservationBudget,
+		context: RexCallContext,
+		fieldLimit = 16384,
+	): Promise<T> {
 		context.signal?.throwIfAborted();
 		if (budget.remaining <= 0) throw new Error("The observation byte budget is exhausted.");
 		const value = await read();
 		const bytes = jsonBytes(value);
-		if (bytes > Math.min(fieldLimit, budget.remaining)) throw new Error("The observation field exceeds the remaining byte budget; its data is unavailable in this page.");
+		if (bytes > Math.min(fieldLimit, budget.remaining))
+			throw new Error("The observation field exceeds the remaining byte budget; its data is unavailable in this page.");
 		budget.remaining -= bytes;
 		return value;
 	}
@@ -1117,7 +1384,8 @@ export class RexCore {
 		request: Extract<RexRequest, { op: "reconcile" | "cleanup" }>,
 		context: RexCallContext,
 	): Promise<RexResult> {
-		if (request.op === "cleanup" && !boundedText(request.recordId, 1024)) throw new Error("Cleanup requires one exact retained record ID; it never selects another claim.");
+		if (request.op === "cleanup" && !boundedText(request.recordId, 1024))
+			throw new Error("Cleanup requires one exact retained record ID; it never selects another claim.");
 		const state = validateOwnershipState(await this.options.store.read(context.ownerId), this.maxRecords);
 		const selected = state.records.filter(
 			(record) => record.ownerId === context.ownerId && (!request.recordId || record.callId === request.recordId),
@@ -1145,19 +1413,21 @@ export class RexCore {
 		const signal = context.signal ?? new AbortController().signal;
 		const scoped = context;
 		const reports: ReconciliationReport[] = [];
-			for (const record of page.records) {
-				if (signal.aborted) break;
-				const report = await this.observeRecord(record, scoped);
-				reports.push(report);
-				if (reportError(report)) break;
-			}
-			if (request.recover) return await this.recoverRecord(page.records[0], reports[0], scoped);
+		for (const record of page.records) {
+			if (signal.aborted) break;
+			const report = await this.observeRecord(record, scoped);
+			reports.push(report);
+			if (reportError(report)) break;
+		}
+		if (request.recover) return await this.recoverRecord(page.records[0], reports[0], scoped);
 		const complete =
 			reports.length === page.records.length && reports.every((report) => report.conclusive) && !signal.aborted;
 		return {
 			...result(
 				complete,
-				complete ? "reconciled" : context.budget?.stopReason() ?? (signal.aborted ? "cancelled" : "reconciliation_incomplete"),
+				complete
+					? "reconciled"
+					: (context.budget?.stopReason() ?? (signal.aborted ? "cancelled" : "reconciliation_incomplete")),
 				undefined,
 				{ reports, operation: "reconcile", phase: "observe" },
 				reports.map(reportError).find((error) => error !== undefined),
@@ -1188,9 +1458,31 @@ export class RexCore {
 	): Promise<RexResult> {
 		if (!record || !report)
 			return result(false, "recovery_interrupted", undefined, undefined, "No current resource observations completed.");
-		if (record.phase === "released") return { ...result(false, "claim_released", undefined, report, "An explicit release is final for this retained claim. Recovery does not revive it."), records: recordRefs([record]) };
-		if (record.pendingCleanupCallId && this.options.isCallActive?.(context.ownerId, record.pendingCleanupCallId) !== false) {
-			return { ...result(false, "cleanup_still_active_or_unknown", undefined, report, "The cleanup producer is active or its live state is unavailable. Do not recover or repeat its effects."), records: recordRefs([record]) };
+		if (record.phase === "released")
+			return {
+				...result(
+					false,
+					"claim_released",
+					undefined,
+					report,
+					"An explicit release is final for this retained claim. Recovery does not revive it.",
+				),
+				records: recordRefs([record]),
+			};
+		if (
+			record.pendingCleanupCallId &&
+			this.options.isCallActive?.(context.ownerId, record.pendingCleanupCallId) !== false
+		) {
+			return {
+				...result(
+					false,
+					"cleanup_still_active_or_unknown",
+					undefined,
+					report,
+					"The cleanup producer is active or its live state is unavailable. Do not recover or repeat its effects.",
+				),
+				records: recordRefs([record]),
+			};
 		}
 		if (!report.conclusive || record.resources.length === 0 || context.signal?.aborted) {
 			return {
@@ -1209,24 +1501,32 @@ export class RexCore {
 			.filter((observation) => observation.presence === "present")
 			.map((observation) => observation.resource);
 		const phase = present.length ? "confirmed" : "closed";
-		await this.options.store.update(context.ownerId, (current) => {
-			context.signal?.throwIfAborted();
-			const entry = current.records.find((item) => item.callId === record.callId && item.ownerId === context.ownerId);
-			if (!entry || requestDigest(entry) !== requestDigest(record))
-				throw new Error("Rex record changed during recovery. Inspect it again.");
-			if (entry.pendingCleanupCallId && this.options.isCallActive?.(context.ownerId, entry.pendingCleanupCallId) !== false) throw new Error("The cleanup producer is active or unknown at recovery admission.");
-			return changeOwnership(
-				current,
-				record.callId,
-				{
-					phase,
-					resources: present,
-					pendingCleanupCallId: undefined,
-					note: "Explicit recovery used current exact-ID presence or absence. No previous native effect was replayed.",
-				},
-				this.maxRecords,
-			);
-		}, "work");
+		await this.options.store.update(
+			context.ownerId,
+			(current) => {
+				context.signal?.throwIfAborted();
+				const entry = current.records.find((item) => item.callId === record.callId && item.ownerId === context.ownerId);
+				if (!entry || requestDigest(entry) !== requestDigest(record))
+					throw new Error("Rex record changed during recovery. Inspect it again.");
+				if (
+					entry.pendingCleanupCallId &&
+					this.options.isCallActive?.(context.ownerId, entry.pendingCleanupCallId) !== false
+				)
+					throw new Error("The cleanup producer is active or unknown at recovery admission.");
+				return changeOwnership(
+					current,
+					record.callId,
+					{
+						phase,
+						resources: present,
+						pendingCleanupCallId: undefined,
+						note: "Explicit recovery used current exact-ID presence or absence. No previous native effect was replayed.",
+					},
+					this.maxRecords,
+				);
+			},
+			"work",
+		);
 		return {
 			...result(
 				true,
@@ -1259,13 +1559,17 @@ export class RexCore {
 				note: "The native outcome remains unknown. Release changes only your retained claim.",
 			};
 		}
-		await this.options.store.update(context.ownerId, (current) => {
-			context.signal?.throwIfAborted();
-			const entry = current.records.find((item) => item.callId === record.callId && item.ownerId === context.ownerId);
-			if (!entry || requestDigest(entry) !== requestDigest(record))
-				throw new Error("Rex record changed before release. Reconcile it again.");
-			return changeOwnership(current, record.callId, { phase: "released", note: request.note }, this.maxRecords);
-		}, "work");
+		await this.options.store.update(
+			context.ownerId,
+			(current) => {
+				context.signal?.throwIfAborted();
+				const entry = current.records.find((item) => item.callId === record.callId && item.ownerId === context.ownerId);
+				if (!entry || requestDigest(entry) !== requestDigest(record))
+					throw new Error("Rex record changed before release. Reconcile it again.");
+				return changeOwnership(current, record.callId, { phase: "released", note: request.note }, this.maxRecords);
+			},
+			"work",
+		);
 		return result(
 			true,
 			"claim_released",
@@ -1292,14 +1596,18 @@ export class RexCore {
 			(entry.phase === "confirmed" && entry.resources.length === 0);
 		if (!allowed(record))
 			throw new Error("Unknown effects and live resource claims need reconciliation or closure before forgetting.");
-		await this.options.store.update(context.ownerId, (current) => {
-			context.signal?.throwIfAborted();
-			const next = validateOwnershipState(current, this.maxRecords);
-			const entry = next.records.find((item) => item.callId === record.callId && item.ownerId === context.ownerId);
-			if (!entry || !allowed(entry)) throw new Error("Rex record changed before forgetting.");
-			next.records = next.records.filter((item) => item !== entry);
-			return next;
-		}, "work");
+		await this.options.store.update(
+			context.ownerId,
+			(current) => {
+				context.signal?.throwIfAborted();
+				const next = validateOwnershipState(current, this.maxRecords);
+				const entry = next.records.find((item) => item.callId === record.callId && item.ownerId === context.ownerId);
+				if (!entry || !allowed(entry)) throw new Error("Rex record changed before forgetting.");
+				next.records = next.records.filter((item) => item !== entry);
+				return next;
+			},
+			"work",
+		);
 		return result(true, "forgotten", undefined, {
 			recordId: record.callId,
 			note: "Only the retained claim was removed. No native resource was closed.",
@@ -1377,18 +1685,27 @@ export class RexCore {
 		}
 		const pending = pendingRecord(request, target, context);
 		context.budget?.check("effect");
-		await this.options.store.update(context.ownerId, (state) => {
-			context.budget?.check("effect");
-			const current = state.records.find((item) => item.callId === record.callId && item.ownerId === context.ownerId);
-			if (!current || requestDigest(current) !== requestDigest(record)) throw new Error("Rex cleanup ownership changed after preflight. Inspect it again.");
-			validateCleanupRecord(current);
-			return changeOwnership(
-				beginOwnership(state, pending, this.maxRecords),
-				record.callId,
-				{ phase: "unknown", pendingCleanupCallId: context.callId, note: "An owned cleanup call has pending effects." },
-				this.maxRecords,
-			);
-		}, "work");
+		await this.options.store.update(
+			context.ownerId,
+			(state) => {
+				context.budget?.check("effect");
+				const current = state.records.find((item) => item.callId === record.callId && item.ownerId === context.ownerId);
+				if (!current || requestDigest(current) !== requestDigest(record))
+					throw new Error("Rex cleanup ownership changed after preflight. Inspect it again.");
+				validateCleanupRecord(current);
+				return changeOwnership(
+					beginOwnership(state, pending, this.maxRecords),
+					record.callId,
+					{
+						phase: "unknown",
+						pendingCleanupCallId: context.callId,
+						note: "An owned cleanup call has pending effects.",
+					},
+					this.maxRecords,
+				);
+			},
+			"work",
+		);
 		const closed: ResourceRef[] = [];
 		let dispatched = false;
 		let settlementAttempted = false;
@@ -1400,10 +1717,14 @@ export class RexCore {
 				closed.push(resource);
 			}
 			settlementAttempted = true;
-			await this.options.store.update(context.ownerId, (current) => {
-				context.budget?.check("finalise");
-				return closeAcknowledgedClaims(current, record.callId, context.callId, context.ownerId, this.maxRecords);
-			}, "finalise");
+			await this.options.store.update(
+				context.ownerId,
+				(current) => {
+					context.budget?.check("finalise");
+					return closeAcknowledgedClaims(current, record.callId, context.callId, context.ownerId, this.maxRecords);
+				},
+				"finalise",
+			);
 			return {
 				...result(true, "cleanup_report", target, {
 					closed,
@@ -1420,18 +1741,39 @@ export class RexCore {
 				},
 			};
 		} catch (error) {
-			return this.failedCleanup(error, target, context, { closed, resources: record.resources, dispatched, settlementAttempted });
+			return this.failedCleanup(error, target, context, {
+				closed,
+				resources: record.resources,
+				dispatched,
+				settlementAttempted,
+			});
 		}
 	}
 
-	private async failedCleanup(error: unknown, target: ResolvedTarget, context: RexCallContext, progress: { closed: ResourceRef[]; resources: ResourceRef[]; dispatched: boolean; settlementAttempted: boolean }): Promise<RexResult> {
+	private async failedCleanup(
+		error: unknown,
+		target: ResolvedTarget,
+		context: RexCallContext,
+		progress: { closed: ResourceRef[]; resources: ResourceRef[]; dispatched: boolean; settlementAttempted: boolean },
+	): Promise<RexResult> {
 		const { closed, resources, dispatched, settlementAttempted } = progress;
-		if (!dispatched) return {
-			...result(false, context.budget?.stopReason() ?? "cancelled", target, { closed }, errorText(error)),
-			effects: { state: "none", recordId: context.callId, note: "Cleanup intent remains retained; no close was requested." },
-		};
+		if (!dispatched)
+			return {
+				...result(false, context.budget?.stopReason() ?? "cancelled", target, { closed }, errorText(error)),
+				effects: {
+					state: "none",
+					recordId: context.callId,
+					note: "Cleanup intent remains retained; no close was requested.",
+				},
+			};
 		try {
-			if (!settlementAttempted) await this.settleEffect(context, "unknown", [], "Cleanup outcome is unknown. Inspect the retained IDs before another close.");
+			if (!settlementAttempted)
+				await this.settleEffect(
+					context,
+					"unknown",
+					[],
+					"Cleanup outcome is unknown. Inspect the retained IDs before another close.",
+				);
 		} catch {
 			/* Pending and original unknown claims still prohibit replay. */
 		}
@@ -1442,7 +1784,9 @@ export class RexCore {
 	}
 }
 
-interface ObservationBudget { remaining: number }
+interface ObservationBudget {
+	remaining: number;
+}
 interface WorkObservation extends ResourceObservation {
 	observedAt: string;
 	childState: "running" | "exited" | "unknown" | "unavailable";
@@ -1461,15 +1805,27 @@ interface WorkReport {
 	error?: string;
 }
 function observationError(error: unknown, context: RexCallContext): string {
-	return boundedDiagnosticText(context.signal?.aborted ? "The observation stopped before this read completed." : errorText(error), 512);
+	return boundedDiagnosticText(
+		context.signal?.aborted ? "The observation stopped before this read completed." : errorText(error),
+		512,
+	);
 }
 function unavailableWork(resource: ResourceRef, error: string): WorkObservation {
 	return { resource, presence: "unknown", observedAt: new Date().toISOString(), childState: "unavailable", error };
 }
-function selectRecords(records: OwnershipRecord[], request: { recordId?: string; phase?: OwnershipRecord["phase"] }): OwnershipRecord[] {
-	if (request.recordId !== undefined && !boundedText(request.recordId, 1024)) throw new Error("Select a complete retained record ID.");
-	if (request.phase !== undefined && !["pending", "confirmed", "unknown", "closed", "released"].includes(request.phase)) throw new Error("Select a stored ownership phase.");
-	return records.filter((record) => (request.recordId === undefined || record.callId === request.recordId) && (request.phase === undefined || record.phase === request.phase));
+function selectRecords(
+	records: OwnershipRecord[],
+	request: { recordId?: string; phase?: OwnershipRecord["phase"] },
+): OwnershipRecord[] {
+	if (request.recordId !== undefined && !boundedText(request.recordId, 1024))
+		throw new Error("Select a complete retained record ID.");
+	if (request.phase !== undefined && !["pending", "confirmed", "unknown", "closed", "released"].includes(request.phase))
+		throw new Error("Select a stored ownership phase.");
+	return records.filter(
+		(record) =>
+			(request.recordId === undefined || record.callId === request.recordId) &&
+			(request.phase === undefined || record.phase === request.phase),
+	);
 }
 interface ResourceObservation {
 	resource: ResourceRef;
@@ -1514,7 +1870,8 @@ function pageCoverage(page: RecordPage, returned: number): RexResult["coverage"]
 		note: "Use offset/limit or a specific recordId for omitted records. Records before this page are included in omittedRecords.",
 	};
 }
-const RESULT_BOUND_NOTE = "Result details were reduced to fit the JSON budget. CLI acknowledgement does not establish an inner application outcome. Exact IDs and effect state are unchanged. Retrieve omitted references by recordId, or use nextOffset with limit 1.";
+const RESULT_BOUND_NOTE =
+	"Result details were reduced to fit the JSON budget. CLI acknowledgement does not establish an inner application outcome. Exact IDs and effect state are unchanged. Retrieve omitted references by recordId, or use nextOffset with limit 1.";
 const DIAGNOSTIC_LIMITS = { error: 4096, "effects.note": 1024, "coverage.note": 1024 } as const;
 
 /** The supported budget follows resultByteLimit and the validated domain identity bounds. */
@@ -1522,8 +1879,20 @@ export function boundResult(value: RexResult, maxBytes: number): RexResult {
 	if (jsonBytes(value) <= maxBytes) return value;
 	let next: RexResult = {
 		...value,
-		...(value.data === undefined ? {} : { data: { omitted: true, reason: "The complete Rex result exceeded its byte limit. Select a smaller view, limit or exact recordId." } }),
-		coverage: { ...value.coverage, truncated: true, dataOmitted: value.coverage.dataOmitted || value.data !== undefined, note: `${RESULT_BOUND_NOTE} ${value.coverage.note ?? ""}`.trim() },
+		...(value.data === undefined
+			? {}
+			: {
+					data: {
+						omitted: true,
+						reason: "The complete Rex result exceeded its byte limit. Select a smaller view, limit or exact recordId.",
+					},
+				}),
+		coverage: {
+			...value.coverage,
+			truncated: true,
+			dataOmitted: value.coverage.dataOmitted || value.data !== undefined,
+			note: `${RESULT_BOUND_NOTE} ${value.coverage.note ?? ""}`.trim(),
+		},
 	};
 	if (jsonBytes(next) <= maxBytes) return next;
 	for (const field of ["error", "effects.note", "coverage.note"] as const) {
@@ -1539,7 +1908,9 @@ export function boundResult(value: RexResult, maxBytes: number): RexResult {
 	// UUID resource IDs, 32 resources and four page references. Six escaped bytes
 	// per UTF-16 unit cover lone surrogates too. Minimum resultByteLimit is 102,400.
 	// Additional or out-of-contract mandatory metadata has no lossless representation.
-	throw new ResultIdentityBoundaryError(`Rex identity metadata exceeds the supported result boundary. Native effects may already exist: outcome=${value.outcome}; effectState=${value.effects.state}; recordId=${JSON.stringify(value.effects.recordId ?? null)}. Do not replay the call.`);
+	throw new ResultIdentityBoundaryError(
+		`Rex identity metadata exceeds the supported result boundary. Native effects may already exist: outcome=${value.outcome}; effectState=${value.effects.state}; recordId=${JSON.stringify(value.effects.recordId ?? null)}. Do not replay the call.`,
+	);
 }
 
 function jsonBytes(value: unknown): number {
@@ -1585,10 +1956,13 @@ function tailText(text: string, maxBytes: number, partialStart = false): string 
 	}
 	const value = text.slice(start);
 	const newline = value.indexOf("\n");
-	return (start > 0 || partialStart) && newline >= 0 && value.slice(newline + 1).trim().length > 0 ? value.slice(newline + 1) : value;
+	return (start > 0 || partialStart) && newline >= 0 && value.slice(newline + 1).trim().length > 0
+		? value.slice(newline + 1)
+		: value;
 }
 function verifyCaptureEnd(first: Record<string, unknown>): void {
-	if (first.eof === false && typeof first.id !== "number") throw new Error("Rex capture has an unverified end without a continuation ID.");
+	if (first.eof === false && typeof first.id !== "number")
+		throw new Error("Rex capture has an unverified end without a continuation ID.");
 }
 function captureTruncated(capture: Capture): boolean {
 	return capture.start > 0 || capture.end < capture.total;
@@ -1606,7 +1980,11 @@ function boundDiagnostic(value: RexResult, field: keyof typeof DIAGNOSTIC_LIMITS
 	const text = boundedDiagnosticText(source, DIAGNOSTIC_LIMITS[field]);
 	if (text === source) return value;
 	const truncatedFields = [...new Set([...(value.coverage.truncatedFields ?? []), field])];
-	const next = { ...value, effects: { ...value.effects }, coverage: { ...value.coverage, truncated: true as const, truncatedFields } };
+	const next = {
+		...value,
+		effects: { ...value.effects },
+		coverage: { ...value.coverage, truncated: true as const, truncatedFields },
+	};
 	if (field === "error") next.error = text;
 	else if (field === "effects.note") next.effects.note = text;
 	else next.coverage.note = text;
@@ -1616,17 +1994,24 @@ function boundDiagnostic(value: RexResult, field: keyof typeof DIAGNOSTIC_LIMITS
 function omitRecordReferences(value: RexResult, maxBytes: number): RexResult {
 	const records = [...(value.records ?? [])];
 	const omittedRecordIds = [...(value.coverage.omittedRecordIds ?? [])];
-	const nextPageOffset = value.coverage.omittedRecordRefs === undefined ? value.coverage.nextOffset : value.coverage.nextPageOffset;
+	const nextPageOffset =
+		value.coverage.omittedRecordRefs === undefined ? value.coverage.nextOffset : value.coverage.nextPageOffset;
 	let next = value;
 	while (records.length > 0 && jsonBytes(next) > maxBytes) {
 		const removed = records.pop();
 		if (!removed) break;
 		omittedRecordIds.unshift(removed.recordId);
-		const coverage = { ...next.coverage, emittedRecordRefs: records.length, omittedRecordRefs: omittedRecordIds.length, omittedRecordIds: [...omittedRecordIds] };
+		const coverage = {
+			...next.coverage,
+			emittedRecordRefs: records.length,
+			omittedRecordRefs: omittedRecordIds.length,
+			omittedRecordIds: [...omittedRecordIds],
+		};
 		if (coverage.pageOffset !== undefined) {
 			coverage.nextPageOffset = nextPageOffset;
 			const firstOmittedReference = coverage.pageOffset + records.length;
-			coverage.nextOffset = nextPageOffset === undefined ? firstOmittedReference : Math.min(nextPageOffset, firstOmittedReference);
+			coverage.nextOffset =
+				nextPageOffset === undefined ? firstOmittedReference : Math.min(nextPageOffset, firstOmittedReference);
 		}
 		next = { ...next, records: [...records], coverage };
 	}
@@ -1668,7 +2053,10 @@ function selectors(
 }
 function validateDefaultTarget(source: string, kind: TargetKind, inheritedUnavailable?: string): void {
 	if (source === "inherited")
-		throw new Error(inheritedUnavailable ?? `No inherited Rex ${kind} exists. Select a resource explicitly; focus is not a substitute.`);
+		throw new Error(
+			inheritedUnavailable ??
+				`No inherited Rex ${kind} exists. Select a resource explicitly; focus is not a substitute.`,
+		);
 	if (source === "explicit" && kind === "block")
 		throw new Error(
 			"Select an explicit block, or request source focus. An explicit session does not authorise its focused block.",
@@ -1697,12 +2085,16 @@ type CreateRequest = Extract<RexRequest, { op: "create" }>;
 const FAILURE_STAYS_OPEN_MS = 4294967295;
 /** By default a pane keeps completed output; `keepOpen: false` closes it when its program succeeds. */
 function exitOptions(keepOpen: boolean | undefined): Record<string, unknown> {
-	return keepOpen === false ? { on_completion: true, quick_exit_threshold_ms: FAILURE_STAYS_OPEN_MS } : { on_completion: false };
+	return keepOpen === false
+		? { on_completion: true, quick_exit_threshold_ms: FAILURE_STAYS_OPEN_MS }
+		: { on_completion: false };
 }
 /** Refuses an option that the requested kind of pane does not accept. */
 function checkKindOptions(request: CreateRequest): void {
 	if (request.kind === "session" && request.focus !== undefined)
-		throw new Error("focus applies to window, split and float creation. Display a new session through a client action.");
+		throw new Error(
+			"focus applies to window, split and float creation. Display a new session through a client action.",
+		);
 	if (request.kind === "float") return;
 	if (request.bounds !== undefined) throw new Error("bounds apply only to float creation.");
 	if (request.keepFloating !== undefined) throw new Error("keepFloating applies only to float creation.");
@@ -1756,7 +2148,13 @@ function creationCall(
 		if (!fullId(target.windowId, "window")) throw new Error("Rex did not resolve the anchor block's window.");
 		return {
 			method: "session.new_layer",
-			args: { session_id: target.sessionId, window_id: target.windowId, bounds: floatBounds(request.bounds), layout, focus: request.focus ?? false },
+			args: {
+				session_id: target.sessionId,
+				window_id: target.windowId,
+				bounds: floatBounds(request.bounds),
+				layout,
+				focus: request.focus ?? false,
+			},
 		};
 	}
 	const direction = request.direction ?? "right";
@@ -1784,10 +2182,18 @@ export function floatBounds(bounds: number[] | undefined): number[] {
 	if (
 		bounds.length !== 4 ||
 		!bounds.every((value) => Number.isFinite(value) && value >= 0 && value <= 1) ||
-		x === undefined || y === undefined || width === undefined || height === undefined ||
-		width <= 0 || height <= 0 || x + width > 1 || y + height > 1
+		x === undefined ||
+		y === undefined ||
+		width === undefined ||
+		height === undefined ||
+		width <= 0 ||
+		height <= 0 ||
+		x + width > 1 ||
+		y + height > 1
 	)
-		throw new Error("Use float bounds [x, y, width, height] as fractions of the window, with a positive size inside it.");
+		throw new Error(
+			"Use float bounds [x, y, width, height] as fractions of the window, with a positive size inside it.",
+		);
 	return bounds;
 }
 function createdResources(kind: CreateRequest["kind"], target: ResolvedTarget, raw: unknown): ResourceRef[] {
@@ -1920,13 +2326,29 @@ function nativeResponse(raw: CliResult, kind: string): unknown {
 	};
 }
 
-function closeAcknowledgedClaims(state: OwnershipState, originalId: string, cleanupId: string, ownerId: string, maxRecords: number): OwnershipState {
+function closeAcknowledgedClaims(
+	state: OwnershipState,
+	originalId: string,
+	cleanupId: string,
+	ownerId: string,
+	maxRecords: number,
+): OwnershipState {
 	let next = validateOwnershipState(state, maxRecords);
 	for (const callId of [originalId, cleanupId]) {
 		const record = next.records.find((entry) => entry.callId === callId && entry.ownerId === ownerId);
 		if (!record) throw new Error("A Rex cleanup claim disappeared before acknowledgement retention.");
 		if (record.phase === "released") continue;
-		next = changeOwnership(next, callId, { phase: "closed", pendingCleanupCallId: undefined, ...(callId === cleanupId ? { resources: [] } : {}), note: "Owned blocks closed. Empty parent resources were not closed." }, maxRecords);
+		next = changeOwnership(
+			next,
+			callId,
+			{
+				phase: "closed",
+				pendingCleanupCallId: undefined,
+				...(callId === cleanupId ? { resources: [] } : {}),
+				note: "Owned blocks closed. Empty parent resources were not closed.",
+			},
+			maxRecords,
+		);
 	}
 	return next;
 }
@@ -1998,23 +2420,31 @@ function conditionResult(
 	raw: CliResult,
 ): RexResult {
 	return {
-		...result(observation.matched, !observation.matched && observer.failure ? "observation_failed" : conditionOutcome(context, observation), target, {
-			...(observer.failure ? { cause: observer.failure } : {}),
-			condition: request.condition,
-			operation: "wait", phase: "observe",
-			snapshot: observation.snapshot,
-			snapshots: observation.snapshots,
-			events: observer.events,
-			eventCount: observer.eventCount,
-			observer: raw.outcome,
-			meaning: observation.matched
-				? "A literal or reported status matched. The agent decides whether that establishes application readiness."
-				: "The requested condition was not observed. This does not establish application failure or child exit.",
-		}),
+		...result(
+			observation.matched,
+			!observation.matched && observer.failure ? "observation_failed" : conditionOutcome(context, observation),
+			target,
+			{
+				...(observer.failure ? { cause: observer.failure } : {}),
+				condition: request.condition,
+				operation: "wait",
+				phase: "observe",
+				snapshot: observation.snapshot,
+				snapshots: observation.snapshots,
+				events: observer.events,
+				eventCount: observer.eventCount,
+				observer: raw.outcome,
+				meaning: observation.matched
+					? "A literal or reported status matched. The agent decides whether that establishes application readiness."
+					: "The requested condition was not observed. This does not establish application failure or child exit.",
+			},
+		),
 		coverage: {
 			bounded: true,
 			truncated:
-				(request.condition === "text" && observation.snapshot !== undefined && captureTruncated(observation.snapshot as Capture)) ||
+				(request.condition === "text" &&
+					observation.snapshot !== undefined &&
+					captureTruncated(observation.snapshot as Capture)) ||
 				observer.eventCount > observer.events.length,
 			note: "Live events have no replay guarantee. Current snapshots cover missed events, not lost history. The terminal remains independent of this observer.",
 		},
@@ -2034,7 +2464,16 @@ const WAIT_ENDINGS: Readonly<Record<string, string>> = {
 function waitDiagnostic(value: RexResult): RexResult {
 	const ending = WAIT_ENDINGS[value.outcome];
 	if (value.ok || !ending) return value;
-	return { ...value, error: [value.error, ending, "Inspect the target's current state before another wait. The observer did not stop terminal work."].filter(Boolean).join(" ") };
+	return {
+		...value,
+		error: [
+			value.error,
+			ending,
+			"Inspect the target's current state before another wait. The observer did not stop terminal work.",
+		]
+			.filter(Boolean)
+			.join(" "),
+	};
 }
 
 class EventObserver {
@@ -2076,7 +2515,13 @@ class EventObserver {
 			.then((value) => {
 				// The transport retains its first stop cause even when close follows work cancellation.
 				const sourceStopped = value.outcome === "output_limit" || value.outcome === "spawn_error";
-				if (sourceStopped || (!this.controller.signal.aborted && !context.budget?.stopReason() && (value.outcome !== "exited" || value.exitCode !== 0))) this.failure = value;
+				if (
+					sourceStopped ||
+					(!this.controller.signal.aborted &&
+						!context.budget?.stopReason() &&
+						(value.outcome !== "exited" || value.exitCode !== 0))
+				)
+					this.failure = value;
 				this.ended = true;
 				this.generation++;
 				this.wake?.();
@@ -2093,11 +2538,17 @@ class EventObserver {
 		}
 		const event = object(object(object(value).payload).event);
 		const payload = object(event.payload);
-		if (event.type !== "block_event" || payload.block_id !== this.blockId || payload.creator_name !== "com.superlogical.terminal") return;
+		if (
+			event.type !== "block_event" ||
+			payload.block_id !== this.blockId ||
+			payload.creator_name !== "com.superlogical.terminal"
+		)
+			return;
 		// Output has no change event; its refresh timer remains authoritative between child exits.
-		const relevant = this.condition === "text"
-			? payload.name === "child_exited"
-			: payload.name === "program_status_changed" || payload.name === "program_status_removed";
+		const relevant =
+			this.condition === "text"
+				? payload.name === "child_exited"
+				: payload.name === "program_status_changed" || payload.name === "program_status_removed";
 		if (!relevant) return;
 		if (this.events.length < 16) this.events.push(value);
 		this.generation++;
@@ -2166,11 +2617,19 @@ function askServerTooOld(identity: Record<string, unknown>): AskSettlement | und
 	const revision = typeof identity.api_revision === "number" ? identity.api_revision : 0;
 	if (revision >= ASK_API_REVISION) return undefined;
 	const version = typeof identity.rex_version === "string" ? identity.rex_version : "an unknown version";
-	return { outcome: "unsupported", reason: "server_revision", detail: `This Rex server (${version}, API revision ${revision}) cannot ask questions; that needs API revision ${ASK_API_REVISION} or later. Update Rex and restart its server.` };
+	return {
+		outcome: "unsupported",
+		reason: "server_revision",
+		detail: `This Rex server (${version}, API revision ${revision}) cannot ask questions; that needs API revision ${ASK_API_REVISION} or later. Update Rex and restart its server.`,
+	};
 }
 
 /** A settled question. Only an answer is success; every other outcome names why no answer arrived. */
-function askResult(question: string, target: ResolvedTarget | undefined, settlement: AskSettlement | { outcome: "cancelled" | "timeout" }): RexResult {
+function askResult(
+	question: string,
+	target: ResolvedTarget | undefined,
+	settlement: AskSettlement | { outcome: "cancelled" | "timeout" },
+): RexResult {
 	const answered = settlement.outcome === "answered";
 	const found = settlement as AskSettlement;
 	const trouble = answered ? undefined : askTrouble(settlement.outcome, found.detail);
@@ -2235,10 +2694,12 @@ function childResult(
 	return {
 		...result(exit.exit_code === 0, exit.exit_code === 0 ? "child_completed" : "child_failed", target, {
 			process,
-			operation: "wait", phase: "observe",
+			operation: "wait",
+			phase: "observe",
 			...output,
 			evidence,
-			meaning: "The terminal's direct child exited. This says nothing about an inner shell command or service readiness.",
+			meaning:
+				"The terminal's direct child exited. This says nothing about an inner shell command or service readiness.",
 		}),
 		coverage: {
 			bounded: true,

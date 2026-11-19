@@ -14,8 +14,25 @@ test("inventory rows quote the source index statements with canonical titles and
 		],
 	};
 	const pages: AccessPage[] = [
-		{ schema: "pillars-source", resource: "inventory", referenceBodyDigest: digest, bodyBytes: 200, offset: 0, endOffset: 40, nextOffset: 40, text: "### Patterns\n\n| Pattern | Structure |\n|---|---|\n" },
-		{ schema: "pillars-source", resource: "inventory", referenceBodyDigest: digest, bodyBytes: 200, offset: 40, endOffset: 200, text: "| [Frame Inspection](pattern-frame-inspection.md) | At an option set, name the frame. |\n" },
+		{
+			schema: "pillars-source",
+			resource: "inventory",
+			referenceBodyDigest: digest,
+			bodyBytes: 200,
+			offset: 0,
+			endOffset: 40,
+			nextOffset: 40,
+			text: "### Patterns\n\n| Pattern | Structure |\n|---|---|\n",
+		},
+		{
+			schema: "pillars-source",
+			resource: "inventory",
+			referenceBodyDigest: digest,
+			bodyBytes: 200,
+			offset: 40,
+			endOffset: 200,
+			text: "| [Frame Inspection](pattern-frame-inspection.md) | At an option set, name the frame. |\n",
+		},
 	];
 	const requests: unknown[] = [];
 	const read: SourceReader = async (request) => {
@@ -27,7 +44,16 @@ test("inventory rows quote the source index statements with canonical titles and
 	assert.deepEqual(await browserEntries(catalog, read), [
 		{ resource: "inventory", title: "Pillars", type: "inventory", index: "" },
 		{ resource: "governance", title: "Pillars Governance", type: "governance", index: "" },
-		{ resource: "pattern-frame-inspection", title: "Frame Inspection", type: "pattern", index: "At an option set, name the frame." },
+		{
+			resource: "pattern-frame-inspection",
+			title: "Frame Inspection",
+			type: "pattern",
+			index: "At an option set, name the frame.",
+		},
 	]);
-	assert.deepEqual(requests, [{ resource: "inventory" }, { resource: "inventory", offset: 40, referenceBodyDigest: digest }], "every page of the inventory binds the first page's digest");
+	assert.deepEqual(
+		requests,
+		[{ resource: "inventory" }, { resource: "inventory", offset: 40, referenceBodyDigest: digest }],
+		"every page of the inventory binds the first page's digest",
+	);
 });

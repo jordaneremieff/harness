@@ -81,8 +81,7 @@ async function fixture(
 				name,
 				label: name,
 				description: "A harmless local messaging write.",
-				parameters:
-					options.schema ?? obj({ room: str(), text: str() }, { open: false }),
+				parameters: options.schema ?? obj({ room: str(), text: str() }, { open: false }),
 				execute: async (_id, input) => {
 					writes.push({ tool: name, arguments: structuredClone(input), frozen: Object.isFrozen(input) });
 					return { content: [{ type: "text", text: "saved locally" }], details: { count: writes.length } };
@@ -97,8 +96,9 @@ async function fixture(
 		try {
 			await active?.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		} finally {
-			try { active?.dispose(); }
-			finally {
+			try {
+				active?.dispose();
+			} finally {
 				await rm(root, { recursive: true, force: true });
 				if (oldDir === undefined) delete process.env.PI_POLICY_DIR;
 				else process.env.PI_POLICY_DIR = oldDir;
@@ -328,13 +328,18 @@ test("ordinary parallel retries execute one local write", { timeout: 30000 }, as
 	}
 });
 
-test("ordinary approved write executes when the provider reuses the refused call's id", { timeout: 30000 }, async () => {
+test("ordinary approved write executes when the provider reuses the refused call's id", {
+	timeout: 30000,
+}, async () => {
 	const f = await fixture();
 	try {
 		const refused = await f.run([ai.fauxToolCall(SEND, args, { id: "reused-provider-id" })], plainRequest);
 		assert.equal(refused.isError, true);
 		await f.approve();
-		const approved = await f.run([ai.fauxToolCall(SEND, args, { id: "reused-provider-id" })], "Send the approved message.");
+		const approved = await f.run(
+			[ai.fauxToolCall(SEND, args, { id: "reused-provider-id" })],
+			"Send the approved message.",
+		);
 		assert.equal(approved.isError, false, JSON.stringify(approved.content));
 		assert.equal(f.writes.length, 1);
 	} finally {
@@ -383,10 +388,7 @@ test("ordinary policy correction refuses an unproved exact-execution identity", 
 	};
 	const f = await fixture({
 		extra: [correction],
-		schema: obj(
-			{ room: str(), old: opt(str()), text: opt(str()) },
-			{ open: false },
-		),
+		schema: obj({ room: str(), old: opt(str()), text: opt(str()) }, { open: false }),
 	});
 	try {
 		const result = await f.invoke(SEND, { room: "release-notices", old: "Message" });

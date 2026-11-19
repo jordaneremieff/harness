@@ -4,6 +4,8 @@ import { publishSettings } from "./settings.ts";
 
 export default function composer(pi: ExtensionAPI): void {
 	const unsubscribe = publishSettings(pi.events, { agentDir: getAgentDir() });
-	pi.on("session_shutdown", () => { unsubscribe(); });
+	pi.on("session_shutdown", () => {
+		unsubscribe();
+	});
 	registerComposer(pi);
 }

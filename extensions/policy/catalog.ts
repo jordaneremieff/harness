@@ -46,8 +46,13 @@ const READER_RULES = new Set([
 ]);
 
 const PRECALL_BLOCKS = new Set([
-	"form.find-discovery", "form.ls-recursive", "form.du-traversal",
-	"bounds.find-output-uncapped", "bounds.grep-recursive-uncapped", "bounds.ls-recursive-uncapped", "bounds.du-uncapped",
+	"form.find-discovery",
+	"form.ls-recursive",
+	"form.du-traversal",
+	"bounds.find-output-uncapped",
+	"bounds.grep-recursive-uncapped",
+	"bounds.ls-recursive-uncapped",
+	"bounds.du-uncapped",
 ]);
 
 export const PACKAGE_CATALOG: PackageDefinitionRow[] = [

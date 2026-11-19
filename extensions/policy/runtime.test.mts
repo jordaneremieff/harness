@@ -5,11 +5,21 @@ import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext, test } from "node:test";
-import { convertToLlm, type ExtensionAPI, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	convertToLlm,
+	type ExtensionAPI,
+	type ExtensionContext,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent";
 
 import { DEFAULT_LIMITS, PACKAGE_CATALOG } from "./catalog.ts";
 import type { NamedData } from "./data.ts";
-import { GUIDANCE_ENTRY, GUIDANCE_HISTORY_LIMITS, GUIDANCE_RETIREMENT_ENTRY, messageDigest } from "./guidance-history.ts";
+import {
+	GUIDANCE_ENTRY,
+	GUIDANCE_HISTORY_LIMITS,
+	GUIDANCE_RETIREMENT_ENTRY,
+	messageDigest,
+} from "./guidance-history.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
 import type { FactsProgram, InputPlan } from "./program.ts";
@@ -75,10 +85,7 @@ async function writeTelemetrySegment(dir: string, lines: string[]): Promise<void
 function fixture(
 	programs: RuleRecord[],
 	mode: PolicyMode = "enforce",
-	schema: unknown = obj(
-		{ old: opt(str()), name: opt(str()) },
-		{ open: false },
-	),
+	schema: unknown = obj({ old: opt(str()), name: opt(str()) }, { open: false }),
 	fail = false,
 	directory = "/unused",
 	toolName = "sample",
@@ -97,7 +104,9 @@ function fixture(
 	const failures: string[] = [];
 	const writer = new PolicyWriter(
 		"/unused",
-		(health) => { if (health.state === "failed") failures.push(health.reason ?? "unknown failure"); },
+		(health) => {
+			if (health.state === "failed") failures.push(health.reason ?? "unknown failure");
+		},
 		async (_dir, batch) => {
 			if (fail) throw new Error("disk unavailable");
 			records.push(...batch.map((item) => JSON.parse(item.json) as PolicyRecord));
@@ -132,7 +141,16 @@ function fixture(
 		return snapshot;
 	};
 	const restart = () => {
-		runtime = new PolicyRuntime(pi, load, () => mode, directory, () => true, writer, undefined, observationClock);
+		runtime = new PolicyRuntime(
+			pi,
+			load,
+			() => mode,
+			directory,
+			() => true,
+			writer,
+			undefined,
+			observationClock,
+		);
 		runtime.sync(snapshot);
 		runtime.attach();
 	};
@@ -216,7 +234,9 @@ function fixture(
 	return {
 		snapshot,
 		pi,
-		get runtime() { return runtime; },
+		get runtime() {
+			return runtime;
+		},
 		restart,
 		call,
 		finish,
@@ -239,7 +259,9 @@ function fixture(
 		notifications,
 		handlers,
 		failures,
-		setMode: (next: PolicyMode) => { mode = next; },
+		setMode: (next: PolicyMode) => {
+			mode = next;
+		},
 		setLoadGate: (gate: Promise<void> | undefined) => {
 			loadGate = gate;
 		},
@@ -295,8 +317,10 @@ describe("observation time ownership", () => {
 		t.mock.method(Date, "now", () => wall);
 		t.mock.method(performance, "now", () => monotonic);
 		const observed = rule("elapsed", {
-			phase: "context", when: { op: "gte", path: ["state", "count"], value: 1 },
-			action: { kind: "guide", text: "Elapsed observation notice." }, onUnavailable: "skip",
+			phase: "context",
+			when: { op: "gte", path: ["state", "count"], value: 1 },
+			action: { kind: "guide", text: "Elapsed observation notice." },
+			onUnavailable: "skip",
 			state: { observe: success, cooldownMs: 10, window: { maxEvents: 4, maxAgeMs: 100 } },
 		});
 		const f = fixture([observed]);
@@ -321,13 +345,24 @@ describe("observation time ownership", () => {
 		let wall = 1_700_000_000_000;
 		t.mock.method(Date, "now", () => wall);
 		t.mock.method(performance, "now", () => 20);
-		const gate = rule("wall-data", { phase: "input",
+		const gate = rule("wall-data", {
+			phase: "input",
 			when: { op: "lookup", path: ["input", "name"], table: "values", value: "unique" },
-			action: { kind: "deny" }, data: ["values"], onUnavailable: "skip" });
+			action: { kind: "deny" },
+			data: ["values"],
+			onUnavailable: "skip",
+		});
 		const f = fixture([gate]);
 		t.after(() => f.writer.close());
-		f.snapshot.data.set("values", { kind: "table", name: "values", revision: "aabbccddeeff", source: "synthetic",
-			capturedAt: wall, maxAgeMs: 10, rows: [{ key: "blue", value: "target" }] });
+		f.snapshot.data.set("values", {
+			kind: "table",
+			name: "values",
+			revision: "aabbccddeeff",
+			source: "synthetic",
+			capturedAt: wall,
+			maxAgeMs: 10,
+			rows: [{ key: "blue", value: "target" }],
+		});
 		assert.ok(await f.call("fresh", { name: "blue" }));
 		wall += 10;
 		assert.equal(await f.call("stale", { name: "blue" }), undefined);
@@ -338,10 +373,20 @@ describe("observation time ownership", () => {
 
 describe("starter intervention effects", () => {
 	it("preserves explicit effects for synthetic command rules", async (t) => {
-		const alpha = rule("synthetic.alpha", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "skip" });
+		const alpha = rule("synthetic.alpha", {
+			phase: "input",
+			when: yes,
+			action: { kind: "deny" },
+			onUnavailable: "skip",
+		});
 		alpha.matcher = { kind: "declarative", language: "command-shape/v1", spec: { command: "alpha" } };
 		const beta = rule("synthetic.beta", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
-		beta.matcher = { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny", spec: { command: "beta" } };
+		beta.matcher = {
+			kind: "declarative",
+			language: "command-shape/v1",
+			onUnavailable: "deny",
+			spec: { command: "beta" },
+		};
 		const f = fixture([alpha, beta], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		assert.match((await f.call("alpha", { command: "alpha 1" }))?.reason ?? "", /Rule synthetic\.alpha:/);
@@ -350,36 +395,99 @@ describe("starter intervention effects", () => {
 		assert.equal(await f.call("operand", { command: "echo alpha" }), undefined);
 	});
 	it("keeps slow traversal gates but delivers preferences only after success", async (t) => {
-		const rows = PACKAGE_CATALOG.filter((row) => row.matcher.kind === "code").map((row): RuleRecord => ({
-			id: row.id, source: { kind: "package" }, matcher: row.matcher,
-			definition: { ...row, state: "active" }, matcherAvailable: true, staleOverride: false,
-		}));
+		const rows = PACKAGE_CATALOG.filter((row) => row.matcher.kind === "code").map(
+			(row): RuleRecord => ({
+				id: row.id,
+				source: { kind: "package" },
+				matcher: row.matcher,
+				definition: { ...row, state: "active" },
+				matcherAvailable: true,
+				staleOverride: false,
+			}),
+		);
 		const f = fixture(rows, "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
-		const sourceInfo = { path: "builtin:fixture", source: "builtin", scope: "temporary" as const, origin: "top-level" as const };
+		const sourceInfo = {
+			path: "builtin:fixture",
+			source: "builtin",
+			scope: "temporary" as const,
+			origin: "top-level" as const,
+		};
 		f.pi.getAllTools = () => [
-			{ name: "bash", description: "Synthetic command", parameters: obj({ command: str() }, { open: true }), exposure: "direct", sourceInfo },
-			{ name: "read", description: "Synthetic reader", parameters: obj({ path: str() }, { open: true }), exposure: "direct", sourceInfo },
+			{
+				name: "bash",
+				description: "Synthetic command",
+				parameters: obj({ command: str() }, { open: true }),
+				exposure: "direct",
+				sourceInfo,
+			},
+			{
+				name: "read",
+				description: "Synthetic reader",
+				parameters: obj({ path: str() }, { open: true }),
+				exposure: "direct",
+				sourceInfo,
+			},
 		];
 		f.pi.getActiveTools = () => ["bash", "read"];
-		assert.match((await f.call("traversal", { command: "find src -type f" }))?.reason ?? "", /Rule form\.find-discovery:/);
+		assert.match(
+			(await f.call("traversal", { command: "find src -type f" }))?.reason ?? "",
+			/Rule form\.find-discovery:/,
+		);
 		assert.equal(await f.call("failed-reader", { command: "cat notes.md" }), undefined);
 		assert.equal(await f.result("failed-reader", true), undefined);
 		assert.equal(await f.call("reader", { command: "cat notes.md" }), undefined);
 		assert.match(JSON.stringify(await f.result("reader")), /read tool for file contents/);
-		assert.equal(await f.call("details", { command: "fd -t f -l . src docs tests | awk '{print $5, $9}' | sort -k2 | head -n 200" }), undefined);
+		assert.equal(
+			await f.call("details", {
+				command: "fd -t f -l . src docs tests | awk '{print $5, $9}' | sort -k2 | head -n 200",
+			}),
+			undefined,
+		);
 	});
 });
 
 describe("integrated catalogue guidance", () => {
 	const bundledFixture = (toolName: "bash" | "read") => {
-		const rows = PACKAGE_CATALOG.map((row): RuleRecord => ({ id: row.id, source: { kind: "package" }, matcher: row.matcher,
-			definition: { ...row, state: "active" }, matcherAvailable: true, staleOverride: false }));
-		const f = fixture(rows, "enforce", toolName === "bash" ? obj({ command: str() }, { open: true }) : obj({ path: str() }), false, "/unused", toolName);
-		const sourceInfo = { path: "builtin:fixture", source: "builtin", scope: "temporary" as const, origin: "top-level" as const };
+		const rows = PACKAGE_CATALOG.map(
+			(row): RuleRecord => ({
+				id: row.id,
+				source: { kind: "package" },
+				matcher: row.matcher,
+				definition: { ...row, state: "active" },
+				matcherAvailable: true,
+				staleOverride: false,
+			}),
+		);
+		const f = fixture(
+			rows,
+			"enforce",
+			toolName === "bash" ? obj({ command: str() }, { open: true }) : obj({ path: str() }),
+			false,
+			"/unused",
+			toolName,
+		);
+		const sourceInfo = {
+			path: "builtin:fixture",
+			source: "builtin",
+			scope: "temporary" as const,
+			origin: "top-level" as const,
+		};
 		f.pi.getAllTools = () => [
-			{ name: "bash", description: "Synthetic command", parameters: obj({ command: str() }, { open: true }), exposure: "direct", sourceInfo },
-			{ name: "read", description: "Synthetic reader", parameters: obj({ path: str() }), exposure: "direct", sourceInfo },
+			{
+				name: "bash",
+				description: "Synthetic command",
+				parameters: obj({ command: str() }, { open: true }),
+				exposure: "direct",
+				sourceInfo,
+			},
+			{
+				name: "read",
+				description: "Synthetic reader",
+				parameters: obj({ path: str() }),
+				exposure: "direct",
+				sourceInfo,
+			},
 		];
 		f.pi.getActiveTools = () => ["bash", "read"];
 		return f;
@@ -390,8 +498,15 @@ describe("integrated catalogue guidance", () => {
 		t.after(() => f.writer.close());
 		const input = { command: "sed -n '4,8p' src/sample.ts" };
 		assert.equal(await f.call("slice", input), undefined);
-		const original = { content: [{ type: "text" as const, text: "Synthetic source lines." }], isError: false, details: undefined };
-		const patch = await f.runtime.toolResult({ type: "tool_result", toolName: "bash", toolCallId: "slice", input, ...original }, f.ctx);
+		const original = {
+			content: [{ type: "text" as const, text: "Synthetic source lines." }],
+			isError: false,
+			details: undefined,
+		};
+		const patch = await f.runtime.toolResult(
+			{ type: "tool_result", toolName: "bash", toolCallId: "slice", input, ...original },
+			f.ctx,
+		);
 		const final = { ...original, ...patch };
 		const note = f.snapshot.records.get("routing.sed-slice")?.definition.note;
 		assert.ok(note);
@@ -409,8 +524,15 @@ describe("integrated catalogue guidance", () => {
 			const id = `read-${index}`;
 			const input = { path: `src/synthetic-${index}.txt` };
 			assert.equal(await f.call(id, input), undefined);
-			const original = { content: [{ type: "text" as const, text: "a".repeat(24_000) }], isError: false, details: undefined };
-			const patch = await f.runtime.toolResult({ type: "tool_result", toolName: "read", toolCallId: id, input, ...original }, f.ctx);
+			const original = {
+				content: [{ type: "text" as const, text: "a".repeat(24_000) }],
+				isError: false,
+				details: undefined,
+			};
+			const patch = await f.runtime.toolResult(
+				{ type: "tool_result", toolName: "read", toolCallId: id, input, ...original },
+				f.ctx,
+			);
 			const final = { ...original, ...patch };
 			await f.runtime.toolEnd({ toolName: "read", toolCallId: id, result: final, isError: final.isError }, f.ctx);
 			if (index < 2) assert.equal(await f.contextEmitted(), undefined);
@@ -418,27 +540,39 @@ describe("integrated catalogue guidance", () => {
 		const note = f.snapshot.records.get("resources.output-volume")?.definition.note;
 		assert.ok(note);
 		assert.ok((await f.contextEmitted())?.includes(note));
-		const state = await f.runtime.inspect("state", {}, f.ctx) as { observationPeriods: Array<{ id: string; windowTotal: number }> };
-		assert.equal(state.observationPeriods.find((period) => period.id === "resources.output-volume")?.windowTotal, 72_000);
+		const state = (await f.runtime.inspect("state", {}, f.ctx)) as {
+			observationPeriods: Array<{ id: string; windowTotal: number }>;
+		};
+		assert.equal(
+			state.observationPeriods.find((period) => period.id === "resources.output-volume")?.windowTotal,
+			72_000,
+		);
 		assert.match(note, /does not establish unnecessary breadth.*Preserve required complete reads/);
 	});
-
 });
 
 describe("separate denial evidence", () => {
 	it("explains an unreadable group before the rule note and admits readable harmless control", async (t) => {
 		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
 		gate.definition.note = "Synthetic restriction: leave repository publication unchanged.";
-		gate.matcher = { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
-			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } };
+		gate.matcher = {
+			kind: "declarative",
+			language: "command-shape/v1",
+			onUnavailable: "deny",
+			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } },
+		};
 		const f = fixture([gate], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
-		assert.equal((await f.call("group", { command: "(true)" }))?.reason,
-			"[policy] Rule synthetic.git: Policy could not determine whether this command matches the rule. Evidence unavailable: unsupported-shell. The rule denies unavailable evidence. No matching command was established. Use plain literal commands joined with && or ; when that preserves the task. Rule note: Synthetic restriction: leave repository publication unchanged.");
+		assert.equal(
+			(await f.call("group", { command: "(true)" }))?.reason,
+			"[policy] Rule synthetic.git: Policy could not determine whether this command matches the rule. Evidence unavailable: unsupported-shell. The rule denies unavailable evidence. No matching command was established. Use plain literal commands joined with && or ; when that preserves the task. Rule note: Synthetic restriction: leave repository publication unchanged.",
+		);
 		assert.equal(await f.call("harmless-loop", { command: "for f in a b; do echo $f; done" }), undefined);
 		assert.equal(await f.call("harmless-substitution", { command: "echo $(date)" }), undefined);
-		assert.equal((await f.call("push", { command: "git push" }))?.reason,
-			"[policy] Rule synthetic.git: Synthetic restriction: leave repository publication unchanged. Matched command: git push");
+		assert.equal(
+			(await f.call("push", { command: "git push" }))?.reason,
+			"[policy] Rule synthetic.git: Synthetic restriction: leave repository publication unchanged. Matched command: git push",
+		);
 	});
 	it("keeps the cause, parse reason and accepted form before the note for every unavailable command reason", () => {
 		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
@@ -446,18 +580,52 @@ describe("separate denial evidence", () => {
 		const records = new Map([[gate.id, gate]]);
 		// The shell reader, Git option decoder and command evaluator supply these reason codes.
 		for (const reason of [
-			"command-byte-limit", "word-limit", "stage-limit", "parse-limit", "nested-depth-limit", "option-limit",
-			"malformed-shell", "malformed-for-syntax", "unsupported-shell", "unsupported-for-syntax",
-			"unexpanded-heredoc", "unexpanded-arithmetic", "unexpanded-parameter", "unexpanded-backtick",
-			"dynamic-prefix", "unsupported-prefix", "unresolved-command", "opaque-command-operand", "shell-evidence-unavailable",
-			"dynamic-command", "dynamic-word", "unsupported-global-option", "unsupported-option", "invalid-option-form",
-			"missing-value", "missing-subcommand", "future-evidence-code",
+			"command-byte-limit",
+			"word-limit",
+			"stage-limit",
+			"parse-limit",
+			"nested-depth-limit",
+			"option-limit",
+			"malformed-shell",
+			"malformed-for-syntax",
+			"unsupported-shell",
+			"unsupported-for-syntax",
+			"unexpanded-heredoc",
+			"unexpanded-arithmetic",
+			"unexpanded-parameter",
+			"unexpanded-backtick",
+			"dynamic-prefix",
+			"unsupported-prefix",
+			"unresolved-command",
+			"opaque-command-operand",
+			"shell-evidence-unavailable",
+			"dynamic-command",
+			"dynamic-word",
+			"unsupported-global-option",
+			"unsupported-option",
+			"invalid-option-form",
+			"missing-value",
+			"missing-subcommand",
+			"future-evidence-code",
 		]) {
-			const plan = { corrections: [], evaluations: [{ id: gate.id, deny: true, truth: "unknown", unavailableReasons: [reason] }] } as unknown as InputPlan;
+			const plan = {
+				corrections: [],
+				evaluations: [{ id: gate.id, deny: true, truth: "unknown", unavailableReasons: [reason] }],
+			} as unknown as InputPlan;
 			const text = refusalText(plan, records, []) ?? "";
-			assert.ok(text.startsWith("[policy] Rule synthetic.git: Policy could not determine whether this command matches the rule."), reason);
+			assert.ok(
+				text.startsWith(
+					"[policy] Rule synthetic.git: Policy could not determine whether this command matches the rule.",
+				),
+				reason,
+			);
 			assert.ok(text.includes(`Evidence unavailable: ${reason}`), reason);
-			assert.ok(text.includes("No matching command was established. Use plain literal commands joined with && or ; when that preserves the task. Rule note:"), reason);
+			assert.ok(
+				text.includes(
+					"No matching command was established. Use plain literal commands joined with && or ; when that preserves the task. Rule note:",
+				),
+				reason,
+			);
 			assert.ok(text.endsWith(gate.definition.note), reason);
 			assert.doesNotMatch(text, /Matched command:/, reason);
 		}
@@ -465,11 +633,18 @@ describe("separate denial evidence", () => {
 	it("admits a supported harmless loop but denies unknown execution without a false match", async (t) => {
 		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
 		gate.definition.note = "Use a permitted command shape.";
-		gate.matcher = { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
-			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } };
+		gate.matcher = {
+			kind: "declarative",
+			language: "command-shape/v1",
+			onUnavailable: "deny",
+			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } },
+		};
 		const f = fixture([gate], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
-		assert.equal(await f.call("loop", { command: 'for f in $(fd -t f design | head -n 20); do wc -c "$f"; done' }), undefined);
+		assert.equal(
+			await f.call("loop", { command: 'for f in $(fd -t f design | head -n 20); do wc -c "$f"; done' }),
+			undefined,
+		);
 		assert.equal(await f.call("newline-loop", { command: "for x in a; do\necho safe; done" }), undefined);
 		for (const [id, command, reason] of [
 			["wrapper", "timeout 1 echo safe", "opaque-command-operand"],
@@ -484,7 +659,10 @@ describe("separate denial evidence", () => {
 			assert.match(denied.reason, /No matching command was established/);
 			assert.doesNotMatch(denied.reason, /Matched command:/);
 		}
-		assert.match((await f.call("push-loop", { command: "for x in a; do git push; done" }))?.reason ?? "", /Matched command: git push/);
+		assert.match(
+			(await f.call("push-loop", { command: "for x in a; do git push; done" }))?.reason ?? "",
+			/Matched command: git push/,
+		);
 		gate.matcher.onUnavailable = "skip";
 		const skip = fixture([gate], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => skip.writer.close());
@@ -492,9 +670,11 @@ describe("separate denial evidence", () => {
 	});
 	it("labels two qualified rules independently and respects their selected guidance effects", async (t) => {
 		const fd = shellRule("block", "bounds.fd-uncapped");
-		fd.definition.note = "For plain discovery use --max-results N; it conflicts with --list-details, --exec and --exec-batch. Bound selected input for those forms.";
+		fd.definition.note =
+			"For plain discovery use --max-results N; it conflicts with --list-details, --exec and --exec-batch. Bound selected input for those forms.";
 		const cap = shellRule("block", "bounds.false-cap");
-		cap.definition.note = "Bound selected input. Move the cap only when changed input preserves the task, not for global sorting or totals.";
+		cap.definition.note =
+			"Bound selected input. Move the cap only when changed input preserves the task, not for global sorting or totals.";
 		const command = "fd -t f -l . src docs tests | awk '{print $5, $9}' | sort -k2 | head -n 200";
 		for (const effect of ["block", "steer"] as const) {
 			for (const row of [fd, cap]) row.definition.effect = effect;
@@ -513,8 +693,12 @@ describe("separate denial evidence", () => {
 	});
 	it("uses a construct-neutral label for unsupported shell evidence", async (t) => {
 		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
-		gate.matcher = { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
-			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } };
+		gate.matcher = {
+			kind: "declarative",
+			language: "command-shape/v1",
+			onUnavailable: "deny",
+			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } },
+		};
 		const f = fixture([gate], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		for (const command of ["echo a{b,c}", "mv file.{txt,md}", "arr=(a b)", "(true)"]) {
@@ -524,12 +708,22 @@ describe("separate denial evidence", () => {
 		}
 	});
 	it("counts whole omitted diagnostics within the shared byte bound", () => {
-		const records = new Map(Array.from({ length: 30 }, (_, index) => {
-			const row = rule(`deny.${index}`, { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "skip" });
-			row.definition.note = "Keep this restriction explicit. ".repeat(5);
-			return [row.id, row] as const;
-		}));
-		const plan = { corrections: [], evaluations: [...records.keys()].map((id) => ({ id, deny: true, truth: true })) } as unknown as InputPlan;
+		const records = new Map(
+			Array.from({ length: 30 }, (_, index) => {
+				const row = rule(`deny.${index}`, {
+					phase: "input",
+					when: yes,
+					action: { kind: "deny" },
+					onUnavailable: "skip",
+				});
+				row.definition.note = "Keep this restriction explicit. ".repeat(5);
+				return [row.id, row] as const;
+			}),
+		);
+		const plan = {
+			corrections: [],
+			evaluations: [...records.keys()].map((id) => ({ id, deny: true, truth: true })),
+		} as unknown as InputPlan;
 		const text = refusalText(plan, records, []) ?? "";
 		const visible = (text.match(/Rule deny\./g) ?? []).length;
 		assert.ok(visible > 0 && visible < records.size);
@@ -540,14 +734,20 @@ describe("separate denial evidence", () => {
 
 describe("bounded first denial", () => {
 	const cases = ["x".repeat(2000), "界".repeat(2000)].flatMap((note) =>
-		([true, "unknown"] as const).flatMap((truth) => [false, true].map((later) => ({ note, truth, later }))));
+		([true, "unknown"] as const).flatMap((truth) => [false, true].map((later) => ({ note, truth, later }))),
+	);
 	for (const { note, truth, later } of cases) {
 		const cause = truth === true ? "Matched command: git push" : "Evidence unavailable: unexpanded-heredoc";
 		const row = rule("deny.first", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
 		row.definition.note = note;
 		const records = new Map([[row.id, row]]);
-		const evaluation = { id: row.id, deny: true, truth, matchedSegment: truth === true ? "git push" : undefined,
-			unavailableReasons: truth === "unknown" ? ["unexpanded-heredoc"] : undefined };
+		const evaluation = {
+			id: row.id,
+			deny: true,
+			truth,
+			matchedSegment: truth === true ? "git push" : undefined,
+			unavailableReasons: truth === "unknown" ? ["unexpanded-heredoc"] : undefined,
+		};
 		const evaluations = later ? [evaluation, { ...evaluation, id: "deny.second" }] : [evaluation];
 		const plan = { corrections: [], evaluations } as unknown as InputPlan;
 		it(`retains the first denial ID, cause and note prefix within the byte bound for ${truth} evidence, ${Buffer.byteLength(note)} note bytes and later denial ${later}`, () => {
@@ -574,7 +774,11 @@ describe("command-specific refusal guidance", () => {
 		["routing.tail-slice", "tail -n +45 notes.md", ["read path=notes.md offset=45"]],
 		["routing.tail-slice", "tail +45 notes.md", ["read path=notes.md offset=45"]],
 		["routing.inline-script-read", `python3 -c "print(open('notes.md').read())"`, ["read path=notes.md"]],
-		["routing.inline-script-read", `node -e 'console.log(require("fs").readFileSync("notes.md", "utf8"))'`, ["read path=notes.md"]],
+		[
+			"routing.inline-script-read",
+			`node -e 'console.log(require("fs").readFileSync("notes.md", "utf8"))'`,
+			["read path=notes.md"],
+		],
 		["routing.cat-read", 'cat "notes with spaces.md"', ['read path="notes with spaces.md"']],
 		["routing.cat-read", 'cat "$FILE"', []],
 		["routing.cat-pipe", "cat data.json | jq .", []],
@@ -618,8 +822,15 @@ describe("command-specific refusal guidance", () => {
 			const denied = await f.call("read-call", { command });
 			assert.ok(denied);
 			const lines = denied.reason.split("\n");
-			assert.ok(lines[0].startsWith("[policy] Rule local.reader: Use your selected reader. Suggested form: reader --plain. Matched command:"));
-			assert.deepEqual(lines.filter((line) => line.startsWith("For this command:")), suggestions.map((value) => `For this command: ${value}`));
+			assert.ok(
+				lines[0].startsWith(
+					"[policy] Rule local.reader: Use your selected reader. Suggested form: reader --plain. Matched command:",
+				),
+			);
+			assert.deepEqual(
+				lines.filter((line) => line.startsWith("For this command:")),
+				suggestions.map((value) => `For this command: ${value}`),
+			);
 			assert.deepEqual(record, before);
 		});
 	}
@@ -650,7 +861,10 @@ describe("compact command inspection", () => {
 			assert.equal(preview.decision.denied, false);
 			assert.deepEqual(preview.input.evaluations, []);
 			assert.deepEqual(preview.results, []);
-			assert.equal(preview.nonMatchingRules, records.filter((row) => row.matcher.kind === "code" && row.definition.effect === "block").length + 1);
+			assert.equal(
+				preview.nonMatchingRules,
+				records.filter((row) => row.matcher.kind === "code" && row.definition.effect === "block").length + 1,
+			);
 		}
 	});
 
@@ -672,7 +886,10 @@ describe("compact command inspection", () => {
 	it("does not attribute a denial to a matched guidance-only rule", async (t) => {
 		const guide = shellRule("steer");
 		const blocker = rule("restriction", {
-			phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "skip",
+			phase: "input",
+			when: yes,
+			action: { kind: "deny" },
+			onUnavailable: "skip",
 		});
 		const f = fixture([guide, blocker], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
@@ -718,14 +935,7 @@ function correctedBash(blocker: RuleRecord, mode: PolicyMode = "enforce", target
 		data: ["commands"],
 		onUnavailable: "skip",
 	});
-	const f = fixture(
-		[correction, blocker],
-		mode,
-		obj({ command: str() }, { open: false }),
-		false,
-		"/unused",
-		"bash",
-	);
+	const f = fixture([correction, blocker], mode, obj({ command: str() }, { open: false }), false, "/unused", "bash");
 	f.snapshot.data.set("commands", commandTable(target));
 	return f;
 }
@@ -891,7 +1101,9 @@ describe("completion-triggered recovery guidance", () => {
 	it("uses a rolling strict age bound without expiring an already triggered notice", async (t) => {
 		let now = Date.now();
 		t.mock.method(Date, "now", () => now);
-		const f = fixture([recoveryRule()], "enforce", undefined, false, "/unused", "sample", undefined, { now: () => now });
+		const f = fixture([recoveryRule()], "enforce", undefined, false, "/unused", "sample", undefined, {
+			now: () => now,
+		});
 		await completed(f, "old", true);
 		now += DEFAULT_LIMITS.errorWindowMs;
 		await completed(f, "new", true);
@@ -1018,16 +1230,32 @@ describe("persistent context guidance placement", () => {
 	it("preserves the complete request prefix with retained shell and guidance notes", async (t) => {
 		const row = PACKAGE_CATALOG.find((entry) => entry.id === "bounds.fd-uncapped");
 		assert.ok(row);
-		const shell: RuleRecord = { id: row.id, source: { kind: "package" }, matcher: row.matcher,
-			definition: { ...row, state: "active" }, matcherAvailable: true, staleOverride: false };
-		const f = fixture([shell, repeatableGuide()], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
+		const shell: RuleRecord = {
+			id: row.id,
+			source: { kind: "package" },
+			matcher: row.matcher,
+			definition: { ...row, state: "active" },
+			matcherAvailable: true,
+			staleOverride: false,
+		};
+		const f = fixture(
+			[shell, repeatableGuide()],
+			"enforce",
+			obj({ command: str() }, { open: true }),
+			false,
+			"/unused",
+			"bash",
+		);
 		t.after(() => f.writer.close());
-		const prepared = await f.handlers.get("before_agent_start")?.({}, f.ctx) as {
+		const prepared = (await f.handlers.get("before_agent_start")?.({}, f.ctx)) as {
 			message: { customType: string; content: string; display: boolean };
 		};
 		assert.match(prepared.message.content, /Shell contract snapshot/);
 		f.session.appendCustomMessageEntry(prepared.message.customType, prepared.message.content, prepared.message.display);
-		f.setTranscript([f.getTranscript()[0], ...convertToLlm(f.session.buildSessionProjection().messages).map((message) => ({ ...message }))]);
+		f.setTranscript([
+			f.getTranscript()[0],
+			...convertToLlm(f.session.buildSessionProjection().messages).map((message) => ({ ...message })),
+		]);
 		let previous: string[] = [];
 		for (let request = 0; request < 3; request++) {
 			const projected = await f.project(request > 0);
@@ -1159,7 +1387,10 @@ describe("persistent context guidance placement", () => {
 			if (signalled) await f.handlers.get("session_compact")?.({}, f.ctx);
 			requestFromSession(f);
 			const projection = f.getTranscript();
-			assert.equal(projection.some((message) => textOf(message) === "Run controlled tools."), false);
+			assert.equal(
+				projection.some((message) => textOf(message) === "Run controlled tools."),
+				false,
+			);
 			const kept = await f.project();
 			assert.ok(kept);
 			assert.equal(notices(kept.messages).length, 1);
@@ -1221,9 +1452,11 @@ describe("persistent context guidance placement", () => {
 	});
 
 	const ledger = async (f: ReturnType<typeof fixture>) =>
-		((await f.runtime.inspect("state", {}, f.ctx)) as {
-			guidanceRecords: Array<{ id: string; timestamp: number }>;
-		}).guidanceRecords;
+		(
+			(await f.runtime.inspect("state", {}, f.ctx)) as {
+				guidanceRecords: Array<{ id: string; timestamp: number }>;
+			}
+		).guidanceRecords;
 	const retirements = (f: ReturnType<typeof fixture>) =>
 		f.session.getEntries().filter((entry) => entry.type === "custom" && entry.customType === GUIDANCE_RETIREMENT_ENTRY);
 	const editSource = async (f: ReturnType<typeof fixture>, text: string) => {
@@ -2009,7 +2242,10 @@ describe("input transactions and modes", () => {
 		await f.finish("a");
 		await f.writer.close();
 		const evaluations = f.records[0].policy?.evaluations as Array<{ id: string; truth: unknown }>;
-		assert.equal(evaluations.find((e) => e.id === "effective"), undefined);
+		assert.equal(
+			evaluations.find((e) => e.id === "effective"),
+			undefined,
+		);
 		const coverage = f.records[0].policy?.coverage as { evaluations: { irrelevant: number } };
 		assert.equal(coverage.evaluations.irrelevant, 1);
 	});
@@ -2546,7 +2782,9 @@ test("prepares the registered schema at each tool boundary", async () => {
 describe("telemetry writer lifecycle", () => {
 	it("reads current writer pressure, recovery, and cumulative loss counts in ordinary health", async () => {
 		let release = () => {};
-		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		const f = fixture([], "observe", obj({}, { open: true }), false, "/unused", "sample", gate);
 		await f.call("trace", {});
 		await f.finish("trace");
@@ -2555,7 +2793,8 @@ describe("telemetry writer lifecycle", () => {
 		assert.ok(row);
 		for (let index = 1; index < TELEMETRY_QUEUE_RECORDS; index++) assert.equal(f.writer.enqueue(row), true);
 		assert.equal(f.writer.enqueue(row), false);
-		const health = async () => (await f.runtime.inspect("health", {}, f.ctx)) as { telemetry: ReturnType<PolicyWriter["health"]> };
+		const health = async () =>
+			(await f.runtime.inspect("health", {}, f.ctx)) as { telemetry: ReturnType<PolicyWriter["health"]> };
 		assert.deepEqual((await health()).telemetry, f.writer.health());
 		assert.equal(f.writer.health().state, "pressure");
 		release();
@@ -2588,8 +2827,13 @@ describe("telemetry health reporting", () => {
 		await chmod(dir, 0o700);
 		await setup(dir);
 		const terminal: string[] = [];
-		t.mock.method(console, "warn", (...args: unknown[]) => { terminal.push(args.join(" ")); });
-		t.mock.method(process.stderr, "write", (chunk: unknown) => { terminal.push(String(chunk)); return true; });
+		t.mock.method(console, "warn", (...args: unknown[]) => {
+			terminal.push(args.join(" "));
+		});
+		t.mock.method(process.stderr, "write", (chunk: unknown) => {
+			terminal.push(String(chunk));
+			return true;
+		});
 		const notifications: Array<{ text: string; level: string }> = [];
 		const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 		const ctx = {
@@ -2607,14 +2851,30 @@ describe("telemetry health reporting", () => {
 			appendEntry: () => {},
 			on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, handler),
 		} as unknown as ExtensionAPI;
-		const snapshot: RuleSnapshot = { records: new Map(), pending: [], data: new Map(), health: { status: "ok", path: "rules.jsonl" } };
-		const runtime: PolicyRuntime = new PolicyRuntime(pi, async () => { runtime.sync(snapshot); return snapshot; }, () => "observe", dir);
+		const snapshot: RuleSnapshot = {
+			records: new Map(),
+			pending: [],
+			data: new Map(),
+			health: { status: "ok", path: "rules.jsonl" },
+		};
+		const runtime: PolicyRuntime = new PolicyRuntime(
+			pi,
+			async () => {
+				runtime.sync(snapshot);
+				return snapshot;
+			},
+			() => "observe",
+			dir,
+		);
 		runtime.sync(snapshot);
 		runtime.attach();
 		const run = async (id: string) => {
 			await runtime.toolStart({ toolName: "sample", toolCallId: id, args: {} }, ctx);
 			await runtime.toolCall({ type: "tool_call", toolName: "sample", toolCallId: id, input: {} }, ctx);
-			await runtime.toolEnd({ toolName: "sample", toolCallId: id, isError: false, result: { content: [{ type: "text", text: "body" }] } }, ctx);
+			await runtime.toolEnd(
+				{ toolName: "sample", toolCallId: id, isError: false, result: { content: [{ type: "text", text: "body" }] } },
+				ctx,
+			);
 		};
 		const close = () => handlers.get("session_shutdown")?.({}, ctx);
 		const health = async () => ((await runtime.inspect("health", {}, ctx)) as { telemetry: TelemetryHealth }).telemetry;
@@ -2652,7 +2912,10 @@ describe("telemetry health reporting", () => {
 		assert.equal(health.lostRecords, 2);
 		assert.equal(f.notifications.length, 1);
 		assert.equal(f.notifications[0].level, "warning");
-		assert.match(f.notifications[0].text, /^\[policy\] Telemetry dropped \d record\(s\).*telemetry\/\.telemetry-lock in the policy directory/);
+		assert.match(
+			f.notifications[0].text,
+			/^\[policy\] Telemetry dropped \d record\(s\).*telemetry\/\.telemetry-lock in the policy directory/,
+		);
 		assert.deepEqual(f.terminal, []);
 	});
 

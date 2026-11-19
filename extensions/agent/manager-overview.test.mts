@@ -17,8 +17,22 @@ function fixtureRoot(t: { after(fn: () => void): void }): string {
 	return root;
 }
 
-function catalogInput(root: string): { cwd: string; agentDir: string; packageDir: string; model: { provider: string; modelId: string }; thinkingLevel: string; ownerId: string } {
-	return { cwd: "/work", agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: "test", modelId: "model" }, thinkingLevel: "off", ownerId: "owner-1" };
+function catalogInput(root: string): {
+	cwd: string;
+	agentDir: string;
+	packageDir: string;
+	model: { provider: string; modelId: string };
+	thinkingLevel: string;
+	ownerId: string;
+} {
+	return {
+		cwd: "/work",
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
+		model: { provider: "test", modelId: "model" },
+		thinkingLevel: "off",
+		ownerId: "owner-1",
+	};
 }
 
 it("returns a partial dashboard page with a cursor at the storage bound instead of throwing", async (t) => {
@@ -49,7 +63,10 @@ it("returns a partial dashboard page with a cursor at the storage bound instead 
 	assert.equal(continuation.coverage.nextCursor, null);
 	assert.equal(continuation.coverage.inventory?.remaining, 0, "no catalogue records remain after the continuation");
 	assert.equal(continuation.coverage.skipped, 1, "the remaining record has no published view");
-	assert.equal(continuation.rows.some((row) => page.rows.some((previous) => previous.id === row.id)), false);
+	assert.equal(
+		continuation.rows.some((row) => page.rows.some((previous) => previous.id === row.id)),
+		false,
+	);
 	assert.equal(observes, 0);
 	const sampled = structuredObservation(StatusToolOutputSchema, buildStatusOverview(page, [], [])) as StatusOverview;
 	assert.equal(sampled.summary.sessions.unavailable, 320);
@@ -57,8 +74,14 @@ it("returns a partial dashboard page with a cursor at the storage bound instead 
 	assert.equal(sampled.sessions.length, 5);
 	assert.equal(sampled.summary.sessions.summarizedUnavailable, 315);
 	assert.equal(sampled.coverage.byteLimitReached, false, "unavailable observations have an intentional bounded sample");
-	const byteBoundPage = { ...page, rows: page.rows.map((row) => ({ ...row, name: "😀".repeat(160), health: { lastError: "independent host fault" } })) };
-	const overview = structuredObservation(StatusToolOutputSchema, buildStatusOverview(byteBoundPage, [], [])) as StatusOverview;
+	const byteBoundPage = {
+		...page,
+		rows: page.rows.map((row) => ({ ...row, name: "😀".repeat(160), health: { lastError: "independent host fault" } })),
+	};
+	const overview = structuredObservation(
+		StatusToolOutputSchema,
+		buildStatusOverview(byteBoundPage, [], []),
+	) as StatusOverview;
 	assert.equal(overview.coverage.byteLimitReached, true, "bounded multibyte names force the status byte limit");
 	assert.equal(overview.coverage.complete, false);
 	assert.ok(overview.sessions.length < byteBoundPage.rows.length, "the byte bound omits rows from the supplied page");
@@ -71,16 +94,43 @@ it("ranks caller-owned history without PID-derived live priority across roster c
 	const root = fixtureRoot(t);
 	let acquires = 0;
 	let observes = 0;
-	const manager = new AgentManager({ root, agentDir: root, packageDir: root,
-		acquire: async () => { acquires++; throw new Error("Roster launched a host"); },
-		observe: async () => { observes++; throw new Error("Roster read native state"); } });
+	const manager = new AgentManager({
+		root,
+		agentDir: root,
+		packageDir: root,
+		acquire: async () => {
+			acquires++;
+			throw new Error("Roster launched a host");
+		},
+		observe: async () => {
+			observes++;
+			throw new Error("Roster read native state");
+		},
+	});
 	t.after(() => manager.close());
-	const records = Array.from({ length: 324 }, () => manager.catalog.create({ ...catalogInput(root), ownerId: "other" }))
-		.sort((left, right) => left.storageId.localeCompare(right.storageId));
+	const records = Array.from({ length: 324 }, () =>
+		manager.catalog.create({ ...catalogInput(root), ownerId: "other" }),
+	).sort((left, right) => left.storageId.localeCompare(right.storageId));
 	const [newest, live, owned] = records.slice(-3);
 	const publishIdle = (record: typeof newest, name: string, ownerId: string, time: number) => {
 		writeFileSync(manager.catalog.path(record.storageId), JSON.stringify({ ...record, name, ownerId }));
-		manager.catalog.updateView(record.storageId, { updatedAt: "2026-01-01T00:00:00.000Z", rows: [{ id: record.storageId, storageId: record.storageId, name, cwd: record.cwd, modifiedAt: 1, owner: "here", state: "idle", cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } });
+		manager.catalog.updateView(record.storageId, {
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			rows: [
+				{
+					id: record.storageId,
+					storageId: record.storageId,
+					name,
+					cwd: record.cwd,
+					modifiedAt: 1,
+					owner: "here",
+					state: "idle",
+					cost: 0,
+					partial: false,
+				},
+			],
+			coverage: { complete: true, omitted: 0 },
+		});
 		utimesSync(manager.catalog.path(record.storageId), time, time);
 	};
 	for (const record of records) publishIdle(record, "Old history", "other", 100);
@@ -89,10 +139,23 @@ it("ranks caller-owned history without PID-derived live priority across roster c
 	publishIdle(owned, "Owned history", "owner-1", 1);
 	const paths = hostPaths(live);
 	mkdirSync(dirname(paths.claim), { recursive: true });
-	writeFileSync(paths.claim, JSON.stringify({ token: "test", pid: process.pid, host: hostname(), sessionId: live.storageId, cwd: live.cwd, createdAt: new Date().toISOString() }));
+	writeFileSync(
+		paths.claim,
+		JSON.stringify({
+			token: "test",
+			pid: process.pid,
+			host: hostname(),
+			sessionId: live.storageId,
+			cwd: live.cwd,
+			createdAt: new Date().toISOString(),
+		}),
+	);
 	const page = await manager.dashboardPage({ ownerId: "owner-1" });
 	const rows = dashboardRecords({ observedAt: 0, sessions: page.rows }, "");
-	assert.deepEqual(rows.slice(0, 2).map((row) => row.id), [owned.storageId, newest.storageId]);
+	assert.deepEqual(
+		rows.slice(0, 2).map((row) => row.id),
+		[owned.storageId, newest.storageId],
+	);
 	const viewport = rosterLines(rows, live.storageId, 80, 10, 0, theme).join("\n");
 	assert.doesNotMatch(viewport, /Live history/);
 	assert.match(viewport, /Owned history/);
@@ -101,11 +164,20 @@ it("ranks caller-owned history without PID-derived live priority across roster c
 	assert.equal(page.coverage.inventory?.remaining, 4);
 	assert.equal(page.coverage.inventory?.priorityRemaining, 0);
 	assert.equal(await manager.sessionFigures("owner-1"), "agents: 0/1+ active");
-	const overview = structuredObservation(StatusToolOutputSchema, await manager.status(undefined, undefined, { id: "owner-1", cwd: root })) as StatusOverview;
-	assert.deepEqual(overview.sessions.slice(0, 2).map((row) => row.id), [owned.storageId, newest.storageId]);
+	const overview = structuredObservation(
+		StatusToolOutputSchema,
+		await manager.status(undefined, undefined, { id: "owner-1", cwd: root }),
+	) as StatusOverview;
+	assert.deepEqual(
+		overview.sessions.slice(0, 2).map((row) => row.id),
+		[owned.storageId, newest.storageId],
+	);
 	assert.equal(overview.coverage.inventory?.remaining, 4);
 	assert.equal(overview.coverage.omittedPriorityRows, 0);
-	assert.equal(overview.sessions.some((row) => "rosterOrder" in row), false);
+	assert.equal(
+		overview.sessions.some((row) => "rosterOrder" in row),
+		false,
+	);
 	assert.equal(acquires, 0);
 	assert.equal(observes, 0);
 });
@@ -135,7 +207,9 @@ it("matches a list query against the first message", async (t) => {
 		agentDir: join(root, "agent"),
 		packageDir: join(root, "package"),
 		observe: async (_metadata, method) =>
-			method === "list" ? { items: [{ conversationId: 1, identity, busy: false, firstMessage: "find the whale" }], next: undefined } : [],
+			method === "list"
+				? { items: [{ conversationId: 1, identity, busy: false, firstMessage: "find the whale" }], next: undefined }
+				: [],
 	});
 	t.after(() => manager.close());
 	const record = manager.catalog.create(catalogInput(root));
@@ -172,7 +246,18 @@ it("re-reads 50 published views without observation or launch", async (t) => {
 		storageIds.push(record.storageId);
 		manager.catalog.updateView(record.storageId, {
 			updatedAt: new Date().toISOString(),
-			rows: [{ id: `${record.storageId}:1`, storageId: record.storageId, cwd: record.cwd, modifiedAt: 1, owner: "here", state: index === 0 ? "working" : "idle", cost: 0, partial: false }],
+			rows: [
+				{
+					id: `${record.storageId}:1`,
+					storageId: record.storageId,
+					cwd: record.cwd,
+					modifiedAt: 1,
+					owner: "here",
+					state: index === 0 ? "working" : "idle",
+					cost: 0,
+					partial: false,
+				},
+			],
 			coverage: { complete: true, omitted: 0 },
 		});
 	}
@@ -180,7 +265,9 @@ it("re-reads 50 published views without observation or launch", async (t) => {
 	assert.equal(acquires, 0);
 	assert.equal(observes, 0);
 	assert.deepEqual(first.rows.map((row) => row.storageId).sort(), storageIds.slice().sort());
-	const interrupted = first.rows.find((row) => row.storageId === storageIds[0]) as { state?: string; owner?: string; ownerLabel?: string } | undefined;
+	const interrupted = first.rows.find((row) => row.storageId === storageIds[0]) as
+		| { state?: string; owner?: string; ownerLabel?: string }
+		| undefined;
 	assert.equal(interrupted?.state, "interrupted", "an absent claim interrupts a working row");
 	assert.equal(interrupted?.owner, "unknown");
 	assert.match(interrupted?.ownerLabel ?? "", /^Host metadata at /u);

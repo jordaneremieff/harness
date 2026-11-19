@@ -14,13 +14,21 @@ export class InputError extends Error {
 }
 
 export function inputObject(input: unknown, fields: readonly string[]): Record<string, unknown> {
-	if (!input || typeof input !== "object" || Array.isArray(input) ||
-		![Object.prototype, null].includes(Object.getPrototypeOf(input)))
+	if (
+		!input ||
+		typeof input !== "object" ||
+		Array.isArray(input) ||
+		![Object.prototype, null].includes(Object.getPrototypeOf(input))
+	)
 		throw new InputError("input", input, "Send a JSON object; use {} for defaults.");
 	const args = input as Record<string, unknown>;
 	for (const key of Object.keys(args)) {
 		if (!fields.includes(key))
-			throw new InputError("input", key, `Remove the unsupported field (name withheld). Only ${fields.join(", ")} are valid fields; use {} for defaults.`);
+			throw new InputError(
+				"input",
+				key,
+				`Remove the unsupported field (name withheld). Only ${fields.join(", ")} are valid fields; use {} for defaults.`,
+			);
 	}
 	return args;
 }

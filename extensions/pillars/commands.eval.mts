@@ -157,7 +157,8 @@ const suite = {
 				{ role: "assistant", content: "What belongs in global instructions, and is duplicate placement allowed?" },
 				{
 					role: "user",
-					content: "Global instructions serve session-wide rules. This guidance needs one canonical home, not duplicate copies.",
+					content:
+						"Global instructions serve session-wide rules. This guidance needs one canonical home, not duplicate copies.",
 				},
 				{
 					role: "assistant",
@@ -200,11 +201,13 @@ const suite = {
 				},
 				{
 					role: "assistant",
-					content: "The shared plan costs six times $40, or $240. The individual plan costs $72. Neither fits the budget.",
+					content:
+						"The shared plan costs six times $40, or $240. The individual plan costs $72. Neither fits the budget.",
 				},
 				{
 					role: "user",
-					content: "Correction: the shared fee is $40 for the entire account, not $40 per worker. The $50 budget remains fixed.",
+					content:
+						"Correction: the shared fee is $40 for the entire account, not $40 per worker. The $50 budget remains fixed.",
 				},
 				{
 					role: "assistant",
@@ -234,7 +237,10 @@ const suite = {
 				},
 				{ role: "assistant", content: "How many workers need cache, and how much cache does each worker need?" },
 				{ role: "user", content: "Eight workers need 8 MiB each." },
-				{ role: "assistant", content: "Is there a possible future file for this change, and is a file write authorized?" },
+				{
+					role: "assistant",
+					content: "Is there a possible future file for this change, and is a file write authorized?",
+				},
 				{
 					role: "user",
 					content:

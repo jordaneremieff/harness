@@ -59,7 +59,8 @@ function host(bus: SettingsBus) {
 			tools.set(tool.name, tool);
 		},
 		registerCommand() {},
-		registerEntryRenderer() {}, registerMessageRenderer() {},
+		registerEntryRenderer() {},
+		registerMessageRenderer() {},
 	} as unknown as ExtensionAPI;
 	return { pi, handlers, tools };
 }
@@ -207,7 +208,10 @@ test("unknown diagnostic fields stay bounded and preserve Unicode and publicatio
 		["bad\u0000key", `${prefix}<invalid-key>`],
 	] as const;
 	for (const [key, expected] of cases) {
-		await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, pillars: { ...section, [key]: true } }));
+		await writeFile(
+			join(agentDir, "harness.json"),
+			JSON.stringify({ version: 1, pillars: { ...section, [key]: true } }),
+		);
 		const events = testBus();
 		const publications: SettingsPublication[] = [];
 		const off = events.on("harness:settings:publish", (value) => publications.push(value as SettingsPublication));
@@ -216,7 +220,10 @@ test("unknown diagnostic fields stay bounded and preserve Unicode and publicatio
 			assert.equal(publications.length, 1);
 			const publication = publications[0];
 			assert.deepEqual(publication.records, baseline.records);
-			assert.deepEqual(publication.diagnostics.filter((issue) => issue.code !== "unknown"), baseline.diagnostics);
+			assert.deepEqual(
+				publication.diagnostics.filter((issue) => issue.code !== "unknown"),
+				baseline.diagnostics,
+			);
 			const unknown = publication.diagnostics.filter((issue) => issue.code === "unknown");
 			assert.equal(unknown.length, 1);
 			assert.equal(unknown[0].field, expected);

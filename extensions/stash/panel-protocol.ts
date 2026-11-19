@@ -24,14 +24,17 @@ export type StashPanelAnswer =
 
 const MAX_TEXT = 4096;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,219}$/u;
-const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const text = (value: unknown, max = MAX_TEXT): value is string => typeof value === "string" && value.length > 0 && value.length <= max;
+const record = (value: unknown): value is Record<string, unknown> =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
+const text = (value: unknown, max = MAX_TEXT): value is string =>
+	typeof value === "string" && value.length > 0 && value.length <= max;
 const identity = (value: unknown): value is string => typeof value === "string" && ID.test(value);
 
 const readers: Record<string, (value: Record<string, unknown>) => StashPanelRequest> = {
 	recent: () => ({ op: "recent" }),
 	archive(value) {
-		if (!text(value.query, 256) || (value.cursor !== undefined && !text(value.cursor))) throw new Error("stash archive search needs a bounded query and an optional cursor");
+		if (!text(value.query, 256) || (value.cursor !== undefined && !text(value.cursor)))
+			throw new Error("stash archive search needs a bounded query and an optional cursor");
 		return { op: "archive", query: value.query, ...(value.cursor === undefined ? {} : { cursor: value.cursor }) };
 	},
 	preview: (value) => byId("preview", value),
@@ -39,11 +42,13 @@ const readers: Record<string, (value: Record<string, unknown>) => StashPanelRequ
 	reopen: (value) => byId("reopen", value),
 	rotate: (value) => byId("rotate", value),
 	pickup(value) {
-		if (!identity(value.id) || (value.note !== undefined && !text(value.note))) throw new Error("stash pickup needs a stash id and an optional bounded note");
+		if (!identity(value.id) || (value.note !== undefined && !text(value.note)))
+			throw new Error("stash pickup needs a stash id and an optional bounded note");
 		return { op: "pickup", id: value.id, ...(value.note === undefined ? {} : { note: value.note }) };
 	},
 	close(value) {
-		if (!identity(value.id) || !text(value.outcome)) throw new Error("stash close needs a stash id and a concrete outcome");
+		if (!identity(value.id) || !text(value.outcome))
+			throw new Error("stash close needs a stash id and a concrete outcome");
 		return { op: "close", id: value.id, outcome: value.outcome };
 	},
 };
@@ -62,13 +67,29 @@ export function readPanelRequest(value: unknown): StashPanelRequest {
 }
 
 function entry(value: unknown): value is StashEntry {
-	return record(value) && record(value.meta) && typeof value.meta.id === "string" && typeof value.meta.title === "string" && typeof value.meta.state === "string"
-		&& Array.isArray(value.meta.tags) && typeof value.path === "string" && (value.preview === undefined || typeof value.preview === "string");
+	return (
+		record(value) &&
+		record(value.meta) &&
+		typeof value.meta.id === "string" &&
+		typeof value.meta.title === "string" &&
+		typeof value.meta.state === "string" &&
+		Array.isArray(value.meta.tags) &&
+		typeof value.path === "string" &&
+		(value.preview === undefined || typeof value.preview === "string")
+	);
 }
 
 function view(value: unknown): value is BrowserView {
-	return record(value) && (value.scope === "recent" || value.scope === "archive") && typeof value.query === "string" && (value.nextCursor === null || typeof value.nextCursor === "string")
-		&& Array.isArray(value.entries) && value.entries.every(entry) && typeof value.hasMore === "boolean" && typeof value.stale === "boolean";
+	return (
+		record(value) &&
+		(value.scope === "recent" || value.scope === "archive") &&
+		typeof value.query === "string" &&
+		(value.nextCursor === null || typeof value.nextCursor === "string") &&
+		Array.isArray(value.entries) &&
+		value.entries.every(entry) &&
+		typeof value.hasMore === "boolean" &&
+		typeof value.stale === "boolean"
+	);
 }
 
 /** A malformed answer is an error the browser shows, never an empty store. */
@@ -82,6 +103,7 @@ export function readPanelAnswer(request: StashPanelRequest, value: unknown): Sta
 		if (!entry(value.entry)) throw new Error("the host answered an unreadable stash entry");
 		return { op: "preview", entry: value.entry };
 	}
-	if (typeof value.id !== "string" || typeof value.text !== "string") throw new Error("the host answered an unreadable stash receipt");
+	if (typeof value.id !== "string" || typeof value.text !== "string")
+		throw new Error("the host answered an unreadable stash receipt");
 	return { op: request.op, id: value.id, text: value.text };
 }

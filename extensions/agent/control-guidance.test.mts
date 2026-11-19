@@ -7,35 +7,66 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import register from "./index.ts";
-import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_GUIDANCE, AGENT_CONTROL_TOOL_NAMES, agentControlGuidance, agentControlGuidanceLines } from "./control-guidance.ts";
+import {
+	AGENT_CONTROL_EXPOSURE,
+	AGENT_CONTROL_GUIDANCE,
+	AGENT_CONTROL_TOOL_NAMES,
+	agentControlGuidance,
+	agentControlGuidanceLines,
+} from "./control-guidance.ts";
 
 it("ordinary delegation guidance names only registered controls and native guidance retains open-work declarations", async () => {
 	const tools = new Map<string, { description: string; promptGuidelines?: string[] }>();
 	await register({
-		events: { emit() {}, on: () => () => {} }, on: () => () => {},
-		registerTool: (tool: { name: string; description: string; promptGuidelines?: string[] }) => tools.set(tool.name, tool),
-		registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, registerCommand() {},
+		events: { emit() {}, on: () => () => {} },
+		on: () => () => {},
+		registerTool: (tool: { name: string; description: string; promptGuidelines?: string[] }) =>
+			tools.set(tool.name, tool),
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
+		registerCommand() {},
 		getThinkingLevel: () => "off",
 	} as unknown as ExtensionAPI);
 	assert.equal(tools.has("agent_yield"), true, "an ordinary session has its own agent_yield");
-	assert.equal(tools.has("agent_work"), false, "the native agent_work, which declares background work, is not an ordinary session's tool");
+	assert.equal(
+		tools.has("agent_work"),
+		false,
+		"the native agent_work, which declares background work, is not an ordinary session's tool",
+	);
 	for (const [name, tool] of tools) {
 		const text = [tool.description, ...(tool.promptGuidelines ?? [])].join("\n");
-		for (const mentioned of text.matchAll(/\bagent_[a-z]+\b/gu)) assert.ok(tools.has(mentioned[0]), `${name} names unavailable ${mentioned[0]}`);
+		for (const mentioned of text.matchAll(/\bagent_[a-z]+\b/gu))
+			assert.ok(tools.has(mentioned[0]), `${name} names unavailable ${mentioned[0]}`);
 	}
 	for (const name of ["agent_spawn", "agent_send"] as const) {
 		const actual = tools.get(name)?.promptGuidelines;
 		assert.deepEqual(actual, agentControlGuidance(name, "ordinary").guidelines);
 		const ordinary = actual?.join("\n") ?? "";
 		assert.match(ordinary, /call agent_yield with a short note for the operator/u);
-		assert.doesNotMatch(ordinary, /background job|nothing (is )?(needed|needs) (from )?you|needs? nothing from/iu, "no job vocabulary and no pseudo-state line");
-		assert.doesNotMatch(ordinary, /agent_work complete|widget|exact result references|Preserve known request IDs/u, "the note is operator text: it is no stored state and carries no result reference");
+		assert.doesNotMatch(
+			ordinary,
+			/background job|nothing (is )?(needed|needs) (from )?you|needs? nothing from/iu,
+			"no job vocabulary and no pseudo-state line",
+		);
+		assert.doesNotMatch(
+			ordinary,
+			/agent_work complete|widget|exact result references|Preserve known request IDs/u,
+			"the note is operator text: it is no stored state and carries no result reference",
+		);
 		assert.match(ordinary, /in the last (tool )?batch[^.]*write no chat text\./u);
-		assert.match(ordinary, /A chat message is only for a decision or act of the operator, a blocker, or a result, and it stands alone/u);
+		assert.match(
+			ordinary,
+			/A chat message is only for a decision or act of the operator, a blocker, or a result, and it stands alone/u,
+		);
 		assert.doesNotMatch(ordinary, /short state note/u);
 		assert.match(ordinary, /Results arrive as events/u);
 		assert.match(ordinary, /no repeated status or inspection call/u);
-		assert.doesNotMatch(ordinary, /the request and its exact result references|final report/u, "the ordinary contract has no routed request and no final report");
+		assert.doesNotMatch(
+			ordinary,
+			/the request and its exact result references|final report/u,
+			"the ordinary contract has no routed request and no final report",
+		);
 		const native = agentControlGuidance(name, "native").guidelines?.join("\n") ?? "";
 		assert.match(native, /agent_work continue/u);
 	}
@@ -98,7 +129,10 @@ it("keeps the approved snippets", () => {
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_steer.snippet, "Redirect a running agent session");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_abort.snippet, "Abort an agent session operation");
 	assert.match((AGENT_CONTROL_GUIDANCE.agent_abort.guidelines ?? []).join(" "), /release: true/u);
-	assert.match((AGENT_CONTROL_GUIDANCE.agent_abort.guidelines ?? []).join(" "), /Do not combine release with timerId or background: true/u);
+	assert.match(
+		(AGENT_CONTROL_GUIDANCE.agent_abort.guidelines ?? []).join(" "),
+		/Do not combine release with timerId or background: true/u,
+	);
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_fork.snippet, "Fork an agent session for side work");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_status.snippet, "Show agent session status");
 	assert.equal(
@@ -149,7 +183,6 @@ it("places follow-ups and reports at tool boundaries without holding the run", (
 	assert.doesNotMatch(send, /agent_await|waits for the current run to end/u);
 });
 
-
 it("describes retained delivery and opt-in unfinished-task check-ins", () => {
 	const all = JSON.stringify(AGENT_CONTROL_GUIDANCE);
 	assert.doesNotMatch(all, /ordinary terminal response/u);
@@ -159,7 +192,10 @@ it("describes retained delivery and opt-in unfinished-task check-ins", () => {
 		AGENT_CONTROL_GUIDANCE.agent_spawn.guidelines?.join("\n") ?? "",
 		/task's answer reports to its request's reply recipient/u,
 	);
-	assert.match(AGENT_CONTROL_GUIDANCE.agent_send.guidelines?.[0] ?? "", /mode: report to the current request's reply recipient/u);
+	assert.match(
+		AGENT_CONTROL_GUIDANCE.agent_send.guidelines?.[0] ?? "",
+		/mode: report to the current request's reply recipient/u,
+	);
 	assert.match(all, /creating owner is provenance/u);
 	assert.match(all, /expectedRevision/u);
 	assert.match(all, /before relying on past findings/u);
@@ -191,8 +227,15 @@ it("renders only the selected controls in control order", () => {
 });
 
 it("renders shared rules once without depending on an unselected control", () => {
-	const selected = agentControlGuidanceLines(["agent_spawn", "agent_send", "agent_configure", "agent_place"]).join("\n");
-	for (const rule of [/For an explicit model override/gu, /Use preset to select execution settings/gu, /When no useful work remains for you and results are still due/gu, /Set checkInMinutes only when a task needs a watchdog/gu]) {
+	const selected = agentControlGuidanceLines(["agent_spawn", "agent_send", "agent_configure", "agent_place"]).join(
+		"\n",
+	);
+	for (const rule of [
+		/For an explicit model override/gu,
+		/Use preset to select execution settings/gu,
+		/When no useful work remains for you and results are still due/gu,
+		/Set checkInMinutes only when a task needs a watchdog/gu,
+	]) {
 		assert.equal([...selected.matchAll(rule)].length, 1);
 	}
 	for (const name of ["agent_spawn", "agent_send"]) {
@@ -240,7 +283,18 @@ it("keeps frequent controls direct and defers infrequent ones", () => {
 			.filter(([, exposure]) => exposure === "deferred")
 			.map(([name]) => name)
 			.sort(),
-		["agent_attach", "agent_command", "agent_configure", "agent_fork", "agent_inspect", "agent_list", "agent_place", "agent_profile", "agent_reset", "agent_rewind"],
+		[
+			"agent_attach",
+			"agent_command",
+			"agent_configure",
+			"agent_fork",
+			"agent_inspect",
+			"agent_list",
+			"agent_place",
+			"agent_profile",
+			"agent_reset",
+			"agent_rewind",
+		],
 	);
 	assert.deepEqual(
 		Object.entries(AGENT_CONTROL_EXPOSURE)

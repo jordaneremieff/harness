@@ -7,7 +7,11 @@ import { renderReadCall, renderReadResult, renderSearchCall, renderSearchResult 
 
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }, width = 100) =>
-	component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n").replace(/^\n+/, "");
+	component
+		.render(width)
+		.map((line) => stripVTControlCharacters(line).trimEnd())
+		.join("\n")
+		.replace(/^\n+/, "");
 const raw = (component: { render(width: number): string[] }, width = 1000) => component.render(width).join("\n");
 const text = (value: string, details?: unknown) => ({ content: [{ type: "text" as const, text: value }], details });
 const collapsed = { expanded: false, isError: false };
@@ -109,26 +113,48 @@ describe("web_read result cards", () => {
 
 	it("states coverage bounds and a missing readable body", () => {
 		const bounded = renderReadResult(
-			text("x", { status: "readable", excerptCount: 1, excerptOffset: 0, nextOffset: null, extractionTruncated: true, outputTruncated: true }),
+			text("x", {
+				status: "readable",
+				excerptCount: 1,
+				excerptOffset: 0,
+				nextOffset: null,
+				extractionTruncated: true,
+				outputTruncated: true,
+			}),
 			{ expanded: false, isPartial: false },
 			theme,
 			collapsed,
 		);
 		assert.match(screen(bounded), /extraction truncated · output truncated/);
-		const empty = renderReadResult(text("x", { status: "no-readable-text" }), { expanded: false, isPartial: false }, theme, collapsed);
+		const empty = renderReadResult(
+			text("x", { status: "no-readable-text" }),
+			{ expanded: false, isPartial: false },
+			theme,
+			collapsed,
+		);
 		assert.match(screen(empty), /^no readable text($|\n)/);
 	});
 
 	it("shows a redirect target only when the final URL differs", () => {
 		const same = renderReadResult(
-			text("x", { status: "readable", excerptCount: 1, requestedUrl: "https://example.com/a", finalUrl: "https://example.com/a" }),
+			text("x", {
+				status: "readable",
+				excerptCount: 1,
+				requestedUrl: "https://example.com/a",
+				finalUrl: "https://example.com/a",
+			}),
 			{ expanded: false, isPartial: false },
 			theme,
 			collapsed,
 		);
 		assert.doesNotMatch(screen(same), /→/);
 		const moved = renderReadResult(
-			text("x", { status: "readable", excerptCount: 1, requestedUrl: "https://example.com/a", finalUrl: "https://example.com/final" }),
+			text("x", {
+				status: "readable",
+				excerptCount: 1,
+				requestedUrl: "https://example.com/a",
+				finalUrl: "https://example.com/final",
+			}),
 			{ expanded: false, isPartial: false },
 			theme,
 			collapsed,
@@ -138,17 +164,33 @@ describe("web_read result cards", () => {
 
 	it("counts links and states the budget the next record needs", () => {
 		const card = renderReadResult(
-			text("links", { view: "links", linkCount: 2, linkOffset: 0, nextOffset: 4, requiredMaxBytes: 20000, extractionTruncated: true }),
+			text("links", {
+				view: "links",
+				linkCount: 2,
+				linkOffset: 0,
+				nextOffset: 4,
+				requiredMaxBytes: 20000,
+				extractionTruncated: true,
+			}),
 			{ expanded: false, isPartial: false },
 			theme,
 			collapsed,
 		);
-		assert.match(screen(card), /^2 links · continuation · extraction truncated · next record needs max_bytes 20000($|\n)/);
+		assert.match(
+			screen(card),
+			/^2 links · continuation · extraction truncated · next record needs max_bytes 20000($|\n)/,
+		);
 	});
 
 	it("does not invent an excerpt range for a find result", () => {
 		const card = renderReadResult(
-			text("x", { status: "readable", find: { query: "phrase", firstMatchOffset: 2 }, excerptCount: 1, excerptOffset: 0, nextOffset: null }),
+			text("x", {
+				status: "readable",
+				find: { query: "phrase", firstMatchOffset: 2 },
+				excerptCount: 1,
+				excerptOffset: 0,
+				nextOffset: null,
+			}),
 			{ expanded: false, isPartial: false },
 			theme,
 			collapsed,
@@ -156,7 +198,13 @@ describe("web_read result cards", () => {
 		assert.match(screen(card), /^readable · 1 matching excerpt · first E3/);
 		assert.ok(!screen(card).includes("E1"));
 		const none = renderReadResult(
-			text("x", { status: "readable", find: { query: "phrase", firstMatchOffset: null }, excerptCount: 0, excerptOffset: 0, nextOffset: null }),
+			text("x", {
+				status: "readable",
+				find: { query: "phrase", firstMatchOffset: null },
+				excerptCount: 0,
+				excerptOffset: 0,
+				nextOffset: null,
+			}),
 			{ expanded: false, isPartial: false },
 			theme,
 			collapsed,
@@ -181,10 +229,15 @@ describe("web_read result cards", () => {
 	});
 
 	it("styles errors and partial results and shows a full result when expanded", () => {
-		const error = renderReadResult(text("Web reader links view refuses XHTML"), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			isError: true,
-		});
+		const error = renderReadResult(
+			text("Web reader links view refuses XHTML"),
+			{ expanded: false, isPartial: false },
+			theme,
+			{
+				...collapsed,
+				isError: true,
+			},
+		);
 		assert.equal(screen(error), "web_read: Web reader links view refuses XHTML");
 		const partial = renderReadResult(text(""), { expanded: false, isPartial: true }, theme, collapsed);
 		assert.equal(screen(partial), "Reading the page...");
@@ -195,7 +248,10 @@ describe("web_read result cards", () => {
 
 describe("web_search call cards", () => {
 	it("names the query and adds one qualifier row for the search controls", () => {
-		assert.equal(screen(renderSearchCall({ query: "pi coding agent" }, theme, collapsed)), "web_search · pi coding agent");
+		assert.equal(
+			screen(renderSearchCall({ query: "pi coding agent" }, theme, collapsed)),
+			"web_search · pi coding agent",
+		);
 		const card = renderSearchCall(
 			{
 				query: "pi coding agent",
@@ -218,7 +274,11 @@ describe("web_search call cards", () => {
 	});
 
 	it("omits non-default qualifiers that carry no information", () => {
-		const card = renderSearchCall({ query: "q", safesearch: "moderate", spellcheck: true, extra_snippets: false }, theme, collapsed);
+		const card = renderSearchCall(
+			{ query: "q", safesearch: "moderate", spellcheck: true, extra_snippets: false },
+			theme,
+			collapsed,
+		);
 		assert.equal(screen(card), "web_search · q");
 	});
 
@@ -251,7 +311,12 @@ describe("web_search result cards", () => {
 
 	it("uses the singular and reports an altered query and truncation", () => {
 		const one = renderSearchResult(
-			text("x", { resultCount: 1, moreResultsAvailable: false, alteredQuery: "corrected query", outputTruncated: true }),
+			text("x", {
+				resultCount: 1,
+				moreResultsAvailable: false,
+				alteredQuery: "corrected query",
+				outputTruncated: true,
+			}),
 			{ expanded: false, isPartial: false },
 			theme,
 			collapsed,
@@ -267,7 +332,12 @@ describe("web_search result cards", () => {
 		assert.equal(screen(error), "web_search: Brave search failed: 429");
 		const partial = renderSearchResult(text(""), { expanded: false, isPartial: true }, theme, collapsed);
 		assert.equal(screen(partial), "Searching the web...");
-		const full = renderSearchResult(text("1. Result title\n   https://example.com"), { expanded: true, isPartial: false }, theme, expanded);
+		const full = renderSearchResult(
+			text("1. Result title\n   https://example.com"),
+			{ expanded: true, isPartial: false },
+			theme,
+			expanded,
+		);
 		assert.match(screen(full, 400), /Result title/);
 	});
 });
@@ -275,7 +345,13 @@ describe("web_search result cards", () => {
 describe("source identity before extraction mechanics", () => {
 	it("leads the web_read card with the page title and domain", () => {
 		const card = renderReadResult(
-			text("body", { status: "readable", excerptCount: 1, title: "Example \u2014 A Page", requestedUrl: "https://example.com/a", finalUrl: "https://example.com/a" }),
+			text("body", {
+				status: "readable",
+				excerptCount: 1,
+				title: "Example \u2014 A Page",
+				requestedUrl: "https://example.com/a",
+				finalUrl: "https://example.com/a",
+			}),
 			{ expanded: false, isPartial: false },
 			theme,
 			collapsed,
@@ -321,7 +397,14 @@ describe("source identity before extraction mechanics", () => {
 
 	it("shows every source when the page is short and no result is omitted", () => {
 		const card = renderSearchResult(
-			text("results", { resultCount: 2, moreResultsAvailable: false, sources: [{ rank: 1, title: "One", domain: "one.dev" }, { rank: 2, title: "Two", domain: "two.dev" }] }),
+			text("results", {
+				resultCount: 2,
+				moreResultsAvailable: false,
+				sources: [
+					{ rank: 1, title: "One", domain: "one.dev" },
+					{ rank: 2, title: "Two", domain: "two.dev" },
+				],
+			}),
 			{ expanded: false, isPartial: false },
 			theme,
 			collapsed,
@@ -335,12 +418,18 @@ describe("retained error diagnostics", () => {
 	const hostile = `Brave search failed: 429\nsecond line \u202e with \x1b[31m controls\n\u65e5\u672c\u8a9e\u306e\u8a3a\u65ad https://example.com/very/long/path/that/keeps/going`;
 
 	it("collapses an error to its first line and expands the retained diagnostic", () => {
-		const collapsedError = renderSearchResult(text(hostile), { expanded: false, isPartial: false }, theme, { ...collapsed, isError: true });
+		const collapsedError = renderSearchResult(text(hostile), { expanded: false, isPartial: false }, theme, {
+			...collapsed,
+			isError: true,
+		});
 		const collapsedScreen = screen(collapsedError);
 		assert.equal(collapsedScreen.split("\n").length, 1);
 		assert.match(collapsedScreen, /^web_search: Brave search failed: 429$/);
 		assert.doesNotMatch(collapsedScreen, /second line/);
-		const expandedError = renderSearchResult(text(hostile), { expanded: true, isPartial: false }, theme, { ...expanded, isError: true });
+		const expandedError = renderSearchResult(text(hostile), { expanded: true, isPartial: false }, theme, {
+			...expanded,
+			isError: true,
+		});
 		const expandedScreen = screen(expandedError, 400);
 		assert.match(expandedScreen, /^web_search: Brave search failed: 429$/m);
 		assert.match(expandedScreen, /second line \\u\{202e\} with \\x1b\[31m controls/);
@@ -350,9 +439,15 @@ describe("retained error diagnostics", () => {
 
 	it("expands a web_read error across lines without a second row when collapsed", () => {
 		const diagnostic = "Web reader refused the URL\nbecause the host is private";
-		const collapsedError = renderReadResult(text(diagnostic), { expanded: false, isPartial: false }, theme, { ...collapsed, isError: true });
+		const collapsedError = renderReadResult(text(diagnostic), { expanded: false, isPartial: false }, theme, {
+			...collapsed,
+			isError: true,
+		});
 		assert.equal(screen(collapsedError), "web_read: Web reader refused the URL");
-		const expandedError = renderReadResult(text(diagnostic), { expanded: true, isPartial: false }, theme, { ...expanded, isError: true });
+		const expandedError = renderReadResult(text(diagnostic), { expanded: true, isPartial: false }, theme, {
+			...expanded,
+			isError: true,
+		});
 		assert.match(screen(expandedError, 200), /because the host is private/);
 	});
 });

@@ -13,5 +13,8 @@ type ToolDisplayPublication = {
 
 /** Pure renderer records for ordinary and standalone tool cards. */
 export function toolDisplay(): ToolDisplayPublication {
-	return { version: 1, tools: [{ name: "registry", renderCall: renderRegistryCall, renderResult: renderRegistryResult }] };
+	return {
+		version: 1,
+		tools: [{ name: "registry", renderCall: renderRegistryCall, renderResult: renderRegistryResult }],
+	};
 }

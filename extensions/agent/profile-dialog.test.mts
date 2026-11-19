@@ -5,22 +5,60 @@ import { profileCommand, profileText } from "./profile-dialog.ts";
 import type { AgentProfile } from "./profile-schema.ts";
 
 const profile: AgentProfile = {
-	identity: "retained-storage", handle: "@history", name: "History expert", role: "Study decisions and their sources", expertise: "Sourced fact: reference.md, 2026-01-01",
-	revision: "a".repeat(64), updatedAt: 1, updatedBy: "editor", creator: "founder", model: { provider: "fixture", modelId: "model" }, thinkingLevel: "high", cwd: "/workspace", live: false,
-	requests: [{ requestId: "request", requester: "second-requester", replyTo: "third-recipient", origin: "model", status: "placed" }],
+	identity: "retained-storage",
+	handle: "@history",
+	name: "History expert",
+	role: "Study decisions and their sources",
+	expertise: "Sourced fact: reference.md, 2026-01-01",
+	revision: "a".repeat(64),
+	updatedAt: 1,
+	updatedBy: "editor",
+	creator: "founder",
+	model: { provider: "fixture", modelId: "model" },
+	thinkingLevel: "high",
+	cwd: "/workspace",
+	live: false,
+	requests: [
+		{
+			requestId: "request",
+			requester: "second-requester",
+			replyTo: "third-recipient",
+			origin: "model",
+			status: "placed",
+		},
+	],
 };
 
 it("profile text separates identity, provenance, current routes, and saved expertise as evidence", () => {
 	const text = profileText(profile);
-	for (const value of [profile.identity, "@history", "History expert", profile.role, "fixture/model", "high", "founder", "second-requester", "third-recipient", profile.revision]) assert.ok(text.includes(value), value);
+	for (const value of [
+		profile.identity,
+		"@history",
+		"History expert",
+		profile.role,
+		"fixture/model",
+		"high",
+		"founder",
+		"second-requester",
+		"third-recipient",
+		profile.revision,
+	])
+		assert.ok(text.includes(value), value);
 	assert.match(text, /Retained; no host started/);
 	assert.match(text, /Saved expertise \(evidence, not fresh authority\):\nSourced fact: reference.md/);
 	assert.ok(text.indexOf("Request routes:") < text.indexOf("Saved expertise"), "routes precede the saved expertise");
-	assert.match(profileText({ ...profile, model: null, requests: [] }), /Model: Unknown[\s\S]*earlier requester evidence is unknown/);
+	assert.match(
+		profileText({ ...profile, model: null, requests: [] }),
+		/Model: Unknown[\s\S]*earlier requester evidence is unknown/,
+	);
 });
 
 it("profile text names unsaved drafts and a revision conflict without presenting them as saved", () => {
-	const text = profileText(profile, { expectedRevision: "b".repeat(64), role: "Draft role", expertise: "Draft expertise" });
+	const text = profileText(profile, {
+		expectedRevision: "b".repeat(64),
+		role: "Draft role",
+		expertise: "Draft expertise",
+	});
 	assert.match(text, /Draft role \(not saved\): Draft role/);
 	assert.match(text, /Draft expertise \(not saved\):\nDraft expertise/);
 	assert.match(text, /Conflict: draft retained/);
@@ -34,9 +72,17 @@ it("profile reports omitted routes without calling a partial list empty", () => 
 		assert.equal(profileText({ ...complete, requestsOmitted: 0 }), profileText(complete));
 		for (const requestsOmitted of [1, 7]) {
 			const text = profileText({ ...complete, requestsOmitted });
-			assert.ok(text.includes(`${requestsOmitted} additional request route${requestsOmitted === 1 ? "" : "s"} omitted from this profile.`));
+			assert.ok(
+				text.includes(
+					`${requestsOmitted} additional request route${requestsOmitted === 1 ? "" : "s"} omitted from this profile.`,
+				),
+			);
 			assert.doesNotMatch(text, /No retained active request routes/);
-			if (requests.length) assert.ok(text.indexOf("additional request route") < text.indexOf(`${requests[0].requestId} ·`), "coverage precedes the bounded list");
+			if (requests.length)
+				assert.ok(
+					text.indexOf("additional request route") < text.indexOf(`${requests[0].requestId} ·`),
+					"coverage precedes the bounded list",
+				);
 		}
 	}
 });

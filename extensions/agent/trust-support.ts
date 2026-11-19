@@ -12,7 +12,14 @@
  * `askPrimary` and persists it. This module carries no transport, session, or
  * package-loading logic.
  */
-import type { LoadExtensionsResult, ProjectTrustContext, ProjectTrustEvent, ProjectTrustEventResult, ProjectTrustStore, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type {
+	LoadExtensionsResult,
+	ProjectTrustContext,
+	ProjectTrustEvent,
+	ProjectTrustEventResult,
+	ProjectTrustStore,
+	SettingsManager,
+} from "@earendil-works/pi-coding-agent";
 
 /** One decision for one cwd. `remember` writes it to the saved trust store. */
 export interface ProjectTrustDecision {
@@ -53,11 +60,18 @@ function trustContext(cwd: string): ProjectTrustContext {
 }
 
 /** First decided handler across the pre-trust extension set; undecided falls through. */
-async function handlerDecision(cwd: string, extensions: LoadExtensionsResult, trustStore: ProjectTrustStore, report: (error: unknown) => void): Promise<boolean | undefined> {
+async function handlerDecision(
+	cwd: string,
+	extensions: LoadExtensionsResult,
+	trustStore: ProjectTrustStore,
+	report: (error: unknown) => void,
+): Promise<boolean | undefined> {
 	for (const extension of extensions.extensions) {
 		for (const handler of extension.handlers.get("project_trust") ?? []) {
 			try {
-				const result = await handler({ type: "project_trust", cwd } satisfies ProjectTrustEvent, trustContext(cwd)) as ProjectTrustEventResult | undefined;
+				const result = (await handler({ type: "project_trust", cwd } satisfies ProjectTrustEvent, trustContext(cwd))) as
+					| ProjectTrustEventResult
+					| undefined;
 				if (result === undefined || result.trusted === "undecided") continue;
 				const trusted = result.trusted === "yes";
 				if (result.remember === true) trustStore.set(cwd, trusted);
@@ -71,7 +85,9 @@ async function handlerDecision(cwd: string, extensions: LoadExtensionsResult, tr
 }
 
 /** Resolver compatible with `resourceLoaderReloadOptions.resolveProjectTrust`. */
-export function createProjectTrustResolver(options: ProjectTrustResolverOptions): (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean> {
+export function createProjectTrustResolver(
+	options: ProjectTrustResolverOptions,
+): (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean> {
 	const { cwd, settingsManager, trustStore, requiresTrust, trusted, askPrimary, onReport } = options;
 	const report = onReport ?? (() => {});
 	return async ({ extensionsResult }) => {
@@ -93,7 +109,12 @@ export function createProjectTrustResolver(options: ProjectTrustResolverOptions)
 }
 
 /** One routed ask; a failure or an unanswered ask refuses. */
-async function dispatchAsk(askPrimary: (cwd: string) => Promise<ProjectTrustDecision | undefined>, cwd: string, trustStore: ProjectTrustStore, report: (error: unknown) => void): Promise<boolean> {
+async function dispatchAsk(
+	askPrimary: (cwd: string) => Promise<ProjectTrustDecision | undefined>,
+	cwd: string,
+	trustStore: ProjectTrustStore,
+	report: (error: unknown) => void,
+): Promise<boolean> {
 	let answer: ProjectTrustDecision | undefined;
 	try {
 		answer = await askPrimary(cwd);
@@ -107,7 +128,11 @@ async function dispatchAsk(askPrimary: (cwd: string) => Promise<ProjectTrustDeci
 }
 
 /** Persist one decision. Session-only answers carry `remember: false`. */
-export function saveProjectTrustDecision(trustStore: ProjectTrustStore, cwd: string, decision: ProjectTrustDecision): void {
+export function saveProjectTrustDecision(
+	trustStore: ProjectTrustStore,
+	cwd: string,
+	decision: ProjectTrustDecision,
+): void {
 	if (decision.remember === true) trustStore.set(cwd, decision.trusted);
 }
 
@@ -120,8 +145,14 @@ const PRIMARY_TRUST_OPTIONS = [
 ] as const;
 
 /** Primary-side: ask once through a UI select; undefined means the asker refuses. */
-export async function promptProjectTrust(cwd: string, prompt: ProjectTrustPrompt): Promise<ProjectTrustDecision | undefined> {
-	const selected = await prompt.select(`Trust project folder?\n${cwd}\n\nThis allows Pi to load project settings and resources, install project packages, and execute project extensions.`, PRIMARY_TRUST_OPTIONS.map((option) => option.label));
+export async function promptProjectTrust(
+	cwd: string,
+	prompt: ProjectTrustPrompt,
+): Promise<ProjectTrustDecision | undefined> {
+	const selected = await prompt.select(
+		`Trust project folder?\n${cwd}\n\nThis allows Pi to load project settings and resources, install project packages, and execute project extensions.`,
+		PRIMARY_TRUST_OPTIONS.map((option) => option.label),
+	);
 	const choice = PRIMARY_TRUST_OPTIONS.find((option) => option.label === selected);
 	return choice === undefined ? undefined : { trusted: choice.trusted, remember: choice.remember };
 }

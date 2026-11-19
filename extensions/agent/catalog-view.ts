@@ -12,7 +12,12 @@
 import { matchesSchema } from "./schema-check.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
-import { boundModelEvidence, MODEL_EVIDENCE_BUDGET_BYTES, ModelEvidenceSchema, type ModelEvidence } from "./model-evidence.ts";
+import {
+	boundModelEvidence,
+	MODEL_EVIDENCE_BUDGET_BYTES,
+	ModelEvidenceSchema,
+	type ModelEvidence,
+} from "./model-evidence.ts";
 import { AgentConversationSummarySchema } from "./observation-schema.ts";
 import { ProfileHintsSchema, type ProfileHints } from "./profile-schema.ts";
 import type { ProfileSeed } from "./profile.ts";
@@ -163,7 +168,8 @@ export function boundCatalogView<Row extends CatalogViewRow>(source: CatalogView
 function validateRows(rows: readonly CatalogViewRow[], storageId: string | undefined): void {
 	for (const row of rows) {
 		if (!matchesSchema(AgentConversationSummarySchema, row)) throw new Error("Agent view has an invalid row");
-		if (storageId !== undefined && row.storageId !== storageId) throw new Error("Agent view row has a different storageId");
+		if (storageId !== undefined && row.storageId !== storageId)
+			throw new Error("Agent view row has a different storageId");
 	}
 }
 
@@ -180,30 +186,60 @@ function validateAttentionHints(candidate: Partial<CatalogView>): void {
 
 function validateIntentOwner(identity: string, storageId: string): void {
 	const owner = identity.split(":");
-	if (owner[0] !== storageId || owner.length > 2 || owner[1] !== undefined && (!/^[1-9]\d*$/u.test(owner[1]) || !Number.isSafeInteger(Number(owner[1])))) throw new Error("Native intent belongs to a different storage");
+	if (
+		owner[0] !== storageId ||
+		owner.length > 2 ||
+		(owner[1] !== undefined && (!/^[1-9]\d*$/u.test(owner[1]) || !Number.isSafeInteger(Number(owner[1]))))
+	)
+		throw new Error("Native intent belongs to a different storage");
 }
 
 function validateIntentClaims(candidate: Partial<CatalogView>): void {
 	const claims = candidate.intentClaims;
 	if (claims === undefined) return;
-	if (!candidate.storageId || !claims || typeof claims !== "object" || !claims.rows || typeof claims.rows !== "object" || Array.isArray(claims.rows)) throw new Error("Invalid native intent projection");
-	if (!claims.coverage || typeof claims.coverage.complete !== "boolean" || !Number.isSafeInteger(claims.coverage.omitted) || claims.coverage.omitted < 0 || claims.coverage.complete && claims.coverage.omitted !== 0) throw new Error("Invalid native intent coverage");
-	const rows = new Map(candidate.rows?.map(row => [row.id, row]));
+	if (
+		!candidate.storageId ||
+		!claims ||
+		typeof claims !== "object" ||
+		!claims.rows ||
+		typeof claims.rows !== "object" ||
+		Array.isArray(claims.rows)
+	)
+		throw new Error("Invalid native intent projection");
+	if (
+		!claims.coverage ||
+		typeof claims.coverage.complete !== "boolean" ||
+		!Number.isSafeInteger(claims.coverage.omitted) ||
+		claims.coverage.omitted < 0 ||
+		(claims.coverage.complete && claims.coverage.omitted !== 0)
+	)
+		throw new Error("Invalid native intent coverage");
+	const rows = new Map(candidate.rows?.map((row) => [row.id, row]));
 	for (const [identity, metadata] of Object.entries(claims.rows)) {
 		const row = rows.get(identity);
 		validateIntentOwner(identity, candidate.storageId);
-		if (!row || metadata !== null && (!matchesSchema(NativeIntentMetadataSchema, metadata) || metadata.cwd !== row.cwd)) throw new Error("Native intent belongs to a different conversation or location");
+		if (
+			!row ||
+			(metadata !== null && (!matchesSchema(NativeIntentMetadataSchema, metadata) || metadata.cwd !== row.cwd))
+		)
+			throw new Error("Native intent belongs to a different conversation or location");
 	}
 }
 function validateHints(candidate: Partial<CatalogView>): void {
 	validateIntentClaims(candidate);
 	validateAttentionHints(candidate);
-	if (candidate.modelEvidence !== undefined && (!matchesSchema(ModelEvidenceSchema, candidate.modelEvidence) || byteLength(candidate.modelEvidence) > MODEL_EVIDENCE_BUDGET_BYTES))
+	if (
+		candidate.modelEvidence !== undefined &&
+		(!matchesSchema(ModelEvidenceSchema, candidate.modelEvidence) ||
+			byteLength(candidate.modelEvidence) > MODEL_EVIDENCE_BUDGET_BYTES)
+	)
 		throw new Error("Invalid model evidence");
-	if (candidate.profiles !== undefined && !matchesSchema(ProfileHintsSchema, candidate.profiles)) throw new Error("Invalid profile hints");
+	if (candidate.profiles !== undefined && !matchesSchema(ProfileHintsSchema, candidate.profiles))
+		throw new Error("Invalid profile hints");
 	if (candidate.profileSeed === undefined) return;
 	handleSlug(candidate.profileSeed.handle);
-	if (typeof candidate.profileSeed.role !== "string" || [...candidate.profileSeed.role].length > 2000) throw new Error("Invalid profile creation seed");
+	if (typeof candidate.profileSeed.role !== "string" || [...candidate.profileSeed.role].length > 2000)
+		throw new Error("Invalid profile creation seed");
 }
 
 /** Validate one stored view. Oversized or malformed views are refused. */
@@ -230,21 +266,31 @@ export function parseCatalogView(value: unknown): CatalogView {
 	validateHints(candidate);
 	const view = candidate as CatalogView;
 	if (byteLength(view) > CATALOG_VIEW_BUDGET_BYTES) throw new Error("Agent view exceeds its byte budget");
-	if (!Number.isFinite(Date.parse(view.updatedAt)) || new Date(view.updatedAt).toISOString() !== view.updatedAt) throw new Error("Agent view has an invalid updatedAt");
+	if (!Number.isFinite(Date.parse(view.updatedAt)) || new Date(view.updatedAt).toISOString() !== view.updatedAt)
+		throw new Error("Agent view has an invalid updatedAt");
 	return view;
 }
 
 /** Retain whole claims only; omission never changes their text or weakens their declared scope. */
 export function withIntentClaims(view: CatalogView, source: CatalogIntentClaims): CatalogView {
 	const { intentClaims: _previous, ...base } = view;
-	const identities = new Set(base.rows.map(row => row.id));
+	const identities = new Set(base.rows.map((row) => row.id));
 	const rows: Record<string, NativeIntentMetadata | null> = Object.create(null);
 	let omitted = source.coverage.omitted;
-	const result = () => ({ ...base, intentClaims: { rows, coverage: { complete: source.coverage.complete && omitted === 0, omitted } } });
+	const result = () => ({
+		...base,
+		intentClaims: { rows, coverage: { complete: source.coverage.complete && omitted === 0, omitted } },
+	});
 	for (const [identity, metadata] of Object.entries(source.rows)) {
-		if (!identities.has(identity)) { omitted++; continue; }
+		if (!identities.has(identity)) {
+			omitted++;
+			continue;
+		}
 		rows[identity] = metadata;
-		if (byteLength(result()) > CATALOG_VIEW_BUDGET_BYTES) { delete rows[identity]; omitted++; }
+		if (byteLength(result()) > CATALOG_VIEW_BUDGET_BYTES) {
+			delete rows[identity];
+			omitted++;
+		}
 	}
 	return byteLength(result()) > CATALOG_VIEW_BUDGET_BYTES ? base : parseCatalogView(result());
 }
@@ -258,7 +304,10 @@ export function withProfileHints(view: CatalogView, profiles: ProfileHints): Cat
 		if (byteLength(next) > CATALOG_VIEW_BUDGET_BYTES - 32) omitted++;
 		else rows.push(hint);
 	}
-	const result = { ...view, profiles: { rows, coverage: { complete: profiles.coverage.complete && omitted === 0, omitted } } };
+	const result = {
+		...view,
+		profiles: { rows, coverage: { complete: profiles.coverage.complete && omitted === 0, omitted } },
+	};
 	if (byteLength(result) > CATALOG_VIEW_BUDGET_BYTES) return view;
 	return parseCatalogView(result);
 }
@@ -269,7 +318,10 @@ export function withAttentionHints(view: CatalogView, source: CatalogAttentionHi
 	const { attention: _attention, ...base } = view;
 	const rows: CatalogAttentionHints["rows"] = [];
 	let omitted = source.coverage.omitted + source.rows.length;
-	const projection = () => ({ ...base, attention: { rows, coverage: { complete: source.coverage.complete && omitted === 0, omitted } } });
+	const projection = () => ({
+		...base,
+		attention: { rows, coverage: { complete: source.coverage.complete && omitted === 0, omitted } },
+	});
 	for (const hint of source.rows) {
 		rows.push(hint);
 		omitted--;

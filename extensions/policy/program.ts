@@ -1,6 +1,17 @@
 /** Closed facts grammar and private correction plans. No action commits occur here. */
 
-import { arr, compile, int, obj, opt, str, type JsonSchema, type Schema, type Static, union } from "@earendil-works/pi-schema";
+import {
+	arr,
+	compile,
+	int,
+	obj,
+	opt,
+	str,
+	type JsonSchema,
+	type Schema,
+	type Static,
+	union,
+} from "@earendil-works/pi-schema";
 import { type CommandEvidence, captureEvidence, type RuleEvidence } from "./compiler.ts";
 import {
 	cloneJson,
@@ -94,10 +105,21 @@ export interface FactsProgram {
 	data?: string[];
 	state?: StateSpec;
 }
-const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({
+	type: "string",
+	enum: [...values],
+});
 const StringLiteral = <const V extends string>(value: V): Schema<V> => ({ type: "string", const: value });
-const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({ ...union(schemas), type: "object" });
-const ScalarValueSchema: Schema = { type: ["string", "number", "boolean", "null", "array"], maxLength: 4096, items: ScalarSchema, maxItems: 64 };
+const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({
+	...union(schemas),
+	type: "object",
+});
+const ScalarValueSchema: Schema = {
+	type: ["string", "number", "boolean", "null", "array"],
+	maxLength: 4096,
+	items: ScalarSchema,
+	maxItems: 64,
+};
 const PathSchema = arr(str({ minLength: 1, maxLength: 128 }), { minItems: 1, maxItems: 16 });
 const ParentPathSchema = arr(str({ minLength: 1, maxLength: 128 }), { maxItems: 16 });
 const closed = { open: false };
@@ -108,7 +130,20 @@ function conditionShape<C extends Schema>(child: C) {
 		obj({ not: child }, closed),
 		obj(
 			{
-				op: StringEnum(["eq", "in", "exists", "type", "gt", "gte", "lt", "lte", "starts-with", "ends-with", "contains", "lookup"]),
+				op: StringEnum([
+					"eq",
+					"in",
+					"exists",
+					"type",
+					"gt",
+					"gte",
+					"lt",
+					"lte",
+					"starts-with",
+					"ends-with",
+					"contains",
+					"lookup",
+				]),
 				path: PathSchema,
 				value: opt(ScalarValueSchema),
 				table: opt(DataNameSchema),
@@ -125,7 +160,20 @@ const conditionDefinitions = {
 			obj({ any: arr(conditionReference, { minItems: 1, maxItems: PROGRAM_LIMITS.children }) }),
 			obj({ not: conditionReference }),
 			obj({
-				op: StringEnum(["eq", "in", "exists", "type", "gt", "gte", "lt", "lte", "starts-with", "ends-with", "contains", "lookup"]),
+				op: StringEnum([
+					"eq",
+					"in",
+					"exists",
+					"type",
+					"gt",
+					"gte",
+					"lt",
+					"lte",
+					"starts-with",
+					"ends-with",
+					"contains",
+					"lookup",
+				]),
 				path: { ...PathSchema },
 				value: opt({ ...ScalarValueSchema }),
 				table: opt({ ...DataNameSchema }),
@@ -176,12 +224,8 @@ function programShape<C extends Schema>(condition: C) {
 			selector: opt(
 				obj(
 					{
-						tools: opt(
-							arr(str({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 64 }),
-						),
-						operations: opt(
-							arr(str({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 64 }),
-						),
+						tools: opt(arr(str({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 64 })),
+						operations: opt(arr(str({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 64 })),
 						codec: opt(
 							obj(
 								{
@@ -218,10 +262,7 @@ function programShape<C extends Schema>(condition: C) {
 					closed,
 				),
 				obj({ kind: StringLiteral("assert-error") }, closed),
-				obj(
-					{ kind: StringLiteral("guide"), text: str({ minLength: 1, maxLength: PROGRAM_LIMITS.text }) },
-					closed,
-				),
+				obj({ kind: StringLiteral("guide"), text: str({ minLength: 1, maxLength: PROGRAM_LIMITS.text }) }, closed),
 				obj({ kind: StringLiteral("observe"), label: str({ minLength: 1, maxLength: 80 }) }, closed),
 			]),
 			onUnavailable: StringEnum(["skip", "deny"]),
@@ -346,7 +387,8 @@ function programActionError(program: FactsProgram): string | undefined {
 		observe: ["completion"],
 	};
 	if (!permitted[program.action.kind].includes(program.phase)) return "Action is unavailable in this phase";
-	if (program.onUnavailable === "deny" && program.phase !== "input") return "Unavailable denial requires the input phase";
+	if (program.onUnavailable === "deny" && program.phase !== "input")
+		return "Unavailable denial requires the input phase";
 	if (program.action.kind === "require-approval" && (program.inputView !== undefined || program.state !== undefined))
 		return "Approval gates always use final input and do not use observation state";
 	if (program.inputView && program.phase !== "input") return "inputView requires the input phase";
@@ -373,7 +415,8 @@ function programSelectorError(program: FactsProgram): string | undefined {
 		return "Unsafe codec path";
 	if (
 		selector?.codec &&
-		(program.action.kind === "rename-key" || (program.action.kind === "substitute" && program.action.stage !== "logical-target"))
+		(program.action.kind === "rename-key" ||
+			(program.action.kind === "substitute" && program.action.stage !== "logical-target"))
 	)
 		return "Decoded argument corrections are unsupported; use a direct-tool correction";
 	const bindings = new Set(program.data ?? []);
@@ -445,12 +488,9 @@ function numericComparison(value: unknown, expected: unknown, op: "gt" | "gte" |
 	return "unknown";
 }
 
-function stringComparison(
-	value: unknown,
-	expected: unknown,
-	op: "starts-with" | "ends-with" | "contains",
-): Truth {
-	if (op === "starts-with") return typeof value === "string" && typeof expected === "string" && value.startsWith(expected);
+function stringComparison(value: unknown, expected: unknown, op: "starts-with" | "ends-with" | "contains"): Truth {
+	if (op === "starts-with")
+		return typeof value === "string" && typeof expected === "string" && value.startsWith(expected);
 	if (op === "ends-with") return typeof value === "string" && typeof expected === "string" && value.endsWith(expected);
 	if (op === "contains") return typeof value === "string" && typeof expected === "string" && value.includes(expected);
 	return "unknown";
@@ -1104,7 +1144,10 @@ function finalizePlan(state: PlanState): void {
 		plan.valid = false;
 		plan.problems.push("Captured final-input rule observation periods changed before candidate validation");
 	}
-	const effective = state.context.applyCorrections === false || !plan.valid || plan.denied ? state.original : (plan.candidate as OwnedInput);
+	const effective =
+		state.context.applyCorrections === false || !plan.valid || plan.denied
+			? state.original
+			: (plan.candidate as OwnedInput);
 	const effectiveEvidence = captureEvidenceFor(state, effective);
 	for (const rule of state.ordered.filter(
 		(entry) =>
@@ -1173,7 +1216,8 @@ export function planInput(
 	for (const rule of approvalRules) {
 		const evaluation = recordRule(state, rule, approvalInput, approvalEvidence);
 		evaluation.inputView = "effective";
-		evaluation.deny = evaluation.applicable === true &&
+		evaluation.deny =
+			evaluation.applicable === true &&
 			(evaluation.truth === true || (evaluation.truth === "unknown" && rule.program.onUnavailable === "deny"));
 		plan.denied ||= evaluation.deny;
 	}

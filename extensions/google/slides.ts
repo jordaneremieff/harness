@@ -1,6 +1,14 @@
 import { int, obj, opt, str } from "@earendil-works/pi-schema";
 import { GRANTS, STDOUT_LIMITS } from "./gws.ts";
-import { checkContinuation, external, ok, renderingId, requireSourceId, SOURCE_ID_PATTERN, TextBudget } from "./result.ts";
+import {
+	checkContinuation,
+	external,
+	ok,
+	renderingId,
+	requireSourceId,
+	SOURCE_ID_PATTERN,
+	TextBudget,
+} from "./result.ts";
 import type { ToolSpec } from "./tools.ts";
 
 const PresentationId = str({ minLength: 1, maxLength: 512 });

@@ -21,7 +21,14 @@ const rows = () => [
 
 function discovery(pages: readonly CollaborationPage[]) {
 	return {
-		items: pages.map(({ thread }) => ({ id: thread.id, title: thread.title, purpose: thread.purpose, updatedAt: thread.updatedAt, closed: thread.closed, members: thread.members.length })),
+		items: pages.map(({ thread }) => ({
+			id: thread.id,
+			title: thread.title,
+			purpose: thread.purpose,
+			updatedAt: thread.updatedAt,
+			closed: thread.closed,
+			members: thread.members.length,
+		})),
 		nextCursor: null,
 		coverage: { complete: true, visited: 1, omitted: 0 },
 	};
@@ -31,8 +38,20 @@ function sharedThread(member: string): CollaborationPage {
 	const id = `${storage}/abcdef`;
 	return {
 		thread: {
-			id, title: "Shared review", purpose: "Review the work", authority: "Operator request", source: "Brief", restrictions: "None",
-			acceptance: "Read the exchange", integrator: storage, creator: storage, revision: 1, sequence: 1, closed: false, createdAt: 1, updatedAt: 2,
+			id,
+			title: "Shared review",
+			purpose: "Review the work",
+			authority: "Operator request",
+			source: "Brief",
+			restrictions: "None",
+			acceptance: "Read the exchange",
+			integrator: storage,
+			creator: storage,
+			revision: 1,
+			sequence: 1,
+			closed: false,
+			createdAt: 1,
+			updatedAt: 2,
 			members: [storage, member].map((identity) => ({ identity, contribution: "Work in the thread", joinedAt: 1 })),
 		},
 		events: [],
@@ -43,7 +62,8 @@ function sharedThread(member: string): CollaborationPage {
 }
 
 type Fixture = ReturnType<typeof fixture>;
-const visible = (f: Fixture) => f.ui.render(f.tui.terminal.columns).map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+const visible = (f: Fixture) =>
+	f.ui.render(f.tui.terminal.columns).map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
 const shown = (f: Fixture) => visible(f).join("\n");
 
 /** The list column, excluding the selected conversation and footer actions. */
@@ -53,9 +73,15 @@ function facts(f: Fixture): string {
 	if (width >= 100) {
 		const divider = lines[1]?.indexOf("│") ?? -1;
 		assert.ok(divider > 0);
-		return lines.slice(1, -1).map((line) => line.slice(0, divider).trimEnd()).join("\n");
+		return lines
+			.slice(1, -1)
+			.map((line) => line.slice(0, divider).trimEnd())
+			.join("\n");
 	}
-	return lines.slice(1, f.tui.terminal.rows >= 25 ? 9 : 6).map((line) => line.trimEnd()).join("\n");
+	return lines
+		.slice(1, f.tui.terminal.rows >= 25 ? 9 : 6)
+		.map((line) => line.trimEnd())
+		.join("\n");
 }
 
 /** Click the visible label on the row it is drawn on. */
@@ -66,7 +92,20 @@ function click(f: Fixture, label: string, y?: number): void {
 	const line = lines[index] ?? "";
 	const x = line.indexOf(label);
 	assert.ok(x >= 0, `${label} is drawn on row ${index}`);
-	const event: TuiMouseEvent = { type: "click", button: "left", x: x + 1, y: index, screenX: x + 1, screenY: index, width: f.tui.terminal.columns, height: f.tui.terminal.rows, shift: false, alt: false, ctrl: false, clickCount: 1 };
+	const event: TuiMouseEvent = {
+		type: "click",
+		button: "left",
+		x: x + 1,
+		y: index,
+		screenX: x + 1,
+		screenY: index,
+		width: f.tui.terminal.columns,
+		height: f.tui.terminal.rows,
+		shift: false,
+		alt: false,
+		ctrl: false,
+		clickCount: 1,
+	};
 	assert.ok(f.ui.handleMouse(event)?.handled, `${label} accepts the click`);
 }
 
@@ -74,13 +113,21 @@ it("the compact strip at 80x24 draws Find and Related/All above the grouped rows
 	const gate = deferred();
 	let reading = true;
 	const observed = source(rows());
-	const f = fixture(80, 24, observed, {
-		collaborate: async (input) => {
-			if (input.action !== "list") return undefined;
-			if (reading) await gate.promise;
-			return discovery([]);
+	const f = fixture(
+		80,
+		24,
+		observed,
+		{
+			collaborate: async (input) => {
+				if (input.action !== "list") return undefined;
+				if (reading) await gate.promise;
+				return discovery([]);
+			},
 		},
-	}, undefined, undefined, ordinary);
+		undefined,
+		undefined,
+		ordinary,
+	);
 	try {
 		for (let attempt = 0; attempt < 6; attempt++) await turn();
 		const pending = visible(f)[1] ?? "";
@@ -95,8 +142,13 @@ it("the compact strip at 80x24 draws Find and Related/All above the grouped rows
 		for (let attempt = 0; attempt < 8; attempt++) await turn();
 		assert.match(facts(f), /Working 1/u);
 		const complete = visible(f)[1] ?? "";
-		for (const text of ["/ Find", " Related ", " All "]) assert.ok(complete.includes(text), `${text} is drawn after the read`);
-		assert.doesNotMatch(facts(f), /Load more|loaded|retained|with errors/u, "a complete list has no pagination or retired totals");
+		for (const text of ["/ Find", " Related ", " All "])
+			assert.ok(complete.includes(text), `${text} is drawn after the read`);
+		assert.doesNotMatch(
+			facts(f),
+			/Load more|loaded|retained|with errors/u,
+			"a complete list has no pagination or retired totals",
+		);
 		assert.doesNotMatch(shown(f), /Unrelated/u, "Related lists this session's work only");
 		click(f, " All ", 1);
 		assert.match(facts(f), /Working 3/u);
@@ -118,11 +170,20 @@ it("compact list controls keep their clicks through a resize and Load more still
 		const result = await list(input);
 		return { ...result, coverage: { ...result.coverage, complete: false, nextCursor: "more" } };
 	};
-	const f = fixture(80, 24, observed, { collaborate: async (input) => (input.action === "list" ? discovery([]) : undefined) }, undefined, undefined, ordinary);
+	const f = fixture(
+		80,
+		24,
+		observed,
+		{ collaborate: async (input) => (input.action === "list" ? discovery([]) : undefined) },
+		undefined,
+		undefined,
+		ordinary,
+	);
 	try {
 		for (let attempt = 0; attempt < 8; attempt++) await turn();
 		const strip = visible(f)[1] ?? "";
-		for (const text of ["/ Find", " Related ", " All "]) assert.ok(strip.includes(text), `${text} stays on the Find row`);
+		for (const text of ["/ Find", " Related ", " All "])
+			assert.ok(strip.includes(text), `${text} stays on the Find row`);
 		assert.equal(visibleWidth(strip), 80, "the compact Find row fills the window");
 		assert.match(facts(f), /Working 1[\s\S]*Load more/u);
 		assert.equal(visible(f)[5]?.trim(), "Load more", "a complete viewport leaves only pagination on the last row");
@@ -146,7 +207,10 @@ it("compact list controls keep their clicks through a resize and Load more still
 	}
 });
 
-for (const [width, height] of [[140, 40], [80, 24]] as const) {
+for (const [width, height] of [
+	[140, 40],
+	[80, 24],
+] as const) {
 	it(`a routine relation refresh keeps the section count and the geometry at ${width}`, async (t) => {
 		t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
 		let gate: Promise<unknown> | undefined;
@@ -156,13 +220,21 @@ for (const [width, height] of [[140, 40], [80, 24]] as const) {
 			rosterChanged = listener;
 			return () => {};
 		};
-		const f = fixture(width, height, observed, {
-			collaborate: async (input) => {
-				if (input.action !== "list") return undefined;
-				if (gate) await gate;
-				return discovery([]);
+		const f = fixture(
+			width,
+			height,
+			observed,
+			{
+				collaborate: async (input) => {
+					if (input.action !== "list") return undefined;
+					if (gate) await gate;
+					return discovery([]);
+				},
 			},
-		}, undefined, undefined, ordinary);
+			undefined,
+			undefined,
+			ordinary,
+		);
 		try {
 			for (let attempt = 0; attempt < 8; attempt++) await turn();
 			const settledFacts = facts(f);
@@ -202,15 +274,23 @@ for (const [width, height] of [[140, 40], [80, 24]] as const) {
 			rosterChanged = listener;
 			return () => {};
 		};
-		const f = fixture(width, height, observed, {
-			collaborate: async (input) => {
-				const pages = joined ? [sharedThread(peer)] : [];
-				if (input.action === "read") return pages[0];
-				if (gate) await gate;
-				if (failing) throw new Error("Threads are unreadable");
-				return discovery(pages);
+		const f = fixture(
+			width,
+			height,
+			observed,
+			{
+				collaborate: async (input) => {
+					const pages = joined ? [sharedThread(peer)] : [];
+					if (input.action === "read") return pages[0];
+					if (gate) await gate;
+					if (failing) throw new Error("Threads are unreadable");
+					return discovery(pages);
+				},
 			},
-		}, undefined, undefined, ordinary);
+			undefined,
+			undefined,
+			ordinary,
+		);
 		const refresh = async (change: () => void) => {
 			change();
 			rosterChanged();
@@ -246,12 +326,20 @@ it("a narrow footer keeps the relation failure rather than clipping it for Load 
 		const result = await list(input);
 		return { ...result, coverage: { ...result.coverage, complete: false, nextCursor: "more" } };
 	};
-	const f = fixture(100, 40, observed, {
-		collaborate: async (input) => {
-			if (input.action === "list") throw new Error("Threads are unreadable");
-			return undefined;
+	const f = fixture(
+		100,
+		40,
+		observed,
+		{
+			collaborate: async (input) => {
+				if (input.action === "list") throw new Error("Threads are unreadable");
+				return undefined;
+			},
 		},
-	}, undefined, undefined, ordinary);
+		undefined,
+		undefined,
+		ordinary,
+	);
 	try {
 		for (let attempt = 0; attempt < 8; attempt++) await turn();
 		const line = facts(f);

@@ -8,7 +8,11 @@ import type { WriteInput } from "./store.ts";
 export const SOURCE_BYTES = 2 * 1024 * 1024;
 export const RESPONSE_VISITS = 2000;
 export const RESPONSE_RESULTS = 30;
-export interface Completeness { state: "complete" | "partial"; reason?: "length" | "aborted" | "error" | "tool-use"; note?: string }
+export interface Completeness {
+	state: "complete" | "partial";
+	reason?: "length" | "aborted" | "error" | "tool-use";
+	note?: string;
+}
 export interface ResponseOrigin {
 	kind: "ordinary-response" | "native-response";
 	host?: string;
@@ -44,30 +48,61 @@ export interface RecentResponses {
 }
 export function completeness(stop: string): Completeness {
 	switch (stop) {
-		case "stop": return { state: "complete" };
-		case "toolUse": return { state: "complete", reason: "tool-use", note: "Text before tool calls; not task acceptance." };
-		case "length": case "aborted": case "error": return { state: "partial", reason: stop };
-		default: return { state: "partial", note: `Response stop: ${stop}` };
+		case "stop":
+			return { state: "complete" };
+		case "toolUse":
+			return { state: "complete", reason: "tool-use", note: "Text before tool calls; not task acceptance." };
+		case "length":
+		case "aborted":
+		case "error":
+			return { state: "partial", reason: stop };
+		default:
+			return { state: "partial", note: `Response stop: ${stop}` };
 	}
 }
-export function responseSnapshot(message: AssistantMessage, entryId: string, origin: Omit<ResponseOrigin, "entry" | "model" | "parts" | "capturedAt">): ResponseSnapshot | undefined {
-	const parts = message.content.flatMap((part) => part.type === "text" && part.text.trim() ? [part.text] : []);
+export function responseSnapshot(
+	message: AssistantMessage,
+	entryId: string,
+	origin: Omit<ResponseOrigin, "entry" | "model" | "parts" | "capturedAt">,
+): ResponseSnapshot | undefined {
+	const parts = message.content.flatMap((part) => (part.type === "text" && part.text.trim() ? [part.text] : []));
 	if (!parts.length) return undefined;
 	return {
-		entryId, parts, stop: message.stopReason, completeness: completeness(message.stopReason), timestamp: message.timestamp,
-		provenance: { ...origin, host: hostname(), entry: entryId, model: `${message.provider}/${message.model}`, capturedAt: new Date().toISOString(), parts: parts.map((text) => ({ chars: text.length })) },
+		entryId,
+		parts,
+		stop: message.stopReason,
+		completeness: completeness(message.stopReason),
+		timestamp: message.timestamp,
+		provenance: {
+			...origin,
+			host: hostname(),
+			entry: entryId,
+			model: `${message.provider}/${message.model}`,
+			capturedAt: new Date().toISOString(),
+			parts: parts.map((text) => ({ chars: text.length })),
+		},
 	};
 }
 export const responseDigest = (source: string): string => `sha256:${createHash("sha256").update(source).digest("hex")}`;
 export function responseText(response: ResponseSnapshot): string {
 	const source = response.parts.join("\n\n");
-	if (Buffer.byteLength(source) > SOURCE_BYTES) throw new Error(`Response ${response.entryId} exceeds the ${SOURCE_BYTES}-byte source limit; no truncated document was saved.`);
+	if (Buffer.byteLength(source) > SOURCE_BYTES)
+		throw new Error(
+			`Response ${response.entryId} exceeds the ${SOURCE_BYTES}-byte source limit; no truncated document was saved.`,
+		);
 	if (!validUnicode(source)) throw new Error("Response contains unpaired Unicode surrogates; no document was saved.");
 	return source;
 }
 export function responseRow(response: ResponseSnapshot): ResponseRow {
 	const first = response.parts[0].split(/\r?\n/u, 1)[0];
-	return { entryId: response.entryId, timestamp: response.timestamp, preview: Array.from(first).slice(0, 160).join(""), bytes: response.parts.reduce((sum, part) => sum + Buffer.byteLength(part), 2 * (response.parts.length - 1)), stop: response.stop, completeness: response.completeness };
+	return {
+		entryId: response.entryId,
+		timestamp: response.timestamp,
+		preview: Array.from(first).slice(0, 160).join(""),
+		bytes: response.parts.reduce((sum, part) => sum + Buffer.byteLength(part), 2 * (response.parts.length - 1)),
+		stop: response.stop,
+		completeness: response.completeness,
+	};
 }
 export const validUnicode = (value: string): boolean => !/[\uD800-\uDFFF]/u.test(value);
 /** The response's label: the working directory's base name and the local time of the response. */
@@ -84,17 +119,34 @@ export function responseSnapshotWrite(response: ResponseSnapshot): { sourceKey: 
 	const identity = origin.conversation === undefined ? origin.session : `${origin.session}:${origin.conversation}`;
 	return {
 		sourceKey: `response\0${origin.kind}\0${identity ?? ""}\0${response.entryId}`,
-		input: { title: responseTitle(response), source: responseText(response), contentOrigin: origin, completeness: response.completeness, references: { state: "uninspected", truncated: false, items: [], omitted: 0 } },
+		input: {
+			title: responseTitle(response),
+			source: responseText(response),
+			contentOrigin: origin,
+			completeness: response.completeness,
+			references: { state: "uninspected", truncated: false, items: [], omitted: 0 },
+		},
 	};
 }
-export type OrdinarySource = Pick<ExtensionContext["sessionManager"], "getEntry" | "getLeafId" | "getSessionId" | "getCwd">;
+export type OrdinarySource = Pick<
+	ExtensionContext["sessionManager"],
+	"getEntry" | "getLeafId" | "getSessionId" | "getCwd"
+>;
 function ordinaryResponse(source: OrdinarySource, entry: SessionEntry): ResponseSnapshot | undefined {
 	const id = entry.id;
 	return entry?.type === "message" && entry.message.role === "assistant"
-		? responseSnapshot(entry.message, id, { kind: "ordinary-response", session: source.getSessionId(), cwd: source.getCwd() }) : undefined;
+		? responseSnapshot(entry.message, id, {
+				kind: "ordinary-response",
+				session: source.getSessionId(),
+				cwd: source.getCwd(),
+			})
+		: undefined;
 }
 /** Capture a leaf once; siblings and later appends never enter this walk. */
-export function recentOrdinary(source: OrdinarySource, options: { leaf?: string | null; visits?: number; results?: number } = {}): RecentResponses {
+export function recentOrdinary(
+	source: OrdinarySource,
+	options: { leaf?: string | null; visits?: number; results?: number } = {},
+): RecentResponses {
 	const cutoff = options.leaf === undefined ? source.getLeafId() : options.leaf;
 	let id = cutoff;
 	const rows: ResponseRow[] = [];

@@ -139,7 +139,8 @@ test("source approval covers the command implementation and live doctrine", asyn
 			registerFlag() {},
 			getFlag: () => approved,
 			registerTool() {},
-			registerEntryRenderer() {}, registerMessageRenderer() {},
+			registerEntryRenderer() {},
+			registerMessageRenderer() {},
 			registerCommand(_name, definition) {
 				command = definition;
 			},
@@ -176,9 +177,14 @@ test("the evaluation preserves early cancellation and cancels a command on fixtu
 			registerFlag() {},
 			getFlag: () => source.digest,
 			registerTool() {},
-			registerEntryRenderer() {}, registerMessageRenderer() {},
-			registerCommand(_name, definition) { command = definition; },
-			sendMessage() { settle?.({ type: "agent_settled", aborted }); },
+			registerEntryRenderer() {},
+			registerMessageRenderer() {},
+			registerCommand(_name, definition) {
+				command = definition;
+			},
+			sendMessage() {
+				settle?.({ type: "agent_settled", aborted });
+			},
 			on(name, handler) {
 				if (name === "agent_settled") settle = handler as unknown as typeof settle;
 				if (name === "session_shutdown") shutdown.push(handler as unknown as () => Promise<void>);
@@ -224,7 +230,8 @@ test("an adapter failure preserves the environment and removes its isolated stor
 				registerFlag() {},
 				getFlag: () => "0".repeat(64),
 				registerTool() {},
-				registerEntryRenderer() {}, registerMessageRenderer() {},
+				registerEntryRenderer() {},
+				registerMessageRenderer() {},
 				registerCommand() {},
 				on(name, handler) {
 					if (name === "tool_call") armed = true;

@@ -17,7 +17,13 @@ it("isolates the same handle across stores sharing cwd and agent directory", { t
 	t.after(async () => {
 		await Promise.all(managers.map((manager) => manager.close()));
 		await Promise.all(connections.map((connection) => connection.close()));
-		for (const connection of connections) { try { process.kill(connection.pid, "SIGKILL"); } catch { /* Already retired. */ } }
+		for (const connection of connections) {
+			try {
+				process.kill(connection.pid, "SIGKILL");
+			} catch {
+				/* Already retired. */
+			}
+		}
 		rmSync(root, { recursive: true, force: true });
 	});
 	const metadata = { ...fixtureMetadata(root), agentDir: join(root, "agent"), packageDir: join(root, "package") };
@@ -27,15 +33,27 @@ it("isolates the same handle across stores sharing cwd and agent directory", { t
 	assert.notEqual(records[0].storageId, records[1].storageId);
 	for (const [index, catalog] of catalogs.entries()) {
 		const record = records[index];
-		assert.equal(handleStorageId("history", `${catalog.root}/.`), record.storageId, "canonical directory aliases share one namespace");
+		assert.equal(
+			handleStorageId("history", `${catalog.root}/.`),
+			record.storageId,
+			"canonical directory aliases share one namespace",
+		);
 		assert.equal(targetIdentity("@history", catalog.root), record.storageId);
 		assert.equal(catalog.createHandled(metadata, "history", "Ignored defaults").record.storageId, record.storageId);
-		const manager = new AgentManager({ root: join(root, index === 0 ? "a" : "b"), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+		const manager = new AgentManager({
+			root: join(root, index === 0 ? "a" : "b"),
+			agentDir: metadata.agentDir,
+			packageDir: metadata.packageDir,
+		});
 		managers.push(manager);
 		assert.equal(await manager.resolveTarget("@history"), record.storageId);
 		const connection = await acquireHost(hostMetadata(record), {
 			runner: fileURLToPath(new URL("./host-fixture.mts", import.meta.url)),
-			env: { ...process.env, PI_AGENT_DIR: metadata.agentDir, PI_AGENT_SESSIONS_DIR: join(root, index === 0 ? "a" : "b") },
+			env: {
+				...process.env,
+				PI_AGENT_DIR: metadata.agentDir,
+				PI_AGENT_SESSIONS_DIR: join(root, index === 0 ? "a" : "b"),
+			},
 		});
 		connections.push(connection);
 	}

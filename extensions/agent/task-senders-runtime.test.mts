@@ -11,8 +11,21 @@ import { DurableHost } from "./durable-host.ts";
 import { createAgentContribution } from "./durable-agents.ts";
 import { AgentMetaDoc, readOutcome } from "./durable-controls.ts";
 import { deliveryState } from "./delivery-store.ts";
-import { answerMessage, completed, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, pending, toolCallMessage } from "./durable-host-fixture.mts";
-import { CommunicationIndexDoc, communicationIndexKey, reconcileInputCommunications } from "./communication-retention.ts";
+import {
+	answerMessage,
+	completed,
+	fixtureModelId,
+	fixtureProvider,
+	fixtureRegistry,
+	fixtureRuntime,
+	pending,
+	toolCallMessage,
+} from "./durable-host-fixture.mts";
+import {
+	CommunicationIndexDoc,
+	communicationIndexKey,
+	reconcileInputCommunications,
+} from "./communication-retention.ts";
 import { captureCommunicationReader } from "./communication-observation.ts";
 import { readConversationSnapshotPage, readDashboard, readInspection } from "./durable-observation.ts";
 import { InspectOutputSchema } from "./observation-schema.ts";
@@ -26,12 +39,31 @@ const ROOT = Durable.ROOT_CONVERSATION_ID;
 async function fixture(t: TestContext, models?: Awaited<ReturnType<typeof fixtureRuntime>>) {
 	const root = mkdtempSync(join(tmpdir(), "task-senders-"));
 	const storageId = randomUUID();
-	const host = await DurableHost.open({ storagePath: join(root, "storage.sqlite"), storageId, cwd: root, models: models ?? await fixtureRuntime("answer"), registry: fixtureRegistry(), agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } }, resume: true, now: () => 17 });
-	t.after(async () => { await host.close(); rmSync(root, { recursive: true, force: true }); });
+	const host = await DurableHost.open({
+		storagePath: join(root, "storage.sqlite"),
+		storageId,
+		cwd: root,
+		models: models ?? (await fixtureRuntime("answer")),
+		registry: fixtureRegistry(),
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
+		resume: true,
+		now: () => 17,
+	});
+	t.after(async () => {
+		await host.close();
+		rmSync(root, { recursive: true, force: true });
+	});
 	return { host, root, storageId };
 }
 async function task(host: DurableHost, requester: string, requestId = "task", replyTo = requester) {
-	const admitted = await host.request("task-submit", { requestId, message: "Original task bytes", requester, replyTo, origin: "model", checkInMinutes: 0 }) as { submissionId: number };
+	const admitted = (await host.request("task-submit", {
+		requestId,
+		message: "Original task bytes",
+		requester,
+		replyTo,
+		origin: "model",
+		checkInMinutes: 0,
+	})) as { submissionId: number };
 	const outcome = await readOutcome(host.harness, admitted.submissionId as Durable.SubmissionId, context);
 	assert.ok(outcome.entryId);
 	await reconcileInputCommunications(host.harness, host.storageId, context);
@@ -39,23 +71,37 @@ async function task(host: DurableHost, requester: string, requestId = "task", re
 }
 it("publishes task requester hints outside entries and communication while preserving native bytes", async (t) => {
 	const { host, storageId } = await fixture(t);
-	await host.harness.commit(async (tx) => { (await tx.doc(AgentMetaDoc, ROOT)).name = "Checked sender"; }, context);
+	await host.harness.commit(async (tx) => {
+		(await tx.doc(AgentMetaDoc, ROOT)).name = "Checked sender";
+	}, context);
 	const { entryId } = await task(host, storageId, "named-task", "00000000-0000-4000-8000-000000000099");
-	await host.harness.commit(async (tx) => { (await tx.doc(AgentMetaDoc, ROOT)).name = "Later name"; }, context);
+	await host.harness.commit(async (tx) => {
+		(await tx.doc(AgentMetaDoc, ROOT)).name = "Later name";
+	}, context);
 	await task(host, storageId, "named-task", "00000000-0000-4000-8000-000000000099");
 	const page = await readConversationSnapshotPage(host.harness, ROOT, {}, context, storageId);
 	assert.deepEqual(page.taskSenders, { [entryId]: { identity: storageId, name: "Checked sender" } });
 	const row = page.entries.find((entry) => entry.id === String(entryId));
 	assert.deepEqual(row?.communication, { state: "unresolved" });
 	assert.equal(row?.model?.[0]?.content, "Original task bytes");
-	assert.equal(page.entries.some((entry) => entry.kind === TASK_SENDER_ENTRY_KIND), false);
+	assert.equal(
+		page.entries.some((entry) => entry.kind === TASK_SENDER_ENTRY_KIND),
+		false,
+	);
 	const conversation = await host.harness.conversation(ROOT, context);
 	assert.ok(conversation);
-	const history = await readInspection(host.harness, storageId, conversation, { view: "history" }, context) as { entries: { kind: string }[] };
+	const history = (await readInspection(host.harness, storageId, conversation, { view: "history" }, context)) as {
+		entries: { kind: string }[];
+	};
 	assert.equal(matchesSchema(InspectOutputSchema, history), true);
-	assert.equal(history.entries.some((entry) => entry.kind === TASK_SENDER_ENTRY_KIND), false);
+	assert.equal(
+		history.entries.some((entry) => entry.kind === TASK_SENDER_ENTRY_KIND),
+		false,
+	);
 	assert.equal("taskSenders" in history, false);
-	const opened = await host.request("observe-open", { token: "senders", scope: "conversation" }) as { frame: ConversationFrame };
+	const opened = (await host.request("observe-open", { token: "senders", scope: "conversation" })) as {
+		frame: ConversationFrame;
+	};
 	assert.deepEqual(opened.frame.taskSenders, page.taskSenders);
 	await host.request("observe-close", { token: "senders" });
 	const before = await readConversationSnapshotPage(host.harness, ROOT, { before: entryId }, context, storageId);
@@ -65,12 +111,19 @@ it("keeps foreign names absent and refuses sender backfill for an existing plain
 	const { host, storageId } = await fixture(t);
 	const foreign = "00000000-0000-4000-8000-000000000002";
 	const known = await task(host, foreign, "foreign-task");
-	const plain = await host.request("submit", { requestId: "plain-task", message: "Plain task", provenance: { classification: "explicit", sender: foreign } }) as { submissionId: number };
+	const plain = (await host.request("submit", {
+		requestId: "plain-task",
+		message: "Plain task",
+		provenance: { classification: "explicit", sender: foreign },
+	})) as { submissionId: number };
 	const outcome = await readOutcome(host.harness, plain.submissionId as Durable.SubmissionId, context);
 	await assert.rejects(task(host, foreign, "plain-task"), /existing request has no retained answer route/u);
 	const conversation = await host.harness.conversation(ROOT, context);
 	assert.ok(conversation);
-	const uncaptured = await conversation.submit({ type: "input", requestId: "uncaptured-task", content: "Admission without owner capture" }, context);
+	const uncaptured = await conversation.submit(
+		{ type: "input", requestId: "uncaptured-task", content: "Admission without owner capture" },
+		context,
+	);
 	const uncapturedOutcome = await readOutcome(host.harness, uncaptured.id, context);
 	await assert.rejects(task(host, foreign, "uncaptured-task"), /existing request has no retained answer route/u);
 	const page = await readConversationSnapshotPage(host.harness, ROOT, {}, context, storageId);
@@ -81,18 +134,37 @@ it("keeps foreign names absent and refuses sender backfill for an existing plain
 it("checks sender record visibility at the captured tail and across a fork", async (t) => {
 	const { host, storageId } = await fixture(t);
 	const { entryId } = await task(host, storageId);
-	const index = await host.harness.snapshot(CommunicationIndexDoc, communicationIndexKey(storageId, ROOT, String(entryId)), context);
+	const index = await host.harness.snapshot(
+		CommunicationIndexDoc,
+		communicationIndexKey(storageId, ROOT, String(entryId)),
+		context,
+	);
 	assert.ok(index?.taskSenderEntryId);
-	const early = await host.request("fork", { requestId: "early", entryId }) as { conversationId: Durable.ConversationId };
-	assert.equal((await readConversationSnapshotPage(host.harness, early.conversationId, {}, context, storageId)).taskSenders, undefined);
-	const late = await host.request("fork", { requestId: "late", entryId: Number(index.taskSenderEntryId) }) as { conversationId: Durable.ConversationId };
-	assert.deepEqual((await readConversationSnapshotPage(host.harness, late.conversationId, {}, context, storageId)).taskSenders?.[String(entryId)], { identity: storageId });
+	const early = (await host.request("fork", { requestId: "early", entryId })) as {
+		conversationId: Durable.ConversationId;
+	};
+	assert.equal(
+		(await readConversationSnapshotPage(host.harness, early.conversationId, {}, context, storageId)).taskSenders,
+		undefined,
+	);
+	const late = (await host.request("fork", { requestId: "late", entryId: Number(index.taskSenderEntryId) })) as {
+		conversationId: Durable.ConversationId;
+	};
+	assert.deepEqual(
+		(await readConversationSnapshotPage(host.harness, late.conversationId, {}, context, storageId)).taskSenders?.[
+			String(entryId)
+		],
+		{ identity: storageId },
+	);
 	const conversation = await host.harness.conversation(ROOT, context);
 	assert.ok(conversation);
 	const originalEntries = conversation.entries.bind(conversation);
 	let capture = true;
 	t.mock.method(conversation, "entries", async (...args: Parameters<typeof originalEntries>) => {
-		if (capture) { capture = false; return originalEntries({ minEntryId: entryId, maxEntryId: entryId }, 1, undefined, context); }
+		if (capture) {
+			capture = false;
+			return originalEntries({ minEntryId: entryId, maxEntryId: entryId }, 1, undefined, context);
+		}
 		return originalEntries(...args);
 	});
 	const reader = await captureCommunicationReader(host.harness, storageId, conversation, context);
@@ -104,7 +176,11 @@ it("rejects an index whose native submission does not identify the original inpu
 	const first = await task(host, storageId, "first");
 	const second = await task(host, storageId, "second");
 	await host.harness.commit(async (tx) => {
-		const index = await tx.doc(CommunicationIndexDoc, communicationIndexKey(storageId, ROOT, String(first.entryId)), null);
+		const index = await tx.doc(
+			CommunicationIndexDoc,
+			communicationIndexKey(storageId, ROOT, String(first.entryId)),
+			null,
+		);
 		assert.ok(index.target);
 		index.target = { ...index.target, submissionId: second.admitted.submissionId };
 	}, context);
@@ -112,28 +188,57 @@ it("rejects an index whose native submission does not identify the original inpu
 	assert.equal(page.taskSenders?.[String(first.entryId)], undefined);
 	assert.deepEqual(page.taskSenders?.[String(second.entryId)], { identity: storageId });
 });
-it("retains queued requester capture through placement and input-provenance eviction", { timeout: 15_000 }, async (t) => {
+it("retains queued requester capture through placement and input-provenance eviction", {
+	timeout: 15_000,
+}, async (t) => {
 	const models = await createTestRuntime();
 	const answer = answerMessage();
 	const held = pending(answer);
 	let first = true;
 	let start!: () => void;
-	const started = new Promise<void>((resolve) => { start = resolve; });
-	const stream = () => { if (first) { first = false; start(); return held; } return completed(answerMessage()); };
-	models.registerNativeProvider({ id: fixtureProvider, name: "Queued sender fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
+	const started = new Promise<void>((resolve) => {
+		start = resolve;
+	});
+	const stream = () => {
+		if (first) {
+			first = false;
+			start();
+			return held;
+		}
+		return completed(answerMessage());
+	};
+	models.registerNativeProvider({
+		id: fixtureProvider,
+		name: "Queued sender fixture",
+		getModels: () => [testModel],
+		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		stream,
+		streamSimple: stream,
+	});
 	const { host, storageId } = await fixture(t, models);
-	const initial = await host.request("submit", { requestId: "held", message: "Hold first input" }) as { submissionId: number };
+	const initial = (await host.request("submit", { requestId: "held", message: "Hold first input" })) as {
+		submissionId: number;
+	};
 	await started;
-	const queued = await host.request("task-submit", { requestId: "queued-sender", message: "Queued task", requester: storageId, origin: "model", whenBusy: "followUp", checkInMinutes: 0 }) as { submissionId: number };
+	const queued = (await host.request("task-submit", {
+		requestId: "queued-sender",
+		message: "Queued task",
+		requester: storageId,
+		origin: "model",
+		whenBusy: "followUp",
+		checkInMinutes: 0,
+	})) as { submissionId: number };
 	const submission = await host.harness.submission(queued.submissionId as Durable.SubmissionId, context);
 	assert.equal((await submission?.status(context))?.status, "queued");
-	held.push({ type: "done", reason: "stop", message: answer }); held.end(answer);
+	held.push({ type: "done", reason: "stop", message: answer });
+	held.end(answer);
 	await readOutcome(host.harness, initial.submissionId as Durable.SubmissionId, context);
 	const outcome = await readOutcome(host.harness, queued.submissionId as Durable.SubmissionId, context);
 	assert.ok(outcome.entryId);
 	await host.harness.commit(async (tx) => {
 		const state = await tx.doc(AwaitDoc);
-		for (let index = state.provenance.length; index < AWAIT_PROVENANCE_LIMIT; index++) state.provenance.push({ conversationId: ROOT, requestId: `absent-${index}`, classification: "explicit" });
+		for (let index = state.provenance.length; index < AWAIT_PROVENANCE_LIMIT; index++)
+			state.provenance.push({ conversationId: ROOT, requestId: `absent-${index}`, classification: "explicit" });
 		await recordInputProvenance(tx, { conversationId: ROOT, requestId: "evict-terminal", classification: "explicit" });
 	}, context);
 	const page = await readConversationSnapshotPage(host.harness, ROOT, {}, context, storageId);
@@ -141,15 +246,21 @@ it("retains queued requester capture through placement and input-provenance evic
 });
 it("keeps settled dashboard state and timing independent of later sender bookkeeping", async (t) => {
 	const { host, storageId } = await fixture(t);
-	const submitted = await host.request("submit", { requestId: "summary-tail", message: "A completed turn" }) as { submissionId: number };
+	const submitted = (await host.request("submit", { requestId: "summary-tail", message: "A completed turn" })) as {
+		submissionId: number;
+	};
 	await readOutcome(host.harness, submitted.submissionId as Durable.SubmissionId, context);
 	const baseline = (await readDashboard(host.harness, storageId, { conversationId: ROOT }, { live: true }, context))[0];
 	assert.ok(baseline);
 	assert.equal(baseline.state, "done");
 	assert.equal(typeof baseline.durationMs, "number");
 	for (const kind of ["agent.communication", TASK_SENDER_ENTRY_KIND]) {
-		await host.harness.commit(async (tx) => { await tx.appendEntry(ROOT, { kind, data: { fixture: true } }); }, context);
-		const current = (await readDashboard(host.harness, storageId, { conversationId: ROOT }, { live: true }, context))[0];
+		await host.harness.commit(async (tx) => {
+			await tx.appendEntry(ROOT, { kind, data: { fixture: true } });
+		}, context);
+		const current = (
+			await readDashboard(host.harness, storageId, { conversationId: ROOT }, { live: true }, context)
+		)[0];
 		assert.equal(current?.state, baseline.state);
 		assert.equal(current?.durationMs, baseline.durationMs);
 		assert.equal(current?.modifiedAt, baseline.modifiedAt);
@@ -160,29 +271,82 @@ it("captures the same-storage requester for a native local send", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "local-task-senders-"));
 	const storageId = randomUUID();
 	const models = await createTestRuntime();
-	let target = "", dispatched = false;
+	let target = "",
+		dispatched = false;
 	const stream = () => {
-		if (!dispatched) { dispatched = true; return completed(toolCallMessage("agent_send", { sessionId: target, message: "Local task bytes", checkInMinutes: 0 })); }
+		if (!dispatched) {
+			dispatched = true;
+			return completed(
+				toolCallMessage("agent_send", { sessionId: target, message: "Local task bytes", checkInMinutes: 0 }),
+			);
+		}
 		return completed(answerMessage());
 	};
-	models.registerNativeProvider({ id: fixtureProvider, name: "Local sender fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
+	models.registerNativeProvider({
+		id: fixtureProvider,
+		name: "Local sender fixture",
+		getModels: () => [testModel],
+		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		stream,
+		streamSimple: stream,
+	});
 	const registry = fixtureRegistry();
-	registry.install(createAgentContribution({ source: import.meta.filename, configureSettings: () => {}, dispatch: async () => { throw new Error("Unexpected foreign dispatch"); } }).create({ durable: Durable, storageId, cwd: root, agentDir: root, onClose() {}, services: { modelRuntime: { getModel: () => testModel, getModels: () => [testModel] } } }));
-	const host = await DurableHost.open({ storagePath: join(root, "storage.sqlite"), storageId, cwd: root, models, registry, agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } }, resume: true });
-	t.after(async () => { await host.close(); rmSync(root, { recursive: true, force: true }); });
-	const child = await host.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, context);
+	registry.install(
+		createAgentContribution({
+			source: import.meta.filename,
+			configureSettings: () => {},
+			dispatch: async () => {
+				throw new Error("Unexpected foreign dispatch");
+			},
+		}).create({
+			durable: Durable,
+			storageId,
+			cwd: root,
+			agentDir: root,
+			onClose() {},
+			services: { modelRuntime: { getModel: () => testModel, getModels: () => [testModel] } },
+		}),
+	);
+	const host = await DurableHost.open({
+		storagePath: join(root, "storage.sqlite"),
+		storageId,
+		cwd: root,
+		models,
+		registry,
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
+		resume: true,
+	});
+	t.after(async () => {
+		await host.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const child = await host.harness.createConversation(
+		{ ownership: { kind: "ownerless" }, agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } },
+		context,
+	);
 	target = `${storageId}:${child.id}`;
-	await host.harness.commit(async (tx) => { (await tx.doc(AgentMetaDoc, ROOT)).name = "Local sender"; }, context);
-	const admitted = await host.request("submit", { requestId: "dispatch-local", message: "Dispatch local task" }) as { submissionId: number };
+	await host.harness.commit(async (tx) => {
+		(await tx.doc(AgentMetaDoc, ROOT)).name = "Local sender";
+	}, context);
+	const admitted = (await host.request("submit", { requestId: "dispatch-local", message: "Dispatch local task" })) as {
+		submissionId: number;
+	};
 	await readOutcome(host.harness, admitted.submissionId as Durable.SubmissionId, context);
 	await reconcileInputCommunications(host.harness, storageId, context);
 	const page = await readConversationSnapshotPage(host.harness, child.id, {}, context, storageId);
 	const input = page.entries.find((entry) => entry.kind === "agent.input");
 	assert.ok(input);
-	const intent = (await deliveryState(host.harness, context, true)).intents.find((item) => item.conversationId === child.id);
+	const intent = (await deliveryState(host.harness, context, true)).intents.find(
+		(item) => item.conversationId === child.id,
+	);
 	assert.ok(intent?.requestId);
 	assert.match(intent.requestId, /^agent-deliver:\d+$/u);
-	assert.deepEqual(input.data, { author: { role: "agent", identity: storageId }, class: "followUp", sender: storageId, requestId: intent.requestId });
+	assert.deepEqual(input.data, {
+		author: { role: "agent", identity: storageId },
+		class: "followUp",
+		sender: storageId,
+		requestId: intent.requestId,
+	});
 	assert.deepEqual(page.taskSenders?.[input.id], { identity: storageId, name: "Local sender" });
 	assert.deepEqual(input.communication, { state: "unresolved" });
 });

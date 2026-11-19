@@ -26,9 +26,21 @@ interface Row {
 interface Check {
 	admitted: boolean;
 	diagnostics: Array<{ severity: string; message: string }>;
-	cases: Array<{ name: string; scopeMatches: boolean; rows: Row[];
-		state?: { observationPeriods: Array<{ count: number; windowCount: number; eligible: boolean; projected: number; resetReason: string }> };
-		unavailable?: string }>;
+	cases: Array<{
+		name: string;
+		scopeMatches: boolean;
+		rows: Row[];
+		state?: {
+			observationPeriods: Array<{
+				count: number;
+				windowCount: number;
+				eligible: boolean;
+				projected: number;
+				resetReason: string;
+			}>;
+		};
+		unavailable?: string;
+	}>;
 	omittedCases?: number;
 }
 interface Tool {
@@ -129,29 +141,71 @@ function noMismatches(result: Check) {
 test("guided command replacements admit without changing their synthetic registry", async () => {
 	const f = fixture();
 	const rows = PACKAGE_CATALOG.filter((row) => row.matcher.kind === "code" && row.effect === "steer");
-	for (const row of rows) f.snapshot.records.set(row.id, {
-		id: row.id, source: { kind: "package" }, matcher: row.matcher, definition: { ...row, state: "active" },
-		matcherAvailable: true, staleOverride: false,
-	});
+	for (const row of rows)
+		f.snapshot.records.set(row.id, {
+			id: row.id,
+			source: { kind: "package" },
+			matcher: row.matcher,
+			definition: { ...row, state: "active" },
+			matcherAvailable: true,
+			staleOverride: false,
+		});
 	const before = JSON.stringify([...f.snapshot.records]);
 	for (const row of rows) {
 		assert.equal(row.matcher.kind, "code");
 		if (row.matcher.kind !== "code") continue;
-		noMismatches(await check({ operation: "replace", id: row.id, expectedRevision: row.revision,
-			purpose: row.purpose, authority: row.authority, reason: "Keep command preferences as guidance.",
-			note: row.note, predicate: row.matcher.key,
-		}, [], f, { effect: "steer" }));
+		noMismatches(
+			await check(
+				{
+					operation: "replace",
+					id: row.id,
+					expectedRevision: row.revision,
+					purpose: row.purpose,
+					authority: row.authority,
+					reason: "Keep command preferences as guidance.",
+					note: row.note,
+					predicate: row.matcher.key,
+				},
+				[],
+				f,
+				{ effect: "steer" },
+			),
+		);
 	}
 	const fd = rows.find((row) => row.id === "bounds.fd-uncapped");
 	assert.ok(fd);
-	const result = await check({ operation: "replace", id: fd.id, expectedRevision: fd.revision,
-		purpose: fd.purpose, authority: fd.authority, reason: "Preserve result semantics.", note: fd.note,
-		predicate: "bounds.fd-uncapped", scope: { cwdPrefixes: ["/selected"] },
-	}, [
-		{ name: "details", scope: { cwd: "/selected" }, steps: [{ ...call("fd -l . design"), expect: { denied: false, guidance: true } }] },
-		{ name: "producer cap", scope: { cwd: "/selected" }, steps: [{ ...call("fd --max-results 2 . design"), expect: { denied: false, guidance: false } }] },
-		{ name: "outside scope", scope: { cwd: "/elsewhere" }, steps: [{ ...call("fd -l . design"), expect: { denied: false, guidance: false } }] },
-	], f, { effect: "steer" });
+	const result = await check(
+		{
+			operation: "replace",
+			id: fd.id,
+			expectedRevision: fd.revision,
+			purpose: fd.purpose,
+			authority: fd.authority,
+			reason: "Preserve result semantics.",
+			note: fd.note,
+			predicate: "bounds.fd-uncapped",
+			scope: { cwdPrefixes: ["/selected"] },
+		},
+		[
+			{
+				name: "details",
+				scope: { cwd: "/selected" },
+				steps: [{ ...call("fd -l . design"), expect: { denied: false, guidance: true } }],
+			},
+			{
+				name: "producer cap",
+				scope: { cwd: "/selected" },
+				steps: [{ ...call("fd --max-results 2 . design"), expect: { denied: false, guidance: false } }],
+			},
+			{
+				name: "outside scope",
+				scope: { cwd: "/elsewhere" },
+				steps: [{ ...call("fd -l . design"), expect: { denied: false, guidance: false } }],
+			},
+		],
+		f,
+		{ effect: "steer" },
+	);
 	noMismatches(result);
 	assert.equal(JSON.stringify([...f.snapshot.records]), before);
 	assert.equal(f.snapshot.pending.length, 0);
@@ -160,14 +214,28 @@ test("guided command replacements admit without changing their synthetic registr
 
 test("substitute does not insert an absent timeout from a null mapping", async () => {
 	const f = fixture();
-	const table = { name: "timeout-defaults", kind: "table" as const, rows: [{ key: null, value: 30 }],
-		source: "synthetic", capturedAt: 0, revision: "000000000000" };
+	const table = {
+		name: "timeout-defaults",
+		kind: "table" as const,
+		rows: [{ key: null, value: 30 }],
+		source: "synthetic",
+		capturedAt: 0,
+		revision: "000000000000",
+	};
 	table.revision = namedDataRevision(table);
 	f.snapshot.data.set(table.name, table);
-	const result = await check(draft({ phase: "input", selector: { tools: ["bash"] },
-		when: { not: { op: "exists", path: ["input", "timeout"] } }, data: [table.name],
-		action: { kind: "substitute", path: ["timeout"], table: table.name }, onUnavailable: "skip",
-	}), [{ name: "missing timeout", steps: [{ ...call("echo safe"), expect: { correctedInput: false, denied: false } }] }], f);
+	const result = await check(
+		draft({
+			phase: "input",
+			selector: { tools: ["bash"] },
+			when: { not: { op: "exists", path: ["input", "timeout"] } },
+			data: [table.name],
+			action: { kind: "substitute", path: ["timeout"], table: table.name },
+			onUnavailable: "skip",
+		}),
+		[{ name: "missing timeout", steps: [{ ...call("echo safe"), expect: { correctedInput: false, denied: false } }] }],
+		f,
+	);
 	noMismatches(result);
 	assert.deepEqual(result.cases[0].rows[0].input, { command: "echo safe" });
 	assert.equal(f.executions(), 0);
@@ -214,7 +282,12 @@ test("a command draft returns step outcomes with the complete starter catalog", 
 	const { program: _program, language: _language, ...common } = draft();
 	const result = await check(
 		{ ...common, authority: "steer-or-block", match: { command: "sleep" }, onUnavailable: "skip" },
-		[{ name: "sleep blocked", steps: [{ ...call("sleep 5"), expect: { denied: true, correctedInput: false, guidance: false } }] }],
+		[
+			{
+				name: "sleep blocked",
+				steps: [{ ...call("sleep 5"), expect: { denied: true, correctedInput: false, guidance: false } }],
+			},
+		],
 		f,
 		{ effect: "block" },
 	);
@@ -373,39 +446,62 @@ test("completion guidance survives a later success and cases isolate clock, rese
 });
 
 test("synthetic observation time controls window, cooldown, once and expiry boundaries", async () => {
-	const program: FactsProgram = { phase: "context",
+	const program: FactsProgram = {
+		phase: "context",
 		when: { op: "gte", path: ["state", "windowCount"], value: 2 },
-		action: { kind: "guide", text: "Inspect the repeated errors." }, onUnavailable: "skip",
-		state: { observe: { op: "eq", path: ["outcome", "kind"], value: "execution-error" },
-			window: { maxEvents: 4, maxAgeMs: 10 }, cooldownMs: 5, once: "turn", expiresAfterMs: 30 },
+		action: { kind: "guide", text: "Inspect the repeated errors." },
+		onUnavailable: "skip",
+		state: {
+			observe: { op: "eq", path: ["outcome", "kind"], value: "execution-error" },
+			window: { maxEvents: 4, maxAgeMs: 10 },
+			cooldownMs: 5,
+			once: "turn",
+			expiresAfterMs: 30,
+		},
 	};
 	const result = await check(draft(program), [
-		{ name: "window and cooldown", steps: [
-			call("allowed", true, 0), call("allowed", true, 9),
-			{ ...context(9), expect: { guidance: true } },
-			{ ...call("allowed", true, 10), turn: 2 },
-			{ ...context(10), turn: 2, expect: { guidance: false } },
-			{ ...context(14), turn: 2, expect: { guidance: false } },
-		] },
-		{ name: "cooldown waits", steps: [
-			call("allowed", true, 0), call("allowed", true, 9),
-			{ ...context(9), expect: { guidance: true } },
-			{ ...call("allowed", true, 10), turn: 2 },
-			{ ...context(10), turn: 2, expect: { guidance: false } },
-		] },
-		{ name: "once and strict age", steps: [
-			call("allowed", true, 0), call("allowed", true, 9),
-			{ ...context(9), expect: { guidance: true } },
-			{ ...context(10), expect: { guidance: false } },
-		] },
-		{ name: "natural expiry", steps: [
-			call("allowed", true, 0), call("allowed", true, 1),
-			{ ...context(1), expect: { guidance: true } },
-			{ ...call("allowed", true, 30), turn: 2 },
-			{ ...context(31), turn: 2, expect: { guidance: false } },
-			{ ...call("allowed", true, 32), turn: 2 },
-			{ ...context(32), turn: 2, expect: { guidance: false } },
-		] },
+		{
+			name: "window and cooldown",
+			steps: [
+				call("allowed", true, 0),
+				call("allowed", true, 9),
+				{ ...context(9), expect: { guidance: true } },
+				{ ...call("allowed", true, 10), turn: 2 },
+				{ ...context(10), turn: 2, expect: { guidance: false } },
+				{ ...context(14), turn: 2, expect: { guidance: false } },
+			],
+		},
+		{
+			name: "cooldown waits",
+			steps: [
+				call("allowed", true, 0),
+				call("allowed", true, 9),
+				{ ...context(9), expect: { guidance: true } },
+				{ ...call("allowed", true, 10), turn: 2 },
+				{ ...context(10), turn: 2, expect: { guidance: false } },
+			],
+		},
+		{
+			name: "once and strict age",
+			steps: [
+				call("allowed", true, 0),
+				call("allowed", true, 9),
+				{ ...context(9), expect: { guidance: true } },
+				{ ...context(10), expect: { guidance: false } },
+			],
+		},
+		{
+			name: "natural expiry",
+			steps: [
+				call("allowed", true, 0),
+				call("allowed", true, 1),
+				{ ...context(1), expect: { guidance: true } },
+				{ ...call("allowed", true, 30), turn: 2 },
+				{ ...context(31), turn: 2, expect: { guidance: false } },
+				{ ...call("allowed", true, 32), turn: 2 },
+				{ ...context(32), turn: 2, expect: { guidance: false } },
+			],
+		},
 	]);
 	noMismatches(result);
 	const periods = result.cases.map((entry) => {
@@ -522,7 +618,10 @@ test("check requests enforce aggregate, event, time, turn, and output bounds", a
 test("authoring guidance permits verified recovery candidates but requires activation approval", async () => {
 	const guide = (await authoringGuide()).replace(/\s+/g, " ");
 	assert.match(guide, /when automatic policy diagnostics identify a verified repeatable recovery/);
-	assert.match(guide, /Present the complete pending proposal for operator review\. After clear contextual approval, call `policy_approve`/);
+	assert.match(
+		guide,
+		/Present the complete pending proposal for operator review\. After clear contextual approval, call `policy_approve`/,
+	);
 	assert.match(guide, /Checks and proposal submission grant no activation authority/);
 	assert.match(guide, /Agent inference or recommendation is not operator approval/);
 	assert.doesNotMatch(guide, /policy_propose` only under operator instruction/);

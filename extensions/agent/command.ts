@@ -58,15 +58,40 @@ export interface AgentActionOutcome {
 /** Ordinary routes the work view uses beyond the text actions. */
 export interface AgentViewWiring {
 	timers(id: string, ctx: ExtensionContext): Promise<readonly TimerListRow[]>;
-	schedule(input: { sessionId: string; message: string; deliverAt: string; mode: TimerMode }, ctx: ExtensionContext): Promise<AgentActionOutcome>;
+	schedule(
+		input: { sessionId: string; message: string; deliverAt: string; mode: TimerMode },
+		ctx: ExtensionContext,
+	): Promise<AgentActionOutcome>;
 	/** One native control with this session as the caller. `signal` withdraws the wait for the answer. */
-	control(method: string, input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal): Promise<unknown>;
-	newAgent(input: { prompt?: string; preset?: string; cwd?: string }, ctx: ExtensionContext, onCreated: (row: AgentConversationSummary) => void): Promise<AgentActionOutcome>;
+	control(
+		method: string,
+		input: Record<string, unknown>,
+		ctx: ExtensionContext,
+		signal?: AbortSignal,
+	): Promise<unknown>;
+	newAgent(
+		input: { prompt?: string; preset?: string; cwd?: string },
+		ctx: ExtensionContext,
+		onCreated: (row: AgentConversationSummary) => void,
+	): Promise<AgentActionOutcome>;
 	newDefaults(ctx: ExtensionContext): NewAgentDefaults;
 }
 
 /** Actions whose form opens in the work view when a TUI command names a target without its other arguments. */
-const VIEW_ACTIONS = new Set(["configure", "fork", "rewind", "compact", "reset", "command", "schedule", "timers", "profile", "abort", "attach", "timer-cancel"]);
+const VIEW_ACTIONS = new Set([
+	"configure",
+	"fork",
+	"rewind",
+	"compact",
+	"reset",
+	"command",
+	"schedule",
+	"timers",
+	"profile",
+	"abort",
+	"attach",
+	"timer-cancel",
+]);
 
 /** The form a command opens: cancelling one scheduled message starts from the list of them. */
 const formName = (name: string) => (name === "timer-cancel" ? "timers" : name);
@@ -79,7 +104,8 @@ function opensForm(action: AgentCommandAction, args: string[]): boolean {
 
 /** The owner's stated reason for a refused request, bounded for one line. */
 function failureReason(result: { reason?: unknown; error?: unknown }): string {
-	const reason = typeof result.reason === "string" ? result.reason : typeof result.error === "string" ? result.error : "";
+	const reason =
+		typeof result.reason === "string" ? result.reason : typeof result.error === "string" ? result.error : "";
 	return reason ? `: ${reason.slice(0, 200)}` : "";
 }
 
@@ -227,7 +253,9 @@ export function createAgentCommand(
 	toolDisplay?: ToolDisplayLookup,
 	taskTargets?: (ctx: ExtensionContext) => readonly string[],
 	readLineage?: (id: string, ctx: ExtensionContext) => Promise<unknown>,
-): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext, open?: { select?: string; action?: string }): Promise<void> } {
+): Omit<RegisteredCommand, "name" | "sourceInfo"> & {
+	openDashboard(ctx: ExtensionContext, open?: { select?: string; action?: string }): Promise<void>;
+} {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) =>
 		`Unknown action "${plain(name).slice(0, 80)}". Use /agent help, or type /agent and a space to choose an action.`;
@@ -255,7 +283,11 @@ export function createAgentCommand(
 	/** A complete action that needs no argument opens no menu, so Enter runs it. */
 	const actionCompletions = (text: string): AutocompleteItem[] | null => {
 		const exact = find(text);
-		if (exact?.args.every((arg) => arg.optional) && !commands.some((action) => action !== exact && action.name.startsWith(text))) return null;
+		if (
+			exact?.args.every((arg) => arg.optional) &&
+			!commands.some((action) => action !== exact && action.name.startsWith(text))
+		)
+			return null;
 		return actionItems(text);
 	};
 	const actionItems = (query: string, before = ""): AutocompleteItem[] =>
@@ -281,38 +313,57 @@ export function createAgentCommand(
 	});
 	const profileDrafts = new Map<string, ProfileDraft>();
 	/** A listed identity or handle selects its row; anything else stays the exact typed target. */
-	const listedTarget = (target: string) => sources.list().then((page) => page.rows.find((row) => row.id === target || row.profile?.handle === target)?.id ?? target, () => target);
+	const listedTarget = (target: string) =>
+		sources.list().then(
+			(page) => page.rows.find((row) => row.id === target || row.profile?.handle === target)?.id ?? target,
+			() => target,
+		);
 	/** Native commands the target's live host lists; a host that is not live leaves the name typed. */
 	const nativeCommands = async (id: string, ctx: ExtensionContext) => {
-		const status = (await wiring.control("status", { sessionId: id }, ctx)) as { inventory?: { contributions?: Array<{ commands?: Array<{ name: string; description: string }> }> } };
+		const status = (await wiring.control("status", { sessionId: id }, ctx)) as {
+			inventory?: { contributions?: Array<{ commands?: Array<{ name: string; description: string }> }> };
+		};
 		if (!status?.inventory) return undefined;
 		const commands = status.inventory.contributions?.flatMap((contribution) => contribution.commands ?? []) ?? [];
-		return [...commands.map((command) => ({ value: command.name, label: command.name, description: command.description })), { value: "reload", label: "reload", description: "Reload host registrations (needs an idle storage)" }];
+		return [
+			...commands.map((command) => ({ value: command.name, label: command.name, description: command.description })),
+			{ value: "reload", label: "reload", description: "Reload host registrations (needs an idle storage)" },
+		];
 	};
-	const formsHost = (ctx: ExtensionContext, state: DashboardState) => (row: AgentConversationSummary): AgentFormHost => ({
-		row,
-		state,
-		source: sources,
-		run: async (name, args) => {
-			const [action, rest] = name === "release" ? ["abort", ["release"]] : [name, args];
-			return requireAction(action).run([row.id, ...rest], ctx);
-		},
-		timers: () => wiring.timers(row.id, ctx),
-		schedule: (input) => wiring.schedule({ sessionId: row.id, ...input }, ctx),
-		models: async () => ctx.modelRegistry.getAvailable().map((model) => ({ identity: `${model.provider}/${model.id}`, name: model.name })),
-		configure: async (patch): Promise<ActionResult> => {
-			const result = (await wiring.control("configure", { sessionId: row.id, ...patch }, ctx)) as { outcome?: string; reason?: unknown; error?: unknown };
-			const label = agentDisplayName(row);
-			if (result?.outcome === "failed") throw new Error(`Configuration failed for “${label}”${failureReason(result)}`);
-			return { text: `Updated configuration for “${label}”`, sessionId: row.id };
-		},
-		commands: () => nativeCommands(row.id, ctx),
-		profile: (method, input) => wiring.control(method, input, ctx),
-		profileDrafts,
-		status: (signal) => wiring.control("status", { sessionId: row.id }, ctx, signal),
-		inspect: (params, signal) => wiring.control("inspect", params, ctx, signal),
-		outcome: () => {},
-	});
+	const formsHost =
+		(ctx: ExtensionContext, state: DashboardState) =>
+		(row: AgentConversationSummary): AgentFormHost => ({
+			row,
+			state,
+			source: sources,
+			run: async (name, args) => {
+				const [action, rest] = name === "release" ? ["abort", ["release"]] : [name, args];
+				return requireAction(action).run([row.id, ...rest], ctx);
+			},
+			timers: () => wiring.timers(row.id, ctx),
+			schedule: (input) => wiring.schedule({ sessionId: row.id, ...input }, ctx),
+			models: async () =>
+				ctx.modelRegistry
+					.getAvailable()
+					.map((model) => ({ identity: `${model.provider}/${model.id}`, name: model.name })),
+			configure: async (patch): Promise<ActionResult> => {
+				const result = (await wiring.control("configure", { sessionId: row.id, ...patch }, ctx)) as {
+					outcome?: string;
+					reason?: unknown;
+					error?: unknown;
+				};
+				const label = agentDisplayName(row);
+				if (result?.outcome === "failed")
+					throw new Error(`Configuration failed for “${label}”${failureReason(result)}`);
+				return { text: `Updated configuration for “${label}”`, sessionId: row.id };
+			},
+			commands: () => nativeCommands(row.id, ctx),
+			profile: (method, input) => wiring.control(method, input, ctx),
+			profileDrafts,
+			status: (signal) => wiring.control("status", { sessionId: row.id }, ctx, signal),
+			inspect: (params, signal) => wiring.control("inspect", params, ctx, signal),
+			outcome: () => {},
+		});
 	const panels = (ctx: ExtensionContext) => async (row: AgentConversationSummary) => {
 		const status = (await wiring.control("status", { sessionId: row.id }, ctx)) as { inventory?: unknown };
 		if (status?.inventory === undefined) return [];
@@ -320,12 +371,20 @@ export function createAgentCommand(
 		const { loadPanelModules, ownerViews } = await loadPanelModulesRuntime();
 		const loaded = await loadPanelModules(status.inventory);
 		return ownerViews(loaded, row.id, async (command, data: JsonValue, signal) => {
-			const answer = (await wiring.control("command", { sessionId: row.id, name: command, data, origin: "operator", invocationId: randomUUID() }, ctx, signal)) as { text?: unknown; data?: JsonValue };
+			const answer = (await wiring.control(
+				"command",
+				{ sessionId: row.id, name: command, data, origin: "operator", invocationId: randomUUID() },
+				ctx,
+				signal,
+			)) as { text?: unknown; data?: JsonValue };
 			if (typeof answer?.text !== "string") throw new Error("The host answered without command text");
 			return { text: answer.text, ...(answer.data === undefined ? {} : { data: answer.data }) };
 		});
 	};
-	const openDashboard = async (ctx: ExtensionContext, open: { select?: string; action?: string } = {}): Promise<void> => {
+	const openDashboard = async (
+		ctx: ExtensionContext,
+		open: { select?: string; action?: string } = {},
+	): Promise<void> => {
 		if (!ctx.hasUI || dashboardOpen) return;
 		dashboardOpen = true;
 		try {

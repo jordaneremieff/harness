@@ -60,8 +60,18 @@ const PROMPT_SOURCE: SourceInfo = {
 	scope: "temporary",
 	origin: "top-level",
 };
-const REGISTRY_SOURCE_INFO: SourceInfo = { path: "<inline:registry-fixture>", source: "local", scope: "temporary", origin: "top-level" };
-const OTHER_SOURCE_INFO: SourceInfo = { path: "<inline:other-fixture>", source: "local", scope: "temporary", origin: "top-level" };
+const REGISTRY_SOURCE_INFO: SourceInfo = {
+	path: "<inline:registry-fixture>",
+	source: "local",
+	scope: "temporary",
+	origin: "top-level",
+};
+const OTHER_SOURCE_INFO: SourceInfo = {
+	path: "<inline:other-fixture>",
+	source: "local",
+	scope: "temporary",
+	origin: "top-level",
+};
 
 function resourceLoader(probes: string[] = []) {
 	return {
@@ -137,7 +147,10 @@ function modelReader(models: ReturnType<typeof createModels>, probes: string[] =
 	};
 }
 
-function host(services: RegistryDurableServices, signal: AbortSignal = new AbortController().signal): RegistryDurableHost {
+function host(
+	services: RegistryDurableServices,
+	signal: AbortSignal = new AbortController().signal,
+): RegistryDurableHost {
 	return {
 		durable: Durable,
 		services,
@@ -187,8 +200,11 @@ function fixture() {
 	const faux = fauxProvider({ models: [{ id: "faux-1", name: "Faux One", contextWindow: 200000, maxTokens: 8192 }] });
 	const models = createModels();
 	models.setProvider(faux.provider);
-	const services: RegistryDurableServices = { resourceLoader: resourceLoader(probes), modelRuntime: modelReader(models, probes),
-		settingsManager: { isProjectTrusted: () => true } };
+	const services: RegistryDurableServices = {
+		resourceLoader: resourceLoader(probes),
+		modelRuntime: modelReader(models, probes),
+		settingsManager: { isProjectTrusted: () => true },
+	};
 	return { probes, faux, models, services };
 }
 
@@ -196,7 +212,9 @@ async function open(models: Fixture["models"], extension: Durable.Extension) {
 	const registry = Durable.createRegistry();
 	registry.install(extension);
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
-	const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: extension.tools ?? [] } } });
+	const root = await harness.root(BACKGROUND_CONTEXT, {
+		agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: extension.tools ?? [] } },
+	});
 	return { harness, root };
 }
 
@@ -222,7 +240,10 @@ test("durable registry answers model-issued queries from native Durable facts", 
 		(await guidance.render({ agent: { tools: [{ name: "registry" }] } } as never, BACKGROUND_CONTEXT)) as string,
 		/Discover session resources, chat models/,
 	);
-	assert.equal(await guidance.render({ agent: { tools: [{ name: "other" }] } } as never, BACKGROUND_CONTEXT), undefined);
+	assert.equal(
+		await guidance.render({ agent: { tools: [{ name: "other" }] } } as never, BACKGROUND_CONTEXT),
+		undefined,
+	);
 
 	const { harness, root } = await open(models, extension);
 	try {
@@ -235,7 +256,11 @@ test("durable registry answers model-issued queries from native Durable facts", 
 					fauxToolCall("registry", { kind: "prompt" }, { id: "prompt" }),
 					fauxToolCall("registry", { kind: "skill", name: "example-skill", contains: PHRASE }, { id: "contains" }),
 					fauxToolCall("registry", { kind: "model", name: "faux/faux-1" }, { id: "model" }),
-					fauxToolCall("registry", { kind: "model", name: `unconfigured-${models.getModels().length}/missing-${models.getModels().length}` }, { id: "non-chat" }),
+					fauxToolCall(
+						"registry",
+						{ kind: "model", name: `unconfigured-${models.getModels().length}/missing-${models.getModels().length}` },
+						{ id: "non-chat" },
+					),
 					fauxToolCall("registry", { kind: "context_file" }, { id: "context" }),
 					fauxToolCall("registry", {}, { id: "summary" }),
 				],
@@ -243,7 +268,9 @@ test("durable registry answers model-issued queries from native Durable facts", 
 			),
 			fauxAssistantMessage("Inspected."),
 		]);
-		const settled = await (await root.submit({ type: "input", content: "Inspect the registry." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const settled = await (
+			await root.submit({ type: "input", content: "Inspect the registry." }, BACKGROUND_CONTEXT)
+		).wait(BACKGROUND_CONTEXT);
 		assert.equal(settled.status, "done", settled.status === "unanswered" ? settled.reason : undefined);
 		const { messages } = await root.context(BACKGROUND_CONTEXT);
 
@@ -268,7 +295,10 @@ test("durable registry answers model-issued queries from native Durable facts", 
 		const command = toolResult(messages, "command");
 		assert.equal(command.isError, false, textOf(command));
 		const commandRecords = recordsOf(command);
-		assert.deepEqual(commandRecords.map((record) => record.name), ["other-status"]);
+		assert.deepEqual(
+			commandRecords.map((record) => record.name),
+			["other-status"],
+		);
 		assert.equal(commandRecords[0]?.kind, "command");
 		assert.equal(objectOf(commandRecords[0]?.sourceInfo).path, "<inline:other-fixture>");
 		assert.equal(Object.hasOwn(commandRecords[0] ?? {}, "invocation"), false);
@@ -329,7 +359,10 @@ test("durable registry answers model-issued queries from native Durable facts", 
 		const context = toolResult(messages, "context");
 		assert.equal(context.isError, false, textOf(context));
 		const contextRecords = recordsOf(context);
-		assert.deepEqual(contextRecords.map((record) => record.path), [join(CWD, "AGENTS.md")]);
+		assert.deepEqual(
+			contextRecords.map((record) => record.path),
+			[join(CWD, "AGENTS.md")],
+		);
 		assert.equal(objectOf(context.details).outcome, "ok");
 
 		const summary = toolResult(messages, "summary");
@@ -338,7 +371,12 @@ test("durable registry answers model-issued queries from native Durable facts", 
 		assert.equal(summaryDetails.outcome, "host_summary");
 		assert.equal(summaryDetails.host, true);
 		assert.deepEqual(summaryDetails.counts, { tool: 1, command: 1, skill: 1, prompt: 1 });
-		assert.deepEqual(summaryDetails.availability, { tools: true, activeTools: true, callableTools: true, commands: true });
+		assert.deepEqual(summaryDetails.availability, {
+			tools: true,
+			activeTools: true,
+			callableTools: true,
+			commands: true,
+		});
 		const summaryContext = objectOf(summaryDetails.context);
 		assert.equal(summaryContext.state, "available");
 		assert.equal(summaryContext.model, "faux/faux-1");
@@ -370,16 +408,41 @@ test("native resource pages resume after clock changes and reject substantive so
 	const skills = loader.getSkills().skills.map((skill) => ({ ...skill }));
 	const prompts = loader.getPrompts().prompts.map((prompt) => ({ ...prompt }));
 	const files = loader.getAgentsFiles().agentsFiles.map((file) => ({ ...file }));
-	skills.push({ ...skills[0], name: "second-skill", sourceInfo: { ...SKILL_SOURCE, path: join(ROOT, "second", "SKILL.md") } });
-	prompts.push({ ...prompts[0], name: "second-prompt", sourceInfo: { ...PROMPT_SOURCE, path: join(ROOT, "prompts", "second.md") } });
+	skills.push({
+		...skills[0],
+		name: "second-skill",
+		sourceInfo: { ...SKILL_SOURCE, path: join(ROOT, "second", "SKILL.md") },
+	});
+	prompts.push({
+		...prompts[0],
+		name: "second-prompt",
+		sourceInfo: { ...PROMPT_SOURCE, path: join(ROOT, "prompts", "second.md") },
+	});
 	files.push({ path: join(CWD, "SECOND.md"), content: "private context" });
-	const nativeServices = { ...services, resourceLoader: { ...loader, getSkills: () => ({ skills }), getPrompts: () => ({ prompts }),
-		getAgentsFiles: () => ({ agentsFiles: files }) } };
-	const contribution = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(nativeServices));
-	const extension = { ...contribution, tools: [...(contribution.tools ?? []), Durable.defineTool({
-		name: "second_tool", description: "A second registered tool", parameters: obj({}, { open: true }),
-		execute: async () => ({ output: [] }),
-	})] };
+	const nativeServices = {
+		...services,
+		resourceLoader: {
+			...loader,
+			getSkills: () => ({ skills }),
+			getPrompts: () => ({ prompts }),
+			getAgentsFiles: () => ({ agentsFiles: files }),
+		},
+	};
+	const contribution = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(
+		host(nativeServices),
+	);
+	const extension = {
+		...contribution,
+		tools: [
+			...(contribution.tools ?? []),
+			Durable.defineTool({
+				name: "second_tool",
+				description: "A second registered tool",
+				parameters: obj({}, { open: true }),
+				execute: async () => ({ output: [] }),
+			}),
+		],
+	};
 	const { harness, root } = await open(models, extension);
 	let sequence = 0;
 	const query = async (params: { kind?: string; limit?: number; cursor?: string }, expectedError = false) => {
@@ -388,7 +451,9 @@ test("native resource pages resume after clock changes and reject substantive so
 			fauxAssistantMessage([fauxToolCall("registry", params, { id })], { stopReason: "toolUse" }),
 			fauxAssistantMessage("Inspected."),
 		]);
-		const settled = await (await root.submit({ type: "input", content: "Inspect the next page." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const settled = await (
+			await root.submit({ type: "input", content: "Inspect the next page." }, BACKGROUND_CONTEXT)
+		).wait(BACKGROUND_CONTEXT);
 		assert.equal(settled.status, "done");
 		const result = toolResult((await root.context(BACKGROUND_CONTEXT)).messages, id);
 		assert.equal(result.isError, expectedError, textOf(result));
@@ -430,16 +495,24 @@ test("Durable model pages carry present, absent, and unreadable settings evidenc
 		const selected = models.getModels()[0];
 		const patterns = [`${selected.provider}/${selected.id}:high`];
 		const scopeFile = join(agentDir, "settings.json");
-		if (state !== "absent") await writeFile(scopeFile, state === "available" ? JSON.stringify({ enabledModels: patterns }) : "private-invalid-settings");
+		if (state !== "absent")
+			await writeFile(
+				scopeFile,
+				state === "available" ? JSON.stringify({ enabledModels: patterns }) : "private-invalid-settings",
+			);
 		const nativeHost = { ...host(services), cwd, agentDir };
 		const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(nativeHost);
 		const { harness, root } = await open(models, extension);
 		try {
 			faux.setResponses([
-				fauxAssistantMessage([fauxToolCall("registry", { kind: "model" }, { id: "settings" })], { stopReason: "toolUse" }),
+				fauxAssistantMessage([fauxToolCall("registry", { kind: "model" }, { id: "settings" })], {
+					stopReason: "toolUse",
+				}),
 				fauxAssistantMessage("Inspected."),
 			]);
-			await (await root.submit({ type: "input", content: "Inspect models." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+			await (await root.submit({ type: "input", content: "Inspect models." }, BACKGROUND_CONTEXT)).wait(
+				BACKGROUND_CONTEXT,
+			);
 			const result = toolResult((await root.context(BACKGROUND_CONTEXT)).messages, "settings");
 			assert.equal(result.isError, false, textOf(result));
 			const details = objectOf(result.details);
@@ -448,9 +521,15 @@ test("Durable model pages carry present, absent, and unreadable settings evidenc
 			assert.deepEqual(scope.patterns, state === "available" ? patterns : null);
 			assert.equal(typeof scope.observedAt, "number");
 			assert.ok(compile(RegistryOutputSchema).check(details));
-			assert.ok(recordsOf(result).every((record) => record.inScope === null && record.providerHasScopedModels === null));
-			assert.ok(recordsOf(result).every((record) => record.providerNamedInSettings ===
-				(state === "available" ? record.provider === selected.provider : null)));
+			assert.ok(
+				recordsOf(result).every((record) => record.inScope === null && record.providerHasScopedModels === null),
+			);
+			assert.ok(
+				recordsOf(result).every(
+					(record) =>
+						record.providerNamedInSettings === (state === "available" ? record.provider === selected.provider : null),
+				),
+			);
 			assert.doesNotMatch(JSON.stringify(result), /private-invalid-settings/);
 		} finally {
 			await harness.close(BACKGROUND_CONTEXT);
@@ -463,11 +542,16 @@ test("an aborted host signal cancels the query without probing host facts", asyn
 	const faux = fauxProvider({ models: [{ id: "faux-1", name: "Faux One", contextWindow: 200000, maxTokens: 8192 }] });
 	const models = createModels();
 	models.setProvider(faux.provider);
-	const services: RegistryDurableServices = { resourceLoader: resourceLoader(probes), modelRuntime: modelReader(models, probes),
-		settingsManager: { isProjectTrusted: () => true } };
+	const services: RegistryDurableServices = {
+		resourceLoader: resourceLoader(probes),
+		modelRuntime: modelReader(models, probes),
+		settingsManager: { isProjectTrusted: () => true },
+	};
 	const aborted = new AbortController();
 	aborted.abort();
-	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services, aborted.signal));
+	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(
+		host(services, aborted.signal),
+	);
 	const { harness, root } = await open(models, extension);
 	try {
 		faux.setResponses([
@@ -491,7 +575,10 @@ test("reports the Durable agent identity for the root and a non-root conversatio
 	const { harness, root } = await open(models, extension);
 	try {
 		const other = await harness.createConversation(
-			{ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: extension.tools ?? [] } } },
+			{
+				ownership: { kind: "ownerless" },
+				agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: extension.tools ?? [] } },
+			},
 			BACKGROUND_CONTEXT,
 		);
 		faux.setResponses([
@@ -503,7 +590,9 @@ test("reports the Durable agent identity for the root and a non-root conversatio
 			fauxAssistantMessage([fauxToolCall("registry", {}, { id: "other-summary" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage("Other done."),
 		]);
-		await (await other.submit({ type: "input", content: "Other summary." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		await (await other.submit({ type: "input", content: "Other summary." }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
 		const rootText = textOf(toolResult((await root.context(BACKGROUND_CONTEXT)).messages, "root-summary"));
 		const otherText = textOf(toolResult((await other.context(BACKGROUND_CONTEXT)).messages, "other-summary"));
 		assert.match(rootText, /- storageId: registry-durable-test/);
@@ -521,7 +610,11 @@ test("unresolved native agent leaves callable evidence unavailable", async () =>
 	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services));
 	const tool = extension.tools?.[0];
 	assert.ok(tool);
-	const api = { conversationId: 1, agent: async () => { throw new Error("Unavailable agent"); },
+	const api = {
+		conversationId: 1,
+		agent: async () => {
+			throw new Error("Unavailable agent");
+		},
 		registry: { tools: () => [{ extension, tool }] },
 	} as unknown as Durable.ToolExecutionApi;
 	const result = await tool.execute({ kind: "tool" }, api, BACKGROUND_CONTEXT);
@@ -538,13 +631,29 @@ test("unresolved native agent leaves callable evidence unavailable", async () =>
 
 test("native structured output retains an unresolved selected identity and page evidence", async () => {
 	const setup = fixture();
-	const services: RegistryDurableServices = { ...setup.services, modelRuntime: { ...setup.services.modelRuntime,
-		getModels: () => [], getModel: () => undefined, getAvailableSnapshot: () => [], hasConfiguredAuth: () => false } };
+	const services: RegistryDurableServices = {
+		...setup.services,
+		modelRuntime: {
+			...setup.services.modelRuntime,
+			getModels: () => [],
+			getModel: () => undefined,
+			getAvailableSnapshot: () => [],
+			hasConfiguredAuth: () => false,
+		},
+	};
 	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services));
 	const tool = extension.tools?.[0];
 	assert.ok(tool);
-	const api = { conversationId: 1, agent: async () => ({ model: { provider: "fixture", modelId: "unknown" }, thinkingLevel: "high", tools: [], callable: [] }),
-		registry: { tools: () => [{ extension, tool }] } } as unknown as Durable.ToolExecutionApi;
+	const api = {
+		conversationId: 1,
+		agent: async () => ({
+			model: { provider: "fixture", modelId: "unknown" },
+			thinkingLevel: "high",
+			tools: [],
+			callable: [],
+		}),
+		registry: { tools: () => [{ extension, tool }] },
+	} as unknown as Durable.ToolExecutionApi;
 	const result = await tool.execute({ kind: "model", name: "fixture/unknown" }, api, BACKGROUND_CONTEXT);
 	assert.ok(compile(RegistryOutputSchema).check(result.structuredOutput));
 	const page = objectOf(result.structuredOutput);
@@ -558,7 +667,8 @@ test("native structured output retains an unresolved selected identity and page 
 	assert.equal(selected.selected, true);
 	assert.equal(selected.metadataAvailable, false);
 	assert.equal(selected.evidence, "selection");
-	for (const key of ["displayName", "reasoning", "input", "contextWindow", "maxTokens", "supportedThinkingLevels"]) assert.equal(selected[key], null);
+	for (const key of ["displayName", "reasoning", "input", "contextWindow", "maxTokens", "supportedThinkingLevels"])
+		assert.equal(selected[key], null);
 	assert.equal(JSON.stringify(result.structuredOutput), JSON.stringify(result.details));
 	assert.equal(result.isError, false);
 	const invalid = await tool.execute({ cursor: "malformed" }, api, BACKGROUND_CONTEXT);
@@ -567,38 +677,97 @@ test("native structured output retains an unresolved selected identity and page 
 	assert.deepEqual(invalid.structuredOutput, invalid.details);
 });
 
-test("native codemode receives structured registry pages and distinguishes callable from offered tools", { timeout: 30000 }, async () => {
+test("native codemode receives structured registry pages and distinguishes callable from offered tools", {
+	timeout: 30000,
+}, async () => {
 	const setup = fixture();
 	const { faux, models } = setup;
-	const services: RegistryDurableServices = { ...setup.services, modelRuntime: { ...setup.services.modelRuntime,
-		getModels: () => [], getModel: () => undefined, getAvailableSnapshot: () => [], hasConfiguredAuth: () => false } };
+	const services: RegistryDurableServices = {
+		...setup.services,
+		modelRuntime: {
+			...setup.services.modelRuntime,
+			getModels: () => [],
+			getModel: () => undefined,
+			getAvailableSnapshot: () => [],
+			hasConfiguredAuth: () => false,
+		},
+	};
 	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services));
 	const sandbox = new CodemodeSandbox();
 	const registry = Durable.createRegistry();
 	registry.install(extension);
 	registry.install(createCodemodeExtension({ sandbox, models: false }));
-	registry.install(Durable.defineExtension({ name: "fixture", tools: [
-		Durable.defineTool({ name: "nested_only", description: "Nested fixture", parameters: obj({}, { open: true }), callers: ["tools"],
-			execute: async () => { throw new Error("Discovery must not execute the fixture"); } }),
-		Durable.defineTool({ name: "deferred_fixture", description: "Deferred fixture", parameters: obj({}, { open: true }), deferred: true,
-			execute: async () => { throw new Error("Discovery must not execute the fixture"); } }),
-		Durable.defineTool({ name: "model_only", description: "Model fixture", parameters: obj({}, { open: true }), callers: ["model"],
-			execute: async () => { throw new Error("Discovery must not execute the fixture"); } }),
-		Durable.defineTool({ name: "nested_query", description: "Inspect a direct nested query result.", parameters: obj({}, { open: true }), callers: ["model"],
-			execute: async (_args, api, context) => {
-				const nested = await api.executeTool("registry", { cursor: "malformed" }, context);
-				assert.equal(nested.isError, true);
-				assert.equal(objectOf(nested.structuredOutput).outcome, "invalid_arguments");
-				return { output: [{ type: "text", text: JSON.stringify({ isError: nested.isError, outcome: objectOf(nested.structuredOutput).outcome }) }] };
-			} }),
-		Durable.defineTool({ name: "fixture_failure", description: "Return an error without a declared value.", parameters: obj({}, { open: true }), callers: ["tools"],
-			execute: async () => ({ output: [{ type: "text", text: "Fixture failure" }], isError: true }) }),
-	] }));
+	registry.install(
+		Durable.defineExtension({
+			name: "fixture",
+			tools: [
+				Durable.defineTool({
+					name: "nested_only",
+					description: "Nested fixture",
+					parameters: obj({}, { open: true }),
+					callers: ["tools"],
+					execute: async () => {
+						throw new Error("Discovery must not execute the fixture");
+					},
+				}),
+				Durable.defineTool({
+					name: "deferred_fixture",
+					description: "Deferred fixture",
+					parameters: obj({}, { open: true }),
+					deferred: true,
+					execute: async () => {
+						throw new Error("Discovery must not execute the fixture");
+					},
+				}),
+				Durable.defineTool({
+					name: "model_only",
+					description: "Model fixture",
+					parameters: obj({}, { open: true }),
+					callers: ["model"],
+					execute: async () => {
+						throw new Error("Discovery must not execute the fixture");
+					},
+				}),
+				Durable.defineTool({
+					name: "nested_query",
+					description: "Inspect a direct nested query result.",
+					parameters: obj({}, { open: true }),
+					callers: ["model"],
+					execute: async (_args, api, context) => {
+						const nested = await api.executeTool("registry", { cursor: "malformed" }, context);
+						assert.equal(nested.isError, true);
+						assert.equal(objectOf(nested.structuredOutput).outcome, "invalid_arguments");
+						return {
+							output: [
+								{
+									type: "text",
+									text: JSON.stringify({ isError: nested.isError, outcome: objectOf(nested.structuredOutput).outcome }),
+								},
+							],
+						};
+					},
+				}),
+				Durable.defineTool({
+					name: "fixture_failure",
+					description: "Return an error without a declared value.",
+					parameters: obj({}, { open: true }),
+					callers: ["tools"],
+					execute: async () => ({ output: [{ type: "text", text: "Fixture failure" }], isError: true }),
+				}),
+			],
+		}),
+	);
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
 	try {
 		const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 		faux.setResponses([
-			fauxAssistantMessage([fauxToolCall("nested_query", {}, { id: "direct-query" }), fauxToolCall("codemode", { code: `
+			fauxAssistantMessage(
+				[
+					fauxToolCall("nested_query", {}, { id: "direct-query" }),
+					fauxToolCall(
+						"codemode",
+						{
+							code: `
 const pages = await Promise.all([
   tools.registry({kind: "tool"}),
   tools.registry({kind: "tool", name: "absent"}),
@@ -619,10 +788,18 @@ return {facts, missing:pages[1].outcome, nonChat:pages[2].catalogBoundary, setti
     reasoning:pages[4].records[0].reasoning, input:pages[4].records[0].input,
     contextWindow:pages[4].records[0].contextWindow, maxTokens:pages[4].records[0].maxTokens,
     supportedThinkingLevels:pages[4].records[0].supportedThinkingLevels}};
-` }, { id: "script" })], { stopReason: "toolUse" }),
+`,
+						},
+						{ id: "script" },
+					),
+				],
+				{ stopReason: "toolUse" },
+			),
 			fauxAssistantMessage("Inspected."),
 		]);
-		const result = await (await root.submit({ type: "input", content: "Inspect through native codemode." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const result = await (
+			await root.submit({ type: "input", content: "Inspect through native codemode." }, BACKGROUND_CONTEXT)
+		).wait(BACKGROUND_CONTEXT);
 		assert.equal(result.status, "done");
 		const script = toolResult((await root.context(BACKGROUND_CONTEXT)).messages, "script");
 		assert.equal(script.isError, false, textOf(script));
@@ -636,13 +813,19 @@ return {facts, missing:pages[1].outcome, nonChat:pages[2].catalogBoundary, setti
 		assert.match(output, /"carrier":false/);
 		assert.match(output, /"pageStatus":"complete"/);
 		assert.match(output, /"pageTruncated":false/);
-		assert.match(output, /"unknown":\{"name":"faux\/faux-1","metadataAvailable":false,"evidence":"selection","displayName":null,"reasoning":null,"input":null,"contextWindow":null,"maxTokens":null,"supportedThinkingLevels":null\}/);
+		assert.match(
+			output,
+			/"unknown":\{"name":"faux\/faux-1","metadataAvailable":false,"evidence":"selection","displayName":null,"reasoning":null,"input":null,"contextWindow":null,"maxTokens":null,"supportedThinkingLevels":null\}/,
+		);
 		const calls = objectOf(script.details).calls;
 		assert.ok(Array.isArray(calls));
 		assert.equal(calls.length, 7);
 		const registryCalls = calls.filter((call) => objectOf(call).name === "registry");
 		assert.equal(registryCalls.length, 6);
-		assert.deepEqual(registryCalls.map((call) => objectOf(call).status), ["ok", "ok", "ok", "ok", "ok", "error"]);
+		assert.deepEqual(
+			registryCalls.map((call) => objectOf(call).status),
+			["ok", "ok", "ok", "ok", "ok", "error"],
+		);
 		assert.equal(objectOf(calls.find((call) => objectOf(call).name === "fixture_failure")).status, "error");
 		assert.match(output, /"invalid":"invalid_arguments"/);
 		assert.match(output, /"failureRejected":true/);
@@ -650,10 +833,15 @@ return {facts, missing:pages[1].outcome, nonChat:pages[2].catalogBoundary, setti
 		assert.equal(direct.isError, false, textOf(direct));
 		assert.match(textOf(direct), /"isError":true,"outcome":"invalid_arguments"/);
 		faux.setResponses([
-			fauxAssistantMessage([fauxToolCall("codemode", { code: "await tools.fixture_failure({})" }, { id: "uncaught" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage(
+				[fauxToolCall("codemode", { code: "await tools.fixture_failure({})" }, { id: "uncaught" })],
+				{ stopReason: "toolUse" },
+			),
 			fauxAssistantMessage("Inspected."),
 		]);
-		await (await root.submit({ type: "input", content: "Inspect an uncaught failure." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		await (await root.submit({ type: "input", content: "Inspect an uncaught failure." }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
 		assert.equal(toolResult((await root.context(BACKGROUND_CONTEXT)).messages, "uncaught").isError, true);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
@@ -674,7 +862,11 @@ function testUsage(input: number, output: number): Usage {
 	};
 }
 
-function assistantEntry(id: number, usage: Usage, stopReason: AssistantMessage["stopReason"] = "stop"): Durable.EntryRecord {
+function assistantEntry(
+	id: number,
+	usage: Usage,
+	stopReason: AssistantMessage["stopReason"] = "stop",
+): Durable.EntryRecord {
 	return {
 		id: id as unknown as Durable.EntryId,
 		conversationId: TEST_CONVERSATION,
@@ -739,7 +931,10 @@ test("the Durable context estimate reads committed usage and honors context boun
 	assert.equal(afterReset.percent, null);
 	assert.equal(afterReset.contextWindow, 200000);
 
-	const afterCompaction = await estimate([headEntry(9, Durable.CompactionEntry.kind), assistantEntry(8, testUsage(100, 25))]);
+	const afterCompaction = await estimate([
+		headEntry(9, Durable.CompactionEntry.kind),
+		assistantEntry(8, testUsage(100, 25)),
+	]);
 	assert.equal(afterCompaction.state, "unknown");
 	assert.equal(afterCompaction.tokens, null);
 
@@ -757,7 +952,9 @@ test("the Durable context estimate reads committed usage and honors context boun
 
 	const failing = {
 		conversationId: TEST_CONVERSATION,
-		commit: async () => { throw new Error("transaction unavailable"); },
+		commit: async () => {
+			throw new Error("transaction unavailable");
+		},
 	} as unknown as Durable.ToolExecutionApi;
 	const unavailable = await readContextEstimate(durableHost, failing, agent, 7, BACKGROUND_CONTEXT);
 	assert.equal(unavailable.state, "unavailable");
@@ -789,21 +986,42 @@ test("native setting queries use the captured host bus and release collection on
 	const dispose = fakePublisher(bus, () => current);
 	const close: (() => void | Promise<void>)[] = [];
 	let requests = 0;
-	bus.on("harness:settings:request", () => { requests++; });
+	bus.on("harness:settings:request", () => {
+		requests++;
+	});
 	let subscriptions = 0;
 	let releases = 0;
-	const observedBus = { ...bus, on(channel: string, handler: (data: unknown) => void) {
-		const unsubscribe = bus.on(channel, handler);
-		if (channel === "harness:settings:publish") subscriptions++;
-		return () => { if (channel === "harness:settings:publish") releases++; unsubscribe(); };
-	} };
-	const nativeHost = { ...host(services), agentDir: directory, onClose: (callback: () => void | Promise<void>) => { close.push(callback); } };
+	const observedBus = {
+		...bus,
+		on(channel: string, handler: (data: unknown) => void) {
+			const unsubscribe = bus.on(channel, handler);
+			if (channel === "harness:settings:publish") subscriptions++;
+			return () => {
+				if (channel === "harness:settings:publish") releases++;
+				unsubscribe();
+			};
+		},
+	};
+	const nativeHost = {
+		...host(services),
+		agentDir: directory,
+		onClose: (callback: () => void | Promise<void>) => {
+			close.push(callback);
+		},
+	};
 	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, observedBus).create(nativeHost);
 	assert.equal(requests, 1);
 	const { harness, root } = await open(models, extension);
 	try {
-		faux.setResponses([fauxAssistantMessage([fauxToolCall("registry", { kind: "setting" }, { id: "setting" })], { stopReason: "toolUse" }), fauxAssistantMessage("Inspected.")]);
-		const result = await (await root.submit({ type: "input", content: "Inspect configuration." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("registry", { kind: "setting" }, { id: "setting" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("Inspected."),
+		]);
+		const result = await (
+			await root.submit({ type: "input", content: "Inspect configuration." }, BACKGROUND_CONTEXT)
+		).wait(BACKGROUND_CONTEXT);
 		assert.equal(result.status, "done");
 		const { messages } = await root.context(BACKGROUND_CONTEXT);
 		const settings = toolResult(messages, "setting");
@@ -815,9 +1033,16 @@ test("native setting queries use the captured host bus and release collection on
 		assert.equal(requests, 2);
 		assert.equal(subscriptions, 1);
 		assert.equal(releases, 0);
-		faux.setResponses([fauxAssistantMessage([fauxToolCall("registry", { kind: "setting" }, { id: "refresh" })], { stopReason: "toolUse" }), fauxAssistantMessage("Refreshed.")]);
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("registry", { kind: "setting" }, { id: "refresh" })], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("Refreshed."),
+		]);
 		current.records[0].value = 9;
-		await (await root.submit({ type: "input", content: "Inspect configuration again." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		await (await root.submit({ type: "input", content: "Inspect configuration again." }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
 		const refreshed = await root.context(BACKGROUND_CONTEXT);
 		assert.equal(recordsOf(toolResult(refreshed.messages, "refresh"))[0].value, 9);
 		assert.equal(requests, 3);
@@ -831,6 +1056,8 @@ test("native setting queries use the captured host bus and release collection on
 		assert.equal(releases, 1);
 		for (const callback of close) await callback();
 		assert.equal(releases, 1);
-		dispose(); bus.clear(); await rm(directory, { recursive: true, force: true });
+		dispose();
+		bus.clear();
+		await rm(directory, { recursive: true, force: true });
 	}
 });

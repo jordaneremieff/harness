@@ -9,7 +9,7 @@ import { DEFAULT_LIMITS } from "./catalog.ts";
 import registerPolicy from "./index.ts";
 
 const stringEnum = <const T extends readonly string[]>(values: T) =>
-	({ type: "string", enum: [...values] } as Schema<T[number]>);
+	({ type: "string", enum: [...values] }) as Schema<T[number]>;
 
 export const PRODUCT_TOOLS = [
 	"policy_product_request",

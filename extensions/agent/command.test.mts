@@ -36,7 +36,11 @@ const extras: AgentViewWiring = {
 	schedule: async () => ({ text: "scheduled" }),
 	control: async () => ({}),
 	newAgent: async () => ({ text: "created" }),
-	newDefaults: () => ({ cwd: "/work", presets: [], ownership: "The answer to the purpose comes back to this session." }),
+	newDefaults: () => ({
+		cwd: "/work",
+		presets: [],
+		ownership: "The answer to the purpose comes back to this session.",
+	}),
 };
 async function registration() {
 	let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
@@ -44,7 +48,8 @@ async function registration() {
 		events: { emit() {}, on: () => () => {} },
 		registerShortcut() {},
 		registerTool() {},
-		registerMessageRenderer() {}, registerToolRenderer() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
 		on() {},
 		getThinkingLevel: () => "off",
 		registerCommand(name: string, options: typeof command) {
@@ -77,8 +82,40 @@ it("the dashboard gets its context window and session figures from the current p
 	const published = rosterPage([row("one", { storageId: "one", creatingOwnerId: "current-primary" })]);
 	const observed = source(published.rows);
 	let reads = 0;
-	observed.list = async (input) => { reads++; assert.equal(input?.ownerId, "current-primary"); return published; };
-	observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage: { input: 160000, output: 3300, cacheRead: 0, cacheWrite: 0, totalTokens: 163300, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] }], partial: false, revision: "1" });
+	observed.list = async (input) => {
+		reads++;
+		assert.equal(input?.ownerId, "current-primary");
+		return published;
+	};
+	observed.snapshot = async () => ({
+		entries: [
+			{
+				id: "1",
+				kind: "pi.assistant",
+				model: [
+					{
+						role: "assistant",
+						api: "openai-responses",
+						provider: "test",
+						model: "model",
+						content: [],
+						timestamp: 0,
+						stopReason: "stop",
+						usage: {
+							input: 160000,
+							output: 3300,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 163300,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+					},
+				],
+			},
+		],
+		partial: false,
+		revision: "1",
+	});
 	const lookups: Array<[string, string]> = [];
 	let dashboard: AgentDashboard | undefined;
 	let finish = () => {};
@@ -86,11 +123,27 @@ it("the dashboard gets its context window and session figures from the current p
 		mode: "tui",
 		hasUI: true,
 		sessionManager: { getSessionId: () => "current-primary" },
-		modelRegistry: { find: (provider: string, id: string) => { lookups.push([provider, id]); return { name: "Example model", reasoning: true, contextWindow: 1000000 }; } },
-		ui: { custom: async (factory: (tui: TUI, currentTheme: typeof theme, currentKeys: typeof keys, done: () => void) => AgentDashboard) => new Promise<void>((resolve) => {
-			finish = resolve;
-			dashboard = factory({ terminal: { rows: 45, columns: 160 }, requestRender() {} } as unknown as TUI, theme, keys, resolve);
-		}), notify() {} },
+		modelRegistry: {
+			find: (provider: string, id: string) => {
+				lookups.push([provider, id]);
+				return { name: "Example model", reasoning: true, contextWindow: 1000000 };
+			},
+		},
+		ui: {
+			custom: async (
+				factory: (tui: TUI, currentTheme: typeof theme, currentKeys: typeof keys, done: () => void) => AgentDashboard,
+			) =>
+				new Promise<void>((resolve) => {
+					finish = resolve;
+					dashboard = factory(
+						{ terminal: { rows: 45, columns: 160 }, requestRender() {} } as unknown as TUI,
+						theme,
+						keys,
+						resolve,
+					);
+				}),
+			notify() {},
+		},
 	} as unknown as ExtensionCommandContext;
 	const command = createAgentCommand([], observed, extras, undefined, async (primary, roster) => {
 		assert.equal(primary, ctx);
@@ -115,7 +168,11 @@ it("the dashboard gets its context window and session figures from the current p
 		assert.match(text, /x more/u, "secondary actions stay in More");
 		dashboard.handleInput("x");
 		assert.match(stripVTControlCharacters(dashboard.render(160).join("\n")), /n\s+New conversation/u);
-	} finally { dashboard?.dispose(); finish(); await opened; }
+	} finally {
+		dashboard?.dispose();
+		finish();
+		await opened;
+	}
 });
 it("the dashboard collaboration adapter carries its primary context and structured read", async () => {
 	const calls: Array<{ input: Record<string, unknown>; ctx: unknown }> = [];
@@ -151,7 +208,10 @@ it("the dashboard collaboration adapter carries its primary context and structur
 		assert.ok(dashboard);
 		dashboard.openNamedAction("threads");
 		await turn();
-		assert.deepEqual(calls, [{ input: { action: "list", limit: 20 }, ctx }, { input: { action: "list" }, ctx }]);
+		assert.deepEqual(calls, [
+			{ input: { action: "list", limit: 20 }, ctx },
+			{ input: { action: "list" }, ctx },
+		]);
 		assert.match(stripVTControlCharacters(dashboard.render(80).join("\n")), /No threads yet\./);
 	} finally {
 		dashboard?.dispose();
@@ -199,20 +259,16 @@ it("the New conversation purpose is literal text even when it is a help flag", a
 	for (const text of ["--help", "-h"]) {
 		const admitted: Array<string | undefined> = [];
 		const rows = [row("one")];
-		const command = createAgentCommand(
-			[],
-			source(rows),
-			{
-				...extras,
-				newAgent: async ({ prompt }, _ctx, onCreated) => {
-					admitted.push(prompt);
-					const created = row("created", { firstMessage: prompt, state: "starting" });
-					rows.push(created);
-					onCreated(created);
-					return { text: "Started", sessionId: "created" };
-				},
+		const command = createAgentCommand([], source(rows), {
+			...extras,
+			newAgent: async ({ prompt }, _ctx, onCreated) => {
+				admitted.push(prompt);
+				const created = row("created", { firstMessage: prompt, state: "starting" });
+				rows.push(created);
+				onCreated(created);
+				return { text: "Started", sessionId: "created" };
 			},
-		);
+		});
 		let ui: AgentDashboard | undefined;
 		let finish = () => {};
 		const ctx = {
@@ -333,7 +389,8 @@ describe("agent command discovery and help", () => {
 			events: { emit() {}, on: () => () => {} },
 			registerShortcut() {},
 			registerTool() {},
-			registerMessageRenderer() {}, registerToolRenderer() {},
+			registerMessageRenderer() {},
+			registerToolRenderer() {},
 			on: () => () => {},
 			registerCommand(name: string, command: unknown) {
 				assert.equal(commands.has(name), false);
@@ -564,12 +621,25 @@ describe("agent metadata completion", () => {
 	});
 
 	it("completes handles and canonical identities and searches retained roles", async () => {
-		const expert = { ...rows[0], name: "History", profile: { identity: rows[0].id, handle: "@history", role: "Review operator decisions", revision: "one", hasExpertise: true, updatedAt: 1 } };
+		const expert = {
+			...rows[0],
+			name: "History",
+			profile: {
+				identity: rows[0].id,
+				handle: "@history",
+				role: "Review operator decisions",
+				revision: "one",
+				hasExpertise: true,
+				updatedAt: 1,
+			},
+		};
 		const command = completionFixture(async () => [expert]);
 		const complete = defined(command.getArgumentCompletions);
 		const choices = defined(await complete("status operator decisions"));
 		assert.deepEqual(choices.map((item) => item.value).sort(), [`status ${expert.id}`, "status @history"].sort());
-		assert.ok(choices.every((item) => item.label.includes("@history") && item.description?.includes(expert.profile.role)));
+		assert.ok(
+			choices.every((item) => item.label.includes("@history") && item.description?.includes(expert.profile.role)),
+		);
 		assert.equal(await complete("send @history new question"), null);
 	});
 

@@ -10,7 +10,16 @@ import { randomUUID } from "node:crypto";
  * the production `durable-runner.ts` through `acquireHost`. Process-loss cases also
  * use fixed test runners. No real provider is used.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, opendirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	opendirSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -38,7 +47,19 @@ export interface RuntimeFixture {
 	readonly notifyPath: string;
 	readonly offline?: OfflineFixture;
 	/** Child environment for one fixture mode. */
-	env(mode: "request" | "effect" | "answer" | "spawn" | "tool-round" | "await-local" | "await-reference" | "retry" | "intent" | "storage-pages"): Record<string, string>;
+	env(
+		mode:
+			| "request"
+			| "effect"
+			| "answer"
+			| "spawn"
+			| "tool-round"
+			| "await-local"
+			| "await-reference"
+			| "retry"
+			| "intent"
+			| "storage-pages",
+	): Record<string, string>;
 	/** Resolve when the host publishes this marker name. The file is not the signal. */
 	marker(name: string): Promise<void>;
 }
@@ -49,10 +70,24 @@ export interface FixtureContext {
 	diagnostic?(message: string): void;
 }
 
-interface RuntimeFixtureOptions { withAgentExtension?: boolean; withCodemode?: boolean; transport?: "sse" | "auto"; retry?: boolean; /** A model request cut off by a host crash counts as a failed attempt; one quick retry resends it after reopen. */ crashRetry?: boolean; packageDir?: string; httpEndpoint?: string; retryDelayMs?: number; offlineRecovery?: boolean }
-function allocateRuntimeRoot(t: FixtureContext, options: RuntimeFixtureOptions): { offline: OfflineFixture | undefined; root: string } {
+interface RuntimeFixtureOptions {
+	withAgentExtension?: boolean;
+	withCodemode?: boolean;
+	transport?: "sse" | "auto";
+	retry?: boolean /** A model request cut off by a host crash counts as a failed attempt; one quick retry resends it after reopen. */;
+	crashRetry?: boolean;
+	packageDir?: string;
+	httpEndpoint?: string;
+	retryDelayMs?: number;
+	offlineRecovery?: boolean;
+}
+function allocateRuntimeRoot(
+	t: FixtureContext,
+	options: RuntimeFixtureOptions,
+): { offline: OfflineFixture | undefined; root: string } {
 	if (offlineContexts.has(t)) throw new Error("Offline fixture context already owns its cleanup boundary");
-	if (options.offlineRecovery && (options.withAgentExtension || options.retry || options.httpEndpoint)) throw new Error("Offline recovery requires fixed non-launching fixture contributions");
+	if (options.offlineRecovery && (options.withAgentExtension || options.retry || options.httpEndpoint))
+		throw new Error("Offline recovery requires fixed non-launching fixture contributions");
 	const offline = options.offlineRecovery ? allocateOfflineFixture("durable-runtime-") : undefined;
 	if (offline) bindOfflineContext(t, offline);
 	let root: string;
@@ -65,7 +100,10 @@ function allocateRuntimeRoot(t: FixtureContext, options: RuntimeFixtureOptions):
 	return { offline, root };
 }
 /** Build an isolated agent home for one durable runtime test. */
-export function runtimeFixture(t: FixtureContext, options: RuntimeFixtureOptions & { offlineRecovery: true }): RuntimeFixture & { offline: OfflineFixture };
+export function runtimeFixture(
+	t: FixtureContext,
+	options: RuntimeFixtureOptions & { offlineRecovery: true },
+): RuntimeFixture & { offline: OfflineFixture };
 export function runtimeFixture(t: FixtureContext, options?: RuntimeFixtureOptions): RuntimeFixture;
 export function runtimeFixture(t: FixtureContext, options: RuntimeFixtureOptions = {}): RuntimeFixture {
 	const { offline, root } = allocateRuntimeRoot(t, options);
@@ -84,32 +122,89 @@ export function runtimeFixture(t: FixtureContext, options: RuntimeFixtureOptions
 	const extensionPath = fileURLToPath(new URL("./testdata/durable-runtime/index.ts", import.meta.url));
 	const extensions = [extensionPath];
 	if (options.withAgentExtension === true) extensions.push(fileURLToPath(new URL("./index.ts", import.meta.url)));
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions, ...(options.withCodemode ? { defaultTools: ["codemode"] } : {}), transport: options.transport ?? "auto", cacheWarming: "off", retry: options.crashRetry === true ? { enabled: true, maxRetries: 1, baseDelayMs: 10, maxAgentDelayMs: 1000 } : { enabled: options.retry === true, maxRetries: 20, baseDelayMs: options.retryDelayMs ?? 300000, maxAgentDelayMs: 300000 } }));
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		JSON.stringify({
+			extensions,
+			...(options.withCodemode ? { defaultTools: ["codemode"] } : {}),
+			transport: options.transport ?? "auto",
+			cacheWarming: "off",
+			retry:
+				options.crashRetry === true
+					? { enabled: true, maxRetries: 1, baseDelayMs: 10, maxAgentDelayMs: 1000 }
+					: {
+							enabled: options.retry === true,
+							maxRetries: 20,
+							baseDelayMs: options.retryDelayMs ?? 300000,
+							maxAgentDelayMs: 300000,
+						},
+		}),
+	);
 	if (options.httpEndpoint !== undefined) {
 		const endpoint = new URL(options.httpEndpoint);
-		if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1") throw new Error("provider fixture requires an isolated loopback HTTP endpoint");
-		writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: {
-			"durable-runtime-http": {
-				api: "openai-completions", baseUrl: endpoint.href, apiKey: "synthetic-runtime-fixture",
-				models: [{ id: "fixture-http-model", name: "HTTP fixture model", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
-			},
-		} }));
+		if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1")
+			throw new Error("provider fixture requires an isolated loopback HTTP endpoint");
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					"durable-runtime-http": {
+						api: "openai-completions",
+						baseUrl: endpoint.href,
+						apiKey: "synthetic-runtime-fixture",
+						models: [
+							{
+								id: "fixture-http-model",
+								name: "HTTP fixture model",
+								reasoning: false,
+								input: ["text"],
+								contextWindow: 128000,
+								maxTokens: 4096,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							},
+						],
+					},
+				},
+			}),
+		);
 	}
 	const ownerId = randomUUID();
-	const record = new AgentCatalog(root).create({
-		cwd,
-		agentDir,
-		packageDir: options.packageDir ?? getPackageDir(),
-		model: options.httpEndpoint === undefined ? { provider: "durable-runtime-fixture", modelId: "fixture-model" } : { provider: "durable-runtime-http", modelId: "fixture-http-model" },
-		thinkingLevel: "off",
-		name: "Durable runtime kill fixture",
-		trust: true,
-		ownerId,
-	}, "primary");
+	const record = new AgentCatalog(root).create(
+		{
+			cwd,
+			agentDir,
+			packageDir: options.packageDir ?? getPackageDir(),
+			model:
+				options.httpEndpoint === undefined
+					? { provider: "durable-runtime-fixture", modelId: "fixture-model" }
+					: { provider: "durable-runtime-http", modelId: "fixture-http-model" },
+			thinkingLevel: "off",
+			name: "Durable runtime kill fixture",
+			trust: true,
+			ownerId,
+		},
+		"primary",
+	);
 	const metadata = hostMetadata(record);
-	writeFileSync(join(agentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: `${metadata.model.provider}/${metadata.model.modelId}` } }, preferences: { defaultPreset: "standard" } })));
+	writeFileSync(
+		join(agentDir, "harness.json"),
+		JSON.stringify(
+			machineConfig({
+				presets: { standard: { model: `${metadata.model.provider}/${metadata.model.modelId}` } },
+				preferences: { defaultPreset: "standard" },
+			}),
+		),
+	);
 	offline?.allow(metadata);
-	const markerContext = offline ? { after(fn: () => void) { t.after(() => { if (offline.cleanupAllowed) fn(); }); } } : t;
+	const markerContext = offline
+		? {
+				after(fn: () => void) {
+					t.after(() => {
+						if (offline.cleanupAllowed) fn();
+					});
+				},
+			}
+		: t;
 	const markers = markerFixture(markerContext, testDir);
 	return {
 		...(offline ? { offline } : {}),
@@ -137,7 +232,10 @@ export function runtimeFixture(t: FixtureContext, options: RuntimeFixtureOptions
 }
 
 /** Accept explicit marker frames before the caller starts a child process. */
-export function markerFixture(t: { after(fn: () => void): void }, testDir: string): {
+export function markerFixture(
+	t: { after(fn: () => void): void },
+	testDir: string,
+): {
 	readonly notifyPath: string;
 	marker(name: string): Promise<void>;
 	/** Hold the publisher's acknowledgment until the returned release function runs. */
@@ -212,9 +310,13 @@ export function markerFixture(t: { after(fn: () => void): void }, testDir: strin
 					else resolve();
 				};
 				// This deadline only bounds a missing publisher. Files never resolve the wait.
-				const timer = setTimeout(() => settle(new Error(
-					`timed out waiting for fixture marker ${name}; file exists=${existsSync(join(testDir, name))}`,
-				)), 30000);
+				const timer = setTimeout(
+					() =>
+						settle(
+							new Error(`timed out waiting for fixture marker ${name}; file exists=${existsSync(join(testDir, name))}`),
+						),
+					30000,
+				);
 				pending.add(settle);
 				waiters.set(name, pending);
 			});
@@ -270,7 +372,8 @@ const offlineContexts = new WeakMap<FixtureContext, OfflineFixture>();
 
 /** An offline context retains its allocation binding after proof failure or directory removal. */
 export function bindOfflineContext(t: FixtureContext, fixture: OfflineFixture): void {
-	if (offlineFixtureFor(fixture.root) !== fixture) throw new Error("Offline cleanup requires a fresh allocation capability");
+	if (offlineFixtureFor(fixture.root) !== fixture)
+		throw new Error("Offline cleanup requires a fresh allocation capability");
 	const previous = offlineContexts.get(t);
 	if (previous && previous !== fixture) throw new Error("Offline fixture context cannot change its allocation");
 	offlineContexts.set(t, fixture);
@@ -289,7 +392,10 @@ export function trackedHosts(t: FixtureContext): number[] {
  */
 export function trackHost(t: FixtureContext, pid: number): void {
 	const offline = offlineContexts.get(t);
-	if (offline) { offline.track(pid); return; }
+	if (offline) {
+		offline.track(pid);
+		return;
+	}
 	const set = trackedPids.get(t) ?? new Set<number>();
 	set.add(pid);
 	trackedPids.set(t, set);
@@ -352,12 +458,25 @@ type ClaimVerdict = { kind: "owned"; pid: number } | { kind: "excluded" } | { ki
  */
 function classifyOwnedClaim(path: string, rootPrefix: string, createdAt: number): ClaimVerdict {
 	let claim: Record<string, unknown>;
-	try { claim = readClaimFile(path).claim as Record<string, unknown>; } catch (error) { return { kind: "unresolved", reason: error instanceof Error ? error.message : String(error) }; }
-	if (claim === null || typeof claim !== "object" || typeof claim.host !== "string" || typeof claim.cwd !== "string" || typeof claim.createdAt !== "string" || !Number.isSafeInteger(claim.pid)) return { kind: "unresolved", reason: "not a claim record" };
+	try {
+		claim = readClaimFile(path).claim as Record<string, unknown>;
+	} catch (error) {
+		return { kind: "unresolved", reason: error instanceof Error ? error.message : String(error) };
+	}
+	if (
+		claim === null ||
+		typeof claim !== "object" ||
+		typeof claim.host !== "string" ||
+		typeof claim.cwd !== "string" ||
+		typeof claim.createdAt !== "string" ||
+		!Number.isSafeInteger(claim.pid)
+	)
+		return { kind: "unresolved", reason: "not a claim record" };
 	const pid = Number(claim.pid);
 	const created = Date.parse(claim.createdAt);
 	if (!Number.isFinite(created)) return { kind: "unresolved", reason: "claim createdAt is not a timestamp" };
-	if (claim.host !== hostname() || !resolve(claim.cwd).startsWith(rootPrefix) || created < createdAt - 1000) return { kind: "excluded" };
+	if (claim.host !== hostname() || !resolve(claim.cwd).startsWith(rootPrefix) || created < createdAt - 1000)
+		return { kind: "excluded" };
 	if (pid <= 1 || pid === process.pid) return { kind: "excluded" };
 	return processGone(pid) ? { kind: "excluded" } : { kind: "owned", pid };
 }
@@ -405,7 +524,12 @@ export interface StopOwnedHostsResult {
  * pass, a scan at its bound, or an unresolved claim leaves the result incomplete. The scan
  * covers claims and tracked pids only; a process that holds neither is outside it.
  */
-export async function stopOwnedHosts(root: string, agentDir: string, createdAt: number, options: { kill?: (pid: number) => void; signal?: NodeJS.Signals; deadlineMs?: number; tracked?: number[] } = {}): Promise<StopOwnedHostsResult> {
+export async function stopOwnedHosts(
+	root: string,
+	agentDir: string,
+	createdAt: number,
+	options: { kill?: (pid: number) => void; signal?: NodeJS.Signals; deadlineMs?: number; tracked?: number[] } = {},
+): Promise<StopOwnedHostsResult> {
 	const stop = options.kill ?? ((pid: number) => signalHost(pid, options.signal ?? "SIGTERM"));
 	const deadlineMs = options.deadlineMs ?? GRACEFUL_EXIT_MS;
 	const tracked = (options.tracked ?? []).filter((pid) => pid > 1 && pid !== process.pid && !processGone(pid));
@@ -419,22 +543,35 @@ export async function stopOwnedHosts(root: string, agentDir: string, createdAt: 
 		complete &&= scan.complete;
 		for (const entry of scan.unresolved) unresolved.add(entry);
 		// Tracked pids join the first pass: a test-owned runner is stopped even before it publishes a claim.
-		const known = pass === 0 ? [...new Set([...tracked, ...scan.claims.map(({ pid }) => pid)])] : scan.claims.map(({ pid }) => pid);
+		const known =
+			pass === 0 ? [...new Set([...tracked, ...scan.claims.map(({ pid }) => pid)])] : scan.claims.map(({ pid }) => pid);
 		const live = known.filter((pid) => !stopped.includes(pid) && !lingering.includes(pid));
 		if (!live.length) break;
-		if (pass === STOP_PASS_LIMIT) { complete = false; break; }
+		if (pass === STOP_PASS_LIMIT) {
+			complete = false;
+			break;
+		}
 		await stopAndWait(live, stop, deadlineMs, stopped, lingering);
 	}
 	return {
 		summary: `${stopped.length} owned host(s) stopped [${stopped.join(", ")}] (${tracked.length} tracked) in ${Date.now() - started} ms; lingering [${lingering.join(", ")}]; unresolved ${unresolved.size}; scan ${complete ? "complete" : "incomplete"}`,
-		stopped, lingering, unresolved: [...unresolved], complete,
+		stopped,
+		lingering,
+		unresolved: [...unresolved],
+		complete,
 	};
 }
 
 /** Signal every pid in one loop, then wait for each exit and sort it into stopped or lingering. */
-async function stopAndWait(pids: number[], stop: (pid: number) => void, deadlineMs: number, stopped: number[], lingering: number[]): Promise<void> {
+async function stopAndWait(
+	pids: number[],
+	stop: (pid: number) => void,
+	deadlineMs: number,
+	stopped: number[],
+	lingering: number[],
+): Promise<void> {
 	for (const pid of pids) stop(pid);
-	for (const pid of pids) (await waitForProcessGone(pid, deadlineMs) ? stopped : lingering).push(pid);
+	for (const pid of pids) ((await waitForProcessGone(pid, deadlineMs)) ? stopped : lingering).push(pid);
 }
 
 /**
@@ -443,7 +580,13 @@ async function stopAndWait(pids: number[], stop: (pid: number) => void, deadline
  * incomplete scan keeps the root in place and fails the test. A process with neither a tracked
  * pid nor a claim under this agent home is outside what the cleanup observes.
  */
-export async function fixtureTeardown(root: string, agentDir: string, createdAt: number, t: FixtureContext, stop: typeof stopOwnedHosts = stopOwnedHosts): Promise<void> {
+export async function fixtureTeardown(
+	root: string,
+	agentDir: string,
+	createdAt: number,
+	t: FixtureContext,
+	stop: typeof stopOwnedHosts = stopOwnedHosts,
+): Promise<void> {
 	const bound = offlineContexts.get(t);
 	if (bound && bound.root !== resolve(root)) throw new Error("Offline context refuses legacy cleanup of another root");
 	const offline = bound ?? offlineFixtureFor(root);
@@ -455,14 +598,26 @@ export async function fixtureTeardown(root: string, agentDir: string, createdAt:
 	}
 	const stopped = await stop(root, agentDir, createdAt, { tracked: trackedHosts(t) });
 	t.diagnostic?.(`fixture teardown ${root}: ${stopped.summary}`);
-	if (stopped.unresolved.length) throw new Error(`fixture claim ownership unresolved, root retained: ${root}; ${stopped.unresolved.join("; ")}`);
-	if (!stopped.complete) throw new Error(`fixture claim scan exceeded its bound or launches outran the stop passes under ${agentDir}; host ownership is unknown, root retained: ${root}`);
-	if (stopped.lingering.length) throw new Error(`fixture hosts did not exit before teardown: ${stopped.lingering.join(", ")}; root retained: ${root}`);
+	if (stopped.unresolved.length)
+		throw new Error(`fixture claim ownership unresolved, root retained: ${root}; ${stopped.unresolved.join("; ")}`);
+	if (!stopped.complete)
+		throw new Error(
+			`fixture claim scan exceeded its bound or launches outran the stop passes under ${agentDir}; host ownership is unknown, root retained: ${root}`,
+		);
+	if (stopped.lingering.length)
+		throw new Error(
+			`fixture hosts did not exit before teardown: ${stopped.lingering.join(", ")}; root retained: ${root}`,
+		);
 	rmSync(root, { recursive: true, force: true });
 }
 
 /** Read the selected receipt after each stored-commit notification until it exists. */
-export async function waitForReceipt(host: HostConnection, ownerId: string, submissionId: string | number, timeoutMs = 60000): Promise<DeliveryReceipt> {
+export async function waitForReceipt(
+	host: HostConnection,
+	ownerId: string,
+	submissionId: string | number,
+	timeoutMs = 60000,
+): Promise<DeliveryReceipt> {
 	if (!host.subscribeChanges) throw new Error("host connection does not publish commit notifications");
 	const deadline = performance.now() + timeoutMs;
 	const signal = AbortSignal.timeout(timeoutMs);
@@ -475,10 +630,13 @@ export async function waitForReceipt(host: HostConnection, ownerId: string, subm
 			signal.throwIfAborted();
 			if (host.closed) throw new Error(`host closed before receipt for submission ${submissionId}`);
 			const next = changes.length + 1;
-			const response = await host.request("receipts", { ownerId }, { signal }) as { receipts: DeliveryReceipt[] };
+			const response = (await host.request("receipts", { ownerId }, { signal })) as { receipts: DeliveryReceipt[] };
 			const receipt = response.receipts.find((item) => String(item.submissionId) === String(submissionId));
 			if (receipt) return receipt;
 			await changes.waitForCount(next, Math.max(1, deadline - performance.now()));
 		}
-	} finally { unsubscribe?.(); stopClose(); }
+	} finally {
+		unsubscribe?.();
+		stopClose();
+	}
 }

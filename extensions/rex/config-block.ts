@@ -218,7 +218,10 @@ end`;
 
 /** A path that a Lua string holds unchanged: no quote, backslash or control character. */
 function luaPath(path: string): string {
-	if (!path.startsWith("/") || /["\\\p{Cc}\p{Cf}]/u.test(path)) throw new Error(`Pi cannot name ${JSON.stringify(path)} in the Rex configuration. Use an agent directory whose path has no quotes, backslashes or control characters.`);
+	if (!path.startsWith("/") || /["\\\p{Cc}\p{Cf}]/u.test(path))
+		throw new Error(
+			`Pi cannot name ${JSON.stringify(path)} in the Rex configuration. Use an agent directory whose path has no quotes, backslashes or control characters.`,
+		);
 	return `"${path}"`;
 }
 
@@ -235,7 +238,10 @@ ${RUNTIME}
 -- pi-harness: pi actions end`;
 }
 
-interface Block { start: number; end: number }
+interface Block {
+	start: number;
+	end: number;
+}
 
 /**
  * The block that setup wrote, if the configuration holds one. Only the exact text of the current block counts, so
@@ -247,18 +253,24 @@ export function findConfigBlock(source: string, registryPath: string): Block | u
 	const ends = [...source.matchAll(END)];
 	// Any other marker line belongs to an earlier Pi block, whose actions the current block would define twice.
 	if ([...source.matchAll(MARKER)].length !== begins.length + ends.length)
-		throw new Error("The Rex configuration holds an earlier Pi block (lines that start with \"-- pi-harness:\"). Delete it by hand, then run /rex setup again.");
+		throw new Error(
+			'The Rex configuration holds an earlier Pi block (lines that start with "-- pi-harness:"). Delete it by hand, then run /rex setup again.',
+		);
 	if (begins.length === 0 && ends.length === 0) return undefined;
 	const begin = begins[0];
 	const end = ends[0];
 	if (begins.length !== 1 || ends.length !== 1 || !begin || !end || end.index < begin.index)
-		throw new Error("The Rex configuration has a partial or repeated Pi block. Correct it by hand, then run /rex setup again.");
+		throw new Error(
+			"The Rex configuration has a partial or repeated Pi block. Correct it by hand, then run /rex setup again.",
+		);
 	const stop = end.index + end[0].length;
 	const region = { start: begin.index, end: source[stop] === "\n" ? stop + 1 : stop };
 	const text = source.slice(region.start, region.end).replaceAll("\r\n", "\n");
 	const block = configBlock(registryPath);
 	if (text !== `${block}\n` && text !== block)
-		throw new Error(`The Pi block in the Rex configuration differs from the version ${BLOCK_VERSION} block that Pi writes. Remove the block by hand, then run /rex setup again.`);
+		throw new Error(
+			`The Pi block in the Rex configuration differs from the version ${BLOCK_VERSION} block that Pi writes. Remove the block by hand, then run /rex setup again.`,
+		);
 	return region;
 }
 

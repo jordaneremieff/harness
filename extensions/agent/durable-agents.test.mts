@@ -1,4 +1,11 @@
-import { deliveryState as readRetainedDelivery, storeDeliveryRow, retainedReceipt, receiptReferencePage, receiptDeliveryRequestId, receiptSourceIdentity } from "./delivery-store.ts";
+import {
+	deliveryState as readRetainedDelivery,
+	storeDeliveryRow,
+	retainedReceipt,
+	receiptReferencePage,
+	receiptDeliveryRequestId,
+	receiptSourceIdentity,
+} from "./delivery-store.ts";
 import { machineConfig } from "./settings-fixture.mts";
 /**
  * durable-agents tests: the native agent contribution in a real Harness.
@@ -16,9 +23,17 @@ import { after, beforeEach, it } from "node:test";
 
 const preferenceOverride = process.env.PI_HARNESS_FILE;
 delete process.env.PI_HARNESS_FILE;
-after(() => { if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride; });
+after(() => {
+	if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride;
+});
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { getCurrentSystemPrompt, type AssistantMessage, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import {
+	getCurrentSystemPrompt,
+	type AssistantMessage,
+	type Message,
+	type Models,
+	type ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import {
@@ -41,9 +56,23 @@ import registerAgentExtension from "./index.ts";
 import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { ProfileDoc, readProfile } from "./profile.ts";
-import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextHooks, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
+import {
+	readRequestContexts,
+	recordRequestContext,
+	REQUEST_CONTEXT_LIMIT,
+	requestContextHooks,
+	requestContextSection,
+	type ActiveRequestContext,
+} from "./request-context.ts";
 import { handleStorageId } from "./identity.ts";
-import { AgentMetaDoc, readOutcome, richSubmitConversation, submitConversation, settleDeliveries, type DeliveryReceipt } from "./durable-controls.ts";
+import {
+	AgentMetaDoc,
+	readOutcome,
+	richSubmitConversation,
+	submitConversation,
+	settleDeliveries,
+	type DeliveryReceipt,
+} from "./durable-controls.ts";
 import { AwaitDoc } from "./awaited-results.ts";
 
 import { DurableHost } from "./durable-host.ts";
@@ -60,8 +89,21 @@ const testCwd = realpathSync(testCwdAlias);
 const testAgentDir = mkdtempSync(join(tmpdir(), "durable-agents-config-"));
 const priorAgentDir = process.env.PI_AGENT_DIR;
 process.env.PI_AGENT_DIR = testAgentDir;
-after(() => { if (priorAgentDir === undefined) delete process.env.PI_AGENT_DIR; else process.env.PI_AGENT_DIR = priorAgentDir; });
-beforeEach(() => writeFileSync(join(testAgentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: `${model.provider}/${model.modelId}` } }, preferences: { defaultPreset: "standard" } }))));
+after(() => {
+	if (priorAgentDir === undefined) delete process.env.PI_AGENT_DIR;
+	else process.env.PI_AGENT_DIR = priorAgentDir;
+});
+beforeEach(() =>
+	writeFileSync(
+		join(testAgentDir, "harness.json"),
+		JSON.stringify(
+			machineConfig({
+				presets: { standard: { model: `${model.provider}/${model.modelId}` } },
+				preferences: { defaultPreset: "standard" },
+			}),
+		),
+	),
+);
 process.on("exit", () => {
 	rmSync(testCwd, { recursive: true, force: true });
 	rmSync(testAgentDir, { recursive: true, force: true });
@@ -277,7 +319,14 @@ const OBSERVED_AT = "2026-10-02T00:00:00.000Z";
 
 function statusObservation(params: Record<string, unknown>): Record<string, unknown> {
 	const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
-	if (sessionId === undefined) return { conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, inventory: { contributions: [], ordinaryOnly: [] }, pid: 123, storageId };
+	if (sessionId === undefined)
+		return {
+			conversations: [],
+			coverage: { complete: true, returned: 0, scanned: 0, next: null },
+			inventory: { contributions: [], ordinaryOnly: [] },
+			pid: 123,
+			storageId,
+		};
 	return {
 		conversation: conversationStatus(sessionConversation(sessionId)),
 		inventory: { contributions: [], ordinaryOnly: [] },
@@ -290,7 +339,15 @@ function listObservation(): Record<string, unknown> {
 	return {
 		rows: [],
 		nextCursor: null,
-		coverage: { complete: true, storagesVisited: 0, unavailable: [], catalog: { storages: 0, pass: "candidates", pending: 0, settled: 0 }, basis: "Every storage in scope was observed.", next: null, profileHints: { complete: true, unknownStorages: 0, omitted: 0 } },
+		coverage: {
+			complete: true,
+			storagesVisited: 0,
+			unavailable: [],
+			catalog: { storages: 0, pass: "candidates", pending: 0, settled: 0 },
+			basis: "Every storage in scope was observed.",
+			next: null,
+			profileHints: { complete: true, unknownStorages: 0, omitted: 0 },
+		},
 		observedAt: OBSERVED_AT,
 		authority: "native catalog scan",
 	};
@@ -313,10 +370,18 @@ function inspectObservation(holder: DispatchHolder): Record<string, unknown> {
 
 function dispatchedSpawn(holder: DispatchHolder, params: Readonly<Record<string, unknown>>): Record<string, unknown> {
 	const sessionId = holder.spawnSessionId ?? "other-storage:1";
-	return { sessionId, ...(holder.spawnThinking === undefined ? {} : { thinking: holder.spawnThinking }), ...(params.prompt === undefined ? {} : { result: { sessionId, submissionId: 23, requestId: params.requestId } }) };
+	return {
+		sessionId,
+		...(holder.spawnThinking === undefined ? {} : { thinking: holder.spawnThinking }),
+		...(params.prompt === undefined ? {} : { result: { sessionId, submissionId: 23, requestId: params.requestId } }),
+	};
 }
 
-async function nativeDispatchResult(holder: DispatchHolder, params: Readonly<Record<string, unknown>>, callContext: import("@earendil-works/chord/context").Context): Promise<unknown> {
+async function nativeDispatchResult(
+	holder: DispatchHolder,
+	params: Readonly<Record<string, unknown>>,
+	callContext: import("@earendil-works/chord/context").Context,
+): Promise<unknown> {
 	assert.ok(holder.harness);
 	const reference = params.result as { submissionId: number; requestId?: string; sessionId: string };
 	const input = await holder.harness.submission(reference.submissionId as Durable.SubmissionId, callContext);
@@ -330,14 +395,30 @@ async function nativeDispatchResult(holder: DispatchHolder, params: Readonly<Rec
 		if (receipt === undefined) return undefined;
 		assert.equal(receipt.ownerId, params.ownerId);
 		const group = await receiptReferencePage(tx, storageId, receipt);
-		return { requestId: receiptDeliveryRequestId(storageId, receipt), sourceId: receiptSourceIdentity(storageId, receipt), recipient: receipt.ownerId, ...(receipt.answerEntryId === null ? {} : { answerEntryId: receipt.answerEntryId }), results: group.results, complete: group.complete };
+		return {
+			requestId: receiptDeliveryRequestId(storageId, receipt),
+			sourceId: receiptSourceIdentity(storageId, receipt),
+			recipient: receipt.ownerId,
+			...(receipt.answerEntryId === null ? {} : { answerEntryId: receipt.answerEntryId }),
+			results: group.results,
+			complete: group.complete,
+		};
 	}, callContext);
 	return { outcome, ...(delivery === undefined ? {} : { delivery }) };
 }
 
 function dispatchedPlace(holder: DispatchHolder, params: Readonly<Record<string, unknown>>) {
 	const sessionId = holder.placeSessionId ?? "place-storage";
-	return { sessionId, ...(params.prompt === undefined ? {} : { submissionId: 1, requestId: params.requestId, result: { sessionId, submissionId: 1, requestId: params.requestId } }) };
+	return {
+		sessionId,
+		...(params.prompt === undefined
+			? {}
+			: {
+					submissionId: 1,
+					requestId: params.requestId,
+					result: { sessionId, submissionId: 1, requestId: params.requestId },
+				}),
+	};
 }
 
 function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentControlDispatch {
@@ -346,7 +427,8 @@ function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentCont
 		switch (method) {
 			case "status":
 				return statusObservation(params);
-			case "receipts": return nativeDispatchResult(holder, params, callContext);
+			case "receipts":
+				return nativeDispatchResult(holder, params, callContext);
 			case "profile-list":
 				return listObservation();
 			case "profile-read": {
@@ -354,17 +436,28 @@ function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentCont
 				assert.ok(holder.harness);
 				return readProfile(holder.harness, storageId, conversation.id, context, true);
 			}
-			case "collaboration-list": return { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } };
+			case "collaboration-list":
+				return { items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } };
 			case "inspect":
 				return inspectObservation(holder);
 			case "compact":
 				return { taskId: 7, status: "task" };
-			case "spawn": return dispatchedSpawn(holder, params);
-			case "place": return dispatchedPlace(holder, params);
+			case "spawn":
+				return dispatchedSpawn(holder, params);
+			case "place":
+				return dispatchedPlace(holder, params);
 			case "command":
 				return { name: params.name, text: `command:${String(params.name)}`, conversationId: params.sessionId ?? null };
 			case "reset":
-				return { conversationId: 5, requestId: params.requestId ?? "test-reset", submissionId: 11, status: "placed", entryId: 12, reason: null, deduped: false };
+				return {
+					conversationId: 5,
+					requestId: params.requestId ?? "test-reset",
+					submissionId: 11,
+					status: "placed",
+					entryId: 12,
+					reason: null,
+					deduped: false,
+				};
 			case "timer-list":
 				return { timers: [] };
 			case "timer-cancel":
@@ -391,7 +484,11 @@ function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentCont
 	};
 }
 
-const testServices: AgentContributionHost["services"] = { modelRuntime: { getModel: (provider, modelId) => provider === model.provider ? fauxProvider().getModel(modelId) : undefined } };
+const testServices: AgentContributionHost["services"] = {
+	modelRuntime: {
+		getModel: (provider, modelId) => (provider === model.provider ? fauxProvider().getModel(modelId) : undefined),
+	},
+};
 
 /** A test tool that shares the batch with agent_compact. */
 const siblingExtension = Durable.defineExtension({
@@ -407,14 +504,22 @@ const siblingExtension = Durable.defineExtension({
 	],
 });
 
-function buildRegistry(dispatch?: AgentControlDispatch, checkIns = true, sourceStorageId = storageId, catalogRoot?: string): { registry: Durable.Registry; extension: Durable.Extension } {
+function buildRegistry(
+	dispatch?: AgentControlDispatch,
+	checkIns = true,
+	sourceStorageId = storageId,
+	catalogRoot?: string,
+): { registry: Durable.Registry; extension: Durable.Extension } {
 	const registry = Durable.createRegistry();
-	if (checkIns) registry.install(Durable.defineExtension({ name: "test.host", tasks: [CheckInTask, CheckInDeadlineTask] }));
-	const contribution = createAgentContribution({ configureSettings: () => {},
+	if (checkIns)
+		registry.install(Durable.defineExtension({ name: "test.host", tasks: [CheckInTask, CheckInDeadlineTask] }));
+	const contribution = createAgentContribution({
+		configureSettings: () => {},
 		source: "/abs/extensions/agent/index.ts",
 		...(dispatch === undefined ? {} : { dispatch }),
 	});
-	const extension: Durable.Extension = contribution.create({ onClose() {},
+	const extension: Durable.Extension = contribution.create({
+		onClose() {},
 		durable: Durable,
 		storageId: sourceStorageId,
 		catalogRoot,
@@ -439,7 +544,10 @@ async function openHarness(
 		context,
 	);
 	harness.resume();
-	const deferred = registry.snapshot().installed().flatMap((entry) => (entry.tools ?? []).filter((tool) => tool.deferred === true));
+	const deferred = registry
+		.snapshot()
+		.installed()
+		.flatMap((entry) => (entry.tools ?? []).filter((tool) => tool.deferred === true));
 	const root = await harness.root(context, { agent: { model, modelTools: { add: deferred } } });
 	return { harness, root };
 }
@@ -550,7 +658,10 @@ it("declares every control tool with an explicit replay classification", () => {
 	assert.equal(reporter?.definition.version, 2);
 	assert.equal(reporter?.definition.migrate, undefined, "old active Reporter tasks must drain before adoption");
 	assert.deepEqual(Object.keys(reporter?.definition.phases ?? {}), ["deliver"]);
-	const contribution = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts" });
+	const contribution = createAgentContribution({
+		configureSettings: () => {},
+		source: "/abs/extensions/agent/index.ts",
+	});
 	assert.equal(contribution.name, "agent");
 	assert.equal(contribution.source, "/abs/extensions/agent/index.ts");
 });
@@ -559,7 +670,9 @@ it("labels a spawn prompt and a send without a mode as new work, and only a stee
 	const route = createRoute();
 	const { registry, extension } = buildRegistry();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
-	t.after(async () => { await harness.close(context); });
+	t.after(async () => {
+		await harness.close(context);
+	});
 	const child = await spawnChild(harness, root, route, "labelled", "SPAWNED");
 	const sessionId = `${storageId}:${child.conversationId}`;
 	const call = async (tool: string, args: Durable.JsonObject): Promise<void> => {
@@ -573,7 +686,8 @@ it("labels a spawn prompt and a send without a mode as new work, and only a stee
 	await call("agent_steer", { sessionId, message: "CONTRACT: reply STEERED" });
 	const classes: Record<string, unknown> = {};
 	for (const entry of await entriesOf(harness, child.conversationId)) {
-		if (entry.kind === "agent.input") classes[messageText(entry.model?.[0])] = (entry.data as { class?: unknown }).class;
+		if (entry.kind === "agent.input")
+			classes[messageText(entry.model?.[0])] = (entry.data as { class?: unknown }).class;
 	}
 	assert.deepEqual(classes, {
 		"CONTRACT: reply SPAWNED": "followUp",
@@ -594,20 +708,37 @@ it("states the tool-round boundary for a steer and the check-in default of zero 
 	assert.match(description("agent_steer"), /placed at its next tool boundary, the end of its current tool round/u);
 	assert.doesNotMatch(description("agent_steer"), /next step/u);
 	for (const name of ["agent_send", "agent_spawn"]) {
-		assert.match(description(name), /Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent\.checkInMinutes setting, names an interval; the default is 0\./u, name);
+		assert.match(
+			description(name),
+			/Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent\.checkInMinutes setting, names an interval; the default is 0\./u,
+			name,
+		);
 		assert.doesNotMatch(description(name), /send automatic owner check-ins/u, name);
 	}
 });
 
 it("saves an explicit handle-less creation role and documents it in both schemas", async (t) => {
 	const ordinary: { name: string; parameters: { properties: Record<string, { description?: string }> } }[] = [];
-	await registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
+	await registerAgentExtension({
+		events: { on: () => () => {}, emit() {} },
+		on() {},
+		registerTool(tool: (typeof ordinary)[number]) {
+			ordinary.push(tool);
+		},
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
+	} as unknown as ExtensionAPI);
 	const { extension, registry } = buildRegistry();
 	for (const tools of [ordinary, extension.tools ?? []]) {
 		const spawn = tools.find((tool) => tool.name === "agent_spawn");
 		assert.ok(spawn);
 		const schema = spawn.parameters as { properties: Record<string, { description?: string }> };
-		assert.equal(schema.properties.role.description, "Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.");
+		assert.equal(
+			schema.properties.role.description,
+			"Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.",
+		);
 	}
 	const route = createRoute();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
@@ -630,7 +761,17 @@ it("saves an explicit handle-less creation role and documents it in both schemas
 it("preserves closed control objects, optional fields, enums and inspect cursors", async () => {
 	const { extension } = buildRegistry();
 	const ordinary: Array<{ name: string; parameters: object }> = [];
-	await registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
+	await registerAgentExtension({
+		events: { on: () => () => {}, emit() {} },
+		on() {},
+		registerTool(tool: (typeof ordinary)[number]) {
+			ordinary.push(tool);
+		},
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
+	} as unknown as ExtensionAPI);
 	for (const tools of [ordinary, extension.tools ?? []]) {
 		const schemaFor = (name: string) => {
 			const tool = tools.find((candidate) => candidate.name === name);
@@ -667,7 +808,15 @@ it("preserves closed control objects, optional fields, enums and inspect cursors
 		assert.equal(status.check({ view: "fleet", provider: 7 }), false);
 		assert.equal(status.check({ view: "fleet", model: "" }), false);
 		const inspect = schemaFor("agent_inspect");
-		assert.equal(inspect.check({ sessionId: storageId, view: "history", source: "toolResult", cursor: { position: 2, nested: { token: "page" } } }), true);
+		assert.equal(
+			inspect.check({
+				sessionId: storageId,
+				view: "history",
+				source: "toolResult",
+				cursor: { position: 2, nested: { token: "page" } },
+			}),
+			true,
+		);
 		assert.equal(inspect.check({ sessionId: storageId, view: "unsupported" }), false);
 		assert.equal(inspect.check({ sessionId: storageId, cursor: "page" }), false);
 		assert.equal(inspect.check({ sessionId: storageId, offset: -1 }), false);
@@ -683,148 +832,265 @@ it("accepts every shared thinking level in native spawn, configure, and attach s
 			const args = { ...(name === "agent_spawn" ? {} : { sessionId: storageId }), thinkingLevel };
 			assert.deepEqual(validateToolArguments(tool, fauxToolCall(name, args)), args);
 		}
-		assert.throws(() => validateToolArguments(tool, fauxToolCall(name, {
-			...(name === "agent_spawn" ? {} : { sessionId: storageId }), thinkingLevel: "unsupported",
-		})), /Validation failed/u);
+		assert.throws(
+			() =>
+				validateToolArguments(
+					tool,
+					fauxToolCall(name, {
+						...(name === "agent_spawn" ? {} : { sessionId: storageId }),
+						thinkingLevel: "unsupported",
+					}),
+				),
+			/Validation failed/u,
+		);
 	}
 });
 
 it("releases failed admission provenance before preparation exhausts its bound", async (t) => {
 	let providerCalls = 0;
 	const route = createRoute();
-	const models = createTestModels((...args) => { providerCalls++; return route.route(...args); });
+	const models = createTestModels((...args) => {
+		providerCalls++;
+		return route.route(...args);
+	});
 	const { registry } = buildRegistry();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models);
 	t.after(() => harness.close(context));
-	for (let index = 0; index < 256; index++) await assert.rejects(submitConversation(root, { message: "Not admitted", requestId: `failed-prepare:${index}`, ownerId: "requester" }, context), /no admission origin/u);
+	for (let index = 0; index < 256; index++)
+		await assert.rejects(
+			submitConversation(
+				root,
+				{ message: "Not admitted", requestId: `failed-prepare:${index}`, ownerId: "requester" },
+				context,
+			),
+			/no admission origin/u,
+		);
 	assert.equal((await harness.snapshot(AwaitDoc, context))?.provenance.length, 0);
 	assert.equal(providerCalls, 0);
 });
 
-for (const tool of ["agent_spawn", "agent_send"]) it(`${tool} returns an admitted exact result before the background answer and arms one configured check-in`, async (t) => {
-	const route = createRoute();
-	let finish!: (answer: AssistantMessage) => void;
-	const producer = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const models = createTestModels((...args) => {
-		const last = args[0].messages.findLast((message) => message.role !== "system");
-		return last?.role === "user" && messageText(last) === "CONTRACT: reply EXACT" ? producer : route.route(...args);
+for (const tool of ["agent_spawn", "agent_send"])
+	it(`${tool} returns an admitted exact result before the background answer and arms one configured check-in`, async (t) => {
+		const route = createRoute();
+		let finish!: (answer: AssistantMessage) => void;
+		const producer = new Promise<AssistantMessage>((resolve) => {
+			finish = resolve;
+		});
+		const models = createTestModels((...args) => {
+			const last = args[0].messages.findLast((message) => message.role !== "system");
+			return last?.role === "user" && messageText(last) === "CONTRACT: reply EXACT" ? producer : route.route(...args);
+		});
+		const { registry } = buildRegistry();
+		const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models);
+		t.after(async () => {
+			finish(fauxAssistantMessage("ANSWER-EXACT"));
+			await harness.close(context);
+		});
+		const existing = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
+		route.script.push({
+			tool,
+			args:
+				tool === "agent_spawn"
+					? { name: "exact-result", prompt: "CONTRACT: reply EXACT", checkInMinutes: 30 }
+					: { sessionId: `${storageId}:${existing.id}`, message: "CONTRACT: reply EXACT", checkInMinutes: 30 },
+		});
+		await say(root, "Dispatch background work");
+		const outcome = (await toolOutcomes(harness, root.id)).find((candidate) => candidate.name === tool);
+		assert.equal(outcome?.isError, false, outcome?.text);
+		const reference = (outcome?.details as { result?: { sessionId: string; submissionId: number; requestId: string } })
+			?.result;
+		assert.ok(reference);
+		assert.ok(outcome?.text.includes(JSON.stringify(reference)));
+		const conversationId = Number(reference.sessionId.split(":")[1]) as Durable.ConversationId;
+		const admitted = await harness.commit((tx) => tx.submissionByRequest(conversationId, reference.requestId), context);
+		assert.equal(admitted?.id, reference.submissionId);
+		assert.equal(admitted?.conversationId, conversationId);
+		assert.ok(admitted?.status === "queued" || admitted?.status === "placed");
+		const checkIns = (await harness.inspect(context)).tasks.filter(
+			(task) => task.record.kind === CheckInTask.definition.name,
+		);
+		assert.equal(checkIns.length, 1, "the tool and Reporter share one admission marker");
+		const state = await readRetainedDelivery(harness, context, true);
+		const intent = state.intents.find(
+			(item) => item.requestId === reference.requestId && item.conversationId === conversationId,
+		);
+		assert.ok(intent, "the producer retains its delivery intent before its answer");
+		assert.equal(intent.ownerId, storageId);
+		assert.equal(intent.submissionId, reference.submissionId);
+		assert.equal(intent.origin, "model");
+		const request = (await readRequestContexts(harness, conversationId, context)).find(
+			(item) => item.requestId === reference.requestId,
+		);
+		assert.equal(request?.requester, storageId);
+		assert.equal(request?.replyTo, storageId);
 	});
-	const { registry } = buildRegistry();
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models);
-	t.after(async () => { finish(fauxAssistantMessage("ANSWER-EXACT")); await harness.close(context); });
-	const existing = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-	route.script.push({ tool, args: tool === "agent_spawn" ? { name: "exact-result", prompt: "CONTRACT: reply EXACT", checkInMinutes: 30 } : { sessionId: `${storageId}:${existing.id}`, message: "CONTRACT: reply EXACT", checkInMinutes: 30 } });
-	await say(root, "Dispatch background work");
-	const outcome = (await toolOutcomes(harness, root.id)).find((candidate) => candidate.name === tool);
-	assert.equal(outcome?.isError, false, outcome?.text);
-	const reference = (outcome?.details as { result?: { sessionId: string; submissionId: number; requestId: string } })?.result;
-	assert.ok(reference);
-	assert.ok(outcome?.text.includes(JSON.stringify(reference)));
-	const conversationId = Number(reference.sessionId.split(":")[1]) as Durable.ConversationId;
-	const admitted = await harness.commit((tx) => tx.submissionByRequest(conversationId, reference.requestId), context);
-	assert.equal(admitted?.id, reference.submissionId);
-	assert.equal(admitted?.conversationId, conversationId);
-	assert.ok(admitted?.status === "queued" || admitted?.status === "placed");
-	const checkIns = (await harness.inspect(context)).tasks.filter((task) => task.record.kind === CheckInTask.definition.name);
-	assert.equal(checkIns.length, 1, "the tool and Reporter share one admission marker");
-	const state = await readRetainedDelivery(harness, context, true);
-	const intent = state.intents.find((item) => item.requestId === reference.requestId && item.conversationId === conversationId);
-	assert.ok(intent, "the producer retains its delivery intent before its answer");
-	assert.equal(intent.ownerId, storageId);
-	assert.equal(intent.submissionId, reference.submissionId);
-	assert.equal(intent.origin, "model");
-	const request = (await readRequestContexts(harness, conversationId, context)).find((item) => item.requestId === reference.requestId);
-	assert.equal(request?.requester, storageId);
-	assert.equal(request?.replyTo, storageId);
-});
 
 it("arms no check-in for a model task that names no interval", async (t) => {
 	const route = createRoute();
 	let finish!: (answer: AssistantMessage) => void;
-	const producer = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
+	const producer = new Promise<AssistantMessage>((resolve) => {
+		finish = resolve;
+	});
 	const models = createTestModels((...args) => {
 		const last = args[0].messages.findLast((message) => message.role !== "system");
 		return last?.role === "user" && messageText(last) === "CONTRACT: reply QUIET" ? producer : route.route(...args);
 	});
 	const { registry } = buildRegistry();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models);
-	t.after(async () => { finish(fauxAssistantMessage("ANSWER-QUIET")); await harness.close(context); });
+	t.after(async () => {
+		finish(fauxAssistantMessage("ANSWER-QUIET"));
+		await harness.close(context);
+	});
 	route.script.push({ tool: "agent_spawn", args: { name: "quiet-result", prompt: "CONTRACT: reply QUIET" } });
 	await say(root, "Dispatch unsupervised work");
 	const outcome = (await toolOutcomes(harness, root.id)).find((candidate) => candidate.name === "agent_spawn");
 	assert.equal(outcome?.isError, false, outcome?.text);
-	assert.ok((outcome?.details as { result?: { submissionId: number } })?.result, "the task is admitted with an exact result reference");
-	const checkIns = (await harness.inspect(context)).tasks.filter((task) => task.record.kind === CheckInTask.definition.name);
+	assert.ok(
+		(outcome?.details as { result?: { submissionId: number } })?.result,
+		"the task is admitted with an exact result reference",
+	);
+	const checkIns = (await harness.inspect(context)).tasks.filter(
+		(task) => task.record.kind === CheckInTask.definition.name,
+	);
 	assert.equal(checkIns.length, 0, "the default interval of zero arms no watchdog");
 });
 
-for (const contentRefusal of [true, false]) it(`retains ${contentRefusal ? "content refusal" : "unclassified failure"} receipts without a second Reporter input`, { timeout: 10000 }, async (t) => {
-	const raw = `${contentRefusal ? "This content was flagged for possible cybersecurity risk" : "Unknown request rejection"}; api_key=sk-abcdefghijklmnopqrstuv; ${"x".repeat(2000)}`;
-	const route = createRoute(); let finish!: (message: AssistantMessage) => void; let calls = 0;
-	const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
-	const models = createTestModels((...args) => {
-		const last = args[0].messages.findLast((message) => message.role !== "system");
-		if (last?.role === "user" && messageText(last) === "REFUSED-TASK") { calls++; return held; }
-		return route.route(...args);
+for (const contentRefusal of [true, false])
+	it(`retains ${contentRefusal ? "content refusal" : "unclassified failure"} receipts without a second Reporter input`, {
+		timeout: 10000,
+	}, async (t) => {
+		const raw = `${contentRefusal ? "This content was flagged for possible cybersecurity risk" : "Unknown request rejection"}; api_key=sk-abcdefghijklmnopqrstuv; ${"x".repeat(2000)}`;
+		const route = createRoute();
+		let finish!: (message: AssistantMessage) => void;
+		let calls = 0;
+		const held = new Promise<AssistantMessage>((resolve) => {
+			finish = resolve;
+		});
+		const models = createTestModels((...args) => {
+			const last = args[0].messages.findLast((message) => message.role !== "system");
+			if (last?.role === "user" && messageText(last) === "REFUSED-TASK") {
+				calls++;
+				return held;
+			}
+			return route.route(...args);
+		});
+		const holder: DispatchHolder = {};
+		const { registry } = buildRegistry(createDispatch(holder, []));
+		const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models, {
+			retry: { enabled: true, maxRetries: 3 },
+		});
+		holder.harness = harness;
+		t.after(async () => {
+			finish(fauxAssistantMessage("FINISHED"));
+			await harness.close(context);
+		});
+		route.script.push({ tool: "agent_spawn", args: { name: "refused-task", prompt: "REFUSED-TASK" } });
+		await say(root, "Dispatch a task");
+		const spawned = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn");
+		assert.ok(spawned);
+		const result = (spawned.details as { result: { sessionId: string; submissionId: number; requestId: string } })
+			.result;
+		finish(fauxAssistantMessage([], { stopReason: "error", errorMessage: raw }));
+		const input = await harness.submission(result.submissionId as Durable.SubmissionId, context);
+		assert.ok(input);
+		const native = await input.wait(context);
+		assert.equal(native.status, "unanswered");
+		if (native.status !== "unanswered") assert.fail("Expected a native model failure");
+		assert.equal(native.reason, "model_error");
+		assert.equal(native.detail, raw);
+		const expected = modelFailureText("model_error", raw);
+		await settle(harness, root.id);
+		assert.equal(
+			(await userTexts(harness, root.id)).some((text) => text.includes(expected)),
+			false,
+			"Reporter posts no second failure body",
+		);
+		await settleDeliveries(harness, context);
+		const receipt = await harness.commit((tx) => retainedReceipt(tx, result.submissionId), context);
+		assert.equal(receipt?.status, "unanswered");
+		assert.equal(receipt?.ownerId, storageId);
+		assert.equal(calls, 1, "the native host does not retry or substitute the model");
+		assert.ok(Buffer.byteLength(expected) <= 1024);
+		assert.doesNotMatch(expected, /abcdefghijkl/u);
 	});
-	const holder: DispatchHolder = {};
-	const { registry } = buildRegistry(createDispatch(holder, []));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models, { retry: { enabled: true, maxRetries: 3 } }); holder.harness = harness;
-	t.after(async () => { finish(fauxAssistantMessage("FINISHED")); await harness.close(context); });
-	route.script.push({ tool: "agent_spawn", args: { name: "refused-task", prompt: "REFUSED-TASK" } });
-	await say(root, "Dispatch a task");
-	const spawned = (await toolOutcomes(harness, root.id)).find((item) => item.name === "agent_spawn"); assert.ok(spawned);
-	const result = (spawned.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
-	finish(fauxAssistantMessage([], { stopReason: "error", errorMessage: raw }));
-	const input = await harness.submission(result.submissionId as Durable.SubmissionId, context); assert.ok(input);
-	const native = await input.wait(context); assert.equal(native.status, "unanswered");
-	if (native.status !== "unanswered") assert.fail("Expected a native model failure");
-	assert.equal(native.reason, "model_error"); assert.equal(native.detail, raw);
-	const expected = modelFailureText("model_error", raw);
-	await settle(harness, root.id);
-	assert.equal((await userTexts(harness, root.id)).some((text) => text.includes(expected)), false, "Reporter posts no second failure body");
-	await settleDeliveries(harness, context);
-	const receipt = await harness.commit((tx) => retainedReceipt(tx, result.submissionId), context);
-	assert.equal(receipt?.status, "unanswered");
-	assert.equal(receipt?.ownerId, storageId);
-	assert.equal(calls, 1, "the native host does not retry or substitute the model");
-	assert.ok(Buffer.byteLength(expected) <= 1024); assert.doesNotMatch(expected, /abcdefghijkl/u);
-});
 
-for (const ownership of ["unowned", "owned", "mismatching-reference"] as const) it(`checks exact receipt ownership with ${ownership} native request identity`, { timeout: 10000 }, async (t) => {
-	const directory = mkdtempSync(join(tmpdir(), "exact-receipt-"));
-	t.after(() => rmSync(directory, { recursive: true, force: true }));
-	const foreign = await DurableHost.open({ storageId: "foreign", storagePath: join(directory, "source.sqlite"), cwd: directory, registry: fixtureRegistry(), models: createTestModels(() => fauxAssistantMessage("EXACT")), agent: { model } }, context);
-	t.after(() => foreign.close());
-	const input = await foreign.root().submit({ type: "input", content: "native work" }, context);
-	const terminal = await input.wait(context);
-	assert.ok(terminal.type === "input" && terminal.status === "done");
-	assert.equal(terminal.requestId, undefined);
-	const retainedRequestId = "retained-admission";
-	if (ownership !== "unowned") {
-		// Receipt ownership uses the submission identity, independently of the optional native request key.
-		const receipt: DeliveryReceipt = { submissionId: terminal.id, requestId: retainedRequestId, ownerId: storageId, conversationId: terminal.conversationId,
-			operationId: null, origin: "operator", status: "done", entryId: terminal.entry ?? null, answerEntryId: terminal.answer, answer: "EXACT", reason: null, acknowledged: false };
-		await foreign.harness.commit((tx) => storeDeliveryRow(tx, "receipt", receipt, true), context);
-	}
-	const result = { sessionId: "foreign", submissionId: terminal.id, ...(ownership === "mismatching-reference" ? { requestId: retainedRequestId } : {}) };
-	if (ownership === "unowned") await assert.rejects(foreign.request("receipts", { ownerId: storageId, result }, context), /not addressed/u);
-	else if (ownership === "mismatching-reference") await assert.rejects(foreign.request("receipts", { ownerId: storageId, result }, context), /does not identify the selected native input/u);
-	else {
-		const selected = await foreign.request("receipts", { ownerId: storageId, result }, context) as { outcome: { submissionId: number; requestId?: string; answer?: string }; delivery: { results: Array<{ sessionId: string; submissionId: number; requestId: string }> } };
-		assert.equal(selected.outcome.submissionId, terminal.id);
-		assert.equal(selected.outcome.requestId, undefined);
-		assert.equal(selected.outcome.answer, "EXACT");
-		assert.deepEqual(selected.delivery.results, [{ sessionId: "foreign", submissionId: terminal.id, requestId: retainedRequestId }]);
-		assert.equal((await input.status(context)).requestId, undefined, "receipt lookup never adds a native request key");
-	}
-});
+for (const ownership of ["unowned", "owned", "mismatching-reference"] as const)
+	it(`checks exact receipt ownership with ${ownership} native request identity`, { timeout: 10000 }, async (t) => {
+		const directory = mkdtempSync(join(tmpdir(), "exact-receipt-"));
+		t.after(() => rmSync(directory, { recursive: true, force: true }));
+		const foreign = await DurableHost.open(
+			{
+				storageId: "foreign",
+				storagePath: join(directory, "source.sqlite"),
+				cwd: directory,
+				registry: fixtureRegistry(),
+				models: createTestModels(() => fauxAssistantMessage("EXACT")),
+				agent: { model },
+			},
+			context,
+		);
+		t.after(() => foreign.close());
+		const input = await foreign.root().submit({ type: "input", content: "native work" }, context);
+		const terminal = await input.wait(context);
+		assert.ok(terminal.type === "input" && terminal.status === "done");
+		assert.equal(terminal.requestId, undefined);
+		const retainedRequestId = "retained-admission";
+		if (ownership !== "unowned") {
+			// Receipt ownership uses the submission identity, independently of the optional native request key.
+			const receipt: DeliveryReceipt = {
+				submissionId: terminal.id,
+				requestId: retainedRequestId,
+				ownerId: storageId,
+				conversationId: terminal.conversationId,
+				operationId: null,
+				origin: "operator",
+				status: "done",
+				entryId: terminal.entry ?? null,
+				answerEntryId: terminal.answer,
+				answer: "EXACT",
+				reason: null,
+				acknowledged: false,
+			};
+			await foreign.harness.commit((tx) => storeDeliveryRow(tx, "receipt", receipt, true), context);
+		}
+		const result = {
+			sessionId: "foreign",
+			submissionId: terminal.id,
+			...(ownership === "mismatching-reference" ? { requestId: retainedRequestId } : {}),
+		};
+		if (ownership === "unowned")
+			await assert.rejects(foreign.request("receipts", { ownerId: storageId, result }, context), /not addressed/u);
+		else if (ownership === "mismatching-reference")
+			await assert.rejects(
+				foreign.request("receipts", { ownerId: storageId, result }, context),
+				/does not identify the selected native input/u,
+			);
+		else {
+			const selected = (await foreign.request("receipts", { ownerId: storageId, result }, context)) as {
+				outcome: { submissionId: number; requestId?: string; answer?: string };
+				delivery: { results: Array<{ sessionId: string; submissionId: number; requestId: string }> };
+			};
+			assert.equal(selected.outcome.submissionId, terminal.id);
+			assert.equal(selected.outcome.requestId, undefined);
+			assert.equal(selected.outcome.answer, "EXACT");
+			assert.deepEqual(selected.delivery.results, [
+				{ sessionId: "foreign", submissionId: terminal.id, requestId: retainedRequestId },
+			]);
+			assert.equal(
+				(await input.status(context)).requestId,
+				undefined,
+				"receipt lookup never adds a native request key",
+			);
+		}
+	});
 
 it("reports the requested and effective thinking level when native creation clamps it", async (t) => {
 	const route = createRoute();
 	const { registry } = buildRegistry();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
-	t.after(async () => { await harness.close(context); });
+	t.after(async () => {
+		await harness.close(context);
+	});
 	route.script.push({ tool: "agent_spawn", args: { name: "max-child", thinkingLevel: "max", checkInMinutes: 0 } });
 	await say(root, "Create a child at max thinking.");
 	const spawn = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_spawn");
@@ -842,16 +1108,37 @@ it("retains native preset selection through replay after a machine file edit", a
 	const agentDir = mkdtempSync(join(tmpdir(), "native-preset-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	const path = join(agentDir, "harness.json");
-	writeFileSync(path, JSON.stringify(machineConfig({ presets: { review: { model: "faux/faux-1", thinkingLevel: "max", role: "Review", checkInMinutes: 0 } } })));
-	const registry = Durable.createRegistry(); const route = createRoute();
-	const extension = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts" }).create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
+	writeFileSync(
+		path,
+		JSON.stringify(
+			machineConfig({
+				presets: { review: { model: "faux/faux-1", thinkingLevel: "max", role: "Review", checkInMinutes: 0 } },
+			}),
+		),
+	);
+	const registry = Durable.createRegistry();
+	const route = createRoute();
+	const extension = createAgentContribution({
+		configureSettings: () => {},
+		source: "/abs/extensions/agent/index.ts",
+	}).create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
 	let original: ExecutionSelection | undefined;
-	registry.install({ ...extension, tools: extension.tools?.map((tool) => tool.name !== "agent_spawn" ? tool : { ...tool, execute: async (args, api, ctx) => {
-		const first = await tool.execute(args, api, ctx);
-		original = (first.details as { selection: ExecutionSelection }).selection;
-		writeFileSync(path, "invalid json");
-		return tool.execute(args, api, ctx);
-	} }) });
+	registry.install({
+		...extension,
+		tools: extension.tools?.map((tool) =>
+			tool.name !== "agent_spawn"
+				? tool
+				: {
+						...tool,
+						execute: async (args, api, ctx) => {
+							const first = await tool.execute(args, api, ctx);
+							original = (first.details as { selection: ExecutionSelection }).selection;
+							writeFileSync(path, "invalid json");
+							return tool.execute(args, api, ctx);
+						},
+					},
+		),
+	});
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
 	route.script.push({ tool: "agent_spawn", args: { preset: "review" } });
@@ -870,26 +1157,59 @@ it("retains native preset selection through replay after a machine file edit", a
 it("forwards native preset inputs and snapshots through handle, foreign, place, and configure dispatch", async (t) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "native-preset-dispatch-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
-	writeFileSync(join(agentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { review: { model: "faux/faux-1", checkInMinutes: 2 } } })));
+	writeFileSync(
+		join(agentDir, "harness.json"),
+		JSON.stringify(machineConfig({ presets: { review: { model: "faux/faux-1", checkInMinutes: 2 } } })),
+	);
 	const seen: Array<{ method: string; params: Readonly<Record<string, unknown>> }> = [];
-	const extension = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts", dispatch: async (method, params) => { seen.push({ method, params }); return { sessionId: "foreign-storage", selection: { marker: "retained" }, ...(method === "place" ? { submissionId: 1, result: { sessionId: "foreign-storage", submissionId: 1, requestId: params.requestId } } : {}) }; } }).create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
-	const registry = Durable.createRegistry(); registry.install(extension);
+	const extension = createAgentContribution({
+		configureSettings: () => {},
+		source: "/abs/extensions/agent/index.ts",
+		dispatch: async (method, params) => {
+			seen.push({ method, params });
+			return {
+				sessionId: "foreign-storage",
+				selection: { marker: "retained" },
+				...(method === "place"
+					? { submissionId: 1, result: { sessionId: "foreign-storage", submissionId: 1, requestId: params.requestId } }
+					: {}),
+			};
+		},
+	}).create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
+	const registry = Durable.createRegistry();
+	registry.install(extension);
 	const route = createRoute();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
 	route.script.push(
 		{ tool: "agent_spawn", args: { handle: "reviewer", preset: "review" } },
 		{ tool: "agent_spawn", args: { cwd: agentDir, preset: "review" } },
-		{ tool: "agent_place", args: { area: agentDir, preset: "review", model: "faux/faux-1", thinkingLevel: "high", prompt: "Task" } },
+		{
+			tool: "agent_place",
+			args: { area: agentDir, preset: "review", model: "faux/faux-1", thinkingLevel: "high", prompt: "Task" },
+		},
 		{ tool: "agent_configure", args: { sessionId: "foreign-storage", preset: "review", thinkingLevel: "low" } },
 	);
 	for (let index = 0; index < 4; index++) await say(root, "Use preset controls");
-	assert.deepEqual(seen.map((entry) => entry.method), ["resolve-agent", "spawn", "place", "configure"]);
-	for (const entry of seen) { assert.equal(entry.params.preset, "review"); assert.ok(entry.params.preferenceSnapshot); }
-	assert.equal(seen[2].params.checkInMinutes, undefined, "place must not override a preset with an early environment default");
+	assert.deepEqual(
+		seen.map((entry) => entry.method),
+		["resolve-agent", "spawn", "place", "configure"],
+	);
+	for (const entry of seen) {
+		assert.equal(entry.params.preset, "review");
+		assert.ok(entry.params.preferenceSnapshot);
+	}
+	assert.equal(
+		seen[2].params.checkInMinutes,
+		undefined,
+		"place must not override a preset with an early environment default",
+	);
 	assert.equal(seen[2].params.thinkingLevel, "high");
 	assert.equal(seen[3].params.thinkingLevel, "low");
-	assert.match((await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_place")?.text ?? "", /retained/u);
+	assert.match(
+		(await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_place")?.text ?? "",
+		/retained/u,
+	);
 });
 
 it("uses isolated preferences despite an ambient agent directory", async (t) => {
@@ -900,9 +1220,15 @@ it("uses isolated preferences despite an ambient agent directory", async (t) => 
 		else process.env.PI_AGENT_DIR = previous;
 		rmSync(ambientDir, { recursive: true, force: true });
 	});
-	writeFileSync(join(ambientDir, "harness.json"), JSON.stringify(machineConfig({ presets: { ambient: { model: "faux/faux-1" } },
-		preferences: { reportingNotes: "AMBIENT-PREFERENCES-MARKER" },
-	})));
+	writeFileSync(
+		join(ambientDir, "harness.json"),
+		JSON.stringify(
+			machineConfig({
+				presets: { ambient: { model: "faux/faux-1" } },
+				preferences: { reportingNotes: "AMBIENT-PREFERENCES-MARKER" },
+			}),
+		),
+	);
 	process.env.PI_AGENT_DIR = ambientDir;
 	const route = createRoute();
 	const { registry } = buildRegistry();
@@ -924,21 +1250,43 @@ it("returns retained native creation facts without revalidating a later catalog"
 	let catalogReads = 0;
 	const route = createRoute();
 	const registry = Durable.createRegistry();
-	const extension = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts" }).create({ onClose() {},
-		durable: Durable, storageId, cwd: testCwd, agentDir: testAgentDir,
-		services: { modelRuntime: { getModel: (_provider, id) => { catalogReads++; return available ? fauxProvider().getModel(id) : undefined; } } },
-	});
-	registry.install({ ...extension, tools: extension.tools?.map((tool) => tool.name !== "agent_spawn" ? tool : {
-		...tool, execute: async (args, api, ctx) => {
-			const first = await tool.execute(args, api, ctx);
-			assert.equal(first.isError, undefined);
-			available = false;
-			const beforeReplay = catalogReads;
-			const replay = await tool.execute(args, api, ctx);
-			assert.equal(catalogReads, beforeReplay, "replay does not revalidate the retained selection");
-			return replay;
+	const extension = createAgentContribution({
+		configureSettings: () => {},
+		source: "/abs/extensions/agent/index.ts",
+	}).create({
+		onClose() {},
+		durable: Durable,
+		storageId,
+		cwd: testCwd,
+		agentDir: testAgentDir,
+		services: {
+			modelRuntime: {
+				getModel: (_provider, id) => {
+					catalogReads++;
+					return available ? fauxProvider().getModel(id) : undefined;
+				},
+			},
 		},
-	}) });
+	});
+	registry.install({
+		...extension,
+		tools: extension.tools?.map((tool) =>
+			tool.name !== "agent_spawn"
+				? tool
+				: {
+						...tool,
+						execute: async (args, api, ctx) => {
+							const first = await tool.execute(args, api, ctx);
+							assert.equal(first.isError, undefined);
+							available = false;
+							const beforeReplay = catalogReads;
+							const replay = await tool.execute(args, api, ctx);
+							assert.equal(catalogReads, beforeReplay, "replay does not revalidate the retained selection");
+							return replay;
+						},
+					},
+		),
+	});
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
 	route.script.push({ tool: "agent_spawn", args: { thinkingLevel: "max" } });
@@ -959,29 +1307,50 @@ it("replays the original foreign spawn receipt through the native tool", { timeo
 	const dispatches: string[] = [];
 	const route = createRoute();
 	const registry = Durable.createRegistry();
-	const extension = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts", dispatch: async (method, args) => {
-		dispatches.push(method);
-		return source.request(method, JSON.parse(JSON.stringify(args)), { requestId: String(args.requestId) });
-	} }).create({ onClose() {}, durable: Durable, storageId: fixture.metadata.storageId, cwd: fixture.cwd, agentDir: fixture.agentDir, services: testServices });
-	registry.install({ ...extension, tools: extension.tools?.map((tool) => tool.name !== "agent_spawn" ? tool : {
-		...tool, execute: async (args, api, ctx) => {
-			const first = await tool.execute(args, api, ctx);
-			assert.equal(first.isError, undefined, JSON.stringify(first.output));
-			const id = (first.details as { sessionId: string }).sessionId;
-			const target = await connectHost(hostMetadata(new AgentCatalog(fixture.root).read(id)));
-			trackHost(t, target.pid);
-			try {
-				assert.deepEqual(await tool.execute(args, api, ctx), first);
-				assert.ok(args !== null && typeof args === "object" && !Array.isArray(args));
-				for (const changed of [{ ...args, handle: "other" }]) {
-					const refused = await tool.execute(changed, api, ctx);
-					assert.equal(refused.isError, true);
-					assert.match(JSON.stringify(refused.output), /different inputs/u);
-				}
-			} finally { await target.close(); }
-			return first;
+	const extension = createAgentContribution({
+		configureSettings: () => {},
+		source: "/abs/extensions/agent/index.ts",
+		dispatch: async (method, args) => {
+			dispatches.push(method);
+			return source.request(method, JSON.parse(JSON.stringify(args)), { requestId: String(args.requestId) });
 		},
-	}) });
+	}).create({
+		onClose() {},
+		durable: Durable,
+		storageId: fixture.metadata.storageId,
+		cwd: fixture.cwd,
+		agentDir: fixture.agentDir,
+		services: testServices,
+	});
+	registry.install({
+		...extension,
+		tools: extension.tools?.map((tool) =>
+			tool.name !== "agent_spawn"
+				? tool
+				: {
+						...tool,
+						execute: async (args, api, ctx) => {
+							const first = await tool.execute(args, api, ctx);
+							assert.equal(first.isError, undefined, JSON.stringify(first.output));
+							const id = (first.details as { sessionId: string }).sessionId;
+							const target = await connectHost(hostMetadata(new AgentCatalog(fixture.root).read(id)));
+							trackHost(t, target.pid);
+							try {
+								assert.deepEqual(await tool.execute(args, api, ctx), first);
+								assert.ok(args !== null && typeof args === "object" && !Array.isArray(args));
+								for (const changed of [{ ...args, handle: "other" }]) {
+									const refused = await tool.execute(changed, api, ctx);
+									assert.equal(refused.isError, true);
+									assert.match(JSON.stringify(refused.output), /different inputs/u);
+								}
+							} finally {
+								await target.close();
+							}
+							return first;
+						},
+					},
+		),
+	});
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
 	route.script.push({ tool: "agent_spawn", args: { cwd: fixture.childCwd } });
@@ -996,8 +1365,13 @@ it("refuses an absent native spawn model before child or reporter creation", asy
 	const route = createRoute();
 	const { registry } = buildRegistry();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
-	t.after(async () => { await harness.close(context); });
-	route.script.push({ tool: "agent_spawn", args: { model: "faux/absent", prompt: "Do the review", checkInMinutes: 0 } });
+	t.after(async () => {
+		await harness.close(context);
+	});
+	route.script.push({
+		tool: "agent_spawn",
+		args: { model: "faux/absent", prompt: "Do the review", checkInMinutes: 0 },
+	});
 	await say(root, "Delegate the review.");
 	const spawn = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_spawn");
 	assert.equal(spawn?.isError, true);
@@ -1023,7 +1397,11 @@ it("spawns an anchor-owned child and reports its answer once", async (t) => {
 	assert.equal(record?.owner?.taskId, child.anchorTaskId, "the anchor task owns the child");
 	const rootAgent = await root.agent(context);
 	const childAgent = await harness.snapshot(Durable.AgentDoc, child.conversationId, context);
-	assert.equal((await harness.snapshot(AgentMetaDoc, child.conversationId, context))?.firstMessage, "CONTRACT: reply ALPHA", "the historical first input contains only task text");
+	assert.equal(
+		(await harness.snapshot(AgentMetaDoc, child.conversationId, context))?.firstMessage,
+		"CONTRACT: reply ALPHA",
+		"the historical first input contains only task text",
+	);
 	assert.deepEqual(childAgent?.model, rootAgent.model, "the child stores the resolved model");
 	assert.equal(childAgent?.thinkingLevel, rootAgent.thinkingLevel, "the child stores the resolved thinking level");
 	const anchor = await harness.getTask(child.anchorTaskId, context);
@@ -1053,7 +1431,12 @@ it("spawns an anchor-owned child and reports its answer once", async (t) => {
 	assert.equal(Object.hasOwn(child, "reported"), false, "new children do not track answer delivery");
 	await settleDeliveries(harness, context);
 	const delivered = await readRetainedDelivery(harness, context, true);
-	assert.equal(Object.values(delivered.receipts).filter((row) => row.conversationId === child.conversationId && row.ownerId === storageId).length, 1);
+	assert.equal(
+		Object.values(delivered.receipts).filter(
+			(row) => row.conversationId === child.conversationId && row.ownerId === storageId,
+		).length,
+		1,
+	);
 });
 
 it("keeps two children when the same name is used deliberately", async (t) => {
@@ -1073,7 +1456,11 @@ it("keeps two children when the same name is used deliberately", async (t) => {
 	assert.equal(reports.length, 0, "Reporter never posts a second answer input");
 	await settleDeliveries(harness, context);
 	const receipts = Object.values((await readRetainedDelivery(harness, context, true)).receipts);
-	assert.equal(receipts.filter((receipt) => state.children.some((child) => child.conversationId === receipt.conversationId)).length, 2);
+	assert.equal(
+		receipts.filter((receipt) => state.children.some((child) => child.conversationId === receipt.conversationId))
+			.length,
+		2,
+	);
 });
 
 it("resumes a child answer with one delivery intent across a second harness open", async (t) => {
@@ -1085,7 +1472,10 @@ it("resumes a child answer with one delivery intent across a second harness open
 	route.hold.children = true;
 	const first = await openHarness(storage, registry, models);
 	holder.harness = first.harness;
-	route.script.push({ tool: "agent_spawn", args: { name: "crash", prompt: "CONTRACT: reply CRASH", checkInMinutes: 0 } });
+	route.script.push({
+		tool: "agent_spawn",
+		args: { name: "crash", prompt: "CONTRACT: reply CRASH", checkInMinutes: 0 },
+	});
 	await say(first.root, "SPAWN");
 	const before = await first.harness.snapshot(TestChildren, first.root.id, context);
 	assert.equal(before?.children.length, 1, "the child is committed before the crash");
@@ -1136,13 +1526,29 @@ it("reconciles an existing local child before Reporter admission", { timeout: 10
 	const { registry } = buildRegistry();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
-	registry.install({ name: "request-routes", sections: [requestContextSection(harness)], hooks: [Durable.hook(Durable.GenerationTask, requestContextHooks(harness))] });
-	const child = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model, instructions: "OLD CHILD INSTRUCTIONS" } }, context);
-	await child.commit(async (tx) => { const meta = await tx.doc(AgentMetaDoc, child.id); meta.name = "Retained child"; meta.owner = "original-founder"; }, context);
-	route.script.push({ tool: "agent_send", args: { sessionId: `${storageId}:${child.id}`, message: "CONTRACT: reply RETAINED", checkInMinutes: 0 } });
+	registry.install({
+		name: "request-routes",
+		sections: [requestContextSection(harness)],
+		hooks: [Durable.hook(Durable.GenerationTask, requestContextHooks(harness))],
+	});
+	const child = await harness.createConversation(
+		{ ownership: { kind: "ownerless" }, agent: { model, instructions: "OLD CHILD INSTRUCTIONS" } },
+		context,
+	);
+	await child.commit(async (tx) => {
+		const meta = await tx.doc(AgentMetaDoc, child.id);
+		meta.name = "Retained child";
+		meta.owner = "original-founder";
+	}, context);
+	route.script.push({
+		tool: "agent_send",
+		args: { sessionId: `${storageId}:${child.id}`, message: "CONTRACT: reply RETAINED", checkInMinutes: 0 },
+	});
 	await say(root, "Contact the retained child");
 	await settle(harness, root.id);
-	const messages = route.requests.find((messages) => messages.some((message) => message.role === "user" && messageText(message) === "CONTRACT: reply RETAINED"));
+	const messages = route.requests.find((messages) =>
+		messages.some((message) => message.role === "user" && messageText(message) === "CONTRACT: reply RETAINED"),
+	);
 	assert.ok(messages);
 	const prompt = getCurrentSystemPrompt(messages);
 	assert.doesNotMatch(prompt, /OLD CHILD INSTRUCTIONS/u);
@@ -1154,74 +1560,151 @@ it("reconciles an existing local child before Reporter admission", { timeout: 10
 	assert.equal((await readProfile(harness, storageId, child.id, context)).creator, "original-founder");
 });
 
-for (const conflictingProfile of [false, true]) it(`resumes an accepted Reporter beyond explicit-route capacity with profile conflict=${conflictingProfile}`, { timeout: 10000 }, async (t) => {
-	assert.equal(REQUEST_CONTEXT_LIMIT, 128);
-	const directory = mkdtempSync(join(tmpdir(), "retained-reporter-"));
-	const storagePath = join(directory, "agent.sqlite");
-	const { registry, extension } = buildRegistry(undefined, false);
-	const reporter = extension.tasks?.find((task) => task.definition.name === "agent.reporter");
-	assert.ok(reporter, "use the native contribution's actual Reporter task");
-	let resumed: Durable.Harness | undefined;
-	let childId: Durable.ConversationId;
-	let observedRoutes: ActiveRequestContext[] = [];
-	const warnings: unknown[] = [];
-	const taskText = "Retained Reporter task";
-	const models = createTestModels(async (request) => {
-		const text = messageText(request.messages.findLast((message) => message.role === "user"));
-		if (text === taskText) {
-			assert.ok(resumed);
-			observedRoutes = await readRequestContexts(resumed, childId, context);
-			return fauxAssistantMessage("RETAINED-REPORTER-ANSWER");
-		}
-		return fauxAssistantMessage("NOTED");
-	});
-	const first = await Durable.Harness.open(await openNodeSqliteStorage(storagePath), { models, registry }, context);
-	t.after(async () => { await resumed?.close(context); await first.close(context); rmSync(directory, { recursive: true, force: true }); });
-	const owner = await first.root(context, { agent: { model } });
-	const child = await first.createConversation({ ownership: { kind: "ownerless" }, agent: { model, instructions: "Retained child instructions" } }, context);
-	childId = child.id;
-	const recipient = await first.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-	const taskId = await owner.commit((tx) => tx.createTask(reporter as Durable.Task<Durable.JsonObject, { phase: string }, null, object>, { name: "Retained child", conversationId: child.id, message: taskText, whenBusy: "followUp", reportTo: recipient.id, checkInMinutes: 0 }, { ownership: { kind: "conversation" }, conversationId: owner.id, background: true }), context);
-	await child.commit(async (tx) => {
-		const meta = await tx.doc(AgentMetaDoc, child.id);
-		meta.name = "Retained child";
-		meta.owner = "retained-founder";
-		if (conflictingProfile) (await tx.doc(ProfileDoc, child.id)).identity = "different-storage";
-		for (let index = 0; index < REQUEST_CONTEXT_LIMIT; index++) await recordRequestContext(tx, child.id, { requestId: `occupied-${index}`, requester: "queued-requester", replyTo: "queued-recipient", origin: "model" });
-	}, context);
-	assert.equal((await readRequestContexts(first, child.id, context)).length, REQUEST_CONTEXT_LIMIT);
-	await first.close(context);
+for (const conflictingProfile of [false, true])
+	it(`resumes an accepted Reporter beyond explicit-route capacity with profile conflict=${conflictingProfile}`, {
+		timeout: 10000,
+	}, async (t) => {
+		assert.equal(REQUEST_CONTEXT_LIMIT, 128);
+		const directory = mkdtempSync(join(tmpdir(), "retained-reporter-"));
+		const storagePath = join(directory, "agent.sqlite");
+		const { registry, extension } = buildRegistry(undefined, false);
+		const reporter = extension.tasks?.find((task) => task.definition.name === "agent.reporter");
+		assert.ok(reporter, "use the native contribution's actual Reporter task");
+		let resumed: Durable.Harness | undefined;
+		let childId: Durable.ConversationId;
+		let observedRoutes: ActiveRequestContext[] = [];
+		const warnings: unknown[] = [];
+		const taskText = "Retained Reporter task";
+		const models = createTestModels(async (request) => {
+			const text = messageText(request.messages.findLast((message) => message.role === "user"));
+			if (text === taskText) {
+				assert.ok(resumed);
+				observedRoutes = await readRequestContexts(resumed, childId, context);
+				return fauxAssistantMessage("RETAINED-REPORTER-ANSWER");
+			}
+			return fauxAssistantMessage("NOTED");
+		});
+		const first = await Durable.Harness.open(await openNodeSqliteStorage(storagePath), { models, registry }, context);
+		t.after(async () => {
+			await resumed?.close(context);
+			await first.close(context);
+			rmSync(directory, { recursive: true, force: true });
+		});
+		const owner = await first.root(context, { agent: { model } });
+		const child = await first.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model, instructions: "Retained child instructions" } },
+			context,
+		);
+		childId = child.id;
+		const recipient = await first.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
+		const taskId = await owner.commit(
+			(tx) =>
+				tx.createTask(
+					reporter as Durable.Task<Durable.JsonObject, { phase: string }, null, object>,
+					{
+						name: "Retained child",
+						conversationId: child.id,
+						message: taskText,
+						whenBusy: "followUp",
+						reportTo: recipient.id,
+						checkInMinutes: 0,
+					},
+					{ ownership: { kind: "conversation" }, conversationId: owner.id, background: true },
+				),
+			context,
+		);
+		await child.commit(async (tx) => {
+			const meta = await tx.doc(AgentMetaDoc, child.id);
+			meta.name = "Retained child";
+			meta.owner = "retained-founder";
+			if (conflictingProfile) (await tx.doc(ProfileDoc, child.id)).identity = "different-storage";
+			for (let index = 0; index < REQUEST_CONTEXT_LIMIT; index++)
+				await recordRequestContext(tx, child.id, {
+					requestId: `occupied-${index}`,
+					requester: "queued-requester",
+					replyTo: "queued-recipient",
+					origin: "model",
+				});
+		}, context);
+		assert.equal((await readRequestContexts(first, child.id, context)).length, REQUEST_CONTEXT_LIMIT);
+		await first.close(context);
 
-	resumed = await Durable.Harness.open(await openNodeSqliteStorage(storagePath), { models, registry, onReport: (report) => warnings.push(report.error) }, context);
-	registry.install({ name: "retained-request-routes", sections: [requestContextSection(resumed)] });
-	const settled = await resumed.waitForTask(taskId, context);
-	assert.equal(settled.state.outcome.status, "completed");
-	const reopenedRecipient = await resumed.conversation(recipient.id, context);
-	await reopenedRecipient?.waitForIdle(context);
-	const requestId = `agent-deliver:${taskId}`;
-	assert.equal(observedRoutes.length, REQUEST_CONTEXT_LIMIT + 1, "accepted Reporter retains its route without evicting the occupied slots");
-	assert.deepEqual(observedRoutes.find((route) => route.requestId === requestId), { requestId, requester: storageId, replyTo: `${storageId}:${recipient.id}`, origin: "model", status: "placed" });
-	assert.equal((await userTexts(resumed, child.id)).filter((text) => text === taskText).length, 1);
-	assert.equal((await userTexts(resumed, recipient.id)).filter((text) => text.includes("RETAINED-REPORTER-ANSWER")).length, 0, "Reporter does not deliver answer bodies");
-	assert.equal((await userTexts(resumed, owner.id)).length, 0, "an explicit reply recipient does not become the requester");
-	const delivery = await resumed.commit((tx) => tx.submissionByRequest(child.id, requestId), context);
-	const report = await resumed.commit((tx) => tx.submissionByRequest(recipient.id, `agent-report:${taskId}`), context);
-	assert.equal(delivery?.status, "done");
-	assert.equal(report, undefined);
-	await settleDeliveries(resumed, context);
-	assert.ok(delivery);
-	const receipt = await resumed.commit((tx) => retainedReceipt(tx, delivery.id), context);
-	assert.equal(receipt?.ownerId, `${storageId}:${recipient.id}`);
-	assert.equal((await readRequestContexts(resumed, child.id, context)).length, REQUEST_CONTEXT_LIMIT);
-	await assert.rejects(resumed.commit((tx) => recordRequestContext(tx, child.id, { requestId: "new-over-capacity", requester: "new-requester", replyTo: "new-recipient", origin: "model" }), context), /unfinished request routes/u);
-	if (conflictingProfile) assert.ok(warnings.some((warning) => String(warning).includes("Profile identity differs")), "optional profile repair reports its failure without failing the retained task");
-	else assert.deepEqual(warnings, []);
-});
+		resumed = await Durable.Harness.open(
+			await openNodeSqliteStorage(storagePath),
+			{ models, registry, onReport: (report) => warnings.push(report.error) },
+			context,
+		);
+		registry.install({ name: "retained-request-routes", sections: [requestContextSection(resumed)] });
+		const settled = await resumed.waitForTask(taskId, context);
+		assert.equal(settled.state.outcome.status, "completed");
+		const reopenedRecipient = await resumed.conversation(recipient.id, context);
+		await reopenedRecipient?.waitForIdle(context);
+		const requestId = `agent-deliver:${taskId}`;
+		assert.equal(
+			observedRoutes.length,
+			REQUEST_CONTEXT_LIMIT + 1,
+			"accepted Reporter retains its route without evicting the occupied slots",
+		);
+		assert.deepEqual(
+			observedRoutes.find((route) => route.requestId === requestId),
+			{ requestId, requester: storageId, replyTo: `${storageId}:${recipient.id}`, origin: "model", status: "placed" },
+		);
+		assert.equal((await userTexts(resumed, child.id)).filter((text) => text === taskText).length, 1);
+		assert.equal(
+			(await userTexts(resumed, recipient.id)).filter((text) => text.includes("RETAINED-REPORTER-ANSWER")).length,
+			0,
+			"Reporter does not deliver answer bodies",
+		);
+		assert.equal(
+			(await userTexts(resumed, owner.id)).length,
+			0,
+			"an explicit reply recipient does not become the requester",
+		);
+		const delivery = await resumed.commit((tx) => tx.submissionByRequest(child.id, requestId), context);
+		const report = await resumed.commit(
+			(tx) => tx.submissionByRequest(recipient.id, `agent-report:${taskId}`),
+			context,
+		);
+		assert.equal(delivery?.status, "done");
+		assert.equal(report, undefined);
+		await settleDeliveries(resumed, context);
+		assert.ok(delivery);
+		const receipt = await resumed.commit((tx) => retainedReceipt(tx, delivery.id), context);
+		assert.equal(receipt?.ownerId, `${storageId}:${recipient.id}`);
+		assert.equal((await readRequestContexts(resumed, child.id, context)).length, REQUEST_CONTEXT_LIMIT);
+		await assert.rejects(
+			resumed.commit(
+				(tx) =>
+					recordRequestContext(tx, child.id, {
+						requestId: "new-over-capacity",
+						requester: "new-requester",
+						replyTo: "new-recipient",
+						origin: "model",
+					}),
+				context,
+			),
+			/unfinished request routes/u,
+		);
+		if (conflictingProfile)
+			assert.ok(
+				warnings.some((warning) => String(warning).includes("Profile identity differs")),
+				"optional profile repair reports its failure without failing the retained task",
+			);
+		else assert.deepEqual(warnings, []);
+	});
 
 it("resolves a namespaced native handle before applying self-control restrictions", async (t) => {
 	const route = createRoute();
 	const id = handleStorageId("native", testCwd);
-	const { registry } = buildRegistry(async (method) => { assert.equal(method, "resolve-target"); return id; }, true, id, testCwd);
+	const { registry } = buildRegistry(
+		async (method) => {
+			assert.equal(method, "resolve-target");
+			return id;
+		},
+		true,
+		id,
+		testCwd,
+	);
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
 	route.script.push({ tool: "agent_abort", args: { sessionId: "@native" } });
@@ -1234,7 +1717,11 @@ it("resolves a namespaced native handle before applying self-control restriction
 it("checks the resolved identity before an alias can abort the caller", async (t) => {
 	const route = createRoute();
 	const calls: string[] = [];
-	const { registry } = buildRegistry(async (method) => { calls.push(method); if (method === "resolve-target") return storageId; throw new Error("unexpected abort dispatch"); });
+	const { registry } = buildRegistry(async (method) => {
+		calls.push(method);
+		if (method === "resolve-target") return storageId;
+		throw new Error("unexpected abort dispatch");
+	});
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
 	route.script.push({ tool: "agent_abort", args: { sessionId: "remote-alias", background: true } });
@@ -1258,25 +1745,37 @@ it("dispatches release to the resolved target and refuses a timer combination", 
 	t.after(() => harness.close(context));
 	route.script.push({ tool: "agent_abort", args: { sessionId: "alias", release: true } });
 	await say(root, "Release the remote host");
-	assert.deepEqual(calls.map((call) => call.method), ["resolve-target", "release"]);
+	assert.deepEqual(
+		calls.map((call) => call.method),
+		["resolve-target", "release"],
+	);
 	assert.equal(calls[1].params.sessionId, "canonical-remote");
 	route.script.push({ tool: "agent_abort", args: { sessionId: "alias", release: true, timerId: 1 } });
 	await say(root, "Reject release with a timer");
-	assert.match((await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort")?.text ?? "", /cannot be combined with timerId/u);
+	assert.match(
+		(await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort")?.text ?? "",
+		/cannot be combined with timerId/u,
+	);
 	assert.equal(calls.length, 2);
 	route.script.push({ tool: "agent_abort", args: { sessionId: "alias", release: true, background: true } });
 	await say(root, "Reject release with background");
-	assert.match((await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort")?.text ?? "", /release cannot be combined with background; abort with background first, then release/u);
+	assert.match(
+		(await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort")?.text ?? "",
+		/release cannot be combined with background; abort with background first, then release/u,
+	);
 	assert.equal(calls.length, 2);
 	route.script.push({ tool: "agent_abort", args: { sessionId: "alias", background: true } });
 	await say(root, "Abort background work");
-	assert.deepEqual(calls.slice(2).map((call) => call.method), ["resolve-target", "abort"]);
+	assert.deepEqual(
+		calls.slice(2).map((call) => call.method),
+		["resolve-target", "abort"],
+	);
 	assert.equal(calls.at(-1)?.params.background, true);
 });
 
-it("reports unavailable native release without inferring global host absence", async t => {
+it("reports unavailable native release without inferring global host absence", async (t) => {
 	const route = createRoute();
-	const { registry } = buildRegistry(async method => {
+	const { registry } = buildRegistry(async (method) => {
 		if (method === "resolve-target") return "canonical-remote";
 		if (method === "release") throw new Error("No verified native host endpoint; writer release is unconfirmed");
 		throw new Error(`unexpected ${method}`);
@@ -1285,7 +1784,7 @@ it("reports unavailable native release without inferring global host absence", a
 	t.after(() => harness.close(context));
 	route.script.push({ tool: "agent_abort", args: { sessionId: "alias", release: true } });
 	await say(root, "Release a cold host");
-	const output = (await toolOutcomes(harness, root.id)).find(entry => entry.name === "agent_abort")?.text ?? "";
+	const output = (await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort")?.text ?? "";
 	assert.match(output, /writer release is unconfirmed/u);
 	assert.doesNotMatch(output, /not running/u);
 });
@@ -1296,49 +1795,95 @@ it("a local abort closes the open work of the target and of each conversation be
 		name: "fixture.hold",
 		version: 1,
 		initial: () => ({ phase: "hold" }),
-		phases: { hold: async (task, runtime, taskContext) => { await runtime.sleepUntil(Number.MAX_SAFE_INTEGER, task.state.checkpoint, taskContext); } },
-		abort: (_task, runtime, taskContext) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), taskContext),
+		phases: {
+			hold: async (task, runtime, taskContext) => {
+				await runtime.sleepUntil(Number.MAX_SAFE_INTEGER, task.state.checkpoint, taskContext);
+			},
+		},
+		abort: (_task, runtime, taskContext) =>
+			runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), taskContext),
 	});
 	const route = createRoute();
 	const holder: DispatchHolder = {};
-	const dispatch: AgentControlDispatch = async (method, params, callContext) => method === "resolve-target" ? params.sessionId : createDispatch(holder, [])(method, params, callContext);
+	const dispatch: AgentControlDispatch = async (method, params, callContext) =>
+		method === "resolve-target" ? params.sessionId : createDispatch(holder, [])(method, params, callContext);
 	const { registry } = buildRegistry(dispatch);
 	registry.install(Durable.defineExtension({ name: "fixture.hold", tasks: [HoldTask] }));
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	holder.harness = harness;
-	t.after(async () => { await harness.close(context); });
+	t.after(async () => {
+		await harness.close(context);
+	});
 	const child = await spawnChild(harness, root, route, "stopped-parent", "PARENT");
 	const childIdentity = `${storageId}:${child.conversationId}`;
-	const owner = await harness.commit((tx) => tx.createTask(HoldTask, {}, { ownership: { kind: "conversation" }, conversationId: child.conversationId }), context);
-	const below = await harness.commit(async (tx) => (await tx.createConversation({ ownership: { kind: "task", taskId: owner } })).id, context);
+	const owner = await harness.commit(
+		(tx) => tx.createTask(HoldTask, {}, { ownership: { kind: "conversation" }, conversationId: child.conversationId }),
+		context,
+	);
+	const below = await harness.commit(
+		async (tx) => (await tx.createConversation({ ownership: { kind: "task", taskId: owner } })).id,
+		context,
+	);
 	// Each conversation has one placed routed input and its declared open work without a dependency.
-	for (const [conversationId, requestId, replyTo] of [[child.conversationId, "parent-task", "requester-outside"], [below, "below-task", childIdentity]] as const) {
+	for (const [conversationId, requestId, replyTo] of [
+		[child.conversationId, "parent-task", "requester-outside"],
+		[below, "below-task", childIdentity],
+	] as const) {
 		await harness.commit(async (tx) => {
 			await recordRequestContext(tx, conversationId, { requestId, requester: replyTo, replyTo, origin: "model" });
-			const entry = await tx.appendEntry(conversationId, { kind: "agent.input", data: { author: { role: "agent", identity: replyTo } }, model: [{ role: "user", content: "Task", timestamp: 1 }] });
-			const submission = await tx.createSubmission({ conversationId, requestId, type: "input", status: "placed", entry: entry.id });
-			(await tx.doc(Durable.LiveDoc, conversationId)).run = { taskId: 999_999 as Durable.TaskId, inputs: [submission.id], turns: 0 };
+			const entry = await tx.appendEntry(conversationId, {
+				kind: "agent.input",
+				data: { author: { role: "agent", identity: replyTo } },
+				model: [{ role: "user", content: "Task", timestamp: 1 }],
+			});
+			const submission = await tx.createSubmission({
+				conversationId,
+				requestId,
+				type: "input",
+				status: "placed",
+				entry: entry.id,
+			});
+			(await tx.doc(Durable.LiveDoc, conversationId)).run = {
+				taskId: 999_999 as Durable.TaskId,
+				inputs: [submission.id],
+				turns: 0,
+			};
 		}, context);
-		const declared = await harness.commit((tx) => declareOpenWork(tx, storageId, conversationId, { results: [], note: "owes a final result" }, 10), context);
+		const declared = await harness.commit(
+			(tx) => declareOpenWork(tx, storageId, conversationId, { results: [], note: "owes a final result" }, 10),
+			context,
+		);
 		assert.ok(!("error" in declared), JSON.stringify(declared));
 	}
 	const work = async (conversationId: Durable.ConversationId) => {
 		const [item] = await harness.commit((tx) => openWorkStatus(tx, storageId, conversationId), context);
 		assert.ok(item);
-		return { state: item.state, ...(item.close === undefined ? {} : { status: item.close.status, delivery: item.close.delivery }) };
+		return {
+			state: item.state,
+			...(item.close === undefined ? {} : { status: item.close.status, delivery: item.close.delivery }),
+		};
 	};
 	route.script.push({ tool: "agent_abort", args: { sessionId: childIdentity } });
 	await say(root, "ABORT");
 	const outcome = (await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort");
 	assert.equal(outcome?.isError, false, outcome?.text);
-	assert.deepEqual(await work(child.conversationId), { state: "closed", status: "stopped", delivery: "active" }, "the requester outside the scope gets the final report");
-	assert.deepEqual(await work(below), { state: "closed", status: "stopped", delivery: "terminal" }, "a report to the stopped target is kept out of delivery");
+	assert.deepEqual(
+		await work(child.conversationId),
+		{ state: "closed", status: "stopped", delivery: "active" },
+		"the requester outside the scope gets the final report",
+	);
+	assert.deepEqual(
+		await work(below),
+		{ state: "closed", status: "stopped", delivery: "terminal" },
+		"a report to the stopped target is kept out of delivery",
+	);
 });
 
 it("refuses an owner abort that crosses the caller's background anchor", async (t) => {
 	const route = createRoute();
 	const holder: DispatchHolder = {};
-	const dispatch: AgentControlDispatch = async (method, params, callContext) => method === "resolve-target" ? params.sessionId : createDispatch(holder, [])(method, params, callContext);
+	const dispatch: AgentControlDispatch = async (method, params, callContext) =>
+		method === "resolve-target" ? params.sessionId : createDispatch(holder, [])(method, params, callContext);
 	const { registry } = buildRegistry(dispatch);
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	holder.harness = harness;
@@ -1397,7 +1942,13 @@ it("drives one model-issued call per control tool", async (t) => {
 	await settle(harness, root.id);
 	await run("agent_status", { sessionId: childSessionId });
 	await run("agent_profile", { action: "read", sessionId: childSessionId });
-	await run("agent_intent", { action: "publish", purpose: "Tool contract", integration: "Compose the fixture", authority: "Synthetic fixture authority", scope: { paths: ["extensions/agent"], branches: ["topic"] } });
+	await run("agent_intent", {
+		action: "publish",
+		purpose: "Tool contract",
+		integration: "Compose the fixture",
+		authority: "Synthetic fixture authority",
+		scope: { paths: ["extensions/agent"], branches: ["topic"] },
+	});
 	await run("agent_list", {});
 	await run("agent_collaborate", { action: "list" });
 	await run("agent_inspect", { sessionId: childSessionId, view: "history" });
@@ -1407,7 +1958,11 @@ it("drives one model-issued call per control tool", async (t) => {
 	await run("agent_abort", { sessionId: childSessionId, timerId: 3 });
 	// Declared work needs the retained route of a placed input of the run.
 	route.script.push({ tool: "agent_work", args: { action: "continue", results: [], note: "The child still works" } });
-	const routed = await richSubmitConversation(root, { message: "RUN agent_work", requestId: "work-request", requester: "work-requester", origin: "model" }, context);
+	const routed = await richSubmitConversation(
+		root,
+		{ message: "RUN agent_work", requestId: "work-request", requester: "work-requester", origin: "model" },
+		context,
+	);
 	await (await harness.submission(routed.submissionId, context))?.wait(context);
 
 	const outcomes = await toolOutcomes(harness, root.id);
@@ -1549,29 +2104,53 @@ it("applies a self-compaction after the whole tool batch and continues the run",
 });
 
 it("spawns a native child through the existing temporary-directory alias", async (t) => {
-	if (testCwdAlias === testCwd) { t.skip("the system temporary directory has no distinct canonical spelling"); return; }
+	if (testCwdAlias === testCwd) {
+		t.skip("the system temporary directory has no distinct canonical spelling");
+		return;
+	}
 	const linkedCwd = testCwdAlias;
 	const route = createRoute();
 	const calls: DispatchCalls = [];
 	const { registry } = buildRegistry(createDispatch({}, calls));
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
-	t.after(async () => { await harness.close(context); });
-	route.script.push({ tool: "agent_spawn", args: { name: "linked", cwd: linkedCwd, prompt: "CONTRACT: reply LINKED", checkInMinutes: 0 } });
+	t.after(async () => {
+		await harness.close(context);
+	});
+	route.script.push({
+		tool: "agent_spawn",
+		args: { name: "linked", cwd: linkedCwd, prompt: "CONTRACT: reply LINKED", checkInMinutes: 0 },
+	});
 	await say(root, "SPAWN");
 	await settle(harness, root.id);
 	const child = (await harness.snapshot(TestChildren, root.id, context))?.children[0];
 	assert.ok(child?.conversationId !== undefined, "the child uses the caller's storage");
 	assert.equal(child.foreignSessionId, undefined);
-	assert.equal(calls.some((call) => call.method === "spawn"), false, "no foreign host spawn occurs");
+	assert.equal(
+		calls.some((call) => call.method === "spawn"),
+		false,
+		"no foreign host spawn occurs",
+	);
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
 	assert.ok(outcome);
 	assert.equal(outcome.isError, false);
-	const reference = (outcome.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
+	const reference = (outcome.details as { result: { sessionId: string; submissionId: number; requestId: string } })
+		.result;
 	assert.equal(reference.sessionId, `${storageId}:${child.conversationId}`);
-	const admitted = await harness.commit((tx) => tx.submissionByRequest(child.conversationId as Durable.ConversationId, reference.requestId), context);
+	const admitted = await harness.commit(
+		(tx) => tx.submissionByRequest(child.conversationId as Durable.ConversationId, reference.requestId),
+		context,
+	);
 	assert.equal(admitted?.id, reference.submissionId);
-	assert.ok(outcome.text.startsWith(`Spawned linked as conversation ${reference.sessionId} in your storage. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}\nPlacement: placed.\nExecution selection: `));
-	assert.equal((outcome.details as { placement?: string }).placement, "placed", "an idle child places its prompt at admission");
+	assert.ok(
+		outcome.text.startsWith(
+			`Spawned linked as conversation ${reference.sessionId} in your storage. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}\nPlacement: placed.\nExecution selection: `,
+		),
+	);
+	assert.equal(
+		(outcome.details as { placement?: string }).placement,
+		"placed",
+		"an idle child places its prompt at admission",
+	);
 });
 
 it("includes the busy-run boundary in native report receipts", async (t) => {
@@ -1582,55 +2161,69 @@ it("includes the busy-run boundary in native report receipts", async (t) => {
 		return { sourceId: "report-source", acknowledged: false };
 	});
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
-	t.after(async () => { await harness.close(context); });
+	t.after(async () => {
+		await harness.close(context);
+	});
 	route.script.push({ tool: "agent_send", args: { sessionId: "other-storage", message: "Progress", mode: "report" } });
 	await say(root, "REPORT");
 	assert.equal(calls[0]?.method, "report");
 	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_send");
 	assert.ok(outcome && !outcome.isError);
-	assert.ok(outcome.text.endsWith(`\n${REPORT_DELIVERY_BOUNDARY}`), "the receipt ends with the report delivery boundary");
+	assert.ok(
+		outcome.text.endsWith(`\n${REPORT_DELIVERY_BOUNDARY}`),
+		"the receipt ends with the report delivery boundary",
+	);
 	assert.match(outcome.text, /placed at the recipient's next tool boundary, not at the end of its run/u);
 	assert.match(outcome.text, /does not interrupt a running tool/u);
 	assert.match(outcome.text, /Use steer when the recipient must change its current work/u);
 	assert.doesNotMatch(outcome.text, /waits for the current run to end|releases the wait/u);
 	const details = outcome.details as { placement?: string; delivery?: string };
-	assert.deepEqual({ placement: details.placement, delivery: details.delivery }, { placement: "unplaced", delivery: "pending" }, "a report row that its recipient has not admitted is unplaced");
+	assert.deepEqual(
+		{ placement: details.placement, delivery: details.delivery },
+		{ placement: "unplaced", delivery: "pending" },
+		"a report row that its recipient has not admitted is unplaced",
+	);
 });
 
-for (const adjusted of [false, true]) it(`spawns a child in a new storage and preserves its thinking adjustment (${adjusted})`, async (t) => {
-	const route = createRoute();
-	const holder: DispatchHolder = {};
-	const calls: DispatchCalls = [];
-	const { registry } = buildRegistry(createDispatch(holder, calls));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
-	holder.harness = harness;
-	holder.spawnSessionId = "other-storage:7";
-	if (adjusted) holder.spawnThinking = { requested: "max", effective: "off" };
-	t.after(async () => {
-		await harness.close(context);
-	});
-	route.script.push({
-		tool: "agent_spawn",
-		args: { name: "remote", cwd: "/elsewhere", prompt: "CONTRACT: reply REMOTE" },
-	});
-	await say(root, "SPAWN");
+for (const adjusted of [false, true])
+	it(`spawns a child in a new storage and preserves its thinking adjustment (${adjusted})`, async (t) => {
+		const route = createRoute();
+		const holder: DispatchHolder = {};
+		const calls: DispatchCalls = [];
+		const { registry } = buildRegistry(createDispatch(holder, calls));
+		const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+		holder.harness = harness;
+		holder.spawnSessionId = "other-storage:7";
+		if (adjusted) holder.spawnThinking = { requested: "max", effective: "off" };
+		t.after(async () => {
+			await harness.close(context);
+		});
+		route.script.push({
+			tool: "agent_spawn",
+			args: { name: "remote", cwd: "/elsewhere", prompt: "CONTRACT: reply REMOTE" },
+		});
+		await say(root, "SPAWN");
 
-	const spawn = calls.find((call) => call.method === "spawn");
-	assert.ok(spawn, "spawn used the host dispatch");
-	assert.equal(spawn.params.senderIdentity, storageId, "the root identity is the bare storage id");
-	assert.match(String(spawn.params.requestId), /^spawn:test-storage:\d+$/u);
-	assert.equal(spawn.params.cwd, "/elsewhere");
-	const state = await harness.snapshot(TestChildren, root.id, context);
-	const child = state?.children.find((candidate) => candidate.name === "remote");
-	assert.equal(child?.foreignSessionId, "other-storage:7");
-	assert.equal(child?.conversationId, undefined, "no local conversation is created");
-	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
-	assert.ok(outcome && !outcome.isError, "the spawn result is not an error");
-	const reference = (outcome.details as { result: { sessionId: string; submissionId: number; requestId: string } }).result;
-	assert.deepEqual(reference, { sessionId: "other-storage:7", submissionId: 23, requestId: spawn.params.requestId });
-	assert.equal(outcome.text, `Spawned remote in /elsewhere as other-storage:7 with its own storage and host. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}${adjusted ? "\nThinking level: requested max; effective off." : ""}`);
-	assert.deepEqual((outcome.details as { thinking?: unknown }).thinking, holder.spawnThinking);
-});
+		const spawn = calls.find((call) => call.method === "spawn");
+		assert.ok(spawn, "spawn used the host dispatch");
+		assert.equal(spawn.params.senderIdentity, storageId, "the root identity is the bare storage id");
+		assert.match(String(spawn.params.requestId), /^spawn:test-storage:\d+$/u);
+		assert.equal(spawn.params.cwd, "/elsewhere");
+		const state = await harness.snapshot(TestChildren, root.id, context);
+		const child = state?.children.find((candidate) => candidate.name === "remote");
+		assert.equal(child?.foreignSessionId, "other-storage:7");
+		assert.equal(child?.conversationId, undefined, "no local conversation is created");
+		const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_spawn");
+		assert.ok(outcome && !outcome.isError, "the spawn result is not an error");
+		const reference = (outcome.details as { result: { sessionId: string; submissionId: number; requestId: string } })
+			.result;
+		assert.deepEqual(reference, { sessionId: "other-storage:7", submissionId: 23, requestId: spawn.params.requestId });
+		assert.equal(
+			outcome.text,
+			`Spawned remote in /elsewhere as other-storage:7 with its own storage and host. The prompt was admitted and the answer will report back.\nResult: ${JSON.stringify(reference)}${adjusted ? "\nThinking level: requested max; effective off." : ""}`,
+		);
+		assert.deepEqual((outcome.details as { thinking?: unknown }).thinking, holder.spawnThinking);
+	});
 
 it("omits retained creation detail from compact storage status without changing child records", async (t) => {
 	const route = createRoute();
@@ -1639,7 +2232,9 @@ it("omits retained creation detail from compact storage status without changing 
 	const { registry } = buildRegistry(createDispatch(holder, calls));
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	holder.harness = harness;
-	t.after(async () => { await harness.close(context); });
+	t.after(async () => {
+		await harness.close(context);
+	});
 	const status = async (caller = root, args: Durable.JsonObject = {}) => {
 		route.script.push({ tool: "agent_status", args });
 		await say(caller, "STATUS");
@@ -1660,12 +2255,25 @@ it("omits retained creation detail from compact storage status without changing 
 	assert.deepEqual(populated.details, empty.details);
 	assert.equal((populated.details as { format: string }).format, "compact");
 	assert.ok((populated.details as { omitted: string[] }).omitted.includes("created-agent detail"));
-	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length, 2, "presentation leaves creation records intact");
-	assert.deepEqual(calls.filter((call) => call.method === "status").map((call) => call.params), [{}, {}]);
+	assert.equal(
+		(await harness.snapshot(TestChildren, root.id, context))?.children.length,
+		2,
+		"presentation leaves creation records intact",
+	);
+	assert.deepEqual(
+		calls.filter((call) => call.method === "status").map((call) => call.params),
+		[{}, {}],
+	);
 	const child = await harness.conversation(local.conversationId, context);
 	assert.ok(child);
-	assert.ok(!(await status(child)).text.includes("Created agents"), "a childless caller does not inherit its owner's registry");
-	assert.ok(!(await status(root, { sessionId: storageId })).text.includes("Created agents"), "selected status stays unchanged");
+	assert.ok(
+		!(await status(child)).text.includes("Created agents"),
+		"a childless caller does not inherit its owner's registry",
+	);
+	assert.ok(
+		!(await status(root, { sessionId: storageId })).text.includes("Created agents"),
+		"selected status stays unchanged",
+	);
 });
 
 it("refuses a self abort and continues the run", async (t) => {
@@ -1718,40 +2326,49 @@ it("sends stable request IDs for foreign fork and rewind", async (t) => {
 	assert.equal(rewind.params.correction, "fix");
 });
 
-for (const minutes of [undefined, 0, 2.5]) it(`dispatches place with interval ${minutes}, resolved area, and stable request ID`, async (t) => {
-	const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
-	process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
-	t.after(() => { if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES; else process.env.PI_AGENT_CHECK_IN_MINUTES = prior; });
-	const route = createRoute();
-	const holder: DispatchHolder = {};
-	const calls: DispatchCalls = [];
-	const { registry } = buildRegistry(createDispatch(holder, calls));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
-	holder.harness = harness;
-	holder.placeSessionId = "place-storage:7";
-	const area = realpathSync(mkdtempSync(join(tmpdir(), "durable-agents-place-")));
-	t.after(async () => {
-		await harness.close(context);
-		rmSync(area, { recursive: true, force: true });
-	});
-	route.script.push({
-		tool: "agent_place",
-		args: { area: `${area}/.`, topic: "far", prompt: "CONTRACT: reply FAR", ...(minutes === undefined ? {} : { checkInMinutes: minutes }) },
-	});
-	await say(root, "PLACE");
+for (const minutes of [undefined, 0, 2.5])
+	it(`dispatches place with interval ${minutes}, resolved area, and stable request ID`, async (t) => {
+		const prior = process.env.PI_AGENT_CHECK_IN_MINUTES;
+		process.env.PI_AGENT_CHECK_IN_MINUTES = "7";
+		t.after(() => {
+			if (prior === undefined) delete process.env.PI_AGENT_CHECK_IN_MINUTES;
+			else process.env.PI_AGENT_CHECK_IN_MINUTES = prior;
+		});
+		const route = createRoute();
+		const holder: DispatchHolder = {};
+		const calls: DispatchCalls = [];
+		const { registry } = buildRegistry(createDispatch(holder, calls));
+		const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+		holder.harness = harness;
+		holder.placeSessionId = "place-storage:7";
+		const area = realpathSync(mkdtempSync(join(tmpdir(), "durable-agents-place-")));
+		t.after(async () => {
+			await harness.close(context);
+			rmSync(area, { recursive: true, force: true });
+		});
+		route.script.push({
+			tool: "agent_place",
+			args: {
+				area: `${area}/.`,
+				topic: "far",
+				prompt: "CONTRACT: reply FAR",
+				...(minutes === undefined ? {} : { checkInMinutes: minutes }),
+			},
+		});
+		await say(root, "PLACE");
 
-	const place = calls.find((call) => call.method === "place");
-	assert.ok(place, "agent_place used the host dispatch");
-	assert.equal(place.params.area, area, "the dispatched area is resolved");
-	assert.equal(place.params.topic, "far");
-	assert.equal(place.params.checkInMinutes, minutes, "the manager resolves absent intervals after preset selection");
-	assert.ok(place.params.preferenceSnapshot);
-	assert.match(String(place.params.requestId), /^place:test-storage:\d+$/u);
-	assert.equal(place.params.senderIdentity, storageId);
-	const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_place");
-	assert.ok(outcome && !outcome.isError, "the place result is not an error");
-	assert.match(outcome.text, /place-storage:7/u);
-});
+		const place = calls.find((call) => call.method === "place");
+		assert.ok(place, "agent_place used the host dispatch");
+		assert.equal(place.params.area, area, "the dispatched area is resolved");
+		assert.equal(place.params.topic, "far");
+		assert.equal(place.params.checkInMinutes, minutes, "the manager resolves absent intervals after preset selection");
+		assert.ok(place.params.preferenceSnapshot);
+		assert.match(String(place.params.requestId), /^place:test-storage:\d+$/u);
+		assert.equal(place.params.senderIdentity, storageId);
+		const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_place");
+		assert.ok(outcome && !outcome.isError, "the place result is not an error");
+		assert.match(outcome.text, /place-storage:7/u);
+	});
 
 it("forwards an object inspect cursor for pagination", async (t) => {
 	const route = createRoute();
@@ -1791,9 +2408,7 @@ it("forwards an object inspect cursor for pagination", async (t) => {
 	assert.ok(first, "the first inspect returned a result");
 	const page = JSON.parse(first.text) as { nextCursor?: { at: number; tag: string } };
 	assert.deepEqual(page.nextCursor, { at: 7, tag: "more" });
-	const firstDetails = first.details as
-		| { nextCursor?: { at: number; tag: string } }
-		| undefined;
+	const firstDetails = first.details as { nextCursor?: { at: number; tag: string } } | undefined;
 	assert.deepEqual(
 		firstDetails?.nextCursor,
 		{ at: 7, tag: "more" },
@@ -1826,7 +2441,14 @@ it("renders the delegation guidance into the model-facing section", async () => 
 	} as unknown as Durable.PromptInput["read"];
 	const input = {
 		conversationId: Durable.ROOT_CONVERSATION_ID,
-		agent: { thinkingLevel: "off" as const, extensions: [], tools: (extension.tools ?? []).filter((tool) => tool.deferred !== true), callable: (extension.tools ?? []).filter((tool) => tool.callers === undefined || tool.callers.includes("tools")), deferred: [], sections: [] },
+		agent: {
+			thinkingLevel: "off" as const,
+			extensions: [],
+			tools: (extension.tools ?? []).filter((tool) => tool.deferred !== true),
+			callable: (extension.tools ?? []).filter((tool) => tool.callers === undefined || tool.callers.includes("tools")),
+			deferred: [],
+			sections: [],
+		},
 		env: undefined,
 		shown: {},
 		read,
@@ -1840,11 +2462,42 @@ it("renders the delegation guidance into the model-facing section", async () => 
 	assert.doesNotMatch(text, /agent_detach/u);
 	const exposed = extension.tools ?? [];
 	assert.deepEqual(
-		exposed.filter((tool) => tool.deferred === true).map((tool) => tool.name).sort(),
-		["agent_attach", "agent_command", "agent_configure", "agent_fork", "agent_inspect", "agent_list", "agent_place", "agent_profile", "agent_reset", "agent_rewind"],
+		exposed
+			.filter((tool) => tool.deferred === true)
+			.map((tool) => tool.name)
+			.sort(),
+		[
+			"agent_attach",
+			"agent_command",
+			"agent_configure",
+			"agent_fork",
+			"agent_inspect",
+			"agent_list",
+			"agent_place",
+			"agent_profile",
+			"agent_reset",
+			"agent_rewind",
+		],
 	);
-	assert.deepEqual(exposed.filter((tool) => tool.callers?.includes("model") && !tool.callers.includes("tools")).map((tool) => tool.name).sort(), ["agent_compact"]);
-	for (const name of ["agent_inspect", "agent_list", "agent_attach", "agent_place", "agent_fork", "agent_rewind", "agent_reset", "agent_configure", "agent_profile", "agent_command"])
+	assert.deepEqual(
+		exposed
+			.filter((tool) => tool.callers?.includes("model") && !tool.callers.includes("tools"))
+			.map((tool) => tool.name)
+			.sort(),
+		["agent_compact"],
+	);
+	for (const name of [
+		"agent_inspect",
+		"agent_list",
+		"agent_attach",
+		"agent_place",
+		"agent_fork",
+		"agent_rewind",
+		"agent_reset",
+		"agent_configure",
+		"agent_profile",
+		"agent_command",
+	])
 		assert.doesNotMatch(text ?? "", new RegExp(`^- ${name}:`, "mu"), `${name} contributes no guidance until offered`);
 	const deferredOnly = await section.render(
 		{ ...input, agent: { ...input.agent, tools: exposed.filter((tool) => tool.name === "agent_list") } },
@@ -1906,7 +2559,9 @@ it("returns the host configure outcome and refuses self configuration", async (t
 it("arms native Reporter check-ins with the model default and releases them on settlement", async (t) => {
 	const route = createRoute();
 	let releaseAnswer: (message: AssistantMessage) => void = () => {};
-	const answer = new Promise<AssistantMessage>((resolve) => { releaseAnswer = resolve; });
+	const answer = new Promise<AssistantMessage>((resolve) => {
+		releaseAnswer = resolve;
+	});
 	const models = createTestModels((request, options, state, model) => {
 		const last = request.messages.findLast((message) => message.role === "user");
 		if (messageText(last).includes("CONTRACT: reply CHECKIN")) return answer;
@@ -1936,7 +2591,10 @@ it("arms native Reporter check-ins with the model default and releases them on s
 	releaseAnswer(fauxAssistantMessage("ANSWER-CHECKIN"));
 	await harness.waitForTask(task.record.id, context);
 	await settle(harness, root.id);
-	assert.equal((await harness.inspect(context)).tasks.some((row) => row.record.kind === "agent.check-in"), false);
+	assert.equal(
+		(await harness.inspect(context)).tasks.some((row) => row.record.kind === "agent.check-in"),
+		false,
+	);
 });
 
 it("leaves native check-ins absent when the host registry supplies no deadline task", async (t) => {
@@ -1955,45 +2613,74 @@ it("namespaces foreign admissions by source storage even when task IDs coincide"
 	const receiver = new Set<string>();
 	for (const source of ["left-storage", "right-storage"]) {
 		const route = createRoute();
-		const { registry } = buildRegistry(async (method, params) => {
-			assert.equal(method, "submit");
-			const key = String(params.requestId);
-			keys.push(key);
-			const deduped = receiver.has(key);
-			receiver.add(key);
-			return { submissionId: receiver.size, deduped };
-		}, true, source);
+		const { registry } = buildRegistry(
+			async (method, params) => {
+				assert.equal(method, "submit");
+				const key = String(params.requestId);
+				keys.push(key);
+				const deduped = receiver.has(key);
+				receiver.add(key);
+				return { submissionId: receiver.size, deduped };
+			},
+			true,
+			source,
+		);
 		const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 		t.after(() => harness.close(context));
-		route.script.push({ tool: "agent_send", args: { sessionId: "remote-storage", message: "Independent contribution", checkInMinutes: 0 } });
+		route.script.push({
+			tool: "agent_send",
+			args: { sessionId: "remote-storage", message: "Independent contribution", checkInMinutes: 0 },
+		});
 		await say(root, "SEND");
 	}
 	assert.equal(keys.length, 2);
-	assert.equal(keys[0].split(":").at(-1), keys[1].split(":").at(-1), "the independent storages reused the same tool task number");
+	assert.equal(
+		keys[0].split(":").at(-1),
+		keys[1].split(":").at(-1),
+		"the independent storages reused the same tool task number",
+	);
 	assert.notEqual(keys[0], keys[1]);
 	assert.equal(receiver.size, 2);
 });
 
-for (const mode of [undefined, "steer", "followUp"]) it(`honors immediate send disposition ${mode ?? "default followUp"}`, async (t) => {
-	const route = createRoute();
-	const calls: DispatchCalls = [];
-	const { registry } = buildRegistry(async (method, params) => { calls.push({ method, params }); return { submissionId: 1, deduped: false }; });
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
-	t.after(() => harness.close(context));
-	route.script.push({ tool: "agent_send", args: { sessionId: "remote-storage", message: "A time-sensitive correction", checkInMinutes: 0, ...(mode === undefined ? {} : { mode }) } });
-	await say(root, "SEND");
-	assert.equal(calls[0].method, "submit");
-	assert.equal(calls[0].params.whenBusy, mode ?? "followUp", "a send without a mode is new work");
-	assert.match(String(calls[0].params.requestId), /^agent-deliver:test-storage:\d+$/u);
-});
+for (const mode of [undefined, "steer", "followUp"])
+	it(`honors immediate send disposition ${mode ?? "default followUp"}`, async (t) => {
+		const route = createRoute();
+		const calls: DispatchCalls = [];
+		const { registry } = buildRegistry(async (method, params) => {
+			calls.push({ method, params });
+			return { submissionId: 1, deduped: false };
+		});
+		const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+		t.after(() => harness.close(context));
+		route.script.push({
+			tool: "agent_send",
+			args: {
+				sessionId: "remote-storage",
+				message: "A time-sensitive correction",
+				checkInMinutes: 0,
+				...(mode === undefined ? {} : { mode }),
+			},
+		});
+		await say(root, "SEND");
+		assert.equal(calls[0].method, "submit");
+		assert.equal(calls[0].params.whenBusy, mode ?? "followUp", "a send without a mode is new work");
+		assert.match(String(calls[0].params.requestId), /^agent-deliver:test-storage:\d+$/u);
+	});
 
 it("dispatches collaboration with actual caller identity and a source-qualified replay key", async (t) => {
 	const route = createRoute();
 	const calls: DispatchCalls = [];
-	const { registry } = buildRegistry(async (method, params) => { calls.push({ method, params }); return { threadId: "thread", sequence: 1, deduped: false }; });
+	const { registry } = buildRegistry(async (method, params) => {
+		calls.push({ method, params });
+		return { threadId: "thread", sequence: 1, deduped: false };
+	});
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
-	route.script.push({ tool: "agent_collaborate", args: { action: "post", threadId: "thread", message: "A supported finding", notify: [] } });
+	route.script.push({
+		tool: "agent_collaborate",
+		args: { action: "post", threadId: "thread", message: "A supported finding", notify: [] },
+	});
 	await say(root, "COLLABORATE");
 	assert.equal(calls[0].method, "collaboration-mutate");
 	assert.equal(calls[0].params.senderIdentity, storageId);
@@ -2007,9 +2694,17 @@ it("keeps the fake model helpers honest", () => {
 });
 
 /** Retained continuity facts of one conversation as [phase, target, request, submission or timer]. */
-async function continuityFacts(harness: Durable.Harness, conversationId: Durable.ConversationId): Promise<Array<[string, string, string, number | undefined]>> {
+async function continuityFacts(
+	harness: Durable.Harness,
+	conversationId: Durable.ConversationId,
+): Promise<Array<[string, string, string, number | undefined]>> {
 	const state = await harness.snapshot(ContinuityDoc, conversationId, context);
-	return (state?.events ?? []).map((event) => [event.phase, event.sessionId, event.requestId, event.submissionId ?? event.timerId]);
+	return (state?.events ?? []).map((event) => [
+		event.phase,
+		event.sessionId,
+		event.requestId,
+		event.submissionId ?? event.timerId,
+	]);
 }
 
 it("records a local request before its admission and then the admission with its exact submission", async (t) => {
@@ -2022,21 +2717,43 @@ it("records a local request before its admission and then the admission with its
 	const child = await spawnChild(harness, root, route, "worker", "FIRST");
 	const target = `${storageId}:${child.conversationId}`;
 	const spawned = await continuityFacts(harness, root.id);
-	assert.deepEqual(spawned.map(([phase, sessionId]) => [phase, sessionId]), [["requested", target], ["admitted", target]]);
+	assert.deepEqual(
+		spawned.map(([phase, sessionId]) => [phase, sessionId]),
+		[
+			["requested", target],
+			["admitted", target],
+		],
+	);
 	const requestId = spawned[0][2];
 	assert.match(requestId, /^agent-deliver:\d+$/u);
 	assert.equal(spawned[1][2], requestId);
 	const submission = await harness.commit((tx) => tx.submissionByRequest(child.conversationId, requestId), context);
 	assert.equal(spawned[1][3], submission?.id, "the admitted fact names the target's submission of that request");
-	assert.equal((await harness.snapshot(ContinuityDoc, root.id, context))?.events.every((event) => event.replyTo === storageId), true);
+	assert.equal(
+		(await harness.snapshot(ContinuityDoc, root.id, context))?.events.every((event) => event.replyTo === storageId),
+		true,
+	);
 
-	route.script.push({ tool: "agent_send", args: { sessionId: target, message: "CONTRACT: reply SECOND", checkInMinutes: 0 } });
+	route.script.push({
+		tool: "agent_send",
+		args: { sessionId: target, message: "CONTRACT: reply SECOND", checkInMinutes: 0 },
+	});
 	await say(root, "SEND");
 	await settle(harness, root.id);
 	const sent = (await continuityFacts(harness, root.id)).slice(2);
-	assert.deepEqual(sent.map(([phase, sessionId]) => [phase, sessionId]), [["requested", target], ["admitted", target]]);
+	assert.deepEqual(
+		sent.map(([phase, sessionId]) => [phase, sessionId]),
+		[
+			["requested", target],
+			["admitted", target],
+		],
+	);
 	assert.notEqual(sent[0][2], requestId);
-	assert.deepEqual(await continuityFacts(harness, child.conversationId), [], "the producer keeps no outgoing fact for work it received");
+	assert.deepEqual(
+		await continuityFacts(harness, child.conversationId),
+		[],
+		"the producer keeps no outgoing fact for work it received",
+	);
 });
 
 it("records a foreign request before the dispatch and closes or keeps it by what the receipt proves", async (t) => {
@@ -2048,7 +2765,8 @@ it("records a foreign request before the dispatch and closes or keeps it by what
 		assert.ok(holder.harness);
 		before.push(await continuityFacts(holder.harness, Durable.ROOT_CONVERSATION_ID));
 		const requestId = String(params.requestId);
-		if (params.sessionId === "remote-storage") return { submissionId: 41, deduped: false, result: { sessionId: "remote-storage", submissionId: 41, requestId } };
+		if (params.sessionId === "remote-storage")
+			return { submissionId: 41, deduped: false, result: { sessionId: "remote-storage", submissionId: 41, requestId } };
 		if (params.sessionId === "primary-session") return { admitted: true, sourceId: "report:primary" };
 		throw new Error("target unavailable");
 	});
@@ -2060,8 +2778,17 @@ it("records a foreign request before the dispatch and closes or keeps it by what
 		await say(root, `SEND ${sessionId}`);
 	}
 	const facts = await continuityFacts(harness, root.id);
-	const requestOf = (sessionId: string): string => facts.find(([phase, target]) => phase === "requested" && target === sessionId)?.[2] ?? "";
-	assert.deepEqual(before.map((seen) => seen.map(([phase]) => phase)), [["requested"], ["requested", "admitted", "requested"], ["requested", "admitted", "requested", "refused", "requested"]], "each request is retained before its dispatch");
+	const requestOf = (sessionId: string): string =>
+		facts.find(([phase, target]) => phase === "requested" && target === sessionId)?.[2] ?? "";
+	assert.deepEqual(
+		before.map((seen) => seen.map(([phase]) => phase)),
+		[
+			["requested"],
+			["requested", "admitted", "requested"],
+			["requested", "admitted", "requested", "refused", "requested"],
+		],
+		"each request is retained before its dispatch",
+	);
 	assert.deepEqual(facts, [
 		["requested", "remote-storage", requestOf("remote-storage"), undefined],
 		["admitted", "remote-storage", requestOf("remote-storage"), 41],
@@ -2069,7 +2796,8 @@ it("records a foreign request before the dispatch and closes or keeps it by what
 		["refused", "primary-session", requestOf("primary-session"), undefined],
 		["requested", "broken-storage", requestOf("broken-storage"), undefined],
 	]);
-	for (const sessionId of ["remote-storage", "primary-session", "broken-storage"]) assert.match(requestOf(sessionId), /^agent-deliver:test-storage:\d+$/u);
+	for (const sessionId of ["remote-storage", "primary-session", "broken-storage"])
+		assert.match(requestOf(sessionId), /^agent-deliver:test-storage:\d+$/u);
 	const outcomes = await toolOutcomes(harness, root.id);
 	const failed = outcomes.filter((outcome) => outcome.isError);
 	assert.equal(failed.length, 1);
@@ -2083,7 +2811,10 @@ it("records the prompt of an agent created in another storage once its identity 
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	holder.harness = harness;
 	t.after(() => harness.close(context));
-	route.script.push({ tool: "agent_spawn", args: { name: "foreign", cwd: "/elsewhere", prompt: "CONTRACT: reply FOREIGN", checkInMinutes: 0 } });
+	route.script.push({
+		tool: "agent_spawn",
+		args: { name: "foreign", cwd: "/elsewhere", prompt: "CONTRACT: reply FOREIGN", checkInMinutes: 0 },
+	});
 	await say(root, "SPAWN");
 	const facts = await continuityFacts(harness, root.id);
 	assert.equal(facts.length, 1);
@@ -2096,9 +2827,29 @@ it("lists a scheduled input with its timer and closes it only on a cancellation 
 	const holder: DispatchHolder = {};
 	let timerId = 8;
 	const { registry } = buildRegistry(async (method, params) => {
-		if (method === "timer-schedule") return { timerId: ++timerId, conversationId: 1, identity: "remote-storage", deadline: params.deliverAt, mode: params.mode, origin: "model", scheduleId: params.scheduleId, deduped: false, disposition: "scheduled", status: "sleeping" };
+		if (method === "timer-schedule")
+			return {
+				timerId: ++timerId,
+				conversationId: 1,
+				identity: "remote-storage",
+				deadline: params.deliverAt,
+				mode: params.mode,
+				origin: "model",
+				scheduleId: params.scheduleId,
+				deduped: false,
+				disposition: "scheduled",
+				status: "sleeping",
+			};
 		// Timer IDs are local to a storage: the other storage has its own timer 10, and one receipt names no identity.
-		if (method === "timer-cancel") return { timerId: params.timerId, outcome: "marked", status: params.timerId === 11 ? "fired" : "cancelled", ...(params.sessionId === "unnamed-storage" ? {} : { identity: params.sessionId === "@handle" ? "remote-storage" : params.sessionId }) };
+		if (method === "timer-cancel")
+			return {
+				timerId: params.timerId,
+				outcome: "marked",
+				status: params.timerId === 11 ? "fired" : "cancelled",
+				...(params.sessionId === "unnamed-storage"
+					? {}
+					: { identity: params.sessionId === "@handle" ? "remote-storage" : params.sessionId }),
+			};
 		return createDispatch(holder, [])(method, params);
 	});
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
@@ -2119,15 +2870,28 @@ it("lists a scheduled input with its timer and closes it only on a cancellation 
 		await say(root, `TIMER ${call.tool}`);
 	}
 	const facts = await continuityFacts(harness, root.id);
-	assert.deepEqual(facts.map(([phase, sessionId, , id]) => [phase, sessionId, id]), [
-		["requested", "remote-storage", 9],
-		["requested", "remote-storage", 10],
-		["requested", "remote-storage", 11],
-		["refused", "remote-storage", undefined],
-	], "a cancelled timer of another storage, a receipt without an identity and a fired timer close nothing");
+	assert.deepEqual(
+		facts.map(([phase, sessionId, , id]) => [phase, sessionId, id]),
+		[
+			["requested", "remote-storage", 9],
+			["requested", "remote-storage", 10],
+			["requested", "remote-storage", 11],
+			["refused", "remote-storage", undefined],
+		],
+		"a cancelled timer of another storage, a receipt without an identity and a fired timer close nothing",
+	);
 	assert.match(facts[0][2], /^timer:test-storage:\d+:delivery$/u);
-	assert.equal(facts[3][2], facts[0][2], "the handle's cancellation closes the request listed under the identity that the host resolved");
-	assert.equal((await toolOutcomes(harness, root.id)).filter((outcome) => outcome.name === "agent_abort" && !outcome.isError).length, 4, "every cancellation itself succeeded");
+	assert.equal(
+		facts[3][2],
+		facts[0][2],
+		"the handle's cancellation closes the request listed under the identity that the host resolved",
+	);
+	assert.equal(
+		(await toolOutcomes(harness, root.id)).filter((outcome) => outcome.name === "agent_abort" && !outcome.isError)
+			.length,
+		4,
+		"every cancellation itself succeeded",
+	);
 });
 
 it("starts a self-compaction's summarizer instructions with the continuity seed", async (t) => {
@@ -2135,13 +2899,21 @@ it("starts a self-compaction's summarizer instructions with the continuity seed"
 	route.batch.push([{ tool: "agent_compact", args: { instructions: "Keep the parser notes." } }]);
 	const holder: DispatchHolder = {};
 	const { registry } = buildRegistry(createDispatch(holder, []));
-	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route), { compaction: { keepRecentTokens: 1 } });
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route), {
+		compaction: { keepRecentTokens: 1 },
+	});
 	holder.harness = harness;
 	t.after(() => harness.close(context));
 	await say(root, "SELFTEST");
-	const summarizer = route.requests.map((messages) => messages.map((message) => messageText(message)).join("\n")).find((text) => text.includes("conversation to summarize"));
+	const summarizer = route.requests
+		.map((messages) => messages.map((message) => messageText(message)).join("\n"))
+		.find((text) => text.includes("conversation to summarize"));
 	assert.ok(summarizer, "the compaction asked the model for a summary");
 	assert.ok(summarizer.includes(`${NATIVE_COMPACTION_SEED}\n\nKeep the parser notes.`), summarizer.slice(-600));
-	const description = registry.snapshot().tools().find(({ tool }) => tool.name === "agent_compact")?.tool.description ?? "";
+	const description =
+		registry
+			.snapshot()
+			.tools()
+			.find(({ tool }) => tool.name === "agent_compact")?.tool.description ?? "";
 	assert.ok(description.includes(NATIVE_COMPACTION_SEED));
 });

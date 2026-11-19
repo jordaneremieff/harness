@@ -6,7 +6,15 @@ import { validateIntentInput } from "./effort-schema.ts";
 
 it("registers every ordinary agent tool with a plain object parameter schema", async () => {
 	const tools: Array<{ name: string; parameters: Record<string, unknown> }> = [];
-	await register({ events: { emit() {}, on: () => () => {} }, on: () => () => {}, registerTool: (tool: typeof tools[number]) => tools.push(tool), registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, registerCommand() {} } as unknown as ExtensionAPI);
+	await register({
+		events: { emit() {}, on: () => () => {} },
+		on: () => () => {},
+		registerTool: (tool: (typeof tools)[number]) => tools.push(tool),
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
+		registerCommand() {},
+	} as unknown as ExtensionAPI);
 	assert.ok(tools.length > 0);
 	for (const tool of tools) {
 		assert.equal(tool.parameters.type, "object", tool.name);
@@ -17,7 +25,13 @@ it("registers every ordinary agent tool with a plain object parameter schema", a
 });
 
 it("validates publish and clear at execution without a union declaration", () => {
-	const publish = { action: "publish", purpose: "Review parser", integration: "Send findings", authority: "Operator requests review", scope: { paths: ["parser"], branches: ["main"] } };
+	const publish = {
+		action: "publish",
+		purpose: "Review parser",
+		integration: "Send findings",
+		authority: "Operator requests review",
+		scope: { paths: ["parser"], branches: ["main"] },
+	};
 	assert.doesNotThrow(() => validateIntentInput(publish));
 	assert.doesNotThrow(() => validateIntentInput({ action: "clear" }));
 	assert.throws(() => validateIntentInput({ action: "publish" }), /Publish intent requires/u);

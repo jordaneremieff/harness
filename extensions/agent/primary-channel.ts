@@ -19,14 +19,33 @@
  * supplies `deliver` (usually `pi.sendMessage`) and `promptTrust` (usually a UI
  * select mapped by `promptProjectTrust`).
  */
-import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, chmodSync, writeFileSync, type BigIntStats } from "node:fs";
+import {
+	constants,
+	closeSync,
+	fstatSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readSync,
+	renameSync,
+	unlinkSync,
+	chmodSync,
+	writeFileSync,
+	type BigIntStats,
+} from "node:fs";
 import { randomUUID } from "node:crypto";
 import { opendir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import { invalid } from "@earendil-works/chord";
 import type { JsonValue } from "@earendil-works/chord/json";
-import { connectTransport, createTransportServer, unixSocketPath, type TransportClient, type TransportRequest } from "../../transport/index.ts";
+import {
+	connectTransport,
+	createTransportServer,
+	unixSocketPath,
+	type TransportClient,
+	type TransportRequest,
+} from "../../transport/index.ts";
 import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { PrimaryIntentClaim } from "./effort-presence.ts";
@@ -145,7 +164,11 @@ export interface PrimaryChannel {
 	readonly socketPath: string;
 	info(): PrimaryInfo;
 	/** Replace the displayed identity fields; the announced server identity and socket stay unchanged. */
-	update(info: { name: string | undefined; model: { provider: string; modelId: string } | undefined; thinkingLevel: string | undefined }): void;
+	update(info: {
+		name: string | undefined;
+		model: { provider: string; modelId: string } | undefined;
+		thinkingLevel: string | undefined;
+	}): void;
 	publishIntent(intentClaim: PrimaryIntentClaim | undefined): void;
 	touch(at: string): void;
 	setObservedPurpose(value: PrimaryObservedPurpose | undefined): void;
@@ -165,11 +188,19 @@ export interface PrimaryChannelConnection {
 }
 
 /** Connect one client with a bounded handshake; a silent peer cannot hang the caller. */
-async function connectClient(id: string, socketPath: string, serverId: string, timeoutMs: number): Promise<TransportClient> {
+async function connectClient(
+	id: string,
+	socketPath: string,
+	serverId: string,
+	timeoutMs: number,
+): Promise<TransportClient> {
 	try {
 		return await connectTransport({ path: socketPath, serverId, timeoutMs });
 	} catch (error) {
-		if (error instanceof Error && error.name === "TimeoutError") throw new PrimaryChannelUnavailableError(`primary channel ${id} did not complete its identity handshake within ${timeoutMs} ms`);
+		if (error instanceof Error && error.name === "TimeoutError")
+			throw new PrimaryChannelUnavailableError(
+				`primary channel ${id} did not complete its identity handshake within ${timeoutMs} ms`,
+			);
 		throw error;
 	}
 }
@@ -191,30 +222,42 @@ function processState(pid: number): "dead" | "live" | "unknown" {
 function optionalString(record: Record<string, unknown>, key: string): string | undefined {
 	const value = record[key];
 	if (value === undefined) return undefined;
-	if (typeof value !== "string" || value === "") throw new PrimaryChannelUnavailableError(`primary endpoint ${key} must be a non-empty string`);
+	if (typeof value !== "string" || value === "")
+		throw new PrimaryChannelUnavailableError(`primary endpoint ${key} must be a non-empty string`);
 	return value;
 }
 
 /** Validate bounded session declarations independently from the delivery contract. */
 export function validatePrimaryIntentClaim(value: unknown): PrimaryIntentClaim {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("intentClaim must be an object");
+	if (value === null || typeof value !== "object" || Array.isArray(value))
+		throw new TypeError("intentClaim must be an object");
 	const record = value as Record<string, unknown>;
 	const text = (key: string, max: number): string => {
 		const field = record[key];
-		if (typeof field !== "string" || field.length === 0 || field.length > max) throw new TypeError(`intentClaim ${key} must contain 1-${max} characters`);
+		if (typeof field !== "string" || field.length === 0 || field.length > max)
+			throw new TypeError(`intentClaim ${key} must contain 1-${max} characters`);
 		return field;
 	};
 	const scope = record.scope;
-	if (scope === null || typeof scope !== "object" || Array.isArray(scope)) throw new TypeError("intentClaim scope must be an object");
+	if (scope === null || typeof scope !== "object" || Array.isArray(scope))
+		throw new TypeError("intentClaim scope must be an object");
 	const fullGate = (scope as Record<string, unknown>).fullGate;
-	if (fullGate !== undefined && typeof fullGate !== "boolean") throw new TypeError("intentClaim scope.fullGate must be a boolean");
+	if (fullGate !== undefined && typeof fullGate !== "boolean")
+		throw new TypeError("intentClaim scope.fullGate must be a boolean");
 	const list = (key: "paths" | "branches"): string[] => {
 		const entries = (scope as Record<string, unknown>)[key];
-		if (!Array.isArray(entries) || entries.length > 32 || entries.some((entry) => typeof entry !== "string" || entry.length === 0 || entry.length > 512)) throw new TypeError(`intentClaim scope.${key} requires at most 32 strings of 1-512 characters`);
+		if (
+			!Array.isArray(entries) ||
+			entries.length > 32 ||
+			entries.some((entry) => typeof entry !== "string" || entry.length === 0 || entry.length > 512)
+		)
+			throw new TypeError(`intentClaim scope.${key} requires at most 32 strings of 1-512 characters`);
 		return [...entries] as string[];
 	};
 	return {
-		purpose: text("purpose", 1024), integration: text("integration", 2048), authority: text("authority", 2048),
+		purpose: text("purpose", 1024),
+		integration: text("integration", 2048),
+		authority: text("authority", 2048),
 		scope: { paths: list("paths"), branches: list("branches"), ...(fullGate === undefined ? {} : { fullGate }) },
 		...(record.contactThread === undefined ? {} : { contactThread: text("contactThread", 256) }),
 		updatedAt: text("updatedAt", 64),
@@ -222,23 +265,37 @@ export function validatePrimaryIntentClaim(value: unknown): PrimaryIntentClaim {
 }
 
 function validateObservedPurpose(value: unknown): PrimaryObservedPurpose {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("observedPurpose must be an object");
+	if (value === null || typeof value !== "object" || Array.isArray(value))
+		throw new TypeError("observedPurpose must be an object");
 	const record = value as Record<string, unknown>;
-	if (record.source !== "session-name" && record.source !== "interactive-input") throw new TypeError("observedPurpose source is invalid");
-	if (typeof record.text !== "string" || record.text.length === 0 || record.text.length > 512) throw new TypeError("observedPurpose text must contain 1-512 characters");
+	if (record.source !== "session-name" && record.source !== "interactive-input")
+		throw new TypeError("observedPurpose source is invalid");
+	if (typeof record.text !== "string" || record.text.length === 0 || record.text.length > 512)
+		throw new TypeError("observedPurpose text must contain 1-512 characters");
 	return { source: record.source, text: record.text };
 }
 
 /** Required identity fields of one endpoint record. */
-function endpointIdentity(record: Record<string, unknown>): Pick<PrimaryEndpoint, "id" | "serverId" | "cwd" | "hostname" | "socketPath" | "startedAt"> {
+function endpointIdentity(
+	record: Record<string, unknown>,
+): Pick<PrimaryEndpoint, "id" | "serverId" | "cwd" | "hostname" | "socketPath" | "startedAt"> {
 	const id = optionalString(record, "id");
 	const serverId = optionalString(record, "serverId");
 	const cwd = optionalString(record, "cwd");
 	const host = optionalString(record, "hostname");
 	const socketPath = optionalString(record, "socketPath");
 	const startedAt = optionalString(record, "startedAt");
-	if (id === undefined || serverId === undefined || cwd === undefined || host === undefined || socketPath === undefined || startedAt === undefined) throw new PrimaryChannelUnavailableError("primary endpoint identity is incomplete");
-	if (!UUID_ANY.test(id) || !UUID_V4.test(serverId)) throw new PrimaryChannelUnavailableError("primary endpoint identities are not canonical UUIDs");
+	if (
+		id === undefined ||
+		serverId === undefined ||
+		cwd === undefined ||
+		host === undefined ||
+		socketPath === undefined ||
+		startedAt === undefined
+	)
+		throw new PrimaryChannelUnavailableError("primary endpoint identity is incomplete");
+	if (!UUID_ANY.test(id) || !UUID_V4.test(serverId))
+		throw new PrimaryChannelUnavailableError("primary endpoint identities are not canonical UUIDs");
 	return { id, serverId, cwd, hostname: host, socketPath, startedAt };
 }
 
@@ -246,28 +303,46 @@ function endpointIdentity(record: Record<string, unknown>): Pick<PrimaryEndpoint
 function endpointModel(record: Record<string, unknown>): { provider: string; modelId: string } | undefined {
 	const model = record.model;
 	if (model === undefined) return undefined;
-	if (model === null || typeof model !== "object" || typeof (model as { provider?: unknown }).provider !== "string" || typeof (model as { modelId?: unknown }).modelId !== "string") throw new PrimaryChannelUnavailableError("primary endpoint model is invalid");
+	if (
+		model === null ||
+		typeof model !== "object" ||
+		typeof (model as { provider?: unknown }).provider !== "string" ||
+		typeof (model as { modelId?: unknown }).modelId !== "string"
+	)
+		throw new PrimaryChannelUnavailableError("primary endpoint model is invalid");
 	return model as { provider: string; modelId: string };
 }
 
 /** Positive process id of one endpoint record. */
 function endpointPid(record: Record<string, unknown>): number {
-	if (typeof record.pid !== "number" || !Number.isSafeInteger(record.pid) || record.pid <= 0) throw new PrimaryChannelUnavailableError("primary endpoint pid is invalid");
+	if (typeof record.pid !== "number" || !Number.isSafeInteger(record.pid) || record.pid <= 0)
+		throw new PrimaryChannelUnavailableError("primary endpoint pid is invalid");
 	return record.pid;
 }
 
-type EndpointDescriptor = Pick<PrimaryInfo, "repository" | "repositoryState" | "lastActivityAt" | "intentClaim" | "observedPurpose" | "sessionFile">;
+type EndpointDescriptor = Pick<
+	PrimaryInfo,
+	"repository" | "repositoryState" | "lastActivityAt" | "intentClaim" | "observedPurpose" | "sessionFile"
+>;
 
 function endpointDescriptor(record: Record<string, unknown>): EndpointDescriptor {
 	const repository = optionalString(record, "repository");
 	const repositoryState = record.repositoryState;
-	if (repositoryState !== undefined && repositoryState !== "git" && repositoryState !== "outside-git" && repositoryState !== "unknown") throw new TypeError("repositoryState is invalid");
+	if (
+		repositoryState !== undefined &&
+		repositoryState !== "git" &&
+		repositoryState !== "outside-git" &&
+		repositoryState !== "unknown"
+	)
+		throw new TypeError("repositoryState is invalid");
 	if (repositoryState === "git" && !repository) throw new TypeError("Git repository identity is missing");
-	if (repositoryState === "outside-git" && repository) throw new TypeError("outside-git repository identity is invalid");
+	if (repositoryState === "outside-git" && repository)
+		throw new TypeError("outside-git repository identity is invalid");
 	const sessionFile = optionalString(record, "sessionFile");
 	const lastActivityAt = optionalString(record, "lastActivityAt");
 	const intentClaim = record.intentClaim === undefined ? undefined : validatePrimaryIntentClaim(record.intentClaim);
-	const observedPurpose = record.observedPurpose === undefined ? undefined : validateObservedPurpose(record.observedPurpose);
+	const observedPurpose =
+		record.observedPurpose === undefined ? undefined : validateObservedPurpose(record.observedPurpose);
 	return {
 		...(sessionFile === undefined ? {} : { sessionFile }),
 		...(observedPurpose === undefined ? {} : { observedPurpose }),
@@ -280,7 +355,8 @@ function endpointDescriptor(record: Record<string, unknown>): EndpointDescriptor
 
 /** Validate one decoded endpoint record. The contract version is checked by the caller. */
 function parseEndpoint(value: unknown, strictDescriptor = false): RecordedPrimaryEndpoint {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new PrimaryChannelUnavailableError("primary endpoint is not an object");
+	if (value === null || typeof value !== "object" || Array.isArray(value))
+		throw new PrimaryChannelUnavailableError("primary endpoint is not an object");
 	const record = value as Record<string, unknown>;
 	const version = record.version;
 	const identity = endpointIdentity(record);
@@ -325,7 +401,11 @@ interface EndpointFile {
 	readonly ino: number;
 }
 
-interface ValidatedEndpoint { readonly revision: string; readonly endpoint: RecordedPrimaryEndpoint; readonly bytes: number }
+interface ValidatedEndpoint {
+	readonly revision: string;
+	readonly endpoint: RecordedPrimaryEndpoint;
+	readonly bytes: number;
+}
 
 /** Strict descriptor observation reuses a parse only for an unchanged opened-file revision. */
 const validatedEndpoints = new Map<string, ValidatedEndpoint>();
@@ -342,7 +422,12 @@ function forgetValidatedEndpoint(path: string): void {
 	validatedEndpointBytes -= cached.bytes;
 }
 
-function rememberValidatedEndpoint(path: string, revision: string, endpoint: RecordedPrimaryEndpoint, bytes: number): void {
+function rememberValidatedEndpoint(
+	path: string,
+	revision: string,
+	endpoint: RecordedPrimaryEndpoint,
+	bytes: number,
+): void {
 	forgetValidatedEndpoint(path);
 	validatedEndpoints.set(path, { revision, endpoint: structuredClone(endpoint), bytes });
 	validatedEndpointBytes += bytes;
@@ -361,14 +446,19 @@ function unreadableEndpoint(path: string, error: unknown): never {
 /** Read one endpoint for descriptor observation, reusing only validation of the same file revision. */
 function readValidatedEndpoint(path: string): RecordedPrimaryEndpoint | undefined {
 	let fd: number;
-	try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-	catch (error) {
-		if (errnoCode(error) === "ENOENT") { forgetValidatedEndpoint(path); return undefined; }
+	try {
+		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	} catch (error) {
+		if (errnoCode(error) === "ENOENT") {
+			forgetValidatedEndpoint(path);
+			return undefined;
+		}
 		return unreadableEndpoint(path, error);
 	}
 	try {
 		const stat = fstatSync(fd, { bigint: true });
-		if (!stat.isFile() || stat.size > BigInt(ENDPOINT_BYTES)) return unreadableEndpoint(path, "the record exceeds its bound or is not a regular file");
+		if (!stat.isFile() || stat.size > BigInt(ENDPOINT_BYTES))
+			return unreadableEndpoint(path, "the record exceeds its bound or is not a regular file");
 		const revision = endpointRevision(stat);
 		const cached = validatedEndpoints.get(path);
 		if (cached?.revision === revision) {
@@ -405,7 +495,8 @@ function readEndpointFile(path: string): EndpointFile | undefined {
 	}
 	try {
 		const stat = fstatSync(fd);
-		if (!stat.isFile() || stat.size > ENDPOINT_BYTES) throw new PrimaryChannelUnavailableError("primary endpoint exceeds its bound or is not a regular file");
+		if (!stat.isFile() || stat.size > ENDPOINT_BYTES)
+			throw new PrimaryChannelUnavailableError("primary endpoint exceeds its bound or is not a regular file");
 		const buffer = Buffer.alloc(ENDPOINT_BYTES + 1);
 		let bytes = 0;
 		while (bytes < buffer.length) {
@@ -474,7 +565,8 @@ async function listPrimaryIds(directory: string): Promise<{ ids: string[]; compl
 	}
 	for await (const entry of handle) {
 		visited += 1;
-		if (entry.isFile() && entry.name.endsWith(".json") && UUID_ANY.test(entry.name.slice(0, -5))) ids.push(entry.name.slice(0, -5));
+		if (entry.isFile() && entry.name.endsWith(".json") && UUID_ANY.test(entry.name.slice(0, -5)))
+			ids.push(entry.name.slice(0, -5));
 		if (visited >= VISIT_LIMIT || ids.length >= LIST_LIMIT) {
 			complete = false;
 			break;
@@ -492,12 +584,20 @@ async function listPrimaryIds(directory: string): Promise<{ ids: string[]; compl
 function removeDeadEndpoint(endpointPath: string, id: string): void {
 	const file = readEndpointFile(endpointPath);
 	if (file === undefined) return;
-	if (file.endpoint.id !== id) throw new PrimaryChannelConflictError(`primary channel ${id} has an invalid endpoint record`);
-	if (file.endpoint.hostname !== hostname()) throw new PrimaryChannelConflictError(`primary channel ${id} is registered on another host (${file.endpoint.hostname}); refusing local replacement`);
-	if (processState(file.endpoint.pid) !== "dead") throw new PrimaryChannelConflictError(`primary channel ${id} is already registered by live PID ${file.endpoint.pid}; refusing replacement`);
+	if (file.endpoint.id !== id)
+		throw new PrimaryChannelConflictError(`primary channel ${id} has an invalid endpoint record`);
+	if (file.endpoint.hostname !== hostname())
+		throw new PrimaryChannelConflictError(
+			`primary channel ${id} is registered on another host (${file.endpoint.hostname}); refusing local replacement`,
+		);
+	if (processState(file.endpoint.pid) !== "dead")
+		throw new PrimaryChannelConflictError(
+			`primary channel ${id} is already registered by live PID ${file.endpoint.pid}; refusing replacement`,
+		);
 	const current = lstatSync(endpointPath, { throwIfNoEntry: false });
 	if (current === undefined) return;
-	if (current.dev !== file.dev || current.ino !== file.ino) throw new PrimaryChannelConflictError(`primary channel ${id} changed during registration; retry`);
+	if (current.dev !== file.dev || current.ino !== file.ino)
+		throw new PrimaryChannelConflictError(`primary channel ${id} changed during registration; retry`);
 	removeFile(endpointPath);
 	removeFile(file.endpoint.socketPath);
 }
@@ -520,7 +620,11 @@ class PrimaryChannelHost {
 	}
 
 	/** Replace the displayed identity fields and rewrite the endpoint record atomically. */
-	update(info: { name: string | undefined; model: { provider: string; modelId: string } | undefined; thinkingLevel: string | undefined }): void {
+	update(info: {
+		name: string | undefined;
+		model: { provider: string; modelId: string } | undefined;
+		thinkingLevel: string | undefined;
+	}): void {
 		const { name: _name, model: _model, thinkingLevel: _thinkingLevel, ...retained } = this.endpoint;
 		this.replace({
 			...retained,
@@ -532,7 +636,10 @@ class PrimaryChannelHost {
 
 	publishIntent(intentClaim: PrimaryIntentClaim | undefined): void {
 		const { intentClaim: _claim, ...retained } = this.endpoint;
-		this.replace({ ...retained, ...(intentClaim === undefined ? {} : { intentClaim: validatePrimaryIntentClaim(intentClaim) }) });
+		this.replace({
+			...retained,
+			...(intentClaim === undefined ? {} : { intentClaim: validatePrimaryIntentClaim(intentClaim) }),
+		});
 	}
 
 	touch(at: string): void {
@@ -565,11 +672,15 @@ class PrimaryChannelHost {
 
 	/** Display one validated message in the primary session. */
 	private async deliver(raw: unknown): Promise<JsonValue> {
-		if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw invalid("params", "deliver requires a message object");
+		if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+			throw invalid("params", "deliver requires a message object");
 		const message = raw as Record<string, unknown>;
-		if (typeof message.sourceId !== "string" || message.sourceId === "" || typeof message.text !== "string") throw invalid("params", "deliver requires sourceId and text");
-		if (message.replyTo !== undefined && typeof message.replyTo !== "string") throw invalid("params", "deliver replyTo must be a string");
-		if (message.requireRetained !== undefined && typeof message.requireRetained !== "boolean") throw invalid("params", "deliver requireRetained must be a boolean");
+		if (typeof message.sourceId !== "string" || message.sourceId === "" || typeof message.text !== "string")
+			throw invalid("params", "deliver requires sourceId and text");
+		if (message.replyTo !== undefined && typeof message.replyTo !== "string")
+			throw invalid("params", "deliver replyTo must be a string");
+		if (message.requireRetained !== undefined && typeof message.requireRetained !== "boolean")
+			throw invalid("params", "deliver requireRetained must be a boolean");
 		await this.options.deliver({
 			requireRetained: message.requireRetained !== false,
 			sourceId: message.sourceId,
@@ -596,13 +707,17 @@ function endpointRecord(options: PrimaryChannelOptions, serverId: string, socket
 		serverId,
 		cwd: options.cwd,
 		...(options.sessionFile === undefined ? {} : { sessionFile: options.sessionFile }),
-		...(options.observedPurpose === undefined ? {} : { observedPurpose: validateObservedPurpose(options.observedPurpose) }),
+		...(options.observedPurpose === undefined
+			? {}
+			: { observedPurpose: validateObservedPurpose(options.observedPurpose) }),
 		...(options.repository === undefined ? {} : { repository: options.repository }),
 		...(options.repositoryState === undefined ? {} : { repositoryState: options.repositoryState }),
 		...(options.lastActivityAt === undefined ? {} : { lastActivityAt: options.lastActivityAt }),
 		...(options.intentClaim === undefined ? {} : { intentClaim: validatePrimaryIntentClaim(options.intentClaim) }),
 		...(options.name === undefined ? {} : { name: options.name }),
-		...(options.model === undefined ? {} : { model: { provider: options.model.provider, modelId: options.model.modelId } }),
+		...(options.model === undefined
+			? {}
+			: { model: { provider: options.model.provider, modelId: options.model.modelId } }),
 		...(options.thinkingLevel === undefined ? {} : { thinkingLevel: options.thinkingLevel }),
 		hostname: hostname(),
 		pid: process.pid,
@@ -635,7 +750,10 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 	} catch (error) {
 		await server.close().catch(() => undefined);
 		removeFile(socketPath);
-		if (errnoCode(error) === "EEXIST") throw new PrimaryChannelConflictError(`primary channel ${options.id} was registered concurrently; refusing replacement`);
+		if (errnoCode(error) === "EEXIST")
+			throw new PrimaryChannelConflictError(
+				`primary channel ${options.id} was registered concurrently; refusing replacement`,
+			);
 		throw error;
 	}
 	let closePromise: Promise<void> | undefined;
@@ -648,7 +766,8 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 			removeFile(socketPath);
 			try {
 				const current = readEndpoint(endpointPath);
-				if (current !== undefined && current.pid === process.pid && current.serverId === serverId) removeFile(endpointPath);
+				if (current !== undefined && current.pid === process.pid && current.serverId === serverId)
+					removeFile(endpointPath);
 			} catch {
 				// A changed or unreadable record belongs to another owner.
 			}
@@ -659,46 +778,79 @@ export async function createPrimaryChannel(options: PrimaryChannelOptions): Prom
 		void close().catch(() => undefined);
 	};
 	options.signal?.addEventListener("abort", onAbort, { once: true });
-	return { id: options.id, socketPath, info: () => host.info(), update: (info) => host.update(info), publishIntent: (claim) => host.publishIntent(claim), touch: (at) => host.touch(at), setObservedPurpose: (value) => host.setObservedPurpose(value), close };
+	return {
+		id: options.id,
+		socketPath,
+		info: () => host.info(),
+		update: (info) => host.update(info),
+		publishIntent: (claim) => host.publishIntent(claim),
+		touch: (at) => host.touch(at),
+		setObservedPurpose: (value) => host.setObservedPurpose(value),
+		close,
+	};
 }
 
 /** Compose the unknown-id refusal with a bounded supported-id page. */
 async function unavailable(directory: string, id: string): Promise<PrimaryChannelUnavailableError> {
 	const { ids, complete } = await listPrimaryIds(directory).catch(() => ({ ids: [], complete: false }));
 	const list = ids.length === 0 ? "none" : ids.join(", ");
-	return new PrimaryChannelUnavailableError(`no live primary channel for ${id}; supported ids: ${list} (coverage: ${complete ? "complete" : "partial"})`);
+	return new PrimaryChannelUnavailableError(
+		`no live primary channel for ${id}; supported ids: ${list} (coverage: ${complete ? "complete" : "partial"})`,
+	);
 }
 
 /** Connect to one registered primary channel and prove the announced serverId within a bounded deadline. */
-export async function connectPrimaryChannel(options: { readonly id: string; readonly sessionsRoot: string; readonly timeoutMs?: number }): Promise<PrimaryChannelConnection> {
-	if (!UUID_ANY.test(options.id)) throw new PrimaryChannelUnavailableError(`primary id ${JSON.stringify(options.id)} is not a canonical UUID; no primary channel was read`);
+export async function connectPrimaryChannel(options: {
+	readonly id: string;
+	readonly sessionsRoot: string;
+	readonly timeoutMs?: number;
+}): Promise<PrimaryChannelConnection> {
+	if (!UUID_ANY.test(options.id))
+		throw new PrimaryChannelUnavailableError(
+			`primary id ${JSON.stringify(options.id)} is not a canonical UUID; no primary channel was read`,
+		);
 	const timeoutMs = options.timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
 	const directory = join(resolve(options.sessionsRoot), ".primaries");
 	const endpoint = readEndpoint(primaryEndpointPath(options.sessionsRoot, options.id));
 	if (endpoint === undefined || endpoint.id !== options.id) throw await unavailable(directory, options.id);
-	if (endpoint.version !== PRIMARY_ENDPOINT_VERSION) throw primaryEndpointIncompatibleError(options.id, endpointVersionLabel(endpoint.version));
+	if (endpoint.version !== PRIMARY_ENDPOINT_VERSION)
+		throw primaryEndpointIncompatibleError(options.id, endpointVersionLabel(endpoint.version));
 	let client: TransportClient;
 	try {
 		client = await connectClient(options.id, endpoint.socketPath, endpoint.serverId, timeoutMs);
 	} catch (error) {
-		throw new PrimaryChannelUnavailableError(`primary channel ${options.id} is registered but unreachable: ${error instanceof Error ? error.message : String(error)}`);
+		throw new PrimaryChannelUnavailableError(
+			`primary channel ${options.id} is registered but unreachable: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 	try {
-		const invoke = async (method: string, params: JsonValue | undefined, deadlineMs: number, signal?: AbortSignal): Promise<unknown> => {
+		const invoke = async (
+			method: string,
+			params: JsonValue | undefined,
+			deadlineMs: number,
+			signal?: AbortSignal,
+		): Promise<unknown> => {
 			const deadline = AbortSignal.timeout(deadlineMs);
-			return client.request({ method, ...(params === undefined ? {} : { params }) }, signal === undefined ? deadline : AbortSignal.any([deadline, signal]));
+			return client.request(
+				{ method, ...(params === undefined ? {} : { params }) },
+				signal === undefined ? deadline : AbortSignal.any([deadline, signal]),
+			);
 		};
 		return {
 			id: endpoint.id,
 			info: async () => (await invoke("info", undefined, timeoutMs)) as PrimaryInfo,
 			deliver: async (message) => {
-				await invoke("deliver", {
-					sourceId: message.sourceId,
-					text: message.text,
-					...(message.details === undefined ? {} : { details: message.details }),
-					...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }),
-					...(message.requireRetained === undefined ? {} : { requireRetained: message.requireRetained }),
-				}, timeoutMs);
+				await invoke(
+					"deliver",
+					{
+						sourceId: message.sourceId,
+						text: message.text,
+						...(message.details === undefined ? {} : { details: message.details }),
+						...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }),
+						...(message.requireRetained === undefined ? {} : { requireRetained: message.requireRetained }),
+					},
+					timeoutMs,
+				);
 			},
 			trustPrompt: async (cwd, signal) => {
 				const value = await invoke("trustPrompt", cwd, TRUST_DECISION_TIMEOUT_MS, signal);
@@ -706,7 +858,9 @@ export async function connectPrimaryChannel(options: { readonly id: string; read
 				const answer = value as { trusted?: unknown; remember?: unknown };
 				return { trusted: answer.trusted === true, remember: answer.remember === true };
 			},
-			close: async () => { await client.dispose().catch(() => undefined); },
+			close: async () => {
+				await client.dispose().catch(() => undefined);
+			},
 		};
 	} catch (error) {
 		await client.dispose().catch(() => undefined);
@@ -742,7 +896,10 @@ function classifyEndpoint(record: RecordedPrimaryEndpoint, id: string): PrimaryE
 }
 
 /** One checked descriptor read uses the same parser and ownership rules as delivery. */
-export function readPrimaryEndpointDescriptor(sessionsRoot: string, id: string): PrimaryEndpointStatus & { readonly info?: PrimaryInfo; readonly unreadable?: true } {
+export function readPrimaryEndpointDescriptor(
+	sessionsRoot: string,
+	id: string,
+): PrimaryEndpointStatus & { readonly info?: PrimaryInfo; readonly unreadable?: true } {
 	if (!UUID_ANY.test(id)) return { state: "unknown", unreadable: true };
 	try {
 		const endpoint = readValidatedEndpoint(primaryEndpointPath(sessionsRoot, id));

@@ -1,10 +1,6 @@
 import type { Static } from "@earendil-works/pi-schema";
 import type { JsonObject } from "@earendil-works/pi-ai";
-import {
-	type ExtensionAPI,
-	getAgentDir,
-	withFileMutationQueue,
-} from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, getAgentDir, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { publishSettings, readSettings } from "./settings.ts";

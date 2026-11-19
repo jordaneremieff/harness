@@ -16,7 +16,13 @@ import {
 
 const NOW = Date.parse("2026-11-14T03:00:00.000Z");
 
-function block(provider: string, modelId: string, timestamp: number, error = "429: weekly usage limit reached", extra: Partial<ProviderBlockFact> = {}): ProviderBlockFact {
+function block(
+	provider: string,
+	modelId: string,
+	timestamp: number,
+	error = "429: weekly usage limit reached",
+	extra: Partial<ProviderBlockFact> = {},
+): ProviderBlockFact {
 	return {
 		blockId: `block-${provider}-${timestamp}`,
 		conversationId: 1,
@@ -40,7 +46,15 @@ it("records the provider block of a delivered result and ignores other details",
 	assert.equal(notes.observe({ status: "done" }), false);
 	assert.equal(notes.observe({ providerBlock: { blockId: "x" } }), false, "an invalid fact is not recorded");
 	assert.equal(notes.observe({ providerBlock: block("alpha", "a-1", NOW - 60_000) }), true);
-	assert.deepEqual(notes.current(NOW), [{ provider: "alpha", modelId: "a-1", timestamp: NOW - 60_000, evidence: "429: weekly usage limit reached", conversationId: "agent-alpha" }]);
+	assert.deepEqual(notes.current(NOW), [
+		{
+			provider: "alpha",
+			modelId: "a-1",
+			timestamp: NOW - 60_000,
+			evidence: "429: weekly usage limit reached",
+			conversationId: "agent-alpha",
+		},
+	]);
 });
 
 it("keeps the newest block per provider, bounds the providers and drops old notes", () => {
@@ -49,7 +63,8 @@ it("keeps the newest block per provider, bounds the providers and drops old note
 	notes.observe({ providerBlock: block("alpha", "a-2", NOW - 60_000, "newer") });
 	assert.equal(notes.observe({ providerBlock: block("alpha", "a-1", NOW - 90_000, "late older") }), false);
 	assert.equal(notes.forProvider("alpha", NOW)?.evidence, "newer");
-	for (let index = 0; index < PROVIDER_BLOCK_NOTE_LIMIT + 2; index++) notes.observe({ providerBlock: block(`p${index}`, "m", NOW - 1000 + index) });
+	for (let index = 0; index < PROVIDER_BLOCK_NOTE_LIMIT + 2; index++)
+		notes.observe({ providerBlock: block(`p${index}`, "m", NOW - 1000 + index) });
 	assert.equal(notes.current(NOW).length, PROVIDER_BLOCK_NOTE_LIMIT);
 	assert.equal(notes.forProvider("alpha", NOW), undefined, "the oldest recorded provider leaves first");
 	const aged = new ProviderBlockNotes();
@@ -60,14 +75,25 @@ it("keeps the newest block per provider, bounds the providers and drops old note
 
 it("renders past evidence with its time, model and provider text, without control characters", () => {
 	const notes = new ProviderBlockNotes();
-	notes.observe({ providerBlock: block("alpha", "a-1", NOW - 3 * 60 * 60_000, "429:\u001b[31m {\"message\":\"Weekly limit exhausted\"}\n", { errorRedacted: true, errorTruncated: true }) });
+	notes.observe({
+		providerBlock: block(
+			"alpha",
+			"a-1",
+			NOW - 3 * 60 * 60_000,
+			'429:\u001b[31m {"message":"Weekly limit exhausted"}\n',
+			{ errorRedacted: true, errorTruncated: true },
+		),
+	});
 	notes.observe({ providerBlock: block("beta", "b-1", NOW - 5 * 60_000) });
 	const section = renderProviderBlockSection(notes, NOW);
 	assert.ok(section);
 	const lines = section.split("\n");
 	assert.match(lines[0], /past evidence .* not current provider state/);
 	assert.equal(lines[1], "- beta/b-1 at 2026-11-14T02:55:00.000Z, agent agent-beta: 429: weekly usage limit reached");
-	assert.equal(lines[2], "- alpha/a-1 at 2026-11-14T00:00:00.000Z, agent agent-alpha: 429: [31m {\"message\":\"Weekly limit exhausted\"} [credential redacted] [truncated]");
+	assert.equal(
+		lines[2],
+		'- alpha/a-1 at 2026-11-14T00:00:00.000Z, agent agent-alpha: 429: [31m {"message":"Weekly limit exhausted"} [credential redacted] [truncated]',
+	);
 	assert.match(lines[3], /nothing substitutes automatically/);
 	assert.ok(!section.includes("\u001b"));
 });
@@ -83,7 +109,13 @@ it("names an earlier refusal in a receipt only for the selected provider", () =>
 });
 
 it("reads the agent provider from a spawn or configure outcome's compact status", () => {
-	assert.equal(outcomeProvider({ sessionId: "s", status: { agent: { model: { provider: "alpha", modelId: "a-1" }, thinkingLevel: "high" } } }), "alpha");
+	assert.equal(
+		outcomeProvider({
+			sessionId: "s",
+			status: { agent: { model: { provider: "alpha", modelId: "a-1" }, thinkingLevel: "high" } },
+		}),
+		"alpha",
+	);
 	assert.equal(outcomeProvider({ sessionId: "s", snapshotError: "unavailable" }), undefined);
 	assert.equal(outcomeProvider(null), undefined);
 	assert.equal(outcomeProvider({ status: { agent: { model: { provider: "" } } } }), undefined);
@@ -101,7 +133,13 @@ it("adds the receipt sentence only to model-choice tools whose outcome names a n
 	appendProviderBlockReceipt("agent_status", status, outcome, notes, NOW);
 	assert.equal(status.length, 1, "observation tools carry no receipt sentence");
 	const other: Array<{ type: string }> = [{ type: "text" }];
-	appendProviderBlockReceipt("agent_configure", other, { status: { agent: { model: { provider: "beta", modelId: "b" } } } }, notes, NOW);
+	appendProviderBlockReceipt(
+		"agent_configure",
+		other,
+		{ status: { agent: { model: { provider: "beta", modelId: "b" } } } },
+		notes,
+		NOW,
+	);
 	assert.equal(other.length, 1, "another provider gets no sentence");
 });
 
@@ -114,7 +152,11 @@ it("keeps the section bytes unchanged across turns until a note arrives or ages 
 	assert.equal(renderProviderBlockSection(notes, NOW + 60_000), first, "a repeated block changes nothing");
 	notes.observe({ providerBlock: block("beta", "b-1", NOW) });
 	assert.notEqual(renderProviderBlockSection(notes, NOW + 60_000), first, "a new block changes the section");
-	assert.equal(renderProviderBlockSection(notes, NOW + PROVIDER_BLOCK_NOTE_AGE_MS + 120_000), undefined, "the section leaves when its notes age out");
+	assert.equal(
+		renderProviderBlockSection(notes, NOW + PROVIDER_BLOCK_NOTE_AGE_MS + 120_000),
+		undefined,
+		"the section leaves when its notes age out",
+	);
 });
 
 it("bounds the section in bytes and says how many older notes it omits", () => {
@@ -124,10 +166,16 @@ it("bounds the section in bytes and says how many older notes it omits", () => {
 		notes.observe({ providerBlock: block(`${"p".repeat(60)}${index}`, "m".repeat(200), NOW - 1000 + index, wide) });
 	const section = renderProviderBlockSection(notes, NOW);
 	assert.ok(section);
-	assert.ok(Buffer.byteLength(section) <= PROVIDER_BLOCK_SECTION_BYTES, `section is ${Buffer.byteLength(section)} bytes`);
+	assert.ok(
+		Buffer.byteLength(section) <= PROVIDER_BLOCK_SECTION_BYTES,
+		`section is ${Buffer.byteLength(section)} bytes`,
+	);
 	const shown = section.split("\n").filter((text) => text.startsWith("- ")).length;
 	assert.ok(shown >= 1 && shown < PROVIDER_BLOCK_NOTE_LIMIT);
-	assert.match(section, new RegExp(`${PROVIDER_BLOCK_NOTE_LIMIT - shown} older notes? (is|are) omitted by the size bound`));
+	assert.match(
+		section,
+		new RegExp(`${PROVIDER_BLOCK_NOTE_LIMIT - shown} older notes? (is|are) omitted by the size bound`),
+	);
 });
 
 it("shares one process-wide store between callers and ignores entries of another shape", () => {
@@ -136,21 +184,43 @@ it("shares one process-wide store between callers and ignores entries of another
 	try {
 		delete globals[PROVIDER_BLOCK_NOTES_KEY];
 		assert.equal(processProviderBlockNotes().observeBlock(block("alpha", "a-1", NOW - 60_000)), true);
-		assert.equal(processProviderBlockNotes().forProvider("alpha", NOW)?.modelId, "a-1", "a second caller reads the same notes");
+		assert.equal(
+			processProviderBlockNotes().forProvider("alpha", NOW)?.modelId,
+			"a-1",
+			"a second caller reads the same notes",
+		);
 		const store = globals[PROVIDER_BLOCK_NOTES_KEY] as { notes: Map<string, unknown> };
 		store.notes.set("beta", { provider: "beta", timestamp: "not a number" });
-		assert.deepEqual(processProviderBlockNotes().current(NOW).map((note) => note.provider), ["alpha"], "a malformed entry is ignored");
+		assert.deepEqual(
+			processProviderBlockNotes()
+				.current(NOW)
+				.map((note) => note.provider),
+			["alpha"],
+			"a malformed entry is ignored",
+		);
 		assert.equal(processProviderBlockNotes().observeBlock({ blockId: "x" }), false);
 		store.notes.set("delta", { provider: "delta", modelId: "d", timestamp: 9e15, evidence: "e", conversationId: "c" });
-		assert.equal(renderProviderBlockSection(processProviderBlockNotes(), NOW)?.includes("delta"), false, "a time outside the Date range is ignored");
+		assert.equal(
+			renderProviderBlockSection(processProviderBlockNotes(), NOW)?.includes("delta"),
+			false,
+			"a time outside the Date range is ignored",
+		);
 		globals[PROVIDER_BLOCK_NOTES_KEY] = null;
 		assert.deepEqual(processProviderBlockNotes().current(NOW), [], "a null value is not used");
 		assert.equal(globals[PROVIDER_BLOCK_NOTES_KEY], null, "and stays in place");
 		globals[PROVIDER_BLOCK_NOTES_KEY] = { version: 2, notes: "other" };
 		const local = processProviderBlockNotes();
 		assert.equal(local.observeBlock(block("gamma", "g", NOW)), true);
-		assert.deepEqual(globals[PROVIDER_BLOCK_NOTES_KEY], { version: 2, notes: "other" }, "a value of another shape stays in place");
-		assert.deepEqual(processProviderBlockNotes().current(NOW), [], "another caller does not see that caller's local notes");
+		assert.deepEqual(
+			globals[PROVIDER_BLOCK_NOTES_KEY],
+			{ version: 2, notes: "other" },
+			"a value of another shape stays in place",
+		);
+		assert.deepEqual(
+			processProviderBlockNotes().current(NOW),
+			[],
+			"another caller does not see that caller's local notes",
+		);
 	} finally {
 		if (previous === undefined) delete globals[PROVIDER_BLOCK_NOTES_KEY];
 		else globals[PROVIDER_BLOCK_NOTES_KEY] = previous;

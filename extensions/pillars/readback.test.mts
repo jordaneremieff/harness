@@ -75,8 +75,7 @@ test("closed requests reject unsupported fields before capture", async () => {
 		{ cursor: "abcd", windowDays: 1 },
 		{ resourceId: "entry-a" },
 		{ view: undefined },
-	])
-	{
+	]) {
 		const result = await read.read(value);
 		validateResponse(result);
 		assert.equal(result.kind, "error");
@@ -162,14 +161,22 @@ test("TTL is fixed, old keys retire within a bounded set, invalid cursors never 
 });
 test("invalid input preserves a capture and out-of-range cursors identify the page boundary", async () => {
 	let calls = 0;
-	const read = createReader(() => { calls++; return snapshot(25); }, { now: () => NOW });
+	const read = createReader(
+		() => {
+			calls++;
+			return snapshot(25);
+		},
+		{ now: () => NOW },
+	);
 	const cursor = page(await read.read({ view: "revisions" })).pagination.nextCursor;
 	assert.ok(cursor);
 	const invalid = await read.read({ windowDays: 0 });
 	validateResponse(invalid);
 	assert.equal(invalid.kind, "error");
 	assert.equal(page(await read.read({ cursor })).pagination.pageNumber, 2);
-	const outOfRange = Buffer.from(Buffer.from(cursor, "base64url").toString("utf8").replace(/:1$/, ":999")).toString("base64url");
+	const outOfRange = Buffer.from(Buffer.from(cursor, "base64url").toString("utf8").replace(/:1$/, ":999")).toString(
+		"base64url",
+	);
 	const refused = await read.read({ cursor: outOfRange });
 	validateResponse(refused);
 	assert.equal(refused.kind, "error");

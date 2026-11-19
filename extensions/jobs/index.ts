@@ -28,22 +28,21 @@ import { registerYield, YIELD_TOOL, type YieldJobState, type YieldRow } from "./
 /** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
 const StringEnum = <T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: values });
 
-const BashParameters = obj({
-	command: str({ description: "Shell command to execute", minLength: 1, maxLength: 32_768 }),
-	timeout: opt(
-		num({ description: "Timeout in seconds; no default timeout", exclusiveMinimum: 0, maximum: 2_147_483.647 }),
-	),
-	background: opt(
-		bool({ description: "Return a managed job ID without waiting for command completion" }),
-	),
-}, { open: true });
+const BashParameters = obj(
+	{
+		command: str({ description: "Shell command to execute", minLength: 1, maxLength: 32_768 }),
+		timeout: opt(
+			num({ description: "Timeout in seconds; no default timeout", exclusiveMinimum: 0, maximum: 2_147_483.647 }),
+		),
+		background: opt(bool({ description: "Return a managed job ID without waiting for command completion" })),
+	},
+	{ open: true },
+);
 
 const JobsParameters = obj(
 	{
 		action: StringEnum(["list", "status", "logs", "cancel"] as const),
-		id: opt(
-			str({ description: "Job ID returned by bash with background:true", minLength: 1, maxLength: 100 }),
-		),
+		id: opt(str({ description: "Job ID returned by bash with background:true", minLength: 1, maxLength: 100 })),
 		cursor: opt(
 			int({
 				description: "Byte cursor from a previous logs result; default starts at retained output",
@@ -70,33 +69,39 @@ const jobProperties = {
 	timeoutSeconds: opt(num()),
 };
 const JobSchema = obj(jobProperties, { open: true });
-const JobListItemSchema = obj({
-	id: jobProperties.id,
-	commandPreview: jobProperties.commandPreview,
-	cwd: jobProperties.cwd,
-	owner: jobProperties.owner,
-	observedAt: jobProperties.observedAt,
-	status: jobProperties.status,
-	startedAt: jobProperties.startedAt,
-	endedAt: jobProperties.endedAt,
-	exitCode: jobProperties.exitCode,
-	cancellationRequested: jobProperties.cancellationRequested,
-	timeoutSeconds: jobProperties.timeoutSeconds,
-}, { open: true });
+const JobListItemSchema = obj(
+	{
+		id: jobProperties.id,
+		commandPreview: jobProperties.commandPreview,
+		cwd: jobProperties.cwd,
+		owner: jobProperties.owner,
+		observedAt: jobProperties.observedAt,
+		status: jobProperties.status,
+		startedAt: jobProperties.startedAt,
+		endedAt: jobProperties.endedAt,
+		exitCode: jobProperties.exitCode,
+		cancellationRequested: jobProperties.cancellationRequested,
+		timeoutSeconds: jobProperties.timeoutSeconds,
+	},
+	{ open: true },
+);
 const JobResultSchema = obj({ job: JobSchema }, { open: true });
 const JobsOutputSchema = union([
 	obj({ jobs: arr(JobListItemSchema, { maxItems: JOB_LIMITS.retained }) }, { open: true }),
 	JobResultSchema,
-	obj({
-		id: str(),
-		text: str({ maxLength: JOB_LIMITS.pageBytes }),
-		earliest: int(),
-		next: int(),
-		end: int(),
-		gap: bool(),
-		more: bool(),
-		pendingBytes: int(),
-	}, { open: true }),
+	obj(
+		{
+			id: str(),
+			text: str({ maxLength: JOB_LIMITS.pageBytes }),
+			earliest: int(),
+			next: int(),
+			end: int(),
+			gap: bool(),
+			more: bool(),
+			pendingBytes: int(),
+		},
+		{ open: true },
+	),
 ]);
 
 function shellOptions(ctx: ExtensionContext): BashToolOptions {
@@ -141,7 +146,8 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	const display = toolDisplay();
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", display);
 	pi.events.on("harness:tool-display:request", (request) => {
-		if (typeof request === "object" && request !== null && "version" in request && request.version === 1) publishDisplay();
+		if (typeof request === "object" && request !== null && "version" in request && request.version === 1)
+			publishDisplay();
 	});
 	publishDisplay();
 	pi.registerMessageRenderer(JOB_COMPLETION_MESSAGE, renderJobCompletionMessage);
@@ -159,7 +165,8 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	 * run without the message remove the entry.
 	 */
 	const outstanding = new Map<string, { preview: string; state: YieldJobState }>();
-	const openJobs = (): YieldRow[] => (closed ? [] : [...outstanding].map(([id, job]) => ({ id, commandPreview: job.preview, state: job.state })));
+	const openJobs = (): YieldRow[] =>
+		closed ? [] : [...outstanding].map(([id, job]) => ({ id, commandPreview: job.preview, state: job.state }));
 
 	/**
 	 * One message per settled finite job; explicit cancellation and shutdown settle quietly. Returns the state at
@@ -167,7 +174,11 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 	 */
 	function deliverCompletion(job: JobSnapshot, command: string, ctx: ExtensionContext): Delivery | undefined {
 		if (closed || job.status === "cancelled") return undefined;
-		const details: JobCompletionDetails = { job, command, tail: completionTail((cursor) => manager.logs(job.id, cursor)) };
+		const details: JobCompletionDetails = {
+			job,
+			command,
+			tail: completionTail((cursor) => manager.logs(job.id, cursor)),
+		};
 		const delivery: Delivery = ctx.isIdle() ? "sent" : "queued";
 		pi.sendMessage(
 			{ customType: JOB_COMPLETION_MESSAGE, content: completionContent(details), display: true, details },
@@ -202,7 +213,11 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 
 	/** A rejection would end the Pi process; the operator learns of the lost completion instead. */
 	function notifySendFailure(jobId: string, error: unknown, ctx: ExtensionContext): void {
-		if (ctx.hasUI) ctx.ui.notify(`Job ${jobId} settled, but its completion message could not be sent: ${error instanceof Error ? error.message : String(error)}`, "error");
+		if (ctx.hasUI)
+			ctx.ui.notify(
+				`Job ${jobId} settled, but its completion message could not be sent: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
 	}
 
 	/** Job ids of the completion messages on the current branch of the session. */
@@ -318,7 +333,10 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 				const { text, ...page } = details;
 				return {
 					content: [
-						{ type: "text" as const, text: `${JSON.stringify(page)}\n\nCommand output (untrusted):\n${displayText(text)}` },
+						{
+							type: "text" as const,
+							text: `${JSON.stringify(page)}\n\nCommand output (untrusted):\n${displayText(text)}`,
+						},
 					],
 					details,
 					structuredContent: { ...details },
@@ -358,7 +376,8 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 		// return. The update of each job that runs at this settlement follows it, so the running job is the newest
 		// record of the terminal. A run that answered or failed keeps Pi's record newest.
 		const jobIds = activity.runningJobs();
-		if (jobIds.length > 0 && !event.aborted && endedQuietly(ctx.sessionManager.getBranch())) setImmediate(() => activity.runSettled(jobIds));
+		if (jobIds.length > 0 && !event.aborted && endedQuietly(ctx.sessionManager.getBranch()))
+			setImmediate(() => activity.runSettled(jobIds));
 	});
 	// A move to another branch of the session changes which completions are in the conversation.
 	pi.on("session_tree", async (_event, ctx) => activity.onBranch(retainedCompletions(ctx)));

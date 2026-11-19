@@ -89,8 +89,7 @@ export class CliTransport implements RexTransport {
 						}
 					}
 				};
-				const after = (at: number, action: () => void) =>
-					setTimeout(action, Math.max(0, at - performance.now()));
+				const after = (at: number, action: () => void) => setTimeout(action, Math.max(0, at - performance.now()));
 				const finish = (exitCode: number | null, signal: string | null) => {
 					if (settled) return;
 					settled = true;

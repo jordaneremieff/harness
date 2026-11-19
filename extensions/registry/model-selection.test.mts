@@ -8,37 +8,81 @@ import { CONFIG_DIR_NAME, type ExtensionContext } from "@earendil-works/pi-codin
 import { compile } from "@earendil-works/pi-schema";
 import { MAX_RESULT_BYTES, MAX_RESULT_LINES } from "./format.ts";
 import { lookup, type LookupResult } from "./lookup.ts";
-import { readDurableModels, readModels, readSettingsScope, type DurableModelReader, type ModelRecord, type ModelSnapshot, type SettingsScopeEvidence } from "./models.ts";
+import {
+	readDurableModels,
+	readModels,
+	readSettingsScope,
+	type DurableModelReader,
+	type ModelRecord,
+	type ModelSnapshot,
+	type SettingsScopeEvidence,
+} from "./models.ts";
 import { RegistryOutputSchema } from "./output.ts";
 import type { RawParams } from "./query.ts";
 
 function fixture() {
 	const catalog: Model<Api>[] = Array.from({ length: 6 }, (_, index) => ({
-		provider: `test-provider-${index}`, id: `test-model-${index}`, name: `Sample V${index}.1 Light`,
-		api: "fixture-api", baseUrl: "https://example.invalid", reasoning: true,
-		input: ["text"], contextWindow: 10000, maxTokens: 1000,
+		provider: `test-provider-${index}`,
+		id: `test-model-${index}`,
+		name: `Sample V${index}.1 Light`,
+		api: "fixture-api",
+		baseUrl: "https://example.invalid",
+		reasoning: true,
+		input: ["text"],
+		contextWindow: 10000,
+		maxTokens: 1000,
 		cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 3 },
 	}));
 	const available = new Set(catalog.slice(4));
 	const configured = new Set(catalog.slice(2));
-	const ctx = { model: catalog[0], thinkingLevel: "high", scopedModels: [], modelRegistry: {
-		getAll: () => [...catalog].reverse(), getAvailable: () => [...available], getError: () => undefined,
-		getRegisteredProviderIds: () => [], hasConfiguredAuth: (model: Model<Api>) => configured.has(model),
-		isUsingOAuth: () => false, getProviderAuthStatus: () => ({ source: "environment", label: "private-auth-label" }),
-		getProvider: () => ({ auth: { oauth: { isSubscription: true } } }),
-		getProviderAuth: () => { throw new Error("Unexpected credential resolution"); },
-		refresh: () => { throw new Error("Unexpected refresh"); },
-	} } as unknown as ExtensionContext;
+	const ctx = {
+		model: catalog[0],
+		thinkingLevel: "high",
+		scopedModels: [],
+		modelRegistry: {
+			getAll: () => [...catalog].reverse(),
+			getAvailable: () => [...available],
+			getError: () => undefined,
+			getRegisteredProviderIds: () => [],
+			hasConfiguredAuth: (model: Model<Api>) => configured.has(model),
+			isUsingOAuth: () => false,
+			getProviderAuthStatus: () => ({ source: "environment", label: "private-auth-label" }),
+			getProvider: () => ({ auth: { oauth: { isSubscription: true } } }),
+			getProviderAuth: () => {
+				throw new Error("Unexpected credential resolution");
+			},
+			refresh: () => {
+				throw new Error("Unexpected refresh");
+			},
+		},
+	} as unknown as ExtensionContext;
 	return { catalog, available, configured, ctx };
 }
 
 async function run(models: ModelSnapshot, params: RawParams = { kind: "model" }) {
-	const result = await lookup({ params, models, session: {}, epoch: "test", snapshot: {
-		tools: [], activeTools: [], commands: [], observation: null, at: 1,
-		availability: { tools: true, activeTools: true, commands: true },
-	} });
-	assert.ok(compile(RegistryOutputSchema).check(result.structuredContent), JSON.stringify(compile(RegistryOutputSchema).errors(result.structuredContent)));
-	const envelope = { content: [{ type: "text", text: result.text }], details: result.details, structuredContent: result.structuredContent };
+	const result = await lookup({
+		params,
+		models,
+		session: {},
+		epoch: "test",
+		snapshot: {
+			tools: [],
+			activeTools: [],
+			commands: [],
+			observation: null,
+			at: 1,
+			availability: { tools: true, activeTools: true, commands: true },
+		},
+	});
+	assert.ok(
+		compile(RegistryOutputSchema).check(result.structuredContent),
+		JSON.stringify(compile(RegistryOutputSchema).errors(result.structuredContent)),
+	);
+	const envelope = {
+		content: [{ type: "text", text: result.text }],
+		details: result.details,
+		structuredContent: result.structuredContent,
+	};
 	assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= MAX_RESULT_BYTES);
 	assert.ok(JSON.stringify(envelope, null, 2).replace(/\\n/g, "\n").split("\n").length <= MAX_RESULT_LINES);
 	return result;
@@ -46,9 +90,16 @@ async function run(models: ModelSnapshot, params: RawParams = { kind: "model" })
 const records = (result: LookupResult) => result.details.records as unknown as ModelRecord[];
 
 function durableReader(catalog: Model<Api>[]): DurableModelReader {
-	return { getModels: () => catalog, getModel: (provider, id) => catalog.find((model) => model.provider === provider && model.id === id),
-		getAvailableSnapshot: () => catalog, getError: () => undefined, getRegisteredProviderIds: () => [], hasConfiguredAuth: () => true,
-		isUsingOAuth: () => true, isUsingSubscription: () => true, getProviderAuthStatus: () => ({ source: "stored" }),
+	return {
+		getModels: () => catalog,
+		getModel: (provider, id) => catalog.find((model) => model.provider === provider && model.id === id),
+		getAvailableSnapshot: () => catalog,
+		getError: () => undefined,
+		getRegisteredProviderIds: () => [],
+		hasConfiguredAuth: () => true,
+		isUsingOAuth: () => true,
+		isUsingSubscription: () => true,
+		getProviderAuthStatus: () => ({ source: "stored" }),
 	};
 }
 
@@ -57,12 +108,25 @@ describe("portable model selection evidence", () => {
 		const { catalog } = fixture();
 		const scope: SettingsScopeEvidence = { status: "available", patterns: ["missing/*"], observedAt: 1 };
 		const reader = durableReader(catalog);
-		assert.equal(readDurableModels(reader, {}, 1, scope).records.some((row) => row.selected), false);
-		const known = readDurableModels(reader, { model: { provider: catalog[0].provider, modelId: catalog[0].id } }, 1, scope).records.find((row) => row.selected);
+		assert.equal(
+			readDurableModels(reader, {}, 1, scope).records.some((row) => row.selected),
+			false,
+		);
+		const known = readDurableModels(
+			reader,
+			{ model: { provider: catalog[0].provider, modelId: catalog[0].id } },
+			1,
+			scope,
+		).records.find((row) => row.selected);
 		assert.equal(known?.catalog, true);
 		assert.equal(known?.metadataAvailable, true);
 		const outside = { ...catalog[0], provider: "missing", id: "resolved" };
-		const resolved = readDurableModels({ ...reader, getModel: () => outside }, { model: { provider: "missing", modelId: "resolved" } }, 1, scope).records.find((row) => row.selected);
+		const resolved = readDurableModels(
+			{ ...reader, getModel: () => outside },
+			{ model: { provider: "missing", modelId: "resolved" } },
+			1,
+			scope,
+		).records.find((row) => row.selected);
 		assert.equal(resolved?.catalog, false);
 		assert.equal(resolved?.metadataAvailable, true);
 		assert.equal(resolved?.displayName, outside.name);
@@ -79,23 +143,63 @@ describe("portable model selection evidence", () => {
 		assert.equal(row.providerNamedInSettings, true);
 		assert.equal(row.configuredAuth, false);
 		assert.equal(row.oauth, true);
-		for (const key of ["displayName", "reasoning", "input", "contextWindow", "maxTokens", "supportedThinkingLevels", "catalogCost", "catalogCostHasTiers"] as const) assert.equal(row[key], null);
-		assert.equal(snapshot.records.filter((entry) => entry.displayName?.startsWith("Sample") === true).length, catalog.length);
+		for (const key of [
+			"displayName",
+			"reasoning",
+			"input",
+			"contextWindow",
+			"maxTokens",
+			"supportedThinkingLevels",
+			"catalogCost",
+			"catalogCostHasTiers",
+		] as const)
+			assert.equal(row[key], null);
+		assert.equal(
+			snapshot.records.filter((entry) => entry.displayName?.startsWith("Sample") === true).length,
+			catalog.length,
+		);
 		const list = await run(snapshot, { kind: "model", name: row.name });
 		assert.deepEqual(records(list), selected);
-		const failed = readDurableModels({ ...reader, getModel: () => { throw new Error("metadata unavailable"); },
-			hasConfiguredAuth: () => { throw new Error("auth unavailable"); }, isUsingOAuth: () => { throw new Error("oauth unavailable"); },
-			isUsingSubscription: () => { throw new Error("billing unavailable"); }, getProviderAuthStatus: () => { throw new Error("source unavailable"); } }, agent, 1, scope).records.find((entry) => entry.selected);
+		const failed = readDurableModels(
+			{
+				...reader,
+				getModel: () => {
+					throw new Error("metadata unavailable");
+				},
+				hasConfiguredAuth: () => {
+					throw new Error("auth unavailable");
+				},
+				isUsingOAuth: () => {
+					throw new Error("oauth unavailable");
+				},
+				isUsingSubscription: () => {
+					throw new Error("billing unavailable");
+				},
+				getProviderAuthStatus: () => {
+					throw new Error("source unavailable");
+				},
+			},
+			agent,
+			1,
+			scope,
+		).records.find((entry) => entry.selected);
 		assert.ok(failed);
-		for (const key of ["configuredAuth", "oauth", "subscriptionRecognized", "authSource"] as const) assert.equal(failed[key], null);
+		for (const key of ["configuredAuth", "oauth", "subscriptionRecognized", "authSource"] as const)
+			assert.equal(failed[key], null);
 	});
 	it("keeps availability ahead of configuration evidence and selection", async () => {
 		const { catalog, ctx } = fixture();
 		ctx.scopedModels = [{ model: catalog[1] }];
 		const snapshot = readModels(ctx, 1);
-		assert.deepEqual(snapshot.records.map((row) => row.id), [4, 5, 2, 3, 0, 1].map((index) => catalog[index].id));
+		assert.deepEqual(
+			snapshot.records.map((row) => row.id),
+			[4, 5, 2, 3, 0, 1].map((index) => catalog[index].id),
+		);
 		assert.equal(snapshot.records.find((row) => row.id === catalog[0].id)?.selected, true);
-		assert.deepEqual(snapshot.records.map((row) => row.providerHasScopedModels), [false, false, false, false, false, true]);
+		assert.deepEqual(
+			snapshot.records.map((row) => row.providerHasScopedModels),
+			[false, false, false, false, false, true],
+		);
 		const result = await run(snapshot);
 		assert.equal(result.text.match(/Order: available with provider configuration evidence first/g)?.length, 1);
 		assert.match(result.text, /Configured access and scope do not establish operator preference/);
@@ -105,8 +209,15 @@ describe("portable model selection evidence", () => {
 	it("does not turn an empty or unavailable scope into provider preference", () => {
 		const { catalog, ctx } = fixture();
 		const unscoped = readModels(ctx, 1);
-		assert.ok(unscoped.records.every((row) => row.providerHasScopedModels === null && row.providerNamedInSettings === null && row.inScope === true));
-		assert.deepEqual(unscoped.records.map((row) => row.id), [4, 5, 2, 3, 0, 1].map((index) => catalog[index].id));
+		assert.ok(
+			unscoped.records.every(
+				(row) => row.providerHasScopedModels === null && row.providerNamedInSettings === null && row.inScope === true,
+			),
+		);
+		assert.deepEqual(
+			unscoped.records.map((row) => row.id),
+			[4, 5, 2, 3, 0, 1].map((index) => catalog[index].id),
+		);
 		ctx.scopedModels = undefined as unknown as ExtensionContext["scopedModels"];
 		assert.ok(readModels(ctx, 1).records.every((row) => row.providerHasScopedModels === null && row.inScope === null));
 	});
@@ -114,38 +225,74 @@ describe("portable model selection evidence", () => {
 		const { catalog, ctx } = fixture();
 		const snapshot = readModels(ctx, 1);
 		const result = await run(snapshot, { kind: "model", search: "  LIGHT\tprovider-4\nV4.1 " });
-		assert.deepEqual(records(result).map((row) => row.id), [catalog[4].id]);
+		assert.deepEqual(
+			records(result).map((row) => row.id),
+			[catalog[4].id],
+		);
 		assert.equal((await run(snapshot, { kind: "model", search: "light absent" })).outcome, "missing");
 		assert.equal((await run(snapshot, { kind: "model", search: " \t " })).outcome, "missing");
 		const name = `${catalog[4].provider}/${catalog[4].id}`;
 		assert.equal(records(await run(snapshot, { kind: "model", name })).length, 1);
 		assert.equal((await run(snapshot, { kind: "model", name: name.toUpperCase() })).outcome, "missing");
-		assert.equal((await run(snapshot, { kind: "model", provider: catalog[4].provider.toUpperCase() })).outcome, "missing");
-		assert.equal(records(await run(snapshot, { kind: "model", provider: catalog[4].provider, search: "light" })).length, 1);
+		assert.equal(
+			(await run(snapshot, { kind: "model", provider: catalog[4].provider.toUpperCase() })).outcome,
+			"missing",
+		);
+		assert.equal(
+			records(await run(snapshot, { kind: "model", provider: catalog[4].provider, search: "light" })).length,
+			1,
+		);
 	});
 	it("projects authentication facts independently and never treats a key as metered billing", () => {
 		const { ctx } = fixture();
 		let snapshot = readModels(ctx, 1);
-		assert.ok(snapshot.records.every((row) => row.oauth === false && row.subscriptionRecognized === false && row.authSource === "environment"));
+		assert.ok(
+			snapshot.records.every(
+				(row) => row.oauth === false && row.subscriptionRecognized === false && row.authSource === "environment",
+			),
+		);
 		ctx.modelRegistry.isUsingOAuth = () => true;
 		snapshot = readModels(ctx, 1);
 		assert.ok(snapshot.records.every((row) => row.oauth === true && row.subscriptionRecognized === true));
-		ctx.modelRegistry.getProvider = () => { throw new Error("private-provider"); };
-		ctx.modelRegistry.getProviderAuthStatus = () => ({ configured: true, source: "private-source" as never, label: "private-label" });
+		ctx.modelRegistry.getProvider = () => {
+			throw new Error("private-provider");
+		};
+		ctx.modelRegistry.getProviderAuthStatus = () => ({
+			configured: true,
+			source: "private-source" as never,
+			label: "private-label",
+		});
 		snapshot = readModels(ctx, 1);
-		assert.ok(snapshot.records.every((row) => row.oauth === true && row.subscriptionRecognized === null && row.authSource === null));
-		ctx.modelRegistry.isUsingOAuth = () => { throw new Error("private-oauth"); };
-		ctx.modelRegistry.getProviderAuthStatus = () => { throw new Error("private-auth"); };
+		assert.ok(
+			snapshot.records.every(
+				(row) => row.oauth === true && row.subscriptionRecognized === null && row.authSource === null,
+			),
+		);
+		ctx.modelRegistry.isUsingOAuth = () => {
+			throw new Error("private-oauth");
+		};
+		ctx.modelRegistry.getProviderAuthStatus = () => {
+			throw new Error("private-auth");
+		};
 		snapshot = readModels(ctx, 1);
-		assert.ok(snapshot.records.every((row) => row.oauth === null && row.subscriptionRecognized === null && row.authSource === null));
+		assert.ok(
+			snapshot.records.every(
+				(row) => row.oauth === null && row.subscriptionRecognized === null && row.authSource === null,
+			),
+		);
 		assert.doesNotMatch(JSON.stringify(snapshot), /private-/);
 	});
 	it("retains unknown availability while configured records still precede the rest", () => {
 		const { catalog, ctx } = fixture();
-		ctx.modelRegistry.getAvailable = () => { throw new Error("unavailable"); };
+		ctx.modelRegistry.getAvailable = () => {
+			throw new Error("unavailable");
+		};
 		const snapshot = readModels(ctx, 1);
 		assert.ok(snapshot.records.every((row) => row.available === null));
-		assert.deepEqual(snapshot.records.map((row) => row.id), [2, 3, 4, 5, 0, 1].map((index) => catalog[index].id));
+		assert.deepEqual(
+			snapshot.records.map((row) => row.id),
+			[2, 3, 4, 5, 0, 1].map((index) => catalog[index].id),
+		);
 	});
 	it("keeps price tiers out of list text and structured records but exposes them in exact lookups", async () => {
 		const { catalog, ctx } = fixture();
@@ -183,7 +330,10 @@ describe("portable model selection evidence", () => {
 		catalog[4].cost.tiers = [{ inputTokensAbove: 1000, input: 4, output: 5, cacheRead: 1, cacheWrite: 6 }];
 		const first = await run(readModels(ctx, 1), { kind: "model", limit: 2 });
 		const second = await run(readModels(ctx, 2), { cursor: first.details.cursor as string });
-		assert.deepEqual(records(second).map((row) => row.id), catalog.slice(2, 4).map((model) => model.id));
+		assert.deepEqual(
+			records(second).map((row) => row.id),
+			catalog.slice(2, 4).map((model) => model.id),
+		);
 		catalog[4].cost.tiers[0].input = 10;
 		assert.equal((await run(readModels(ctx, 3), { cursor: first.details.cursor as string })).outcome, "stale_cursor");
 		catalog[4].cost.tiers[0].input = 4;
@@ -193,9 +343,17 @@ describe("portable model selection evidence", () => {
 	it("projects Durable public billing accessors and raw settings without effective scope", async () => {
 		const { catalog } = fixture();
 		const reader = durableReader(catalog);
-		const scope: SettingsScopeEvidence = { status: "available", patterns: [`${catalog[0].provider}/*:high`], observedAt: 1 };
+		const scope: SettingsScopeEvidence = {
+			status: "available",
+			patterns: [`${catalog[0].provider}/*:high`],
+			observedAt: 1,
+		};
 		const snapshot = readDurableModels(reader, {}, 1, scope);
-		assert.ok(snapshot.records.every((row) => row.inScope === null && row.providerHasScopedModels === null && row.subscriptionRecognized === true));
+		assert.ok(
+			snapshot.records.every(
+				(row) => row.inScope === null && row.providerHasScopedModels === null && row.subscriptionRecognized === true,
+			),
+		);
 		const first = await run(snapshot, { kind: "model", limit: 1 });
 		assert.deepEqual(first.details.settingsScope, scope);
 		assert.match(first.text, /Raw settings patterns are not effective session scope or operator preference/);
@@ -203,10 +361,20 @@ describe("portable model selection evidence", () => {
 		assert.equal((await run(later, { cursor: first.details.cursor as string })).outcome, "ok");
 		later.settingsScope = { ...scope, patterns: [] };
 		assert.equal((await run(later, { cursor: first.details.cursor as string })).outcome, "stale_cursor");
-		reader.isUsingOAuth = () => { throw new Error("private-oauth"); };
-		reader.isUsingSubscription = () => { throw new Error("private-subscription"); };
-		reader.getProviderAuthStatus = () => { throw new Error("private-source"); };
-		assert.ok(readDurableModels(reader, {}, 3, scope).records.every((row) => row.oauth === null && row.subscriptionRecognized === null && row.authSource === null));
+		reader.isUsingOAuth = () => {
+			throw new Error("private-oauth");
+		};
+		reader.isUsingSubscription = () => {
+			throw new Error("private-subscription");
+		};
+		reader.getProviderAuthStatus = () => {
+			throw new Error("private-source");
+		};
+		assert.ok(
+			readDurableModels(reader, {}, 3, scope).records.every(
+				(row) => row.oauth === null && row.subscriptionRecognized === null && row.authSource === null,
+			),
+		);
 	});
 	it("bounds oversized settings and exact tiers without claiming absence", async () => {
 		const { catalog } = fixture();
@@ -215,8 +383,18 @@ describe("portable model selection evidence", () => {
 		assert.equal(hugeSettings.details.pageBlocked, true);
 		assert.equal(hugeSettings.details.omittedDetails, true);
 		assert.match(hugeSettings.text, /no absence is established/);
-		catalog[0].cost.tiers = Array.from({ length: 1000 }, (_, inputTokensAbove) => ({ inputTokensAbove, input: 1, output: 2, cacheRead: 0, cacheWrite: 0 }));
-		const snapshot = readDurableModels(durableReader(catalog), {}, 1, { status: "absent", patterns: null, observedAt: 1 });
+		catalog[0].cost.tiers = Array.from({ length: 1000 }, (_, inputTokensAbove) => ({
+			inputTokensAbove,
+			input: 1,
+			output: 2,
+			cacheRead: 0,
+			cacheWrite: 0,
+		}));
+		const snapshot = readDurableModels(durableReader(catalog), {}, 1, {
+			status: "absent",
+			patterns: null,
+			observedAt: 1,
+		});
 		const list = await run(snapshot);
 		assert.equal(list.details.pageBlocked, undefined);
 		const exact = await run(snapshot, { kind: "model", name: `${catalog[0].provider}/${catalog[0].id}` });
@@ -230,27 +408,40 @@ describe("provider configuration order", () => {
 		it(`${host}: a large unscoped provider does not bury configured-provider search results`, async () => {
 			const { catalog, available, configured, ctx } = fixture();
 			const target = catalog[5];
-			const variants = Array.from({ length: 40 }, (_, index) => ({ ...catalog[0],
-				id: `variant-${String(index).padStart(2, "0")}`, name: `Sample variant ${index}` }));
+			const variants = Array.from({ length: 40 }, (_, index) => ({
+				...catalog[0],
+				id: `variant-${String(index).padStart(2, "0")}`,
+				name: `Sample variant ${index}`,
+			}));
 			catalog.push(...variants);
 			for (const model of variants) available.add(model);
 			const anchor = { ...target, id: "scope-anchor", name: "Unrelated anchor" };
 			catalog.push(anchor);
 			ctx.scopedModels = [{ model: anchor }];
-			const scope: SettingsScopeEvidence = { status: "available", patterns: [`${target.provider}/unmatched-*:high`], observedAt: 1 };
-			const reader = { ...durableReader(catalog), getAvailableSnapshot: () => [...available],
-				hasConfiguredAuth: (provider: string) => [...configured].some((model) => model.provider === provider) };
-			const read = (at: number) => host === "ordinary" ? readModels(ctx, at)
-				: readDurableModels(reader, {}, at, { ...scope, observedAt: at });
+			const scope: SettingsScopeEvidence = {
+				status: "available",
+				patterns: [`${target.provider}/unmatched-*:high`],
+				observedAt: 1,
+			};
+			const reader = {
+				...durableReader(catalog),
+				getAvailableSnapshot: () => [...available],
+				hasConfiguredAuth: (provider: string) => [...configured].some((model) => model.provider === provider),
+			};
+			const read = (at: number) =>
+				host === "ordinary" ? readModels(ctx, at) : readDurableModels(reader, {}, at, { ...scope, observedAt: at });
 			const snapshot = read(1);
 			let page = await run(snapshot, { kind: "model", search: "sample" });
 			const firstCursor = page.details.cursor as string;
 			assert.deepEqual(page.details.query, { match: "exact", limit: 20, kind: "model", search: "sample" });
 			assert.equal(records(page)[0].name, `${target.provider}/${target.id}`);
 			const { inScope, providerHasScopedModels, providerNamedInSettings } = records(page)[0];
-			assert.deepEqual({ inScope, providerHasScopedModels, providerNamedInSettings }, host === "ordinary"
-				? { inScope: false, providerHasScopedModels: true, providerNamedInSettings: null }
-				: { inScope: null, providerHasScopedModels: null, providerNamedInSettings: true });
+			assert.deepEqual(
+				{ inScope, providerHasScopedModels, providerNamedInSettings },
+				host === "ordinary"
+					? { inScope: false, providerHasScopedModels: true, providerNamedInSettings: null }
+					: { inScope: null, providerHasScopedModels: null, providerNamedInSettings: true },
+			);
 			assert.equal(records(page)[1].provider, variants[0].provider);
 			assert.match(page.text, /alphabetical provider\/id within each group/);
 			assert.match(page.text, /Neither filters the catalog nor establishes operator preference/);
@@ -262,9 +453,15 @@ describe("provider configuration order", () => {
 			}
 			assert.equal(page.details.cursor, undefined);
 			const expected = snapshot.records.filter((row) => row.displayName?.startsWith("Sample") === true);
-			assert.deepEqual(seen, expected.map((row) => row.name));
+			assert.deepEqual(
+				seen,
+				expected.map((row) => row.name),
+			);
 			assert.equal(new Set(seen).size, catalog.length - 1);
-			assert.deepEqual(expected.slice(1, 41).map((row) => row.id), variants.map((model) => model.id));
+			assert.deepEqual(
+				expected.slice(1, 41).map((row) => row.id),
+				variants.map((model) => model.id),
+			);
 			ctx.scopedModels = [{ model: catalog[4] }];
 			scope.patterns = [`${catalog[4].provider}/*`];
 			assert.equal((await run(read(100), { cursor: firstCursor })).outcome, "stale_cursor");
@@ -273,43 +470,101 @@ describe("provider configuration order", () => {
 	it("keeps alphabetical ties rather than scope order and does not prioritize unavailable scoped providers", () => {
 		const { catalog, ctx } = fixture();
 		ctx.scopedModels = [5, 1, 4, 3].map((index) => ({ model: catalog[index] }));
-		assert.deepEqual(readModels(ctx, 1).records.map((row) => row.id), [4, 5, 2, 3, 0, 1].map((index) => catalog[index].id));
+		assert.deepEqual(
+			readModels(ctx, 1).records.map((row) => row.id),
+			[4, 5, 2, 3, 0, 1].map((index) => catalog[index].id),
+		);
 	});
 	it("extracts literal provider prefixes without resolving model IDs or thinking suffixes", () => {
 		const { catalog } = fixture();
 		const target = catalog[5];
 		for (const suffix of ["", "absent-id", "*:high", "nested/absent-id:batch:high", "[abc]?", "~fuzzy"]) {
-			const snapshot = readDurableModels(durableReader(catalog), {}, 1,
-				{ status: "available", patterns: [`${target.provider}/${suffix}`], observedAt: 1 });
+			const snapshot = readDurableModels(durableReader(catalog), {}, 1, {
+				status: "available",
+				patterns: [`${target.provider}/${suffix}`],
+				observedAt: 1,
+			});
 			assert.equal(snapshot.records[0].provider, target.provider);
-			assert.deepEqual(snapshot.records.map((row) => row.providerNamedInSettings), [true, false, false, false, false, false]);
+			assert.deepEqual(
+				snapshot.records.map((row) => row.providerNamedInSettings),
+				[true, false, false, false, false, false],
+			);
 			assert.ok(snapshot.records.every((row) => row.inScope === null && row.providerHasScopedModels === null));
 		}
 	});
 	it("ignores glob, fuzzy, escaped, nonliteral and prefix-less provider patterns", () => {
 		const { catalog } = fixture();
 		const target = catalog[5];
-		for (const character of ["*", "?", "[", "]", "{", "}", "(", ")", "!", "+", "@", "~", "^", "$", "|", "\\", ":", " ", "\t"]) {
+		for (const character of [
+			"*",
+			"?",
+			"[",
+			"]",
+			"{",
+			"}",
+			"(",
+			")",
+			"!",
+			"+",
+			"@",
+			"~",
+			"^",
+			"$",
+			"|",
+			"\\",
+			":",
+			" ",
+			"\t",
+		]) {
 			const provider = `${target.provider}${character}`;
-			const snapshot = readDurableModels(durableReader([{ ...target, provider }]), {}, 1,
-				{ status: "available", patterns: [`${provider}/*`], observedAt: 1 });
+			const snapshot = readDurableModels(durableReader([{ ...target, provider }]), {}, 1, {
+				status: "available",
+				patterns: [`${provider}/*`],
+				observedAt: 1,
+			});
 			assert.equal(snapshot.records[0].providerNamedInSettings, false, character);
 		}
-		for (const pattern of [target.id, `${target.id}:high`, "*", "*/sample", "/sample", ` ${target.provider}/*`,
-			`${target.provider.toUpperCase()}/*`, `${target.provider.slice(0, -1)}/*`, `~${target.provider}/*`]) {
-			const snapshot = readDurableModels(durableReader(catalog), {}, 1,
-				{ status: "available", patterns: [pattern], observedAt: 1 });
-			assert.ok(snapshot.records.every((row) => row.providerNamedInSettings === false), pattern);
-			assert.deepEqual(snapshot.records.map((row) => row.id), catalog.map((model) => model.id));
+		for (const pattern of [
+			target.id,
+			`${target.id}:high`,
+			"*",
+			"*/sample",
+			"/sample",
+			` ${target.provider}/*`,
+			`${target.provider.toUpperCase()}/*`,
+			`${target.provider.slice(0, -1)}/*`,
+			`~${target.provider}/*`,
+		]) {
+			const snapshot = readDurableModels(durableReader(catalog), {}, 1, {
+				status: "available",
+				patterns: [pattern],
+				observedAt: 1,
+			});
+			assert.ok(
+				snapshot.records.every((row) => row.providerNamedInSettings === false),
+				pattern,
+			);
+			assert.deepEqual(
+				snapshot.records.map((row) => row.id),
+				catalog.map((model) => model.id),
+			);
 		}
 	});
 	it("distinguishes known empty settings from absent or unavailable evidence without reordering", () => {
 		const { catalog } = fixture();
 		for (const status of ["available", "absent", "unavailable"] as const) {
-			const snapshot = readDurableModels(durableReader(catalog), {}, 1,
-				{ status, patterns: status === "available" ? [] : null, observedAt: 1 });
-			assert.ok(snapshot.records.every((row) => row.providerNamedInSettings === (status === "available" ? false : null)));
-			assert.deepEqual(snapshot.records.map((row) => row.id), catalog.map((model) => model.id));
+			const snapshot = readDurableModels(durableReader(catalog), {}, 1, {
+				status,
+				patterns: status === "available" ? [] : null,
+				observedAt: 1,
+			});
+			assert.ok(
+				snapshot.records.every((row) => row.providerNamedInSettings === (status === "available" ? false : null)),
+			);
+			assert.deepEqual(
+				snapshot.records.map((row) => row.id),
+				catalog.map((model) => model.id),
+			);
 		}
 	});
 	it("invalidates a cursor when patterns change without changing the named provider", async () => {
@@ -318,7 +573,10 @@ describe("provider configuration order", () => {
 		const scope: SettingsScopeEvidence = { status: "available", patterns: [`${catalog[5].provider}/*`], observedAt: 1 };
 		const first = await run(readDurableModels(reader, {}, 1, scope), { kind: "model", limit: 1 });
 		scope.patterns = [`${catalog[5].provider}/absent-id:high`];
-		assert.equal((await run(readDurableModels(reader, {}, 2, scope), { cursor: first.details.cursor as string })).outcome, "stale_cursor");
+		assert.equal(
+			(await run(readDurableModels(reader, {}, 2, scope), { cursor: first.details.cursor as string })).outcome,
+			"stale_cursor",
+		);
 	});
 });
 
@@ -343,7 +601,11 @@ describe("settings scope configuration", () => {
 		assert.deepEqual(readSettingsScope(cwd, agentDir, 3, true).patterns, []);
 		assert.deepEqual(readSettingsScope(cwd, agentDir, 3, false).patterns, patterns);
 		await writeFile(project, "private-invalid-json");
-		assert.deepEqual(readSettingsScope(cwd, agentDir, 4, true), { status: "unavailable", patterns: null, observedAt: 4 });
+		assert.deepEqual(readSettingsScope(cwd, agentDir, 4, true), {
+			status: "unavailable",
+			patterns: null,
+			observedAt: 4,
+		});
 		assert.deepEqual(readSettingsScope(cwd, agentDir, 4, false).patterns, patterns);
 		await rm(project);
 		await writeFile(global, JSON.stringify({ enabledModels: 12 }));

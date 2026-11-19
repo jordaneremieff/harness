@@ -3,7 +3,13 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { createEventBus, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+	createEventBus,
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+	type ExtensionContext,
+	SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { compile } from "@earendil-works/pi-schema";
 import type { TranscriptEvent } from "vitest-evals";
 import { piSdkAdapter, runDeterministicChecks } from "../../evals/subjects/pi-sdk.mts";
@@ -91,38 +97,36 @@ function harness(mode: PolicyMode) {
 		getSystemPrompt: () => "",
 		ui: { notify: (text: string) => notices.push(text) },
 	} as unknown as ExtensionContext;
-	registerProductFixture(
-		{
-			events: createEventBus(),
-			on(name: string, handler: Handler) {
-				hooks.set(name, [...(hooks.get(name) ?? []), handler]);
-			},
-			registerTool(tool: Tool) {
-				tools.set(tool.name, tool);
-			},
-			registerFlag() {},
-			registerShortcut() {},
-			registerCommand(name: string, command: Command) {
-				commands.set(name, command);
-			},
-			getFlag: () => mode,
-			getAllTools: () => {
-				if (catalog === "unavailable") throw new Error("Synthetic catalog unavailable");
-				return [...tools.values()].map(({ name, parameters }) => ({
-					name,
-					...(catalog === "missing-schema" ? {} : { parameters }),
-				}));
-			},
-			getActiveTools: () => active,
-			appendEntry(customType: string, data?: unknown) {
-				entries.push({ id: `entry-${entries.length + 1}`, type: "custom", customType, data });
+	registerProductFixture({
+		events: createEventBus(),
+		on(name: string, handler: Handler) {
+			hooks.set(name, [...(hooks.get(name) ?? []), handler]);
+		},
+		registerTool(tool: Tool) {
+			tools.set(tool.name, tool);
+		},
+		registerFlag() {},
+		registerShortcut() {},
+		registerCommand(name: string, command: Command) {
+			commands.set(name, command);
+		},
+		getFlag: () => mode,
+		getAllTools: () => {
+			if (catalog === "unavailable") throw new Error("Synthetic catalog unavailable");
+			return [...tools.values()].map(({ name, parameters }) => ({
+				name,
+				...(catalog === "missing-schema" ? {} : { parameters }),
+			}));
+		},
+		getActiveTools: () => active,
+		appendEntry(customType: string, data?: unknown) {
+			entries.push({ id: `entry-${entries.length + 1}`, type: "custom", customType, data });
 			session.appendCustomEntry(customType, data);
-			},
-			setActiveTools(names: string[]) {
-				active = [...names];
-			},
-		} as unknown as ExtensionAPI,
-	);
+		},
+		setActiveTools(names: string[]) {
+			active = [...names];
+		},
+	} as unknown as ExtensionAPI);
 	const tool = (name: string): Tool => {
 		const found = tools.get(name);
 		assert.ok(found, name);
@@ -158,13 +162,7 @@ function harness(mode: PolicyMode) {
 		return text;
 	};
 	const inspect = async (args: Record<string, unknown>) => {
-		const output = await tool("policy_rules").execute(
-			"inspection",
-			args,
-			new AbortController().signal,
-			undefined,
-			ctx,
-		);
+		const output = await tool("policy_rules").execute("inspection", args, new AbortController().signal, undefined, ctx);
 		return { ...output, text: output.content.map((part) => part.text).join("\n") };
 	};
 	return {

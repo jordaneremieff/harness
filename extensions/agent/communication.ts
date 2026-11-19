@@ -18,19 +18,84 @@ const identity = str({ minLength: 1, maxLength: 256, pattern: identityPattern })
 const storageId = str({ minLength: 36, maxLength: 36, pattern: STORAGE_ID_PATTERN });
 const entryId = str({ minLength: 1, maxLength: 16, pattern: "^[1-9][0-9]*$" });
 const sourceId = bounded(1_024);
-export const CommunicationBodySchema = obj({ text: bounded(COMMUNICATION_BODY_BYTES, 0), complete: bool(), redacted: bool() });
-export const CommunicationSenderSchema = obj({ identity, name: opt(bounded(160, 0)), kind: opt(union([lit("agent"), lit("session")])) });
-export const CommunicationReferenceSchema = obj({ submissionId: positive, requestId: opt(sourceId), entryId: opt(entryId), answerEntryId: opt(entryId) });
-const common = { format: lit("agent.communication/1"), sender: CommunicationSenderSchema, body: CommunicationBodySchema, recordedAt: count };
+export const CommunicationBodySchema = obj({
+	text: bounded(COMMUNICATION_BODY_BYTES, 0),
+	complete: bool(),
+	redacted: bool(),
+});
+export const CommunicationSenderSchema = obj({
+	identity,
+	name: opt(bounded(160, 0)),
+	kind: opt(union([lit("agent"), lit("session")])),
+});
+export const CommunicationReferenceSchema = obj({
+	submissionId: positive,
+	requestId: opt(sourceId),
+	entryId: opt(entryId),
+	answerEntryId: opt(entryId),
+});
+const common = {
+	format: lit("agent.communication/1"),
+	sender: CommunicationSenderSchema,
+	body: CommunicationBodySchema,
+	recordedAt: count,
+};
 export const CommunicationSchema = union([
-	obj({ ...common, kind: lit("notice"), metadata: obj({ threadId: bounded(256), event: opt(positive), frameRevision: opt(positive), eventKind: opt(bounded(64, 0)), title: opt(bounded(160, 0)), passive: opt(bool()) }) }),
-	obj({ ...common, kind: lit("report"), metadata: obj({ sourceId, requestId: sourceId, replyTo: opt(identity), passive: opt(bool()) }) }),
-	obj({ ...common, kind: lit("result"), metadata: obj({ status: union([lit("done"), lit("unanswered")]), references: arr(CommunicationReferenceSchema, { minItems: 1, maxItems: 16 }), omittedReferences: count, reason: opt(bounded(1_024, 0)), receiptContinuation: opt(ReceiptContinuationSchema) }) }),
-	obj({ ...common, kind: lit("check-in"), metadata: obj({ sourceId, producerRequestId: sourceId, elapsedMs: count, origin: union([lit("operator"), lit("model")]) }) }),
+	obj({
+		...common,
+		kind: lit("notice"),
+		metadata: obj({
+			threadId: bounded(256),
+			event: opt(positive),
+			frameRevision: opt(positive),
+			eventKind: opt(bounded(64, 0)),
+			title: opt(bounded(160, 0)),
+			passive: opt(bool()),
+		}),
+	}),
+	obj({
+		...common,
+		kind: lit("report"),
+		metadata: obj({ sourceId, requestId: sourceId, replyTo: opt(identity), passive: opt(bool()) }),
+	}),
+	obj({
+		...common,
+		kind: lit("result"),
+		metadata: obj({
+			status: union([lit("done"), lit("unanswered")]),
+			references: arr(CommunicationReferenceSchema, { minItems: 1, maxItems: 16 }),
+			omittedReferences: count,
+			reason: opt(bounded(1_024, 0)),
+			receiptContinuation: opt(ReceiptContinuationSchema),
+		}),
+	}),
+	obj({
+		...common,
+		kind: lit("check-in"),
+		metadata: obj({
+			sourceId,
+			producerRequestId: sourceId,
+			elapsedMs: count,
+			origin: union([lit("operator"), lit("model")]),
+		}),
+	}),
 ]);
 export type Communication = Static<typeof CommunicationSchema>;
-export const CommunicationInputLinkSchema = obj({ mode: lit("input"), storageId, conversationId: positive, entryId, submissionId: positive, requestId: sourceId });
-export const CommunicationPassiveLinkSchema = obj({ mode: lit("passive"), storageId, conversationId: positive, entryId, requestId: sourceId });
+export const CommunicationInputLinkSchema = obj({
+	mode: lit("input"),
+	storageId,
+	conversationId: positive,
+	entryId,
+	submissionId: positive,
+	requestId: sourceId,
+});
+export const CommunicationPassiveLinkSchema = obj({
+	mode: lit("passive"),
+	storageId,
+	conversationId: positive,
+	entryId,
+	requestId: sourceId,
+});
 export const CommunicationLinkSchema = union([CommunicationInputLinkSchema, CommunicationPassiveLinkSchema]);
 export type CommunicationInputLink = Static<typeof CommunicationInputLinkSchema>;
 export type CommunicationLink = Static<typeof CommunicationLinkSchema>;
@@ -40,9 +105,17 @@ export const CommunicationViewSchema = union([
 	obj({ state: lit("unavailable"), reason: union([lit("limit"), lit("invalid")]) }),
 ]);
 export type CommunicationView = Static<typeof CommunicationViewSchema>;
-export const CommunicationCompanionSchema = obj({ format: lit("agent.communication-link/1"), target: CommunicationInputLinkSchema, value: CommunicationSchema });
+export const CommunicationCompanionSchema = obj({
+	format: lit("agent.communication-link/1"),
+	target: CommunicationInputLinkSchema,
+	value: CommunicationSchema,
+});
 export type CommunicationCompanion = Static<typeof CommunicationCompanionSchema>;
-export const CommunicationPassiveSchema = obj({ format: lit("agent.communication-passive/1"), requestId: sourceId, value: CommunicationSchema });
+export const CommunicationPassiveSchema = obj({
+	format: lit("agent.communication-passive/1"),
+	requestId: sourceId,
+	value: CommunicationSchema,
+});
 export type CommunicationPassive = Static<typeof CommunicationPassiveSchema>;
 
 /** Canonical identity checks never resolve a handle or change a supplied author. */
@@ -54,7 +127,12 @@ export function communicationIdentity(value: string): boolean {
 	return Number.isSafeInteger(conversation) && conversation > 1;
 }
 function canonicalEntry(value: string): boolean {
-	return /^[1-9][0-9]*$/u.test(value) && Number.isSafeInteger(Number(value)) && Number(value) > 0 && String(Number(value)) === value;
+	return (
+		/^[1-9][0-9]*$/u.test(value) &&
+		Number.isSafeInteger(Number(value)) &&
+		Number(value) > 0 &&
+		String(Number(value)) === value
+	);
 }
 function textFits(value: string, maximum: number, body = false): boolean {
 	if (Buffer.byteLength(value, "utf8") > maximum) return false;
@@ -67,24 +145,60 @@ function textFits(value: string, maximum: number, body = false): boolean {
 	return true;
 }
 function validValue(value: Communication): boolean {
-	if ((value.body.redacted && value.body.complete) || !communicationIdentity(value.sender.identity) || (value.sender.name !== undefined && !textFits(value.sender.name, 160)) || !textFits(value.body.text, COMMUNICATION_BODY_BYTES, true)) return false;
+	if (
+		(value.body.redacted && value.body.complete) ||
+		!communicationIdentity(value.sender.identity) ||
+		(value.sender.name !== undefined && !textFits(value.sender.name, 160)) ||
+		!textFits(value.body.text, COMMUNICATION_BODY_BYTES, true)
+	)
+		return false;
 	switch (value.kind) {
-		case "notice": return textFits(value.metadata.threadId, 256) && (value.metadata.title === undefined || textFits(value.metadata.title, 160)) && (value.metadata.eventKind === undefined || textFits(value.metadata.eventKind, 64));
-		case "report": return textFits(value.metadata.sourceId, 1_024) && textFits(value.metadata.requestId, 1_024) && (value.metadata.replyTo === undefined || communicationIdentity(value.metadata.replyTo));
-		case "check-in": return textFits(value.metadata.sourceId, 1_024) && textFits(value.metadata.producerRequestId, 1_024);
-		case "result": return (value.metadata.reason === undefined || textFits(value.metadata.reason, 1_024)) && value.metadata.references.every((reference) => (reference.requestId === undefined || textFits(reference.requestId, 1_024)) && (reference.entryId === undefined || canonicalEntry(reference.entryId)) && (reference.answerEntryId === undefined || canonicalEntry(reference.answerEntryId)));
+		case "notice":
+			return (
+				textFits(value.metadata.threadId, 256) &&
+				(value.metadata.title === undefined || textFits(value.metadata.title, 160)) &&
+				(value.metadata.eventKind === undefined || textFits(value.metadata.eventKind, 64))
+			);
+		case "report":
+			return (
+				textFits(value.metadata.sourceId, 1_024) &&
+				textFits(value.metadata.requestId, 1_024) &&
+				(value.metadata.replyTo === undefined || communicationIdentity(value.metadata.replyTo))
+			);
+		case "check-in":
+			return textFits(value.metadata.sourceId, 1_024) && textFits(value.metadata.producerRequestId, 1_024);
+		case "result":
+			return (
+				(value.metadata.reason === undefined || textFits(value.metadata.reason, 1_024)) &&
+				value.metadata.references.every(
+					(reference) =>
+						(reference.requestId === undefined || textFits(reference.requestId, 1_024)) &&
+						(reference.entryId === undefined || canonicalEntry(reference.entryId)) &&
+						(reference.answerEntryId === undefined || canonicalEntry(reference.answerEntryId)),
+				)
+			);
 	}
 }
 export function communicationSerializedBytes(value: unknown): number {
-	try { return Buffer.byteLength(JSON.stringify(value), "utf8"); }
-	catch { return Number.POSITIVE_INFINITY; }
+	try {
+		return Buffer.byteLength(JSON.stringify(value), "utf8");
+	} catch {
+		return Number.POSITIVE_INFINITY;
+	}
 }
 /** Closed shape checks and UTF-8 limits are both required at the public boundary. */
 export function parseCommunication(value: unknown): Communication | undefined {
 	try {
-		if (!matchesSchema(CommunicationSchema, value) || !validValue(value) || communicationSerializedBytes(value) > COMMUNICATION_VALUE_BYTES) return undefined;
+		if (
+			!matchesSchema(CommunicationSchema, value) ||
+			!validValue(value) ||
+			communicationSerializedBytes(value) > COMMUNICATION_VALUE_BYTES
+		)
+			return undefined;
 		return JSON.parse(JSON.stringify(value)) as Communication;
-	} catch { return undefined; }
+	} catch {
+		return undefined;
+	}
 }
 function validLink(value: CommunicationLink): boolean {
 	return canonicalEntry(value.entryId) && textFits(value.requestId, 1_024);
@@ -93,30 +207,67 @@ export function parseCommunicationLink(value: unknown): CommunicationLink | unde
 	try {
 		if (!matchesSchema(CommunicationLinkSchema, value) || !validLink(value)) return undefined;
 		return JSON.parse(JSON.stringify(value)) as CommunicationLink;
-	} catch { return undefined; }
+	} catch {
+		return undefined;
+	}
 }
 export function parseCommunicationCompanion(value: unknown): CommunicationCompanion | undefined {
 	try {
-		if (!matchesSchema(CommunicationCompanionSchema, value) || !validLink(value.target) || !parseCommunication(value.value) || ((value.value.kind === "notice" || value.value.kind === "report") && value.value.metadata.passive === true)) return undefined;
+		if (
+			!matchesSchema(CommunicationCompanionSchema, value) ||
+			!validLink(value.target) ||
+			!parseCommunication(value.value) ||
+			((value.value.kind === "notice" || value.value.kind === "report") && value.value.metadata.passive === true)
+		)
+			return undefined;
 		return JSON.parse(JSON.stringify(value)) as CommunicationCompanion;
-	} catch { return undefined; }
+	} catch {
+		return undefined;
+	}
 }
 export function parseCommunicationPassive(value: unknown): CommunicationPassive | undefined {
 	try {
-		if (!matchesSchema(CommunicationPassiveSchema, value) || !textFits(value.requestId, 1_024) || !parseCommunication(value.value) || (value.value.kind !== "notice" && value.value.kind !== "report") || value.value.metadata.passive !== true) return undefined;
+		if (
+			!matchesSchema(CommunicationPassiveSchema, value) ||
+			!textFits(value.requestId, 1_024) ||
+			!parseCommunication(value.value) ||
+			(value.value.kind !== "notice" && value.value.kind !== "report") ||
+			value.value.metadata.passive !== true
+		)
+			return undefined;
 		return JSON.parse(JSON.stringify(value)) as CommunicationPassive;
-	} catch { return undefined; }
+	} catch {
+		return undefined;
+	}
 }
 export function parseCommunicationView(value: unknown): CommunicationView | undefined {
 	try {
 		if (!matchesSchema(CommunicationViewSchema, value)) return undefined;
-		if (value.state === "ready" && (!canonicalEntry(value.recordEntryId) || !validLink(value.target) || !parseCommunication(value.value) || communicationSerializedBytes(value) > COMMUNICATION_READY_BYTES)) return undefined;
+		if (
+			value.state === "ready" &&
+			(!canonicalEntry(value.recordEntryId) ||
+				!validLink(value.target) ||
+				!parseCommunication(value.value) ||
+				communicationSerializedBytes(value) > COMMUNICATION_READY_BYTES)
+		)
+			return undefined;
 		return JSON.parse(JSON.stringify(value)) as CommunicationView;
-	} catch { return undefined; }
+	} catch {
+		return undefined;
+	}
 }
 /** Object key order is not a new provenance value; array order remains significant. */
 export function communicationFingerprint(value: Communication): string {
-	const ordered = (item: unknown): unknown => Array.isArray(item) ? item.map(ordered) : item !== null && typeof item === "object" ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, child]) => [key, ordered(child)])) : item;
+	const ordered = (item: unknown): unknown =>
+		Array.isArray(item)
+			? item.map(ordered)
+			: item !== null && typeof item === "object"
+				? Object.fromEntries(
+						Object.entries(item)
+							.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+							.map(([key, child]) => [key, ordered(child)]),
+					)
+				: item;
 	return JSON.stringify(ordered(value));
 }
 

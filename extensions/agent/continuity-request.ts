@@ -21,7 +21,10 @@ export interface ContinuityMismatch {
  * the head lookup and the insertion. Durable reports a throw from a hook and still sends the
  * request, so a mismatch inserts nothing and goes to the host diagnostic instead of throwing.
  */
-export function continuityRequestHooks(source: () => ContinuitySource | undefined, mismatch: (found: ContinuityMismatch) => void): Partial<GenerationHooks> {
+export function continuityRequestHooks(
+	source: () => ContinuitySource | undefined,
+	mismatch: (found: ContinuityMismatch) => void,
+): Partial<GenerationHooks> {
 	return {
 		async beforeRequest(request, api, context) {
 			const held = source();

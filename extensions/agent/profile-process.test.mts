@@ -16,7 +16,14 @@ import { tryNativeWriterLease } from "./native-lease.ts";
 import { eventLog, waitForProcessExit, waitForConnectionClose } from "./host-fixture.mts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { BASE_OPERATIONS } from "./profile-base-contract-fixture.mts";
-import { guarded, instructions, lastTool, profileFixture, type ProviderRequest, type Requester } from "./profile-process-fixture.mts";
+import {
+	guarded,
+	instructions,
+	lastTool,
+	profileFixture,
+	type ProviderRequest,
+	type Requester,
+} from "./profile-process-fixture.mts";
 
 function writerAvailable(metadata: HostMetadata): boolean {
 	assert.equal(existsSync(hostPaths(metadata).claim), true, "writer release preserves the lease inode");
@@ -44,13 +51,23 @@ it("uses the OS temporary directory by default and preserves the scratch-root ov
 function requestRoutes(request: ProviderRequest): RequestContext[] {
 	return request.context.messages.flatMap((message) => {
 		if (message.role !== "user") return [];
-		const text = typeof message.content === "string" ? message.content : message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("");
+		const text =
+			typeof message.content === "string"
+				? message.content
+				: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 		return text.startsWith("<agent-request-route host=") ? [JSON.parse(text.split("\n")[1]) as RequestContext] : [];
 	});
 }
 
 type Updated = { outcome: "applied" | "conflict"; deduped: boolean; profile: AgentProfile };
-type Spawned = { sessionId: string; created: boolean; handle: string; profile: AgentProfile | null; availability?: string; creation?: { name: string; role: string } };
+type Spawned = {
+	sessionId: string;
+	created: boolean;
+	handle: string;
+	profile: AgentProfile | null;
+	availability?: string;
+	creation?: { name: string; role: string };
+};
 type Admitted = { submissionId: number | string; deduped: boolean; identity: string };
 
 function toolData<T>(request: ProviderRequest, name: string): T {
@@ -60,44 +77,87 @@ function toolData<T>(request: ProviderRequest, name: string): T {
 	return result.details as T;
 }
 
-async function send(requester: Requester, sessionId: string, requestId: string, replyTo = requester.identity): Promise<Admitted> {
+async function send(
+	requester: Requester,
+	sessionId: string,
+	requestId: string,
+	replyTo = requester.identity,
+): Promise<Admitted> {
 	return requester.control<Admitted>("task-submit", {
-		sessionId, message: `Question ${requestId}`, requestId, requester: requester.identity, replyTo,
-		origin: "model", whenBusy: "followUp", checkInMinutes: 0,
+		sessionId,
+		message: `Question ${requestId}`,
+		requestId,
+		requester: requester.identity,
+		replyTo,
+		origin: "model",
+		whenBusy: "followUp",
+		checkInMinutes: 0,
 	});
 }
 async function notice(requester: Requester, text: string): Promise<void> {
 	await requester.notices.waitFor((items) => items.some((item) => item.text.includes(text)), 60000);
 }
-function occurrences(requester: Requester, text: string): number { return requester.notices.filter((item) => item.text.includes(text)).length; }
+function occurrences(requester: Requester, text: string): number {
+	return requester.notices.filter((item) => item.text.includes(text)).length;
+}
 
-it("retains a standing profile across native boundaries and routes reused work by request", { timeout: 240000 }, async (t) => {
+it("retains a standing profile across native boundaries and routes reused work by request", {
+	timeout: 240000,
+}, async (t) => {
 	const f = await profileFixture(t);
 	const [a, b, c] = await Promise.all([f.requester(), f.requester(), f.requester()]);
 	assert.notEqual(a.process.pid, b.process.pid);
-	const created = await a.call<Spawned>("spawn", { handle: "archive-guide", name: "Archive guide", role: "Explain archive evidence with sources.", trust: true });
+	const created = await a.call<Spawned>("spawn", {
+		handle: "archive-guide",
+		name: "Archive guide",
+		role: "Explain archive evidence with sources.",
+		trust: true,
+	});
 	assert.equal(created.created, true);
 	assert.equal(created.handle, "@archive-guide");
 	assert.ok(created.profile);
 	const identity = created.sessionId;
 	const metadata = await a.call<HostMetadata>("metadata", { sessionId: identity });
-	const observation = await a.raw<{ token: string }>(identity, "observe-open", { scope: "conversation", token: randomUUID() });
+	const observation = await a.raw<{ token: string }>(identity, "observe-open", {
+		scope: "conversation",
+		token: randomUUID(),
+	});
 	const first = await send(a, "@archive-guide", "first-question");
 	let request = await f.next();
-	assert.ok(request.context.messages.some((message) => message.role === "user" && message.content === "Question first-question"), "native task content remains the caller's words");
+	assert.ok(
+		request.context.messages.some(
+			(message) => message.role === "user" && message.content === "Question first-question",
+		),
+		"native task content remains the caller's words",
+	);
 	const self = instructions(request);
-	for (const value of [identity, "@archive-guide", "Archive guide", "Explain archive evidence with sources.", "agent_profile"]) assert.ok(self.includes(value), value);
+	for (const value of [
+		identity,
+		"@archive-guide",
+		"Archive guide",
+		"Explain archive evidence with sources.",
+		"agent_profile",
+	])
+		assert.ok(self.includes(value), value);
 	assert.ok(JSON.stringify(request.context).includes(a.identity), "host-authored request names its requester");
 	request.tool("tool_search", { query: "read or update the saved agent profile" });
 	request = await f.next();
-	assert.ok(getCurrentTools(request.context.messages).some((tool) => tool.name === "agent_profile"), "tool discovery declares the profile tool");
+	assert.ok(
+		getCurrentTools(request.context.messages).some((tool) => tool.name === "agent_profile"),
+		"tool discovery declares the profile tool",
+	);
 	request.tool("agent_profile", { action: "read" });
 	request = await f.next();
 	const initial = toolData<AgentProfile>(request, "agent_profile");
 	assert.equal(initial.identity, identity);
 	assert.equal(initial.creator, a.identity);
 	const stale = `Observation 2026-01-01: archive region is east. Source: ${f.source}. Recheck the current source before reuse.`;
-	request.tool("agent_profile", { action: "update", expectedRevision: initial.revision, role: "Verify current archive evidence.", expertise: stale });
+	request.tool("agent_profile", {
+		action: "update",
+		expectedRevision: initial.revision,
+		role: "Verify current archive evidence.",
+		expertise: stale,
+	});
 	request = await f.next();
 	const saved = toolData<Updated>(request, "agent_profile");
 	assert.equal(saved.outcome, "applied");
@@ -105,14 +165,21 @@ it("retains a standing profile across native boundaries and routes reused work b
 	assert.notEqual(saved.profile.revision, initial.revision);
 	assert.ok(instructions(request).includes("Verify current archive evidence."));
 	const active = await a.raw<AgentProfile>(identity, "profile-read");
-	assert.ok(active.requests.some((route) => route.requester === a.identity && route.replyTo === a.identity && route.status === "placed"));
+	assert.ok(
+		active.requests.some(
+			(route) => route.requester === a.identity && route.replyTo === a.identity && route.status === "placed",
+		),
+	);
 	request.answer("FIRST_RESULT");
 	await notice(a, "FIRST_RESULT");
 	const duplicate = await send(a, "@archive-guide", "first-question");
 	assert.equal(duplicate.deduped, true);
 	assert.equal(duplicate.submissionId, first.submissionId);
 
-	const compacting = a.raw(identity, "compact", { instructions: "Keep only: archive task complete. Omit the original task text and archive claim.", wait: true });
+	const compacting = a.raw(identity, "compact", {
+		instructions: "Keep only: archive task complete. Omit the original task text and archive claim.",
+		wait: true,
+	});
 	request = await f.next();
 	request.answer("Archive task complete. Read the saved profile before the next archive question.");
 	const compacted = await compacting;
@@ -125,19 +192,46 @@ it("retains a standing profile across native boundaries and routes reused work b
 	await send(a, identity, "source-correction");
 	request = await f.next();
 	assert.ok(instructions(request).includes(identity));
-	assert.ok(!request.context.messages.some((item) => item.role === "user" && JSON.stringify(item).includes("Question first-question")), "compaction removes the earlier task text");
-	request.tool("agent_compact", { instructions: "Retain only: check current archive evidence. Omit the original task text." });
+	assert.ok(
+		!request.context.messages.some(
+			(item) => item.role === "user" && JSON.stringify(item).includes("Question first-question"),
+		),
+		"compaction removes the earlier task text",
+	);
+	request.tool("agent_compact", {
+		instructions: "Retain only: check current archive evidence. Omit the original task text.",
+	});
 	request = await f.next();
 	request.answer("Check current archive evidence and retrieve the saved profile.");
 	request = await f.next();
-	assert.ok(!request.context.messages.some((item) => item.role === "user" && JSON.stringify(item).includes("Question source-correction")), "self-compaction removes the active task text");
-	assert.ok(!requestRoutes(request).some((route) => route.requestId === "source-correction"), "compaction removes the input's note");
-	assert.doesNotMatch(instructions(request), /source-correction/u, "the system section contains no request-specific bytes");
+	assert.ok(
+		!request.context.messages.some(
+			(item) => item.role === "user" && JSON.stringify(item).includes("Question source-correction"),
+		),
+		"self-compaction removes the active task text",
+	);
+	assert.ok(
+		!requestRoutes(request).some((route) => route.requestId === "source-correction"),
+		"compaction removes the input's note",
+	);
+	assert.doesNotMatch(
+		instructions(request),
+		/source-correction/u,
+		"the system section contains no request-specific bytes",
+	);
 	request.tool("agent_profile", { action: "read" });
 	request = await f.next();
 	const retrieved = toolData<AgentProfile>(request, "agent_profile");
 	assert.equal(retrieved.expertise, stale, "native profile retrieval survives compaction");
-	assert.ok(retrieved.requests.some((route) => route.requestId.includes("source-correction") && route.requester === a.identity && route.replyTo === a.identity && route.status === "placed"));
+	assert.ok(
+		retrieved.requests.some(
+			(route) =>
+				route.requestId.includes("source-correction") &&
+				route.requester === a.identity &&
+				route.replyTo === a.identity &&
+				route.status === "placed",
+		),
+	);
 	request.tool("read", { path: f.source });
 	request = await f.next();
 	assert.match(lastTool(request, "read").text, /region is west/u);
@@ -174,7 +268,14 @@ it("retains a standing profile across native boundaries and routes reused work b
 	const aRestarted = await f.requester(a.identity);
 	assert.notEqual(aRestarted.process.pid, a.process.pid);
 
-	const reused = await b.call<Spawned>("spawn", { handle: "archive-guide", name: "Do not rename", role: "Do not replace", model: "missing-provider/missing-model", thinkingLevel: "high", trust: true });
+	const reused = await b.call<Spawned>("spawn", {
+		handle: "archive-guide",
+		name: "Do not rename",
+		role: "Do not replace",
+		model: "missing-provider/missing-model",
+		thinkingLevel: "high",
+		trust: true,
+	});
 	assert.equal(reused.created, false);
 	assert.equal(reused.sessionId, identity);
 	assert.ok(reused.profile);
@@ -185,7 +286,10 @@ it("retains a standing profile across native boundaries and routes reused work b
 	assert.equal(reused.profile.thinkingLevel, created.profile.thinkingLevel);
 	assert.equal(reused.profile.revision, correctedProfile.revision);
 
-	for (const [recipient, key] of [[b, "second-requester"], [c, "distinct-reply-recipient"]] as const) {
+	for (const [recipient, key] of [
+		[b, "second-requester"],
+		[c, "distinct-reply-recipient"],
+	] as const) {
 		await send(b, "@archive-guide", key, recipient.identity);
 		request = await f.next();
 		const prompt = JSON.stringify(request.context);
@@ -199,7 +303,12 @@ it("retains a standing profile across native boundaries and routes reused work b
 		const current = toolData<AgentProfile>(request, "agent_profile");
 		assert.equal(current.expertise, corrected);
 		assert.equal(current.requests.length, 1, "only the current request remains active");
-		assert.ok(current.requests.some((route) => route.requestId.includes(key) && route.requester === b.identity && route.replyTo === recipient.identity));
+		assert.ok(
+			current.requests.some(
+				(route) =>
+					route.requestId.includes(key) && route.requester === b.identity && route.replyTo === recipient.identity,
+			),
+		);
 		assert.ok(current.requests.every((route) => route.requester !== a.identity));
 		request.tool("agent_send", { sessionId: recipient.identity, message: `INTERIM_${key}`, mode: "report" });
 		request = await f.next();
@@ -211,11 +320,17 @@ it("retains a standing profile across native boundaries and routes reused work b
 		assert.equal(occurrences(recipient, `FINAL_${key}`), 1);
 		assert.equal(occurrences(a, key), 0);
 		assert.equal(occurrences(aRestarted, key), 0, "the live creator receives neither report nor result");
-		if (recipient === c) assert.equal(occurrences(b, key), 0, "requester and explicit reply recipient are different routes");
+		if (recipient === c)
+			assert.equal(occurrences(b, key), 0, "requester and explicit reply recipient are different routes");
 	}
 
 	const persisted = await b.control<AgentProfile>("profile-read", { sessionId: identity });
-	const update = { expectedRevision: persisted.revision, expertise: `${corrected}\nCommitted continuity checkpoint.`, requestId: "committed-profile-edit", senderIdentity: b.identity };
+	const update = {
+		expectedRevision: persisted.revision,
+		expertise: `${corrected}\nCommitted continuity checkpoint.`,
+		requestId: "committed-profile-edit",
+		senderIdentity: b.identity,
+	};
 	await b.raw(identity, "observe-open", { scope: "conversation", token: randomUUID() });
 	const committed = await b.raw<Updated>(identity, "profile-update", update);
 	assert.equal(committed.outcome, "applied");
@@ -236,19 +351,41 @@ it("retains a standing profile across native boundaries and routes reused work b
 	assert.equal(reopened.profile.revision, committed.profile.revision);
 	assert.equal(reopened.profile.expertise, committed.profile.expertise);
 	assert.notEqual(restarted.hosts.at(-1)?.pid, host.pid);
-	const conflict = await restarted.raw<Updated>(identity, "profile-update", { expectedRevision: persisted.revision, role: "Stale overwrite", requestId: "stale-profile-edit", senderIdentity: b.identity });
+	const conflict = await restarted.raw<Updated>(identity, "profile-update", {
+		expectedRevision: persisted.revision,
+		role: "Stale overwrite",
+		requestId: "stale-profile-edit",
+		senderIdentity: b.identity,
+	});
 	assert.equal(conflict.outcome, "conflict");
 	assert.equal(conflict.profile.revision, committed.profile.revision);
-	await assert.rejects(restarted.raw(identity, "profile-update", { ...update, expertise: "Changed retry payload" }), /request|payload|reuse|different/iu);
+	await assert.rejects(
+		restarted.raw(identity, "profile-update", { ...update, expertise: "Changed retry payload" }),
+		/request|payload|reuse|different/iu,
+	);
 	await restarted.call("release", { sessionId: identity });
 	assert.equal(occurrences(a, "FIRST_RESULT"), 1);
 });
 
-it("concurrent independent requesters resolve one handle without replacing creation defaults", { timeout: 120000 }, async (t) => {
+it("concurrent independent requesters resolve one handle without replacing creation defaults", {
+	timeout: 120000,
+}, async (t) => {
 	const f = await profileFixture(t);
 	const [a, b] = await Promise.all([f.requester(), f.requester()]);
-	const settled = await Promise.allSettled([a, b].map((requester, index) => requester.call<Spawned>("spawn", { handle: "shared-expert", name: `Expert ${index}`, role: `Charter ${index}`, trust: true })));
-	const results = settled.map((result) => { assert.equal(result.status, "fulfilled", result.status === "rejected" ? String(result.reason) : ""); return (result as PromiseFulfilledResult<Spawned>).value; });
+	const settled = await Promise.allSettled(
+		[a, b].map((requester, index) =>
+			requester.call<Spawned>("spawn", {
+				handle: "shared-expert",
+				name: `Expert ${index}`,
+				role: `Charter ${index}`,
+				trust: true,
+			}),
+		),
+	);
+	const results = settled.map((result) => {
+		assert.equal(result.status, "fulfilled", result.status === "rejected" ? String(result.reason) : "");
+		return (result as PromiseFulfilledResult<Spawned>).value;
+	});
 	assert.equal(results[0].sessionId, results[1].sessionId);
 	assert.deepEqual(results.map((result) => result.created).sort(), [false, true]);
 	const winner = results.find((result) => result.created);
@@ -268,46 +405,98 @@ it("concurrent independent requesters resolve one handle without replacing creat
 	const retained = await b.control<AgentProfile>("profile-read", { sessionId: "@shared-expert" });
 	assert.equal(retained.revision, winner.profile.revision);
 	assert.equal(retained.creator, winner.profile.creator);
-	assert.equal(new Set([...a.hosts, ...b.hosts].map((host) => host.pid)).size, 1, "concurrent resolve starts one writer");
+	assert.equal(
+		new Set([...a.hosts, ...b.hosts].map((host) => host.pid)).size,
+		1,
+		"concurrent resolve starts one writer",
+	);
 	assert.equal(f.requests.length, 0, "resolve without prompt starts no model turn");
 	const creator = winner.profile.creator === a.identity ? a : b;
 	await creator.call("release", { sessionId: winner.sessionId });
 });
 
-it("preserves unchanged operations and refuses changed contracts across a feature-capability process boundary", { timeout: 120000 }, async (t) => {
+it("preserves unchanged operations and refuses changed contracts across a feature-capability process boundary", {
+	timeout: 120000,
+}, async (t) => {
 	const f = await profileFixture(t);
 	const a = await f.requester();
-	const expert = await a.call<Spawned>("spawn", { handle: "contract-expert", name: "Contract expert", role: "Preserve base controls.", trust: true });
+	const expert = await a.call<Spawned>("spawn", {
+		handle: "contract-expert",
+		name: "Contract expert",
+		role: "Preserve base controls.",
+		trust: true,
+	});
 	const metadata = await a.call<HostMetadata>("metadata", { sessionId: expert.sessionId });
 	const paths = hostPaths(metadata);
-	const observation = await a.raw<{ token: string }>(expert.sessionId, "observe-open", { scope: "conversation", token: randomUUID() });
+	const observation = await a.raw<{ token: string }>(expert.sessionId, "observe-open", {
+		scope: "conversation",
+		token: randomUUID(),
+	});
 	assert.deepEqual(Object.keys(BASE_OPERATIONS), ["status", "submit", "reset", "list", "dashboard"]);
 	const unchangedOperations = ["reset", "list"];
 	const changedOperations = ["status", "submit", "dashboard"];
-	for (const method of unchangedOperations) assert.deepEqual(HOST_CONTRACT.operations[method], BASE_OPERATIONS[method], `${method} keeps its declared base contract`);
-	for (const method of changedOperations) assert.notDeepEqual(HOST_CONTRACT.operations[method], BASE_OPERATIONS[method], `${method} requires its changed contract`);
+	for (const method of unchangedOperations)
+		assert.deepEqual(
+			HOST_CONTRACT.operations[method],
+			BASE_OPERATIONS[method],
+			`${method} keeps its declared base contract`,
+		);
+	for (const method of changedOperations)
+		assert.notDeepEqual(
+			HOST_CONTRACT.operations[method],
+			BASE_OPERATIONS[method],
+			`${method} requires its changed contract`,
+		);
 	assert.notEqual(HOST_CONTRACT.operations.status.request, BASE_OPERATIONS.status.request);
 	assert.notEqual(HOST_CONTRACT.operations.status.response, BASE_OPERATIONS.status.response);
 	assert.notEqual(HOST_CONTRACT.operations.submit.request, BASE_OPERATIONS.submit.request);
 	assert.notEqual(HOST_CONTRACT.operations.submit.response, BASE_OPERATIONS.submit.response);
 	const oldClient = await connectTransport({ serverId: paths.serverId, path: paths.socket });
 	t.after(() => oldClient.dispose());
-	const base = async (method: string, params: Record<string, unknown> = {}, contract = BASE_OPERATIONS[method]) => oldClient.request({
-		method, params: { sessionId: expert.sessionId, ...params }, requestId: randomUUID(), contract,
-	});
-	await assert.rejects(base("configure", { name: "Rejected base rename" }, { request: "configure/1.0.0", response: "configure/1.0.0" }), /configure request contract configure\/1\.0\.0 differs from configure\/1\.3\.0.*no operation was admitted/u);
+	const base = async (method: string, params: Record<string, unknown> = {}, contract = BASE_OPERATIONS[method]) =>
+		oldClient.request({
+			method,
+			params: { sessionId: expert.sessionId, ...params },
+			requestId: randomUUID(),
+			contract,
+		});
+	await assert.rejects(
+		base("configure", { name: "Rejected base rename" }, { request: "configure/1.0.0", response: "configure/1.0.0" }),
+		/configure request contract configure\/1\.0\.0 differs from configure\/1\.3\.0.*no operation was admitted/u,
+	);
 	const unchanged = await a.control<AgentProfile>("profile-read", { sessionId: expert.sessionId });
 	assert.equal(unchanged.name, "Contract expert", "the refused base configure never changes native storage");
 	await assert.rejects(base("status"), /status request contract .* differs from .*no operation was admitted/u);
-	await assert.rejects(base("submit", { message: "Rejected base task", requestId: "rejected-base-admission", ownerId: a.identity, origin: "operator" }), /submit request contract .* differs from .*no operation was admitted/u);
+	await assert.rejects(
+		base("submit", {
+			message: "Rejected base task",
+			requestId: "rejected-base-admission",
+			ownerId: a.identity,
+			origin: "operator",
+		}),
+		/submit request contract .* differs from .*no operation was admitted/u,
+	);
 	const status = await a.raw<{ conversation: { identity: string; busy: boolean } }>(expert.sessionId, "status");
 	assert.equal(status.conversation.identity, expert.sessionId);
 	assert.equal(status.conversation.busy, false, "refused contracts leave native work idle");
 	assert.equal(f.requests.length, 0, "refused contracts start no provider request");
 	await send(a, expert.sessionId, "current-admission");
 	let request = await f.next();
-	assert.deepEqual(requestRoutes(request), [{ requestId: "current-admission", requester: a.identity, replyTo: a.identity, origin: "model", class: "followUp", sender: a.identity }]);
-	assert.ok(request.context.messages.some((message) => message.role === "user" && message.content === "Question current-admission"));
+	assert.deepEqual(requestRoutes(request), [
+		{
+			requestId: "current-admission",
+			requester: a.identity,
+			replyTo: a.identity,
+			origin: "model",
+			class: "followUp",
+			sender: a.identity,
+		},
+	]);
+	assert.ok(
+		request.context.messages.some(
+			(message) => message.role === "user" && message.content === "Question current-admission",
+		),
+	);
 	request.tool("agent_send", { sessionId: a.identity, message: "BASE_PROGRESS", mode: "report" });
 	request = await f.next();
 	assert.equal(lastTool(request, "agent_send").isError, false);
@@ -322,23 +511,51 @@ it("preserves unchanged operations and refuses changed contracts across a featur
 	assert.equal(after.handle, "@contract-expert");
 
 	const proxyMetadata = { ...metadata, storageId: randomUUID(), storagePath: join(f.root, "base-contract.sqlite") };
-	const proxy = fork(fileURLToPath(new URL("./profile-base-contract-fixture.mts", import.meta.url)), [JSON.stringify(proxyMetadata), JSON.stringify(metadata)], {
-		cwd: f.cwd, env: { ...process.env, PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: join(f.root, "sessions") }, stdio: ["ignore", "ignore", "pipe", "ipc"],
-	});
+	const proxy = fork(
+		fileURLToPath(new URL("./profile-base-contract-fixture.mts", import.meta.url)),
+		[JSON.stringify(proxyMetadata), JSON.stringify(metadata)],
+		{
+			cwd: f.cwd,
+			env: { ...process.env, PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: join(f.root, "sessions") },
+			stdio: ["ignore", "ignore", "pipe", "ipc"],
+		},
+	);
 	const forwarded = eventLog<string>();
 	let stderr = "";
-	proxy.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-	t.after(async () => { if (proxy.connected) proxy.disconnect(); await waitForProcessExit(proxy); });
-	await guarded(new Promise<void>((resolve, reject) => {
-		proxy.on("message", (message: { event: string; method?: string }) => { if (message.event === "ready") resolve(); else if (message.method) forwarded.push(message.method); });
-		proxy.once("error", reject);
-		proxy.once("exit", () => reject(new Error(`Base contract fixture exited: ${stderr}`)));
-	}), "base contract process readiness");
+	proxy.stderr?.on("data", (chunk: Buffer) => {
+		stderr += chunk.toString();
+	});
+	t.after(async () => {
+		if (proxy.connected) proxy.disconnect();
+		await waitForProcessExit(proxy);
+	});
+	await guarded(
+		new Promise<void>((resolve, reject) => {
+			proxy.on("message", (message: { event: string; method?: string }) => {
+				if (message.event === "ready") resolve();
+				else if (message.method) forwarded.push(message.method);
+			});
+			proxy.once("error", reject);
+			proxy.once("exit", () => reject(new Error(`Base contract fixture exited: ${stderr}`)));
+		}),
+		"base contract process readiness",
+	);
 	const newClient = await connectHost(proxyMetadata, { retryAttempts: 0 });
 	t.after(() => newClient.close());
-	for (const method of changedOperations) await assert.rejects(newClient.request(method, { sessionId: expert.sessionId }), new RegExp(`${method} (?:request|response) contract .* differs from`, "u"));
-	for (const method of ["profile-read", "profile-update", "task-submit"]) await assert.rejects(newClient.request(method, { sessionId: expert.sessionId }), new RegExp(`does not advertise ${method}`, "u"));
-	await assert.rejects(newClient.request("configure", { sessionId: expert.sessionId, name: "Rejected proxy rename" }), /does not advertise configure/u);
+	for (const method of changedOperations)
+		await assert.rejects(
+			newClient.request(method, { sessionId: expert.sessionId }),
+			new RegExp(`${method} (?:request|response) contract .* differs from`, "u"),
+		);
+	for (const method of ["profile-read", "profile-update", "task-submit"])
+		await assert.rejects(
+			newClient.request(method, { sessionId: expert.sessionId }),
+			new RegExp(`does not advertise ${method}`, "u"),
+		);
+	await assert.rejects(
+		newClient.request("configure", { sessionId: expert.sessionId, name: "Rejected proxy rename" }),
+		/does not advertise configure/u,
+	);
 	assert.deepEqual(forwarded, [], "changed and unavailable operations never dispatch to the peer");
 	await newClient.request("reset", { sessionId: expert.sessionId, requestId: "base-only-reset" });
 	await newClient.request("list");
@@ -347,7 +564,10 @@ it("preserves unchanged operations and refuses changed contracts across a featur
 	assert.deepEqual(forwarded, unchangedOperations, "only unchanged operations reach native storage");
 	await send(a, expert.sessionId, "current-only-admission");
 	request = await f.next();
-	assert.ok(instructions(request).includes("Renamed contract expert"), "current configuration refreshes native instructions after unchanged base controls");
+	assert.ok(
+		instructions(request).includes("Renamed contract expert"),
+		"current configuration refreshes native instructions after unchanged base controls",
+	);
 	request.answer("BASE_ONLY_RESULT");
 	await notice(a, "BASE_ONLY_RESULT");
 	await newClient.close();

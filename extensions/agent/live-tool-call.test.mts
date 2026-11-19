@@ -7,19 +7,42 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { createAssistantMessageEventStream, getCurrentSystemPrompt, type AssistantMessage, type ToolCall, type ToolResultMessage, type TranscriptContext } from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	getCurrentSystemPrompt,
+	type AssistantMessage,
+	type ToolCall,
+	type ToolResultMessage,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
 import * as Durable from "@earendil-works/pi-durable";
 import { createAgentContribution, type AgentControlDispatch } from "./durable-agents.ts";
 import { DurableHost } from "./durable-host.ts";
-import { answerMessage, completed, fixtureRegistry, fixtureStorageId, hostOptions, toolCallMessage } from "./durable-host-fixture.mts";
+import {
+	answerMessage,
+	completed,
+	fixtureRegistry,
+	fixtureStorageId,
+	hostOptions,
+	toolCallMessage,
+} from "./durable-host-fixture.mts";
 import { deferred, page as rosterPage } from "./dashboard-test-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { LiveObservationService } from "./live-observation.ts";
-import { AssistantMessageSchema, ConversationStatusSchema, InspectOutputSchema, StatusOutputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
+import {
+	AssistantMessageSchema,
+	ConversationStatusSchema,
+	InspectOutputSchema,
+	StatusOutputSchema,
+	StatusToolOutputSchema,
+	structuredObservation,
+} from "./observation-schema.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 
-it("observes a provider's live tool call through native status, frames, and compact views without parsing buffers", { timeout: 10000 }, async (t) => {
+it("observes a provider's live tool call through native status, frames, and compact views without parsing buffers", {
+	timeout: 10000,
+}, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "live-tool-call-"));
 	const ambientDir = mkdtempSync(join(tmpdir(), "live-ambient-preferences-"));
 	const previous = { directory: process.env.PI_AGENT_DIR, file: process.env.PI_HARNESS_FILE };
@@ -31,8 +54,10 @@ it("observes a provider's live tool call through native status, frames, and comp
 		else process.env.PI_HARNESS_FILE = previous.file;
 		rmSync(ambientDir, { recursive: true, force: true });
 	});
-	writeFileSync(join(ambientDir, "harness.json"), JSON.stringify(machineConfig({ presets: {}, preferences: { reportingNotes: ambientMarker },
-	})));
+	writeFileSync(
+		join(ambientDir, "harness.json"),
+		JSON.stringify(machineConfig({ presets: {}, preferences: { reportingNotes: ambientMarker } })),
+	);
 	process.env.PI_AGENT_DIR = ambientDir;
 	delete process.env.PI_HARNESS_FILE;
 	const prompts: string[] = [];
@@ -41,13 +66,36 @@ it("observes a provider's live tool call through native status, frames, and comp
 	let host: DurableHost | undefined;
 	let watch: Durable.WatchHandle<Durable.ConversationView> | undefined;
 	let service: LiveObservationService | undefined;
-	t.after(async () => { release.resolve(); await watch?.stop(); await service?.closeAll(); await host?.close(); rmSync(root, { recursive: true, force: true }); });
-	const call: ToolCall = { type: "toolCall", id: "streamed-call", name: "probe", arguments: { path: "file", partialArgs: "declared argument data" }, thoughtSignature: "signature", namespace: "fixture" };
+	t.after(async () => {
+		release.resolve();
+		await watch?.stop();
+		await service?.closeAll();
+		await host?.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const call: ToolCall = {
+		type: "toolCall",
+		id: "streamed-call",
+		name: "probe",
+		arguments: { path: "file", partialArgs: "declared argument data" },
+		thoughtSignature: "signature",
+		namespace: "fixture",
+	};
 	const text = { type: "text" as const, text: "Prepare the action" };
-	const scratch = { partialArgs: '{"path":"fi', partialJson: '{"path":', customInput: { property: "code", jsonBuffer: "{" }, streamIndex: 0, transientMarker: "private scratch" };
+	const scratch = {
+		partialArgs: '{"path":"fi',
+		partialJson: '{"path":',
+		customInput: { property: "code", jsonBuffer: "{" },
+		streamIndex: 0,
+		transientMarker: "private scratch",
+	};
 	// Durable publishes its own parse of the streamed argument text, not the provider's partial arguments or buffers.
 	const streamedCall: ToolCall = { ...call, arguments: { path: "fi" } };
-	const partial: AssistantMessage = { ...answerMessage(), stopReason: "pending", content: [text, { ...call, ...scratch }] };
+	const partial: AssistantMessage = {
+		...answerMessage(),
+		stopReason: "pending",
+		content: [text, { ...call, ...scratch }],
+	};
 	let observed: ToolResultMessage | undefined;
 	let executions = 0;
 	const models = await createTestRuntime();
@@ -59,7 +107,8 @@ it("observes a provider's live tool call through native status, frames, and comp
 			return completed(answerMessage("Finished"));
 		}
 		const task = input.messages.findLast((message) => message.role === "user");
-		if (task?.content === "Observe the storage") return completed(toolCallMessage("agent_status", { sessionId: fixtureStorageId, detail: true }));
+		if (task?.content === "Observe the storage")
+			return completed(toolCallMessage("agent_status", { sessionId: fixtureStorageId, detail: true }));
 		assert.equal(task?.content, "Stream a tool call");
 		const events = createAssistantMessageEventStream();
 		events.push({ type: "start", partial });
@@ -73,14 +122,51 @@ it("observes a provider's live tool call through native status, frames, and comp
 		});
 		return events;
 	};
-	models.registerNativeProvider({ id: testModel.provider, name: "Live tool fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream: streamSimple, streamSimple });
-	const registry = fixtureRegistry([Durable.defineTool({ name: "probe", description: "Read fixture arguments", parameters: obj({ path: str(), partialArgs: str() }, { open: true }), execute: async () => { executions++; return { output: [{ type: "text", text: "Read" }] }; } })]);
+	models.registerNativeProvider({
+		id: testModel.provider,
+		name: "Live tool fixture",
+		getModels: () => [testModel],
+		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		stream: streamSimple,
+		streamSimple,
+	});
+	const registry = fixtureRegistry([
+		Durable.defineTool({
+			name: "probe",
+			description: "Read fixture arguments",
+			parameters: obj({ path: str(), partialArgs: str() }, { open: true }),
+			execute: async () => {
+				executions++;
+				return { output: [{ type: "text", text: "Read" }] };
+			},
+		}),
+	]);
 	const dispatch: AgentControlDispatch = async (method, params) => {
 		assert.ok(host);
 		const value = await host.request(method, params, context);
-		return method === "status" ? { ...value as Record<string, unknown>, inventory: { contributions: [], ordinaryOnly: [] }, pid: process.pid, storageId: fixtureStorageId } : value;
+		return method === "status"
+			? {
+					...(value as Record<string, unknown>),
+					inventory: { contributions: [], ordinaryOnly: [] },
+					pid: process.pid,
+					storageId: fixtureStorageId,
+				}
+			: value;
 	};
-	registry.install(createAgentContribution({ configureSettings: () => {}, source: fileURLToPath(new URL("./index.ts", import.meta.url)), dispatch }).create({ onClose() {}, durable: Durable, storageId: fixtureStorageId, cwd: root, agentDir: root, services: { modelRuntime: models } }));
+	registry.install(
+		createAgentContribution({
+			configureSettings: () => {},
+			source: fileURLToPath(new URL("./index.ts", import.meta.url)),
+			dispatch,
+		}).create({
+			onClose() {},
+			durable: Durable,
+			storageId: fixtureStorageId,
+			cwd: root,
+			agentDir: root,
+			services: { modelRuntime: models },
+		}),
+	);
 	host = await DurableHost.open(hostOptions(join(root, "agent.sqlite"), models, registry, root), context);
 	const worker = host.root();
 	watch = await worker.watch(context);
@@ -92,8 +178,13 @@ it("observes a provider's live tool call through native status, frames, and comp
 	});
 	const submission = await host.submit({ message: "Stream a tool call", requestId: "stream" });
 	await published.promise;
-	const observer = await host.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: testModel.provider, modelId: testModel.id } } }, context);
-	await (await observer.submit({ type: "input", content: "Observe the storage", requestId: "observe" }, context)).wait(context);
+	const observer = await host.harness.createConversation(
+		{ ownership: { kind: "ownerless" }, agent: { model: { provider: testModel.provider, modelId: testModel.id } } },
+		context,
+	);
+	await (await observer.submit({ type: "input", content: "Observe the storage", requestId: "observe" }, context)).wait(
+		context,
+	);
 	assert.ok(observed, "the model issued native selected detail through the real contribution and host dispatch");
 	assert.equal(observed.isError, false, JSON.stringify(observed.content));
 	const status = structuredObservation(StatusToolOutputSchema, observed.details) as {
@@ -115,7 +206,10 @@ it("observes a provider's live tool call through native status, frames, and comp
 	structuredObservation(AssistantMessageSchema, liveMessage);
 	assert.deepEqual(liveMessage.content[1], streamedCall);
 	for (const view of ["history", "branch", "activity"] as const) {
-		const inspection: unknown = structuredObservation(InspectOutputSchema, await host.request("inspect", { sessionId: fixtureStorageId, view }, context));
+		const inspection: unknown = structuredObservation(
+			InspectOutputSchema,
+			await host.request("inspect", { sessionId: fixtureStorageId, view }, context),
+		);
 		assert.doesNotMatch(JSON.stringify(inspection), /private scratch|partialJson|streamIndex/u);
 		if (view === "activity") {
 			const metadata = (inspection as { metadata: { operation: number | null; streamedText: string } }).metadata;
@@ -125,17 +219,24 @@ it("observes a provider's live tool call through native status, frames, and comp
 	}
 	const snapshot = await host.request("snapshot", { sessionId: fixtureStorageId }, context);
 	assert.doesNotMatch(JSON.stringify(snapshot), /private scratch|partialJson|streamIndex/u);
-	const rows = await host.request("dashboard", {}, context) as AgentConversationSummary[];
+	const rows = (await host.request("dashboard", {}, context)) as AgentConversationSummary[];
 	const overview = buildStatusOverview(rosterPage(rows), [], []);
 	structuredObservation(StatusToolOutputSchema, overview);
 	assert.equal(overview.sessions.length, rows.length);
 	assert.doesNotMatch(JSON.stringify(overview), /private scratch|partialJson|streamIndex/u);
 	const native = await host.harness.snapshot(Durable.LiveDoc, worker.id, context);
-	assert.deepEqual(native?.generation?.message?.content[1], { ...call, ...scratch, arguments: streamedCall.arguments }, "all observation paths leave the provider's private state unchanged");
+	assert.deepEqual(
+		native?.generation?.message?.content[1],
+		{ ...call, ...scratch, arguments: streamedCall.arguments },
+		"all observation paths leave the provider's private state unchanged",
+	);
 	release.resolve();
 	assert.equal((await host.wait(submission.submissionId, context)).status, "done");
 	assert.equal(executions, 1);
 	assert.ok(prompts.length > 0);
-	assert.equal(prompts.some((prompt) => prompt.includes(ambientMarker)), false,
-		"native live-tool fixtures must not read ambient machine preferences");
+	assert.equal(
+		prompts.some((prompt) => prompt.includes(ambientMarker)),
+		false,
+		"native live-tool fixtures must not read ambient machine preferences",
+	);
 });

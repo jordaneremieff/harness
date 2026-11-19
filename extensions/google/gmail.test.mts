@@ -158,8 +158,9 @@ test("gmail_message_get pages a multibyte body with an exact continuation", asyn
 		for (;;) {
 			const result = await fake.tool("gmail_message_get", { messageId: "m", offset, limit: 4096 });
 			assert.equal(result.status, "ok", JSON.stringify(result));
-			const body = (result.data as { externalData: { body: { text: string; nextOffset?: number; totalCodePoints: number } } })
-				.externalData.body;
+			const body = (
+				result.data as { externalData: { body: { text: string; nextOffset?: number; totalCodePoints: number } } }
+			).externalData.body;
 			assert.ok(body.text.length > 0, "every page must emit text");
 			collected += body.text;
 			pages += 1;

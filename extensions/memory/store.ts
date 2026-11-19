@@ -107,11 +107,12 @@ export interface WriteReceipt {
 export class MemoryWriteError extends Error {
 	readonly receipt: WriteReceipt;
 	constructor(receipt: WriteReceipt) {
-		const outcome = receipt.written.length === 0
-			? "Memory write stopped; no live files were written"
-			: receipt.notWritten.length > 0
-				? "Memory write partially completed"
-				: "Memory write published all live files, but cleanup failed";
+		const outcome =
+			receipt.written.length === 0
+				? "Memory write stopped; no live files were written"
+				: receipt.notWritten.length > 0
+					? "Memory write partially completed"
+					: "Memory write published all live files, but cleanup failed";
 		super(`${outcome}: ${JSON.stringify(receipt)}`);
 		this.receipt = receipt;
 		this.name = "MemoryWriteError";
@@ -208,12 +209,15 @@ function checkCredentials(payload: string, location = "resulting note"): void {
 }
 
 const PRIVATE_KEY_MARKER = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i;
-const CREDENTIAL_TOKEN = /\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b/i;
+const CREDENTIAL_TOKEN =
+	/\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b/i;
 
 function credentialFamily(payload: string): string | undefined {
 	return PRIVATE_KEY_MARKER.test(payload)
 		? "private-key marker"
-		: CREDENTIAL_TOKEN.test(payload) ? "recognized token prefix" : undefined;
+		: CREDENTIAL_TOKEN.test(payload)
+			? "recognized token prefix"
+			: undefined;
 }
 
 /** Error text shares the writer's recognised credential formats, before any output clipping. */
@@ -229,7 +233,14 @@ function preflight(subject: unknown, validate: () => void): void {
 	} catch (error) {
 		const slug = typeof subject === "string" ? redactCredentials(subject).slice(0, 120) : "[invalid subject]";
 		throw new MemoryWriteError({
-			ok: false, slug, file: `${slug}.md`, written: [], notWritten: [], captured: [], historyOmitted: [], initialized: false,
+			ok: false,
+			slug,
+			file: `${slug}.md`,
+			written: [],
+			notWritten: [],
+			captured: [],
+			historyOmitted: [],
+			initialized: false,
 			error: redactCredentials(error instanceof Error ? error.message : "Invalid mutation input"),
 		});
 	}
@@ -275,12 +286,13 @@ type DigestArgument = "expectedDigest" | `supersedes[${number}].digest`;
 function digestMismatch(path: string, argument: DigestArgument, phase: "planning" | "publication"): Error {
 	const subject = basename(path, ".md");
 	const boundary = phase === "publication" ? " before publication" : "";
-	return new Error(`Source digest changed${boundary} for "${subject}"; read "${subject}" with memory_read and update ${argument} before retry.`);
+	return new Error(
+		`Source digest changed${boundary} for "${subject}"; read "${subject}" with memory_read and update ${argument} before retry.`,
+	);
 }
 function existing(path: string, expected?: string, argument: DigestArgument = "expectedDigest"): Existing {
 	const source = readSource(path);
-	if (expected !== undefined && sourceDigest(source) !== expected)
-		throw digestMismatch(path, argument, "planning");
+	if (expected !== undefined && sourceDigest(source) !== expected) throw digestMismatch(path, argument, "planning");
 	const match = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(source);
 	if (!match)
 		throw new Error(
@@ -422,21 +434,27 @@ interface WriteLease {
 }
 class UnsafeLockError extends Error {
 	constructor() {
-		super("Memory lock file attributes are unsafe; no notes were written. Inspect its type, owner, size and permissions; the owner must use chmod 0600 at a quiet-writer boundary.");
+		super(
+			"Memory lock file attributes are unsafe; no notes were written. Inspect its type, owner, size and permissions; the owner must use chmod 0600 at a quiet-writer boundary.",
+		);
 	}
 }
 class LockIdentityError extends Error {
 	constructor() {
-		super("Memory lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.");
+		super(
+			"Memory lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.",
+		);
 	}
 }
 function heldLease(fd: number, path: string): WriteLease {
-	let released = false, invalid = false;
+	let released = false,
+		invalid = false;
 	return {
 		assertNamed() {
 			if (released || invalid) throw new LockIdentityError();
 			try {
-				const held = fstatSync(fd), named = lstatSync(path);
+				const held = fstatSync(fd),
+					named = lstatSync(path);
 				if (!named.isFile() || held.dev !== named.dev || held.ino !== named.ino) throw new LockIdentityError();
 			} catch {
 				invalid = true;
@@ -457,20 +475,38 @@ function acquire(root: string): WriteLease {
 	const path = join(root, LOCK);
 	let fd: number | undefined;
 	try {
-		fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | O_EXLOCK, 0o600);
+		fd = openSync(
+			path,
+			constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | O_EXLOCK,
+			0o600,
+		);
 		const info = fstatSync(fd);
-		if (!info.isFile() || info.uid !== process.getuid?.() || info.nlink < 1 || (info.mode & 0o077) !== 0 || info.size > 4096)
+		if (
+			!info.isFile() ||
+			info.uid !== process.getuid?.() ||
+			info.nlink < 1 ||
+			(info.mode & 0o077) !== 0 ||
+			info.size > 4096
+		)
 			throw new UnsafeLockError();
 		const lease = heldLease(fd, path);
 		lease.assertNamed();
 		return lease;
 	} catch (error) {
-		if (fd !== undefined) { try { closeSync(fd); } catch { /* Acquisition did not grant publication authority. */ } }
+		if (fd !== undefined) {
+			try {
+				closeSync(fd);
+			} catch {
+				/* Acquisition did not grant publication authority. */
+			}
+		}
 		if (error instanceof LockIdentityError || error instanceof UnsafeLockError) throw error;
 		const code = errorCode(error);
-		throw new Error(code === "EAGAIN" || code === "EWOULDBLOCK"
-			? "Memory writer is busy. Retry later. This writer never removes the lock file. Do not remove it."
-			: `Memory lock acquisition failed (${code}); no notes were written.`);
+		throw new Error(
+			code === "EAGAIN" || code === "EWOULDBLOCK"
+				? "Memory writer is busy. Retry later. This writer never removes the lock file. Do not remove it."
+				: `Memory lock acquisition failed (${code}); no notes were written.`,
+		);
 	}
 }
 
@@ -498,7 +534,13 @@ function targetPlans(root: string, input: MemoryWrite, today: string, signal?: A
 		const source = existing(join(root, file), target.digest, expectedArgument);
 		if (source.meta.status === "superseded" && source.meta.superseded_by !== input.slug)
 			throw new Error("A supersession target already names another replacement");
-		return { file, content: superseded(source, input.slug, today), expected: target.digest, expectedArgument, prior: source.text };
+		return {
+			file,
+			content: superseded(source, input.slug, today),
+			expected: target.digest,
+			expectedArgument,
+			prior: source.text,
+		};
 	});
 }
 function destinationSource(destination: string, input: { expectedDigest?: string }): Existing | undefined {
@@ -901,7 +943,11 @@ function capturePriors(
 }
 
 function mutationFailure(error: unknown, lease: WriteLease): string {
-	try { lease.assertNamed(); } catch (identityError) { error = identityError; }
+	try {
+		lease.assertNamed();
+	} catch (identityError) {
+		error = identityError;
+	}
 	return error instanceof Error && !("code" in error)
 		? error.message
 		: `Filesystem operation failed (${errorCode(error)})`;

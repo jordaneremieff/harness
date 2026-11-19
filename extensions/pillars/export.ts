@@ -58,8 +58,7 @@ function tokenize(args: string): string[] {
 
 function parseWindowDays(tokens: string[]): number {
 	if (!tokens.length) return 30;
-	if (tokens.length !== 2 || tokens[0] !== "--days" || !WINDOW_DAYS.test(tokens[1]))
-		throw new Error("invalid_command");
+	if (tokens.length !== 2 || tokens[0] !== "--days" || !WINDOW_DAYS.test(tokens[1])) throw new Error("invalid_command");
 	return Number(tokens[1]);
 }
 

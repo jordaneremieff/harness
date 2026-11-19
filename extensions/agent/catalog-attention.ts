@@ -67,10 +67,16 @@ export async function projectCatalogAttention(
 			rows.push({ identity: source.identity, kind: "provider-blocked", blockId });
 			continue;
 		}
-		const blocked = inspection.tasks.filter((task) => task.record.conversationId === source.conversationId && task.state.kind === "blocked")
+		const blocked = inspection.tasks
+			.filter((task) => task.record.conversationId === source.conversationId && task.state.kind === "blocked")
 			.sort((left, right) => left.record.id - right.record.id)[0];
 		if (blocked?.state.kind === "blocked") {
-			rows.push({ identity: source.identity, kind: "task-blocked", taskId: blocked.record.id, reason: blocked.state.reason });
+			rows.push({
+				identity: source.identity,
+				kind: "task-blocked",
+				taskId: blocked.record.id,
+				reason: blocked.state.reason,
+			});
 			continue;
 		}
 		if (source.state === "failed") rows.push({ identity: source.identity, kind: "failed-turn" });

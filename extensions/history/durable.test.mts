@@ -628,7 +628,12 @@ interface ArgumentSearchResult {
 	slotsVisited?: number;
 	skipped?: { depth: number; pointerLength: number };
 	matches: (SearchMatch & { call?: { name?: string; id?: string } })[];
-	next: { fromId: number; mode?: string; position: { message: number; block: number; path?: number[] }; offset: number } | null;
+	next: {
+		fromId: number;
+		mode?: string;
+		position: { message: number; block: number; path?: number[] };
+		offset: number;
+	} | null;
 }
 
 async function nativeArgumentSearch(entries: Durable.EntryRecord[], callId?: string) {
@@ -713,7 +718,9 @@ test("native argument search finds tool-call strings by physical position and re
 	const rest = await pages({ query: "needle", mode: "arguments", maxMatches: 1, ...first.next });
 	assert.equal(Math.min(...reads), resumeAt);
 	assert.deepEqual(
-		[first, ...rest].flatMap((page) => page.matches.map((match) => [match.entry.id, match.call?.name, match.pointer, match.offset])),
+		[first, ...rest].flatMap((page) =>
+			page.matches.map((match) => [match.entry.id, match.call?.name, match.pointer, match.offset]),
+		),
 		[
 			[2, "write", "/model/1/content/0/arguments/tail", 0],
 			[1, "edit", "/model/0/content/0/arguments/edits/0/newText", 0],
@@ -733,7 +740,10 @@ test("native argument search reports skips, leaves out the calling call and vali
 					role: "assistant",
 					content: [
 						{ type: "thinking", thinking: "needle", redacted: true, thinkingSignature: "needle" },
-						{ ...toolCall("other", "probe", { deep, ["q".repeat(1000)]: "needle hidden", ok: "needle kept" }), thoughtSignature: "needle" },
+						{
+							...toolCall("other", "probe", { deep, ["q".repeat(1000)]: "needle hidden", ok: "needle kept" }),
+							thoughtSignature: "needle",
+						},
 						toolCall("self", "history_search", { query: "needle", mode: "arguments" }),
 					],
 				},
@@ -862,7 +872,10 @@ test("native scan continuations resume after a surrogate pair at the overlap bou
 	const value = `${"a".repeat(2044)}😀x`;
 	for (const [entry, mode] of [
 		[nativeEntry([{ role: "user", content: value }], 1, "pi.user"), "text"],
-		[nativeEntry([{ role: "assistant", content: [toolCall("c", "probe", { s: value })] }], 1, "pi.assistant"), "arguments"],
+		[
+			nativeEntry([{ role: "assistant", content: [toolCall("c", "probe", { s: value })] }], 1, "pi.assistant"),
+			"arguments",
+		],
 	] as const) {
 		const { pages } = await nativeArgumentSearch([entry]);
 		const all = await pages({ query: "😀", mode, maxScanBytes: 2048 });
@@ -903,7 +916,11 @@ test("native history_read lists a tool call's argument keys and keeps other opaq
 	const tx = {
 		scanEntries: async (query: Durable.EntryQuery, limit: number) => ({
 			items: entries
-				.filter((entry) => (query.minEntryId === undefined || entry.id >= query.minEntryId) && (query.maxEntryId === undefined || entry.id <= query.maxEntryId))
+				.filter(
+					(entry) =>
+						(query.minEntryId === undefined || entry.id >= query.minEntryId) &&
+						(query.maxEntryId === undefined || entry.id <= query.maxEntryId),
+				)
 				.slice(0, limit),
 		}),
 	} as unknown as Durable.Tx;
@@ -916,12 +933,30 @@ test("native history_read lists a tool call's argument keys and keeps other opaq
 		return JSON.parse((result.output as { text: string }[])[0].text) as Record<string, unknown>;
 	};
 	assert.deepEqual((await read("/model/0/content/0/arguments")).items, [
-		{ key: "content", pointer: "/model/0/content/0/arguments/content", kind: "string", totalCodeUnits: 6, text: "marker" },
+		{
+			key: "content",
+			pointer: "/model/0/content/0/arguments/content",
+			kind: "string",
+			totalCodeUnits: 6,
+			text: "marker",
+		},
 		{ key: "archive", pointer: "/model/0/content/0/arguments/archive", kind: "scalar", value: false },
-		{ key: "options", pointer: "/model/0/content/0/arguments/options", kind: "object", omitted: true, action: "Read this pointer to list its argument keys." },
+		{
+			key: "options",
+			pointer: "/model/0/content/0/arguments/options",
+			kind: "object",
+			omitted: true,
+			action: "Read this pointer to list its argument keys.",
+		},
 	]);
 	assert.deepEqual((await read("/model/0/content/0/arguments/options")).items, [
-		{ key: "mode", pointer: "/model/0/content/0/arguments/options/mode", kind: "string", totalCodeUnits: 4, text: "fast" },
+		{
+			key: "mode",
+			pointer: "/model/0/content/0/arguments/options/mode",
+			kind: "string",
+			totalCodeUnits: 4,
+			text: "fast",
+		},
 	]);
 	const details = await read("/model/1/details");
 	assert.equal(details.status, "structured_omitted");

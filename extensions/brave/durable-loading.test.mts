@@ -65,14 +65,21 @@ it("the contribution evaluates no page reader, and web_search loads neither it n
 	assert.ok(search);
 	globalThis.fetch = (async () => new Response(JSON.stringify({ web: { results: [] } }))) as typeof fetch;
 	const signal = new AbortController().signal;
-	await search.execute({ query: "nothing" }, {} as Parameters<typeof search.execute>[1], { abortSignal: signal } as Context);
+	await search.execute(
+		{ query: "nothing" },
+		{} as Parameters<typeof search.execute>[1],
+		{ abortSignal: signal } as Context,
+	);
 	assert.deepEqual(pageReader(), [], "web_search evaluates no page reader");
 	assert.deepEqual(htmlParser(), [], "web_search evaluates no parser");
 
 	const read = [...(extension.tools ?? [])].find((tool) => tool.name === "web_read");
 	assert.ok(read);
 	const api = {} as Parameters<typeof read.execute>[1];
-	await assert.rejects(read.execute({ url: "http://8.8.8.8/" }, api, { abortSignal: AbortSignal.abort() } as Context), /cancelled/);
+	await assert.rejects(
+		read.execute({ url: "http://8.8.8.8/" }, api, { abortSignal: AbortSignal.abort() } as Context),
+		/cancelled/,
+	);
 	assert.equal(sockets.length, 0, "a cancelled read opens no connection");
 	t.mock.method(Agent.prototype, "createConnection", () => {
 		const body = "Readable evidence.\n";

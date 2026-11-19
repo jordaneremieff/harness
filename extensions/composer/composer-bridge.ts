@@ -29,7 +29,13 @@ export interface ComposerState {
 	cwd: string;
 	session: { id: string; name?: string };
 }
-export interface ComposerConfig { version: 1; composer: string; endpoint: string; token: string; pid: number }
+export interface ComposerConfig {
+	version: 1;
+	composer: string;
+	endpoint: string;
+	token: string;
+	pid: number;
+}
 export type JsonObject = Record<string, unknown>;
 export function object(value: unknown): JsonObject {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Expected a JSON object.");
@@ -45,11 +51,20 @@ export function draft(value: unknown): string {
 	return text;
 }
 export function integer(value: unknown, min = 0): number {
-	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min) throw new Error("Expected a valid integer.");
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min)
+		throw new Error("Expected a valid integer.");
 	return value;
 }
 export function oneLine(error: unknown): string {
-	return Array.from((error instanceof Error ? error.message : "Composer request failed.").replace(/\p{Cs}/gu, "�").replace(/[\r\n\p{Cc}\p{Zl}\p{Zp}]+/gu, " ")).slice(0, 250).join("") || "Composer request failed.";
+	return (
+		Array.from(
+			(error instanceof Error ? error.message : "Composer request failed.")
+				.replace(/\p{Cs}/gu, "�")
+				.replace(/[\r\n\p{Cc}\p{Zl}\p{Zp}]+/gu, " "),
+		)
+			.slice(0, 250)
+			.join("") || "Composer request failed."
+	);
 }
 
 interface BridgeHandlers {
@@ -78,12 +93,17 @@ export class ComposerBridge {
 		this.paths = paths;
 		this.handlers = handlers;
 		this.pollMs = pollMs;
-		this.server = createServer({ requestTimeout: 10_000, headersTimeout: 5000 }, (req, res) => { void this.handle(req, res); });
+		this.server = createServer({ requestTimeout: 10_000, headersTimeout: 5000 }, (req, res) => {
+			void this.handle(req, res);
+		});
 	}
 	async start(): Promise<ComposerConfig> {
 		await new Promise<void>((resolve, reject) => {
 			this.server.once("error", reject);
-			this.server.listen(0, "127.0.0.1", () => { this.server.off("error", reject); resolve(); });
+			this.server.listen(0, "127.0.0.1", () => {
+				this.server.off("error", reject);
+				resolve();
+			});
 		});
 		const address = this.server.address();
 		if (typeof address !== "object" || !address) throw new Error("No loopback address for the composer.");
@@ -95,7 +115,9 @@ export class ComposerBridge {
 		if (this.events.length > EVENT_LIMIT) this.events.shift();
 		this.changed();
 	}
-	changed(): void { this.pending?.(); }
+	changed(): void {
+		this.pending?.();
+	}
 	close(): void {
 		if (this.lifetime.signal.aborted) return;
 		this.lifetime.abort();
@@ -105,9 +127,15 @@ export class ComposerBridge {
 	private authorised(request: IncomingMessage): boolean {
 		const auth = Buffer.from(request.headers.authorization ?? "");
 		const expected = Buffer.from(`Bearer ${this.token}`);
-		return !this.lifetime.signal.aborted && request.method === "POST" && request.headers.origin === undefined &&
-			request.headers.host === this.endpoint.slice(7) && request.headers["content-type"]?.split(";", 1)[0] === "application/json" &&
-			auth.length === expected.length && timingSafeEqual(auth, expected);
+		return (
+			!this.lifetime.signal.aborted &&
+			request.method === "POST" &&
+			request.headers.origin === undefined &&
+			request.headers.host === this.endpoint.slice(7) &&
+			request.headers["content-type"]?.split(";", 1)[0] === "application/json" &&
+			auth.length === expected.length &&
+			timingSafeEqual(auth, expected)
+		);
 	}
 	private send(response: ServerResponse, status: number, result: JsonObject): void {
 		if (response.destroyed || response.writableEnded) return;
@@ -122,14 +150,19 @@ export class ComposerBridge {
 			request.on("data", (chunk: Buffer) => {
 				if (bytes > BODY_BYTES) return;
 				bytes += chunk.length;
-				if (bytes > BODY_BYTES) { chunks.length = 0; reject(new Error("Composer request exceeds 4 MiB.")); }
-				else chunks.push(chunk);
+				if (bytes > BODY_BYTES) {
+					chunks.length = 0;
+					reject(new Error("Composer request exceeds 4 MiB."));
+				} else chunks.push(chunk);
 			});
 			request.once("error", reject);
 			request.once("end", () => {
 				if (bytes > BODY_BYTES) return;
-				try { resolve(object(JSON.parse(utf8.decode(Buffer.concat(chunks))))); }
-				catch { reject(new Error("Expected a UTF-8 JSON object.")); }
+				try {
+					resolve(object(JSON.parse(utf8.decode(Buffer.concat(chunks)))));
+				} catch {
+					reject(new Error("Expected a UTF-8 JSON object."));
+				}
 			});
 		});
 	}
@@ -141,19 +174,34 @@ export class ComposerBridge {
 			const state = this.handlers.state();
 			const reset = after < (this.events[0]?.seq ?? 1) - 1;
 			this.lastStateVersion = state.version;
-			this.send(response, 200, { ok: true, sequence: this.sequence, state, events: reset ? [] : this.events.filter(event => event.seq > after), ...(reset ? { reset } : {}) });
+			this.send(response, 200, {
+				ok: true,
+				sequence: this.sequence,
+				state,
+				events: reset ? [] : this.events.filter((event) => event.seq > after),
+				...(reset ? { reset } : {}),
+			});
 		};
 		this.handlers.poll(true);
-		if (ready()) { finish(); this.handlers.poll(false); return; }
+		if (ready()) {
+			finish();
+			this.handlers.poll(false);
+			return;
+		}
 		const cleanup = () => {
 			clearTimeout(timer);
 			this.pending = undefined;
 			response.off("close", cleanup);
 			this.handlers.poll(false);
 		};
-		const respond = () => { cleanup(); finish(); };
+		const respond = () => {
+			cleanup();
+			finish();
+		};
 		const timer = setTimeout(respond, this.pollMs);
-		this.pending = () => { if (ready()) respond(); };
+		this.pending = () => {
+			if (ready()) respond();
+		};
 		response.once("close", cleanup);
 	}
 	private async dispatch(path: string, body: JsonObject, response: ServerResponse): Promise<void> {
@@ -167,23 +215,40 @@ export class ComposerBridge {
 			return;
 		}
 		if (!this.connected) throw new Error("Connect the composer with /hello first.");
-		if (path === "/events") { this.poll(response, integer(body.after)); return; }
+		if (path === "/events") {
+			this.poll(response, integer(body.after));
+			return;
+		}
 		const abort = new AbortController();
 		const disconnect = () => abort.abort();
 		response.once("close", disconnect);
-		try { this.send(response, 200, { ok: true, ...await this.handlers.request(path, body, AbortSignal.any([abort.signal, this.lifetime.signal])) }); }
-		finally { response.off("close", disconnect); }
+		try {
+			this.send(response, 200, {
+				ok: true,
+				...(await this.handlers.request(path, body, AbortSignal.any([abort.signal, this.lifetime.signal]))),
+			});
+		} finally {
+			response.off("close", disconnect);
+		}
 	}
 	private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
 		try {
-			if (!this.authorised(request)) { this.send(response, 403, { ok: false, error: "Unauthorised composer request." }); return; }
+			if (!this.authorised(request)) {
+				this.send(response, 403, { ok: false, error: "Unauthorised composer request." });
+				return;
+			}
 			const path = request.url ?? "";
-			if (path !== "/hello" && path !== "/events" && !this.paths.has(path)) { this.send(response, 404, { ok: false, error: "Unknown composer request." }); return; }
+			if (path !== "/hello" && path !== "/events" && !this.paths.has(path)) {
+				this.send(response, 404, { ok: false, error: "Unknown composer request." });
+				return;
+			}
 			const body = await this.body(request);
 			this.lifetime.signal.throwIfAborted();
 			if (response.destroyed) return;
 			if (body.composer !== this.composer) throw new Error("Composer identity differs.");
 			await this.dispatch(path, body, response);
-		} catch (error) { this.send(response, 409, { ok: false, error: oneLine(error) }); }
+		} catch (error) {
+			this.send(response, 409, { ok: false, error: oneLine(error) });
+		}
 	}
 }

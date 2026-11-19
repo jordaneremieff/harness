@@ -15,7 +15,12 @@ const lock: { packages: Record<string, PackageDependencies> } = JSON.parse(
 );
 
 test("Durable execution packages survive managed installs that omit dev and peer dependencies", () => {
-	for (const name of ["@earendil-works/chord", "@earendil-works/pi-durable", "@earendil-works/pi-codemode", "@earendil-works/pi-mcp"]) {
+	for (const name of [
+		"@earendil-works/chord",
+		"@earendil-works/pi-durable",
+		"@earendil-works/pi-codemode",
+		"@earendil-works/pi-mcp",
+	]) {
 		assert.equal(manifest.dependencies?.[name], "*", `${name} must be a direct runtime dependency`);
 		assert.equal(manifest.peerDependencies?.[name], undefined, `${name} is not supplied by Pi's loader`);
 		assert.equal(lock.packages[""].dependencies?.[name], manifest.dependencies?.[name], `${name} lockfile declaration`);

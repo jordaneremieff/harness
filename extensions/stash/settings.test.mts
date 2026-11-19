@@ -8,7 +8,14 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createEventBus, SettingsManager, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
-import { readSettings, publishSettings, SETTINGS_PUBLISH, type SettingsPublication, type SettingsBus, settings } from "./settings.ts";
+import {
+	readSettings,
+	publishSettings,
+	SETTINGS_PUBLISH,
+	type SettingsPublication,
+	type SettingsBus,
+	settings,
+} from "./settings.ts";
 import { capacityConfig, invalidCapacityFields } from "./capacity.ts";
 import type { StashDurableContribution, StashDurableHost } from "./durable.ts";
 import registerStash from "./index.ts";
@@ -265,7 +272,10 @@ test("native tools use file settings and resolve checkpoint paths against their 
 	models.setProvider(faux.provider);
 	const host: StashDurableHost = {
 		durable: Durable,
-		services: { modelRuntime: models, settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }) } as unknown as AgentSessionServices,
+		services: {
+			modelRuntime: models,
+			settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
+		} as unknown as AgentSessionServices,
 		cwd: join(root, "other-project"),
 		agentDir: nativeDir,
 		storageId: "runtime-fixture",
@@ -308,14 +318,16 @@ test("native tools use file settings and resolve checkpoint paths against their 
 	assert.deepEqual(await listStashes(join(agentDir, "wrong-store"), {}), []);
 	const command = contribution.commands?.[0];
 	assert.ok(command);
-	const message = String(await command.run({
-		args: "capacity",
-		conversation,
-		harness,
-		context,
-		host,
-		invocationId: "capacity-status",
-	}));
+	const message = String(
+		await command.run({
+			args: "capacity",
+			conversation,
+			harness,
+			context,
+			host,
+			invocationId: "capacity-status",
+		}),
+	);
 	assert.match(message, /Capacity observation is disabled by stash.capacity/);
 	assert.doesNotMatch(message, /PI_STASH_CAPACITY=0/);
 });
@@ -395,7 +407,10 @@ test("unknown diagnostic fields stay bounded and preserve Unicode and publicatio
 			assert.equal(publications.length, 1);
 			const publication = publications[0];
 			assert.deepEqual(publication.records, baseline.records);
-			assert.deepEqual(publication.diagnostics.filter((issue) => issue.code !== "unknown"), baseline.diagnostics);
+			assert.deepEqual(
+				publication.diagnostics.filter((issue) => issue.code !== "unknown"),
+				baseline.diagnostics,
+			);
 			const unknown = publication.diagnostics.filter((issue) => issue.code === "unknown");
 			assert.equal(unknown.length, 1);
 			assert.equal(unknown[0].field, expected);

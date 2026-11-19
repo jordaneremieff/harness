@@ -8,8 +8,14 @@ test("wall-clock jumps do not change observation time after its origin is captur
 	let wallReads = 0;
 	let monotonicReads = 0;
 	const clock = createObservationClock(
-		() => { wallReads++; return wall; },
-		() => { monotonicReads++; return monotonic; },
+		() => {
+			wallReads++;
+			return wall;
+		},
+		() => {
+			monotonicReads++;
+			return monotonic;
+		},
 	);
 	assert.equal(wallReads, 1);
 	assert.equal(monotonicReads, 1);
@@ -27,10 +33,16 @@ test("wall-clock jumps do not change observation time after its origin is captur
 test("each observation clock retains its own process origins", () => {
 	let wall = 100;
 	let monotonic = 10;
-	const first = createObservationClock(() => wall, () => monotonic);
+	const first = createObservationClock(
+		() => wall,
+		() => monotonic,
+	);
 	wall = 200;
 	monotonic = 20;
-	const second = createObservationClock(() => wall, () => monotonic);
+	const second = createObservationClock(
+		() => wall,
+		() => monotonic,
+	);
 	wall = 0;
 	monotonic = 25;
 	assert.equal(first.now(), 115);

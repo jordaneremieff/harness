@@ -32,12 +32,17 @@ function metadataDifferences(records: ModelRecord[]): Map<string, HealthFinding>
 	const differences = new Map<string, HealthFinding>();
 	for (const [identity, group] of groups) {
 		if (group.length < 2) continue;
-		const fields = CAPABILITY_FIELDS.filter((field) => new Set(group.map((record) => capabilityValue(record, field))).size > 1);
+		const fields = CAPABILITY_FIELDS.filter(
+			(field) => new Set(group.map((record) => capabilityValue(record, field))).size > 1,
+		);
 		if (fields.length === 0) continue;
 		differences.set(identity, {
-			code: "metadata_conflict", fields, duplicateRecords: group.length,
+			code: "metadata_conflict",
+			fields,
+			duplicateRecords: group.length,
 			reason: "The same provider/model identity has conflicting capability metadata in the returned catalog.",
-			boundary: "Only visible catalog rows and projected capability fields are compared. Different providers are distinct identities; shadowed registrations and remote capabilities are not checked.",
+			boundary:
+				"Only visible catalog rows and projected capability fields are compared. Different providers are distinct identities; shadowed registrations and remote capabilities are not checked.",
 		});
 	}
 	return differences;
@@ -60,24 +65,30 @@ export function catalogHealth(snapshot: ModelSnapshot | undefined): HealthRecord
 			findings.push({
 				code: "expiry_marker",
 				reason: "The model ID contains an explicit expires-on- date marker.",
-				boundary: "ID text only. The date and remote retirement status are unverified; a four-digit suffix supplies no year.",
+				boundary:
+					"ID text only. The date and remote retirement status are unverified; a four-digit suffix supplies no year.",
 			});
 		}
 		if (record.selected && !record.catalog && snapshot?.catalogAvailable && snapshot.catalogError === false) {
 			findings.push({
 				code: "selected_not_in_catalog",
 				reason: "The selected provider/model ID is absent from the returned local catalog.",
-				boundary: "Current selection compared with returned getAll rows. The host can silently omit failed providers; this does not establish removal, last-refresh membership, or remote resolution.",
+				boundary:
+					"Current selection compared with returned getAll rows. The host can silently omit failed providers; this does not establish removal, last-refresh membership, or remote resolution.",
 			});
 		}
 		if (record.selected && record.configuredAuth === false) {
 			findings.push({
 				code: "selected_auth_missing",
 				reason: "The selected model has no configured auth according to the host.",
-				boundary: "Current selection and configured-auth presence only, not recent dispatch use, credential validity, or a remote auth failure.",
+				boundary:
+					"Current selection and configured-auth presence only, not recent dispatch use, credential validity, or a remote auth failure.",
 			});
 		}
-		const difference = record.catalog && record.metadataAvailable ? differences.get(JSON.stringify([record.provider, record.id])) : undefined;
+		const difference =
+			record.catalog && record.metadataAvailable
+				? differences.get(JSON.stringify([record.provider, record.id]))
+				: undefined;
 		if (difference) findings.push(difference);
 		return findings.length === 0 ? [] : [{ ...record, findings }];
 	});

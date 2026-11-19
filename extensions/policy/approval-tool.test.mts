@@ -115,10 +115,21 @@ describe("context-authorized policy approval tool", () => {
 				return handle;
 			});
 			syncBuiltinESMExports();
-			t.after(() => { replacement.mock.restore(); syncBuiltinESMExports(); });
-			const input = name === "policy_propose" ? proposal("local.other") : name === "policy_approve" ? approval(pending) : {
-				operation: "reject", proposalId: pending.id, revision: proposalRevision(pending), authorization,
-			};
+			t.after(() => {
+				replacement.mock.restore();
+				syncBuiltinESMExports();
+			});
+			const input =
+				name === "policy_propose"
+					? proposal("local.other")
+					: name === "policy_approve"
+						? approval(pending)
+						: {
+								operation: "reject",
+								proposalId: pending.id,
+								revision: proposalRevision(pending),
+								authorization,
+							};
 			await assert.rejects(f.call(name, input, controller.signal), PolicyMutationCancelledError);
 			assert.equal(await f.bytes(), before);
 			await assert.rejects(lstat(join(f.dir, ".rules-lock")), /ENOENT/);

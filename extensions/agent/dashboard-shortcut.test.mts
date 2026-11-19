@@ -6,19 +6,27 @@ import register from "./index.ts";
 import { AgentDashboard } from "./dashboard.ts";
 import { source, theme, keys } from "./dashboard-test-fixture.mts";
 import type { TUI } from "@earendil-works/pi-tui";
-it("/agent mounts one dashboard, not a primary projection, and releases the open guard", { timeout: 5000 }, async () => {
+it("/agent mounts one dashboard, not a primary projection, and releases the open guard", {
+	timeout: 5000,
+}, async () => {
 	const command = createAgentCommand([], source(), {
 		timers: async () => [],
 		schedule: async () => ({ text: "scheduled" }),
 		control: async () => ({}),
 		newAgent: async () => ({ text: "created" }),
-		newDefaults: () => ({ cwd: "/work", presets: [], ownership: "The answer to the purpose comes back to this session." }),
+		newDefaults: () => ({
+			cwd: "/work",
+			presets: [],
+			ownership: "The answer to the purpose comes back to this session.",
+		}),
 	});
 	let ui!: AgentDashboard;
 	let opens = 0;
 	let done!: () => void;
 	let mounted!: () => void;
-	let mounting = new Promise<void>((resolve) => { mounted = resolve; });
+	let mounting = new Promise<void>((resolve) => {
+		mounted = resolve;
+	});
 	const ctx = {
 		mode: "tui",
 		hasUI: true,
@@ -53,7 +61,9 @@ it("/agent mounts one dashboard, not a primary projection, and releases the open
 	assert.equal(opens, 1);
 	done();
 	await opened;
-	mounting = new Promise<void>((resolve) => { mounted = resolve; });
+	mounting = new Promise<void>((resolve) => {
+		mounted = resolve;
+	});
 	const reopened = command.openDashboard(ctx);
 	await mounting;
 	assert.equal(opens, 2);
@@ -66,7 +76,8 @@ it("the sole entry shortcut names the dashboard and registers no primary observe
 	await register({
 		events: { emit() {}, on: () => () => {} },
 		registerTool() {},
-		registerMessageRenderer() {}, registerToolRenderer() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
 		registerCommand(_name: string, _value: RegisteredCommand) {},
 		registerShortcut: (key: string, value: { description: string }) =>
 			shortcuts.push({ key, description: value.description }),

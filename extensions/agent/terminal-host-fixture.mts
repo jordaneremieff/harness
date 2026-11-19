@@ -23,21 +23,41 @@ import { modelChoices } from "./durable-runtime.ts";
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
-	const promise = new Promise<T>((done) => { resolve = done; });
+	const promise = new Promise<T>((done) => {
+		resolve = done;
+	});
 	return { promise, resolve };
 }
 
 export function controlledGate() {
 	const started = deferred<{ taskId: number; conversationId: number }>();
 	const release = deferred<void>();
-	return { started: started.promise, release: () => release.resolve(), enter: started.resolve, released: release.promise, calls: 0, aborts: 0 };
+	return {
+		started: started.promise,
+		release: () => release.resolve(),
+		enter: started.resolve,
+		released: release.promise,
+		calls: 0,
+		aborts: 0,
+	};
 }
 
 function lastUser(context: TranscriptContext) {
-	const index = context.messages.findLastIndex((message) => message.role === "user" && !(typeof message.content === "string" ? message.content : message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("")).startsWith("<agent-request-route "));
+	const index = context.messages.findLastIndex(
+		(message) =>
+			message.role === "user" &&
+			!(
+				typeof message.content === "string"
+					? message.content
+					: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("")
+			).startsWith("<agent-request-route "),
+	);
 	const user = context.messages[index];
 	if (user?.role !== "user") throw new Error("controlled model requires user input");
-	const text = typeof user.content === "string" ? user.content : user.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("");
+	const text =
+		typeof user.content === "string"
+			? user.content
+			: user.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 	const marker = /gate:([a-zA-Z0-9-]+)/u.exec(text)?.[1];
 	if (!marker) throw new Error(`controlled model expected a gate marker, received ${text}`);
 	return { marker, answered: context.messages.slice(index + 1).some((message) => message.role === "toolResult") };
@@ -95,7 +115,14 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 		async host(name: string, options: { timers?: boolean } = {}): Promise<ControlledTerminalHost> {
 			const cwd = join(root, name);
 			mkdirSync(cwd);
-			const record = catalog.create({ cwd, agentDir, packageDir, model: { provider: testModel.provider, modelId: testModel.id }, thinkingLevel: "off", name });
+			const record = catalog.create({
+				cwd,
+				agentDir,
+				packageDir,
+				model: { provider: testModel.provider, modelId: testModel.id },
+				thinkingLevel: "off",
+				name,
+			});
 			const gates = new Map<string, ReturnType<typeof controlledGate>>();
 			const requests: ControlledTerminalHost["requests"] = [];
 			const calls: ControlledTerminalHost["calls"] = [];
@@ -115,7 +142,16 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 				request.marker = marker;
 				return completed(answered ? answerMessage(`answer:${marker}`) : toolCallMessage("terminal-gate", { marker }));
 			};
-			runtime.registerNativeProvider({ id: testModel.provider, name: "Terminal host test provider", getModels: () => [testModel, { ...testModel, id: "alternate", name: "Alternate test model" }], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
+			runtime.registerNativeProvider({
+				id: testModel.provider,
+				name: "Terminal host test provider",
+				getModels: () => [testModel, { ...testModel, id: "alternate", name: "Alternate test model" }],
+				auth: {
+					apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) },
+				},
+				stream,
+				streamSimple: stream,
+			});
 			const tool = defineTool({
 				name: "terminal-gate",
 				description: "Wait for an explicit test release.",
@@ -126,52 +162,110 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 					if (!gate) throw new Error(`gate ${args.marker} is not registered`);
 					gate.calls++;
 					gate.enter({ taskId: api.taskId, conversationId: api.conversationId });
-					const aborted = () => { gate.aborts++; };
+					const aborted = () => {
+						gate.aborts++;
+					};
 					context.abortSignal?.addEventListener("abort", aborted, { once: true });
-					try { await gate.released; }
-					finally { context.abortSignal?.removeEventListener("abort", aborted); }
+					try {
+						await gate.released;
+					} finally {
+						context.abortSignal?.removeEventListener("abort", aborted);
+					}
 					return { output: [{ type: "text", text: `released:${args.marker}` }] };
 				},
 			});
 			let durable!: DurableHost;
 			const commandCalls: DurableCommandCall[] = [];
 			const contributionHost = {
-				durable: Durable, services: {}, cwd, agentDir, storageId: record.storageId,
-				get harness() { return durable.harness; },
-				signal: new AbortController().signal, onClose() {},
-				inventory: { contributions: [{ name: "fixture", source: join(cwd, "index.ts"), commands: [{ name: "echo", description: "Return command arguments" }] }], ordinaryOnly: [] },
+				durable: Durable,
+				services: {},
+				cwd,
+				agentDir,
+				storageId: record.storageId,
+				get harness() {
+					return durable.harness;
+				},
+				signal: new AbortController().signal,
+				onClose() {},
+				inventory: {
+					contributions: [
+						{
+							name: "fixture",
+							source: join(cwd, "index.ts"),
+							commands: [{ name: "echo", description: "Return command arguments" }],
+						},
+					],
+					ordinaryOnly: [],
+				},
 			} as unknown as DurableCommandHost;
-			const commands = [{ name: "echo", description: "Return command arguments", async run(call: DurableCommandCall) {
-				commandCalls.push(call);
-				return `command:${call.conversation.id}:${call.args}`;
-			} }];
+			const commands = [
+				{
+					name: "echo",
+					description: "Return command arguments",
+					async run(call: DurableCommandCall) {
+						commandCalls.push(call);
+						return `command:${call.conversation.id}:${call.args}`;
+					},
+				},
+			];
 			const registry = fixtureRegistry([tool]);
 			if (options.timers) registry.install(Durable.defineExtension({ name: "terminal-timers", tasks: [TimerTask] }));
 			const ready = deferred<void>();
-			const processHost: HostProcess = await runHost(async () => {
-				durable = await DurableHost.open({ storageId: record.storageId, storagePath: record.storagePath, cwd, models: runtime, registry, agent: { model: record.model }, meta: { name }, commands, contributionHost, settings: { compaction: { enabled: false }, retry: { enabled: false } } });
-				return {
-					async request(method, raw, _requestId, signal) {
-						const params = raw as RequestParams | undefined;
-						calls.push({ method, params });
-						// The runtime layer answers these two before the native host sees them.
-						if (method === "models") return modelChoices({ services: { modelRuntime: runtime } as never });
-						const result = await durable.request(method, params, signal ?? BACKGROUND_CONTEXT);
-						if (method === "status") return { ...result as object, inventory: contributionHost.inventory, pid: process.pid, storageId: record.storageId };
-						trackObservation(method, params);
-						return result;
-					},
-					close: () => durable.close(),
-					isIdle: () => durable.isIdle(),
-					onChange: (listener) => onStoredCommit(durable.harness, () => listener()),
-				};
-			}, { metadata: hostMetadata(record), idleMs: 0, announceReady: () => ready.resolve() });
+			const processHost: HostProcess = await runHost(
+				async () => {
+					durable = await DurableHost.open({
+						storageId: record.storageId,
+						storagePath: record.storagePath,
+						cwd,
+						models: runtime,
+						registry,
+						agent: { model: record.model },
+						meta: { name },
+						commands,
+						contributionHost,
+						settings: { compaction: { enabled: false }, retry: { enabled: false } },
+					});
+					return {
+						async request(method, raw, _requestId, signal) {
+							const params = raw as RequestParams | undefined;
+							calls.push({ method, params });
+							// The runtime layer answers these two before the native host sees them.
+							if (method === "models") return modelChoices({ services: { modelRuntime: runtime } as never });
+							const result = await durable.request(method, params, signal ?? BACKGROUND_CONTEXT);
+							if (method === "status")
+								return {
+									...(result as object),
+									inventory: contributionHost.inventory,
+									pid: process.pid,
+									storageId: record.storageId,
+								};
+							trackObservation(method, params);
+							return result;
+						},
+						close: () => durable.close(),
+						isIdle: () => durable.isIdle(),
+						onChange: (listener) => onStoredCommit(durable.harness, () => listener()),
+					};
+				},
+				{ metadata: hostMetadata(record), idleMs: 0, announceReady: () => ready.resolve() },
+			);
 			await ready.promise;
 			const host: ControlledTerminalHost = {
-				record, durable, gates, requests, calls, observations, commandCalls, contributionHost,
-				waitForObservations: (count) => observations.size === count ? Promise.resolve() : observationEvents.waitFor(() => observations.size === count),
+				record,
+				durable,
+				gates,
+				requests,
+				calls,
+				observations,
+				commandCalls,
+				contributionHost,
+				waitForObservations: (count) =>
+					observations.size === count
+						? Promise.resolve()
+						: observationEvents.waitFor(() => observations.size === count),
 				async status(identity = record.storageId) {
-					return (await durable.request("status", { sessionId: identity }) as { conversation: ConversationStatus }).conversation;
+					return ((await durable.request("status", { sessionId: identity })) as { conversation: ConversationStatus })
+						.conversation;
 				},
 				async identityState(identity = record.storageId) {
 					const conversation = await durable.conversation(identity);
@@ -181,7 +275,10 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 				},
 				async publish() {
 					const projection = await durable.catalogProjection();
-					catalog.updateView(record.storageId, boundCatalogView({ updatedAt: projection.updatedAt, rows: projection.rows, storageId: record.storageId }));
+					catalog.updateView(
+						record.storageId,
+						boundCatalogView({ updatedAt: projection.updatedAt, rows: projection.rows, storageId: record.storageId }),
+					);
 				},
 				async settled(submissionId) {
 					const submission = await durable.harness.submission(submissionId as SubmissionId, BACKGROUND_CONTEXT);
@@ -198,6 +295,9 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 }
 
 export async function createSibling(host: ControlledTerminalHost): Promise<string> {
-	const conversation = await host.durable.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: host.record.model } }, BACKGROUND_CONTEXT);
+	const conversation = await host.durable.harness.createConversation(
+		{ ownership: { kind: "ownerless" }, agent: { model: host.record.model } },
+		BACKGROUND_CONTEXT,
+	);
 	return host.durable.identity(conversation.id as ConversationId);
 }

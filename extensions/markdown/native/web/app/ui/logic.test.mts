@@ -216,8 +216,20 @@ test("inline differences preserve exact original and replacement text", () => {
 test("separated edits leave shared words, emoji and punctuation unmarked", () => {
 	const parts = logic.diffWords("Meet Tuesday, 👩‍💻, at two.", "Meet Thursday, 👩‍💻, at four!");
 	assert.ok(parts);
-	assert.deepEqual(Array.from(parts.filter(p => p.kind === "same"), p => p.text), ["Meet ", ", 👩‍💻, at "]);
-	assert.deepEqual(Array.from(parts.filter(p => p.kind === "added"), p => p.text), ["Thursday", "four!"]);
+	assert.deepEqual(
+		Array.from(
+			parts.filter((p) => p.kind === "same"),
+			(p) => p.text,
+		),
+		["Meet ", ", 👩‍💻, at "],
+	);
+	assert.deepEqual(
+		Array.from(
+			parts.filter((p) => p.kind === "added"),
+			(p) => p.text,
+		),
+		["Thursday", "four!"],
+	);
 	const punctuation = logic.diffWords("Keep it.", "Keep it?");
 	assert.equal(punctuation?.[0].text, "Keep it");
 });

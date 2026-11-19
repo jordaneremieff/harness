@@ -14,7 +14,10 @@ const rules: Array<[string, RegExp]> = [
 	["personal-path", /(?:\/Users\/|\/home\/)[A-Za-z0-9._-]+\//],
 	["private-key", /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
 	["credential", /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|sk-ant-[A-Za-z0-9_-]{30,})\b/],
-	["session-transcript", /^\s*<(?:agent-request-context|agent-request-route|agent-efforts|agent-preferences)(?=[\s/>])/],
+	[
+		"session-transcript",
+		/^\s*<(?:agent-request-context|agent-request-route|agent-efforts|agent-preferences)(?=[\s/>])/,
+	],
 ];
 
 export function scanText(text: string): { line: number; rule: string } | undefined {
@@ -33,7 +36,19 @@ function git(cwd: string, args: string[], maxBuffer = 4_000_000): string {
 function changedBlobs(cwd: string, commit: string): Map<string, string> {
 	// Compare merge results with every parent. Disabling rename detection treats
 	// rename destinations as additions; raw records distinguish blobs from gitlinks.
-	const changes = git(cwd, ["diff-tree", "--root", "-m", "--no-commit-id", "--raw", "--no-abbrev", "--no-renames", "-z", "-r", "--diff-filter=AMT", commit]).split("\0");
+	const changes = git(cwd, [
+		"diff-tree",
+		"--root",
+		"-m",
+		"--no-commit-id",
+		"--raw",
+		"--no-abbrev",
+		"--no-renames",
+		"-z",
+		"-r",
+		"--diff-filter=AMT",
+		commit,
+	]).split("\0");
 	const blobs = new Map<string, string>();
 	for (let index = 0; index + 1 < changes.length; index += 2) {
 		const [, mode, , oid] = changes[index].split(" ");
@@ -45,7 +60,10 @@ function changedBlobs(cwd: string, commit: string): Map<string, string> {
 /** Findings for every commit message and changed text blob selected by `revisions`; matched text is never reported. */
 export function scanRange(cwd: string, revisions: string[]): string[] {
 	const findings: string[] = [];
-	const commits = git(cwd, ["rev-list", ...revisions]).trim().split("\n").filter(Boolean);
+	const commits = git(cwd, ["rev-list", ...revisions])
+		.trim()
+		.split("\n")
+		.filter(Boolean);
 	for (const commit of commits) {
 		const message = scanText(git(cwd, ["log", "-1", "--format=%B", commit]));
 		if (message) findings.push(`${commit.slice(0, 7)} commit message line ${message.line}: ${message.rule}`);
@@ -69,7 +87,9 @@ export function pushRanges(stdin: string): string[][] {
 		.filter(Boolean)
 		.map((line) => line.split(" "))
 		.filter(([, local]) => local && !zero.test(local))
-		.map(([, local, , remote]) => (remote && !zero.test(remote) ? [`${remote}..${local}`] : [local, "--not", "--remotes"]));
+		.map(([, local, , remote]) =>
+			remote && !zero.test(remote) ? [`${remote}..${local}`] : [local, "--not", "--remotes"],
+		);
 }
 
 export function hookContent(): string {
@@ -87,7 +107,10 @@ export function hookContent(): string {
 export function installHook(repoRoot: string): string {
 	// Non-bare pre-push hooks run from the worktree root, including relative hooksPath settings.
 	const worktree = git(repoRoot, ["rev-parse", "--show-toplevel"]).replace(/\n$/, "");
-	const path = git(worktree, ["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-push"]).replace(/\n$/, "");
+	const path = git(worktree, ["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-push"]).replace(
+		/\n$/,
+		"",
+	);
 	mkdirSync(dirname(path), { recursive: true });
 	if (existsSync(path) && !readFileSync(path, "utf8").includes(hookMarker)) {
 		throw new Error(`Refusing to replace an unmanaged hook: ${path}`);

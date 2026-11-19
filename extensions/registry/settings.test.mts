@@ -15,5 +15,7 @@ test("unknown fields and an invalid selected note switch share the diagnostic bo
 		assert.equal(snapshot.diagnostics[256].code, "coverage");
 		assert.equal(snapshot.values.notes, true);
 		assert.equal(snapshot.records[0].status, "invalid");
-	} finally { rmSync(agentDir, { recursive: true, force: true }); }
+	} finally {
+		rmSync(agentDir, { recursive: true, force: true });
+	}
 });

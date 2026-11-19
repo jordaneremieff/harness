@@ -21,10 +21,17 @@ async function fixture(t: TestContext) {
 	const root = await mkdtemp(join(tmpdir(), "markdown-live-launch-"));
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = root;
-	t.after(async () => { if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous; await rm(root, { recursive: true, force: true }); });
+	t.after(async () => {
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previous;
+		await rm(root, { recursive: true, force: true });
+	});
 	const app = join(root, "Reader.app");
 	await mkdir(join(app, "Contents", "Resources"), { recursive: true });
-	await writeFile(join(app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1, pane: 1, paneOpen: 1, live: 1 }));
+	await writeFile(
+		join(app, "Contents", "Resources", "build.json"),
+		JSON.stringify({ contract: 1, pane: 1, paneOpen: 1, live: 1 }),
+	);
 	return { root, app, store: new MarkdownStore(join(root, "store")) };
 }
 async function checkLaunch(argv: string[], text: string) {
@@ -36,7 +43,9 @@ async function checkLaunch(argv: string[], text: string) {
 	assert.ok(!text.includes(config.token), "the tool output carries a private path, never its token");
 	await rm(path);
 }
-test("closing a bridge removes unused launch files without changing consumed files or another live owner's files", { timeout: 10000 }, async (t) => {
+test("closing a bridge removes unused launch files without changing consumed files or another live owner's files", {
+	timeout: 10000,
+}, async (t) => {
 	const f = await fixture(t);
 	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
 	t.after(() => bridge.close());
@@ -48,7 +57,11 @@ test("closing a bridge removes unused launch files without changing consumed fil
 	const consumed = await liveArguments(["reader", "--pane", "document"], live);
 	const consumedPath = consumed.argv.at(-1);
 	assert.ok(consumedPath);
-	assert.deepEqual(JSON.parse(await readFile(unusedPath, "utf8")), { version: 1, endpoint: live.endpoint, token: live.token });
+	assert.deepEqual(JSON.parse(await readFile(unusedPath, "utf8")), {
+		version: 1,
+		endpoint: live.endpoint,
+		token: live.token,
+	});
 	await rm(consumedPath);
 	const other = new LiveBridge({ submit: async () => ({ status: "requested" }) });
 	t.after(() => other.close());
@@ -67,19 +80,34 @@ test("closing a bridge removes unused launch files without changing consumed fil
 	assert.ok((await stat(otherPath)).isFile());
 	assert.equal(await readFile(unrelatedPath, "utf8"), "unattributed configuration");
 	await assert.rejects(liveArguments(["reader"], live), /closed/u);
-	assert.deepEqual((await readdir(join(f.root, "markdown-live"))).sort(), [unrelatedPath, otherPath].map((path) => path.split("/").at(-1)).sort());
+	assert.deepEqual(
+		(await readdir(join(f.root, "markdown-live"))).sort(),
+		[unrelatedPath, otherPath].map((path) => path.split("/").at(-1)).sort(),
+	);
 	other.close();
 	await assert.rejects(stat(otherPath), { code: "ENOENT" });
 });
-test("a live process keeps its launch file until exit and another bridge never prunes it", { timeout: 10000 }, async (t) => {
+test("a live process keeps its launch file until exit and another bridge never prunes it", {
+	timeout: 10000,
+}, async (t) => {
 	const f = await fixture(t);
-	const child = spawn(process.execPath, ["--input-type=module", "-e", `
+	const child = spawn(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`
 		import { liveArguments } from ${JSON.stringify(new URL("./live-launch.ts", import.meta.url).href)};
 		const launch = await liveArguments(["reader"], ${JSON.stringify(config)});
 		process.send(launch.argv.at(-1));
 		process.stdin.once("data", () => process.exit(0));
-	`], { env: { ...process.env, PI_CODING_AGENT_DIR: f.root }, stdio: ["pipe", "pipe", "pipe", "ipc"] });
-	t.after(() => { if (child.exitCode === null) child.kill(); });
+	`,
+		],
+		{ env: { ...process.env, PI_CODING_AGENT_DIR: f.root }, stdio: ["pipe", "pipe", "pipe", "ipc"] },
+	);
+	t.after(() => {
+		if (child.exitCode === null) child.kill();
+	});
 	const [path] = await once(child, "message");
 	assert.equal(typeof path, "string");
 	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
@@ -93,70 +121,144 @@ test("a live process keeps its launch file until exit and another bridge never p
 	assert.deepEqual(await exited, [0, null]);
 	await assert.rejects(stat(path as string), { code: "ENOENT" });
 });
-test("ordinary publication and read show commands carry private one-use connections without revealing tokens", { timeout: 10000 }, async (t) => {
+test("ordinary publication and read show commands carry private one-use connections without revealing tokens", {
+	timeout: 10000,
+}, async (t) => {
 	const f = await fixture(t);
 	const calls: ExtensionContext[] = [];
-	const connection = async (ctx: ExtensionContext) => { calls.push(ctx); return config; };
-	const ctx = { cwd: f.root, sessionManager: { getSessionId: () => "exact-ordinary" } } as unknown as ExtensionToolContext;
-	const published = await createPublishTool({ store: f.store, app: f.app, connection }).execute("publish", { title: "Live", text: "# Exact\n" }, new AbortController().signal, undefined, ctx);
+	const connection = async (ctx: ExtensionContext) => {
+		calls.push(ctx);
+		return config;
+	};
+	const ctx = {
+		cwd: f.root,
+		sessionManager: { getSessionId: () => "exact-ordinary" },
+	} as unknown as ExtensionToolContext;
+	const published = await createPublishTool({ store: f.store, app: f.app, connection }).execute(
+		"publish",
+		{ title: "Live", text: "# Exact\n" },
+		new AbortController().signal,
+		undefined,
+		ctx,
+	);
 	assert.equal(published.details?.ok, true);
 	const result = published.details;
 	assert.ok(result?.ok && result.show);
 	await checkLaunch(result.show, JSON.stringify(published));
-	const read = await createReadTool({ store: f.store, app: f.app, connection }).execute("read", { document: result.documentId }, new AbortController().signal, undefined, ctx);
+	const read = await createReadTool({ store: f.store, app: f.app, connection }).execute(
+		"read",
+		{ document: result.documentId },
+		new AbortController().signal,
+		undefined,
+		ctx,
+	);
 	assert.ok(read.details?.ok && read.details.op === "read" && read.details.show);
 	await checkLaunch(read.details.show, JSON.stringify(read));
 	assert.deepEqual(calls, [ctx, ctx]);
 	assert.equal((await f.store.get(result.documentId)).source, "# Exact\n");
 });
-test("native publication and read prepare show commands from their actual calling conversation", { timeout: 10000 }, async (t) => {
+test("native publication and read prepare show commands from their actual calling conversation", {
+	timeout: 10000,
+}, async (t) => {
 	const f = await fixture(t);
-	const faux = fauxProvider(); const models = createModels(); models.setProvider(faux.provider);
+	const faux = fauxProvider();
+	const models = createModels();
+	models.setProvider(faux.provider);
 	const registry = Durable.createRegistry();
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
 	try {
-		const selected = await f.store.create({ title: "Selected", source: "# Selected\n", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() } });
+		const selected = await f.store.create({
+			title: "Selected",
+			source: "# Selected\n",
+			contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() },
+		});
 		const calls: string[] = [];
-		const connection = async (id: Durable.ConversationId) => { calls.push(String(id)); return config; };
-		registry.install(Durable.defineExtension({ name: "markdown", tools: [createNativePublishTool({ durable: Durable, harness, cwd: f.root }, { store: f.store, app: f.app, connection }), createNativeReadTool(Durable, { store: f.store, app: f.app, connection })] }));
+		const connection = async (id: Durable.ConversationId) => {
+			calls.push(String(id));
+			return config;
+		};
+		registry.install(
+			Durable.defineExtension({
+				name: "markdown",
+				tools: [
+					createNativePublishTool(
+						{ durable: Durable, harness, cwd: f.root },
+						{ store: f.store, app: f.app, connection },
+					),
+					createNativeReadTool(Durable, { store: f.store, app: f.app, connection }),
+				],
+			}),
+		);
 		const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 		faux.setResponses([
-			fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Native live", text: "# Native\n" }), { stopReason: "toolUse" }),
-			fauxAssistantMessage(fauxToolCall("markdown_read", { document: selected.document.id }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Native live", text: "# Native\n" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage(fauxToolCall("markdown_read", { document: selected.document.id }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("Ready."),
 		]);
-		assert.equal((await (await conversation.submit({ type: "input", content: "Prepare both commands." }, context)).wait(context)).status, "done");
-		const results = (await conversation.entries({}, 30, undefined, context)).items.filter((entry) => Durable.ToolResultEntry.is(entry));
+		assert.equal(
+			(await (await conversation.submit({ type: "input", content: "Prepare both commands." }, context)).wait(context))
+				.status,
+			"done",
+		);
+		const results = (await conversation.entries({}, 30, undefined, context)).items.filter((entry) =>
+			Durable.ToolResultEntry.is(entry),
+		);
 		assert.equal(results.length, 2);
 		for (const entry of results) {
 			const message = entry.model?.[0];
 			assert.ok(message?.role === "toolResult" && !message.isError);
-			const text = message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+			const text = message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 			const match = /run (\[[^\n]+\]) as the program/u.exec(text);
 			assert.ok(match, text);
 			await checkLaunch(JSON.parse(match[1]) as string[], text);
 		}
 		assert.deepEqual(calls, [String(conversation.id), String(conversation.id)]);
-	} finally { await harness.close(context); }
+	} finally {
+		await harness.close(context);
+	}
 });
 test("pane and editor openers accept live versions 1 and 2 without changing their launch contracts", async (t) => {
 	const f = await fixture(t);
 	const previous = process.env.PI_MARKDOWN_APP;
 	process.env.PI_MARKDOWN_APP = f.app;
-	t.after(() => { if (previous === undefined) delete process.env.PI_MARKDOWN_APP; else process.env.PI_MARKDOWN_APP = previous; });
-	const stored = await f.store.create({ title: "Exact", source: "captured", contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() } });
+	t.after(() => {
+		if (previous === undefined) delete process.env.PI_MARKDOWN_APP;
+		else process.env.PI_MARKDOWN_APP = previous;
+	});
+	const stored = await f.store.create({
+		title: "Exact",
+		source: "captured",
+		contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() },
+	});
 	const saved = await selectStored(f.store.root, stored.document.id);
 	for (const live of [1, 2, 3]) {
-		await writeFile(join(f.app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1, pane: 1, paneOpenRequest: 1, editorOpen: 1, live }));
+		await writeFile(
+			join(f.app, "Contents", "Resources", "build.json"),
+			JSON.stringify({ contract: 1, pane: 1, paneOpenRequest: 1, editorOpen: 1, live }),
+		);
 		let dispatches = 0;
-		const runtime: RevealRuntime = { platform: "darwin", acceptanceMs: 5, run: async (_exe, args, options) => {
-			if (args[1] === "capture") return { stdout: "null" };
-			dispatches++;
-			const payload = JSON.parse(options.input ?? "null");
-			await checkLaunch(payload.argv, JSON.stringify(payload));
-			return { stdout: JSON.stringify({ version: 1, outcome: "created", detail: "Created.", receipt: { opaque: "pane" } }) };
-		} };
-		const result = await materializeAndReveal(async () => saved, new AbortController().signal, { gui: true, runtime, live: config });
+		const runtime: RevealRuntime = {
+			platform: "darwin",
+			acceptanceMs: 5,
+			run: async (_exe, args, options) => {
+				if (args[1] === "capture") return { stdout: "null" };
+				dispatches++;
+				const payload = JSON.parse(options.input ?? "null");
+				await checkLaunch(payload.argv, JSON.stringify(payload));
+				return {
+					stdout: JSON.stringify({ version: 1, outcome: "created", detail: "Created.", receipt: { opaque: "pane" } }),
+				};
+			},
+		};
+		const result = await materializeAndReveal(async () => saved, new AbortController().signal, {
+			gui: true,
+			runtime,
+			live: config,
+		});
 		if (live === 1 || live === 2) {
 			assert.equal(result.state, "not-confirmed");
 			await openScratchpad(new AbortController().signal, { runtime, live: config });
@@ -173,7 +275,10 @@ test("show attaches live versions 1 and 2 but refuses unknown capabilities", asy
 	for (const live of [1, 2, 3, undefined]) {
 		await writeFile(join(f.app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1, pane: 1, live }));
 		let calls = 0;
-		const outcome = await withLiveShow({ show: ["reader", "--pane", "document"] }, f.app, async () => { calls++; return config; });
+		const outcome = await withLiveShow({ show: ["reader", "--pane", "document"] }, f.app, async () => {
+			calls++;
+			return config;
+		});
 		if (live === 1 || live === 2) {
 			assert.ok(outcome.show);
 			await checkLaunch(outcome.show, JSON.stringify(outcome));
@@ -186,10 +291,17 @@ test("show attaches live versions 1 and 2 but refuses unknown capabilities", asy
 });
 test("a missing live app or closed conversation preserves the successful document outcome", async (t) => {
 	const f = await fixture(t);
-	const outcome: { ok: boolean; show?: string[]; showUnavailable?: string } = { ok: true, show: ["reader", "--pane", "document"] };
+	const outcome: { ok: boolean; show?: string[]; showUnavailable?: string } = {
+		ok: true,
+		show: ["reader", "--pane", "document"],
+	};
 	const missing = await withLiveShow(outcome, join(f.root, "missing.app"), async () => config);
-	assert.equal(missing.ok, true); assert.equal(missing.show, undefined);
-	const closed = await withLiveShow(outcome, f.app, async () => { throw new Error("closed"); });
-	assert.equal(closed.ok, true); assert.equal(closed.show, undefined);
+	assert.equal(missing.ok, true);
+	assert.equal(missing.show, undefined);
+	const closed = await withLiveShow(outcome, f.app, async () => {
+		throw new Error("closed");
+	});
+	assert.equal(closed.ok, true);
+	assert.equal(closed.show, undefined);
 	assert.match(closed.showUnavailable ?? "", /exact invoking conversation/u);
 });

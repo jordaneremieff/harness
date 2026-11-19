@@ -5,7 +5,17 @@ import { onStoredCommit } from "./commit-observation.ts";
  * optional held answer for the busy-boundary tests. As a runner, it serves
  * paused scheduling over the host protocol with an explicit native clock.
  */
-import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fstatSync,
+	mkdirSync,
+	mkdtempSync,
+	openSync,
+	readSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -13,7 +23,11 @@ import { parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
 import { runHost } from "./host-process.ts";
 import { eventLog } from "./host-fixture.mts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	type AssistantMessage,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { DurableHost } from "./durable-host.ts";
 import { reconcileDeliveries, type DeliveryReceipt } from "./durable-controls.ts";
@@ -21,7 +35,14 @@ import { createDurableServices, type DurableServices } from "./durable-services.
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import type { Conversation } from "@earendil-works/pi-durable";
 
-const USAGE = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const USAGE = {
+	input: 1,
+	output: 1,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 2,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
 
 export const FIXTURE_ANSWER = "schedule fixture answer";
 
@@ -88,8 +109,15 @@ function gate(): Gate {
  * `crashRetry`, one immediate retry resends it after reopen, even on the
  * subprocess's fixed clock.
  */
-function scheduleSettingsText(agentExtension: boolean, crashRetry = process.env.DURABLE_TEST_CRASH_RETRY === "1"): string {
-	return JSON.stringify({ cacheWarming: "off", retry: crashRetry ? { enabled: true, maxRetries: 1, baseDelayMs: 0, maxAgentDelayMs: 0 } : { enabled: false }, ...(agentExtension ? { extensions: [fileURLToPath(new URL("./index.ts", import.meta.url))] } : {}) });
+function scheduleSettingsText(
+	agentExtension: boolean,
+	crashRetry = process.env.DURABLE_TEST_CRASH_RETRY === "1",
+): string {
+	return JSON.stringify({
+		cacheWarming: "off",
+		retry: crashRetry ? { enabled: true, maxRetries: 1, baseDelayMs: 0, maxAgentDelayMs: 0 } : { enabled: false },
+		...(agentExtension ? { extensions: [fileURLToPath(new URL("./index.ts", import.meta.url))] } : {}),
+	});
 }
 
 /** Prepare the final configuration before the parent captures its immutable launcher inputs. */
@@ -100,18 +128,31 @@ export function prepareScheduleSettings(agentDir: string, agentExtension = true,
 /** A subprocess validates its prepared configuration without rewriting it. */
 export function requireScheduleSettings(agentDir: string, agentExtension = true): void {
 	const expected = Buffer.from(scheduleSettingsText(agentExtension));
-	const fd = openSync(join(agentDir, "settings.json"), constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+	const fd = openSync(
+		join(agentDir, "settings.json"),
+		constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW,
+	);
 	try {
 		const stat = fstatSync(fd);
-		if (!stat.isFile() || stat.size !== expected.length) throw new Error("Schedule fixture settings differ from the prepared configuration");
+		if (!stat.isFile() || stat.size !== expected.length)
+			throw new Error("Schedule fixture settings differ from the prepared configuration");
 		const bytes = Buffer.alloc(expected.length + 1);
 		const length = readSync(fd, bytes, 0, bytes.length, 0);
-		if (!bytes.subarray(0, length).equals(expected)) throw new Error("Schedule fixture settings differ from the prepared configuration");
-	} finally { closeSync(fd); }
+		if (!bytes.subarray(0, length).equals(expected))
+			throw new Error("Schedule fixture settings differ from the prepared configuration");
+	} finally {
+		closeSync(fd);
+	}
 }
 
-export async function scheduleFixture(t: { after(fn: () => void | Promise<void>): void }, options: ScheduleFixtureOptions = {}): Promise<ScheduleFixture> {
-	const root = options.metadata === undefined ? mkdtempSync(join(tmpdir(), "durable-schedule-")) : dirname(options.metadata.storagePath);
+export async function scheduleFixture(
+	t: { after(fn: () => void | Promise<void>): void },
+	options: ScheduleFixtureOptions = {},
+): Promise<ScheduleFixture> {
+	const root =
+		options.metadata === undefined
+			? mkdtempSync(join(tmpdir(), "durable-schedule-"))
+			: dirname(options.metadata.storagePath);
 	const cwd = options.metadata?.cwd ?? join(root, "work");
 	const agentDir = options.metadata?.agentDir ?? join(root, "agent");
 	const storagePath = options.metadata?.storagePath ?? join(root, "store.sqlite");
@@ -122,13 +163,23 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 	const runtime = await createTestRuntime();
 	const answerText = options.answer ?? FIXTURE_ANSWER;
 	const requested = gate();
-	const firstGate: Gate | undefined = options.deferFirstAnswer === true || options.deferAnswers === true ? gate() : undefined;
+	const firstGate: Gate | undefined =
+		options.deferFirstAnswer === true || options.deferAnswers === true ? gate() : undefined;
 	let held = firstGate !== undefined;
 	let requests = 0;
 	const stream = (_model: unknown, _context: TranscriptContext, requestOptions?: { signal?: AbortSignal }) => {
 		requests += 1;
 		requested.release();
-		const message: AssistantMessage = { role: "assistant", content: [{ type: "text", text: answerText }], api: testModel.api, provider: testModel.provider, model: testModel.id, usage: USAGE, stopReason: "stop", timestamp: Date.now() };
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: answerText }],
+			api: testModel.api,
+			provider: testModel.provider,
+			model: testModel.id,
+			usage: USAGE,
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
 		const events = createAssistantMessageEventStream();
 		if ((held || options.deferAnswers === true) && firstGate !== undefined) {
 			held = false;
@@ -211,7 +262,13 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 		services: opened.services,
 		conversation: async () => await fixture.host.conversation(undefined),
 		submitMessage: async (message: string) => {
-			const result = (await fixture.host.request("submit", { sessionId: storageId, message, requestId: `fixture-submit:${Math.random().toString(36).slice(2)}`, ownerId, origin: "operator" })) as { submissionId: number };
+			const result = (await fixture.host.request("submit", {
+				sessionId: storageId,
+				message,
+				requestId: `fixture-submit:${Math.random().toString(36).slice(2)}`,
+				ownerId,
+				origin: "operator",
+			})) as { submissionId: number };
 			return result.submissionId;
 		},
 		waitForFirstRequest: () => requested.promise,
@@ -224,8 +281,13 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 			const deadline = performance.now() + timeoutMs;
 			const changes = eventLog<void>();
 			let closed = false;
-			const stopClose = host.harness.subscribeClose(() => { closed = true; changes.push(undefined); });
-			const stop = onStoredCommit(host.harness, (publication) => { if (publication.changes.length > 0) changes.push(undefined); });
+			const stopClose = host.harness.subscribeClose(() => {
+				closed = true;
+				changes.push(undefined);
+			});
+			const stop = onStoredCommit(host.harness, (publication) => {
+				if (publication.changes.length > 0) changes.push(undefined);
+			});
 			try {
 				for (;;) {
 					signal.throwIfAborted();
@@ -233,11 +295,18 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 					const next = changes.length + 1;
 					const page = (await host.request("receipts", { ownerId }, signal)) as { receipts: DeliveryReceipt[] };
 					const found = page.receipts.find((receipt) => receipt.requestId === requestId);
-					if (page.receipts.length > 0) await host.request("acknowledge", { ownerId, submissionIds: page.receipts.map((receipt) => receipt.submissionId) });
+					if (page.receipts.length > 0)
+						await host.request("acknowledge", {
+							ownerId,
+							submissionIds: page.receipts.map((receipt) => receipt.submissionId),
+						});
 					if (found !== undefined) return found;
 					await changes.waitForCount(next, Math.max(1, deadline - performance.now()));
 				}
-			} finally { stop(); stopClose(); }
+			} finally {
+				stop();
+				stopClose();
+			}
 		},
 		searchCount: async (query: string) => {
 			const page = (await fixture.host.request("inspect", { view: "search", query })) as { matches: unknown[] };
@@ -266,11 +335,21 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 
 async function waitForSleepingCheckIn(fixture: ScheduleFixture): Promise<{ ready: true }> {
 	const graph = await fixture.host.harness.watchTaskGraph(BACKGROUND_CONTEXT);
-	const ready = (value: typeof graph.value) => Object.values(value.tasks).some((node) => node.kind === "agent.check-in-deadline" && node.state.status === "sleeping");
+	const ready = (value: typeof graph.value) =>
+		Object.values(value.tasks).some(
+			(node) => node.kind === "agent.check-in-deadline" && node.state.status === "sleeping",
+		);
 	try {
-		if (!ready(graph.value)) await new Promise<void>((resolve) => graph.start(async (call) => { if (call.kind === "value" && ready(call.value)) resolve(); }));
+		if (!ready(graph.value))
+			await new Promise<void>((resolve) =>
+				graph.start(async (call) => {
+					if (call.kind === "value" && ready(call.value)) resolve();
+				}),
+			);
 		return { ready: true };
-	} finally { await graph.stop(); }
+	} finally {
+		await graph.stop();
+	}
 }
 
 /** A paused native timer host with a caller-controlled clock, for process-loss tests. */
@@ -280,20 +359,38 @@ async function main(): Promise<void> {
 	const metadata = parseHostMetadata(JSON.parse(raw));
 	const now = Number(process.env.DURABLE_TEST_NOW);
 	if (!Number.isSafeInteger(now) || now <= 0) throw new Error("DURABLE_TEST_NOW must be a positive integer");
-	const fixture = await scheduleFixture({ after() {} }, { agentExtension: true, metadata, now: () => now, resume: false, deferAnswers: process.env.DURABLE_TEST_HOLD_ANSWER === "1" });
-	const host = await runHost(() => ({
-		request: async (method, params) => {
-			const command = method === "command" ? (params as { name?: unknown } | undefined)?.name : undefined;
-			if (command === "fixture-clock") return { now };
-			if (command === "fixture-release-answer") { fixture.releaseAnswer(); return { released: true }; }
-			if (command === "fixture-checkin-ready") return waitForSleepingCheckIn(fixture);
-			if (command === "fixture-resume") { fixture.host.harness.resume(); return { resumed: true }; }
-			return fixture.host.request(method, params as Record<string, unknown> | undefined);
+	const fixture = await scheduleFixture(
+		{ after() {} },
+		{
+			agentExtension: true,
+			metadata,
+			now: () => now,
+			resume: false,
+			deferAnswers: process.env.DURABLE_TEST_HOLD_ANSWER === "1",
 		},
-		close: () => fixture.close(),
-		isIdle: () => fixture.host.isIdle(),
-		onChange: (listener) => onStoredCommit(fixture.host.harness, () => listener()),
-	}), { metadata, idleMs: 0 });
+	);
+	const host = await runHost(
+		() => ({
+			request: async (method, params) => {
+				const command = method === "command" ? (params as { name?: unknown } | undefined)?.name : undefined;
+				if (command === "fixture-clock") return { now };
+				if (command === "fixture-release-answer") {
+					fixture.releaseAnswer();
+					return { released: true };
+				}
+				if (command === "fixture-checkin-ready") return waitForSleepingCheckIn(fixture);
+				if (command === "fixture-resume") {
+					fixture.host.harness.resume();
+					return { resumed: true };
+				}
+				return fixture.host.request(method, params as Record<string, unknown> | undefined);
+			},
+			close: () => fixture.close(),
+			isIdle: () => fixture.host.isIdle(),
+			onChange: (listener) => onStoredCommit(fixture.host.harness, () => listener()),
+		}),
+		{ metadata, idleMs: 0 },
+	);
 	await host.done;
 }
 

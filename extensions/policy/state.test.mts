@@ -339,9 +339,17 @@ test("future cooldown stamps do not extend cooldown or replenish consumed once a
 
 test("each temporal operation samples its owned clock once, including composite views", () => {
 	let reads = 0;
-	const clock = { now: () => { reads++; return 10; } };
+	const clock = {
+		now: () => {
+			reads++;
+			return 10;
+		},
+	};
 	const state = new ObservationState(clock);
-	const rules = [rule({ resetWhen: { op: "eq", path: ["outcome", "kind"], value: "success" } }), { ...rule(), id: "other" }];
+	const rules = [
+		rule({ resetWhen: { op: "eq", path: ["outcome", "kind"], value: "success" } }),
+		{ ...rule(), id: "other" },
+	];
 	const once = (operation: () => unknown) => {
 		const before = reads;
 		operation();

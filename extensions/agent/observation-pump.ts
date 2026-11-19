@@ -47,7 +47,8 @@ const monotonicClock: ObservationClock = {
  * pass start. A mark during a pass waits for that pass to settle.
  */
 export function createObservationPump(options: ObservationPumpOptions): ObservationPump {
-	if (!Number.isFinite(options.intervalMs) || options.intervalMs < 0) throw new RangeError("observation pump intervalMs must be a finite nonnegative number");
+	if (!Number.isFinite(options.intervalMs) || options.intervalMs < 0)
+		throw new RangeError("observation pump intervalMs must be a finite nonnegative number");
 	const clock = options.clock ?? monotonicClock;
 	let dirty = false;
 	let pending: (() => void) | undefined;
@@ -72,7 +73,11 @@ export function createObservationPump(options: ObservationPumpOptions): Observat
 		try {
 			await options.run();
 		} catch (error) {
-			try { options.onError(error); } catch { /* A failure report must not break later passes. */ }
+			try {
+				options.onError(error);
+			} catch {
+				/* A failure report must not break later passes. */
+			}
 		} finally {
 			inFlight = false;
 			if (!disposed && dirty) schedule();

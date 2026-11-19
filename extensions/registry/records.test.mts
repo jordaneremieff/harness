@@ -92,7 +92,10 @@ describe("record projection", () => {
 			["tool:read", "command:stash", "skill:pillars", "prompt:review"],
 		);
 		const shuffled = [...records].reverse().sort(compareRecords);
-		assert.deepEqual(shuffled.map((r) => r.name), records.map((r) => r.name));
+		assert.deepEqual(
+			shuffled.map((r) => r.name),
+			records.map((r) => r.name),
+		);
 	});
 });
 
@@ -147,7 +150,13 @@ describe("observation join", () => {
 
 	it("keys identity on name, source, and path together", () => {
 		const base = info();
-		for (const change of [{ path: "/y" }, { source: "user" }, { scope: "project" }, { origin: "top-level" }, { baseDir: "/b" }]) {
+		for (const change of [
+			{ path: "/y" },
+			{ source: "user" },
+			{ scope: "project" },
+			{ origin: "top-level" },
+			{ baseDir: "/b" },
+		]) {
 			assert.notEqual(skillIdentity("a", base), skillIdentity("a", info(change)));
 		}
 		assert.notEqual(skillIdentity("a", base), skillIdentity("b", base));

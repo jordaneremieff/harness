@@ -106,7 +106,8 @@ function balancedStep(
 	if (char === "'") return { ...advance, quote: "single" };
 	if (char === '"') return { ...advance, quote: "double" };
 	if (char === "`") return { ...advance, next: skipBacktickSpan(text, index) };
-	if (char === "$" && text[index + 1] === "{") return { ...advance, next: skipBalanced(text, index + 1, "{", "}", nesting + 1) };
+	if (char === "$" && text[index + 1] === "{")
+		return { ...advance, next: skipBalanced(text, index + 1, "{", "}", nesting + 1) };
 	if (char === open) return { ...advance, depth: 1 };
 	if (char === close) return { ...advance, depth: -1, done: index + 1 };
 	return advance;
@@ -290,9 +291,12 @@ function unsafeDelimiterUnits(text: string): boolean {
 /** These checks add uncertainty without changing the reader's token boundaries. */
 function inspectDollarReasons(state: ReaderState, index: number, doubleQuoted: boolean): void {
 	const next = state.text[index + 1];
-	if (afterContinuations(state.text, index + 1) !== index + 1 ||
-		(next === "(" && afterContinuations(state.text, index + 2) !== index + 2 &&
-			state.text[afterContinuations(state.text, index + 2)] === "(")) {
+	if (
+		afterContinuations(state.text, index + 1) !== index + 1 ||
+		(next === "(" &&
+			afterContinuations(state.text, index + 2) !== index + 2 &&
+			state.text[afterContinuations(state.text, index + 2)] === "(")
+	) {
 		state.budget.reasons.add("unsupported-shell");
 		state.budget.continuedDollar = true;
 	}
@@ -308,16 +312,28 @@ function inspectDollarReasons(state: ReaderState, index: number, doubleQuoted: b
 }
 
 /** Inspect otherwise opaque bodies, retaining the enclosing parameter quote context. */
-function inspectOpaqueExpansions(state: ReaderState, start: number, end: number, doubleQuoted: boolean, depth = 0): void {
+function inspectOpaqueExpansions(
+	state: ReaderState,
+	start: number,
+	end: number,
+	doubleQuoted: boolean,
+	depth = 0,
+): void {
 	let quoted = doubleQuoted;
 	for (let index = start; index < end; index++) {
 		const char = state.text[index];
-		if (char === "\\") { index++; continue; }
+		if (char === "\\") {
+			index++;
+			continue;
+		}
 		if (char === "'" && !quoted) {
 			index = afterSingleQuote(state.text, index, end) - 1;
 			continue;
 		}
-		if (char === '"') { quoted = !quoted; continue; }
+		if (char === '"') {
+			quoted = !quoted;
+			continue;
+		}
 		if (char !== "$") continue;
 		inspectDollarReasons(state, index, quoted);
 		index = inspectOpaqueDollar(state, index, end, quoted, depth);
@@ -334,7 +350,14 @@ function inspectOpaqueDollar(state: ReaderState, index: number, end: number, quo
 }
 
 function inspectOpaqueCommand(state: ReaderState, start: number, end: number, depth: number): void {
-	const budget: ParseBudget = { words: 0, stages: 0, reasons: new Set(), actions: [], bytes: 0, inspectionDepth: depth };
+	const budget: ParseBudget = {
+		words: 0,
+		stages: 0,
+		reasons: new Set(),
+		actions: [],
+		bytes: 0,
+		inspectionDepth: depth,
+	};
 	parse(state.text.slice(start, end), depth, budget);
 	if (budget.continuedDollar) {
 		state.budget.reasons.add("unsupported-shell");
@@ -351,7 +374,10 @@ function inspectHeredocContinuation(state: ReaderState): void {
 	let index = state.index + 2;
 	if (state.text[index] === "-") index++;
 	for (;;) {
-		if (isBlank(state.text[index])) { index++; continue; }
+		if (isBlank(state.text[index])) {
+			index++;
+			continue;
+		}
 		const next = afterContinuations(state.text, index);
 		if (next === index) return;
 		state.budget.reasons.add("unexpanded-heredoc");
@@ -367,7 +393,8 @@ function keywordEligible(state: ReaderState): boolean {
 function flushWord(state: ReaderState): void {
 	if (!state.started) return;
 	const word: Word = {
-		text: state.current, literal: state.literal,
+		text: state.current,
+		literal: state.literal,
 		keyword: keywordEligible(state),
 	};
 	state.budget.words++;
@@ -417,7 +444,8 @@ function afterHeredocBodies(state: ReaderState, from: number): number {
 		const pattern = new RegExp(`^[ \\t]*${delimiter}[ \\t]*(?:\\n|$)`, "m");
 		const match = pattern.exec(state.text.slice(position));
 		const end = match ? position + match.index + match[0].length : undefined;
-		if (unsafeDelimiterUnits(state.text.slice(position, end ?? state.text.length))) state.budget.reasons.add("malformed-shell");
+		if (unsafeDelimiterUnits(state.text.slice(position, end ?? state.text.length)))
+			state.budget.reasons.add("malformed-shell");
 		if (end === undefined || afterHeredocBody(state.text, position, heredoc) !== end)
 			state.budget.reasons.add("malformed-shell");
 		position = end ?? state.text.length;
@@ -521,15 +549,24 @@ function commentAction(state: ReaderState): ReaderAction {
 	const next = newline === -1 ? state.text.length : newline + 1;
 	return {
 		kind: "split",
-		split: { words: state.words, end: newline === -1 ? "eof" : "statement", ...(newline === -1 ? {} : { separator: "newline" as const }) },
+		split: {
+			words: state.words,
+			end: newline === -1 ? "eof" : "statement",
+			...(newline === -1 ? {} : { separator: "newline" as const }),
+		},
 		next: state.heredocs.length > 0 && newline !== -1 ? afterHeredocBodies(state, next) : next,
 	};
 }
 
 function statementEndAction(state: ReaderState, char: string): ReaderAction {
 	flushWord(state);
-	const next = char === "\n" && state.heredocs.length > 0 ? afterHeredocBodies(state, state.index + 1) : state.index + 1;
-	return { kind: "split", split: { words: state.words, end: "statement", separator: char === "\n" ? "newline" : "semicolon" }, next };
+	const next =
+		char === "\n" && state.heredocs.length > 0 ? afterHeredocBodies(state, state.index + 1) : state.index + 1;
+	return {
+		kind: "split",
+		split: { words: state.words, end: "statement", separator: char === "\n" ? "newline" : "semicolon" },
+		next,
+	};
 }
 
 function ampersandAction(state: ReaderState): ReaderAction {
@@ -591,14 +628,19 @@ function applyRedirectOperator(state: ReaderState, char: string): void {
 		readHeredocOperator(state);
 	} else {
 		state.pendingRedirect = char === "<" ? "in" : "out";
-		if (state.text[state.index + 1] === char || state.text[state.index + 1] === "&" || state.text[state.index + 1] === "|")
+		if (
+			state.text[state.index + 1] === char ||
+			state.text[state.index + 1] === "&" ||
+			state.text[state.index + 1] === "|"
+		)
 			state.index += 2;
 		else state.index++;
 	}
 }
 
 function redirectOperatorAction(state: ReaderState, char: string): ReaderAction {
-	if (state.pendingHeredoc && state.started && /^\d+$/.test(state.current)) state.budget.reasons.add("unexpanded-heredoc");
+	if (state.pendingHeredoc && state.started && /^\d+$/.test(state.current))
+		state.budget.reasons.add("unexpanded-heredoc");
 	let explicitFd: number | null = null;
 	if (state.started && /^\d+$/.test(state.current)) {
 		explicitFd = Number(state.current);
@@ -691,8 +733,12 @@ function backtickAction(state: ReaderState): ReaderAction {
 }
 
 function groupAction(state: ReaderState, char: string): ReaderAction {
-	if (char === "(" && state.text[afterContinuations(state.text, state.index + 1)] === "(" &&
-		state.frame.lastShift > afterContinuations(state.text, state.index + 1)) state.budget.reasons.add("unexpanded-arithmetic");
+	if (
+		char === "(" &&
+		state.text[afterContinuations(state.text, state.index + 1)] === "(" &&
+		state.frame.lastShift > afterContinuations(state.text, state.index + 1)
+	)
+		state.budget.reasons.add("unexpanded-arithmetic");
 	if (state.started) state.budget.reasons.add("unsupported-shell");
 	if (char === "(" || char === "{") state.frame.groups.push(char);
 	else if (state.frame.groups.pop() !== (char === ")" ? "(" : "{")) state.budget.reasons.add("malformed-shell");
@@ -813,11 +859,7 @@ function skipCommandPrefix(words: Word[], index: number): { next: number; end: b
 	return { next: index, end: false };
 }
 
-function skipEnvPrefix(
-	words: Word[],
-	index: number,
-	reasons: string[],
-): { next: number; end: boolean } {
+function skipEnvPrefix(words: Word[], index: number, reasons: string[]): { next: number; end: boolean } {
 	const original = index;
 	index++;
 	const values = new Set(["a", "argv0", "u", "unset", "C", "chdir", "S", "split-string"]);
@@ -916,12 +958,16 @@ function toStage(words: Word[], fromPipe: boolean, toPipe: boolean): Stage {
 	};
 }
 
-const TRAP_SIGNAL = /^(?:[0-9]+|(?:SIG)?(?:EXIT|DEBUG|ERR|RETURN|HUP|INT|QUIT|ILL|TRAP|ABRT|EMT|FPE|KILL|BUS|SEGV|SYS|PIPE|ALRM|TERM|URG|STOP|TSTP|CONT|CHLD|TTIN|TTOU|IO|XCPU|XFSZ|VTALRM|PROF|WINCH|INFO|USR1|USR2))$/;
+const TRAP_SIGNAL =
+	/^(?:[0-9]+|(?:SIG)?(?:EXIT|DEBUG|ERR|RETURN|HUP|INT|QUIT|ILL|TRAP|ABRT|EMT|FPE|KILL|BUS|SEGV|SYS|PIPE|ALRM|TERM|URG|STOP|TSTP|CONT|CHLD|TTIN|TTOU|IO|XCPU|XFSZ|VTALRM|PROF|WINCH|INFO|USR1|USR2))$/;
 
 function trapAction(stage: Stage, depth: number, budget: ParseBudget): void {
 	let index = 0;
 	const literal = (position: number) => stage.argLiterals?.[position] !== false;
-	if (!literal(index)) { budget.reasons.add("unresolved-command"); return; }
+	if (!literal(index)) {
+		budget.reasons.add("unresolved-command");
+		return;
+	}
 	if (/^-[lp]+$/.test(stage.args[index] ?? "")) return;
 	if (stage.args[index] === "--") index++;
 	const action = stage.args[index];
@@ -932,16 +978,26 @@ function trapAction(stage: Stage, depth: number, budget: ParseBudget): void {
 		return;
 	}
 	if (action === "-" || action === "" || (!signals.length && TRAP_SIGNAL.test(action))) return;
-	if (!signals.length || action.startsWith("-")) { budget.reasons.add("unresolved-command"); return; }
+	if (!signals.length || action.startsWith("-")) {
+		budget.reasons.add("unresolved-command");
+		return;
+	}
 	budget.actions.push({ command: action, depth: depth + 1 });
 }
 
 function aliasReasons(stage: Stage, budget: ParseBudget): void {
 	let index = 0;
-	if (stage.argLiterals?.[index] === false) { budget.reasons.add("unresolved-command"); return; }
+	if (stage.argLiterals?.[index] === false) {
+		budget.reasons.add("unresolved-command");
+		return;
+	}
 	if (/^-p+$/.test(stage.args[index] ?? "")) return;
 	if (stage.args[index] === "--") index++;
-	if (stage.args.slice(index).some((arg, offset) => stage.argLiterals?.[index + offset] === false || arg.startsWith("-") || arg.includes("=")))
+	if (
+		stage.args
+			.slice(index)
+			.some((arg, offset) => stage.argLiterals?.[index + offset] === false || arg.startsWith("-") || arg.includes("="))
+	)
 		budget.reasons.add("unresolved-command");
 }
 
@@ -957,10 +1013,19 @@ function collectActionEvidence(statements: Statement[], depth: number, budget: P
 function appendActionEvidence(statements: Statement[], budget: ParseBudget): void {
 	for (let index = 0; index < budget.actions.length; index++) {
 		const action = budget.actions[index];
-		if (action.depth > MAX_NESTED_DEPTH) { budget.reasons.add("nested-depth-limit"); continue; }
-		if (budget.words > 4096 || budget.stages >= 256) { budget.reasons.add("parse-limit"); break; }
+		if (action.depth > MAX_NESTED_DEPTH) {
+			budget.reasons.add("nested-depth-limit");
+			continue;
+		}
+		if (budget.words > 4096 || budget.stages >= 256) {
+			budget.reasons.add("parse-limit");
+			break;
+		}
 		const bytes = Buffer.byteLength(action.command, "utf8");
-		if (budget.bytes + bytes > 64 * 1024) { budget.reasons.add("command-byte-limit"); continue; }
+		if (budget.bytes + bytes > 64 * 1024) {
+			budget.reasons.add("command-byte-limit");
+			continue;
+		}
 		budget.bytes += bytes;
 		statements.push(...parse(action.command, action.depth, budget));
 	}
@@ -1014,7 +1079,23 @@ function collectParsedNested(
 	}
 }
 
-const LOOP_CONTROLS = new Set(["for", "select", "case", "function", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac", "!"]);
+const LOOP_CONTROLS = new Set([
+	"for",
+	"select",
+	"case",
+	"function",
+	"if",
+	"then",
+	"elif",
+	"else",
+	"fi",
+	"while",
+	"until",
+	"do",
+	"done",
+	"esac",
+	"!",
+]);
 
 function keyword(word: Word | undefined, text: string): boolean {
 	return word?.keyword === true && word.text === text;
@@ -1022,9 +1103,16 @@ function keyword(word: Word | undefined, text: string): boolean {
 
 function plainForHeader(split: Split, frame: ParseFrame, stages: Word[][]): boolean {
 	const words = split.words;
-	return stages.length === 0 && frame.groups.length === 0 && split.end === "statement" && !split.control &&
-		words[1]?.keyword === true && /^[A-Za-z_][A-Za-z0-9_]*$/.test(words[1].text) && keyword(words[2], "in") &&
-		!words.some((word) => word.redirect || word.heredoc);
+	return (
+		stages.length === 0 &&
+		frame.groups.length === 0 &&
+		split.end === "statement" &&
+		!split.control &&
+		words[1]?.keyword === true &&
+		/^[A-Za-z_][A-Za-z0-9_]*$/.test(words[1].text) &&
+		keyword(words[2], "in") &&
+		!words.some((word) => word.redirect || word.heredoc)
+	);
 }
 
 function openFor(split: Split, frame: ParseFrame, stages: Word[][], budget: ParseBudget): Split {
@@ -1038,7 +1126,13 @@ function openFor(split: Split, frame: ParseFrame, stages: Word[][], budget: Pars
 	return split;
 }
 
-function startForBody(split: Split, frame: ParseFrame, stages: Word[][], budget: ParseBudget, loop: NonNullable<ParseFrame["loop"]>): Split {
+function startForBody(
+	split: Split,
+	frame: ParseFrame,
+	stages: Word[][],
+	budget: ParseBudget,
+	loop: NonNullable<ParseFrame["loop"]>,
+): Split {
 	if (!keyword(split.words[0], "do")) {
 		budget.reasons.add("malformed-for-syntax");
 		return split;
@@ -1111,7 +1205,13 @@ export function parseStatements(command: string): Statement[] {
 export function parseShellEvidence(command: string): ShellEvidence {
 	if (Buffer.byteLength(command, "utf8") > 64 * 1024)
 		return { statements: [], wordCount: 0, complete: false, reasons: ["command-byte-limit"] };
-	const budget: ParseBudget = { words: 0, stages: 0, reasons: new Set(), actions: [], bytes: Buffer.byteLength(command, "utf8") };
+	const budget: ParseBudget = {
+		words: 0,
+		stages: 0,
+		reasons: new Set(),
+		actions: [],
+		bytes: Buffer.byteLength(command, "utf8"),
+	};
 	if (command.includes("\0")) budget.reasons.add("malformed-shell");
 	const statements = parse(command, 0, budget);
 	appendActionEvidence(statements, budget);

@@ -134,7 +134,13 @@ export function captureTool<P extends object, D, S>(tool: ToolDefinition<P, D, S
 					throw new Error("Unexpected nested tool call");
 				},
 			} satisfies ExtensionToolContext;
-			const result = await tool.execute(id, params as Parameters<typeof tool.execute>[1], signal, undefined, toolContext);
+			const result = await tool.execute(
+				id,
+				params as Parameters<typeof tool.execute>[1],
+				signal,
+				undefined,
+				toolContext,
+			);
 			if (tool.outputSchema)
 				assert.ok(
 					compile(tool.outputSchema).check(result.structuredContent),

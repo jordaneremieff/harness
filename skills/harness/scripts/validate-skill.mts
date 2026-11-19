@@ -320,8 +320,7 @@ function parseLineEntry(line: string, lineNumber: number): LineResult {
 	if (!match) return { kind: "error", error: `line ${lineNumber}: expected a YAML mapping entry` };
 	const key = match[1].trim();
 	if (!key) return { kind: "error", error: `line ${lineNumber}: empty mapping key` };
-	if (DANGEROUS_YAML_KEYS.has(key))
-		return { kind: "error", error: `line ${lineNumber}: unsafe mapping key: ${key}` };
+	if (DANGEROUS_YAML_KEYS.has(key)) return { kind: "error", error: `line ${lineNumber}: unsafe mapping key: ${key}` };
 	return { kind: "entry", entry: { key, raw: match[2], indent } };
 }
 
@@ -421,7 +420,10 @@ function checkName(): void {
 	if (value.startsWith("-") || value.endsWith("-")) fail("name.edges", "name must not start or end with a hyphen");
 	if (value.includes("--")) fail("name.consecutive", "name must not contain consecutive hyphens");
 	else if (value.includes("-") && !value.startsWith("-") && !value.endsWith("-"))
-		warn("name.components", `name '${value}' has more than one component; this repository names skills with one plain component`);
+		warn(
+			"name.components",
+			`name '${value}' has more than one component; this repository names skills with one plain component`,
+		);
 	const parent = basename(skill.directory);
 	if (parent !== value) fail("name.directory", `name '${value}' does not match parent directory '${parent}'`);
 }

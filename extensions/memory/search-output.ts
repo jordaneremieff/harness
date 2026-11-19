@@ -19,16 +19,7 @@ const matched = arr(
 	obj(
 		{
 			term: str(),
-			fields: arr(
-				union([
-					lit("slug"),
-					lit("title"),
-					lit("tags"),
-					lit("frontmatter"),
-					lit("body"),
-				]),
-				{ maxItems: 5 },
-			),
+			fields: arr(union([lit("slug"), lit("title"), lit("tags"), lit("frontmatter"), lit("body")]), { maxItems: 5 }),
 		},
 		{ open: false },
 	),
@@ -117,12 +108,7 @@ export const memorySearchOutputSchema = obj(
 					title: str({ maxLength: 160 }),
 					lifecycle: obj(
 						{
-							status: union([
-								lit("active"),
-								lit("superseded"),
-								lit("retired"),
-								lit("unknown"),
-							]),
+							status: union([lit("active"), lit("superseded"), lit("retired"), lit("unknown")]),
 							supersededBy: union([str({ maxLength: 120 }), nul()]),
 							problem: cue(),
 						},

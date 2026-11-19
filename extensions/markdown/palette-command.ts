@@ -41,11 +41,20 @@ function age(updatedAt: string, now: number): string {
 }
 
 function isRequest(value: unknown): value is PaletteRequest {
-	return typeof value === "object" && value !== null
-		&& "version" in value && value.version === 1
-		&& "command" in value && value.command === "markdown.read"
-		&& "context" in value && typeof value.context === "object" && value.context !== null && !Array.isArray(value.context)
-		&& "answers" in value && Array.isArray(value.answers);
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"version" in value &&
+		value.version === 1 &&
+		"command" in value &&
+		value.command === "markdown.read" &&
+		"context" in value &&
+		typeof value.context === "object" &&
+		value.context !== null &&
+		!Array.isArray(value.context) &&
+		"answers" in value &&
+		Array.isArray(value.answers)
+	);
 }
 
 async function step(root: string, app: string, request: PaletteRequest): Promise<PaletteReply> {
@@ -77,8 +86,11 @@ async function step(root: string, app: string, request: PaletteRequest): Promise
 	const { document, revision } = await store.get(id);
 	const pane = paneCommand(app, root, document.id, revision);
 	if (!("show" in pane) || !hasPaneRevision(pane.show)) return { error: READER_ERROR };
-	try { await access(pane.show[0], constants.X_OK); }
-	catch { return { error: READER_ERROR }; }
+	try {
+		await access(pane.show[0], constants.X_OK);
+	} catch {
+		return { error: READER_ERROR };
+	}
 	return { show: { argv: pane.show, label: [...title(document)].slice(0, 32).join(""), placement: "right" } };
 }
 
@@ -88,11 +100,17 @@ async function run(args: string[]): Promise<PaletteReply> {
 		return { error: "The Markdown store and reader app require absolute paths." };
 	}
 	let request: unknown;
-	try { request = JSON.parse(json); }
-	catch { return { error: "The Markdown palette request is not valid JSON." }; }
+	try {
+		request = JSON.parse(json);
+	} catch {
+		return { error: "The Markdown palette request is not valid JSON." };
+	}
 	if (!isRequest(request)) return { error: "The Markdown palette request is invalid." };
-	try { return await step(root, app, request); }
-	catch (error) { return { error: error instanceof StoreError ? error.message : "The Markdown store is unavailable." }; }
+	try {
+		return await step(root, app, request);
+	} catch (error) {
+		return { error: error instanceof StoreError ? error.message : "The Markdown store is unavailable." };
+	}
 }
 
 if (import.meta.main) process.stdout.write(`${JSON.stringify(await run(process.argv.slice(2)))}\n`);

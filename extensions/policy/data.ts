@@ -1,7 +1,19 @@
 /** Approved structured data and bounded, noncoercing JSON operations. */
-import { arr, compile, int, lit, num, obj, oneOf, opt, str, type JsonSchema, type Schema, type Static } from "@earendil-works/pi-schema";
+import {
+	arr,
+	compile,
+	int,
+	lit,
+	num,
+	obj,
+	oneOf,
+	opt,
+	str,
+	type JsonSchema,
+	type Schema,
+	type Static,
+} from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
-
 
 export type Scalar = string | number | boolean | null;
 export type Truth = true | false | "unknown";

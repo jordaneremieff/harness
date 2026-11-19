@@ -10,7 +10,10 @@
 import type { CommitPublication, Session } from "@earendil-works/pi-durable";
 
 /** Attach `listener` to stored commits; the returned function detaches it and is idempotent. */
-export function onStoredCommit(session: Pick<Session, "observeCommits">, listener: (publication: CommitPublication) => void): () => void {
+export function onStoredCommit(
+	session: Pick<Session, "observeCommits">,
+	listener: (publication: CommitPublication) => void,
+): () => void {
 	const observation = session.observeCommits({ advance: (publication) => listener(publication), end: () => {} });
 	return () => observation.detach();
 }

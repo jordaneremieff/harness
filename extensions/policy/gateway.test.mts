@@ -90,13 +90,20 @@ test("malformed inner arguments retain raw facts and explicit unavailable handli
 
 test("outer logical-target substitutions preserve inner bytes and feed effective gates", () => {
 	const servers: NamedData = {
-		name: "servers", kind: "table", source: "operator", capturedAt: 1, revision: "123456abcdef",
+		name: "servers",
+		kind: "table",
+		source: "operator",
+		capturedAt: 1,
+		revision: "123456abcdef",
 		rows: [{ key: "friendly", value: "alpha" }],
 	};
 	const target: ProgramRule = {
-		id: "target", revision: "123456abcdef",
+		id: "target",
+		revision: "123456abcdef",
 		program: {
-			phase: "input", selector: gate.program.selector, data: ["servers"],
+			phase: "input",
+			selector: gate.program.selector,
+			data: ["servers"],
 			when: { op: "lookup", path: ["outer", "server"], table: "servers", value: "unique" },
 			action: { kind: "substitute", path: ["server"], table: "servers", stage: "logical-target" },
 			onUnavailable: "skip",
@@ -115,6 +122,9 @@ test("outer logical-target substitutions preserve inner bytes and feed effective
 	assert.equal(denied.denied, true);
 	assert.deepEqual(denied.candidate, original);
 	assert.equal(planInput([target, effective], original, { ...ctx, applyCorrections: false }).denied, false);
-	const result = { ...gate, program: { ...gate.program, phase: "result" as const, action: { kind: "assert-error" as const } } };
+	const result = {
+		...gate,
+		program: { ...gate.program, phase: "result" as const, action: { kind: "assert-error" as const } },
+	};
 	assert.equal(evaluatePrograms([result], "result", { ...ctx, facts: { input, original } })[0].truth, true);
 });

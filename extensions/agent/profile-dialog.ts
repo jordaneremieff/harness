@@ -10,8 +10,12 @@ export interface ProfileDraft {
 	expertise?: string;
 	needsRead?: boolean;
 }
-type ProfileControl = (method: "profile-read" | "profile-update", input: Record<string, unknown>, ctx: ExtensionContext) => Promise<unknown>;
-const safe = (value: string | null) => value === null ? "Unknown" : displayText(value);
+type ProfileControl = (
+	method: "profile-read" | "profile-update",
+	input: Record<string, unknown>,
+	ctx: ExtensionContext,
+) => Promise<unknown>;
+const safe = (value: string | null) => (value === null ? "Unknown" : displayText(value));
 
 function identityLines(profile: AgentProfile): string[] {
 	return [
@@ -31,10 +35,12 @@ function identityLines(profile: AgentProfile): string[] {
 }
 function requestLines(profile: AgentProfile): string[] {
 	const omitted = profile.requestsOmitted ?? 0;
-	const lines = profile.requests.map((request) =>
-		`${safe(request.requestId)} · ${request.status} · ${request.origin}\n  Requester: ${safe(request.requester)}\n  Reply recipient: ${safe(request.replyTo)}`,
+	const lines = profile.requests.map(
+		(request) =>
+			`${safe(request.requestId)} · ${request.status} · ${request.origin}\n  Requester: ${safe(request.requester)}\n  Reply recipient: ${safe(request.replyTo)}`,
 	);
-	if (omitted > 0) lines.unshift(`${omitted} additional request route${omitted === 1 ? "" : "s"} omitted from this profile.`);
+	if (omitted > 0)
+		lines.unshift(`${omitted} additional request route${omitted === 1 ? "" : "s"} omitted from this profile.`);
 	else if (lines.length === 0) lines.push("No retained active request routes; earlier requester evidence is unknown.");
 	return ["Request routes:", ...lines];
 }
@@ -43,13 +49,16 @@ function draftLines(profile: AgentProfile, draft?: ProfileDraft): string[] {
 		...(draft?.role === undefined ? [] : [`Draft role (not saved): ${safe(draft.role) || "(empty)"}`]),
 		...(draft?.expertise === undefined ? [] : ["Draft expertise is not saved; view or edit it below."]),
 		...(draft?.needsRead || (draft && draft.expectedRevision !== profile.revision)
-			? ["Conflict: draft retained. Read the current profile, then explicitly select its revision before Save."] : []),
+			? ["Conflict: draft retained. Read the current profile, then explicitly select its revision before Save."]
+			: []),
 	];
 }
 /** Identity, bounded request routes and saved expertise, which is evidence and separate from present instructions. */
 export function profileText(profile: AgentProfile, draft?: ProfileDraft): string {
 	return [
-		...identityLines(profile), ...requestLines(profile), ...draftLines(profile, draft),
+		...identityLines(profile),
+		...requestLines(profile),
+		...draftLines(profile, draft),
 		`Saved expertise (evidence, not fresh authority):\n${safe(profile.expertise) || "(empty)"}`,
 		...(draft?.expertise !== undefined ? [`Draft expertise (not saved):\n${safe(draft.expertise) || "(empty)"}`] : []),
 	].join("\n");

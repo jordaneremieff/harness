@@ -10,7 +10,12 @@ import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ConversationId, EntryId, EntryRecord, GenerationHooks, HookApi } from "@earendil-works/pi-durable";
-import { associateThreadNotices, projectThreadNotices, type ThreadNoticeSource, type ThreadRangeSnapshot } from "./thread-notice-projection.ts";
+import {
+	associateThreadNotices,
+	projectThreadNotices,
+	type ThreadNoticeSource,
+	type ThreadRangeSnapshot,
+} from "./thread-notice-projection.ts";
 
 export const THREAD_NOTICE_ENTRY_KIND = "agent.thread-notice";
 /** Bounds of one history read at a request boundary. */
@@ -48,12 +53,21 @@ function hasAssistant(entry: EntryRecord): boolean {
 }
 
 /** Newest entries first, down to the last examined entry, the record bound, or the byte bound. */
-async function unreadEntries(api: HookApi, after: number | undefined, context: Context): Promise<{ entries: EntryRecord[]; exhausted: boolean }> {
+async function unreadEntries(
+	api: HookApi,
+	after: number | undefined,
+	context: Context,
+): Promise<{ entries: EntryRecord[]; exhausted: boolean }> {
 	const entries: EntryRecord[] = [];
 	let bytes = 0;
 	let cursor: Parameters<HookApi["entries"]>[2];
 	for (;;) {
-		const page = await api.entries({ order: "descending", ...(after === undefined ? {} : { minEntryId: (after + 1) as EntryId }) }, Math.min(READ_PAGE, THREAD_NOTICE_READ_RECORDS - entries.length), cursor, context);
+		const page = await api.entries(
+			{ order: "descending", ...(after === undefined ? {} : { minEntryId: (after + 1) as EntryId }) },
+			Math.min(READ_PAGE, THREAD_NOTICE_READ_RECORDS - entries.length),
+			cursor,
+			context,
+		);
 		for (const entry of page.items) {
 			bytes += Buffer.byteLength(JSON.stringify(entry));
 			if (bytes > THREAD_NOTICE_READ_BYTES) return { entries, exhausted: false };
@@ -66,18 +80,47 @@ async function unreadEntries(api: HookApi, after: number | undefined, context: C
 }
 
 /** Advance one conversation's state over the entries stored since its last read. */
-async function readSources(api: HookApi, state: ConversationState | undefined, recipient: string, context: Context): Promise<ConversationState> {
+async function readSources(
+	api: HookApi,
+	state: ConversationState | undefined,
+	recipient: string,
+	context: Context,
+): Promise<ConversationState> {
 	const read = await unreadEntries(api, state?.through, context);
-	const next: ConversationState = state === undefined
-		? { through: 0, boundary: read.exhausted ? "initial" : undefined, complete: read.exhausted, sources: [], snapshots: [] }
-		: { ...state, sources: [...state.sources], complete: read.exhausted, ...(read.exhausted ? {} : { boundary: undefined }) };
+	const next: ConversationState =
+		state === undefined
+			? {
+					through: 0,
+					boundary: read.exhausted ? "initial" : undefined,
+					complete: read.exhausted,
+					sources: [],
+					snapshots: [],
+				}
+			: {
+					...state,
+					sources: [...state.sources],
+					complete: read.exhausted,
+					...(read.exhausted ? {} : { boundary: undefined }),
+				};
 	for (const entry of read.entries.reverse()) {
 		next.through = Math.max(next.through, entry.id);
-		if (hasAssistant(entry)) { next.boundary = `assistant:${entry.id}`; continue; }
+		if (hasAssistant(entry)) {
+			next.boundary = `assistant:${entry.id}`;
+			continue;
+		}
 		if (entry.kind !== THREAD_NOTICE_ENTRY_KIND || entry.model?.length !== 1) continue;
 		// A notice without a known preceding boundary cannot join a range.
 		if (next.boundary === undefined) continue;
-		next.sources.push({ entryId: entry.id, source: { sourceId: `entry:${entry.id}`, recipient, epoch: next.boundary, message: entry.model[0], passive: entry.data } });
+		next.sources.push({
+			entryId: entry.id,
+			source: {
+				sourceId: `entry:${entry.id}`,
+				recipient,
+				epoch: next.boundary,
+				message: entry.model[0],
+				passive: entry.data,
+			},
+		});
 	}
 	return next;
 }
@@ -90,8 +133,13 @@ async function readSources(api: HookApi, state: ConversationState | undefined, r
 function presentSources(state: ConversationState, messages: readonly Message[]): RetainedSource[] {
 	if (state.sources.length === 0) return [];
 	const tuples = new Set(messages.map((message) => JSON.stringify(message)));
-	const present = new Set(state.sources.filter((item) => tuples.has(JSON.stringify(item.source.message))).map((item) => item.entryId));
-	const newestPresent = state.sources.reduce((newest, item) => present.has(item.entryId) ? Math.max(newest, item.entryId) : newest, 0);
+	const present = new Set(
+		state.sources.filter((item) => tuples.has(JSON.stringify(item.source.message))).map((item) => item.entryId),
+	);
+	const newestPresent = state.sources.reduce(
+		(newest, item) => (present.has(item.entryId) ? Math.max(newest, item.entryId) : newest),
+		0,
+	);
 	let retained = state.sources.filter((item) => present.has(item.entryId) || item.entryId > newestPresent);
 	if (retained.length > SOURCE_LIMIT) {
 		const absent = retained.filter((item) => !present.has(item.entryId)).slice(0, retained.length - SOURCE_LIMIT);
@@ -108,7 +156,10 @@ function marker(original: Message, text: string): Message {
 	return { ...original, content: typeof original.content === "string" ? text : [{ type: "text", text }] };
 }
 
-function mergeSnapshots(saved: readonly ThreadRangeSnapshot[], retained: readonly ThreadRangeSnapshot[]): ThreadRangeSnapshot[] {
+function mergeSnapshots(
+	saved: readonly ThreadRangeSnapshot[],
+	retained: readonly ThreadRangeSnapshot[],
+): ThreadRangeSnapshot[] {
 	const covered = new Set(saved.flatMap((snapshot) => snapshot.sources));
 	return [...saved, ...retained.filter((snapshot) => !snapshot.sources.some((id) => covered.has(id)))];
 }
@@ -137,10 +188,20 @@ export function threadNoticeRequestHooks(scope: ThreadNoticeScope): Partial<Gene
 			const state = await readSources(api, states.get(api.conversationId), scope.identity(api.conversationId), context);
 			states.set(api.conversationId, state);
 			const sources = presentSources(state, request.messages);
-			if (sources.length === 0) { state.snapshots = []; return undefined; }
-			const associations = associateThreadNotices(request.messages, sources.map((item) => item.source), state.complete);
-			if (associations.items.length === 0) { state.snapshots = []; return undefined; }
-			const saved = await api.memo<JsonValue>(RANGE_MEMO, context) as ThreadRangeSnapshot[] | undefined;
+			if (sources.length === 0) {
+				state.snapshots = [];
+				return undefined;
+			}
+			const associations = associateThreadNotices(
+				request.messages,
+				sources.map((item) => item.source),
+				state.complete,
+			);
+			if (associations.items.length === 0) {
+				state.snapshots = [];
+				return undefined;
+			}
+			const saved = (await api.memo<JsonValue>(RANGE_MEMO, context)) as ThreadRangeSnapshot[] | undefined;
 			const projection = projectThreadNotices({
 				scope: `${scope.storageId}:${api.conversationId}`,
 				messages: request.messages,
@@ -148,7 +209,8 @@ export function threadNoticeRequestHooks(scope: ThreadNoticeScope): Partial<Gene
 				snapshots: mergeSnapshots(saved ?? [], state.snapshots),
 				marker,
 			});
-			if (saved === undefined) await api.memo(RANGE_MEMO, memoSnapshots(projection.snapshots) as unknown as JsonValue, context);
+			if (saved === undefined)
+				await api.memo(RANGE_MEMO, memoSnapshots(projection.snapshots) as unknown as JsonValue, context);
 			state.snapshots = projection.snapshots;
 			return { messages: projection.messages };
 		},

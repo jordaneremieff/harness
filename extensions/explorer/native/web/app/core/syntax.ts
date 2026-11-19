@@ -179,7 +179,10 @@
 	const scans = new Map(
 		Object.entries(starts).map(([id, start]) => [
 			id,
-			new RegExp(`(${start})|${markers(id)}|${quotes}|(${jsLanguages.has(id) ? jsRegex : "(?!)"})|${identifier}`, "giu"),
+			new RegExp(
+				`(${start})|${markers(id)}|${quotes}|(${jsLanguages.has(id) ? jsRegex : "(?!)"})|${identifier}`,
+				"giu",
+			),
 		]),
 	);
 

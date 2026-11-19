@@ -17,10 +17,19 @@ setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 
 const STASH_ENTRY = fileURLToPath(new URL("./index.ts", import.meta.url));
 const identity = (text: string) => text;
-const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: identity, italic: identity, underline: identity, strikethrough: identity } as unknown as Theme;
+const theme = {
+	fg: (_color: string, text: string) => text,
+	bg: (_color: string, text: string) => text,
+	bold: identity,
+	italic: identity,
+	underline: identity,
+	strikethrough: identity,
+} as unknown as Theme;
 
 let dir: string;
-const saved = ["PI_STASH_DIR", "PI_STASH_CHECKPOINT_DIR", "PI_CODING_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]] as const);
+const saved = ["PI_STASH_DIR", "PI_STASH_CHECKPOINT_DIR", "PI_CODING_AGENT_DIR", "PI_HARNESS_FILE"].map(
+	(key) => [key, process.env[key]] as const,
+);
 
 before(async () => {
 	dir = await mkdtemp(join(tmpdir(), "stash-browser-test-"));
@@ -46,14 +55,21 @@ function extension(copied: string[] = []) {
 	const sent: Array<{ content: string; options?: unknown }> = [];
 	const pi = {
 		registerTool: () => {},
-		registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) => commands.set(name, command),
-		registerShortcut: (key: string, shortcut: { handler(ctx: ExtensionContext): Promise<void> }) => shortcuts.set(key, shortcut),
+		registerCommand: (name: string, command: { handler(args: string, ctx: ExtensionContext): Promise<void> }) =>
+			commands.set(name, command),
+		registerShortcut: (key: string, shortcut: { handler(ctx: ExtensionContext): Promise<void> }) =>
+			shortcuts.set(key, shortcut),
 		registerMessageRenderer: () => {},
 		exec: async () => ({ code: 0, stdout: "main\n", stderr: "", killed: false }),
 		sendUserMessage: (content: string, options?: unknown) => sent.push({ content, options }),
 		sendMessage: () => {},
 		appendEntry: () => {},
-		getCommands: () => [...commands.keys()].map((name) => ({ name, source: "extension", sourceInfo: { path: STASH_ENTRY, source: "local", scope: "user", origin: "top-level" } })),
+		getCommands: () =>
+			[...commands.keys()].map((name) => ({
+				name,
+				source: "extension",
+				sourceInfo: { path: STASH_ENTRY, source: "local", scope: "user", origin: "top-level" },
+			})),
 		events: {
 			on(name: string, handler: (data: unknown) => void) {
 				const set = handlers.get(name) ?? new Set();
@@ -92,11 +108,19 @@ function context(script: (frame: Frame) => Promise<void>, patch: { idle?: boolea
 		sessionManager: { getSessionId: () => patch.session ?? `browser-session-${++sessions}` },
 		ui: {
 			notify: (message: string) => run.notices.push(message),
-			custom: async <T,>(factory: (tui: unknown, theme: Theme, keys: unknown, done: (value: T) => void) => unknown, options?: { overlay?: boolean }) =>
+			custom: async <T,>(
+				factory: (tui: unknown, theme: Theme, keys: unknown, done: (value: T) => void) => unknown,
+				options?: { overlay?: boolean },
+			) =>
 				new Promise<T>((resolve, reject) => {
 					assert.notEqual(options?.overlay, true, "the browser opens in the editor slot below the transcript");
 					run.frames++;
-					const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender() {} }, theme, { getKeys: () => [] }, resolve) as Frame;
+					const frame = factory(
+						{ terminal: { rows: 40, columns: 120 }, requestRender() {} },
+						theme,
+						{ getKeys: () => [] },
+						resolve,
+					) as Frame;
 					script(frame).then(
 						() => frame.close(),
 						(error: unknown) => {
@@ -148,7 +172,19 @@ function clickFooter(frame: Frame, label: string, width = 200): void {
 	const row = stripVTControlCharacters(lines.at(-1) ?? "");
 	const at = row.indexOf(label);
 	assert.ok(at >= 0, `no footer control ${label} in: ${row}`);
-	const event: TuiMouseEvent = { type: "click", button: "left", x: at, y: lines.length - 1, screenX: at, screenY: lines.length - 1, width, height: lines.length, shift: false, alt: false, ctrl: false };
+	const event: TuiMouseEvent = {
+		type: "click",
+		button: "left",
+		x: at,
+		y: lines.length - 1,
+		screenX: at,
+		screenY: lines.length - 1,
+		width,
+		height: lines.length,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	};
 	assert.ok(frame.handleMouse(event)?.handled, `${label} is clickable`);
 }
 
@@ -235,7 +271,11 @@ describe("ordinary stash browser", () => {
 		await command.handler("", noted.ctx);
 		assert.equal(sent.length, 1);
 		const content = sent[0]?.content ?? "";
-		assert.ok(content.indexOf("remember the flag") >= 0 && content.indexOf("remember the flag") < content.indexOf("NOTED_HANDOVER"), "the note goes ahead of the handover");
+		assert.ok(
+			content.indexOf("remember the flag") >= 0 &&
+				content.indexOf("remember the flag") < content.indexOf("NOTED_HANDOVER"),
+			"the note goes ahead of the handover",
+		);
 		const second = await writeStash(dir, { title: `${title} empty`, summary: "PLAIN_HANDOVER" });
 		const plain = context(async (frame) => {
 			await choose(frame, second.record);
@@ -303,7 +343,10 @@ describe("ordinary stash browser", () => {
 			await choose(frame, record);
 			act(frame, "Rotate…");
 			assert.ok((await until(frame, /Rotate \S+ to the archive/)).includes(".trash"));
-			assert.ok((await listStashes(dir, { limit: 200 })).some((entry) => entry.meta.id === record.id), "nothing moved before the confirming action");
+			assert.ok(
+				(await listStashes(dir, { limit: 200 })).some((entry) => entry.meta.id === record.id),
+				"nothing moved before the confirming action",
+			);
 			act(frame, "Rotate");
 			await until(frame, /Rotated stash/);
 		});
@@ -344,7 +387,11 @@ describe("ordinary stash browser", () => {
 			assert.equal(frame.viewTitle, "Stashes", "copying leaves the browser open");
 		});
 		await command.handler("", ctx);
-		assert.deepEqual(copied, [`pi "/stash get ${record.id}"`, `pi "/stash get ${record.id}"`], "the click and the key copy the same command");
+		assert.deepEqual(
+			copied,
+			[`pi "/stash get ${record.id}"`, `pi "/stash get ${record.id}"`],
+			"the click and the key copy the same command",
+		);
 		assert.deepEqual(sent, []);
 	});
 
@@ -377,7 +424,16 @@ describe("ordinary stash browser", () => {
 		const { ctx } = context(async (frame) => {
 			await choose(frame, closing.record);
 			const row = footer(frame);
-			for (const control of ["enter pick up", "a note", "o close stash", "c copy", "h help", "r refresh", "x more", "esc close"])
+			for (const control of [
+				"enter pick up",
+				"a note",
+				"o close stash",
+				"c copy",
+				"h help",
+				"r refresh",
+				"x more",
+				"esc close",
+			])
 				assert.ok(row.includes(control), `${control} in: ${row}`);
 			act(frame, "Close with outcome…");
 			act(frame, "Close stash");
@@ -409,7 +465,8 @@ describe("ordinary stash browser", () => {
 			await choose(frame, { id, title: "Unknown record" });
 			assert.match(text(frame), /unknown \(mystery\)/);
 			const labels = frame.viewActions.map((candidate) => candidate.label);
-			for (const label of ["Pick up", "Pick up with note…", "Close with outcome…", "Release…", "Reopen…", "Rotate…"]) assert.ok(!labels.includes(label), `${label} must not be offered`);
+			for (const label of ["Pick up", "Pick up with note…", "Close with outcome…", "Release…", "Reopen…", "Rotate…"])
+				assert.ok(!labels.includes(label), `${label} must not be offered`);
 			assert.ok(labels.includes("Copy resume command"), "the resume command stays available");
 		});
 		await command.handler("", ctx);

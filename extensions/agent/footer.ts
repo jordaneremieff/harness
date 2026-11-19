@@ -43,7 +43,10 @@ export function sessionFigures(
 			creationRows.push(row);
 			return true;
 		}
-		return sentWork.has(row.id) || (row.state === "working" && (sentWork.has(row.storageId) || inLineage(row.storageId, sentWork)));
+		return (
+			sentWork.has(row.id) ||
+			(row.state === "working" && (sentWork.has(row.storageId) || inLineage(row.storageId, sentWork)))
+		);
 	});
 	return formatDurableFooter(scopedRows, creationRows);
 }

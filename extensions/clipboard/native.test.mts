@@ -115,7 +115,10 @@ test("native clipboard_list discovery flows through get and restore without the 
 			assert.match(JSON.stringify(tail.content), /rollback instructions/);
 			const restored = yield { name: "clipboard_restore", args: { id: selected.id, date: selected.date } };
 			assert.equal(restored.isError, false);
-			appendFileSync(join(archive, `${selected.date}.jsonl`), `\n${JSON.stringify(makeEntry("changed archive body", undefined, new Date("2026-01-03T00:00:00Z"), selected.id))}\n`);
+			appendFileSync(
+				join(archive, `${selected.date}.jsonl`),
+				`\n${JSON.stringify(makeEntry("changed archive body", undefined, new Date("2026-01-03T00:00:00Z"), selected.id))}\n`,
+			);
 			const stale = yield {
 				name: "clipboard_get",
 				args: { id: selected.id, date: selected.date, offset: 100, sourceId },

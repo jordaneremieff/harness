@@ -218,21 +218,13 @@ function runJxa(request: OsaRequest, options: JxaOptions): OsaReply {
 
 	const tabsColumn = (property: number): Descriptor => {
 		if (property === CODE.id)
-			return valueReply(
-				listDescriptor(windows.map((window) => longList(window.tabs.map((tab) => tab.id)))),
-			);
+			return valueReply(listDescriptor(windows.map((window) => longList(window.tabs.map((tab) => tab.id)))));
 		if (property === fcc("URL "))
-			return valueReply(
-				listDescriptor(windows.map((window) => textList(window.tabs.map((tab) => tab.url)))),
-			);
+			return valueReply(listDescriptor(windows.map((window) => textList(window.tabs.map((tab) => tab.url)))));
 		if (property === fcc("pnam"))
-			return valueReply(
-				listDescriptor(windows.map((window) => textList(window.tabs.map((tab) => tab.title)))),
-			);
+			return valueReply(listDescriptor(windows.map((window) => textList(window.tabs.map((tab) => tab.title)))));
 		if (property === fcc("ldng"))
-			return valueReply(
-				listDescriptor(windows.map((window) => boolList(window.tabs.map((tab) => tab.loading)))),
-			);
+			return valueReply(listDescriptor(windows.map((window) => boolList(window.tabs.map((tab) => tab.loading)))));
 		return errorReply(-1728, "Can't get tab column.");
 	};
 
@@ -322,7 +314,11 @@ function runJxa(request: OsaRequest, options: JxaOptions): OsaReply {
 	};
 
 	const runningFor = (bundleId: string) => options.runningByBundle?.[bundleId] ?? options.running ?? [5];
-	const running = new Set(Object.values(options.runningByBundle ?? {}).flat().concat(options.running ?? [5]));
+	const running = new Set(
+		Object.values(options.runningByBundle ?? {})
+			.flat()
+			.concat(options.running ?? [5]),
+	);
 	const appBundleId = options.bundleId ?? request.bundleId ?? BROWSERS.chrome.bundleId;
 	const app = (pid: number) => ({
 		...describe("app "),
@@ -345,8 +341,7 @@ function runJxa(request: OsaRequest, options: JxaOptions): OsaReply {
 			NSFileHandle: { fileHandleWithStandardInput: { readDataToEndOfFile: { text: JSON.stringify(request) } } },
 			NSString: { alloc: { initWithDataEncoding: (data: { text: string }) => ({ js: data.text }) } },
 			NSRunningApplication: {
-				runningApplicationWithProcessIdentifier: (pid: number) =>
-					running.has(pid) ? app(pid) : nilDescriptor(),
+				runningApplicationWithProcessIdentifier: (pid: number) => (running.has(pid) ? app(pid) : nilDescriptor()),
 				runningApplicationsWithBundleIdentifier: (bundleId: string) => {
 					const pids = runningFor(bundleId);
 					return {
@@ -390,7 +385,6 @@ function runJxa(request: OsaRequest, options: JxaOptions): OsaReply {
 	return JSON.parse(String(output)) as OsaReply;
 }
 
-
 function obj(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
@@ -422,7 +416,7 @@ it("delivers a fulfilled evaluation value from the program's own reply", async (
 	const events: JxaEvent[] = [];
 	const deps: BrowserDeps = {
 		run: async (request) => {
-		return runJxa(request, { scriptResult: SETTLED_ENVELOPE, events });
+			return runJxa(request, { scriptResult: SETTLED_ENVELOPE, events });
 		},
 		readAccess: () => ({ chrome: "interact" }),
 		platform: "darwin",
@@ -505,10 +499,7 @@ it("lists windows and tabs in one reply after fresh process checks", () => {
 	assert.equal(windows.length, 1);
 	assert.equal(windows[0].id, "1");
 	assert.equal(items(windows[0].tabs)[0].id, String(tabId));
-	assert.equal(
-		events.filter((event) => event.property === CODE.id && event.container === "windows").length,
-		1,
-	);
+	assert.equal(events.filter((event) => event.property === CODE.id && event.container === "windows").length, 1);
 });
 
 it("returns static facts and sends no Apple Event when access is absent", () => {
@@ -575,14 +566,8 @@ it("repeats one inconsistent window listing and no more", () => {
 	const retried: JxaEvent[] = [];
 	const first = okValue(runJxa(tabsRequest({ pid: 5 }), { events: retried, inconsistentFirstListing: true }));
 	assert.equal(first.kind, "ok");
-	assert.equal(
-		retried.filter((event) => event.property === CODE.id && event.container === "windows").length,
-		2,
-	);
+	assert.equal(retried.filter((event) => event.property === CODE.id && event.container === "windows").length, 2);
 	const once: JxaEvent[] = [];
 	okValue(runJxa(tabsRequest({ pid: 5 }), { events: once }));
-	assert.equal(
-		once.filter((event) => event.property === CODE.id && event.container === "windows").length,
-		1,
-	);
+	assert.equal(once.filter((event) => event.property === CODE.id && event.container === "windows").length, 1);
 });

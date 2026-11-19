@@ -60,7 +60,11 @@ function evalRow(id: string, overrides: Record<string, unknown> = {}) {
 	};
 }
 function policy(evaluations: unknown[], decision = "deny", omitted = 0) {
-	return { decision, evaluations, coverage: { evaluations: { total: evaluations.length + omitted, omitted, irrelevant: 0 } } };
+	return {
+		decision,
+		evaluations,
+		coverage: { evaluations: { total: evaluations.length + omitted, omitted, irrelevant: 0 } },
+	};
 }
 async function directory(t: TestContext): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "policy-telemetry-"));
@@ -147,18 +151,35 @@ function accounting(summary: Awaited<ReturnType<typeof readTelemetry>>): void {
 
 describe("compact policy decision records", () => {
 	it("bounds plain allows and retains full denial, unavailable, guidance and correction facts", async (t) => {
-		const evaluations = Array.from({ length: 80 }, (_, index) => evalRow(`rule-${index}`, { truth: false, deny: false }));
-		const pins = Array.from({ length: 36 }, (_, index) => ({ id: `rule-${index}`, revision: "123456789abc", generation: 1 }));
+		const evaluations = Array.from({ length: 80 }, (_, index) =>
+			evalRow(`rule-${index}`, { truth: false, deny: false }),
+		);
+		const pins = Array.from({ length: 36 }, (_, index) => ({
+			id: `rule-${index}`,
+			revision: "123456789abc",
+			generation: 1,
+		}));
 		const rows = telemetryDecisionRows(evaluations, pins, [], []);
 		const before = Buffer.byteLength(JSON.stringify(fixture({ policy: { evaluations, generations: pins } })));
-		const compact = fixture({ policy: {
-			decision: "none",
-			evaluations: rows.evaluations.rows, generations: rows.generations.rows,
-			coverage: {
-				evaluations: { total: rows.evaluations.total, omitted: rows.evaluations.omitted, irrelevant: rows.evaluations.irrelevant },
-				generations: { total: rows.generations.total, omitted: rows.generations.omitted, irrelevant: rows.generations.irrelevant },
+		const compact = fixture({
+			policy: {
+				decision: "none",
+				evaluations: rows.evaluations.rows,
+				generations: rows.generations.rows,
+				coverage: {
+					evaluations: {
+						total: rows.evaluations.total,
+						omitted: rows.evaluations.omitted,
+						irrelevant: rows.evaluations.irrelevant,
+					},
+					generations: {
+						total: rows.generations.total,
+						omitted: rows.generations.omitted,
+						irrelevant: rows.generations.irrelevant,
+					},
+				},
 			},
-		} });
+		});
 		const after = Buffer.byteLength(JSON.stringify(compact));
 		assert.ok(after < 1600, `allow record size ${after}`);
 		assert.ok(after < before / 10);
@@ -351,8 +372,10 @@ describe("policy telemetry aggregation", () => {
 describe("policy telemetry input and filesystem bounds", () => {
 	it("keeps the newest records at a saturated line budget and continues to the older denial", async (t) => {
 		const dir = await directory(t);
-		await writeFile(segment(dir, DAY),
-			`${JSON.stringify(fixture({ outcome: "denied", policy: policy([evalRow("deny-first")]) }))}\n${"null\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture({ tool: "newest" }))}\n`);
+		await writeFile(
+			segment(dir, DAY),
+			`${JSON.stringify(fixture({ outcome: "denied", policy: policy([evalRow("deny-first")]) }))}\n${"null\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture({ tool: "newest" }))}\n`,
+		);
 		const result = await readTelemetry(dir, DAY, DAY);
 		assert.equal(result.denials.confirmed, 0);
 		assert.equal(result.tools.find((row) => row.name === "newest")?.records, 1);
@@ -443,7 +466,10 @@ describe("policy telemetry input and filesystem bounds", () => {
 		await writeFile(join(dir, `${DAY}.jsonl`), `${JSON.stringify(fixture({ tool: "root" }))}\n`);
 		const result = await readTelemetry(dir, DAY, DAY);
 		assert.deepEqual(result.tools.map((row) => row.name).sort(), ["first", "second"]);
-		assert.deepEqual(result.coverage.days[0].segments.map((entry) => entry.ordinal), [2, 1]);
+		assert.deepEqual(
+			result.coverage.days[0].segments.map((entry) => entry.ordinal),
+			[2, 1],
+		);
 		assert.equal(result.coverage.status, "complete");
 		const text = formatTelemetry(result);
 		assert.doesNotMatch(text, /legacy|root/);
@@ -538,10 +564,19 @@ describe("policy telemetry input and filesystem bounds", () => {
 		await records(dir, [fixture()], DAY);
 		const result = await readTelemetry(dir, DAY, "2026-09-05");
 		assert.equal(result.coverage.bytesRead, TELEMETRY_LIMITS.bytes);
-		assert.deepEqual(result.coverage.days.map((day) => day.day), ["2026-09-05", "2026-09-04", DAY]);
+		assert.deepEqual(
+			result.coverage.days.map((day) => day.day),
+			["2026-09-05", "2026-09-04", DAY],
+		);
 		assert.ok(result.coverage.days[0].issues.includes("total-byte-limit"));
 		assert.ok((result.coverage.days[0].segments[0].startOffset ?? 0) > 0);
-		assert.deepEqual(result.coverage.days.slice(1).map((day) => [day.status, day.segmentsNotReached]), [["skipped", 1], ["skipped", 1]]);
+		assert.deepEqual(
+			result.coverage.days.slice(1).map((day) => [day.status, day.segmentsNotReached]),
+			[
+				["skipped", 1],
+				["skipped", 1],
+			],
+		);
 		assert.equal(result.coverage.status, "partial");
 		assert.equal(result.coverage.pageStatus, "complete");
 		assert.equal(result.denials.confirmed, 0);
@@ -566,26 +601,51 @@ describe("policy telemetry input and filesystem bounds", () => {
 describe("policy telemetry continuation", () => {
 	it("covers every record once across pages, earlier bytes, and older segments", async (t) => {
 		const dir = await directory(t);
-		const big = Array.from({ length: 60 }, (_, n) => fixture({ tool: `big${n % 3}`, captured: "p".repeat(200 * 1024) }));
+		const big = Array.from({ length: 60 }, (_, n) =>
+			fixture({ tool: `big${n % 3}`, captured: "p".repeat(200 * 1024) }),
+		);
 		await records(dir, big, DAY, 1);
 		await records(dir, [fixture({ tool: "second" }), fixture({ outcome: "denied" })], DAY, 2);
 		await records(dir, [fixture({ tool: "older" })], "2026-09-02");
 		const pages = await allPages(dir, { from: "2026-09-02", to: DAY });
 		assert.ok(pages.length >= 2);
-		assert.equal(total(pages, (page) => page.records), 63);
-		assert.equal(total(pages, (page) => page.denials.confirmed), 1);
-		assert.equal(total(pages, (page) => page.coverage.malformedLines + page.coverage.oversizedLines), 0);
-		assert.deepEqual(pages.map((page) => page.continuation.page), ["first", ...pages.slice(1).map(() => "resumed")]);
+		assert.equal(
+			total(pages, (page) => page.records),
+			63,
+		);
+		assert.equal(
+			total(pages, (page) => page.denials.confirmed),
+			1,
+		);
+		assert.equal(
+			total(pages, (page) => page.coverage.malformedLines + page.coverage.oversizedLines),
+			0,
+		);
+		assert.deepEqual(
+			pages.map((page) => page.continuation.page),
+			["first", ...pages.slice(1).map(() => "resumed")],
+		);
 		for (const page of pages) {
 			assert.equal(page.coverage.pageStatus, "complete");
 			accounting(page);
 		}
-		assert.deepEqual(pages.slice(0, -1).map((page) => page.coverage.status), pages.slice(0, -1).map(() => "partial"));
+		assert.deepEqual(
+			pages.slice(0, -1).map((page) => page.coverage.status),
+			pages.slice(0, -1).map(() => "partial"),
+		);
 		assert.equal(pages.at(-1)?.coverage.status, "complete");
-		assert.deepEqual(pages.at(-1)?.coverage.days.map((day) => day.status), ["complete", "complete"]);
-		const covered = pages.flatMap((page) => page.coverage.days.flatMap((day) => day.segments.filter((row) => row.name.endsWith(".000001.jsonl") && row.name.startsWith(DAY))));
+		assert.deepEqual(
+			pages.at(-1)?.coverage.days.map((day) => day.status),
+			["complete", "complete"],
+		);
+		const covered = pages.flatMap((page) =>
+			page.coverage.days.flatMap((day) =>
+				day.segments.filter((row) => row.name.endsWith(".000001.jsonl") && row.name.startsWith(DAY)),
+			),
+		);
 		assert.equal(covered[0].endOffset, covered[0].size);
-		for (let index = 1; index < covered.length; index++) assert.equal(covered[index].endOffset, covered[index - 1].startOffset);
+		for (let index = 1; index < covered.length; index++)
+			assert.equal(covered[index].endOffset, covered[index - 1].startOffset);
 		assert.equal(covered.at(-1)?.startOffset, 0);
 	});
 
@@ -597,9 +657,18 @@ describe("policy telemetry continuation", () => {
 		);
 		const pages = await allPages(dir, { from: DAY, to: DAY });
 		assert.equal(pages.length, 3);
-		assert.equal(total(pages, (page) => page.records), 2);
-		assert.equal(total(pages, (page) => page.coverage.oversizedLines), 1);
-		assert.deepEqual(pages.map((page) => page.tools.map((row) => row.name)), [["after"], [], ["before"]]);
+		assert.equal(
+			total(pages, (page) => page.records),
+			2,
+		);
+		assert.equal(
+			total(pages, (page) => page.coverage.oversizedLines),
+			1,
+		);
+		assert.deepEqual(
+			pages.map((page) => page.tools.map((row) => row.name)),
+			[["after"], [], ["before"]],
+		);
 	});
 
 	it("reports a vanished or replaced cursor segment and continues with older segments", async (t) => {
@@ -623,7 +692,10 @@ describe("policy telemetry continuation", () => {
 			assert.deepEqual(lost.issues, [change === "vanished" ? "missing" : "source-changed"]);
 			assert.equal(lost.bytesNotRead, first.coverage.days[0].segments[0].startOffset);
 			assert.equal(older.status, "complete");
-			assert.deepEqual(next.tools.map((row) => row.name), ["older"]);
+			assert.deepEqual(
+				next.tools.map((row) => row.name),
+				["older"],
+			);
 			assert.equal(next.coverage.pageStatus, "partial");
 			assert.equal(next.continuation.nextCursor, null);
 		}
@@ -655,7 +727,12 @@ describe("policy telemetry continuation", () => {
 			[dir, { since: "2026-09-03T00:00:00Z", until: "2026-09-04T00:00:00Z", cursor }],
 		] as const)
 			await assert.rejects(readTelemetryPage(path, request), /another selection/);
-		for (const bad of ["", "!", "x".repeat(TELEMETRY_LIMITS.cursorChars + 1), Buffer.from("{\"v\":2}").toString("base64url")])
+		for (const bad of [
+			"",
+			"!",
+			"x".repeat(TELEMETRY_LIMITS.cursorChars + 1),
+			Buffer.from('{"v":2}').toString("base64url"),
+		])
 			await assert.rejects(readTelemetryPage(dir, { from: DAY, to: DAY, cursor: bad }), /malformed/);
 	});
 });
@@ -663,13 +740,27 @@ describe("policy telemetry continuation", () => {
 describe("policy telemetry instants", () => {
 	it("matches recorded instants in a half-open interval across covering writer-local day files", async (t) => {
 		const dir = await directory(t);
-		await records(dir, [
-			fixture({ tool: "early", at: "2026-09-02T22:59:59.999Z" }),
-			fixture({ tool: "inside", at: "2026-09-02T23:00:00.000Z" }),
-		], "2026-09-03");
-		await records(dir, [fixture({ tool: "inside", at: "2026-09-03T00:30:00.000Z" }), fixture({ tool: "end", at: "2026-09-03T01:00:00.000Z" })], "2026-09-02");
+		await records(
+			dir,
+			[
+				fixture({ tool: "early", at: "2026-09-02T22:59:59.999Z" }),
+				fixture({ tool: "inside", at: "2026-09-02T23:00:00.000Z" }),
+			],
+			"2026-09-03",
+		);
+		await records(
+			dir,
+			[
+				fixture({ tool: "inside", at: "2026-09-03T00:30:00.000Z" }),
+				fixture({ tool: "end", at: "2026-09-03T01:00:00.000Z" }),
+			],
+			"2026-09-02",
+		);
 		await records(dir, [fixture({ tool: "inside", at: "2026-09-03T00:59:00.000Z" })], "2026-09-01");
-		const result = await readTelemetryPage(dir, { since: "2026-09-03T10:00:00+11:00", until: "2026-09-03T12:00:00+11:00" });
+		const result = await readTelemetryPage(dir, {
+			since: "2026-09-03T10:00:00+11:00",
+			until: "2026-09-03T12:00:00+11:00",
+		});
 		assert.deepEqual(result.selection, {
 			kind: "instants",
 			since: "2026-09-03T10:00:00+11:00",
@@ -681,14 +772,20 @@ describe("policy telemetry instants", () => {
 			segmentsModifiedBeforeSince: "excluded",
 		});
 		assert.deepEqual([result.from, result.to], ["2026-09-02", "2026-09-03"]);
-		assert.deepEqual(result.tools.map((row) => [row.name, row.records]), [["inside", 2]]);
+		assert.deepEqual(
+			result.tools.map((row) => [row.name, row.records]),
+			[["inside", 2]],
+		);
 		assert.equal(result.coverage.outsideWindowLines, 2);
 		assert.equal(result.coverage.status, "complete");
 		accounting(result);
 		const wide = await readTelemetryPage(dir, { since: "2026-09-02T23:00:00Z", until: "2026-09-05T00:00:00Z" });
 		assert.equal(wide.coverage.days.find((day) => day.day === "2026-09-05")?.status, "missing");
 		assert.equal(wide.coverage.status, "complete", "an absent covering day file is not a gap");
-		assert.match(formatTelemetry(result), /recorded instants from 2026-09-02T23:00:00.000Z up to 2026-09-03T01:00:00.000Z \(exclusive/);
+		assert.match(
+			formatTelemetry(result),
+			/recorded instants from 2026-09-02T23:00:00.000Z up to 2026-09-03T01:00:00.000Z \(exclusive/,
+		);
 	});
 
 	it("excludes segments last modified before the start instant without reading them", async (t) => {
@@ -701,7 +798,10 @@ describe("policy telemetry instants", () => {
 		const [newer, excluded] = result.coverage.days.find((day) => day.day === DAY)?.segments ?? [];
 		assert.equal(newer.status, "complete");
 		assert.deepEqual([excluded.status, excluded.bytesRead, excluded.issues], ["excluded", 0, []]);
-		assert.deepEqual(result.tools.map((row) => row.name), ["later"]);
+		assert.deepEqual(
+			result.tools.map((row) => row.name),
+			["later"],
+		);
 		assert.equal(result.coverage.status, "complete");
 	});
 
@@ -717,7 +817,12 @@ describe("policy telemetry instants", () => {
 		])
 			await assert.rejects(readTelemetryPage("/unused", { since, until }), RangeError);
 		await assert.rejects(
-			readTelemetryPage("/unused", { from: DAY, to: DAY, since: "2026-09-03T10:00:00Z", until: "2026-09-03T11:00:00Z" } as TelemetryRequest),
+			readTelemetryPage("/unused", {
+				from: DAY,
+				to: DAY,
+				since: "2026-09-03T10:00:00Z",
+				until: "2026-09-03T11:00:00Z",
+			} as TelemetryRequest),
 			/exactly one selection/,
 		);
 	});
@@ -736,14 +841,30 @@ describe("policy telemetry recording evidence", () => {
 			otherWriters: "unknown",
 		});
 		assert.equal(clean.coverage.status, "complete");
-		const lossy = await readTelemetry(dir, DAY, DAY, { health: { state: "pressure", lostRecords: 2, lostBytes: 900, reason: "lock busy" } });
+		const lossy = await readTelemetry(dir, DAY, DAY, {
+			health: { state: "pressure", lostRecords: 2, lostBytes: 900, reason: "lock busy" },
+		});
 		assert.equal(lossy.recording.status, "incomplete");
-		assert.match(formatTelemetry(lossy), /Recording: incomplete\. This process's writer since its start: pressure; lost records 2/);
+		assert.match(
+			formatTelemetry(lossy),
+			/Recording: incomplete\. This process's writer since its start: pressure; lost records 2/,
+		);
 		assert.match(formatTelemetry(none), /Recording: unknown\. This host exposes no writer health/);
 		const resumed = await readTelemetry(dir, DAY, DAY, {
-			health: { state: "ok", lostRecords: 0, lostBytes: 0, uncertainRecords: 3, uncertainBytes: 400, recovery: { stops: 1, resumes: 1, staleLocks: 1 } },
+			health: {
+				state: "ok",
+				lostRecords: 0,
+				lostBytes: 0,
+				uncertainRecords: 3,
+				uncertainBytes: 400,
+				recovery: { stops: 1, resumes: 1, staleLocks: 1 },
+			},
 		});
-		assert.equal(resumed.recording.status, "unknown", "a batch that may have reached storage leaves recording unknown, not lost");
+		assert.equal(
+			resumed.recording.status,
+			"unknown",
+			"a batch that may have reached storage leaves recording unknown, not lost",
+		);
 		assert.match(
 			formatTelemetry(resumed),
 			/records whose batch failed after bytes may have reached storage 3 \(400 bytes; each may be absent, torn, or present\); stops 1, resumes 1, stale locks taken over 1\./,
@@ -812,13 +933,23 @@ describe("policy telemetry text", () => {
 			startOffset: Number.MAX_SAFE_INTEGER,
 			endOffset: Number.MAX_SAFE_INTEGER,
 			bytesNotRead: Number.MAX_SAFE_INTEGER,
-			issues: ["source-changed", "total-byte-limit", "incomplete-line", "malformed-line", "oversized-line", "read-error"] as const,
+			issues: [
+				"source-changed",
+				"total-byte-limit",
+				"incomplete-line",
+				"malformed-line",
+				"oversized-line",
+				"read-error",
+			] as const,
 		};
 		for (const day of result.coverage.days) {
 			day.segmentsNotReached = Number.MAX_SAFE_INTEGER;
 			day.issues = [...row.issues, "segment-limit", "line-limit"];
 		}
-		result.coverage.days[0].segments = Array.from({ length: TELEMETRY_LIMITS.segments + 1 }, () => ({ ...row, issues: [...row.issues] }));
+		result.coverage.days[0].segments = Array.from({ length: TELEMETRY_LIMITS.segments + 1 }, () => ({
+			...row,
+			issues: [...row.issues],
+		}));
 		assert.ok(Buffer.byteLength(JSON.stringify(result)) <= TELEMETRY_LIMITS.structuredBytes);
 		const text = formatTelemetry(result);
 		assert.ok(Buffer.byteLength(text) <= TELEMETRY_LIMITS.outputBytes);

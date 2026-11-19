@@ -772,8 +772,7 @@ function validateOverrideEvent(value: Record<string, unknown>): Extract<RuleEven
 		slot.state = "disabled";
 	}
 	if (value.override.effect !== undefined) slot.effect = oneOf(value.override.effect, EFFECTS, "override.effect");
-	if (slot.state === undefined && slot.effect === undefined)
-		throw new Error("override set requires state or effect");
+	if (slot.state === undefined && slot.effect === undefined) throw new Error("override set requires state or effect");
 	return { kind: "override", id, ruleId, operation, override: slot };
 }
 
@@ -967,9 +966,7 @@ function reduceProposalEvent(
 	if (event.operation === "add" && existing) return;
 	if (
 		event.operation === "replace" &&
-		(!existing ||
-			existing.definition.revision !== event.expectedRevision ||
-			existing.definition.state === "retired")
+		(!existing || existing.definition.revision !== event.expectedRevision || existing.definition.state === "retired")
 	)
 		return;
 	if (event.operation === "retire" && !existing) return;
@@ -1339,9 +1336,7 @@ function parseEventLines(content: Buffer): ReadEventsResult {
 			throw new RuleLineError(lineNumber, reason);
 		}
 	}
-	return start < content.length
-		? { events, eventLines, incompleteFinalLine: lineNumber + 1 }
-		: { events, eventLines };
+	return start < content.length ? { events, eventLines, incompleteFinalLine: lineNumber + 1 } : { events, eventLines };
 }
 
 export class PolicyMutationCancelledError extends Error {
@@ -1733,7 +1728,8 @@ export class RuleRegistry {
 		const records = new Map<string, RuleRecord>();
 		for (const [id, record] of reduction.records) {
 			const available = record.matcher.kind === "declarative" ? true : this.matcherAvailable(record.matcher.key);
-			const stale = record.override !== undefined && record.override.againstDefinitionRevision !== record.definition.revision;
+			const stale =
+				record.override !== undefined && record.override.againstDefinitionRevision !== record.definition.revision;
 			const previous = prior?.get(id);
 			if (previous && previous.matcherAvailable === available && previous.staleOverride === stale) {
 				records.set(id, previous);
@@ -1749,15 +1745,21 @@ export class RuleRegistry {
 	private preparedFor(store: CachedStore): PreparedPolicy {
 		const records = this.derivedRecords(store.reduction, store.prepared?.records);
 		if (store.prepared && store.prepared.records === records) return store.prepared.policy;
-		const policy = preparePolicy({ revision: store.revision, records, data: store.reduction.data }, store.prepared?.policy);
+		const policy = preparePolicy(
+			{ revision: store.revision, records, data: store.reduction.data },
+			store.prepared?.policy,
+		);
 		store.prepared = { records, policy };
 		return policy;
 	}
 
-	private async readReduction(signal?: AbortSignal): Promise<{ reduction: RuleReduction; incompleteFinalLine?: number }> {
+	private async readReduction(
+		signal?: AbortSignal,
+	): Promise<{ reduction: RuleReduction; incompleteFinalLine?: number }> {
 		const store = await this.readStore(signal);
 		const reduction = clone(store.reduction);
-		for (const [id, record] of reduction.records) reduction.records.set(id, refreshDerived(record, this.matcherAvailable));
+		for (const [id, record] of reduction.records)
+			reduction.records.set(id, refreshDerived(record, this.matcherAvailable));
 		return {
 			reduction,
 			...(store.incompleteFinalLine ? { incompleteFinalLine: store.incompleteFinalLine } : {}),
@@ -1974,12 +1976,16 @@ export class RuleRegistry {
 					pending ??= clone(store.reduction.pending);
 					return pending;
 				},
-				set pending(value: PendingProposal[]) { pending = value; },
+				set pending(value: PendingProposal[]) {
+					pending = value;
+				},
 				get data() {
 					data ??= clone(store.reduction.data);
 					return data;
 				},
-				set data(value: Map<string, NamedData>) { data = value; },
+				set data(value: Map<string, NamedData>) {
+					data = value;
+				},
 				health,
 			} as unknown as RuleSnapshot;
 			let records: Map<string, RuleRecord> | undefined;
@@ -2096,7 +2102,12 @@ export class RuleRegistry {
 		};
 	}
 
-	importCatalog(selection: string, expectedRevision: string, audit: SessionRuleAudit, signal?: AbortSignal): Promise<CatalogImportEvent> {
+	importCatalog(
+		selection: string,
+		expectedRevision: string,
+		audit: SessionRuleAudit,
+		signal?: AbortSignal,
+	): Promise<CatalogImportEvent> {
 		return this.mutate((reduction) => {
 			const plan = this.buildImport(selection, reduction.records);
 			if (plan.revision !== expectedRevision) throw new Error("import revision changed; inspect a fresh import plan");
@@ -2110,7 +2121,12 @@ export class RuleRegistry {
 		return this.mutate(() => ({ event, result: event }), signal);
 	}
 
-	proposeAdd(candidateValue: LocalRuleCandidate, reason: string, audit: AgentRuleAudit, signal?: AbortSignal): Promise<ProposalEvent> {
+	proposeAdd(
+		candidateValue: LocalRuleCandidate,
+		reason: string,
+		audit: AgentRuleAudit,
+		signal?: AbortSignal,
+	): Promise<ProposalEvent> {
 		const candidate = validateLocalCandidate(candidateValue);
 		const event: ProposalEvent = {
 			kind: "proposal",
@@ -2175,7 +2191,12 @@ export class RuleRegistry {
 			throw new Error(`policy rule store would exceed ${MAX_REGISTRY_BYTES} bytes`);
 	}
 
-	async setData(data: NamedData, expectedRevision: string | null, audit: SessionRuleAudit, signal?: AbortSignal): Promise<DataSetEvent> {
+	async setData(
+		data: NamedData,
+		expectedRevision: string | null,
+		audit: SessionRuleAudit,
+		signal?: AbortSignal,
+	): Promise<DataSetEvent> {
 		// Capture before the transaction waits so callers cannot alter approved data in flight.
 		const event = validateRuleEvent({
 			kind: "data",
@@ -2188,7 +2209,12 @@ export class RuleRegistry {
 		return this.mutate(() => ({ event, result: event }), signal);
 	}
 
-	removeData(name: string, expectedRevision: string, audit: SessionRuleAudit, signal?: AbortSignal): Promise<DataRemoveEvent> {
+	removeData(
+		name: string,
+		expectedRevision: string,
+		audit: SessionRuleAudit,
+		signal?: AbortSignal,
+	): Promise<DataRemoveEvent> {
 		const event: DataRemoveEvent = {
 			kind: "data",
 			id: randomUUID(),
@@ -2224,7 +2250,13 @@ export class RuleRegistry {
 		return this.mutate(() => ({ event, result: event }), signal);
 	}
 
-	disable(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string, signal?: AbortSignal): Promise<OverrideEvent> {
+	disable(
+		ruleId: string,
+		reason: string,
+		audit: SessionRuleAudit,
+		expectedIdentity?: string,
+		signal?: AbortSignal,
+	): Promise<OverrideEvent> {
 		return this.mutate((reduction) => {
 			const existing = reduction.records.get(ruleId);
 			assertTargetIdentity(existing, expectedIdentity);
@@ -2245,7 +2277,13 @@ export class RuleRegistry {
 		}, signal);
 	}
 
-	enable(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string, signal?: AbortSignal): Promise<OverrideEvent> {
+	enable(
+		ruleId: string,
+		reason: string,
+		audit: SessionRuleAudit,
+		expectedIdentity?: string,
+		signal?: AbortSignal,
+	): Promise<OverrideEvent> {
 		return this.mutate((reduction) => {
 			const existing = reduction.records.get(ruleId);
 			assertTargetIdentity(existing, expectedIdentity);
@@ -2304,7 +2342,13 @@ export class RuleRegistry {
 		}, signal);
 	}
 
-	retire(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string, signal?: AbortSignal): Promise<DefinitionEvent> {
+	retire(
+		ruleId: string,
+		reason: string,
+		audit: SessionRuleAudit,
+		expectedIdentity?: string,
+		signal?: AbortSignal,
+	): Promise<DefinitionEvent> {
 		const event: DefinitionEvent = {
 			kind: "definition",
 			id: randomUUID(),

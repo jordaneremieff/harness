@@ -8,9 +8,15 @@ import { renderReadCall, renderReadResult, renderSearchCall, renderSearchResult 
 
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }, width = 140) =>
-	component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
+	component
+		.render(width)
+		.map((line) => stripVTControlCharacters(line).trimEnd())
+		.join("\n");
 const rows = (component: { render(width: number): string[] }, width = 100) =>
-	component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).filter((line) => line !== "");
+	component
+		.render(width)
+		.map((line) => stripVTControlCharacters(line).trimEnd())
+		.filter((line) => line !== "");
 const emptyResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
 function registeredTools(): Map<string, ToolDefinition> {
@@ -40,7 +46,13 @@ describe("history_search cards", () => {
 	it("names the query, filter, and continuation", () => {
 		const shown = screen(
 			renderSearchCall(
-				{ query: "amber decision", filter: { source: "toolResult", toolName: "bash", errorsOnly: true }, fromId: "entry-1", slot: 2, offset: 40 },
+				{
+					query: "amber decision",
+					filter: { source: "toolResult", toolName: "bash", errorsOnly: true },
+					fromId: "entry-1",
+					slot: 2,
+					offset: 40,
+				},
 				theme,
 				{ expanded: false, argsComplete: true },
 			),
@@ -58,14 +70,18 @@ describe("history_search cards", () => {
 		sessionUser(sm, "recent cyan");
 		const value = searchHistory(sm, { query: "amber" });
 		assert.equal(value.status, "ancestry_exhausted");
-		const view = renderSearchResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false });
+		const view = renderSearchResult(toolResult(value), { expanded: false, isPartial: false }, theme, {
+			isError: false,
+		});
 		const shown = screen(view);
 		assert.match(shown, /1 match · \d+ entries visited · ancestry exhausted/);
 		assert.match(shown, /1 message/);
 		assert.doesNotMatch(shown, /amber raw detail/);
 		assert.doesNotMatch(shown, /continuation available/);
 		assert.equal(rows(view).length, 2);
-		const expanded = screen(renderSearchResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }));
+		const expanded = screen(
+			renderSearchResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(expanded, /"status": "ancestry_exhausted"/);
 		assert.match(expanded, /"notice":/);
 	});
@@ -76,11 +92,15 @@ describe("history_search cards", () => {
 		sessionUser(sm, "alpha two");
 		const limited = searchHistory(sm, { query: "alpha", maxMatches: 1 });
 		assert.equal(limited.status, "match_limit");
-		const shown = screen(renderSearchResult(toolResult(limited), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const shown = screen(
+			renderSearchResult(toolResult(limited), { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(shown, /1 match · 1 entry visited · match limit/);
 		assert.match(shown, /continuation available/);
 		const empty = searchHistory(sm, { query: "nothing-matches-this" });
-		const emptyShown = screen(renderSearchResult(toolResult(empty), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const emptyShown = screen(
+			renderSearchResult(toolResult(empty), { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(emptyShown, /0 matches · \d+ entries visited · ancestry exhausted/);
 	});
 
@@ -118,12 +138,16 @@ describe("history_search cards", () => {
 			next: { fromId: "e1", mode: "arguments", position: { block: 0, path: [1] }, offset: 0 },
 		};
 		const collapsed = screen(
-			renderSearchResult(emptyResult(JSON.stringify(value)), { expanded: false, isPartial: false }, theme, { isError: false }),
+			renderSearchResult(emptyResult(JSON.stringify(value)), { expanded: false, isPartial: false }, theme, {
+				isError: false,
+			}),
 		);
 		assert.match(collapsed, /1 match · 1 entry visited · node limit/);
 		assert.match(collapsed, /continuation available/);
 		const expanded = screen(
-			renderSearchResult(emptyResult(JSON.stringify(value)), { expanded: true, isPartial: false }, theme, { isError: false }),
+			renderSearchResult(emptyResult(JSON.stringify(value)), { expanded: true, isPartial: false }, theme, {
+				isError: false,
+			}),
 		);
 		assert.match(expanded, /1 · message · assistant · call edit · e1/);
 		assert.match(expanded, /\/message\/content\/0\/arguments\/path · offsets 0\.\.9/);
@@ -131,9 +155,15 @@ describe("history_search cards", () => {
 	});
 
 	it("marks omitted entry types in the tally", () => {
-		const matches = ["message", "compaction", "branch_summary", "context_edit", "custom", "label"].map((type) => ({ entry: { type } }));
+		const matches = ["message", "compaction", "branch_summary", "context_edit", "custom", "label"].map((type) => ({
+			entry: { type },
+		}));
 		const value = { status: "ancestry_exhausted", matches, visited: 6, next: null };
-		const shown = screen(renderSearchResult(emptyResult(JSON.stringify(value)), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const shown = screen(
+			renderSearchResult(emptyResult(JSON.stringify(value)), { expanded: false, isPartial: false }, theme, {
+				isError: false,
+			}),
+		);
 		assert.match(shown, /\+2 more/);
 	});
 
@@ -141,23 +171,42 @@ describe("history_search cards", () => {
 		const sm = SessionManager.inMemory();
 		sessionUser(sm, "listing body");
 		const unknown = searchHistory(sm, { fromId: "missing-entry" });
-		const shown = screen(renderSearchResult(toolResult(unknown), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const shown = screen(
+			renderSearchResult(toolResult(unknown), { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(shown, /0 matches · 1 entry visited · unknown entry/);
 		const listing = searchHistory(sm, {});
-		const listingShown = screen(renderSearchResult(toolResult(listing), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const listingShown = screen(
+			renderSearchResult(toolResult(listing), { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(listingShown, /1 match · 1 entry visited · ancestry exhausted/);
 	});
 
 	it("renders errors, partial state, and malformed payloads safely", () => {
-		const error = screen(renderSearchResult(emptyResult("history_search failed: source changed"), { expanded: false, isPartial: false }, theme, { isError: true }));
+		const error = screen(
+			renderSearchResult(
+				emptyResult("history_search failed: source changed"),
+				{ expanded: false, isPartial: false },
+				theme,
+				{ isError: true },
+			),
+		);
 		assert.match(error, /history_search failed: source changed/);
-		assert.match(screen(renderSearchResult(emptyResult("{}"), { expanded: false, isPartial: true }, theme, { isError: false })), /Searching history\.\.\./);
-		const malformed = screen(renderSearchResult(emptyResult("not json"), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(
+			screen(renderSearchResult(emptyResult("{}"), { expanded: false, isPartial: true }, theme, { isError: false })),
+			/Searching history\.\.\./,
+		);
+		const malformed = screen(
+			renderSearchResult(emptyResult("not json"), { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(malformed, /not json/);
 	});
 
 	it("escapes controls and clips long queries in the call card", () => {
-		const shown = screen(renderSearchCall({ query: `\x1b]52;c;clip\x07${"q".repeat(200)}` }, theme, { argsComplete: true }), 60);
+		const shown = screen(
+			renderSearchCall({ query: `\x1b]52;c;clip\x07${"q".repeat(200)}` }, theme, { argsComplete: true }),
+			60,
+		);
 		assert.doesNotMatch(shown, /[\x1b\x07]/);
 		assert.ok(shown.includes("…"));
 	});
@@ -165,7 +214,11 @@ describe("history_search cards", () => {
 
 describe("history_read cards", () => {
 	it("names the entry and pointer", () => {
-		const shown = screen(renderReadCall({ entryId: "entry-9", pointer: "/message/content/0/text", offset: 12 }, theme, { argsComplete: true }));
+		const shown = screen(
+			renderReadCall({ entryId: "entry-9", pointer: "/message/content/0/text", offset: 12 }, theme, {
+				argsComplete: true,
+			}),
+		);
 		assert.match(shown, /history_read · entry-9/);
 		assert.match(shown, /\/message\/content\/0\/text · offset 12/);
 		assert.match(screen(renderReadCall({}, theme, { argsComplete: true })), /history_read · \(entry pending\)/);
@@ -182,7 +235,9 @@ describe("history_read cards", () => {
 		assert.match(shown, /the exact stored sentence/);
 		assert.doesNotMatch(shown, new RegExp(id));
 		assert.equal(rows(view).length, 2);
-		const expanded = screen(renderReadResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }));
+		const expanded = screen(
+			renderReadResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(expanded, /"status": "complete"/);
 		assert.match(expanded, /"totalCodeUnits"/);
 	});
@@ -193,13 +248,17 @@ describe("history_read cards", () => {
 		const value = readHistory(sm, { entryId: id, pointer: "/message/content" });
 		assert.equal(value.bytes, 18);
 		assert.equal(value.totalCodeUnits, 6);
-		const shown = screen(renderReadResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const shown = screen(
+			renderReadResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(shown, /6 of 6 code units/);
 		assert.doesNotMatch(shown, /18 of/);
 	});
 
 	it("shows a withheld reason with the expansion hint", () => {
-		const withheld = emptyResult(JSON.stringify({ status: "withheld", startId: "e", reason: "Image payloads are not exposed." }));
+		const withheld = emptyResult(
+			JSON.stringify({ status: "withheld", startId: "e", reason: "Image payloads are not exposed." }),
+		);
 		const view = renderReadResult(withheld, { expanded: false, isPartial: false }, theme, { isError: false });
 		const shown = screen(view);
 		assert.match(shown, /withheld content/);
@@ -213,7 +272,9 @@ describe("history_read cards", () => {
 		const id = sessionUser(sm, "x".repeat(500));
 		const value = readHistory(sm, { entryId: id, pointer: "/message/content", maxBytes: 4 });
 		assert.equal(value.status, "page");
-		const shown = screen(renderReadResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const shown = screen(
+			renderReadResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(shown, /page · \d+ of \d+ code units/);
 		assert.match(shown, /continuation available/);
 	});
@@ -223,7 +284,9 @@ describe("history_read cards", () => {
 		const id = sessionUser(sm, "body");
 		const unknown = readHistory(sm, { entryId: "missing", pointer: "/message/content" });
 		assert.equal(unknown.status, "unknown_entry");
-		const unknownShown = screen(renderReadResult(toolResult(unknown), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const unknownShown = screen(
+			renderReadResult(toolResult(unknown), { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(unknownShown, /unknown entry/);
 		assert.match(unknownShown, /Use an entry ID/);
 		const absent = readHistory(sm, { entryId: id, pointer: "/message/noSuchField" });
@@ -236,23 +299,36 @@ describe("history_read cards", () => {
 
 	it("escapes controls, handles errors, and reuses the previous component", () => {
 		const hostile = screen(
-			renderReadResult(emptyResult(JSON.stringify({ status: "complete", startId: "e", pointer: "/x", text: "\x1b]52;c;d\x07\u202e" })),
+			renderReadResult(
+				emptyResult(JSON.stringify({ status: "complete", startId: "e", pointer: "/x", text: "\x1b]52;c;d\x07\u202e" })),
 				{ expanded: false, isPartial: false },
 				theme,
 				{ isError: false },
 			),
 		);
 		assert.doesNotMatch(hostile, /[\x1b\x07\u202e]/u);
-		assert.match(screen(renderReadResult(emptyResult("read failed"), { expanded: false, isPartial: false }, theme, { isError: true })), /read failed/);
+		assert.match(
+			screen(
+				renderReadResult(emptyResult("read failed"), { expanded: false, isPartial: false }, theme, { isError: true }),
+			),
+			/read failed/,
+		);
 		const initial = renderReadCall({ entryId: "e" }, theme, { expanded: false, argsComplete: true });
-		const updated = renderReadCall({ entryId: "e" }, theme, { expanded: true, argsComplete: true, lastComponent: initial });
+		const updated = renderReadCall({ entryId: "e" }, theme, {
+			expanded: true,
+			argsComplete: true,
+			lastComponent: initial,
+		});
 		assert.equal(initial, updated);
 		assert.match(screen(updated), /"entryId": "e"/);
 	});
 
 	it("bounds an oversized expanded body", () => {
 		const long = JSON.stringify({ status: "complete", startId: "e", text: "line\n".repeat(9000) });
-		const expanded = screen(renderReadResult(emptyResult(long), { expanded: true, isPartial: false }, theme, { isError: false }), 400);
+		const expanded = screen(
+			renderReadResult(emptyResult(long), { expanded: true, isPartial: false }, theme, { isError: false }),
+			400,
+		);
 		assert.match(expanded, /Display limit; full text remains in native tool history/);
 		assert.ok(expanded.length < 90_000);
 	});
@@ -264,7 +340,10 @@ describe("expanded history cards", () => {
 		sessionUser(sm, "decision amber raw detail");
 		sessionUser(sm, "recent cyan");
 		const value = searchHistory(sm, { query: "amber" });
-		const shown = screen(renderSearchResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }), 400);
+		const shown = screen(
+			renderSearchResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }),
+			400,
+		);
 		assert.match(shown, /Matches \(first 1 of 1\):/);
 		assert.match(shown, /1 · message · user · /);
 		assert.match(shown, /"amber raw detail"/, "the search owner's bounded excerpt starts at the match");
@@ -281,7 +360,13 @@ describe("expanded history cards", () => {
 			status: "match_limit",
 			visited: 5,
 			matches: [1, 2, 3, 4, 5].map((index) => ({
-				entry: { id: index, kind: "pi.tool-result", toolName: `bash-${index}`, isError: index % 2 === 0, timestamp: `2026-11-04T10:3${index}:05.000Z` },
+				entry: {
+					id: index,
+					kind: "pi.tool-result",
+					toolName: `bash-${index}`,
+					isError: index % 2 === 0,
+					timestamp: `2026-11-04T10:3${index}:05.000Z`,
+				},
 				pointer: `/model/${index}/content/0/text`,
 				offset: index,
 				endOffset: index + 3,
@@ -289,7 +374,12 @@ describe("expanded history cards", () => {
 			})),
 			next: { sessionId: "s", fromId: 1, position: { message: 0, block: 0 }, offset: 0 },
 		};
-		const shown = screen(renderSearchResult(emptyResult(JSON.stringify(value)), { expanded: true, isPartial: false }, theme, { isError: false }), 400);
+		const shown = screen(
+			renderSearchResult(emptyResult(JSON.stringify(value)), { expanded: true, isPartial: false }, theme, {
+				isError: false,
+			}),
+			400,
+		);
 		assert.match(shown, /Matches \(first 3 of 5\):/);
 		assert.match(shown, /1 · pi\.tool-result · tool bash-1 · 2026-11-04T10:31:05\.000Z · #1/);
 		assert.match(shown, /2 · pi\.tool-result · tool bash-2 · error · 2026-11-04T10:32:05\.000Z · #2/);
@@ -301,18 +391,41 @@ describe("expanded history cards", () => {
 		const sm = SessionManager.inMemory();
 		const id = sessionUser(sm, "the exact stored sentence");
 		const value = readHistory(sm, { entryId: id, pointer: "/message/content" });
-		const shown = screen(renderReadResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }), 400);
+		const shown = screen(
+			renderReadResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }),
+			400,
+		);
 		assert.match(shown, /Text \(exact stored page\):/);
 		assert.match(shown, /the exact stored sentence/);
-		assert.ok(shown.indexOf("Text (exact stored page):") < shown.indexOf("Scope:") && shown.indexOf("Scope:") < shown.indexOf("Raw payload (retained):"));
+		assert.ok(
+			shown.indexOf("Text (exact stored page):") < shown.indexOf("Scope:") &&
+				shown.indexOf("Scope:") < shown.indexOf("Raw payload (retained):"),
+		);
 		assert.match(shown, /Scope: entry message · user · /);
 		assert.match(shown, /membership not_checked/);
 		assert.match(shown, /"totalCodeUnits"/);
 	});
 
 	it("lists item pointers as read evidence for manifest reads", () => {
-		const value = { status: "complete", startId: 9, pointer: "/message/content", sessionId: "s", membership: "not_checked", entry: { id: 9, type: "message", role: "assistant", timestamp: "2026-11-04T10:31:05.000Z" }, items: [{ pointer: "/message/content/0", kind: "block" }, { pointer: "/message/content/1", kind: "block" }], next: null };
-		const shown = screen(renderReadResult(emptyResult(JSON.stringify(value)), { expanded: true, isPartial: false }, theme, { isError: false }), 400);
+		const value = {
+			status: "complete",
+			startId: 9,
+			pointer: "/message/content",
+			sessionId: "s",
+			membership: "not_checked",
+			entry: { id: 9, type: "message", role: "assistant", timestamp: "2026-11-04T10:31:05.000Z" },
+			items: [
+				{ pointer: "/message/content/0", kind: "block" },
+				{ pointer: "/message/content/1", kind: "block" },
+			],
+			next: null,
+		};
+		const shown = screen(
+			renderReadResult(emptyResult(JSON.stringify(value)), { expanded: true, isPartial: false }, theme, {
+				isError: false,
+			}),
+			400,
+		);
 		assert.match(shown, /Items \(first 2 of 2\):/);
 		assert.match(shown, /\/message\/content\/0 · block/);
 	});
@@ -320,12 +433,19 @@ describe("expanded history cards", () => {
 
 describe("retained error diagnostics and injected hints", () => {
 	it("collapses an error to one clipped line and expands the retained diagnostic", () => {
-		const diagnostic = "history_read failed: source changed\nsecond line \u202e with \x1b[31m controls\n\u65e5\u672c\u8a9e\u306e\u8a3a\u65ad";
-		const collapsedRows = rows(renderReadResult(emptyResult(diagnostic), { expanded: false, isPartial: false }, theme, { isError: true }), 400);
+		const diagnostic =
+			"history_read failed: source changed\nsecond line \u202e with \x1b[31m controls\n\u65e5\u672c\u8a9e\u306e\u8a3a\u65ad";
+		const collapsedRows = rows(
+			renderReadResult(emptyResult(diagnostic), { expanded: false, isPartial: false }, theme, { isError: true }),
+			400,
+		);
 		assert.equal(collapsedRows.length, 1, "one clipped line beside the card's leading spacer");
 		assert.match(collapsedRows[0], /^history_read failed: source changed/);
 		assert.doesNotMatch(collapsedRows[0], /second line/);
-		const expandedView = screen(renderReadResult(emptyResult(diagnostic), { expanded: true, isPartial: false }, theme, { isError: true }), 400);
+		const expandedView = screen(
+			renderReadResult(emptyResult(diagnostic), { expanded: true, isPartial: false }, theme, { isError: true }),
+			400,
+		);
 		assert.match(expandedView, /second line \\u\{202e\} with \\u\{1b\}\[31m controls/);
 		assert.match(expandedView, /\u65e5\u672c\u8a9e\u306e\u8a3a\u65ad/);
 	});
@@ -334,11 +454,20 @@ describe("retained error diagnostics and injected hints", () => {
 		const sm = SessionManager.inMemory();
 		sessionUser(sm, "needle decision");
 		const value = searchHistory(sm, { query: "needle" });
-		const withKey = screen(renderSearchResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false, keyText: () => "ctrl+o" }));
+		const withKey = screen(
+			renderSearchResult(toolResult(value), { expanded: false, isPartial: false }, theme, {
+				isError: false,
+				keyText: () => "ctrl+o",
+			}),
+		);
 		assert.match(withKey, /ctrl\+o to expand result/);
-		const withoutKey = screen(renderSearchResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false }));
+		const withoutKey = screen(
+			renderSearchResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
 		assert.match(withoutKey, /Expand for result/);
-		const callWithKey = screen(renderSearchCall({ query: "q".repeat(200) }, theme, { argsComplete: true, keyText: () => "ctrl+o" }));
+		const callWithKey = screen(
+			renderSearchCall({ query: "q".repeat(200) }, theme, { argsComplete: true, keyText: () => "ctrl+o" }),
+		);
 		assert.match(callWithKey, /ctrl\+o to expand arguments/);
 	});
 });
@@ -347,10 +476,19 @@ describe("history card safety", () => {
 	const hostile = "safe\u009b\u202e\x1b[31m";
 	it("escapes C1 and bidi controls from payload values and expanded output", () => {
 		const search = emptyResult(JSON.stringify({ status: hostile, matches: [], visited: 0, next: null }));
-		assert.doesNotMatch(screen(renderSearchResult(search, { expanded: false, isPartial: false }, theme, { isError: false })), /[\x1b\u009b\u202e]/u);
+		assert.doesNotMatch(
+			screen(renderSearchResult(search, { expanded: false, isPartial: false }, theme, { isError: false })),
+			/[\x1b\u009b\u202e]/u,
+		);
 		const read = emptyResult(JSON.stringify({ status: "complete", startId: hostile, pointer: hostile, text: hostile }));
-		assert.doesNotMatch(screen(renderReadResult(read, { expanded: false, isPartial: false }, theme, { isError: false })), /[\x1b\u009b\u202e]/u);
-		assert.doesNotMatch(screen(renderReadResult(read, { expanded: true, isPartial: false }, theme, { isError: false })), /[\x1b\u009b\u202e]/u);
+		assert.doesNotMatch(
+			screen(renderReadResult(read, { expanded: false, isPartial: false }, theme, { isError: false })),
+			/[\x1b\u009b\u202e]/u,
+		);
+		assert.doesNotMatch(
+			screen(renderReadResult(read, { expanded: true, isPartial: false }, theme, { isError: false })),
+			/[\x1b\u009b\u202e]/u,
+		);
 	});
 	it("tolerates null and undefined arguments", () => {
 		assert.doesNotThrow(() => renderSearchCall(null, theme, { expanded: false, argsComplete: false }));

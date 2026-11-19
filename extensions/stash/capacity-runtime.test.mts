@@ -30,7 +30,10 @@ import { listStashes } from "./store.ts";
 
 const config = { enabled: true, checkpointPercent: 60, decisionPercent: 70, stopPercent: 95 };
 
-async function runtime(t: TestContext, options: { stash?: boolean; abortAtBoundary?: boolean; gate?: boolean; codemode?: boolean } = {}) {
+async function runtime(
+	t: TestContext,
+	options: { stash?: boolean; abortAtBoundary?: boolean; gate?: boolean; codemode?: boolean } = {},
+) {
 	const root = await mkdtemp(join(tmpdir(), "stash-capacity-runtime-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const savedContext = ["PI_CODING_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]] as const);
@@ -89,24 +92,45 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 		}
 		if (options.gate) {
 			pi.events.on("harness:continuity-tools", (value) => {
-				const request = value as { declare(tool: { name: string; act: string; accepts?: (input: unknown) => boolean }): void };
+				const request = value as {
+					declare(tool: { name: string; act: string; accepts?: (input: unknown) => boolean }): void;
+				};
 				request.declare({ name: "fake_compact", act: "compaction" });
-				request.declare({ name: "fake_resolve", act: "worker-resolution", accepts: (input) => {
-					const mode = (input as { mode?: string }).mode;
-					if (mode === "throw") throw new Error("refused form");
-					return mode === "report";
-				} });
+				request.declare({
+					name: "fake_resolve",
+					act: "worker-resolution",
+					accepts: (input) => {
+						const mode = (input as { mode?: string }).mode;
+						if (mode === "throw") throw new Error("refused form");
+						return mode === "report";
+					},
+				});
 				void Promise.resolve().then(() => request.declare({ name: "fake_late", act: "compaction" }));
 			});
-			pi.on("tool_call", (event) => event.toolName === "other_blocked" ? { block: true, reason: "Another extension refused this call." } : undefined);
-			for (const name of ["fixture_read", "fake_compact", "fake_resolve", "fake_late", "other_blocked", "fixture_enable_gate"]) pi.registerTool({
-				name, label: name, description: "Synthetic gate fixture", parameters: obj({ mode: opt(str()) }),
-				execute: async () => {
-					executed.push(name);
-					if (name === "fixture_enable_gate") process.env.PI_STASH_CAPACITY = "1";
-					return { content: [{ type: "text", text: "done" }], details: {} };
-				},
-			});
+			pi.on("tool_call", (event) =>
+				event.toolName === "other_blocked"
+					? { block: true, reason: "Another extension refused this call." }
+					: undefined,
+			);
+			for (const name of [
+				"fixture_read",
+				"fake_compact",
+				"fake_resolve",
+				"fake_late",
+				"other_blocked",
+				"fixture_enable_gate",
+			])
+				pi.registerTool({
+					name,
+					label: name,
+					description: "Synthetic gate fixture",
+					parameters: obj({ mode: opt(str()) }),
+					execute: async () => {
+						executed.push(name);
+						if (name === "fixture_enable_gate") process.env.PI_STASH_CAPACITY = "1";
+						return { content: [{ type: "text", text: "done" }], details: {} };
+					},
+				});
 		}
 		if (options.stash || options.gate) registerStash(pi);
 		else {
@@ -142,7 +166,24 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 		settingsManager,
 		resourceLoader: loader,
 		sessionManager: SessionManager.inMemory(root),
-		tools: options.gate ? ["stash_write", "stash_read", "stash_edit", "stash_complete", "stash_rotate", "fixture_read", "fake_compact", "fake_resolve", "fake_late", "other_blocked", "fixture_enable_gate", ...(options.codemode ? ["codemode"] : [])] : options.stash ? ["stash_write"] : [],
+		tools: options.gate
+			? [
+					"stash_write",
+					"stash_read",
+					"stash_edit",
+					"stash_complete",
+					"stash_rotate",
+					"fixture_read",
+					"fake_compact",
+					"fake_resolve",
+					"fake_late",
+					"other_blocked",
+					"fixture_enable_gate",
+					...(options.codemode ? ["codemode"] : []),
+				]
+			: options.stash
+				? ["stash_write"]
+				: [],
 	}));
 	t.after(() => session.dispose());
 	await session.bindExtensions({
@@ -176,7 +217,9 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 
 test("ordinary budget notices retain exact request prefixes without a continuation", { timeout: 20000 }, async (t) => {
 	process.env.PI_STASH_CAPACITY = "0";
-	t.after(() => { delete process.env.PI_STASH_CAPACITY; });
+	t.after(() => {
+		delete process.env.PI_STASH_CAPACITY;
+	});
 	t.mock.method(console, "error", () => {});
 	const host = await runtime(t, { stash: true });
 	const command = host.session.extensionRunner?.getCommand("stash");
@@ -192,7 +235,10 @@ test("ordinary budget notices retain exact request prefixes without a continuati
 	await command.handler("budget 120000 5", ctx);
 	await host.prompt([capture]);
 	await host.prompt([capture]);
-	const notices = () => host.session.sessionManager.getEntries().filter((entry) => entry.type === "custom_message" && entry.customType === "stash-budget");
+	const notices = () =>
+		host.session.sessionManager
+			.getEntries()
+			.filter((entry) => entry.type === "custom_message" && entry.customType === "stash-budget");
 	assert.equal(notices().length, 2);
 	assert.match(JSON.stringify(notices()), /host estimate/);
 	assert.match(JSON.stringify(notices()), /cumulative cost: unavailable/);
@@ -210,15 +256,31 @@ test("ordinary budget notices retain exact request prefixes without a continuati
 });
 
 const reply = () => fauxAssistantMessage("Synthetic response.");
-const calls = (...names: string[]) => fauxAssistantMessage(names.map((name, index) => fauxToolCall(name, name === "stash_read" ? { id: "retained" } : {}, { id: `${name}-${index}` })), { stopReason: "toolUse" });
+const calls = (...names: string[]) =>
+	fauxAssistantMessage(
+		names.map((name, index) =>
+			fauxToolCall(name, name === "stash_read" ? { id: "retained" } : {}, { id: `${name}-${index}` }),
+		),
+		{ stopReason: "toolUse" },
+	);
 
-test("ordinary invalid capacity settings reach tool display and the next model request once", { timeout: 20000 }, async (t) => {
+test("ordinary invalid capacity settings reach tool display and the next model request once", {
+	timeout: 20000,
+}, async (t) => {
 	const host = await runtime(t, { gate: true });
 	const displayedErrors: string[] = [];
-	t.after(host.session.subscribe((event) => {
-		if (event.type === "tool_execution_end" && event.isError) displayedErrors.push(JSON.stringify(event.result.content));
-	}));
-	const values = { PI_STASH_CAPACITY: "1", PI_STASH_CHECKPOINT_PERCENT: "95", PI_STASH_DECISION_PERCENT: "90", PI_STASH_STOP_PERCENT: "98" };
+	t.after(
+		host.session.subscribe((event) => {
+			if (event.type === "tool_execution_end" && event.isError)
+				displayedErrors.push(JSON.stringify(event.result.content));
+		}),
+	);
+	const values = {
+		PI_STASH_CAPACITY: "1",
+		PI_STASH_CHECKPOINT_PERCENT: "95",
+		PI_STASH_DECISION_PERCENT: "90",
+		PI_STASH_STOP_PERCENT: "98",
+	};
 	const saved = Object.keys(values).map((key) => [key, process.env[key]] as const);
 	Object.assign(process.env, values);
 	t.after(() => {
@@ -244,7 +306,10 @@ test("ordinary invalid capacity settings reach tool display and the next model r
 	assert.equal(displayedErrors.length, 1, "Pi's tool display receives one error result");
 	assert.match(displayedErrors[0], /checkpointPercent.*decisionPercent/);
 	const results = host.session.messages.filter((message) => message.role === "toolResult");
-	assert.deepEqual(results.map((message) => message.isError), [true, false, false]);
+	assert.deepEqual(
+		results.map((message) => message.isError),
+		[true, false, false],
+	);
 	assert.deepEqual(host.executed, ["fixture_read", "fixture_read"]);
 });
 
@@ -258,17 +323,26 @@ test("a decision round refuses intake and preserves a declared continuity call",
 	assert.deepEqual(host.executed, ["fake_compact", "fixture_read"]);
 });
 
-test("the stop gate preserves accepted continuity forms and refuses late declarations", { timeout: 20000 }, async (t) => {
+test("the stop gate preserves accepted continuity forms and refuses late declarations", {
+	timeout: 20000,
+}, async (t) => {
 	const host = await runtime(t, { gate: true });
 	host.setUsage(9600);
 	await host.prompt([
 		calls("fixture_read", "stash_read", "fake_late", "fake_compact"),
-		fauxAssistantMessage([
-			fauxToolCall("fake_resolve", { mode: "report" }, { id: "accepted" }),
-			fauxToolCall("fake_resolve", { mode: "followUp" }, { id: "refused" }),
-			fauxToolCall("fake_resolve", { mode: "throw" }, { id: "throws" }),
-			fauxToolCall("stash_write", { title: "Capacity", summary: "Retain the task.", checkpoint: true }, { id: "saved" }),
-		], { stopReason: "toolUse" }),
+		fauxAssistantMessage(
+			[
+				fauxToolCall("fake_resolve", { mode: "report" }, { id: "accepted" }),
+				fauxToolCall("fake_resolve", { mode: "followUp" }, { id: "refused" }),
+				fauxToolCall("fake_resolve", { mode: "throw" }, { id: "throws" }),
+				fauxToolCall(
+					"stash_write",
+					{ title: "Capacity", summary: "Retain the task.", checkpoint: true },
+					{ id: "saved" },
+				),
+			],
+			{ stopReason: "toolUse" },
+		),
 		reply(),
 	]);
 	assert.deepEqual(host.executed, ["fake_compact", "fake_resolve"]);
@@ -285,9 +359,12 @@ for (const name of ["stash_edit", "stash_complete", "stash_rotate"] as const) {
 	test(`ordinary stop refuses ${name} before its store operation`, { timeout: 20000 }, async (t) => {
 		const host = await runtime(t, { gate: true });
 		host.setUsage(9600);
-		const args: Parameters<typeof fauxToolCall>[1] = name === "stash_edit"
-			? { id: "missing", expectedDigest: "a".repeat(64), edits: [{ oldText: "before", newText: "after" }] }
-			: name === "stash_complete" ? { id: "missing", outcome: "done" } : { id: "missing" };
+		const args: Parameters<typeof fauxToolCall>[1] =
+			name === "stash_edit"
+				? { id: "missing", expectedDigest: "a".repeat(64), edits: [{ oldText: "before", newText: "after" }] }
+				: name === "stash_complete"
+					? { id: "missing", outcome: "done" }
+					: { id: "missing" };
 		await host.prompt([fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }), reply()]);
 		const result = host.session.messages.find((message) => message.role === "toolResult" && message.toolName === name);
 		assert.ok(result?.role === "toolResult" && result.isError);
@@ -295,32 +372,57 @@ for (const name of ["stash_edit", "stash_complete", "stash_rotate"] as const) {
 	});
 }
 
-test("ordinary codemode nested calls meet the stop gate after controls become enabled", { timeout: 30000 }, async (t) => {
+test("ordinary codemode nested calls meet the stop gate after controls become enabled", {
+	timeout: 30000,
+}, async (t) => {
 	const saved = process.env.PI_STASH_CAPACITY;
 	process.env.PI_STASH_CAPACITY = "0";
-	t.after(() => { if (saved === undefined) delete process.env.PI_STASH_CAPACITY; else process.env.PI_STASH_CAPACITY = saved; });
+	t.after(() => {
+		if (saved === undefined) delete process.env.PI_STASH_CAPACITY;
+		else process.env.PI_STASH_CAPACITY = saved;
+	});
 	const host = await runtime(t, { gate: true, codemode: true });
 	host.setUsage(9600);
 	await host.prompt([
-		fauxAssistantMessage(fauxToolCall("codemode", { code: 'await tools.fixture_enable_gate({}); text(await tools.stash_read({id:"missing"}));' }), { stopReason: "toolUse" }),
+		fauxAssistantMessage(
+			fauxToolCall("codemode", {
+				code: 'await tools.fixture_enable_gate({}); text(await tools.stash_read({id:"missing"}));',
+			}),
+			{ stopReason: "toolUse" },
+		),
 		reply(),
 	]);
-	const result = host.session.messages.find((message) => message.role === "toolResult" && message.toolName === "codemode");
+	const result = host.session.messages.find(
+		(message) => message.role === "toolResult" && message.toolName === "codemode",
+	);
 	assert.ok(result?.role === "toolResult");
 	assert.match(JSON.stringify(result.content), /Stash stop/);
 	assert.deepEqual(host.executed, ["fixture_enable_gate"]);
-	assert.equal(host.session.messages.filter((message) => message.role === "toolResult").length, 1, "nested results stay in the parent result");
+	assert.equal(
+		host.session.messages.filter((message) => message.role === "toolResult").length,
+		1,
+		"nested results stay in the parent result",
+	);
 });
 
-test("release remains reachable at the stop threshold and compaction restores the gate", { timeout: 20000 }, async (t) => {
+test("release remains reachable at the stop threshold and compaction restores the gate", {
+	timeout: 20000,
+}, async (t) => {
 	const host = await runtime(t, { gate: true });
 	host.setUsage(9600);
 	await host.prompt([reply(), reply()]);
-	await host.session.sendCustomMessage({ customType: "fixture-owner-input", content: "Keep the authorised direction reachable.", display: false });
+	await host.session.sendCustomMessage({
+		customType: "fixture-owner-input",
+		content: "Keep the authorised direction reachable.",
+		display: false,
+	});
 	assert.match(JSON.stringify(host.session.messages), /Keep the authorised direction reachable/);
 	const command = host.session.extensionRunner.getCommand("stash");
 	assert.ok(command);
-	await assert.rejects(command.handler("capacity release", host.session.extensionRunner.createCommandContext()), /released until the next compaction/);
+	await assert.rejects(
+		command.handler("capacity release", host.session.extensionRunner.createCommandContext()),
+		/released until the next compaction/,
+	);
 	await host.prompt([calls("fixture_read"), reply()]);
 	assert.deepEqual(host.executed, ["fixture_read"]);
 	const firstKept = host.session.sessionManager.getLeafId();
@@ -333,7 +435,13 @@ test("release remains reachable at the stop threshold and compaction restores th
 test("another extension's refusal resets the ordinary stop-round counter", { timeout: 20000 }, async (t) => {
 	const host = await runtime(t, { gate: true });
 	host.setUsage(9600);
-	await host.prompt([calls("fixture_read"), calls("other_blocked"), calls("fixture_read"), calls("fixture_read"), reply()]);
+	await host.prompt([
+		calls("fixture_read"),
+		calls("other_blocked"),
+		calls("fixture_read"),
+		calls("fixture_read"),
+		reply(),
+	]);
 	assert.equal(host.faux.state.callCount, 5);
 	assert.deepEqual(host.executed, []);
 });
@@ -341,10 +449,21 @@ test("another extension's refusal resets the ordinary stop-round counter", { tim
 test("an error above the stop threshold reports measured facts once per episode", { timeout: 20000 }, async (t) => {
 	const host = await runtime(t, { gate: true });
 	const notices: string[] = [];
-	host.session.extensionRunner.setUIContext({ ...host.session.extensionRunner.getUIContext(), notify: (text) => { notices.push(text); } }, "tui");
+	host.session.extensionRunner.setUIContext(
+		{
+			...host.session.extensionRunner.getUIContext(),
+			notify: (text) => {
+				notices.push(text);
+			},
+		},
+		"tui",
+	);
 	host.setUsage(9600);
 	await host.prompt([reply(), reply()]);
-	for (let attempt = 0; attempt < 2; attempt++) await host.prompt([fauxAssistantMessage("failed", { stopReason: "error", errorMessage: "Synthetic provider failure" })]);
+	for (let attempt = 0; attempt < 2; attempt++)
+		await host.prompt([
+			fauxAssistantMessage("failed", { stopReason: "error", errorMessage: "Synthetic provider failure" }),
+		]);
 	const failures = notices.filter((text) => text.includes("this turn failed while context use was"));
 	assert.equal(failures.length, 1);
 	assert.match(failures[0], /Pi automatic compaction is disabled/);

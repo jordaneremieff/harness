@@ -102,9 +102,19 @@ describe("byte-identified rule reductions", () => {
 	it("refreshes availability and isolates nested records, pending proposals, and data", async (t) => {
 		const dir = await directory(t);
 		let available = true;
-		const reg = new RuleRegistry(dir, { catalog: [row("sample.rule")], matcherAvailable: () => available, onNotice: assert.fail });
+		const reg = new RuleRegistry(dir, {
+			catalog: [row("sample.rule")],
+			matcherAvailable: () => available,
+			onNotice: assert.fail,
+		});
 		await reg.proposeAdd(candidate(), "Bound output.", agent);
-		const data = { name: "sample", kind: "table" as const, source: "test", capturedAt: 1, rows: [{ key: "key", value: "original" }] };
+		const data = {
+			name: "sample",
+			kind: "table" as const,
+			source: "test",
+			capturedAt: 1,
+			rows: [{ key: "key", value: "original" }],
+		};
 		await reg.setData({ ...data, revision: namedDataRevision(data) }, null, sessionAudit());
 		const original = await reg.snapshot();
 		const returned = await reg.snapshot();
@@ -129,7 +139,13 @@ describe("byte-identified rule reductions", () => {
 	it("copies proposals and data only when inspected, once per snapshot", async (t) => {
 		const reg = registry(await directory(t));
 		await reg.proposeAdd(candidate(), "Bound output.", agent);
-		const data = { name: "sample", kind: "table" as const, source: "test", capturedAt: 1, rows: [{ key: "key", value: "original" }] };
+		const data = {
+			name: "sample",
+			kind: "table" as const,
+			source: "test",
+			capturedAt: 1,
+			rows: [{ key: "key", value: "original" }],
+		};
 		await reg.setData({ ...data, revision: namedDataRevision(data) }, null, sessionAudit());
 		await reg.snapshot();
 		const copy = t.mock.method(globalThis, "structuredClone");
@@ -150,7 +166,13 @@ describe("byte-identified rule reductions", () => {
 	it("keeps uninspected snapshot fields bound to their captured store bytes", async (t) => {
 		const reg = registry(await directory(t));
 		const first = await reg.proposeAdd(candidate(), "Bound output.", agent);
-		const data = { name: "sample", kind: "table" as const, source: "test", capturedAt: 1, rows: [{ key: "key", value: "original" }] };
+		const data = {
+			name: "sample",
+			kind: "table" as const,
+			source: "test",
+			capturedAt: 1,
+			rows: [{ key: "key", value: "original" }],
+		};
 		const originalData = { ...data, revision: namedDataRevision(data) };
 		await reg.setData(originalData, null, sessionAudit());
 		const before = await reg.snapshot();
@@ -160,7 +182,10 @@ describe("byte-identified rule reductions", () => {
 		const after = await reg.snapshot();
 		assert.equal(after.pending.length, 2);
 		assert.equal(after.data.get("sample")?.rows[0].value, "replacement");
-		assert.deepEqual(before.pending.map(({ id }) => id), [first.id]);
+		assert.deepEqual(
+			before.pending.map(({ id }) => id),
+			[first.id],
+		);
 		const binding = before.data.get("sample");
 		assert.ok(binding);
 		assert.equal(binding.rows[0].value, "original");
@@ -185,7 +210,11 @@ describe("byte-identified rule reductions", () => {
 	it("reuses one prepared generation until bytes or matcher availability change", async (t) => {
 		const dir = await directory(t);
 		let available = true;
-		const reg = new RuleRegistry(dir, { catalog: [row("sample.rule")], matcherAvailable: () => available, onNotice: assert.fail });
+		const reg = new RuleRegistry(dir, {
+			catalog: [row("sample.rule")],
+			matcherAvailable: () => available,
+			onNotice: assert.fail,
+		});
 		const first = preparedPolicyFor(await reg.snapshot());
 		assert.ok(first.revision);
 		assert.equal(first.rules.length, 1);

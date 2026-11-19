@@ -8,8 +8,22 @@ import { sessionAppearance } from "./dashboard-roster.ts";
 import { buildLiveEntries } from "./live-frames.ts";
 
 /** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
-const visible = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
-const click = (x: number, y: number, width: number, height: number): TuiMouseEvent => ({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
+const visible = (lines: string[]) =>
+	lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+const click = (x: number, y: number, width: number, height: number): TuiMouseEvent => ({
+	type: "click",
+	button: "left",
+	x,
+	y,
+	screenX: x,
+	screenY: y,
+	width,
+	height,
+	shift: false,
+	alt: false,
+	ctrl: false,
+	clickCount: 1,
+});
 
 /** Click the visible text, as the operator would. */
 function clickText(f: ReturnType<typeof fixture>, text: string): void {
@@ -29,7 +43,23 @@ it("dashboard close releases a native nested renderer timer through the console"
 	const intervals = t.mock.method(globalThis, "setInterval");
 	const clears = t.mock.method(globalThis, "clearInterval");
 	const observed = source([row("one", { state: "working" })]);
-	const live = buildLiveEntries({ nestedTools: [{ callId: "parent/key", parentCallId: "parent", parentTaskId: 1, taskId: 2, name: "bash", arguments: { command: "echo synthetic" }, status: "running", output: "partial" }] }, []);
+	const live = buildLiveEntries(
+		{
+			nestedTools: [
+				{
+					callId: "parent/key",
+					parentCallId: "parent",
+					parentTaskId: 1,
+					taskId: 2,
+					name: "bash",
+					arguments: { command: "echo synthetic" },
+					status: "running",
+					output: "partial",
+				},
+			],
+		},
+		[],
+	);
 	observed.frame = () => conversationFrame({ entries: [], live });
 	const f = fixture(100, 30, observed);
 	try {
@@ -38,7 +68,8 @@ it("dashboard close releases a native nested renderer timer through the console"
 		f.ui.render(100);
 		const toolTimers = intervals.mock.calls.filter((call) => call.arguments[1] === 1000);
 		assert.equal(toolTimers.length, 1);
-		f.ui.dispose(); f.ui.dispose();
+		f.ui.dispose();
+		f.ui.dispose();
 		const toolClears = clears.mock.calls.filter((call) => call.arguments[0] === toolTimers[0].result);
 		assert.equal(toolClears.length, 1);
 	} finally {
@@ -94,101 +125,208 @@ it("refused admission retains the draft and disposition", async () => {
 });
 
 function factSource(state: "working" | "idle" | "failed") {
-	const observed = source([row("one", { name: "Recipient", state, error: state === "failed" ? "quota limit" : undefined, profile: { identity: "one", role: "", handle: "@recipient", revision: "1", hasExpertise: false, updatedAt: 0 } })]);
+	const observed = source([
+		row("one", {
+			name: "Recipient",
+			state,
+			error: state === "failed" ? "quota limit" : undefined,
+			profile: { identity: "one", role: "", handle: "@recipient", revision: "1", hasExpertise: false, updatedAt: 0 },
+		}),
+	]);
 	const base = conversationFrame();
-	const usage = { input: 100, output: 20, cacheRead: 30, cacheWrite: 10, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-	observed.frame = () => conversationFrame({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", provider: "test", model: "model", api: "openai-responses", timestamp: 0, content: [], stopReason: "stop", usage }] }], status: { ...base.status, busy: state === "working", usage: { models: { "test/model": usage }, tools: {} } } });
+	const usage = {
+		input: 100,
+		output: 20,
+		cacheRead: 30,
+		cacheWrite: 10,
+		totalTokens: 160,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	observed.frame = () =>
+		conversationFrame({
+			entries: [
+				{
+					id: "1",
+					kind: "pi.assistant",
+					model: [
+						{
+							role: "assistant",
+							provider: "test",
+							model: "model",
+							api: "openai-responses",
+							timestamp: 0,
+							content: [],
+							stopReason: "stop",
+							usage,
+						},
+					],
+				},
+			],
+			status: { ...base.status, busy: state === "working", usage: { models: { "test/model": usage }, tools: {} } },
+		});
 	observed.availability = () => ({ state: "live", at: base.observedAt });
 	return observed;
 }
 for (const state of ["working", "idle", "failed"] as const) {
-	for (const width of [164, 100, 80, 60]) for (const writing of [false, true]) {
-		it(`${state} target facts appear once, the state beside the name and the status below the message field, at ${width}${writing ? " while writing" : ""}`, async () => {
-			const f = fixture(width, 30, factSource(state), { modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }) });
-			try {
-				await turn();
-				await turn();
-				if (writing) f.ui.handleInput("\r");
-				const lines = visible(f.ui.render(width));
-				assert.equal(lines.length, 30); assert.ok(lines.every((line) => visibleWidth(line) === width));
-				const wide = width >= 100;
-				const paneX = wide ? (lines[1]?.indexOf("│") ?? 0) + 1 : 0;
-				const paneY = wide ? 1 : 9;
-				const pane = lines.slice(paneY).map((line) => line.slice(paneX));
-				const right = pane.join("\n");
-				const header = pane[0] ?? "";
-				assert.equal(header.split("Recipient").length - 1, 1, "the header shows one label, not the handle pair");
-				assert.doesNotMatch(header, /@recipient/);
-				assert.doesNotMatch(pane[0] ?? "", /model|high|%|\$/);
-				assert.match(header, new RegExp(sessionAppearance[state].label), "the state shares the name row");
-				const bottom = pane.findIndex((line) => line.includes("╰─"));
-				const facts = pane.findIndex((line) => /test\/model \[high\].*16%.*160\/1.0k/.test(line));
-				assert.ok(bottom > 0 && facts > bottom, "the status lines sit under the message field, as in the main session");
-				assert.match(pane[facts + 1] ?? "", /\/work/);
-				for (const fact of ["test/model", "[high]", "16%", "160/1.0k", "~$0.42"]) assert.equal(right.split(fact).length - 1, 1, right);
-				const caption = pane.find((line) => line.includes("╭─")) ?? "";
-				assert.match(caption, /╭─ To Recipient /);
-				assert.doesNotMatch(caption, /Correction|New work/u, "steer is implicit on every message field");
-				assert.doesNotMatch(right, /First task|agents:|test:model/u);
-				assert.doesNotMatch(caption, /Working|Idle|Failed|model|high|%|\$|hit|ctx| in| out/);
-				const status = "test/model [high] │ ██░░░░░░░░ 16% │ 160/1.0k │ ~$0.42 │ ● 21% hit";
-				assert.equal(right.split("21% hit").length - 1, width - paneX > visibleWidth(status) ? 1 : 0);
-			} finally { f.ui.dispose(); }
-		});
-	}
+	for (const width of [164, 100, 80, 60])
+		for (const writing of [false, true]) {
+			it(`${state} target facts appear once, the state beside the name and the status below the message field, at ${width}${writing ? " while writing" : ""}`, async () => {
+				const f = fixture(width, 30, factSource(state), {
+					modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }),
+				});
+				try {
+					await turn();
+					await turn();
+					if (writing) f.ui.handleInput("\r");
+					const lines = visible(f.ui.render(width));
+					assert.equal(lines.length, 30);
+					assert.ok(lines.every((line) => visibleWidth(line) === width));
+					const wide = width >= 100;
+					const paneX = wide ? (lines[1]?.indexOf("│") ?? 0) + 1 : 0;
+					const paneY = wide ? 1 : 9;
+					const pane = lines.slice(paneY).map((line) => line.slice(paneX));
+					const right = pane.join("\n");
+					const header = pane[0] ?? "";
+					assert.equal(header.split("Recipient").length - 1, 1, "the header shows one label, not the handle pair");
+					assert.doesNotMatch(header, /@recipient/);
+					assert.doesNotMatch(pane[0] ?? "", /model|high|%|\$/);
+					assert.match(header, new RegExp(sessionAppearance[state].label), "the state shares the name row");
+					const bottom = pane.findIndex((line) => line.includes("╰─"));
+					const facts = pane.findIndex((line) => /test\/model \[high\].*16%.*160\/1.0k/.test(line));
+					assert.ok(
+						bottom > 0 && facts > bottom,
+						"the status lines sit under the message field, as in the main session",
+					);
+					assert.match(pane[facts + 1] ?? "", /\/work/);
+					for (const fact of ["test/model", "[high]", "16%", "160/1.0k", "~$0.42"])
+						assert.equal(right.split(fact).length - 1, 1, right);
+					const caption = pane.find((line) => line.includes("╭─")) ?? "";
+					assert.match(caption, /╭─ To Recipient /);
+					assert.doesNotMatch(caption, /Correction|New work/u, "steer is implicit on every message field");
+					assert.doesNotMatch(right, /First task|agents:|test:model/u);
+					assert.doesNotMatch(caption, /Working|Idle|Failed|model|high|%|\$|hit|ctx| in| out/);
+					const status = "test/model [high] │ ██░░░░░░░░ 16% │ 160/1.0k │ ~$0.42 │ ● 21% hit";
+					assert.equal(right.split("21% hit").length - 1, width - paneX > visibleWidth(status) ? 1 : 0);
+				} finally {
+					f.ui.dispose();
+				}
+			});
+		}
 }
 it("the delivery effect and a long draft stay on the message field without other facts", async () => {
-	const f = fixture(100, 30, factSource("working"), { modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }) });
+	const f = fixture(100, 30, factSource("working"), {
+		modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }),
+	});
 	try {
-		await turn(); await turn();
+		await turn();
+		await turn();
 		const state = agentState(f.state, "one");
 		f.ui.handleInput("\r");
 		f.ui.render(100);
 		f.ui.handleInput("\u000e");
 		clickText(f, "Send as follow-up");
 		updateDraft(state, Array.from({ length: 30 }, (_, index) => `draft ${index}`).join("\n"));
-		const caption = () => visible(f.ui.render(f.tui.terminal.columns)).slice(1).find((line) => line.includes("╭─")) ?? "";
-		assert.match(caption(), /New work at next step/); assert.match(caption(), /↑ \d+ lines/);
+		const caption = () =>
+			visible(f.ui.render(f.tui.terminal.columns))
+				.slice(1)
+				.find((line) => line.includes("╭─")) ?? "";
+		assert.match(caption(), /New work at next step/);
+		assert.match(caption(), /↑ \d+ lines/);
 		assert.doesNotMatch(caption(), /model|high|ctx|%|\$| in| out/);
 		f.resize(60, 30);
 		assert.match(caption(), /New work at next step/);
-		assert.equal(state.mode, "followUp"); assert.equal(state.draft.split("\n").length, 30);
-	} finally { f.ui.dispose(); }
+		assert.equal(state.mode, "followUp");
+		assert.equal(state.draft.split("\n").length, 30);
+	} finally {
+		f.ui.dispose();
+	}
 });
 it("project status shows the selected folder and branch without delegate statistics", async () => {
-	const observed = source([row("one", { modifiedAt: 100 }), row("child", { creatingOwnerId: "one", cost: 1 }), row("other", { creatingOwnerId: "primary", cost: 99 })]);
-	const list = observed.list; observed.list = async () => { const page = await list(); return { ...page, coverage: { ...page.coverage, complete: false } }; };
+	const observed = source([
+		row("one", { modifiedAt: 100 }),
+		row("child", { creatingOwnerId: "one", cost: 1 }),
+		row("other", { creatingOwnerId: "primary", cost: 99 }),
+	]);
+	const list = observed.list;
+	observed.list = async () => {
+		const page = await list();
+		return { ...page, coverage: { ...page.coverage, complete: false } };
+	};
 	const f = fixture(164, 30, observed, { branch: async () => "main" });
 	try {
-		await turn(); await turn();
+		await turn();
+		await turn();
 		const screen = visible(f.ui.render(164)).join("\n");
 		assert.match(screen, /\/work \(main\)/);
 		assert.doesNotMatch(screen, /agents:|~\$1\.00|~\$99\.00/u);
 		const before = f.ui.focus;
-		f.ui.handleMouse({ type: "press", button: "left", x: 100, y: 28, screenX: 100, screenY: 28, width: 164, height: 30, shift: false, alt: false, ctrl: false });
+		f.ui.handleMouse({
+			type: "press",
+			button: "left",
+			x: 100,
+			y: 28,
+			screenX: 100,
+			screenY: 28,
+			width: 164,
+			height: 30,
+			shift: false,
+			alt: false,
+			ctrl: false,
+		});
 		assert.deepEqual(f.ui.focus, before, "a press on the figures changes nothing");
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 it("a short transcript reads earlier pages until its pane fills", async () => {
 	const observed = source([row("one")]);
 	const reads: number[] = [];
-	observed.snapshot = async () => ({ entries: [{ id: "100", kind: "pi.user", model: [{ role: "user", content: "Current message", timestamp: 100 }] }], partial: true, revision: "100", nextBefore: 100 });
+	observed.snapshot = async () => ({
+		entries: [{ id: "100", kind: "pi.user", model: [{ role: "user", content: "Current message", timestamp: 100 }] }],
+		partial: true,
+		revision: "100",
+		nextBefore: 100,
+	});
 	observed.earlier = async (_id, before) => {
 		reads.push(before);
-		return { entries: [{ id: String(before - 1), kind: "pi.user", model: [{ role: "user", content: `Earlier message ${before - 1}`, timestamp: before - 1 }] }], partial: true, revision: String(before - 1), nextBefore: before - 1,
-			coverage: { complete: false, entries: 1, bytes: 128, hiddenExcluded: 0, entryLimitReached: true, byteLimitReached: false } };
+		return {
+			entries: [
+				{
+					id: String(before - 1),
+					kind: "pi.user",
+					model: [{ role: "user", content: `Earlier message ${before - 1}`, timestamp: before - 1 }],
+				},
+			],
+			partial: true,
+			revision: String(before - 1),
+			nextBefore: before - 1,
+			coverage: {
+				complete: false,
+				entries: 1,
+				bytes: 128,
+				hiddenExcluded: 0,
+				entryLimitReached: true,
+				byteLimitReached: false,
+			},
+		};
 	};
 	const f = fixture(100, 30, observed);
 	try {
 		await turn();
-		for (let step = 0; step < 30; step++) { f.ui.render(100); await turn(); }
+		for (let step = 0; step < 30; step++) {
+			f.ui.render(100);
+			await turn();
+		}
 		assert.ok(reads.length > 1 && reads.length < 24, "several short pages fill the pane before its read bound");
 		const filled = reads.length;
-		f.ui.render(100); await turn();
+		f.ui.render(100);
+		await turn();
 		assert.equal(reads.length, filled, "a full pane stops automatic reads");
 		assert.match(visible(f.ui.render(100)).join("\n"), /Earlier message|Current message/u);
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 it("automatic history reads stop at 24 pages per selection and leave earlier history reachable", async () => {
@@ -197,15 +335,33 @@ it("automatic history reads stop at 24 pages per selection and leave earlier his
 	observed.snapshot = async () => ({ entries: [], partial: true, revision: "100", nextBefore: 100 });
 	observed.earlier = async (_id, before) => {
 		reads.push(before);
-		return { entries: [], partial: true, revision: String(before - 1), nextBefore: before - 1,
-			coverage: { complete: false, entries: 0, bytes: 0, hiddenExcluded: 1, entryLimitReached: true, byteLimitReached: false } };
+		return {
+			entries: [],
+			partial: true,
+			revision: String(before - 1),
+			nextBefore: before - 1,
+			coverage: {
+				complete: false,
+				entries: 0,
+				bytes: 0,
+				hiddenExcluded: 1,
+				entryLimitReached: true,
+				byteLimitReached: false,
+			},
+		};
 	};
 	const f = fixture(100, 30, observed);
 	try {
 		await turn();
-		for (let step = 0; step < 30; step++) { f.ui.render(100); await turn(); }
+		for (let step = 0; step < 30; step++) {
+			f.ui.render(100);
+			await turn();
+		}
 		assert.equal(reads.length, 24);
-		assert.deepEqual(reads, Array.from({ length: 24 }, (_, index) => 100 - index));
+		assert.deepEqual(
+			reads,
+			Array.from({ length: 24 }, (_, index) => 100 - index),
+		);
 		f.ui.handleInput("\t");
 		f.ui.render(100);
 		f.ui.handleInput("\x1b[5~");
@@ -213,10 +369,18 @@ it("automatic history reads stop at 24 pages per selection and leave earlier his
 		assert.equal(reads.length, 25, "PageUp still reads history after automatic reads stop");
 		f.ui.selectIdentity("two");
 		await turn();
-		for (let step = 0; step < 30; step++) { f.ui.render(100); await turn(); }
+		for (let step = 0; step < 30; step++) {
+			f.ui.render(100);
+			await turn();
+		}
 		assert.equal(reads.length, 49, "a new selection receives its own automatic page allowance");
-		assert.deepEqual(reads.slice(25), Array.from({ length: 24 }, (_, index) => 100 - index));
-	} finally { f.ui.dispose(); }
+		assert.deepEqual(
+			reads.slice(25),
+			Array.from({ length: 24 }, (_, index) => 100 - index),
+		);
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 it("cwd events refresh the branch, while ordinary renders never launch reads", async (t) => {
@@ -225,17 +389,34 @@ it("cwd events refresh the branch, while ordinary renders never launch reads", a
 	let notify = () => {};
 	const observed = source([current]);
 	observed.list = async () => page([current]);
-	observed.subscribeRoster = (listener) => { notify = listener; return () => {}; };
+	observed.subscribeRoster = (listener) => {
+		notify = listener;
+		return () => {};
+	};
 	const reads: string[] = [];
-	const f = fixture(80, 24, observed, { branch: async (cwd) => { reads.push(cwd); return cwd === "/one" ? "main" : "topic"; } });
+	const f = fixture(80, 24, observed, {
+		branch: async (cwd) => {
+			reads.push(cwd);
+			return cwd === "/one" ? "main" : "topic";
+		},
+	});
 	try {
-		await turn(); const count = reads.length;
+		await turn();
+		const count = reads.length;
 		for (let index = 0; index < 10; index++) f.ui.render(80);
 		assert.equal(reads.length, count);
-		current = { ...current, cwd: "/two" }; notify(); t.mock.timers.tick(250); await turn();
+		current = { ...current, cwd: "/two" };
+		notify();
+		t.mock.timers.tick(250);
+		await turn();
 		assert.equal(reads.at(-1), "/two");
 		assert.match(visible(f.ui.render(80)).join("\n"), /\/two \(topic\)/);
-		const updated = reads.length; notify(); t.mock.timers.tick(250); await turn();
+		const updated = reads.length;
+		notify();
+		t.mock.timers.tick(250);
+		await turn();
 		assert.equal(reads.length, updated);
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });

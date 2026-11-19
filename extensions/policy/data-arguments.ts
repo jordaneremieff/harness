@@ -29,7 +29,11 @@ export function supplyDataRevision(json: string, snapshot: RuleSnapshot): string
 	return JSON.stringify({ ...value, expectedRevision: snapshot.data.get(data.name)?.revision ?? null });
 }
 
-async function dataEditor(dialogs: DataArgumentDialogs, action: "set" | "set-file", snapshot: RuleSnapshot): Promise<string | undefined> {
+async function dataEditor(
+	dialogs: DataArgumentDialogs,
+	action: "set" | "set-file",
+	snapshot: RuleSnapshot,
+): Promise<string | undefined> {
 	const json = await dialogs.editor(
 		action === "set" ? "Data JSON: data (current target revision is supplied)" : "Data file JSON: path",
 		"",
@@ -42,7 +46,11 @@ async function dataEditor(dialogs: DataArgumentDialogs, action: "set" | "set-fil
  * Complete `supplied` into one data command: choose the action, the named data for show and remove
  * (remove binds the binding revision shown), or edit the JSON for set and set-file. Undefined cancels.
  */
-export async function chooseDataArguments(dialogs: DataArgumentDialogs, supplied: string, snapshot: RuleSnapshot): Promise<string | undefined> {
+export async function chooseDataArguments(
+	dialogs: DataArgumentDialogs,
+	supplied: string,
+	snapshot: RuleSnapshot,
+): Promise<string | undefined> {
 	const args = supplied || (await dialogs.select("Policy data action", DATA_ACTIONS));
 	if (!args) return undefined;
 	if (args === "set" || args === "set-file") return dataEditor(dialogs, args, snapshot);

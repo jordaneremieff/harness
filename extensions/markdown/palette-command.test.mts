@@ -10,7 +10,11 @@ import { MarkdownStore } from "./store.ts";
 
 const exec = promisify(execFile);
 const command = fileURLToPath(new URL("./palette-command.ts", import.meta.url));
-const input = (title: string) => ({ title, source: `# ${title}\n`, contentOrigin: { kind: "tool" as const, capturedAt: new Date().toISOString() } });
+const input = (title: string) => ({
+	title,
+	source: `# ${title}\n`,
+	contentOrigin: { kind: "tool" as const, capturedAt: new Date().toISOString() },
+});
 
 async function fixture(t: TestContext) {
 	const root = await mkdtemp(join(tmpdir(), "markdown-palette-"));
@@ -20,10 +24,17 @@ async function fixture(t: TestContext) {
 	const executable = join(app, "Contents", "MacOS", "MarkdownReader");
 	const manifest = join(app, "Contents", "Resources", "build.json");
 	return {
-		root, store, executable, manifest,
+		root,
+		store,
+		executable,
+		manifest,
 		async step(answers: unknown[] = []) {
 			const request = { version: 1, command: "markdown.read", context: { origin: "palette" }, answers };
-			const { stdout, stderr } = await exec(process.execPath, [command, store.root, app, JSON.stringify(request)], { cwd: root, env: {}, timeout: 20_000 });
+			const { stdout, stderr } = await exec(process.execPath, [command, store.root, app, JSON.stringify(request)], {
+				cwd: root,
+				env: {},
+				timeout: 20_000,
+			});
 			assert.equal(stderr, "");
 			return JSON.parse(stdout);
 		},
@@ -43,12 +54,18 @@ test("the pick merges published documents and responses by newest change and cap
 	await f.store.snapshot("file", "file", input("File snapshot"));
 	const older = new Date(Date.now() - 3 * 3_600_000 - 60_000).toISOString();
 	const directory = join(f.store.root, "documents");
-	await writeFile(join(directory, published.document.id, "document.json"), JSON.stringify({ ...published.document, updatedAt: older }));
+	await writeFile(
+		join(directory, published.document.id, "document.json"),
+		JSON.stringify({ ...published.document, updatedAt: older }),
+	);
 	for (let i = 0; i < 200; i++) {
 		const id = `md-${i.toString(16).padStart(20, "0")}`;
 		const path = join(directory, id);
 		await mkdir(path);
-		await writeFile(join(path, "document.json"), JSON.stringify({ ...published.document, id, updatedAt: "2020-01-01T00:00:00.000Z" }));
+		await writeFile(
+			join(path, "document.json"),
+			JSON.stringify({ ...published.document, id, updatedAt: "2020-01-01T00:00:00.000Z" }),
+		);
 	}
 
 	const reply = await f.step();
@@ -57,7 +74,13 @@ test("the pick merges published documents and responses by newest change and cap
 	assert.equal(reply.ask.prompt.items.length, 200);
 	assert.deepEqual(reply.ask.prompt.items.slice(0, 2), [
 		{ id: response.document.id, title: "Saved response", subtitle: "Response · just now", icon: "document" },
-		{ id: published.document.id, title: "Published note", subtitle: "Published · 3 h ago", icon: "document", detail: "Revision 1" },
+		{
+			id: published.document.id,
+			title: "Published note",
+			subtitle: "Published · 3 h ago",
+			icon: "document",
+			detail: "Revision 1",
+		},
 	]);
 	assert.ok(reply.ask.prompt.items.every((item: { title: string }) => item.title !== "File snapshot"));
 });
@@ -76,11 +99,23 @@ test("the selection pins the revision current at step two in a right split", asy
 	assert.equal((await f.step()).ask.prompt.items[0].id, id);
 	const prefix = `${"a".repeat(31)}📄`;
 	const current = await f.store.update(id, 1, input(`${prefix}More title`));
-	assert.deepEqual(await f.step([id]), { show: {
-		argv: [f.executable, "--pane", "--store", f.store.root, id, "--revision", "2", "--digest", current.revision.digest],
-		label: prefix,
-		placement: "right",
-	} });
+	assert.deepEqual(await f.step([id]), {
+		show: {
+			argv: [
+				f.executable,
+				"--pane",
+				"--store",
+				f.store.root,
+				id,
+				"--revision",
+				"2",
+				"--digest",
+				current.revision.digest,
+			],
+			label: prefix,
+			placement: "right",
+		},
+	});
 	assert.deepEqual(await readdir(join(f.store.root, "opens")), []);
 });
 

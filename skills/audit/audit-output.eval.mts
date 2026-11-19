@@ -8,7 +8,8 @@ const suite: EvaluationSuite = {
 	subject: {
 		adapter: "pi-sdk",
 		kind: "skill",
-		description: "Compare direct audit invocation against a plain request with matched synthetic evidence and read-only tools.",
+		description:
+			"Compare direct audit invocation against a plain request with matched synthetic evidence and read-only tools.",
 		config: {
 			invocation: "direct-skill",
 			baseline: "The paired baseline suite replaces the slash command with each case's ordinary request.",
@@ -19,7 +20,12 @@ const suite: EvaluationSuite = {
 			{
 				id: "candidate",
 				description: "Load the audit skill explicitly and expose read only.",
-				config: { skills: [{ path: "./SKILL.md" }], tools: ["read"], cwd: "./fixtures", appendSystemPrompt: [evaluationBoundary] },
+				config: {
+					skills: [{ path: "./SKILL.md" }],
+					tools: ["read"],
+					cwd: "./fixtures",
+					appendSystemPrompt: [evaluationBoundary],
+				},
 			},
 		],
 	},

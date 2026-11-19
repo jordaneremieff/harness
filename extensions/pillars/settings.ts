@@ -67,7 +67,8 @@ export const settings = {
 		collect: {
 			type: "boolean",
 			env: "PI_PILLARS_COLLECT",
-			description: "Collect source access evidence. false stops collection only; corpus access and retained-data readback stay available.",
+			description:
+				"Collect source access evidence. false stops collection only; corpus access and retained-data readback stay available.",
 			default: true,
 		},
 	},
@@ -202,10 +203,7 @@ function ownSection(document: Record<string, unknown> | undefined, diagnostics: 
 	}
 	for (const key of Object.keys(value)) {
 		if (!Object.hasOwn(settings.fields, key))
-			addDiagnostic(
-				diagnostics,
-				diagnostic(`${settings.slice}.${unknownKey(key)}`, "file", "unknown"),
-			);
+			addDiagnostic(diagnostics, diagnostic(`${settings.slice}.${unknownKey(key)}`, "file", "unknown"));
 	}
 	return value;
 }

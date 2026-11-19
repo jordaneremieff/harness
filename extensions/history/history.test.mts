@@ -298,7 +298,10 @@ test("system messages and compaction checkpoints expose bounded prompt and tool 
 	assert.equal(readHistory(sm, { entryId: system, pointer: "/message/toolsAdded/0/name" }).text, "synthetic_tool");
 	const root = readHistory(sm, { entryId: compact }).items as Record<string, unknown>[];
 	assert.ok(root.some((field) => field.pointer === "/systemMessage"));
-	const checkpoint = readHistory(sm, { entryId: compact, pointer: "/systemMessage" }).items as Record<string, unknown>[];
+	const checkpoint = readHistory(sm, { entryId: compact, pointer: "/systemMessage" }).items as Record<
+		string,
+		unknown
+	>[];
 	assert.ok(checkpoint.some((field) => field.pointer === "/systemMessage/sections"));
 	assert.equal(readHistory(sm, { entryId: compact, pointer: "/systemMessage/sections/rules" }).text, "exact rule text");
 	assert.equal(readHistory(sm, { entryId: compact, pointer: "/systemMessage/content" }).text, "base instructions");
@@ -306,12 +309,27 @@ test("system messages and compaction checkpoints expose bounded prompt and tool 
 	assert.ok(stored);
 	assert.equal(stored.type, "compaction");
 	if (stored.type !== "compaction") throw new Error("Expected a compaction checkpoint");
-	const arrayCheckpoint = source([{ ...stored, systemMessage: {
-		role: "system", content: [{ type: "text", text: "base instructions", textSignature: "opaque signature" }], timestamp: 1,
-	} }]);
-	assert.equal(readHistory(arrayCheckpoint, { entryId: compact, pointer: "/systemMessage/content/0/textSignature" }).status, "withheld");
-	const block = readHistory(arrayCheckpoint, { entryId: compact, pointer: "/systemMessage/content/0" }).items as Record<string, unknown>[];
-	assert.ok(block.some((field) => field.pointer === "/systemMessage/content/0/textSignature" && field.kind === "withheld"));
+	const arrayCheckpoint = source([
+		{
+			...stored,
+			systemMessage: {
+				role: "system",
+				content: [{ type: "text", text: "base instructions", textSignature: "opaque signature" }],
+				timestamp: 1,
+			},
+		},
+	]);
+	assert.equal(
+		readHistory(arrayCheckpoint, { entryId: compact, pointer: "/systemMessage/content/0/textSignature" }).status,
+		"withheld",
+	);
+	const block = readHistory(arrayCheckpoint, { entryId: compact, pointer: "/systemMessage/content/0" }).items as Record<
+		string,
+		unknown
+	>[];
+	assert.ok(
+		block.some((field) => field.pointer === "/systemMessage/content/0/textSignature" && field.kind === "withheld"),
+	);
 });
 
 test("custom entries retain their entry class and literal nested pointers", () => {
@@ -353,8 +371,20 @@ test("tool arguments remain available by pointer while provider payloads and red
 		} as unknown as SessionEntry,
 	]);
 	assert.deepEqual(readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments" }).items, [
-		{ key: "data", pointer: "/message/content/0/arguments/data", kind: "string", totalCodeUnits: 10, text: "tool input" },
-		{ key: "query", pointer: "/message/content/0/arguments/query", kind: "string", totalCodeUnits: 16, text: "specific request" },
+		{
+			key: "data",
+			pointer: "/message/content/0/arguments/data",
+			kind: "string",
+			totalCodeUnits: 10,
+			text: "tool input",
+		},
+		{
+			key: "query",
+			pointer: "/message/content/0/arguments/query",
+			kind: "string",
+			totalCodeUnits: 16,
+			text: "specific request",
+		},
 	]);
 	assert.equal(readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments/data" }).text, "tool input");
 	for (const pointer of [
@@ -380,7 +410,12 @@ test("tool arguments remain available by pointer while provider payloads and red
 test("context-edit replacement blocks withhold payloads and signatures in direct reads and manifests", () => {
 	const cases = [
 		{
-			block: { type: "thinking", thinking: "synthetic redacted text", thinkingSignature: "synthetic thinking signature", redacted: true },
+			block: {
+				type: "thinking",
+				thinking: "synthetic redacted text",
+				thinkingSignature: "synthetic thinking signature",
+				redacted: true,
+			},
 			keys: ["thinking", "thinkingSignature"],
 		},
 		{
@@ -393,16 +428,23 @@ test("context-edit replacement blocks withhold payloads and signatures in direct
 		},
 		{
 			block: {
-				type: "toolCall", id: "call", name: "synthetic_tool",
-				arguments: { data: "readable input" }, thoughtSignature: "synthetic call signature",
+				type: "toolCall",
+				id: "call",
+				name: "synthetic_tool",
+				arguments: { data: "readable input" },
+				thoughtSignature: "synthetic call signature",
 			},
 			keys: ["thoughtSignature"],
 		},
 	];
 	for (const { block, keys } of cases) {
 		const entry = {
-			id: "edit", parentId: null, timestamp: "2026-01-01", type: "context_edit",
-			targetId: "target", replacement: { content: [block] },
+			id: "edit",
+			parentId: null,
+			timestamp: "2026-01-01",
+			type: "context_edit",
+			targetId: "target",
+			replacement: { content: [block] },
 		} as unknown as SessionEntry;
 		const sm = source([entry]);
 		const manifest = readHistory(sm, { entryId: "edit", pointer: "/replacement/content/0" });
@@ -411,35 +453,60 @@ test("context-edit replacement blocks withhold payloads and signatures in direct
 			for (const selected of [pointer, `${pointer}/nested`]) {
 				const result = readHistory(sm, { entryId: "edit", pointer: selected });
 				assert.equal(result.status, "withheld", selected);
-				assert.equal(result.reason, "Image payloads, opaque provider signatures, and redacted thinking are not exposed.");
+				assert.equal(
+					result.reason,
+					"Image payloads, opaque provider signatures, and redacted thinking are not exposed.",
+				);
 				assert.equal(result.text, undefined);
 			}
-			assert.ok((manifest.items as Record<string, unknown>[]).some(
-				(item) => item.pointer === pointer && item.kind === "withheld" &&
-					item.reason === "Image payload, provider signature, or redacted thinking.",
-			));
+			assert.ok(
+				(manifest.items as Record<string, unknown>[]).some(
+					(item) =>
+						item.pointer === pointer &&
+						item.kind === "withheld" &&
+						item.reason === "Image payload, provider signature, or redacted thinking.",
+				),
+			);
 			assert.ok(!JSON.stringify(toolResult(manifest)).includes(Reflect.get(block, key)));
 		}
 	}
 });
 
 test("context-edit manifests expose replacement content and preserve ordinary selectors", () => {
-	const sm = source([{
-		id: "edit", parentId: null, timestamp: "2026-01-01", type: "context_edit", targetId: "target",
-		replacement: { content: [
-			{ type: "text", text: "readable replacement" },
-			{ type: "thinking", thinking: "readable thinking", redacted: false },
-			{ type: "thinking", thinking: "synthetic redacted text", redacted: true },
-			{ type: "image", data: "synthetic image payload", mimeType: "image/png" },
-			{ type: "toolCall", id: "call", name: "synthetic_tool", arguments: { data: "readable input", textSignature: "ordinary field" } },
-		] },
-	} as unknown as SessionEntry]);
+	const sm = source([
+		{
+			id: "edit",
+			parentId: null,
+			timestamp: "2026-01-01",
+			type: "context_edit",
+			targetId: "target",
+			replacement: {
+				content: [
+					{ type: "text", text: "readable replacement" },
+					{ type: "thinking", thinking: "readable thinking", redacted: false },
+					{ type: "thinking", thinking: "synthetic redacted text", redacted: true },
+					{ type: "image", data: "synthetic image payload", mimeType: "image/png" },
+					{
+						type: "toolCall",
+						id: "call",
+						name: "synthetic_tool",
+						arguments: { data: "readable input", textSignature: "ordinary field" },
+					},
+				],
+			},
+		} as unknown as SessionEntry,
+	]);
 	const root = readHistory(sm, { entryId: "edit" });
-	assert.ok((root.items as Record<string, unknown>[]).some((item) => item.pointer === "/replacement" && item.kind === "object"));
+	assert.ok(
+		(root.items as Record<string, unknown>[]).some((item) => item.pointer === "/replacement" && item.kind === "object"),
+	);
 	assert.equal((root.entry as Record<string, unknown>).targetId, "target");
 	const replacement = readHistory(sm, { entryId: "edit", pointer: "/replacement" });
 	assert.equal(replacement.status, "complete");
-	assert.deepEqual((replacement.items as Record<string, unknown>[]).map((item) => item.pointer), ["/replacement/content"]);
+	assert.deepEqual(
+		(replacement.items as Record<string, unknown>[]).map((item) => item.pointer),
+		["/replacement/content"],
+	);
 	const first = readHistory(sm, { entryId: "edit", pointer: "/replacement/content", maxItems: 1 });
 	assert.equal(first.status, "page");
 	assert.equal((first.items as Record<string, unknown>[])[0].pointer, "/replacement/content/0");
@@ -463,9 +530,16 @@ test("context-edit manifests expose replacement content and preserve ordinary se
 
 test("context edits preserve null, string and empty replacements without withholding ordinary custom data", () => {
 	for (const replacement of [null, { content: "replacement text" }, { content: [] }]) {
-		const sm = source([{
-			id: "edit", parentId: null, timestamp: "2026-01-01", type: "context_edit", targetId: "target", replacement,
-		} as unknown as SessionEntry]);
+		const sm = source([
+			{
+				id: "edit",
+				parentId: null,
+				timestamp: "2026-01-01",
+				type: "context_edit",
+				targetId: "target",
+				replacement,
+			} as unknown as SessionEntry,
+		]);
 		const result = readHistory(sm, { entryId: "edit", pointer: "/replacement" });
 		assert.equal(result.status, "complete");
 		if (replacement === null) {
@@ -476,10 +550,15 @@ test("context edits preserve null, string and empty replacements without withhol
 			if (typeof replacement.content === "string") assert.equal(content.text, replacement.content);
 			else assert.deepEqual(content.items, []);
 		}
-		assert.equal(readHistory(sm, { entryId: "edit", pointer: "/replacement/content/0/thinkingSignature" }).status, "field_absent");
+		assert.equal(
+			readHistory(sm, { entryId: "edit", pointer: "/replacement/content/0/thinkingSignature" }).status,
+			"field_absent",
+		);
 	}
 	const sm = SessionManager.inMemory();
-	const id = sm.appendCustomEntry("ordinary-data", { replacement: { content: [{ type: "image", data: "ordinary data" }] } });
+	const id = sm.appendCustomEntry("ordinary-data", {
+		replacement: { content: [{ type: "image", data: "ordinary data" }] },
+	});
 	assert.equal(readHistory(sm, { entryId: id, pointer: "/data/replacement/content/0/data" }).text, "ordinary data");
 });
 
@@ -519,7 +598,9 @@ test("defensive execute validation rejects mutated parameters and observes cance
 	const ctx = {
 		...({ sessionManager: sm } as unknown as ExtensionContext),
 		tools: [],
-		executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+		executeTool: async () => {
+			throw new Error("Unexpected nested tool call");
+		},
 	} satisfies ExtensionToolContext;
 	const search = tools[0];
 	const read = tools[1];
@@ -609,7 +690,8 @@ function nest(depth: number, leaf: string): unknown {
 /** Follow argument-search continuations until the walk ends; every call keeps the original query and limits. */
 function allPages(sm: HistorySource, args: Record<string, unknown>) {
 	const pages = [searchHistory(sm, args)];
-	while (pages.at(-1)?.next !== null && pages.length < 50) pages.push(searchHistory(sm, { ...args, ...next(pages.at(-1) as Result) }));
+	while (pages.at(-1)?.next !== null && pages.length < 50)
+		pages.push(searchHistory(sm, { ...args, ...next(pages.at(-1) as Result) }));
 	return pages;
 }
 
@@ -897,7 +979,13 @@ test("an argument-search match and one read of the call's arguments answer every
 	const listing = readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments" });
 	assert.equal(listing.status, "complete");
 	assert.deepEqual(listing.items, [
-		{ key: "content", pointer: "/message/content/0/arguments/content", kind: "string", totalCodeUnits: 18, text: "use-path marker 42" },
+		{
+			key: "content",
+			pointer: "/message/content/0/arguments/content",
+			kind: "string",
+			totalCodeUnits: 18,
+			text: "use-path marker 42",
+		},
 		{ key: "archive", pointer: "/message/content/0/arguments/archive", kind: "scalar", value: false },
 		{ key: "odd/key~", pointer: "/message/content/0/arguments/odd~1key~0", kind: "scalar", value: 3 },
 		{
@@ -908,22 +996,62 @@ test("an argument-search match and one read of the call's arguments answer every
 			omitted: true,
 			action: "Read this pointer with offset and maxBytes.",
 		},
-		{ key: "edits", pointer: "/message/content/0/arguments/edits", kind: "array", length: 1, omitted: true, action: "Read this pointer with offset and maxItems." },
-		{ key: "options", pointer: "/message/content/0/arguments/options", kind: "object", omitted: true, action: "Read this pointer to list its argument keys." },
-		{ key: "deep", pointer: "/message/content/0/arguments/deep", kind: "object", omitted: true, action: "Read this pointer to list its argument keys." },
+		{
+			key: "edits",
+			pointer: "/message/content/0/arguments/edits",
+			kind: "array",
+			length: 1,
+			omitted: true,
+			action: "Read this pointer with offset and maxItems.",
+		},
+		{
+			key: "options",
+			pointer: "/message/content/0/arguments/options",
+			kind: "object",
+			omitted: true,
+			action: "Read this pointer to list its argument keys.",
+		},
+		{
+			key: "deep",
+			pointer: "/message/content/0/arguments/deep",
+			kind: "object",
+			omitted: true,
+			action: "Read this pointer to list its argument keys.",
+		},
 		{ kind: "skipped", reason: "pointerLength", totalCodeUnits: LIMITS.pointerUnits },
 	]);
 	assert.equal(readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments/odd~1key~0" }).value, 3);
 	assert.deepEqual(readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments/edits/0" }).items, [
-		{ key: "oldText", pointer: "/message/content/0/arguments/edits/0/oldText", kind: "string", totalCodeUnits: 1, text: "a" },
-		{ key: "newText", pointer: "/message/content/0/arguments/edits/0/newText", kind: "string", totalCodeUnits: 1, text: "b" },
+		{
+			key: "oldText",
+			pointer: "/message/content/0/arguments/edits/0/oldText",
+			kind: "string",
+			totalCodeUnits: 1,
+			text: "a",
+		},
+		{
+			key: "newText",
+			pointer: "/message/content/0/arguments/edits/0/newText",
+			kind: "string",
+			totalCodeUnits: 1,
+			text: "b",
+		},
 	]);
 	const paged = readHistory(sm, { entryId: "a", pointer: "/message/content/0/arguments", maxItems: 2 });
 	assert.equal((paged.items as unknown[]).length, 2);
-	assert.deepEqual(paged.next, { sessionId: "synthetic-session", entryId: "a", pointer: "/message/content/0/arguments", offset: 2 });
+	assert.deepEqual(paged.next, {
+		sessionId: "synthetic-session",
+		entryId: "a",
+		pointer: "/message/content/0/arguments",
+		offset: 2,
+	});
 	let pointer = "/message/content/0/arguments/deep";
 	for (let level = 1; level < LIMITS.argumentDepth - 1; level++) pointer += "/next";
 	const lastListed = readHistory(sm, { entryId: "a", pointer });
-	assert.deepEqual((lastListed.items as Record<string, unknown>[])[0]?.action, "Read this pointer, or append a known child key as a JSON pointer. Opaque object keys are not enumerated.", "the listing stops at the argument-search depth");
+	assert.deepEqual(
+		(lastListed.items as Record<string, unknown>[])[0]?.action,
+		"Read this pointer, or append a known child key as a JSON pointer. Opaque object keys are not enumerated.",
+		"the listing stops at the argument-search depth",
+	);
 	assert.equal(readHistory(sm, { entryId: "a", pointer: `${pointer}/next` }).status, "structured_omitted");
 });

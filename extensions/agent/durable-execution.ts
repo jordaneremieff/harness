@@ -11,19 +11,59 @@ import type { Context } from "@earendil-works/chord/context";
 import { awaitWithContext, withCancel } from "@earendil-works/chord/context";
 import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode";
 import { CodemodeSandbox, parseCodemodeSource } from "@earendil-works/pi-codemode";
-import { createCodemodeExtension, createCodemodeTool, type CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
+import {
+	createCodemodeExtension,
+	createCodemodeTool,
+	type CodemodeNamespace,
+} from "@earendil-works/pi-durable/codemode";
 import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
-import type { AuthProvider, CallToolResult, ContentBlock, ListResourcesResult, ReadResourceResult, Resource, ResourceTemplate, Tool as McpTool } from "@earendil-works/pi-mcp";
-import { createMcpToolName, isMcpServerOverride, JSON_RPC_ERROR_CODES, limitMcpContent, mcpNamespace, McpClient, McpError, normalizeMcpInputSchema, StdioTransport, StreamableHttpTransport, toLlmContent, validateMcpServerConfig } from "@earendil-works/pi-mcp";
+import type {
+	AuthProvider,
+	CallToolResult,
+	ContentBlock,
+	ListResourcesResult,
+	ReadResourceResult,
+	Resource,
+	ResourceTemplate,
+	Tool as McpTool,
+} from "@earendil-works/pi-mcp";
+import {
+	createMcpToolName,
+	isMcpServerOverride,
+	JSON_RPC_ERROR_CODES,
+	limitMcpContent,
+	mcpNamespace,
+	McpClient,
+	McpError,
+	normalizeMcpInputSchema,
+	StdioTransport,
+	StreamableHttpTransport,
+	toLlmContent,
+	validateMcpServerConfig,
+} from "@earendil-works/pi-mcp";
 import { McpOAuthAuthorizationRequiredError } from "@earendil-works/pi-mcp/oauth";
-import type { AgentSessionServices, LoadedMcpConfig, McpExposure, McpServerConfig, McpServerEntry } from "@earendil-works/pi-coding-agent";
+import type {
+	AgentSessionServices,
+	LoadedMcpConfig,
+	McpExposure,
+	McpServerConfig,
+	McpServerEntry,
+} from "@earendil-works/pi-coding-agent";
 export type { LoadedMcpConfig, McpExposure, McpServerConfig, McpServerEntry } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { obj, opt, str, type Schema } from "@earendil-works/pi-schema";
-import { QueuedCodemodeSandbox, type CodemodeAdmissionFailure, type CodemodeAdmissionFailureCode } from "./codemode-admission.ts";
-import { DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS, prepareNativeCodemodeArguments, replaceCodemodeTimeout } from "./codemode-source.ts";
+import {
+	QueuedCodemodeSandbox,
+	type CodemodeAdmissionFailure,
+	type CodemodeAdmissionFailureCode,
+} from "./codemode-admission.ts";
+import {
+	DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS,
+	prepareNativeCodemodeArguments,
+	replaceCodemodeTimeout,
+} from "./codemode-source.ts";
 import { guardStdio, McpGuardian } from "./mcp-guardian.ts";
 import { NativeMcpAuth } from "./mcp-auth.ts";
 
@@ -84,7 +124,6 @@ type NestedTool = Durable.ToolRegistration;
 
 type ToolResultContent = readonly (TextContent | ImageContent)[];
 
-
 // ─── MCP configuration ──────────────────────────────────────────────────────
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -92,7 +131,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isExposure(value: unknown): value is McpExposure {
-	return value === "codemode" || value === "deferred" || value === "direct" || value === "hidden" || value === "codemode-deferred";
+	return (
+		value === "codemode" ||
+		value === "deferred" ||
+		value === "direct" ||
+		value === "hidden" ||
+		value === "codemode-deferred"
+	);
 }
 
 /** Validate one `mcpServers` entry, returning a copy or an error message. */
@@ -102,7 +147,12 @@ function validateServerConfig(name: string, raw: unknown, scope: "global" | "pro
 	if (value.exposure === "codemode-deferred") value.exposure = "codemode";
 	if (value.toolExposure !== undefined) {
 		if (!isRecord(value.toolExposure)) return `server "${name}": toolExposure must map tool names to exposures`;
-		value.toolExposure = Object.fromEntries(Object.entries(value.toolExposure).map(([tool, exposure]) => [tool, exposure === "codemode-deferred" ? "codemode" : exposure]));
+		value.toolExposure = Object.fromEntries(
+			Object.entries(value.toolExposure).map(([tool, exposure]) => [
+				tool,
+				exposure === "codemode-deferred" ? "codemode" : exposure,
+			]),
+		);
 	}
 	const structural = validateMcpServerConfig(name, value, {
 		checkMetadataDocumentCallback(callbackUrl) {
@@ -127,7 +177,8 @@ function validateAuthFields(name: string, value: Record<string, unknown>, scope:
 	const auth = value.auth;
 	if (auth !== undefined) {
 		if (scope === "project") return `server "${name}": auth is only allowed in the global mcp.json`;
-		if (!isRecord(auth) || typeof auth.provider !== "string" || auth.provider === "") return `server "${name}": auth.provider must be a provider name`;
+		if (!isRecord(auth) || typeof auth.provider !== "string" || auth.provider === "")
+			return `server "${name}": auth.provider must be a provider name`;
 	}
 	return true;
 }
@@ -144,7 +195,12 @@ function isMcpSelectionOverride(value: unknown): value is Record<string, unknown
 	return isRecord(value) && isMcpServerOverride(value);
 }
 
-function applyProjectMcpOverride(name: string, patch: Record<string, unknown>, path: string, state: McpConfigState): void {
+function applyProjectMcpOverride(
+	name: string,
+	patch: Record<string, unknown>,
+	path: string,
+	state: McpConfigState,
+): void {
 	const base = state.servers.get(name);
 	if (base === undefined) {
 		state.errors.push(`${path}: server "${name}" needs "command" or "url", or a global server to override`);
@@ -160,7 +216,12 @@ function applyProjectMcpOverride(name: string, patch: Record<string, unknown>, p
 	else state.servers.set(name, { ...base, config, override: path });
 }
 
-function readMcpConfigServers(servers: Record<string, unknown>, path: string, scope: "global" | "project", state: McpConfigState): void {
+function readMcpConfigServers(
+	servers: Record<string, unknown>,
+	path: string,
+	scope: "global" | "project",
+	state: McpConfigState,
+): void {
 	for (const [name, raw] of Object.entries(servers)) {
 		if (scope === "project" && isMcpSelectionOverride(raw)) {
 			applyProjectMcpOverride(name, raw, path, state);
@@ -171,7 +232,9 @@ function readMcpConfigServers(servers: Record<string, unknown>, path: string, sc
 			state.errors.push(`${path}: ${config}`);
 			continue;
 		}
-		const clash = [...state.servers.keys()].find((other) => other !== name && mcpNamespace(other) === mcpNamespace(name));
+		const clash = [...state.servers.keys()].find(
+			(other) => other !== name && mcpNamespace(other) === mcpNamespace(name),
+		);
 		if (clash !== undefined) {
 			state.errors.push(`${path}: server "${name}" conflicts with "${clash}"`);
 			continue;
@@ -243,7 +306,11 @@ function resolveConfigValue(config: string, env: Record<string, string | undefin
 
 function resolveCommandValue(config: string): string | undefined {
 	try {
-		const output = execSync(config.slice(1), { encoding: "utf-8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
+		const output = execSync(config.slice(1), {
+			encoding: "utf-8",
+			timeout: 10_000,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
 		return output.trim() || undefined;
 	} catch {
 		return undefined;
@@ -266,7 +333,11 @@ function resolveTemplateValue(config: string, env: Record<string, string | undef
 }
 
 /** One `$...` reference: its replacement text and the index after it. */
-function templateStep(config: string, dollar: number, env: Record<string, string | undefined>): { text: string; next: number } | undefined {
+function templateStep(
+	config: string,
+	dollar: number,
+	env: Record<string, string | undefined>,
+): { text: string; next: number } | undefined {
 	const next = config[dollar + 1];
 	if (next === "$" || next === "!") return { text: next, next: dollar + 2 };
 	const braced = next === "{" ? /^\{([A-Za-z_][A-Za-z0-9_]*)\}/.exec(config.slice(dollar + 1)) : null;
@@ -295,7 +366,9 @@ function createMcpResultSchema(structuredContentSchema: CodemodeJsonSchema | und
 }
 
 function textOf(content: readonly { type?: string; text?: string }[] | undefined): string {
-	return (content ?? []).flatMap((block) => (block.type === "text" && typeof block.text === "string" ? [block.text] : [])).join("\n");
+	return (content ?? [])
+		.flatMap((block) => (block.type === "text" && typeof block.text === "string" ? [block.text] : []))
+		.join("\n");
 }
 
 async function saveToTempFile(data: string | Uint8Array, extension: string): Promise<string> {
@@ -311,7 +384,10 @@ function extensionOf(uri: string): string {
 
 function isTextMimeType(mimeType: string | undefined): boolean {
 	const type = mimeType?.split(";", 1)[0]?.trim().toLowerCase();
-	return type !== undefined && (type.startsWith("text/") || type === "application/json" || type.endsWith("+json") || type.endsWith("+xml"));
+	return (
+		type !== undefined &&
+		(type.startsWith("text/") || type === "application/json" || type.endsWith("+json") || type.endsWith("+xml"))
+	);
 }
 
 type ResourceLinkBlock = Extract<ContentBlock, { type: "resource_link" }>;
@@ -331,7 +407,11 @@ function resourceLinkText(block: ResourceLinkBlock): string {
 	return `[MCP resource ${block.uri} "${block.title ?? block.name}"${details.length > 0 ? ` (${details.join(", ")})` : ""}${description}]`;
 }
 
-async function blobResourceContent(resource: { uri: string; mimeType?: string; blob: string }): Promise<ToolResultContent> {
+async function blobResourceContent(resource: {
+	uri: string;
+	mimeType?: string;
+	blob: string;
+}): Promise<ToolResultContent> {
 	const data = Buffer.from(resource.blob, "base64");
 	if (isTextMimeType(resource.mimeType)) return [{ type: "text", text: data.toString("utf8") }];
 	const kind = `${resource.mimeType ?? "unknown type"}, ${data.length} bytes`;
@@ -339,24 +419,40 @@ async function blobResourceContent(resource: { uri: string; mimeType?: string; b
 		const path = await saveToTempFile(data, extensionOf(resource.uri));
 		return [{ type: "text", text: `[MCP resource ${resource.uri} (${kind}) written to ${path}]` }];
 	} catch (error) {
-		return [{ type: "text", text: `[MCP resource ${resource.uri} (${kind}) could not be written: ${error instanceof Error ? error.message : String(error)}]` }];
+		return [
+			{
+				type: "text",
+				text: `[MCP resource ${resource.uri} (${kind}) could not be written: ${error instanceof Error ? error.message : String(error)}]`,
+			},
+		];
 	}
 }
 
 /** Convert one MCP result into a Durable tool result. Scripts read `structuredOutput`. */
-export async function convertMcpResult(server: string, tool: string, result: CallToolResult): Promise<Durable.ToolExecutionResult<JsonValue>> {
-	const limited = await limitMcpContent([...await mcpModelContent(result)], saveToTempFile);
+export async function convertMcpResult(
+	server: string,
+	tool: string,
+	result: CallToolResult,
+): Promise<Durable.ToolExecutionResult<JsonValue>> {
+	const limited = await limitMcpContent([...(await mcpModelContent(result))], saveToTempFile);
 	const { _meta: _ignored, ...scriptResult } = result;
 	return {
 		output: [...limited.content],
 		structuredOutput: scriptResult as unknown as JsonValue,
-		details: { server, tool, ...(limited.fullOutputPath === undefined ? {} : { fullOutputPath: limited.fullOutputPath }) },
+		details: {
+			server,
+			tool,
+			...(limited.fullOutputPath === undefined ? {} : { fullOutputPath: limited.fullOutputPath }),
+		},
 		...(result.isError ? { isError: true } : {}),
 	};
 }
 
 async function mcpModelContent(result: CallToolResult): Promise<ToolResultContent> {
-	const converted = result.content.length > 0 ? (await Promise.all(result.content.map((block) => blockToContent(block)))).flat() : (toLlmContent(result) as ToolResultContent);
+	const converted =
+		result.content.length > 0
+			? (await Promise.all(result.content.map((block) => blockToContent(block)))).flat()
+			: (toLlmContent(result) as ToolResultContent);
 	const content = [...converted];
 	if (result.isError && textOf(content) === "") content.push({ type: "text", text: "MCP tool returned an error" });
 	return content;
@@ -384,7 +480,11 @@ function resolveHeaders(headers: Readonly<Record<string, string>> | undefined): 
 }
 
 /** Build the transport auth for one server from its configured provider or stored OAuth tokens. */
-function createServerAuthProvider(entry: McpServerEntry, auth: NativeMcpAuth, modelRuntime: DurableExecutionHost["services"]["modelRuntime"]): AuthProvider | undefined {
+function createServerAuthProvider(
+	entry: McpServerEntry,
+	auth: NativeMcpAuth,
+	modelRuntime: DurableExecutionHost["services"]["modelRuntime"],
+): AuthProvider | undefined {
 	const { config, name } = entry;
 	if (!("url" in config)) return undefined;
 	if (config.auth !== undefined) {
@@ -392,14 +492,17 @@ function createServerAuthProvider(entry: McpServerEntry, auth: NativeMcpAuth, mo
 		return { token: async () => (await modelRuntime.getAuth(provider))?.auth.apiKey };
 	}
 	const headers = resolveHeaders(config.headers);
-	if (headers !== undefined && Object.keys(headers).some((header) => header.toLowerCase() === "authorization")) return undefined;
+	if (headers !== undefined && Object.keys(headers).some((header) => header.toLowerCase() === "authorization"))
+		return undefined;
 	return auth.provider(name, config, resolveConfigValue);
 }
 
 /** A transport error the model can act on, naming the server and how to sign in. */
 function mcpTransportError(server: McpServerEntry, error: unknown): Error {
 	if (error instanceof McpOAuthAuthorizationRequiredError) {
-		return new Error(`MCP server "${server.name}" requires sign-in. Run pi mcp login ${server.name} or /mcp login ${server.name} in an interactive session.`);
+		return new Error(
+			`MCP server "${server.name}" requires sign-in. Run pi mcp login ${server.name} or /mcp login ${server.name} in an interactive session.`,
+		);
 	}
 	return error instanceof Error ? error : new Error(String(error));
 }
@@ -407,7 +510,11 @@ function mcpTransportError(server: McpServerEntry, error: unknown): Error {
 function createTransport(entry: McpServerEntry, cwd: string, authProvider: AuthProvider | undefined) {
 	const { config, name } = entry;
 	if ("url" in config) {
-		return new StreamableHttpTransport({ url: config.url, headers: resolveHeaders(config.headers), ...(authProvider === undefined ? {} : { authProvider }) });
+		return new StreamableHttpTransport({
+			url: config.url,
+			headers: resolveHeaders(config.headers),
+			...(authProvider === undefined ? {} : { authProvider }),
+		});
 	}
 	if (typeof config.command !== "string") throw new Error(`MCP server "${name}" defines neither url nor command`);
 	const env: Record<string, string> = {};
@@ -447,7 +554,13 @@ class McpServerConnection {
 	readonly authProvider: AuthProvider | undefined;
 	private readonly guardian: McpGuardian;
 
-	constructor(entry: McpServerEntry, cwd: string, onTools: () => void, authProvider: AuthProvider | undefined, guardian: McpGuardian) {
+	constructor(
+		entry: McpServerEntry,
+		cwd: string,
+		onTools: () => void,
+		authProvider: AuthProvider | undefined,
+		guardian: McpGuardian,
+	) {
 		this.guardian = guardian;
 		this.entry = entry;
 		this.cwd = cwd;
@@ -480,37 +593,55 @@ class McpServerConnection {
 	}
 
 	callTool(name: string, args: Record<string, unknown>, options: { signal?: AbortSignal }): Promise<CallToolResult> {
-		return this.withClient((client) => client.callTool(name, args, { signal: options.signal, timeoutMs: this.timeoutMs }));
+		return this.withClient((client) =>
+			client.callTool(name, args, { signal: options.signal, timeoutMs: this.timeoutMs }),
+		);
 	}
 
 	/** Every resource, following `nextCursor` through all pages. */
 	allResources(options: { signal?: AbortSignal } = {}): Promise<Resource[]> {
-		return this.withClient((client) => client.listResources({ signal: options.signal, timeoutMs: this.timeoutMs }), true);
+		return this.withClient(
+			(client) => client.listResources({ signal: options.signal, timeoutMs: this.timeoutMs }),
+			true,
+		);
 	}
 
 	resourcesPage(cursor: string | undefined, options: { signal?: AbortSignal } = {}): Promise<ListResourcesResult> {
-		return this.withClient((client) => client.listResourcesPage(cursor, { signal: options.signal, timeoutMs: this.timeoutMs }), true);
+		return this.withClient(
+			(client) => client.listResourcesPage(cursor, { signal: options.signal, timeoutMs: this.timeoutMs }),
+			true,
+		);
 	}
 
 	/** Every resource template, following `nextCursor` through all pages. */
 	allResourceTemplates(options: { signal?: AbortSignal } = {}): Promise<ResourceTemplate[]> {
-		return this.withClient((client) => client.listResourceTemplates({ signal: options.signal, timeoutMs: this.timeoutMs }), true);
+		return this.withClient(
+			(client) => client.listResourceTemplates({ signal: options.signal, timeoutMs: this.timeoutMs }),
+			true,
+		);
 	}
 
-	resourceTemplatesPage(cursor: string | undefined, options: { signal?: AbortSignal } = {}): Promise<{ resourceTemplates: ResourceTemplate[]; nextCursor?: string }> {
+	resourceTemplatesPage(
+		cursor: string | undefined,
+		options: { signal?: AbortSignal } = {},
+	): Promise<{ resourceTemplates: ResourceTemplate[]; nextCursor?: string }> {
 		return this.withClient(async (client) => {
 			try {
 				return await client.listResourceTemplatesPage(cursor, { signal: options.signal, timeoutMs: this.timeoutMs });
 			} catch (error) {
 				// Servers that do not implement templates list have none.
-				if (error instanceof McpError && error.code === JSON_RPC_ERROR_CODES.methodNotFound) return { resourceTemplates: [] };
+				if (error instanceof McpError && error.code === JSON_RPC_ERROR_CODES.methodNotFound)
+					return { resourceTemplates: [] };
 				throw error;
 			}
 		}, true);
 	}
 
 	readResource(uri: string, options: { signal?: AbortSignal } = {}): Promise<ReadResourceResult> {
-		return this.withClient((client) => client.readResource(uri, { signal: options.signal, timeoutMs: this.timeoutMs }), true);
+		return this.withClient(
+			(client) => client.readResource(uri, { signal: options.signal, timeoutMs: this.timeoutMs }),
+			true,
+		);
 	}
 
 	/** Run one request, reconnecting when the client dropped; sign-in failures become readable errors. */
@@ -602,7 +733,9 @@ class McpServerConnection {
 /** The three resource tools, using the names established by common MCP hosts. */
 const RESOURCE_LIST_PARAMETERS = obj({
 	server: opt(str({ description: "MCP server name. Omit to list every server with resources." })),
-	cursor: opt(str({ description: "Opaque cursor from a previous call with the same server; omit for the first page." })),
+	cursor: opt(
+		str({ description: "Opaque cursor from a previous call with the same server; omit for the first page." }),
+	),
 });
 
 const RESOURCE_READ_PARAMETERS = obj({
@@ -610,9 +743,35 @@ const RESOURCE_READ_PARAMETERS = obj({
 	uri: str({ description: "Resource URI returned by list_mcp_resources." }),
 });
 
-const RESOURCE_LIST_OUTPUT_SCHEMA: Schema = { type: "object", properties: { server: { type: "string" }, resources: { type: "array", items: { type: "object" } }, nextCursor: { type: "string" }, errors: { type: "array", items: { type: "object" } } }, required: ["resources"] };
-const RESOURCE_TEMPLATES_OUTPUT_SCHEMA: Schema = { type: "object", properties: { server: { type: "string" }, resourceTemplates: { type: "array", items: { type: "object" } }, nextCursor: { type: "string" }, errors: { type: "array", items: { type: "object" } } }, required: ["resourceTemplates"] };
-const RESOURCE_READ_OUTPUT_SCHEMA: Schema = { type: "object", properties: { server: { type: "string" }, uri: { type: "string" }, contents: { type: "array", items: { type: "object" } } }, required: ["server", "uri", "contents"] };
+const RESOURCE_LIST_OUTPUT_SCHEMA: Schema = {
+	type: "object",
+	properties: {
+		server: { type: "string" },
+		resources: { type: "array", items: { type: "object" } },
+		nextCursor: { type: "string" },
+		errors: { type: "array", items: { type: "object" } },
+	},
+	required: ["resources"],
+};
+const RESOURCE_TEMPLATES_OUTPUT_SCHEMA: Schema = {
+	type: "object",
+	properties: {
+		server: { type: "string" },
+		resourceTemplates: { type: "array", items: { type: "object" } },
+		nextCursor: { type: "string" },
+		errors: { type: "array", items: { type: "object" } },
+	},
+	required: ["resourceTemplates"],
+};
+const RESOURCE_READ_OUTPUT_SCHEMA: Schema = {
+	type: "object",
+	properties: {
+		server: { type: "string" },
+		uri: { type: "string" },
+		contents: { type: "array", items: { type: "object" } },
+	},
+	required: ["server", "uri", "contents"],
+};
 
 /** MCP App resources are user interfaces for hosts that render them. */
 function isMcpAppResource(item: { uri?: string; uriTemplate?: string; mimeType?: string }): boolean {
@@ -629,12 +788,20 @@ function listedResource(server: string, item: unknown): Record<string, JsonValue
 }
 
 /** A resource tool result: listing JSON for the model and the full payload for scripts. */
-async function resourceJsonResult(tool: string, server: string | undefined, payload: JsonValue): Promise<Durable.ToolExecutionResult<JsonValue>> {
+async function resourceJsonResult(
+	tool: string,
+	server: string | undefined,
+	payload: JsonValue,
+): Promise<Durable.ToolExecutionResult<JsonValue>> {
 	const limited = await limitMcpContent([{ type: "text", text: JSON.stringify(payload) }], saveToTempFile);
 	return {
 		output: [...limited.content],
 		structuredOutput: payload,
-		details: { server: server ?? "", tool, ...(limited.fullOutputPath === undefined ? {} : { fullOutputPath: limited.fullOutputPath }) },
+		details: {
+			server: server ?? "",
+			tool,
+			...(limited.fullOutputPath === undefined ? {} : { fullOutputPath: limited.fullOutputPath }),
+		},
 	};
 }
 
@@ -658,14 +825,24 @@ interface Activation {
 function computeActivation(host: DurableExecutionHost): Activation {
 	const settings = host.services.settingsManager.getSettings();
 	const defaultTools = host.services.settingsManager.getDefaultTools();
-	const disabled = new Set((settings.extensions ?? []).filter((entry) => entry.startsWith("-builtin:")).map((entry) => entry.slice(9)));
-	const config = disabled.has("mcp") ? { servers: [], errors: [] } : loadMcpConfig({ agentDir: host.agentDir, cwd: host.cwd, projectTrusted: host.services.settingsManager.isProjectTrusted() });
+	const disabled = new Set(
+		(settings.extensions ?? []).filter((entry) => entry.startsWith("-builtin:")).map((entry) => entry.slice(9)),
+	);
+	const config = disabled.has("mcp")
+		? { servers: [], errors: [] }
+		: loadMcpConfig({
+				agentDir: host.agentDir,
+				cwd: host.cwd,
+				projectTrusted: host.services.settingsManager.isProjectTrusted(),
+			});
 	for (const error of config.errors) host.services.diagnostics.push({ type: "warning", message: error });
 	const servers = config.servers.filter((server) => server.config.enabled !== false);
 	const uses = (exposure: McpExposure) => servers.some((server) => configuredExposures(server.config).has(exposure));
 	const configured = (name: string) => defaultTools?.includes(name) ?? false;
 	return {
-		codemode: !disabled.has("codemode") && (configured(CODEMODE_TOOL_NAME) || (config.autoEnableCodemode !== false && uses("codemode"))),
+		codemode:
+			!disabled.has("codemode") &&
+			(configured(CODEMODE_TOOL_NAME) || (config.autoEnableCodemode !== false && uses("codemode"))),
 		toolSearch: !disabled.has("tool_search") && (configured(TOOL_SEARCH_TOOL_NAME) || uses("deferred")),
 		servers,
 		indirect: servers.some((server) => hasIndirectTools(server.config)),
@@ -677,7 +854,9 @@ type AdmissionDoc = Durable.TaskDocToken<{ deadline?: number; admitted: boolean 
 
 // ─── Native execution host ────────────────────────────────────────────────
 
-function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
 /** The invocation budget expired while an MCP connection was still being discovered. */
 class CodemodeDiscoveryTimeoutError extends Error {}
 function hasIndirectTools(config: McpServerConfig): boolean {
@@ -699,7 +878,11 @@ class DurableExecutionRuntime implements DurableExecution {
 	private readonly servers: McpServerConnection[] = [];
 	private readonly guardian: McpGuardian;
 	private readonly auth: NativeMcpAuth;
-	private readonly sandbox = new CodemodeSandbox({ acquireWorker: () => { throw new Error("Codemode calls require queued worker admission."); } });
+	private readonly sandbox = new CodemodeSandbox({
+		acquireWorker: () => {
+			throw new Error("Codemode calls require queued worker admission.");
+		},
+	});
 	private readonly queuedSandboxes = new Set<QueuedCodemodeSandbox>();
 	private readonly readyTimeoutMs: number;
 	private readonly closeOnHostAbort = () => void this.close();
@@ -717,19 +900,32 @@ class DurableExecutionRuntime implements DurableExecution {
 		if (host.signal.aborted) void this.close();
 		else host.signal.addEventListener("abort", this.closeOnHostAbort, { once: true });
 		for (const server of host.signal.aborted ? [] : activation.servers) {
-			this.servers.push(new McpServerConnection(server, host.cwd, () => this.rebuildMcpTools(), createServerAuthProvider(server, this.auth, host.services.modelRuntime), this.guardian));
+			this.servers.push(
+				new McpServerConnection(
+					server,
+					host.cwd,
+					() => this.rebuildMcpTools(),
+					createServerAuthProvider(server, this.auth, host.services.modelRuntime),
+					this.guardian,
+				),
+			);
 		}
 		this.rebuildMcpTools();
 		this.ready = this.waitForDirectServers();
 	}
 
 	private async waitForDirectServers(): Promise<void> {
-		const pending = this.servers.filter((server) => configuredExposures(server.entry.config).has("direct")).map((server) => server.ready);
+		const pending = this.servers
+			.filter((server) => configuredExposures(server.entry.config).has("direct"))
+			.map((server) => server.ready);
 		if (pending.length === 0 || this.readyTimeoutMs <= 0) return;
 		await new Promise<void>((resolve) => {
 			const timer = setTimeout(resolve, this.readyTimeoutMs);
 			timer.unref?.();
-			void Promise.all(pending).then(() => { clearTimeout(timer); resolve(); });
+			void Promise.all(pending).then(() => {
+				clearTimeout(timer);
+				resolve();
+			});
 		});
 	}
 
@@ -737,66 +933,138 @@ class DurableExecutionRuntime implements DurableExecution {
 		const result: Durable.Extension[] = [];
 		if (activation.codemode) {
 			const Admission = this.host.durable.defineDoc<{ deadline?: number; admitted: boolean }>({
-				kind: "agent.codemode-admission", version: 1, scope: "task", initial: () => ({ admitted: false }), checkpointWhen: () => false,
+				kind: "agent.codemode-admission",
+				version: 1,
+				scope: "task",
+				initial: () => ({ admitted: false }),
+				checkpointWhen: () => false,
 			});
 			const native = createCodemodeExtension({ sandbox: this.sandbox, namespaces: this.namespaces });
-			const tools = (native.tools ?? []).map((tool) => tool.name !== CODEMODE_TOOL_NAME ? tool : {
-				...tool,
-				prepareArguments: prepareNativeCodemodeArguments,
-				execute: (args: { code: string }, api: Durable.ToolExecutionApi, context: Context) => this.executeCodemode(args, api, context, Admission),
+			const tools = (native.tools ?? []).map((tool) =>
+				tool.name !== CODEMODE_TOOL_NAME
+					? tool
+					: {
+							...tool,
+							prepareArguments: prepareNativeCodemodeArguments,
+							execute: (args: { code: string }, api: Durable.ToolExecutionApi, context: Context) =>
+								this.executeCodemode(args, api, context, Admission),
+						},
+			);
+			result.push({
+				...native,
+				tools,
+				hooks: [
+					this.host.durable.hook(this.host.durable.GenerationTask, {
+						beforeRequest: (request) => {
+							if (this.host.services.settingsManager.getSettings().codemode?.mode !== "only") return;
+							return {
+								messages: request.messages.map((message) =>
+									message.role !== "system"
+										? message
+										: {
+												...message,
+												...(message.toolsAdded === undefined
+													? {}
+													: {
+															toolsAdded: message.toolsAdded.filter((tool) =>
+																CODEMODE_ONLY_DECLARATIONS.has(tool.name),
+															),
+														}),
+											},
+								),
+							};
+						},
+					}),
+				],
 			});
-			result.push({ ...native, tools, hooks: [this.host.durable.hook(this.host.durable.GenerationTask, {
-				beforeRequest: (request) => {
-					if (this.host.services.settingsManager.getSettings().codemode?.mode !== "only") return;
-					return { messages: request.messages.map((message) => message.role !== "system" ? message : {
-						...message,
-						...(message.toolsAdded === undefined ? {} : { toolsAdded: message.toolsAdded.filter((tool) => CODEMODE_ONLY_DECLARATIONS.has(tool.name)) }),
-					}) };
-				},
-			})] });
 		}
 		if (activation.toolSearch) {
 			const native = createToolSearchExtension();
-			result.push({ ...native, tools: (native.tools ?? []).map((tool) => ({ ...tool,
-				execute: async (args: Parameters<typeof tool.execute>[0], api: Durable.ToolExecutionApi, context: Context) => { await this.waitForAllServers(context); return tool.execute(args, this.catalogApi(api), context); },
-			})) });
+			result.push({
+				...native,
+				tools: (native.tools ?? []).map((tool) => ({
+					...tool,
+					execute: async (
+						args: Parameters<typeof tool.execute>[0],
+						api: Durable.ToolExecutionApi,
+						context: Context,
+					) => {
+						await this.waitForAllServers(context);
+						return tool.execute(args, this.catalogApi(api), context);
+					},
+				})),
+			});
 		}
-		result.push(this.host.durable.defineExtension({ name: EXTENSION_NAME, tools: this.liveTools,
-			sections: activation.indirect ? [this.host.durable.section(MCP_SERVERS_SECTION, () => this.renderServersSection())] : [],
-		}));
+		result.push(
+			this.host.durable.defineExtension({
+				name: EXTENSION_NAME,
+				tools: this.liveTools,
+				sections: activation.indirect
+					? [this.host.durable.section(MCP_SERVERS_SECTION, () => this.renderServersSection())]
+					: [],
+			}),
+		);
 		return result;
 	}
 
 	/** Run one native script inside its persisted execution budget and queued worker admission. */
-	private async executeCodemode(args: { code: string }, api: Durable.ToolExecutionApi, context: Context, Admission: AdmissionDoc) {
+	private async executeCodemode(
+		args: { code: string },
+		api: Durable.ToolExecutionApi,
+		context: Context,
+		Admission: AdmissionDoc,
+	) {
 		const parsed = parseCodemodeSource(args.code);
-		const deadline = await api.memo(CODEMODE_DEADLINE_MEMO, api.now() + (parsed.options.timeoutMs ?? DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS), context);
+		const deadline = await api.memo(
+			CODEMODE_DEADLINE_MEMO,
+			api.now() + (parsed.options.timeoutMs ?? DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS),
+			context,
+		);
 		const refusal = await this.preflightCodemode(parsed.code, deadline, api, context);
-		const sandbox = new QueuedCodemodeSandbox({
-			deadline: () => api.commit(async (tx) => {
-				const state = await tx.doc(Admission, api.taskId);
-				if (state.deadline === undefined || state.admitted) {
-					state.deadline = api.now() + CODEMODE_WORKER_WAIT_MS;
-					state.admitted = false;
-				}
-				return Math.min(state.deadline, deadline);
-			}, context).then((admissionDeadline) => Date.now() + Math.max(0, admissionDeadline - api.now())),
-			admitted: () => api.commit(async (tx) => { (await tx.doc(Admission, api.taskId)).admitted = true; }, context),
-			now: () => api.now(),
-			executionDeadline: deadline,
-			...(refusal === undefined ? {} : { refusal }),
-		}, undefined, { memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES }, (failure: CodemodeAdmissionFailure) => api.diagnostic({
-			severity: failure.code === "CODEMODE_CANCELLED" ? "warn" : "error",
-			code: failure.code,
-			message: `${failure.message} (active ${failure.active}, waiting ${failure.waiting}, limit ${failure.limit})`,
-		}));
+		const sandbox = new QueuedCodemodeSandbox(
+			{
+				deadline: () =>
+					api
+						.commit(async (tx) => {
+							const state = await tx.doc(Admission, api.taskId);
+							if (state.deadline === undefined || state.admitted) {
+								state.deadline = api.now() + CODEMODE_WORKER_WAIT_MS;
+								state.admitted = false;
+							}
+							return Math.min(state.deadline, deadline);
+						}, context)
+						.then((admissionDeadline) => Date.now() + Math.max(0, admissionDeadline - api.now())),
+				admitted: () =>
+					api.commit(async (tx) => {
+						(await tx.doc(Admission, api.taskId)).admitted = true;
+					}, context),
+				now: () => api.now(),
+				executionDeadline: deadline,
+				...(refusal === undefined ? {} : { refusal }),
+			},
+			undefined,
+			{ memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES },
+			(failure: CodemodeAdmissionFailure) =>
+				api.diagnostic({
+					severity: failure.code === "CODEMODE_CANCELLED" ? "warn" : "error",
+					code: failure.code,
+					message: `${failure.message} (active ${failure.active}, waiting ${failure.waiting}, limit ${failure.limit})`,
+				}),
+		);
 		this.queuedSandboxes.add(sandbox);
 		if (this.closed) await sandbox.close();
 		try {
 			// A pending refusal ends the script at its sandbox start whatever the budget; the full budget keeps Pi from
 			// ending it earlier with an unrecorded timeout, so the refusal reaches its diagnostic.
-			const remainingBudget = refusal === undefined ? Math.max(1, Math.ceil(deadline - api.now())) : parsed.options.timeoutMs ?? DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS;
-			return await createCodemodeTool({ sandbox, namespaces: this.namespaces }).execute({ ...args, code: replaceCodemodeTimeout(args.code, remainingBudget) }, this.catalogApi(api), context);
+			const remainingBudget =
+				refusal === undefined
+					? Math.max(1, Math.ceil(deadline - api.now()))
+					: (parsed.options.timeoutMs ?? DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS);
+			return await createCodemodeTool({ sandbox, namespaces: this.namespaces }).execute(
+				{ ...args, code: replaceCodemodeTimeout(args.code, remainingBudget) },
+				this.catalogApi(api),
+				context,
+			);
 		} finally {
 			this.queuedSandboxes.delete(sandbox);
 			await sandbox.close();
@@ -807,15 +1075,22 @@ class DurableExecutionRuntime implements DurableExecution {
 	 * MCP discovery spends the script's own budget. An expired budget or a cancellation is returned, not thrown: it
 	 * refuses execution only when the native tool asks for a sandbox, so a result it already retained still returns.
 	 */
-	private async preflightCodemode(code: string, deadline: number, api: Durable.ToolExecutionApi, context: Context): Promise<CodemodeRefusal | undefined> {
+	private async preflightCodemode(
+		code: string,
+		deadline: number,
+		api: Durable.ToolExecutionApi,
+		context: Context,
+	): Promise<CodemodeRefusal | undefined> {
 		try {
 			await this.waitForScriptServers(code, context, deadline - api.now());
 		} catch (error) {
-			if (error instanceof CodemodeDiscoveryTimeoutError) return { code: "CODEMODE_ADMISSION_TIMEOUT", message: error.message };
+			if (error instanceof CodemodeDiscoveryTimeoutError)
+				return { code: "CODEMODE_ADMISSION_TIMEOUT", message: error.message };
 			if (context.abortSignal?.aborted === true) return { code: "CODEMODE_CANCELLED", message: errorText(error) };
 			throw error;
 		}
-		if (deadline - api.now() <= 0) return { code: "CODEMODE_ADMISSION_TIMEOUT", message: "The codemode script timed out before worker admission." };
+		if (deadline - api.now() <= 0)
+			return { code: "CODEMODE_ADMISSION_TIMEOUT", message: "The codemode script timed out before worker admission." };
 		return undefined;
 	}
 
@@ -824,15 +1099,36 @@ class DurableExecutionRuntime implements DurableExecution {
 		this.closed = true;
 		this.host.signal.removeEventListener("abort", this.closeOnHostAbort);
 		const pending = new Set(this.servers.map((server) => server.entry.name));
-		const closing = Promise.all([this.sandbox.close(), ...[...this.queuedSandboxes].map((sandbox) => sandbox.close()), ...this.servers.map(async (server) => { await server.close(); pending.delete(server.entry.name); })]);
+		const closing = Promise.all([
+			this.sandbox.close(),
+			...[...this.queuedSandboxes].map((sandbox) => sandbox.close()),
+			...this.servers.map(async (server) => {
+				await server.close();
+				pending.delete(server.entry.name);
+			}),
+		]);
 		const authSettled = this.auth.close();
 		this.closePromise = new Promise<void>((resolve, reject) => {
 			const deadline = setTimeout(() => {
-				this.host.services.diagnostics.push({ type: "warning", message: `MCP shutdown timed out: ${[...pending].join(", ")}` });
+				this.host.services.diagnostics.push({
+					type: "warning",
+					message: `MCP shutdown timed out: ${[...pending].join(", ")}`,
+				});
 				this.guardian.close();
 				resolve();
 			}, 5000);
-			void closing.then(() => { clearTimeout(deadline); this.guardian.close(); resolve(); }, (error: unknown) => { clearTimeout(deadline); this.guardian.close(); reject(error); });
+			void closing.then(
+				() => {
+					clearTimeout(deadline);
+					this.guardian.close();
+					resolve();
+				},
+				(error: unknown) => {
+					clearTimeout(deadline);
+					this.guardian.close();
+					reject(error);
+				},
+			);
 		}).finally(() => authSettled);
 		return this.closePromise;
 	}
@@ -842,15 +1138,23 @@ class DurableExecutionRuntime implements DurableExecution {
 		this.liveTools.splice(0);
 		this.namespaces.splice(0);
 		for (const server of this.servers) {
-			this.namespaces.push({ name: server.entry.name, prefix: `${mcpNamespace(server.entry.name)}__`,
+			this.namespaces.push({
+				name: server.entry.name,
+				prefix: `${mcpNamespace(server.entry.name)}__`,
 				...(server.entry.config.description === undefined ? {} : { description: server.entry.config.description }),
 				...(server.instructions === undefined ? {} : { instructions: server.instructions }),
 			});
 			this.registerServerTools(server);
 		}
 		// Resource capabilities are unknown until use. Keep the declarations independent of connection progress.
-		const exposures = new Set(this.servers.filter((server) => server.entry.config.exposure !== "hidden").map((server) => server.entry.config.exposure ?? "codemode"));
-		if (exposures.size > 0) for (const tool of this.resourceTools) this.liveTools.push({ ...tool, ...(exposures.has("direct") ? {} : { deferred: true }) });
+		const exposures = new Set(
+			this.servers
+				.filter((server) => server.entry.config.exposure !== "hidden")
+				.map((server) => server.entry.config.exposure ?? "codemode"),
+		);
+		if (exposures.size > 0)
+			for (const tool of this.resourceTools)
+				this.liveTools.push({ ...tool, ...(exposures.has("direct") ? {} : { deferred: true }) });
 	}
 
 	private registerServerTools(server: McpServerConnection): void {
@@ -860,7 +1164,11 @@ class DurableExecutionRuntime implements DurableExecution {
 		for (const tool of tools) {
 			const exposure = getToolExposure(server.entry.config, tool.name);
 			if (exposure === "hidden") continue;
-			const name = createMcpToolName(server.entry.name, tool.name, (candidate) => owners.has(candidate) || plain.indexOf(candidate) !== plain.lastIndexOf(candidate));
+			const name = createMcpToolName(
+				server.entry.name,
+				tool.name,
+				(candidate) => owners.has(candidate) || plain.indexOf(candidate) !== plain.lastIndexOf(candidate),
+			);
 			owners.add(name);
 			this.liveTools.push(this.defineMcpTool(server, tool, name, exposure));
 		}
@@ -871,41 +1179,77 @@ class DurableExecutionRuntime implements DurableExecution {
 	}
 
 	private defineMcpTool(server: McpServerConnection, tool: McpTool, name: string, exposure: McpExposure): NestedTool {
-		return { name, description: tool.description?.trim() || tool.title || `MCP tool ${tool.name} from server ${server.entry.name}`,
-			parameters: toParameters(tool.inputSchema), structuredOutputSchema: createMcpResultSchema(tool.outputSchema as CodemodeJsonSchema | undefined),
-			replay: "unsafe", ...(exposure === "direct" ? {} : { deferred: true }),
-			execute: async (args, _api, context) => convertMcpResult(server.entry.name, tool.name, await server.callTool(tool.name, args as Record<string, unknown>, { signal: context.abortSignal })),
+		return {
+			name,
+			description: tool.description?.trim() || tool.title || `MCP tool ${tool.name} from server ${server.entry.name}`,
+			parameters: toParameters(tool.inputSchema),
+			structuredOutputSchema: createMcpResultSchema(tool.outputSchema as CodemodeJsonSchema | undefined),
+			replay: "unsafe",
+			...(exposure === "direct" ? {} : { deferred: true }),
+			execute: async (args, _api, context) =>
+				convertMcpResult(
+					server.entry.name,
+					tool.name,
+					await server.callTool(tool.name, args as Record<string, unknown>, { signal: context.abortSignal }),
+				),
 		};
 	}
 
 	/** A tool phase pins its agent before MCP discovery; the public conversation read resolves the completed catalog. */
 	private catalogApi(api: Durable.ToolExecutionApi): Durable.ToolExecutionApi {
 		if (this.servers.length === 0) return api;
-		return { ...api, get models() { return api.models; }, get env() { return api.env; }, agent: async (context) => {
-			await api.agent(context);
-			const conversation = await this.host.harness.conversation(api.conversationId, context);
-			if (conversation === undefined) throw new Error("The MCP tool's conversation is unavailable");
-			return conversation.agent(context);
-		} };
+		return {
+			...api,
+			get models() {
+				return api.models;
+			},
+			get env() {
+				return api.env;
+			},
+			agent: async (context) => {
+				await api.agent(context);
+				const conversation = await this.host.harness.conversation(api.conversationId, context);
+				if (conversation === undefined) throw new Error("The MCP tool's conversation is unavailable");
+				return conversation.agent(context);
+			},
+		};
 	}
 
 	private async waitForScriptServers(code: string, context: Context, timeoutMs: number): Promise<void> {
 		const wantsAll = /\b(searchTools|describeNamespace|describeTool|ALL_TOOLS)\b/.test(code);
-		const waiting = this.servers.filter((server) => wantsAll || new RegExp(`\\b${mcpNamespace(server.entry.name)}(?:__|\\b)`, "u").test(code) || /\b(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource)\b/.test(code));
+		const waiting = this.servers.filter(
+			(server) =>
+				wantsAll ||
+				new RegExp(`\\b${mcpNamespace(server.entry.name)}(?:__|\\b)`, "u").test(code) ||
+				/\b(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource)\b/.test(code),
+		);
 		await this.waitForServers(waiting, context, timeoutMs);
 	}
-	private async waitForAllServers(context: Context): Promise<void> { await this.waitForServers(this.servers, context); }
-	private async waitForServers(servers: readonly McpServerConnection[], context: Context, timeoutMs?: number): Promise<void> {
+	private async waitForAllServers(context: Context): Promise<void> {
+		await this.waitForServers(this.servers, context);
+	}
+	private async waitForServers(
+		servers: readonly McpServerConnection[],
+		context: Context,
+		timeoutMs?: number,
+	): Promise<void> {
 		if (servers.length === 0) return;
 		const signal = context.abortSignal;
 		signal?.throwIfAborted();
-		if (timeoutMs !== undefined && timeoutMs <= 0) throw new CodemodeDiscoveryTimeoutError("The codemode script timed out while waiting for MCP servers.");
+		if (timeoutMs !== undefined && timeoutMs <= 0)
+			throw new CodemodeDiscoveryTimeoutError("The codemode script timed out while waiting for MCP servers.");
 		// Cancelling this waiter ends only the wait: a shared MCP connection keeps its own lifetime.
 		const waiter = timeoutMs === undefined ? undefined : withCancel(context);
-		const timer = waiter === undefined ? undefined : setTimeout(
-			() => waiter.cancel(new CodemodeDiscoveryTimeoutError("The codemode script timed out while waiting for MCP servers.")),
-			timeoutMs,
-		);
+		const timer =
+			waiter === undefined
+				? undefined
+				: setTimeout(
+						() =>
+							waiter.cancel(
+								new CodemodeDiscoveryTimeoutError("The codemode script timed out while waiting for MCP servers."),
+							),
+						timeoutMs,
+					);
 		timer?.unref?.();
 		try {
 			await awaitWithContext(Promise.all(servers.map((server) => server.ready)), waiter?.context ?? context);
@@ -926,7 +1270,8 @@ class DurableExecutionRuntime implements DurableExecution {
 				parameters: RESOURCE_LIST_PARAMETERS,
 				structuredOutputSchema: RESOURCE_LIST_OUTPUT_SCHEMA,
 				replay: "safe",
-				execute: (args, _api, context) => this.listResourceTool(LIST_MCP_RESOURCES_TOOL, "resources", args as Record<string, unknown>, context),
+				execute: (args, _api, context) =>
+					this.listResourceTool(LIST_MCP_RESOURCES_TOOL, "resources", args as Record<string, unknown>, context),
 			},
 			{
 				name: LIST_MCP_RESOURCE_TEMPLATES_TOOL,
@@ -935,7 +1280,13 @@ class DurableExecutionRuntime implements DurableExecution {
 				parameters: RESOURCE_LIST_PARAMETERS,
 				structuredOutputSchema: RESOURCE_TEMPLATES_OUTPUT_SCHEMA,
 				replay: "safe",
-				execute: (args, _api, context) => this.listResourceTool(LIST_MCP_RESOURCE_TEMPLATES_TOOL, "resourceTemplates", args as Record<string, unknown>, context),
+				execute: (args, _api, context) =>
+					this.listResourceTool(
+						LIST_MCP_RESOURCE_TEMPLATES_TOOL,
+						"resourceTemplates",
+						args as Record<string, unknown>,
+						context,
+					),
 			},
 			{
 				name: READ_MCP_RESOURCE_TOOL,
@@ -948,7 +1299,12 @@ class DurableExecutionRuntime implements DurableExecution {
 		];
 	}
 
-	private async listResourceTool(tool: string, key: "resources" | "resourceTemplates", params: Record<string, unknown>, context: Context): Promise<Durable.ToolExecutionResult<JsonValue>> {
+	private async listResourceTool(
+		tool: string,
+		key: "resources" | "resourceTemplates",
+		params: Record<string, unknown>,
+		context: Context,
+	): Promise<Durable.ToolExecutionResult<JsonValue>> {
 		await this.waitForAllServers(context);
 		const serverName = resourceStringArgument(params, "server");
 		const cursor = resourceStringArgument(params, "cursor");
@@ -958,29 +1314,57 @@ class DurableExecutionRuntime implements DurableExecution {
 			return await this.listEveryResourceServer(tool, key, servers, context);
 		}
 		const server = this.findResourceServer(serverName, servers);
-		const page = key === "resources" ? await server.resourcesPage(cursor, { signal: context.abortSignal }) : await server.resourceTemplatesPage(cursor, { signal: context.abortSignal });
+		const page =
+			key === "resources"
+				? await server.resourcesPage(cursor, { signal: context.abortSignal })
+				: await server.resourceTemplatesPage(cursor, { signal: context.abortSignal });
 		const items = "resources" in page ? page.resources : page.resourceTemplates;
-		const payload = { server: server.entry.name, [key]: items.filter((item) => !isMcpAppResource(item)).map((item) => listedResource(server.entry.name, item)), ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }) };
+		const payload = {
+			server: server.entry.name,
+			[key]: items.filter((item) => !isMcpAppResource(item)).map((item) => listedResource(server.entry.name, item)),
+			...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
+		};
 		return await resourceJsonResult(tool, server.entry.name, payload as unknown as JsonValue);
 	}
 
-	private async listEveryResourceServer(tool: string, key: "resources" | "resourceTemplates", servers: readonly McpServerConnection[], context: Context): Promise<Durable.ToolExecutionResult<JsonValue>> {
-		const results = await Promise.allSettled(servers.map((server) => (key === "resources" ? server.allResources({ signal: context.abortSignal }) : server.allResourceTemplates({ signal: context.abortSignal }))));
+	private async listEveryResourceServer(
+		tool: string,
+		key: "resources" | "resourceTemplates",
+		servers: readonly McpServerConnection[],
+		context: Context,
+	): Promise<Durable.ToolExecutionResult<JsonValue>> {
+		const results = await Promise.allSettled(
+			servers.map((server) =>
+				key === "resources"
+					? server.allResources({ signal: context.abortSignal })
+					: server.allResourceTemplates({ signal: context.abortSignal }),
+			),
+		);
 		const items: JsonValue[] = [];
 		const errors: JsonValue[] = [];
 		results.forEach((result, index) => {
 			const server = servers[index];
 			if (server === undefined) return;
 			if (result.status === "fulfilled") {
-				items.push(...result.value.filter((item) => !isMcpAppResource(item)).map((item) => listedResource(server.entry.name, item) as unknown as JsonValue));
+				items.push(
+					...result.value
+						.filter((item) => !isMcpAppResource(item))
+						.map((item) => listedResource(server.entry.name, item) as unknown as JsonValue),
+				);
 			} else {
 				errors.push({ server: server.entry.name, error: errorText(result.reason) });
 			}
 		});
-		return await resourceJsonResult(tool, undefined, { [key]: items, ...(errors.length === 0 ? {} : { errors }) } as unknown as JsonValue);
+		return await resourceJsonResult(tool, undefined, {
+			[key]: items,
+			...(errors.length === 0 ? {} : { errors }),
+		} as unknown as JsonValue);
 	}
 
-	private async readResourceTool(params: Record<string, unknown>, context: Context): Promise<Durable.ToolExecutionResult<JsonValue>> {
+	private async readResourceTool(
+		params: Record<string, unknown>,
+		context: Context,
+	): Promise<Durable.ToolExecutionResult<JsonValue>> {
 		await this.waitForAllServers(context);
 		const serverName = resourceStringArgument(params, "server");
 		const uri = resourceStringArgument(params, "uri");
@@ -988,9 +1372,15 @@ class DurableExecutionRuntime implements DurableExecution {
 		if (uri === undefined) throw new Error("uri must be provided");
 		const server = this.findResourceServer(serverName, this.resourceServers());
 		const result = await server.readResource(uri, { signal: context.abortSignal });
-		const blocks: ContentBlock[] = result.contents.flatMap((contents) => [...(result.contents.length > 1 ? [{ type: "text" as const, text: `${contents.uri}:` }] : []), { type: "resource" as const, resource: contents }]);
+		const blocks: ContentBlock[] = result.contents.flatMap((contents) => [
+			...(result.contents.length > 1 ? [{ type: "text" as const, text: `${contents.uri}:` }] : []),
+			{ type: "resource" as const, resource: contents },
+		]);
 		const converted = (await Promise.all(blocks.map((block) => blockToContent(block)))).flat();
-		const limited = await limitMcpContent(converted.length > 0 ? converted : [{ type: "text", text: `Resource ${uri} is empty.` }], saveToTempFile);
+		const limited = await limitMcpContent(
+			converted.length > 0 ? converted : [{ type: "text", text: `Resource ${uri} is empty.` }],
+			saveToTempFile,
+		);
 		const contents = result.contents.map(({ _meta: _ignored, ...rest }) => rest);
 		return {
 			output: [...limited.content],
@@ -1007,27 +1397,37 @@ class DurableExecutionRuntime implements DurableExecution {
 		const found = servers.find((server) => server.entry.name === name);
 		if (found !== undefined) return found;
 		const available = servers.map((server) => server.entry.name).join(", ");
-		throw new Error(`MCP server "${name}" has no resources${available === "" ? "" : `. Servers with resources: ${available}`}`);
+		throw new Error(
+			`MCP server "${name}" has no resources${available === "" ? "" : `. Servers with resources: ${available}`}`,
+		);
 	}
 
 	// ── Prompt section ─────────────────────────────────────────────────────
 
 	/** The `mcp_servers` section: enabled servers with tools that are not declared. */
 	private renderServersSection(): string | undefined {
-		const listed = this.servers.filter((server) => hasIndirectTools(server.entry.config)).sort((a, b) => a.entry.name.localeCompare(b.entry.name));
+		const listed = this.servers
+			.filter((server) => hasIndirectTools(server.entry.config))
+			.sort((a, b) => a.entry.name.localeCompare(b.entry.name));
 		if (listed.length === 0) return undefined;
-		const reaches = listed.map((server) => (configuredExposures(server.entry.config).has("codemode") ? "codemode" : "tool_search"));
+		const reaches = listed.map((server) =>
+			configuredExposures(server.entry.config).has("codemode") ? "codemode" : "tool_search",
+		);
 		const intro = [
 			"MCP servers with tools that are not declared to you.",
 			reaches.includes("codemode") ? " Their tools are called from `codemode` scripts." : "",
 			reaches.includes("tool_search") ? " Their tools are loaded with `tool_search`." : "",
 		].join("");
 		const heads = listed.map((server, index) => `- ${mcpNamespace(server.entry.name)} (${reaches[index]})`);
-		const omitted = (count: number) => (count > 0 ? [`- … ${count} more server${count === 1 ? "" : "s"}; use searchTools() to find their tools`] : []);
+		const omitted = (count: number) =>
+			count > 0 ? [`- … ${count} more server${count === 1 ? "" : "s"}; use searchTools() to find their tools`] : [];
 		const size = (kept: number) => [intro, ...heads.slice(0, kept), ...omitted(listed.length - kept)].join("\n").length;
 		let kept = listed.length;
 		while (kept > 0 && size(kept) > MAX_SERVERS_SECTION_CHARS) kept--;
-		const perServer = kept === 0 ? 0 : Math.min(MAX_SERVER_DESCRIPTION_CHARS, Math.floor((MAX_SERVERS_SECTION_CHARS - size(kept)) / kept) - 2);
+		const perServer =
+			kept === 0
+				? 0
+				: Math.min(MAX_SERVER_DESCRIPTION_CHARS, Math.floor((MAX_SERVERS_SECTION_CHARS - size(kept)) / kept) - 2);
 		const lines = listed.slice(0, kept).map((server, index) => {
 			const summary = perServer > 0 ? truncateLine(server.entry.config.description ?? "", perServer) : "";
 			return summary === "" ? heads[index] : `${heads[index]}: ${summary}`;
@@ -1040,6 +1440,9 @@ class DurableExecutionRuntime implements DurableExecution {
  * Create the native codemode and MCP built-ins for one Durable session host. The caller
  * installs `extensions` in the host registry and calls `close()` when the host shuts down.
  */
-export function createDurableExecution(host: DurableExecutionHost, options?: DurableExecutionOptions): DurableExecution {
+export function createDurableExecution(
+	host: DurableExecutionHost,
+	options?: DurableExecutionOptions,
+): DurableExecution {
 	return new DurableExecutionRuntime(host, options);
 }

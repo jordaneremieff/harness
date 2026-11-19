@@ -9,7 +9,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createAssistantMessageEventStream, getCurrentTools, type AssistantMessage, type ToolResultMessage, type TranscriptContext } from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	getCurrentTools,
+	type AssistantMessage,
+	type ToolResultMessage,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage, type Conversation, type Extension } from "@earendil-works/pi-durable";
 import { createDurableServices, type DurableContributionHost, type DurableServices } from "./durable-services.ts";
 import { createDurableExecution, type DurableExecution } from "./durable-execution.ts";
@@ -19,7 +25,14 @@ export const fixtureProvider = testModel.provider;
 export const fixtureModelId = testModel.id;
 export const fixtureServerPath = fileURLToPath(new URL("./testdata/mcp-server/server.mts", import.meta.url));
 
-const USAGE = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const USAGE = {
+	input: 1,
+	output: 1,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 2,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
 
 /**
  * The fixture contribution: `guarded` records an effect unless the policy hook blocks it,
@@ -122,7 +135,16 @@ export function writeExecutionExtension(dir: string): string {
 }
 
 export function answerMessage(text = "durable answer"): AssistantMessage {
-	return { role: "assistant", content: [{ type: "text", text }], api: "openai-completions", provider: fixtureProvider, model: fixtureModelId, usage: USAGE, stopReason: "stop", timestamp: Date.now() };
+	return {
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "openai-completions",
+		provider: fixtureProvider,
+		model: fixtureModelId,
+		usage: USAGE,
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
 }
 
 function completed(message: AssistantMessage) {
@@ -134,11 +156,29 @@ function completed(message: AssistantMessage) {
 }
 
 function codemodeCall(code: string, id = "codemode-call"): AssistantMessage {
-	return { role: "assistant", content: [{ type: "toolCall", id, name: "codemode", arguments: { code } }], api: "openai-completions", provider: fixtureProvider, model: fixtureModelId, usage: USAGE, stopReason: "toolUse", timestamp: Date.now() };
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", id, name: "codemode", arguments: { code } }],
+		api: "openai-completions",
+		provider: fixtureProvider,
+		model: fixtureModelId,
+		usage: USAGE,
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	};
 }
 
 function toolSearchCall(query: string, id = "tool-search-call"): AssistantMessage {
-	return { role: "assistant", content: [{ type: "toolCall", id, name: "tool_search", arguments: { query } }], api: "openai-completions", provider: fixtureProvider, model: fixtureModelId, usage: USAGE, stopReason: "toolUse", timestamp: Date.now() };
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", id, name: "tool_search", arguments: { query } }],
+		api: "openai-completions",
+		provider: fixtureProvider,
+		model: fixtureModelId,
+		usage: USAGE,
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	};
 }
 
 /** A stream function keyed by the request history. */
@@ -146,12 +186,14 @@ export type FixtureStream = (context: TranscriptContext, requests: readonly Tran
 
 /** The default stream: one codemode call, then an answer after any tool result. */
 export function codemodeStream(code: string): FixtureStream {
-	return (context) => (context.messages.some((message) => message.role === "toolResult") ? answerMessage() : codemodeCall(code));
+	return (context) =>
+		context.messages.some((message) => message.role === "toolResult") ? answerMessage() : codemodeCall(code);
 }
 
 /** A stream that calls `tool_search` first, then answers. */
 export function toolSearchStream(query: string): FixtureStream {
-	return (context) => (context.messages.some((message) => message.role === "toolResult") ? answerMessage() : toolSearchCall(query));
+	return (context) =>
+		context.messages.some((message) => message.role === "toolResult") ? answerMessage() : toolSearchCall(query);
 }
 
 /** A stream that lists MCP resources once, then answers. */
@@ -172,18 +214,31 @@ export function resourceListStream(): FixtureStream {
 }
 
 /** A runtime driven by one `FixtureStream`. */
-export async function streamRuntime(stream: FixtureStream, requests: TranscriptContext[] = []): Promise<{ runtime: Awaited<ReturnType<typeof createTestRuntime>>; requests: TranscriptContext[] }> {
+export async function streamRuntime(
+	stream: FixtureStream,
+	requests: TranscriptContext[] = [],
+): Promise<{ runtime: Awaited<ReturnType<typeof createTestRuntime>>; requests: TranscriptContext[] }> {
 	const runtime = await createTestRuntime();
 	const providerStream = (_model: unknown, context: TranscriptContext) => {
 		requests.push(structuredClone(context));
 		return completed(stream(context, requests));
 	};
-	runtime.registerNativeProvider({ id: fixtureProvider, name: "Durable execution fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream: providerStream, streamSimple: providerStream });
+	runtime.registerNativeProvider({
+		id: fixtureProvider,
+		name: "Durable execution fixture",
+		getModels: () => [testModel],
+		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		stream: providerStream,
+		streamSimple: providerStream,
+	});
 	return { runtime, requests };
 }
 
 /** A runtime whose first request issues one codemode call, then answers after any tool result. */
-export async function scriptRuntime(code: string, requests: TranscriptContext[] = []): Promise<{ runtime: Awaited<ReturnType<typeof createTestRuntime>>; requests: TranscriptContext[] }> {
+export async function scriptRuntime(
+	code: string,
+	requests: TranscriptContext[] = [],
+): Promise<{ runtime: Awaited<ReturnType<typeof createTestRuntime>>; requests: TranscriptContext[] }> {
 	return await streamRuntime(codemodeStream(code), requests);
 }
 
@@ -191,7 +246,14 @@ export async function scriptRuntime(code: string, requests: TranscriptContext[] 
 export async function answerRuntime(): Promise<Awaited<ReturnType<typeof createTestRuntime>>> {
 	const runtime = await createTestRuntime();
 	const stream = () => completed(answerMessage());
-	runtime.registerNativeProvider({ id: fixtureProvider, name: "Durable execution answer fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
+	runtime.registerNativeProvider({
+		id: fixtureProvider,
+		name: "Durable execution answer fixture",
+		getModels: () => [testModel],
+		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		stream,
+		streamSimple: stream,
+	});
 	return runtime;
 }
 
@@ -230,12 +292,19 @@ export interface ExecutionFixture {
 	readonly execution: DurableExecution;
 	/** Milliseconds the fixture waited in `ready`, when `awaitReady` was set. */
 	readonly readyElapsedMs: number | undefined;
-	submit(content: string): Promise<{ answer: string; toolResults: readonly ToolResultMessage[]; messages: readonly TranscriptContext["messages"][number][] }>;
+	submit(content: string): Promise<{
+		answer: string;
+		toolResults: readonly ToolResultMessage[];
+		messages: readonly TranscriptContext["messages"][number][];
+	}>;
 	close(): Promise<void>;
 }
 
 /** Isolated services, registry, and Harness with the fixture contribution installed. */
-export async function executionFixture(t: { after(fn: () => void | Promise<void>): void }, options: ExecutionFixtureOptions): Promise<ExecutionFixture> {
+export async function executionFixture(
+	t: { after(fn: () => void | Promise<void>): void },
+	options: ExecutionFixtureOptions,
+): Promise<ExecutionFixture> {
 	const root = mkdtempSync(join(tmpdir(), "durable-execution-"));
 	const cwd = join(root, "work");
 	const agentDir = join(root, "agent");
@@ -252,13 +321,20 @@ export async function executionFixture(t: { after(fn: () => void | Promise<void>
 		}),
 	);
 	if (options.mcpServers !== undefined) {
-		writeFileSync(join(agentDir, "mcp.json"), JSON.stringify({ mcpServers: options.mcpServers, ...(options.autoEnableCodemode === undefined ? {} : { autoEnableCodemode: options.autoEnableCodemode }) }));
+		writeFileSync(
+			join(agentDir, "mcp.json"),
+			JSON.stringify({
+				mcpServers: options.mcpServers,
+				...(options.autoEnableCodemode === undefined ? {} : { autoEnableCodemode: options.autoEnableCodemode }),
+			}),
+		);
 	}
 	if (options.projectMcpServers !== undefined) {
 		mkdirSync(join(cwd, ".pi"));
 		writeFileSync(join(cwd, ".pi", "mcp.json"), JSON.stringify({ mcpServers: options.projectMcpServers }));
 	}
-	if (options.mcpAuth !== undefined) writeFileSync(join(agentDir, "mcp-auth.json"), JSON.stringify(options.mcpAuth, null, 2));
+	if (options.mcpAuth !== undefined)
+		writeFileSync(join(agentDir, "mcp-auth.json"), JSON.stringify(options.mcpAuth, null, 2));
 	const extensionPath = writeExecutionExtension(join(root, "extension"));
 	const errors: unknown[] = [];
 	const { runtime, requests } = await streamRuntime(options.stream ?? codemodeStream(options.code ?? 'return "ok";'));
@@ -270,13 +346,20 @@ export async function executionFixture(t: { after(fn: () => void | Promise<void>
 		extensionPaths: [extensionPath],
 		trusted: options.trusted ?? true,
 		buildBuiltin: (host) => {
-			execution = createDurableExecution(host, options.readyTimeoutMs === undefined ? undefined : { readyTimeoutMs: options.readyTimeoutMs });
+			execution = createDurableExecution(
+				host,
+				options.readyTimeoutMs === undefined ? undefined : { readyTimeoutMs: options.readyTimeoutMs },
+			);
 			return { ...execution, extensions: [...execution.extensions, ...(options.builtinExtensions?.(host) ?? [])] };
 		},
 		modelRuntime: runtime,
 		onReport: (error) => errors.push(error),
 	});
-	const harness = await Harness.open(new MemoryStorage(), { models: runtime, registry: services.registry, settings: services.settings, env: services.env }, BACKGROUND_CONTEXT);
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{ models: runtime, registry: services.registry, settings: services.settings, env: services.env },
+		BACKGROUND_CONTEXT,
+	);
 	const close = async () => {
 		await services.close().catch(() => undefined);
 		await harness.close(BACKGROUND_CONTEXT).catch(() => undefined);
@@ -291,7 +374,9 @@ export async function executionFixture(t: { after(fn: () => void | Promise<void>
 		readyElapsedMs = performance.now() - started;
 	}
 	harness.resume();
-	const conversation = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } });
+	const conversation = await harness.root(BACKGROUND_CONTEXT, {
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
+	});
 	return {
 		root,
 		cwd,
@@ -305,10 +390,14 @@ export async function executionFixture(t: { after(fn: () => void | Promise<void>
 		execution: execution as DurableExecution,
 		readyElapsedMs,
 		async submit(content: string) {
-			const settled = await (await conversation.submit({ type: "input", content }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+			const settled = await (await conversation.submit({ type: "input", content }, BACKGROUND_CONTEXT)).wait(
+				BACKGROUND_CONTEXT,
+			);
 			if (settled.status !== "done") throw new Error(`submission did not settle: ${settled.status}`);
 			const view = await conversation.context(BACKGROUND_CONTEXT);
-			const toolResults = view.messages.filter((message): message is ToolResultMessage => message.role === "toolResult");
+			const toolResults = view.messages.filter(
+				(message): message is ToolResultMessage => message.role === "toolResult",
+			);
 			return { answer: messageText(view.messages.at(-1)), toolResults, messages: [...view.messages] };
 		},
 		close,
@@ -318,10 +407,20 @@ export async function executionFixture(t: { after(fn: () => void | Promise<void>
 /** All text of one model message. */
 export function messageText(message: unknown): string {
 	if (message === undefined || message === null) return "";
-	const content = (message as { content?: unknown; output?: unknown }).content ?? (message as { output?: unknown }).output;
+	const content =
+		(message as { content?: unknown; output?: unknown }).content ?? (message as { output?: unknown }).output;
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
-	return content.flatMap((part) => (part !== null && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string" ? [(part as { text: string }).text] : [])).join("\n");
+	return content
+		.flatMap((part) =>
+			part !== null &&
+			typeof part === "object" &&
+			(part as { type?: unknown }).type === "text" &&
+			typeof (part as { text?: unknown }).text === "string"
+				? [(part as { text: string }).text]
+				: [],
+		)
+		.join("\n");
 }
 
 /** Text of one tool result message. */
@@ -333,7 +432,14 @@ export function toolResultText(result: unknown): string {
 export function toolResultBody(result: unknown): string {
 	const content = (result as { content?: unknown }).content;
 	if (!Array.isArray(content)) return "";
-	const texts = content.flatMap((part) => (part !== null && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string" ? [(part as { text: string }).text] : []));
+	const texts = content.flatMap((part) =>
+		part !== null &&
+		typeof part === "object" &&
+		(part as { type?: unknown }).type === "text" &&
+		typeof (part as { text?: unknown }).text === "string"
+			? [(part as { text: string }).text]
+			: [],
+	);
 	return texts.at(-1) ?? "";
 }
 
@@ -352,7 +458,10 @@ export interface HttpMcpFixture {
 	close(): Promise<void>;
 }
 
-export async function httpMcpServer(token: string, options: { beforeResponse?: (method: string) => Promise<void>; silent?: boolean } = {}): Promise<HttpMcpFixture> {
+export async function httpMcpServer(
+	token: string,
+	options: { beforeResponse?: (method: string) => Promise<void>; silent?: boolean } = {},
+): Promise<HttpMcpFixture> {
 	const server = createServer((request, response) => handleHttpMcp(request, response, token, options));
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const address = server.address();
@@ -367,7 +476,12 @@ export async function httpMcpServer(token: string, options: { beforeResponse?: (
 	};
 }
 
-function handleHttpMcp(request: IncomingMessage, response: ServerResponse, token: string, options: { beforeResponse?: (method: string) => Promise<void>; silent?: boolean }): void {
+function handleHttpMcp(
+	request: IncomingMessage,
+	response: ServerResponse,
+	token: string,
+	options: { beforeResponse?: (method: string) => Promise<void>; silent?: boolean },
+): void {
 	if (request.headers.authorization !== `Bearer ${token}`) {
 		response.writeHead(401, { "content-type": "application/json", "www-authenticate": 'Bearer realm="mcp"' });
 		response.end(JSON.stringify({ error: "unauthorized" }));
@@ -395,7 +509,10 @@ function handleHttpMcp(request: IncomingMessage, response: ServerResponse, token
 			response.writeHead(200, { "content-type": "application/json" });
 			response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: httpMcpResult(message) }));
 		};
-		if (options.beforeResponse) void options.beforeResponse(message.method ?? "").then(respond, (error: unknown) => response.destroy(error instanceof Error ? error : new Error(String(error))));
+		if (options.beforeResponse)
+			void options
+				.beforeResponse(message.method ?? "")
+				.then(respond, (error: unknown) => response.destroy(error instanceof Error ? error : new Error(String(error))));
 		else respond();
 	});
 }
@@ -403,19 +520,43 @@ function handleHttpMcp(request: IncomingMessage, response: ServerResponse, token
 function httpMcpResult(message: { method?: string; params?: Record<string, unknown> }): unknown {
 	switch (message.method) {
 		case "initialize":
-			return { protocolVersion: "2025-06-18", capabilities: { tools: {}, resources: {} }, serverInfo: { name: "durable-http-fixture", version: "1.0.0" }, instructions: "HTTP fixture server." };
+			return {
+				protocolVersion: "2025-06-18",
+				capabilities: { tools: {}, resources: {} },
+				serverInfo: { name: "durable-http-fixture", version: "1.0.0" },
+				instructions: "HTTP fixture server.",
+			};
 		case "ping":
 			return {};
 		case "tools/list":
-			return { tools: [{ name: "echo", description: "Echo one value", inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } }] };
+			return {
+				tools: [
+					{
+						name: "echo",
+						description: "Echo one value",
+						inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+					},
+				],
+			};
 		case "tools/call":
-			return { content: [{ type: "text", text: `echo ${String((message.params?.arguments as Record<string, unknown> | undefined)?.value ?? "")}` }] };
+			return {
+				content: [
+					{
+						type: "text",
+						text: `echo ${String((message.params?.arguments as Record<string, unknown> | undefined)?.value ?? "")}`,
+					},
+				],
+			};
 		case "resources/list":
 			return { resources: [{ uri: "docs://readme", name: "readme", mimeType: "text/plain" }] };
 		case "resources/templates/list":
 			return { resourceTemplates: [] };
 		case "resources/read":
-			return { contents: [{ uri: String(message.params?.uri ?? "docs://readme"), mimeType: "text/plain", text: "hello resource" }] };
+			return {
+				contents: [
+					{ uri: String(message.params?.uri ?? "docs://readme"), mimeType: "text/plain", text: "hello resource" },
+				],
+			};
 		default:
 			return {};
 	}
@@ -436,7 +577,10 @@ export async function crashFixtureMain(argv: readonly string[]): Promise<number>
 	const root = dirname(storagePath);
 	const agentDir = join(root, "agent");
 	mkdirSync(agentDir, { recursive: true });
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false }, defaultTools: ["+codemode"] }));
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		JSON.stringify({ cacheWarming: "off", retry: { enabled: false }, defaultTools: ["+codemode"] }),
+	);
 	(globalThis as Record<string, unknown>).__execFixture = { effectPath: join(root, "effect.txt"), hang: true };
 	const extensionPath = writeExecutionExtension(join(root, "child-extension"));
 	const { runtime } = await scriptRuntime(`const value = await tools["slow-effect"]({});\nreturn value;`);

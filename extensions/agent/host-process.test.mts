@@ -10,7 +10,14 @@ import { PluginError } from "@earendil-works/chord";
 import { connectTransport, type TransportClient, type TransportRequest } from "../../transport/index.ts";
 import { observeClaim } from "./claims.ts";
 import { tryNativeWriterLease } from "./native-lease.ts";
-import { HostError, hostPaths, parseHostHello, parseHostMetadata, type HostMetadata, type HostReady } from "./host-protocol.ts";
+import {
+	HostError,
+	hostPaths,
+	parseHostHello,
+	parseHostMetadata,
+	type HostMetadata,
+	type HostReady,
+} from "./host-protocol.ts";
 import { HostClaimRefusedError, resolveIdleMs, runHost, type HostProcess, type HostRuntime } from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { eventLog } from "./host-fixture.mts";
@@ -26,7 +33,9 @@ function writerAvailable(config: HostMetadata): boolean {
 }
 
 const fixtureRoots = new Set<string>();
-after(() => { for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true }); });
+after(() => {
+	for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
+});
 
 function fixtureRoot(_t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "host-process-"));
@@ -65,11 +74,21 @@ function transportRequest(method: string, params?: unknown, requestId = randomUU
 	return { method, ...(params === undefined ? {} : { params }), requestId, contract: HOST_CONTRACT.operations[method] };
 }
 
-function call(client: TransportClient, _config: HostMetadata, method: string, params?: unknown, signal?: AbortSignal): Promise<unknown> {
+function call(
+	client: TransportClient,
+	_config: HostMetadata,
+	method: string,
+	params?: unknown,
+	signal?: AbortSignal,
+): Promise<unknown> {
 	return client.request(transportRequest(method, params), signal);
 }
 
-async function startHost(root: string, idleMs = 0, runtime: () => HostRuntime = echoRuntime): Promise<{ host: HostProcess; metadata: HostMetadata }> {
+async function startHost(
+	root: string,
+	idleMs = 0,
+	runtime: () => HostRuntime = echoRuntime,
+): Promise<{ host: HostProcess; metadata: HostMetadata }> {
 	const config = metadata(root);
 	const host = await runHost(runtime, { metadata: config, idleMs, announceReady: noop });
 	return { host, metadata: config };
@@ -83,10 +102,19 @@ async function deadPid(): Promise<number> {
 	return pid;
 }
 
-it("publishes the current writer identity from the server rather than mutable diagnostic metadata", { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t), config = metadata(root);
+it("publishes the current writer identity from the server rather than mutable diagnostic metadata", {
+	timeout: 10000,
+}, async (t) => {
+	const root = fixtureRoot(t),
+		config = metadata(root);
 	let ready: HostReady | undefined;
-	const host = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: value => { ready = value; } });
+	const host = await runHost(echoRuntime, {
+		metadata: config,
+		idleMs: 0,
+		announceReady: (value) => {
+			ready = value;
+		},
+	});
 	t.after(() => host.close());
 	assert.ok(ready);
 	const paths = hostPaths(config);
@@ -101,30 +129,62 @@ it("publishes the current writer identity from the server rather than mutable di
 	assert.deepEqual(parseHostHello(await client.request({ method: "runtime-contract" })), hello);
 });
 
-it("cancels a refused release without closing observations and resumes idle retirement", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t), checked = eventLog<void>(), checks = eventLog<() => void>();
+it("cancels a refused release without closing observations and resumes idle retirement", {
+	timeout: 15000,
+}, async (t) => {
+	const root = fixtureRoot(t),
+		checked = eventLog<void>(),
+		checks = eventLog<() => void>();
 	let releaseListener: ((requested: boolean) => void) | undefined;
-	let attempts = 0, closedTokens = 0;
+	let attempts = 0,
+		closedTokens = 0;
 	const runtime: HostRuntime = {
-		request: async method => {
+		request: async (method) => {
 			if (method === "observe-open") return { token: randomUUID() };
-			if (method === "observe-close") { closedTokens++; return {}; }
-			releaseListener?.(true); return { retiring: true, blockers: [] };
+			if (method === "observe-close") {
+				closedTokens++;
+				return {};
+			}
+			releaseListener?.(true);
+			return { retiring: true, blockers: [] };
 		},
-		isIdle: () => true, close: async () => {},
-		onReleaseRequested: listener => { releaseListener = listener; return () => { releaseListener = undefined; }; },
-		tryRetire: async seal => { attempts++; if (attempts === 1) { releaseListener?.(false); checked.push(undefined); return false; } return seal(); },
+		isIdle: () => true,
+		close: async () => {},
+		onReleaseRequested: (listener) => {
+			releaseListener = listener;
+			return () => {
+				releaseListener = undefined;
+			};
+		},
+		tryRetire: async (seal) => {
+			attempts++;
+			if (attempts === 1) {
+				releaseListener?.(false);
+				checked.push(undefined);
+				return false;
+			}
+			return seal();
+		},
 	};
 	const config = metadata(root);
-	const host = await runHost(() => runtime, { metadata: config, idleMs: 3600000, announceReady: noop, scheduleIdleCheck: check => { checks.push(check); return () => {}; } });
+	const host = await runHost(() => runtime, {
+		metadata: config,
+		idleMs: 3600000,
+		announceReady: noop,
+		scheduleIdleCheck: (check) => {
+			checks.push(check);
+			return () => {};
+		},
+	});
 	t.after(() => host.close());
-	const client = await connectClient(config); t.after(() => client.dispose());
-	const first = await call(client, config, "observe-open") as { token: string };
+	const client = await connectClient(config);
+	t.after(() => client.dispose());
+	const first = (await call(client, config, "observe-open")) as { token: string };
 	assert.deepEqual(await call(client, config, "status"), { retiring: true, blockers: [] });
 	await checked.waitForCount(1, 5000);
 	await new Promise<void>(setImmediate);
 	assert.equal(closedTokens, 0, "a refused seal preserves existing observations");
-	const second = await call(client, config, "observe-open") as { token: string };
+	const second = (await call(client, config, "observe-open")) as { token: string };
 	await call(client, config, "observe-close", { token: first.token });
 	await call(client, config, "observe-close", { token: second.token });
 	checks[checks.length - 1]();
@@ -132,25 +192,53 @@ it("cancels a refused release without closing observations and resumes idle reti
 	assert.equal(attempts, 2);
 });
 
-it("waits for an in-flight delivery scan at grace expiry and retires on quiescence", { timeout: 15000 }, async t => {
-	const root = fixtureRoot(t), checked = eventLog<void>(), closed = eventLog<void>();
+it("waits for an in-flight delivery scan at grace expiry and retires on quiescence", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t),
+		checked = eventLog<void>(),
+		closed = eventLog<void>();
 	let releaseListener: ((requested: boolean) => void) | undefined, quiescentListener: (() => void) | undefined;
-	let busy = false, attempts = 0;
+	let busy = false,
+		attempts = 0;
 	const runtime: HostRuntime = {
-		request: async () => { releaseListener?.(true); return { retiring: true, blockers: [] }; },
-		isIdle: () => true, close: async () => { closed.push(undefined); },
-		onReleaseRequested: listener => { releaseListener = listener; return () => { releaseListener = undefined; }; },
-		onQuiescent: listener => { quiescentListener = listener; return () => { quiescentListener = undefined; }; },
-		tryRetire: async seal => { attempts++; if (busy) { checked.push(undefined); return false; } return seal(); },
+		request: async () => {
+			releaseListener?.(true);
+			return { retiring: true, blockers: [] };
+		},
+		isIdle: () => true,
+		close: async () => {
+			closed.push(undefined);
+		},
+		onReleaseRequested: (listener) => {
+			releaseListener = listener;
+			return () => {
+				releaseListener = undefined;
+			};
+		},
+		onQuiescent: (listener) => {
+			quiescentListener = listener;
+			return () => {
+				quiescentListener = undefined;
+			};
+		},
+		tryRetire: async (seal) => {
+			attempts++;
+			if (busy) {
+				checked.push(undefined);
+				return false;
+			}
+			return seal();
+		},
 	};
 	const { host, metadata: config } = await startHost(root, 3600000, () => runtime);
 	t.after(() => host.close());
-	const client = await connectClient(config); t.after(() => client.dispose());
+	const client = await connectClient(config);
+	t.after(() => client.dispose());
 	assert.deepEqual(await call(client, config, "status"), { retiring: true, blockers: [] });
 	busy = true;
 	await checked.waitForCount(1, 5000);
 	assert.equal(closed.length, 0);
-	busy = false; quiescentListener?.();
+	busy = false;
+	quiescentListener?.();
 	await closed.waitForCount(1, 1000);
 	await host.done;
 	assert.equal(attempts, 2, "quiescence retries release without the normal idle interval");
@@ -161,7 +249,10 @@ it("serves a request and rejects a client with the wrong serverId", { timeout: 1
 	const { host, metadata: config } = await startHost(root);
 	t.after(() => host.close().catch(() => {}));
 	const client = await connectClient(config);
-	assert.deepEqual(await call(client, config, "timer-list", { value: 1 }), { method: "timer-list", params: { value: 1 } });
+	assert.deepEqual(await call(client, config, "timer-list", { value: 1 }), {
+		method: "timer-list",
+		params: { value: 1 },
+	});
 	await client.dispose();
 	await assert.rejects(connectTransport({ serverId: randomUUID(), path: hostPaths(config).socket }));
 });
@@ -169,12 +260,26 @@ it("serves a request and rejects a client with the wrong serverId", { timeout: 1
 it("refuses absent or mismatched caller contracts before any runtime effect", async (t) => {
 	const root = fixtureRoot(t);
 	let effects = 0;
-	const { host, metadata: config } = await startHost(root, 0, () => ({ request: async () => { effects++; return {}; }, close: async () => {}, isIdle: () => true }));
+	const { host, metadata: config } = await startHost(root, 0, () => ({
+		request: async () => {
+			effects++;
+			return {};
+		},
+		close: async () => {},
+		isIdle: () => true,
+	}));
 	t.after(() => host.close());
 	const client = await connectClient(config);
 	t.after(() => client.dispose());
-	for (const contract of [null, { ...HOST_CONTRACT.operations.submit, request: "submit/2.0.0" }, { ...HOST_CONTRACT.operations.submit, response: "changed" }]) {
-		await assert.rejects(client.request({ method: "submit", params: { message: "task" }, requestId: randomUUID(), contract }), /no operation was admitted/u);
+	for (const contract of [
+		null,
+		{ ...HOST_CONTRACT.operations.submit, request: "submit/2.0.0" },
+		{ ...HOST_CONTRACT.operations.submit, response: "changed" },
+	]) {
+		await assert.rejects(
+			client.request({ method: "submit", params: { message: "task" }, requestId: randomUUID(), contract }),
+			/no operation was admitted/u,
+		);
 	}
 	assert.equal(effects, 0);
 	await call(client, config, "submit", { message: "safe" });
@@ -186,7 +291,10 @@ it("preserves a runtime error message", { timeout: 15000 }, async (t) => {
 	const { host, metadata: config } = await startHost(root);
 	t.after(() => host.close().catch(() => {}));
 	const client = await connectClient(config);
-	await assert.rejects(call(client, config, "configure"), (error: unknown) => error instanceof PluginError && error.code === "invalid" && error.message === "not allowed");
+	await assert.rejects(
+		call(client, config, "configure"),
+		(error: unknown) => error instanceof PluginError && error.code === "invalid" && error.message === "not allowed",
+	);
 	await client.dispose();
 });
 
@@ -195,16 +303,23 @@ it("returns a failed runtime response before shared shutdown releases the claim"
 	const config = metadata(root);
 	let failed = false;
 	let closed = 0;
-	const host = await runHost(() => ({
-		request: async (method, params) => {
-			if (method !== "command") return { method, params };
-			failed = true;
-			throw new Error("reload failed");
-		},
-		get shutdownRequired() { return failed; },
-		isIdle: () => false,
-		close: async () => { closed++; },
-	}), { metadata: config, idleMs: 0, announceReady: noop });
+	const host = await runHost(
+		() => ({
+			request: async (method, params) => {
+				if (method !== "command") return { method, params };
+				failed = true;
+				throw new Error("reload failed");
+			},
+			get shutdownRequired() {
+				return failed;
+			},
+			isIdle: () => false,
+			close: async () => {
+				closed++;
+			},
+		}),
+		{ metadata: config, idleMs: 0, announceReady: noop },
+	);
 	t.after(() => host.close().catch(() => {}));
 	const client = await connectClient(config);
 	try {
@@ -214,11 +329,17 @@ it("returns a failed runtime response before shared shutdown releases the claim"
 		assert.equal(closed, 1, "fatal and explicit close share one shutdown");
 		assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "dead");
 		assert.equal(writerAvailable(config), true);
-	} finally { await client.dispose().catch(() => {}); }
+	} finally {
+		await client.dispose().catch(() => {});
+	}
 	const replacement = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
 	const next = await connectClient(config);
-	try { assert.deepEqual(await call(next, config, "status", {}), { method: "status", params: {} }); }
-	finally { await next.dispose().catch(() => {}); await replacement.close(); }
+	try {
+		assert.deepEqual(await call(next, config, "status", {}), { method: "status", params: {} });
+	} finally {
+		await next.dispose().catch(() => {});
+		await replacement.close();
+	}
 });
 
 it("acknowledges owner close after writer release and before transport EOF", { timeout: 10000 }, async (t) => {
@@ -237,10 +358,13 @@ it("refuses a second host while the lease is held without creating its runtime",
 	t.after(() => host.close());
 	let created = false;
 	await assert.rejects(
-		runHost(() => {
-			created = true;
-			return echoRuntime();
-		}, { metadata: config, idleMs: 0, announceReady: noop }),
+		runHost(
+			() => {
+				created = true;
+				return echoRuntime();
+			},
+			{ metadata: config, idleMs: 0, announceReady: noop },
+		),
 		(error: unknown) => error instanceof HostClaimRefusedError && error.observation === "busy",
 	);
 	assert.equal(created, false, "the losing factory never ran");
@@ -252,17 +376,43 @@ it("excludes concurrent contenders on a persistent diagnostic inode", { timeout:
 	const config = metadata(root);
 	const paths = hostPaths(config);
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
-	writeFileSync(paths.claim, JSON.stringify({ token: "stale", pid: await deadPid(), host: hostname(), sessionId: config.storageId, cwd: config.cwd, createdAt: new Date().toISOString() }), { mode: 0o600 });
+	writeFileSync(
+		paths.claim,
+		JSON.stringify({
+			token: "stale",
+			pid: await deadPid(),
+			host: hostname(),
+			sessionId: config.storageId,
+			cwd: config.cwd,
+			createdAt: new Date().toISOString(),
+		}),
+		{ mode: 0o600 },
+	);
 	const original = lstatSync(paths.claim);
 	let constructions = 0;
-	const results = await Promise.allSettled(Array.from({ length: 2 }, () => runHost(() => {
-		constructions += 1;
-		return echoRuntime();
-	}, { metadata: config, idleMs: 0, announceReady: noop, announceBusy: noop })));
+	const results = await Promise.allSettled(
+		Array.from({ length: 2 }, () =>
+			runHost(
+				() => {
+					constructions += 1;
+					return echoRuntime();
+				},
+				{ metadata: config, idleMs: 0, announceReady: noop, announceBusy: noop },
+			),
+		),
+	);
 	for (const result of results) if (result.status === "fulfilled") t.after(() => result.value.close());
 	assert.equal(constructions, 1);
 	assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
-	assert.equal(results.filter((result) => result.status === "rejected" && result.reason instanceof HostClaimRefusedError && result.reason.observation === "busy").length, 1);
+	assert.equal(
+		results.filter(
+			(result) =>
+				result.status === "rejected" &&
+				result.reason instanceof HostClaimRefusedError &&
+				result.reason.observation === "busy",
+		).length,
+		1,
+	);
 	assert.equal(lstatSync(paths.claim).ino, original.ino);
 	assert.equal(writerAvailable(config), false);
 	for (const result of results) if (result.status === "fulfilled") await result.value.close();
@@ -284,7 +434,15 @@ it("waits for runtime idle before retiring", { timeout: 15000 }, async (t) => {
 	let idle = false;
 	const runtime: HostRuntime = { request: async () => ({}), close: async () => {}, isIdle: () => idle };
 	const checks = eventLog<() => void>();
-	const host = await runHost(() => runtime, { metadata: config, idleMs: 40, announceReady: noop, scheduleIdleCheck: (check) => { checks.push(check); return noop; } });
+	const host = await runHost(() => runtime, {
+		metadata: config,
+		idleMs: 40,
+		announceReady: noop,
+		scheduleIdleCheck: (check) => {
+			checks.push(check);
+			return noop;
+		},
+	});
 	t.after(() => host.close());
 	await checks.waitForCount(1);
 	checks[0]();
@@ -326,7 +484,9 @@ it("publishes changed state to a public subscription", { timeout: 15000 }, async
 	const initial = subscription.value as { revision: number };
 	assert.equal(typeof initial.revision, "number");
 	await call(client, config, "report");
-	await updates.waitFor((values) => values.some((value) => (value as { revision: number }).revision > initial.revision));
+	await updates.waitFor((values) =>
+		values.some((value) => (value as { revision: number }).revision > initial.revision),
+	);
 	await subscription.dispose();
 	await client.dispose();
 });
@@ -336,25 +496,52 @@ it("publishes live observation deltas without a catalog change", { timeout: 1500
 	let revision = 1;
 	let changeReads = 0;
 	const root = fixtureRoot(t);
-	const frame = () => ({scope: "conversation", storageId: config.storageId, conversationId: 1, revision,
-		entries: [], live: [{text: "partial reasoning"}], status: {busy: true}});
+	const frame = () => ({
+		scope: "conversation",
+		storageId: config.storageId,
+		conversationId: 1,
+		revision,
+		entries: [],
+		live: [{ text: "partial reasoning" }],
+		status: { busy: true },
+	});
 	const runtime: HostRuntime = {
-		request: async (method) => method === "observe-open" ? {token: "live-token", frame: frame()} : method === "observe-frame" ? frame() : {closed: true},
-		close: async () => {}, isIdle: () => true,
-		onChange: () => { changeReads++; return () => {}; },
-		onObservationChange: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+		request: async (method) =>
+			method === "observe-open"
+				? { token: "live-token", frame: frame() }
+				: method === "observe-frame"
+					? frame()
+					: { closed: true },
+		close: async () => {},
+		isIdle: () => true,
+		onChange: () => {
+			changeReads++;
+			return () => {};
+		},
+		onObservationChange: (listener) => {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
 	};
-	const {host, metadata: config} = await startHost(root, 0, () => runtime);
+	const { host, metadata: config } = await startHost(root, 0, () => runtime);
 	t.after(() => host.close().catch(() => {}));
 	const client = await connectClient(config);
 	t.after(() => client.dispose());
-	await call(client, config, "observe-open", {token: "live-token", scope: "conversation", sessionId: config.storageId});
+	await call(client, config, "observe-open", {
+		token: "live-token",
+		scope: "conversation",
+		sessionId: config.storageId,
+	});
 	const updates = eventLog<unknown>();
-	const subscription = await client.subscribe("observation", "live-token", update => { updates.push(update); });
-	assert.equal((subscription.value as {revision: number}).revision, 1);
+	const subscription = await client.subscribe("observation", "live-token", (update) => {
+		updates.push(update);
+	});
+	assert.equal((subscription.value as { revision: number }).revision, 1);
 	revision = 2;
 	for (const listener of listeners) listener();
-	await updates.waitFor(values => values.some(value => (value as {revision: number}).revision === 2));
+	await updates.waitFor((values) => values.some((value) => (value as { revision: number }).revision === 2));
 	assert.equal(changeReads, 1, "only idle activity uses the catalog-change fallback");
 	await subscription.dispose();
 	await host.close();
@@ -362,18 +549,48 @@ it("publishes live observation deltas without a catalog change", { timeout: 1500
 });
 
 it("excludes a contender throughout held construction and native close", { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t), config = metadata(root);
-	let built = () => {}, finishConstruction = () => {}, closing = () => {}, finishClose = () => {};
-	const entered = new Promise<void>((resolve) => { built = resolve; });
-	const construction = new Promise<void>((resolve) => { finishConstruction = resolve; });
-	const closeEntered = new Promise<void>((resolve) => { closing = resolve; });
-	const nativeClose = new Promise<void>((resolve) => { finishClose = resolve; });
+	const root = fixtureRoot(t),
+		config = metadata(root);
+	let built = () => {},
+		finishConstruction = () => {},
+		closing = () => {},
+		finishClose = () => {};
+	const entered = new Promise<void>((resolve) => {
+		built = resolve;
+	});
+	const construction = new Promise<void>((resolve) => {
+		finishConstruction = resolve;
+	});
+	const closeEntered = new Promise<void>((resolve) => {
+		closing = resolve;
+	});
+	const nativeClose = new Promise<void>((resolve) => {
+		finishClose = resolve;
+	});
 	let factories = 0;
-	const first = runHost(async () => {
-		factories += 1; built(); await construction;
-		return { ...echoRuntime(), close: async () => { closing(); await nativeClose; } };
-	}, { metadata: config, idleMs: 0, announceReady: noop });
-	const contender = () => runHost(() => { factories += 1; return echoRuntime(); }, { metadata: config, idleMs: 0, announceReady: noop });
+	const first = runHost(
+		async () => {
+			factories += 1;
+			built();
+			await construction;
+			return {
+				...echoRuntime(),
+				close: async () => {
+					closing();
+					await nativeClose;
+				},
+			};
+		},
+		{ metadata: config, idleMs: 0, announceReady: noop },
+	);
+	const contender = () =>
+		runHost(
+			() => {
+				factories += 1;
+				return echoRuntime();
+			},
+			{ metadata: config, idleMs: 0, announceReady: noop },
+		);
 	try {
 		await entered;
 		await assert.rejects(contender(), HostClaimRefusedError);
@@ -383,33 +600,61 @@ it("excludes a contender throughout held construction and native close", { timeo
 		await closeEntered;
 		await assert.rejects(contender(), HostClaimRefusedError);
 		assert.equal(factories, 1);
-		finishClose(); await shutdown;
+		finishClose();
+		await shutdown;
 		const next = await contender();
 		assert.equal(factories, 2);
 		await next.close();
-	} finally { finishConstruction(); finishClose(); await (await first).close(); }
+	} finally {
+		finishConstruction();
+		finishClose();
+		await (await first).close();
+	}
 });
 
 it("retains exclusion after an uncertain factory rejection", async (t) => {
-	const root = fixtureRoot(t), config = metadata(root);
-	await assert.rejects(runHost(async () => { throw new Error("partial native construction"); }, { metadata: config, idleMs: 0 }), /partial native/u);
+	const root = fixtureRoot(t),
+		config = metadata(root);
+	await assert.rejects(
+		runHost(
+			async () => {
+				throw new Error("partial native construction");
+			},
+			{ metadata: config, idleMs: 0 },
+		),
+		/partial native/u,
+	);
 	const before = readFileSync(hostPaths(config).claim);
 	await assert.rejects(runHost(echoRuntime, { metadata: config, idleMs: 0 }), HostClaimRefusedError);
 	assert.deepEqual(readFileSync(hostPaths(config).claim), before);
 });
 
 it("does not acquire a claim when validation fails before construction", async (t) => {
-	const root = fixtureRoot(t), config = metadata(root);
+	const root = fixtureRoot(t),
+		config = metadata(root);
 	let called = false;
-	await assert.rejects(runHost(() => { called = true; return echoRuntime(); }, { metadata: config, idleMs: -1 }), /idleMs/u);
+	await assert.rejects(
+		runHost(
+			() => {
+				called = true;
+				return echoRuntime();
+			},
+			{ metadata: config, idleMs: -1 },
+		),
+		/idleMs/u,
+	);
 	assert.equal(called, false);
 	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "absent");
 	const host = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
 	await host.close();
 });
 
-it("writes a clean end through the held descriptor and clears it for the next holder", { timeout: 10000 }, async t => {
-	const root = fixtureRoot(t), config = metadata(root), paths = hostPaths(config);
+it("writes a clean end through the held descriptor and clears it for the next holder", {
+	timeout: 10000,
+}, async (t) => {
+	const root = fixtureRoot(t),
+		config = metadata(root),
+		paths = hostPaths(config);
 	const first = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
 	const before = JSON.parse(readFileSync(paths.claim, "utf8"));
 	const inode = lstatSync(paths.claim).ino;
@@ -427,31 +672,54 @@ it("writes a clean end through the held descriptor and clears it for the next ho
 	assert.equal(lstatSync(paths.claim).ino, inode);
 });
 
-it("an end-record write failure retains exclusion until its process exits", { timeout: 15000 }, async t => {
-	const root = fixtureRoot(t), config = metadata(root), paths = hostPaths(config);
+it("an end-record write failure retains exclusion until its process exits", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t),
+		config = metadata(root),
+		paths = hostPaths(config);
 	const source = `
 		import { runHost } from ${JSON.stringify(new URL("./host-process.ts", import.meta.url).href)};
 		const host = await runHost(() => ({ request:async()=>({}), close:async()=>{}, isIdle:()=>false }), {metadata:JSON.parse(process.argv[1]),idleMs:0,announceReady(){},writeEndRecord(){throw new Error('end write failed');}});
 		try {await host.close();} catch(error) {process.send(error.message);}
 		await new Promise(resolve=>process.once('message',resolve));process.exit(0);`;
-	const child = spawn(process.execPath, ["--input-type=module", "--eval", source, JSON.stringify(config)], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
-	t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+	const child = spawn(process.execPath, ["--input-type=module", "--eval", source, JSON.stringify(config)], {
+		stdio: ["ignore", "ignore", "pipe", "ipc"],
+	});
+	t.after(() => {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+	});
 	const [message] = await once(child, "message");
 	assert.equal(message, "end write failed");
 	assert.equal(writerAvailable(config), false);
 	assert.equal(JSON.parse(readFileSync(paths.claim, "utf8")).endedAt, undefined);
 	assert.equal(lstatSync(paths.socket, { throwIfNoEntry: false }), undefined);
-	const exited = once(child, "exit"); child.send("exit"); await exited;
+	const exited = once(child, "exit");
+	child.send("exit");
+	await exited;
 	assert.equal(writerAvailable(config), true);
 });
 
 for (const failure of ["native close failed", "end write failed"]) {
-	it(`settles remote close and retains the exact writer after ${failure}`, { timeout: 3000 }, async t => {
-		const root = fixtureRoot(t), config = metadata(root), paths = hostPaths(config);
-		const runtime = { ...echoRuntime(), close: async () => { if (failure === "native close failed") throw new Error(failure); } };
+	it(`settles remote close and retains the exact writer after ${failure}`, { timeout: 3000 }, async (t) => {
+		const root = fixtureRoot(t),
+			config = metadata(root),
+			paths = hostPaths(config);
+		const runtime = {
+			...echoRuntime(),
+			close: async () => {
+				if (failure === "native close failed") throw new Error(failure);
+			},
+		};
 		const host = await runHost(() => runtime, {
-			metadata: config, idleMs: 0, announceReady: noop,
-			...(failure === "end write failed" ? { writeEndRecord: () => { throw new Error(failure); } } : {}),
+			metadata: config,
+			idleMs: 0,
+			announceReady: noop,
+			...(failure === "end write failed"
+				? {
+						writeEndRecord: () => {
+							throw new Error(failure);
+						},
+					}
+				: {}),
 		});
 		const before = readFileSync(paths.claim);
 		const client = await connectClient(config);
@@ -462,14 +730,23 @@ for (const failure of ["native close failed", "end write failed"]) {
 		await assert.rejects(host.close(), new RegExp(failure, "u"));
 		assert.deepEqual(readFileSync(paths.claim), before, "the failed generation never publishes a clean end");
 		assert.equal(writerAvailable(config), false);
-		await assert.rejects(runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop }), HostClaimRefusedError);
+		await assert.rejects(
+			runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop }),
+			HostClaimRefusedError,
+		);
 		assert.deepEqual(readFileSync(paths.claim), before, "a refused contender never changes the writer generation");
 	});
 }
 
 it("retains exclusion when native close fails", async (t) => {
-	const root = fixtureRoot(t), config = metadata(root);
-	const runtime = { ...echoRuntime(), close: async () => { throw new Error("native close failed"); } };
+	const root = fixtureRoot(t),
+		config = metadata(root);
+	const runtime = {
+		...echoRuntime(),
+		close: async () => {
+			throw new Error("native close failed");
+		},
+	};
 	const host = await runHost(() => runtime, { metadata: config, idleMs: 0, announceReady: noop });
 	const done = assert.rejects(host.done, /native close failed/u);
 	await assert.rejects(host.close(), /native close failed/u);
@@ -508,11 +785,22 @@ it("keeps a deep agent directory working with a short socket path", { timeout: 1
 function observedRuntime(config: () => HostMetadata) {
 	const listeners = new Set<() => void>();
 	const state = { revision: 1, frames: 0, failFrames: false, gate: undefined as Promise<void> | undefined, closes: 0 };
-	const frame = () => ({ scope: "conversation", storageId: config().storageId, conversationId: 1, revision: state.revision, entries: [], live: [], status: { busy: true } });
+	const frame = () => ({
+		scope: "conversation",
+		storageId: config().storageId,
+		conversationId: 1,
+		revision: state.revision,
+		entries: [],
+		live: [],
+		status: { busy: true },
+	});
 	const runtime: HostRuntime = {
 		request: async (method) => {
 			if (method === "observe-open") return { token: "pump-token" };
-			if (method === "observe-close") { state.closes++; return {}; }
+			if (method === "observe-close") {
+				state.closes++;
+				return {};
+			}
 			if (method === "observe-frame") {
 				state.frames++;
 				const gate = state.gate;
@@ -522,26 +810,54 @@ function observedRuntime(config: () => HostMetadata) {
 			}
 			return {};
 		},
-		close: async () => {}, isIdle: () => true,
-		onObservationChange: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+		close: async () => {},
+		isIdle: () => true,
+		onObservationChange: (listener) => {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
 	};
-	return { runtime, state, change: () => { for (const listener of [...listeners]) listener(); }, listeners };
+	return {
+		runtime,
+		state,
+		change: () => {
+			for (const listener of [...listeners]) listener();
+		},
+		listeners,
+	};
 }
 
 async function observedHost(t: { after(fn: () => void): void }) {
-	const root = fixtureRoot(t), config = metadata(root), clock = manualClock();
+	const root = fixtureRoot(t),
+		config = metadata(root),
+		clock = manualClock();
 	const fixture = observedRuntime(() => config);
-	const host = await runHost(() => fixture.runtime, { metadata: config, idleMs: 0, announceReady: noop, observationClock: clock });
+	const host = await runHost(() => fixture.runtime, {
+		metadata: config,
+		idleMs: 0,
+		announceReady: noop,
+		observationClock: clock,
+	});
 	t.after(() => host.close().catch(() => {}));
 	const client = await connectClient(config);
 	t.after(() => client.dispose());
-	await call(client, config, "observe-open", { token: "pump-token", scope: "conversation", sessionId: config.storageId });
+	await call(client, config, "observe-open", {
+		token: "pump-token",
+		scope: "conversation",
+		sessionId: config.storageId,
+	});
 	const updates = eventLog<unknown>();
-	const subscription = await client.subscribe("observation", "pump-token", (update) => { updates.push(update); });
+	const subscription = await client.subscribe("observation", "pump-token", (update) => {
+		updates.push(update);
+	});
 	return { host, clock, client, config, updates, subscription, ...fixture };
 }
 
-it("constructs one observation frame per interval during sustained updates and publishes the final state", { timeout: 15000 }, async (t) => {
+it("constructs one observation frame per interval during sustained updates and publishes the final state", {
+	timeout: 15000,
+}, async (t) => {
 	const h = await observedHost(t);
 	assert.equal(h.state.frames, 1, "the baseline frame is built immediately");
 	h.clock.advance(0);
@@ -558,7 +874,9 @@ it("constructs one observation frame per interval during sustained updates and p
 	const constructed = h.state.frames - before;
 	assert.ok(constructed <= 10, `one simulated second built ${constructed} frames`);
 	h.clock.advance(100);
-	await h.updates.waitFor((values) => values.some((value) => (value as { revision: number }).revision === h.state.revision));
+	await h.updates.waitFor((values) =>
+		values.some((value) => (value as { revision: number }).revision === h.state.revision),
+	);
 	assert.equal((h.updates.at(-1) as { revision: number }).revision, h.state.revision, "the last revision is published");
 });
 
@@ -567,7 +885,9 @@ it("keeps a change that arrives during a construction for one trailing pass", { 
 	h.clock.advance(0);
 	await new Promise<void>(setImmediate);
 	let release = () => {};
-	h.state.gate = new Promise<void>((resolve) => { release = resolve; });
+	h.state.gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
 	h.state.revision = 2;
 	h.change();
 	h.clock.advance(100);
@@ -587,7 +907,9 @@ it("keeps a change that arrives during a construction for one trailing pass", { 
 	assert.equal(h.state.frames, during + 1, "the trailing state costs one construction");
 });
 
-it("closing the last subscription cancels the waiting pass and later changes build nothing", { timeout: 15000 }, async (t) => {
+it("closing the last subscription cancels the waiting pass and later changes build nothing", {
+	timeout: 15000,
+}, async (t) => {
 	const h = await observedHost(t);
 	h.clock.advance(0);
 	await new Promise<void>(setImmediate);

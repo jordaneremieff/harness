@@ -22,11 +22,18 @@ const providerExtension = fileURLToPath(new URL("./testdata/print-provider.ts", 
 
 type Reply = { content: AssistantMessage["content"]; stopReason: "stop" | "toolUse" };
 const say = (value: string): Reply => ({ content: [{ type: "text", text: value }], stopReason: "stop" });
-const call = (name: string, args: JsonObject): Reply => ({ content: [{ type: "toolCall", id: randomUUID(), name, arguments: args }], stopReason: "toolUse" });
+const call = (name: string, args: JsonObject): Reply => ({
+	content: [{ type: "toolCall", id: randomUUID(), name, arguments: args }],
+	stopReason: "toolUse",
+});
 type Entry = { type: string; customType?: string; content?: unknown; display?: boolean };
 
 /** One CLI run in an isolated agent home. `script` answers request `index`; undefined fails that request. */
-async function printRun(mode: "text" | "json", prompt: string, script: (context: TranscriptContext, index: number) => Reply | undefined) {
+async function printRun(
+	mode: "text" | "json",
+	prompt: string,
+	script: (context: TranscriptContext, index: number) => Reply | undefined,
+) {
 	const root = mkdtempSync(join(tmpdir(), "jobs-print-"));
 	const [agentDir, sessions, cwd] = ["agent", "sessions", "work"].map((name) => join(root, name));
 	for (const dir of [agentDir, sessions, cwd]) mkdirSync(dir);
@@ -54,30 +61,71 @@ async function printRun(mode: "text" | "json", prompt: string, script: (context:
 		socket.on("error", () => {});
 		socket.on("close", () => sockets.delete(socket));
 	});
-	await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
 	const address = server.address();
 	assert.ok(address && typeof address === "object");
 	try {
-		const child = spawn(process.execPath, [
-			piCli, ...(mode === "json" ? ["--mode", "json"] : []), "-p",
-			"--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-mcp",
-			"--session-dir", sessions, "-e", providerExtension, "-e", jobsExtension, "--model", "jobs-print-fixture/scripted", prompt,
-		], {
-			cwd,
-			env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, PI_AGENT_DIR: agentDir, PI_OFFLINE: "1", JOBS_PRINT_TEST_PORT: String(address.port) },
-			stdio: ["ignore", "pipe", "pipe"],
-		});
+		const child = spawn(
+			process.execPath,
+			[
+				piCli,
+				...(mode === "json" ? ["--mode", "json"] : []),
+				"-p",
+				"--offline",
+				"--no-extensions",
+				"--no-skills",
+				"--no-prompt-templates",
+				"--no-themes",
+				"--no-context-files",
+				"--no-mcp",
+				"--session-dir",
+				sessions,
+				"-e",
+				providerExtension,
+				"-e",
+				jobsExtension,
+				"--model",
+				"jobs-print-fixture/scripted",
+				prompt,
+			],
+			{
+				cwd,
+				env: {
+					...process.env,
+					PI_CODING_AGENT_DIR: agentDir,
+					PI_AGENT_DIR: agentDir,
+					PI_OFFLINE: "1",
+					JOBS_PRINT_TEST_PORT: String(address.port),
+				},
+				stdio: ["ignore", "pipe", "pipe"],
+			},
+		);
 		let stdout = "";
 		let stderr = "";
-		child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
-		child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+			stderr += chunk;
+		});
 		const timer = setTimeout(() => child.kill("SIGKILL"), 60000);
-		const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+		const code = await new Promise<number | null>((resolve, reject) => {
+			child.once("error", reject);
+			child.once("close", resolve);
+		});
 		clearTimeout(timer);
 		if (failures.length > 0) throw failures[0];
-		const files = readdirSync(sessions, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".jsonl"));
+		const files = readdirSync(sessions, { recursive: true, encoding: "utf8" }).filter((name) =>
+			name.endsWith(".jsonl"),
+		);
 		assert.equal(files.length, 1, `one session file; stderr: ${stderr}`);
-		const entries = readFileSync(join(sessions, files[0] as string), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as Entry);
+		const entries = readFileSync(join(sessions, files[0] as string), "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as Entry);
 		return { stdout, stderr, code, requests, entries };
 	} finally {
 		for (const socket of sockets) socket.destroy();
@@ -88,12 +136,23 @@ async function printRun(mode: "text" | "json", prompt: string, script: (context:
 
 type Job = { id: string; status: string };
 function latestJob(context: TranscriptContext): Job | undefined {
-	const result = context.messages.findLast((message) => message.role === "toolResult" && (message.toolName === "bash" || message.toolName === "jobs"));
+	const result = context.messages.findLast(
+		(message) => message.role === "toolResult" && (message.toolName === "bash" || message.toolName === "jobs"),
+	);
 	return result?.role === "toolResult" ? (result.details as { job?: Job } | undefined)?.job : undefined;
 }
-const textOf = (content: unknown): string => typeof content === "string" ? content : Array.isArray(content) ? content.flatMap((part: { type?: string; text?: string }) => part.type === "text" && part.text ? [part.text] : []).join("\n") : "";
-const completionArrived = (context: TranscriptContext, id: string) => context.messages.some((message) => message.role === "user" && textOf(message.content).includes(id));
-const askedForAnswer = (context: TranscriptContext) => context.messages.some((message) => message.role === "user" && textOf(message.content) === COMPLETE_ANSWER);
+const textOf = (content: unknown): string =>
+	typeof content === "string"
+		? content
+		: Array.isArray(content)
+			? content
+					.flatMap((part: { type?: string; text?: string }) => (part.type === "text" && part.text ? [part.text] : []))
+					.join("\n")
+			: "";
+const completionArrived = (context: TranscriptContext, id: string) =>
+	context.messages.some((message) => message.role === "user" && textOf(message.content).includes(id));
+const askedForAnswer = (context: TranscriptContext) =>
+	context.messages.some((message) => message.role === "user" && textOf(message.content) === COMPLETE_ANSWER);
 
 /**
  * The scripted model starts a quick background job, reads its status until it settled, and reports; the queued
@@ -127,22 +186,50 @@ function lateCompletionScript(report: string, reply: string, complete: string) {
 	};
 }
 
-it("prints the complete answer after a job completion that arrives after the first answer", { timeout: 90000 }, async () => {
+it("prints the complete answer after a job completion that arrives after the first answer", {
+	timeout: 90000,
+}, async () => {
 	const complete = "The check started in the background and passed.";
-	const run = await printRun("text", "Run the check in the background.", lateCompletionScript("The check runs in the background.", "The check passed.", complete));
-	assert.deepEqual({ stdout: run.stdout, stderr: run.stderr, code: run.code }, { stdout: `${complete}\n`, stderr: "", code: 0 });
-	const requests = run.entries.filter((entry) => entry.type === "custom_message" && entry.customType === COMPLETE_ANSWER_TYPE);
-	assert.deepEqual(requests.map(({ content, display }) => ({ content, display })), [{ content: COMPLETE_ANSWER, display: false }], "one context-only request");
-	for (const context of run.requests) assert.doesNotMatch(JSON.stringify(context.messages), new RegExp(YIELD_TOOL, "u"), "the run does not offer jobs_yield");
+	const run = await printRun(
+		"text",
+		"Run the check in the background.",
+		lateCompletionScript("The check runs in the background.", "The check passed.", complete),
+	);
+	assert.deepEqual(
+		{ stdout: run.stdout, stderr: run.stderr, code: run.code },
+		{ stdout: `${complete}\n`, stderr: "", code: 0 },
+	);
+	const requests = run.entries.filter(
+		(entry) => entry.type === "custom_message" && entry.customType === COMPLETE_ANSWER_TYPE,
+	);
+	assert.deepEqual(
+		requests.map(({ content, display }) => ({ content, display })),
+		[{ content: COMPLETE_ANSWER, display: false }],
+		"one context-only request",
+	);
+	for (const context of run.requests)
+		assert.doesNotMatch(
+			JSON.stringify(context.messages),
+			new RegExp(YIELD_TOOL, "u"),
+			"the run does not offer jobs_yield",
+		);
 	assert.match(JSON.stringify(run.requests[0]?.messages), /"jobs"/u, "the request carries the tool declarations");
 });
 
 it("ends a JSON stream with the complete answer after a late job completion", { timeout: 90000 }, async () => {
 	const complete = "The check started in the background and passed.";
-	const run = await printRun("json", "Run the check in the background.", lateCompletionScript("The check runs in the background.", "The check passed.", complete));
+	const run = await printRun(
+		"json",
+		"Run the check in the background.",
+		lateCompletionScript("The check runs in the background.", "The check passed.", complete),
+	);
 	assert.equal(run.code, 0, run.stderr);
-	const events = run.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; message?: { role?: string; content?: unknown } });
+	const events = run.stdout
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as { type: string; message?: { role?: string; content?: unknown } });
 	const last = events.findLast((event) => event.type === "message_end" && event.message?.role === "assistant");
 	assert.equal(textOf(last?.message?.content), complete);
-	for (const context of run.requests) assert.doesNotMatch(JSON.stringify(context.messages), new RegExp(YIELD_TOOL, "u"));
+	for (const context of run.requests)
+		assert.doesNotMatch(JSON.stringify(context.messages), new RegExp(YIELD_TOOL, "u"));
 });

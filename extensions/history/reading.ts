@@ -172,7 +172,8 @@ export function argumentLevel(block: unknown, below: readonly string[]): number 
  */
 export function argumentItem(key: string, value: unknown, parent: string, depth: number): RecordValue {
 	const pointer = `${parent}/${key.replaceAll("~", "~0").replaceAll("/", "~1")}`;
-	if (pointer.length > LIMITS.pointerUnits) return { kind: "skipped", reason: "pointerLength", totalCodeUnits: key.length };
+	if (pointer.length > LIMITS.pointerUnits)
+		return { kind: "skipped", reason: "pointerLength", totalCodeUnits: key.length };
 	if (typeof value === "string" && value.length <= INLINE_ARGUMENT_UNITS)
 		return { key, pointer, kind: "string", totalCodeUnits: value.length, text: value };
 	if (object(value) && depth + 1 < LIMITS.argumentDepth)

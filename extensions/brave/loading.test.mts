@@ -14,7 +14,11 @@ import { afterEach, beforeEach, it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 interface RegisteredTool {
-	execute(id: string, params: unknown, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text: string }> }>;
+	execute(
+		id: string,
+		params: unknown,
+		signal?: AbortSignal,
+	): Promise<{ content: Array<{ type: string; text: string }> }>;
 }
 
 const loaded: string[] = [];

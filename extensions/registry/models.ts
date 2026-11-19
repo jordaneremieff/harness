@@ -1,7 +1,14 @@
 import { getSupportedThinkingLevels, type ModelCost, type ModelCostRates } from "@earendil-works/pi-ai";
 import { SettingsManager, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-export const AUTH_SOURCES = ["stored", "runtime", "environment", "fallback", "models_json_key", "models_json_command"] as const;
+export const AUTH_SOURCES = [
+	"stored",
+	"runtime",
+	"environment",
+	"fallback",
+	"models_json_key",
+	"models_json_command",
+] as const;
 type AuthSource = (typeof AUTH_SOURCES)[number];
 
 /** Configuration evidence, never a resolved session cycle or preference. */
@@ -11,7 +18,12 @@ export interface SettingsScopeEvidence {
 	observedAt: number;
 }
 
-export function readSettingsScope(cwd: string, agentDir: string, at: number, projectTrusted: boolean): SettingsScopeEvidence {
+export function readSettingsScope(
+	cwd: string,
+	agentDir: string,
+	at: number,
+	projectTrusted: boolean,
+): SettingsScopeEvidence {
 	const unavailable: SettingsScopeEvidence = { status: "unavailable", patterns: null, observedAt: at };
 	try {
 		const settings = SettingsManager.create(cwd, agentDir, { projectTrusted });
@@ -59,7 +71,8 @@ function readAuthSource(read: () => { source?: string }): AuthSource | null {
 function costRates(value: ModelCostRates): ModelCostRates | null {
 	const { input, output, cacheRead, cacheWrite } = value;
 	return [input, output, cacheRead, cacheWrite].every((rate) => Number.isFinite(rate) && rate >= 0)
-		? { input, output, cacheRead, cacheWrite } : null;
+		? { input, output, cacheRead, cacheWrite }
+		: null;
 }
 
 /** Select price fields only; a malformed price stays unknown rather than zero. */
@@ -71,7 +84,8 @@ function catalogCost(model: ModelInfo): ModelCost | null {
 		const tiers = model.cost.tiers.map((tier) => {
 			const rates = costRates(tier);
 			return rates !== null && Number.isFinite(tier.inputTokensAbove) && tier.inputTokensAbove >= 0
-				? { ...rates, inputTokensAbove: tier.inputTokensAbove } : null;
+				? { ...rates, inputTokensAbove: tier.inputTokensAbove }
+				: null;
 		});
 		return tiers.every((tier) => tier !== null) ? { ...base, tiers } : null;
 	} catch {
@@ -218,11 +232,12 @@ interface ModelBuildInput {
 function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord {
 	const name = `${model.provider}/${model.id}`;
 	const selected =
-		input.selectedRef !== undefined && model.provider === input.selectedRef.provider && model.id === input.selectedRef.modelId;
+		input.selectedRef !== undefined &&
+		model.provider === input.selectedRef.provider &&
+		model.id === input.selectedRef.modelId;
 	const scopeIndex =
-		input.scopedModels?.findIndex(
-			(entry) => entry.model.provider === model.provider && entry.model.id === model.id,
-		) ?? -1;
+		input.scopedModels?.findIndex((entry) => entry.model.provider === model.provider && entry.model.id === model.id) ??
+		-1;
 	const scope = input.scopedModels?.[scopeIndex];
 	const cost = catalogCost(model);
 	return {
@@ -244,8 +259,10 @@ function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord
 		...input.billing(model),
 		catalogCost: cost,
 		catalogCostHasTiers: cost === null ? null : (cost.tiers?.length ?? 0) > 0,
-		providerHasScopedModels: input.scopeConfigured === true
-			? input.scopedModels?.some((entry) => entry.model.provider === model.provider) ?? null : null,
+		providerHasScopedModels:
+			input.scopeConfigured === true
+				? (input.scopedModels?.some((entry) => entry.model.provider === model.provider) ?? null)
+				: null,
 		providerNamedInSettings: input.settingsProviders?.has(model.provider) ?? null,
 		extensionProvider: input.extensionProviders === null ? null : input.extensionProviders.has(model.provider),
 		inScope: input.scopeConfigured === null ? null : !input.scopeConfigured || scope !== undefined,
@@ -257,23 +274,40 @@ function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord
 	};
 }
 
-function selectedIdentity(reader: DurableModelReader, ref: NonNullable<DurableAgentModel["model"]>, input: ModelBuildInput): ModelRecord {
+function selectedIdentity(
+	reader: DurableModelReader,
+	ref: NonNullable<DurableAgentModel["model"]>,
+	input: ModelBuildInput,
+): ModelRecord {
 	const name = `${ref.provider}/${ref.modelId}`;
 	return {
-		kind: "model", name, provider: ref.provider, id: ref.modelId,
-		displayName: null, metadataAvailable: false, catalog: false, selected: true,
-		reasoning: null, input: null, contextWindow: null, maxTokens: null, supportedThinkingLevels: null,
+		kind: "model",
+		name,
+		provider: ref.provider,
+		id: ref.modelId,
+		displayName: null,
+		metadataAvailable: false,
+		catalog: false,
+		selected: true,
+		reasoning: null,
+		input: null,
+		contextWindow: null,
+		maxTokens: null,
+		supportedThinkingLevels: null,
 		available: input.availableSnapshot ? input.available.has(name) : null,
 		configuredAuth: readBoolean(() => reader.hasConfiguredAuth(ref.provider)),
 		oauth: readBoolean(() => reader.isUsingOAuth(ref.provider)),
 		subscriptionRecognized: readBoolean(() => reader.isUsingSubscription(ref.provider)),
 		authSource: readAuthSource(() => reader.getProviderAuthStatus(ref.provider)),
-		catalogCost: null, catalogCostHasTiers: null, providerHasScopedModels: null,
+		catalogCost: null,
+		catalogCostHasTiers: null,
+		providerHasScopedModels: null,
 		providerNamedInSettings: input.settingsProviders?.has(ref.provider) ?? null,
 		extensionProvider: input.extensionProviders?.has(ref.provider) ?? null,
 		inScope: null,
 		...(input.thinkingLevel === undefined ? {} : { currentThinkingLevel: input.thinkingLevel }),
-		evidence: "selection", at: input.at,
+		evidence: "selection",
+		at: input.at,
 	};
 }
 
@@ -327,7 +361,10 @@ export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
 			const oauth = readBoolean(() => registry.isUsingOAuth(model));
 			return {
 				oauth,
-				subscriptionRecognized: oauth === null ? null : readBoolean(() => oauth && registry.getProvider(model.provider)?.auth.oauth?.isSubscription === true),
+				subscriptionRecognized:
+					oauth === null
+						? null
+						: readBoolean(() => oauth && registry.getProvider(model.provider)?.auth.oauth?.isSubscription === true),
 				authSource: readAuthSource(() => registry.getProviderAuthStatus(model.provider)),
 			};
 		},
@@ -348,7 +385,12 @@ export function readModels(ctx: ExtensionContext, at: number): ModelSnapshot {
  * model choice and has no Pi session model scope, so scope stays unavailable
  * rather than empty.
  */
-export function readDurableModels(reader: DurableModelReader, agent: DurableAgentModel, at: number, settingsScope: SettingsScopeEvidence): ModelSnapshot {
+export function readDurableModels(
+	reader: DurableModelReader,
+	agent: DurableAgentModel,
+	at: number,
+	settingsScope: SettingsScopeEvidence,
+): ModelSnapshot {
 	let catalog: ModelInfo[] = [];
 	let catalogAvailable = false;
 	try {
@@ -392,7 +434,10 @@ export function readDurableModels(reader: DurableModelReader, agent: DurableAgen
 		}
 	}
 	const models = [...catalog];
-	if (selectedModel && !models.some((model) => model.provider === selectedModel.provider && model.id === selectedModel.id)) {
+	if (
+		selectedModel &&
+		!models.some((model) => model.provider === selectedModel.provider && model.id === selectedModel.id)
+	) {
 		models.push(selectedModel);
 	}
 	const input: ModelBuildInput = {

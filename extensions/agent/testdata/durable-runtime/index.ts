@@ -31,13 +31,32 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { publishFixtureMarker } from "./signal.ts";
 import type * as Durable from "@earendil-works/pi-durable";
-import { createAssistantMessageEventStream, type AssistantMessage, type Model, type TranscriptContext } from "@earendil-works/pi-ai";
-import { createCodemodeExtension, getPackageDir, ModelRuntime, VERSION, type AgentSessionServices, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	createAssistantMessageEventStream,
+	type AssistantMessage,
+	type Model,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
+import {
+	createCodemodeExtension,
+	getPackageDir,
+	ModelRuntime,
+	VERSION,
+	type AgentSessionServices,
+	type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import { str, obj } from "@earendil-works/pi-schema";
 
 const providerId = "durable-runtime-fixture";
 const modelId = "fixture-model";
-const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0.0625, output: 0.0625, cacheRead: 0, cacheWrite: 0, total: 0.125 } };
+const usage = {
+	input: 1,
+	output: 1,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 2,
+	cost: { input: 0.0625, output: 0.0625, cacheRead: 0, cacheWrite: 0, total: 0.125 },
+};
 
 const fixtureModel: Model<"openai-completions"> = {
 	provider: providerId,
@@ -75,11 +94,23 @@ interface RequestOptions {
 
 /** Record provider-boundary options without credentials or abort signals. */
 function recordSessionOptions(options: RequestOptions | undefined): void {
-	appendFileSync(join(controlDir(), "session-options.jsonl"), `${JSON.stringify({ sessionId: options?.sessionId ?? null, transport: options?.transport ?? null, reasoning: options?.reasoning })}\n`);
+	appendFileSync(
+		join(controlDir(), "session-options.jsonl"),
+		`${JSON.stringify({ sessionId: options?.sessionId ?? null, transport: options?.transport ?? null, reasoning: options?.reasoning })}\n`,
+	);
 }
 
 function message(content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"]): AssistantMessage {
-	return { role: "assistant", content, api: "openai-completions", provider: providerId, model: modelId, usage, stopReason, timestamp: Date.now() };
+	return {
+		role: "assistant",
+		content,
+		api: "openai-completions",
+		provider: providerId,
+		model: modelId,
+		usage,
+		stopReason,
+		timestamp: Date.now(),
+	};
 }
 
 function completed(content: AssistantMessage["content"], stopReason: "stop" | "toolUse") {
@@ -109,15 +140,18 @@ function pending(signal?: AbortSignal) {
 function answer(): ReturnType<typeof completed> {
 	const events = createAssistantMessageEventStream();
 	const value = message([{ type: "text", text: process.env.DURABLE_TEST_ANSWER ?? "durable runtime answer" }], "stop");
-	void publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY ?? "", "answered").then(() => {
-		events.push({ type: "start", partial: value });
-		events.push({ type: "done", reason: "stop", message: value });
-		events.end(value);
-	}, (cause: unknown) => {
-		const error = { ...value, stopReason: "error" as const, errorMessage: String(cause) };
-		events.push({ type: "error", reason: "error", error });
-		events.end(error);
-	});
+	void publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY ?? "", "answered").then(
+		() => {
+			events.push({ type: "start", partial: value });
+			events.push({ type: "done", reason: "stop", message: value });
+			events.end(value);
+		},
+		(cause: unknown) => {
+			const error = { ...value, stopReason: "error" as const, errorMessage: String(cause) };
+			events.push({ type: "error", reason: "error", error });
+			events.end(error);
+		},
+	);
 	return events;
 }
 
@@ -125,7 +159,11 @@ function answer(): ReturnType<typeof completed> {
 function userText(context: TranscriptContext): string {
 	return context.messages
 		.filter((item) => item.role === "user")
-		.map((item) => typeof item.content === "string" ? item.content : item.content.map((part) => part.type === "text" ? part.text : "").join(""))
+		.map((item) =>
+			typeof item.content === "string"
+				? item.content
+				: item.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
+		)
 		.filter((text) => !text.startsWith("<agent-request-route "))
 		.join("\n");
 }
@@ -141,7 +179,17 @@ function spawn(context: TranscriptContext) {
 	if (text.includes("SPAWN_CHILD") && !context.messages.some((item) => item.role === "toolResult")) {
 		const childCwd = process.env.DURABLE_TEST_CHILD_CWD;
 		if (!childCwd) throw new Error("DURABLE_TEST_CHILD_CWD is required for spawn mode");
-		return completed([{ type: "toolCall", id: "spawn-child", name: "agent_spawn", arguments: { cwd: childCwd, prompt: "CHILD_TASK", name: "child" } }], "toolUse");
+		return completed(
+			[
+				{
+					type: "toolCall",
+					id: "spawn-child",
+					name: "agent_spawn",
+					arguments: { cwd: childCwd, prompt: "CHILD_TASK", name: "child" },
+				},
+			],
+			"toolUse",
+		);
 	}
 	return completed([{ type: "text", text: "PRIMARY_DONE" }], "stop");
 }
@@ -150,22 +198,31 @@ function spawn(context: TranscriptContext) {
 function retryError() {
 	const socketPath = process.env.DURABLE_TEST_NOTIFY;
 	if (!socketPath) throw new Error("DURABLE_TEST_NOTIFY is required for the durable runtime fixture");
-	const error = { ...message([], "error"), errorMessage: '429 {"code":"temporary_overload","message":"Temporary request throttling; retry this request"}' };
+	const error = {
+		...message([], "error"),
+		errorMessage: '429 {"code":"temporary_overload","message":"Temporary request throttling; retry this request"}',
+	};
 	const events = createAssistantMessageEventStream();
-	void publishFixtureMarker(socketPath, "retry-requested").then(() => {
-		events.push({ type: "error", reason: "error", error });
-		events.end(error);
-	}, (cause: unknown) => {
-		const failed = { ...error, errorMessage: `Fixture retry marker failed: ${String(cause)}` };
-		events.push({ type: "error", reason: "error", error: failed });
-		events.end(failed);
-	});
+	void publishFixtureMarker(socketPath, "retry-requested").then(
+		() => {
+			events.push({ type: "error", reason: "error", error });
+			events.end(error);
+		},
+		(cause: unknown) => {
+			const failed = { ...error, errorMessage: `Fixture retry marker failed: ${String(cause)}` };
+			events.push({ type: "error", reason: "error", error: failed });
+			events.end(failed);
+		},
+	);
 	return events;
 }
 
 function storagePages(context: TranscriptContext) {
-	const result = context.messages.findLast(item => item.role === "toolResult" && item.toolName === "codemode");
-	if (result) { writeFileSync(join(controlDir(), "storage-pages.json"), JSON.stringify(result)); return answer(); }
+	const result = context.messages.findLast((item) => item.role === "toolResult" && item.toolName === "codemode");
+	if (result) {
+		writeFileSync(join(controlDir(), "storage-pages.json"), JSON.stringify(result));
+		return answer();
+	}
 	const storageId = userText(context).split("STORAGE_PAGE:")[1]?.split("\n")[0];
 	if (!storageId) throw new Error("The storage-page fixture requires its exact storage identity");
 	const code = `await tools.agent_spawn({name:"page peer",model:"${providerId}/${modelId}"});
@@ -179,19 +236,38 @@ function storagePages(context: TranscriptContext) {
 }
 
 function intent(context: TranscriptContext) {
-	const texts = context.messages.flatMap(item => item.role === "user" ? [typeof item.content === "string" ? item.content : item.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n")] : []);
-	const text = texts.findLast(value => value.startsWith("INTENT_INPUT:"));
+	const texts = context.messages.flatMap((item) =>
+		item.role === "user"
+			? [
+					typeof item.content === "string"
+						? item.content
+						: item.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"),
+				]
+			: [],
+	);
+	const text = texts.findLast((value) => value.startsWith("INTENT_INPUT:"));
 	if (text === undefined) throw new Error("The intent fixture requires a tagged input");
-	const input = JSON.parse(text.slice("INTENT_INPUT:".length)) as { requestId: string; input: Extract<AssistantMessage["content"][number], { type: "toolCall" }>["arguments"] | "DISCOVER" };
+	const input = JSON.parse(text.slice("INTENT_INPUT:".length)) as {
+		requestId: string;
+		input: Extract<AssistantMessage["content"][number], { type: "toolCall" }>["arguments"] | "DISCOVER";
+	};
 	const id = `intent-${input.requestId}`;
-	const result = context.messages.findLast(item => item.role === "toolResult" && item.toolCallId === id);
+	const result = context.messages.findLast((item) => item.role === "toolResult" && item.toolCallId === id);
 	if (result !== undefined) {
 		appendFileSync(join(controlDir(), "intent-returns.jsonl"), `${JSON.stringify(result)}\n`);
 		return answer();
 	}
-	if (context.messages.some(item => item.role === "assistant" && item.content.some(part => part.type === "toolCall" && part.id === id))) throw new Error("The completed intent call has no result in the model context");
+	if (
+		context.messages.some(
+			(item) => item.role === "assistant" && item.content.some((part) => part.type === "toolCall" && part.id === id),
+		)
+	)
+		throw new Error("The completed intent call has no result in the model context");
 	const name = input.input === "DISCOVER" ? "agent_status" : "agent_intent";
-	return completed([{ type: "toolCall", id, name, arguments: input.input === "DISCOVER" ? {} : input.input }], "toolUse");
+	return completed(
+		[{ type: "toolCall", id, name, arguments: input.input === "DISCOVER" ? {} : input.input }],
+		"toolUse",
+	);
 }
 
 function stream(_model: unknown, context: TranscriptContext, options?: RequestOptions) {
@@ -203,11 +279,24 @@ function stream(_model: unknown, context: TranscriptContext, options?: RequestOp
 	if (mode === "intent") return intent(context);
 	if (mode === "storage-pages") return storagePages(context);
 	if (mode === "tool-round" && context.messages.at(-1)?.role !== "toolResult") {
-		return completed([{ type: "toolCall", id: `read-${context.messages.length}`, name: "read", arguments: { path: join(controlDir(), "input.txt") } }], "toolUse");
+		return completed(
+			[
+				{
+					type: "toolCall",
+					id: `read-${context.messages.length}`,
+					name: "read",
+					arguments: { path: join(controlDir(), "input.txt") },
+				},
+			],
+			"toolUse",
+		);
 	}
 	if (mode === "effect" && !context.messages.some((item) => item.role === "toolResult")) {
 		mark("tool-called");
-		return completed([{ type: "toolCall", id: "fixture-effect-call", name: "fixture-effect", arguments: { tag: "one" } }], "toolUse");
+		return completed(
+			[{ type: "toolCall", id: "fixture-effect-call", name: "fixture-effect", arguments: { tag: "one" } }],
+			"toolUse",
+		);
 	}
 	return answer();
 }
@@ -218,7 +307,8 @@ function nativeCheckpoint(change: Durable.CommitChange): object | undefined {
 		if (change.value.status !== "done" && change.value.status !== "unanswered") return undefined;
 		return { type: "terminal", submission: change.value };
 	}
-	if (change.type === "entry" && change.value.kind === "pi.assistant") return { type: "assistant", entry: change.value };
+	if (change.type === "entry" && change.value.kind === "pi.assistant")
+		return { type: "assistant", entry: change.value };
 	if (change.type !== "document" || change.kind !== "change" || change.record.kind !== "pi.live") return undefined;
 	const generation = change.value.generation as { attempt?: number; retry?: { at: number; error: string } } | undefined;
 	if (generation?.retry === undefined) return undefined;
@@ -227,7 +317,11 @@ function nativeCheckpoint(change: Durable.CommitChange): object | undefined {
 function recordNativeCommit(publication: Durable.CommitPublication): void {
 	for (const change of publication.changes) {
 		const checkpoint = nativeCheckpoint(change);
-		if (checkpoint !== undefined) appendFileSync(join(controlDir(), "native-checkpoints.jsonl"), `${JSON.stringify({ at: Date.now(), seq: publication.seq, ...checkpoint })}\n`);
+		if (checkpoint !== undefined)
+			appendFileSync(
+				join(controlDir(), "native-checkpoints.jsonl"),
+				`${JSON.stringify({ at: Date.now(), seq: publication.seq, ...checkpoint })}\n`,
+			);
 	}
 }
 
@@ -237,34 +331,64 @@ export default async function registerDurableRuntimeFixture(pi: ExtensionAPI): P
 		id: providerId,
 		name: "Durable runtime fixture",
 		getModels: () => [fixtureModel],
-		auth: { apiKey: { name: "Fixture", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		auth: {
+			apiKey: { name: "Fixture", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) },
+		},
 		stream,
 		streamSimple: stream,
 	});
 	pi.events.emit("durable:contribution", {
 		name: "fixture.effect",
 		source: fileURLToPath(import.meta.url),
-		create(host: { readonly durable: typeof Durable; readonly services: AgentSessionServices; readonly harness: Durable.Harness; onClose(dispose: () => void): void }): Durable.Extension {
+		create(host: {
+			readonly durable: typeof Durable;
+			readonly services: AgentSessionServices;
+			readonly harness: Durable.Harness;
+			onClose(dispose: () => void): void;
+		}): Durable.Extension {
 			if (process.env.DURABLE_TEST_HTTP === "1") {
-				const version = (entry: string): string => JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")).version;
+				const version = (entry: string): string =>
+					JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")).version;
 				// The extension loader maps the pi-ai root to its compat view; the models entry is the package itself.
 				const aiEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai/models"));
 				const durableEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-durable"));
-				writeFileSync(join(controlDir(), `load-proof-${process.pid}.json`), JSON.stringify({ codingAgent: VERSION, packageDir: getPackageDir(), piAi: version(aiEntry), piAiEntry: aiEntry, durable: version(durableEntry), durableEntry, modelRuntime: host.services.modelRuntime instanceof ModelRuntime, providerRetry: host.services.settingsManager.getProviderRetrySettings(), httpIdleTimeoutMs: host.services.settingsManager.getHttpIdleTimeoutMs() }));
+				writeFileSync(
+					join(controlDir(), `load-proof-${process.pid}.json`),
+					JSON.stringify({
+						codingAgent: VERSION,
+						packageDir: getPackageDir(),
+						piAi: version(aiEntry),
+						piAiEntry: aiEntry,
+						durable: version(durableEntry),
+						durableEntry,
+						modelRuntime: host.services.modelRuntime instanceof ModelRuntime,
+						providerRetry: host.services.settingsManager.getProviderRetrySettings(),
+						httpIdleTimeoutMs: host.services.settingsManager.getHttpIdleTimeoutMs(),
+					}),
+				);
 				mark("load-proof");
-				{ const observation = host.harness.observeCommits({ advance: recordNativeCommit, end: () => {} }); host.onClose(() => observation.detach()); }
+				{
+					const observation = host.harness.observeCommits({ advance: recordNativeCommit, end: () => {} });
+					host.onClose(() => observation.detach());
+				}
 				const runtime = host.services.modelRuntime;
 				const upstream = runtime.streamSimple.bind(runtime);
 				runtime.streamSimple = (...args) => {
 					if (args[0].provider === "durable-runtime-http") {
-						appendFileSync(join(controlDir(), "http-options.jsonl"), `${JSON.stringify({ transport: args[2]?.transport ?? null, maxRetries: args[2]?.maxRetries ?? null, timeoutMs: args[2]?.timeoutMs ?? null, maxRetryDelayMs: args[2]?.maxRetryDelayMs ?? null })}\n`);
+						appendFileSync(
+							join(controlDir(), "http-options.jsonl"),
+							`${JSON.stringify({ transport: args[2]?.transport ?? null, maxRetries: args[2]?.maxRetries ?? null, timeoutMs: args[2]?.timeoutMs ?? null, maxRetryDelayMs: args[2]?.maxRetryDelayMs ?? null })}\n`,
+						);
 					}
 					const stream = upstream(...args);
 					const observed = createAssistantMessageEventStream();
 					void (async () => {
 						for await (const event of stream) {
 							if (event.type === "error") {
-								appendFileSync(join(controlDir(), "exposed-errors.jsonl"), `${JSON.stringify({ at: Date.now(), error: event.error.errorMessage, provider: args[0].provider })}\n`);
+								appendFileSync(
+									join(controlDir(), "exposed-errors.jsonl"),
+									`${JSON.stringify({ at: Date.now(), error: event.error.errorMessage, provider: args[0].provider })}\n`,
+								);
 								mark("error-exposed");
 							}
 							observed.push(event);

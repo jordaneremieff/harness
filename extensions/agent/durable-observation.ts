@@ -20,16 +20,70 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord/context";
 import type { Message, Models, Usage } from "@earendil-works/pi-ai";
 import type { ModelEvidenceCollector } from "./model-evidence.ts";
-import { createSession, AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type ConversationView, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type HarnessInspection, type LiveState, type RunFailure, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";
+import {
+	createSession,
+	AssistantEntry,
+	Harness,
+	InboxDoc,
+	LiveDoc,
+	UsageDoc,
+	type Conversation,
+	type ConversationId,
+	type ConversationRecord,
+	type ConversationView,
+	type Cursor,
+	type EntryId,
+	type EntryRecord,
+	type HarnessOptions,
+	type HarnessInspection,
+	type LiveState,
+	type RunFailure,
+	type Storage,
+	type SubmissionId,
+	type SubmissionRecord,
+	type TaskInspection,
+	type UsageState,
+} from "@earendil-works/pi-durable";
 import { captureSnapshot } from "./snapshot-capture.ts";
-import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary, DashboardAutoRetry, DashboardCompactionFailure, DashboardHealth } from "./dashboard-types.ts";
+import type {
+	AgentConversationEntry,
+	AgentConversationSnapshot,
+	AgentConversationState,
+	AgentConversationSummary,
+	DashboardAutoRetry,
+	DashboardCompactionFailure,
+	DashboardHealth,
+} from "./dashboard-types.ts";
 import { AgentMetaDoc, settleDeliveries, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
-import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliveryStore, retainedReceipt, receiptReferencePage, snapshotReceipt } from "./delivery-store.ts";
+import {
+	snapshotDeliveryState,
+	deliveryState,
+	latestReceipt,
+	migrateDeliveryStore,
+	retainedReceipt,
+	receiptReferencePage,
+	snapshotReceipt,
+} from "./delivery-store.ts";
 import type { AnswerContinuation, ReceiptGroup } from "./observation-schema.ts";
 import { timerStatusRows } from "./durable-timers.ts";
 import { readUnplacedSummary } from "./unplaced-inputs.ts";
-import { openWorkItems, openWorkStatus, requestWork, type FinalReportFact, type FinalReportRead, type OpenWorkView, type RequestWork } from "./open-work.ts";
-import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecovery, readProviderBlock, readInputProviderBlock, readInputRecovery } from "./provider-block.ts";
+import {
+	openWorkItems,
+	openWorkStatus,
+	requestWork,
+	type FinalReportFact,
+	type FinalReportRead,
+	type OpenWorkView,
+	type RequestWork,
+} from "./open-work.ts";
+import {
+	snapshotProviderBlock,
+	snapshotInputProviderBlock,
+	snapshotInputRecovery,
+	readProviderBlock,
+	readInputProviderBlock,
+	readInputRecovery,
+} from "./provider-block.ts";
 import { modelFailureText, PROVIDER_BLOCK_ERROR, type ProviderBlockFact } from "./provider-block-facts.ts";
 import type { CommunicationView } from "./communication.ts";
 import { captureCommunicationReader, type CapturedCommunicationReader } from "./communication-observation.ts";
@@ -80,8 +134,20 @@ export interface DurableEntryRow {
 	readonly truncated: boolean;
 	readonly nextOffset: number | null;
 	readonly omissions?: EntryOmissions;
-	readonly toolCalls?: readonly { readonly callId?: string; readonly name: string; readonly arguments: string; readonly truncated: boolean }[];
-	readonly toolResults?: readonly { readonly callId?: string; readonly name: string; readonly text: string; readonly isError: boolean; readonly truncated: boolean; readonly durationMs?: number }[];
+	readonly toolCalls?: readonly {
+		readonly callId?: string;
+		readonly name: string;
+		readonly arguments: string;
+		readonly truncated: boolean;
+	}[];
+	readonly toolResults?: readonly {
+		readonly callId?: string;
+		readonly name: string;
+		readonly text: string;
+		readonly isError: boolean;
+		readonly truncated: boolean;
+		readonly durationMs?: number;
+	}[];
 	readonly omittedParts?: number;
 }
 
@@ -104,7 +170,11 @@ export interface DurableInspectParams {
 }
 
 /** Entry kinds a conversation surface never displays. They are not part of the visible transcript. */
-const HIDDEN_TRANSCRIPT_KINDS: ReadonlySet<string> = new Set(["pi.system", "agent.communication", TASK_SENDER_ENTRY_KIND]);
+const HIDDEN_TRANSCRIPT_KINDS: ReadonlySet<string> = new Set([
+	"pi.system",
+	"agent.communication",
+	TASK_SENDER_ENTRY_KIND,
+]);
 
 /** True for an entry kind the transcript surface hides; hidden entries never consume transcript bounds. */
 export function isHiddenTranscriptKind(kind: string): boolean {
@@ -253,7 +323,7 @@ function redactContent(content: unknown, omissions: OmissionCounts): unknown {
 }
 
 function routeGuidance(message: Message): string | undefined {
-	return message.role === "system" ? message.sections?.["agent-request-context"] ?? undefined : undefined;
+	return message.role === "system" ? (message.sections?.["agent-request-context"] ?? undefined) : undefined;
 }
 
 function redactRouteSection(message: Message): Message {
@@ -265,7 +335,10 @@ function redactRouteSection(message: Message): Message {
 	return { ...message, sections: { ...message.sections, "agent-request-context": redacted } };
 }
 
-function projectMessages(model: readonly Message[] | undefined, omissions: EntryOmissions): readonly Message[] | undefined {
+function projectMessages(
+	model: readonly Message[] | undefined,
+	omissions: EntryOmissions,
+): readonly Message[] | undefined {
 	if (model === undefined) return undefined;
 	return model.map((message) => {
 		const safe = redactRouteSection(message);
@@ -276,7 +349,11 @@ function projectMessages(model: readonly Message[] | undefined, omissions: Entry
 }
 
 /** Redacted JSON serialization of one entry, with omission counts when any apply. */
-export function projectEntry(entry: EntryRecord): { readonly value: Record<string, unknown>; readonly text: string; readonly omissions?: EntryOmissions } {
+export function projectEntry(entry: EntryRecord): {
+	readonly value: Record<string, unknown>;
+	readonly text: string;
+	readonly omissions?: EntryOmissions;
+} {
 	const omissions: EntryOmissions = { providerSignatures: 0, imagePayloads: 0, redactedThinking: 0 };
 	const model = projectMessages(entry.model, omissions);
 	const value: Record<string, unknown> = model === entry.model ? { ...entry } : { ...entry, model };
@@ -288,7 +365,8 @@ function searchablePart(part: unknown): string | undefined {
 	if (part === null || typeof part !== "object") return undefined;
 	const candidate = part as Record<string, unknown>;
 	if (candidate.type === "text" && typeof candidate.text === "string") return candidate.text;
-	if (candidate.type === "thinking" && candidate.redacted !== true && typeof candidate.thinking === "string") return candidate.thinking;
+	if (candidate.type === "thinking" && candidate.redacted !== true && typeof candidate.thinking === "string")
+		return candidate.thinking;
 	if (candidate.type === "toolCall" && typeof candidate.name === "string") return candidate.name;
 	return undefined;
 }
@@ -320,7 +398,11 @@ export function searchableText(entry: EntryRecord): string {
 }
 
 /** UTF-16 fragment that keeps surrogate pairs intact and returns the continuation offset. */
-export function fragment(text: string, offset: number, maxUnits: number): { readonly text: string; readonly start: number; readonly nextOffset: number | null; readonly truncated: boolean } {
+export function fragment(
+	text: string,
+	offset: number,
+	maxUnits: number,
+): { readonly text: string; readonly start: number; readonly nextOffset: number | null; readonly truncated: boolean } {
 	let start = Math.max(0, Math.min(Number.isFinite(offset) ? Math.trunc(offset) : 0, text.length));
 	const first = text.charCodeAt(start);
 	const previous = text.charCodeAt(start - 1);
@@ -330,7 +412,12 @@ export function fragment(text: string, offset: number, maxUnits: number): { read
 		const code = text.charCodeAt(end - 1);
 		if (code >= 0xd800 && code <= 0xdbff) end -= 1;
 	}
-	return { text: text.slice(start, end), start, nextOffset: end < text.length ? end : null, truncated: end < text.length };
+	return {
+		text: text.slice(start, end),
+		start,
+		nextOffset: end < text.length ? end : null,
+		truncated: end < text.length,
+	};
 }
 
 function entryPreview(entry: EntryRecord): { readonly text: string; readonly truncated: boolean } | undefined {
@@ -368,7 +455,11 @@ interface CompactEntryParts {
 	omittedParts: number;
 }
 
-function compactExcerpt(parts: CompactEntryParts, text: string, limit = parts.remaining): { text: string; truncated: boolean } {
+function compactExcerpt(
+	parts: CompactEntryParts,
+	text: string,
+	limit = parts.remaining,
+): { text: string; truncated: boolean } {
 	const budget = Math.min(parts.remaining, limit);
 	const cut = fragment(text, 0, budget);
 	const marker = cut.truncated && budget >= "[truncated]".length ? "[truncated]" : "";
@@ -385,12 +476,17 @@ function compactName(parts: CompactEntryParts, name: string): string {
 }
 
 function compactCall(parts: CompactEntryParts, part: Record<string, unknown>): void {
-	if (parts.toolCalls.length >= 8) { parts.omittedParts++; return; }
+	if (parts.toolCalls.length >= 8) {
+		parts.omittedParts++;
+		return;
+	}
 	const name = String(part.name);
 	const cut = compactExcerpt(parts, JSON.stringify(part.arguments), 240);
 	parts.toolCalls.push({
 		...(typeof part.id === "string" ? { callId: compactName(parts, part.id) } : {}),
-		name: compactName(parts, name), arguments: cut.text, truncated: cut.truncated || name.length > 128,
+		name: compactName(parts, name),
+		arguments: cut.text,
+		truncated: cut.truncated || name.length > 128,
 	});
 }
 
@@ -398,21 +494,35 @@ function compactPart(parts: CompactEntryParts, value: unknown): void {
 	if (value === null || typeof value !== "object") return;
 	const part = value as Record<string, unknown>;
 	switch (part.type) {
-		case "text": if (typeof part.text === "string") parts.text.push(part.text); break;
-		case "thinking": if (typeof part.thinking === "string") parts.thoughts.push(`Thinking: ${part.thinking}`); break;
-		case "image": parts.text.push(IMAGE_MARKER); break;
-		case "toolCall": compactCall(parts, part); break;
-		default: parts.omittedParts++;
+		case "text":
+			if (typeof part.text === "string") parts.text.push(part.text);
+			break;
+		case "thinking":
+			if (typeof part.thinking === "string") parts.thoughts.push(`Thinking: ${part.thinking}`);
+			break;
+		case "image":
+			parts.text.push(IMAGE_MARKER);
+			break;
+		case "toolCall":
+			compactCall(parts, part);
+			break;
+		default:
+			parts.omittedParts++;
 	}
 }
 
 function compactMessage(parts: CompactEntryParts, message: Message): void {
 	if (message.role === "toolResult") {
-		if (parts.toolResults.length >= 8) { parts.omittedParts++; return; }
+		if (parts.toolResults.length >= 8) {
+			parts.omittedParts++;
+			return;
+		}
 		const cut = compactExcerpt(parts, textOfMessage(message));
 		parts.toolResults.push({
 			...(typeof message.toolCallId === "string" ? { callId: compactName(parts, message.toolCallId) } : {}),
-			name: compactName(parts, message.toolName), text: cut.text, isError: message.isError,
+			name: compactName(parts, message.toolName),
+			text: cut.text,
+			isError: message.isError,
 			truncated: cut.truncated || message.toolName.length > 128,
 			...(message.durationMs === undefined ? {} : { durationMs: message.durationMs }),
 		});
@@ -431,17 +541,36 @@ export function entryRow(entry: EntryRecord, maxUnits = ENTRY_PREVIEW_UNITS): Du
 	const omissions: EntryOmissions = { providerSignatures: 0, imagePayloads: 0, redactedThinking: 0 };
 	const messages = projectMessages(entry.model, omissions) ?? [];
 	const units = Math.max(32, Math.min(maxUnits, ENTRY_PREVIEW_UNITS));
-	const reservedText = Math.min(Math.floor(units / 2), messages.filter((message) => message.role !== "toolResult").map(textOfMessage).join("\n").length);
-	const parts: CompactEntryParts = { remaining: units - reservedText, truncated: false, text: [], thoughts: [], toolCalls: [], toolResults: [], omittedParts: 0 };
+	const reservedText = Math.min(
+		Math.floor(units / 2),
+		messages
+			.filter((message) => message.role !== "toolResult")
+			.map(textOfMessage)
+			.join("\n").length,
+	);
+	const parts: CompactEntryParts = {
+		remaining: units - reservedText,
+		truncated: false,
+		text: [],
+		thoughts: [],
+		toolCalls: [],
+		toolResults: [],
+		omittedParts: 0,
+	};
 	for (const message of messages) compactMessage(parts, message);
 	if (messages.length === 0 && entry.data !== undefined) parts.text.push(JSON.stringify(entry.data));
 	parts.remaining += reservedText;
 	const readable = compactExcerpt(parts, [...parts.text, ...parts.thoughts].join("\n"));
 	const anyOmissions = omissions.providerSignatures + omissions.imagePayloads + omissions.redactedThinking > 0;
 	return {
-		id: entry.id, format: "compact", kind: entry.kind, source: entrySource(entry.kind),
+		id: entry.id,
+		format: "compact",
+		kind: entry.kind,
+		source: entrySource(entry.kind),
 		...(entry.model?.[0]?.role === undefined ? {} : { role: entry.model[0].role }),
-		text: readable.text, truncated: parts.truncated || parts.omittedParts > 0, nextOffset: null,
+		text: readable.text,
+		truncated: parts.truncated || parts.omittedParts > 0,
+		nextOffset: null,
 		...(parts.toolCalls.length === 0 ? {} : { toolCalls: parts.toolCalls }),
 		...(parts.toolResults.length === 0 ? {} : { toolResults: parts.toolResults }),
 		...(parts.omittedParts === 0 ? {} : { omittedParts: parts.omittedParts }),
@@ -459,19 +588,33 @@ function messageTextOf(entry: EntryRecord | undefined): string | null {
 /** A passive thread notice entry, or an admitted input that carries a notified thread notice. */
 function threadNoticeEntry(entry: EntryRecord): boolean {
 	if (entry.kind === "agent.thread-notice") return true;
-	return entry.kind === AGENT_INPUT_KIND && entry.data !== null && typeof entry.data === "object" && (entry.data as { class?: unknown }).class === "thread-notice";
+	return (
+		entry.kind === AGENT_INPUT_KIND &&
+		entry.data !== null &&
+		typeof entry.data === "object" &&
+		(entry.data as { class?: unknown }).class === "thread-notice"
+	);
 }
 
 /**
  * The newest entry's text for a status. A thread notice reads as one line about what happened in the thread,
  * built from its verified communication; its model text names identifiers and read calls instead.
  */
-async function newestTextOf(harness: Harness, storageId: string, conversation: Conversation, entry: EntryRecord | undefined, context: Context): Promise<string | null> {
+async function newestTextOf(
+	harness: Harness,
+	storageId: string,
+	conversation: Conversation,
+	entry: EntryRecord | undefined,
+	context: Context,
+): Promise<string | null> {
 	if (entry !== undefined && threadNoticeEntry(entry)) {
 		try {
 			const [view] = await (await captureCommunicationReader(harness, storageId, conversation, context)).views([entry]);
-			if (view?.state === "ready" && view.value.kind === "notice") return fragment(threadNoticeSummary(view.value), 0, ENTRY_PREVIEW_UNITS).text;
-		} catch { /* An unreadable communication keeps the retained model text. */ }
+			if (view?.state === "ready" && view.value.kind === "notice")
+				return fragment(threadNoticeSummary(view.value), 0, ENTRY_PREVIEW_UNITS).text;
+		} catch {
+			/* An unreadable communication keeps the retained model text. */
+		}
 	}
 	return messageTextOf(entry);
 }
@@ -498,7 +641,8 @@ function textRoleOf(entry: EntryRecord | undefined): DurableTextRole | undefined
 
 function boundedLimit(value: number | undefined, fallback: number, max: number): number {
 	if (value === undefined) return fallback;
-	if (!Number.isInteger(value) || value < 1) throw new RangeError(`limit must be a positive integer, received ${String(value)}`);
+	if (!Number.isInteger(value) || value < 1)
+		throw new RangeError(`limit must be a positive integer, received ${String(value)}`);
 	return Math.min(value, max);
 }
 
@@ -560,8 +704,13 @@ export function optionalParam<K extends string, V>(key: K, value: V | undefined)
 }
 
 /** Resolve one conversation target by external identity or native ID; default root. */
-export function resolveSessionConversationId(storageId: string, sessionId: string | undefined, conversationId: number | undefined): ConversationId {
-	if (sessionId !== undefined && conversationId !== undefined) throw new TypeError("pass sessionId or conversationId, not both");
+export function resolveSessionConversationId(
+	storageId: string,
+	sessionId: string | undefined,
+	conversationId: number | undefined,
+): ConversationId {
+	if (sessionId !== undefined && conversationId !== undefined)
+		throw new TypeError("pass sessionId or conversationId, not both");
 	if (conversationId !== undefined) return conversationId as ConversationId;
 	if (sessionId === undefined || sessionId === storageId) return 1 as ConversationId;
 	const prefix = `${storageId}:`;
@@ -576,12 +725,18 @@ export function resolveSessionConversationId(storageId: string, sessionId: strin
 }
 
 /** The receipt-reference cursor and the final-report selector page the result view, never both at once. */
-function checkResultPageSelectors(view: string | undefined, receiptCursor: unknown, finalReport: boolean | undefined): void {
+function checkResultPageSelectors(
+	view: string | undefined,
+	receiptCursor: unknown,
+	finalReport: boolean | undefined,
+): void {
 	if (finalReport !== undefined && view !== "result") throw new TypeError("finalReport selects only the result view");
-	if (finalReport === true && receiptCursor !== undefined) throw new TypeError("finalReport and receiptCursor select different pages");
+	if (finalReport === true && receiptCursor !== undefined)
+		throw new TypeError("finalReport and receiptCursor select different pages");
 	if (receiptCursor === undefined) return;
 	if (view !== "result") throw new TypeError("receiptCursor selects only the result view");
-	if (typeof receiptCursor !== "string" || receiptCursor.length === 0 || receiptCursor.length > 2048) throw new TypeError("receiptCursor must contain 1 to 2048 characters");
+	if (typeof receiptCursor !== "string" || receiptCursor.length === 0 || receiptCursor.length > 2048)
+		throw new TypeError("receiptCursor must contain 1 to 2048 characters");
 }
 
 /** Parse one inspection request into its native parameters. */
@@ -593,11 +748,13 @@ export function parseInspectParams(params: RequestParams | undefined): DurableIn
 	const finalReport = requestBoolean(params, "finalReport");
 	checkResultPageSelectors(view, receiptCursor, finalReport);
 	const offset = requestInteger(params, "offset");
-	if (view === "result" && offset !== undefined && offset < 0) throw new RangeError("result offset must be a nonnegative safe integer");
+	if (view === "result" && offset !== undefined && offset < 0)
+		throw new RangeError("result offset must be a nonnegative safe integer");
 	const source = requestString(params, "source");
 	const cursor = params?.cursor;
 	if (view === "search") searchCursor(cursor);
-	else if (cursor !== undefined && (typeof cursor !== "object" || cursor === null || Array.isArray(cursor))) throw new TypeError("cursor must be an object");
+	else if (cursor !== undefined && (typeof cursor !== "object" || cursor === null || Array.isArray(cursor)))
+		throw new TypeError("cursor must be an object");
 	return {
 		...optionalParam("view", view as DurableInspectParams["view"] | undefined),
 		...optionalParam("limit", requestInteger(params, "limit")),
@@ -609,7 +766,10 @@ export function parseInspectParams(params: RequestParams | undefined): DurableIn
 		...(finalReport === true ? { finalReport } : {}),
 		...optionalParam("query", requestString(params, "query")),
 		...optionalParam("source", source as DurableInspectParams["source"] | undefined),
-		...optionalParam("submissionId", requestPositiveId(params?.submissionId, "submissionId") as SubmissionId | undefined),
+		...optionalParam(
+			"submissionId",
+			requestPositiveId(params?.submissionId, "submissionId") as SubmissionId | undefined,
+		),
 		...optionalParam("operationId", requestString(params, "operationId")),
 		...optionalParam("requestId", requestId),
 	};
@@ -625,12 +785,31 @@ function parseEntryId(value: unknown): EntryId | undefined {
 	throw new TypeError(`entry ID must be a positive integer, received ${String(value)}`);
 }
 
-async function metaOf(harness: Harness, conversationId: ConversationId, context: Context): Promise<{ readonly name: string | undefined; readonly owner: string | undefined; readonly firstMessage: string | undefined; readonly updatedAt: number | undefined }> {
+async function metaOf(
+	harness: Harness,
+	conversationId: ConversationId,
+	context: Context,
+): Promise<{
+	readonly name: string | undefined;
+	readonly owner: string | undefined;
+	readonly firstMessage: string | undefined;
+	readonly updatedAt: number | undefined;
+}> {
 	const meta = await harness.snapshot(AgentMetaDoc, conversationId, context);
-	return { name: meta?.name ?? undefined, owner: meta?.owner ?? undefined, firstMessage: meta?.firstMessage ?? undefined, updatedAt: meta?.updatedAt ?? undefined };
+	return {
+		name: meta?.name ?? undefined,
+		owner: meta?.owner ?? undefined,
+		firstMessage: meta?.firstMessage ?? undefined,
+		updatedAt: meta?.updatedAt ?? undefined,
+	};
 }
 
-async function conversationSummary(harness: Harness, storageId: string, record: ConversationRecord, context: Context): Promise<ConversationSummary> {
+async function conversationSummary(
+	harness: Harness,
+	storageId: string,
+	record: ConversationRecord,
+	context: Context,
+): Promise<ConversationSummary> {
 	const meta = await metaOf(harness, record.id, context);
 	const live = await harness.snapshot(LiveDoc, record.id, context);
 	return {
@@ -640,7 +819,9 @@ async function conversationSummary(harness: Harness, storageId: string, record: 
 		...(meta.owner === undefined ? {} : { owner: meta.owner }),
 		...(meta.firstMessage === undefined ? {} : { firstMessage: meta.firstMessage }),
 		busy: live?.run !== undefined,
-		...(record.parent === undefined ? {} : { forkSource: { conversationId: record.parent.conversationId, at: record.parent.at } }),
+		...(record.parent === undefined
+			? {}
+			: { forkSource: { conversationId: record.parent.conversationId, at: record.parent.at } }),
 		...(record.owner === undefined ? {} : { ownerTaskId: record.owner.taskId }),
 	};
 }
@@ -652,7 +833,12 @@ export interface DurableListParams {
 	readonly ownerTaskId?: number;
 }
 
-export async function readConversationList(harness: Harness, storageId: string, params: DurableListParams, context: Context): Promise<{ readonly items: readonly ConversationSummary[]; readonly next: Cursor | null }> {
+export async function readConversationList(
+	harness: Harness,
+	storageId: string,
+	params: DurableListParams,
+	context: Context,
+): Promise<{ readonly items: readonly ConversationSummary[]; readonly next: Cursor | null }> {
 	const limit = boundedLimit(params.limit, 20, 50);
 	const page = await harness.commit(
 		(tx) =>
@@ -692,7 +878,8 @@ function trimSubmission(submission: SubmissionRecord): ConversationStatus["submi
 		...(submission.requestId === undefined ? {} : { requestId: submission.requestId }),
 	};
 	const entry = submission.entry === undefined ? {} : { entryId: submission.entry };
-	if (submission.status === "done") return { ...base, ...entry, ...(submission.type === "write" ? {} : { answerEntryId: submission.answer }) };
+	if (submission.status === "done")
+		return { ...base, ...entry, ...(submission.type === "write" ? {} : { answerEntryId: submission.answer }) };
 	if (submission.status === "placed") return { ...base, ...entry };
 	if (submission.status === "unanswered") return { ...base, ...entry, reason: submission.reason };
 	return base;
@@ -706,17 +893,24 @@ export interface DurableStatusOptions {
 
 /** Provider parsing buffers are not part of the public AssistantMessage contract. */
 function publicContentPart(part: NonNullable<NonNullable<LiveState["generation"]>["message"]>["content"][number]) {
-	if (part.type === "text") return {
-		type: part.type, text: part.text,
-		...(part.textSignature === undefined ? {} : { textSignature: part.textSignature }),
-	};
-	if (part.type === "thinking") return {
-		type: part.type, thinking: part.thinking,
-		...(part.thinkingSignature === undefined ? {} : { thinkingSignature: part.thinkingSignature }),
-		...(part.redacted === undefined ? {} : { redacted: part.redacted }),
-	};
+	if (part.type === "text")
+		return {
+			type: part.type,
+			text: part.text,
+			...(part.textSignature === undefined ? {} : { textSignature: part.textSignature }),
+		};
+	if (part.type === "thinking")
+		return {
+			type: part.type,
+			thinking: part.thinking,
+			...(part.thinkingSignature === undefined ? {} : { thinkingSignature: part.thinkingSignature }),
+			...(part.redacted === undefined ? {} : { redacted: part.redacted }),
+		};
 	return {
-		type: part.type, id: part.id, name: part.name, arguments: part.arguments,
+		type: part.type,
+		id: part.id,
+		name: part.name,
+		arguments: part.arguments,
 		...(part.argumentsError === undefined ? {} : { argumentsError: part.argumentsError }),
 		...(part.thoughtSignature === undefined ? {} : { thoughtSignature: part.thoughtSignature }),
 		...(part.namespace === undefined ? {} : { namespace: part.namespace }),
@@ -726,12 +920,19 @@ function publicContentPart(part: NonNullable<NonNullable<LiveState["generation"]
 /** Retain public counters without forwarding provider-owned usage metadata. */
 function publicUsage(usage: Usage): Usage {
 	return {
-		input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite,
+		input: usage.input,
+		output: usage.output,
+		cacheRead: usage.cacheRead,
+		cacheWrite: usage.cacheWrite,
 		...(usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: usage.cacheWrite1h }),
 		...(usage.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
 		totalTokens: usage.totalTokens,
 		cost: {
-			input: usage.cost.input, output: usage.cost.output, cacheRead: usage.cost.cacheRead, cacheWrite: usage.cost.cacheWrite, total: usage.cost.total,
+			input: usage.cost.input,
+			output: usage.cost.output,
+			cacheRead: usage.cost.cacheRead,
+			cacheWrite: usage.cost.cacheWrite,
+			total: usage.cost.total,
 			...(usage.cost.totalFromProvider === undefined ? {} : { totalFromProvider: usage.cost.totalFromProvider }),
 		},
 	};
@@ -749,11 +950,18 @@ export function publicLiveState(live: LiveState | undefined): LiveState | null {
 	const projected = { ...live };
 	const generation = live.generation;
 	const message = generation?.message;
-	if (message && generation) projected.generation = { ...generation, message: { ...message, content: message.content.map(publicContentPart), usage: publicUsage(message.usage) } };
-	if (live.nestedTools !== undefined) projected.nestedTools = live.nestedTools.map((slot) => {
-		const summary = slot.summary;
-		return summary?.usage === undefined ? slot : { ...slot, summary: { ...summary, usage: publicUsage(summary.usage) } };
-	});
+	if (message && generation)
+		projected.generation = {
+			...generation,
+			message: { ...message, content: message.content.map(publicContentPart), usage: publicUsage(message.usage) },
+		};
+	if (live.nestedTools !== undefined)
+		projected.nestedTools = live.nestedTools.map((slot) => {
+			const summary = slot.summary;
+			return summary?.usage === undefined
+				? slot
+				: { ...slot, summary: { ...summary, usage: publicUsage(summary.usage) } };
+		});
 	return projected;
 }
 
@@ -780,7 +988,9 @@ export async function readConversationStatus(
 	]);
 	const liveTaskIds = new Set(inspection.tasks.map((task) => Number(task.record.id)));
 	const backlog = await backlogFacts(harness, conversationId, options.now ?? Date.now(), context);
-	const providerBlock = frozenObservations.has(harness) ? await snapshotProviderBlock(harness, conversationId, context) : await harness.commit((tx) => readProviderBlock(tx, conversationId), context);
+	const providerBlock = frozenObservations.has(harness)
+		? await snapshotProviderBlock(harness, conversationId, context)
+		: await harness.commit((tx) => readProviderBlock(tx, conversationId), context);
 	// A status read commits nothing: a transaction read would create the document of a conversation that has none.
 	const openWork = await openWorkStatus({ harness, context }, storageId, conversationId);
 	return {
@@ -802,8 +1012,12 @@ export async function readConversationStatus(
 			...(agent.cwd === undefined ? {} : { cwd: agent.cwd }),
 			...(agent.instructions === undefined ? {} : { instructions: agent.instructions }),
 		},
-		tasks: inspection.tasks.filter((task) => task.record.conversationId === conversationId).map((task) => trimTask(task, frozenObservations.has(harness))),
-		submissions: inspection.submissions.filter((submission) => submission.conversationId === conversationId).map(trimSubmission),
+		tasks: inspection.tasks
+			.filter((task) => task.record.conversationId === conversationId)
+			.map((task) => trimTask(task, frozenObservations.has(harness))),
+		submissions: inspection.submissions
+			.filter((submission) => submission.conversationId === conversationId)
+			.map(trimSubmission),
 		timers: await timerStatusRows(harness, conversationId, context, liveTaskIds),
 	};
 }
@@ -828,7 +1042,14 @@ function textOfMessage(message: Message): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	return content
-		.flatMap((part) => (part !== null && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string" ? [(part as { text: string }).text] : []))
+		.flatMap((part) =>
+			part !== null &&
+			typeof part === "object" &&
+			(part as { type?: unknown }).type === "text" &&
+			typeof (part as { text?: unknown }).text === "string"
+				? [(part as { text: string }).text]
+				: [],
+		)
 		.join("");
 }
 
@@ -869,7 +1090,11 @@ function newestTimestamp(entry: EntryRecord | undefined): number | undefined {
 }
 
 /** A newer input without a delivery owner still supersedes an older owned outcome. */
-function currentReceipt(delivery: AgentDeliveryState | undefined, conversationId: ConversationId, entries: readonly EntryRecord[]): DeliveryReceipt | undefined {
+function currentReceipt(
+	delivery: AgentDeliveryState | undefined,
+	conversationId: ConversationId,
+	entries: readonly EntryRecord[],
+): DeliveryReceipt | undefined {
 	if (!delivery) return undefined;
 	let latest: DeliveryReceipt | undefined;
 	for (const receipt of Object.values(delivery.receipts)) {
@@ -886,10 +1111,16 @@ function currentReceipt(delivery: AgentDeliveryState | undefined, conversationId
  * conversation with one ended its newest run without an answer. A run cut off
  * at the restart limit is terminal like any other failure: it needs new input.
  */
-function dashboardState(busy: boolean, entries: readonly EntryRecord[], receipt: DeliveryReceipt | undefined, runFailure?: RunFailure): AgentConversationState {
+function dashboardState(
+	busy: boolean,
+	entries: readonly EntryRecord[],
+	receipt: DeliveryReceipt | undefined,
+	runFailure?: RunFailure,
+): AgentConversationState {
 	if (busy) return "working";
 	if (entries.length === 0) return "new";
-	if (runFailure !== undefined && runFailure.reason !== "nothing_to_answer") return runFailure.reason === "aborted" ? "stopped" : "failed";
+	if (runFailure !== undefined && runFailure.reason !== "nothing_to_answer")
+		return runFailure.reason === "aborted" ? "stopped" : "failed";
 	if (receipt?.status === "done") return "done";
 	if (receipt?.status === "unanswered") return receipt.reason === "aborted" ? "stopped" : "failed";
 	return newestEntryState(entries[entries.length - 1]);
@@ -898,8 +1129,10 @@ function dashboardState(busy: boolean, entries: readonly EntryRecord[], receipt:
 /** Without a native outcome, the newest retained entry decides the idle state. */
 function newestEntryState(newest: EntryRecord | undefined): AgentConversationState {
 	if (newest?.kind === "pi.assistant") {
-		if (newest.model?.some((message) => message.role === "assistant" && message.stopReason === "aborted")) return "stopped";
-		if (newest.model?.some((message) => message.role === "assistant" && message.stopReason === "error")) return "failed";
+		if (newest.model?.some((message) => message.role === "assistant" && message.stopReason === "aborted"))
+			return "stopped";
+		if (newest.model?.some((message) => message.role === "assistant" && message.stopReason === "error"))
+			return "failed";
 		return "done";
 	}
 	if (newest?.kind === "pi.tool-result") return "interrupted";
@@ -934,7 +1167,11 @@ function errorMessage(error: unknown): string {
 }
 
 /** A cold reader's empty registry says nothing about the source host's execution availability. */
-function blockedTasks(inspection: HarnessInspection, conversationId: ConversationId, frozen = false): Array<{ readonly error?: string; readonly reason: string }> {
+function blockedTasks(
+	inspection: HarnessInspection,
+	conversationId: ConversationId,
+	frozen = false,
+): Array<{ readonly error?: string; readonly reason: string }> {
 	if (frozen) return [];
 	const result: Array<{ error?: string; reason: string }> = [];
 	for (const task of inspection.tasks) {
@@ -950,26 +1187,55 @@ function blockedTasks(inspection: HarnessInspection, conversationId: Conversatio
  * provider retry, a compaction failure or retry, and the latest blocked task.
  * Absent when nothing is failing, and never computed for a cold snapshot.
  */
-export function dashboardHealth(live: LiveState | undefined, blocked: readonly { readonly error?: string; readonly reason: string }[], now: number, retryMaxAttempts: number | undefined): DashboardHealth | undefined {
+export function dashboardHealth(
+	live: LiveState | undefined,
+	blocked: readonly { readonly error?: string; readonly reason: string }[],
+	now: number,
+	retryMaxAttempts: number | undefined,
+): DashboardHealth | undefined {
 	const failing = live?.compactions?.find((status) => status.retry !== undefined);
-	const compactionFailure: DashboardCompactionFailure | undefined = failing?.retry !== undefined
-		? { trigger: failing.trigger, errorMessage: failing.retry.error, at: new Date(failing.retry.at).toISOString() }
-		: live?.compactionFailure === undefined ? undefined : { trigger: live.compactionFailure.trigger, errorMessage: live.compactionFailure.error };
+	const compactionFailure: DashboardCompactionFailure | undefined =
+		failing?.retry !== undefined
+			? { trigger: failing.trigger, errorMessage: failing.retry.error, at: new Date(failing.retry.at).toISOString() }
+			: live?.compactionFailure === undefined
+				? undefined
+				: { trigger: live.compactionFailure.trigger, errorMessage: live.compactionFailure.error };
 	const retry = live?.generation?.retry;
-	const autoRetry: DashboardAutoRetry | undefined = retry === undefined || retryMaxAttempts === undefined ? undefined : { attempt: live?.generation?.attempt ?? 1, maxAttempts: retryMaxAttempts, delayMs: Math.max(0, retry.at - now), errorMessage: retry.error };
+	const autoRetry: DashboardAutoRetry | undefined =
+		retry === undefined || retryMaxAttempts === undefined
+			? undefined
+			: {
+					attempt: live?.generation?.attempt ?? 1,
+					maxAttempts: retryMaxAttempts,
+					delayMs: Math.max(0, retry.at - now),
+					errorMessage: retry.error,
+				};
 	const lastError = blocked.find((task) => task.error !== undefined)?.error ?? blocked[0]?.reason;
 	if (lastError === undefined && compactionFailure === undefined && autoRetry === undefined) return undefined;
-	return { ...(lastError === undefined ? {} : { lastError }), ...(compactionFailure === undefined ? {} : { compactionFailure }), ...(autoRetry === undefined ? {} : { autoRetry }) };
+	return {
+		...(lastError === undefined ? {} : { lastError }),
+		...(compactionFailure === undefined ? {} : { compactionFailure }),
+		...(autoRetry === undefined ? {} : { autoRetry }),
+	};
 }
 
 function isToolCallPart(part: unknown, callId: string): part is { readonly arguments: Record<string, unknown> } {
 	if (part === null || typeof part !== "object") return false;
 	const candidate = part as { readonly type?: unknown; readonly id?: unknown; readonly arguments?: unknown };
-	return candidate.type === "toolCall" && candidate.id === callId && candidate.arguments !== undefined && typeof candidate.arguments === "object" && candidate.arguments !== null;
+	return (
+		candidate.type === "toolCall" &&
+		candidate.id === callId &&
+		candidate.arguments !== undefined &&
+		typeof candidate.arguments === "object" &&
+		candidate.arguments !== null
+	);
 }
 
 /** Arguments of one tool call committed in the active transcript. */
-function committedToolCallArguments(entries: readonly EntryRecord[], callId: string): Record<string, unknown> | undefined {
+function committedToolCallArguments(
+	entries: readonly EntryRecord[],
+	callId: string,
+): Record<string, unknown> | undefined {
 	for (const entry of entries) {
 		for (const message of entry.model ?? []) {
 			const content = (message as { readonly content?: unknown }).content;
@@ -982,7 +1248,11 @@ function committedToolCallArguments(entries: readonly EntryRecord[], callId: str
 }
 
 /** Arguments of one tool call, from the live partial first and then committed entries. */
-function toolCallArguments(live: LiveState | undefined, entries: readonly EntryRecord[], callId: string): Record<string, unknown> | undefined {
+function toolCallArguments(
+	live: LiveState | undefined,
+	entries: readonly EntryRecord[],
+	callId: string,
+): Record<string, unknown> | undefined {
 	for (const part of live?.generation?.message?.content ?? []) {
 		if (part.type === "toolCall" && part.id === callId) return part.arguments as Record<string, unknown>;
 	}
@@ -990,7 +1260,10 @@ function toolCallArguments(live: LiveState | undefined, entries: readonly EntryR
 }
 
 /** First unresolved tool call of the live round, with its committed argument text. */
-function currentTool(live: LiveState | undefined, entries: readonly EntryRecord[]): { readonly name: string; readonly argument: string } | undefined {
+function currentTool(
+	live: LiveState | undefined,
+	entries: readonly EntryRecord[],
+): { readonly name: string; readonly argument: string } | undefined {
 	const slot = live?.tools?.find((tool) => tool.status !== "done");
 	if (slot === undefined) return undefined;
 	const args = toolCallArguments(live, entries, slot.callId);
@@ -1015,7 +1288,10 @@ function turnDuration(entries: readonly EntryRecord[], busy: boolean, now: numbe
 	return span >= 0 ? span : undefined;
 }
 
-function firstMessageOf(meta: { readonly firstMessage: string | undefined }, entries: readonly EntryRecord[]): string | undefined {
+function firstMessageOf(
+	meta: { readonly firstMessage: string | undefined },
+	entries: readonly EntryRecord[],
+): string | undefined {
 	if (meta.firstMessage !== undefined) return meta.firstMessage;
 	const firstUser = entries.find((entry) => isInputKind(entry.kind));
 	if (firstUser === undefined) return undefined;
@@ -1033,14 +1309,28 @@ function latestReplyOf(entries: readonly EntryRecord[]): string | undefined {
 /** Why the newest run ended without an answer, as `pi.live.runFailure` records it. */
 function runFailureText(failure: RunFailure | undefined): string | undefined {
 	if (failure === undefined) return undefined;
-	return failure.detail === undefined || failure.detail.trim() === "" ? failure.reason : `${failure.reason}: ${failure.detail}`;
+	return failure.detail === undefined || failure.detail.trim() === ""
+		? failure.reason
+		: `${failure.reason}: ${failure.detail}`;
 }
 
-async function terminalError(harness: Harness, receipt: DeliveryReceipt | undefined, entries: readonly EntryRecord[], context: Context, runFailure?: RunFailure): Promise<string | undefined> {
+async function terminalError(
+	harness: Harness,
+	receipt: DeliveryReceipt | undefined,
+	entries: readonly EntryRecord[],
+	context: Context,
+	runFailure?: RunFailure,
+): Promise<string | undefined> {
 	if (receipt) {
 		const submission = await harness.submission(receipt.submissionId, context);
 		const status = await submission?.status(context);
-		if (status?.type === "input" && status.status === "unanswered" && typeof status.detail === "string" && status.detail.trim()) return status.detail;
+		if (
+			status?.type === "input" &&
+			status.status === "unanswered" &&
+			typeof status.detail === "string" &&
+			status.detail.trim()
+		)
+			return status.detail;
 	}
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
@@ -1054,12 +1344,19 @@ async function terminalError(harness: Harness, receipt: DeliveryReceipt | undefi
 }
 
 /** Exact terminal input lookup is bounded; absence and scan exhaustion remain distinct. */
-async function dashboardInput(storage: Pick<Storage, "scanSubmissions"> | undefined, conversationId: ConversationId, entryId: EntryId | undefined, context: Context): Promise<{ submissionId?: SubmissionId; limited: boolean }> {
+async function dashboardInput(
+	storage: Pick<Storage, "scanSubmissions"> | undefined,
+	conversationId: ConversationId,
+	entryId: EntryId | undefined,
+	context: Context,
+): Promise<{ submissionId?: SubmissionId; limited: boolean }> {
 	if (storage === undefined || entryId === undefined) return { limited: false };
 	let cursor: Cursor | undefined;
 	for (let page = 0; page < 64; page++) {
 		const records = await storage.scanSubmissions({ conversationId, status: "unanswered" }, 64, cursor, context);
-		const input = records.items.find((record) => record.type === "input" && record.entry === entryId && record.reason === "model_error");
+		const input = records.items.find(
+			(record) => record.type === "input" && record.entry === entryId && record.reason === "model_error",
+		);
 		if (input !== undefined) return { submissionId: input.id, limited: false };
 		if (records.next === undefined) return { limited: false };
 		cursor = records.next;
@@ -1068,12 +1365,32 @@ async function dashboardInput(storage: Pick<Storage, "scanSubmissions"> | undefi
 }
 
 /** Native quota text is classification-safe; the display cause belongs to the exact failed input, even after recovery. */
-async function dashboardError(harness: Harness, conversationId: ConversationId, state: AgentConversationState, receipt: DeliveryReceipt | undefined, entries: readonly EntryRecord[], storage: Pick<Storage, "scanSubmissions"> | undefined, context: Context, runFailure?: RunFailure): Promise<string | undefined> {
+async function dashboardError(
+	harness: Harness,
+	conversationId: ConversationId,
+	state: AgentConversationState,
+	receipt: DeliveryReceipt | undefined,
+	entries: readonly EntryRecord[],
+	storage: Pick<Storage, "scanSubmissions"> | undefined,
+	context: Context,
+	runFailure?: RunFailure,
+): Promise<string | undefined> {
 	if (state !== "failed" && state !== "stopped") return undefined;
 	const error = await terminalError(harness, receipt, entries, context, runFailure);
 	if (state !== "failed" || error !== PROVIDER_BLOCK_ERROR) return error;
-	const input = receipt === undefined ? await dashboardInput(storage, conversationId, [...entries].reverse().find((entry) => isInputKind(entry.kind))?.id, context) : { submissionId: receipt.submissionId, limited: false };
-	const block = input.submissionId === undefined ? undefined : await observedInputProviderBlock(harness, input.submissionId as SubmissionId, context);
+	const input =
+		receipt === undefined
+			? await dashboardInput(
+					storage,
+					conversationId,
+					[...entries].reverse().find((entry) => isInputKind(entry.kind))?.id,
+					context,
+				)
+			: { submissionId: receipt.submissionId, limited: false };
+	const block =
+		input.submissionId === undefined
+			? undefined
+			: await observedInputProviderBlock(harness, input.submissionId as SubmissionId, context);
 	if (block === undefined) return `${error}\n[provider evidence ${input.limited ? "lookup limited" : "unavailable"}]`;
 	return `${block.error}${block.errorRedacted ? "\n[provider error redacted]" : ""}${block.errorTruncated ? "\n[provider error truncated]" : ""}`;
 }
@@ -1092,7 +1409,12 @@ interface BacklogFacts {
  * What a conversation still owes: admitted inputs that are queued, and declared work without a final report, each
  * with the age in milliseconds of its oldest member at `now`.
  */
-async function backlogFacts(harness: Harness, conversationId: ConversationId, now: number, context: Context): Promise<BacklogFacts> {
+async function backlogFacts(
+	harness: Harness,
+	conversationId: ConversationId,
+	now: number,
+	context: Context,
+): Promise<BacklogFacts> {
 	const age = (since: number): number => Math.max(0, Math.round(now - since));
 	const unplaced = await readUnplacedSummary(harness, conversationId, context);
 	// A snapshot read: a commit would create the open-work document of a conversation that has none.
@@ -1116,10 +1438,19 @@ async function dashboardLiveExtras(
 ): Promise<Partial<Pick<AgentConversationSummary, "health" | "currentTool" | "durationMs">>> {
 	if (options.live !== true) return {};
 	const now = options.now ?? Date.now();
-	const health = dashboardHealth(live, blockedTasks(await harness.inspect(context), record.id, frozenObservations.has(harness)), now, options.retryMaxAttempts);
+	const health = dashboardHealth(
+		live,
+		blockedTasks(await harness.inspect(context), record.id, frozenObservations.has(harness)),
+		now,
+		options.retryMaxAttempts,
+	);
 	const tool = currentTool(live, entries);
 	const duration = turnDuration(entries, live?.run !== undefined, now);
-	return { ...(health === undefined ? {} : { health }), ...(tool === undefined ? {} : { currentTool: tool }), ...(duration === undefined ? {} : { durationMs: duration }) };
+	return {
+		...(health === undefined ? {} : { health }),
+		...(tool === undefined ? {} : { currentTool: tool }),
+		...(duration === undefined ? {} : { durationMs: duration }),
+	};
 }
 
 async function dashboardSummary(
@@ -1137,14 +1468,30 @@ async function dashboardSummary(
 		harness.conversation(record.id, context),
 	]);
 	const agent = conversation ? await conversation.agent(context) : undefined;
-	const entries = conversation ? (await activeEntries(conversation, context)).filter((entry) => entry.kind !== "agent.communication" && entry.kind !== TASK_SENDER_ENTRY_KIND && entry.kind !== TASK_HOOK_REPORT_KIND) : [];
+	const entries = conversation
+		? (await activeEntries(conversation, context)).filter(
+				(entry) =>
+					entry.kind !== "agent.communication" &&
+					entry.kind !== TASK_SENDER_ENTRY_KIND &&
+					entry.kind !== TASK_HOOK_REPORT_KIND,
+			)
+		: [];
 	const receipt = currentReceipt(delivery, record.id, entries);
 	const state = dashboardState(live?.run !== undefined, entries, receipt, live?.runFailure);
 	const cost = usageCost(usage);
 	const firstMessage = firstMessageOf(meta, entries);
 	const replyText = latestReplyOf(entries);
 	const liveExtras = await dashboardLiveExtras(harness, record, live, entries, options, context);
-	const error = await dashboardError(harness, record.id, state, receipt, entries, options.storage, context, live?.runFailure);
+	const error = await dashboardError(
+		harness,
+		record.id,
+		state,
+		receipt,
+		entries,
+		options.storage,
+		context,
+		live?.runFailure,
+	);
 	const backlog = await backlogFacts(harness, record.id, options.now ?? Date.now(), context);
 	const row: AgentConversationSummary = {
 		id: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
@@ -1152,7 +1499,11 @@ async function dashboardSummary(
 		...(meta.name === undefined ? {} : { name: meta.name }),
 		...(firstMessage === undefined ? {} : { firstMessage }),
 		cwd: agent?.cwd ?? options.cwd ?? "",
-		...(agent?.model === undefined ? {} : { model: { provider: agent.model.provider, modelId: agent.model.modelId, thinkingLevel: agent.thinkingLevel } }),
+		...(agent?.model === undefined
+			? {}
+			: {
+					model: { provider: agent.model.provider, modelId: agent.model.modelId, thinkingLevel: agent.thinkingLevel },
+				}),
 		modifiedAt: newestTimestamp(entries[entries.length - 1]) ?? meta.updatedAt ?? 0,
 		owner: options.owner ?? "unavailable",
 		...(options.ownerLabel === undefined ? {} : { ownerLabel: options.ownerLabel }),
@@ -1179,25 +1530,36 @@ export async function readDashboard(
 ): Promise<readonly AgentConversationSummary[]> {
 	const forConversations = async (ids: readonly ConversationId[]): Promise<AgentDeliveryState> => {
 		const state: AgentDeliveryState = { intents: [], receipts: {}, reports: [] };
-		for (const id of ids) { const receipt = await latestReceipt(harness, id, context); if (receipt) state.receipts[String(receipt.submissionId)] = receipt; }
+		for (const id of ids) {
+			const receipt = await latestReceipt(harness, id, context);
+			if (receipt) state.receipts[String(receipt.submissionId)] = receipt;
+		}
 		return state;
 	};
 	const conversationId = params.conversationId;
 	if (conversationId !== undefined) {
 		const record = await harness.commit((tx) => tx.conversation(conversationId), context);
-		return record === undefined ? [] : [await dashboardSummary(harness, storageId, record, await forConversations([record.id]), options, context)];
+		return record === undefined
+			? []
+			: [await dashboardSummary(harness, storageId, record, await forConversations([record.id]), options, context)];
 	}
 	const page = await harness.commit((tx) => tx.scanConversations({}, 200, undefined), context);
 	if (options.modelEvidence) options.modelEvidence.value.coverage.conversationsComplete = page.next == null;
 	const summaries: AgentConversationSummary[] = [];
 	const delivery = await forConversations(page.items.map((record) => record.id));
-	for (const record of page.items) summaries.push(await dashboardSummary(harness, storageId, record, delivery, options, context));
+	for (const record of page.items)
+		summaries.push(await dashboardSummary(harness, storageId, record, delivery, options, context));
 	return summaries;
 }
 
 export function snapshotEntry(entry: EntryRecord): AgentConversationEntry {
 	const data = entry.data;
-	const passiveMetadata = entry.kind === "agent.thread-notice" && data !== null && typeof data === "object" && !Array.isArray(data) && (data.format === "agent.communication-passive/1" || data.format === "agent.communication-invalid/1");
+	const passiveMetadata =
+		entry.kind === "agent.thread-notice" &&
+		data !== null &&
+		typeof data === "object" &&
+		!Array.isArray(data) &&
+		(data.format === "agent.communication-passive/1" || data.format === "agent.communication-invalid/1");
 	return {
 		id: String(entry.id),
 		kind: entry.kind,
@@ -1238,7 +1600,11 @@ export interface SnapshotSelection {
  * excluded before either bound applies, so a large prompt record cannot push
  * the first user input out of the page.
  */
-export function selectSnapshotEntries(records: readonly EntryRecord[], limit = SNAPSHOT_ENTRY_LIMIT, maxBytes = SNAPSHOT_BYTE_LIMIT): SnapshotSelection {
+export function selectSnapshotEntries(
+	records: readonly EntryRecord[],
+	limit = SNAPSHOT_ENTRY_LIMIT,
+	maxBytes = SNAPSHOT_BYTE_LIMIT,
+): SnapshotSelection {
 	const selected: EntryRecord[] = [];
 	let entries = 0;
 	let bytes = 0;
@@ -1273,7 +1639,14 @@ export function selectSnapshotEntries(records: readonly EntryRecord[], limit = S
 		entries: ordered,
 		partial,
 		nextBefore: partial && oldest !== undefined ? oldest.id : null,
-		coverage: { complete: !partial, entries, bytes, hiddenExcluded, entryLimitReached: stop?.reason === "entry", byteLimitReached: stop?.reason === "byte" },
+		coverage: {
+			complete: !partial,
+			entries,
+			bytes,
+			hiddenExcluded,
+			entryLimitReached: stop?.reason === "entry",
+			byteLimitReached: stop?.reason === "byte",
+		},
 	};
 }
 
@@ -1282,11 +1655,20 @@ export function selectSnapshotEntries(records: readonly EntryRecord[], limit = S
  * newest entries; when it does not start the transcript (`before` is set), the
  * page reports incomplete coverage and continues older than its oldest entry.
  */
-export function selectWindowEntries(view: Pick<ConversationView, "entries" | "before">, limit = SNAPSHOT_ENTRY_LIMIT, maxBytes = SNAPSHOT_BYTE_LIMIT): SnapshotSelection {
+export function selectWindowEntries(
+	view: Pick<ConversationView, "entries" | "before">,
+	limit = SNAPSHOT_ENTRY_LIMIT,
+	maxBytes = SNAPSHOT_BYTE_LIMIT,
+): SnapshotSelection {
 	const selection = selectSnapshotEntries([...view.entries].reverse(), limit, maxBytes);
 	if (selection.partial || view.before === undefined) return selection;
 	const oldest = view.entries[0];
-	return { ...selection, partial: true, nextBefore: oldest === undefined ? (view.before + 1) as EntryId : oldest.id, coverage: { ...selection.coverage, complete: false } };
+	return {
+		...selection,
+		partial: true,
+		nextBefore: oldest === undefined ? ((view.before + 1) as EntryId) : oldest.id,
+		coverage: { ...selection.coverage, complete: false },
+	};
 }
 
 /** Bounds of one history-page read; the source query walks history newest first. */
@@ -1315,7 +1697,9 @@ export function parseConversationSnapshotParams(params: RequestParams | undefine
 	return {
 		...(params?.before === undefined ? {} : { before: requestRequiredId(params.before, "before") as EntryId }),
 		...(limit === undefined ? {} : { limit: boundedLimit(limit, SNAPSHOT_ENTRY_LIMIT, SNAPSHOT_ENTRY_LIMIT) }),
-		...(maxBytes === undefined ? {} : { maxBytes: boundedLimit(maxBytes, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_BYTE_LIMIT_MAX) }),
+		...(maxBytes === undefined
+			? {}
+			: { maxBytes: boundedLimit(maxBytes, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_BYTE_LIMIT_MAX) }),
 	};
 }
 
@@ -1325,20 +1709,46 @@ export function emptyConversationSnapshot(): ConversationSnapshotPage {
 }
 
 function snapshotPage(selection: SnapshotSelection, before: EntryId | undefined): ConversationSnapshotPage {
-	const entries = selection.entries.map((entry) => ({ ...snapshotEntry(entry), communication: { state: "unresolved" as const } }));
+	const entries = selection.entries.map((entry) => ({
+		...snapshotEntry(entry),
+		communication: { state: "unresolved" as const },
+	}));
 	const first = entries[0];
 	const last = entries[entries.length - 1];
-	const revision = first === undefined || last === undefined ? `${before === undefined ? "empty" : `before-${before}`}` : `${first.id}-${last.id}-${entries.length}`;
-	return { entries, partial: selection.partial, revision, nextBefore: selection.nextBefore, coverage: selection.coverage };
+	const revision =
+		first === undefined || last === undefined
+			? `${before === undefined ? "empty" : `before-${before}`}`
+			: `${first.id}-${last.id}-${entries.length}`;
+	return {
+		entries,
+		partial: selection.partial,
+		revision,
+		nextBefore: selection.nextBefore,
+		coverage: selection.coverage,
+	};
 }
 
-async function joinedSnapshotPage(selection: SnapshotSelection, before: EntryId | undefined, reader: CapturedCommunicationReader | undefined): Promise<ConversationSnapshotPage> {
+async function joinedSnapshotPage(
+	selection: SnapshotSelection,
+	before: EntryId | undefined,
+	reader: CapturedCommunicationReader | undefined,
+): Promise<ConversationSnapshotPage> {
 	const page = snapshotPage(selection, before);
 	if (reader === undefined) return page;
 	const views = await reader.views(selection.entries);
 	const taskSenders = await reader.taskSenders(selection.entries);
-	const revision = `${page.revision}:${createHash("sha256").update(JSON.stringify([views, taskSenders])).digest("hex")}`;
-	return { ...page, revision, ...(taskSenders === undefined ? {} : { taskSenders }), entries: page.entries.map((entry, index) => ({ ...entry, communication: views[index] ?? { state: "unavailable", reason: "limit" } })) };
+	const revision = `${page.revision}:${createHash("sha256")
+		.update(JSON.stringify([views, taskSenders]))
+		.digest("hex")}`;
+	return {
+		...page,
+		revision,
+		...(taskSenders === undefined ? {} : { taskSenders }),
+		entries: page.entries.map((entry, index) => ({
+			...entry,
+			communication: views[index] ?? { state: "unavailable", reason: "limit" },
+		})),
+	};
 }
 
 /**
@@ -1346,12 +1756,24 @@ async function joinedSnapshotPage(selection: SnapshotSelection, before: EntryId 
  * source: the newest entries, or the entries strictly older than `before`.
  * Head markers such as compaction summaries sit where they were written.
  */
-async function readHistorySnapshot(conversation: Conversation, before: EntryId | undefined, limit: number, maxBytes: number, context: Context, reader?: CapturedCommunicationReader): Promise<ConversationSnapshotPage> {
+async function readHistorySnapshot(
+	conversation: Conversation,
+	before: EntryId | undefined,
+	limit: number,
+	maxBytes: number,
+	context: Context,
+	reader?: CapturedCommunicationReader,
+): Promise<ConversationSnapshotPage> {
 	const collected: EntryRecord[] = [];
 	let cursor: Cursor | undefined;
 	let sourceComplete = false;
 	for (let page = 0; page < SNAPSHOT_CONTINUATION_PAGES; page++) {
-		const result = await conversation.entries(before === undefined ? {} : { maxEntryId: (before - 1) as EntryId }, SNAPSHOT_CONTINUATION_PAGE, cursor, context);
+		const result = await conversation.entries(
+			before === undefined ? {} : { maxEntryId: (before - 1) as EntryId },
+			SNAPSHOT_CONTINUATION_PAGE,
+			cursor,
+			context,
+		);
 		collected.push(...result.items);
 		cursor = result.next;
 		if (cursor === undefined) {
@@ -1390,13 +1812,27 @@ export async function readConversationSnapshotPage(
 ): Promise<ConversationSnapshotPage> {
 	const conversation = await harness.conversation(conversationId, context);
 	if (!conversation) throw new Error(`conversation ${conversationId} does not exist`);
-	const reader = storageId === undefined ? undefined : await captureCommunicationReader(harness, storageId, conversation, context);
-	return readHistorySnapshot(conversation, params.before, params.limit ?? SNAPSHOT_ENTRY_LIMIT, params.maxBytes ?? SNAPSHOT_BYTE_LIMIT, context, reader);
+	const reader =
+		storageId === undefined ? undefined : await captureCommunicationReader(harness, storageId, conversation, context);
+	return readHistorySnapshot(
+		conversation,
+		params.before,
+		params.limit ?? SNAPSHOT_ENTRY_LIMIT,
+		params.maxBytes ?? SNAPSHOT_BYTE_LIMIT,
+		context,
+		reader,
+	);
 }
 
-export async function readReceipts(harness: Harness, ownerId: string | undefined, context: Context): Promise<readonly DeliveryReceipt[]> {
+export async function readReceipts(
+	harness: Harness,
+	ownerId: string | undefined,
+	context: Context,
+): Promise<readonly DeliveryReceipt[]> {
 	if (!frozenObservations.has(harness)) await settleDeliveries(harness, context);
-	const state = frozenObservations.has(harness) ? await snapshotDeliveryState(harness, context, true) : await deliveryState(harness, context, true);
+	const state = frozenObservations.has(harness)
+		? await snapshotDeliveryState(harness, context, true)
+		: await deliveryState(harness, context, true);
 	return Object.values(state.receipts).filter((receipt) => ownerId === undefined || receipt.ownerId === ownerId);
 }
 
@@ -1411,7 +1847,13 @@ interface HistoryPage {
 	readonly detail: string;
 }
 
-function collectHistoryEntries(items: readonly EntryRecord[], params: DurableInspectParams, remaining: number, seen: Set<EntryId>, readable: boolean): { readonly entries: EntryRecord[]; readonly hitLimit: boolean } {
+function collectHistoryEntries(
+	items: readonly EntryRecord[],
+	params: DurableInspectParams,
+	remaining: number,
+	seen: Set<EntryId>,
+	readable: boolean,
+): { readonly entries: EntryRecord[]; readonly hitLimit: boolean } {
 	const entries: EntryRecord[] = [];
 	for (const entry of items) {
 		if (seen.has(entry.id)) continue;
@@ -1427,18 +1869,45 @@ function collectHistoryEntries(items: readonly EntryRecord[], params: DurableIns
 /** Caller selectors and cursors rejected by the inspection owner, not implementation failures. */
 export class InspectionRequestError extends TypeError {}
 
-function inspectionEntries(conversation: Conversation, query: Parameters<Conversation["entries"]>[0], limit: number, cursor: Cursor | undefined, context: Context) {
-	if (cursor !== undefined && (cursor === null || typeof cursor !== "object" || typeof cursor.after !== "number" || !Number.isSafeInteger(cursor.after) || (cursor.order !== undefined && cursor.order !== "ascending" && cursor.order !== "descending"))) throw new InspectionRequestError("Invalid storage cursor");
+function inspectionEntries(
+	conversation: Conversation,
+	query: Parameters<Conversation["entries"]>[0],
+	limit: number,
+	cursor: Cursor | undefined,
+	context: Context,
+) {
+	if (
+		cursor !== undefined &&
+		(cursor === null ||
+			typeof cursor !== "object" ||
+			typeof cursor.after !== "number" ||
+			!Number.isSafeInteger(cursor.after) ||
+			(cursor.order !== undefined && cursor.order !== "ascending" && cursor.order !== "descending"))
+	)
+		throw new InspectionRequestError("Invalid storage cursor");
 	return conversation.entries(query, limit, cursor, context);
 }
 
-async function scanHistory(conversation: Conversation, params: DurableInspectParams, end: EntryId | undefined, limit: number, context: Context, readable: boolean): Promise<{ readonly entries: EntryRecord[]; readonly next: Cursor | undefined }> {
+async function scanHistory(
+	conversation: Conversation,
+	params: DurableInspectParams,
+	end: EntryId | undefined,
+	limit: number,
+	context: Context,
+	readable: boolean,
+): Promise<{ readonly entries: EntryRecord[]; readonly next: Cursor | undefined }> {
 	const scanned: EntryRecord[] = [];
 	const seen = new Set<EntryId>();
 	let cursor = params.cursor;
 	let next: Cursor | undefined;
 	for (let page = 0; page < 8; page++) {
-		const result = await inspectionEntries(conversation, end === undefined ? {} : { maxEntryId: end }, limit - scanned.length, cursor, context);
+		const result = await inspectionEntries(
+			conversation,
+			end === undefined ? {} : { maxEntryId: end },
+			limit - scanned.length,
+			cursor,
+			context,
+		);
 		const collected = collectHistoryEntries(result.items, params, limit - scanned.length, seen, readable);
 		scanned.push(...collected.entries);
 		next = result.next;
@@ -1456,9 +1925,13 @@ async function readHistoryPage(
 	view: "history" | "branch",
 	context: Context,
 ): Promise<HistoryPage> {
-	const reader = view === "history" ? await captureCommunicationReader(harness, storageId, conversation, context) : undefined;
+	const reader =
+		view === "history" ? await captureCommunicationReader(harness, storageId, conversation, context) : undefined;
 	const limit = boundedLimit(params.limit, HISTORY_LIMIT_DEFAULT, HISTORY_LIMIT_MAX);
-	const end = view === "branch" ? (parseEntryId(params.fromId ?? params.entryId) ?? await currentLeaf(conversation, context)) : parseEntryId(params.entryId);
+	const end =
+		view === "branch"
+			? (parseEntryId(params.fromId ?? params.entryId) ?? (await currentLeaf(conversation, context)))
+			: parseEntryId(params.entryId);
 	const scanned = await scanHistory(conversation, params, end, limit, context, view === "history");
 	const views = await reader?.views(scanned.entries);
 	return {
@@ -1466,12 +1939,17 @@ async function readHistoryPage(
 		...(view === "history" ? { format: "compact" as const } : {}),
 		sessionId: durableIdentity(storageId, conversation.id === 1 ? undefined : conversation.id),
 		conversationId: conversation.id,
-		entries: scanned.entries.map((entry, index) => view === "branch" ? rawEntryRow(entry) : { ...entryRow(entry), communication: views?.[index] ?? { state: "unresolved" } }),
+		entries: scanned.entries.map((entry, index) =>
+			view === "branch"
+				? rawEntryRow(entry)
+				: { ...entryRow(entry), communication: views?.[index] ?? { state: "unresolved" } },
+		),
 		nextCursor: scanned.next ?? null,
 		order: "newestFirst",
-		detail: view === "branch"
-			? "Newest first. Redacted JSON; continue with nextCursor or exact entryId and nextOffset."
-			: "Newest first. Compact readable entries; continue with nextCursor. Truncated text and tool parts have markers. Use exact with entryId and offset 0 for full retained redacted JSON.",
+		detail:
+			view === "branch"
+				? "Newest first. Redacted JSON; continue with nextCursor or exact entryId and nextOffset."
+				: "Newest first. Compact readable entries; continue with nextCursor. Truncated text and tool parts have markers. Use exact with entryId and offset 0 for full retained redacted JSON.",
 	};
 }
 
@@ -1491,12 +1969,18 @@ interface ExactPage {
 	readonly omissions?: EntryOmissions;
 }
 
-async function readExact(storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ExactPage> {
+async function readExact(
+	storageId: string,
+	conversation: Conversation,
+	params: DurableInspectParams,
+	context: Context,
+): Promise<ExactPage> {
 	const entryId = parseEntryId(params.entryId);
 	if (entryId === undefined) throw new TypeError("exact inspection requires entryId");
 	const page = await conversation.entries({ minEntryId: entryId, maxEntryId: entryId }, 1, undefined, context);
 	const entry = page.items[0];
-	if (entry === undefined || entry.id !== entryId) throw new Error(`entry ${entryId} is not visible from conversation ${conversation.id}`);
+	if (entry === undefined || entry.id !== entryId)
+		throw new Error(`entry ${entryId} is not visible from conversation ${conversation.id}`);
 	const projected = projectEntry(entry);
 	const cut = fragment(projected.text, params.offset ?? 0, ENTRY_PAGE_UNITS);
 	return {
@@ -1550,10 +2034,22 @@ function searchMatch(entry: EntryRecord, text: string, query: string): SearchMat
 	const at = text.indexOf(query);
 	if (at < 0) return undefined;
 	const cut = fragment(text, at, 512);
-	return { entryId: entry.id, kind: entry.kind, source: entrySource(entry.kind), matchOffset: at, excerpt: cut.text, excerptText: cut.text, truncated: cut.truncated };
+	return {
+		entryId: entry.id,
+		kind: entry.kind,
+		source: entrySource(entry.kind),
+		matchOffset: at,
+		excerpt: cut.text,
+		excerptText: cut.text,
+		truncated: cut.truncated,
+	};
 }
 
-function scanSearchEntry(entry: EntryRecord, params: DurableInspectParams, query: string): { readonly bytes: number; readonly match?: SearchMatch } {
+function scanSearchEntry(
+	entry: EntryRecord,
+	params: DurableInspectParams,
+	query: string,
+): { readonly bytes: number; readonly match?: SearchMatch } {
 	const text = searchableText(entry);
 	const bytes = Buffer.byteLength(text, "utf8");
 	if (params.source !== undefined && entrySource(entry.kind) !== params.source) return { bytes };
@@ -1589,7 +2085,11 @@ function scanSearchPage(
 		scannedBytes += scan.bytes;
 		if (scan.match !== undefined) matches.push(scan.match);
 		if (matches.length >= maxMatches || scannedEntries >= budget) {
-			return { scannedEntries, scannedBytes, resume: { cursor: pageCursor ?? null, skip: index + 1, scannedBytes: priorBytes + scannedBytes } };
+			return {
+				scannedEntries,
+				scannedBytes,
+				resume: { cursor: pageCursor ?? null, skip: index + 1, scannedBytes: priorBytes + scannedBytes },
+			};
 		}
 	}
 	return { scannedEntries, scannedBytes, resume: null };
@@ -1597,16 +2097,44 @@ function scanSearchPage(
 
 function searchCursor(value: unknown): SearchCursor | null {
 	if (value === undefined) return null;
-	const fail = (): never => { throw new InspectionRequestError("Invalid search cursor; pass the complete nextCursor object unchanged as cursor, including cursor, skip, and scannedBytes"); };
+	const fail = (): never => {
+		throw new InspectionRequestError(
+			"Invalid search cursor; pass the complete nextCursor object unchanged as cursor, including cursor, skip, and scannedBytes",
+		);
+	};
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return fail();
 	const prior = value as Record<string, unknown>;
-	if (Object.keys(prior).length !== 3 || !Object.hasOwn(prior, "cursor") || !Number.isSafeInteger(prior.skip) || Number(prior.skip) < 0 || Number(prior.skip) > 32 || !Number.isSafeInteger(prior.scannedBytes) || Number(prior.scannedBytes) < 0) return fail();
+	if (
+		Object.keys(prior).length !== 3 ||
+		!Object.hasOwn(prior, "cursor") ||
+		!Number.isSafeInteger(prior.skip) ||
+		Number(prior.skip) < 0 ||
+		Number(prior.skip) > 32 ||
+		!Number.isSafeInteger(prior.scannedBytes) ||
+		Number(prior.scannedBytes) < 0
+	)
+		return fail();
 	const cursor = prior.cursor;
-	if (cursor !== null && (typeof cursor !== "object" || Array.isArray(cursor) || !Number.isSafeInteger((cursor as Cursor).after) || ((cursor as Cursor).order !== undefined && (cursor as Cursor).order !== "ascending" && (cursor as Cursor).order !== "descending"))) return fail();
+	if (
+		cursor !== null &&
+		(typeof cursor !== "object" ||
+			Array.isArray(cursor) ||
+			!Number.isSafeInteger((cursor as Cursor).after) ||
+			((cursor as Cursor).order !== undefined &&
+				(cursor as Cursor).order !== "ascending" &&
+				(cursor as Cursor).order !== "descending"))
+	)
+		return fail();
 	return prior as unknown as SearchCursor;
 }
 
-async function scanSearch(conversation: Conversation, params: DurableInspectParams, query: string, maxMatches: number, context: Context): Promise<SearchScan> {
+async function scanSearch(
+	conversation: Conversation,
+	params: DurableInspectParams,
+	query: string,
+	maxMatches: number,
+	context: Context,
+): Promise<SearchScan> {
 	const prior = searchCursor(params.cursor);
 	let cursor: Cursor | undefined = prior?.cursor ?? undefined;
 	let skip = prior?.skip ?? 0;
@@ -1617,12 +2145,28 @@ async function scanSearch(conversation: Conversation, params: DurableInspectPara
 	let resume: SearchCursor | null = null;
 	while (scannedEntries < SEARCH_SCAN_LIMIT_DEFAULT && matches.length < maxMatches) {
 		const pageCursor = cursor;
-		const page = await inspectionEntries(conversation, {}, Math.min(32, SEARCH_SCAN_LIMIT_DEFAULT - scannedEntries), pageCursor, context);
+		const page = await inspectionEntries(
+			conversation,
+			{},
+			Math.min(32, SEARCH_SCAN_LIMIT_DEFAULT - scannedEntries),
+			pageCursor,
+			context,
+		);
 		if (page.items.length === 0) {
 			complete = true;
 			break;
 		}
-		const pageScan = scanSearchPage(page.items, params, query, skip, maxMatches, SEARCH_SCAN_LIMIT_DEFAULT - scannedEntries, matches, pageCursor, scannedBytes);
+		const pageScan = scanSearchPage(
+			page.items,
+			params,
+			query,
+			skip,
+			maxMatches,
+			SEARCH_SCAN_LIMIT_DEFAULT - scannedEntries,
+			matches,
+			pageCursor,
+			scannedBytes,
+		);
 		scannedEntries += pageScan.scannedEntries;
 		scannedBytes += pageScan.scannedBytes;
 		if (pageScan.resume !== null) {
@@ -1636,10 +2180,21 @@ async function scanSearch(conversation: Conversation, params: DurableInspectPara
 			break;
 		}
 	}
-	return { matches, nextCursor: resume ?? (complete ? null : { cursor: cursor ?? null, skip, scannedBytes }), complete, scannedEntries, scannedBytes };
+	return {
+		matches,
+		nextCursor: resume ?? (complete ? null : { cursor: cursor ?? null, skip, scannedBytes }),
+		complete,
+		scannedEntries,
+		scannedBytes,
+	};
 }
 
-async function readSearch(storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<SearchPage> {
+async function readSearch(
+	storageId: string,
+	conversation: Conversation,
+	params: DurableInspectParams,
+	context: Context,
+): Promise<SearchPage> {
 	if (params.query === undefined || params.query === "") throw new TypeError("search inspection requires query");
 	const maxMatches = boundedLimit(params.limit, SEARCH_MATCH_LIMIT_DEFAULT, SEARCH_MATCH_LIMIT_MAX);
 	const scan = await scanSearch(conversation, params, params.query, maxMatches, context);
@@ -1650,7 +2205,8 @@ async function readSearch(storageId: string, conversation: Conversation, params:
 		matches: scan.matches,
 		nextCursor: scan.nextCursor,
 		coverage: { scannedEntries: scan.scannedEntries, scannedBytes: scan.scannedBytes, complete: scan.complete },
-		detail: "Case-sensitive literal match over entry kind, message text, visible thinking, and tool names. Signatures, images, redacted thinking, arguments, and arbitrary data are excluded. Repeat query and nextCursor to continue.",
+		detail:
+			"Case-sensitive literal match over entry kind, message text, visible thinking, and tool names. Signatures, images, redacted thinking, arguments, and arbitrary data are excluded. Repeat query and nextCursor to continue.",
 	};
 }
 
@@ -1732,7 +2288,12 @@ function activityAfter(cursor: Cursor | undefined): EntryId | undefined {
 	return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? (value as EntryId) : undefined;
 }
 
-async function scanActivity(conversation: Conversation, params: DurableInspectParams, turnLimit: number, context: Context): Promise<ActivityScan> {
+async function scanActivity(
+	conversation: Conversation,
+	params: DurableInspectParams,
+	turnLimit: number,
+	context: Context,
+): Promise<ActivityScan> {
 	const collected: EntryRecord[] = [];
 	const after = activityAfter(params.cursor);
 	let cursor: Cursor | undefined = after === undefined ? params.cursor : undefined;
@@ -1741,7 +2302,13 @@ async function scanActivity(conversation: Conversation, params: DurableInspectPa
 	let scannedBytes = 0;
 	// Collect newest-first until one more than the requested turn count or either bound.
 	while (scannedEntries < ACTIVITY_SCAN_ENTRIES && scannedBytes < ACTIVITY_SCAN_BYTES) {
-		const page = await inspectionEntries(conversation, after === undefined ? {} : { maxEntryId: (after - 1) as EntryId }, 32, cursor, context);
+		const page = await inspectionEntries(
+			conversation,
+			after === undefined ? {} : { maxEntryId: (after - 1) as EntryId },
+			32,
+			cursor,
+			context,
+		);
 		collected.push(...page.items);
 		scannedEntries += page.items.length;
 		for (const entry of page.items) scannedBytes += Buffer.byteLength(searchableText(entry), "utf8");
@@ -1770,7 +2337,12 @@ function groupActivityTurns(collected: readonly EntryRecord[]): EntryRecord[][] 
 	return turns;
 }
 
-async function activityMetadata(harness: Harness, conversation: Conversation, options: DurableInspectionOptions, context: Context): Promise<DurableActivityMetadata> {
+async function activityMetadata(
+	harness: Harness,
+	conversation: Conversation,
+	options: DurableInspectionOptions,
+	context: Context,
+): Promise<DurableActivityMetadata> {
 	if (options.live !== true) {
 		return { owner: options.owner ?? "unavailable", live: false, operation: null, runningTools: [], pending: null };
 	}
@@ -1781,12 +2353,36 @@ async function activityMetadata(harness: Harness, conversation: Conversation, op
 	// The assistant tool-call timestamp predates execution; it is an issue time, not a start time.
 	// A running call without a committed generation message is still real work, listed without times.
 	const runningTools = [
-		...(live?.tools ?? []).filter((tool) => tool.status !== "done")
-			.map((tool) => ({ toolCallId: tool.callId, name: tool.name, ...(tool.taskId === undefined ? {} : { taskId: tool.taskId }), ...(issuedAt === undefined ? {} : { issuedAt: new Date(issuedAt).toISOString(), elapsedMs: Math.max(0, now - issuedAt), elapsedFrom: "tool-call-entry" as const }) })),
-		...(live?.nestedTools ?? []).filter((tool) => tool.status !== "done")
-			.map((tool) => ({ toolCallId: tool.callId, name: tool.name, taskId: tool.taskId, parentToolCallId: tool.parentCallId, parentTaskId: tool.parentTaskId })),
+		...(live?.tools ?? [])
+			.filter((tool) => tool.status !== "done")
+			.map((tool) => ({
+				toolCallId: tool.callId,
+				name: tool.name,
+				...(tool.taskId === undefined ? {} : { taskId: tool.taskId }),
+				...(issuedAt === undefined
+					? {}
+					: {
+							issuedAt: new Date(issuedAt).toISOString(),
+							elapsedMs: Math.max(0, now - issuedAt),
+							elapsedFrom: "tool-call-entry" as const,
+						}),
+			})),
+		...(live?.nestedTools ?? [])
+			.filter((tool) => tool.status !== "done")
+			.map((tool) => ({
+				toolCallId: tool.callId,
+				name: tool.name,
+				taskId: tool.taskId,
+				parentToolCallId: tool.parentCallId,
+				parentTaskId: tool.parentTaskId,
+			})),
 	];
-	const health = dashboardHealth(live, blockedTasks(await harness.inspect(context), conversation.id, frozenObservations.has(harness)), now, options.retryMaxAttempts);
+	const health = dashboardHealth(
+		live,
+		blockedTasks(await harness.inspect(context), conversation.id, frozenObservations.has(harness)),
+		now,
+		options.retryMaxAttempts,
+	);
 	const streamedText = live?.generation?.message === undefined ? undefined : textOfMessage(live.generation.message);
 	return {
 		owner: "here",
@@ -1856,8 +2452,19 @@ function shrinkMetadataErrors(metadata: DurableActivityMetadata, units: number):
 		...(metadata.lastError === undefined ? {} : { lastError: boundMetadataText(metadata.lastError, units) }),
 		...(metadata.compactionFailure === undefined
 			? {}
-			: { compactionFailure: { ...metadata.compactionFailure, ...(metadata.compactionFailure.errorMessage === undefined ? {} : { errorMessage: boundMetadataText(metadata.compactionFailure.errorMessage, units) }) } }),
-		...(metadata.autoRetry === undefined ? {} : { autoRetry: { ...metadata.autoRetry, errorMessage: boundMetadataText(metadata.autoRetry.errorMessage, units) } }),
+			: {
+					compactionFailure: {
+						...metadata.compactionFailure,
+						...(metadata.compactionFailure.errorMessage === undefined
+							? {}
+							: { errorMessage: boundMetadataText(metadata.compactionFailure.errorMessage, units) }),
+					},
+				}),
+		...(metadata.autoRetry === undefined
+			? {}
+			: {
+					autoRetry: { ...metadata.autoRetry, errorMessage: boundMetadataText(metadata.autoRetry.errorMessage, units) },
+				}),
 	};
 }
 
@@ -1866,8 +2473,12 @@ function omitMetadataErrors(metadata: DurableActivityMetadata): DurableActivityM
 	return {
 		...metadata,
 		...(metadata.lastError === undefined ? {} : { lastError: ACTIVITY_METADATA_OMISSION }),
-		...(metadata.compactionFailure === undefined ? {} : { compactionFailure: { ...metadata.compactionFailure, errorMessage: ACTIVITY_METADATA_OMISSION } }),
-		...(metadata.autoRetry === undefined ? {} : { autoRetry: { ...metadata.autoRetry, errorMessage: ACTIVITY_METADATA_OMISSION } }),
+		...(metadata.compactionFailure === undefined
+			? {}
+			: { compactionFailure: { ...metadata.compactionFailure, errorMessage: ACTIVITY_METADATA_OMISSION } }),
+		...(metadata.autoRetry === undefined
+			? {}
+			: { autoRetry: { ...metadata.autoRetry, errorMessage: ACTIVITY_METADATA_OMISSION } }),
 	};
 }
 
@@ -1889,7 +2500,8 @@ export function reduceActivityMetadata(
 			current = withoutStream as DurableActivityMetadata;
 		}
 	}
-	if (current.runningTools.length > ACTIVITY_METADATA_TOOL_LIMIT && !fits(current)) current = { ...current, runningTools: current.runningTools.slice(0, ACTIVITY_METADATA_TOOL_LIMIT) };
+	if (current.runningTools.length > ACTIVITY_METADATA_TOOL_LIMIT && !fits(current))
+		current = { ...current, runningTools: current.runningTools.slice(0, ACTIVITY_METADATA_TOOL_LIMIT) };
 	if (current.runningTools.length > 0 && !fits(current)) current = { ...current, runningTools: [] };
 	for (const units of [1024, 256, 64]) {
 		if (fits(current)) break;
@@ -1903,14 +2515,20 @@ export function reduceActivityMetadata(
 function isFailureEntry(entry: EntryRecord): boolean {
 	for (const message of entry.model ?? []) {
 		if (message.role === "toolResult" && message.isError === true) return true;
-		if (message.role === "assistant" && (message.stopReason === "error" || message.stopReason === "aborted" || message.errorMessage !== undefined)) return true;
+		if (
+			message.role === "assistant" &&
+			(message.stopReason === "error" || message.stopReason === "aborted" || message.errorMessage !== undefined)
+		)
+			return true;
 	}
 	return false;
 }
 
 /** Rebuild the turn structure newest-first from selected rows in chronological order. */
 function activityTurns(rows: readonly ActivityRow[]): TurnRow[] {
-	const ordered = [...rows].sort((left, right) => left.turnIndex - right.turnIndex || left.entryIndex - right.entryIndex);
+	const ordered = [...rows].sort(
+		(left, right) => left.turnIndex - right.turnIndex || left.entryIndex - right.entryIndex,
+	);
 	const turns: { turnIndex: number; entries: DurableEntryRow[] }[] = [];
 	for (const row of ordered) {
 		let current = turns[turns.length - 1];
@@ -1923,7 +2541,14 @@ function activityTurns(rows: readonly ActivityRow[]): TurnRow[] {
 	return turns.map((turn) => ({ entries: turn.entries })).reverse();
 }
 
-function activityDraft(base: ActivityBase, scan: ActivityScan, rows: readonly ActivityRow[], totalRows: number, metadataTruncated: boolean, hasOlder: boolean): ActivityDraft {
+function activityDraft(
+	base: ActivityBase,
+	scan: ActivityScan,
+	rows: readonly ActivityRow[],
+	totalRows: number,
+	metadataTruncated: boolean,
+	hasOlder: boolean,
+): ActivityDraft {
 	const omittedEntries = totalRows - rows.length;
 	return {
 		...base,
@@ -1960,7 +2585,12 @@ function activityCandidates(groups: readonly (readonly EntryRecord[])[]): Activi
 		for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
 			const entry = entries[entryIndex];
 			if (entry === undefined) continue;
-			candidates.push({ turnIndex, entryIndex, failure: isFailureEntry(entry), row: entryRow(entry, ENTRY_PREVIEW_UNITS) });
+			candidates.push({
+				turnIndex,
+				entryIndex,
+				failure: isFailureEntry(entry),
+				row: entryRow(entry, ENTRY_PREVIEW_UNITS),
+			});
 		}
 	}
 	return candidates;
@@ -1995,7 +2625,14 @@ function dropOldestOrdinary(kept: ActivityRow[]): void {
 }
 
 /** Finalize and, if the fixed point exceeds the bound, drop rows until it holds. */
-function boundedActivity(base: ActivityBase, scan: ActivityScan, candidates: readonly ActivityRow[], kept: ActivityRow[], metadataTruncated: boolean, hasOlder: boolean): ActivityDraft {
+function boundedActivity(
+	base: ActivityBase,
+	scan: ActivityScan,
+	candidates: readonly ActivityRow[],
+	kept: ActivityRow[],
+	metadataTruncated: boolean,
+	hasOlder: boolean,
+): ActivityDraft {
 	let final = finalizedActivity(activityDraft(base, scan, kept, candidates.length, metadataTruncated, hasOlder));
 	while (activityBytes(final) > ACTIVITY_DIGEST_BYTES && kept.length > 0) {
 		dropOldestOrdinary(kept);
@@ -2004,11 +2641,20 @@ function boundedActivity(base: ActivityBase, scan: ActivityScan, candidates: rea
 	return final;
 }
 
-async function readActivity(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, options: DurableInspectionOptions, context: Context): Promise<ActivityPage> {
+async function readActivity(
+	harness: Harness,
+	storageId: string,
+	conversation: Conversation,
+	params: DurableInspectParams,
+	options: DurableInspectionOptions,
+	context: Context,
+): Promise<ActivityPage> {
 	const reader = await captureCommunicationReader(harness, storageId, conversation, context);
 	const turnLimit = boundedLimit(params.limit, ACTIVITY_TURN_LIMIT_DEFAULT, ACTIVITY_TURN_LIMIT_MAX);
 	const scan = await scanActivity(conversation, params, turnLimit, context);
-	const allGroups = groupActivityTurns(scan.collected.filter((entry) => entry.kind !== "agent.communication" && entry.kind !== TASK_SENDER_ENTRY_KIND));
+	const allGroups = groupActivityTurns(
+		scan.collected.filter((entry) => entry.kind !== "agent.communication" && entry.kind !== TASK_SENDER_ENTRY_KIND),
+	);
 	const groups = allGroups.slice(-turnLimit);
 	const candidates = activityCandidates(groups);
 	const oldestSelected = groups[0]?.[0] ?? scan.collected[scan.collected.length - 1];
@@ -2020,21 +2666,33 @@ async function readActivity(harness: Harness, storageId: string, conversation: C
 		conversationId: conversation.id,
 		nextCursor: oldestSelected === undefined || !hasOlder ? null : ({ after: oldestSelected.id } as Cursor),
 		metadata,
-		detail: "Newest turns first. Compact readable entries; exact with entryId and offset 0 returns retained redacted JSON. Failure rows take priority within the digest bound; nextCursor resumes older turns and unfinished scans only, not rows dropped by the bound. Use history for those rows.",
+		detail:
+			"Newest turns first. Compact readable entries; exact with entryId and offset 0 returns retained redacted JSON. Failure rows take priority within the digest bound; nextCursor resumes older turns and unfinished scans only, not rows dropped by the bound. Use history for those rows.",
 	});
 	// A metadata-only overflow must fit before any row is considered.
-	const reduced = reduceActivityMetadata(await activityMetadata(harness, conversation, options, context), (candidate) =>
-		activityBytes(activityDraft(baseFor(candidate), scan, [], candidates.length, false, hasOlder)) <= ACTIVITY_DIGEST_SELECT_BYTES,
+	const reduced = reduceActivityMetadata(
+		await activityMetadata(harness, conversation, options, context),
+		(candidate) =>
+			activityBytes(activityDraft(baseFor(candidate), scan, [], candidates.length, false, hasOlder)) <=
+			ACTIVITY_DIGEST_SELECT_BYTES,
 	);
 	const base = baseFor(reduced.metadata);
 	const ranked = [...candidates].reverse();
-	const kept = selectActivityRows(ranked, (rows) => activityBytes(activityDraft(base, scan, rows, candidates.length, reduced.truncated, hasOlder)) <= ACTIVITY_DIGEST_SELECT_BYTES);
+	const kept = selectActivityRows(
+		ranked,
+		(rows) =>
+			activityBytes(activityDraft(base, scan, rows, candidates.length, reduced.truncated, hasOlder)) <=
+			ACTIVITY_DIGEST_SELECT_BYTES,
+	);
 	const result = boundedActivity(base, scan, candidates, kept, reduced.truncated, hasOlder);
 	const records = new Map(scan.collected.map((entry) => [entry.id, entry]));
 	const rows = result.turns.flatMap((turn) => turn.entries);
 	const views = await reader.views(rows.map((row) => records.get(row.id) as EntryRecord));
 	let index = 0;
-	result.turns = result.turns.map((turn) => ({ ...turn, entries: turn.entries.map((row) => ({ ...row, communication: views[index++] ?? { state: "unresolved" } })) }));
+	result.turns = result.turns.map((turn) => ({
+		...turn,
+		entries: turn.entries.map((row) => ({ ...row, communication: views[index++] ?? { state: "unresolved" } })),
+	}));
 	return finalizedActivity(result);
 }
 
@@ -2087,73 +2745,159 @@ interface FinalReportPage {
 type InputRecord = Extract<SubmissionRecord, { type: "input" }>;
 
 function resultWork(work: RequestWork, record: InputRecord): ResultWork {
-	return { state: work.work, ...(record.status === "done" ? { answer: "state-note" as const, label: work.label } : {}), ...(work.work === "closed" ? { finalReport: work.finalReport } : {}) };
+	return {
+		state: work.work,
+		...(record.status === "done" ? { answer: "state-note" as const, label: work.label } : {}),
+		...(work.work === "closed" ? { finalReport: work.finalReport } : {}),
+	};
 }
 
 /**
  * Declared work of the selected input in any status. The close of a work item retains its final report,
  * and that close needs no answer: the input can still be placed, or can end unanswered afterwards.
  */
-async function selectedWork(harness: Harness, storageId: string, record: InputRecord, context: Context): Promise<RequestWork | undefined> {
+async function selectedWork(
+	harness: Harness,
+	storageId: string,
+	record: InputRecord,
+	context: Context,
+): Promise<RequestWork | undefined> {
 	if (record.requestId === undefined) return undefined;
 	const ownerId = (await snapshotReceipt(harness, record.id, context))?.ownerId;
-	return requestWork({ harness, context }, storageId, record.conversationId, { requestId: record.requestId, submissionId: record.id, ...(ownerId === undefined ? {} : { ownerId }) });
+	return requestWork({ harness, context }, storageId, record.conversationId, {
+		requestId: record.requestId,
+		submissionId: record.id,
+		...(ownerId === undefined ? {} : { ownerId }),
+	});
 }
 
 function inputEntryIds(record: InputRecord): Pick<ResultPage, "entryId" | "answerEntryId"> {
-	return { ...optionalParam("entryId", record.entry), ...(record.status === "done" ? { answerEntryId: record.answer } : {}) };
+	return {
+		...optionalParam("entryId", record.entry),
+		...(record.status === "done" ? { answerEntryId: record.answer } : {}),
+	};
 }
 
 /**
  * One page of the retained final report; the answer and the receipt group stay on their own pages. The
  * retained report decides the page, and `status` stays the status of the input.
  */
-function finalReportPage(base: ResultPage, record: InputRecord, work: RequestWork | undefined, offset: number): ResultPage {
+function finalReportPage(
+	base: ResultPage,
+	record: InputRecord,
+	work: RequestWork | undefined,
+	offset: number,
+): ResultPage {
 	const identity = { ...base, ...inputEntryIds(record) };
 	const request = `Request ${record.requestId ?? `of submission ${record.id}`}`;
-	if (work === undefined) throw new InspectionRequestError(record.status === "done"
-		? `${request} declared no work: its answer is its result, and no final report exists`
-		: `${request} has no closed declared work, so no final report exists; its input is ${record.status}`);
-	if (work.work === "open") return boundedResult({ ...identity, work: resultWork(work, record), reason: "The declared work of this request is open; its final report does not exist yet" });
+	if (work === undefined)
+		throw new InspectionRequestError(
+			record.status === "done"
+				? `${request} declared no work: its answer is its result, and no final report exists`
+				: `${request} has no closed declared work, so no final report exists; its input is ${record.status}`,
+		);
+	if (work.work === "open")
+		return boundedResult({
+			...identity,
+			work: resultWork(work, record),
+			reason: "The declared work of this request is open; its final report does not exist yet",
+		});
 	const text = work.report?.message;
-	if (text === undefined) return boundedResult({ ...identity, work: resultWork(work, record), reason: `Final report ${work.finalReport.requestId} is not retained for ${work.finalReport.ownerId}` });
+	if (text === undefined)
+		return boundedResult({
+			...identity,
+			work: resultWork(work, record),
+			reason: `Final report ${work.finalReport.requestId} is not retained for ${work.finalReport.ownerId}`,
+		});
 	if (offset > text.length) throw new RangeError("result offset exceeds the retained final report length");
 	const cut = fragment(text, offset, RESULT_PAGE_UNITS);
 	const { requestId, ownerId, status } = work.finalReport;
 	return boundedResult({
 		...identity,
 		work: resultWork(work, record),
-		finalReport: { requestId, ownerId, ...(status === undefined ? {} : { status }), text: cut.text, length: text.length, offset: cut.start, nextOffset: cut.nextOffset, truncated: cut.truncated },
-		...(cut.nextOffset === null ? {} : { finalReportContinuation: { ...work.finalReport.read, offset: cut.nextOffset } }),
+		finalReport: {
+			requestId,
+			ownerId,
+			...(status === undefined ? {} : { status }),
+			text: cut.text,
+			length: text.length,
+			offset: cut.start,
+			nextOffset: cut.nextOffset,
+			truncated: cut.truncated,
+		},
+		...(cut.nextOffset === null
+			? {}
+			: { finalReportContinuation: { ...work.finalReport.read, offset: cut.nextOffset } }),
 	});
 }
 
-interface ResultSelection { readonly record?: SubmissionRecord; readonly operationId?: string; readonly reason?: string }
-async function resultSubmission(harness: Harness, submissionId: SubmissionId, context: Context): Promise<SubmissionRecord | undefined> {
+interface ResultSelection {
+	readonly record?: SubmissionRecord;
+	readonly operationId?: string;
+	readonly reason?: string;
+}
+async function resultSubmission(
+	harness: Harness,
+	submissionId: SubmissionId,
+	context: Context,
+): Promise<SubmissionRecord | undefined> {
 	return (await harness.submission(submissionId, context))?.status(context);
 }
-function verifyResultSelectors(record: SubmissionRecord | undefined, conversation: Conversation, params: DurableInspectParams): void {
+function verifyResultSelectors(
+	record: SubmissionRecord | undefined,
+	conversation: Conversation,
+	params: DurableInspectParams,
+): void {
 	if (record === undefined) return;
-	if (record.conversationId !== conversation.id) throw new InspectionRequestError(`durable submission ${record.id} belongs to conversation ${record.conversationId}`);
-	if (params.requestId !== undefined && record.requestId !== params.requestId) throw new InspectionRequestError("requestId and the other result selectors select different native submissions");
-	if (params.entryId !== undefined && (!("entry" in record) || record.entry !== params.entryId)) throw new InspectionRequestError("entryId does not match the selected native submission");
+	if (record.conversationId !== conversation.id)
+		throw new InspectionRequestError(
+			`durable submission ${record.id} belongs to conversation ${record.conversationId}`,
+		);
+	if (params.requestId !== undefined && record.requestId !== params.requestId)
+		throw new InspectionRequestError("requestId and the other result selectors select different native submissions");
+	if (params.entryId !== undefined && (!("entry" in record) || record.entry !== params.entryId))
+		throw new InspectionRequestError("entryId does not match the selected native submission");
 }
-async function operationResult(harness: Harness, conversation: Conversation, params: DurableInspectParams, record: SubmissionRecord | undefined, context: Context): Promise<ResultSelection> {
+async function operationResult(
+	harness: Harness,
+	conversation: Conversation,
+	params: DurableInspectParams,
+	record: SubmissionRecord | undefined,
+	context: Context,
+): Promise<ResultSelection> {
 	if (params.operationId === undefined) return { ...(record === undefined ? {} : { record }) };
 	const receipts = await readReceipts(harness, undefined, context);
 	const selected = record?.id ?? params.submissionId;
-	const matches = (receipt: typeof receipts[number]) => receipt.operationId === params.operationId && receipt.conversationId === conversation.id;
-	const found = receipts.find((receipt) => matches(receipt) && (selected === undefined || receipt.submissionId === selected));
-	if (found !== undefined) return { record: record ?? await resultSubmission(harness, found.submissionId, context), operationId: params.operationId };
-	if (receipts.some(matches)) throw new InspectionRequestError("operationId and the other result selectors select different native submissions");
+	const matches = (receipt: (typeof receipts)[number]) =>
+		receipt.operationId === params.operationId && receipt.conversationId === conversation.id;
+	const found = receipts.find(
+		(receipt) => matches(receipt) && (selected === undefined || receipt.submissionId === selected),
+	);
+	if (found !== undefined)
+		return {
+			record: record ?? (await resultSubmission(harness, found.submissionId, context)),
+			operationId: params.operationId,
+		};
+	if (receipts.some(matches))
+		throw new InspectionRequestError("operationId and the other result selectors select different native submissions");
 	return { reason: "No retained receipt matches the operationId in this conversation" };
 }
-async function resultTarget(harness: Harness, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ResultSelection> {
-	if (params.submissionId === undefined && params.requestId === undefined && params.operationId === undefined) throw new TypeError("result inspection requires submissionId, requestId or operationId");
+async function resultTarget(
+	harness: Harness,
+	conversation: Conversation,
+	params: DurableInspectParams,
+	context: Context,
+): Promise<ResultSelection> {
+	if (params.submissionId === undefined && params.requestId === undefined && params.operationId === undefined)
+		throw new TypeError("result inspection requires submissionId, requestId or operationId");
 	const requestId = params.requestId;
-	let record = requestId === undefined ? undefined : await harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context);
+	let record =
+		requestId === undefined
+			? undefined
+			: await harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context);
 	if (params.submissionId !== undefined) {
-		if (record !== undefined && record.id !== params.submissionId) throw new InspectionRequestError("requestId and submissionId select different native submissions");
+		if (record !== undefined && record.id !== params.submissionId)
+			throw new InspectionRequestError("requestId and submissionId select different native submissions");
 		record ??= await resultSubmission(harness, params.submissionId, context);
 	}
 	verifyResultSelectors(record, conversation, params);
@@ -2162,48 +2906,106 @@ async function resultTarget(harness: Harness, conversation: Conversation, params
 	return target;
 }
 
-async function resultAnswer(harness: Harness, answerEntryId: EntryId, context: Context): Promise<{ readonly answer?: string; readonly reason?: string }> {
+async function resultAnswer(
+	harness: Harness,
+	answerEntryId: EntryId,
+	context: Context,
+): Promise<{ readonly answer?: string; readonly reason?: string }> {
 	const answer = await harness.commit((tx) => tx.entry(AssistantEntry, answerEntryId), context);
 	const text = answer === undefined ? undefined : (answer.model ?? []).map(textOfMessage).join("");
-	return text === undefined || text === "" ? { reason: `durable answer entry ${answerEntryId} is not retained` } : { answer: text };
+	return text === undefined || text === ""
+		? { reason: `durable answer entry ${answerEntryId} is not retained` }
+		: { answer: text };
 }
 
 function observedInputRecovery(harness: Harness, id: SubmissionId, context: Context) {
-	return frozenObservations.has(harness) ? snapshotInputRecovery(harness, id, context) : harness.commit((tx) => readInputRecovery(tx, id), context);
+	return frozenObservations.has(harness)
+		? snapshotInputRecovery(harness, id, context)
+		: harness.commit((tx) => readInputRecovery(tx, id), context);
 }
 function observedInputProviderBlock(harness: Harness, id: SubmissionId, context: Context) {
-	return frozenObservations.has(harness) ? snapshotInputProviderBlock(harness, id, context) : harness.commit((tx) => readInputProviderBlock(tx, id), context);
+	return frozenObservations.has(harness)
+		? snapshotInputProviderBlock(harness, id, context)
+		: harness.commit((tx) => readInputProviderBlock(tx, id), context);
 }
 
 function boundedResult(page: ResultPage): ResultPage {
-	if (Buffer.byteLength(JSON.stringify(page), "utf8") > RESULT_PAGE_BYTES) throw new InspectionRequestError(`Result identity, body and receipt metadata exceed the ${RESULT_PAGE_BYTES}-byte response limit`);
+	if (Buffer.byteLength(JSON.stringify(page), "utf8") > RESULT_PAGE_BYTES)
+		throw new InspectionRequestError(
+			`Result identity, body and receipt metadata exceed the ${RESULT_PAGE_BYTES}-byte response limit`,
+		);
 	return page;
 }
 
-async function resultReceiptGroup(harness: Harness, storageId: string, record: SubmissionRecord, sessionId: string, cursor: string | undefined, context: Context): Promise<ReceiptGroup | undefined> {
+async function resultReceiptGroup(
+	harness: Harness,
+	storageId: string,
+	record: SubmissionRecord,
+	sessionId: string,
+	cursor: string | undefined,
+	context: Context,
+): Promise<ReceiptGroup | undefined> {
 	if (cursor === undefined && !frozenObservations.has(harness)) await settleDeliveries(harness, context, null);
-	if (await snapshotReceipt(harness, record.id, context) === undefined) {
+	if ((await snapshotReceipt(harness, record.id, context)) === undefined) {
 		if (cursor !== undefined) throw new InspectionRequestError("No retained receipt matches the selected result");
 		return undefined;
 	}
 	return harness.commit(async (tx) => {
 		const selected = await retainedReceipt(tx, record.id);
 		if (selected === undefined) throw new InspectionRequestError("The selected receipt is no longer retained");
-		if (selected.conversationId !== record.conversationId || (record.requestId !== undefined && selected.requestId !== record.requestId) || (record.type === "input" && record.status === "done" && selected.answerEntryId !== record.answer)) throw new InspectionRequestError("The retained receipt disagrees with the selected native submission");
+		if (
+			selected.conversationId !== record.conversationId ||
+			(record.requestId !== undefined && selected.requestId !== record.requestId) ||
+			(record.type === "input" && record.status === "done" && selected.answerEntryId !== record.answer)
+		)
+			throw new InspectionRequestError("The retained receipt disagrees with the selected native submission");
 		const page = await receiptReferencePage(tx, storageId, selected, cursor);
 		return {
 			...page,
-			next: page.next === null ? null : { tool: "agent_inspect", view: "result", sessionId, submissionId: record.id, ...optionalParam("requestId", record.requestId), receiptCursor: page.next },
+			next:
+				page.next === null
+					? null
+					: {
+							tool: "agent_inspect",
+							view: "result",
+							sessionId,
+							submissionId: record.id,
+							...optionalParam("requestId", record.requestId),
+							receiptCursor: page.next,
+						},
 		};
 	}, context);
 }
 
-function unavailableResult(sessionId: string, conversationId: ConversationId, params: DurableInspectParams, reason: string | undefined, usage: UsageState): ResultPage {
-	if (params.receiptCursor !== undefined) throw new InspectionRequestError("No retained receipt matches the selected result");
-	return boundedResult({ view: "result", sessionId, conversationId, status: "unavailable", reason: reason ?? "No native submission matches the result selector in this conversation", ...optionalParam("requestId", params.requestId), ...optionalParam("submissionId", params.submissionId), ...optionalParam("operationId", params.operationId), usage });
+function unavailableResult(
+	sessionId: string,
+	conversationId: ConversationId,
+	params: DurableInspectParams,
+	reason: string | undefined,
+	usage: UsageState,
+): ResultPage {
+	if (params.receiptCursor !== undefined)
+		throw new InspectionRequestError("No retained receipt matches the selected result");
+	return boundedResult({
+		view: "result",
+		sessionId,
+		conversationId,
+		status: "unavailable",
+		reason: reason ?? "No native submission matches the result selector in this conversation",
+		...optionalParam("requestId", params.requestId),
+		...optionalParam("submissionId", params.submissionId),
+		...optionalParam("operationId", params.operationId),
+		usage,
+	});
 }
 
-async function readResultBody(harness: Harness, selected: ResultPage, record: Extract<SubmissionRecord, { type: "input"; status: "done" }>, params: DurableInspectParams, context: Context): Promise<ResultPage> {
+async function readResultBody(
+	harness: Harness,
+	selected: ResultPage,
+	record: Extract<SubmissionRecord, { type: "input"; status: "done" }>,
+	params: DurableInspectParams,
+	context: Context,
+): Promise<ResultPage> {
 	const identity = { ...selected, entryId: record.entry, answerEntryId: record.answer };
 	if (params.receiptCursor !== undefined) return boundedResult(identity);
 	const retained = await resultAnswer(harness, record.answer, context);
@@ -2212,12 +3014,33 @@ async function readResultBody(harness: Harness, selected: ResultPage, record: Ex
 	if (offset > retained.answer.length) throw new RangeError("result offset exceeds the retained answer length");
 	const cut = fragment(retained.answer, offset, RESULT_PAGE_UNITS);
 	return boundedResult({
-		...identity, answer: cut.text, offset: cut.start, nextOffset: cut.nextOffset, truncated: cut.truncated,
-		...(cut.nextOffset === null ? {} : { answerContinuation: { tool: "agent_inspect", view: "result", sessionId: selected.sessionId, submissionId: record.id, ...optionalParam("requestId", record.requestId), offset: cut.nextOffset } }),
+		...identity,
+		answer: cut.text,
+		offset: cut.start,
+		nextOffset: cut.nextOffset,
+		truncated: cut.truncated,
+		...(cut.nextOffset === null
+			? {}
+			: {
+					answerContinuation: {
+						tool: "agent_inspect",
+						view: "result",
+						sessionId: selected.sessionId,
+						submissionId: record.id,
+						...optionalParam("requestId", record.requestId),
+						offset: cut.nextOffset,
+					},
+				}),
 	});
 }
 
-async function readResult(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context): Promise<ResultPage> {
+async function readResult(
+	harness: Harness,
+	storageId: string,
+	conversation: Conversation,
+	params: DurableInspectParams,
+	context: Context,
+): Promise<ResultPage> {
 	const target = await resultTarget(harness, conversation, params, context);
 	const record = target.record;
 	const usage = await readUsage(harness, context);
@@ -2238,29 +3061,74 @@ async function readResult(harness: Harness, storageId: string, conversation: Con
 	if (record.type !== "input") return otherResult(base, record, params);
 	const work = await selectedWork(harness, storageId, record, context);
 	if (params.finalReport === true) return finalReportPage(base, record, work, params.offset ?? 0);
-	if (record.status === "done" || record.status === "unanswered") return settledResult(harness, storageId, base, record, work, params, context);
-	if (params.receiptCursor !== undefined) throw new InspectionRequestError("receiptCursor requires a settled native input");
-	return boundedResult({ ...base, ...inputEntryIds(record), ...(work === undefined ? {} : { work: resultWork(work, record) }) });
+	if (record.status === "done" || record.status === "unanswered")
+		return settledResult(harness, storageId, base, record, work, params, context);
+	if (params.receiptCursor !== undefined)
+		throw new InspectionRequestError("receiptCursor requires a settled native input");
+	return boundedResult({
+		...base,
+		...inputEntryIds(record),
+		...(work === undefined ? {} : { work: resultWork(work, record) }),
+	});
 }
 
 /** A submission that is not an input has no answer, receipt group or declared work. */
-function otherResult(base: ResultPage, record: Exclude<SubmissionRecord, { type: "input" }>, params: DurableInspectParams): ResultPage {
-	if (params.receiptCursor !== undefined || params.finalReport === true) throw new InspectionRequestError(`${params.finalReport === true ? "finalReport" : "receiptCursor"} requires a native input`);
+function otherResult(
+	base: ResultPage,
+	record: Exclude<SubmissionRecord, { type: "input" }>,
+	params: DurableInspectParams,
+): ResultPage {
+	if (params.receiptCursor !== undefined || params.finalReport === true)
+		throw new InspectionRequestError(
+			`${params.finalReport === true ? "finalReport" : "receiptCursor"} requires a native input`,
+		);
 	return boundedResult({ ...base, ...("entry" in record ? optionalParam("entryId", record.entry) : {}) });
 }
 
-async function settledResult(harness: Harness, storageId: string, base: ResultPage, record: Extract<InputRecord, { status: "done" | "unanswered" }>, work: RequestWork | undefined, params: DurableInspectParams, context: Context): Promise<ResultPage> {
-	const receiptGroup = await resultReceiptGroup(harness, storageId, record, base.sessionId, params.receiptCursor, context);
-	const selected = { ...base, ...optionalParam("receiptGroup", receiptGroup), ...(work === undefined ? {} : { work: resultWork(work, record) }) };
+async function settledResult(
+	harness: Harness,
+	storageId: string,
+	base: ResultPage,
+	record: Extract<InputRecord, { status: "done" | "unanswered" }>,
+	work: RequestWork | undefined,
+	params: DurableInspectParams,
+	context: Context,
+): Promise<ResultPage> {
+	const receiptGroup = await resultReceiptGroup(
+		harness,
+		storageId,
+		record,
+		base.sessionId,
+		params.receiptCursor,
+		context,
+	);
+	const selected = {
+		...base,
+		...optionalParam("receiptGroup", receiptGroup),
+		...(work === undefined ? {} : { work: resultWork(work, record) }),
+	};
 	if (record.status === "done") return readResultBody(harness, selected, record, params, context);
 	const providerBlock = await observedInputProviderBlock(harness, record.id, context);
-	return boundedResult({ ...selected, ...(record.entry === undefined ? {} : { entryId: record.entry }), reason: modelFailureText(record.reason, record.detail, providerBlock), ...(providerBlock === undefined ? {} : { providerBlock }) });
+	return boundedResult({
+		...selected,
+		...(record.entry === undefined ? {} : { entryId: record.entry }),
+		reason: modelFailureText(record.reason, record.detail, providerBlock),
+		...(providerBlock === undefined ? {} : { providerBlock }),
+	});
 }
 
 /** One bounded inspection over a conversation's committed entries, submissions, and receipts. */
-export async function readInspection(harness: Harness, storageId: string, conversation: Conversation, params: DurableInspectParams, context: Context, options: DurableInspectionOptions = {}): Promise<unknown> {
+export async function readInspection(
+	harness: Harness,
+	storageId: string,
+	conversation: Conversation,
+	params: DurableInspectParams,
+	context: Context,
+	options: DurableInspectionOptions = {},
+): Promise<unknown> {
 	const view = params.view ?? "history";
-	if (params.requestId !== undefined && view !== "result") throw new TypeError("requestId selects only the result view");
+	if (params.requestId !== undefined && view !== "result")
+		throw new TypeError("requestId selects only the result view");
 	checkResultPageSelectors(view, params.receiptCursor, params.finalReport);
 	switch (view) {
 		case "history":
@@ -2274,7 +3142,8 @@ export async function readInspection(harness: Harness, storageId: string, conver
 		case "activity":
 			return readActivity(harness, storageId, conversation, params, options, context);
 		case "result":
-			if (params.offset !== undefined && (!Number.isSafeInteger(params.offset) || params.offset < 0)) throw new RangeError("result offset must be a nonnegative safe integer");
+			if (params.offset !== undefined && (!Number.isSafeInteger(params.offset) || params.offset < 0))
+				throw new RangeError("result offset must be a nonnegative safe integer");
 			return readResult(harness, storageId, conversation, params, context);
 	}
 }
@@ -2324,7 +3193,14 @@ export class DurableObservation {
 	private closing?: Promise<void>;
 	private readonly classifyOwner: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string };
 
-	private constructor(harness: Harness, storage: Storage, storageId: string, release: () => Promise<void>, classifyOwner: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string }, absent: boolean) {
+	private constructor(
+		harness: Harness,
+		storage: Storage,
+		storageId: string,
+		release: () => Promise<void>,
+		classifyOwner: () => { readonly owner: "here" | "unavailable" | "unknown"; readonly label?: string },
+		absent: boolean,
+	) {
 		this.harness = harness;
 		this.storage = storage;
 		this.absent = absent;
@@ -2333,8 +3209,17 @@ export class DurableObservation {
 		this.classifyOwner = classifyOwner;
 	}
 
-	static async open(options: DurableObservationOptions & DurableSnapshotSource, context: Context = BACKGROUND_CONTEXT): Promise<DurableObservation> {
-		const copy = await captureSnapshot(options.backupFrom, { maxSourceBytes: options.maxSourceBytes ?? SNAPSHOT_MAX_SOURCE_BYTES, deadline: options.deadline ?? Date.now() + (options.backupTimeoutMs ?? SNAPSHOT_BACKUP_TIMEOUT_MS), signal: context.abortSignal, requireExists: options.requireSourceExists, sourceRoot: options.sourceRoot });
+	static async open(
+		options: DurableObservationOptions & DurableSnapshotSource,
+		context: Context = BACKGROUND_CONTEXT,
+	): Promise<DurableObservation> {
+		const copy = await captureSnapshot(options.backupFrom, {
+			maxSourceBytes: options.maxSourceBytes ?? SNAPSHOT_MAX_SOURCE_BYTES,
+			deadline: options.deadline ?? Date.now() + (options.backupTimeoutMs ?? SNAPSHOT_BACKUP_TIMEOUT_MS),
+			signal: context.abortSignal,
+			requireExists: options.requireSourceExists,
+			sourceRoot: options.sourceRoot,
+		});
 		let storage = copy.storage;
 		const preparation = createSession(storage);
 		let harness: Harness;
@@ -2387,30 +3272,52 @@ export class DurableObservation {
 
 	/** External identity of one conversation: the storage ID for the root. */
 	identity(conversationId?: ConversationId): string {
-		return conversationId === undefined || conversationId === 1 ? this.storageId : durableIdentity(this.storageId, conversationId);
+		return conversationId === undefined || conversationId === 1
+			? this.storageId
+			: durableIdentity(this.storageId, conversationId);
 	}
 
-	async list(params: DurableListParams = {}, context: Context = BACKGROUND_CONTEXT): Promise<{ readonly items: readonly ConversationSummary[]; readonly next: Cursor | null }> {
+	async list(
+		params: DurableListParams = {},
+		context: Context = BACKGROUND_CONTEXT,
+	): Promise<{ readonly items: readonly ConversationSummary[]; readonly next: Cursor | null }> {
 		return readConversationList(this.harness, this.storageId, params, context);
 	}
 
-	async status(conversationId: ConversationId, options: DurableStatusOptions = {}, context: Context = BACKGROUND_CONTEXT): Promise<ConversationStatus | undefined> {
+	async status(
+		conversationId: ConversationId,
+		options: DurableStatusOptions = {},
+		context: Context = BACKGROUND_CONTEXT,
+	): Promise<ConversationStatus | undefined> {
 		return readConversationStatus(this.harness, this.storageId, conversationId, options, context);
 	}
 
-	async inspect(conversation: Conversation, params: DurableInspectParams = {}, context: Context = BACKGROUND_CONTEXT): Promise<unknown> {
-		return readInspection(this.harness, this.storageId, conversation, params, context, { owner: this.classifyOwner().owner });
+	async inspect(
+		conversation: Conversation,
+		params: DurableInspectParams = {},
+		context: Context = BACKGROUND_CONTEXT,
+	): Promise<unknown> {
+		return readInspection(this.harness, this.storageId, conversation, params, context, {
+			owner: this.classifyOwner().owner,
+		});
 	}
 
 	async receipts(ownerId?: string, context: Context = BACKGROUND_CONTEXT): Promise<readonly DeliveryReceipt[]> {
 		return readReceipts(this.harness, ownerId, context);
 	}
 
-	async dashboard(params: DurableDashboardParams = {}, options: DurableDashboardOptions = {}, context: Context = BACKGROUND_CONTEXT): Promise<readonly AgentConversationSummary[]> {
+	async dashboard(
+		params: DurableDashboardParams = {},
+		options: DurableDashboardOptions = {},
+		context: Context = BACKGROUND_CONTEXT,
+	): Promise<readonly AgentConversationSummary[]> {
 		return readDashboard(this.harness, this.storageId, params, { ...options, storage: this.storage }, context);
 	}
 
-	async snapshot(conversationId: ConversationId, context: Context = BACKGROUND_CONTEXT): Promise<ConversationSnapshotPage> {
+	async snapshot(
+		conversationId: ConversationId,
+		context: Context = BACKGROUND_CONTEXT,
+	): Promise<ConversationSnapshotPage> {
 		if (this.absent) return emptyConversationSnapshot();
 		return readConversationSnapshotPage(this.harness, conversationId, {}, context, this.storageId);
 	}
@@ -2420,9 +3327,16 @@ export class DurableObservation {
 	}
 
 	private async target(params: RequestParams | undefined, context: Context): Promise<Conversation> {
-		const conversationId = resolveSessionConversationId(this.storageId, requestString(params, "sessionId"), requestPositiveId(params?.conversationId, "conversationId"));
+		const conversationId = resolveSessionConversationId(
+			this.storageId,
+			requestString(params, "sessionId"),
+			requestPositiveId(params?.conversationId, "conversationId"),
+		);
 		const conversation = await this.harness.conversation(conversationId, context);
-		if (!conversation) throw new Error(`conversation ${durableIdentity(this.storageId, conversationId === 1 ? undefined : conversationId)} does not exist`);
+		if (!conversation)
+			throw new Error(
+				`conversation ${durableIdentity(this.storageId, conversationId === 1 ? undefined : conversationId)} does not exist`,
+			);
 		return conversation;
 	}
 
@@ -2430,7 +3344,8 @@ export class DurableObservation {
 		const sessionId = requestString(params, "sessionId");
 		const conversationId = requestPositiveId(params?.conversationId, "conversationId");
 		const options: DurableStatusOptions = optionalParam("cwd", requestString(params, "cwd"));
-		if (params?.view === "storage-page" && (sessionId !== undefined || conversationId !== undefined)) throw new Error("Storage status does not accept a conversation selector");
+		if (params?.view === "storage-page" && (sessionId !== undefined || conversationId !== undefined))
+			throw new Error("Storage status does not accept a conversation selector");
 		if (sessionId !== undefined || conversationId !== undefined) {
 			const conversation = await this.target(params, context);
 			const status = await readConversationStatus(this.harness, this.storageId, conversation.id, options, context);
@@ -2444,14 +3359,20 @@ export class DurableObservation {
 			const status = await readConversationStatus(this.harness, this.storageId, record.id, options, context);
 			if (status) conversations.push(status);
 		}
-		return { conversations, coverage: storageStatusCoverage(this.storageId, input.limit, page.items.length, conversations.length, page.next) };
+		return {
+			conversations,
+			coverage: storageStatusCoverage(this.storageId, input.limit, page.items.length, conversations.length, page.next),
+		};
 	}
 
 	private async requestList(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const list: DurableListParams = {
 			...optionalParam("limit", requestInteger(params, "limit")),
 			...(params?.cursor === undefined ? {} : { cursor: params.cursor as Cursor }),
-			...optionalParam("ownerConversationId", requestPositiveId(params?.ownerConversationId, "ownerConversationId") as ConversationId | undefined),
+			...optionalParam(
+				"ownerConversationId",
+				requestPositiveId(params?.ownerConversationId, "ownerConversationId") as ConversationId | undefined,
+			),
 			...optionalParam("ownerTaskId", requestInteger(params, "ownerTaskId")),
 		};
 		return readConversationList(this.harness, this.storageId, list, context);
@@ -2464,7 +3385,12 @@ export class DurableObservation {
 			this.harness,
 			this.storageId,
 			conversationId === undefined ? {} : { conversationId: conversationId as ConversationId },
-			{ storage: this.storage, owner: owner.owner, ...(owner.label === undefined ? {} : { ownerLabel: owner.label }), ...optionalParam("cwd", requestString(params, "cwd")) },
+			{
+				storage: this.storage,
+				owner: owner.owner,
+				...(owner.label === undefined ? {} : { ownerLabel: owner.label }),
+				...optionalParam("cwd", requestString(params, "cwd")),
+			},
 			context,
 		);
 	}
@@ -2477,12 +3403,23 @@ export class DurableObservation {
 			reports: state.reports.filter((report) => report.ownerId === ownerId && !report.acknowledged),
 		};
 		const settled = new Set(Object.keys(state.receipts));
-		const pending = state.intents.filter((intent) => intent.ownerId === ownerId && (intent.submissionId === null || !settled.has(String(intent.submissionId)))).length;
+		const pending = state.intents.filter(
+			(intent) =>
+				intent.ownerId === ownerId && (intent.submissionId === null || !settled.has(String(intent.submissionId))),
+		).length;
 		const usages = new Map<ConversationId, unknown>();
 		const receipts = [];
 		for (const receipt of deliveries.receipts) {
-			if (!usages.has(receipt.conversationId)) usages.set(receipt.conversationId, (await this.harness.snapshot(UsageDoc, receipt.conversationId, context)) ?? null);
-			receipts.push({ ...receipt, identity: durableIdentity(this.storageId, receipt.conversationId === 1 ? undefined : receipt.conversationId), usage: usages.get(receipt.conversationId) });
+			if (!usages.has(receipt.conversationId))
+				usages.set(
+					receipt.conversationId,
+					(await this.harness.snapshot(UsageDoc, receipt.conversationId, context)) ?? null,
+				);
+			receipts.push({
+				...receipt,
+				identity: durableIdentity(this.storageId, receipt.conversationId === 1 ? undefined : receipt.conversationId),
+				usage: usages.get(receipt.conversationId),
+			});
 		}
 		return { receipts, reports: deliveries.reports, pending };
 	}
@@ -2493,20 +3430,24 @@ export class DurableObservation {
 	 * parsing are identical to `DurableHost.request`; write methods reject.
 	 */
 	async request(method: string, params?: RequestParams, context: Context = BACKGROUND_CONTEXT): Promise<unknown> {
-			if (method === "profile-read") {
-				const { readProfile } = await import("./profile.ts");
+		if (method === "profile-read") {
+			const { readProfile } = await import("./profile.ts");
+			const conversation = await this.target(params, context);
+			return readProfile(this.harness, this.storageId, conversation.id, context, false);
+		}
+		if (method === "collaboration-read" || method === "collaboration-list") {
+			const { readCollaboration, listCollaboration } = await import("./collaboration.ts");
+			return method === "collaboration-read"
+				? readCollaboration(this.harness, params ?? {}, context)
+				: listCollaboration(this.harness, params ?? {}, context);
+		}
+		switch (method) {
+			case "inspect": {
 				const conversation = await this.target(params, context);
-				return readProfile(this.harness, this.storageId, conversation.id, context, false);
+				return readInspection(this.harness, this.storageId, conversation, parseInspectParams(params), context, {
+					owner: this.classifyOwner().owner,
+				});
 			}
-			if (method === "collaboration-read" || method === "collaboration-list") {
-				const { readCollaboration, listCollaboration } = await import("./collaboration.ts");
-				return method === "collaboration-read" ? readCollaboration(this.harness, params ?? {}, context) : listCollaboration(this.harness, params ?? {}, context);
-			}
-			switch (method) {
-				case "inspect": {
-					const conversation = await this.target(params, context);
-					return readInspection(this.harness, this.storageId, conversation, parseInspectParams(params), context, { owner: this.classifyOwner().owner });
-				}
 			case "status":
 				return this.requestStatus(params, context);
 			case "list":
@@ -2515,12 +3456,22 @@ export class DurableObservation {
 				return this.requestDashboard(params, context);
 			case "snapshot": {
 				if (this.absent) {
-					resolveSessionConversationId(this.storageId, requestString(params, "sessionId"), requestPositiveId(params?.conversationId, "conversationId"));
+					resolveSessionConversationId(
+						this.storageId,
+						requestString(params, "sessionId"),
+						requestPositiveId(params?.conversationId, "conversationId"),
+					);
 					parseConversationSnapshotParams(params);
 					return emptyConversationSnapshot();
 				}
 				const conversation = await this.target(params, context);
-				return readConversationSnapshotPage(this.harness, conversation.id, parseConversationSnapshotParams(params), context, this.storageId);
+				return readConversationSnapshotPage(
+					this.harness,
+					conversation.id,
+					parseConversationSnapshotParams(params),
+					context,
+					this.storageId,
+				);
 			}
 			case "receipts":
 				return this.requestReceipts(params, context);

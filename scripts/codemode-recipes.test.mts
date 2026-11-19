@@ -8,11 +8,28 @@ import { parseCodemodeSource } from "@earendil-works/pi-codemode";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-type ThreadEvent = { sequence: number; kind: string; sender: string; message: string; source: string; replyTo: number | null; revision: number };
+type ThreadEvent = {
+	sequence: number;
+	kind: string;
+	sender: string;
+	message: string;
+	source: string;
+	replyTo: number | null;
+	revision: number;
+};
 type Digest = {
-	frameRevision: number; frame?: { purpose: string }; through: number; newest: number;
+	frameRevision: number;
+	frame?: { purpose: string };
+	through: number;
+	newest: number;
 	next: Record<string, unknown> | null;
-	events: { seq: number; kind: string; text: string; source?: string; cut?: { shown: number; of: number; read: Record<string, unknown> } }[];
+	events: {
+		seq: number;
+		kind: string;
+		text: string;
+		source?: string;
+		cut?: { shown: number; of: number; read: Record<string, unknown> };
+	}[];
 };
 
 /** The thread digest recipe of the Agent extension, run against a forward-read double of `agent_collaborate`. */
@@ -20,47 +37,110 @@ function digestFixture(events: ThreadEvent[]) {
 	const content = readFileSync(join(root, "extensions/agent/codemode.md"), "utf8");
 	const recipe = /```js\n([\s\S]*?)\n```/.exec(content.slice(content.indexOf("\n## Thread digest")))?.[1];
 	assert.ok(recipe, "thread digest recipe");
-	const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (...parameters: string[]) => (...values: unknown[]) => Promise<Digest>;
-	const run = new AsyncFunction("tools", "load", "store", parseCodemodeSource(recipe.replace('"<thread id>"', '"t1"')).code);
-	const thread = { id: "t1", title: "Title", purpose: "Purpose", authority: "Authority", source: "Source", restrictions: "Restrictions", acceptance: "Acceptance", integrator: "integrator", revision: 1, closed: false, members: [] };
+	const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
+		...parameters: string[]
+	) => (...values: unknown[]) => Promise<Digest>;
+	const run = new AsyncFunction(
+		"tools",
+		"load",
+		"store",
+		parseCodemodeSource(recipe.replace('"<thread id>"', '"t1"')).code,
+	);
+	const thread = {
+		id: "t1",
+		title: "Title",
+		purpose: "Purpose",
+		authority: "Authority",
+		source: "Source",
+		restrictions: "Restrictions",
+		acceptance: "Acceptance",
+		integrator: "integrator",
+		revision: 1,
+		closed: false,
+		members: [],
+	};
 	const saved = new Map<string, unknown>();
 	const calls: Record<string, unknown>[] = [];
 	let failAt = 0;
 	const read = (input: Record<string, unknown>) => {
 		calls.push(input);
 		if (failAt > 0 && calls.length === failAt) throw new Error("thread read failed");
-		assert.deepEqual(Object.keys(input).filter((key) => !["action", "threadId", "after", "knownFrameRevision", "limit"].includes(key)), []);
+		assert.deepEqual(
+			Object.keys(input).filter((key) => !["action", "threadId", "after", "knownFrameRevision", "limit"].includes(key)),
+			[],
+		);
 		assert.equal(input.action, "read");
 		const after = input.after as number;
 		const limit = input.limit as number;
 		const page = events.filter((event) => event.sequence > after).slice(0, limit);
 		const through = page.at(-1)?.sequence ?? after;
 		return {
-			direction: "forward", threadId: "t1", frameRevision: thread.revision, sequence: events.length, closed: false,
+			direction: "forward",
+			threadId: "t1",
+			frameRevision: thread.revision,
+			sequence: events.length,
+			closed: false,
 			...(input.knownFrameRevision === thread.revision ? {} : { thread: { ...thread } }),
 			events: page,
-			next: through < events.length ? { tool: "agent_collaborate", action: "read", threadId: "t1", after: through, knownFrameRevision: thread.revision, limit } : null,
-			pending: 0, coverage: { complete: through === events.length, bytes: 0, after, through },
+			next:
+				through < events.length
+					? {
+							tool: "agent_collaborate",
+							action: "read",
+							threadId: "t1",
+							after: through,
+							knownFrameRevision: thread.revision,
+							limit,
+						}
+					: null,
+			pending: 0,
+			coverage: { complete: through === events.length, bytes: 0, after, through },
 		};
 	};
 	return {
-		thread, calls, saved, read,
-		failOnCall(call: number) { failAt = call; },
-		digest: () => run({ agent_collaborate: async (input: Record<string, unknown>) => JSON.stringify(read(input)) }, (key: string) => saved.get(key), (key: string, value: unknown) => { saved.set(key, value); }),
+		thread,
+		calls,
+		saved,
+		read,
+		failOnCall(call: number) {
+			failAt = call;
+		},
+		digest: () =>
+			run(
+				{ agent_collaborate: async (input: Record<string, unknown>) => JSON.stringify(read(input)) },
+				(key: string) => saved.get(key),
+				(key: string, value: unknown) => {
+					saved.set(key, value);
+				},
+			),
 	};
 }
-const threadEvent = (sequence: number, message: string, kind = "contribution", source = ""): ThreadEvent => ({ sequence, kind, sender: "agent-a", message, source, replyTo: null, revision: 1 });
+const threadEvent = (sequence: number, message: string, kind = "contribution", source = ""): ThreadEvent => ({
+	sequence,
+	kind,
+	sender: "agent-a",
+	message,
+	source,
+	replyTo: null,
+	revision: 1,
+});
 
 test("the thread digest returns every event once and saves no position past an unread event", async () => {
 	const f = digestFixture(Array.from({ length: 70 }, (_, index) => threadEvent(index + 1, `note ${index + 1}`)));
 	const first = await f.digest();
-	assert.deepEqual(first.events.map((event) => event.seq), Array.from({ length: 60 }, (_, index) => index + 1));
+	assert.deepEqual(
+		first.events.map((event) => event.seq),
+		Array.from({ length: 60 }, (_, index) => index + 1),
+	);
 	assert.equal(first.through, 60);
 	assert.equal(first.newest, 70);
 	assert.deepEqual(first.next, { action: "read", threadId: "t1", after: 60, knownFrameRevision: 1, limit: 20 });
 	assert.deepEqual(f.saved.get("digest:t1"), { after: 60, frameRevision: 1 });
 	const second = await f.digest();
-	assert.deepEqual(second.events.map((event) => event.seq), Array.from({ length: 10 }, (_, index) => index + 61));
+	assert.deepEqual(
+		second.events.map((event) => event.seq),
+		Array.from({ length: 10 }, (_, index) => index + 61),
+	);
 	assert.equal(second.next, null);
 	assert.deepEqual((await f.digest()).events, []);
 });
@@ -86,14 +166,23 @@ test("the thread digest marks each cut, names the exact read for it, and keeps c
 				continue;
 			}
 			assert.ok(event.text.endsWith(" [cut]") && event.text.length === 606);
-			assert.deepEqual({ shown: event.cut?.shown, of: event.cut?.of }, { shown: 600, of: `${event.seq}:${long}`.length });
+			assert.deepEqual(
+				{ shown: event.cut?.shown, of: event.cut?.of },
+				{ shown: 600, of: `${event.seq}:${long}`.length },
+			);
 			const complete = f.read(event.cut?.read ?? {}).events;
-			assert.deepEqual(complete.map((entry) => entry.message), [`${event.seq}:${long}`]);
+			assert.deepEqual(
+				complete.map((entry) => entry.message),
+				[`${event.seq}:${long}`],
+			);
 		}
 		if (digest.next === null) break;
 		assert.equal(digest.next.after, digest.through);
 	}
-	assert.deepEqual(seen, Array.from({ length: 60 }, (_, index) => index + 1));
+	assert.deepEqual(
+		seen,
+		Array.from({ length: 60 }, (_, index) => index + 1),
+	);
 });
 
 test("the thread digest returns a changed frame and stores nothing when a read fails", async () => {
@@ -117,8 +206,12 @@ function resultDigest(path: string, finalReport: boolean) {
 	const recipes = readFileSync(join(root, "extensions/agent/codemode.md"), "utf8");
 	const recipe = /\n## Save a result digest to a file\n[\s\S]*?```js\n([\s\S]*?)\n```/.exec(recipes)?.[1];
 	assert.ok(recipe, "file digest recipe");
-	const source = recipe.replace('"<output path>"', JSON.stringify(path)).replace("const finalReport = false;", `const finalReport = ${finalReport};`);
-	const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (...parameters: string[]) => (tools: object) => Promise<unknown>;
+	const source = recipe
+		.replace('"<output path>"', JSON.stringify(path))
+		.replace("const finalReport = false;", `const finalReport = ${finalReport};`);
+	const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor as new (
+		...parameters: string[]
+	) => (tools: object) => Promise<unknown>;
 	return new AsyncFunction("tools", parseCodemodeSource(source).code);
 }
 
@@ -128,16 +221,27 @@ test("the file digest writes the exact requested result once and returns only it
 		const parts = ["line 1\n", "é点🦜\n"];
 		const writes: unknown[] = [];
 		const offsets: number[] = [];
-		const receipt = await resultDigest(path, finalReport)({
+		const receipt = await resultDigest(
+			path,
+			finalReport,
+		)({
 			agent_inspect: async (input: { view: string; finalReport?: boolean; offset?: number }) => {
 				assert.equal(input.view, "result");
 				assert.equal(input.finalReport, finalReport || undefined);
 				offsets.push(input.offset ?? 0);
 				const first = input.offset === undefined;
-				const text = parts[first ? 0 : 1], nextOffset = first ? parts[0].length : null;
-				return JSON.stringify(finalReport ? { status: "unanswered", finalReport: { text, nextOffset } } : { status: "done", answer: text, nextOffset });
+				const text = parts[first ? 0 : 1],
+					nextOffset = first ? parts[0].length : null;
+				return JSON.stringify(
+					finalReport
+						? { status: "unanswered", finalReport: { text, nextOffset } }
+						: { status: "done", answer: text, nextOffset },
+				);
 			},
-			write: async (input: unknown) => { writes.push(input); return "Saved"; },
+			write: async (input: unknown) => {
+				writes.push(input);
+				return "Saved";
+			},
 		});
 		const content = parts.join("");
 		assert.deepEqual(offsets, [0, parts[0].length]);
@@ -150,10 +254,26 @@ test("the file digest never writes a partial or unavailable result", async () =>
 	const run = resultDigest("out/result.txt", false);
 	for (const incomplete of [{ status: "placed" }, { status: "done", answer: "part", nextOffset: 0 }]) {
 		const writes: unknown[] = [];
-		await assert.rejects(run({ agent_inspect: async () => incomplete, write: async (input: unknown) => { writes.push(input); } }), /not available|did not advance/);
+		await assert.rejects(
+			run({
+				agent_inspect: async () => incomplete,
+				write: async (input: unknown) => {
+					writes.push(input);
+				},
+			}),
+			/not available|did not advance/,
+		);
 		assert.deepEqual(writes, []);
 	}
-	await assert.rejects(run({ agent_inspect: async () => ({ status: "done", answer: "" }), write: async () => { throw new Error("write failed"); } }), /write failed/);
+	await assert.rejects(
+		run({
+			agent_inspect: async () => ({ status: "done", answer: "" }),
+			write: async () => {
+				throw new Error("write failed");
+			},
+		}),
+		/write failed/,
+	);
 });
 
 test("maintained codemode recipes parse their options before their source", () => {

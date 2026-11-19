@@ -27,7 +27,12 @@ function repository(initialText = "plain\n"): { root: string; git: (...args: str
 		GIT_COMMITTER_EMAIL: "fixture@example.com",
 	};
 	const git = (...args: string[]) =>
-		execFileSync("git", ["commit", "merge"].includes(args[0]) ? ["-c", "core.hooksPath=/dev/null", ...args] : args, { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+		execFileSync("git", ["commit", "merge"].includes(args[0]) ? ["-c", "core.hooksPath=/dev/null", ...args] : args, {
+			cwd: root,
+			env,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		}).trim();
 	git("init", "-q", "-b", "main");
 	writeFileSync(join(root, "ok.txt"), initialText);
 	git("add", ".");
@@ -46,7 +51,7 @@ test("signature rules flag secrets and personal paths without reporting the matc
 test("every recognised envelope name matches bare and attributed opening tags", () => {
 	for (const name of ["request-context", "request-route", "efforts", "preferences"]) {
 		assert.equal(scanText(`${opening(name)}>`)?.rule, "session-transcript");
-		assert.equal(scanText(`${opening(name, ' host="fixture" origin=\'test\'')}>`)?.rule, "session-transcript");
+		assert.equal(scanText(`${opening(name, " host=\"fixture\" origin='test'")}>`)?.rule, "session-transcript");
 		assert.equal(scanText(`${opening(name, '\thost="fixture"')}>`)?.rule, "session-transcript");
 	}
 	assert.equal(scanText(`${opening("request-route")}>`)?.line, 1);
@@ -152,7 +157,10 @@ test("a range scan finds envelope signatures without echoing attributes", (t) =>
 test("root commits scan both clean and flagged content", (t) => {
 	const clean = repository();
 	const flagged = repository(["/", "home/fixture/private\n"].join(""));
-	t.after(() => { rmSync(clean.root, { recursive: true, force: true }); rmSync(flagged.root, { recursive: true, force: true }); });
+	t.after(() => {
+		rmSync(clean.root, { recursive: true, force: true });
+		rmSync(flagged.root, { recursive: true, force: true });
+	});
 	assert.deepEqual(scanRange(clean.root, ["HEAD"]), []);
 	const findings = scanRange(flagged.root, ["HEAD"]);
 	assert.equal(findings.length, 1);
@@ -248,10 +256,10 @@ test("the installer resolves linked-worktree hook context without replacing shar
 });
 
 test("pre-push input maps to ranges and the hook installs only over its own marker", (t) => {
-	assert.deepEqual(
-		pushRanges("refs/heads/main abc refs/heads/main def\nrefs/heads/x 111 refs/heads/x 0000000000\n"),
-		[["def..abc"], ["111", "--not", "--remotes"]],
-	);
+	assert.deepEqual(pushRanges("refs/heads/main abc refs/heads/main def\nrefs/heads/x 111 refs/heads/x 0000000000\n"), [
+		["def..abc"],
+		["111", "--not", "--remotes"],
+	]);
 	assert.deepEqual(pushRanges("(delete) 0000000000 refs/heads/gone def\n"), []);
 	const { root } = repository();
 	t.after(() => rmSync(root, { recursive: true, force: true }));

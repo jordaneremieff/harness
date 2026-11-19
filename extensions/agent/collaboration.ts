@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
-import { defineDoc, defineDocFamily, ROOT_CONVERSATION_ID, type Harness, type Session, type Tx } from "@earendil-works/pi-durable";
+import {
+	defineDoc,
+	defineDocFamily,
+	ROOT_CONVERSATION_ID,
+	type Harness,
+	type Session,
+	type Tx,
+} from "@earendil-works/pi-durable";
 import {
 	COLLABORATION_THREAD_ID,
 	CollaborationReadError,
@@ -37,33 +44,76 @@ type ThreadIndex = { keys: string[] };
 type StoredThread = { thread: CollaborationThread | null };
 type StoredEvent = { event: CollaborationEvent | null };
 type StoredMutation = { digest: string; threadId: string; sequence: number };
-export const CollaborationIndex = defineDoc<ThreadIndex>({ kind: "agent.collaboration.index", version: 1, scope: "session", checkpointWhen: () => false, initial: () => ({ keys: [] }) });
-export const CollaborationThreads = defineDocFamily<StoredThread, null>({ kind: "agent.collaboration.thread", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({ thread: null }) });
-export const CollaborationEvents = defineDocFamily<StoredEvent, null>({ kind: "agent.collaboration.event", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({ event: null }) });
-const CollaborationMutations = defineDocFamily<StoredMutation, null>({ kind: "agent.collaboration.mutation", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({ digest: "", threadId: "", sequence: 0 }) });
+export const CollaborationIndex = defineDoc<ThreadIndex>({
+	kind: "agent.collaboration.index",
+	version: 1,
+	scope: "session",
+	checkpointWhen: () => false,
+	initial: () => ({ keys: [] }),
+});
+export const CollaborationThreads = defineDocFamily<StoredThread, null>({
+	kind: "agent.collaboration.thread",
+	version: 1,
+	scope: "session",
+	family: true,
+	checkpointWhen: () => false,
+	initial: () => ({ thread: null }),
+});
+export const CollaborationEvents = defineDocFamily<StoredEvent, null>({
+	kind: "agent.collaboration.event",
+	version: 1,
+	scope: "session",
+	family: true,
+	checkpointWhen: () => false,
+	initial: () => ({ event: null }),
+});
+const CollaborationMutations = defineDocFamily<StoredMutation, null>({
+	kind: "agent.collaboration.mutation",
+	version: 1,
+	scope: "session",
+	family: true,
+	checkpointWhen: () => false,
+	initial: () => ({ digest: "", threadId: "", sequence: 0 }),
+});
 
 export function collaborationIdentity(value: unknown, field: string): string {
 	const requirement = `${field} requires an exact discovered identity: a canonical lowercase UUID for a bare root, or UUID:positive nonroot conversation ID (a safe integer greater than ${ROOT_CONVERSATION_ID}); a root uses the bare storage ID${field === "integrator" ? ". Call agent_list and copy the discovered identity into integrator; omit integrator to use the caller" : ""}`;
 	if (typeof value !== "string" || !ID.test(value)) throw new Error(requirement);
 	const suffix = value.split(":")[1];
-	if (suffix !== undefined && (!Number.isSafeInteger(Number(suffix)) || Number(suffix) <= ROOT_CONVERSATION_ID)) throw new Error(requirement);
+	if (suffix !== undefined && (!Number.isSafeInteger(Number(suffix)) || Number(suffix) <= ROOT_CONVERSATION_ID))
+		throw new Error(requirement);
 	return value;
 }
-function hash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
+function hash(value: string): string {
+	return createHash("sha256").update(value).digest("hex");
+}
 function frame(input: Record<string, unknown>, actor: string): CollaborationFrame {
-	return { title: text(input, "title", 160), purpose: text(input, "purpose", 4000), authority: text(input, "authority", 4000), source: text(input, "source", 2000), restrictions: text(input, "restrictions", 4000), acceptance: text(input, "acceptance", 4000), integrator: collaborationIdentity(input.integrator === undefined ? actor : input.integrator, "integrator") };
+	return {
+		title: text(input, "title", 160),
+		purpose: text(input, "purpose", 4000),
+		authority: text(input, "authority", 4000),
+		source: text(input, "source", 2000),
+		restrictions: text(input, "restrictions", 4000),
+		acceptance: text(input, "acceptance", 4000),
+		integrator: collaborationIdentity(input.integrator === undefined ? actor : input.integrator, "integrator"),
+	};
 }
 function recipients(input: Record<string, unknown>, actor: string): string[] {
 	if (input.notify === undefined) return [];
-	if (!Array.isArray(input.notify) || input.notify.length > 16) throw new Error("notify requires an array of at most 16 exact identities");
-	return [...new Set(input.notify.map((value, index) => collaborationIdentity(value, `notify[${index}]`)))].filter((value) => value !== actor);
+	if (!Array.isArray(input.notify) || input.notify.length > 16)
+		throw new Error("notify requires an array of at most 16 exact identities");
+	return [...new Set(input.notify.map((value, index) => collaborationIdentity(value, `notify[${index}]`)))].filter(
+		(value) => value !== actor,
+	);
 }
 
 /** Thread events and notification intents share the source storage's atomic commit. */
 async function appendEvent(tx: Tx, thread: CollaborationThread, event: CollaborationEvent): Promise<void> {
 	const stored = await tx.doc(CollaborationEvents, `${thread.id}:${event.sequence}`, null);
 	stored.event = event;
-	const audience = [...new Set([...thread.members.map((member) => member.identity), ...event.notify])].filter((recipient) => recipient !== event.sender);
+	const audience = [...new Set([...thread.members.map((member) => member.identity), ...event.notify])].filter(
+		(recipient) => recipient !== event.sender,
+	);
 	if (audience.length === 0) return;
 	const notices = await tx.doc(ThreadDeliveryDoc, thread.id, null);
 	notices.pending += audience.length;
@@ -71,7 +121,25 @@ async function appendEvent(tx: Tx, thread: CollaborationThread, event: Collabora
 		const passive = !event.notify.includes(recipient);
 		const requestId = `thread:${thread.id}:${event.sequence}:${recipient}`;
 		const message = threadNoticeText(event, passive);
-		const report: DeliveryReport = { sourceId: `report:${requestId}`, requestId, ownerId: recipient, senderIdentity: event.sender, message, replyTo: null, acknowledged: false, createdAt: event.at, direct: true, steer: !passive, passive, threadId: thread.id, threadTitle: thread.title, threadEvent: event.sequence, threadFrameRevision: event.revision, threadEventKind: event.kind, operatorMessage: threadNoticeDisplayText(event, passive) };
+		const report: DeliveryReport = {
+			sourceId: `report:${requestId}`,
+			requestId,
+			ownerId: recipient,
+			senderIdentity: event.sender,
+			message,
+			replyTo: null,
+			acknowledged: false,
+			createdAt: event.at,
+			direct: true,
+			steer: !passive,
+			passive,
+			threadId: thread.id,
+			threadTitle: thread.title,
+			threadEvent: event.sequence,
+			threadFrameRevision: event.revision,
+			threadEventKind: event.kind,
+			operatorMessage: threadNoticeDisplayText(event, passive),
+		};
 		await storeDeliveryRow(tx, "report", report, true);
 	}
 }
@@ -79,11 +147,28 @@ async function appendEvent(tx: Tx, thread: CollaborationThread, event: Collabora
 function byteBound(value: unknown, maximum: number, label: string): void {
 	if (Buffer.byteLength(JSON.stringify(value)) > maximum) throw new Error(`${label} exceeds its ${maximum}-byte bound`);
 }
-async function createThread(tx: Tx, id: string, input: Record<string, unknown>, actor: string, now: number): Promise<CollaborationThread> {
+async function createThread(
+	tx: Tx,
+	id: string,
+	input: Record<string, unknown>,
+	actor: string,
+	now: number,
+): Promise<CollaborationThread> {
 	const index = await tx.doc(CollaborationIndex);
-	if (index.keys.length >= MAX_THREADS) throw new Error("This storage reached its thread bound; create a thread in another participant storage");
+	if (index.keys.length >= MAX_THREADS)
+		throw new Error("This storage reached its thread bound; create a thread in another participant storage");
 	index.keys.push(id);
-	return { ...frame(input, actor), id, creator: actor, createdAt: now, updatedAt: now, revision: 1, closed: false, sequence: 0, members: [{ identity: actor, contribution: participation(input) ?? "", joinedAt: now }] };
+	return {
+		...frame(input, actor),
+		id,
+		creator: actor,
+		createdAt: now,
+		updatedAt: now,
+		revision: 1,
+		closed: false,
+		sequence: 0,
+		members: [{ identity: actor, contribution: participation(input) ?? "", joinedAt: now }],
+	};
 }
 function participation(input: Record<string, unknown>): string | undefined {
 	if (input.participation === undefined) return undefined;
@@ -95,57 +180,113 @@ function joinThread(thread: CollaborationThread, input: Record<string, unknown>,
 	const contribution = participation(input) ?? member?.contribution ?? "";
 	if (member) member.contribution = contribution;
 	else {
-		if (thread.members.length >= MAX_MEMBERS) throw new Error(`The thread reached its participant bound; call agent_collaborate with action: read and threadId: ${thread.id}, then action: create with sessionId set to a discovered Durable agent and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`);
+		if (thread.members.length >= MAX_MEMBERS)
+			throw new Error(
+				`The thread reached its participant bound; call agent_collaborate with action: read and threadId: ${thread.id}, then action: create with sessionId set to a discovered Durable agent and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`,
+			);
 		thread.members.push({ identity: actor, contribution, joinedAt: now });
 	}
 	return contribution || "Joined the thread.";
 }
-function unchangedJoin(thread: CollaborationThread, input: Record<string, unknown>, actor: string, action: string): boolean {
+function unchangedJoin(
+	thread: CollaborationThread,
+	input: Record<string, unknown>,
+	actor: string,
+	action: string,
+): boolean {
 	if (action !== "join") return false;
 	const member = thread.members.find((item) => item.identity === actor);
 	return member !== undefined && (participation(input) ?? member.contribution) === member.contribution;
 }
-function reviseThread(thread: CollaborationThread, input: Record<string, unknown>, actor: string, origin: string): string {
-	if (actor !== thread.creator && actor !== thread.integrator && origin !== "operator") throw new Error(`Only the creator, integrator or operator revises the governing frame; call agent_collaborate with action: post, threadId: ${thread.id}, and message containing your proposal`);
-	Object.assign(thread, frame(input, actor)); thread.revision += 1;
+function reviseThread(
+	thread: CollaborationThread,
+	input: Record<string, unknown>,
+	actor: string,
+	origin: string,
+): string {
+	if (actor !== thread.creator && actor !== thread.integrator && origin !== "operator")
+		throw new Error(
+			`Only the creator, integrator or operator revises the governing frame; call agent_collaborate with action: post, threadId: ${thread.id}, and message containing your proposal`,
+		);
+	Object.assign(thread, frame(input, actor));
+	thread.revision += 1;
 	return JSON.stringify(frame(input, actor));
 }
 function postContent(input: Record<string, unknown>): { kind: string; message: string; source: string } {
 	const kind = input.kind === undefined ? "contribution" : text(input, "kind", 32);
-	if (kind !== "contribution" && kind !== "carried-authority") throw new Error("Post kind must be contribution or carried-authority");
-	return { kind, message: text(input, "message", 8000), source: text(input, "source", 2000, kind !== "carried-authority") };
+	if (kind !== "contribution" && kind !== "carried-authority")
+		throw new Error("Post kind must be contribution or carried-authority");
+	return {
+		kind,
+		message: text(input, "message", 8000),
+		source: text(input, "source", 2000, kind !== "carried-authority"),
+	};
 }
-function applyThreadAction(thread: CollaborationThread, input: Record<string, unknown>, action: string, actor: string, origin: string, now: number): { kind: string; message: string; source: string } {
+function applyThreadAction(
+	thread: CollaborationThread,
+	input: Record<string, unknown>,
+	action: string,
+	actor: string,
+	origin: string,
+	now: number,
+): { kind: string; message: string; source: string } {
 	const source = text(input, "source", 2000, true);
 	switch (action) {
-		case "create": return { kind: action, message: JSON.stringify(frame(input, actor)), source };
-		case "join": return { kind: action, message: joinThread(thread, input, actor, now), source };
-		case "leave": thread.members = thread.members.filter((item) => item.identity !== actor); return { kind: action, message: text(input, "message", 8000, true) || "Left the thread.", source };
-		case "post": return postContent(input);
-		case "revise": return { kind: action, message: reviseThread(thread, input, actor, origin), source };
-		case "close": thread.closed = true; return { kind: action, message: text(input, "message", 8000), source };
-		default: throw new Error("Unknown collaboration mutation");
+		case "create":
+			return { kind: action, message: JSON.stringify(frame(input, actor)), source };
+		case "join":
+			return { kind: action, message: joinThread(thread, input, actor, now), source };
+		case "leave":
+			thread.members = thread.members.filter((item) => item.identity !== actor);
+			return { kind: action, message: text(input, "message", 8000, true) || "Left the thread.", source };
+		case "post":
+			return postContent(input);
+		case "revise":
+			return { kind: action, message: reviseThread(thread, input, actor, origin), source };
+		case "close":
+			thread.closed = true;
+			return { kind: action, message: text(input, "message", 8000), source };
+		default:
+			throw new Error("Unknown collaboration mutation");
 	}
 }
-function requireOpenThread(thread: CollaborationThread | null, id: string, storageId: string): asserts thread is CollaborationThread {
+function requireOpenThread(
+	thread: CollaborationThread | null,
+	id: string,
+	storageId: string,
+): asserts thread is CollaborationThread {
 	if (thread === null) throw new Error("Thread not found; repeat discovery or check threadId");
-	if (thread.closed) throw new Error(`This thread is closed; call agent_collaborate with action: read and threadId: ${id}, then action: create with sessionId: ${storageId} and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`);
+	if (thread.closed)
+		throw new Error(
+			`This thread is closed; call agent_collaborate with action: read and threadId: ${id}, then action: create with sessionId: ${storageId} and title, purpose, authority, source, restrictions, and acceptance copied from the returned thread`,
+		);
 }
 function requireParticipation(thread: CollaborationThread, action: string, actor: string, origin: string): void {
 	if (["create", "join"].includes(action) || origin === "operator") return;
 	if (thread.members.some((item) => item.identity === actor)) return;
-	if (action === "revise" && actor !== thread.creator && actor !== thread.integrator) throw new Error(`Join the thread before proposing a frame change; call agent_collaborate with action: join and threadId: ${thread.id}, then action: post with the same threadId and message containing your proposal`);
-	throw new Error(`Join the thread before changing it; call agent_collaborate with action: join and threadId: ${thread.id}, then repeat action: ${action}`);
+	if (action === "revise" && actor !== thread.creator && actor !== thread.integrator)
+		throw new Error(
+			`Join the thread before proposing a frame change; call agent_collaborate with action: join and threadId: ${thread.id}, then action: post with the same threadId and message containing your proposal`,
+		);
+	throw new Error(
+		`Join the thread before changing it; call agent_collaborate with action: join and threadId: ${thread.id}, then repeat action: ${action}`,
+	);
 }
 function replyReference(input: Record<string, unknown>, sequence: number): number | null {
 	const replyTo = input.replyTo ?? null;
 	if (replyTo === null) return null;
-	if (typeof replyTo !== "number" || !Number.isSafeInteger(replyTo) || replyTo < 1 || replyTo > sequence) throw new Error("replyTo must name an earlier event in this thread");
+	if (typeof replyTo !== "number" || !Number.isSafeInteger(replyTo) || replyTo < 1 || replyTo > sequence)
+		throw new Error("replyTo must name an earlier event in this thread");
 	return replyTo;
 }
 
 /** Mutations use the actual caller identity supplied by the tool or operator adapter. */
-export async function mutateCollaboration(harness: Harness, storageId: string, input: Record<string, unknown>, context: Context): Promise<{ threadId: string; sequence: number; deduped: boolean }> {
+export async function mutateCollaboration(
+	harness: Harness,
+	storageId: string,
+	input: Record<string, unknown>,
+	context: Context,
+): Promise<{ threadId: string; sequence: number; deduped: boolean }> {
 	validateCollaborationTextLimits(input);
 	const actor = collaborationIdentity(input.senderIdentity, "senderIdentity");
 	recipients(input, actor);
@@ -155,7 +296,15 @@ export async function mutateCollaboration(harness: Harness, storageId: string, i
 	const requestId = text(input, "requestId", 512);
 	const action = text(input, "action", 32);
 	const requestKey = hash(JSON.stringify([actor, requestId]));
-	const digest = hash(JSON.stringify(Object.fromEntries(Object.entries(input).filter(([key]) => key !== "requestId").sort(([a], [b]) => a.localeCompare(b)))));
+	const digest = hash(
+		JSON.stringify(
+			Object.fromEntries(
+				Object.entries(input)
+					.filter(([key]) => key !== "requestId")
+					.sort(([a], [b]) => a.localeCompare(b)),
+			),
+		),
+	);
 	const id = action === "create" ? `${storageId}/${requestKey.slice(0, 32)}` : text(input, "threadId", 128);
 	if (collaborationStorage(id) !== storageId) throw new Error("The thread belongs to a different storage host");
 	return harness.commit(async (tx) => {
@@ -174,17 +323,32 @@ export async function mutateCollaboration(harness: Harness, storageId: string, i
 		requireOpenThread(thread, id, storageId);
 		requireParticipation(thread, action, actor, origin);
 		if (unchangedJoin(thread, input, actor, action)) {
-			receipt.digest = digest; receipt.threadId = id; receipt.sequence = thread.sequence;
+			receipt.digest = digest;
+			receipt.threadId = id;
+			receipt.sequence = thread.sequence;
 			return { threadId: id, sequence: thread.sequence, deduped: false };
 		}
 		const content = applyThreadAction(thread, input, action, actor, origin, now);
 		const replyTo = replyReference(input, thread.sequence);
-		thread.sequence += 1; thread.updatedAt = now;
-		const event: CollaborationEvent = { ...content, threadId: id, sequence: thread.sequence, at: now, sender: actor, origin, replyTo, revision: thread.revision, notify: recipients(input, actor) };
+		thread.sequence += 1;
+		thread.updatedAt = now;
+		const event: CollaborationEvent = {
+			...content,
+			threadId: id,
+			sequence: thread.sequence,
+			at: now,
+			sender: actor,
+			origin,
+			replyTo,
+			revision: thread.revision,
+			notify: recipients(input, actor),
+		};
 		byteBound(thread, 24 * 1024, "Thread frame and participants");
 		byteBound(event, 20 * 1024, "Thread event");
 		await appendEvent(tx, thread, event);
-		receipt.digest = digest; receipt.threadId = id; receipt.sequence = event.sequence;
+		receipt.digest = digest;
+		receipt.threadId = id;
+		receipt.sequence = event.sequence;
 		return { threadId: id, sequence: event.sequence, deduped: false };
 	}, context);
 }
@@ -209,8 +373,10 @@ function validInteger(value: unknown, minimum: number): value is number {
 function readText(input: Record<string, unknown>, key: string, maximum: number, optional = false): string {
 	const value = input[key];
 	if (value === undefined && optional) return "";
-	if (typeof value !== "string" || value.trim() === "") throw new CollaborationReadError("invalid_request", `${key} is required and must be nonblank text`);
-	if (value.length > maximum) throw new CollaborationReadError("invalid_request", `${key} exceeds the maximum length of ${maximum} characters`);
+	if (typeof value !== "string" || value.trim() === "")
+		throw new CollaborationReadError("invalid_request", `${key} is required and must be nonblank text`);
+	if (value.length > maximum)
+		throw new CollaborationReadError("invalid_request", `${key} exceeds the maximum length of ${maximum} characters`);
 	return value;
 }
 function readLimit(input: Record<string, unknown>): number {
@@ -220,80 +386,158 @@ function readLimit(input: Record<string, unknown>): number {
 }
 function readBytes(value: unknown, maximum: number, label: string): number {
 	const bytes = Buffer.byteLength(JSON.stringify(value));
-	if (bytes > maximum) throw new CollaborationReadError("source_unreadable", `${label} exceeds its ${maximum}-byte bound`);
+	if (bytes > maximum)
+		throw new CollaborationReadError("source_unreadable", `${label} exceeds its ${maximum}-byte bound`);
 	return bytes;
 }
 function readSelectedStorage(value: unknown): string | undefined {
 	if (value === undefined) return undefined;
 	let identity: string;
-	try { identity = collaborationIdentity(value, "sessionId"); }
-	catch (error) {
+	try {
+		identity = collaborationIdentity(value, "sessionId");
+	} catch (error) {
 		if (error instanceof Error) throw new CollaborationReadError("invalid_request", error.message);
 		throw error;
 	}
-	if (!validIdentity(identity)) throw new CollaborationReadError("invalid_request", "sessionId requires an exact discovered identity");
+	if (!validIdentity(identity))
+		throw new CollaborationReadError("invalid_request", "sessionId requires an exact discovered identity");
 	return identity.split(":")[0];
 }
 async function readIndex(session: Session, context: Context, storageId?: string): Promise<string[]> {
 	const snapshot: unknown = await session.snapshot(CollaborationIndex, context);
 	if (snapshot === undefined) return [];
-	if (!isRecord(snapshot) || !Array.isArray(snapshot.keys) || snapshot.keys.length > MAX_THREADS) throw new CollaborationReadError("source_unreadable", "Thread index is malformed");
+	if (!isRecord(snapshot) || !Array.isArray(snapshot.keys) || snapshot.keys.length > MAX_THREADS)
+		throw new CollaborationReadError("source_unreadable", "Thread index is malformed");
 	const keys: string[] = [];
 	const seen = new Set<string>();
 	for (const key of snapshot.keys) {
-		if (!validThreadId(key) || seen.has(key)) throw new CollaborationReadError("source_unreadable", "Thread index is malformed");
-		if (storageId !== undefined && !key.startsWith(`${storageId}/`)) throw new CollaborationReadError("source_unreadable", "Thread index refers to a different storage host");
-		seen.add(key); keys.push(key);
+		if (!validThreadId(key) || seen.has(key))
+			throw new CollaborationReadError("source_unreadable", "Thread index is malformed");
+		if (storageId !== undefined && !key.startsWith(`${storageId}/`))
+			throw new CollaborationReadError("source_unreadable", "Thread index refers to a different storage host");
+		seen.add(key);
+		keys.push(key);
 	}
 	return keys;
 }
 function validGoverningFrame(thread: Record<string, unknown>): boolean {
-	return validText(thread.title, 160) && validText(thread.purpose, 4000) && validText(thread.authority, 4000) && validText(thread.source, 2000) && validText(thread.restrictions, 4000) && validText(thread.acceptance, 4000) && validIdentity(thread.integrator);
+	return (
+		validText(thread.title, 160) &&
+		validText(thread.purpose, 4000) &&
+		validText(thread.authority, 4000) &&
+		validText(thread.source, 2000) &&
+		validText(thread.restrictions, 4000) &&
+		validText(thread.acceptance, 4000) &&
+		validIdentity(thread.integrator)
+	);
 }
 function validThreadState(thread: Record<string, unknown>): boolean {
-	return validIdentity(thread.creator) && validInteger(thread.createdAt, 0) && validInteger(thread.updatedAt, 0) && validInteger(thread.sequence, 1) && Number.isSafeInteger(thread.sequence + 1) && validInteger(thread.revision, 1) && thread.revision <= thread.sequence && typeof thread.closed === "boolean";
+	return (
+		validIdentity(thread.creator) &&
+		validInteger(thread.createdAt, 0) &&
+		validInteger(thread.updatedAt, 0) &&
+		validInteger(thread.sequence, 1) &&
+		Number.isSafeInteger(thread.sequence + 1) &&
+		validInteger(thread.revision, 1) &&
+		thread.revision <= thread.sequence &&
+		typeof thread.closed === "boolean"
+	);
 }
 function validThreadMembers(members: unknown): boolean {
 	if (!Array.isArray(members) || members.length > MAX_MEMBERS) return false;
 	const identities = new Set<string>();
 	for (const member of members) {
-		if (!isRecord(member) || !validIdentity(member.identity) || !validText(member.contribution, 256, true) || !validInteger(member.joinedAt, 0) || identities.has(member.identity)) return false;
+		if (
+			!isRecord(member) ||
+			!validIdentity(member.identity) ||
+			!validText(member.contribution, 256, true) ||
+			!validInteger(member.joinedAt, 0) ||
+			identities.has(member.identity)
+		)
+			return false;
 		identities.add(member.identity);
 	}
 	return true;
 }
 function readThread(snapshot: unknown, id: string, indexed = false): CollaborationThread {
-	if (snapshot === undefined || (isRecord(snapshot) && snapshot.thread === null)) throw new CollaborationReadError(indexed ? "source_unreadable" : "not_found", indexed ? "Thread index refers to an unavailable thread" : "Thread not found");
+	if (snapshot === undefined || (isRecord(snapshot) && snapshot.thread === null))
+		throw new CollaborationReadError(
+			indexed ? "source_unreadable" : "not_found",
+			indexed ? "Thread index refers to an unavailable thread" : "Thread not found",
+		);
 	const thread = isRecord(snapshot) ? snapshot.thread : undefined;
-	if (!isRecord(thread) || thread.id !== id || !validGoverningFrame(thread) || !validThreadState(thread) || !validThreadMembers(thread.members)) throw new CollaborationReadError("source_unreadable", "Thread frame and participants are malformed");
+	if (
+		!isRecord(thread) ||
+		thread.id !== id ||
+		!validGoverningFrame(thread) ||
+		!validThreadState(thread) ||
+		!validThreadMembers(thread.members)
+	)
+		throw new CollaborationReadError("source_unreadable", "Thread frame and participants are malformed");
 	readBytes(thread, 24 * 1024, "Thread frame and participants");
 	return thread as CollaborationThread;
 }
 function validEventReferences(event: Record<string, unknown>, thread: CollaborationThread, sequence: number): boolean {
-	return event.threadId === thread.id && event.sequence === sequence && (event.replyTo === null || (validInteger(event.replyTo, 1) && event.replyTo < sequence)) && validInteger(event.revision, 1) && event.revision <= thread.revision && event.revision <= sequence;
+	return (
+		event.threadId === thread.id &&
+		event.sequence === sequence &&
+		(event.replyTo === null || (validInteger(event.replyTo, 1) && event.replyTo < sequence)) &&
+		validInteger(event.revision, 1) &&
+		event.revision <= thread.revision &&
+		event.revision <= sequence
+	);
 }
 function validEventAudience(event: Record<string, unknown>): boolean {
 	if (!Array.isArray(event.notify) || event.notify.length > 16) return false;
-	return !event.notify.some((identity) => !validIdentity(identity) || identity === event.sender) && new Set(event.notify).size === event.notify.length;
+	return (
+		!event.notify.some((identity) => !validIdentity(identity) || identity === event.sender) &&
+		new Set(event.notify).size === event.notify.length
+	);
 }
 function validEventProvenance(event: Record<string, unknown>): boolean {
-	return validInteger(event.at, 0) && validIdentity(event.sender) && (event.origin === "operator" || event.origin === "model");
+	return (
+		validInteger(event.at, 0) &&
+		validIdentity(event.sender) &&
+		(event.origin === "operator" || event.origin === "model")
+	);
 }
 function validEventContent(event: Record<string, unknown>): boolean {
-	if (typeof event.kind !== "string" || !["create", "join", "leave", "contribution", "carried-authority", "revise", "close"].includes(event.kind)) return false;
+	if (
+		typeof event.kind !== "string" ||
+		!["create", "join", "leave", "contribution", "carried-authority", "revise", "close"].includes(event.kind)
+	)
+		return false;
 	const messageMaximum = event.kind === "create" || event.kind === "revise" ? 20 * 1024 : 8000;
-	return validText(event.message, messageMaximum) && validText(event.source, 2000, !["create", "revise", "carried-authority"].includes(event.kind));
+	return (
+		validText(event.message, messageMaximum) &&
+		validText(event.source, 2000, !["create", "revise", "carried-authority"].includes(event.kind))
+	);
 }
 function readEvent(snapshot: unknown, thread: CollaborationThread, sequence: number): CollaborationEvent {
 	const event = isRecord(snapshot) ? snapshot.event : undefined;
-	if (event === undefined || event === null) throw new CollaborationReadError("source_unreadable", `Thread event ${sequence} is unavailable; no complete history is claimed`);
-	if (!isRecord(event) || !validEventReferences(event, thread, sequence) || !validEventProvenance(event) || !validEventContent(event) || !validEventAudience(event)) throw new CollaborationReadError("source_unreadable", `Thread event ${sequence} is malformed`);
+	if (event === undefined || event === null)
+		throw new CollaborationReadError(
+			"source_unreadable",
+			`Thread event ${sequence} is unavailable; no complete history is claimed`,
+		);
+	if (
+		!isRecord(event) ||
+		!validEventReferences(event, thread, sequence) ||
+		!validEventProvenance(event) ||
+		!validEventContent(event) ||
+		!validEventAudience(event)
+	)
+		throw new CollaborationReadError("source_unreadable", `Thread event ${sequence} is malformed`);
 	readBytes(event, 20 * 1024, "Thread event");
 	return event as CollaborationEvent;
 }
 
 function eventView(event: CollaborationEvent): CollaborationEventView {
-	return { ...event, atUtc: utcTime(event.at), ...(event.kind === "create" ? { message: "", frameOmitted: "current-frame-returned-separately" as const } : {}) };
+	return {
+		...event,
+		atUtc: utcTime(event.at),
+		...(event.kind === "create" ? { message: "", frameOmitted: "current-frame-returned-separately" as const } : {}),
+	};
 }
 function pageBytes<T extends { coverage: { bytes: number } }>(page: T): number {
 	for (;;) {
@@ -305,43 +549,97 @@ function pageBytes<T extends { coverage: { bytes: number } }>(page: T): number {
 async function readPending(session: Session, id: string, context: Context): Promise<number> {
 	const delivery: unknown = await session.snapshot(ThreadDeliveryDoc, id, context);
 	const pending = delivery === undefined ? 0 : isRecord(delivery) ? delivery.pending : undefined;
-	if (!validInteger(pending, 0)) throw new CollaborationReadError("source_unreadable", "Thread delivery pending count is malformed");
+	if (!validInteger(pending, 0))
+		throw new CollaborationReadError("source_unreadable", "Thread delivery pending count is malformed");
 	return pending;
 }
 function validateReadCursors(input: Record<string, unknown>): void {
-	if (input.after !== undefined && input.before !== undefined) throw new CollaborationReadError("invalid_request", "after and before are exclusive");
-	if (input.knownFrameRevision !== undefined && input.after === undefined) throw new CollaborationReadError("invalid_request", "knownFrameRevision requires after");
-	for (const [field, minimum] of [["after", 0], ["before", 1], ["knownFrameRevision", 1]] as const) {
-		if (input[field] !== undefined && !validInteger(input[field], minimum)) throw new CollaborationReadError("invalid_request", `${field} must be a retained ${field === "knownFrameRevision" ? "frame revision" : "event cursor"}`);
+	if (input.after !== undefined && input.before !== undefined)
+		throw new CollaborationReadError("invalid_request", "after and before are exclusive");
+	if (input.knownFrameRevision !== undefined && input.after === undefined)
+		throw new CollaborationReadError("invalid_request", "knownFrameRevision requires after");
+	for (const [field, minimum] of [
+		["after", 0],
+		["before", 1],
+		["knownFrameRevision", 1],
+	] as const) {
+		if (input[field] !== undefined && !validInteger(input[field], minimum))
+			throw new CollaborationReadError(
+				"invalid_request",
+				`${field} must be a retained ${field === "knownFrameRevision" ? "frame revision" : "event cursor"}`,
+			);
 	}
 }
-export function readCollaboration(session: Session, input: Record<string, unknown> & { after: number }, context: Context): Promise<CollaborationForwardPage>;
-export function readCollaboration(session: Session, input: Record<string, unknown> & { after?: undefined }, context: Context): Promise<CollaborationPage>;
-export function readCollaboration(session: Session, input: Record<string, unknown>, context: Context): Promise<CollaborationPage | CollaborationForwardPage>;
-export async function readCollaboration(session: Session, input: Record<string, unknown>, context: Context): Promise<CollaborationPage | CollaborationForwardPage> {
+export function readCollaboration(
+	session: Session,
+	input: Record<string, unknown> & { after: number },
+	context: Context,
+): Promise<CollaborationForwardPage>;
+export function readCollaboration(
+	session: Session,
+	input: Record<string, unknown> & { after?: undefined },
+	context: Context,
+): Promise<CollaborationPage>;
+export function readCollaboration(
+	session: Session,
+	input: Record<string, unknown>,
+	context: Context,
+): Promise<CollaborationPage | CollaborationForwardPage>;
+export async function readCollaboration(
+	session: Session,
+	input: Record<string, unknown>,
+	context: Context,
+): Promise<CollaborationPage | CollaborationForwardPage> {
 	validateCollaborationTextLimits(input);
 	const id = readText(input, "threadId", 128);
-	if (!validThreadId(id)) throw new CollaborationReadError("invalid_request", "threadId must be an identity returned by agent_collaborate");
+	if (!validThreadId(id))
+		throw new CollaborationReadError("invalid_request", "threadId must be an identity returned by agent_collaborate");
 	const limit = readLimit(input);
 	validateReadCursors(input);
-	if (input.action !== undefined && input.action !== "read") throw new CollaborationReadError("invalid_request", "Thread read requires action read");
+	if (input.action !== undefined && input.action !== "read")
+		throw new CollaborationReadError("invalid_request", "Thread read requires action read");
 	validateCollaborationAction({ ...input, action: "read" });
 	const thread = readThread(await session.snapshot(CollaborationThreads, id, context), id);
 	const pending = await readPending(session, id, context);
 	if (typeof input.after === "number") return readForward(session, input, thread, pending, limit, context);
 	return readBackward(session, input, thread, pending, limit, context);
 }
-async function readBackward(session: Session, input: Record<string, unknown>, thread: CollaborationThread, pending: number, limit: number, context: Context): Promise<CollaborationPage> {
+async function readBackward(
+	session: Session,
+	input: Record<string, unknown>,
+	thread: CollaborationThread,
+	pending: number,
+	limit: number,
+	context: Context,
+): Promise<CollaborationPage> {
 	const id = thread.id;
-	const before = input.before === undefined ? thread.sequence + 1 : input.before as number;
-	if (before > thread.sequence + 1) throw new CollaborationReadError("invalid_request", "before must be a retained event cursor");
-	const page: CollaborationPage = { thread, events: [], nextBefore: before > 1 ? before : null, pending, coverage: { complete: before === 1, bytes: 0 } };
+	const before = input.before === undefined ? thread.sequence + 1 : (input.before as number);
+	if (before > thread.sequence + 1)
+		throw new CollaborationReadError("invalid_request", "before must be a retained event cursor");
+	const page: CollaborationPage = {
+		thread,
+		events: [],
+		nextBefore: before > 1 ? before : null,
+		pending,
+		coverage: { complete: before === 1, bytes: 0 },
+	};
 	readBytes(page, MAX_PAGE_BYTES, "Thread read metadata");
 	for (let sequence = before - 1; sequence > 0 && page.events.length < limit; sequence--) {
-		const event = eventView(readEvent(await session.snapshot(CollaborationEvents, `${id}:${sequence}`, context), thread, sequence));
-		const candidate: CollaborationPage = { ...page, events: [event, ...page.events], nextBefore: sequence > 1 ? sequence : null, coverage: { complete: sequence === 1, bytes: 0 } };
+		const event = eventView(
+			readEvent(await session.snapshot(CollaborationEvents, `${id}:${sequence}`, context), thread, sequence),
+		);
+		const candidate: CollaborationPage = {
+			...page,
+			events: [event, ...page.events],
+			nextBefore: sequence > 1 ? sequence : null,
+			coverage: { complete: sequence === 1, bytes: 0 },
+		};
 		if (pageBytes(candidate) > MAX_PAGE_BYTES) {
-			if (!page.events.length) throw new CollaborationReadError("source_unreadable", "Thread event and read metadata exceed the page byte bound; no progress is claimed");
+			if (!page.events.length)
+				throw new CollaborationReadError(
+					"source_unreadable",
+					"Thread event and read metadata exceed the page byte bound; no progress is claimed",
+				);
 			break;
 		}
 		Object.assign(page, candidate);
@@ -349,24 +647,62 @@ async function readBackward(session: Session, input: Record<string, unknown>, th
 	pageBytes(page);
 	return page;
 }
-async function readForward(session: Session, input: Record<string, unknown>, thread: CollaborationThread, pending: number, limit: number, context: Context): Promise<CollaborationForwardPage> {
+async function readForward(
+	session: Session,
+	input: Record<string, unknown>,
+	thread: CollaborationThread,
+	pending: number,
+	limit: number,
+	context: Context,
+): Promise<CollaborationForwardPage> {
 	const after = input.after as number;
-	if (after > thread.sequence || (typeof input.knownFrameRevision === "number" && input.knownFrameRevision > thread.revision)) throw new CollaborationReadError("invalid_request", "after and knownFrameRevision must not exceed the retained sequence and revision");
+	if (
+		after > thread.sequence ||
+		(typeof input.knownFrameRevision === "number" && input.knownFrameRevision > thread.revision)
+	)
+		throw new CollaborationReadError(
+			"invalid_request",
+			"after and knownFrameRevision must not exceed the retained sequence and revision",
+		);
 	const page: CollaborationForwardPage = {
-		direction: "forward", threadId: thread.id, frameRevision: thread.revision, sequence: thread.sequence, closed: thread.closed,
-		...(input.knownFrameRevision !== thread.revision ? { thread } : {}), events: [], next: null, pending,
+		direction: "forward",
+		threadId: thread.id,
+		frameRevision: thread.revision,
+		sequence: thread.sequence,
+		closed: thread.closed,
+		...(input.knownFrameRevision !== thread.revision ? { thread } : {}),
+		events: [],
+		next: null,
+		pending,
 		coverage: { complete: after === thread.sequence, bytes: 0, after, through: after },
 	};
 	readBytes(page, MAX_PAGE_BYTES, "Thread read metadata");
 	for (let sequence = after + 1; sequence <= thread.sequence && page.events.length < limit; sequence++) {
-		const event = eventView(readEvent(await session.snapshot(CollaborationEvents, `${thread.id}:${sequence}`, context), thread, sequence));
+		const event = eventView(
+			readEvent(await session.snapshot(CollaborationEvents, `${thread.id}:${sequence}`, context), thread, sequence),
+		);
 		const candidate: CollaborationForwardPage = {
-			...page, events: [...page.events, event],
-			next: sequence < thread.sequence ? { tool: "agent_collaborate", action: "read", threadId: thread.id, after: sequence, knownFrameRevision: thread.revision, limit } : null,
+			...page,
+			events: [...page.events, event],
+			next:
+				sequence < thread.sequence
+					? {
+							tool: "agent_collaborate",
+							action: "read",
+							threadId: thread.id,
+							after: sequence,
+							knownFrameRevision: thread.revision,
+							limit,
+						}
+					: null,
 			coverage: { complete: sequence === thread.sequence, bytes: 0, after, through: sequence },
 		};
 		if (pageBytes(candidate) > MAX_PAGE_BYTES) {
-			if (!page.events.length) throw new CollaborationReadError("source_unreadable", "Thread event and read metadata exceed the page byte bound; no progress is claimed");
+			if (!page.events.length)
+				throw new CollaborationReadError(
+					"source_unreadable",
+					"Thread event and read metadata exceed the page byte bound; no progress is claimed",
+				);
 			break;
 		}
 		Object.assign(page, candidate);
@@ -376,13 +712,24 @@ async function readForward(session: Session, input: Record<string, unknown>, thr
 }
 
 function readListCursor(input: Record<string, unknown>): number {
-	const start = input.cursor === undefined ? 0 : typeof input.cursor === "string" && input.cursor.length <= 2048 ? Number(input.cursor) : NaN;
-	if (!Number.isSafeInteger(start) || start < 0 || (input.cursor !== undefined && String(start) !== input.cursor)) throw new CollaborationReadError("invalid_request", "Invalid local thread cursor");
+	const start =
+		input.cursor === undefined
+			? 0
+			: typeof input.cursor === "string" && input.cursor.length <= 2048
+				? Number(input.cursor)
+				: NaN;
+	if (!Number.isSafeInteger(start) || start < 0 || (input.cursor !== undefined && String(start) !== input.cursor))
+		throw new CollaborationReadError("invalid_request", "Invalid local thread cursor");
 	return start;
 }
-export async function listCollaboration(session: Session, input: Record<string, unknown>, context: Context): Promise<CollaborationList> {
+export async function listCollaboration(
+	session: Session,
+	input: Record<string, unknown>,
+	context: Context,
+): Promise<CollaborationList> {
 	validateCollaborationTextLimits(input);
-	if (input.action !== undefined && input.action !== "list") throw new CollaborationReadError("invalid_request", "Thread list requires action list");
+	if (input.action !== undefined && input.action !== "list")
+		throw new CollaborationReadError("invalid_request", "Thread list requires action list");
 	validateCollaborationAction({ ...input, action: "list" });
 	const storageId = readSelectedStorage(input.sessionId);
 	const limit = readLimit(input);
@@ -394,9 +741,14 @@ export async function listCollaboration(session: Session, input: Record<string, 
 	let offset = start;
 	for (; offset < keys.length && offset - start < 64 && items.length < limit; offset++) {
 		const thread = readThread(await session.snapshot(CollaborationThreads, keys[offset], context), keys[offset], true);
-		if (!query || [thread.title, thread.purpose, thread.id].some((value) => value.toLocaleLowerCase().includes(query))) items.push(collaborationSummary(thread));
+		if (!query || [thread.title, thread.purpose, thread.id].some((value) => value.toLocaleLowerCase().includes(query)))
+			items.push(collaborationSummary(thread));
 	}
-	return { items, nextCursor: offset < keys.length ? String(offset) : null, coverage: { complete: offset === keys.length, visited: offset - start, omitted: 0 } };
+	return {
+		items,
+		nextCursor: offset < keys.length ? String(offset) : null,
+		coverage: { complete: offset === keys.length, visited: offset - start, omitted: 0 },
+	};
 }
 
 /** Catalog hints are bounded discovery data; the native thread remains authoritative. */
@@ -407,9 +759,11 @@ export async function projectCollaboration(session: Session, context: Context): 
 		const snapshot = await session.snapshot(CollaborationThreads, key, context);
 		if (snapshot?.thread) items.push(collaborationSummary(readThread(snapshot, key, true)));
 	}
-	items.sort((a, b) => Number(a.closed) - Number(b.closed) || b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+	items.sort(
+		(a, b) =>
+			Number(a.closed) - Number(b.closed) || b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+	);
 	items.splice(8);
 	while (Buffer.byteLength(JSON.stringify(items)) > 4000) items.pop();
 	return { items, omitted: keys.length - items.length, updatedAt: new Date().toISOString() };
 }
-

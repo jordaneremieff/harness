@@ -112,7 +112,13 @@ type SourceResult = { ok: true; buffer: Buffer } | SourceFailure;
 type DiscoveryResult = { ok: true; note: NoteCue } | SourceFailure;
 type PageSlice = { content: string; nextOffset: number; contentCodePoints: number; hasMore: boolean };
 
-export type SearchOptions = { query?: string | string[]; cursor?: string; limit?: number; includeRetired?: boolean; detail?: boolean };
+export type SearchOptions = {
+	query?: string | string[];
+	cursor?: string;
+	limit?: number;
+	includeRetired?: boolean;
+	detail?: boolean;
+};
 export type ReadOptions = { slug: string; offset?: number; digest?: string; revision?: string };
 export type HistoryPlan = { capturedBefore: string; keepNewest: number };
 export type HistoryOptions = { slug: string; cursor?: string; limit?: number; plan?: HistoryPlan };
@@ -308,7 +314,11 @@ function toOutputNote(note: NoteCue): Record<string, unknown> {
 function materialFreshness(freshness: Freshness): Partial<Freshness> | undefined {
 	const material: Partial<Freshness> = {};
 	if (freshness.deadline === "due")
-		Object.assign(material, { deadline: freshness.deadline, reviewAfter: freshness.reviewAfter, evaluatedOn: freshness.evaluatedOn });
+		Object.assign(material, {
+			deadline: freshness.deadline,
+			reviewAfter: freshness.reviewAfter,
+			evaluatedOn: freshness.evaluatedOn,
+		});
 	if (freshness.concern) material.concern = freshness.concern;
 	if (freshness.retirement) material.retirement = freshness.retirement;
 	if (freshness.problems.length) material.problems = freshness.problems;
@@ -1252,14 +1262,15 @@ async function runIndex(
 		matches,
 		cursor.page,
 		pageSize,
-		(note, rank) => searchNoteOutput(
-			queries.length === 0
-				? toOutputNote(note)
-				: fused
-					? toFusedOutput(note, scan.notes, texts, queries, rankings, rank, signal)
-					: toSearchOutput(note, queries[0], rankings[0].idf, rank, signal),
-			args.detail,
-		),
+		(note, rank) =>
+			searchNoteOutput(
+				queries.length === 0
+					? toOutputNote(note)
+					: fused
+						? toFusedOutput(note, scan.notes, texts, queries, rankings, rank, signal)
+						: toSearchOutput(note, queries[0], rankings[0].idf, rank, signal),
+				args.detail,
+			),
 		signal,
 	);
 	const nextCursor = indexContinuation(cursor, scan, cursor.page + kept.length, totalMatches);
@@ -1433,7 +1444,13 @@ export async function searchMemory(
 		requireReadme(resolved);
 		const result = await runIndex(
 			resolved,
-			{ query, cursor: options.cursor, limit, includeRetired: options.includeRetired ?? false, detail: options.detail ?? false },
+			{
+				query,
+				cursor: options.cursor,
+				limit,
+				includeRetired: options.includeRetired ?? false,
+				detail: options.detail ?? false,
+			},
 			signal,
 		);
 		checkAbort(signal);

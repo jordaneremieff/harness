@@ -264,7 +264,9 @@ test("native settings replace the factory snapshot with the host agent directory
 	}
 });
 
-test("usage failures retain diagnostics through model, script and direct native calls", { timeout: 30000 }, async (t) => {
+test("usage failures retain diagnostics through model, script and direct native calls", {
+	timeout: 30000,
+}, async (t) => {
 	const fixture = await makeFixture(t);
 	useFixtureEnvironment(t, fixture);
 	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
@@ -272,29 +274,40 @@ test("usage failures retain diagnostics through model, script and direct native 
 	const direct: Durable.NestedToolExecutionResult[] = [];
 	const probe = Durable.defineExtension({
 		name: "usage-result-probe",
-		tools: [Durable.defineTool({
-			name: "usage-probe", description: "Read the retained usage result.", parameters: obj({}, { open: false }),
-			async execute(_args, api, context) {
-				direct.push(await api.executeTool("pillars_usage", {}, context));
-				return { output: [{ type: "text", text: "Direct result retained." }] };
-			},
-		})],
+		tools: [
+			Durable.defineTool({
+				name: "usage-probe",
+				description: "Read the retained usage result.",
+				parameters: obj({}, { open: false }),
+				async execute(_args, api, context) {
+					direct.push(await api.executeTool("pillars_usage", {}, context));
+					return { output: [{ type: "text", text: "Direct result retained." }] };
+				},
+			}),
+		],
 	});
-	const opened = await openContribution(fixture, { extra: [createCodemodeExtension({ sandbox, models: false }), probe] });
+	const opened = await openContribution(fixture, {
+		extra: [createCodemodeExtension({ sandbox, models: false }), probe],
+	});
 	t.after(() => opened.controller.abort());
 	const call = async (name: string, args: Durable.JsonObject) => {
 		opened.faux.setResponses([
 			fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Synthetic usage checked."),
 		]);
-		const settled = await (await opened.root.submit({ type: "input", content: "Read access evidence." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const settled = await (
+			await opened.root.submit({ type: "input", content: "Read access evidence." }, BACKGROUND_CONTEXT)
+		).wait(BACKGROUND_CONTEXT);
 		assert.equal(settled.status, "done");
 		const message = toolResults((await opened.root.context(BACKGROUND_CONTEXT)).messages).at(-1);
 		assert.ok(message);
 		return message;
 	};
 	try {
-		assert.equal(opened.extension.tools?.find((tool) => tool.name === "pillars_usage")?.structuredOutputSchema, undefined);
+		assert.equal(
+			opened.extension.tools?.find((tool) => tool.name === "pillars_usage")?.structuredOutputSchema,
+			undefined,
+		);
 		const empty = await call("pillars_usage", {});
 		assert.equal(empty.isError, false);
 		assert.match(textOf(empty), /"kind":"page"/);
@@ -312,7 +325,9 @@ test("usage failures retain diagnostics through model, script and direct native 
 			assert.equal(unreadable.isError, true);
 			assert.match(diagnostic, /"kind":"error".*"code":"store_unreadable"/);
 			assert.deepEqual(unreadable.details, JSON.parse(diagnostic));
-			const caught = await call("codemode", { code: 'try { await tools.pillars_usage({}); throw new Error("expected rejection"); } catch (error) { if (JSON.parse(error.message).code !== "store_unreadable") throw error; text(error.message); }' });
+			const caught = await call("codemode", {
+				code: 'try { await tools.pillars_usage({}); throw new Error("expected rejection"); } catch (error) { if (JSON.parse(error.message).code !== "store_unreadable") throw error; text(error.message); }',
+			});
 			assert.equal(caught.isError, false, textOf(caught));
 			assert.ok(textOf(caught).includes(diagnostic));
 			const uncaught = await call("codemode", { code: "await tools.pillars_usage({});" });
@@ -417,23 +432,33 @@ test("native draft semantic errors pass the schema and retain specific handler m
 		assert.equal(Object.hasOwn(parameters.properties.draft, "maxLength"), false);
 		for (const draft of [" \n", "\ud800"]) assert.equal(compile(tool.parameters).check({ draft }), true);
 		faux.setResponses([
-			fauxAssistantMessage([
-				fauxToolCall("pillars", { draft: " \n" }, { id: "blank-draft" }),
-				fauxToolCall("pillars", { draft: "\ud800" }, { id: "malformed-draft" }),
-			], { stopReason: "toolUse" }),
+			fauxAssistantMessage(
+				[
+					fauxToolCall("pillars", { draft: " \n" }, { id: "blank-draft" }),
+					fauxToolCall("pillars", { draft: "\ud800" }, { id: "malformed-draft" }),
+				],
+				{ stopReason: "toolUse" },
+			),
 			fauxAssistantMessage("Stopped."),
 		]);
-		const settled = await (await root.submit({ type: "input", content: "Check draft validation." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const settled = await (
+			await root.submit({ type: "input", content: "Check draft validation." }, BACKGROUND_CONTEXT)
+		).wait(BACKGROUND_CONTEXT);
 		assert.equal(settled.status, "done");
 		const results = toolResults((await root.context(BACKGROUND_CONTEXT)).messages);
-		for (const [id, condition] of [["blank-draft", /blank text/], ["malformed-draft", /malformed Unicode: unpaired surrogate/]] as const) {
+		for (const [id, condition] of [
+			["blank-draft", /blank text/],
+			["malformed-draft", /malformed Unicode: unpaired surrogate/],
+		] as const) {
 			const result = results.find((entry) => entry.toolCallId === id);
 			assert.ok(result);
 			assert.equal(result.isError, true);
 			assert.match(textOf(result), condition);
 			assert.doesNotMatch(textOf(result), /must match pattern/);
 		}
-	} finally { await harness.close(BACKGROUND_CONTEXT); }
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
 });
 
 test("host-written settlements bypass corpus observation and draft assessment", async (t) => {
@@ -442,15 +467,33 @@ test("host-written settlements bypass corpus observation and draft assessment", 
 	const opened = await openContribution(fixture);
 	t.after(() => opened.controller.abort());
 	try {
-		const handlers = opened.extension.hooks?.find((registration) => registration.task === Durable.ToolTask.definition.name)?.handlers as Partial<Durable.ToolHooks>;
+		const handlers = opened.extension.hooks?.find(
+			(registration) => registration.task === Durable.ToolTask.definition.name,
+		)?.handlers as Partial<Durable.ToolHooks>;
 		assert.ok(handlers?.afterTool);
-		for (const code of ["tool_unavailable", "invalid_arguments", "blocked", "interrupted", "restart_limit", "aborted", "abandoned"]) {
+		for (const code of [
+			"tool_unavailable",
+			"invalid_arguments",
+			"blocked",
+			"interrupted",
+			"restart_limit",
+			"aborted",
+			"abandoned",
+		]) {
 			const call = { type: "toolCall", name: "pillars", id: code, arguments: null } as unknown as Durable.ToolHookCall;
-			assert.equal(await handlers.afterTool(call, {
-				isError: true,
-				diagnostics: [{ code, severity: "error", message: "Host settlement." }],
-				details: { schema: "pillars-source" },
-			}, {} as Durable.HookApi, BACKGROUND_CONTEXT), undefined);
+			assert.equal(
+				await handlers.afterTool(
+					call,
+					{
+						isError: true,
+						diagnostics: [{ code, severity: "error", message: "Host settlement." }],
+						details: { schema: "pillars-source" },
+					},
+					{} as Durable.HookApi,
+					BACKGROUND_CONTEXT,
+				),
+				undefined,
+			);
 		}
 		await opened.closeAll();
 		assert.equal(sumCounter(await storedCells(fixture.store), "readResults"), 0);
@@ -681,8 +724,14 @@ test("native codemode receives bounded JSON text and rejects source errors while
 	useFixtureEnvironment(t, fixture);
 	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
 	t.after(() => sandbox.close());
-	const calls: Array<{ name: string; parent: boolean; output: unknown; structuredOutput: unknown; isError: boolean; codes: Array<string | undefined> }> =
-		[];
+	const calls: Array<{
+		name: string;
+		parent: boolean;
+		output: unknown;
+		structuredOutput: unknown;
+		isError: boolean;
+		codes: Array<string | undefined>;
+	}> = [];
 	const observer = Durable.defineExtension({
 		name: "pillars-test-observer",
 		hooks: [

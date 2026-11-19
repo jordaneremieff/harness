@@ -344,7 +344,10 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 		assert.equal(detailedPage.detail, true);
 		assert.deepEqual(nativeDetails(detailedResult), detailedPage);
 		const detailedNote = (detailedPage.notes as Array<Record<string, unknown>>)[0];
-		assert.equal((detailedNote.freshness as Record<string, unknown>).evaluatedOn, new Date().toISOString().slice(0, 10));
+		assert.equal(
+			(detailedNote.freshness as Record<string, unknown>).evaluatedOn,
+			new Date().toISOString().slice(0, 10),
+		);
 		assert.equal((detailedNote.formulations as unknown[]).length, 2);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);

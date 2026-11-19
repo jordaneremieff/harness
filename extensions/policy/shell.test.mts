@@ -9,7 +9,7 @@ describe("plain for evidence", () => {
 			'for file in a b\ndo wc -c "$file" | sort\ndone',
 			'for file in a\ndo\nwc -c "$file"\ndone',
 			'for file in a; do # body follows\nwc -c "$file"; done',
-			'for file in; do echo empty; done',
+			"for file in; do echo empty; done",
 		]) {
 			const parsed = parseShellEvidence(command);
 			assert.equal(parsed.complete, true, command);
@@ -53,8 +53,16 @@ describe("plain for evidence", () => {
 		const limited = parseShellEvidence(`${loop.repeat(64)}echo tail`);
 		assert.ok(limited.reasons.includes("stage-limit"));
 		assert.equal(limited.statements.length, 128);
-		assert.deepEqual(limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
-			Array.from({ length: 64 }, () => [[["echo", ["x"]]], [["", []], ["cat", []]]]).flat());
+		assert.deepEqual(
+			limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
+			Array.from({ length: 64 }, () => [
+				[["echo", ["x"]]],
+				[
+					["", []],
+					["cat", []],
+				],
+			]).flat(),
+		);
 	});
 	it("counts a pipeline body at the aggregate stage limit", () => {
 		const loop = "for f in a; do echo x | cat; done\n";
@@ -64,8 +72,13 @@ describe("plain for evidence", () => {
 		assert.deepEqual(below.statements.at(-1)?.[0].args, ["tail"]);
 		const limited = parseShellEvidence(`${loop.repeat(64)}echo tail`);
 		assert.ok(limited.reasons.includes("stage-limit"));
-		assert.deepEqual(limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
-			Array.from({ length: 64 }, () => [["echo", ["x"]], ["cat", []]]));
+		assert.deepEqual(
+			limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
+			Array.from({ length: 64 }, () => [
+				["echo", ["x"]],
+				["cat", []],
+			]),
+		);
 	});
 	it("shares the aggregate stage limit with loops nested in a substitution", () => {
 		const loop = "for f in a; do echo x; done\n";
@@ -76,8 +89,10 @@ describe("plain for evidence", () => {
 		const limited = parseShellEvidence(`echo $(${loop.repeat(85)}echo tail)`);
 		assert.ok(limited.reasons.includes("stage-limit"));
 		assert.equal(limited.statements[0][0].command, "echo");
-		assert.deepEqual(limited.statements.slice(1).map((statement) => statement.map((stage) => [stage.command, stage.args])),
-			Array.from({ length: 85 }, () => [["echo", ["x"]]]));
+		assert.deepEqual(
+			limited.statements.slice(1).map((statement) => statement.map((stage) => [stage.command, stage.args])),
+			Array.from({ length: 85 }, () => [["echo", ["x"]]]),
+		);
 	});
 	it("counts directly nested loops at the aggregate stage limit without resolving their syntax", () => {
 		const loop = "for f in a; do for g in b; do echo x; done; done\n";
@@ -88,8 +103,10 @@ describe("plain for evidence", () => {
 		assert.deepEqual(below.statements.at(-1)?.[0].args, ["tail"]);
 		const limited = parseShellEvidence(`${loop.repeat(52)}echo tail`);
 		assert.ok(limited.reasons.includes("stage-limit"));
-		assert.deepEqual(limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
-			Array.from({ length: 51 }, () => [[["for", ["g", "in", "b"]]], [["echo", ["x"]]], [["done", []]]]).flat());
+		assert.deepEqual(
+			limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
+			Array.from({ length: 51 }, () => [[["for", ["g", "in", "b"]]], [["echo", ["x"]]], [["done", []]]]).flat(),
+		);
 	});
 	it("stops at the aggregate stage limit within a loop body", () => {
 		const command = (count: number) => `for f in a; do ${"echo x; ".repeat(count)}done\necho tail`;
@@ -97,37 +114,58 @@ describe("plain for evidence", () => {
 		assert.equal(below.complete, true);
 		assert.equal(below.statements.length, 254);
 		assert.deepEqual(below.statements.at(-1)?.[0].args, ["tail"]);
-		for (const [count, retained] of [[254, 254], [256, 255]]) {
+		for (const [count, retained] of [
+			[254, 254],
+			[256, 255],
+		]) {
 			const limited = parseShellEvidence(command(count));
 			assert.ok(limited.reasons.includes("stage-limit"));
-			assert.deepEqual(limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
-				Array.from({ length: retained }, () => [["echo", ["x"]]]));
+			assert.deepEqual(
+				limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
+				Array.from({ length: retained }, () => [["echo", ["x"]]]),
+			);
 		}
 	});
 	it("leaves unsupported or incomplete control syntax unavailable", () => {
 		for (const command of [
-			'for x "in" a; do echo x; done', 'for x in a; "do" echo x; done',
-			'for x in a; do echo x; "done"', 'for x in a; do echo x; do\\ne',
-			'for x in a; do echo x', 'for x in a; do; done', 'for x in a; do done',
-			'for x in a; do echo safe;; done', 'for x in a; do echo safe |; done',
-			'for x in a; do | echo safe; done', 'for x in a; do echo safe | | wc; done',
-			'for x in a;; do echo safe; done', 'for x in a; do; echo safe; done',
-			'for ((i=0;i<3;i++)); do echo x; done',
-			'for x in a; do for y in b; do echo x; done; done',
-			'for x in a; do if true; then echo x; fi; done',
-			'for x in a && do echo x; done', 'for x in a; do echo x & done',
-			'for x in a; do (echo x); done', 'for x in a; do echo x; done | wc',
-			'for x in a > out; do echo x; done', 'for x in a; do echo x; done extra',
+			'for x "in" a; do echo x; done',
+			'for x in a; "do" echo x; done',
+			'for x in a; do echo x; "done"',
+			"for x in a; do echo x; do\\ne",
+			"for x in a; do echo x",
+			"for x in a; do; done",
+			"for x in a; do done",
+			"for x in a; do echo safe;; done",
+			"for x in a; do echo safe |; done",
+			"for x in a; do | echo safe; done",
+			"for x in a; do echo safe | | wc; done",
+			"for x in a;; do echo safe; done",
+			"for x in a; do; echo safe; done",
+			"for ((i=0;i<3;i++)); do echo x; done",
+			"for x in a; do for y in b; do echo x; done; done",
+			"for x in a; do if true; then echo x; fi; done",
+			"for x in a && do echo x; done",
+			"for x in a; do echo x & done",
+			"for x in a; do (echo x); done",
+			"for x in a; do echo x; done | wc",
+			"for x in a > out; do echo x; done",
+			"for x in a; do echo x; done extra",
 			`for x in a; do ${"echo x;".repeat(257)} done`,
 			`for x in ${"x ".repeat(4097)}; do echo x; done`,
-		]) assert.equal(parseShellEvidence(command).complete, false, command.slice(0, 120));
+		])
+			assert.equal(parseShellEvidence(command).complete, false, command.slice(0, 120));
 	});
 	it("reads plain-loop bodies with the same statement and reason rules as standalone bodies", () => {
 		for (const body of [
-			'echo safe\n', 'cat <<<\'literal\'\n', 'cat <<\'EOF\'\n$(git push)\nEOF\n',
-			'trap \'git push\' EXIT\n', 'trap \'echo cleanup\' EXIT\n',
-			'echo $[ 1 <<"2" ]\ngit push\n2\n', 'echo $(trap \'git push\' EXIT)\n',
-			'echo <(trap \'git push\' EXIT)\n', 'shopt -s expand_aliases\nalias p=\'git push\'\np\n',
+			"echo safe\n",
+			"cat <<<'literal'\n",
+			"cat <<'EOF'\n$(git push)\nEOF\n",
+			"trap 'git push' EXIT\n",
+			"trap 'echo cleanup' EXIT\n",
+			'echo $[ 1 <<"2" ]\ngit push\n2\n',
+			"echo $(trap 'git push' EXIT)\n",
+			"echo <(trap 'git push' EXIT)\n",
+			"shopt -s expand_aliases\nalias p='git push'\np\n",
 		]) {
 			const alone = parseShellEvidence(body);
 			const loop = parseShellEvidence(`for f in a; do ${body}done\n`);
@@ -210,7 +248,10 @@ describe("here-document delimiter evidence", () => {
 		for (const word of ["'EOF'", '"EOF"', "E'O'F"]) {
 			const parsed = parseShellEvidence(`cat <<${word}\n$(git push)\nEOF`);
 			assert.equal(parsed.complete, true);
-			assert.deepEqual(parsed.statements.flat().map((stage) => stage.command), ["cat"]);
+			assert.deepEqual(
+				parsed.statements.flat().map((stage) => stage.command),
+				["cat"],
+			);
 		}
 	});
 });
@@ -392,7 +433,13 @@ describe("supplemental shell evidence", () => {
 		const second = 'echo "$(git push)"';
 		for (const command of [`${first}; ${second}`, `${second}; ${first}`]) {
 			const parsed = parseShellEvidence(command);
-			assert.deepEqual(parsed.statements.slice(0, 4).flat().map((stage) => stage.command), ["echo", "echo", ...command.startsWith(first) ? ["trap", "git"] : ["git", "trap"]]);
+			assert.deepEqual(
+				parsed.statements
+					.slice(0, 4)
+					.flat()
+					.map((stage) => stage.command),
+				["echo", "echo", ...(command.startsWith(first) ? ["trap", "git"] : ["git", "trap"])],
+			);
 			assert.ok(parsed.reasons.includes("stage-limit") || parsed.reasons.includes("parse-limit"));
 		}
 	});
@@ -434,12 +481,26 @@ describe("supplemental shell evidence", () => {
 			assert.ok(!parseShellEvidence(`echo $(\n${body}\n)`).reasons.includes("unsupported-shell"));
 			assert.ok(!parseShellEvidence(`echo \${x:-$(\n${body}\n)}`).reasons.includes("unsupported-shell"));
 		}
-		for (const text of ["�", "😀"]) assert.equal(parseShellEvidence(`cat <<'E${text}F'\nsafe\nE${text}F\n`).complete, true);
+		for (const text of ["�", "😀"])
+			assert.equal(parseShellEvidence(`cat <<'E${text}F'\nsafe\nE${text}F\n`).complete, true);
 	});
 	it("retains literal neighbours and original redirect extraction", () => {
-		for (const command of ["alias", "alias -p", "alias -p p='git push'", "alias p", "echo $[1+2]", "(( x=1+2 ))",
-			"printf '%s' $'line\\n'", "printf '%s' $'\\e[31m'", "printf '%s' $'a\\\\'", "echo '$\\\nx'", "echo \\$\\\nx",
-			"cat <<'EOF'\n$\\\n(git push)\nEOF\n", "cat '2'<<'EOF'\nsafe\nEOF\n"]) assert.equal(parseShellEvidence(command).complete, true, command);
+		for (const command of [
+			"alias",
+			"alias -p",
+			"alias -p p='git push'",
+			"alias p",
+			"echo $[1+2]",
+			"(( x=1+2 ))",
+			"printf '%s' $'line\\n'",
+			"printf '%s' $'\\e[31m'",
+			"printf '%s' $'a\\\\'",
+			"echo '$\\\nx'",
+			"echo \\$\\\nx",
+			"cat <<'EOF'\n$\\\n(git push)\nEOF\n",
+			"cat '2'<<'EOF'\nsafe\nEOF\n",
+		])
+			assert.equal(parseShellEvidence(command).complete, true, command);
 		for (const word of ["'2'", '"2"', "2''"]) {
 			const parsed = parseShellEvidence(`cat ${word}<<EOF\n$(git push)\nEOF\n`);
 			assert.deepEqual(parsed.statements[0][0].args, []);

@@ -2,7 +2,18 @@ import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, unlink, utimes, writeFile, type FileHandle } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	rm,
+	stat,
+	unlink,
+	utimes,
+	writeFile,
+	type FileHandle,
+} from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +33,9 @@ interface Deferred {
 
 function deferred(): Deferred {
 	let resolve!: () => void;
-	const promise = new Promise<void>((done) => { resolve = done; });
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
 	return { promise, resolve };
 }
 
@@ -38,7 +51,16 @@ interface SetterPlan {
 }
 
 function response(value: unknown): CliResult {
-	return { outcome: "exited", exitCode: 0, signal: null, stdout: JSON.stringify(value), stderr: "", bytes: 0, truncated: false, started: true };
+	return {
+		outcome: "exited",
+		exitCode: 0,
+		signal: null,
+		stdout: JSON.stringify(value),
+		stderr: "",
+		bytes: 0,
+		truncated: false,
+		started: true,
+	};
 }
 
 class FakeTransport implements RexTransport {
@@ -60,18 +82,25 @@ class FakeTransport implements RexTransport {
 		this.tab = tab;
 	}
 
-	get label(): string { return this.tab.label; }
-	set label(value: string) { this.tab.label = value; }
+	get label(): string {
+		return this.tab.label;
+	}
+	set label(value: string) {
+		this.tab.label = value;
+	}
 
-	queueSet(plan: SetterPlan): void { this.setPlans.push(plan); }
+	queueSet(plan: SetterPlan): void {
+		this.setPlans.push(plan);
+	}
 
 	async run(args: readonly string[], call: CliCall): Promise<CliResult> {
-		const method = args.includes("whoami") ? "whoami" : args.at(-2) ?? "";
+		const method = args.includes("whoami") ? "whoami" : (args.at(-2) ?? "");
 		this.calls.push({ method, args, signal: call.signal });
 		await this.onMethod?.(method);
 		if (call.signal?.aborted) return { ...response({}), outcome: "cancelled", exitCode: null };
 		if (method === "whoami") return this.whoami();
-		if (method === "com.superlogical.terminal.process") return response({ foreground: { pid: this.processPid }, last_exit: null });
+		if (method === "com.superlogical.terminal.process")
+			return response({ foreground: { pid: this.processPid }, last_exit: null });
 		if (method === "session.view") return this.view();
 		if (method === "session.set_window_label") return this.setLabel(args);
 		throw new Error(`Unexpected Rex method: ${method}`);
@@ -87,7 +116,11 @@ class FakeTransport implements RexTransport {
 			{ block_id: this.env.REX_BLOCK },
 			...Array.from({ length: this.extraBlocks }, (_, index) => ({ block_id: `block:extra-${index}` })),
 		];
-		return response({ revision: 1, session_id: this.env.REX_SESSION, windows: [{ window_id: this.windowId, label: this.tab.label, layers: [{ blocks }] }] });
+		return response({
+			revision: 1,
+			session_id: this.env.REX_SESSION,
+			windows: [{ window_id: this.windowId, label: this.tab.label, layers: [{ blocks }] }],
+		});
 	}
 
 	private setLabel(args: readonly string[]): CliResult {
@@ -105,18 +138,34 @@ class FakeTransport implements RexTransport {
 		};
 	}
 
-	dispose(): void { this.disposals++; }
+	dispose(): void {
+		this.disposals++;
+	}
 
 	get writes(): string[] {
-		return this.calls.filter((call) => call.method === "session.set_window_label").map((call) => (JSON.parse(call.args.at(-1) ?? "{}") as { label: string }).label);
+		return this.calls
+			.filter((call) => call.method === "session.set_window_label")
+			.map((call) => (JSON.parse(call.args.at(-1) ?? "{}") as { label: string }).label);
 	}
 }
 
-function context(mode: ExtensionContext["mode"] = "tui", notify: (message: string) => void = () => {}): ExtensionContext {
+function context(
+	mode: ExtensionContext["mode"] = "tui",
+	notify: (message: string) => void = () => {},
+): ExtensionContext {
 	return { mode, cwd: "/work/fallback", ui: { notify } } as unknown as ExtensionContext;
 }
 
-async function fixture(t: TestContext, options: { mode?: ExtensionContext["mode"]; block?: boolean; maxRecords?: number; now?: () => Date; tab?: TabState } = {}) {
+async function fixture(
+	t: TestContext,
+	options: {
+		mode?: ExtensionContext["mode"];
+		block?: boolean;
+		maxRecords?: number;
+		now?: () => Date;
+		tab?: TabState;
+	} = {},
+) {
 	const agentDir = await mkdtemp(join(tmpdir(), "rex-tab-label-"));
 	const env: NodeJS.ProcessEnv = {
 		REX_SERVER: "unix:///launch",
@@ -125,7 +174,9 @@ async function fixture(t: TestContext, options: { mode?: ExtensionContext["mode"
 	};
 	const transport = new FakeTransport(env, options.tab);
 	const notices: string[] = [];
-	const ctx = context(options.mode ?? "tui", (message: string) => { notices.push(message); });
+	const ctx = context(options.mode ?? "tui", (message: string) => {
+		notices.push(message);
+	});
 	const state = { name: undefined as string | undefined };
 	const projector = createTabLabelProjector({
 		agentDir,
@@ -147,15 +198,25 @@ async function fixture(t: TestContext, options: { mode?: ExtensionContext["mode"
 async function recordFiles(agentDir: string): Promise<StoredForTest[]> {
 	const directory = join(agentDir, "rex", "tab-labels");
 	let names: string[];
-	try { names = await readdir(directory); }
-	catch { return []; }
-	return Promise.all(names.filter((name) => name.endsWith(".json")).map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8")) as StoredForTest));
+	try {
+		names = await readdir(directory);
+	} catch {
+		return [];
+	}
+	return Promise.all(
+		names
+			.filter((name) => name.endsWith(".json"))
+			.map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8")) as StoredForTest),
+	);
 }
 
 async function lockFiles(agentDir: string): Promise<string[]> {
 	const directory = join(agentDir, "rex", "tab-labels");
-	try { return (await readdir(directory)).filter((name) => name.endsWith(".lock")); }
-	catch { return []; }
+	try {
+		return (await readdir(directory)).filter((name) => name.endsWith(".lock"));
+	} catch {
+		return [];
+	}
 }
 
 interface StoredForTest {
@@ -171,7 +232,12 @@ interface StoredForTest {
 	updatedAt: string;
 }
 
-function projectorFor(agentDir: string, env: NodeJS.ProcessEnv, transport: RexTransport, name: () => string | undefined): TabLabelProjector {
+function projectorFor(
+	agentDir: string,
+	env: NodeJS.ProcessEnv,
+	transport: RexTransport,
+	name: () => string | undefined,
+): TabLabelProjector {
 	return createTabLabelProjector({
 		agentDir,
 		settings: SETTINGS,
@@ -214,7 +280,10 @@ function pauseNextRecordRead(entered: () => void, release: Promise<void>): Fault
 	};
 	MUTABLE_PROMISES.open = patched;
 	syncBuiltinESMExports();
-	fault.restore = () => { MUTABLE_PROMISES.open = original; syncBuiltinESMExports(); };
+	fault.restore = () => {
+		MUTABLE_PROMISES.open = original;
+		syncBuiltinESMExports();
+	};
 	return fault;
 }
 
@@ -231,13 +300,20 @@ function stealNextLock(held: { handle?: FileHandle }): Fault {
 			fault.armed = false;
 			const lockPath = String(args[0]);
 			await unlink(lockPath);
-			held.handle = await original(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT | O_EXLOCK | fs.constants.O_NONBLOCK, 0o600);
+			held.handle = await original(
+				lockPath,
+				fs.constants.O_RDWR | fs.constants.O_CREAT | O_EXLOCK | fs.constants.O_NONBLOCK,
+				0o600,
+			);
 		}
 		return handle;
 	};
 	MUTABLE_PROMISES.open = patched;
 	syncBuiltinESMExports();
-	fault.restore = () => { MUTABLE_PROMISES.open = original; syncBuiltinESMExports(); };
+	fault.restore = () => {
+		MUTABLE_PROMISES.open = original;
+		syncBuiltinESMExports();
+	};
 	return fault;
 }
 
@@ -255,7 +331,10 @@ function pauseNextDirectoryCreate(directory: string, entered: () => void, releas
 	};
 	MUTABLE_PROMISES.mkdir = patched;
 	syncBuiltinESMExports();
-	fault.restore = () => { MUTABLE_PROMISES.mkdir = original; syncBuiltinESMExports(); };
+	fault.restore = () => {
+		MUTABLE_PROMISES.mkdir = original;
+		syncBuiltinESMExports();
+	};
 	return fault;
 }
 
@@ -272,7 +351,10 @@ function afterNextRecordRename(directory: string, done: () => void | Promise<voi
 	};
 	MUTABLE_PROMISES.rename = patched;
 	syncBuiltinESMExports();
-	return () => { MUTABLE_PROMISES.rename = original; syncBuiltinESMExports(); };
+	return () => {
+		MUTABLE_PROMISES.rename = original;
+		syncBuiltinESMExports();
+	};
 }
 
 function contendRecordLocks(): Fault & { attempts: number } {
@@ -287,7 +369,10 @@ function contendRecordLocks(): Fault & { attempts: number } {
 	};
 	MUTABLE_PROMISES.open = patched;
 	syncBuiltinESMExports();
-	fault.restore = () => { MUTABLE_PROMISES.open = original; syncBuiltinESMExports(); };
+	fault.restore = () => {
+		MUTABLE_PROMISES.open = original;
+		syncBuiltinESMExports();
+	};
 	return fault;
 }
 
@@ -355,12 +440,22 @@ test("default and recorded automatic labels accept updates and repeated input ob
 	f.projector.start(f.ctx);
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, ["fallback"]);
-	assert.deepEqual(f.transport.calls[0]?.args.slice(0, 6), ["--autostart=false", "--color=never", "--timeout=10s", "--server", "unix:///launch", "whoami"]);
+	assert.deepEqual(f.transport.calls[0]?.args.slice(0, 6), [
+		"--autostart=false",
+		"--color=never",
+		"--timeout=10s",
+		"--server",
+		"unix:///launch",
+		"whoami",
+	]);
 
 	const settledCalls = f.transport.calls.length;
 	f.projector.input(f.ctx);
 	await f.projector.idle();
-	assert.deepEqual(f.transport.calls.slice(settledCalls).map((call) => call.method), ["whoami", "com.superlogical.terminal.process", "session.view"]);
+	assert.deepEqual(
+		f.transport.calls.slice(settledCalls).map((call) => call.method),
+		["whoami", "com.superlogical.terminal.process", "session.view"],
+	);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 
 	f.state.name = "Named";
@@ -390,7 +485,10 @@ test("an unchanged name event launches no process and every input keeps three fr
 	const f = await fixture(t);
 	f.projector.start(f.ctx);
 	await f.projector.idle();
-	assert.deepEqual(f.transport.calls.map((call) => call.method), WRITE_CHECKS);
+	assert.deepEqual(
+		f.transport.calls.map((call) => call.method),
+		WRITE_CHECKS,
+	);
 
 	const settled = f.transport.calls.length;
 	f.projector.refresh(f.ctx);
@@ -401,7 +499,12 @@ test("an unchanged name event launches no process and every input keeps three fr
 	for (let index = 1; index <= 2; index++) {
 		f.projector.input(f.ctx);
 		await f.projector.idle();
-		assert.deepEqual(f.transport.calls.slice(settled + (index - 1) * CHECKS.length, settled + index * CHECKS.length).map((call) => call.method), CHECKS);
+		assert.deepEqual(
+			f.transport.calls
+				.slice(settled + (index - 1) * CHECKS.length, settled + index * CHECKS.length)
+				.map((call) => call.method),
+			CHECKS,
+		);
 	}
 	assert.equal(f.transport.calls.length, settled + 2 * CHECKS.length);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
@@ -412,7 +515,10 @@ test("coincident start and input share one observation pass", async (t) => {
 	f.projector.start(f.ctx);
 	f.projector.input(f.ctx);
 	await f.projector.idle();
-	assert.deepEqual(f.transport.calls.map((call) => call.method), WRITE_CHECKS);
+	assert.deepEqual(
+		f.transport.calls.map((call) => call.method),
+		WRITE_CHECKS,
+	);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 });
 
@@ -431,7 +537,10 @@ test("an unchanged name event during an observation pass adds no pass", async (t
 	f.projector.refresh(f.ctx);
 	release.resolve();
 	await f.projector.idle();
-	assert.deepEqual(f.transport.calls.map((call) => call.method), WRITE_CHECKS);
+	assert.deepEqual(
+		f.transport.calls.map((call) => call.method),
+		WRITE_CHECKS,
+	);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 });
 
@@ -452,7 +561,10 @@ test("an input during an observation pass receives its own fresh pass", async (t
 	f.projector.input(f.ctx);
 	release.resolve();
 	await f.projector.idle();
-	assert.deepEqual(f.transport.calls.map((call) => call.method), [...WRITE_CHECKS, ...CHECKS]);
+	assert.deepEqual(
+		f.transport.calls.map((call) => call.method),
+		[...WRITE_CHECKS, ...CHECKS],
+	);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 });
 
@@ -507,7 +619,10 @@ test("an input during a gated window query receives its own observation pass", a
 	f.projector.input(f.ctx);
 	release.resolve();
 	await f.projector.idle();
-	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, ...WRITE_CHECKS]);
+	assert.deepEqual(
+		f.transport.calls.map((call) => call.method),
+		[...CHECKS, ...WRITE_CHECKS],
+	);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 });
 
@@ -695,10 +810,12 @@ test("contention opens once without a timer or another pass and a real name even
 
 test("a name change after claim I/O skips the old setter and retains the newer demand", async (t) => {
 	const f = await fixture(t);
-	t.after(afterNextRecordRename(join(f.agentDir, "rex", "tab-labels"), () => {
-		f.state.name = "Latest name";
-		f.projector.refresh(f.ctx);
-	}));
+	t.after(
+		afterNextRecordRename(join(f.agentDir, "rex", "tab-labels"), () => {
+			f.state.name = "Latest name";
+			f.projector.refresh(f.ctx);
+		}),
+	);
 	f.state.name = "Obsolete name";
 	f.projector.start(f.ctx);
 	await f.projector.idle();
@@ -708,10 +825,12 @@ test("a name change after claim I/O skips the old setter and retains the newer d
 
 test("session replacement after claim I/O never dispatches the old setter", async (t) => {
 	const f = await fixture(t);
-	t.after(afterNextRecordRename(join(f.agentDir, "rex", "tab-labels"), () => {
-		f.state.name = "Replacement name";
-		f.projector.start(f.ctx);
-	}));
+	t.after(
+		afterNextRecordRename(join(f.agentDir, "rex", "tab-labels"), () => {
+			f.state.name = "Replacement name";
+			f.projector.start(f.ctx);
+		}),
+	);
 	f.state.name = "Obsolete name";
 	f.projector.start(f.ctx);
 	await f.projector.idle();
@@ -720,19 +839,63 @@ test("session replacement after claim I/O never dispatches the old setter", asyn
 });
 
 const attachmentChanges: readonly [string, (f: Awaited<ReturnType<typeof fixture>>) => void][] = [
-	["foreground loss", (f) => { f.transport.processPid = 9999; }],
-	["a second block", (f) => { f.transport.extraBlocks = 1; }],
-	["a manual label", (f) => { f.transport.label = "Manual label"; }],
-	["a different host", (f) => { f.transport.hostId = "other-host"; }],
-	["a different server instance", (f) => { f.transport.instanceId = "other-instance"; }],
-	["a different containing window", (f) => { f.transport.windowId = "window:other"; }],
-	["a different inherited session", (f) => { f.env.REX_SESSION = "session:other"; }],
-	["a different inherited block", (f) => { f.env.REX_BLOCK = "block:other"; }],
+	[
+		"foreground loss",
+		(f) => {
+			f.transport.processPid = 9999;
+		},
+	],
+	[
+		"a second block",
+		(f) => {
+			f.transport.extraBlocks = 1;
+		},
+	],
+	[
+		"a manual label",
+		(f) => {
+			f.transport.label = "Manual label";
+		},
+	],
+	[
+		"a different host",
+		(f) => {
+			f.transport.hostId = "other-host";
+		},
+	],
+	[
+		"a different server instance",
+		(f) => {
+			f.transport.instanceId = "other-instance";
+		},
+	],
+	[
+		"a different containing window",
+		(f) => {
+			f.transport.windowId = "window:other";
+		},
+	],
+	[
+		"a different inherited session",
+		(f) => {
+			f.env.REX_SESSION = "session:other";
+		},
+	],
+	[
+		"a different inherited block",
+		(f) => {
+			f.env.REX_BLOCK = "block:other";
+		},
+	],
 ];
 for (const [name, change] of attachmentChanges) {
 	test(`${name} after claim I/O prevents setter dispatch`, async (t) => {
 		const f = await fixture(t);
-		t.after(afterNextRecordRename(join(f.agentDir, "rex", "tab-labels"), () => { change(f); }));
+		t.after(
+			afterNextRecordRename(join(f.agentDir, "rex", "tab-labels"), () => {
+				change(f);
+			}),
+		);
 		f.state.name = "Attempted name";
 		f.projector.start(f.ctx);
 		await f.projector.idle();
@@ -757,7 +920,10 @@ test("a server selector change during the exact claim read never retargets the s
 	release.resolve();
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, []);
-	assert.equal(f.transport.calls.some((call) => call.args.includes("unix:///replacement")), false);
+	assert.equal(
+		f.transport.calls.some((call) => call.args.includes("unix:///replacement")),
+		false,
+	);
 	assert.deepEqual(await recordFiles(f.agentDir), []);
 	assert.deepEqual(f.notices, []);
 });
@@ -765,13 +931,18 @@ test("a server selector change during the exact claim read never retargets the s
 test("a superseded claim prevents dispatch and remains intact", async (t) => {
 	const f = await fixture(t);
 	const directory = join(f.agentDir, "rex", "tab-labels");
-	t.after(afterNextRecordRename(directory, async () => {
-		const recordName = (await readdir(directory)).find((name) => name.endsWith(".json"));
-		assert.ok(recordName);
-		const record = (await recordFiles(f.agentDir))[0];
-		assert.ok(record);
-		await writeFile(join(directory, recordName), JSON.stringify({ ...record, attempt: "successor", pending: "Successor name" }));
-	}));
+	t.after(
+		afterNextRecordRename(directory, async () => {
+			const recordName = (await readdir(directory)).find((name) => name.endsWith(".json"));
+			assert.ok(recordName);
+			const record = (await recordFiles(f.agentDir))[0];
+			assert.ok(record);
+			await writeFile(
+				join(directory, recordName),
+				JSON.stringify({ ...record, attempt: "successor", pending: "Successor name" }),
+			);
+		}),
+	);
 	f.projector.start(f.ctx);
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, []);
@@ -784,7 +955,9 @@ test("a contended withdrawal remains pending until an actual input retries it on
 	const f = await fixture(t);
 	const fault = contendRecordLocks();
 	t.after(fault.restore);
-	f.transport.onMethod = (method) => { if (method === "session.set_window_label") fault.armed = true; };
+	f.transport.onMethod = (method) => {
+		if (method === "session.set_window_label") fault.armed = true;
+	};
 	f.transport.queueSet({ outcome: "spawn_error", started: false, apply: false });
 	f.state.name = "Unstarted name";
 	f.projector.start(f.ctx);
@@ -811,7 +984,9 @@ test("a contended confirmation stays pending and reconciles without another sett
 	const f = await fixture(t);
 	const fault = contendRecordLocks();
 	t.after(fault.restore);
-	f.transport.onMethod = (method) => { if (method === "session.set_window_label") fault.armed = true; };
+	f.transport.onMethod = (method) => {
+		if (method === "session.set_window_label") fault.armed = true;
+	};
 	f.state.name = "Acknowledged name";
 	f.projector.start(f.ctx);
 	await f.projector.idle();
@@ -833,7 +1008,9 @@ test("shutdown attempts retained withdrawal once and preserves uncertain state",
 	const f = await fixture(t);
 	const fault = contendRecordLocks();
 	t.after(fault.restore);
-	f.transport.onMethod = (method) => { if (method === "session.set_window_label") fault.armed = true; };
+	f.transport.onMethod = (method) => {
+		if (method === "session.set_window_label") fault.armed = true;
+	};
 	f.transport.queueSet({ outcome: "spawn_error", started: false, apply: false });
 	f.projector.start(f.ctx);
 	await f.projector.idle();
@@ -858,7 +1035,10 @@ test("a claim write that fails after persistence withdraws the claim before disp
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, []);
 	assert.equal(f.transport.label, DEFAULT_LABEL);
-	assert.deepEqual((await readdir(directory)).filter((name) => join(directory, name) !== blocker), []);
+	assert.deepEqual(
+		(await readdir(directory)).filter((name) => join(directory, name) !== blocker),
+		[],
+	);
 	assert.equal(f.notices.length, 1);
 
 	f.transport.label = "Attempted name";
@@ -872,7 +1052,9 @@ test("a claim write that fails after persistence withdraws the claim before disp
 test("a run cancelled after its claim is persisted withdraws the claim before dispatch", async (t) => {
 	const f = await fixture(t);
 	const projector = f.projector;
-	const restore = afterNextRecordRename(join(f.agentDir, "rex", "tab-labels"), () => { void projector.shutdown(); });
+	const restore = afterNextRecordRename(join(f.agentDir, "rex", "tab-labels"), () => {
+		void projector.shutdown();
+	});
 	t.after(restore);
 	f.state.name = "Attempted name";
 	f.projector.start(f.ctx);
@@ -901,7 +1083,10 @@ test("an old acknowledgement cannot confirm a successor's claim", async (t) => {
 	const release = deferred();
 	t.after(release.resolve);
 	f.transport.onMethod = async (method) => {
-		if (method === "session.set_window_label") { entered.resolve(); await release.promise; }
+		if (method === "session.set_window_label") {
+			entered.resolve();
+			await release.promise;
+		}
 	};
 	f.state.name = "Older name";
 	f.projector.start(f.ctx);
@@ -1054,7 +1239,10 @@ test("a name change during an in-flight fallback write finishes with the new nam
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, ["fallback", "New name"]);
 	assert.equal(f.transport.label, "New name");
-	assert.deepEqual(f.transport.calls.map((call) => call.method), [...WRITE_CHECKS, ...WRITE_CHECKS]);
+	assert.deepEqual(
+		f.transport.calls.map((call) => call.method),
+		[...WRITE_CHECKS, ...WRITE_CHECKS],
+	);
 });
 
 test("a delayed startup read uses the latest session name at write time", async (t) => {
@@ -1074,7 +1262,10 @@ test("a delayed startup read uses the latest session name at write time", async 
 	release.resolve();
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, ["New name"]);
-	assert.deepEqual(f.transport.calls.map((call) => call.method), WRITE_CHECKS);
+	assert.deepEqual(
+		f.transport.calls.map((call) => call.method),
+		WRITE_CHECKS,
+	);
 });
 
 test("shutdown and a new session invalidate an obsolete run before its write", async (t) => {
@@ -1157,7 +1348,10 @@ test("record pruning retains the configured bound", async (t) => {
 	}
 	const records = await recordFiles(first.agentDir);
 	assert.equal(records.length, 3);
-	assert.equal(records.some((record) => record.label === "Name 4"), true);
+	assert.equal(
+		records.some((record) => record.label === "Name 4"),
+		true,
+	);
 });
 
 async function delayedWithdrawalAfterReload(t: TestContext, prior: string | undefined): Promise<void> {
@@ -1165,7 +1359,9 @@ async function delayedWithdrawalAfterReload(t: TestContext, prior: string | unde
 	const first = await fixture(t, { tab });
 	const secondTransport = new FakeTransport(first.env, tab);
 	const secondNotices: string[] = [];
-	const secondCtx = context("tui", (message: string) => { secondNotices.push(message); });
+	const secondCtx = context("tui", (message: string) => {
+		secondNotices.push(message);
+	});
 	const secondState = { name: "New name" };
 	const second = projectorFor(first.agentDir, first.env, secondTransport, () => secondState.name);
 	t.after(() => second.shutdown());
@@ -1272,9 +1468,17 @@ async function startChildProjector(t: TestContext, prefix: string, name: string)
 }
 
 /** A second projector on the same store, driven by the test and never started before it is ready. */
-function replacementProjector(agentDir: string, env: NodeJS.ProcessEnv, tab: TabState, notices: string[], state: { name: string }) {
+function replacementProjector(
+	agentDir: string,
+	env: NodeJS.ProcessEnv,
+	tab: TabState,
+	notices: string[],
+	state: { name: string },
+) {
 	const transport = new FakeTransport(env, tab);
-	const ctx = context("tui", (message: string) => { notices.push(message); });
+	const ctx = context("tui", (message: string) => {
+		notices.push(message);
+	});
 	const projector = createTabLabelProjector({
 		agentDir,
 		settings: SETTINGS,
@@ -1382,8 +1586,12 @@ test("a cancelled update waiting for a record lock makes no change", async (t) =
 	const waiterState = { name: "Waiter name" };
 	const holderNotices: string[] = [];
 	const waiterNotices: string[] = [];
-	const holderCtx = context("tui", (message: string) => { holderNotices.push(message); });
-	const waiterCtx = context("tui", (message: string) => { waiterNotices.push(message); });
+	const holderCtx = context("tui", (message: string) => {
+		holderNotices.push(message);
+	});
+	const waiterCtx = context("tui", (message: string) => {
+		waiterNotices.push(message);
+	});
 	const holder = projectorFor(first.agentDir, first.env, holderTransport, () => holderState.name);
 	const waiter = projectorFor(first.agentDir, first.env, waiterTransport, () => waiterState.name);
 	t.after(() => waiter.shutdown());
@@ -1445,7 +1653,9 @@ test("an acquisition that finds its lock path replaced refuses without a mutatio
 	const held: { handle?: FileHandle } = {};
 	const fault = stealNextLock(held);
 	t.after(fault.restore);
-	t.after(async () => { await held.handle?.close(); });
+	t.after(async () => {
+		await held.handle?.close();
+	});
 	fault.armed = true;
 
 	f.state.name = "New name";

@@ -241,7 +241,11 @@ for (const [name, form] of moduleForms) {
 				["fixtures/nested.eval.mts", "../../../evals/vitest-evals.mts", false],
 			] as const) {
 				assert.equal(
-					auditSliceImports(root, join(root, "extensions/example", consumer), analyseSource(join(root, "extensions/example", consumer), form(`${quote}${target}${quote}`))).length,
+					auditSliceImports(
+						root,
+						join(root, "extensions/example", consumer),
+						analyseSource(join(root, "extensions/example", consumer), form(`${quote}${target}${quote}`)),
+					).length,
 					allowed ? 0 : 1,
 				);
 			}
@@ -252,21 +256,44 @@ for (const [name, form] of moduleForms) {
 for (const [name, form] of moduleForms) {
 	test(`schema import guard: ${name}`, () => {
 		for (const specifier of ["typebox", "typebox/value", "@sinclair/typebox", "@sinclair/typebox/compiler"]) {
-			const failures = auditSchemaImports("/fixture", "/fixture/scripts/example.mts", analyseSource("/fixture/scripts/example.mts", form(JSON.stringify(specifier))));
-			assert.deepEqual(failures, [`scripts/example.mts: import "${specifier}" uses TypeBox; use @earendil-works/pi-schema`]);
+			const failures = auditSchemaImports(
+				"/fixture",
+				"/fixture/scripts/example.mts",
+				analyseSource("/fixture/scripts/example.mts", form(JSON.stringify(specifier))),
+			);
+			assert.deepEqual(failures, [
+				`scripts/example.mts: import "${specifier}" uses TypeBox; use @earendil-works/pi-schema`,
+			]);
 		}
 		for (const specifier of ["typebox-extra", "@sinclair/typebox-extra", "@earendil-works/pi-schema", "./typebox.ts"])
-			assert.deepEqual(auditSchemaImports("/fixture", "/fixture/scripts/example.mts", analyseSource("/fixture/scripts/example.mts", form(JSON.stringify(specifier)))), []);
+			assert.deepEqual(
+				auditSchemaImports(
+					"/fixture",
+					"/fixture/scripts/example.mts",
+					analyseSource("/fixture/scripts/example.mts", form(JSON.stringify(specifier))),
+				),
+				[],
+			);
 	});
 }
 
 test("schema guard ignores inert strings and computed specifiers", () => {
-	assert.deepEqual(auditSchemaImports("/fixture", "/fixture/scripts/example.mts", analyseSource("/fixture/scripts/example.mts", `
+	assert.deepEqual(
+		auditSchemaImports(
+			"/fixture",
+			"/fixture/scripts/example.mts",
+			analyseSource(
+				"/fixture/scripts/example.mts",
+				`
 		// import "typebox";
 		const text = 'require("@sinclair/typebox")';
 		const name = "typebox";
 		import(name); require(name);
-	`)), []);
+	`,
+			),
+		),
+		[],
+	);
 });
 
 test("schema guard rejects direct declarations in every dependency section", () => {
@@ -275,14 +302,25 @@ test("schema guard rejects direct declarations in every dependency section", () 
 			assert.deepEqual(auditSchemaDependencies({ [section]: { [name]: "*" } }), [
 				`package.json: ${section} declares "${name}"; use @earendil-works/pi-schema`,
 			]);
-		assert.deepEqual(auditSchemaDependencies({ [section]: { "typebox-extra": "*", "@sinclair/typebox-extra": "*", "@earendil-works/pi-schema": "*" } }), []);
+		assert.deepEqual(
+			auditSchemaDependencies({
+				[section]: { "typebox-extra": "*", "@sinclair/typebox-extra": "*", "@earendil-works/pi-schema": "*" },
+			}),
+			[],
+		);
 	}
 });
 
 test("schema guard reaches tracked source roots, discovered extension files and the root manifest", () => {
 	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
 	try {
-		const paths = ["extensions/example/schema.ts", "scripts/schema.mts", "prompts/schema.ts", "transport/schema.mts", "evals/schema.mts"];
+		const paths = [
+			"extensions/example/schema.ts",
+			"scripts/schema.mts",
+			"prompts/schema.ts",
+			"transport/schema.mts",
+			"evals/schema.mts",
+		];
 		for (const path of paths) {
 			mkdirSync(dirname(join(root, path)), { recursive: true });
 			writeFileSync(join(root, path), 'import type { Schema } from "typebox";\n');
@@ -293,7 +331,13 @@ test("schema guard reaches tracked source roots, discovered extension files and 
 		const manifest = join(root, "package.json");
 		const original = readFileSync(manifest, "utf8");
 		writeFileSync(manifest, JSON.stringify({ ...JSON.parse(original), dependencies: { typebox: "*" } }));
-		const run = () => spawnSync(process.execPath, [join(root, "scripts/check-slices.mts")], { cwd: root, encoding: "utf8", timeout: 30_000, maxBuffer: 128_000 });
+		const run = () =>
+			spawnSync(process.execPath, [join(root, "scripts/check-slices.mts")], {
+				cwd: root,
+				encoding: "utf8",
+				timeout: 30_000,
+				maxBuffer: 128_000,
+			});
 		const rejected = run();
 		assert.equal(rejected.status, 1, rejected.stdout + rejected.stderr);
 		for (const path of [...paths, "extensions/example/new.mts"])
@@ -373,7 +417,11 @@ for (const [name, form] of callForms) {
 				const source = form(`${quote}${specifier}${quote}`);
 				assert.ok(literalSpecifiers(source).includes(specifier), source);
 				assert.equal(
-					auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", analyseSource("/fixture/extensions/example/runtime.ts", source)).length,
+					auditSliceImports(
+						"/fixture",
+						"/fixture/extensions/example/runtime.ts",
+						analyseSource("/fixture/extensions/example/runtime.ts", source),
+					).length,
 					allowed ? 0 : 1,
 					source,
 				);
@@ -398,9 +446,14 @@ for (const [name, source] of [
 	["missing expression", 'const value = ; import "../memory/settings.ts";'],
 ] as const) {
 	test(`syntax failure: ${name}`, () => {
-		assert.deepEqual(auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", analyseSource("/fixture/extensions/example/runtime.ts", source)), [
-			"extensions/example/runtime.ts: TypeScript syntax errors prevent a complete import check",
-		]);
+		assert.deepEqual(
+			auditSliceImports(
+				"/fixture",
+				"/fixture/extensions/example/runtime.ts",
+				analyseSource("/fixture/extensions/example/runtime.ts", source),
+			),
+			["extensions/example/runtime.ts: TypeScript syntax errors prevent a complete import check"],
+		);
 	});
 }
 
@@ -516,7 +569,14 @@ test("literal extraction ignores comments, ordinary strings, and computed specif
 test("literal extraction decodes escapes before applying slice rules", () => {
 	const source = 'import("\\x2e\\x2e/memory/settings.ts")';
 	assert.deepEqual(literalSpecifiers(source), ["../memory/settings.ts"]);
-	assert.equal(auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", analyseSource("/fixture/extensions/example/runtime.ts", source)).length, 1);
+	assert.equal(
+		auditSliceImports(
+			"/fixture",
+			"/fixture/extensions/example/runtime.ts",
+			analyseSource("/fixture/extensions/example/runtime.ts", source),
+		).length,
+		1,
+	);
 });
 
 test("one source inventory reads and analyses each source once", () => {
@@ -1265,7 +1325,10 @@ test("allows only the agent public transport entrypoint", async () => {
 		["extensions/other/index.ts", "../../transport/index.ts", false],
 		["extensions/agent/host-client.ts", "../../extensions/other/index.ts", false],
 	] as const)
-		assert.equal(auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length, allowed ? 0 : 1);
+		assert.equal(
+			auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length,
+			allowed ? 0 : 1,
+		);
 });
 
 test("refuses a repository module shared across extensions for every slice", async () => {
@@ -1276,5 +1339,9 @@ test("refuses a repository module shared across extensions for every slice", asy
 		["extensions/agent/work-view.ts", "../../operator-ui/index.ts"],
 		["extensions/statusline/index.ts", "../../shared/views.ts"],
 	] as const)
-		assert.equal(auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length, 1, specifier);
+		assert.equal(
+			auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length,
+			1,
+			specifier,
+		);
 });

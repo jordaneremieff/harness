@@ -19,7 +19,9 @@ export interface RestartProcess {
 	exitCode?: string | number | null;
 }
 
-interface RestartGuard { pending: boolean }
+interface RestartGuard {
+	pending: boolean;
+}
 const guardKey = Symbol.for("pi.extension.agent.restart");
 const shared = globalThis as typeof globalThis & { [guardKey]?: RestartGuard };
 
@@ -35,12 +37,22 @@ function shellQuote(value: string): string {
 /** Only fixed categories reach the terminal; thrown messages can contain secrets. */
 function safeCause(error: unknown): string {
 	if (error instanceof TypeError) return "invalid restart arguments";
-	if (error instanceof Error && "code" in error && typeof error.code === "string" && /^E[A-Z0-9_]{1,40}$/u.test(error.code)) return error.code;
+	if (
+		error instanceof Error &&
+		"code" in error &&
+		typeof error.code === "string" &&
+		/^E[A-Z0-9_]{1,40}$/u.test(error.code)
+	)
+		return error.code;
 	return "restart operation unavailable";
 }
 
 /** Pi owns graceful cleanup. This listener runs only at its final successful exit. */
-export function armRestart(launch: RestartLaunch, host: RestartProcess = process, write: (fd: number, text: string) => unknown = writeSync): () => void {
+export function armRestart(
+	launch: RestartLaunch,
+	host: RestartProcess = process,
+	write: (fd: number, text: string) => unknown = writeSync,
+): () => void {
 	const listener = (code: number): void => {
 		if (code !== 0) return;
 		try {
@@ -49,11 +61,17 @@ export function armRestart(launch: RestartLaunch, host: RestartProcess = process
 			host.execve(launch.executable, launch.args, host.env);
 		} catch (error) {
 			host.exitCode = 1;
-			try { write(2, `Restart failed after shutdown: ${safeCause(error)}. Use the recovery command above.\n`); } catch { /* The terminal is already unavailable. */ }
+			try {
+				write(2, `Restart failed after shutdown: ${safeCause(error)}. Use the recovery command above.\n`);
+			} catch {
+				/* The terminal is already unavailable. */
+			}
 		}
 	};
 	host.once("exit", listener);
-	return () => { host.removeListener("exit", listener); };
+	return () => {
+		host.removeListener("exit", listener);
+	};
 }
 
 interface RestartOptions {
@@ -73,30 +91,50 @@ function cliPath(host: RestartProcess, packageDir: () => string): string {
 	try {
 		const root = packageDir();
 		const metadata = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-		if (metadata.name !== "@earendil-works/pi-coding-agent" || typeof metadata.bin?.pi !== "string" || !host.argv[1]) throw new Error("not Pi CLI");
+		if (metadata.name !== "@earendil-works/pi-coding-agent" || typeof metadata.bin?.pi !== "string" || !host.argv[1])
+			throw new Error("not Pi CLI");
 		cli = realpathSync(resolve(root, metadata.bin.pi));
 		if (realpathSync(host.argv[1]) !== cli) throw new Error("not Pi CLI");
-	} catch { throw new RestartRefusal(cliRefusal); }
-	if (typeof host.execve !== "function") throw new RestartRefusal("Restart refused. This runtime does not support process.execve.");
-	try { accessSync(host.execPath, constants.X_OK); }
-	catch { throw new RestartRefusal("Restart refused. The Node executable is unavailable or not executable."); }
-	try { accessSync(cli, constants.R_OK); }
-	catch { throw new RestartRefusal("Restart refused. The Pi CLI file is not readable."); }
+	} catch {
+		throw new RestartRefusal(cliRefusal);
+	}
+	if (typeof host.execve !== "function")
+		throw new RestartRefusal("Restart refused. This runtime does not support process.execve.");
+	try {
+		accessSync(host.execPath, constants.X_OK);
+	} catch {
+		throw new RestartRefusal("Restart refused. The Node executable is unavailable or not executable.");
+	}
+	try {
+		accessSync(cli, constants.R_OK);
+	} catch {
+		throw new RestartRefusal("Restart refused. The Pi CLI file is not readable.");
+	}
 	return cli;
 }
 
 function savedFile(ctx: ExtensionContext) {
 	const sessionFile = ctx.sessionManager.getSessionFile();
-	if (!sessionFile || !isAbsolute(sessionFile)) throw new RestartRefusal("Restart refused. Pi has not saved this session to an absolute file yet.");
+	if (!sessionFile || !isAbsolute(sessionFile))
+		throw new RestartRefusal("Restart refused. Pi has not saved this session to an absolute file yet.");
 	let file: ReturnType<typeof statSync>;
-	try { file = statSync(sessionFile); }
-	catch { throw new RestartRefusal("Restart refused. Pi has not saved this session to a file yet."); }
-	if (!file.isFile() || file.size === 0) throw new RestartRefusal("Restart refused. Pi has not saved this session to a non-empty file yet.");
+	try {
+		file = statSync(sessionFile);
+	} catch {
+		throw new RestartRefusal("Restart refused. Pi has not saved this session to a file yet.");
+	}
+	if (!file.isFile() || file.size === 0)
+		throw new RestartRefusal("Restart refused. Pi has not saved this session to a non-empty file yet.");
 	return { sessionFile, file };
 }
 
 function notifyFailure(ctx: ExtensionContext, error: unknown): void {
-	ctx.ui.notify(error instanceof RestartRefusal ? error.message : `Restart failed before shutdown: ${safeCause(error)}. This session remains open.`, "warning");
+	ctx.ui.notify(
+		error instanceof RestartRefusal
+			? error.message
+			: `Restart failed before shutdown: ${safeCause(error)}. This session remains open.`,
+		"warning",
+	);
 }
 
 export function createRestartCommand(options: RestartOptions) {
@@ -109,28 +147,67 @@ export function createRestartCommand(options: RestartOptions) {
 		const { sessionFile, file } = savedFile(ctx);
 		const native = ctx.sessionManager;
 		// Pi omits primary Bash and retained TUI compaction messages from these accessors; confirmation covers their loss.
-		if (!ctx.isIdle() || ctx.hasPendingMessages()) throw new RestartRefusal("Restart refused. This session has active or queued work. Stop or finish that work, then use /restart.");
+		if (!ctx.isIdle() || ctx.hasPendingMessages())
+			throw new RestartRefusal(
+				"Restart refused. This session has active or queued work. Stop or finish that work, then use /restart.",
+			);
 		const hosts = options.hosts();
 		if (hosts.refusal) throw new RestartRefusal(hosts.refusal);
 		const sessionDir = native.getSessionDir();
-		const launch = { executable: host.execPath, args: [host.execPath, ...host.execArgv, cli, "--session-dir", sessionDir, "--session", sessionFile] };
-		if (launch.args.some((arg) => /[\x00-\x1f\x7f-\x9f]/u.test(arg))) throw new RestartRefusal("Restart refused. A launch argument contains terminal control characters.");
-		return { launch, identity: JSON.stringify([native.getSessionId(), sessionFile, sessionDir, ctx.cwd, file.dev, file.ino, hosts.identity, launch]) };
+		const launch = {
+			executable: host.execPath,
+			args: [host.execPath, ...host.execArgv, cli, "--session-dir", sessionDir, "--session", sessionFile],
+		};
+		if (launch.args.some((arg) => /[\x00-\x1f\x7f-\x9f]/u.test(arg)))
+			throw new RestartRefusal("Restart refused. A launch argument contains terminal control characters.");
+		return {
+			launch,
+			identity: JSON.stringify([
+				native.getSessionId(),
+				sessionFile,
+				sessionDir,
+				ctx.cwd,
+				file.dev,
+				file.ino,
+				hosts.identity,
+				launch,
+			]),
+		};
 	};
 	return {
 		description: "Restart this Pi process and resume the saved session",
 		handler: async (args: string, ctx: ExtensionContext): Promise<void> => {
-			if (args.trim()) { ctx.ui.notify("Usage: /restart", "warning"); return; }
-			if (guard.pending) { ctx.ui.notify("Restart refused. A restart is already pending.", "warning"); return; }
+			if (args.trim()) {
+				ctx.ui.notify("Usage: /restart", "warning");
+				return;
+			}
+			if (guard.pending) {
+				ctx.ui.notify("Restart refused. A restart is already pending.", "warning");
+				return;
+			}
 			let before: ReturnType<typeof preflight>;
-			try { before = preflight(ctx); } catch (error) { notifyFailure(ctx, error); return; }
+			try {
+				before = preflight(ctx);
+			} catch (error) {
+				notifyFailure(ctx, error);
+				return;
+			}
 			let disarm: (() => void) | undefined;
 			let committed = false;
 			guard.pending = true;
 			try {
-				if (!await ctx.ui.confirm("Restart this Pi session?", "Other extensions' work in this process stops. A running ! command also stops. Pi's private compaction queue and other unsaved state are lost. Continue?")) return;
+				if (
+					!(await ctx.ui.confirm(
+						"Restart this Pi session?",
+						"Other extensions' work in this process stops. A running ! command also stops. Pi's private compaction queue and other unsaved state are lost. Continue?",
+					))
+				)
+					return;
 				const after = preflight(ctx);
-				if (before.identity !== after.identity) throw new RestartRefusal("Restart refused. The session or agent hosts changed during confirmation. Use /restart again.");
+				if (before.identity !== after.identity)
+					throw new RestartRefusal(
+						"Restart refused. The session or agent hosts changed during confirmation. Use /restart again.",
+					);
 				disarm = armRestart(after.launch, host, options.write);
 				ctx.shutdown();
 				committed = true;

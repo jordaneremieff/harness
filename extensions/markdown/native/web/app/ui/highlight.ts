@@ -4,7 +4,26 @@
 	// interpolation mark, n number or constant, k keyword, t type or annotation, f function, p key or
 	// property name, m member, r parameter, b builtin, v variable, o operator, d delimiter, ev enum
 	// case, x macro, and ins, del and meta for diff lines.
-	type Kind = "c" | "s" | "e" | "n" | "k" | "t" | "f" | "p" | "m" | "r" | "b" | "v" | "o" | "d" | "ev" | "x" | "ins" | "del" | "meta";
+	type Kind =
+		| "c"
+		| "s"
+		| "e"
+		| "n"
+		| "k"
+		| "t"
+		| "f"
+		| "p"
+		| "m"
+		| "r"
+		| "b"
+		| "v"
+		| "o"
+		| "d"
+		| "ev"
+		| "x"
+		| "ins"
+		| "del"
+		| "meta";
 	type Token = { text: string; kind?: Kind };
 	interface Grammar {
 		comment?: string;
@@ -50,7 +69,9 @@
 			"abstract as async await break case catch class const continue debugger declare default delete do else enum export extends finally for from function get if implements import in infer instanceof interface keyof let namespace new of override private protected public readonly return satisfies set static switch throw try type typeof var void while with yield",
 		),
 		constants: set("true false null undefined NaN Infinity"),
-		builtins: set("this super console window document globalThis process require module exports Math JSON Object Array Number String Boolean Symbol Reflect Intl"),
+		builtins: set(
+			"this super console window document globalThis process require module exports Math JSON Object Array Number String Boolean Symbol Reflect Intl",
+		),
 		primitives: set("string number boolean any unknown never object bigint symbol"),
 		definers: set("function"),
 		typers: set("class interface type enum extends implements new namespace"),
@@ -109,7 +130,9 @@
 		shell: {
 			comment: HASH_COMMENT,
 			string: QUOTED,
-			keywords: set("if then else elif fi for in while until do done case esac function return export local readonly declare set unset select time"),
+			keywords: set(
+				"if then else elif fi for in while until do done case esac function return export local readonly declare set unset select time",
+			),
 			builtins: set("cd echo printf source alias exit eval exec read test true false shift trap wait"),
 			shell: true,
 			operators: String.raw`&&|\|\||>>|<<|[|&;<>!=]`,
@@ -138,7 +161,9 @@
 			),
 			constants: set("true false nil iota"),
 			builtins: set("append cap close copy delete len make new panic print println recover"),
-			primitives: set("bool byte complex64 complex128 error float32 float64 int int8 int16 int32 int64 rune string uint uint8 uint16 uint32 uint64 uintptr any"),
+			primitives: set(
+				"bool byte complex64 complex128 error float32 float64 int int8 int16 int32 int64 rune string uint uint8 uint16 uint32 uint64 uintptr any",
+			),
 			definers: set("func"),
 			typers: set("type struct"),
 			types: true,
@@ -176,11 +201,41 @@
 		},
 	};
 	const aliases: Record<string, string> = {
-		javascript: "js", jsx: "js", mjs: "js", cjs: "js", ts: "js", typescript: "js", tsx: "js", mts: "js", cts: "js",
-		jsonc: "json", json5: "json", py: "python", sh: "shell", bash: "shell", zsh: "shell", console: "shell",
-		shellscript: "shell", fish: "shell", rs: "rust", golang: "go", rb: "ruby", c: "clike", h: "clike", cpp: "clike",
-		hpp: "clike", cc: "clike", java: "clike", kotlin: "clike", kt: "clike", cs: "clike", csharp: "clike",
-		scala: "clike", dart: "clike", php: "clike", "objective-c": "clike",
+		javascript: "js",
+		jsx: "js",
+		mjs: "js",
+		cjs: "js",
+		ts: "js",
+		typescript: "js",
+		tsx: "js",
+		mts: "js",
+		cts: "js",
+		jsonc: "json",
+		json5: "json",
+		py: "python",
+		sh: "shell",
+		bash: "shell",
+		zsh: "shell",
+		console: "shell",
+		shellscript: "shell",
+		fish: "shell",
+		rs: "rust",
+		golang: "go",
+		rb: "ruby",
+		c: "clike",
+		h: "clike",
+		cpp: "clike",
+		hpp: "clike",
+		cc: "clike",
+		java: "clike",
+		kotlin: "clike",
+		kt: "clike",
+		cs: "clike",
+		csharp: "clike",
+		scala: "clike",
+		dart: "clike",
+		php: "clike",
+		"objective-c": "clike",
 	};
 	const special: Record<string, (text: string) => Token[]> = {};
 	const name = (language: string) => language.trim().toLowerCase();
@@ -244,7 +299,8 @@
 	/** The tokens of one mark inside a string, and the offset after it. */
 	function markTokens(text: string, mark: string, start: number, grammar: Grammar, depth: number): [Token[], number] {
 		const { open, end } = interpolation(text, mark, start);
-		if (!open || end < 0 || depth >= 3) return [[{ text: mark, kind: open ? "e" : markKind(mark) }], start + mark.length];
+		if (!open || end < 0 || depth >= 3)
+			return [[{ text: mark, kind: open ? "e" : markKind(mark) }], start + mark.length];
 		const inner = code(text.slice(start + mark.length, end), grammar, depth + 1);
 		return [[{ text: mark, kind: "e" }, ...inner, { text: text[end], kind: "e" }], end + 1];
 	}
@@ -303,7 +359,22 @@
 		patterns.set(grammar, pattern);
 		return pattern;
 	}
-	const SEPARATORS = new Set(["|", "||", "&&", ";", "(", "{", "!", "if", "while", "until", "then", "do", "else", "elif"]);
+	const SEPARATORS = new Set([
+		"|",
+		"||",
+		"&&",
+		";",
+		"(",
+		"{",
+		"!",
+		"if",
+		"while",
+		"until",
+		"then",
+		"do",
+		"else",
+		"elif",
+	]);
 	function memberKind(state: State, rest: string): Kind {
 		if (/^\s*\(/u.test(rest)) return "f";
 		const before = state.previous.at(-2) ?? "";
@@ -408,8 +479,10 @@
 			/^(?:\+\+\+|---|@@|diff |index )/u.test(match[0]) ? "meta" : match[0].startsWith("+") ? "ins" : "del",
 		);
 	special.markdown = (text) =>
-		scan(text, /^(#{1,6} [^\n]*)|^([ \t]*(?:[-*+]|\d+\.)[ \t])|(`[^`\n]+`)|(\[[^\]\n]*\]\([^)\n]*\))|(\*\*[^*\n]+\*\*)/gmu, (match) =>
-			groupOf(match, [undefined, "k", "d", "s", "f", "t"]),
+		scan(
+			text,
+			/^(#{1,6} [^\n]*)|^([ \t]*(?:[-*+]|\d+\.)[ \t])|(`[^`\n]+`)|(\[[^\]\n]*\]\([^)\n]*\))|(\*\*[^*\n]+\*\*)/gmu,
+			(match) => groupOf(match, [undefined, "k", "d", "s", "f", "t"]),
 		);
 	special.markup = (text) =>
 		scan(
@@ -430,9 +503,24 @@
 			(match) => groupOf(match, [undefined, "c", "s", "k", "v", "p", "n", "f", "t", "d"]),
 		);
 	const SPECIAL: Record<string, string> = {
-		diff: "diff", patch: "diff", md: "markdown", markdown: "markdown", html: "markup", xml: "markup", svg: "markup",
-		xhtml: "markup", plist: "markup", vue: "markup", yaml: "yaml", yml: "yaml", toml: "yaml", ini: "yaml",
-		"front matter": "yaml", css: "css", scss: "css", less: "css",
+		diff: "diff",
+		patch: "diff",
+		md: "markdown",
+		markdown: "markdown",
+		html: "markup",
+		xml: "markup",
+		svg: "markup",
+		xhtml: "markup",
+		plist: "markup",
+		vue: "markup",
+		yaml: "yaml",
+		yml: "yaml",
+		toml: "yaml",
+		ini: "yaml",
+		"front matter": "yaml",
+		css: "css",
+		scss: "css",
+		less: "css",
 	};
 	/** A language for an unlabelled block whose text identifies it: JSON or a shell transcript. */
 	function detect(text: string) {

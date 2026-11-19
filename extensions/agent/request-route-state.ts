@@ -11,7 +11,9 @@ export class RequestRouteState {
 	private bytes = 0;
 	private readonly maxBytes: number;
 
-	constructor(maxBytes = REQUEST_NOTES_HOST_BYTES) { this.maxBytes = maxBytes; }
+	constructor(maxBytes = REQUEST_NOTES_HOST_BYTES) {
+		this.maxBytes = maxBytes;
+	}
 
 	get(id: ConversationId): RouteState | undefined {
 		const record = this.conversations.get(id);
@@ -39,7 +41,10 @@ export class RequestRouteState {
 		this.delete(id);
 		if (!state.notes.length) return;
 		const bytes = Buffer.byteLength(JSON.stringify(state));
-		this.conversations.set(id, { state: { notes: state.notes.map((note) => ({ ...note })), prefix: { ...state.prefix } }, bytes });
+		this.conversations.set(id, {
+			state: { notes: state.notes.map((note) => ({ ...note })), prefix: { ...state.prefix } },
+			bytes,
+		});
 		this.bytes += bytes;
 		while (this.bytes > this.maxBytes) this.delete(this.conversations.keys().next().value as ConversationId);
 	}

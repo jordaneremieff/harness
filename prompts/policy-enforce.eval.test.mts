@@ -231,7 +231,7 @@ it("explicit variant modes ignore ambient enforcement and retain falsifiable con
 		["policy-block-returned"],
 	);
 	for (const content of ["[policy] Rule form.find-discovery:", `Matched command: ${policyFixture.command}`]) {
-		const partial = enforceEvents.map((event) => event.type === "tool_result" ? { ...event, content } : event);
+		const partial = enforceEvents.map((event) => (event.type === "tool_result" ? { ...event, content } : event));
 		const checks = runDeterministicChecks("", evaluationCase.checks, partial, evaluationCase.id);
 		assert.equal(checks.find((check) => check.checkId === "policy-block-returned")?.passed, false);
 	}

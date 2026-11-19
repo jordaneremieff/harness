@@ -33,7 +33,14 @@ import {
 	queryLine,
 	recordBlock,
 } from "./format.ts";
-import { type ContextSnapshot, contextLines, type HostAccessors, hostFacts, installedAccessors, type SessionFacts } from "./host.ts";
+import {
+	type ContextSnapshot,
+	contextLines,
+	type HostAccessors,
+	hostFacts,
+	installedAccessors,
+	type SessionFacts,
+} from "./host.ts";
 import {
 	type CursorState,
 	type FileStamp,
@@ -185,13 +192,24 @@ function unavailableResult(
 			"Incomplete inventories have no continuation; query an available resource kind for paged results.",
 		]),
 		blocks: matched.slice(0, query.limit).map((record) => recordBlock(record, fullRecordQuery(query))),
-		page: { total: matched.length, offset: 0, unavailableReason: "The requested resource inventory is incomplete; no safe continuation is available." },
-		pageSummary: (kept) => `records: ${kept} shown of ${matched.length} known matches | limit ${query.limit} (inventory incomplete)`,
+		page: {
+			total: matched.length,
+			offset: 0,
+			unavailableReason: "The requested resource inventory is incomplete; no safe continuation is available.",
+		},
+		pageSummary: (kept) =>
+			`records: ${kept} shown of ${matched.length} known matches | limit ${query.limit} (inventory incomplete)`,
 		footer: (kept) => [
 			...(fullRecordQuery(query) ? observationLines(request.snapshot.observation) : [RESOURCE_LIST_HINT]),
 			...boundariesFor(request, matched.slice(0, kept)),
 		],
-		details: { unavailableSurfaces: missingSurfaces, query, total: matched.length, incompleteInventory: true, scanned: false },
+		details: {
+			unavailableSurfaces: missingSurfaces,
+			query,
+			total: matched.length,
+			incompleteInventory: true,
+			scanned: false,
+		},
 	};
 	return finish("unavailable", assembled);
 }
@@ -268,7 +286,12 @@ function cancelledScanResult(request: LookupRequest, query: Query): LookupResult
 	});
 }
 
-function ioErrorScanResult(request: LookupRequest, query: Query, record: ResourceRecord, scan: ScanResult): LookupResult {
+function ioErrorScanResult(
+	request: LookupRequest,
+	query: Query,
+	record: ResourceRecord,
+	scan: ScanResult,
+): LookupResult {
 	return finish("io_error", {
 		header: baseHeader("io_error", request.snapshot.at, [
 			`query: ${queryLine(query)}`,
@@ -284,7 +307,12 @@ function ioErrorScanResult(request: LookupRequest, query: Query, record: Resourc
 	});
 }
 
-function unavailableScanResult(request: LookupRequest, query: Query, record: ResourceRecord, scan: ScanResult): LookupResult {
+function unavailableScanResult(
+	request: LookupRequest,
+	query: Query,
+	record: ResourceRecord,
+	scan: ScanResult,
+): LookupResult {
 	return finish("unavailable", {
 		header: baseHeader("unavailable", request.snapshot.at, [
 			`source: ${record.sourceInfo.path}`,
@@ -378,8 +406,7 @@ function completedScanResult(
 	return finish(outcome, {
 		header,
 		blocks: page.items.map(matchBlock),
-		page: { total: scan.matches.length, offset: page.offset,
-			unavailableReason: scanContinuationReason(scan) },
+		page: { total: scan.matches.length, offset: page.offset, unavailableReason: scanContinuationReason(scan) },
 		footer: ["", ...boundariesFor(request, [record])],
 		details,
 		pageSummary: (kept) =>
@@ -402,7 +429,8 @@ async function containsResult(
 	const resolution = resolveScanTarget(candidates);
 	if (resolution.kind === "unavailable") return unavailableTargetResult(request, query);
 	if (resolution.kind === "missing") return missingTargetResult(request, query);
-	if (resolution.kind === "ambiguous") return ambiguousTargetResult(request, query, resolution.candidates, offset, fingerprint);
+	if (resolution.kind === "ambiguous")
+		return ambiguousTargetResult(request, query, resolution.candidates, offset, fingerprint);
 
 	const record = resolution.record;
 	const scan = await (request.scan ?? scanFile)(record.sourceInfo.path, query.contains as string, request.signal);
@@ -453,16 +481,19 @@ function isLookupResult(value: ResolvedQuery | LookupResult): value is LookupRes
 function resolveCursor(request: LookupRequest, params: RawParams, fingerprint: string): ResolvedQuery | LookupResult {
 	if (params.cursor === undefined) return { query: parseQuery(params), offset: 0, expectedStamp: undefined };
 	if (hasAnySelector(params)) {
-		throw new QueryError(
-			"invalid_arguments",
-			"cursor resumes its own encoded query: pass cursor as the only argument",
-		);
+		throw new QueryError("invalid_arguments", "cursor resumes its own encoded query: pass cursor as the only argument");
 	}
 	const state: CursorState = decodeCursor(params.cursor);
 	if (state.epoch !== request.epoch) return staleCursor(request, "the session changed since the cursor was issued");
 	if (state.query.kind === "setting") {
-		return settingsPage({ query: state.query, snapshot: request.settings, epoch: request.epoch,
-			at: request.snapshot.at, offset: state.offset, expectedFingerprint: state.fingerprint });
+		return settingsPage({
+			query: state.query,
+			snapshot: request.settings,
+			epoch: request.epoch,
+			at: request.snapshot.at,
+			offset: state.offset,
+			expectedFingerprint: state.fingerprint,
+		});
 	}
 	if (state.query.kind === "model" || state.query.kind === "context_file") {
 		return discoveryPage({
@@ -520,9 +551,7 @@ function listingResult(
 	};
 	if (query.detail && selected.length > 1) {
 		return finish("ambiguous", {
-			header: baseHeader("ambiguous", snapshot.at, [
-				"More than one tool has this exact name. No schema was returned.",
-			]),
+			header: baseHeader("ambiguous", snapshot.at, ["More than one tool has this exact name. No schema was returned."]),
 			blocks: page.items.map((record) => recordBlock(record)),
 			page: { total: selected.length, offset: page.offset },
 			footer,
@@ -548,7 +577,8 @@ function listingResult(
 		page: { total: selected.length, offset: page.offset },
 		footer,
 		details,
-		pageSummary: (kept) => `records: ${kept} shown of ${page.total} matched | offset ${page.offset} | limit ${query.limit}`,
+		pageSummary: (kept) =>
+			`records: ${kept} shown of ${page.total} matched | offset ${page.offset} | limit ${query.limit}`,
 		continuation: (kept) =>
 			offset + kept < selected.length
 				? encodeCursor({ query, offset: offset + kept, fingerprint, epoch: request.epoch })
@@ -600,7 +630,9 @@ export async function lookup(request: LookupRequest): Promise<LookupResult> {
 		if (!(error instanceof QueryError)) throw error;
 		return finish(error.reason, {
 			header: baseHeader(error.reason, request.snapshot.at, [error.message, ...BOUNDARY_LINES]),
-			blocks: [], footer: [], details: { reason: error.reason, message: error.message },
+			blocks: [],
+			footer: [],
+			details: { reason: error.reason, message: error.message },
 		});
 	}
 }

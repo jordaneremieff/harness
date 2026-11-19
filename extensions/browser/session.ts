@@ -190,12 +190,7 @@ export async function discoverTabs(
 	request: TabsDiscoveryRequest,
 	signal?: AbortSignal,
 ): Promise<TabsDiscovery> {
-	const reply = await call(
-		deps,
-		request,
-		signal,
-		request.requestPermission ? 120_000 : CALL_TIMEOUT_MS,
-	);
+	const reply = await call(deps, request, signal, request.requestPermission ? 120_000 : CALL_TIMEOUT_MS);
 	return expectValue<TabsDiscovery>(reply);
 }
 

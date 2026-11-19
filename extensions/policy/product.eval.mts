@@ -67,7 +67,12 @@ const volume = [
 	step("policy_product_volume", { bytes: Math.ceil(DEFAULT_LIMITS.outputBytes / 2) }),
 ];
 const corpusRead = [step("pillars", { resource: "pattern-grounding-preflight" })];
-const policyIds = ["arguments.schema", "recovery.repeated-errors", "resources.output-volume", "recovery.pillars-application"];
+const policyIds = [
+	"arguments.schema",
+	"recovery.repeated-errors",
+	"resources.output-volume",
+	"recovery.pillars-application",
+];
 const resources = {
 	extensions: [{ path: "./product-fixture.ts" }],
 	tools: [

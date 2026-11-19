@@ -1,13 +1,33 @@
 /** Admitted inputs that the recipient conversation holds in its inbox, not yet in its transcript. */
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import { defineDoc, defineTask, InboxDoc, LiveDoc, type ConversationId, type InboxItem, type Harness, type SubmissionId, type SubmissionRecord, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import {
+	defineDoc,
+	defineTask,
+	InboxDoc,
+	LiveDoc,
+	type ConversationId,
+	type InboxItem,
+	type Harness,
+	type SubmissionId,
+	type SubmissionRecord,
+	type TaskId,
+	type Tx,
+} from "@earendil-works/pi-durable";
 import { onStoredCommit } from "./commit-observation.ts";
 import { retainedReport, storeDeliveryRow } from "./delivery-store.ts";
 import { openWorkItems } from "./open-work.ts";
 import { RequestContextDoc } from "./request-context.ts";
 import { inputLabel, type InputLabel } from "./input-entry.ts";
 
-export type InputClass = "operator" | "steer" | "followUp" | "report" | "result" | "check-in" | "timer" | "thread-notice";
+export type InputClass =
+	| "operator"
+	| "steer"
+	| "followUp"
+	| "report"
+	| "result"
+	| "check-in"
+	| "timer"
+	| "thread-notice";
 
 export type UnplacedInput = {
 	requestId: string;
@@ -45,7 +65,8 @@ export type Placement = "placed" | "unplaced" | "withdrawn";
 
 /** Placement that a committed submission record states; `conversationId` rejects a record of another conversation. */
 export function placementOf(record: SubmissionRecord | undefined, conversationId?: ConversationId): Placement {
-	if (record === undefined || (conversationId !== undefined && record.conversationId !== conversationId)) return "withdrawn";
+	if (record === undefined || (conversationId !== undefined && record.conversationId !== conversationId))
+		return "withdrawn";
 	if (record.status === "queued") return "unplaced";
 	// A settled input has an entry exactly when a boundary placed it before it ended.
 	return record.status === "unanswered" && record.entry === undefined ? "withdrawn" : "placed";
@@ -57,11 +78,23 @@ export interface UnplacedSummary {
 	readonly oldestAdmittedAt?: number;
 }
 
-export const UnplacedInputsDoc = defineDoc<UnplacedInputsState>({ kind: "agent.unplaced-inputs", version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({ inputs: [] }) });
+export const UnplacedInputsDoc = defineDoc<UnplacedInputsState>({
+	kind: "agent.unplaced-inputs",
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "initial",
+	checkpointWhen: () => false,
+	initial: () => ({ inputs: [] }),
+});
 
-async function queued(inputs: readonly UnplacedInput[], submission: (id: SubmissionId) => Promise<{ readonly status: string } | undefined>): Promise<UnplacedInput[]> {
+async function queued(
+	inputs: readonly UnplacedInput[],
+	submission: (id: SubmissionId) => Promise<{ readonly status: string } | undefined>,
+): Promise<UnplacedInput[]> {
 	const retained: UnplacedInput[] = [];
-	for (const input of inputs) if ((await submission(input.submissionId as SubmissionId))?.status === "queued") retained.push(input);
+	for (const input of inputs)
+		if ((await submission(input.submissionId as SubmissionId))?.status === "queued") retained.push(input);
 	return retained;
 }
 
@@ -78,17 +111,33 @@ export async function pruneUnplacedInputs(tx: Tx, conversationId: ConversationId
  * Call in a commit after the submit. A repeat for the same submission keeps the first admission time.
  * A submission that is absent or that left the inbox without an entry reads `withdrawn`, never `placed`.
  */
-export async function recordUnplacedInput(tx: Tx, conversationId: ConversationId, admission: UnplacedAdmission): Promise<Placement> {
+export async function recordUnplacedInput(
+	tx: Tx,
+	conversationId: ConversationId,
+	admission: UnplacedAdmission,
+): Promise<Placement> {
 	const inputs = await pruneUnplacedInputs(tx, conversationId);
 	const submission = await tx.submission(admission.submissionId as SubmissionId);
-	if (submission?.status !== "queued" || submission.conversationId !== conversationId) return placementOf(submission, conversationId);
+	if (submission?.status !== "queued" || submission.conversationId !== conversationId)
+		return placementOf(submission, conversationId);
 	const state = await tx.doc(UnplacedInputsDoc, conversationId);
 	if (admission.recipient !== undefined) state.recipient = admission.recipient;
 	if (!inputs.some((input) => input.submissionId === admission.submissionId))
-		inputs.push({ requestId: submission.requestId ?? "", submissionId: admission.submissionId, class: admission.class, sender: admission.sender, admittedAt: admission.admittedAt, noticed: false });
+		inputs.push({
+			requestId: submission.requestId ?? "",
+			submissionId: admission.submissionId,
+			class: admission.class,
+			sender: admission.sender,
+			admittedAt: admission.admittedAt,
+			noticed: false,
+		});
 	const watch = state.watch === undefined ? undefined : await tx.task(state.watch as TaskId);
 	if (watch === undefined || watch.state.status === "terminal")
-		state.watch = await tx.createTask(UnplacedWatchTask, { conversationId }, { ownership: { kind: "conversation" }, conversationId, background: true });
+		state.watch = await tx.createTask(
+			UnplacedWatchTask,
+			{ conversationId },
+			{ ownership: { kind: "conversation" }, conversationId, background: true },
+		);
 	return "unplaced";
 }
 
@@ -110,8 +159,16 @@ function retainQueuedRow(inputs: UnplacedInput[], inbox: readonly InboxItem[], r
 	const item = inbox.find((candidate) => candidate.id === row.submissionId);
 	if (item === undefined || item.mode === "write") return false;
 	if (inputs.some((input) => input.submissionId === row.submissionId)) return true;
-	const label = row.label ?? inputLabel(item.entry ?? { kind: "pi.user" }, row.requestId, row.fallback?.sender) ?? row.fallback;
-	inputs.push({ requestId: row.requestId, submissionId: row.submissionId, class: label?.class ?? "followUp", sender: label?.sender ?? "", admittedAt: row.admittedAt, noticed: false });
+	const label =
+		row.label ?? inputLabel(item.entry ?? { kind: "pi.user" }, row.requestId, row.fallback?.sender) ?? row.fallback;
+	inputs.push({
+		requestId: row.requestId,
+		submissionId: row.submissionId,
+		class: label?.class ?? "followUp",
+		sender: label?.sender ?? "",
+		admittedAt: row.admittedAt,
+		noticed: false,
+	});
 	return true;
 }
 
@@ -121,7 +178,11 @@ function retainQueuedRow(inputs: UnplacedInput[], inbox: readonly InboxItem[], r
  * after that admission in the same commit. An input that the native inbox does not hold is placed or withdrawn and
  * gets no row. A row keeps the label of its admission, else the class and sender of its native entry.
  */
-export async function prepareQueuedInputs(tx: Tx, conversationId: ConversationId, recipient?: string): Promise<(rows: readonly QueuedInputRow[]) => Promise<boolean>> {
+export async function prepareQueuedInputs(
+	tx: Tx,
+	conversationId: ConversationId,
+	recipient?: string,
+): Promise<(rows: readonly QueuedInputRow[]) => Promise<boolean>> {
 	const inputs = await pruneUnplacedInputs(tx, conversationId);
 	const state = await tx.doc(UnplacedInputsDoc, conversationId);
 	const watch = state.watch === undefined ? undefined : await tx.task(state.watch as TaskId);
@@ -133,7 +194,11 @@ export async function prepareQueuedInputs(tx: Tx, conversationId: ConversationId
 		if (!queuedAny) return false;
 		if (recipient !== undefined) state.recipient = recipient;
 		if (!watched) {
-			state.watch = await tx.createTask(UnplacedWatchTask, { conversationId }, { ownership: { kind: "conversation" }, conversationId, background: true });
+			state.watch = await tx.createTask(
+				UnplacedWatchTask,
+				{ conversationId },
+				{ ownership: { kind: "conversation" }, conversationId, background: true },
+			);
 			watched = true;
 		}
 		return true;
@@ -145,11 +210,16 @@ export async function prepareQueuedInputs(tx: Tx, conversationId: ConversationId
  * earlier admission and its bookkeeping. Each conversation with a queued input gets one commit; a row's wait counts
  * from this repair because the native record keeps no admission time.
  */
-export async function repairQueuedInputs(harness: Harness, context: Context, now: () => number = Date.now, recipient?: (conversationId: ConversationId) => Promise<string | undefined>): Promise<void> {
+export async function repairQueuedInputs(
+	harness: Harness,
+	context: Context,
+	now: () => number = Date.now,
+	recipient?: (conversationId: ConversationId) => Promise<string | undefined>,
+): Promise<void> {
 	const queuedIds = new Map<ConversationId, SubmissionId[]>();
 	for (const submission of (await harness.inspect(context)).submissions) {
 		if (submission.status !== "queued" || submission.type !== "input") continue;
-		queuedIds.set(submission.conversationId, [...queuedIds.get(submission.conversationId) ?? [], submission.id]);
+		queuedIds.set(submission.conversationId, [...(queuedIds.get(submission.conversationId) ?? []), submission.id]);
 	}
 	for (const [conversationId, ids] of queuedIds) {
 		const identity = await recipient?.(conversationId);
@@ -157,7 +227,13 @@ export async function repairQueuedInputs(harness: Harness, context: Context, now
 	}
 }
 
-async function repairConversation(tx: Tx, conversationId: ConversationId, ids: readonly SubmissionId[], now: number, recipient: string | undefined): Promise<void> {
+async function repairConversation(
+	tx: Tx,
+	conversationId: ConversationId,
+	ids: readonly SubmissionId[],
+	now: number,
+	recipient: string | undefined,
+): Promise<void> {
 	const present = new Set((await tx.doc(UnplacedInputsDoc, conversationId)).inputs.map((input) => input.submissionId));
 	const routes = (await tx.doc(RequestContextDoc, conversationId)).requests;
 	const rows: QueuedInputRow[] = [];
@@ -166,16 +242,30 @@ async function repairConversation(tx: Tx, conversationId: ConversationId, ids: r
 		const record = await tx.submission(id);
 		if (record?.status !== "queued") continue;
 		const requester = routes.find((route) => route.requestId === record.requestId)?.requester;
-		rows.push({ submissionId: id, requestId: record.requestId ?? "", admittedAt: now, ...(requester === undefined ? {} : { fallback: { class: "followUp", sender: requester } }) });
+		rows.push({
+			submissionId: id,
+			requestId: record.requestId ?? "",
+			admittedAt: now,
+			...(requester === undefined ? {} : { fallback: { class: "followUp", sender: requester } }),
+		});
 	}
 	const retain = await prepareQueuedInputs(tx, conversationId, recipient);
 	const waiting = (await tx.doc(UnplacedInputsDoc, conversationId)).inputs.filter((input) => !input.noticed);
 	if (rows.length === 0 && waiting.length === 0) return;
-	await retain([...rows, ...waiting.map((input) => ({ submissionId: input.submissionId, requestId: input.requestId, admittedAt: input.admittedAt }))]);
+	await retain([
+		...rows,
+		...waiting.map((input) => ({
+			submissionId: input.submissionId,
+			requestId: input.requestId,
+			admittedAt: input.admittedAt,
+		})),
+	]);
 }
 
 function summary(inputs: readonly UnplacedInput[]): UnplacedSummary {
-	return inputs.length === 0 ? { unplaced: 0 } : { unplaced: inputs.length, oldestAdmittedAt: Math.min(...inputs.map((input) => input.admittedAt)) };
+	return inputs.length === 0
+		? { unplaced: 0 }
+		: { unplaced: inputs.length, oldestAdmittedAt: Math.min(...inputs.map((input) => input.admittedAt)) };
 }
 
 /** Count and oldest admission time of the rows that are still queued, without a write. */
@@ -184,16 +274,28 @@ export async function unplacedSummary(tx: Tx, conversationId: ConversationId): P
 }
 
 /** Committed snapshot read of `unplacedSummary()` for observation code. */
-export async function readUnplacedSummary(harness: Harness, conversationId: ConversationId, context: Context): Promise<UnplacedSummary> {
+export async function readUnplacedSummary(
+	harness: Harness,
+	conversationId: ConversationId,
+	context: Context,
+): Promise<UnplacedSummary> {
 	const state = await harness.snapshot(UnplacedInputsDoc, conversationId, context);
-	return summary(await queued(state?.inputs ?? [], async (id) => (await harness.submission(id, context))?.status(context)));
+	return summary(
+		await queued(state?.inputs ?? [], async (id) => (await harness.submission(id, context))?.status(context)),
+	);
 }
 
 /** An input that stays queued this long produces one notice to its sender. */
 export const UNPLACED_NOTICE_MS = 5 * 60_000;
 
 /** Classes that an agent or the operator sends on purpose; only these produce a notice. */
-const EXPLICIT_CLASSES: ReadonlySet<InputClass> = new Set<InputClass>(["operator", "steer", "followUp", "report", "thread-notice"]);
+const EXPLICIT_CLASSES: ReadonlySet<InputClass> = new Set<InputClass>([
+	"operator",
+	"steer",
+	"followUp",
+	"report",
+	"thread-notice",
+]);
 
 function at(time: number | undefined): string {
 	return time === undefined ? "start unknown" : `first started at ${new Date(time).toISOString()}`;
@@ -205,8 +307,11 @@ function at(time: number | undefined): string {
  */
 export async function currentStep(tx: Tx, conversationId: ConversationId, maxAttempts?: number): Promise<string> {
 	const live = await tx.doc(LiveDoc, conversationId);
-	const started = async (taskId: TaskId | undefined): Promise<number | undefined> => taskId === undefined ? undefined : (await tx.task(taskId))?.startedAt;
-	const tools = [...live.tools ?? [], ...live.nestedTools ?? []].filter((tool) => tool.status === "running").slice(0, 4);
+	const started = async (taskId: TaskId | undefined): Promise<number | undefined> =>
+		taskId === undefined ? undefined : (await tx.task(taskId))?.startedAt;
+	const tools = [...(live.tools ?? []), ...(live.nestedTools ?? [])]
+		.filter((tool) => tool.status === "running")
+		.slice(0, 4);
 	if (tools.length > 0) {
 		const lines: string[] = [];
 		for (const tool of tools) lines.push(`tool ${tool.name.slice(0, 80)}, ${at(await started(tool.taskId))}`);
@@ -239,16 +344,47 @@ async function requestersOf(tx: Tx, conversationId: ConversationId): Promise<Map
 		const route = requestId === undefined ? undefined : routes.find((request) => request.requestId === requestId);
 		if (route !== undefined) requesters.set(route.replyTo, "run");
 	}
-	for (const item of await openWorkItems(tx, conversationId)) if (!requesters.has(item.replyTo)) requesters.set(item.replyTo, "work");
+	for (const item of await openWorkItems(tx, conversationId))
+		if (!requesters.has(item.replyTo)) requesters.set(item.replyTo, "work");
 	return requesters;
 }
 
-async function writeNotice(tx: Tx, ownerId: string, senderIdentity: string, sourceId: string, message: string, passive: boolean, now: number): Promise<void> {
-	if (await retainedReport(tx, ownerId, sourceId) !== undefined) return;
-	await storeDeliveryRow(tx, "report", { sourceId, requestId: sourceId, ownerId, senderIdentity, message, replyTo: null, ...(passive ? { passive } : {}), acknowledged: false, createdAt: now }, true);
+async function writeNotice(
+	tx: Tx,
+	ownerId: string,
+	senderIdentity: string,
+	sourceId: string,
+	message: string,
+	passive: boolean,
+	now: number,
+): Promise<void> {
+	if ((await retainedReport(tx, ownerId, sourceId)) !== undefined) return;
+	await storeDeliveryRow(
+		tx,
+		"report",
+		{
+			sourceId,
+			requestId: sourceId,
+			ownerId,
+			senderIdentity,
+			message,
+			replyTo: null,
+			...(passive ? { passive } : {}),
+			acknowledged: false,
+			createdAt: now,
+		},
+		true,
+	);
 }
 
-type NoticeContext = { readonly tx: Tx; readonly conversationId: ConversationId; readonly state: UnplacedInputsState; readonly recipient: string; readonly now: number; readonly step: string };
+type NoticeContext = {
+	readonly tx: Tx;
+	readonly conversationId: ConversationId;
+	readonly state: UnplacedInputsState;
+	readonly recipient: string;
+	readonly now: number;
+	readonly step: string;
+};
 
 function plural(count: number): string {
 	return `${count} admitted input${count === 1 ? "" : "s"}`;
@@ -259,12 +395,16 @@ function plural(count: number): string {
  * group is said to wait "for more than 5 minutes".
  */
 function stuck(rows: readonly UnplacedInput[], now: number): { due: UnplacedInput[]; newer: number } {
-	const due = rows.filter((row) => row.admittedAt + UNPLACED_NOTICE_MS <= now).sort((left, right) => left.admittedAt - right.admittedAt);
+	const due = rows
+		.filter((row) => row.admittedAt + UNPLACED_NOTICE_MS <= now)
+		.sort((left, right) => left.admittedAt - right.admittedAt);
 	return { due, newer: rows.length - due.length };
 }
 
 function newerText(newer: number, owner: string): string {
-	return newer === 0 ? "" : `; ${newer} newer input${newer === 1 ? "" : "s"}${owner} ${newer === 1 ? "waits" : "wait"} there too`;
+	return newer === 0
+		? ""
+		: `; ${newer} newer input${newer === 1 ? "" : "s"}${owner} ${newer === 1 ? "waits" : "wait"} there too`;
 }
 
 /**
@@ -281,22 +421,45 @@ async function noticeSender(notice: NoticeContext, row: UnplacedInput): Promise<
 	const { due, newer } = stuck(own, notice.now);
 	const oldest = due[0] ?? row;
 	const message = `Unplaced input notice: ${recipient} did not place ${plural(due.length)} from you for more than 5 minutes (oldest admitted ${new Date(oldest.admittedAt).toISOString()}, request ${oldest.requestId})${newerText(newer, " from you")}. Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round; nothing was withdrawn.`;
-	await writeNotice(notice.tx, row.sender, recipient, `unplaced:${notice.conversationId}:${row.requestId}`, message, own.every((input) => input.class === "thread-notice"), notice.now);
+	await writeNotice(
+		notice.tx,
+		row.sender,
+		recipient,
+		`unplaced:${notice.conversationId}:${row.requestId}`,
+		message,
+		own.every((input) => input.class === "thread-notice"),
+		notice.now,
+	);
 }
 
-const REQUESTER_RELATION: Record<RequesterKind, string> = { run: "which serves your request", work: "which holds open declared work for your request" };
+const REQUESTER_RELATION: Record<RequesterKind, string> = {
+	run: "which serves your request",
+	work: "which holds open declared work for your request",
+};
 
 /** One notice for each requester of the conversation that is not a noticed sender. */
 async function noticeRequesters(notice: NoticeContext): Promise<void> {
 	const { tx, conversationId, state, recipient } = notice;
 	const run = (await tx.doc(LiveDoc, conversationId)).run;
-	const requesters = [...await requestersOf(tx, conversationId)].filter(([requester]) => requester !== recipient && !state.inputs.some((input) => input.sender === requester && input.noticed && EXPLICIT_CLASSES.has(input.class)));
+	const requesters = [...(await requestersOf(tx, conversationId))].filter(
+		([requester]) =>
+			requester !== recipient &&
+			!state.inputs.some((input) => input.sender === requester && input.noticed && EXPLICIT_CLASSES.has(input.class)),
+	);
 	if (requesters.length === 0) return;
 	const { due, newer } = stuck(state.inputs, notice.now);
 	if (due.length === 0) return;
 	for (const [requester, kind] of requesters) {
 		const message = `Unplaced input notice: ${recipient}, ${REQUESTER_RELATION[kind]}, did not place ${plural(due.length)} for more than 5 minutes (oldest admitted ${new Date(due[0].admittedAt).toISOString()})${newerText(newer, "")}. Current step: ${notice.step}. The recipient places queued inputs at the end of its current tool round.`;
-		await writeNotice(tx, requester, recipient, `unplaced:${conversationId}:run:${run?.taskId ?? 0}`, message, false, notice.now);
+		await writeNotice(
+			tx,
+			requester,
+			recipient,
+			`unplaced:${conversationId}:run:${run?.taskId ?? 0}`,
+			message,
+			false,
+			notice.now,
+		);
 	}
 }
 
@@ -304,12 +467,25 @@ async function noticeRequesters(notice: NoticeContext): Promise<void> {
  * Notify once for each sender whose explicit input stayed queued for the notice period, and once for each requester of
  * the conversation that is not such a sender. Every other due row is marked without a notice.
  */
-async function noticeDue(tx: Tx, conversationId: ConversationId, state: UnplacedInputsState, now: number, maxAttempts: number): Promise<void> {
+async function noticeDue(
+	tx: Tx,
+	conversationId: ConversationId,
+	state: UnplacedInputsState,
+	now: number,
+	maxAttempts: number,
+): Promise<void> {
 	const due = state.inputs.filter((input) => !input.noticed && input.admittedAt + UNPLACED_NOTICE_MS <= now);
 	const explicit = due.filter((input) => EXPLICIT_CLASSES.has(input.class));
 	for (const row of due) if (!EXPLICIT_CLASSES.has(row.class)) row.noticed = true;
 	if (explicit.length === 0) return;
-	const notice: NoticeContext = { tx, conversationId, state, recipient: state.recipient ?? String(conversationId), now, step: await currentStep(tx, conversationId, maxAttempts) };
+	const notice: NoticeContext = {
+		tx,
+		conversationId,
+		state,
+		recipient: state.recipient ?? String(conversationId),
+		now,
+		step: await currentStep(tx, conversationId, maxAttempts),
+	};
 	for (const row of explicit) if (!row.noticed) await noticeSender(notice, row);
 	await noticeRequesters(notice);
 }
@@ -333,18 +509,27 @@ export const UnplacedWatchTask = defineTask<{ conversationId: number }, { phase:
 					if (state.watch === task.id) delete state.watch;
 					return { status: "terminal", outcome: { status: "completed", result: null } };
 				}
-				return { status: "sleeping", until: Math.min(...waiting.map((input) => input.admittedAt)) + UNPLACED_NOTICE_MS, checkpoint: { phase: "watch" } };
+				return {
+					status: "sleeping",
+					until: Math.min(...waiting.map((input) => input.admittedAt)) + UNPLACED_NOTICE_MS,
+					checkpoint: { phase: "watch" },
+				};
 			}, context);
 		},
 	},
-	abort: (_task, runtime, context) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+	abort: (_task, runtime, context) =>
+		runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
 /**
  * End the watch of a conversation when no queued row waits for its notice any more. Returns true when a
  * watch was ended. The next queued admission starts a new watch.
  */
-export async function endSettledWatch(harness: Harness, conversationId: ConversationId, context: Context): Promise<boolean> {
+export async function endSettledWatch(
+	harness: Harness,
+	conversationId: ConversationId,
+	context: Context,
+): Promise<boolean> {
 	if ((await harness.snapshot(UnplacedInputsDoc, conversationId, context))?.watch === undefined) return false;
 	let watch: TaskId | undefined;
 	await harness.commit(async (tx) => {
@@ -373,9 +558,12 @@ export class UnplacedWatchEnd {
 	private closed = false;
 
 	constructor(harness: Harness, report: (error: unknown) => void) {
-		this.harness = harness; this.report = report;
+		this.harness = harness;
+		this.report = report;
 		this.detach = onStoredCommit(harness, (publication) => {
-			for (const change of publication.changes) if (change.type === "submission" && change.value.status !== "queued") this.pending.add(change.value.conversationId);
+			for (const change of publication.changes)
+				if (change.type === "submission" && change.value.status !== "queued")
+					this.pending.add(change.value.conversationId);
 			this.schedule();
 		});
 	}
@@ -393,10 +581,20 @@ export class UnplacedWatchEnd {
 			const next = this.pending.values().next();
 			if (next.done || this.closed) return;
 			this.pending.delete(next.value);
-			try { await endSettledWatch(this.harness, next.value, BACKGROUND_CONTEXT); }
-			catch (error) {
+			try {
+				await endSettledWatch(this.harness, next.value, BACKGROUND_CONTEXT);
+			} catch (error) {
 				// A closing Harness refuses the commit; the watch then ends at its own notice time after reopen.
-				if (!this.closed) try { this.report(new Error("The unplaced-input watch of a conversation was not ended after its inputs left the inbox", { cause: error })); } catch { /* no further route */ }
+				if (!this.closed)
+					try {
+						this.report(
+							new Error("The unplaced-input watch of a conversation was not ended after its inputs left the inbox", {
+								cause: error,
+							}),
+						);
+					} catch {
+						/* no further route */
+					}
 			}
 		}
 	}

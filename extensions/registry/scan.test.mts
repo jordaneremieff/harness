@@ -139,13 +139,25 @@ describe("active scan cancellation", () => {
 		const controller = new AbortController();
 		let rejectRead: (error: Error) => void = () => {};
 		let entered: () => void = () => {};
-		const ready = new Promise<void>((resolve) => { entered = resolve; });
+		const ready = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
 		let closes = 0;
-		const io: ScanIO = { stat: async () => facts, open: async () => ({
+		const io: ScanIO = {
 			stat: async () => facts,
-			read: async () => new Promise((_, reject) => { rejectRead = reject; entered(); }),
-			close: async () => { closes += 1; rejectRead(new Error("closed during read")); },
-		}) };
+			open: async () => ({
+				stat: async () => facts,
+				read: async () =>
+					new Promise((_, reject) => {
+						rejectRead = reject;
+						entered();
+					}),
+				close: async () => {
+					closes += 1;
+					rejectRead(new Error("closed during read"));
+				},
+			}),
+		};
 		const result = scanFile(path, "needle", controller.signal, io);
 		await ready;
 		controller.abort();
@@ -158,10 +170,21 @@ describe("active scan cancellation", () => {
 		const facts = await stat(path);
 		const controller = new AbortController();
 		let closes = 0;
-		const result = await scanFile(path, "x", controller.signal, { stat: async () => facts, open: async () => {
-			controller.abort();
-			return { stat: async () => facts, read: async () => { throw new Error("must not read"); }, close: async () => { closes += 1; } };
-		} });
+		const result = await scanFile(path, "x", controller.signal, {
+			stat: async () => facts,
+			open: async () => {
+				controller.abort();
+				return {
+					stat: async () => facts,
+					read: async () => {
+						throw new Error("must not read");
+					},
+					close: async () => {
+						closes += 1;
+					},
+				};
+			},
+		});
 		assert.equal(result.outcome, "cancelled");
 		assert.equal(closes, 1);
 	});

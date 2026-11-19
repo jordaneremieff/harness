@@ -10,7 +10,15 @@ import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { str, bool, obj } from "@earendil-works/pi-schema";
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
-import { Harness, MemoryStorage, LiveDoc, UsageDoc, type Extension, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
+import {
+	Harness,
+	MemoryStorage,
+	LiveDoc,
+	UsageDoc,
+	type Extension,
+	type ToolExecutionApi,
+	type ToolExecutionResult,
+} from "@earendil-works/pi-durable";
 import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox, type CodemodeRunOptions, type CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
 import { StdioTransport } from "@earendil-works/pi-mcp";
@@ -18,10 +26,35 @@ import { CodemodeWorkerQueue, QueuedCodemodeSandbox } from "./codemode-admission
 import { readCreatedAgents } from "./agent-lineage.ts";
 import { agentChildrenDoc } from "./children.ts";
 import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema.ts";
-import { convertMcpResult, createDurableExecution, loadMcpConfig, type DurableExecutionHost } from "./durable-execution.ts";
+import {
+	convertMcpResult,
+	createDurableExecution,
+	loadMcpConfig,
+	type DurableExecutionHost,
+} from "./durable-execution.ts";
 import { createAgentContribution, type AgentContributionHost } from "./durable-agents.ts";
 import type { McpOAuthState } from "@earendil-works/pi-mcp/oauth";
-import { answerRuntime, answerMessage, codemodeStream, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, streamRuntime, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension, type FixtureStream } from "./durable-execution-fixture.mts";
+import {
+	answerRuntime,
+	answerMessage,
+	codemodeStream,
+	CRASH_STORAGE_ID,
+	declaredTool,
+	declaredTools,
+	executionFixture,
+	fixtureModelId,
+	fixtureProvider,
+	fixtureServerPath,
+	httpMcpServer,
+	messageText,
+	resourceListStream,
+	streamRuntime,
+	toolResultBody,
+	toolResultText,
+	toolSearchStream,
+	writeExecutionExtension,
+	type FixtureStream,
+} from "./durable-execution-fixture.mts";
 import { DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS } from "./codemode-source.ts";
 import { createDurableServices, type DurableContributionHost } from "./durable-services.ts";
 import type { DurableHost } from "./durable-host.ts";
@@ -44,7 +77,8 @@ function readyFrom(child: ReturnType<typeof spawn>, timeoutMs = 20000): Promise<
 		let stdout: Buffer = Buffer.alloc(0);
 		let stderr: Buffer = Buffer.alloc(0);
 		let settled = false;
-		const detail = (message: string) => `${message}\nstdout=${stdout.toString("utf8")}\nstderr=${stderr.toString("utf8")}`;
+		const detail = (message: string) =>
+			`${message}\nstdout=${stdout.toString("utf8")}\nstderr=${stderr.toString("utf8")}`;
 		const timer = setTimeout(() => {
 			if (settled) return;
 			settled = true;
@@ -124,34 +158,54 @@ it("returns text and structured images from native nested read", { timeout: 3000
 	const toolResult = result.toolResults.at(-1);
 	assert.ok(toolResult);
 	assert.notEqual(toolResult.isError, true, toolResultText(toolResult));
-	const output = JSON.parse(toolResultBody(toolResult)) as { textFile: string; type: string; mimeType: string; data: string; note: string };
+	const output = JSON.parse(toolResultBody(toolResult)) as {
+		textFile: string;
+		type: string;
+		mimeType: string;
+		data: string;
+		note: string;
+	};
 	assert.equal(output.textFile, "plain text\n");
 	assert.equal(output.type, "image");
 	assert.equal(output.mimeType, "image/png");
 	assert.equal(typeof output.note, "string");
 	assert.ok(output.data.length > 0);
-	assert.deepEqual(toolResult.content.filter((block) => block.type === "image"), [{ type: "image", data: output.data, mimeType: output.mimeType }]);
+	assert.deepEqual(
+		toolResult.content.filter((block) => block.type === "image"),
+		[{ type: "image", data: output.data, mimeType: output.mimeType }],
+	);
 	const details = toolResult.details as unknown as CodemodeToolDetails;
 	assert.ok(details);
-	assert.equal(details.calls.every((call) => call.status === "ok"), true);
+	assert.equal(
+		details.calls.every((call) => call.status === "ok"),
+		true,
+	);
 });
 
 it("preserves read truncation details beside the structured text result", { timeout: 30000 }, async (t) => {
 	let captured: ToolExecutionResult | undefined;
 	const f = await executionFixture(t, {
 		code: `const value = await tools.read({ path: "long.txt" }); return { length: value.length, continuation: value.includes("Use offset=2001 to continue") };`,
-		builtinExtensions: (host) => [host.durable.defineExtension({
-			name: "fixture.read-result",
-			hooks: [host.durable.hook(host.durable.ToolTask, { afterTool(call, result) {
-				if (call.name === "read") captured = result;
-				return undefined;
-			} })],
-		})],
+		builtinExtensions: (host) => [
+			host.durable.defineExtension({
+				name: "fixture.read-result",
+				hooks: [
+					host.durable.hook(host.durable.ToolTask, {
+						afterTool(call, result) {
+							if (call.name === "read") captured = result;
+							return undefined;
+						},
+					}),
+				],
+			}),
+		],
 	});
 	writeFileSync(join(f.cwd, "long.txt"), Array.from({ length: 2101 }, (_, index) => `line ${index}`).join("\n"));
 	const result = await f.submit("read a file with truncated text");
 	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { length: number; continuation: boolean };
-	const details = captured?.details as { truncated?: boolean; outputLines?: number; totalLines?: number; structuredContent?: unknown } | undefined;
+	const details = captured?.details as
+		| { truncated?: boolean; outputLines?: number; totalLines?: number; structuredContent?: unknown }
+		| undefined;
 	assert.ok(details);
 	assert.equal(details.truncated, true);
 	assert.equal(details.outputLines, 2000);
@@ -164,7 +218,9 @@ it("preserves read truncation details beside the structured text result", { time
 });
 
 it("rejects a missing nested read without a structured success value", { timeout: 30000 }, async (t) => {
-	const f = await executionFixture(t, { code: `try { return { value: await tools.read({ path: "missing.txt" }) }; } catch (error) { return { error: error.message }; }` });
+	const f = await executionFixture(t, {
+		code: `try { return { value: await tools.read({ path: "missing.txt" }) }; } catch (error) { return { error: error.message }; }`,
+	});
 	const result = await f.submit("read a missing file");
 	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { value?: unknown; error?: string };
 	assert.equal(output.value, undefined);
@@ -184,7 +240,14 @@ it("describes asynchronous discovery and awaits native tool descriptions", { tim
 			missing: (await describeTool("missing")) === undefined, missingNamespace: (await describeNamespace("missing")) === undefined };`,
 	});
 	const result = await f.submit("discover a native tool");
-	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { listed: { description: string }; found: { name: string; description: string }; described: string; asynchronous: boolean; missing: boolean; missingNamespace: boolean };
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as {
+		listed: { description: string };
+		found: { name: string; description: string };
+		described: string;
+		asynchronous: boolean;
+		missing: boolean;
+		missingNamespace: boolean;
+	};
 	assert.equal(output.asynchronous, true);
 	assert.equal(output.missingNamespace, true);
 	assert.match(output.described, /structured\(args:.*Promise</u);
@@ -193,13 +256,19 @@ it("describes asynchronous discovery and awaits native tool descriptions", { tim
 	assert.equal(output.found.description, output.described);
 	assert.equal(output.missing, true);
 	const description = declaredTool(f.requests[0], "codemode")?.description ?? "";
-	for (const helper of ["searchTools", "describeTool", "describeNamespace"]) assert.ok(description.includes(`await ${helper}(`));
+	for (const helper of ["searchTools", "describeTool", "describeNamespace"])
+		assert.ok(description.includes(`await ${helper}(`));
 });
 
 it("separates script text and the returned value from grouped console lines", { timeout: 30000 }, async (t) => {
-	const f = await executionFixture(t, { code: `console.log("first log"); text("alpha"); console.warn("second log"); text({ value: 2 }); return "omega";` });
+	const f = await executionFixture(t, {
+		code: `console.log("first log"); text("alpha"); console.warn("second log"); text({ value: 2 }); return "omega";`,
+	});
 	const result = await f.submit("produce separate output items");
-	assert.equal(toolResultBody(result.toolResults.at(-1)), "==> text 1/3 <==\nalpha\n==> text 2/3 <==\n{\"value\":2}\n==> text 3/3 <==\nomega\n<console_output>\nfirst log\nsecond log\n</console_output>");
+	assert.equal(
+		toolResultBody(result.toolResults.at(-1)),
+		'==> text 1/3 <==\nalpha\n==> text 2/3 <==\n{"value":2}\n==> text 3/3 <==\nomega\n<console_output>\nfirst log\nsecond log\n</console_output>',
+	);
 });
 
 it("leaves one script text item unnumbered and groups console-only output", { timeout: 30000 }, async (t) => {
@@ -214,7 +283,9 @@ it("leaves one script text item unnumbered and groups console-only output", { ti
 });
 
 it("keeps numbered text on each side of an image and console output last", { timeout: 30000 }, async (t) => {
-	const f = await executionFixture(t, { code: `text("before"); console.log("log"); image({ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }); text("after");` });
+	const f = await executionFixture(t, {
+		code: `text("before"); console.log("log"); image({ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }); text("after");`,
+	});
 	const result = await f.submit("produce an image between text items");
 	const first = result.toolResults.at(-1)?.content[1];
 	assert.ok(first?.type === "text");
@@ -229,23 +300,36 @@ it("keeps numbered text on each side of an image and console output last", { tim
 	]);
 });
 
-it("retains separated partial output and grouped console lines before a script error", { timeout: 30000 }, async (t) => {
-	const f = await executionFixture(t, { code: `text("before"); console.log("log"); text("second"); throw new Error("stop here");` });
+it("retains separated partial output and grouped console lines before a script error", {
+	timeout: 30000,
+}, async (t) => {
+	const f = await executionFixture(t, {
+		code: `text("before"); console.log("log"); text("second"); throw new Error("stop here");`,
+	});
 	const result = await f.submit("fail after partial output");
 	const output = toolResultBody(result.toolResults.at(-1));
-	assert.ok(output.startsWith("==> text 1/2 <==\nbefore\n==> text 2/2 <==\nsecond\n<console_output>\nlog\n</console_output>\nScript error:\n"));
+	assert.ok(
+		output.startsWith(
+			"==> text 1/2 <==\nbefore\n==> text 2/2 <==\nsecond\n<console_output>\nlog\n</console_output>\nScript error:\n",
+		),
+	);
 	assert.match(output, /stop here/u);
 	assert.equal(result.toolResults.at(-1)?.isError, true);
 });
 
 it("spills the full separated output before text truncation", { timeout: 30000 }, async (t) => {
-	const f = await executionFixture(t, { code: `// @options: {"max_output_tokens": 20}\ntext("a".repeat(100)); console.log("log"); return "z".repeat(100);` });
+	const f = await executionFixture(t, {
+		code: `// @options: {"max_output_tokens": 20}\ntext("a".repeat(100)); console.log("log"); return "z".repeat(100);`,
+	});
 	const result = await f.submit("truncate separated output");
 	const toolResult = result.toolResults.at(-1);
 	const path = (toolResult?.details as { fullOutputPath?: string } | undefined)?.fullOutputPath;
 	assert.ok(path);
 	t.after(() => rmSync(path, { force: true }));
-	assert.equal(readFileSync(path, "utf8"), `==> text 1/2 <==\n${"a".repeat(100)}\n==> text 2/2 <==\n${"z".repeat(100)}\n<console_output>\nlog\n</console_output>`);
+	assert.equal(
+		readFileSync(path, "utf8"),
+		`==> text 1/2 <==\n${"a".repeat(100)}\n==> text 2/2 <==\n${"z".repeat(100)}\n<console_output>\nlog\n</console_output>`,
+	);
 	assert.match(toolResultBody(toolResult), /Warning: truncated output/u);
 });
 
@@ -253,13 +337,24 @@ it("ignores undeclared structured results and rejects their error text", { timeo
 	const f = await executionFixture(t, {
 		code: `const value = await tools.text_only({ fail: false });
 			try { await tools.text_only({ fail: true }); } catch (error) { return { value, error: error.message }; }`,
-		builtinExtensions: (host) => [host.durable.defineExtension({
-			name: "fixture.text-only",
-			tools: [host.durable.defineTool({
-				name: "text_only", description: "Return text without an output schema.", parameters: obj({ fail: bool() }, { open: true }), replay: "safe",
-				execute: async ({ fail }) => ({ output: [{ type: "text" as const, text: fail ? "text error" : "text value" }], isError: fail, details: { structuredContent: { ignored: true } } }),
-			})],
-		})],
+		builtinExtensions: (host) => [
+			host.durable.defineExtension({
+				name: "fixture.text-only",
+				tools: [
+					host.durable.defineTool({
+						name: "text_only",
+						description: "Return text without an output schema.",
+						parameters: obj({ fail: bool() }, { open: true }),
+						replay: "safe",
+						execute: async ({ fail }) => ({
+							output: [{ type: "text" as const, text: fail ? "text error" : "text value" }],
+							isError: fail,
+							details: { structuredContent: { ignored: true } },
+						}),
+					}),
+				],
+			}),
+		],
 	});
 	const result = await f.submit("check the output schema boundary");
 	assert.deepEqual(JSON.parse(toolResultBody(result.toolResults.at(-1))), { value: "text value", error: "text error" });
@@ -272,10 +367,18 @@ it("returns admitted spawn and send references as native codemode objects", { ti
 			const spawned = await tools.agent_spawn({ name: "working-agent", model: ${JSON.stringify(`${fixtureProvider}/${fixtureModelId}`)}, prompt: "Reply with a result" });
 			const sent = await tools.agent_send({ sessionId: created.sessionId, message: "Reply with another result" });
 			return { created, spawned, sent };`,
-		builtinExtensions: (host) => [createAgentContribution({ configureSettings: () => {}, source: fileURLToPath(new URL("./index.ts", import.meta.url)) }).create(host)],
+		builtinExtensions: (host) => [
+			createAgentContribution({
+				configureSettings: () => {},
+				source: fileURLToPath(new URL("./index.ts", import.meta.url)),
+			}).create(host),
+		],
 	});
 	const result = await f.submit("Dispatch work and retain its exact references");
-	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as Record<string, { sessionId: string; result?: { sessionId: string; submissionId: number; requestId: string } }>;
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as Record<
+		string,
+		{ sessionId: string; result?: { sessionId: string; submissionId: number; requestId: string } }
+	>;
 	assert.equal(output.created.result, undefined);
 	assert.equal(output.spawned.result?.sessionId, output.spawned.sessionId);
 	assert.equal(output.sent.result?.sessionId, output.created.sessionId);
@@ -295,10 +398,27 @@ it("preserves compact native status and retained creation facts through codemode
 	const label = "\u0001😀".repeat(60);
 	const captured: ToolExecutionResult[] = [];
 	const calls: Readonly<Record<string, unknown>>[] = [];
-	const hostStatus = { conversations: [], live: false, storageId: "fixture-execution", coverage: { complete: true, returned: 0, scanned: 0, next: null } };
-	const selectedStatus = { live: false, storageId: peer,
-		conversation: { conversationId: 1, identity: peer, busy: false, lastText: null, live: null, inbox: null,
-			agent: { thinkingLevel: "off", extensions: [], tools: [] }, tasks: [], submissions: [] } };
+	const hostStatus = {
+		conversations: [],
+		live: false,
+		storageId: "fixture-execution",
+		coverage: { complete: true, returned: 0, scanned: 0, next: null },
+	};
+	const selectedStatus = {
+		live: false,
+		storageId: peer,
+		conversation: {
+			conversationId: 1,
+			identity: peer,
+			busy: false,
+			lastText: null,
+			live: null,
+			inbox: null,
+			agent: { thinkingLevel: "off", extensions: [], tools: [] },
+			tasks: [],
+			submissions: [],
+		},
+	};
 	const f = await executionFixture(t, {
 		code: `const before = await tools.agent_status({});
 			for (let i = 0; i < 21; i++) await tools.agent_spawn({ name: ${JSON.stringify(label)} + i, model: ${JSON.stringify(`${fixtureProvider}/${fixtureModelId}`)} });
@@ -311,30 +431,77 @@ it("preserves compact native status and retained creation facts through codemode
 			const catalogRoot = join(sessionsRoot, "durable");
 			mkdirSync(join(sessionsRoot, ".primaries"), { recursive: true });
 			mkdirSync(catalogRoot);
-			writeFileSync(primaryEndpointPath(sessionsRoot, peer), JSON.stringify({
-				id: peer, version: PRIMARY_ENDPOINT_VERSION, serverId: randomUUID(),
-				cwd: host.cwd, hostname: hostname(), pid: process.pid,
-				socketPath: join(sessionsRoot, "missing.sock"), startedAt: "2026-10-04T09:00:00Z",
-				intentClaim: { purpose: "Shared native status", integration: "Test structured observations", authority: "Fixture only", scope: { paths: ["extensions/agent"], branches: ["topic"] }, updatedAt: "2026-10-04T10:00:00Z" },
-			}));
-			return [createAgentContribution({ configureSettings: () => {},
-				source: fileURLToPath(new URL("./index.ts", import.meta.url)),
-				dispatch: async (method, params) => { assert.equal(method, "status"); calls.push(params); return params.sessionId === peer ? selectedStatus : hostStatus; },
-			}).create({ ...host, catalogRoot }), host.durable.defineExtension({
-				name: "fixture.status-capture",
-				hooks: [host.durable.hook(host.durable.ToolTask, { afterTool(call, result) {
-					if (call.name === "agent_status") captured.push(result);
-					return undefined;
-				} })],
-			})];
+			writeFileSync(
+				primaryEndpointPath(sessionsRoot, peer),
+				JSON.stringify({
+					id: peer,
+					version: PRIMARY_ENDPOINT_VERSION,
+					serverId: randomUUID(),
+					cwd: host.cwd,
+					hostname: hostname(),
+					pid: process.pid,
+					socketPath: join(sessionsRoot, "missing.sock"),
+					startedAt: "2026-10-04T09:00:00Z",
+					intentClaim: {
+						purpose: "Shared native status",
+						integration: "Test structured observations",
+						authority: "Fixture only",
+						scope: { paths: ["extensions/agent"], branches: ["topic"] },
+						updatedAt: "2026-10-04T10:00:00Z",
+					},
+				}),
+			);
+			return [
+				createAgentContribution({
+					configureSettings: () => {},
+					source: fileURLToPath(new URL("./index.ts", import.meta.url)),
+					dispatch: async (method, params) => {
+						assert.equal(method, "status");
+						calls.push(params);
+						return params.sessionId === peer ? selectedStatus : hostStatus;
+					},
+				}).create({ ...host, catalogRoot }),
+				host.durable.defineExtension({
+					name: "fixture.status-capture",
+					hooks: [
+						host.durable.hook(host.durable.ToolTask, {
+							afterTool(call, result) {
+								if (call.name === "agent_status") captured.push(result);
+								return undefined;
+							},
+						}),
+					],
+				}),
+			];
 		},
 	});
 	const result = await f.submit("Read compact status and selected detail");
-	type Overview = typeof hostStatus & { format: string; omitted: string[]; createdAgents?: unknown; awareness?: unknown };
-	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { before: Overview; combined: Overview; selected: { format: string; conversation: { identity: string } }; detail: typeof selectedStatus; fleet: Record<string, unknown> };
+	type Overview = typeof hostStatus & {
+		format: string;
+		omitted: string[];
+		createdAgents?: unknown;
+		awareness?: unknown;
+	};
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as {
+		before: Overview;
+		combined: Overview;
+		selected: { format: string; conversation: { identity: string } };
+		detail: typeof selectedStatus;
+		fleet: Record<string, unknown>;
+	};
 	assert.equal(captured.length, 5);
-	for (const [index, value] of [output.before, output.combined, output.selected, output.detail, output.fleet].entries()) {
-		assert.equal(matchesSchema(StatusToolOutputSchema, value), true, JSON.stringify(schemaErrors(StatusToolOutputSchema, value, 10)));
+	for (const [index, value] of [
+		output.before,
+		output.combined,
+		output.selected,
+		output.detail,
+		output.fleet,
+	].entries()) {
+		assert.equal(
+			matchesSchema(StatusToolOutputSchema, value),
+			true,
+			JSON.stringify(schemaErrors(StatusToolOutputSchema, value, 10)),
+		);
 		assert.deepEqual(captured[index]?.structuredOutput, value, "codemode retains the native structured result");
 		assert.notEqual(captured[index]?.isError, true);
 	}
@@ -345,15 +512,32 @@ it("preserves compact native status and retained creation facts through codemode
 		assert.deepEqual(overview.omitted, ["host inventory", "effort awareness", "created-agent detail"]);
 	}
 	const combined = output.combined;
-	assert.deepEqual({ conversations: combined.conversations, live: combined.live, storageId: combined.storageId, coverage: combined.coverage }, hostStatus);
+	assert.deepEqual(
+		{
+			conversations: combined.conversations,
+			live: combined.live,
+			storageId: combined.storageId,
+			coverage: combined.coverage,
+		},
+		hostStatus,
+	);
 	assert.deepEqual(JSON.parse(messageText(captured[1])), combined);
 	assert.equal(matchesSchema(StatusOutputSchema, combined), false, "the host wire schema is not widened");
-	const created = await readCreatedAgents(f.harness, agentChildrenDoc(await import("@earendil-works/pi-durable")), { storageId: hostStatus.storageId, conversationId: f.conversation.id }, BACKGROUND_CONTEXT);
+	const created = await readCreatedAgents(
+		f.harness,
+		agentChildrenDoc(await import("@earendil-works/pi-durable")),
+		{ storageId: hostStatus.storageId, conversationId: f.conversation.id },
+		BACKGROUND_CONTEXT,
+	);
 	assert.ok(created);
 	assert.equal(created.agents.length, 20);
 	assert.equal(created.omitted, 1);
 	assert.equal(created.agents[0]?.name, `${label.slice(0, 160)}…`);
-	assert.ok(created.agents.every((child) => child.kind === "conversation" && child.identity.startsWith(`${hostStatus.storageId}:`)));
+	assert.ok(
+		created.agents.every(
+			(child) => child.kind === "conversation" && child.identity.startsWith(`${hostStatus.storageId}:`),
+		),
+	);
 	assert.equal(output.selected.format, "compact");
 	assert.equal(output.selected.conversation.identity, peer);
 	assert.deepEqual(output.detail, selectedStatus);
@@ -364,10 +548,24 @@ it("preserves compact native status and retained creation facts through codemode
 });
 
 it("preserves live models and environment getters in the MCP catalog adapter", { timeout: 30000 }, async (t) => {
-	const f = await executionFixture(t, { mcpServers: { docs: { command: process.execPath, args: [fixtureServerPath], exposure: "direct" } } });
-	const state: { models: ToolExecutionApi["models"]; env: ToolExecutionApi["env"] } = { models: {} as ToolExecutionApi["models"], env: undefined };
-	const source = { get models() { return state.models; }, get env() { return state.env; } } as ToolExecutionApi;
-	const adapter = (f.execution as unknown as { catalogApi(api: ToolExecutionApi): ToolExecutionApi }).catalogApi(source);
+	const f = await executionFixture(t, {
+		mcpServers: { docs: { command: process.execPath, args: [fixtureServerPath], exposure: "direct" } },
+	});
+	const state: { models: ToolExecutionApi["models"]; env: ToolExecutionApi["env"] } = {
+		models: {} as ToolExecutionApi["models"],
+		env: undefined,
+	};
+	const source = {
+		get models() {
+			return state.models;
+		},
+		get env() {
+			return state.env;
+		},
+	} as ToolExecutionApi;
+	const adapter = (f.execution as unknown as { catalogApi(api: ToolExecutionApi): ToolExecutionApi }).catalogApi(
+		source,
+	);
 	assert.equal(adapter.models, state.models);
 	assert.equal(adapter.env, undefined);
 	const models = {} as ToolExecutionApi["models"];
@@ -378,7 +576,9 @@ it("preserves live models and environment getters in the MCP catalog adapter", {
 	assert.equal(adapter.env, env);
 });
 
-it("omits model headers from every codemode catalog lookup and retains sampling metadata", { timeout: 30000 }, async (t) => {
+it("omits model headers from every codemode catalog lookup and retains sampling metadata", {
+	timeout: 30000,
+}, async (t) => {
 	const provider = "catalog-fixture";
 	const id = "catalog-model";
 	const samplingParamsByThinkingLevel = { off: { temperature: 0.2 }, high: { topP: 0.8 } };
@@ -392,14 +592,26 @@ it("omits model headers from every codemode catalog lookup and retains sampling 
 		};`,
 	});
 	const runtime = f.services.services.modelRuntime;
-	const stream = () => { throw new Error("Catalog lookup must not request model output"); };
+	const stream = () => {
+		throw new Error("Catalog lookup must not request model output");
+	};
 	runtime.registerNativeProvider({
-		id: provider, name: "Catalog fixture", getModels: () => [{ ...testModel, provider, id, headers, samplingParamsByThinkingLevel }],
-		auth: { apiKey: { name: "Fixture", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
-		stream, streamSimple: stream,
+		id: provider,
+		name: "Catalog fixture",
+		getModels: () => [{ ...testModel, provider, id, headers, samplingParamsByThinkingLevel }],
+		auth: {
+			apiKey: { name: "Fixture", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) },
+		},
+		stream,
+		streamSimple: stream,
 	});
 	const result = await f.submit("inspect the model catalog");
-	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { listed: Record<string, unknown>[]; available: Record<string, unknown>[]; exact: Record<string, unknown>; missing: boolean };
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as {
+		listed: Record<string, unknown>[];
+		available: Record<string, unknown>[];
+		exact: Record<string, unknown>;
+		missing: boolean;
+	};
 	assert.equal(output.listed.length, 1);
 	assert.equal(output.available.length, 1);
 	assert.equal(output.missing, true, "an unknown model remains undefined in the script");
@@ -410,7 +622,11 @@ it("omits model headers from every codemode catalog lookup and retains sampling 
 		assert.equal(model.api, testModel.api);
 		assert.deepEqual(model.samplingParamsByThinkingLevel, samplingParamsByThinkingLevel);
 	}
-	assert.deepEqual(runtime.getModel(provider, id)?.headers, headers, "catalog projection leaves provider headers intact");
+	assert.deepEqual(
+		runtime.getModel(provider, id)?.headers,
+		headers,
+		"catalog projection leaves provider headers intact",
+	);
 });
 
 it("throws a native agent error without data to codemode with its text", { timeout: 30000 }, async (t) => {
@@ -421,13 +637,22 @@ it("throws a native agent error without data to codemode with its text", { timeo
 		} catch (error) {
 			return { caught: true, error: error.message };
 		}`,
-		builtinExtensions: (host) => [createAgentContribution({ configureSettings: () => {},
-			source: fileURLToPath(new URL("./index.ts", import.meta.url)),
-			dispatch: async () => { throw new Error("target stream unavailable"); },
-		}).create(host)],
+		builtinExtensions: (host) => [
+			createAgentContribution({
+				configureSettings: () => {},
+				source: fileURLToPath(new URL("./index.ts", import.meta.url)),
+				dispatch: async () => {
+					throw new Error("target stream unavailable");
+				},
+			}).create(host),
+		],
 	});
 	const result = await f.submit("read the target status");
-	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { caught: boolean; error?: string; value?: unknown };
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as {
+		caught: boolean;
+		error?: string;
+		value?: unknown;
+	};
 	assert.equal(output.caught, true, "the agent failure rejects the nested script call");
 	assert.match(output.error ?? "", /Status of target failed: target stream unavailable/u);
 	assert.equal(output.value, undefined, "the error is not an empty structured value");
@@ -437,16 +662,28 @@ it("keeps a data-bearing native tool error as a codemode result", { timeout: 300
 	const failure = { outcome: "failed", error: "target is busy" };
 	const f = await executionFixture(t, {
 		code: `return await tools.data_error({});`,
-		builtinExtensions: (host) => [host.durable.defineExtension({
-			name: "fixture.data-error",
-			tools: [{
-				...host.durable.defineTool({
-					name: "data_error", description: "Return an error with structured data.", parameters: obj({}, { open: true }), replay: "safe",
-					execute: async () => ({ output: [{ type: "text" as const, text: "target is busy" }], isError: true, structuredOutput: failure, diagnostics: [{ severity: "error" as const, message: "target is busy" }] }),
-				}),
-				structuredOutputSchema: obj({ outcome: str(), error: str() }, { open: true }),
-			}],
-		})],
+		builtinExtensions: (host) => [
+			host.durable.defineExtension({
+				name: "fixture.data-error",
+				tools: [
+					{
+						...host.durable.defineTool({
+							name: "data_error",
+							description: "Return an error with structured data.",
+							parameters: obj({}, { open: true }),
+							replay: "safe",
+							execute: async () => ({
+								output: [{ type: "text" as const, text: "target is busy" }],
+								isError: true,
+								structuredOutput: failure,
+								diagnostics: [{ severity: "error" as const, message: "target is busy" }],
+							}),
+						}),
+						structuredOutputSchema: obj({ outcome: str(), error: str() }, { open: true }),
+					},
+				],
+			}),
+		],
 	});
 	const result = await f.submit("read the structured error");
 	assert.deepEqual(JSON.parse(toolResultBody(result.toolResults.at(-1))), failure);
@@ -468,15 +705,23 @@ it("applies an afterTool ToolTask hook to a nested codemode result", { timeout: 
 	}
 });
 
-it("starts only the named indirect server on demand and keeps prompt declarations stable", { timeout: 30000 }, async (t) => {
+it("starts only the named indirect server on demand and keeps prompt declarations stable", {
+	timeout: 30000,
+}, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "mcp-demand-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const one = join(root, "one.events"), two = join(root, "two.events");
+	const one = join(root, "one.events"),
+		two = join(root, "two.events");
 	const f = await executionFixture(t, {
-		code: 'return await tools.mcp__one_more__list_topics({});',
+		code: "return await tools.mcp__one_more__list_topics({});",
 		mcpServers: {
 			one_more: { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: one } },
-			one: { command: process.execPath, args: [fixtureServerPath], exposure: "deferred", env: { MCP_FIXTURE_EVENTS_FILE: two } },
+			one: {
+				command: process.execPath,
+				args: [fixtureServerPath],
+				exposure: "deferred",
+				env: { MCP_FIXTURE_EVENTS_FILE: two },
+			},
 		},
 	});
 	assert.equal(existsSync(one), false);
@@ -486,25 +731,40 @@ it("starts only the named indirect server on demand and keeps prompt declaration
 	assert.match(readFileSync(one, "utf8"), /^started /u);
 	assert.equal(existsSync(two), false);
 	assert.deepEqual(declaredTools(f.requests[1]), declaredTools(f.requests[0]));
-	assert.deepEqual(f.requests[1].messages.filter(message => message.role === "system"), f.requests[0].messages.filter(message => message.role === "system"), "connection completion emits no system or tool declaration patch");
+	assert.deepEqual(
+		f.requests[1].messages.filter((message) => message.role === "system"),
+		f.requests[0].messages.filter((message) => message.role === "system"),
+		"connection completion emits no system or tool declaration patch",
+	);
 });
 
-for (const code of ['return await searchTools("topics");', 'return ALL_TOOLS;', 'return await tools.list_mcp_resources({});']) it(`starts all indirect servers for discovery: ${code}`, { timeout: 30000 }, async (t) => {
-	const root = mkdtempSync(join(tmpdir(), "mcp-discovery-"));
-	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const one = join(root, "one.events"), two = join(root, "two.events");
-	const f = await executionFixture(t, { code, mcpServers: {
-		one: { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: one } },
-		two: { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: two } },
-	} });
-	assert.equal(existsSync(one), false);
-	assert.equal(existsSync(two), false);
-	await f.submit("discover resources");
-	assert.match(readFileSync(one, "utf8"), /^started /u);
-	assert.match(readFileSync(two, "utf8"), /^started /u);
-});
+for (const code of [
+	'return await searchTools("topics");',
+	"return ALL_TOOLS;",
+	"return await tools.list_mcp_resources({});",
+])
+	it(`starts all indirect servers for discovery: ${code}`, { timeout: 30000 }, async (t) => {
+		const root = mkdtempSync(join(tmpdir(), "mcp-discovery-"));
+		t.after(() => rmSync(root, { recursive: true, force: true }));
+		const one = join(root, "one.events"),
+			two = join(root, "two.events");
+		const f = await executionFixture(t, {
+			code,
+			mcpServers: {
+				one: { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: one } },
+				two: { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: two } },
+			},
+		});
+		assert.equal(existsSync(one), false);
+		assert.equal(existsSync(two), false);
+		await f.submit("discover resources");
+		assert.match(readFileSync(one, "utf8"), /^started /u);
+		assert.match(readFileSync(two, "utf8"), /^started /u);
+	});
 
-it("reaches a stdio MCP server from codemode with normalized names and structured results", { timeout: 60000 }, async (t) => {
+it("reaches a stdio MCP server from codemode with normalized names and structured results", {
+	timeout: 60000,
+}, async (t) => {
 	const code = `const info = await describeNamespace("dev-docs");
 		const listed = await tools.mcp__dev_docs__list_topics({});
 		const routed = {};
@@ -537,10 +797,18 @@ it("reaches a stdio MCP server from codemode with normalized names and structure
 	assert.equal(output.result.content[0]?.text, "called list-topics {}", "the script received the CallToolResult");
 	const colliding = Object.keys(output.routed);
 	assert.equal(colliding.length, 2, "both tools that normalize to one name stay reachable");
-	for (const name of colliding) assert.match(name, /^mcp__dev_docs__lookup_doc_\w+$/u, "colliding names carry a suffix");
-	assert.deepEqual(Object.values(output.routed).sort(), ['called lookup-doc {"topic":"x"}', 'called lookup_doc {"topic":"x"}']);
+	for (const name of colliding)
+		assert.match(name, /^mcp__dev_docs__lookup_doc_\w+$/u, "colliding names carry a suffix");
+	assert.deepEqual(Object.values(output.routed).sort(), [
+		'called lookup-doc {"topic":"x"}',
+		'called lookup_doc {"topic":"x"}',
+	]);
 	assert.ok(declaredTools(f.requests[0]).includes("codemode"), "the configured server activates codemode");
-	assert.deepEqual(declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")), [], "server tools stay out of the model's declarations");
+	assert.deepEqual(
+		declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")),
+		[],
+		"server tools stay out of the model's declarations",
+	);
 });
 
 function deferred() {
@@ -552,14 +820,19 @@ function deferred() {
 }
 
 /** One named prompt section of the request's system message. */
-function systemSection(request: { messages: readonly { role?: string; content?: unknown; sections?: unknown }[] }, name: string): string | undefined {
+function systemSection(
+	request: { messages: readonly { role?: string; content?: unknown; sections?: unknown }[] },
+	name: string,
+): string | undefined {
 	const system = request.messages.find((message) => message.role === "system");
 	const sections = system?.sections;
 	if (sections === null || typeof sections !== "object") return undefined;
 	return (sections as Record<string, string>)[name];
 }
 
-it("activates tool_search for a deferred server and loads matching tools for the next request", { timeout: 60000 }, async (t) => {
+it("activates tool_search for a deferred server and loads matching tools for the next request", {
+	timeout: 60000,
+}, async (t) => {
 	const f = await executionFixture(t, {
 		settings: { defaultTools: [] },
 		mcpServers: {
@@ -576,12 +849,23 @@ it("activates tool_search for a deferred server and loads matching tools for the
 	const result = await f.submit("find the docs tools");
 	assert.match(toolResultText(result.toolResults[0]), /mcp__dev_docs__list_topics/u);
 	assert.ok(declaredTools(f.requests[0]).includes("tool_search"), "the deferred server activates tool_search");
-	assert.ok(!declaredTools(f.requests[0]).includes("codemode"), "codemode stays inactive without codemode exposure or settings");
-	assert.match(systemSection(f.requests[0], "mcp_servers") ?? "", /^- mcp__dev_docs \(tool_search\): Search the product docs$/mu);
-	assert.ok(declaredTools(f.requests[1]).includes("mcp__dev_docs__list_topics"), "the loaded tool is declared on the next request");
+	assert.ok(
+		!declaredTools(f.requests[0]).includes("codemode"),
+		"codemode stays inactive without codemode exposure or settings",
+	);
+	assert.match(
+		systemSection(f.requests[0], "mcp_servers") ?? "",
+		/^- mcp__dev_docs \(tool_search\): Search the product docs$/mu,
+	);
+	assert.ok(
+		declaredTools(f.requests[1]).includes("mcp__dev_docs__list_topics"),
+		"the loaded tool is declared on the next request",
+	);
 });
 
-it("hides direct tool declarations in codemode only mode while scripts still reach them", { timeout: 30000 }, async (t) => {
+it("hides direct tool declarations in codemode only mode while scripts still reach them", {
+	timeout: 30000,
+}, async (t) => {
 	const f = await executionFixture(t, {
 		code: `const value = await tools.structured({});\nreturn value;`,
 		settings: { defaultTools: ["+codemode", "+tool_search"], codemode: { mode: "only" } },
@@ -595,59 +879,145 @@ it("hides direct tool declarations in codemode only mode while scripts still rea
 });
 
 it("keeps model-only compaction declared in codemode only mode", { timeout: 30000 }, async (t) => {
-	const control = (host: DurableExecutionHost, name: string, modelOnly: boolean) => host.durable.defineTool({
-		name,
-		description: `${name} fixture`,
-		parameters: obj({}, { open: true }),
-		execute: async () => ({ output: [{ type: "text" as const, text: "ok" }] }),
-		...(modelOnly ? { callers: ["model"] as const } : {}),
-	});
+	const control = (host: DurableExecutionHost, name: string, modelOnly: boolean) =>
+		host.durable.defineTool({
+			name,
+			description: `${name} fixture`,
+			parameters: obj({}, { open: true }),
+			execute: async () => ({ output: [{ type: "text" as const, text: "ok" }] }),
+			...(modelOnly ? { callers: ["model"] as const } : {}),
+		});
 	const f = await executionFixture(t, {
 		stream: () => answerMessage(),
 		settings: { defaultTools: ["+codemode", "+tool_search"], codemode: { mode: "only" } },
-		builtinExtensions: (host) => [host.durable.defineExtension({ name: "fixture.agent-controls", tools: [
-			control(host, "agent_compact", true),
-			control(host, "agent_status", false),
-		] })],
+		builtinExtensions: (host) => [
+			host.durable.defineExtension({
+				name: "fixture.agent-controls",
+				tools: [control(host, "agent_compact", true), control(host, "agent_status", false)],
+			}),
+		],
 	});
 	await f.submit("say hi");
 	assert.deepEqual(declaredTools(f.requests[0]).sort(), ["agent_compact", "codemode", "tool_search"]);
 });
 
 /** The harness Agent contribution as a native extension for one execution fixture host. */
-function agentContribution(host: Parameters<NonNullable<Parameters<typeof executionFixture>[1]["builtinExtensions"]>>[0], dispatched: string[] = []): ReturnType<ReturnType<typeof createAgentContribution>["create"]> {
-	return createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts", dispatch: async (method) => { dispatched.push(method); return { items: [], next: undefined }; } }).create(host as unknown as AgentContributionHost);
+function agentContribution(
+	host: Parameters<NonNullable<Parameters<typeof executionFixture>[1]["builtinExtensions"]>>[0],
+	dispatched: string[] = [],
+): ReturnType<ReturnType<typeof createAgentContribution>["create"]> {
+	return createAgentContribution({
+		configureSettings: () => {},
+		source: "/abs/extensions/agent/index.ts",
+		dispatch: async (method) => {
+			dispatched.push(method);
+			return { items: [], next: undefined };
+		},
+	}).create(host as unknown as AgentContributionHost);
 }
 
-it("declares direct controls, defers infrequent ones, and discovers a deferred control without MCP", { timeout: 30000 }, async (t) => {
+it("declares direct controls, defers infrequent ones, and discovers a deferred control without MCP", {
+	timeout: 30000,
+}, async (t) => {
 	const dispatched: string[] = [];
 	const stream: FixtureStream = (context) => {
 		const results = context.messages.filter((message) => message.role === "toolResult");
 		if (!results.some((result) => result.toolName === "tool_search"))
-			return { role: "assistant", api: "openai-completions", provider: fixtureProvider, model: fixtureModelId, content: [{ type: "toolCall", id: "search-agents", name: "tool_search", arguments: { query: "list retained agent sessions" } }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: Date.now() };
+			return {
+				role: "assistant",
+				api: "openai-completions",
+				provider: fixtureProvider,
+				model: fixtureModelId,
+				content: [
+					{
+						type: "toolCall",
+						id: "search-agents",
+						name: "tool_search",
+						arguments: { query: "list retained agent sessions" },
+					},
+				],
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: Date.now(),
+			};
 		if (!results.some((result) => result.toolName === "agent_list"))
-			return { role: "assistant", api: "openai-completions", provider: fixtureProvider, model: fixtureModelId, content: [{ type: "toolCall", id: "list-agents", name: "agent_list", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: Date.now() };
+			return {
+				role: "assistant",
+				api: "openai-completions",
+				provider: fixtureProvider,
+				model: fixtureModelId,
+				content: [{ type: "toolCall", id: "list-agents", name: "agent_list", arguments: {} }],
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: Date.now(),
+			};
 		return answerMessage();
 	};
-	const f = await executionFixture(t, { settings: { defaultTools: ["+codemode", "+tool_search"] }, stream, builtinExtensions: (host) => [agentContribution(host, dispatched)] });
+	const f = await executionFixture(t, {
+		settings: { defaultTools: ["+codemode", "+tool_search"] },
+		stream,
+		builtinExtensions: (host) => [agentContribution(host, dispatched)],
+	});
 	const result = await f.submit("find the retained agent tools and use them");
 	const first = declaredTools(f.requests[0]);
-	for (const name of ["agent_spawn", "agent_send", "agent_steer", "agent_abort", "agent_status", "agent_intent", "agent_collaborate", "agent_work", "agent_compact", "tool_search"])
+	for (const name of [
+		"agent_spawn",
+		"agent_send",
+		"agent_steer",
+		"agent_abort",
+		"agent_status",
+		"agent_intent",
+		"agent_collaborate",
+		"agent_work",
+		"agent_compact",
+		"tool_search",
+	])
 		assert.ok(first.includes(name), `${name} is declared directly`);
-	for (const name of ["agent_inspect", "agent_list", "agent_attach", "agent_place", "agent_fork", "agent_rewind", "agent_reset", "agent_configure", "agent_profile", "agent_command"])
+	for (const name of [
+		"agent_inspect",
+		"agent_list",
+		"agent_attach",
+		"agent_place",
+		"agent_fork",
+		"agent_rewind",
+		"agent_reset",
+		"agent_configure",
+		"agent_profile",
+		"agent_command",
+	])
 		assert.ok(!first.includes(name), `${name} starts undeclared`);
 	assert.ok(!first.includes("agent_await"), "the removed wait has no declaration");
 	assert.match(systemSection(f.requests[0], "agent-controls") ?? "", /^- agent_spawn:/mu);
 	assert.doesNotMatch(systemSection(f.requests[0], "agent-controls") ?? "", /^- agent_list:/mu);
 	assert.match(toolResultText(result.toolResults.find((entry) => entry.toolName === "tool_search")), /agent_list/u);
-	assert.ok(declaredTools(f.requests[1]).includes("agent_list"), "tool_search declares the loaded control on the next request");
+	assert.ok(
+		declaredTools(f.requests[1]).includes("agent_list"),
+		"tool_search declares the loaded control on the next request",
+	);
 	const listed = result.toolResults.find((entry) => entry.toolName === "agent_list");
 	assert.ok(listed, "the loaded control executes");
 	assert.ok(dispatched.includes("profile-list"), `the loaded control reached the host dispatch: ${dispatched.join()}`);
 });
 
 it("keeps explicit builtin tool-search disablement authoritative without MCP", { timeout: 30000 }, async (t) => {
-	const f = await executionFixture(t, { settings: { defaultTools: ["+codemode", "+tool_search"], extensions: ["-builtin:tool_search"] }, stream: () => answerMessage() });
+	const f = await executionFixture(t, {
+		settings: { defaultTools: ["+codemode", "+tool_search"], extensions: ["-builtin:tool_search"] },
+		stream: () => answerMessage(),
+	});
 	await f.submit("say hi");
 	assert.ok(declaredTools(f.requests[0]).includes("codemode"));
 	assert.ok(!declaredTools(f.requests[0]).includes("tool_search"), "the configured removal stays authoritative");
@@ -670,10 +1040,15 @@ it("keeps model-only compaction out of script callables", { timeout: 60000 }, as
 
 it("prepares a finite execution budget on the registered native codemode tool", { timeout: 30000 }, async (t) => {
 	const f = await executionFixture(t, { stream: () => answerMessage() });
-	const tool = f.execution.extensions.find((extension) => extension.name === "codemode")?.tools?.find((candidate) => candidate.name === "codemode");
+	const tool = f.execution.extensions
+		.find((extension) => extension.name === "codemode")
+		?.tools?.find((candidate) => candidate.name === "codemode");
 	assert.ok(tool?.prepareArguments);
 	const prepared = tool.prepareArguments({ code: 'return "ok";' }) as { code: string };
-	assert.match(prepared.code, new RegExp(`^// @options: \\{"timeout_ms":${DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS}\\}\\nreturn "ok";$`, "u"));
+	assert.match(
+		prepared.code,
+		new RegExp(`^// @options: \\{"timeout_ms":${DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS}\\}\\nreturn "ok";$`, "u"),
+	);
 });
 
 it("sends stored OAuth tokens to an HTTP server and reads its resources", { timeout: 60000 }, async (t) => {
@@ -686,7 +1061,12 @@ it("sends stored OAuth tokens to an HTTP server and reads its resources", { time
 			const read = await tools.read_mcp_resource({ server: "remote-docs", uri: "docs://readme" });
 			return { tool, listed, read };`,
 		mcpServers: { "remote-docs": { url: server.url, description: "Remote docs" } },
-		mcpAuth: { [`mcp__remote_docs|${server.url}`]: { serverUrl: server.url, tokens: { access_token: token, token_type: "Bearer" } } },
+		mcpAuth: {
+			[`mcp__remote_docs|${server.url}`]: {
+				serverUrl: server.url,
+				tokens: { access_token: token, token_type: "Bearer" },
+			},
+		},
 	});
 	const result = await f.submit("call the remote server");
 	const body = toolResultBody(result.toolResults.at(-1));
@@ -703,18 +1083,40 @@ it("sends stored OAuth tokens to an HTTP server and reads its resources", { time
 });
 
 it("records nested calls in native live slots and preserves hook parent identity", { timeout: 30000 }, async (t) => {
-	const entered = deferred(); const release = deferred();
+	const entered = deferred();
+	const release = deferred();
 	t.after(() => release.resolve());
-	let parent: unknown; let nestedTask: unknown;
+	let parent: unknown;
+	let nestedTask: unknown;
 	const f = await executionFixture(t, {
 		code: 'return await tools.step({ value: "first" });',
-		builtinExtensions: (host) => [host.durable.defineExtension({ name: "fixture.progress", tools: [host.durable.defineTool({
-			name: "step", description: "Hold an owned nested call.", parameters: obj({ value: str() }, { open: true }), replay: "safe",
-			execute: async (_args, api) => { nestedTask = api.taskId; entered.resolve(); await release.promise; return { output: [{ type: "text" as const, text: "done" }] }; },
-		})], hooks: [host.durable.hook(host.durable.ToolTask, { beforeTool(call) {
-			if (call.name === "step") parent = call.parent;
-			return undefined;
-		} })] })],
+		builtinExtensions: (host) => [
+			host.durable.defineExtension({
+				name: "fixture.progress",
+				tools: [
+					host.durable.defineTool({
+						name: "step",
+						description: "Hold an owned nested call.",
+						parameters: obj({ value: str() }, { open: true }),
+						replay: "safe",
+						execute: async (_args, api) => {
+							nestedTask = api.taskId;
+							entered.resolve();
+							await release.promise;
+							return { output: [{ type: "text" as const, text: "done" }] };
+						},
+					}),
+				],
+				hooks: [
+					host.durable.hook(host.durable.ToolTask, {
+						beforeTool(call) {
+							if (call.name === "step") parent = call.parent;
+							return undefined;
+						},
+					}),
+				],
+			}),
+		],
 	});
 	const submitted = f.submit("observe a native nested call");
 	await entered.promise;
@@ -738,18 +1140,41 @@ it("records nested calls in native live slots and preserves hook parent identity
 
 it("counts model usage under the nested model tool without charging codemode twice", { timeout: 30000 }, async (t) => {
 	const model = { provider: "fixture", id: "classifier" };
-	const context = { state: {}, images: [{ type: "image", data: "AA==", mimeType: "image/png" }], questions: { q: { type: "bool", instructions: "Check", criteria: { true: "yes", false: "no" } } } };
-	const f = await executionFixture(t, { code: `return await models.classify(${JSON.stringify(model)}, ${JSON.stringify(context)});` });
+	const context = {
+		state: {},
+		images: [{ type: "image", data: "AA==", mimeType: "image/png" }],
+		questions: { q: { type: "bool", instructions: "Check", criteria: { true: "yes", false: "no" } } },
+	};
+	const f = await executionFixture(t, {
+		code: `return await models.classify(${JSON.stringify(model)}, ${JSON.stringify(context)});`,
+	});
 	const runtime = f.services.services.modelRuntime;
 	runtime.getModelOfType = (() => model) as typeof runtime.getModelOfType;
 	let received: unknown;
 	runtime.classify = (async (_model, value) => {
 		received = value;
-		return { api: "fixture-classifier", provider: model.provider, model: model.id, answers: { q: { type: "bool", probability: 1 } }, timestamp: Date.now(), stopReason: "stop", usage: { input: 0, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 1, cost: { input: 0, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.1 } } };
+		return {
+			api: "fixture-classifier",
+			provider: model.provider,
+			model: model.id,
+			answers: { q: { type: "bool", probability: 1 } },
+			timestamp: Date.now(),
+			stopReason: "stop",
+			usage: {
+				input: 0,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 1,
+				cost: { input: 0, output: 0.1, cacheRead: 0, cacheWrite: 0, total: 0.1 },
+			},
+		};
 	}) as typeof runtime.classify;
 	const result = await f.submit("classify with an image");
 	assert.deepEqual(received, context);
-	assert.deepEqual(JSON.parse(toolResultBody(result.toolResults.at(-1))).answers, { q: { type: "bool", probability: 1 } });
+	assert.deepEqual(JSON.parse(toolResultBody(result.toolResults.at(-1))).answers, {
+		q: { type: "bool", probability: 1 },
+	});
 	assert.equal(result.toolResults.at(-1)?.usage, undefined);
 	const usage = await f.harness.snapshot(UsageDoc, f.conversation.id, BACKGROUND_CONTEXT);
 	assert.equal(usage?.tools["pi.codemode.models.classify"].cost.total, 0.1);
@@ -758,11 +1183,24 @@ it("counts model usage under the nested model tool without charging codemode twi
 
 it("rejects malformed structured output before the script receives a success value", { timeout: 30000 }, async (t) => {
 	const f = await executionFixture(t, {
-		code: 'try { return { value: await tools.malformed({}) }; } catch (error) { return { error: error.message }; }',
-		builtinExtensions: (host) => [host.durable.defineExtension({ name: "fixture.malformed", tools: [host.durable.defineTool({
-			name: "malformed", description: "Return an invalid structured value.", parameters: obj({}, { open: true }), structuredOutputSchema: obj({ answer: str() }, { open: true }),
-			execute: async () => ({ output: [{ type: "text" as const, text: "not a success" }], structuredOutput: { answer: 42 } }),
-		})] })],
+		code: "try { return { value: await tools.malformed({}) }; } catch (error) { return { error: error.message }; }",
+		builtinExtensions: (host) => [
+			host.durable.defineExtension({
+				name: "fixture.malformed",
+				tools: [
+					host.durable.defineTool({
+						name: "malformed",
+						description: "Return an invalid structured value.",
+						parameters: obj({}, { open: true }),
+						structuredOutputSchema: obj({ answer: str() }, { open: true }),
+						execute: async () => ({
+							output: [{ type: "text" as const, text: "not a success" }],
+							structuredOutput: { answer: 42 },
+						}),
+					}),
+				],
+			}),
+		],
 	});
 	const result = await f.submit("reject invalid output");
 	const output = JSON.parse(toolResultBody(result.toolResults.at(-1)));
@@ -771,7 +1209,9 @@ it("rejects malformed structured output before the script receives a success val
 });
 
 it("rejects invalid model arguments with the public contract's error text", { timeout: 30000 }, async (t) => {
-	const f = await executionFixture(t, { code: 'try { await models.classify({}, {}); return "no error"; } catch (error) { return error.message; }' });
+	const f = await executionFixture(t, {
+		code: 'try { await models.classify({}, {}); return "no error"; } catch (error) { return error.message; }',
+	});
 	const result = await f.submit("call classify badly");
 	assert.match(toolResultBody(result.toolResults.at(-1)), /expects a classifier model/u);
 });
@@ -783,9 +1223,20 @@ it("declares direct resource tools and serves a model-issued resource listing", 
 	const f = await executionFixture(t, {
 		stream: resourceListStream(),
 		mcpServers: { "remote-docs": { url: server.url, description: "Remote docs", exposure: "direct" } },
-		mcpAuth: { [`mcp__remote_docs|${server.url}`]: { serverUrl: server.url, tokens: { access_token: token, token_type: "Bearer" } } },
+		mcpAuth: {
+			[`mcp__remote_docs|${server.url}`]: {
+				serverUrl: server.url,
+				tokens: { access_token: token, token_type: "Bearer" },
+			},
+		},
 	});
-	assert.ok(f.services.registry.snapshot().tools().some(({ tool }) => tool.name === "list_mcp_resources"), "fixture installation completes direct resource registration");
+	assert.ok(
+		f.services.registry
+			.snapshot()
+			.tools()
+			.some(({ tool }) => tool.name === "list_mcp_resources"),
+		"fixture installation completes direct resource registration",
+	);
 	const result = await f.submit("list the resources");
 	assert.ok(declaredTools(f.requests[0]).includes("list_mcp_resources"));
 	assert.match(toolResultText(result.toolResults.at(-1)), /docs:\/\/readme/u);
@@ -796,24 +1247,46 @@ it("keeps fixture registration pending until the server supplies its tools", { t
 	const entered = deferred();
 	const release = deferred();
 	t.after(() => release.resolve());
-	const server = await httpMcpServer(token, { beforeResponse: async (method) => {
-		if (method === "tools/list") { entered.resolve(); await release.promise; }
-	} });
+	const server = await httpMcpServer(token, {
+		beforeResponse: async (method) => {
+			if (method === "tools/list") {
+				entered.resolve();
+				await release.promise;
+			}
+		},
+	});
 	t.after(() => server.close());
 	let registered = false;
 	const completion = executionFixture(t, {
 		mcpServers: { "held-docs": { url: server.url, exposure: "direct" } },
-		mcpAuth: { [`mcp__held_docs|${server.url}`]: { serverUrl: server.url, tokens: { access_token: token, token_type: "Bearer" } } },
-	}).then((fixture) => { registered = true; return fixture; });
+		mcpAuth: {
+			[`mcp__held_docs|${server.url}`]: {
+				serverUrl: server.url,
+				tokens: { access_token: token, token_type: "Bearer" },
+			},
+		},
+	}).then((fixture) => {
+		registered = true;
+		return fixture;
+	});
 	await entered.promise;
 	assert.equal(registered, false, "the server still holds its tool list");
 	release.resolve();
 	const f = await completion;
 	assert.equal(registered, true);
-	assert.ok(f.services.registry.snapshot().tools().some(({ tool }) => tool.name === "mcp__held_docs__echo"));
+	assert.ok(
+		f.services.registry
+			.snapshot()
+			.tools()
+			.some(({ tool }) => tool.name === "mcp__held_docs__echo"),
+	);
 });
 
-function mcpConfigFixture(t: { after(fn: () => void): void }, globalServers: Record<string, unknown>, projectServers: Record<string, unknown>) {
+function mcpConfigFixture(
+	t: { after(fn: () => void): void },
+	globalServers: Record<string, unknown>,
+	projectServers: Record<string, unknown>,
+) {
 	const root = mkdtempSync(join(tmpdir(), "durable-mcp-config-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const agentDir = join(root, "agent");
@@ -833,7 +1306,10 @@ it("keeps MCP text at Unicode boundaries and preserves the full script result", 
 	const result = await convertMcpResult("docs", "large", raw);
 	assert.deepEqual(result.structuredOutput, raw);
 	assert.ok(result.output);
-	const shown = result.output.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+	const shown = result.output
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("\n");
 	assert.equal(Buffer.from(shown, "utf8").toString("utf8"), shown);
 	assert.ok(shown.length < text.length);
 	assert.match(shown, /truncated/u);
@@ -845,14 +1321,21 @@ it("keeps MCP text at Unicode boundaries and preserves the full script result", 
 
 it("rejects MCP OAuth callbacks outside the declared registration contract", (t) => {
 	const url = "https://example.com/mcp";
-	const f = mcpConfigFixture(t, {
-		query: { url, oauth: { callbackUrl: "http://localhost/callback?state=foreign" } },
-		ports: { url, oauth: { callbackUrl: "http://localhost:1234/callback", callbackPort: 5678 } },
-		document: { url, oauth: { clientRegistration: "cimd", callbackUrl: "http://localhost/other" } },
-		valid: { url, oauth: { clientRegistration: "cimd", callbackUrl: "http://localhost:1234/callback" } },
-	}, {});
+	const f = mcpConfigFixture(
+		t,
+		{
+			query: { url, oauth: { callbackUrl: "http://localhost/callback?state=foreign" } },
+			ports: { url, oauth: { callbackUrl: "http://localhost:1234/callback", callbackPort: 5678 } },
+			document: { url, oauth: { clientRegistration: "cimd", callbackUrl: "http://localhost/other" } },
+			valid: { url, oauth: { clientRegistration: "cimd", callbackUrl: "http://localhost:1234/callback" } },
+		},
+		{},
+	);
 	const config = loadMcpConfig({ ...f, projectTrusted: false });
-	assert.deepEqual(config.servers.map((server) => server.name), ["valid"]);
+	assert.deepEqual(
+		config.servers.map((server) => server.name),
+		["valid"],
+	);
 	assert.equal(config.errors.length, 3);
 	assert.match(config.errors.join("\n"), /query|fragment/u);
 	assert.match(config.errors.join("\n"), /different ports/u);
@@ -866,8 +1349,12 @@ it("reads a leading BOM in global and trusted project MCP configuration", (t) =>
 	writeFileSync(f.override, `\uFEFF${readFileSync(f.override, "utf8")}`);
 	const config = loadMcpConfig({ ...f, projectTrusted: true });
 	assert.deepEqual(config.errors, []);
-	assert.deepEqual(config.servers, [{ name: "docs", source: f.source, override: f.override, config: { ...base, enabled: false } }]);
-	assert.deepEqual(loadMcpConfig({ ...f, projectTrusted: false }).servers, [{ name: "docs", source: f.source, config: base }]);
+	assert.deepEqual(config.servers, [
+		{ name: "docs", source: f.source, override: f.override, config: { ...base, enabled: false } },
+	]);
+	assert.deepEqual(loadMcpConfig({ ...f, projectTrusted: false }).servers, [
+		{ name: "docs", source: f.source, config: base },
+	]);
 });
 
 it("reports malformed JSON after a BOM and does not read an untrusted project MCP configuration", (t) => {
@@ -892,14 +1379,31 @@ it("applies trusted project selection without replacing global transport and aut
 		exposure: "direct",
 		toolExposure: { "write-*": "hidden" },
 	};
-	const f = mcpConfigFixture(t, { docs: base }, { docs: { enabled: false, exposure: "codemode", toolExposure: { read: "deferred" } } });
+	const f = mcpConfigFixture(
+		t,
+		{ docs: base },
+		{ docs: { enabled: false, exposure: "codemode", toolExposure: { read: "deferred" } } },
+	);
 	const config = loadMcpConfig({ ...f, projectTrusted: true });
 	assert.deepEqual(config.errors, []);
-	assert.deepEqual(config.servers, [{ name: "docs", source: f.source, override: f.override, config: { ...base, enabled: false, exposure: "codemode", toolExposure: { read: "deferred" } } }]);
+	assert.deepEqual(config.servers, [
+		{
+			name: "docs",
+			source: f.source,
+			override: f.override,
+			config: { ...base, enabled: false, exposure: "codemode", toolExposure: { read: "deferred" } },
+		},
+	]);
 });
 
 it("enables a global server and treats an empty project override as an inherited no-op", (t) => {
-	const base = { command: "synthetic-server", args: ["--docs"], env: { DOCS_ACCOUNT: "synthetic-account" }, cwd: "docs", enabled: false };
+	const base = {
+		command: "synthetic-server",
+		args: ["--docs"],
+		env: { DOCS_ACCOUNT: "synthetic-account" },
+		cwd: "docs",
+		enabled: false,
+	};
 	const f = mcpConfigFixture(t, { enabled: base, unchanged: base }, { enabled: { enabled: true }, unchanged: {} });
 	const config = loadMcpConfig({ ...f, projectTrusted: true });
 	assert.deepEqual(config.errors, []);
@@ -910,7 +1414,11 @@ it("enables a global server and treats an empty project override as an inherited
 });
 
 it("replaces the toolExposure map rather than merging its entries", (t) => {
-	const f = mcpConfigFixture(t, { docs: { command: "synthetic-server", toolExposure: { "*": "hidden" } } }, { docs: { toolExposure: {} } });
+	const f = mcpConfigFixture(
+		t,
+		{ docs: { command: "synthetic-server", toolExposure: { "*": "hidden" } } },
+		{ docs: { toolExposure: {} } },
+	);
 	const config = loadMcpConfig({ ...f, projectTrusted: true });
 	assert.deepEqual(config.errors, []);
 	assert.deepEqual(config.servers[0]?.config.toolExposure, {});
@@ -936,9 +1444,16 @@ it("rejects nonselection and invalid project overrides without changing the glob
 		["toolExposure", { toolExposure: { read: "invalid" } }, /invalid toolExposure/u],
 		["typed", { type: "stdio", enabled: false }, /needs either "command"/u],
 	];
-	const f = mcpConfigFixture(t, Object.fromEntries(patches.map(([name]) => [name, base])), Object.fromEntries(patches.map(([name, patch]) => [name, patch])));
+	const f = mcpConfigFixture(
+		t,
+		Object.fromEntries(patches.map(([name]) => [name, base])),
+		Object.fromEntries(patches.map(([name, patch]) => [name, patch])),
+	);
 	const config = loadMcpConfig({ ...f, projectTrusted: true });
-	assert.deepEqual(config.servers, patches.map(([name]) => ({ name, source: f.source, config: base })));
+	assert.deepEqual(
+		config.servers,
+		patches.map(([name]) => ({ name, source: f.source, config: base })),
+	);
 	assert.equal(config.errors.length, patches.length);
 	for (const [index, [name, , expected]] of patches.entries()) {
 		assert.match(config.errors[index] ?? "", expected, name);
@@ -956,10 +1471,16 @@ it("requires an exact global server name for a project override", (t) => {
 });
 
 it("replaces a global server when the project supplies a transport", (t) => {
-	const f = mcpConfigFixture(t, { docs: { url: "https://example.com/mcp", auth: { provider: "synthetic-provider" } } }, { docs: { command: "project-server", args: ["docs"] } });
+	const f = mcpConfigFixture(
+		t,
+		{ docs: { url: "https://example.com/mcp", auth: { provider: "synthetic-provider" } } },
+		{ docs: { command: "project-server", args: ["docs"] } },
+	);
 	const config = loadMcpConfig({ ...f, projectTrusted: true });
 	assert.deepEqual(config.errors, []);
-	assert.deepEqual(config.servers, [{ name: "docs", source: f.override, config: { command: "project-server", args: ["docs"] } }]);
+	assert.deepEqual(config.servers, [
+		{ name: "docs", source: f.override, config: { command: "project-server", args: ["docs"] } },
+	]);
 });
 
 it("does not start or expose a global MCP server disabled by a trusted project", { timeout: 30000 }, async (t) => {
@@ -968,12 +1489,22 @@ it("does not start or expose a global MCP server disabled by a trusted project",
 	const eventsFile = join(root, "server-events.txt");
 	const f = await executionFixture(t, {
 		code: `return { callable: "mcp__dev_docs__list_topics" in tools, matches: await searchTools("documentation", { namespace: "dev-docs" }) };`,
-		mcpServers: { "dev-docs": { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: eventsFile }, exposure: "direct" } },
+		mcpServers: {
+			"dev-docs": {
+				command: process.execPath,
+				args: [fixtureServerPath],
+				env: { MCP_FIXTURE_EVENTS_FILE: eventsFile },
+				exposure: "direct",
+			},
+		},
 		projectMcpServers: { "dev-docs": { enabled: false } },
 	});
 	const result = await f.submit("Use only this project's selected tools.");
 	assert.deepEqual(JSON.parse(toolResultBody(result.toolResults.at(-1))), { callable: false, matches: [] });
-	assert.deepEqual(declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")), []);
+	assert.deepEqual(
+		declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")),
+		[],
+	);
 	assert.equal(existsSync(eventsFile), false, "the disabled server never started");
 	assert.deepEqual(f.services.services.diagnostics, []);
 });
@@ -984,7 +1515,14 @@ it("keeps the global MCP selection in an untrusted project", { timeout: 30000 },
 	const eventsFile = join(root, "server-events.txt");
 	const f = await executionFixture(t, {
 		code: `return (await tools.mcp__dev_docs__list_topics({})).content[0].text;`,
-		mcpServers: { "dev-docs": { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: eventsFile }, exposure: "direct" } },
+		mcpServers: {
+			"dev-docs": {
+				command: process.execPath,
+				args: [fixtureServerPath],
+				env: { MCP_FIXTURE_EVENTS_FILE: eventsFile },
+				exposure: "direct",
+			},
+		},
 		projectMcpServers: { "dev-docs": { enabled: false } },
 		trusted: false,
 	});
@@ -997,7 +1535,9 @@ it("keeps the global MCP selection in an untrusted project", { timeout: 30000 },
 it("starts a global MCP server enabled by a trusted project", { timeout: 30000 }, async (t) => {
 	const f = await executionFixture(t, {
 		code: `return (await tools.mcp__dev_docs__list_topics({})).content[0].text;`,
-		mcpServers: { "dev-docs": { command: process.execPath, args: [fixtureServerPath], exposure: "direct", enabled: false } },
+		mcpServers: {
+			"dev-docs": { command: process.execPath, args: [fixtureServerPath], exposure: "direct", enabled: false },
+		},
 		projectMcpServers: { "dev-docs": { enabled: true } },
 	});
 	const result = await f.submit("Use the documentation server selected by the project.");
@@ -1013,11 +1553,17 @@ it("discovers and calls MCP tools through a trusted project codemode override", 
 		projectMcpServers: { "dev-docs": { exposure: "codemode" } },
 	});
 	const result = await f.submit("Use the project documentation tools through a script.");
-	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { info: { name: string; tools: string[] }; called: string };
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as {
+		info: { name: string; tools: string[] };
+		called: string;
+	};
 	assert.equal(output.info.name, "dev-docs");
 	assert.ok(output.info.tools.includes("mcp__dev_docs__list_topics"));
 	assert.equal(output.called, "called list-topics {}");
-	assert.deepEqual(declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")), []);
+	assert.deepEqual(
+		declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")),
+		[],
+	);
 });
 
 it("loads MCP tools after search through a trusted project deferred override", { timeout: 30000 }, async (t) => {
@@ -1028,41 +1574,72 @@ it("loads MCP tools after search through a trusted project deferred override", {
 	});
 	const result = await f.submit("Find the project documentation tools.");
 	assert.match(toolResultText(result.toolResults.at(-1)), /mcp__dev_docs__lookup_doc/u);
-	assert.deepEqual(declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")), []);
+	assert.deepEqual(
+		declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")),
+		[],
+	);
 	assert.ok(declaredTools(f.requests[1]).some((name) => name.startsWith("mcp__dev_docs__lookup_doc")));
 });
 
 it("hides one project tool and discards the global toolExposure map", { timeout: 30000 }, async (t) => {
 	const f = await executionFixture(t, {
 		code: `return { info: await describeNamespace("dev-docs"), callable: "mcp__dev_docs__list_topics" in tools };`,
-		mcpServers: { "dev-docs": { command: process.execPath, args: [fixtureServerPath], exposure: "codemode", toolExposure: { "*": "hidden" } } },
+		mcpServers: {
+			"dev-docs": {
+				command: process.execPath,
+				args: [fixtureServerPath],
+				exposure: "codemode",
+				toolExposure: { "*": "hidden" },
+			},
+		},
 		projectMcpServers: { "dev-docs": { toolExposure: { "list-topics": "hidden" } } },
 	});
 	const result = await f.submit("Use only the documentation tools selected by the project.");
-	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { info: { tools: string[] }; callable: boolean };
+	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as {
+		info: { tools: string[] };
+		callable: boolean;
+	};
 	assert.equal(output.callable, false);
 	assert.ok(output.info.tools.some((name) => name.startsWith("mcp__dev_docs__lookup_doc")));
 	assert.ok(output.info.tools.every((name) => name !== "mcp__dev_docs__list_topics"));
 });
 
 function cimdGrant(serverUrl: string): McpOAuthState {
-	return { serverUrl, tokens: { access_token: "synthetic-expired", refresh_token: "synthetic-refresh", token_type: "Bearer" }, tokensExpireAt: 1,
-		discovery: { authorizationServerUrl: "https://auth.example.test", authorizationServerMetadata: {
-			issuer: "https://auth.example.test", authorization_endpoint: "https://auth.example.test/authorize", token_endpoint: "https://auth.example.test/token",
-			response_types_supported: ["code"], client_id_metadata_document_supported: true, token_endpoint_auth_methods_supported: ["none"], authorization_response_iss_parameter_supported: true,
-		} } };
+	return {
+		serverUrl,
+		tokens: { access_token: "synthetic-expired", refresh_token: "synthetic-refresh", token_type: "Bearer" },
+		tokensExpireAt: 1,
+		discovery: {
+			authorizationServerUrl: "https://auth.example.test",
+			authorizationServerMetadata: {
+				issuer: "https://auth.example.test",
+				authorization_endpoint: "https://auth.example.test/authorize",
+				token_endpoint: "https://auth.example.test/token",
+				response_types_supported: ["code"],
+				client_id_metadata_document_supported: true,
+				token_endpoint_auth_methods_supported: ["none"],
+				authorization_response_iss_parameter_supported: true,
+			},
+		},
+	};
 }
 
 it("refreshes production CIMD state through a project selection override", { timeout: 30000 }, async (t) => {
 	const token = `synthetic-${randomUUID()}`;
 	const server = await httpMcpServer(token);
 	t.after(() => server.close());
-	const fetch = globalThis.fetch; let refreshes = 0;
+	const fetch = globalThis.fetch;
+	let refreshes = 0;
 	t.mock.method(globalThis, "fetch", async (input: string | URL, init?: RequestInit) => {
 		if (String(input) !== "https://auth.example.test/token") return fetch(input, init);
 		refreshes++;
 		assert.equal(new URLSearchParams(String(init?.body)).get("client_id"), "https://pi.dev/oauth/client.json");
-		return Response.json({ access_token: token, refresh_token: "synthetic-rotated", token_type: "Bearer", expires_in: 3600 });
+		return Response.json({
+			access_token: token,
+			refresh_token: "synthetic-rotated",
+			token_type: "Bearer",
+			expires_in: 3600,
+		});
 	});
 	const key = `mcp__remote_docs|${server.url}`;
 	const f = await executionFixture(t, {
@@ -1073,53 +1650,108 @@ it("refreshes production CIMD state through a project selection override", { tim
 	});
 	const result = await f.submit("Use the project's authenticated documentation tools.");
 	assert.equal(toolResultBody(result.toolResults.at(-1)), "echo selected");
-	assert.deepEqual(declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")), []);
+	assert.deepEqual(
+		declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")),
+		[],
+	);
 	assert.equal(refreshes, 1);
 	const state = JSON.parse(readFileSync(join(f.agentDir, "mcp-auth.json"), "utf8"))[key];
-	assert.equal(state.tokens.access_token, token); assert.equal(state.tokens.refresh_token, "synthetic-rotated");
+	assert.equal(state.tokens.access_token, token);
+	assert.equal(state.tokens.refresh_token, "synthetic-rotated");
 	assert.equal(state.clientInformation, undefined);
 });
 
 it("shares one rotating grant between two native executions", { timeout: 30000 }, async (t) => {
-	const token = `synthetic-${randomUUID()}`; const server = await httpMcpServer(token); t.after(() => server.close());
+	const token = `synthetic-${randomUUID()}`;
+	const server = await httpMcpServer(token);
+	t.after(() => server.close());
 	let host!: DurableExecutionHost;
-	const f = await executionFixture(t, { builtinExtensions: (value) => { host = value; return []; } });
+	const f = await executionFixture(t, {
+		builtinExtensions: (value) => {
+			host = value;
+			return [];
+		},
+	});
 	const key = `mcp__remote_docs|${server.url}`;
-	writeFileSync(join(f.agentDir, "mcp.json"), JSON.stringify({ mcpServers: { "remote-docs": { url: server.url, exposure: "direct" } } }));
+	writeFileSync(
+		join(f.agentDir, "mcp.json"),
+		JSON.stringify({ mcpServers: { "remote-docs": { url: server.url, exposure: "direct" } } }),
+	);
 	writeFileSync(join(f.agentDir, "mcp-auth.json"), JSON.stringify({ [key]: cimdGrant(server.url) }));
-	const entered = deferred(); const release = deferred(); t.after(release.resolve);
-	const fetch = globalThis.fetch; let refreshes = 0;
+	const entered = deferred();
+	const release = deferred();
+	t.after(release.resolve);
+	const fetch = globalThis.fetch;
+	let refreshes = 0;
 	t.mock.method(globalThis, "fetch", async (input: string | URL, init?: RequestInit) => {
 		if (String(input) !== "https://auth.example.test/token") return fetch(input, init);
-		refreshes++; entered.resolve(); await release.promise;
-		return refreshes === 1 ? Response.json({ access_token: token, refresh_token: "synthetic-rotated", token_type: "Bearer", expires_in: 3600 }) : Response.json({ error: "invalid_grant" }, { status: 400 });
+		refreshes++;
+		entered.resolve();
+		await release.promise;
+		return refreshes === 1
+			? Response.json({
+					access_token: token,
+					refresh_token: "synthetic-rotated",
+					token_type: "Bearer",
+					expires_in: 3600,
+				})
+			: Response.json({ error: "invalid_grant" }, { status: 400 });
 	});
-	const first = createDurableExecution(host); const second = createDurableExecution(host);
-	t.after(async () => { await Promise.all([first.close(), second.close()]); });
-	await entered.promise; release.resolve(); await Promise.all([first.ready, second.ready]);
-	for (const execution of [first, second]) assert.ok(execution.extensions.some((extension) => extension.tools?.some((tool) => tool.name === "mcp__remote_docs__echo")));
+	const first = createDurableExecution(host);
+	const second = createDurableExecution(host);
+	t.after(async () => {
+		await Promise.all([first.close(), second.close()]);
+	});
+	await entered.promise;
+	release.resolve();
+	await Promise.all([first.ready, second.ready]);
+	for (const execution of [first, second])
+		assert.ok(
+			execution.extensions.some((extension) => extension.tools?.some((tool) => tool.name === "mcp__remote_docs__echo")),
+		);
 	assert.equal(refreshes, 1);
-	assert.equal(JSON.parse(readFileSync(join(f.agentDir, "mcp-auth.json"), "utf8"))[key].tokens.refresh_token, "synthetic-rotated");
+	assert.equal(
+		JSON.parse(readFileSync(join(f.agentDir, "mcp-auth.json"), "utf8"))[key].tokens.refresh_token,
+		"synthetic-rotated",
+	);
 });
 
 it("awaits refresh persistence on native execution close", { timeout: 30000 }, async (t) => {
 	let host!: DurableExecutionHost;
-	const f = await executionFixture(t, { builtinExtensions: (value) => { host = value; return []; } });
-	const url = "https://mcp.example.test/mcp"; const key = `mcp__docs|${url}`;
+	const f = await executionFixture(t, {
+		builtinExtensions: (value) => {
+			host = value;
+			return [];
+		},
+	});
+	const url = "https://mcp.example.test/mcp";
+	const key = `mcp__docs|${url}`;
 	const path = join(f.agentDir, "mcp-auth.json");
 	writeFileSync(join(f.agentDir, "mcp.json"), JSON.stringify({ mcpServers: { docs: { url, exposure: "direct" } } }));
 	writeFileSync(path, JSON.stringify({ [key]: cimdGrant(url) }));
 	const answered = deferred();
 	t.mock.method(globalThis, "fetch", async (input: string | URL) => {
 		assert.equal(String(input), "https://auth.example.test/token");
-		mkdirSync(`${path}.lock`); answered.resolve();
-		return Response.json({ access_token: "synthetic-new", refresh_token: "synthetic-rotated", token_type: "Bearer", expires_in: 3600 });
+		mkdirSync(`${path}.lock`);
+		answered.resolve();
+		return Response.json({
+			access_token: "synthetic-new",
+			refresh_token: "synthetic-rotated",
+			token_type: "Bearer",
+			expires_in: 3600,
+		});
 	});
-	const execution = createDurableExecution(host); t.after(() => execution.close());
+	const execution = createDurableExecution(host);
+	t.after(() => execution.close());
 	await answered.promise;
-	let closed = false; const closing = execution.close().then(() => { closed = true; });
-	await Promise.resolve(); assert.equal(closed, false);
-	rmdirSync(`${path}.lock`); await closing;
+	let closed = false;
+	const closing = execution.close().then(() => {
+		closed = true;
+	});
+	await Promise.resolve();
+	assert.equal(closed, false);
+	rmdirSync(`${path}.lock`);
+	await closing;
 	assert.equal(existsSync(`${path}.lock`), false);
 	assert.equal(JSON.parse(readFileSync(path, "utf8"))[key].tokens.refresh_token, "synthetic-rotated");
 });
@@ -1139,7 +1771,10 @@ it("rejects auth in a trusted project's mcp.json", () => {
 	const root = mkdtempSync(join(tmpdir(), "durable-execution-auth-"));
 	try {
 		mkdirSync(join(root, ".pi"), { recursive: true });
-		writeFileSync(join(root, ".pi", "mcp.json"), JSON.stringify({ mcpServers: { docs: { url: "https://example.com/mcp", auth: { provider: "example" } } } }));
+		writeFileSync(
+			join(root, ".pi", "mcp.json"),
+			JSON.stringify({ mcpServers: { docs: { url: "https://example.com/mcp", auth: { provider: "example" } } } }),
+		);
 		const config = loadMcpConfig({ agentDir: join(root, "agent"), cwd: root, projectTrusted: true });
 		assert.equal(config.servers.length, 0);
 		assert.match(config.errors.join("\n"), /auth is only allowed in the global mcp.json/u);
@@ -1153,7 +1788,14 @@ it("bounds ready for a direct server that never answers", { timeout: 30000 }, as
 		code: `return "ok";`,
 		readyTimeoutMs: 150,
 		awaitReady: true,
-		mcpServers: { "silent-docs": { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_MODE: "silent" }, exposure: "direct" } },
+		mcpServers: {
+			"silent-docs": {
+				command: process.execPath,
+				args: [fixtureServerPath],
+				env: { MCP_FIXTURE_MODE: "silent" },
+				exposure: "direct",
+			},
+		},
 	});
 	assert.ok(f.readyElapsedMs !== undefined && f.readyElapsedMs < 5000, `ready took ${String(f.readyElapsedMs)}ms`);
 	const result = await f.submit("say hi");
@@ -1165,9 +1807,14 @@ it("waits for a late direct server before the first request", { timeout: 30000 }
 	const entered = deferred();
 	const release = deferred();
 	t.after(() => release.resolve());
-	const server = await httpMcpServer(token, { beforeResponse: async (method) => {
-		if (method === "tools/list") { entered.resolve(); await release.promise; }
-	} });
+	const server = await httpMcpServer(token, {
+		beforeResponse: async (method) => {
+			if (method === "tools/list") {
+				entered.resolve();
+				await release.promise;
+			}
+		},
+	});
 	t.after(() => server.close());
 	let ready = false;
 	const completion = executionFixture(t, {
@@ -1175,8 +1822,16 @@ it("waits for a late direct server before the first request", { timeout: 30000 }
 		readyTimeoutMs: 5000,
 		awaitReady: true,
 		mcpServers: { "remote-docs": { url: server.url, description: "Remote docs", exposure: "direct" } },
-		mcpAuth: { [`mcp__remote_docs|${server.url}`]: { serverUrl: server.url, tokens: { access_token: token, token_type: "Bearer" } } },
-	}).then((fixture) => { ready = true; return fixture; });
+		mcpAuth: {
+			[`mcp__remote_docs|${server.url}`]: {
+				serverUrl: server.url,
+				tokens: { access_token: token, token_type: "Bearer" },
+			},
+		},
+	}).then((fixture) => {
+		ready = true;
+		return fixture;
+	});
 	await entered.promise;
 	assert.equal(ready, false, "the server still holds registration before the first model request");
 	release.resolve();
@@ -1192,17 +1847,33 @@ it("does not wait for an indirect server that never answers", { timeout: 30000 }
 		code: `return "ok";`,
 		readyTimeoutMs: 10000,
 		awaitReady: true,
-		mcpServers: { "silent-docs": { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_MODE: "silent" }, exposure: "codemode" } },
+		mcpServers: {
+			"silent-docs": {
+				command: process.execPath,
+				args: [fixtureServerPath],
+				env: { MCP_FIXTURE_MODE: "silent" },
+				exposure: "codemode",
+			},
+		},
 	});
 	assert.ok(f.readyElapsedMs !== undefined && f.readyElapsedMs < 1000, `ready took ${String(f.readyElapsedMs)}ms`);
 	const result = await f.submit("say hi");
 	assert.equal(result.answer, "durable answer");
 });
 
-it("ends the MCP preflight at the script's explicit budget and records a stable diagnostic", { timeout: 30000 }, async (t) => {
+it("ends the MCP preflight at the script's explicit budget and records a stable diagnostic", {
+	timeout: 30000,
+}, async (t) => {
 	const f = await executionFixture(t, {
 		code: `// @options: {"timeout_ms": 200}\nreturn await tools.mcp__silent_docs__anything({});`,
-		mcpServers: { "silent-docs": { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_MODE: "silent" }, exposure: "codemode" } },
+		mcpServers: {
+			"silent-docs": {
+				command: process.execPath,
+				args: [fixtureServerPath],
+				env: { MCP_FIXTURE_MODE: "silent" },
+				exposure: "codemode",
+			},
+		},
 	});
 	const started = Date.now();
 	const result = await f.submit("call the silent server");
@@ -1217,20 +1888,39 @@ it("persists a finite deadline for a script that names no timeout", { timeout: 3
 	const starts: { startedAt: number; deadline?: number }[] = [];
 	onStoredCommit(harness, (publication) => {
 		for (const change of publication.changes) {
-			if (change.type === "document" && change.kind === "change" && change.record.kind === "pi.codemode.run" && change.value.start !== undefined) starts.push(change.value.start as unknown as { startedAt: number; deadline?: number });
+			if (
+				change.type === "document" &&
+				change.kind === "change" &&
+				change.record.kind === "pi.codemode.run" &&
+				change.value.start !== undefined
+			)
+				starts.push(change.value.start as unknown as { startedAt: number; deadline?: number });
 		}
 	});
-	const outcome = await (await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+	const outcome = await (
+		await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)
+	).wait(BACKGROUND_CONTEXT);
 	assert.equal(outcome.status, "done");
 	assert.ok(starts.length > 0);
 	assert.equal(starts[0].deadline, starts[0].startedAt + DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS);
 });
 
-async function nativeClockFixture(t: TestContext, now: () => number, code = '// @options: {"timeout_ms": 2000}\nreturn 42;', extensions?: (host: DurableContributionHost, execution: ReturnType<typeof createDurableExecution>) => readonly Extension[]) {
+async function nativeClockFixture(
+	t: TestContext,
+	now: () => number,
+	code = '// @options: {"timeout_ms": 2000}\nreturn 42;',
+	extensions?: (
+		host: DurableContributionHost,
+		execution: ReturnType<typeof createDurableExecution>,
+	) => readonly Extension[],
+) {
 	const root = mkdtempSync(join(tmpdir(), "durable-codemode-clock-"));
 	const agentDir = join(root, "agent");
 	mkdirSync(agentDir);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["+codemode"], cacheWarming: "off", retry: { enabled: false } }));
+	writeFileSync(
+		join(agentDir, "settings.json"),
+		JSON.stringify({ defaultTools: ["+codemode"], cacheWarming: "off", retry: { enabled: false } }),
+	);
 	let services: Awaited<ReturnType<typeof createDurableServices>> | undefined;
 	let harness: Harness | undefined;
 	const storage = new MemoryStorage();
@@ -1245,26 +1935,49 @@ async function nativeClockFixture(t: TestContext, now: () => number, code = '// 
 	});
 	const { runtime } = await streamRuntime(codemodeStream(code));
 	const open = async () => {
-		services = await createDurableServices({ cwd: root, agentDir, storageId: "fixture-clock", extensionPaths: [], trusted: true, buildBuiltin: (host) => {
-			const execution = createDurableExecution(host);
-			return { ...execution, extensions: [...execution.extensions, ...(extensions?.(host, execution) ?? [])] };
-		}, modelRuntime: runtime });
-		harness = await Harness.open(storage, { models: runtime, registry: services.registry, settings: services.settings, env: services.env, now }, BACKGROUND_CONTEXT);
+		services = await createDurableServices({
+			cwd: root,
+			agentDir,
+			storageId: "fixture-clock",
+			extensionPaths: [],
+			trusted: true,
+			buildBuiltin: (host) => {
+				const execution = createDurableExecution(host);
+				return { ...execution, extensions: [...execution.extensions, ...(extensions?.(host, execution) ?? [])] };
+			},
+			modelRuntime: runtime,
+		});
+		harness = await Harness.open(
+			storage,
+			{ models: runtime, registry: services.registry, settings: services.settings, env: services.env, now },
+			BACKGROUND_CONTEXT,
+		);
 		await services.install(harness);
 		harness.resume();
-		const conversation = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } });
+		const conversation = await harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
+		});
 		return { services, harness, conversation };
 	};
-	return { ...await open(), reopen: async () => {
-		await services?.close();
-		await harness?.close(BACKGROUND_CONTEXT);
-		return open();
-	} };
+	return {
+		...(await open()),
+		reopen: async () => {
+			await services?.close();
+			await harness?.close(BACKGROUND_CONTEXT);
+			return open();
+		},
+	};
 }
 
 function observeQueuedWorkers(t: TestContext, queue: CodemodeWorkerQueue) {
 	const queued = deferred();
-	const observed = { queued: queued.promise, onQueued: () => {}, workers: 0, timeouts: [] as (number | undefined)[], attempts: [] as { startedAt: number; timeoutMs: number | undefined }[] };
+	const observed = {
+		queued: queued.promise,
+		onQueued: () => {},
+		workers: 0,
+		timeouts: [] as (number | undefined)[],
+		attempts: [] as { startedAt: number; timeoutMs: number | undefined }[],
+	};
 	const reserve = queue.reserve.bind(queue);
 	t.mock.method(queue, "reserve", (signal: AbortSignal, deadline: number) => {
 		const pending = reserve(signal, deadline);
@@ -1273,22 +1986,37 @@ function observeQueuedWorkers(t: TestContext, queue: CodemodeWorkerQueue) {
 		return pending;
 	});
 	const start = QueuedCodemodeSandbox.prototype.start;
-	t.mock.method(QueuedCodemodeSandbox.prototype, "start", function(this: QueuedCodemodeSandbox, code: string, options: CodemodeRunOptions) {
-		observed.attempts.push({ startedAt: options.startedAt, timeoutMs: options.timeoutMs });
-		const fields = this as unknown as { queue: CodemodeWorkerQueue; options: CodemodeSandboxOptions };
-		fields.queue = queue;
-		fields.options = { ...fields.options, onWorkerStarted: () => { observed.workers++; } };
-		return start.call(this, code, options);
-	});
+	t.mock.method(
+		QueuedCodemodeSandbox.prototype,
+		"start",
+		function (this: QueuedCodemodeSandbox, code: string, options: CodemodeRunOptions) {
+			observed.attempts.push({ startedAt: options.startedAt, timeoutMs: options.timeoutMs });
+			const fields = this as unknown as { queue: CodemodeWorkerQueue; options: CodemodeSandboxOptions };
+			fields.queue = queue;
+			fields.options = {
+				...fields.options,
+				onWorkerStarted: () => {
+					observed.workers++;
+				},
+			};
+			return start.call(this, code, options);
+		},
+	);
 	const nativeStart = CodemodeSandbox.prototype.start;
-	t.mock.method(CodemodeSandbox.prototype, "start", function(this: CodemodeSandbox, code: string, options: CodemodeRunOptions) {
-		observed.timeouts.push(options.timeoutMs);
-		return nativeStart.call(this, code, options);
-	});
+	t.mock.method(
+		CodemodeSandbox.prototype,
+		"start",
+		function (this: CodemodeSandbox, code: string, options: CodemodeRunOptions) {
+			observed.timeouts.push(options.timeoutMs);
+			return nativeStart.call(this, code, options);
+		},
+	);
 	return observed;
 }
 
-it("refuses a queued native launch after the committed Harness script deadline passes", { timeout: 30000 }, async (t) => {
+it("refuses a queued native launch after the committed Harness script deadline passes", {
+	timeout: 30000,
+}, async (t) => {
 	const queue = new CodemodeWorkerQueue(1);
 	const release = await queue.reserve(new AbortController().signal, Date.now() + 10000);
 	t.after(release);
@@ -1298,7 +2026,12 @@ it("refuses a queued native launch after the committed Harness script deadline p
 	let persisted: { startedAt: number; deadline: number } | undefined;
 	onStoredCommit(harness, (publication) => {
 		for (const change of publication.changes) {
-			if (change.type === "document" && change.kind === "change" && change.record.kind === "pi.codemode.run" && change.value.start !== undefined) {
+			if (
+				change.type === "document" &&
+				change.kind === "change" &&
+				change.record.kind === "pi.codemode.run" &&
+				change.value.start !== undefined
+			) {
 				const start = change.value.start as unknown as { startedAt: number; deadline: number };
 				persisted = { startedAt: start.startedAt, deadline: start.deadline };
 			}
@@ -1340,7 +2073,9 @@ it("debits a partial Harness clock advance from the queued native worker budget"
 	assert.match(toolResultBody(output), /42/u);
 });
 
-it("keeps the original native deadline and replay remainder across a queued Harness reopen", { timeout: 30000 }, async (t) => {
+it("keeps the original native deadline and replay remainder across a queued Harness reopen", {
+	timeout: 30000,
+}, async (t) => {
 	const queue = new CodemodeWorkerQueue(1);
 	const release = await queue.reserve(new AbortController().signal, Date.now() + 10000);
 	t.after(release);
@@ -1354,7 +2089,10 @@ it("keeps the original native deadline and replay remainder across a queued Harn
 	clock = 1600;
 	const reopened = await f.reopen();
 	await queuedAgain.promise;
-	assert.deepEqual(observed.attempts, [{ startedAt: 1000, timeoutMs: 2000 }, { startedAt: 1000, timeoutMs: 1400 }]);
+	assert.deepEqual(observed.attempts, [
+		{ startedAt: 1000, timeoutMs: 2000 },
+		{ startedAt: 1000, timeoutMs: 1400 },
+	]);
 	clock = 2500;
 	release();
 	const restored = await reopened.harness.submission(submission.id, BACKGROUND_CONTEXT);
@@ -1372,7 +2110,9 @@ it("keeps the original native deadline and replay remainder across a queued Harn
 
 it("admits native codemode with an injected Harness clock", { timeout: 30000 }, async (t) => {
 	const { conversation } = await nativeClockFixture(t, () => 1000);
-	const outcome = await (await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+	const outcome = await (
+		await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)
+	).wait(BACKGROUND_CONTEXT);
 	assert.equal(outcome.status, "done");
 	const view = await conversation.context(BACKGROUND_CONTEXT);
 	const output = view.messages.find((message) => message.role === "toolResult");
@@ -1386,18 +2126,29 @@ it("preserves an expired persisted worker wait at the native tool boundary", { t
 		code: 'await tools.structured({}); return "unexpected";',
 		builtinExtensions: (host) => {
 			const Admission = host.durable.defineDoc<{ deadline?: number; admitted: boolean }>({
-				kind: "agent.codemode-admission", version: 1, scope: "task", initial: () => ({ admitted: false }), checkpointWhen: () => false,
+				kind: "agent.codemode-admission",
+				version: 1,
+				scope: "task",
+				initial: () => ({ admitted: false }),
+				checkpointWhen: () => false,
 			});
-			return [host.durable.defineExtension({ name: "fixture.expired-admission", hooks: [host.durable.hook(host.durable.ToolTask, {
-				beforeTool: async (call, api, context) => {
-					if (call.name !== "codemode") return undefined;
-					await host.harness.commit(async (tx) => {
-						const state = await tx.doc(Admission, api.taskId);
-						state.deadline = Date.now() - 1;
-					}, context);
-					return undefined;
-				},
-			})] })];
+			return [
+				host.durable.defineExtension({
+					name: "fixture.expired-admission",
+					hooks: [
+						host.durable.hook(host.durable.ToolTask, {
+							beforeTool: async (call, api, context) => {
+								if (call.name !== "codemode") return undefined;
+								await host.harness.commit(async (tx) => {
+									const state = await tx.doc(Admission, api.taskId);
+									state.deadline = Date.now() - 1;
+								}, context);
+								return undefined;
+							},
+						}),
+					],
+				}),
+			];
 		},
 	});
 	const result = await f.submit("Resume the queued script.");
@@ -1411,18 +2162,35 @@ it("preserves an expired persisted worker wait at the native tool boundary", { t
 it("reports a transport that exceeds the close deadline", { timeout: 12000 }, async (t) => {
 	const isolated = mkdtempSync(join(tmpdir(), "mcp-deadline-"));
 	t.after(() => rmSync(isolated, { recursive: true, force: true }));
-	const f = await executionFixture(t, { mcpServers: { docs: { command: process.execPath, args: [fixtureServerPath], env: { PI_AGENT_DIR: isolated, PI_AGENT_SESSIONS_DIR: isolated }, exposure: "direct" } }, awaitReady: true });
+	const f = await executionFixture(t, {
+		mcpServers: {
+			docs: {
+				command: process.execPath,
+				args: [fixtureServerPath],
+				env: { PI_AGENT_DIR: isolated, PI_AGENT_SESSIONS_DIR: isolated },
+				exposure: "direct",
+			},
+		},
+		awaitReady: true,
+	});
 	const original = StdioTransport.prototype.close;
 	let called = false;
-	StdioTransport.prototype.close = async () => { called = true; await new Promise<void>(() => {}); };
-	t.after(() => { StdioTransport.prototype.close = original; });
+	StdioTransport.prototype.close = async () => {
+		called = true;
+		await new Promise<void>(() => {});
+	};
+	t.after(() => {
+		StdioTransport.prototype.close = original;
+	});
 	try {
 		const first = f.execution.close();
 		assert.equal(first, f.execution.close());
 		await first;
 		assert.equal(called, true);
 		assert.ok(f.services.services.diagnostics.some((entry) => entry.message.includes("MCP shutdown timed out: docs")));
-	} finally { StdioTransport.prototype.close = original; }
+	} finally {
+		StdioTransport.prototype.close = original;
+	}
 });
 
 it("joins the same execution close promise", async (t) => {
@@ -1441,18 +2209,25 @@ it("aborts an owned nested call with the conversation and reaches idle", { timeo
 		const submission = await f.conversation.submit({ type: "input", content: "hang the tool" }, BACKGROUND_CONTEXT);
 		await entered.promise;
 		const live = await f.harness.snapshot(LiveDoc, f.conversation.id, BACKGROUND_CONTEXT);
-		assert.equal(live?.nestedTools?.some((slot) => slot.name === "hanging" && slot.parentCallId === "codemode-call"), true);
+		assert.equal(
+			live?.nestedTools?.some((slot) => slot.name === "hanging" && slot.parentCallId === "codemode-call"),
+			true,
+		);
 		await f.conversation.abort(BACKGROUND_CONTEXT);
 		await f.conversation.waitForIdle(BACKGROUND_CONTEXT);
 		await submission.wait(BACKGROUND_CONTEXT);
 		const view = await f.conversation.context(BACKGROUND_CONTEXT);
-		const retained = view.messages.find((message) => message.role === "toolResult" && message.toolCallId === "codemode-call");
+		const retained = view.messages.find(
+			(message) => message.role === "toolResult" && message.toolCallId === "codemode-call",
+		);
 		assert.ok(retained?.role === "toolResult");
 		assert.equal(retained.isError, true);
 		assert.match(messageText(retained), /Tool codemode was aborted/u);
 		assert.equal((await f.harness.inspect(BACKGROUND_CONTEXT)).tasks.length, 0);
 		assert.equal(((globalThis as Record<string, unknown>).__execFixture as { aborted: boolean }).aborted, true);
-	} finally { delete (globalThis as Record<string, unknown>).__execFixture; }
+	} finally {
+		delete (globalThis as Record<string, unknown>).__execFixture;
+	}
 });
 
 it("does not repeat an interrupted unsafe nested call after a crash", { timeout: 60000 }, async () => {
@@ -1522,32 +2297,71 @@ it("does not repeat an interrupted unsafe nested call after a crash", { timeout:
 });
 
 /** Holds codemode tool settlement after the native tool returns, so a restart finds its outcome committed but the task unsettled. */
-function interruptCodemodeSettlement(host: DurableContributionHost, gate: { interrupt: boolean; entered: ReturnType<typeof deferred> }): readonly Extension[] {
-	return [host.durable.defineExtension({ name: "fixture.interrupted-settlement", hooks: [host.durable.hook(host.durable.ToolTask, {
-		afterTool: async (call, _result, _api, context) => {
-			if (call.name !== "codemode" || !gate.interrupt) return undefined;
-			gate.entered.resolve();
-			await new Promise<never>((_, reject) => context.abortSignal?.addEventListener("abort", () => reject(context.abortSignal?.reason), { once: true }));
-			return undefined;
-		},
-	})] })];
+function interruptCodemodeSettlement(
+	host: DurableContributionHost,
+	gate: { interrupt: boolean; entered: ReturnType<typeof deferred> },
+): readonly Extension[] {
+	return [
+		host.durable.defineExtension({
+			name: "fixture.interrupted-settlement",
+			hooks: [
+				host.durable.hook(host.durable.ToolTask, {
+					afterTool: async (call, _result, _api, context) => {
+						if (call.name !== "codemode" || !gate.interrupt) return undefined;
+						gate.entered.resolve();
+						await new Promise<never>((_, reject) =>
+							context.abortSignal?.addEventListener("abort", () => reject(context.abortSignal?.reason), { once: true }),
+						);
+						return undefined;
+					},
+				}),
+			],
+		}),
+	];
 }
 
 const RETAINED_CODEMODE_RESULTS = [
-	{ name: "success", code: '// @options: {"timeout_ms": 2000}\nstore("runs", 1);\nreturn 42;', isError: false, text: /42/u, storeWrites: 1 },
-	{ name: "error", code: '// @options: {"timeout_ms": 2000}\nthrow new Error("retained failure");', isError: true, text: /retained failure/u, storeWrites: 0 },
+	{
+		name: "success",
+		code: '// @options: {"timeout_ms": 2000}\nstore("runs", 1);\nreturn 42;',
+		isError: false,
+		text: /42/u,
+		storeWrites: 1,
+	},
+	{
+		name: "error",
+		code: '// @options: {"timeout_ms": 2000}\nthrow new Error("retained failure");',
+		isError: true,
+		text: /retained failure/u,
+		storeWrites: 0,
+	},
 ];
 
 for (const scenario of RETAINED_CODEMODE_RESULTS)
-	it(`returns the retained codemode ${scenario.name} after the deadline passes during interrupted settlement`, { timeout: 30000 }, async (t) => {
+	it(`returns the retained codemode ${scenario.name} after the deadline passes during interrupted settlement`, {
+		timeout: 30000,
+	}, async (t) => {
 		const observed = observeQueuedWorkers(t, new CodemodeWorkerQueue(1));
 		let clock = 1000;
 		const gate = { interrupt: true, entered: deferred() };
-		const f = await nativeClockFixture(t, () => clock, scenario.code, (host) => interruptCodemodeSettlement(host, gate));
+		const f = await nativeClockFixture(
+			t,
+			() => clock,
+			scenario.code,
+			(host) => interruptCodemodeSettlement(host, gate),
+		);
 		let storeWrites = 0;
-		const countStoreWrites = (harness: Harness) => onStoredCommit(harness, (publication) => {
-			for (const change of publication.changes) if (change.type === "document" && change.kind === "change" && change.record.kind === "pi.codemode.store" && "runs" in (change.value as { values: object }).values) storeWrites++;
-		});
+		const countStoreWrites = (harness: Harness) =>
+			onStoredCommit(harness, (publication) => {
+				for (const change of publication.changes)
+					if (
+						change.type === "document" &&
+						change.kind === "change" &&
+						change.record.kind === "pi.codemode.store" &&
+						"runs" in (change.value as { values: object }).values
+					)
+						storeWrites++;
+			});
 		countStoreWrites(f.harness);
 		const submission = await f.conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT);
 		await gate.entered.promise;
@@ -1571,40 +2385,91 @@ for (const scenario of RETAINED_CODEMODE_RESULTS)
 	});
 
 /** Advances the injected clock once while the native tool prepares its agent, after the harness computed the script's remaining budget. */
-function delayNativePreparation(t: TestContext, execution: ReturnType<typeof createDurableExecution>, delay: { ms: number; advance: (ms: number) => void }): readonly Extension[] {
-	const catalogApi = (execution as unknown as { catalogApi(api: ToolExecutionApi): ToolExecutionApi }).catalogApi.bind(execution);
-	t.mock.method(execution, "catalogApi" as never, ((api: ToolExecutionApi) => Object.create(catalogApi(api), { agent: { value: async (context: Parameters<ToolExecutionApi["agent"]>[0]) => {
-		const ms = delay.ms;
-		delay.ms = 0;
-		delay.advance(ms);
-		return api.agent(context);
-	} } })) as never);
+function delayNativePreparation(
+	t: TestContext,
+	execution: ReturnType<typeof createDurableExecution>,
+	delay: { ms: number; advance: (ms: number) => void },
+): readonly Extension[] {
+	const catalogApi = (execution as unknown as { catalogApi(api: ToolExecutionApi): ToolExecutionApi }).catalogApi.bind(
+		execution,
+	);
+	t.mock.method(
+		execution,
+		"catalogApi" as never,
+		((api: ToolExecutionApi) =>
+			Object.create(catalogApi(api), {
+				agent: {
+					value: async (context: Parameters<ToolExecutionApi["agent"]>[0]) => {
+						const ms = delay.ms;
+						delay.ms = 0;
+						delay.advance(ms);
+						return api.agent(context);
+					},
+				},
+			})) as never,
+	);
 	return [];
 }
 
-it("caps the running native script by the original deadline when preparation takes time", { timeout: 30000 }, async (t) => {
+it("caps the running native script by the original deadline when preparation takes time", {
+	timeout: 30000,
+}, async (t) => {
 	const queue = new CodemodeWorkerQueue(1);
 	const release = await queue.reserve(new AbortController().signal, Date.now() + 10000);
 	t.after(release);
 	const observed = observeQueuedWorkers(t, queue);
 	let clock = 1000;
-	const delay = { ms: 1000, advance: (ms: number) => { clock += ms; } };
-	const { conversation } = await nativeClockFixture(t, () => clock, undefined, (_host, execution) => delayNativePreparation(t, execution, delay));
+	const delay = {
+		ms: 1000,
+		advance: (ms: number) => {
+			clock += ms;
+		},
+	};
+	const { conversation } = await nativeClockFixture(
+		t,
+		() => clock,
+		undefined,
+		(_host, execution) => delayNativePreparation(t, execution, delay),
+	);
 	const submission = await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT);
 	await observed.queued;
-	assert.deepEqual(observed.attempts, [{ startedAt: 2000, timeoutMs: 2000 }], "preparation moved the native start and deadline");
+	assert.deepEqual(
+		observed.attempts,
+		[{ startedAt: 2000, timeoutMs: 2000 }],
+		"preparation moved the native start and deadline",
+	);
 	release();
 	assert.equal((await submission.wait(BACKGROUND_CONTEXT)).status, "done");
 	assert.equal(observed.workers, 1);
-	assert.ok(observed.timeouts[0] !== undefined && observed.timeouts[0] > 0 && observed.timeouts[0] <= 1000, `worker timeout ${String(observed.timeouts[0])}`);
+	assert.ok(
+		observed.timeouts[0] !== undefined && observed.timeouts[0] > 0 && observed.timeouts[0] <= 1000,
+		`worker timeout ${String(observed.timeouts[0])}`,
+	);
 });
 
 it("refuses a native script whose preparation outlasts the original deadline", { timeout: 30000 }, async (t) => {
 	const observed = observeQueuedWorkers(t, new CodemodeWorkerQueue(1));
 	let clock = 1000;
-	const delay = { ms: 2500, advance: (ms: number) => { clock += ms; } };
-	const { conversation } = await nativeClockFixture(t, () => clock, undefined, (_host, execution) => delayNativePreparation(t, execution, delay));
-	assert.equal((await (await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT)).status, "done");
+	const delay = {
+		ms: 2500,
+		advance: (ms: number) => {
+			clock += ms;
+		},
+	};
+	const { conversation } = await nativeClockFixture(
+		t,
+		() => clock,
+		undefined,
+		(_host, execution) => delayNativePreparation(t, execution, delay),
+	);
+	assert.equal(
+		(
+			await (
+				await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)
+			).wait(BACKGROUND_CONTEXT)
+		).status,
+		"done",
+	);
 	assert.equal(observed.workers, 0);
 	const view = await conversation.context(BACKGROUND_CONTEXT);
 	const output = view.messages.find((message) => message.role === "toolResult");
@@ -1619,8 +2484,18 @@ it("keeps the original deadline cap on the replayed script after a reopen", { ti
 	t.after(release);
 	const observed = observeQueuedWorkers(t, queue);
 	let clock = 1000;
-	const delay = { ms: 1000, advance: (ms: number) => { clock += ms; } };
-	const f = await nativeClockFixture(t, () => clock, undefined, (_host, execution) => delayNativePreparation(t, execution, delay));
+	const delay = {
+		ms: 1000,
+		advance: (ms: number) => {
+			clock += ms;
+		},
+	};
+	const f = await nativeClockFixture(
+		t,
+		() => clock,
+		undefined,
+		(_host, execution) => delayNativePreparation(t, execution, delay),
+	);
 	const submission = await f.conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT);
 	await observed.queued;
 	const queuedAgain = deferred();
@@ -1628,25 +2503,41 @@ it("keeps the original deadline cap on the replayed script after a reopen", { ti
 	clock = 2600;
 	const reopened = await f.reopen();
 	await queuedAgain.promise;
-	assert.deepEqual(observed.attempts, [{ startedAt: 2000, timeoutMs: 2000 }, { startedAt: 2000, timeoutMs: 1400 }]);
+	assert.deepEqual(observed.attempts, [
+		{ startedAt: 2000, timeoutMs: 2000 },
+		{ startedAt: 2000, timeoutMs: 1400 },
+	]);
 	clock = 2800;
 	release();
 	const restored = await reopened.harness.submission(submission.id, BACKGROUND_CONTEXT);
 	assert.ok(restored);
 	assert.equal((await restored.wait(BACKGROUND_CONTEXT)).status, "done");
 	assert.equal(observed.workers, 1);
-	assert.ok(observed.timeouts[0] !== undefined && observed.timeouts[0] > 0 && observed.timeouts[0] <= 200, `worker timeout ${String(observed.timeouts[0])}`);
+	assert.ok(
+		observed.timeouts[0] !== undefined && observed.timeouts[0] > 0 && observed.timeouts[0] <= 200,
+		`worker timeout ${String(observed.timeouts[0])}`,
+	);
 });
 
 it("includes worker-capacity counts in the emitted admission diagnostic", { timeout: 30000 }, async (t) => {
 	const queue = new CodemodeWorkerQueue(1, 0);
 	const observed = observeQueuedWorkers(t, queue);
 	const { conversation } = await nativeClockFixture(t, () => 1000);
-	assert.equal((await (await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT)).status, "done");
+	assert.equal(
+		(
+			await (
+				await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)
+			).wait(BACKGROUND_CONTEXT)
+		).status,
+		"done",
+	);
 	assert.equal(observed.workers, 0);
 	const view = await conversation.context(BACKGROUND_CONTEXT);
 	const output = view.messages.find((message) => message.role === "toolResult");
 	assert.ok(output?.role === "toolResult");
 	assert.equal(output.isError, true);
-	assert.match(toolResultBody(output), /\[error\] The codemode worker queue is full \(0 waiting calls\)\. \(active 0, waiting 0, limit 1\)/u);
+	assert.match(
+		toolResultBody(output),
+		/\[error\] The codemode worker queue is full \(0 waiting calls\)\. \(active 0, waiting 0, limit 1\)/u,
+	);
 });

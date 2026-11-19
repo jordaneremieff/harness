@@ -128,11 +128,7 @@ function withinWindow(at: number, now: number, maxAge: number): boolean {
 }
 
 /** The age bound drops samples before the event bound trims the remaining window. */
-function recordWindow(
-	period: ObservationPeriod,
-	window: NonNullable<StateSpec["window"]>,
-	sample: EventSample,
-): void {
+function recordWindow(period: ObservationPeriod, window: NonNullable<StateSpec["window"]>, sample: EventSample): void {
 	period.window = period.window.filter((event) => withinWindow(event.at, sample.at, window.maxAgeMs));
 	period.window.push(sample);
 	if (period.window.length > window.maxEvents) period.window.splice(0, period.window.length - window.maxEvents);
@@ -299,8 +295,11 @@ export class ObservationState {
 			(period.projectedTurns.has(turn) || period.projectedTurns.size >= STATE_LIMITS.turns)
 		)
 			return false;
-		return period.lastProjectedAt === undefined || period.lastProjectedAt > now ||
-			now - period.lastProjectedAt >= (period.spec?.cooldownMs ?? 0);
+		return (
+			period.lastProjectedAt === undefined ||
+			period.lastProjectedAt > now ||
+			now - period.lastProjectedAt >= (period.spec?.cooldownMs ?? 0)
+		);
 	}
 
 	/** Views project expiry without changing the live period, for read-only previews. */
@@ -425,7 +424,9 @@ function storedTotal(total: ObservedTotal): number | null {
 	return total === UNKNOWN ? null : total;
 }
 function storedFromTotal(value: unknown): ObservedTotal {
-	return (value === null ? UNKNOWN : typeof value === "number" && Number.isFinite(value) ? value : UNKNOWN) as ObservedTotal;
+	return (
+		value === null ? UNKNOWN : typeof value === "number" && Number.isFinite(value) ? value : UNKNOWN
+	) as ObservedTotal;
 }
 function safeCount(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;

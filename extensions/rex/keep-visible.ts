@@ -28,9 +28,7 @@ export interface FloatedPane {
  * - `arranged`: it was moved, resized, tiled or taken to another window, so it stays where it is;
  * - `missing`: it no longer exists.
  */
-export type PaneState =
-	| { kind: "covering"; share: number }
-	| { kind: "focused" | "clear" | "arranged" | "missing" };
+export type PaneState = { kind: "covering"; share: number } | { kind: "focused" | "clear" | "arranged" | "missing" };
 
 /** The conversation's window as one view shows it, while the window's arrangement allows a move. */
 export interface ConversationWindow {
@@ -63,11 +61,12 @@ export interface ConversationKeeperOptions {
 }
 
 function object(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" ? value as Record<string, unknown> : {};
+	return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
 function rect(value: unknown): Rect | undefined {
-	if (!Array.isArray(value) || value.length !== 4 || !value.every((n) => typeof n === "number" && Number.isFinite(n))) return undefined;
+	if (!Array.isArray(value) || value.length !== 4 || !value.every((n) => typeof n === "number" && Number.isFinite(n)))
+		return undefined;
 	return value.map((n: number) => Math.min(1, Math.max(0, n))) as Rect;
 }
 
@@ -146,11 +145,20 @@ export function floatingUnchanged(before: ConversationWindow, after: Conversatio
 function unchanged(layer: Record<string, unknown>, created: readonly number[] | undefined): boolean {
 	if (created === undefined) return true;
 	const current = rect(layer.bounds);
-	return current !== undefined && created.length === 4 && current.every((value, index) => Math.abs(value - (created[index] ?? Number.NaN)) <= BOUNDS_TOLERANCE);
+	return (
+		current !== undefined &&
+		created.length === 4 &&
+		current.every((value, index) => Math.abs(value - (created[index] ?? Number.NaN)) <= BOUNDS_TOLERANCE)
+	);
 }
 
 /** The state of one pane that this conversation created, from one view of the conversation's window. */
-export function paneState(view: unknown, window: ConversationWindow, blockId: string, created: readonly number[] | undefined): PaneState {
+export function paneState(
+	view: unknown,
+	window: ConversationWindow,
+	blockId: string,
+	created: readonly number[] | undefined,
+): PaneState {
 	if (window.tiled.has(blockId)) return { kind: "arranged" };
 	for (const value of window.layers) {
 		const layer = object(value);
@@ -175,10 +183,13 @@ export function dockDirection(size: unknown): Direction {
 }
 
 function textOf(content: unknown): boolean {
-	return Array.isArray(content) && content.some((part) => {
-		const value = object(part);
-		return value.type === "text" && typeof value.text === "string" && value.text.trim().length > 0;
-	});
+	return (
+		Array.isArray(content) &&
+		content.some((part) => {
+			const value = object(part);
+			return value.type === "text" && typeof value.text === "string" && value.text.trim().length > 0;
+		})
+	);
 }
 
 /**
@@ -192,7 +203,8 @@ export function runAnswered(branch: readonly unknown[], aborted: boolean): boole
 		const entry = object(branch[index]);
 		if (entry.type !== "message") continue;
 		const message = object(entry.message);
-		if (message.role === "assistant") return message.stopReason === "error" || (message.stopReason !== "aborted" && textOf(message.content));
+		if (message.role === "assistant")
+			return message.stopReason === "error" || (message.stopReason !== "aborted" && textOf(message.content));
 		if (message.role === "user" || message.role === "toolResult") return false;
 	}
 	return false;
@@ -259,7 +271,10 @@ class Keeper implements ConversationKeeper {
 		if (!this.active || this.pending.size === 0) return;
 		this.ctx = ctx;
 		this.requested = true;
-		if (!this.running) this.running = this.pump().finally(() => { this.running = undefined; });
+		if (!this.running)
+			this.running = this.pump().finally(() => {
+				this.running = undefined;
+			});
 	}
 
 	async idle(): Promise<void> {
@@ -328,7 +343,14 @@ class Keeper implements ConversationKeeper {
 			attempted.add(next);
 			before = { window, moved: next };
 			const attempt = { paneId: next, ...this.placement(blockId, size, window) };
-			const response = await this.call(ctx, transport, signal, "session.move_block", { session_id: sessionId, block_id: next, anchor_block_id: attempt.anchor, direction: attempt.direction, side: "after", ratio: 0.5 });
+			const response = await this.call(ctx, transport, signal, "session.move_block", {
+				session_id: sessionId,
+				block_id: next,
+				anchor_block_id: attempt.anchor,
+				direction: attempt.direction,
+				side: "after",
+				ratio: 0.5,
+			});
 			if (succeeded(response)) this.dock(blockId, attempt);
 			else {
 				this.warn(ctx, new CliCallError(cliError("session.move_block", response)));
@@ -349,7 +371,13 @@ class Keeper implements ConversationKeeper {
 	}
 
 	/** The view; when it cannot be read after a move that Rex did not confirm, that move counts as failed. */
-	private async view(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal, sessionId: string, unconfirmed: Attempt | undefined): Promise<unknown> {
+	private async view(
+		ctx: ExtensionContext,
+		transport: RexTransport,
+		signal: AbortSignal,
+		sessionId: string,
+		unconfirmed: Attempt | undefined,
+	): Promise<unknown> {
 		try {
 			return await this.api(ctx, transport, signal, "session.view", { session_id: sessionId });
 		} catch (error) {
@@ -370,21 +398,42 @@ class Keeper implements ConversationKeeper {
 	}
 
 	/** Beside the pane that this keeper docked last when it is still tiled here, otherwise beside the conversation. */
-	private placement(conversationBlockId: string, size: unknown, window: ConversationWindow): { anchor: string; direction: Direction } {
-		if (this.docked && window.tiled.has(this.docked.blockId)) return { anchor: this.docked.blockId, direction: this.docked.direction };
+	private placement(
+		conversationBlockId: string,
+		size: unknown,
+		window: ConversationWindow,
+	): { anchor: string; direction: Direction } {
+		if (this.docked && window.tiled.has(this.docked.blockId))
+			return { anchor: this.docked.blockId, direction: this.docked.direction };
 		return { anchor: conversationBlockId, direction: dockDirection(size) };
 	}
 
 	/** Records a docked pane; later panes stack in its space, so the conversation keeps its share. */
 	private dock(conversationBlockId: string, attempt: Attempt): void {
 		this.pending.delete(attempt.paneId);
-		const direction = attempt.anchor === conversationBlockId ? (attempt.direction === "horizontal" ? "vertical" : "horizontal") : attempt.direction;
+		const direction =
+			attempt.anchor === conversationBlockId
+				? attempt.direction === "horizontal"
+					? "vertical"
+					: "horizontal"
+				: attempt.direction;
 		this.docked = { blockId: attempt.paneId, direction };
 	}
 
-	private call(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal, method: string, args: Record<string, unknown>): Promise<CliResult> {
+	private call(
+		ctx: ExtensionContext,
+		transport: RexTransport,
+		signal: AbortSignal,
+		method: string,
+		args: Record<string, unknown>,
+	): Promise<CliResult> {
 		signal.throwIfAborted();
-		const prefix = ["--autostart=false", "--color=never", "--timeout=10s", ...(this.env.REX_SERVER ? ["--server", this.env.REX_SERVER] : [])];
+		const prefix = [
+			"--autostart=false",
+			"--color=never",
+			"--timeout=10s",
+			...(this.env.REX_SERVER ? ["--server", this.env.REX_SERVER] : []),
+		];
 		return transport.run([...prefix, "api", "call", method, JSON.stringify(args)], {
 			cwd: ctx.cwd,
 			signal,
@@ -393,7 +442,13 @@ class Keeper implements ConversationKeeper {
 		});
 	}
 
-	private async api(ctx: ExtensionContext, transport: RexTransport, signal: AbortSignal, method: string, args: Record<string, unknown>): Promise<unknown> {
+	private async api(
+		ctx: ExtensionContext,
+		transport: RexTransport,
+		signal: AbortSignal,
+		method: string,
+		args: Record<string, unknown>,
+	): Promise<unknown> {
 		const response = await this.call(ctx, transport, signal, method, args);
 		if (!succeeded(response)) throw new CliCallError(cliError(method, response));
 		try {
@@ -406,7 +461,11 @@ class Keeper implements ConversationKeeper {
 	private warn(ctx: ExtensionContext, error: unknown): void {
 		if (this.warned || !ctx.hasUI) return;
 		this.warned = true;
-		const detail = (error instanceof Error ? error.message : String(error)).replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 300);
+		const detail = (error instanceof Error ? error.message : String(error))
+			.replace(/[\p{Cc}\p{Cf}]/gu, " ")
+			.replace(/\s+/gu, " ")
+			.trim()
+			.slice(0, 300);
 		ctx.ui.notify(`Rex could not move a floating pane off this conversation: ${detail || "Unknown error"}`, "warning");
 	}
 }
@@ -414,7 +473,11 @@ class Keeper implements ConversationKeeper {
 /** Whether the pane is in the tiled layer of the conversation's window, whatever that window's zoom. */
 function tiledWith(view: unknown, conversationBlockId: string, paneId: string): boolean {
 	const window = windows(view).find((candidate) => holds(candidate, conversationBlockId));
-	const tiledLayer = window ? layersOf(window).map(object).find((layer) => layer.kind === "tiled") : undefined;
+	const tiledLayer = window
+		? layersOf(window)
+				.map(object)
+				.find((layer) => layer.kind === "tiled")
+		: undefined;
 	return leaves(tiledLayer?.layout).some((leaf) => leaf.blockId === paneId);
 }
 
@@ -422,8 +485,14 @@ function tiledWith(view: unknown, conversationBlockId: string, paneId: string): 
  * Whether the focus or the floating layers of the window changed since the view before the last move, apart
  * from that move: then somebody arranges the window, and the remaining panes wait.
  */
-function disturbed(before: { window: ConversationWindow; moved: string } | undefined, after: ConversationWindow): boolean {
-	return before !== undefined && (after.focus !== before.window.focus || !floatingUnchanged(before.window, after, before.moved));
+function disturbed(
+	before: { window: ConversationWindow; moved: string } | undefined,
+	after: ConversationWindow,
+): boolean {
+	return (
+		before !== undefined &&
+		(after.focus !== before.window.focus || !floatingUnchanged(before.window, after, before.moved))
+	);
 }
 
 function succeeded(response: CliResult): boolean {

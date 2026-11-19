@@ -12,8 +12,22 @@ import { type ComposerEnvironment, folderLabel, registerComposer, splitComposer 
 
 type Factory = Parameters<ExtensionContext["ui"]["setEditorComponent"]>[0];
 const tui = { requestRender() {}, terminal: { rows: 30 } } as unknown as TUI;
-const theme: EditorTheme = { borderColor: x => x, selectList: { selectedPrefix: x => x, selectedText: x => x, description: x => x, scrollInfo: x => x, noMatch: x => x } };
-const keys = { matches: (data: string, action: string) => ({ "\r": "tui.input.submit", "\x04": "app.exit", "\x1b": "app.interrupt", "\x16": "app.clipboard.pasteImage" })[data as "\r"] === action } as unknown as KeybindingsManager;
+const theme: EditorTheme = {
+	borderColor: (x) => x,
+	selectList: {
+		selectedPrefix: (x) => x,
+		selectedText: (x) => x,
+		description: (x) => x,
+		scrollInfo: (x) => x,
+		noMatch: (x) => x,
+	},
+};
+const keys = {
+	matches: (data: string, action: string) =>
+		({ "\r": "tui.input.submit", "\x04": "app.exit", "\x1b": "app.interrupt", "\x16": "app.clipboard.pasteImage" })[
+			data as "\r"
+		] === action,
+} as unknown as KeybindingsManager;
 function host(env: ComposerEnvironment, initial = "") {
 	let factory: Factory;
 	let editor: ComposerEditor | undefined;
@@ -24,14 +38,20 @@ function host(env: ComposerEnvironment, initial = "") {
 	let onDequeue = () => {};
 	let thinking = "off";
 	let idle = true;
-	const models = [{ provider: "fixture", id: "a", name: "Model A", reasoning: false }, { provider: "fixture", id: "b", name: "Model B", reasoning: false }];
+	const models = [
+		{ provider: "fixture", id: "a", name: "Model A", reasoning: false },
+		{ provider: "fixture", id: "b", name: "Model B", reasoning: false },
+	];
 	const notices: string[] = [];
 	const branch: object[] = [];
 	const workingVisible: boolean[] = [];
 	const presence: unknown[] = [];
 	const listeners = new Map<string, (payload: unknown) => void>();
 	const bus = {
-		on(name: string, handler: (payload: unknown) => void) { listeners.set(name, handler); return () => listeners.delete(name); },
+		on(name: string, handler: (payload: unknown) => void) {
+			listeners.set(name, handler);
+			return () => listeners.delete(name);
+		},
 		emit(name: string, payload: unknown) {
 			if (name === "harness:composer:presence") presence.push(payload);
 			listeners.get(name)?.(payload);
@@ -40,8 +60,14 @@ function host(env: ComposerEnvironment, initial = "") {
 	const handlers = new Map<string, (event: object, ctx: ExtensionContext) => unknown>();
 	let compose: (args: string, ctx: ExtensionContext) => Promise<void>;
 	const ctx = {
-		mode: "tui", hasUI: true, cwd: env.agentDir, isIdle: () => idle, sessionManager: { getSessionId: () => "id", getBranch: () => branch },
-		model: models[0], modelRegistry: { getAvailable: () => models }, getContextUsage: () => ({ percent: 25, tokens: 50, contextWindow: 200 }),
+		mode: "tui",
+		hasUI: true,
+		cwd: env.agentDir,
+		isIdle: () => idle,
+		sessionManager: { getSessionId: () => "id", getBranch: () => branch },
+		model: models[0],
+		modelRegistry: { getAvailable: () => models },
+		getContextUsage: () => ({ percent: 25, tokens: 50, contextWindow: 200 }),
 		ui: {
 			getEditorComponent: () => factory,
 			setEditorComponent(next: Factory) {
@@ -58,31 +84,67 @@ function host(env: ComposerEnvironment, initial = "") {
 					editor.focused = true;
 				}
 			},
-			notify(message: string) { notices.push(message); },
-			setWorkingVisible(visible: boolean) { workingVisible.push(visible); },
+			notify(message: string) {
+				notices.push(message);
+			},
+			setWorkingVisible(visible: boolean) {
+				workingVisible.push(visible);
+			},
 		},
 	} as unknown as ExtensionContext;
 	const pi = {
 		events: bus,
-		on(event: string, handler: (event: object, ctx: ExtensionContext) => unknown) { handlers.set(event, handler); },
-		registerCommand(name: string, spec: { handler: typeof compose }) { assert.equal(name, "composer"); compose = spec.handler; },
-		getThinkingLevel: () => thinking, getSessionName: () => undefined, getCommands: () => [{ name: "composer", source: "extension" }, { name: "stash", source: "extension" }, { name: "review", source: "prompt" }, { name: "skill:harness", source: "skill" }],
-		setModel: async () => true, setThinkingLevel: (level: string) => { thinking = level === "off" ? level : "low"; },
+		on(event: string, handler: (event: object, ctx: ExtensionContext) => unknown) {
+			handlers.set(event, handler);
+		},
+		registerCommand(name: string, spec: { handler: typeof compose }) {
+			assert.equal(name, "composer");
+			compose = spec.handler;
+		},
+		getThinkingLevel: () => thinking,
+		getSessionName: () => undefined,
+		getCommands: () => [
+			{ name: "composer", source: "extension" },
+			{ name: "stash", source: "extension" },
+			{ name: "review", source: "prompt" },
+			{ name: "skill:harness", source: "skill" },
+		],
+		setModel: async () => true,
+		setThinkingLevel: (level: string) => {
+			thinking = level === "off" ? level : "low";
+		},
 	} as unknown as ExtensionAPI;
 	registerComposer(pi, env);
 	return {
 		command: (args = "") => compose(args, ctx),
-		event: (name: string, event: string | object = name) => handlers.get(name)?.(typeof event === "string" ? { reason: event } : event, ctx),
-		editor: () => { assert.ok(editor); return editor; },
+		event: (name: string, event: string | object = name) =>
+			handlers.get(name)?.(typeof event === "string" ? { reason: event } : event, ctx),
+		editor: () => {
+			assert.ok(editor);
+			return editor;
+		},
 		text: () => editor?.getExpandedText() ?? text,
 		installed: () => Boolean(editor),
 		reset: () => ctx.ui.setEditorComponent(undefined),
-		onSubmit: (handler: typeof onSubmit) => { onSubmit = handler; },
-		onFollowUp: (handler: typeof onFollowUp) => { onFollowUp = handler; },
-		onEscape: (handler: typeof onEscape) => { onEscape = handler; },
-		onDequeue: (handler: typeof onDequeue) => { onDequeue = handler; },
-		setIdle: (value: boolean) => { idle = value; },
-		notices, branch, workingVisible, presence,
+		onSubmit: (handler: typeof onSubmit) => {
+			onSubmit = handler;
+		},
+		onFollowUp: (handler: typeof onFollowUp) => {
+			onFollowUp = handler;
+		},
+		onEscape: (handler: typeof onEscape) => {
+			onEscape = handler;
+		},
+		onDequeue: (handler: typeof onDequeue) => {
+			onDequeue = handler;
+		},
+		setIdle: (value: boolean) => {
+			idle = value;
+		},
+		notices,
+		branch,
+		workingVisible,
+		presence,
 		requestPresence: (payload: unknown) => bus.emit("harness:composer:presence-request", payload),
 	};
 }
@@ -90,13 +152,51 @@ async function setup(t: TestContext) {
 	const agentDir = await mkdtemp(join(tmpdir(), "pi-composer-"));
 	t.after(() => rm(agentDir, { recursive: true, force: true }));
 	let launch: string;
-	const env: ComposerEnvironment = { agentDir, alive: pid => pid === 100, async launch(file) { launch = await file(); return undefined; } };
+	const env: ComposerEnvironment = {
+		agentDir,
+		alive: (pid) => pid === 100,
+		async launch(file) {
+			launch = await file();
+			return undefined;
+		},
+	};
 	return { env, launch: () => launch };
 }
 function client(config: ComposerConfig) {
-	return async (path: string, body: Record<string, unknown> = {}, options: { headers?: Record<string, string>; raw?: string; signal?: AbortSignal } = {}) => {
-		const response = await fetch(config.endpoint + path, { method: "POST", headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json", ...options.headers }, body: options.raw ?? JSON.stringify({ composer: config.composer, ...body }), signal: options.signal });
-		return { status: response.status, ...(await response.json() as { ok: boolean; error?: string; outcome?: string; text?: string; sequence: number; message?: string; events?: { type: string; text?: string }[]; state?: ComposerState; reset?: boolean; stopped?: boolean; cursor?: number; prefix?: string; items?: unknown[]; history?: string[]; restored?: number; level?: string; applied?: boolean; models?: Array<{ id: string; current: boolean }> }) };
+	return async (
+		path: string,
+		body: Record<string, unknown> = {},
+		options: { headers?: Record<string, string>; raw?: string; signal?: AbortSignal } = {},
+	) => {
+		const response = await fetch(config.endpoint + path, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${config.token}`, "Content-Type": "application/json", ...options.headers },
+			body: options.raw ?? JSON.stringify({ composer: config.composer, ...body }),
+			signal: options.signal,
+		});
+		return {
+			status: response.status,
+			...((await response.json()) as {
+				ok: boolean;
+				error?: string;
+				outcome?: string;
+				text?: string;
+				sequence: number;
+				message?: string;
+				events?: { type: string; text?: string }[];
+				state?: ComposerState;
+				reset?: boolean;
+				stopped?: boolean;
+				cursor?: number;
+				prefix?: string;
+				items?: unknown[];
+				history?: string[];
+				restored?: number;
+				level?: string;
+				applied?: boolean;
+				models?: Array<{ id: string; current: boolean }>;
+			}),
+		};
 	};
 }
 async function consume(path: string): Promise<ComposerConfig & { share: number }> {
@@ -105,7 +205,9 @@ async function consume(path: string): Promise<ComposerConfig & { share: number }
 	return cfg;
 }
 
-test("authenticates one composer, validates requests, and delivers bounded long polls", { timeout: 6000 }, async t => {
+test("authenticates one composer, validates requests, and delivers bounded long polls", {
+	timeout: 6000,
+}, async (t) => {
 	const files = await setup(t);
 	const pi = host(files.env, "terminal draft");
 	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
@@ -131,7 +233,7 @@ test("authenticates one composer, validates requests, and delivers bounded long 
 	const second = ask("/events", { after: start.sequence }, { signal: controller.signal });
 	assert.equal((await Promise.race([pending, second])).status, 409);
 	await pi.event("agent_start");
-	const changed = (await Promise.all([pending, second])).find(result => result.ok);
+	const changed = (await Promise.all([pending, second])).find((result) => result.ok);
 	assert.equal(changed?.state?.phase, "working");
 	assert.deepEqual(changed?.events, []);
 	for (let i = 0; i < 257; i++) pi.editor().insertTextAtCursor("x");
@@ -140,7 +242,9 @@ test("authenticates one composer, validates requests, and delivers bounded long 
 	assert.deepEqual(reset.events, []);
 });
 
-test("routes submit, follow-up, abort, and restores terminal input without duplicate submissions", { timeout: 6000 }, async t => {
+test("routes submit, follow-up, abort, and restores terminal input without duplicate submissions", {
+	timeout: 6000,
+}, async (t) => {
 	const files = await setup(t);
 	const pi = host(files.env);
 	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
@@ -152,7 +256,9 @@ test("routes submit, follow-up, abort, and restores terminal input without dupli
 	assert.equal(pi.text(), "newer");
 	const touched: string[] = [];
 	let exits = 0;
-	pi.editor().onCtrlD = () => { exits++; };
+	pi.editor().onCtrlD = () => {
+		exits++;
+	};
 	pi.editor().handleInput("\x04");
 	pi.editor().setText("");
 	pi.editor().handleInput("\x04");
@@ -160,12 +266,23 @@ test("routes submit, follow-up, abort, and restores terminal input without dupli
 	pi.editor().handleInput("🚀");
 	pi.editor().handleInput("\x1b[27;1;32~");
 	pi.editor().handleInput("\x1b[27;2;128640~");
-	for (const key of ["\x1b[27;3;65~", "\x1b[27;1;10~", "\x1b[27;1;127~", "\x1b[27;1;55296~", "\x1b[27;1;1114112~", "\x1b[27;1;00000065~", "\x1b[27;1;65~\n", "\x1b[D", "\x1b[200~\x1b[201~"]) pi.editor().handleInput(key);
+	for (const key of [
+		"\x1b[27;3;65~",
+		"\x1b[27;1;10~",
+		"\x1b[27;1;127~",
+		"\x1b[27;1;55296~",
+		"\x1b[27;1;1114112~",
+		"\x1b[27;1;00000065~",
+		"\x1b[27;1;65~\n",
+		"\x1b[D",
+		"\x1b[200~\x1b[201~",
+	])
+		pi.editor().handleInput(key);
 	pi.editor().handleInput("\x1b[200~one\r\ntwo\x1b[201~");
 	pi.editor().handleInput("\r");
 	pi.editor().onPasteImage = () => pi.editor().insertTextAtCursor("/image.png");
 	pi.editor().handleInput("\x16");
-	pi.onSubmit(async text => {
+	pi.onSubmit(async (text) => {
 		touched.push(text);
 		pi.editor().setText(text);
 		await new Promise(() => {});
@@ -174,19 +291,38 @@ test("routes submit, follow-up, abort, and restores terminal input without dupli
 	assert.equal((await ask("/submit", message)).outcome, "accepted");
 	assert.equal((await ask("/submit", message)).outcome, "accepted");
 	assert.equal((await ask("/submit", { ...message, text: "other" })).outcome, "refused");
-	assert.equal((await ask("/submit", { ...message, id: randomUUID(), text: "a".repeat(DRAFT_BYTES + 1) })).outcome, "refused");
+	assert.equal(
+		(await ask("/submit", { ...message, id: randomUUID(), text: "a".repeat(DRAFT_BYTES + 1) })).outcome,
+		"refused",
+	);
 	assert.equal((await ask("/submit", { ...message, id: "bad" })).status, 409);
-	pi.onFollowUp(() => { touched.push(pi.text()); pi.editor().setText(""); });
+	pi.onFollowUp(() => {
+		touched.push(pi.text());
+		pi.editor().setText("");
+	});
 	assert.equal((await ask("/submit", { id: randomUUID(), behavior: "followUp", text: "queued" })).outcome, "accepted");
 	assert.deepEqual(touched, ["!echo test", "queued"]);
-	pi.onSubmit(() => { throw new Error("refused\nextra line"); });
+	pi.onSubmit(() => {
+		throw new Error("refused\nextra line");
+	});
 	assert.equal((await ask("/submit", { ...message, id: randomUUID() })).outcome, "refused");
-	assert.deepEqual((await ask("/events", { after: start.sequence })).events?.map(({ type, text }) => [type, text]), [
-		["insert", "🚀"], ["insert", " "], ["insert", "🚀"], ["insert", "one\ntwo"], ["focus", undefined], ["insert", "/image.png"], ["setText", "!echo test"],
-	]);
+	assert.deepEqual(
+		(await ask("/events", { after: start.sequence })).events?.map(({ type, text }) => [type, text]),
+		[
+			["insert", "🚀"],
+			["insert", " "],
+			["insert", "🚀"],
+			["insert", "one\ntwo"],
+			["focus", undefined],
+			["insert", "/image.png"],
+			["setText", "!echo test"],
+		],
+	);
 	assert.equal((await ask("/abort")).stopped, false);
 	await pi.event("agent_start");
-	pi.onEscape(() => { pi.editor().setText("restored queue"); });
+	pi.onEscape(() => {
+		pi.editor().setText("restored queue");
+	});
 	assert.equal((await ask("/abort")).stopped, true);
 	assert.equal(pi.text(), "restored queue");
 	assert.ok((await ask("/close", { draft: { text: "last native draft" } })).ok);
@@ -194,7 +330,7 @@ test("routes submit, follow-up, abort, and restores terminal input without dupli
 	assert.equal(pi.text(), "last native draft");
 });
 
-test("reconnects through the exact record and preserves fallback edits", { timeout: 6000 }, async t => {
+test("reconnects through the exact record and preserves fallback edits", { timeout: 6000 }, async (t) => {
 	const files = await setup(t);
 	const old = host(files.env);
 	await old.command();
@@ -206,7 +342,10 @@ test("reconnects through the exact record and preserves fallback edits", { timeo
 	assert.equal((await oldAsk("/events", { after: start.sequence })).events?.[0].type, "detach");
 	await stopping;
 	assert.deepEqual(old.workingVisible, [false, true]);
-	assert.deepEqual(old.presence, [{ version: 1, present: true }, { version: 1, present: false }]);
+	assert.deepEqual(old.presence, [
+		{ version: 1, present: true },
+		{ version: 1, present: false },
+	]);
 	old.requestPresence({ version: 1 });
 	assert.equal(old.presence.length, 2);
 	const pi = host(files.env, old.text());
@@ -225,7 +364,7 @@ test("reconnects through the exact record and preserves fallback edits", { timeo
 	assert.equal(pi.text(), "");
 });
 
-test("hands off an empty fallback draft only once on return to visibility", { timeout: 6000 }, async t => {
+test("hands off an empty fallback draft only once on return to visibility", { timeout: 6000 }, async (t) => {
 	const files = await setup(t);
 	const pi = host(files.env);
 	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
@@ -241,13 +380,20 @@ test("hands off an empty fallback draft only once on return to visibility", { ti
 	pi.editor().setText("");
 	await ask("/visibility", { visible: false });
 	await ask("/visibility", { visible: true });
-	assert.deepEqual((await ask("/events", { after: visible.sequence })).events, [{ seq: visible.sequence + 1, type: "setText", text: "put back" }]);
+	assert.deepEqual((await ask("/events", { after: visible.sequence })).events, [
+		{ seq: visible.sequence + 1, type: "setText", text: "put back" },
+	]);
 });
 
-test("recovers presence after a poll gap without overriding visibility or terminal edits", { timeout: 6000 }, async t => {
+test("recovers presence after a poll gap without overriding visibility or terminal edits", {
+	timeout: 6000,
+}, async (t) => {
 	const files = await setup(t);
 	const pi = host(files.env);
-	t.after(() => { t.mock.timers.reset(); return pi.event("session_shutdown", "quit") as Promise<void>; });
+	t.after(() => {
+		t.mock.timers.reset();
+		return pi.event("session_shutdown", "quit") as Promise<void>;
+	});
 	await pi.command();
 	const ask = client(await consume(files.launch()));
 	t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -287,10 +433,13 @@ test("recovers presence after a poll gap without overriding visibility or termin
 	assert.equal(reconnected.sequence, visible.sequence);
 	assert.ok(shown());
 	assert.deepEqual(pi.workingVisible, [false, true, false, true, false, true, false]);
-	assert.deepEqual(pi.presence, pi.workingVisible.map(value => ({ version: 1, present: !value })));
+	assert.deepEqual(
+		pi.presence,
+		pi.workingVisible.map((value) => ({ version: 1, present: !value })),
+	);
 });
 
-test("publishes current presence and restores the terminal presentation on close", { timeout: 6000 }, async t => {
+test("publishes current presence and restores the terminal presentation on close", { timeout: 6000 }, async (t) => {
 	const files = await setup(t);
 	const pi = host(files.env);
 	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
@@ -304,10 +453,13 @@ test("publishes current presence and restores the terminal presentation on close
 	pi.requestPresence({ version: 1 });
 	await pi.command("close");
 	assert.deepEqual(pi.workingVisible, [false, true]);
-	assert.deepEqual(pi.presence, [false, true, true, false].map(present => ({ version: 1, present })));
+	assert.deepEqual(
+		pi.presence,
+		[false, true, true, false].map((present) => ({ version: 1, present })),
+	);
 });
 
-test("publishes the current branch cost at hello, message end and tree change", { timeout: 6000 }, async t => {
+test("publishes the current branch cost at hello, message end and tree change", { timeout: 6000 }, async (t) => {
 	const files = await setup(t);
 	const pi = host(files.env);
 	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
@@ -329,20 +481,40 @@ test("publishes the current branch cost at hello, message end and tree change", 
 });
 
 test("requests a 20 percent split below the exact invoking pane", async () => {
-	const origin = { version: 1, terminal: "Rex", application: { bundleId: "com.superlogical.rex" }, exact: { blockId: "block:fixture" } } as const;
+	const origin = {
+		version: 1,
+		terminal: "Rex",
+		application: { bundleId: "com.superlogical.rex" },
+		exact: { blockId: "block:fixture" },
+	} as const;
 	const argv = ["/composer", "--composer", "/connection.json"];
 	const signal = new AbortController().signal;
 	let payload: unknown;
-	const result = await splitComposer(argv, origin, "/project", signal, async (file, operation, _timeout, receivedSignal, input) => {
-		assert.deepEqual([file, operation, receivedSignal], ["terminal-pane.ts", "split", signal]);
-		payload = JSON.parse(input ?? "null");
-		return { version: 1, outcome: "created", receipt: { direction: "vertical" } };
-	});
+	const result = await splitComposer(
+		argv,
+		origin,
+		"/project",
+		signal,
+		async (file, operation, _timeout, receivedSignal, input) => {
+			assert.deepEqual([file, operation, receivedSignal], ["terminal-pane.ts", "split", signal]);
+			payload = JSON.parse(input ?? "null");
+			return { version: 1, outcome: "created", receipt: { direction: "vertical" } };
+		},
+	);
 	assert.deepEqual(result, { receipt: { direction: "vertical" } });
-	assert.deepEqual(payload, { version: 1, origin, argv, cwd: "/project", placement: { side: "below", share: 0.2 }, label: "Composer" });
+	assert.deepEqual(payload, {
+		version: 1,
+		origin,
+		argv,
+		cwd: "/project",
+		placement: { side: "below", share: 0.2 },
+		label: "Composer",
+	});
 });
 
-test("completes through the installed provider with UTF-16 cursors and cancels stale requests", { timeout: 6000 }, async t => {
+test("completes through the installed provider with UTF-16 cursors and cancels stale requests", {
+	timeout: 6000,
+}, async (t) => {
 	const files = await setup(t);
 	const pi = host(files.env);
 	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
@@ -350,19 +522,24 @@ test("completes through the installed provider with UTF-16 cursors and cancels s
 	const ask = client(await consume(files.launch()));
 	await ask("/hello", { pid: 100, draft: { text: "" } });
 	let didStart = () => {};
-	const started = new Promise<void>(resolve => { didStart = resolve; });
+	const started = new Promise<void>((resolve) => {
+		didStart = resolve;
+	});
 	let calls = 0;
 	const provider: AutocompleteProvider = {
 		async getSuggestions(lines, line, col, options) {
 			assert.deepEqual([lines, line, col, options.force], [["row", "🚀@f"], 1, 4, true]);
 			if (++calls === 1) {
 				didStart();
-				await new Promise<void>(resolve => options.signal.addEventListener("abort", () => resolve(), { once: true }));
+				await new Promise<void>((resolve) => options.signal.addEventListener("abort", () => resolve(), { once: true }));
 			}
 			return { prefix: "@f", items: Array.from({ length: 60 }, () => ({ value: "@file", label: "file" })) };
 		},
 		applyCompletion(lines, line, col, item, prefix) {
-			assert.deepEqual([lines, line, col, item, prefix], [["row", "🚀@f"], 1, 4, { value: "@file", label: "file" }, "@f"]);
+			assert.deepEqual(
+				[lines, line, col, item, prefix],
+				[["row", "🚀@f"], 1, 4, { value: "@file", label: "file" }, "@f"],
+			);
 			return { lines: ["row", "🚀@file"], cursorLine: 1, cursorCol: 7 };
 		},
 	};
@@ -375,10 +552,15 @@ test("completes through the installed provider with UTF-16 cursors and cancels s
 	assert.equal(found.prefix, "@f");
 	assert.equal(found.items?.length, 50);
 	assert.equal((await stale).status, 409);
-	assert.deepEqual(await ask("/applyCompletion", { ...input, item: found.items?.[0], prefix: found.prefix }), { ok: true, status: 200, text: "row\n🚀@file", cursor: 11 });
+	assert.deepEqual(await ask("/applyCompletion", { ...input, item: found.items?.[0], prefix: found.prefix }), {
+		ok: true,
+		status: 200,
+		text: "row\n🚀@file",
+		cursor: 11,
+	});
 });
 
-test("updates model, thinking, history and queue state, and returns hidden edits", { timeout: 6000 }, async t => {
+test("updates model, thinking, history and queue state, and returns hidden edits", { timeout: 6000 }, async (t) => {
 	const files = await setup(t);
 	const pi = host(files.env);
 	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
@@ -387,7 +569,10 @@ test("updates model, thinking, history and queue state, and returns hidden edits
 	const start = await ask("/hello", { pid: 100, draft: { text: "native" } });
 	assert.deepEqual(start.history, []);
 	assert.deepEqual(start.state?.context, { percent: 25, tokens: 50, window: 200 });
-	assert.deepEqual((await ask("/models")).models?.map(({ current }) => current), [true, false]);
+	assert.deepEqual(
+		(await ask("/models")).models?.map(({ current }) => current),
+		[true, false],
+	);
 	assert.equal((await ask("/setModel", { provider: "fixture", id: "missing" })).applied, false);
 	assert.equal((await ask("/setModel", { provider: "fixture", id: "b" })).applied, true);
 	assert.equal((await ask("/setThinking", { level: "high" })).level, "low");
@@ -403,14 +588,17 @@ test("updates model, thinking, history and queue state, and returns hidden edits
 	assert.equal(shown.state?.thinking, "low");
 	pi.setIdle(false);
 	await pi.event("agent_start");
-	pi.onSubmit(text => pi.editor().addToHistory(text));
+	pi.onSubmit((text) => pi.editor().addToHistory(text));
 	const send = (text: string) => ask("/submit", { id: randomUUID(), behavior: "send", text });
 	await send("steering");
 	await send("queued");
 	await pi.event("message_start", { message: { role: "user", content: [{ type: "text", text: "steering" }] } });
 	const working = await ask("/events", { after: shown.sequence });
 	assert.deepEqual(working.state?.queued, [{ behavior: "steer", text: "queued" }]);
-	assert.deepEqual(working.events?.map(event => event.type), ["history", "history"]);
+	assert.deepEqual(
+		working.events?.map((event) => event.type),
+		["history", "history"],
+	);
 	pi.onDequeue(() => pi.editor().setText("queued"));
 	assert.equal((await ask("/dequeue")).restored, 1);
 	const restored = await ask("/events", { after: working.sequence });
@@ -418,7 +606,7 @@ test("updates model, thinking, history and queue state, and returns hidden edits
 	assert.equal(restored.events?.[0]?.text, "queued");
 });
 
-test("resize validates the request and refuses hidden or unconfirmed panes", { timeout: 6000 }, async t => {
+test("resize validates the request and refuses hidden or unconfirmed panes", { timeout: 6000 }, async (t) => {
 	const files = await setup(t);
 	const pi = host(files.env);
 	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
@@ -437,12 +625,14 @@ test("resize validates the request and refuses hidden or unconfirmed panes", { t
 	assert.match(hidden.message ?? "", /not visible/u);
 });
 
-test("resize waits for the split receipt and keeps only the latest queued size", { timeout: 6000 }, async t => {
+test("resize waits for the split receipt and keeps only the latest queued size", { timeout: 6000 }, async (t) => {
 	const files = await setup(t);
 	const receipt = { direction: "vertical" };
 	const gate = () => {
 		let signal = () => {};
-		const promise = new Promise<void>(resolve => { signal = resolve; });
+		const promise = new Promise<void>((resolve) => {
+			signal = resolve;
+		});
 		return { promise, resolve: signal };
 	};
 	const split = gate();
@@ -450,18 +640,29 @@ test("resize waits for the split receipt and keeps only the latest queued size",
 	const first = gate();
 	const mutated = gate();
 	const shares: number[] = [];
-	const pi = host({ ...files.env, async launch(file, cwd, signal) {
-		await files.env.launch(file, cwd, signal);
-		fileWritten.resolve();
-		await split.promise;
-		return { receipt };
-	}, async resize(target, share) {
-		assert.equal(target, receipt);
-		shares.push(share);
-		if (shares.length === 1) { mutated.resolve(); await first.promise; }
-		return { applied: true };
-	} });
-	t.after(() => { split.resolve(); first.resolve(); return pi.event("session_shutdown", "quit") as Promise<void>; });
+	const pi = host({
+		...files.env,
+		async launch(file, cwd, signal) {
+			await files.env.launch(file, cwd, signal);
+			fileWritten.resolve();
+			await split.promise;
+			return { receipt };
+		},
+		async resize(target, share) {
+			assert.equal(target, receipt);
+			shares.push(share);
+			if (shares.length === 1) {
+				mutated.resolve();
+				await first.promise;
+			}
+			return { applied: true };
+		},
+	});
+	t.after(() => {
+		split.resolve();
+		first.resolve();
+		return pi.event("session_shutdown", "quit") as Promise<void>;
+	});
 	const opening = pi.command();
 	await fileWritten.promise;
 	const launch = await consume(files.launch());
@@ -472,19 +673,19 @@ test("resize waits for the split receipt and keeps only the latest queued size",
 	split.resolve();
 	await opening;
 	await mutated.promise;
-	const waiting = [0.1, 0.4].map(async share => ({ share, response: await ask("/resize", { share }) }));
+	const waiting = [0.1, 0.4].map(async (share) => ({ share, response: await ask("/resize", { share }) }));
 	const superseded = await Promise.race(waiting);
 	assert.equal(superseded.response.applied, false);
 	assert.match(superseded.response.message ?? "", /newer/u);
 	assert.deepEqual(shares, [0.3]);
 	first.resolve();
 	assert.equal((await active).applied, true);
-	const latest = (await Promise.all(waiting)).find(entry => entry.share !== superseded.share);
+	const latest = (await Promise.all(waiting)).find((entry) => entry.share !== superseded.share);
 	assert.equal(latest?.response.applied, true);
 	assert.deepEqual(shares, [0.3, latest?.share]);
 });
 
-test("reports Pi's terminal as waiting while anything else holds the editor's focus", { timeout: 6000 }, async t => {
+test("reports Pi's terminal as waiting while anything else holds the editor's focus", { timeout: 6000 }, async (t) => {
 	const files = await setup(t);
 	const pi = host(files.env);
 	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
@@ -510,7 +711,9 @@ test("reports Pi's terminal as waiting while anything else holds the editor's fo
 	pi.event("ui_prompt_end", {});
 });
 
-test("marks a view that opens soon after the composer sends a command as that command's answer", { timeout: 6000 }, async t => {
+test("marks a view that opens soon after the composer sends a command as that command's answer", {
+	timeout: 6000,
+}, async (t) => {
 	const files = await setup(t);
 	const pi = host(files.env);
 	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
@@ -523,10 +726,16 @@ test("marks a view that opens soon after the composer sends a command as that co
 		return result.state?.waiting;
 	};
 	let opens = true;
-	pi.onSubmit(() => { if (opens) pi.editor().focused = false; });
+	pi.onSubmit(() => {
+		if (opens) pi.editor().focused = false;
+	});
 	const send = (text: string) => ask("/submit", { id: randomUUID(), behavior: "send", text });
 	assert.equal((await send("/stash recent")).outcome, "accepted");
-	assert.deepEqual(await waiting(), { kind: "view", command: "stash" }, "Pi opened the view before the handler returned");
+	assert.deepEqual(
+		await waiting(),
+		{ kind: "view", command: "stash" },
+		"Pi opened the view before the handler returned",
+	);
 	pi.event("ui_prompt_start", { kind: "custom" });
 	assert.deepEqual(await waiting(), { kind: "custom", command: "stash" });
 	pi.event("ui_prompt_end", {});
@@ -552,16 +761,23 @@ test("marks a view that opens soon after the composer sends a command as that co
 	assert.equal(await waiting(), undefined);
 });
 
-test("terminal focus asks Rex for Pi's pane only through a confirmed receipt", { timeout: 6000 }, async t => {
+test("terminal focus asks Rex for Pi's pane only through a confirmed receipt", { timeout: 6000 }, async (t) => {
 	const files = await setup(t);
 	const receipt = { direction: "vertical" };
 	const focused: unknown[] = [];
 	let withReceipt = false;
 	let launch = "";
-	const pi = host({ ...files.env, async launch(file) { launch = await file(); return withReceipt ? { receipt } : undefined; }, async focus(target) {
-		focused.push(target);
-		return { focused: true };
-	} });
+	const pi = host({
+		...files.env,
+		async launch(file) {
+			launch = await file();
+			return withReceipt ? { receipt } : undefined;
+		},
+		async focus(target) {
+			focused.push(target);
+			return { focused: true };
+		},
+	});
 	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
 	await pi.command();
 	let ask = client(await consume(launch));
@@ -576,7 +792,7 @@ test("terminal focus asks Rex for Pi's pane only through a confirmed receipt", {
 	await pi.command();
 	ask = client(await consume(launch));
 	await ask("/hello", { pid: 100, draft: { text: "" } });
-	assert.equal((await ask("/terminal") as { focused?: boolean }).focused, true);
+	assert.equal(((await ask("/terminal")) as { focused?: boolean }).focused, true);
 	assert.deepEqual(focused, [receipt]);
 	await ask("/visibility", { visible: false });
 	assert.match((await ask("/terminal")).message ?? "", /not visible/u);

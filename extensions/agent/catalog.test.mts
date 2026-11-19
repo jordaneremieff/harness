@@ -47,17 +47,29 @@ it("finds the ordinary session at the top of a chain of creating owners", (t) =>
 	const nested = catalog.create({ ...input, ownerId: `${root.storageId}:3` });
 	const deeper = catalog.create({ ...input, ownerId: nested.storageId });
 	assert.equal(catalog.ordinaryOwner(deeper.storageId), ordinary);
-	assert.equal(catalog.ordinaryOwner(`${nested.storageId}:7`), ordinary, "a conversation follows the chain of its storage");
+	assert.equal(
+		catalog.ordinaryOwner(`${nested.storageId}:7`),
+		ordinary,
+		"a conversation follows the chain of its storage",
+	);
 	assert.equal(catalog.ordinaryOwner(ordinary), ordinary, "an identity that names no storage ends the chain");
 	assert.equal(catalog.ordinaryOwner(undefined), undefined);
 	const { ownerId: _owner, ...unowned } = input;
-	assert.equal(catalog.ordinaryOwner(catalog.create(unowned).storageId), undefined, "a chain that ends without an owner names no ordinary session");
+	assert.equal(
+		catalog.ordinaryOwner(catalog.create(unowned).storageId),
+		undefined,
+		"a chain that ends without an owner names no ordinary session",
+	);
 	assert.throws(() => catalog.ordinaryOwner("not an identity"), /Invalid Durable agent identity/u);
 });
 
 it("shares raw record and claim reads while preserving caller-specific priorities and cursors", async (t) => {
 	const { catalog, input } = fixture(t);
-	const records = [catalog.create({ ...input, ownerId: "first" }), catalog.create({ ...input, ownerId: "second" }), catalog.create(input)];
+	const records = [
+		catalog.create({ ...input, ownerId: "first" }),
+		catalog.create({ ...input, ownerId: "second" }),
+		catalog.create(input),
+	];
 	const observation = new CatalogObservation(catalog);
 	const reads = t.mock.method(catalog, "observeRecord");
 	const [first, shared] = await Promise.all([observation.read(), observation.read()]);
@@ -75,7 +87,10 @@ it("shares raw record and claim reads while preserving caller-specific prioritie
 	assert.ok(a.nextCursor);
 	const cursor = a.nextCursor;
 	assert.throws(() => projectCatalogPriority(first, { ownerIds: ["second"], cursor, limit: 1 }), /caller changed/u);
-	assert.notEqual(projectCatalogPriority(first, { ownerIds: ["first"], cursor: a.nextCursor, limit: 1 }).items[0].record.storageId, records[0].storageId);
+	assert.notEqual(
+		projectCatalogPriority(first, { ownerIds: ["first"], cursor: a.nextCursor, limit: 1 }).items[0].record.storageId,
+		records[0].storageId,
+	);
 	assert.equal((await observation.read()).observedAt, first.observedAt);
 	assert.equal(reads.mock.callCount(), records.length, "projection and cached reads open neither records nor claims");
 	catalog.markRecoveryDue(records[0].storageId, true);
@@ -87,7 +102,11 @@ it("shares raw record and claim reads while preserving caller-specific prioritie
 	assert.equal(changed.facts.get(records[0].storageId)?.record.recoveryDue, true);
 	assert.equal(changed.facts.get(records[1].storageId)?.record.recoveryDue, true);
 	assert.equal(changed.observedAt, first.observedAt, "targeted updates do not claim a new whole-inventory observation");
-	assert.equal(first.facts.get(records[0].storageId)?.record.recoveryDue, undefined, "an earlier observation remains unchanged");
+	assert.equal(
+		first.facts.get(records[0].storageId)?.record.recoveryDue,
+		undefined,
+		"an earlier observation remains unchanged",
+	);
 });
 
 it("checks file stamps on every read and observes only changed records without notices", async (t) => {
@@ -126,7 +145,11 @@ it("checks file stamps on every read and observes only changed records without n
 	renameSync(temporary, secondPath);
 	assert.notEqual(statSync(secondPath).ino, replaced.ino);
 	await observation.read();
-	assert.equal(reads.mock.callCount(), 5, "replacement opens one record and one claim despite unchanged bytes and size");
+	assert.equal(
+		reads.mock.callCount(),
+		5,
+		"replacement opens one record and one claim despite unchanged bytes and size",
+	);
 	assert.equal(stats.mock.callCount(), 12);
 	assert.equal(claims.mock.callCount(), 5);
 
@@ -158,8 +181,12 @@ it("reconciles catalogue changes without inferring ownership from process presen
 	const { catalog, input } = fixture(t);
 	let now = Date.now();
 	t.mock.method(Date, "now", () => now);
-	const child = spawn(process.execPath, ["-e", "process.send('ready'); process.on('message', () => process.exit(0))"], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
-	t.after(() => { child.kill(); });
+	const child = spawn(process.execPath, ["-e", "process.send('ready'); process.on('message', () => process.exit(0))"], {
+		stdio: ["ignore", "ignore", "ignore", "ipc"],
+	});
+	t.after(() => {
+		child.kill();
+	});
 	await once(child, "message");
 	assert.ok(child.pid);
 	const live = catalog.create(input);
@@ -197,11 +224,18 @@ it("retains dirty identities during observation and retries a failed reconciliat
 	await observation.read();
 	const read = catalog.observeClaim.bind(catalog);
 	let release!: () => void;
-	const held = new Promise<void>((resolve) => { release = resolve; });
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
 	let entered!: () => void;
-	const started = new Promise<void>((resolve) => { entered = resolve; });
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
 	t.mock.method(catalog, "observeClaim", async (record: typeof first) => {
-		if (record.storageId === first.storageId) { entered(); await held; }
+		if (record.storageId === first.storageId) {
+			entered();
+			await held;
+		}
 		return read(record);
 	});
 	observation.invalidate([first.storageId]);
@@ -211,7 +245,14 @@ it("retains dirty identities during observation and retries a failed reconciliat
 	observation.invalidate([second.storageId]);
 	release();
 	assert.ok((await pending).facts.has(second.storageId));
-	const identities = t.mock.method(catalog, "identities", async () => { throw new Error("directory unavailable"); }, { times: 1 });
+	const identities = t.mock.method(
+		catalog,
+		"identities",
+		async () => {
+			throw new Error("directory unavailable");
+		},
+		{ times: 1 },
+	);
 	observation.invalidate();
 	await assert.rejects(observation.read(), /directory unavailable/u);
 	assert.equal(identities.mock.callCount(), 1);
@@ -237,8 +278,19 @@ it("falls back to complete observation for unknown or overflowing identity chang
 
 it("keeps creation records within the host metadata envelope and 32768-byte bound", (t) => {
 	const { catalog, input } = fixture(t);
-	const records = [catalog.createTracked(input, "selected").record, catalog.createHandled(input, "reviewer", "Review").record];
-	const keys = new Set([...Object.keys(input), "storageId", "storagePath", "createdAt", "view", "threads", "recoveryDue"]);
+	const records = [
+		catalog.createTracked(input, "selected").record,
+		catalog.createHandled(input, "reviewer", "Review").record,
+	];
+	const keys = new Set([
+		...Object.keys(input),
+		"storageId",
+		"storagePath",
+		"createdAt",
+		"view",
+		"threads",
+		"recoveryDue",
+	]);
 	for (const record of records) {
 		const bytes = readFileSync(catalog.path(record.storageId));
 		assert.ok(bytes.length <= 32768);
@@ -319,7 +371,11 @@ it("keeps a collected catalog page independent of subsequent record changes", as
 	const page = await catalog.page({ limit: 12 });
 	const frozen = page.records.map((record) => record.recoveryDue);
 	catalog.markRecoveryDue(page.records[5].storageId, true);
-	assert.deepEqual(page.records.map((record) => record.recoveryDue), frozen, "a collected batch is independent of subsequent observations");
+	assert.deepEqual(
+		page.records.map((record) => record.recoveryDue),
+		frozen,
+		"a collected batch is independent of subsequent observations",
+	);
 });
 
 it("bounds a discovery batch and binds continuations only to query and cwd", async (t) => {
@@ -333,7 +389,10 @@ it("bounds a discovery batch and binds continuations only to query and cwd", asy
 	catalog.create(input);
 	const next = await catalog.page({ cursor: page.nextCursor });
 	assert.equal(next.coverage.complete, true);
-	assert.equal(next.records.some((record) => page.records.some((previous) => previous.storageId === record.storageId)), false);
+	assert.equal(
+		next.records.some((record) => page.records.some((previous) => previous.storageId === record.storageId)),
+		false,
+	);
 	await assert.rejects(catalog.page({ cursor: page.nextCursor, query: "different" }), /query or cwd/u);
 	await assert.rejects(catalog.page({ cursor: page.nextCursor, cwd: "/different" }), /query or cwd/u);
 	await assert.rejects(catalog.page({ limit: 33 }), /Catalog limit/u);
@@ -341,8 +400,10 @@ it("bounds a discovery batch and binds continuations only to query and cwd", asy
 
 it("continues strictly after the last name through publication, creation, and removal", async (t) => {
 	const { catalog, input } = fixture(t);
-	const candidates = Array.from({ length: 12 }, (_, index) => ({ request: `record-${index}`, record: catalog.create(input, `record-${index}`) }))
-		.sort((a, b) => a.record.storageId < b.record.storageId ? -1 : 1);
+	const candidates = Array.from({ length: 12 }, (_, index) => ({
+		request: `record-${index}`,
+		record: catalog.create(input, `record-${index}`),
+	})).sort((a, b) => (a.record.storageId < b.record.storageId ? -1 : 1));
 	const behind = candidates[0];
 	const ahead = candidates[candidates.length - 1];
 	assert.equal(catalog.discardUnopened(behind.record), "removed");
@@ -350,7 +411,10 @@ it("continues strictly after the last name through publication, creation, and re
 	const existing = candidates.slice(1, -1).map(({ record }) => record.storageId);
 	const first = await catalog.page({ limit: 3 });
 	assert.ok(first.nextCursor);
-	assert.deepEqual(first.records.map((record) => record.storageId), existing.slice(0, 3));
+	assert.deepEqual(
+		first.records.map((record) => record.storageId),
+		existing.slice(0, 3),
+	);
 	assert.equal(catalog.discardUnopened(first.records[2]), "removed");
 	const writer = new AgentCatalog(input.cwd);
 	writer.markRecoveryDue(existing[3], true);
@@ -397,22 +461,71 @@ it("reports complete priority scans, output overflow, and unreadable records sep
 	const { catalog, input } = fixture(t);
 	const records = Array.from({ length: 6 }, () => catalog.create(input));
 	for (const [index, record] of records.entries()) {
-		catalog.updateView(record.storageId, { updatedAt: new Date().toISOString(), rows: [
-			{ id: record.storageId, storageId: record.storageId, cwd: input.cwd, modifiedAt: 0, owner: "unknown", state: "idle", cost: 0, partial: false },
-			{ id: `${record.storageId}:2`, storageId: record.storageId, cwd: input.cwd, modifiedAt: 0, owner: "unknown", state: "idle", cost: 0, partial: false },
-		], coverage: { complete: true, omitted: 0 } });
+		catalog.updateView(record.storageId, {
+			updatedAt: new Date().toISOString(),
+			rows: [
+				{
+					id: record.storageId,
+					storageId: record.storageId,
+					cwd: input.cwd,
+					modifiedAt: 0,
+					owner: "unknown",
+					state: "idle",
+					cost: 0,
+					partial: false,
+				},
+				{
+					id: `${record.storageId}:2`,
+					storageId: record.storageId,
+					cwd: input.cwd,
+					modifiedAt: 0,
+					owner: "unknown",
+					state: "idle",
+					cost: 0,
+					partial: false,
+				},
+			],
+			coverage: { complete: true, omitted: 0 },
+		});
 		utimesSync(catalog.path(record.storageId), index + 1, index + 1);
 	}
 	writeFileSync(catalog.path(records[0].storageId), "invalid");
 	const first = await catalog.priorityPage({ ownerIds: [input.ownerId], limit: 3 });
-	assert.deepEqual(first.items.map((item) => item.record.storageId), records.slice(-3).reverse().map((record) => record.storageId));
-	assert.deepEqual(first.coverage, { candidates: 6, inspected: 6, unreadable: 1, unknownClaims: 0, returned: 3, remaining: 2, priorityRemaining: 2,
-		remainingRows: 4, priorityRemainingRows: 4, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 3 });
+	assert.deepEqual(
+		first.items.map((item) => item.record.storageId),
+		records
+			.slice(-3)
+			.reverse()
+			.map((record) => record.storageId),
+	);
+	assert.deepEqual(first.coverage, {
+		candidates: 6,
+		inspected: 6,
+		unreadable: 1,
+		unknownClaims: 0,
+		returned: 3,
+		remaining: 2,
+		priorityRemaining: 2,
+		remainingRows: 4,
+		priorityRemainingRows: 4,
+		recordByteLimit: 32768,
+		claimByteLimit: 16384,
+		outputLimit: 3,
+	});
 	assert.ok(first.nextCursor);
 	const next = await catalog.priorityPage({ ownerIds: [input.ownerId], limit: 3, cursor: first.nextCursor });
-	assert.deepEqual(next.items.map((item) => item.record.storageId), records.slice(1, 3).reverse().map((record) => record.storageId));
+	assert.deepEqual(
+		next.items.map((item) => item.record.storageId),
+		records
+			.slice(1, 3)
+			.reverse()
+			.map((record) => record.storageId),
+	);
 	assert.equal(next.nextCursor, null);
-	await assert.rejects(catalog.priorityPage({ ownerIds: ["different"], limit: 3, cursor: first.nextCursor }), /caller changed/u);
+	await assert.rejects(
+		catalog.priorityPage({ ownerIds: ["different"], limit: 3, cursor: first.nextCursor }),
+		/caller changed/u,
+	);
 	await assert.rejects(catalog.priorityPage({ limit: 0 }), /output limit/u);
 });
 
@@ -452,7 +565,10 @@ it("reuses immutable creation metadata across Pi installations without rewriting
 	const reused = catalog.createTracked({ ...input, packageDir: callerPackageDir }, "same-request");
 	assert.equal(reused.created, false);
 	assert.deepEqual(reused.record, first);
-	assert.deepEqual(hostMetadata(reused.record, callerPackageDir), { ...hostMetadata(first), packageDir: callerPackageDir });
+	assert.deepEqual(hostMetadata(reused.record, callerPackageDir), {
+		...hostMetadata(first),
+		packageDir: callerPackageDir,
+	});
 	assert.equal(hostMetadata(reused.record).packageDir, input.packageDir);
 	for (const changed of [
 		{ cwd: join(input.cwd, "other-cwd") },
@@ -461,7 +577,11 @@ it("reuses immutable creation metadata across Pi installations without rewriting
 		{ thinkingLevel: "high" },
 		{ name: "other-name" },
 		{ trust: true },
-	]) assert.throws(() => catalog.create({ ...input, packageDir: callerPackageDir, ...changed }, "same-request"), /different agent configuration/u);
+	])
+		assert.throws(
+			() => catalog.create({ ...input, packageDir: callerPackageDir, ...changed }, "same-request"),
+			/different agent configuration/u,
+		);
 	assert.equal(readFileSync(catalog.path(first.storageId), "utf8"), before);
 });
 
@@ -654,8 +774,28 @@ it("refuses view writes through a symlink, corrupt record, or wrong identity", (
 it("rejects unknown cached states without losing the host's address", (t) => {
 	const { catalog, input } = fixture(t);
 	const record = catalog.create(input);
-	const row = { id: record.storageId, storageId: record.storageId, cwd: record.cwd, modifiedAt: 1, owner: "unknown", state: "future-state", cost: 0, partial: false };
-	writeFileSync(catalog.path(record.storageId), JSON.stringify({ ...record, view: { storageId: record.storageId, updatedAt: new Date().toISOString(), rows: [row], coverage: { complete: true, omitted: 0 } } }));
+	const row = {
+		id: record.storageId,
+		storageId: record.storageId,
+		cwd: record.cwd,
+		modifiedAt: 1,
+		owner: "unknown",
+		state: "future-state",
+		cost: 0,
+		partial: false,
+	};
+	writeFileSync(
+		catalog.path(record.storageId),
+		JSON.stringify({
+			...record,
+			view: {
+				storageId: record.storageId,
+				updatedAt: new Date().toISOString(),
+				rows: [row],
+				coverage: { complete: true, omitted: 0 },
+			},
+		}),
+	);
 	const readable = catalog.read(record.storageId);
 	assert.equal(readable.storagePath, record.storagePath);
 	assert.deepEqual(readable.view?.rows, []);
@@ -689,7 +829,10 @@ function writeClaim(record: ReturnType<AgentCatalog["read"]>, pid: number, host 
 	return paths.claim;
 }
 
-function countParses(t: { mock: { method: typeof import("node:test").mock.method } }, text: string): { readonly count: () => number } {
+function countParses(
+	t: { mock: { method: typeof import("node:test").mock.method } },
+	text: string,
+): { readonly count: () => number } {
 	const parse = JSON.parse;
 	let parses = 0;
 	t.mock.method(JSON, "parse", (...args: Parameters<typeof JSON.parse>) => {
@@ -747,11 +890,25 @@ it("publishes its own writes to the next read without a stale cached value", (t)
 it("evicts old validations when retained payload bytes pass the byte bound", (t) => {
 	const { catalog, input } = fixture(t);
 	const long = "x".repeat(1900);
-	const rows = (storageId: string): CatalogViewRow[] => Array.from({ length: 11 }, (_, index) => ({
-		id: `${storageId}:${index}`, storageId, cwd: input.cwd, modifiedAt: 0, owner: "unknown", state: "idle", cost: 0, partial: false, latestReply: long,
-	}));
+	const rows = (storageId: string): CatalogViewRow[] =>
+		Array.from({ length: 11 }, (_, index) => ({
+			id: `${storageId}:${index}`,
+			storageId,
+			cwd: input.cwd,
+			modifiedAt: 0,
+			owner: "unknown",
+			state: "idle",
+			cost: 0,
+			partial: false,
+			latestReply: long,
+		}));
 	const first = catalog.create(input);
-	catalog.updateView(first.storageId, { storageId: first.storageId, updatedAt: "2026-01-01T00:00:00.000Z", rows: rows(first.storageId), coverage: { complete: true, omitted: 0 } });
+	catalog.updateView(first.storageId, {
+		storageId: first.storageId,
+		updatedAt: "2026-01-01T00:00:00.000Z",
+		rows: rows(first.storageId),
+		coverage: { complete: true, omitted: 0 },
+	});
 	const text = readFileSync(catalog.path(first.storageId), "utf8");
 	assert.ok(text.length > 16_000, "each record is large enough that 8 MiB holds fewer than 512 of them");
 	const parses = countParses(t, text);
@@ -759,20 +916,37 @@ it("evicts old validations when retained payload bytes pass the byte bound", (t)
 	const count = Math.ceil((8 * 1024 * 1024) / text.length) + 4;
 	for (let index = 0; index < count; index++) {
 		const next = catalog.create(input);
-		catalog.updateView(next.storageId, { storageId: next.storageId, updatedAt: "2026-01-01T00:00:00.000Z", rows: rows(next.storageId), coverage: { complete: true, omitted: 0 } });
+		catalog.updateView(next.storageId, {
+			storageId: next.storageId,
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			rows: rows(next.storageId),
+			coverage: { complete: true, omitted: 0 },
+		});
 		catalog.read(next.storageId);
 	}
 	catalog.read(first.storageId);
 	assert.equal(parses.count(), 2);
 });
 
-it("retains an unopened record while a new holder still exposes the previous ended generation", t => {
+it("retains an unopened record while a new holder still exposes the previous ended generation", (t) => {
 	const { catalog, input } = fixture(t);
 	const record = catalog.createTracked(input, "pre-publication").record;
 	const paths = hostPaths(record);
 	mkdirSync(dirname(paths.claim), { recursive: true });
 	const createdAt = "2026-01-01T00:00:00.000Z";
-	writeFileSync(paths.claim, JSON.stringify({ token: "previous", sessionId: record.storageId, cwd: record.cwd, host: hostname(), pid: process.pid, createdAt, endedAt: createdAt }), { mode: 0o600 });
+	writeFileSync(
+		paths.claim,
+		JSON.stringify({
+			token: "previous",
+			sessionId: record.storageId,
+			cwd: record.cwd,
+			host: hostname(),
+			pid: process.pid,
+			createdAt,
+			endedAt: createdAt,
+		}),
+		{ mode: 0o600 },
+	);
 	const holder = tryNativeWriterLease(paths.claim);
 	assert.equal(holder.kind, "held");
 	if (holder.kind !== "held") return;

@@ -70,7 +70,8 @@ const suite: EvaluationSuite = {
 				],
 				prompt: "/seed",
 				fixture: {
-					intent: "Carry the retry-budget configuration state into a fresh session while leaving the bare unexplained fragment out.",
+					intent:
+						"Carry the retry-budget configuration state into a fresh session while leaving the bare unexplained fragment out.",
 					mockOutcome: "success",
 				},
 			},
@@ -130,7 +131,8 @@ const suite: EvaluationSuite = {
 				],
 				prompt: "/seed for the handoff",
 				fixture: {
-					intent: "Hand off migration state: reported-done steps, the designed-not-run backfill, and the operator's open batch-size decision.",
+					intent:
+						"Hand off migration state: reported-done steps, the designed-not-run backfill, and the operator's open batch-size decision.",
 					mockOutcome: "success",
 				},
 			},
@@ -250,7 +252,8 @@ const suite: EvaluationSuite = {
 				],
 				prompt: "/seed",
 				fixture: {
-					intent: "Transfer navigation (memory entry, URL, decision note) and the drain rationale with their unverified statuses.",
+					intent:
+						"Transfer navigation (memory entry, URL, decision note) and the drain rationale with their unverified statuses.",
 					mockOutcome: "success",
 				},
 			},
@@ -263,7 +266,10 @@ const suite: EvaluationSuite = {
 				{
 					id: "payload-navigation",
 					type: "tool-call",
-					config: { name: "clipboard_copy", argumentsContain: ["docs/decisions/drain.md", "https://example.com/relay-drain"] },
+					config: {
+						name: "clipboard_copy",
+						argumentsContain: ["docs/decisions/drain.md", "https://example.com/relay-drain"],
+					},
 				},
 				{
 					id: "payload-memory-reference",
@@ -304,7 +310,8 @@ const suite: EvaluationSuite = {
 				seed: [
 					{
 						role: "user",
-						content: "We earlier planned to rewrite flush as a worker pool with a new decision doc. Scrap that plan entirely.",
+						content:
+							"We earlier planned to rewrite flush as a worker pool with a new decision doc. Scrap that plan entirely.",
 					},
 					{
 						role: "assistant",
@@ -396,7 +403,10 @@ const suite: EvaluationSuite = {
 				{
 					id: "payload-doc-pointer",
 					type: "tool-call",
-					config: { name: "clipboard_copy", argumentsContain: ["docs/onboarding/quickstart.md", "docs/reference/cli.md"] },
+					config: {
+						name: "clipboard_copy",
+						argumentsContain: ["docs/onboarding/quickstart.md", "docs/reference/cli.md"],
+					},
 				},
 				{
 					id: "no-bare-token-in-payload",
@@ -443,7 +453,8 @@ const suite: EvaluationSuite = {
 				],
 				prompt: "/seed",
 				fixture: {
-					intent: "Carry the exact reported diagnostic line, its pointers, and the unrun source search into the handoff.",
+					intent:
+						"Carry the exact reported diagnostic line, its pointers, and the unrun source search into the handoff.",
 					mockOutcome: "success",
 				},
 			},
@@ -456,7 +467,10 @@ const suite: EvaluationSuite = {
 				{
 					id: "payload-diagnostic-and-pointers",
 					type: "tool-call",
-					config: { name: "clipboard_copy", argumentsContain: ["RELAY_SOAK_GUARD_4412", "var/log/soak-run-12.txt", "configs/soak.yaml"] },
+					config: {
+						name: "clipboard_copy",
+						argumentsContain: ["RELAY_SOAK_GUARD_4412", "var/log/soak-run-12.txt", "configs/soak.yaml"],
+					},
 				},
 				{
 					id: "copy-outcome",
@@ -488,12 +502,13 @@ const suite: EvaluationSuite = {
 					{
 						role: "assistant",
 						content:
-							"Status output on record: {\"scheduler\": \"degraded\", \"TIDE_BUDGET_EPOCH\": 12, \"next_window\": \"closed\"}. The degraded state started after the config reload. TIDE_BUDGET_EPOCH is not listed in docs/scheduler/fields.md; the other two fields are. I have not diffed the reload.",
+							'Status output on record: {"scheduler": "degraded", "TIDE_BUDGET_EPOCH": 12, "next_window": "closed"}. The degraded state started after the config reload. TIDE_BUDGET_EPOCH is not listed in docs/scheduler/fields.md; the other two fields are. I have not diffed the reload.',
 					},
 				],
 				prompt: "/seed",
 				fixture: {
-					intent: "Carry the resolved budget field (exact name, reported value, documentation status) and the degraded-state report into the handoff.",
+					intent:
+						"Carry the resolved budget field (exact name, reported value, documentation status) and the degraded-state report into the handoff.",
 					mockOutcome: "success",
 				},
 			},

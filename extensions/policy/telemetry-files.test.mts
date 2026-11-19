@@ -2,7 +2,20 @@ import assert from "node:assert/strict";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { closeSync, constants, openSync } from "node:fs";
-import { chmod, link, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	link,
+	lstat,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	rm,
+	stat,
+	symlink,
+	truncate,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
@@ -150,7 +163,13 @@ describe("telemetry append, rotation and retention", () => {
 		await appendTelemetryRecords(dir, [record("a"), record("b"), record("c")], RETENTION);
 		const text = await readFile(join(dir, "telemetry", `${DAY}.000001.jsonl`), "utf8");
 		assert.ok(text.endsWith("\n"));
-		assert.deepEqual(text.split("\n").filter(Boolean).map((line) => JSON.parse(line).callId), ["a", "b", "c"]);
+		assert.deepEqual(
+			text
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => JSON.parse(line).callId),
+			["a", "b", "c"],
+		);
 		assert.deepEqual(await names(dir), [`${DAY}.000001.jsonl`]);
 	});
 
@@ -169,7 +188,10 @@ describe("telemetry append, rotation and retention", () => {
 		const rotated = JSON.parse((await readFile(join(dir, "telemetry", `${DAY}.000002.jsonl`), "utf8")).trim());
 		assert.equal(rotated.callId, "a");
 		await appendTelemetryRecords(dir, [record("b")], RETENTION);
-		assert.equal((await readFile(join(dir, "telemetry", `${DAY}.000002.jsonl`), "utf8")).split("\n").filter(Boolean).length, 2);
+		assert.equal(
+			(await readFile(join(dir, "telemetry", `${DAY}.000002.jsonl`), "utf8")).split("\n").filter(Boolean).length,
+			2,
+		);
 		assert.deepEqual(await names(dir), [`${DAY}.000001.jsonl`, `${DAY}.000002.jsonl`]);
 	});
 
@@ -213,7 +235,7 @@ describe("telemetry append, rotation and retention", () => {
 		await seed(dir, "2026-09-02.000001.jsonl", 40 * MIB);
 		await appendTelemetryRecords(dir, [record("a")], { maxBytes: TELEMETRY_SEGMENT_BYTES, maxAgeDays: 30 });
 		assert.deepEqual(await names(dir), [`${DAY}.000001.jsonl`]);
-		assert.ok((await readFile(join(dir, "telemetry", `${DAY}.000001.jsonl`), "utf8")).includes("\"callId\":\"a\""));
+		assert.ok((await readFile(join(dir, "telemetry", `${DAY}.000001.jsonl`), "utf8")).includes('"callId":"a"'));
 	});
 
 	it("removes a full segment when the smallest budget needs the room for a rotated one", async (t) => {
@@ -237,7 +259,10 @@ describe("telemetry safety", () => {
 		assert.equal(await readFile(outside, "utf8"), "keep");
 	});
 
-	it("refuses a FIFO segment without waiting for a peer", { timeout: 10_000, skip: process.platform === "win32" }, async (t) => {
+	it("refuses a FIFO segment without waiting for a peer", {
+		timeout: 10_000,
+		skip: process.platform === "win32",
+	}, async (t) => {
 		const dir = await policyDir(t);
 		execFileSync("mkfifo", [join(dir, "telemetry", "2026-07-02.000001.jsonl")]);
 		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), /nonregular or symbolic link/);
@@ -298,7 +323,10 @@ describe("telemetry safety", () => {
 
 	it("rejects the whole batch when one record is invalid", async (t) => {
 		const dir = await policyDir(t);
-		await assert.rejects(appendTelemetryRecords(dir, [record("a"), record("b", "not-a-date")], RETENTION), /invalid policy timestamp/);
+		await assert.rejects(
+			appendTelemetryRecords(dir, [record("a"), record("b", "not-a-date")], RETENTION),
+			/invalid policy timestamp/,
+		);
 		assert.deepEqual(await names(dir), []);
 	});
 });
@@ -309,12 +337,21 @@ describe("telemetry lock", () => {
 		let now = 0;
 		t.mock.method(performance, "now", () => now);
 		let prepared = () => {};
-		const preparing = new Promise<void>((resolve) => { prepared = resolve; });
+		const preparing = new Promise<void>((resolve) => {
+			prepared = resolve;
+		});
 		let release = () => {};
-		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		const appending = appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record())], RETENTION, {
 			acquireUntil: 2000,
-			hooks: { afterDirectoryPreparation: async () => { prepared(); await gate; } },
+			hooks: {
+				afterDirectoryPreparation: async () => {
+					prepared();
+					await gate;
+				},
+			},
 		});
 		const expired = assert.rejects(appending, (error: unknown) => {
 			assert.ok(error instanceof TelemetryAcquisitionExpiredError);
@@ -336,7 +373,11 @@ describe("telemetry lock", () => {
 		const row = record();
 		await appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(row)], RETENTION, {
 			acquireUntil: 2000,
-			hooks: { afterInventory: async () => { now = 2100; } },
+			hooks: {
+				afterInventory: async () => {
+					now = 2100;
+				},
+			},
 		});
 		assert.deepEqual(await names(dir), [`${DAY}.000001.jsonl`]);
 		const lines = (await readFile(join(dir, "telemetry", `${DAY}.000001.jsonl`), "utf8")).split("\n").filter(Boolean);
@@ -367,9 +408,12 @@ describe("telemetry lock", () => {
 		const lock = join(dir, "telemetry", ".telemetry-lock");
 		await writeFile(lock, "held", { mode: 0o600 });
 		const started = performance.now();
-		await assert.rejects(appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record())], RETENTION, {
-			acquireUntil: started + 40,
-		}), TelemetryLockBusyError);
+		await assert.rejects(
+			appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record())], RETENTION, {
+				acquireUntil: started + 40,
+			}),
+			TelemetryLockBusyError,
+		);
 		const elapsed = performance.now() - started;
 		assert.ok(elapsed >= 35 && elapsed < 300, `acquisition took ${elapsed} ms`);
 		assert.equal(await readFile(lock, "utf8"), "held");
@@ -379,13 +423,16 @@ describe("telemetry lock", () => {
 		const dir = await policyDir(t);
 		const lock = join(dir, "telemetry", ".telemetry-lock");
 		await writeFile(lock, "held", { mode: 0o600 });
-		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION, {
-			foreignOwner: (path) => path === lock,
-		}), (error: unknown) => {
-			assert.ok(error instanceof Error && !(error instanceof TelemetryLockBusyError));
-			assert.match(error.message, /not owned by this user/);
-			return true;
-		});
+		await assert.rejects(
+			appendTelemetryRecords(dir, [record("a")], RETENTION, {
+				foreignOwner: (path) => path === lock,
+			}),
+			(error: unknown) => {
+				assert.ok(error instanceof Error && !(error instanceof TelemetryLockBusyError));
+				assert.match(error.message, /not owned by this user/);
+				return true;
+			},
+		);
 		assert.equal(await readFile(lock, "utf8"), "held");
 	});
 
@@ -395,11 +442,17 @@ describe("telemetry lock", () => {
 		await writeFile(target, "keep");
 		const lock = join(dir, "telemetry", ".telemetry-lock");
 		await symlink(target, lock);
-		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), /lock is not a regular non-symlink file/);
+		await assert.rejects(
+			appendTelemetryRecords(dir, [record("a")], RETENTION),
+			/lock is not a regular non-symlink file/,
+		);
 		assert.equal(await readFile(target, "utf8"), "keep");
 		await rm(lock);
 		await mkdir(lock);
-		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), /lock is not a regular non-symlink file/);
+		await assert.rejects(
+			appendTelemetryRecords(dir, [record("a")], RETENTION),
+			/lock is not a regular non-symlink file/,
+		);
 	});
 
 	it("writes nothing and removes nothing after a lock name changed while it was held", async (t) => {
@@ -446,7 +499,9 @@ describe("telemetry lock", () => {
 		const dir = await policyDir(t);
 		let linked: number | undefined;
 		await appendTelemetryRecords(dir, [record("a")], RETENTION, {
-			afterInventory: async () => { linked = (await lstat(legacyPath(dir))).ino; },
+			afterInventory: async () => {
+				linked = (await lstat(legacyPath(dir))).ino;
+			},
 		});
 		const first = await lstat(lockPath(dir));
 		assert.equal(linked, first.ino, "the legacy name is the lock file itself while the append runs");
@@ -463,7 +518,9 @@ describe("telemetry lock", () => {
 		const dir = await policyDir(t);
 		const held = openSync(lockPath(dir), constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | O_EXLOCK, 0o600);
 		let open = true;
-		t.after(() => { if (open) closeSync(held); });
+		t.after(() => {
+			if (open) closeSync(held);
+		});
 		const started = Date.now();
 		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), (error: unknown) => {
 			assert.ok(error instanceof TelemetryLockBusyError);
@@ -493,7 +550,11 @@ describe("telemetry lock", () => {
 		await writeFile(lockPath(dir), "", { mode: 0o600 });
 		await link(lockPath(dir), legacyPath(dir));
 		let recovered = 0;
-		const options = { onStaleLock: () => { recovered++; } };
+		const options = {
+			onStaleLock: () => {
+				recovered++;
+			},
+		};
 		await appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record("a"))], RETENTION, options);
 		assert.equal(recovered, 1);
 		assert.deepEqual(await names(dir), [`${DAY}.000001.jsonl`], "the taken-over name is removed on release");
@@ -518,29 +579,46 @@ describe("telemetry lock", () => {
 				},
 			});
 		`;
-		const child = spawn(process.execPath, ["--input-type=module", "--eval", script, dir, AT], { stdio: ["ignore", "pipe", "inherit"] });
-		t.after(() => { child.kill("SIGKILL"); });
+		const child = spawn(process.execPath, ["--input-type=module", "--eval", script, dir, AT], {
+			stdio: ["ignore", "pipe", "inherit"],
+		});
+		t.after(() => {
+			child.kill("SIGKILL");
+		});
 		const exited = once(child, "exit");
 		await Promise.race([
 			once(child.stdout, "data"),
-			exited.then(() => { throw new Error("the writer process exited before it held the lock"); }),
+			exited.then(() => {
+				throw new Error("the writer process exited before it held the lock");
+			}),
 		]);
 		await assert.rejects(
-			appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record("waiting"))], RETENTION, { acquireUntil: performance.now() + 80 }),
+			appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record("waiting"))], RETENTION, {
+				acquireUntil: performance.now() + 80,
+			}),
 			(error: unknown) => error instanceof TelemetryLockBusyError && error.holder?.ownership === "live",
 			"a running holder is live contention, not a stale lock",
 		);
 		child.kill("SIGKILL");
 		await exited;
-		assert.equal((await lstat(legacyPath(dir))).ino, (await lstat(lockPath(dir))).ino, "the dead writer left its link under the legacy name");
+		assert.equal(
+			(await lstat(legacyPath(dir))).ino,
+			(await lstat(lockPath(dir))).ino,
+			"the dead writer left its link under the legacy name",
+		);
 		let recovered = 0;
 		await appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record("after"))], RETENTION, {
-			onStaleLock: () => { recovered++; },
+			onStaleLock: () => {
+				recovered++;
+			},
 		});
 		assert.equal(recovered, 1);
 		await assert.rejects(lstat(legacyPath(dir)), { code: "ENOENT" });
 		const lines = (await readFile(join(dir, "telemetry", `${DAY}.000001.jsonl`), "utf8")).split("\n").filter(Boolean);
-		assert.deepEqual(lines.map((line) => JSON.parse(line).callId), ["after"]);
+		assert.deepEqual(
+			lines.map((line) => JSON.parse(line).callId),
+			["after"],
+		);
 	});
 
 	it("excludes a writer of an earlier release in both directions", { timeout: 60_000 }, async (t) => {
@@ -571,11 +649,15 @@ describe("telemetry lock", () => {
 				await handle.close();
 			}
 		`;
-		const earlier = execute(process.execPath, ["--input-type=module", "--eval", earlierWriter, legacyPath(dir), counter, "120"], {
-			timeout: 45_000,
-			killSignal: "SIGKILL",
-			maxBuffer: 65536,
-		});
+		const earlier = execute(
+			process.execPath,
+			["--input-type=module", "--eval", earlierWriter, legacyPath(dir), counter, "120"],
+			{
+				timeout: 45_000,
+				killSignal: "SIGKILL",
+				maxBuffer: 65536,
+			},
+		);
 		while ((await readFile(counter, "utf8")) === "0") await delay(5);
 		const countUnderLock = async () => {
 			const value = Number(await readFile(counter, "utf8"));
@@ -592,14 +674,20 @@ describe("telemetry lock", () => {
 		};
 		for (let index = 0; index < 40; index++) await appendAfterContention(`n${index}`);
 		await earlier;
-		assert.equal(await readFile(counter, "utf8"), "160", "no update was lost, so no two writers held the lock together");
+		assert.equal(
+			await readFile(counter, "utf8"),
+			"160",
+			"no update was lost, so no two writers held the lock together",
+		);
 		assert.equal((await readTelemetry(dir, DAY, DAY)).records, 40);
 		assert.deepEqual(await names(dir), [`${DAY}.000001.jsonl`]);
 	});
 });
 
 describe("telemetry across processes", () => {
-	it("keeps every record once, with complete lines, through concurrent appends and one rotation", { timeout: 60_000 }, async (t) => {
+	it("keeps every record once, with complete lines, through concurrent appends and one rotation", {
+		timeout: 60_000,
+	}, async (t) => {
 		const dir = await policyDir(t);
 		await seed(dir, "2026-09-01.000001.jsonl", 20 * MIB);
 		await seed(dir, "2026-09-02.000001.jsonl", 20 * MIB);
@@ -636,7 +724,10 @@ describe("telemetry across processes", () => {
 		assert.deepEqual(files, [`${DAY}.000001.jsonl`, `${DAY}.000002.jsonl`], "retention removed the older days once");
 		const text = await readFile(join(dir, "telemetry", `${DAY}.000002.jsonl`), "utf8");
 		assert.ok(text.endsWith("\n"));
-		const ids = text.split("\n").filter(Boolean).map((line) => JSON.parse(line).callId);
+		const ids = text
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line).callId);
 		assert.equal(ids.length, 36);
 		assert.equal(new Set(ids).size, 36);
 		const summary = await readTelemetry(dir, DAY, DAY);

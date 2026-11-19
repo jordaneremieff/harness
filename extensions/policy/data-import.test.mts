@@ -102,7 +102,11 @@ async function snapshotReplay(dir: string, kind: ReplayKind, json: string, limit
 	});
 	return new RuleRegistry(target, { catalog: [], onNotice() {} }).snapshot();
 }
-function assertReplayBounds(snapshot: Awaited<ReturnType<typeof snapshotReplay>>, kind: ReplayKind, delta: number): void {
+function assertReplayBounds(
+	snapshot: Awaited<ReturnType<typeof snapshotReplay>>,
+	kind: ReplayKind,
+	delta: number,
+): void {
 	assert.equal(snapshot.health.status, delta > 0 ? "degraded" : "ok");
 	if (delta <= 0) assert.equal(kind === "data" ? snapshot.data.size : snapshot.pending.length, 1);
 }
@@ -343,7 +347,16 @@ describe("complete named-data file import", () => {
 		const review = dataReview(artifact, contentRevision(artifact));
 		const decisions: boolean[] = [];
 		const frame = viewStack();
-		frame.mount((host) => new ArtifactReview({ host, title: "Data review", artifact: review, label: "Set policy data", decide: (value) => void decisions.push(value) }));
+		frame.mount(
+			(host) =>
+				new ArtifactReview({
+					host,
+					title: "Data review",
+					artifact: review,
+					label: "Set policy data",
+					decide: (value) => void decisions.push(value),
+				}),
+		);
 		const seen = new Set<number>();
 		for (let page = 0; page < 400; page++) {
 			const rendered = frame.screen(180, 40);

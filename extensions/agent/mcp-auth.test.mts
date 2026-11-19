@@ -8,23 +8,53 @@ import { it, type TestContext } from "node:test";
 import lockfile, { type LockOptions } from "proper-lockfile";
 import type { McpServerConfig } from "@earendil-works/pi-coding-agent";
 import { StreamableHttpTransport, type McpFetch } from "@earendil-works/pi-mcp";
-import { McpOAuthAuthorizationRequiredError, McpOAuthProvider, type McpOAuthState, type AuthorizationServerMetadata } from "@earendil-works/pi-mcp/oauth";
-import { McpCredentialFileLock, McpRefreshLock, NativeMcpAuth, type CredentialFileLock, type McpLockDriver } from "./mcp-auth.ts";
+import {
+	McpOAuthAuthorizationRequiredError,
+	McpOAuthProvider,
+	type McpOAuthState,
+	type AuthorizationServerMetadata,
+} from "@earendil-works/pi-mcp/oauth";
+import {
+	McpCredentialFileLock,
+	McpRefreshLock,
+	NativeMcpAuth,
+	type CredentialFileLock,
+	type McpLockDriver,
+} from "./mcp-auth.ts";
 
 const url = "https://mcp.example.test/mcp";
 const key = `mcp__docs|${url}`;
 const metadata: AuthorizationServerMetadata = {
-	issuer: "https://auth.example.test", authorization_endpoint: "https://auth.example.test/authorize", token_endpoint: "https://auth.example.test/token",
-	response_types_supported: ["code"], token_endpoint_auth_methods_supported: ["none"], client_id_metadata_document_supported: true, authorization_response_iss_parameter_supported: true,
+	issuer: "https://auth.example.test",
+	authorization_endpoint: "https://auth.example.test/authorize",
+	token_endpoint: "https://auth.example.test/token",
+	response_types_supported: ["code"],
+	token_endpoint_auth_methods_supported: ["none"],
+	client_id_metadata_document_supported: true,
+	authorization_response_iss_parameter_supported: true,
 };
-const rotated = { access_token: "synthetic-new", refresh_token: "synthetic-next", token_type: "Bearer", expires_in: 3600 };
+const rotated = {
+	access_token: "synthetic-new",
+	refresh_token: "synthetic-next",
+	token_type: "Bearer",
+	expires_in: 3600,
+};
 function grant(): McpOAuthState {
-	return { serverUrl: url, tokens: { access_token: "synthetic-old", refresh_token: "synthetic-original", token_type: "Bearer" }, tokensExpireAt: 1,
-		discovery: { authorizationServerUrl: metadata.issuer, authorizationServerMetadata: metadata } };
+	return {
+		serverUrl: url,
+		tokens: { access_token: "synthetic-old", refresh_token: "synthetic-original", token_type: "Bearer" },
+		tokensExpireAt: 1,
+		discovery: { authorizationServerUrl: metadata.issuer, authorizationServerMetadata: metadata },
+	};
 }
 function deferred() {
 	let resolve!: () => void;
-	return { promise: new Promise<void>((done) => { resolve = done; }), resolve: () => resolve() };
+	return {
+		promise: new Promise<void>((done) => {
+			resolve = done;
+		}),
+		resolve: () => resolve(),
+	};
 }
 
 interface LockAcquisition {
@@ -44,7 +74,10 @@ function controlledLocks() {
 					path,
 					options: options ?? {},
 					releases: 0,
-					acquire: () => resolve(async () => { entry.releases++; }),
+					acquire: () =>
+						resolve(async () => {
+							entry.releases++;
+						}),
 					compromise: (error = new Error("synthetic ownership loss")) => options?.onCompromised?.(error),
 				};
 				acquisitions.push(entry);
@@ -57,43 +90,70 @@ function fixture(t: TestContext, initial = grant(), fileLock?: CredentialFileLoc
 	const path = join(dir, "mcp-auth.json");
 	writeFileSync(path, JSON.stringify({ [key]: initial }));
 	const owner = new NativeMcpAuth(dir, refreshLock, fileLock);
-	t.after(async () => { await owner.close(); rmSync(dir, { recursive: true, force: true }); });
+	t.after(async () => {
+		await owner.close();
+		rmSync(dir, { recursive: true, force: true });
+	});
 	return { dir, path, owner, read: () => JSON.parse(readFileSync(path, "utf8")) as Record<string, McpOAuthState> };
 }
 function provider(owner: NativeMcpAuth, oauth?: Extract<McpServerConfig, { url: string }>["oauth"]) {
 	return owner.provider("docs", { url, oauth }, (value) => value);
 }
-function refreshFetch(t: TestContext, run: McpFetch) { t.mock.method(globalThis, "fetch", run); }
+function refreshFetch(t: TestContext, run: McpFetch) {
+	t.mock.method(globalThis, "fetch", run);
+}
 function rejectedToken(token = "synthetic-old") {
 	return { token, serverUrl: new URL(url), fetch: globalThis.fetch, response: new Response(null, { status: 401 }) };
 }
 
 it("refreshes production CIMD state without registration or stored client information", async (t) => {
-	const f = fixture(t); let calls = 0;
+	const f = fixture(t);
+	let calls = 0;
 	refreshFetch(t, async (input, init) => {
-		assert.equal(String(input), metadata.token_endpoint); assert.ok(init?.signal);
+		assert.equal(String(input), metadata.token_endpoint);
+		assert.ok(init?.signal);
 		assert.equal(new URLSearchParams(String(init.body)).get("client_id"), "https://pi.dev/oauth/client.json");
-		calls++; return Response.json(rotated);
+		calls++;
+		return Response.json(rotated);
 	});
 	assert.equal(await provider(f.owner).token(), rotated.access_token);
-	assert.equal(calls, 1); assert.deepEqual(f.read()[key].tokens, rotated);
+	assert.equal(calls, 1);
+	assert.deepEqual(f.read()[key].tokens, rotated);
 	assert.equal(f.read()[key].clientInformation, undefined);
 });
 
 it("shares refresh ownership between native owners and reuses the replacement token", async (t) => {
-	const f = fixture(t); const other = new NativeMcpAuth(f.dir); t.after(() => other.close());
-	const entered = deferred(); const release = deferred(); t.after(release.resolve); let calls = 0;
-	refreshFetch(t, async () => { calls++; entered.resolve(); await release.promise; return calls === 1 ? Response.json(rotated) : Response.json({ error: "invalid_grant" }, { status: 400 }); });
-	const first = provider(f.owner).token(); await entered.promise;
-	const second = provider(other).token(); release.resolve();
+	const f = fixture(t);
+	const other = new NativeMcpAuth(f.dir);
+	t.after(() => other.close());
+	const entered = deferred();
+	const release = deferred();
+	t.after(release.resolve);
+	let calls = 0;
+	refreshFetch(t, async () => {
+		calls++;
+		entered.resolve();
+		await release.promise;
+		return calls === 1 ? Response.json(rotated) : Response.json({ error: "invalid_grant" }, { status: 400 });
+	});
+	const first = provider(f.owner).token();
+	await entered.promise;
+	const second = provider(other).token();
+	release.resolve();
 	assert.deepEqual(await Promise.all([first, second]), [rotated.access_token, rotated.access_token]);
-	assert.equal(calls, 1); assert.deepEqual(f.read()[key].tokens, rotated);
+	assert.equal(calls, 1);
+	assert.deepEqual(f.read()[key].tokens, rotated);
 });
 
 it("discards a losing refresh's token invalidation and reuses the committed rotation", { timeout: 5000 }, async (t) => {
-	const firstEntered = deferred(); const secondEntered = deferred();
-	const releaseWinner = deferred(); const releaseLoser = deferred();
-	t.after(() => { releaseWinner.resolve(); releaseLoser.resolve(); });
+	const firstEntered = deferred();
+	const secondEntered = deferred();
+	const releaseWinner = deferred();
+	const releaseLoser = deferred();
+	t.after(() => {
+		releaseWinner.resolve();
+		releaseLoser.resolve();
+	});
 	const f = fixture(t);
 	// Bypass refresh coordination to exercise conditional persistence after ownership loss.
 	const other = new NativeMcpAuth(f.dir, { withRefreshLock: (_key, fn) => fn() });
@@ -103,41 +163,66 @@ it("discards a losing refresh's token invalidation and reuses the committed rota
 	refreshFetch(t, async (_input, init) => {
 		assert.equal(new URLSearchParams(String(init?.body)).get("refresh_token"), "synthetic-original");
 		if (++calls === 1) {
-			firstEntered.resolve(); await releaseWinner.promise; return Response.json(rotated);
+			firstEntered.resolve();
+			await releaseWinner.promise;
+			return Response.json(rotated);
 		}
-		secondEntered.resolve(); await releaseLoser.promise;
+		secondEntered.resolve();
+		await releaseLoser.promise;
 		return Response.json({ error: "invalid_grant" }, { status: 400 });
 	});
-	const winner = provider(f.owner); const loser = provider(other);
-	const first = winner.token(); await firstEntered.promise;
-	const second = loser.token(); await secondEntered.promise;
-	releaseWinner.resolve(); assert.equal(await first, rotated.access_token);
-	const saved = f.read(); assert.deepEqual(saved[key].tokens, rotated);
-	releaseLoser.resolve(); assert.equal(await second, rotated.access_token);
-	assert.deepEqual(invalidation.mock.calls.map((call) => call.arguments), [["tokens"]]);
+	const winner = provider(f.owner);
+	const loser = provider(other);
+	const first = winner.token();
+	await firstEntered.promise;
+	const second = loser.token();
+	await secondEntered.promise;
+	releaseWinner.resolve();
+	assert.equal(await first, rotated.access_token);
+	const saved = f.read();
+	assert.deepEqual(saved[key].tokens, rotated);
+	releaseLoser.resolve();
+	assert.equal(await second, rotated.access_token);
+	assert.deepEqual(
+		invalidation.mock.calls.map((call) => call.arguments),
+		[["tokens"]],
+	);
 	assert.deepEqual(f.read(), saved);
 	assert.equal(await loser.token(), rotated.access_token);
-	assert.equal(calls, 2); assert.deepEqual(f.read(), saved);
+	assert.equal(calls, 2);
+	assert.deepEqual(f.read(), saved);
 });
 
 /** Ordinary Pi's store is private. This writer reproduces its directory lock and whole-file save protocol. */
 function ordinaryWrite(path: string, states: Record<string, McpOAuthState>): void {
 	const release = lockfile.lockSync(path, { realpath: false });
-	try { writeFileSync(path, JSON.stringify(states)); }
-	finally { release(); }
+	try {
+		writeFileSync(path, JSON.stringify(states));
+	} finally {
+		release();
+	}
 }
 
 for (const outcome of ["new sign-in", "logout", "invalid-grant loser"] as const) {
 	it(`preserves an ordinary writer's ${outcome} during native refresh`, async (t) => {
-		const f = fixture(t); const newer = { ...grant(), tokens: { ...rotated, access_token: "synthetic-sign-in" }, tokensExpireAt: Date.now() + 3600000 };
+		const f = fixture(t);
+		const newer = {
+			...grant(),
+			tokens: { ...rotated, access_token: "synthetic-sign-in" },
+			tokensExpireAt: Date.now() + 3600000,
+		};
 		const unrelated = { ...grant(), serverUrl: "https://other.example.test/mcp" };
-		const auth = provider(f.owner); let calls = 0;
+		const auth = provider(f.owner);
+		let calls = 0;
 		refreshFetch(t, async () => {
 			calls++;
 			ordinaryWrite(f.path, { ...(outcome === "logout" ? {} : { [key]: newer }), unrelated });
-			return outcome === "invalid-grant loser" ? Response.json({ error: "invalid_grant" }, { status: 400 }) : Response.json(rotated);
+			return outcome === "invalid-grant loser"
+				? Response.json({ error: "invalid_grant" }, { status: 400 })
+				: Response.json(rotated);
 		});
-		if (outcome === "logout") await assert.rejects(auth.onUnauthorized(rejectedToken()), McpOAuthAuthorizationRequiredError);
+		if (outcome === "logout")
+			await assert.rejects(auth.onUnauthorized(rejectedToken()), McpOAuthAuthorizationRequiredError);
 		else {
 			assert.equal(await auth.token(), newer.tokens.access_token);
 			assert.equal(await auth.token(), newer.tokens.access_token);
@@ -148,97 +233,201 @@ for (const outcome of ["new sign-in", "logout", "invalid-grant loser"] as const)
 }
 
 it("does not fall back to a URL-only grant after committed canonical logout", async (t) => {
-	const f = fixture(t); const urlOnly = { ...grant(), tokens: { ...rotated, access_token: "synthetic-url-only" } };
-	refreshFetch(t, async () => { ordinaryWrite(f.path, { [url]: urlOnly }); return Response.json(rotated); });
+	const f = fixture(t);
+	const urlOnly = { ...grant(), tokens: { ...rotated, access_token: "synthetic-url-only" } };
+	refreshFetch(t, async () => {
+		ordinaryWrite(f.path, { [url]: urlOnly });
+		return Response.json(rotated);
+	});
 	await assert.rejects(provider(f.owner).onUnauthorized(rejectedToken()), McpOAuthAuthorizationRequiredError);
 	assert.deepEqual(f.read(), { [url]: urlOnly });
 });
 
 it("fails a credential lock acquisition without running an unlocked mutation", async (t) => {
 	const f = fixture(t);
-	const before = readFileSync(f.path, "utf8"); let writes = 0;
+	const before = readFileSync(f.path, "utf8");
+	let writes = 0;
 	const locked = Object.assign(new Error("Lock file is already being held"), { code: "ELOCKED" });
-	const driver: McpLockDriver = { lock: async () => { throw locked; } };
-	await assert.rejects(new McpCredentialFileLock(driver).withFileLock(f.path, () => { writes++; writeFileSync(f.path, "{}"); }), { code: "ELOCKED" });
-	assert.equal(writes, 0); assert.equal(readFileSync(f.path, "utf8"), before); assert.equal(existsSync(`${f.path}.lock`), false);
+	const driver: McpLockDriver = {
+		lock: async () => {
+			throw locked;
+		},
+	};
+	await assert.rejects(
+		new McpCredentialFileLock(driver).withFileLock(f.path, () => {
+			writes++;
+			writeFileSync(f.path, "{}");
+		}),
+		{ code: "ELOCKED" },
+	);
+	assert.equal(writes, 0);
+	assert.equal(readFileSync(f.path, "utf8"), before);
+	assert.equal(existsSync(`${f.path}.lock`), false);
 });
 
 it("fails a refresh lock acquisition without running the callback", async () => {
 	const locked = Object.assign(new Error("Lock file is already being held"), { code: "ELOCKED" });
-	const driver: McpLockDriver = { lock: async () => { throw locked; } };
+	const driver: McpLockDriver = {
+		lock: async () => {
+			throw locked;
+		},
+	};
 	let calls = 0;
-	await assert.rejects(new McpRefreshLock(tmpdir(), driver).withRefreshLock(key, async () => { calls++; }), { code: "ELOCKED" });
+	await assert.rejects(
+		new McpRefreshLock(tmpdir(), driver).withRefreshLock(key, async () => {
+			calls++;
+		}),
+		{ code: "ELOCKED" },
+	);
 	assert.equal(calls, 0);
 });
 
 it("reclaims a stale directory and owns the lock during the mutation", async (t) => {
-	const f = fixture(t); mkdirSync(`${f.path}.lock`);
-	const stale = new Date(Date.now() - 11000); utimesSync(`${f.path}.lock`, stale, stale);
-	await new McpCredentialFileLock().withFileLock(f.path, () => { assert.ok(existsSync(`${f.path}.lock`)); writeFileSync(f.path, "{}"); });
-	assert.equal(existsSync(`${f.path}.lock`), false); assert.deepEqual(f.read(), {});
+	const f = fixture(t);
+	mkdirSync(`${f.path}.lock`);
+	const stale = new Date(Date.now() - 11000);
+	utimesSync(`${f.path}.lock`, stale, stale);
+	await new McpCredentialFileLock().withFileLock(f.path, () => {
+		assert.ok(existsSync(`${f.path}.lock`));
+		writeFileSync(f.path, "{}");
+	});
+	assert.equal(existsSync(`${f.path}.lock`), false);
+	assert.deepEqual(f.read(), {});
 });
 
 it("drains a completed remote rotation before close resolves", async (t) => {
-	const entered = deferred(); const release = deferred(); t.after(release.resolve); let operations = 0;
+	const entered = deferred();
+	const release = deferred();
+	t.after(release.resolve);
+	let operations = 0;
 	const fileLock = new McpCredentialFileLock();
-	const lock: CredentialFileLock = { async withFileLock(path, fn) { if (++operations === 3) { entered.resolve(); await release.promise; } return fileLock.withFileLock(path, fn); } };
+	const lock: CredentialFileLock = {
+		async withFileLock(path, fn) {
+			if (++operations === 3) {
+				entered.resolve();
+				await release.promise;
+			}
+			return fileLock.withFileLock(path, fn);
+		},
+	};
 	const f = fixture(t, grant(), lock);
 	refreshFetch(t, async () => Response.json(rotated));
-	const auth = provider(f.owner); const token = auth.token(); await entered.promise;
-	let closed = false; const close = f.owner.close().then(() => { closed = true; });
-	await Promise.resolve(); assert.equal(closed, false); assert.equal(f.read()[key].tokens?.access_token, "synthetic-old");
-	release.resolve(); await close; await token; await auth.settled();
+	const auth = provider(f.owner);
+	const token = auth.token();
+	await entered.promise;
+	let closed = false;
+	const close = f.owner.close().then(() => {
+		closed = true;
+	});
+	await Promise.resolve();
+	assert.equal(closed, false);
+	assert.equal(f.read()[key].tokens?.access_token, "synthetic-old");
+	release.resolve();
+	await close;
+	await token;
+	await auth.settled();
 	assert.deepEqual(f.read()[key].tokens, rotated);
 });
 
 it("drains the credential reread after a refresh before close resolves", async (t) => {
-	const entered = deferred(); const release = deferred(); t.after(release.resolve);
-	let operations = 0; let closed = false; const late: number[] = [];
+	const entered = deferred();
+	const release = deferred();
+	t.after(release.resolve);
+	let operations = 0;
+	let closed = false;
+	const late: number[] = [];
 	const fileLock = new McpCredentialFileLock();
-	const lock: CredentialFileLock = { async withFileLock(path, fn) {
-		const operation = ++operations;
-		if (operation === 3) { entered.resolve(); await release.promise; }
-		try { return await fileLock.withFileLock(path, fn); } finally { if (closed) late.push(operation); }
-	} };
+	const lock: CredentialFileLock = {
+		async withFileLock(path, fn) {
+			const operation = ++operations;
+			if (operation === 3) {
+				entered.resolve();
+				await release.promise;
+			}
+			try {
+				return await fileLock.withFileLock(path, fn);
+			} finally {
+				if (closed) late.push(operation);
+			}
+		},
+	};
 	const f = fixture(t, grant(), lock);
 	refreshFetch(t, async () => Response.json(rotated));
-	const token = provider(f.owner).token(); await entered.promise;
-	const close = f.owner.close().then(() => { closed = true; });
-	release.resolve(); await close;
+	const token = provider(f.owner).token();
+	await entered.promise;
+	const close = f.owner.close().then(() => {
+		closed = true;
+	});
+	release.resolve();
+	await close;
 	const completedAtClose = operations;
 	assert.equal(await token, rotated.access_token);
-	assert.deepEqual(late, []); assert.equal(completedAtClose, 4);
+	assert.deepEqual(late, []);
+	assert.equal(completedAtClose, 4);
 	assert.equal(existsSync(`${f.path}.lock`), false);
 });
 
 it("does not exchange after close while waiting for refresh ownership", async (t) => {
-	const held = deferred(); const release = deferred();
+	const held = deferred();
+	const release = deferred();
 	const locks = controlledLocks();
 	const lock = new McpRefreshLock(tmpdir(), locks.driver);
 	const f = fixture(t, grant(), undefined, lock);
-	const holder = lock.withRefreshLock(key, async () => { held.resolve(); await release.promise; });
-	const [holding] = locks.acquisitions; assert.ok(holding); holding.acquire();
+	const holder = lock.withRefreshLock(key, async () => {
+		held.resolve();
+		await release.promise;
+	});
+	const [holding] = locks.acquisitions;
+	assert.ok(holding);
+	holding.acquire();
 	await held.promise;
-	let calls = 0; refreshFetch(t, async () => { calls++; return Response.json(rotated); });
+	let calls = 0;
+	refreshFetch(t, async () => {
+		calls++;
+		return Response.json(rotated);
+	});
 	const refresh = provider(f.owner).onUnauthorized(rejectedToken());
 	const rejected = assert.rejects(refresh, /authentication is closed/u);
-	const close = f.owner.close(); release.resolve(); await holder;
-	const [waiting] = locks.acquisitions.slice(1); assert.ok(waiting); waiting.acquire();
+	const close = f.owner.close();
+	release.resolve();
+	await holder;
+	const [waiting] = locks.acquisitions.slice(1);
+	assert.ok(waiting);
+	waiting.acquire();
 	await Promise.all([rejected, close]);
-	assert.equal(calls, 0); assert.deepEqual(f.read()[key], grant());
-	assert.deepEqual(locks.acquisitions.map((entry) => entry.releases), [1, 1]);
+	assert.equal(calls, 0);
+	assert.deepEqual(f.read()[key], grant());
+	assert.deepEqual(
+		locks.acquisitions.map((entry) => entry.releases),
+		[1, 1],
+	);
 });
 
 it("does not exchange after close while waiting for the credential reread", async (t) => {
-	const entered = deferred(); const release = deferred(); t.after(release.resolve);
+	const entered = deferred();
+	const release = deferred();
+	t.after(release.resolve);
 	const fileLock = new McpCredentialFileLock();
-	const lock: CredentialFileLock = { async withFileLock(path, fn) { entered.resolve(); await release.promise; return fileLock.withFileLock(path, fn); } };
-	const f = fixture(t, grant(), lock); let calls = 0;
-	refreshFetch(t, async () => { calls++; return Response.json(rotated); });
+	const lock: CredentialFileLock = {
+		async withFileLock(path, fn) {
+			entered.resolve();
+			await release.promise;
+			return fileLock.withFileLock(path, fn);
+		},
+	};
+	const f = fixture(t, grant(), lock);
+	let calls = 0;
+	refreshFetch(t, async () => {
+		calls++;
+		return Response.json(rotated);
+	});
 	const refresh = provider(f.owner).onUnauthorized(rejectedToken());
 	const rejected = assert.rejects(refresh, /authentication is closed/u);
-	await entered.promise; const close = f.owner.close(); release.resolve();
-	await Promise.all([rejected, close]); assert.equal(calls, 0);
+	await entered.promise;
+	const close = f.owner.close();
+	release.resolve();
+	await Promise.all([rejected, close]);
+	assert.equal(calls, 0);
 	assert.deepEqual(f.read()[key], grant());
 });
 
@@ -249,21 +438,30 @@ it("reports compromised refresh ownership without releasing a replacement lease"
 	const work = new McpRefreshLock(f.dir, locks.driver).withRefreshLock(key, async (lease) => {
 		assert.equal(lease?.valid, true);
 		locks.acquisitions[0]?.compromise();
-		assert.equal(lease?.valid, false); return "completed";
+		assert.equal(lease?.valid, false);
+		return "completed";
 	});
 	locks.acquisitions[0]?.acquire();
 	assert.equal(await work, "completed");
 	assert.equal(locks.acquisitions[0]?.releases, 0);
-	assert.deepEqual(warning.mock.calls[0].arguments, ["MCP refresh lock ownership was lost; credential writes remain conditional", { code: "MCP_REFRESH_LOCK_COMPROMISED" }]);
+	assert.deepEqual(warning.mock.calls[0].arguments, [
+		"MCP refresh lock ownership was lost; credential writes remain conditional",
+		{ code: "MCP_REFRESH_LOCK_COMPROMISED" },
+	]);
 });
 
 async function within<T>(work: Promise<T>, label: string, ms = 3000): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
-		return await Promise.race([work, new Promise<never>((_resolve, reject) => {
-			timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), ms);
-		})]);
-	} finally { clearTimeout(timer); }
+		return await Promise.race([
+			work,
+			new Promise<never>((_resolve, reject) => {
+				timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), ms);
+			}),
+		]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 function compromiseWarning(t: TestContext): Promise<void> {
@@ -272,160 +470,319 @@ function compromiseWarning(t: TestContext): Promise<void> {
 		if (warning.code === "MCP_REFRESH_LOCK_COMPROMISED") reported.resolve();
 	};
 	process.on("warning", listener);
-	t.after(() => { process.off("warning", listener); reported.resolve(); });
+	t.after(() => {
+		process.off("warning", listener);
+		reported.resolve();
+	});
 	return within(reported.promise, "refresh compromise warning", 15_000).finally(() => process.off("warning", listener));
 }
 
 async function leaseFixture(t: TestContext, pause: "reread" | "metadata" | "token") {
 	const dir = mkdtempSync(join(tmpdir(), "mcp-lease-test-"));
 	const owners: NativeMcpAuth[] = [];
-	const reread = deferred(); const resumeRead = deferred();
-	const discovery = deferred(); const resumeDiscovery = deferred();
-	const token = deferred(); const resumeToken = deferred();
-	let exchanges = 0; const errors: unknown[] = [];
+	const reread = deferred();
+	const resumeRead = deferred();
+	const discovery = deferred();
+	const resumeDiscovery = deferred();
+	const token = deferred();
+	const resumeToken = deferred();
+	let exchanges = 0;
+	const errors: unknown[] = [];
 	const server = createServer((request, response) => {
 		void (async () => {
 			response.setHeader("content-type", "application/json");
-			if (request.url?.startsWith("/.well-known/oauth-protected-resource")) { response.writeHead(404).end(); return; }
-			if (request.url === "/metadata") {
-				discovery.resolve(); await within(resumeDiscovery.promise, "metadata response", 15_000);
-				response.end(JSON.stringify(meta)); return;
+			if (request.url?.startsWith("/.well-known/oauth-protected-resource")) {
+				response.writeHead(404).end();
+				return;
 			}
-			assert.equal(request.url, "/token"); assert.equal(request.method, "POST");
+			if (request.url === "/metadata") {
+				discovery.resolve();
+				await within(resumeDiscovery.promise, "metadata response", 15_000);
+				response.end(JSON.stringify(meta));
+				return;
+			}
+			assert.equal(request.url, "/token");
+			assert.equal(request.method, "POST");
 			request.resume();
 			if (++exchanges === 1) {
-				token.resolve(); await within(resumeToken.promise, "token response", 15_000);
+				token.resolve();
+				await within(resumeToken.promise, "token response", 15_000);
 				response.end(JSON.stringify(rotated));
 			} else response.writeHead(400).end(JSON.stringify({ error: "invalid_grant" }));
-		})().catch((error) => { errors.push(error); response.writeHead(500).end(); });
+		})().catch((error) => {
+			errors.push(error);
+			response.writeHead(500).end();
+		});
 	});
 	t.after(async () => {
-		resumeRead.resolve(); resumeDiscovery.resolve(); resumeToken.resolve();
-		try { await within(Promise.allSettled(owners.map((owner) => owner.close())), "owner cleanup"); }
-		finally {
+		resumeRead.resolve();
+		resumeDiscovery.resolve();
+		resumeToken.resolve();
+		try {
+			await within(Promise.allSettled(owners.map((owner) => owner.close())), "owner cleanup");
+		} finally {
 			server.closeAllConnections();
 			await within(new Promise<void>((resolve) => server.close(() => resolve())), "server cleanup");
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 	await within(new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)), "server listen");
-	const address = server.address(); assert.ok(address && typeof address !== "string");
-	const base = `http://127.0.0.1:${address.port}`; const serverUrl = `${base}/mcp`;
+	const address = server.address();
+	assert.ok(address && typeof address !== "string");
+	const base = `http://127.0.0.1:${address.port}`;
+	const serverUrl = `${base}/mcp`;
 	const canonicalKey = `mcp__docs|${serverUrl}`;
-	const meta = { ...metadata, issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token` };
-	const state = { ...grant(), serverUrl, discovery: { authorizationServerUrl: base, authorizationServerMetadata: meta } };
+	const meta = {
+		...metadata,
+		issuer: base,
+		authorization_endpoint: `${base}/authorize`,
+		token_endpoint: `${base}/token`,
+	};
+	const state = {
+		...grant(),
+		serverUrl,
+		discovery: { authorizationServerUrl: base, authorizationServerMetadata: meta },
+	};
 	const unrelated = { ...grant(), serverUrl: "https://other.example.test/mcp" };
-	const path = join(dir, "mcp-auth.json"); writeFileSync(path, JSON.stringify({ [canonicalKey]: state, unrelated }));
+	const path = join(dir, "mcp-auth.json");
+	writeFileSync(path, JSON.stringify({ [canonicalKey]: state, unrelated }));
 	const fileLock = new McpCredentialFileLock();
-	const gated: CredentialFileLock = { async withFileLock(path, fn) {
-		reread.resolve(); await within(resumeRead.promise, "credential reread", 15_000);
-		return fileLock.withFileLock(path, fn);
-	} };
+	const gated: CredentialFileLock = {
+		async withFileLock(path, fn) {
+			reread.resolve();
+			await within(resumeRead.promise, "credential reread", 15_000);
+			return fileLock.withFileLock(path, fn);
+		},
+	};
 	const locks = controlledLocks();
-	const first = new NativeMcpAuth(dir, new McpRefreshLock(dir, locks.driver), pause === "reread" ? gated : undefined); owners.push(first);
-	const second = new NativeMcpAuth(dir, new McpRefreshLock(dir, locks.driver)); owners.push(second);
+	const first = new NativeMcpAuth(dir, new McpRefreshLock(dir, locks.driver), pause === "reread" ? gated : undefined);
+	owners.push(first);
+	const second = new NativeMcpAuth(dir, new McpRefreshLock(dir, locks.driver));
+	owners.push(second);
 	function start(owner: NativeMcpAuth, metadataOverride = false) {
-		const auth = owner.provider("docs", { url: serverUrl, oauth: metadataOverride ? { authServerMetadataUrl: `${base}/metadata` } : undefined }, (value) => value);
-		return auth.onUnauthorized({ token: "synthetic-old", serverUrl: new URL(serverUrl), fetch: globalThis.fetch, response: new Response(null, { status: 401 }) })
-			.then(() => undefined, (error: unknown) => error);
+		const auth = owner.provider(
+			"docs",
+			{ url: serverUrl, oauth: metadataOverride ? { authServerMetadataUrl: `${base}/metadata` } : undefined },
+			(value) => value,
+		);
+		return auth
+			.onUnauthorized({
+				token: "synthetic-old",
+				serverUrl: new URL(serverUrl),
+				fetch: globalThis.fetch,
+				response: new Response(null, { status: 401 }),
+			})
+			.then(
+				() => undefined,
+				(error: unknown) => error,
+			);
 	}
-	const lockPath = join(dir, `mcp-auth-refresh-${createHash("sha256").update(canonicalKey).digest("hex").slice(0, 16)}`);
-	return { first, second, start, lockPath, locks, reread, resumeRead, discovery, resumeDiscovery, token, resumeToken,
-		read: () => JSON.parse(readFileSync(path, "utf8")), canonicalKey, state, unrelated,
-		verify: (expected = 1) => { assert.deepEqual(errors, []); assert.equal(exchanges, expected); } };
+	const lockPath = join(
+		dir,
+		`mcp-auth-refresh-${createHash("sha256").update(canonicalKey).digest("hex").slice(0, 16)}`,
+	);
+	return {
+		first,
+		second,
+		start,
+		lockPath,
+		locks,
+		reread,
+		resumeRead,
+		discovery,
+		resumeDiscovery,
+		token,
+		resumeToken,
+		read: () => JSON.parse(readFileSync(path, "utf8")),
+		canonicalKey,
+		state,
+		unrelated,
+		verify: (expected = 1) => {
+			assert.deepEqual(errors, []);
+			assert.equal(exchanges, expected);
+		},
+	};
 }
 
 for (const pause of ["reread", "metadata"] as const) {
 	it(`sends no token request after reported lease loss during ${pause}`, { timeout: 10_000 }, async (t) => {
 		const f = await leaseFixture(t, pause);
 		const first = f.start(f.first, pause === "metadata");
-		const [original] = f.locks.acquisitions; assert.ok(original); original.acquire();
+		const [original] = f.locks.acquisitions;
+		assert.ok(original);
+		original.acquire();
 		await within((pause === "reread" ? f.reread : f.discovery).promise, "first owner pause");
-		const warning = compromiseWarning(t); original.compromise();
+		const warning = compromiseWarning(t);
+		original.compromise();
 		const second = f.start(f.second);
-		const replacement = f.locks.acquisitions[1]; assert.ok(replacement); replacement.acquire();
+		const replacement = f.locks.acquisitions[1];
+		assert.ok(replacement);
+		replacement.acquire();
 		await within(f.token.promise, "replacement token request");
 		await warning;
-		f.resumeRead.resolve(); f.resumeDiscovery.resolve();
+		f.resumeRead.resolve();
+		f.resumeDiscovery.resolve();
 		assert.match(String(await within(first, "lost owner completion")), /refresh lock ownership was lost/u);
 		assert.equal(original.releases, 0);
 		assert.deepEqual(f.read(), { [f.canonicalKey]: f.state, unrelated: f.unrelated });
-		f.resumeToken.resolve(); assert.equal(await within(second, "replacement completion"), undefined);
-		assert.equal(replacement.releases, 1); assert.deepEqual(f.read()[f.canonicalKey].tokens, rotated);
-		assert.deepEqual(f.read().unrelated, f.unrelated); f.verify();
-		assert.equal(original.path, f.lockPath); assert.equal(replacement.path, f.lockPath);
+		f.resumeToken.resolve();
+		assert.equal(await within(second, "replacement completion"), undefined);
+		assert.equal(replacement.releases, 1);
+		assert.deepEqual(f.read()[f.canonicalKey].tokens, rotated);
+		assert.deepEqual(f.read().unrelated, f.unrelated);
+		f.verify();
+		assert.equal(original.path, f.lockPath);
+		assert.equal(replacement.path, f.lockPath);
 	});
 }
 
 it("persists an admitted rotation after reported lease loss and close", { timeout: 10_000 }, async (t) => {
-	const f = await leaseFixture(t, "token"); const attempt = f.start(f.first);
-	const [original] = f.locks.acquisitions; assert.ok(original); original.acquire();
+	const f = await leaseFixture(t, "token");
+	const attempt = f.start(f.first);
+	const [original] = f.locks.acquisitions;
+	assert.ok(original);
+	original.acquire();
 	await within(f.token.promise, "admitted token request");
-	const warning = compromiseWarning(t); original.compromise(); await warning;
-	let closed = false; const close = f.first.close().then(() => { closed = true; });
-	await Promise.resolve(); assert.equal(closed, false);
-	f.resumeToken.resolve(); assert.equal(await within(attempt, "admitted completion"), undefined);
-	await within(close, "close after persistence"); assert.equal(closed, true);
+	const warning = compromiseWarning(t);
+	original.compromise();
+	await warning;
+	let closed = false;
+	const close = f.first.close().then(() => {
+		closed = true;
+	});
+	await Promise.resolve();
+	assert.equal(closed, false);
+	f.resumeToken.resolve();
+	assert.equal(await within(attempt, "admitted completion"), undefined);
+	await within(close, "close after persistence");
+	assert.equal(closed, true);
 	assert.equal(original.releases, 0);
-	assert.deepEqual(f.read()[f.canonicalKey].tokens, rotated); assert.deepEqual(f.read().unrelated, f.unrelated); f.verify();
+	assert.deepEqual(f.read()[f.canonicalKey].tokens, rotated);
+	assert.deepEqual(f.read().unrelated, f.unrelated);
+	f.verify();
 });
 
 it("sends no token request after close during metadata discovery", { timeout: 8000 }, async (t) => {
-	const f = await leaseFixture(t, "metadata"); const attempt = f.start(f.first, true);
-	const [original] = f.locks.acquisitions; assert.ok(original); original.acquire();
-	await within(f.discovery.promise, "metadata request"); const close = f.first.close();
+	const f = await leaseFixture(t, "metadata");
+	const attempt = f.start(f.first, true);
+	const [original] = f.locks.acquisitions;
+	assert.ok(original);
+	original.acquire();
+	await within(f.discovery.promise, "metadata request");
+	const close = f.first.close();
 	f.resumeDiscovery.resolve();
 	assert.match(String(await within(attempt, "closed owner completion")), /authentication is closed/u);
-	await within(close, "closed owner drain"); f.verify(0);
+	await within(close, "closed owner drain");
+	f.verify(0);
 	assert.equal(original.releases, 1);
 	assert.deepEqual(f.read(), { [f.canonicalKey]: f.state, unrelated: f.unrelated });
 });
 
 it("refuses a credential callback after reported ownership loss", async (t) => {
-	const f = fixture(t); let writes = 0; let releases = 0;
+	const f = fixture(t);
+	let writes = 0;
+	let releases = 0;
 	const warning = t.mock.method(process, "emitWarning", () => undefined);
-	const driver: McpLockDriver = { lock: async (_path, options) => {
-		options?.onCompromised?.(new Error("synthetic ownership loss"));
-		return async () => { releases++; };
-	} };
-	await assert.rejects(new McpCredentialFileLock(driver).withFileLock(f.path, () => { writes++; }), /synthetic ownership loss/u);
-	assert.equal(writes, 0); assert.equal(releases, 0); assert.equal(warning.mock.callCount(), 1);
+	const driver: McpLockDriver = {
+		lock: async (_path, options) => {
+			options?.onCompromised?.(new Error("synthetic ownership loss"));
+			return async () => {
+				releases++;
+			};
+		},
+	};
+	await assert.rejects(
+		new McpCredentialFileLock(driver).withFileLock(f.path, () => {
+			writes++;
+		}),
+		/synthetic ownership loss/u,
+	);
+	assert.equal(writes, 0);
+	assert.equal(releases, 0);
+	assert.equal(warning.mock.callCount(), 1);
 });
 
 it("releases refresh ownership after a failed callback", async (t) => {
-	const f = fixture(t); const locks = controlledLocks(); const lock = new McpRefreshLock(f.dir, locks.driver);
-	const failed = lock.withRefreshLock(key, async () => { throw new Error("synthetic failure"); });
+	const f = fixture(t);
+	const locks = controlledLocks();
+	const lock = new McpRefreshLock(f.dir, locks.driver);
+	const failed = lock.withRefreshLock(key, async () => {
+		throw new Error("synthetic failure");
+	});
 	locks.acquisitions[0]?.acquire();
 	await assert.rejects(failed, /synthetic failure/u);
 	const reacquired = lock.withRefreshLock(key, async () => "reacquired");
 	locks.acquisitions[1]?.acquire();
 	assert.equal(await reacquired, "reacquired");
-	assert.deepEqual(locks.acquisitions.map((entry) => entry.releases), [1, 1]);
+	assert.deepEqual(
+		locks.acquisitions.map((entry) => entry.releases),
+		[1, 1],
+	);
 });
 
 it("reads URL-only state without taking it over", async (t) => {
-	const state = grant(); delete state.tokensExpireAt;
-	const f = fixture(t, state); ordinaryWrite(f.path, { [url]: state });
+	const state = grant();
+	delete state.tokensExpireAt;
+	const f = fixture(t, state);
+	ordinaryWrite(f.path, { [url]: state });
 	assert.equal(await provider(f.owner).token(), state.tokens?.access_token);
 	assert.deepEqual(f.read(), { [url]: state });
 });
 
-const configurations: { name: string; oauth?: Extract<McpServerConfig, { url: string }>["oauth"]; supports?: boolean; iss?: boolean; expectedClient?: string; expectedRedirect?: string; signIn?: boolean; error?: RegExp }[] = [
-	{ name: "explicit client", oauth: { clientId: "registered-client", clientSecret: "synthetic-secret" }, expectedClient: "registered-client" },
-	{ name: "forced unsupported CIMD", oauth: { clientRegistration: "cimd" }, supports: false, error: /clientRegistration.*cimd.*requires/u },
+const configurations: {
+	name: string;
+	oauth?: Extract<McpServerConfig, { url: string }>["oauth"];
+	supports?: boolean;
+	iss?: boolean;
+	expectedClient?: string;
+	expectedRedirect?: string;
+	signIn?: boolean;
+	error?: RegExp;
+}[] = [
+	{
+		name: "explicit client",
+		oauth: { clientId: "registered-client", clientSecret: "synthetic-secret" },
+		expectedClient: "registered-client",
+	},
+	{
+		name: "forced unsupported CIMD",
+		oauth: { clientRegistration: "cimd" },
+		supports: false,
+		error: /clientRegistration.*cimd.*requires/u,
+	},
 	{ name: "DCR", oauth: { clientRegistration: "dcr" }, signIn: true },
 	{ name: "named client and scope", oauth: { clientName: "test-client", scope: "configured-scope" }, signIn: true },
-	{ name: "custom callback with port", oauth: { callbackUrl: "http://localhost:8765/custom", callbackPort: 9999 }, signIn: true },
+	{
+		name: "custom callback with port",
+		oauth: { callbackUrl: "http://localhost:8765/custom", callbackPort: 9999 },
+		signIn: true,
+	},
 	{ name: "callbackPort", oauth: { clientRegistration: "dcr", callbackPort: 8765 }, signIn: true },
-	{ name: "metadata override", oauth: { authServerMetadataUrl: "https://auth.example.test/override" }, expectedClient: "https://pi.dev/oauth/client.json" },
-	{ name: "server-specific document", iss: false, expectedClient: `https://pi.dev/oauth/${createHash("sha256").update(url).digest().subarray(0, 9).toString("base64url")}/client.json` },
+	{
+		name: "metadata override",
+		oauth: { authServerMetadataUrl: "https://auth.example.test/override" },
+		expectedClient: "https://pi.dev/oauth/client.json",
+	},
+	{
+		name: "server-specific document",
+		iss: false,
+		expectedClient: `https://pi.dev/oauth/${createHash("sha256").update(url).digest().subarray(0, 9).toString("base64url")}/client.json`,
+	},
 	{ name: "auto without CIMD support", supports: false, signIn: true },
 ];
 for (const row of configurations) {
 	it(`honours OAuth configuration: ${row.name}`, async (t) => {
-		const state = grant(); const meta = { ...metadata, registration_endpoint: "https://auth.example.test/register", token_endpoint_auth_methods_supported: row.oauth?.clientSecret ? ["client_secret_post"] : ["none"], client_id_metadata_document_supported: row.supports ?? true, authorization_response_iss_parameter_supported: row.iss ?? true };
+		const state = grant();
+		const meta = {
+			...metadata,
+			registration_endpoint: "https://auth.example.test/register",
+			token_endpoint_auth_methods_supported: row.oauth?.clientSecret ? ["client_secret_post"] : ["none"],
+			client_id_metadata_document_supported: row.supports ?? true,
+			authorization_response_iss_parameter_supported: row.iss ?? true,
+		};
 		state.discovery = { authorizationServerUrl: metadata.issuer, authorizationServerMetadata: meta };
-		const f = fixture(t, state); const requests: string[] = [];
+		const f = fixture(t, state);
+		const requests: string[] = [];
 		refreshFetch(t, async (input, init) => {
 			requests.push(String(input));
 			if (String(input) === row.oauth?.authServerMetadataUrl) return Response.json(meta);
@@ -437,31 +794,40 @@ for (const row of configurations) {
 				return Response.json({ ...body, client_id: "dynamic-client" });
 			}
 			assert.equal(String(input), meta.token_endpoint);
-			const body = new URLSearchParams(String(init?.body)); assert.equal(body.get("client_id"), row.expectedClient);
+			const body = new URLSearchParams(String(init?.body));
+			assert.equal(body.get("client_id"), row.expectedClient);
 			if (row.oauth?.clientSecret) assert.equal(body.get("client_secret"), row.oauth.clientSecret);
 			return Response.json(rotated);
 		});
 		if (row.error) await assert.rejects(provider(f.owner, row.oauth).onUnauthorized(rejectedToken()), row.error);
 		else if (row.signIn) {
 			// An automatic refresh never registers a client: a config without a stored client or document requires sign-in.
-			await assert.rejects(provider(f.owner, row.oauth).onUnauthorized(rejectedToken()), McpOAuthAuthorizationRequiredError);
+			await assert.rejects(
+				provider(f.owner, row.oauth).onUnauthorized(rejectedToken()),
+				McpOAuthAuthorizationRequiredError,
+			);
 			assert.deepEqual(requests, []);
 			assert.deepEqual(f.read()[key], state);
-		}
-		else assert.equal(await provider(f.owner, row.oauth).token(), rotated.access_token);
+		} else assert.equal(await provider(f.owner, row.oauth).token(), rotated.access_token);
 		if (row.oauth?.authServerMetadataUrl) assert.ok(requests.includes(row.oauth.authServerMetadataUrl));
 	});
 }
 
 it("keeps a pending sign-in when the native refresh fails", async (t) => {
-	const pending = grant(); pending.codeVerifier = "pending-verifier"; pending.oauthState = "pending-state";
-	const f = fixture(t, pending); const requests: string[] = [];
+	const pending = grant();
+	pending.codeVerifier = "pending-verifier";
+	pending.oauthState = "pending-state";
+	const f = fixture(t, pending);
+	const requests: string[] = [];
 	refreshFetch(t, async (input) => {
 		requests.push(String(input));
 		if (String(input) !== metadata.token_endpoint) throw new Error(`unexpected request: ${String(input)}`);
 		return Response.json({ error: "invalid_grant" }, { status: 400 });
 	});
-	await assert.rejects(provider(f.owner, { clientId: "registered-client" }).onUnauthorized(rejectedToken()), McpOAuthAuthorizationRequiredError);
+	await assert.rejects(
+		provider(f.owner, { clientId: "registered-client" }).onUnauthorized(rejectedToken()),
+		McpOAuthAuthorizationRequiredError,
+	);
 	assert.deepEqual(requests, [metadata.token_endpoint]);
 	const saved = f.read()[key];
 	assert.equal(saved.tokens, undefined);
@@ -470,18 +836,41 @@ it("keeps a pending sign-in when the native refresh fails", async (t) => {
 });
 
 it("uses the challenge resource metadata without registration or an interactive redirect", async (t) => {
-	const state = grant(); delete state.discovery; delete state.tokensExpireAt;
-	const f = fixture(t, state); let resourceSeen = false; const requests: string[] = [];
+	const state = grant();
+	delete state.discovery;
+	delete state.tokensExpireAt;
+	const f = fixture(t, state);
+	let resourceSeen = false;
+	const requests: string[] = [];
 	const fetch: McpFetch = async (input) => {
 		requests.push(String(input));
-		if (String(input) === "https://mcp.example.test/resource") { resourceSeen = true; return Response.json({ resource: url, authorization_servers: [metadata.issuer] }); }
-		if (String(input).includes(".well-known")) return Response.json({ ...metadata, registration_endpoint: "https://auth.example.test/register" });
+		if (String(input) === "https://mcp.example.test/resource") {
+			resourceSeen = true;
+			return Response.json({ resource: url, authorization_servers: [metadata.issuer] });
+		}
+		if (String(input).includes(".well-known"))
+			return Response.json({ ...metadata, registration_endpoint: "https://auth.example.test/register" });
 		throw new Error(`unexpected request: ${String(input)}`);
 	};
 	const auth = provider(f.owner, { clientRegistration: "dcr", scope: "configured" });
-	await assert.rejects(auth.onUnauthorized({ token: state.tokens?.access_token, serverUrl: new URL(url), response: new Response(null, { status: 401, headers: { "www-authenticate": 'Bearer resource_metadata="https://mcp.example.test/resource", scope="challenged"' } }), fetch }), McpOAuthAuthorizationRequiredError);
+	await assert.rejects(
+		auth.onUnauthorized({
+			token: state.tokens?.access_token,
+			serverUrl: new URL(url),
+			response: new Response(null, {
+				status: 401,
+				headers: {
+					"www-authenticate": 'Bearer resource_metadata="https://mcp.example.test/resource", scope="challenged"',
+				},
+			}),
+			fetch,
+		}),
+		McpOAuthAuthorizationRequiredError,
+	);
 	assert.equal(resourceSeen, true);
-	assert.ok(requests.every((request) => request === "https://mcp.example.test/resource" || request.includes(".well-known")));
+	assert.ok(
+		requests.every((request) => request === "https://mcp.example.test/resource" || request.includes(".well-known")),
+	);
 	const saved = f.read()[key];
 	assert.deepEqual(saved.tokens, state.tokens);
 	assert.equal(saved.codeVerifier, state.codeVerifier);
@@ -489,11 +878,16 @@ it("uses the challenge resource metadata without registration or an interactive 
 });
 
 it("sends the stored token after a transient refresh failure and reports sign-in after a 401", async (t) => {
-	const f = fixture(t); let refreshes = 0; const sent: string[] = [];
+	const f = fixture(t);
+	let refreshes = 0;
+	const sent: string[] = [];
 	refreshFetch(t, async (input, init) => {
 		if (String(input) === metadata.token_endpoint) {
 			refreshes++;
-			return Response.json({ error: refreshes === 1 ? "server_error" : "invalid_grant" }, { status: refreshes === 1 ? 503 : 400 });
+			return Response.json(
+				{ error: refreshes === 1 ? "server_error" : "invalid_grant" },
+				{ status: refreshes === 1 ? 503 : 400 },
+			);
 		}
 		assert.equal(String(input), url);
 		sent.push(new Headers(init?.headers).get("authorization") ?? "");
@@ -502,18 +896,39 @@ it("sends the stored token after a transient refresh failure and reports sign-in
 	const transport = new StreamableHttpTransport({ url, authProvider: provider(f.owner), openGetStream: false });
 	t.after(() => transport.close());
 	await transport.start();
-	await assert.rejects(transport.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }), McpOAuthAuthorizationRequiredError);
+	await assert.rejects(
+		transport.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+		McpOAuthAuthorizationRequiredError,
+	);
 	assert.deepEqual(sent, ["Bearer synthetic-old"]);
-	assert.equal(refreshes, 2); assert.equal(f.read()[key].tokens, undefined);
+	assert.equal(refreshes, 2);
+	assert.equal(f.read()[key].tokens, undefined);
 });
 
 it("requires sign-in without a refresh token and for insufficient scope", async (t) => {
-	const state = grant(); assert.ok(state.tokens); delete state.tokens.refresh_token;
-	const f = fixture(t, state); let requests = 0;
-	refreshFetch(t, async () => { requests++; throw new Error("unexpected network"); });
+	const state = grant();
+	assert.ok(state.tokens);
+	delete state.tokens.refresh_token;
+	const f = fixture(t, state);
+	let requests = 0;
+	refreshFetch(t, async () => {
+		requests++;
+		throw new Error("unexpected network");
+	});
 	const auth = provider(f.owner);
 	assert.equal(await auth.token(), state.tokens.access_token);
 	await assert.rejects(auth.onUnauthorized(rejectedToken()), McpOAuthAuthorizationRequiredError);
-	await assert.rejects(auth.onUnauthorized({ token: state.tokens.access_token, serverUrl: new URL(url), fetch: globalThis.fetch, response: new Response(null, { status: 403, headers: { "www-authenticate": 'Bearer error="insufficient_scope"' } }) }), McpOAuthAuthorizationRequiredError);
+	await assert.rejects(
+		auth.onUnauthorized({
+			token: state.tokens.access_token,
+			serverUrl: new URL(url),
+			fetch: globalThis.fetch,
+			response: new Response(null, {
+				status: 403,
+				headers: { "www-authenticate": 'Bearer error="insufficient_scope"' },
+			}),
+		}),
+		McpOAuthAuthorizationRequiredError,
+	);
 	assert.equal(requests, 0);
 });

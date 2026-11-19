@@ -4,7 +4,16 @@
  * extension. The ordinary tool registration and the tool-display publication use these same records.
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { renderApproveCall, renderApproveResult, renderControlCall, renderControlResult, renderProposeCall, renderProposeResult, renderRulesCall, renderRulesResult } from "./presentation.ts";
+import {
+	renderApproveCall,
+	renderApproveResult,
+	renderControlCall,
+	renderControlResult,
+	renderProposeCall,
+	renderProposeResult,
+	renderRulesCall,
+	renderRulesResult,
+} from "./presentation.ts";
 
 export type ToolDisplayPublication = {
 	version: 1;

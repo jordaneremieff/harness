@@ -1,13 +1,26 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { SETTINGS_PUBLISH, SETTINGS_REQUEST, type Diagnostic, type Origin, type SettingsBus, type SettingsPublication, type Source } from "./configuration-protocol.ts";
+import {
+	SETTINGS_PUBLISH,
+	SETTINGS_REQUEST,
+	type Diagnostic,
+	type Origin,
+	type SettingsBus,
+	type SettingsPublication,
+	type Source,
+} from "./configuration-protocol.ts";
 
 export const settings = {
 	slice: "registry",
 	fields: {
-		notes: { type: "boolean", env: "PI_REGISTRY_NOTES", default: true,
-			description: "Append bounded registry facts to matching completed discovery calls. Read fresh for each matching call. false turns off notes only; explicit registry queries stay available." },
+		notes: {
+			type: "boolean",
+			env: "PI_REGISTRY_NOTES",
+			default: true,
+			description:
+				"Append bounded registry facts to matching completed discovery calls. Read fresh for each matching call. false turns off notes only; explicit registry queries stay available.",
+		},
 	},
 } as const;
 export type ReadOptions = { agentDir: string; env?: Readonly<Record<string, string | undefined>> };
@@ -47,11 +60,22 @@ function boundedRead(fd: number): Buffer {
 	}
 	return bytes.subarray(0, length);
 }
-function readDocument(options: ReadOptions): { source: Source; document?: Record<string, unknown>; diagnostics: Diagnostic[] } {
-	const source: Source = { path: documentPath({ agentDir: options.agentDir, env: {} }),
-		status: "unavailable", digest: null, observedAt: new Date().toISOString() };
-	try { source.path = documentPath(options); }
-	catch { return { source, diagnostics: [diagnostic("PI_HARNESS_FILE", "env", "document")] }; }
+function readDocument(options: ReadOptions): {
+	source: Source;
+	document?: Record<string, unknown>;
+	diagnostics: Diagnostic[];
+} {
+	const source: Source = {
+		path: documentPath({ agentDir: options.agentDir, env: {} }),
+		status: "unavailable",
+		digest: null,
+		observedAt: new Date().toISOString(),
+	};
+	try {
+		source.path = documentPath(options);
+	} catch {
+		return { source, diagnostics: [diagnostic("PI_HARNESS_FILE", "env", "document")] };
+	}
 	let fd: number | undefined;
 	let readComplete = false;
 	try {
@@ -66,8 +90,13 @@ function readDocument(options: ReadOptions): { source: Source; document?: Record
 		return { source: { ...source, status: "loaded" }, document: value, diagnostics: [] };
 	} catch (error) {
 		if (object(error) && error.code === "ENOENT") return { source: { ...source, status: "missing" }, diagnostics: [] };
-		return { source: { ...source, status: readComplete ? "invalid" : "unavailable" }, diagnostics: [diagnostic("document", "file", "document")] };
-	} finally { if (fd !== undefined) closeSync(fd); }
+		return {
+			source: { ...source, status: readComplete ? "invalid" : "unavailable" },
+			diagnostics: [diagnostic("document", "file", "document")],
+		};
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
 }
 function readSection(options: ReadOptions) {
 	const { source, document, diagnostics } = readDocument(options);
@@ -76,7 +105,10 @@ function readSection(options: ReadOptions) {
 	if (sectionValue !== undefined && !object(sectionValue)) diagnostics.push(diagnostic("registry", "file", "invalid"));
 	for (const key of Object.keys(section)) {
 		if (key === "notes") continue;
-		if (diagnostics.length >= 256) { diagnostics.push(diagnostic("coverage", "file", "coverage")); break; }
+		if (diagnostics.length >= 256) {
+			diagnostics.push(diagnostic("coverage", "file", "coverage"));
+			break;
+		}
 		let suffix = text(key) ? key.slice(0, 64) : "<invalid-key>";
 		if (/[\ud800-\udbff]$/.test(suffix)) suffix = suffix.slice(0, -1);
 		diagnostics.push(diagnostic(`registry.${suffix}`, "file", "unknown"));
@@ -85,34 +117,63 @@ function readSection(options: ReadOptions) {
 }
 function addDiagnostic(diagnostics: Diagnostic[], fact: Diagnostic): void {
 	if (diagnostics.length < 256) diagnostics.push(fact);
-	else if (!diagnostics.some((item) => item.code === "coverage")) diagnostics.push(diagnostic("coverage", "file", "coverage"));
+	else if (!diagnostics.some((item) => item.code === "coverage"))
+		diagnostics.push(diagnostic("coverage", "file", "coverage"));
 }
 function selectNotes(section: Record<string, unknown>, options: ReadOptions, diagnostics: Diagnostic[]) {
 	const env = options.env ?? process.env;
-	let origin: Origin = env.PI_REGISTRY_NOTES !== undefined ? "env" : Object.hasOwn(section, "notes") ? "file" : "default";
+	let origin: Origin =
+		env.PI_REGISTRY_NOTES !== undefined ? "env" : Object.hasOwn(section, "notes") ? "file" : "default";
 	const input = origin === "env" ? env.PI_REGISTRY_NOTES : origin === "file" ? section.notes : true;
 	let value = true;
 	let invalid = false;
-	if (origin === "env" && ["true", "false", "0", "1"].includes(input as string)) value = input === "true" || input === "1";
+	if (origin === "env" && ["true", "false", "0", "1"].includes(input as string))
+		value = input === "true" || input === "1";
 	else if (origin !== "env" && typeof input === "boolean") value = input;
-	else { addDiagnostic(diagnostics, diagnostic("registry.notes", origin, "invalid")); origin = "default"; invalid = true; }
+	else {
+		addDiagnostic(diagnostics, diagnostic("registry.notes", origin, "invalid"));
+		origin = "default";
+		invalid = true;
+	}
 	return { value, origin, invalid };
 }
 export function readSettings(options: ReadOptions): Snapshot {
 	const { source, section, diagnostics } = readSection(options);
 	const { value, origin, invalid } = selectNotes(section, options, diagnostics);
-	return { version: 1, slice: "registry", source, diagnostics, values: { notes: value }, records: [{
-		name: "registry.notes", key: "notes", type: "boolean", env: settings.fields.notes.env,
-		description: settings.fields.notes.description, secret: false, origin,
-		status: invalid ? "invalid" : "valid", value,
-	}] };
+	return {
+		version: 1,
+		slice: "registry",
+		source,
+		diagnostics,
+		values: { notes: value },
+		records: [
+			{
+				name: "registry.notes",
+				key: "notes",
+				type: "boolean",
+				env: settings.fields.notes.env,
+				description: settings.fields.notes.description,
+				secret: false,
+				origin,
+				status: invalid ? "invalid" : "valid",
+				value,
+			},
+		],
+	};
 }
 export function publishSettings(bus: SettingsBus, options: ReadOptions): () => void {
 	const publish = () => {
 		const { values: _values, ...publication } = readSettings(options);
 		bus.emit(SETTINGS_PUBLISH, structuredClone(publication));
 	};
-	const off = bus.on(SETTINGS_REQUEST, (input) => { if (object(input) && input.version === 1) publish(); });
-	try { publish(); } catch (error) { off(); throw error; }
+	const off = bus.on(SETTINGS_REQUEST, (input) => {
+		if (object(input) && input.version === 1) publish();
+	});
+	try {
+		publish();
+	} catch (error) {
+		off();
+		throw error;
+	}
 	return off;
 }

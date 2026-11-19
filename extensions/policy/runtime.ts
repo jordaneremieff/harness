@@ -1,6 +1,13 @@
 /** One event interpreter for approved plans, corrections, observations, and guidance. */
 import { randomUUID } from "node:crypto";
-import { ActionApprovals, actionAuthority, type ActionBinding, type ActionControl, sameActionInput, sealActionInput } from "./action-approval.ts";
+import {
+	ActionApprovals,
+	actionAuthority,
+	type ActionBinding,
+	type ActionControl,
+	sameActionInput,
+	sealActionInput,
+} from "./action-approval.ts";
 import type {
 	ContextWithSystemEvent,
 	ExtensionAPI,
@@ -236,7 +243,12 @@ function refusalEvidence(entry: ProgramEvaluation, corrected: boolean): string |
 	return undefined;
 }
 
-function denialDiagnostic(id: string, record: RuleRecord | undefined, entries: ProgramEvaluation[], correctedInput: boolean) {
+function denialDiagnostic(
+	id: string,
+	record: RuleRecord | undefined,
+	entries: ProgramEvaluation[],
+	correctedInput: boolean,
+) {
 	const evidence = new Set<string>();
 	const suggestions = new Set<string>();
 	for (const entry of entries) {
@@ -285,14 +297,23 @@ function appendRefusalSuggestions(text: string, suggestions: ReadonlySet<string>
 }
 
 /** Preserve stored guidance and append bounded evidence for both policy runtimes. */
-export function refusalText(plan: InputPlan, records: ReadonlyMap<string, RuleRecord>, fallbackIds: readonly string[]): string | undefined {
+export function refusalText(
+	plan: InputPlan,
+	records: ReadonlyMap<string, RuleRecord>,
+	fallbackIds: readonly string[],
+): string | undefined {
 	const denials = plan.evaluations.filter((evaluation) => evaluation.deny);
 	const ids = [...new Set(denials.length ? denials.map((evaluation) => evaluation.id) : fallbackIds)];
 	let text = "";
 	for (const [index, id] of ids.entries()) {
 		const remaining = ids.length - index - 1;
 		const reserve = omittedDenials(remaining);
-		const diagnostic = denialDiagnostic(id, records.get(id), denials.filter((entry) => entry.id === id), plan.corrections.length > 0);
+		const diagnostic = denialDiagnostic(
+			id,
+			records.get(id),
+			denials.filter((entry) => entry.id === id),
+			plan.corrections.length > 0,
+		);
 		const candidate = diagnostic.text ? (text ? `${text}\n${diagnostic.text}` : diagnostic.text) : undefined;
 		if (!candidate || Buffer.byteLength(candidate + reserve, "utf8") > GUIDANCE_BYTES)
 			return remainingRefusal(text, diagnostic.priorityParts, remaining);
@@ -351,8 +372,12 @@ export class PolicyRuntime {
 		this.pi = pi;
 		this.load = async (ctx) => {
 			if (ctx) this.noticeContext = ctx;
-			try { return await load(ctx); }
-			catch (error) { this.actions.clear(); throw error; }
+			try {
+				return await load(ctx);
+			} catch (error) {
+				this.actions.clear();
+				throw error;
+			}
 		};
 		this.mode = mode;
 		this.enabled = enabled;
@@ -384,9 +409,7 @@ export class PolicyRuntime {
 	sync(snapshot: RuleSnapshot): void {
 		const policy = preparedPolicyFor(snapshot);
 		const prior = this.effectiveActions;
-		this.effectiveActions = new Map(
-			[...policy.records].map(([id, record]) => [id, effectiveEffect(record)]),
-		);
+		this.effectiveActions = new Map([...policy.records].map(([id, record]) => [id, effectiveEffect(record)]));
 		this.policy = policy;
 		this.ownedPolicy = attachedPreparedPolicy(snapshot) !== undefined;
 		this.snapshot = snapshot;
@@ -460,10 +483,17 @@ export class PolicyRuntime {
 	}
 	private actionBinding(ctx: ExtensionContext, snapshot: RuleSnapshot): ActionBinding {
 		const catalog = this.catalog();
-		if (!catalog.available) { this.actions.clear(); throw new Error("Exact-action tool schemas are unavailable"); }
+		if (!catalog.available) {
+			this.actions.clear();
+			throw new Error("Exact-action tool schemas are unavailable");
+		}
 		const scope = sessionScope(ctx);
-		return { session: ctx.sessionManager.getSessionId(), scope: { cwd: scope.cwd, provider: scope.provider ?? null, model: scope.model ?? null },
-			authority: actionAuthority(snapshot, catalog.tools), mode: this.effectiveMode() };
+		return {
+			session: ctx.sessionManager.getSessionId(),
+			scope: { cwd: scope.cwd, provider: scope.provider ?? null, model: scope.model ?? null },
+			authority: actionAuthority(snapshot, catalog.tools),
+			mode: this.effectiveMode(),
+		};
 	}
 	async actionControl(params: ActionControl, ctx: ExtensionContext): Promise<unknown> {
 		const snapshot = await this.load(ctx);
@@ -520,10 +550,7 @@ export class PolicyRuntime {
 			),
 		};
 	}
-	private evaluationContext(
-		tool: string,
-		input: Record<string, unknown> | undefined,
-	): EvaluationContext {
+	private evaluationContext(tool: string, input: Record<string, unknown> | undefined): EvaluationContext {
 		const catalog = this.catalog();
 		const schema = catalog.tools.find((t) => t.name === tool)?.parameters;
 		const now = this.now();
@@ -584,7 +611,10 @@ export class PolicyRuntime {
 		const now = this.now();
 		const data = call.context.namedData
 			? call.context.namedData.snapshot(now)
-			: snapshotData(Object.values(call.context.data ?? {}).flatMap((source) => (source.data ? [source.data] : [])), now);
+			: snapshotData(
+					Object.values(call.context.data ?? {}).flatMap((source) => (source.data ? [source.data] : [])),
+					now,
+				);
 		return {
 			...call.context,
 			data,
@@ -689,9 +719,8 @@ export class PolicyRuntime {
 			this.track(call);
 		} else {
 			const approvalRules =
-				[...this.prepared().compiled.values()].some(
-					(rule) => rule.program.action.kind === "require-approval",
-				) || call.rules.some((rule) => rule.program.action.kind === "require-approval");
+				[...this.prepared().compiled.values()].some((rule) => rule.program.action.kind === "require-approval") ||
+				call.rules.some((rule) => rule.program.action.kind === "require-approval");
 			if (approvalRules) {
 				const fresh = this.makeCall(event.toolName, event.toolCallId, event.input, ctx, snapshot);
 				fresh.requested = call.requested;
@@ -703,12 +732,29 @@ export class PolicyRuntime {
 		call.prepared = true;
 		return call;
 	}
-	private approvalReason(call: ObservedCall, event: ToolCallEvent, ctx: ExtensionContext, snapshot: RuleSnapshot, plan: InputPlan): string | undefined {
-		if (this.effectiveMode() !== "enforce" || !plan.evaluations.some((entry) => entry.action.kind === "require-approval" && entry.deny)) return undefined;
-		if (!this.createActionState) return "[policy] Simulation requires exact-action approval; no permission state was created.";
-		if (!call.executionStarted || !sameActionInput(call.requested, event.input) || !sameActionInput(event.input, plan.candidate))
+	private approvalReason(
+		call: ObservedCall,
+		event: ToolCallEvent,
+		ctx: ExtensionContext,
+		snapshot: RuleSnapshot,
+		plan: InputPlan,
+	): string | undefined {
+		if (
+			this.effectiveMode() !== "enforce" ||
+			!plan.evaluations.some((entry) => entry.action.kind === "require-approval" && entry.deny)
+		)
+			return undefined;
+		if (!this.createActionState)
+			return "[policy] Simulation requires exact-action approval; no permission state was created.";
+		if (
+			!call.executionStarted ||
+			!sameActionInput(call.requested, event.input) ||
+			!sameActionInput(event.input, plan.candidate)
+		)
 			return "[policy] Exact execution arguments are unproved: start, hook and final input must agree. Retry with the exact final payload without input correction.";
-		return this.actions.gate(plan, event.toolName, this.actionBinding(ctx, snapshot), () => sealActionInput(event.input as Record<string, unknown>));
+		return this.actions.gate(plan, event.toolName, this.actionBinding(ctx, snapshot), () =>
+			sealActionInput(event.input as Record<string, unknown>),
+		);
 	}
 	async toolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<{ block: true; reason: string } | undefined> {
 		if (this.closed || !this.enabled()) return;
@@ -727,9 +773,15 @@ export class PolicyRuntime {
 		const approvalReason = this.approvalReason(call, event, ctx, snapshot, plan);
 		this.collect(call, plan.evaluations);
 		call.corrections = plan.corrections;
-		const denied = this.applyInputCorrections(call, event, plan, approvalReason !== undefined || plan.denied || !plan.valid);
+		const denied = this.applyInputCorrections(
+			call,
+			event,
+			plan,
+			approvalReason !== undefined || plan.denied || !plan.valid,
+		);
 		if (activeMode === "enforce" && denied) {
-			call.decision = approvalReason ??
+			call.decision =
+				approvalReason ??
 				refusalText(plan, this.prepared().records, call.classes) ??
 				"[policy] The approved input checks refused this call.";
 			this.notice(call, ctx);
@@ -922,11 +974,7 @@ export class PolicyRuntime {
 		for (const rule of rules) {
 			const selected = observationSelected(rule, completionContext, completionFrame);
 			const pin = call.pins.get(rule.id);
-			if (
-				pin &&
-				selected === true &&
-				!this.state.complete(pin, completionFrame.factsFor(rule), call.turn, this.now())
-			)
+			if (pin && selected === true && !this.state.complete(pin, completionFrame.factsFor(rule), call.turn, this.now()))
 				this.stale++;
 		}
 		const guides = evaluatePrograms(rules, "completion", this.contextFor(call, result, outcome)).filter(
@@ -1012,9 +1060,17 @@ export class PolicyRuntime {
 				dataSnapshots: rows.dataSnapshots.rows,
 				metadata: rows.metadata.rows,
 				coverage: {
-					evaluations: { total: rows.evaluations.total, omitted: rows.evaluations.omitted, irrelevant: rows.evaluations.irrelevant },
+					evaluations: {
+						total: rows.evaluations.total,
+						omitted: rows.evaluations.omitted,
+						irrelevant: rows.evaluations.irrelevant,
+					},
 					corrections: { total: rows.corrections.total, omitted: rows.corrections.omitted },
-					generations: { total: rows.generations.total, omitted: rows.generations.omitted, irrelevant: rows.generations.irrelevant },
+					generations: {
+						total: rows.generations.total,
+						omitted: rows.generations.omitted,
+						irrelevant: rows.generations.irrelevant,
+					},
 					dataSnapshots: { total: rows.dataSnapshots.total, omitted: rows.dataSnapshots.omitted },
 					metadata: { total: rows.metadata.total, omitted: rows.metadata.omitted },
 				},
@@ -1105,9 +1161,7 @@ export class PolicyRuntime {
 		return [...policy.records.values()]
 			.filter(
 				(r) =>
-					effectiveState(r) === "active" &&
-					r.matcherAvailable &&
-					scopeMatches(r.definition.scope, sessionScope(ctx)),
+					effectiveState(r) === "active" && r.matcherAvailable && scopeMatches(r.definition.scope, sessionScope(ctx)),
 			)
 			.flatMap((record) => {
 				const compiled = policy.compiled.get(record.id);

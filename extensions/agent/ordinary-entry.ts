@@ -47,7 +47,12 @@ import { publishAgentPalette } from "./palette-publication.ts";
 import { readableControlText, projectReportReceipt } from "./control-result.ts";
 import { projectSelectedStatus, validateStatusDetail } from "./status-overview.ts";
 import { fitStorageStatusPage } from "./storage-page-fit.ts";
-import { associateThreadNotices, projectThreadNotices, type ThreadNoticeSource, type ThreadRangeSnapshot } from "./thread-notice-projection.ts";
+import {
+	associateThreadNotices,
+	projectThreadNotices,
+	type ThreadNoticeSource,
+	type ThreadRangeSnapshot,
+} from "./thread-notice-projection.ts";
 import type { AgentContributionHost } from "./durable-agents.ts";
 import {
 	createResetTimerActions,
@@ -79,7 +84,14 @@ import { DispatchOutputSchema } from "./result-schema.ts";
 import { MAX_CONTINUITY_SUMMARY, SELF_COMPACTION_NOTICE, SelfCompaction } from "./self-compaction.ts";
 import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
 import { publishSettings } from "./settings.ts";
-import { createAgentToolCards, ordinaryWorkCard, renderAgentCompactionMessage, renderAgentPeerMessage, renderAgentPlanningBudgetMessage, type AgentToolCard } from "./tool-cards.ts";
+import {
+	createAgentToolCards,
+	ordinaryWorkCard,
+	renderAgentCompactionMessage,
+	renderAgentPeerMessage,
+	renderAgentPlanningBudgetMessage,
+	type AgentToolCard,
+} from "./tool-cards.ts";
 import { ORDINARY_YIELD_TOOL, registerOrdinaryWork } from "./ordinary-work.ts";
 import { collectToolDisplay, publishToolDisplay } from "./tool-display.ts";
 import { promptProjectTrust } from "./trust-support.ts";
@@ -116,7 +128,10 @@ export function agentRestartHosts(): RestartHosts {
 	};
 }
 /** Provider tool declarations retain an explicit string type. */
-const StringEnum = <const T extends readonly string[]>(values: T, options: { readonly description?: string } = {}): Schema<T[number]> => ({ type: "string", enum: [...values], ...options });
+const StringEnum = <const T extends readonly string[]>(
+	values: T,
+	options: { readonly description?: string } = {},
+): Schema<T[number]> => ({ type: "string", enum: [...values], ...options });
 const id = str({ minLength: 1, maxLength: 256 });
 const maybeTrust = opt(bool());
 const abort = obj(
@@ -129,11 +144,15 @@ const abort = obj(
 	},
 	{},
 );
-const message = obj(
-	{ sessionId: id, message: str({ minLength: 1 }), replyTo: opt(id) },
-	{},
+const message = obj({ sessionId: id, message: str({ minLength: 1 }), replyTo: opt(id) }, {});
+const checkIn = opt(
+	num({
+		minimum: 0,
+		maximum: 35791,
+		description:
+			"Owner check-in interval in minutes while unanswered. Default: configured agent.checkInMinutes, which is 0 (no check-ins) unless set; results arrive without them.",
+	}),
 );
-const checkIn = opt(num({ minimum: 0, maximum: 35791, description: "Owner check-in interval in minutes while unanswered. Default: configured agent.checkInMinutes, which is 0 (no check-ins) unless set; results arrive without them." }));
 const send = obj(
 	{
 		sessionId: id,
@@ -154,7 +173,13 @@ const spawn = obj(
 	{
 		handle: opt(HandleSchema),
 		preset: PresetParameter,
-		role: opt(str({ maxLength: 2000, description: "Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role." })),
+		role: opt(
+			str({
+				maxLength: 2000,
+				description:
+					"Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.",
+			}),
+		),
 		cwd: opt(str()),
 		name: opt(str({ maxLength: 256 })),
 		prompt: opt(str()),
@@ -182,10 +207,24 @@ const inspect = obj(
 		query: opt(str({ minLength: 1, maxLength: 256 })),
 		source: opt(StringEnum(["user", "assistant", "toolResult", "summary", "custom"])),
 		submissionId: opt(nativeEntryId),
-		requestId: opt(str({ minLength: 1, description: "Native request ID within the selected conversation; result view only." })),
+		requestId: opt(
+			str({ minLength: 1, description: "Native request ID within the selected conversation; result view only." }),
+		),
 		operationId: opt(id),
-		receiptCursor: opt(str({ minLength: 1, maxLength: 2048, description: "Recipient reference continuation from a result page. Separate from answer offset and history cursor." })),
-		finalReport: opt(bool({ description: "Result view only: page the retained final report of the selected input's declared work instead of its answer; offset continues it." })),
+		receiptCursor: opt(
+			str({
+				minLength: 1,
+				maxLength: 2048,
+				description:
+					"Recipient reference continuation from a result page. Separate from answer offset and history cursor.",
+			}),
+		),
+		finalReport: opt(
+			bool({
+				description:
+					"Result view only: page the retained final report of the selected input's declared work instead of its answer; offset continues it.",
+			}),
+		),
 	},
 	{},
 );
@@ -215,14 +254,29 @@ function resultIndent(value: unknown): 2 | undefined {
 }
 const result = (value: unknown, schema?: Schema): AgentToolResult<unknown> => ({
 	...((value as { outcome?: string } | null)?.outcome === "failed" ? { isError: true } : {}),
-	content: [{ type: "text", text: (value as { view?: string } | null)?.view === "result" ? readableControlText(value) : typeof value === "string" ? value : JSON.stringify(value, null, resultIndent(value)) }],
+	content: [
+		{
+			type: "text",
+			text:
+				(value as { view?: string } | null)?.view === "result"
+					? readableControlText(value)
+					: typeof value === "string"
+						? value
+						: JSON.stringify(value, null, resultIndent(value)),
+		},
+	],
 	details: value,
 	structuredContent: schema ? structuredObservation(schema, value) : JSON.parse(JSON.stringify(value ?? null)),
 });
 function releaseCommandMessage(value: unknown, label: string): string {
 	const state = value as { retiring: boolean; blockers: string[]; writesPlaced: number };
-	const message = state.retiring ? `Released “${label}”; its host is retiring.` : `Stopped “${label}”; the host stays up: ${state.blockers.join("; ")}.`;
-	const writes = state.writesPlaced > 0 ? ` Placed ${state.writesPlaced} leftover ${state.writesPlaced === 1 ? "write" : "writes"}.` : "";
+	const message = state.retiring
+		? `Released “${label}”; its host is retiring.`
+		: `Stopped “${label}”; the host stays up: ${state.blockers.join("; ")}.`;
+	const writes =
+		state.writesPlaced > 0
+			? ` Placed ${state.writesPlaced} leftover ${state.writesPlaced === 1 ? "write" : "writes"}.`
+			: "";
 	return `${message}${writes}`;
 }
 
@@ -241,7 +295,10 @@ const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 	name: ctx.sessionManager.getSessionName(),
 	...(ctx.model ? { model: { provider: ctx.model.provider, modelId: ctx.model.id } } : {}),
 	thinkingLevel: pi.getThinkingLevel(),
-	preferenceCatalog: { getModel: (provider, modelId) => ctx.modelRegistry.find(provider, modelId), getModels: () => ctx.modelRegistry.getAll() },
+	preferenceCatalog: {
+		getModel: (provider, modelId) => ctx.modelRegistry.find(provider, modelId),
+		getModels: () => ctx.modelRegistry.getAll(),
+	},
 	validateModel: (model, level) => {
 		const selected = ctx.modelRegistry.find(model.provider, model.modelId);
 		if (!selected) throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`);
@@ -251,20 +308,44 @@ const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 });
 const asText = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value, null, 2));
 
-function admitExecutionInput(pi: ExtensionAPI, ctx: ExtensionContext, name: string, callId: string, input: Record<string, unknown>): { admitted: Record<string, unknown>; admissionCaller: AgentCaller } {
+function admitExecutionInput(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	name: string,
+	callId: string,
+	input: Record<string, unknown>,
+): { admitted: Record<string, unknown>; admissionCaller: AgentCaller } {
 	const admissionCaller = caller(ctx, pi);
 	const key = `${name}:${callId}`;
-	const digest = createHash("sha256").update(JSON.stringify(Object.entries(input).sort(([a], [b]) => a.localeCompare(b)))).digest("hex");
+	const digest = createHash("sha256")
+		.update(JSON.stringify(Object.entries(input).sort(([a], [b]) => a.localeCompare(b))))
+		.digest("hex");
 	const entries = ctx.sessionManager.getBranch();
-	const retained = (kind: string) => entries.findLast((entry) => entry.type === "custom" && entry.customType === kind && (entry.data as { key?: unknown } | undefined)?.key === key);
+	const retained = (kind: string) =>
+		entries.findLast(
+			(entry) =>
+				entry.type === "custom" &&
+				entry.customType === kind &&
+				(entry.data as { key?: unknown } | undefined)?.key === key,
+		);
 	const entry = retained("agent.preference-admission");
-	const data = entry?.type === "custom" ? entry.data as { digest: string; snapshot: unknown } : undefined;
+	const data = entry?.type === "custom" ? (entry.data as { digest: string; snapshot: unknown }) : undefined;
 	if (data && data.digest !== digest) throw new Error("Agent control call ID belongs to different inputs");
-	const snapshot = data ? parsePreferenceSnapshot(data.snapshot) : readAgentPreferences(undefined, admissionCaller.preferenceCatalog);
+	const snapshot = data
+		? parsePreferenceSnapshot(data.snapshot)
+		: readAgentPreferences(undefined, admissionCaller.preferenceCatalog);
 	if (!data) pi.appendEntry("agent.preference-admission", { key, digest, snapshot });
 	const selected = retained("agent.execution-selection");
-	const admitted = { ...input, preferenceSnapshot: snapshot, ...(selected?.type === "custom" ? { selection: parseExecutionSelection((selected.data as { selection: unknown }).selection) } : {}) };
-	admissionCaller.retainExecutionSelection = (selection) => { pi.appendEntry("agent.execution-selection", { key, selection: parseExecutionSelection(selection) }); };
+	const admitted = {
+		...input,
+		preferenceSnapshot: snapshot,
+		...(selected?.type === "custom"
+			? { selection: parseExecutionSelection((selected.data as { selection: unknown }).selection) }
+			: {}),
+	};
+	admissionCaller.retainExecutionSelection = (selection) => {
+		pi.appendEntry("agent.execution-selection", { key, selection: parseExecutionSelection(selection) });
+	};
 	return { admitted, admissionCaller };
 }
 
@@ -274,11 +355,28 @@ function ordinaryThreadSources(ctx: ExtensionContext): ThreadNoticeSource<Contex
 	for (const entry of ctx.sessionManager.buildContextEntries()) {
 		if (entry.type === "message" && entry.message.role === "assistant") epoch = `entry:${entry.id}`;
 		if (entry.type !== "custom_message" || entry.customType !== "agent.peer") continue;
-		const details = entry.details as { sourceId?: unknown; deliveryRecipient?: unknown; communicationPassive?: unknown } | undefined;
-		if (typeof details?.sourceId !== "string" || details.deliveryRecipient !== ctx.sessionManager.getSessionId() ||
-			(details.communicationPassive as { value?: { kind?: unknown } } | undefined)?.value?.kind !== "notice") continue;
-		sources.push({ sourceId: `${entry.id}:${details.sourceId}`, recipient: details.deliveryRecipient, epoch, passive: details.communicationPassive,
-			message: { role: "custom", customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp: new Date(entry.timestamp).getTime() },
+		const details = entry.details as
+			| { sourceId?: unknown; deliveryRecipient?: unknown; communicationPassive?: unknown }
+			| undefined;
+		if (
+			typeof details?.sourceId !== "string" ||
+			details.deliveryRecipient !== ctx.sessionManager.getSessionId() ||
+			(details.communicationPassive as { value?: { kind?: unknown } } | undefined)?.value?.kind !== "notice"
+		)
+			continue;
+		sources.push({
+			sourceId: `${entry.id}:${details.sourceId}`,
+			recipient: details.deliveryRecipient,
+			epoch,
+			passive: details.communicationPassive,
+			message: {
+				role: "custom",
+				customType: entry.customType,
+				content: entry.content,
+				display: entry.display,
+				details: entry.details,
+				timestamp: new Date(entry.timestamp).getTime(),
+			},
 		});
 	}
 	return sources;
@@ -298,12 +396,13 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		source: originalEntrypoint,
 		async create(host: AgentContributionHost) {
 			const native = await loadAgentNative();
-			return native.createAgentContribution({
-				source: originalEntrypoint,
-				configureSettings,
-				dispatch: (method, params, context) =>
-					native.resolveAgentControlDispatch()(method, params, context),
-			}).create(host);
+			return native
+				.createAgentContribution({
+					source: originalEntrypoint,
+					configureSettings,
+					dispatch: (method, params, context) => native.resolveAgentControlDispatch()(method, params, context),
+				})
+				.create(host);
 		},
 	});
 	const selfCompaction = new SelfCompaction((handler) => pi.on("turn_end", handler));
@@ -313,14 +412,23 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	// session registers `agent_yield`, whose record is the state note card.
 	const observedRows = () => observedManager?.observedToolCardRows() ?? [];
 	const yieldCard = ordinaryWorkCard(ORDINARY_YIELD_TOOL, observedRows);
-	const cards: Readonly<Record<string, AgentToolCard>> = { ...createAgentToolCards(observedRows), [ORDINARY_YIELD_TOOL]: yieldCard };
+	const cards: Readonly<Record<string, AgentToolCard>> = {
+		...createAgentToolCards(observedRows),
+		[ORDINARY_YIELD_TOOL]: yieldCard,
+	};
 	pi.registerToolRenderer((name, next) => next() ?? cards[name]);
-	publishToolDisplay(pi.events, Object.entries(cards).map(([name, presentation]) => ({ name, ...presentation })));
+	publishToolDisplay(
+		pi.events,
+		Object.entries(cards).map(([name, presentation]) => ({ name, ...presentation })),
+	);
 	const primaries = new Map<string, AbortController>();
 	const primaryRetentions = new Map<string, PrimaryRetention>();
 	let threadNoticeLifecycle = 0;
 	let threadNoticeSnapshots: ThreadRangeSnapshot[] = [];
-	const resetThreadNotices = () => { threadNoticeLifecycle++; threadNoticeSnapshots = []; };
+	const resetThreadNotices = () => {
+		threadNoticeLifecycle++;
+		threadNoticeSnapshots = [];
+	};
 	const getManager = (): AgentManager => {
 		const agentDir = process.env.PI_AGENT_DIR ?? getAgentDir();
 		const configured = resolve(process.env.PI_AGENT_SESSIONS_DIR ?? join(agentDir, "agent-sessions"));
@@ -329,7 +437,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const existing = owners.managers.get(root);
 		if (existing) {
 			if (existing.managerProtocol !== MANAGER_PROTOCOL)
-				throw new Error(`The retained agent manager uses ${existing.managerProtocol}; this code requires ${MANAGER_PROTOCOL}. Restart Pi before agent controls.`);
+				throw new Error(
+					`The retained agent manager uses ${existing.managerProtocol}; this code requires ${MANAGER_PROTOCOL}. Restart Pi before agent controls.`,
+				);
 			observedManager = existing;
 			return existing;
 		}
@@ -339,8 +449,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		return manager;
 	};
 	pi.events.on("durable:launch-provider", (query) => {
-		if (query === null || typeof query !== "object" || typeof (query as { provide?: unknown }).provide !== "function") throw new Error("Independent launch discovery requires provide()");
-		(query as { provide: (launch: IndependentCommandLaunch) => void }).provide((input) => getManager().launchIndependent(input));
+		if (query === null || typeof query !== "object" || typeof (query as { provide?: unknown }).provide !== "function")
+			throw new Error("Independent launch discovery requires provide()");
+		(query as { provide: (launch: IndependentCommandLaunch) => void }).provide((input) =>
+			getManager().launchIndependent(input),
+		);
 	});
 	let agentFigures = "";
 	const showAgentCell = (ctx: ExtensionContext) => ctx.ui.setStatus("agent", agentFigures || undefined);
@@ -348,7 +461,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	let currentPreferences = registrationPreferences;
 	const continuity = new OrdinaryContinuity({
 		append: (fact) => pi.appendEntry(ORDINARY_CONTINUITY_ENTRY, fact),
-		budget: (provider, modelId) => currentPreferences.document?.preferences?.contextBudgetTokens?.[`${provider}/${modelId}`],
+		budget: (provider, modelId) =>
+			currentPreferences.document?.preferences?.contextBudgetTokens?.[`${provider}/${modelId}`],
 		diagnose: (sessionId, text) => getManager().continuityNoteFailure(sessionId, text),
 	});
 	const refreshRegistrations = new Map<string, (snapshot: PreferenceSnapshot) => void>();
@@ -361,11 +475,21 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		}
 		return snapshot;
 	};
-	const control = async (method: string, input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) => {
+	const control = async (
+		method: string,
+		input: Record<string, unknown>,
+		ctx: ExtensionContext,
+		signal?: AbortSignal,
+	) => {
 		const manager = getManager();
 		return manager.control(method, input, caller(ctx, pi), signal ? { signal } : undefined);
 	};
-	const prepareInput = (name: AgentControlToolName, input: Record<string, unknown>, ctx: ExtensionContext, callId: string) => {
+	const prepareInput = (
+		name: AgentControlToolName,
+		input: Record<string, unknown>,
+		ctx: ExtensionContext,
+		callId: string,
+	) => {
 		refreshPreferences(ctx);
 		return admitExecutionInput(pi, ctx, name, callId, input);
 	};
@@ -373,34 +497,50 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		name: AgentControlToolName,
 		description: string,
 		parameters: Schema<Record<string, unknown>>,
-		execute: (input: Record<string, unknown>, ctx: ExtensionContext, callId: string, admissionCaller?: AgentCaller) => Promise<unknown>,
+		execute: (
+			input: Record<string, unknown>,
+			ctx: ExtensionContext,
+			callId: string,
+			admissionCaller?: AgentCaller,
+		) => Promise<unknown>,
 	): void => {
 		const guidance = agentControlGuidance(name, "ordinary");
 		const exposure: AgentControlExposure = AGENT_CONTROL_EXPOSURE[name];
 		const schema = observationSchemas[name];
 		const presetAware = ["agent_spawn", "agent_place", "agent_configure"].includes(name);
-		const registerDefinition = (snapshot: PreferenceSnapshot): void => pi.registerTool({
-			name,
-			label: name.replace("agent_", "Agent "),
-			description,
-			promptSnippet: guidance.snippet,
-			promptGuidelines: [...(guidance.guidelines ?? [])],
-			parameters: presetAware ? { ...parameters, properties: { ...(parameters.properties as Record<string, Schema>), preset: presetParameter(snapshot).schema } } : parameters,
-			outputSchema: schema ?? unknown(),
-			...(exposure === "direct" ? {} : { exposure }),
-			async execute(callId, input: Static<typeof parameters>, _signal, _update, ctx) {
-				const { admitted, admissionCaller } = presetAware ? prepareInput(name, input, ctx, callId) : { admitted: input, admissionCaller: undefined };
-				const value = await execute(admitted, ctx, callId, admissionCaller);
-				const projected = name === "agent_send" && admitted.mode === "report" ? projectReportReceipt(value) : value;
-				const output = result(projected, schema);
-				appendProviderBlockReceipt(name, output.content, value, providerBlocks, Date.now());
-				if (name === "agent_compact" && typeof (value as { text?: unknown })?.text === "string")
-					return { ...output, content: [{ type: "text", text: (value as { text: string }).text }] };
-				return output;
-			},
-			renderCall: cards[name].renderCall,
-			renderResult: cards[name].renderResult,
-		});
+		const registerDefinition = (snapshot: PreferenceSnapshot): void =>
+			pi.registerTool({
+				name,
+				label: name.replace("agent_", "Agent "),
+				description,
+				promptSnippet: guidance.snippet,
+				promptGuidelines: [...(guidance.guidelines ?? [])],
+				parameters: presetAware
+					? {
+							...parameters,
+							properties: {
+								...(parameters.properties as Record<string, Schema>),
+								preset: presetParameter(snapshot).schema,
+							},
+						}
+					: parameters,
+				outputSchema: schema ?? unknown(),
+				...(exposure === "direct" ? {} : { exposure }),
+				async execute(callId, input: Static<typeof parameters>, _signal, _update, ctx) {
+					const { admitted, admissionCaller } = presetAware
+						? prepareInput(name, input, ctx, callId)
+						: { admitted: input, admissionCaller: undefined };
+					const value = await execute(admitted, ctx, callId, admissionCaller);
+					const projected = name === "agent_send" && admitted.mode === "report" ? projectReportReceipt(value) : value;
+					const output = result(projected, schema);
+					appendProviderBlockReceipt(name, output.content, value, providerBlocks, Date.now());
+					if (name === "agent_compact" && typeof (value as { text?: unknown })?.text === "string")
+						return { ...output, content: [{ type: "text", text: (value as { text: string }).text }] };
+					return output;
+				},
+				renderCall: cards[name].renderCall,
+				renderResult: cards[name].renderResult,
+			});
 		if (presetAware) refreshRegistrations.set(name, registerDefinition);
 		registerDefinition(registrationPreferences);
 	};
@@ -409,13 +549,19 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		label: "Agent intent",
 		promptSnippet: AGENT_CONTROL_GUIDANCE.agent_intent.snippet,
 		promptGuidelines: [...(AGENT_CONTROL_GUIDANCE.agent_intent.guidelines ?? [])],
-		description: "Publish or clear this ordinary primary session's purpose, integration intent, scope, carried operator direction, and contact thread. Intent is a session claim, not verified authority or a lock. Returns the published endpoint and bounded related efforts. No model wake. Independent work needs no claim. Publish where an actual dependency with another effort needs coordination, after bounded discovery; update or clear intent when integration completes. Use agent_send for direct effort contact and agent_collaborate for a retained agreement.",
+		description:
+			"Publish or clear this ordinary primary session's purpose, integration intent, scope, carried operator direction, and contact thread. Intent is a session claim, not verified authority or a lock. Returns the published endpoint and bounded related efforts. No model wake. Independent work needs no claim. Publish where an actual dependency with another effort needs coordination, after bounded discovery; update or clear intent when integration completes. Use agent_send for direct effort contact and agent_collaborate for a retained agreement.",
 		parameters: IntentParams,
 		outputSchema: unknown(),
 		async execute(_callId, input: Static<typeof IntentParams>, _signal, _update, ctx) {
 			validateIntentInput(input);
 			const { action, ...fields } = input;
-			return result(await getManager().publishIntent(ctx.sessionManager.getSessionId(), action === "clear" ? undefined : fields as Omit<PrimaryIntentClaim, "updatedAt">));
+			return result(
+				await getManager().publishIntent(
+					ctx.sessionManager.getSessionId(),
+					action === "clear" ? undefined : (fields as Omit<PrimaryIntentClaim, "updatedAt">),
+				),
+			);
 		},
 		renderCall: cards.agent_intent.renderCall,
 		renderResult: cards.agent_intent.renderResult,
@@ -426,19 +572,35 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		CollaborationParams,
 		(input, ctx, callId) => {
 			if (input.action !== "read") validateCollaborationAction(input);
-			return getManager().collaborate({ ...input, origin: "model", requestId: `collaboration:${ctx.sessionManager.getSessionId()}:${callId}` }, caller(ctx, pi));
+			return getManager().collaborate(
+				{ ...input, origin: "model", requestId: `collaboration:${ctx.sessionManager.getSessionId()}:${callId}` },
+				caller(ctx, pi),
+			);
 		},
 	);
 	registerOrdinaryWork(pi, yieldCard, { waiting: (sessionId) => continuity.open(sessionId) });
-	register("agent_profile", "Read or revision-check an agent's durable role and sourced expertise. Saved expertise is evidence, not fresh authority. Profile edits start no model turn.", ProfileParams, (input, ctx, callId) => {
-		if (typeof input.sessionId !== "string") throw new Error("A primary profile control requires an agent sessionId");
-		return control(input.action === "read" ? "profile-read" : "profile-update", { ...input, requestId: `profile:${ctx.sessionManager.getSessionId()}:${callId}` }, ctx);
-	});
+	register(
+		"agent_profile",
+		"Read or revision-check an agent's durable role and sourced expertise. Saved expertise is evidence, not fresh authority. Profile edits start no model turn.",
+		ProfileParams,
+		(input, ctx, callId) => {
+			if (typeof input.sessionId !== "string") throw new Error("A primary profile control requires an agent sessionId");
+			return control(
+				input.action === "read" ? "profile-read" : "profile-update",
+				{ ...input, requestId: `profile:${ctx.sessionManager.getSessionId()}:${callId}` },
+				ctx,
+			);
+		},
+	);
 	register(
 		"agent_spawn",
 		"Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. Results arrive without check-ins. Task check-ins run only when checkInMinutes or the configured agent.checkInMinutes sets a nonzero interval; the default is 0. Assess a check-in: report progress, let work continue, steer a wrap-up, or abort a hung tool. Steering does not interrupt a running tool. checkInMinutes 0 disables.",
 		spawn,
-		(input, ctx, callId, admissionCaller) => getManager().spawn({ ...input, origin: "model", requestId: `spawn:${ctx.sessionManager.getSessionId()}:${callId}` }, admissionCaller ?? caller(ctx, pi)),
+		(input, ctx, callId, admissionCaller) =>
+			getManager().spawn(
+				{ ...input, origin: "model", requestId: `spawn:${ctx.sessionManager.getSessionId()}:${callId}` },
+				admissionCaller ?? caller(ctx, pi),
+			),
 	);
 	register(
 		"agent_list",
@@ -464,15 +626,25 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			validateStatusSelectors(selectors);
 			if (input.view === "storage-page") {
 				const page = storageStatusPageInput(selectors);
-				const { projected } = await fitStorageStatusPage(page.limit, (limit) => getManager().status({ ...page, limit }));
+				const { projected } = await fitStorageStatusPage(page.limit, (limit) =>
+					getManager().status({ ...page, limit }),
+				);
 				return projected;
 			}
 			const sessionId = input.sessionId as string | undefined;
 			const view = input.view as "fleet" | undefined;
 			const selection = validateFleetSelection(input);
 			const selfId = !sessionId ? ctx?.sessionManager?.getSessionId() : undefined;
-			const reportedUsage = view === "fleet" && ctx?.sessionManager?.getEntries ? ordinaryReportedUsage(ctx.sessionManager.getEntries()) : undefined;
-			const value = await getManager().status(sessionId, view, selfId ? { id: selfId, cwd: ctx.cwd, reportedUsage } : undefined, selection);
+			const reportedUsage =
+				view === "fleet" && ctx?.sessionManager?.getEntries
+					? ordinaryReportedUsage(ctx.sessionManager.getEntries())
+					: undefined;
+			const value = await getManager().status(
+				sessionId,
+				view,
+				selfId ? { id: selfId, cwd: ctx.cwd, reportedUsage } : undefined,
+				selection,
+			);
 			if (sessionId === undefined || input.detail === true) return value;
 			return projectSelectedStatus(value);
 		},
@@ -482,9 +654,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry, not the live selected branch; pass a clipped entry's textCursor as cursor to page its complete allowed text. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId, a conversation-qualified native requestId, or the separate retained operationId. Missing results return unavailable; supplied selectors must agree. Result answerContinuation pages readable answer text; receiptGroup.next pages recipient references with receiptCursor. When the request declared work, the answer is a state note: work.finalReport.read pages its final report with finalReport true. Images, signatures, and redacted thinking stay omitted.",
 		inspect,
 		(input, ctx) => {
-			if (input.requestId !== undefined && input.view !== "result") throw new Error("requestId selects only the result view");
-			if (input.receiptCursor !== undefined && input.view !== "result") throw new Error("receiptCursor requires result view");
-			if (input.finalReport !== undefined && input.view !== "result") throw new Error("finalReport requires result view");
+			if (input.requestId !== undefined && input.view !== "result")
+				throw new Error("requestId selects only the result view");
+			if (input.receiptCursor !== undefined && input.view !== "result")
+				throw new Error("receiptCursor requires result view");
+			if (input.finalReport !== undefined && input.view !== "result")
+				throw new Error("finalReport requires result view");
 			return control("inspect", input, ctx);
 		},
 	);
@@ -494,11 +669,25 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		send,
 		(input, ctx, callId) => {
 			if (input.mode === "report") {
-				if (input.deliverAt !== undefined || input.replyTo !== undefined || input.checkInMinutes !== undefined) throw new Error("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
-				return control("report", { ...input, requestId: `report:${ctx.sessionManager.getSessionId()}:${callId}`, origin: "model" }, ctx);
+				if (input.deliverAt !== undefined || input.replyTo !== undefined || input.checkInMinutes !== undefined)
+					throw new Error("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
+				return control(
+					"report",
+					{ ...input, requestId: `report:${ctx.sessionManager.getSessionId()}:${callId}`, origin: "model" },
+					ctx,
+				);
 			}
 			if (input.deliverAt === undefined)
-				return control("submit", { ...input, checkInMinutes: checkInMinutes(input.checkInMinutes), whenBusy: input.mode ?? "followUp", origin: "model" }, ctx);
+				return control(
+					"submit",
+					{
+						...input,
+						checkInMinutes: checkInMinutes(input.checkInMinutes),
+						whenBusy: input.mode ?? "followUp",
+						origin: "model",
+					},
+					ctx,
+				);
 			if (input.replyTo !== undefined) throw new Error("replyTo cannot be combined with deliverAt");
 			return control(
 				"timer-schedule",
@@ -527,9 +716,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		"Abort the selected conversation without deleting retained evidence. With timerId, cancel only that input. With release, request host retirement; other work and timers remain.",
 		abort,
 		(input, ctx) => {
-			if (input.release === true && input.background === true) throw new Error("release cannot be combined with background; abort with background first, then release");
-			if (input.timerId !== undefined && input.release === true) throw new Error("release cannot be combined with timerId");
-			if (input.timerId !== undefined) return control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx);
+			if (input.release === true && input.background === true)
+				throw new Error("release cannot be combined with background; abort with background first, then release");
+			if (input.timerId !== undefined && input.release === true)
+				throw new Error("release cannot be combined with timerId");
+			if (input.timerId !== undefined)
+				return control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx);
 			const { release, ...params } = input;
 			return control(release === true ? "release" : "abort", params, ctx);
 		},
@@ -537,10 +729,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	register(
 		"agent_attach",
 		"Connect to a Durable storage host without new input. Retained unfinished work resumes automatically.",
-		obj(
-			{ sessionId: id, model: opt(str()), trust: maybeTrust },
-			{},
-		),
+		obj({ sessionId: id, model: opt(str()), trust: maybeTrust }, {}),
 		(input, ctx) => control("attach", input, ctx),
 	);
 	register(
@@ -552,25 +741,24 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	register(
 		"agent_rewind",
 		"Fork before a mistaken entry and redo the work under your correction. The source stays unchanged. Files remain current.",
-		obj(
-			{ sessionId: id, entryId: id, correction: str({ minLength: 1 }), trust: maybeTrust },
-			{},
-		),
+		obj({ sessionId: id, entryId: id, correction: str({ minLength: 1 }), trust: maybeTrust }, {}),
 		(input, ctx) => control("rewind", { ...input, origin: "model" }, ctx),
 	);
 	register(
 		"agent_configure",
 		"Change a Durable agent's name, exact model, preset, or reasoning level. Changes require an idle target. No task starts.",
 		configure,
-		(input, ctx, callId, admissionCaller) => getManager().control("configure", { ...input, requestId: `configure:${ctx.sessionManager.getSessionId()}:${callId}` }, admissionCaller ?? caller(ctx, pi)),
+		(input, ctx, callId, admissionCaller) =>
+			getManager().control(
+				"configure",
+				{ ...input, requestId: `configure:${ctx.sessionManager.getSessionId()}:${callId}` },
+				admissionCaller ?? caller(ctx, pi),
+			),
 	);
 	register(
 		"agent_command",
 		"Invoke a native contribution command, reload registrations, or fork to a tree entry through its Durable owner.",
-		obj(
-			{ sessionId: id, name: str({ minLength: 1 }), args: opt(str()) },
-			{},
-		),
+		obj({ sessionId: id, name: str({ minLength: 1 }), args: opt(str()) }, {}),
 		(input, ctx) => control("command", { ...input, origin: "model" }, ctx),
 	);
 	register(
@@ -589,7 +777,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			},
 			{},
 		),
-		(input, ctx, callId, admissionCaller) => getManager().place({ ...input, origin: "model", requestId: `place:${ctx.sessionManager.getSessionId()}:${callId}` }, admissionCaller ?? caller(ctx, pi)),
+		(input, ctx, callId, admissionCaller) =>
+			getManager().place(
+				{ ...input, origin: "model", requestId: `place:${ctx.sessionManager.getSessionId()}:${callId}` },
+				admissionCaller ?? caller(ctx, pi),
+			),
 	);
 	register(
 		"agent_compact",
@@ -601,9 +793,15 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					throw new Error("Primary self-compaction accepts summary, not instructions");
 				const usage = ctx.getContextUsage();
 				const compaction = {
-					identity: String(input.sessionId), self: true, name: ctx.sessionManager.getSessionName(),
-					provider: ctx.model?.provider, modelId: ctx.model?.id, thinkingLevel: ctx.thinkingLevel ?? pi.getThinkingLevel(),
-					...(usage === undefined ? {} : { before: { tokens: usage.tokens, contextWindow: usage.contextWindow, percent: usage.percent } }),
+					identity: String(input.sessionId),
+					self: true,
+					name: ctx.sessionManager.getSessionName(),
+					provider: ctx.model?.provider,
+					modelId: ctx.model?.id,
+					thinkingLevel: ctx.thinkingLevel ?? pi.getThinkingLevel(),
+					...(usage === undefined
+						? {}
+						: { before: { tokens: usage.tokens, contextWindow: usage.contextWindow, percent: usage.percent } }),
 					summaryChars: typeof input.summary === "string" ? input.summary.length : undefined,
 				};
 				selfCompaction.request(String(input.sessionId), callId, input.summary as string | undefined);
@@ -707,7 +905,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					const label = await agentLabel(sessionId);
 					// The receipt states whether the input is in the agent's context; an unplaced input waits for the next tool boundary.
 					const placement = (receipt as { placement?: unknown } | null)?.placement;
-					const placed = placement === "placed" ? " (placed)" : placement === "unplaced" ? " (unplaced: the agent reads it at its next tool boundary)" : "";
+					const placed =
+						placement === "placed"
+							? " (placed)"
+							: placement === "unplaced"
+								? " (unplaced: the agent reads it at its next tool boundary)"
+								: "";
 					return outcome(
 						`${name === "steer" ? `Sent a correction to “${label}”` : `Sent a task to “${label}”`}${placed}`,
 						sessionId,
@@ -720,7 +923,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			description: "Stop current work; keep the agent",
 			confirm: "This stops the selected agent's current operation without deleting its evidence.",
 			help: `${sessionHelp} Add release to request host retirement.`,
-			args: [{ name: "session", complete: "session-control" }, { name: "release", optional: true }],
+			args: [
+				{ name: "session", complete: "session-control" },
+				{ name: "release", optional: true },
+			],
 			run: async ([sessionId, release], ctx) => {
 				if (release !== undefined && release !== "release") throw new Error("Use release or omit the second argument");
 				const stopped = await control(release === "release" ? "release" : "abort", { sessionId }, ctx);
@@ -843,7 +1049,11 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			confirm: "This invokes a command with the selected owner's authority.",
 			args: [{ name: "session", complete: "session" }, { name: "name" }, { name: "args", rest: true, optional: true }],
 			run: async ([sessionId, name, ...args], ctx) => {
-				const result = (await control("command", { sessionId, name, args: args.join(" "), origin: "operator" }, ctx)) as {
+				const result = (await control(
+					"command",
+					{ sessionId, name, args: args.join(" "), origin: "operator" },
+					ctx,
+				)) as {
 					reloaded?: boolean;
 					text?: string;
 				};
@@ -906,10 +1116,14 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			label: agentLabel,
 		})),
 	];
-	registerResetTimerTools(pi, (ctx) => ({
-		control: (method, input) => control(method, input, ctx),
-		label: agentLabel,
-	}), cards.agent_reset);
+	registerResetTimerTools(
+		pi,
+		(ctx) => ({
+			control: (method, input) => control(method, input, ctx),
+			label: agentLabel,
+		}),
+		cards.agent_reset,
+	);
 	const command = createAgentCommand(
 		actions,
 		createAgentObservationSource({
@@ -925,21 +1139,35 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				scheduleAgentInput({ control: (method, params) => control(method, params, ctx), label: agentLabel }, input),
 			control,
 			newAgent: async ({ prompt, preset, cwd }, ctx, onCreated) => {
-				const created = (await getManager().spawn({ prompt, preset, cwd, origin: "operator" }, caller(ctx, pi), onCreated)) as { sessionId: string; cwd?: string; status?: { name?: string } };
-				const label = created.status?.name ?? (prompt === undefined ? shortIdentity(created.sessionId) : excerpt(prompt));
+				const created = (await getManager().spawn(
+					{ prompt, preset, cwd, origin: "operator" },
+					caller(ctx, pi),
+					onCreated,
+				)) as { sessionId: string; cwd?: string; status?: { name?: string } };
+				const label =
+					created.status?.name ?? (prompt === undefined ? shortIdentity(created.sessionId) : excerpt(prompt));
 				const place = basename(created.cwd ?? ctx.cwd);
-				return outcome(prompt === undefined ? `Created idle agent “${label}” in ${place}` : `Started agent “${label}” in ${place}`, created.sessionId);
+				return outcome(
+					prompt === undefined ? `Created idle agent “${label}” in ${place}` : `Started agent “${label}” in ${place}`,
+					created.sessionId,
+				);
 			},
 			newDefaults: (ctx) => {
 				const { defaultPreset, choices } = presetChoices(refreshPreferences(ctx));
-				return { cwd: ctx.cwd, presets: choices, ...(defaultPreset === undefined ? {} : { preset: defaultPreset }), ownership: "The answer to the purpose comes back to this session, like agent_spawn." };
+				return {
+					cwd: ctx.cwd,
+					presets: choices,
+					...(defaultPreset === undefined ? {} : { preset: defaultPreset }),
+					ownership: "The answer to the purpose comes back to this session, like agent_spawn.",
+				};
 			},
 		},
 		(input, ctx) => getManager().collaborate({ ...input, origin: "operator" }, caller(ctx, pi)),
 		async (ctx, page) => getManager().sessionFigures(ctx.sessionManager.getSessionId(), page),
 		{
 			efforts: (ctx) => getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd),
-			observeEffort: async (id) => formatPrimaryObservation(await getManager().observePrimary(id, { view: "activity" })),
+			observeEffort: async (id) =>
+				formatPrimaryObservation(await getManager().observePrimary(id, { view: "activity" })),
 			messageEffort: async (id, text, ctx) => {
 				await control("submit", { sessionId: id, message: text, origin: "operator" }, ctx);
 				return { text: "Message delivered to the effort's primary. Delivery does not prove action." };
@@ -970,11 +1198,22 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const abort = new AbortController();
 		primaries.set(sessionId, abort);
 		const purpose = retainedPurpose(ctx.sessionManager, _event.reason);
-		const retention = new PrimaryRetention(ctx.sessionManager, () => ctx.isIdle(), (text, details) => {
-			refreshPreferences(ctx);
-			const wake = !(details !== null && typeof details === "object" && (details as { wake?: unknown }).wake === false);
-			pi.sendMessage({ customType: "agent.peer", content: text, details, display: true }, wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false });
-		});
+		const retention = new PrimaryRetention(
+			ctx.sessionManager,
+			() => ctx.isIdle(),
+			(text, details) => {
+				refreshPreferences(ctx);
+				const wake = !(
+					details !== null &&
+					typeof details === "object" &&
+					(details as { wake?: unknown }).wake === false
+				);
+				pi.sendMessage(
+					{ customType: "agent.peer", content: text, details, display: true },
+					wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false },
+				);
+			},
+		);
 		primaryRetentions.set(sessionId, retention);
 		const retained = ctx.sessionManager.getEntries();
 		continuity.start(sessionId, retained);
@@ -1023,8 +1262,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const sources = ordinaryThreadSources(ctx);
 		if (sources.length === 0 && threadNoticeSnapshots.length === 0) return;
 		const associations = associateThreadNotices(event.messages, sources);
-		const projection = projectThreadNotices({ scope: `${ctx.sessionManager.getSessionId()}:${threadNoticeLifecycle}`, messages: event.messages, associations, snapshots: threadNoticeSnapshots,
-			marker: (original, text) => original.role === "custom" ? { ...original, content: text } : original,
+		const projection = projectThreadNotices({
+			scope: `${ctx.sessionManager.getSessionId()}:${threadNoticeLifecycle}`,
+			messages: event.messages,
+			associations,
+			snapshots: threadNoticeSnapshots,
+			marker: (original, text) => (original.role === "custom" ? { ...original, content: text } : original),
 		});
 		threadNoticeSnapshots = projection.snapshots;
 		return { messages: projection.messages };
@@ -1032,7 +1275,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	pi.on("session_tree", () => resetThreadNotices());
 	pi.on("before_agent_start", async (event, ctx) => {
 		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
-		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd), "prompt");
+		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(
+			await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd),
+			"prompt",
+		);
 		const blocks = renderProviderBlockSection(providerBlocks, Date.now());
 		if (blocks !== undefined) event.systemPromptOptions.sections["agent-provider-blocks"] = blocks;
 	});
@@ -1052,7 +1298,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		selfCompaction.clear();
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
-	pi.on("agent_settled", (_event, ctx) => { primaryRetentions.get(ctx.sessionManager.getSessionId())?.settled(); });
+	pi.on("agent_settled", (_event, ctx) => {
+		primaryRetentions.get(ctx.sessionManager.getSessionId())?.settled();
+	});
 	const disposePalette = publishAgentPalette(pi.events, getAgentDir());
 	pi.on("session_shutdown", async (_event, ctx) => {
 		disposePalette();

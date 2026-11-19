@@ -13,25 +13,57 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { CLAIM_BYTES } from "./claims.ts";
-import { fixtureTeardown, ownedHostClaims, processGone, runtimeFixture, signalHost, stopOwnedHosts, trackHost, trackedHosts, waitForProcessGone, type FixtureContext, type StopOwnedHostsResult } from "./durable-runtime-fixture.mts";
+import {
+	fixtureTeardown,
+	ownedHostClaims,
+	processGone,
+	runtimeFixture,
+	signalHost,
+	stopOwnedHosts,
+	trackHost,
+	trackedHosts,
+	waitForProcessGone,
+	type FixtureContext,
+	type StopOwnedHostsResult,
+} from "./durable-runtime-fixture.mts";
 import { hostPaths } from "./host-protocol.ts";
 
 /** A context that records hooks and runs them later in registration order, awaiting each, as node:test does. */
-function fakeContext(): FixtureContext & { hooks: Array<() => void | Promise<void>>; diagnostics: string[]; run(observe?: (index: number) => void): Promise<void> } {
+function fakeContext(): FixtureContext & {
+	hooks: Array<() => void | Promise<void>>;
+	diagnostics: string[];
+	run(observe?: (index: number) => void): Promise<void>;
+} {
 	const hooks: Array<() => void | Promise<void>> = [];
 	const diagnostics: string[] = [];
 	return {
 		hooks,
 		diagnostics,
-		after: (fn) => { hooks.push(fn); },
-		diagnostic: (message) => { diagnostics.push(message); },
-		run: async (observe) => { for (let index = 0; index < hooks.length; index += 1) { observe?.(index); await hooks[index](); } },
+		after: (fn) => {
+			hooks.push(fn);
+		},
+		diagnostic: (message) => {
+			diagnostics.push(message);
+		},
+		run: async (observe) => {
+			for (let index = 0; index < hooks.length; index += 1) {
+				observe?.(index);
+				await hooks[index]();
+			}
+		},
 	};
 }
 
 /** A process that stays alive in `cwd` until signalled and reports its working directory on request. */
 function holdingProcess(cwd: string): { child: ChildProcess; pid: number } {
-	const child = spawn(process.execPath, ["-e", "process.stdin.once('data',()=>{let m='ok';try{process.cwd();}catch(e){m=e.message;}process.stdout.write(m);process.exit(0);});setInterval(()=>{},1000);"], { cwd, stdio: ["pipe", "pipe", "ignore"] });
+	const child = spawn(
+		process.execPath,
+		[
+			"-e",
+			"process.stdin.once('data',()=>{let m='ok';try{process.cwd();}catch(e){m=e.message;}process.stdout.write(m);process.exit(0);});setInterval(()=>{},1000);",
+		],
+		{ cwd, stdio: ["pipe", "pipe", "ignore"] },
+	);
 	if (child.pid === undefined) throw new Error("holding process did not start");
 	return { child, pid: child.pid };
 }
@@ -40,7 +72,12 @@ function holdingProcess(cwd: string): { child: ChildProcess; pid: number } {
  * A launcher that behaves like a ready host under SIGTERM: it finishes an in-flight launch
  * (spawns a detached child and publishes that child's claim) and only then exits.
  */
-function launcherProcess(cwd: string, childClaimPath: string, childStorageId: string, childCwd: string): { child: ChildProcess; pid: number } {
+function launcherProcess(
+	cwd: string,
+	childClaimPath: string,
+	childStorageId: string,
+	childCwd: string,
+): { child: ChildProcess; pid: number } {
 	const script = `
 		const { spawn } = require("node:child_process");
 		const { writeFileSync, mkdirSync } = require("node:fs");
@@ -56,7 +93,11 @@ function launcherProcess(cwd: string, childClaimPath: string, childStorageId: st
 		});
 		process.stdout.write("ready\\n");
 		setInterval(() => {}, 1000);`;
-	const child = spawn(process.execPath, ["-e", script], { cwd, env: { ...process.env, CHILD_CLAIM: childClaimPath, CHILD_STORAGE: childStorageId, CHILD_CWD: childCwd }, stdio: ["ignore", "pipe", "ignore"] });
+	const child = spawn(process.execPath, ["-e", script], {
+		cwd,
+		env: { ...process.env, CHILD_CLAIM: childClaimPath, CHILD_STORAGE: childStorageId, CHILD_CWD: childCwd },
+		stdio: ["ignore", "pipe", "ignore"],
+	});
 	if (child.pid === undefined) throw new Error("launcher process did not start");
 	return { child, pid: child.pid };
 }
@@ -65,7 +106,10 @@ function launcherProcess(cwd: string, childClaimPath: string, childStorageId: st
 function writeClaim(agentDir: string, storageId: string, cwd: string, pid: number, createdAt = new Date()): string {
 	const paths = hostPaths({ agentDir, storageId, cwd });
 	mkdirSync(dirname(paths.claim), { recursive: true });
-	writeFileSync(paths.claim, JSON.stringify({ sessionId: storageId, cwd, host: hostname(), createdAt: createdAt.toISOString(), pid }));
+	writeFileSync(
+		paths.claim,
+		JSON.stringify({ sessionId: storageId, cwd, host: hostname(), createdAt: createdAt.toISOString(), pid }),
+	);
 	return paths.claim;
 }
 
@@ -81,11 +125,25 @@ async function exitCode(child: ChildProcess): Promise<number | null> {
 }
 
 function collect(child: ChildProcess): Promise<string> {
-	return new Promise((resolve) => { let text = ""; child.stdout?.on("data", (chunk: Buffer) => { text += chunk.toString(); }); child.stderr?.on("data", (chunk: Buffer) => { text += chunk.toString(); }); child.once("exit", () => resolve(text)); });
+	return new Promise((resolve) => {
+		let text = "";
+		child.stdout?.on("data", (chunk: Buffer) => {
+			text += chunk.toString();
+		});
+		child.stderr?.on("data", (chunk: Buffer) => {
+			text += chunk.toString();
+		});
+		child.once("exit", () => resolve(text));
+	});
 }
 
 function outcome(result: StopOwnedHostsResult): Omit<StopOwnedHostsResult, "summary"> {
-	return { stopped: result.stopped, lingering: result.lingering, unresolved: result.unresolved, complete: result.complete };
+	return {
+		stopped: result.stopped,
+		lingering: result.lingering,
+		unresolved: result.unresolved,
+		complete: result.complete,
+	};
 }
 
 it("the launch environment overrides an outer harness path with the fixture configuration", async () => {
@@ -95,7 +153,9 @@ it("the launch environment overrides an outer harness path with the fixture conf
 		const launch = { PI_HARNESS_FILE: join(f.root, "outer-harness.json"), ...f.env("answer") };
 		assert.equal(launch.PI_HARNESS_FILE, join(f.agentDir, "harness.json"));
 		assert.equal(existsSync(launch.PI_HARNESS_FILE), true);
-	} finally { await t.run(); }
+	} finally {
+		await t.run();
+	}
 });
 
 it("a process that outlives its working directory reports the uv_cwd failure", async () => {
@@ -126,9 +186,18 @@ it("teardown stops every claimed host and waits for its exit before the root is 
 	try {
 		assert.equal(t.hooks.length, 3, "fixture root teardown, marker server close, tracked host");
 		const scan = ownedHostClaims(f.root, f.agentDir, Date.now() - 60000);
-		assert.deepEqual({ complete: scan.complete, unresolved: scan.unresolved, pids: scan.claims.map((row) => row.pid).sort() }, { complete: true, unresolved: [], pids: [first.pid, second.pid].sort() });
-		await t.run((index) => { timeline.push(`${index}: root=${existsSync(f.root)} first=${processGone(first.pid) ? "gone" : "alive"} second=${processGone(second.pid) ? "gone" : "alive"}`); });
-		timeline.push(`end: root=${existsSync(f.root)} first=${processGone(first.pid) ? "gone" : "alive"} second=${processGone(second.pid) ? "gone" : "alive"}`);
+		assert.deepEqual(
+			{ complete: scan.complete, unresolved: scan.unresolved, pids: scan.claims.map((row) => row.pid).sort() },
+			{ complete: true, unresolved: [], pids: [first.pid, second.pid].sort() },
+		);
+		await t.run((index) => {
+			timeline.push(
+				`${index}: root=${existsSync(f.root)} first=${processGone(first.pid) ? "gone" : "alive"} second=${processGone(second.pid) ? "gone" : "alive"}`,
+			);
+		});
+		timeline.push(
+			`end: root=${existsSync(f.root)} first=${processGone(first.pid) ? "gone" : "alive"} second=${processGone(second.pid) ? "gone" : "alive"}`,
+		);
 		assert.deepEqual(timeline, [
 			"0: root=true first=alive second=alive",
 			"1: root=false first=gone second=gone",
@@ -157,7 +226,12 @@ it("a launcher that joins its in-flight launch on close publishes the child's cl
 	const launcher = launcherProcess(f.cwd, childClaim, childStorage, f.childCwd);
 	writeClaim(f.agentDir, f.metadata.storageId, f.cwd, launcher.pid);
 	const lines: string[] = [];
-	const ready = new Promise<void>((resolve) => { launcher.child.stdout?.on("data", (chunk: Buffer) => { lines.push(...chunk.toString().split("\n").filter(Boolean)); if (lines.includes("ready")) resolve(); }); });
+	const ready = new Promise<void>((resolve) => {
+		launcher.child.stdout?.on("data", (chunk: Buffer) => {
+			lines.push(...chunk.toString().split("\n").filter(Boolean));
+			if (lines.includes("ready")) resolve();
+		});
+	});
 	let childPid = 0;
 	try {
 		await ready;
@@ -165,9 +239,18 @@ it("a launcher that joins its in-flight launch on close publishes the child's cl
 		const result = await stopOwnedHosts(f.root, f.agentDir, Date.now() - 60000);
 		childPid = Number(lines.find((line) => line.startsWith("child "))?.slice(6));
 		assert.ok(childPid > 1, "the launcher reported the child it spawned while closing");
-		assert.deepEqual(outcome(result), { stopped: [launcher.pid, childPid], lingering: [], unresolved: [], complete: true });
+		assert.deepEqual(outcome(result), {
+			stopped: [launcher.pid, childPid],
+			lingering: [],
+			unresolved: [],
+			complete: true,
+		});
 		assert.equal(processGone(launcher.pid), true);
-		assert.equal(processGone(childPid), true, "the child published during the launcher's close was stopped by the second pass");
+		assert.equal(
+			processGone(childPid),
+			true,
+			"the child published during the launcher's close was stopped by the second pass",
+		);
 		assert.match(result.summary, /^2 owned host\(s\) stopped \[/);
 	} finally {
 		launcher.child.kill("SIGKILL");
@@ -187,8 +270,17 @@ it("a host that does not exit keeps the root in place and fails the test visibly
 		assert.deepEqual(outcome(result), { stopped: [], lingering: [held.pid], unresolved: [], complete: true });
 		assert.equal(processGone(held.pid), false);
 		// The hook path: a lingering report must retain the root and surface the failure before any removal.
-		const lingering: StopOwnedHostsResult = { summary: `lingering [${held.pid}]`, stopped: [], lingering: [held.pid], unresolved: [], complete: true };
-		await assert.rejects(fixtureTeardown(f.root, f.agentDir, Date.now(), t, async () => lingering), new RegExp(`did not exit before teardown: ${held.pid}; root retained`));
+		const lingering: StopOwnedHostsResult = {
+			summary: `lingering [${held.pid}]`,
+			stopped: [],
+			lingering: [held.pid],
+			unresolved: [],
+			complete: true,
+		};
+		await assert.rejects(
+			fixtureTeardown(f.root, f.agentDir, Date.now(), t, async () => lingering),
+			new RegExp(`did not exit before teardown: ${held.pid}; root retained`),
+		);
 		assert.equal(existsSync(f.root), true);
 		assert.equal(existsSync(f.cwd), true);
 		assert.deepEqual(t.diagnostics, [`fixture teardown ${f.root}: lingering [${held.pid}]`]);
@@ -210,13 +302,20 @@ it("a claim published after the first scan is stopped by the second pass", async
 	try {
 		// `late` is already running with no claim when the first scan runs; its claim lands while the
 		// first pass is signalling, which is the hand-off the later passes exist for.
-		const result = await stopOwnedHosts(f.root, f.agentDir, Date.now() - 60000, { kill: (pid) => {
-			signalled.push(pid);
-			if (signalled.length === 1) writeClaim(f.agentDir, `${f.metadata.storageId}:25`, f.childCwd, late.pid);
-			signalHost(pid, "SIGTERM");
-		} });
+		const result = await stopOwnedHosts(f.root, f.agentDir, Date.now() - 60000, {
+			kill: (pid) => {
+				signalled.push(pid);
+				if (signalled.length === 1) writeClaim(f.agentDir, `${f.metadata.storageId}:25`, f.childCwd, late.pid);
+				signalHost(pid, "SIGTERM");
+			},
+		});
 		assert.deepEqual(signalled, [first.pid, late.pid]);
-		assert.deepEqual(outcome(result), { stopped: [first.pid, late.pid], lingering: [], unresolved: [], complete: true });
+		assert.deepEqual(outcome(result), {
+			stopped: [first.pid, late.pid],
+			lingering: [],
+			unresolved: [],
+			complete: true,
+		});
 		assert.equal(processGone(first.pid), true);
 		assert.equal(processGone(late.pid), true);
 	} finally {
@@ -233,7 +332,13 @@ it("an unreadable or partial claim is unresolved ownership: nothing is signalled
 	try {
 		const partial = hostPaths({ agentDir: f.agentDir, storageId: "partial", cwd: f.cwd }).claim;
 		mkdirSync(dirname(partial), { recursive: true });
-		writeFileSync(partial, `{"sessionId":"partial","cwd":"${f.cwd}","host":"${hostname()}","createdAt":"${new Date().toISOString()}","pid":${bystander.pid}`.slice(0, -4));
+		writeFileSync(
+			partial,
+			`{"sessionId":"partial","cwd":"${f.cwd}","host":"${hostname()}","createdAt":"${new Date().toISOString()}","pid":${bystander.pid}`.slice(
+				0,
+				-4,
+			),
+		);
 		const oversized = hostPaths({ agentDir: f.agentDir, storageId: "oversized", cwd: f.cwd }).claim;
 		mkdirSync(dirname(oversized), { recursive: true });
 		writeFileSync(oversized, "x".repeat(CLAIM_BYTES + 1));
@@ -242,10 +347,17 @@ it("an unreadable or partial claim is unresolved ownership: nothing is signalled
 		assert.equal(scan.complete, true);
 		assert.deepEqual(scan.unresolved.map((entry) => entry.split(":")[0]).sort(), [oversized, partial].sort());
 		const signalled: number[] = [];
-		const result = await stopOwnedHosts(f.root, f.agentDir, Date.now() - 60000, { kill: (pid) => { signalled.push(pid); } });
+		const result = await stopOwnedHosts(f.root, f.agentDir, Date.now() - 60000, {
+			kill: (pid) => {
+				signalled.push(pid);
+			},
+		});
 		assert.deepEqual(signalled, [], "an unresolved claim never receives a signal");
 		assert.equal(result.unresolved.length, 2);
-		await assert.rejects(fixtureTeardown(f.root, f.agentDir, Date.now() - 60000, t), /claim ownership unresolved, root retained/);
+		await assert.rejects(
+			fixtureTeardown(f.root, f.agentDir, Date.now() - 60000, t),
+			/claim ownership unresolved, root retained/,
+		);
 		assert.equal(existsSync(f.root), true);
 		assert.equal(processGone(bystander.pid), false);
 		assert.match(t.diagnostics[0], /\(0 tracked\) .*unresolved 2; scan complete$/);
@@ -262,10 +374,26 @@ it("a claim directory beyond the scan bound makes ownership unknown: the root st
 		const claimsDir = dirname(hostPaths({ agentDir: f.agentDir, storageId: "crowded", cwd: f.cwd }).claim);
 		mkdirSync(claimsDir, { recursive: true });
 		// 65 readable claims that are provably another machine's: excluded, not unresolved, so only the bound is in play.
-		for (let index = 0; index < 65; index += 1) writeFileSync(join(claimsDir, `${index}.lock`), JSON.stringify({ sessionId: "crowded", cwd: f.cwd, host: "another-machine", createdAt: new Date().toISOString(), pid: 1 }));
+		for (let index = 0; index < 65; index += 1)
+			writeFileSync(
+				join(claimsDir, `${index}.lock`),
+				JSON.stringify({
+					sessionId: "crowded",
+					cwd: f.cwd,
+					host: "another-machine",
+					createdAt: new Date().toISOString(),
+					pid: 1,
+				}),
+			);
 		const scan = ownedHostClaims(f.root, f.agentDir, Date.now() - 60000);
-		assert.deepEqual({ complete: scan.complete, claims: scan.claims, unresolved: scan.unresolved }, { complete: false, claims: [], unresolved: [] });
-		await assert.rejects(fixtureTeardown(f.root, f.agentDir, Date.now(), t), /exceeded its bound .*; host ownership is unknown, root retained/);
+		assert.deepEqual(
+			{ complete: scan.complete, claims: scan.claims, unresolved: scan.unresolved },
+			{ complete: false, claims: [], unresolved: [] },
+		);
+		await assert.rejects(
+			fixtureTeardown(f.root, f.agentDir, Date.now(), t),
+			/exceeded its bound .*; host ownership is unknown, root retained/,
+		);
 		assert.equal(existsSync(f.root), true);
 		assert.match(t.diagnostics[0], /scan incomplete$/);
 	} finally {
@@ -288,8 +416,21 @@ it("teardown ignores claims that are stale, foreign to the root, older than the 
 		writeClaim(f.agentDir, "earlier", f.cwd, earlier.pid, new Date(Date.now() - 120000));
 		const foreign = hostPaths({ agentDir: f.agentDir, storageId: "foreign", cwd: f.cwd });
 		mkdirSync(dirname(foreign.claim), { recursive: true });
-		writeFileSync(foreign.claim, JSON.stringify({ sessionId: "foreign", cwd: f.cwd, host: "another-machine", createdAt: new Date().toISOString(), pid: bystander.pid }));
-		assert.deepEqual(ownedHostClaims(f.root, f.agentDir, Date.now() - 60000), { claims: [], unresolved: [], complete: true });
+		writeFileSync(
+			foreign.claim,
+			JSON.stringify({
+				sessionId: "foreign",
+				cwd: f.cwd,
+				host: "another-machine",
+				createdAt: new Date().toISOString(),
+				pid: bystander.pid,
+			}),
+		);
+		assert.deepEqual(ownedHostClaims(f.root, f.agentDir, Date.now() - 60000), {
+			claims: [],
+			unresolved: [],
+			complete: true,
+		});
 		const stopped = await stopOwnedHosts(f.root, f.agentDir, Date.now() - 60000);
 		assert.deepEqual(outcome(stopped), { stopped: [], lingering: [], unresolved: [], complete: true });
 		assert.equal(processGone(bystander.pid), false, "a claim outside the root never stops a process");
@@ -310,7 +451,11 @@ it("a tracked runner spawned before its claim is stopped by the first cleanup ph
 	// The real hand-off a test owns: it spawned the runner, so it holds the pid and registers it at
 	// once. durable-runner.ts loads its modules and only then takes its claim in runHost, so at
 	// the first scan this process has no claim; the tracked pid is what the fixture stops.
-	const runner = spawn(process.execPath, [fileURLToPath(new URL("./durable-runner.ts", import.meta.url)), JSON.stringify(f.metadata)], { cwd: f.cwd, env: { ...process.env, ...f.env("answer") }, stdio: ["ignore", "pipe", "pipe"] });
+	const runner = spawn(
+		process.execPath,
+		[fileURLToPath(new URL("./durable-runner.ts", import.meta.url)), JSON.stringify(f.metadata)],
+		{ cwd: f.cwd, env: { ...process.env, ...f.env("answer") }, stdio: ["ignore", "pipe", "pipe"] },
+	);
 	assert.ok(runner.pid);
 	const pid = runner.pid;
 	trackHost(t, pid);
@@ -318,10 +463,20 @@ it("a tracked runner spawned before its claim is stopped by the first cleanup ph
 	const timeline: string[] = [];
 	try {
 		assert.deepEqual(ownedHostClaims(f.root, f.agentDir, Date.now() - 60000).claims, [], "no claim yet at the scan");
-		await t.run((index) => { timeline.push(`${index}: root=${existsSync(f.root)} runner=${processGone(pid) ? "gone" : "alive"}`); });
+		await t.run((index) => {
+			timeline.push(`${index}: root=${existsSync(f.root)} runner=${processGone(pid) ? "gone" : "alive"}`);
+		});
 		timeline.push(`end: root=${existsSync(f.root)} runner=${processGone(pid) ? "gone" : "alive"}`);
-		assert.deepEqual(timeline, ["0: root=true runner=alive", "1: root=false runner=gone", "2: root=false runner=gone", "end: root=false runner=gone"]);
-		assert.match(t.diagnostics[0], /: 1 owned host\(s\) stopped \[\d+\] \(1 tracked\) in \d+ ms; lingering \[\]; unresolved 0; scan complete$/);
+		assert.deepEqual(timeline, [
+			"0: root=true runner=alive",
+			"1: root=false runner=gone",
+			"2: root=false runner=gone",
+			"end: root=false runner=gone",
+		]);
+		assert.match(
+			t.diagnostics[0],
+			/: 1 owned host\(s\) stopped \[\d+\] \(1 tracked\) in \d+ ms; lingering \[\]; unresolved 0; scan complete$/,
+		);
 		const text = await output;
 		assert.doesNotMatch(text, /uv_cwd|ENOENT/, "the runner was stopped while its directories still existed");
 		assert.doesNotMatch(text, /"pid"/, "no readiness frame was published");
@@ -341,7 +496,10 @@ it("teardown does not signal a process with no tracked handle or claim", async (
 	try {
 		await t.run();
 		assert.equal(existsSync(f.root), false);
-		assert.match(t.diagnostics[0], /: 0 owned host\(s\) stopped \[\] \(0 tracked\) in \d+ ms; lingering \[\]; unresolved 0; scan complete$/);
+		assert.match(
+			t.diagnostics[0],
+			/: 0 owned host\(s\) stopped \[\] \(0 tracked\) in \d+ ms; lingering \[\]; unresolved 0; scan complete$/,
+		);
 		assert.equal(processGone(orphan.pid), false, "the fixture did not signal a process it could not attribute");
 	} finally {
 		orphan.child.kill("SIGKILL");

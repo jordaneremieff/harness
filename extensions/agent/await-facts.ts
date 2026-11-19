@@ -24,7 +24,12 @@ async function retryInputMatches(tx: Tx, conversationId: ConversationId, result:
 }
 
 /** Retry belongs only to placed inputs of the current native run. */
-export async function producerRetryFact(tx: Tx, conversationId: ConversationId, results: readonly ResultReference[], maxAttempts?: number): Promise<ProducerRetry | undefined> {
+export async function producerRetryFact(
+	tx: Tx,
+	conversationId: ConversationId,
+	results: readonly ResultReference[],
+	maxAttempts?: number,
+): Promise<ProducerRetry | undefined> {
 	const live = await tx.doc(LiveDoc, conversationId);
 	if (live.run === undefined || live.generation?.retry === undefined) return undefined;
 	const task = await tx.task(live.run.taskId);
@@ -32,28 +37,53 @@ export async function producerRetryFact(tx: Tx, conversationId: ConversationId, 
 	const correlated: ResultReference[] = [];
 	for (const result of results.slice(0, 16)) {
 		if (!live.run.inputs.includes(result.submissionId as SubmissionId)) continue;
-		if (!await retryInputMatches(tx, conversationId, result)) continue;
+		if (!(await retryInputMatches(tx, conversationId, result))) continue;
 		correlated.push(result);
 	}
 	if (correlated.length === 0) return undefined;
 	const agent = await tx.doc(AgentDoc, conversationId);
 	const error = safeFactText(live.generation.retry.error);
-	return { state: "provider-retry", runId: live.run.taskId, results: correlated,
-		...(agent.model === undefined ? {} : { model: { provider: safeFactText(agent.model.provider, 256).text, modelId: safeFactText(agent.model.modelId, 256).text } }),
-		attempt: live.generation.attempt, ...(maxAttempts === undefined ? {} : { maxAttempts }),
-		nextRetryAt: live.generation.retry.at, error: error.text, errorTruncated: error.truncated };
+	return {
+		state: "provider-retry",
+		runId: live.run.taskId,
+		results: correlated,
+		...(agent.model === undefined
+			? {}
+			: {
+					model: {
+						provider: safeFactText(agent.model.provider, 256).text,
+						modelId: safeFactText(agent.model.modelId, 256).text,
+					},
+				}),
+		attempt: live.generation.attempt,
+		...(maxAttempts === undefined ? {} : { maxAttempts }),
+		nextRetryAt: live.generation.retry.at,
+		error: error.text,
+		errorTruncated: error.truncated,
+	};
 }
 
 /** Provider error text is a claim, not a scheduling guarantee or diagnosis. */
 export function retryFactLines(retry: ProducerRetry): string[] {
-	return retry.results.map((result) => `${result.sessionId} · submission ${result.submissionId}${result.requestId === undefined ? "" : ` · request ${safeFactText(result.requestId, 160).text}`} · pending · provider retry · ${retry.model === undefined ? "model unknown" : `${retry.model.provider}/${retry.model.modelId}`} · attempt ${retry.attempt}${retry.maxAttempts === undefined ? " (ceiling unknown)" : `/${retry.maxAttempts}`} · next retry ${new Date(retry.nextRetryAt).toISOString()} · provider error: ${safeFactText(retry.error).text}${retry.errorTruncated ? " [truncated]" : ""}`);
+	return retry.results.map(
+		(result) =>
+			`${result.sessionId} · submission ${result.submissionId}${result.requestId === undefined ? "" : ` · request ${safeFactText(result.requestId, 160).text}`} · pending · provider retry · ${retry.model === undefined ? "model unknown" : `${retry.model.provider}/${retry.model.modelId}`} · attempt ${retry.attempt}${retry.maxAttempts === undefined ? " (ceiling unknown)" : `/${retry.maxAttempts}`} · next retry ${new Date(retry.nextRetryAt).toISOString()} · provider error: ${safeFactText(retry.error).text}${retry.errorTruncated ? " [truncated]" : ""}`,
+	);
 }
 
 /** Retained notices can carry this member; nothing writes it. */
 const RetainedAwaitingSchema = obj({
 	runId: int({ minimum: 1 }),
 	heldInputs: arr(int({ minimum: 1 }), { maxItems: 16 }),
-	results: arr(obj({ result: ResultReferenceSchema, status: union([lit("pending"), lit("done"), lit("unanswered"), lit("unavailable")]), reason: opt(str({ maxLength: 512 })), answerEntryId: opt(int({ minimum: 1 })) }), { maxItems: 16 }),
+	results: arr(
+		obj({
+			result: ResultReferenceSchema,
+			status: union([lit("pending"), lit("done"), lit("unanswered"), lit("unavailable")]),
+			reason: opt(str({ maxLength: 512 })),
+			answerEntryId: opt(int({ minimum: 1 })),
+		}),
+		{ maxItems: 16 },
+	),
 	queuedInputCount: int({ minimum: 0 }),
 	queueSnapshot: lit("committed InboxDoc"),
 	omitted: obj({ heldInputs: int({ minimum: 0 }), results: int({ minimum: 0 }) }),

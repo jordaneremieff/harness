@@ -2,43 +2,118 @@ import { execFile } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { paneStackingCommand, withPaneStacking } from "./pane-stacking.ts";
-import { parseOrigin, trustedRexExecutable, type Runner, type RunResult, type TerminalOrigin } from "./terminal-origin.ts";
+import {
+	parseOrigin,
+	trustedRexExecutable,
+	type Runner,
+	type RunResult,
+	type TerminalOrigin,
+} from "./terminal-origin.ts";
 
 export type PanePlacement = { side: "right" | "below"; share: number };
-export interface PaneRequest { version: 1; origin: TerminalOrigin | null; argv: string[]; cwd: string; placement?: PanePlacement; label?: string }
+export interface PaneRequest {
+	version: 1;
+	origin: TerminalOrigin | null;
+	argv: string[];
+	cwd: string;
+	placement?: PanePlacement;
+	label?: string;
+}
 type Direction = "horizontal" | "vertical";
-export interface PaneResizeRequest { version: 1; receipt: PaneReceipt; share: number }
-export interface PaneResizeResult { version: 1; outcome: "resized" | "stale" | "unavailable" | "uncertain"; detail: string }
-export interface PaneFocusRequest { version: 1; receipt: PaneReceipt }
-export interface PaneFocusResult { version: 1; outcome: "focused" | "stale" | "unavailable" | "uncertain"; detail: string }
-export interface PaneReceipt { server: string; hostId: string; instanceId: string; sessionId: string; windowId: string; anchorId: string; blockId: string; direction: Direction }
-export interface PaneResult { version: 1; outcome: "created" | "stale" | "unavailable" | "uncertain"; detail: string; receipt?: PaneReceipt }
+export interface PaneResizeRequest {
+	version: 1;
+	receipt: PaneReceipt;
+	share: number;
+}
+export interface PaneResizeResult {
+	version: 1;
+	outcome: "resized" | "stale" | "unavailable" | "uncertain";
+	detail: string;
+}
+export interface PaneFocusRequest {
+	version: 1;
+	receipt: PaneReceipt;
+}
+export interface PaneFocusResult {
+	version: 1;
+	outcome: "focused" | "stale" | "unavailable" | "uncertain";
+	detail: string;
+}
+export interface PaneReceipt {
+	server: string;
+	hostId: string;
+	instanceId: string;
+	sessionId: string;
+	windowId: string;
+	anchorId: string;
+	blockId: string;
+	direction: Direction;
+}
+export interface PaneResult {
+	version: 1;
+	outcome: "created" | "stale" | "unavailable" | "uncertain";
+	detail: string;
+	receipt?: PaneReceipt;
+}
 const LIMIT = 16384;
 const DEFAULT_PLACEMENT: PanePlacement = { side: "right", share: 0.5 };
 const DEFAULT_LABEL = "Reader";
-const validText = (value: unknown, max: number): value is string => typeof value === "string" && Buffer.byteLength(value) <= max && !value.includes("\0");
+const validText = (value: unknown, max: number): value is string =>
+	typeof value === "string" && Buffer.byteLength(value) <= max && !value.includes("\0");
 function parsePlacement(value: unknown): PanePlacement {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Pane placement must be one object.");
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new Error("Pane placement must be one object.");
 	const placement = value as Record<string, unknown>;
-	if (Object.keys(placement).some((key) => !["side", "share"].includes(key)) || (placement.side !== "right" && placement.side !== "below") || typeof placement.share !== "number" || !Number.isFinite(placement.share) || placement.share < 0.15 || placement.share > 0.85) throw new Error("Pane placement requires side right or below and a share from 0.15 to 0.85.");
+	if (
+		Object.keys(placement).some((key) => !["side", "share"].includes(key)) ||
+		(placement.side !== "right" && placement.side !== "below") ||
+		typeof placement.share !== "number" ||
+		!Number.isFinite(placement.share) ||
+		placement.share < 0.15 ||
+		placement.share > 0.85
+	)
+		throw new Error("Pane placement requires side right or below and a share from 0.15 to 0.85.");
 	return { side: placement.side, share: placement.share };
 }
 // Printable means one to 32 Unicode code points without control, format or surrogate characters.
 function parseLabel(value: unknown): string {
 	const length = typeof value === "string" ? [...value].length : 0;
-	if (typeof value !== "string" || length < 1 || length > 32 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value)) throw new Error("Pane label requires 1 to 32 printable Unicode characters.");
+	if (typeof value !== "string" || length < 1 || length > 32 || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value))
+		throw new Error("Pane label requires 1 to 32 printable Unicode characters.");
 	return value;
 }
 export function parsePaneRequest(input: string): PaneRequest {
 	if (Buffer.byteLength(input) > LIMIT) throw new Error("Pane request exceeds 16384 bytes.");
 	const value = JSON.parse(input) as Partial<PaneRequest>;
-	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["version", "origin", "argv", "cwd", "placement", "label"].includes(key)) || value.version !== 1 || !("origin" in value)) throw new Error("Invalid pane request.");
-	if (!Array.isArray(value.argv) || value.argv.length < 1 || value.argv.length > 64 || !value.argv.every((arg) => validText(arg, 4096)) || !isAbsolute(value.argv[0])) throw new Error("Pane argv requires an absolute program and bounded, NUL-free arguments.");
+	if (
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Object.keys(value).some((key) => !["version", "origin", "argv", "cwd", "placement", "label"].includes(key)) ||
+		value.version !== 1 ||
+		!("origin" in value)
+	)
+		throw new Error("Invalid pane request.");
+	if (
+		!Array.isArray(value.argv) ||
+		value.argv.length < 1 ||
+		value.argv.length > 64 ||
+		!value.argv.every((arg) => validText(arg, 4096)) ||
+		!isAbsolute(value.argv[0])
+	)
+		throw new Error("Pane argv requires an absolute program and bounded, NUL-free arguments.");
 	if (!validText(value.cwd, 4096) || !isAbsolute(value.cwd)) throw new Error("Pane cwd must be an absolute path.");
 	const placement = value.placement === undefined ? undefined : parsePlacement(value.placement);
 	const label = value.label === undefined ? undefined : parseLabel(value.label);
 	const origin = value.origin === null ? null : parseOrigin(JSON.stringify(value.origin));
-	return { version: 1, origin, argv: value.argv, cwd: value.cwd, ...(placement ? { placement } : {}), ...(label !== undefined ? { label } : {}) };
+	return {
+		version: 1,
+		origin,
+		argv: value.argv,
+		cwd: value.cwd,
+		...(placement ? { placement } : {}),
+		...(label !== undefined ? { label } : {}),
+	};
 }
 
 // Identity validation and the single mutation share one Rex connection. A block anchor never
@@ -108,26 +183,67 @@ if not focused or type(focused.revision) ~= "number" then
 end
 return {outcome="focused", detail="Rex focused the anchor terminal."}
 `;
-const runChild: Runner = (executable, args, options) => new Promise((done) => {
-	execFile(executable, [...args], { ...options, encoding: "utf8", killSignal: "SIGKILL" }, (error, stdout, stderr) => {
-		if (!error) return done({ code: 0, stdout, stderr });
-		done({ code: typeof error.code === "number" ? error.code : null, stdout, stderr, failure: error.code === "ENOENT" ? "missing" : error.killed ? "timeout" : "failed" });
+const runChild: Runner = (executable, args, options) =>
+	new Promise((done) => {
+		execFile(
+			executable,
+			[...args],
+			{ ...options, encoding: "utf8", killSignal: "SIGKILL" },
+			(error, stdout, stderr) => {
+				if (!error) return done({ code: 0, stdout, stderr });
+				done({
+					code: typeof error.code === "number" ? error.code : null,
+					stdout,
+					stderr,
+					failure: error.code === "ENOENT" ? "missing" : error.killed ? "timeout" : "failed",
+				});
+			},
+		);
 	});
-});
 const result = (outcome: PaneResult["outcome"], detail: string): PaneResult => ({ version: 1, outcome, detail });
 const uuid = "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}";
 const receiptFields = ["server", "hostId", "instanceId", "sessionId", "windowId", "anchorId", "blockId", "direction"];
 function readReceipt(value: unknown): PaneReceipt | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !receiptFields.includes(key))) return;
+	if (
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Object.keys(value).some((key) => !receiptFields.includes(key))
+	)
+		return;
 	const r = value as PaneReceipt;
 	const id = (value: unknown, prefix = "") => typeof value === "string" && new RegExp(`^${prefix}${uuid}$`).test(value);
-	if (!validText(r.server, 4096) || !r.server.length || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(r.server) || !id(r.hostId) || !id(r.instanceId) || !id(r.sessionId, "session:") || !id(r.windowId, "window:") || !id(r.anchorId, "block:") || !id(r.blockId, "block:") || r.anchorId === r.blockId || (r.direction !== "horizontal" && r.direction !== "vertical")) return;
+	if (
+		!validText(r.server, 4096) ||
+		!r.server.length ||
+		/[\p{Cc}\p{Cf}\p{Cs}]/u.test(r.server) ||
+		!id(r.hostId) ||
+		!id(r.instanceId) ||
+		!id(r.sessionId, "session:") ||
+		!id(r.windowId, "window:") ||
+		!id(r.anchorId, "block:") ||
+		!id(r.blockId, "block:") ||
+		r.anchorId === r.blockId ||
+		(r.direction !== "horizontal" && r.direction !== "vertical")
+	)
+		return;
 	return r;
 }
 export function parseResizeRequest(input: string): PaneResizeRequest {
 	if (Buffer.byteLength(input) > LIMIT) throw new Error("Pane request exceeds 16384 bytes.");
 	const value = JSON.parse(input) as Partial<PaneResizeRequest>;
-	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => !["version", "receipt", "share"].includes(key)) || value.version !== 1 || typeof value.share !== "number" || !Number.isFinite(value.share) || value.share < 0.1 || value.share > 0.9) throw new Error("Invalid pane resize request.");
+	if (
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Object.keys(value).some((key) => !["version", "receipt", "share"].includes(key)) ||
+		value.version !== 1 ||
+		typeof value.share !== "number" ||
+		!Number.isFinite(value.share) ||
+		value.share < 0.1 ||
+		value.share > 0.9
+	)
+		throw new Error("Invalid pane resize request.");
 	const receipt = readReceipt(value.receipt);
 	if (!receipt) throw new Error("Pane resize requires an exact split receipt.");
 	return { version: 1, receipt, share: value.share };
@@ -135,7 +251,14 @@ export function parseResizeRequest(input: string): PaneResizeRequest {
 export function parseFocusRequest(input: string): PaneFocusRequest {
 	if (Buffer.byteLength(input) > LIMIT) throw new Error("Pane request exceeds 16384 bytes.");
 	const value = JSON.parse(input) as Partial<PaneFocusRequest>;
-	if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => key !== "version" && key !== "receipt") || value.version !== 1) throw new Error("Invalid pane focus request.");
+	if (
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value) ||
+		Object.keys(value).some((key) => key !== "version" && key !== "receipt") ||
+		value.version !== 1
+	)
+		throw new Error("Invalid pane focus request.");
 	const receipt = readReceipt(value.receipt);
 	if (!receipt) throw new Error("Pane focus requires an exact split receipt.");
 	return { version: 1, receipt };
@@ -146,13 +269,35 @@ function matchesOrigin(env: Readonly<NodeJS.ProcessEnv>, server: string, session
 function runRex(run: Runner, server: string, sessionId: string, script: string, args: object): Promise<RunResult> {
 	const env = { ...process.env };
 	for (const key of Object.keys(env)) if (key.startsWith("REX_")) delete env[key];
-	return run(trustedRexExecutable(), ["--autostart=false", "--color=never", "--timeout=3s", `--server=${server}`, "do", "--session", sessionId, "-e", script, "--args", JSON.stringify(args), "--json"], { timeout: 5000, maxBuffer: 32768, env });
+	return run(
+		trustedRexExecutable(),
+		[
+			"--autostart=false",
+			"--color=never",
+			"--timeout=3s",
+			`--server=${server}`,
+			"do",
+			"--session",
+			sessionId,
+			"-e",
+			script,
+			"--args",
+			JSON.stringify(args),
+			"--json",
+		],
+		{ timeout: 5000, maxBuffer: 32768, env },
+	);
 }
-export async function splitPane(request: PaneRequest, env: Readonly<NodeJS.ProcessEnv> = process.env, run: Runner = runChild): Promise<PaneResult> {
+export async function splitPane(
+	request: PaneRequest,
+	env: Readonly<NodeJS.ProcessEnv> = process.env,
+	run: Runner = runChild,
+): Promise<PaneResult> {
 	request = parsePaneRequest(JSON.stringify(request));
 	const exact = request.origin?.exact;
 	if (!exact) return result("unavailable", "No verified invoking terminal is available. No pane was created.");
-	if (!matchesOrigin(env, exact.server, exact.sessionId, exact.blockId)) return result("stale", "The inherited terminal differs from the captured origin. No pane was created.");
+	if (!matchesOrigin(env, exact.server, exact.sessionId, exact.blockId))
+		return result("stale", "The inherited terminal differs from the captured origin. No pane was created.");
 	// The program learns which content of the window lies over its pane from Rex's layout, as panes that rex_terminal creates do.
 	const argv = withPaneStacking(request.argv, paneStackingCommand(exact.server, env));
 	const placement = request.placement ?? DEFAULT_PLACEMENT;
@@ -161,48 +306,109 @@ export async function splitPane(request: PaneRequest, env: Readonly<NodeJS.Proce
 	const label = request.label ?? DEFAULT_LABEL;
 	let child: RunResult;
 	try {
-		child = await runRex(run, exact.server, exact.sessionId, splitScript, { ...exact, argv, cwd: request.cwd, direction, ratio, label });
-	} catch { return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically."); }
-	if (child.failure === "missing") return result("unavailable", "The trusted Rex program is missing. No pane was created.");
-	if (child.failure || child.code !== 0 || Buffer.byteLength(child.stdout) > 32768) return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically.");
+		child = await runRex(run, exact.server, exact.sessionId, splitScript, {
+			...exact,
+			argv,
+			cwd: request.cwd,
+			direction,
+			ratio,
+			label,
+		});
+	} catch {
+		return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically.");
+	}
+	if (child.failure === "missing")
+		return result("unavailable", "The trusted Rex program is missing. No pane was created.");
+	if (child.failure || child.code !== 0 || Buffer.byteLength(child.stdout) > 32768)
+		return result("uncertain", "Rex split creation is unconfirmed. Do not retry automatically.");
 	return readResult(child.stdout, exact, direction);
 }
 function readResult(stdout: string, exact: NonNullable<TerminalOrigin["exact"]>, direction: Direction): PaneResult {
 	try {
 		const value = JSON.parse(stdout) as PaneResult;
-		if (!["created", "stale", "unavailable", "uncertain"].includes(value.outcome) || !validText(value.detail, 256) || !value.detail.length || /[\p{Cc}\p{Cf}]/u.test(value.detail)) throw new Error("Invalid result.");
+		if (
+			!["created", "stale", "unavailable", "uncertain"].includes(value.outcome) ||
+			!validText(value.detail, 256) ||
+			!value.detail.length ||
+			/[\p{Cc}\p{Cf}]/u.test(value.detail)
+		)
+			throw new Error("Invalid result.");
 		const r = readReceipt(value.receipt);
-		const receipt = r?.server === exact.server && r.hostId === exact.hostId && r.instanceId === exact.instanceId && r.sessionId === exact.sessionId && r.anchorId === exact.blockId && r.direction === direction ? r : undefined;
+		const receipt =
+			r?.server === exact.server &&
+			r.hostId === exact.hostId &&
+			r.instanceId === exact.instanceId &&
+			r.sessionId === exact.sessionId &&
+			r.anchorId === exact.blockId &&
+			r.direction === direction
+				? r
+				: undefined;
 		if (value.outcome === "created" && !receipt) throw new Error("Missing receipt.");
 		return { version: 1, outcome: value.outcome, detail: value.detail, ...(receipt ? { receipt } : {}) };
-	} catch { return result("uncertain", "Rex returned an invalid creation result. Do not retry automatically."); }
+	} catch {
+		return result("uncertain", "Rex returned an invalid creation result. Do not retry automatically.");
+	}
 }
-export async function resizePane(request: PaneResizeRequest, env: Readonly<NodeJS.ProcessEnv> = process.env, run: Runner = runChild): Promise<PaneResizeResult> {
+export async function resizePane(
+	request: PaneResizeRequest,
+	env: Readonly<NodeJS.ProcessEnv> = process.env,
+	run: Runner = runChild,
+): Promise<PaneResizeResult> {
 	const { receipt, share } = parseResizeRequest(JSON.stringify(request));
-	const response = (outcome: PaneResizeResult["outcome"], detail: string): PaneResizeResult => ({ version: 1, outcome, detail });
-	if (!matchesOrigin(env, receipt.server, receipt.sessionId, receipt.anchorId)) return response("stale", "The inherited terminal differs from the receipt anchor.");
+	const response = (outcome: PaneResizeResult["outcome"], detail: string): PaneResizeResult => ({
+		version: 1,
+		outcome,
+		detail,
+	});
+	if (!matchesOrigin(env, receipt.server, receipt.sessionId, receipt.anchorId))
+		return response("stale", "The inherited terminal differs from the receipt anchor.");
 	try {
 		const child = await runRex(run, receipt.server, receipt.sessionId, resizeScript, { ...receipt, ratio: 1 - share });
 		if (child.failure === "missing") return response("unavailable", "The trusted Rex program is missing.");
 		if (!child.failure && child.code === 0 && Buffer.byteLength(child.stdout) <= 32768) {
 			const { outcome, detail } = JSON.parse(child.stdout) as PaneResizeResult;
-			if (["resized", "stale", "unavailable", "uncertain"].includes(outcome) && validText(detail, 256) && detail.length && !/[\p{Cc}\p{Cf}]/u.test(detail)) return response(outcome, detail);
+			if (
+				["resized", "stale", "unavailable", "uncertain"].includes(outcome) &&
+				validText(detail, 256) &&
+				detail.length &&
+				!/[\p{Cc}\p{Cf}]/u.test(detail)
+			)
+				return response(outcome, detail);
 		}
-	} catch { /* An unconfirmed mutation is not safe to repeat. */ }
+	} catch {
+		/* An unconfirmed mutation is not safe to repeat. */
+	}
 	return response("uncertain", "Rex resize is unconfirmed. Do not retry automatically.");
 }
-export async function focusPane(request: PaneFocusRequest, env: Readonly<NodeJS.ProcessEnv> = process.env, run: Runner = runChild): Promise<PaneFocusResult> {
+export async function focusPane(
+	request: PaneFocusRequest,
+	env: Readonly<NodeJS.ProcessEnv> = process.env,
+	run: Runner = runChild,
+): Promise<PaneFocusResult> {
 	const { receipt } = parseFocusRequest(JSON.stringify(request));
-	const response = (outcome: PaneFocusResult["outcome"], detail: string): PaneFocusResult => ({ version: 1, outcome, detail });
-	if (!matchesOrigin(env, receipt.server, receipt.sessionId, receipt.anchorId)) return response("stale", "The inherited terminal differs from the receipt anchor.");
+	const response = (outcome: PaneFocusResult["outcome"], detail: string): PaneFocusResult => ({
+		version: 1,
+		outcome,
+		detail,
+	});
+	if (!matchesOrigin(env, receipt.server, receipt.sessionId, receipt.anchorId))
+		return response("stale", "The inherited terminal differs from the receipt anchor.");
 	try {
 		const child = await runRex(run, receipt.server, receipt.sessionId, focusScript, receipt);
 		if (child.failure === "missing") return response("unavailable", "The trusted Rex program is missing.");
 		if (!child.failure && child.code === 0 && Buffer.byteLength(child.stdout) <= 32768) {
 			const { outcome, detail } = JSON.parse(child.stdout) as PaneFocusResult;
-			if (["focused", "stale", "unavailable", "uncertain"].includes(outcome) && validText(detail, 256) && detail.length && !/[\p{Cc}\p{Cf}]/u.test(detail)) return response(outcome, detail);
+			if (
+				["focused", "stale", "unavailable", "uncertain"].includes(outcome) &&
+				validText(detail, 256) &&
+				detail.length &&
+				!/[\p{Cc}\p{Cf}]/u.test(detail)
+			)
+				return response(outcome, detail);
 		}
-	} catch { /* An unconfirmed focus change is not safe to repeat. */ }
+	} catch {
+		/* An unconfirmed focus change is not safe to repeat. */
+	}
 	return response("uncertain", "Rex focus is unconfirmed. Do not retry automatically.");
 }
 const operations = {
@@ -212,7 +418,8 @@ const operations = {
 };
 async function main(): Promise<void> {
 	const operation = process.argv[2];
-	if (process.argv.length !== 3 || (operation !== "split" && operation !== "resize" && operation !== "focus")) throw new Error("Use terminal-pane.ts split, resize or focus with one JSON request on stdin.");
+	if (process.argv.length !== 3 || (operation !== "split" && operation !== "resize" && operation !== "focus"))
+		throw new Error("Use terminal-pane.ts split, resize or focus with one JSON request on stdin.");
 	const chunks: Buffer[] = [];
 	let size = 0;
 	for await (const chunk of process.stdin) {
@@ -224,5 +431,12 @@ async function main(): Promise<void> {
 	process.stdout.write(`${JSON.stringify(await operations[operation](input))}\n`);
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-	void main().catch((error) => { process.stderr.write(`${String(error instanceof Error ? error.message : error).replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 256)}\n`); process.exitCode = 1; });
+	void main().catch((error) => {
+		process.stderr.write(
+			`${String(error instanceof Error ? error.message : error)
+				.replace(/[\p{Cc}\p{Cf}]/gu, " ")
+				.slice(0, 256)}\n`,
+		);
+		process.exitCode = 1;
+	});
 }

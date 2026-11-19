@@ -18,7 +18,10 @@ export type JobCompletionDetails = {
 /** The job id of a jobs.completion message or session entry, or undefined for any other message. */
 export function completionJobId(message: { customType?: unknown; details?: unknown }): string | undefined {
 	if (message.customType !== JOB_COMPLETION_MESSAGE) return undefined;
-	const job = typeof message.details === "object" && message.details !== null ? (message.details as { job?: unknown }).job : undefined;
+	const job =
+		typeof message.details === "object" && message.details !== null
+			? (message.details as { job?: unknown }).job
+			: undefined;
 	const id = typeof job === "object" && job !== null ? (job as { id?: unknown }).id : undefined;
 	return typeof id === "string" ? id : undefined;
 }
@@ -37,8 +40,10 @@ export function commandPreview(command: string): string {
 
 function outcomeLine(job: CompletionJob): string {
 	const seconds = Math.max(0, Math.round(((job.endedAt ?? Date.now()) - job.startedAt) / 1000));
-	if (job.status === "lost") return "was lost: its host stopped while the command ran, output was not retained, and the command was not run again";
-	if (job.status === "timed_out") return `timed out after ${seconds}s and settled cancellation${job.timeoutSeconds === undefined ? "" : ` (timeout limit ${job.timeoutSeconds}s)`}`;
+	if (job.status === "lost")
+		return "was lost: its host stopped while the command ran, output was not retained, and the command was not run again";
+	if (job.status === "timed_out")
+		return `timed out after ${seconds}s and settled cancellation${job.timeoutSeconds === undefined ? "" : ` (timeout limit ${job.timeoutSeconds}s)`}`;
 	if (typeof job.exitCode === "number") return `${job.status} with exit code ${job.exitCode} after ${seconds}s`;
 	return `${job.status} without an exit code after ${seconds}s`;
 }
@@ -60,11 +65,19 @@ export function completionTail(read: (cursor?: number) => JobLogs): JobCompletio
 	// A window that starts inside the output begins with a partial line.
 	if (start > probe.earliest && lines.length > 1) lines.shift();
 	const kept = lines.length > COMPLETION_LIMITS.tailLines ? lines.slice(-COMPLETION_LIMITS.tailLines) : lines;
-	return { text: kept.join("\n"), omitted: probe.earliest > 0 || start > probe.earliest || kept.length < lines.length, outputBytes: probe.end };
+	return {
+		text: kept.join("\n"),
+		omitted: probe.earliest > 0 || start > probe.earliest || kept.length < lines.length,
+		outputBytes: probe.end,
+	};
 }
 
 export function executionErrorLabel(status: string | undefined): string {
-	return status === "timed_out" ? "Backend error after timeout" : status === "cancelled" ? "Backend error after cancellation" : "Execution error";
+	return status === "timed_out"
+		? "Backend error after timeout"
+		: status === "cancelled"
+			? "Backend error after cancellation"
+			: "Execution error";
 }
 
 export function completionContent(details: JobCompletionDetails): string {
@@ -72,7 +85,10 @@ export function completionContent(details: JobCompletionDetails): string {
 	const lines = [`Background job ${job.id} ${outcomeLine(job)}: ${details.command || "command unknown"}`];
 	lines.push(`Working directory: ${job.cwd === undefined ? "unknown" : displayText(job.cwd)}`);
 	if (job.error) lines.push(`${executionErrorLabel(job.status)}: ${displayText(job.error)}`);
-	if (job.status === "lost") lines.push("Output is unavailable after host loss; zero retained bytes does not mean the command produced no output.");
+	if (job.status === "lost")
+		lines.push(
+			"Output is unavailable after host loss; zero retained bytes does not mean the command produced no output.",
+		);
 	else if (tail.outputBytes === 0) lines.push("The command produced no output.");
 	else {
 		lines.push(

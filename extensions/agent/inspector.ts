@@ -75,7 +75,9 @@ export class Inspector implements Component, Focusable {
 	private notice?: Notice;
 	private closed = false;
 	private expanded = false;
-	get capturesViewportInput(): boolean { return this.options.expandKey !== undefined; }
+	get capturesViewportInput(): boolean {
+		return this.options.expandKey !== undefined;
+	}
 	private bodyY = 1;
 	private bodyHeight = 1;
 	/** Size of the last render: a pointer event drawn for another size acts on nothing. */
@@ -172,11 +174,19 @@ export class Inspector implements Component, Focusable {
 			const actions = this.top()?.view.actions?.() ?? [];
 			const key = this.options.expandKey;
 			if (!key) return actions;
-			return [...actions, {
-				id: "\u0000expand", label: this.expanded ? "Collapse" : "Expand", primary: true,
-				key: actions.some((action) => action.key === key) ? undefined : key,
-				run: () => { this.expanded = !this.expanded; this.options.requestRender(); },
-			}];
+			return [
+				...actions,
+				{
+					id: "\u0000expand",
+					label: this.expanded ? "Collapse" : "Expand",
+					primary: true,
+					key: actions.some((action) => action.key === key) ? undefined : key,
+					run: () => {
+						this.expanded = !this.expanded;
+						this.options.requestRender();
+					},
+				},
+			];
 		} catch (error) {
 			this.fail(error);
 			return [];

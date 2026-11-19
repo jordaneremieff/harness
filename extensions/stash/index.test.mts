@@ -192,7 +192,10 @@ describe("stash entrypoint", () => {
 			[...tools.keys()],
 			["stash_write", "stash_list", "stash_read", "stash_edit", "stash_complete", "stash_rotate"],
 		);
-		assert.deepEqual([...renderers.keys()], ["stash-redaction", "stash-budget", "stash-budget-status", "stash-capacity-request"]);
+		assert.deepEqual(
+			[...renderers.keys()],
+			["stash-redaction", "stash-budget", "stash-budget-status", "stash-capacity-request"],
+		);
 		assert.ok(commands.has("stash"));
 		assert.deepEqual([...shortcuts.keys()], ["ctrl+alt+s"]);
 		assert.equal(shortcuts.get("ctrl+alt+s").description, "Open the stash browser");
@@ -219,8 +222,6 @@ describe("stash entrypoint", () => {
 		}
 		assert.deepEqual(sent, []);
 	});
-
-
 
 	it("keeps browser guards local to each extension instance", async () => {
 		const first = registry();
@@ -282,8 +283,14 @@ describe("stash entrypoint", () => {
 		assert.match(await readFile(result.details.path, "utf8"), /Decision and next step/);
 		assert.ok(!(await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Working synthesis"));
 		const original = await readFile(result.details.path, "utf8");
-		const page = await tools.get("stash_list").execute("search", { collection: "checkpoints", query: "Decision and next step" });
-		const found = JSON.parse(page.content[0].text) as { collection: string; provisional: boolean; matches: { id: string; state: string; source: string; workspace: string }[] };
+		const page = await tools
+			.get("stash_list")
+			.execute("search", { collection: "checkpoints", query: "Decision and next step" });
+		const found = JSON.parse(page.content[0].text) as {
+			collection: string;
+			provisional: boolean;
+			matches: { id: string; state: string; source: string; workspace: string }[];
+		};
 		assert.equal(found.collection, "checkpoints");
 		assert.equal(found.provisional, true);
 		assert.equal(found.matches.length, 1);
@@ -295,19 +302,32 @@ describe("stash entrypoint", () => {
 		assert.match(String(read.details.digest), /^[a-f0-9]{64}$/);
 		assert.equal(read.details.provisional, true);
 		assert.equal(await readFile(result.details.path, "utf8"), original);
-		await assert.rejects(tools.get("stash_read").execute("wrong", { id: found.matches[0].id }), /requires collection checkpoints/);
-		await assert.rejects(tools.get("stash_read").execute("bare", { collection: "checkpoints", id: found.matches[0].id.slice(11) }), /require the checkpoint:/);
+		await assert.rejects(
+			tools.get("stash_read").execute("wrong", { id: found.matches[0].id }),
+			/requires collection checkpoints/,
+		);
+		await assert.rejects(
+			tools.get("stash_read").execute("bare", { collection: "checkpoints", id: found.matches[0].id.slice(11) }),
+			/require the checkpoint:/,
+		);
 		const lifecycle = await tools.get("stash_list").execute("state", { collection: "checkpoints", state: "open" });
 		assert.equal(lifecycle.isError, true);
-		await assert.rejects(tools.get("stash_complete").execute("complete", { id: found.matches[0].id, outcome: "No" }), /registered schema/);
+		await assert.rejects(
+			tools.get("stash_complete").execute("complete", { id: found.matches[0].id, outcome: "No" }),
+			/registered schema/,
+		);
 		const recent = await tools.get("stash_list").execute("recent", { collection: "checkpoints" });
 		assert.equal(recent.details.provisional, true);
 		assert.match(recent.content[0].text, /Source: checkpoint-owner/);
 		process.env.PI_STASH_CHECKPOINT_DIR = join(dir, "different-checkpoints");
 		try {
-			const changed = await tools.get("stash_list").execute("changed", { collection: "checkpoints", query: "Decision and next step" });
+			const changed = await tools
+				.get("stash_list")
+				.execute("changed", { collection: "checkpoints", query: "Decision and next step" });
 			assert.equal((JSON.parse(changed.content[0].text) as { matches: unknown[] }).matches.length, 0);
-		} finally { delete process.env.PI_STASH_CHECKPOINT_DIR; }
+		} finally {
+			delete process.env.PI_STASH_CHECKPOINT_DIR;
+		}
 	});
 
 	it("honors the checkpoint destination and refuses the handover directory", async () => {
@@ -459,7 +479,6 @@ describe("stash entrypoint", () => {
 		await commands.get("stash").handler("rotate", ctx);
 		assert.match(notifications.join("\n"), /Usage: \/stash rotate/);
 	});
-
 
 	it("signals a missing stash as a failed tool execution", async () => {
 		const { tools } = registry();
@@ -839,10 +858,6 @@ describe("stash entrypoint", () => {
 			);
 		}
 	});
-
-
-
-
 });
 
 function creationCtx(ui: TestUi = {}, extra: TestContext = {}): TestContext {
@@ -1427,8 +1442,4 @@ describe("unknown and unread lifecycle states", () => {
 		assert.ok(items?.some((item) => item.description?.includes("unknown (mystery)")));
 		assert.ok(!items?.some((item) => item.description?.includes("open ·")));
 	});
-
-
-
-
 });

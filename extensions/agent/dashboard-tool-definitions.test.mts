@@ -6,11 +6,20 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import {
-	createCodemodeExtension, createReadToolDefinition, createBashToolDefinition,
-	createEditToolDefinition, createWriteToolDefinition, createGrepToolDefinition,
-	createFindToolDefinition, createLsToolDefinition, createPowerShellToolDefinition,
-	initTheme, ToolExecutionComponent,
-	type ExtensionAPI, type ToolDefinition, type ToolRenderers,
+	createCodemodeExtension,
+	createReadToolDefinition,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createWriteToolDefinition,
+	createGrepToolDefinition,
+	createFindToolDefinition,
+	createLsToolDefinition,
+	createPowerShellToolDefinition,
+	initTheme,
+	ToolExecutionComponent,
+	type ExtensionAPI,
+	type ToolDefinition,
+	type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings, Text, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { captureCodemodeRenderers, createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
@@ -24,17 +33,37 @@ const cwd = "/work";
 const background = /\x1b\[48;/u;
 function nativeCodemode(): ToolDefinition {
 	const definitions: ToolDefinition[] = [];
-	const pi = new Proxy({}, { get(_target, key) {
-		assert.equal(key, "registerTool", "capture touches only registerTool");
-		return (definition: ToolDefinition) => definitions.push(definition);
-	} });
+	const pi = new Proxy(
+		{},
+		{
+			get(_target, key) {
+				assert.equal(key, "registerTool", "capture touches only registerTool");
+				return (definition: ToolDefinition) => definitions.push(definition);
+			},
+		},
+	);
 	assert.equal(createCodemodeExtension()(pi as ExtensionAPI), undefined);
 	assert.equal(definitions.length, 1);
 	assert.equal(definitions[0].name, "codemode");
 	return definitions[0];
 }
-function rendered(definition: { name: string }, args: unknown, result: { content: Array<{ type: string; text?: string }>; isError: boolean } | undefined, expanded: boolean, width = 80, partial = false): string[] {
-	const tool = new ToolExecutionComponent(definition.name, "call", args, { showImages: false }, definition as ToolDefinition, tui, cwd);
+function rendered(
+	definition: { name: string },
+	args: unknown,
+	result: { content: Array<{ type: string; text?: string }>; isError: boolean } | undefined,
+	expanded: boolean,
+	width = 80,
+	partial = false,
+): string[] {
+	const tool = new ToolExecutionComponent(
+		definition.name,
+		"call",
+		args,
+		{ showImages: false },
+		definition as ToolDefinition,
+		tui,
+		cwd,
+	);
 	tool.setArgsComplete();
 	tool.setExpanded(expanded);
 	if (result) tool.updateResult(result, partial);
@@ -53,24 +82,58 @@ it("captures Pi codemode presentation through its synchronous public factory", (
 
 it("keeps transcript tool definitions inert without loadout hooks", async () => {
 	const define = createDashboardToolDefinitions(cwd);
-	for (const name of ["read", "bash", "edit", "write", "grep", "find", "ls", "powershell", "codemode", ...Object.keys(createAgentToolCards()), "unregistered_tool", "toString"]) {
+	for (const name of [
+		"read",
+		"bash",
+		"edit",
+		"write",
+		"grep",
+		"find",
+		"ls",
+		"powershell",
+		"codemode",
+		...Object.keys(createAgentToolCards()),
+		"unregistered_tool",
+		"toString",
+	]) {
 		const definition = define(name);
-		await assert.rejects(definition.execute("display", {}, undefined, undefined, {} as never), /Transcript tools cannot execute/u);
+		await assert.rejects(
+			definition.execute("display", {}, undefined, undefined, {} as never),
+			/Transcript tools cannot execute/u,
+		);
 		assert.equal(definition.prepareLoadout, undefined);
 	}
 });
 
 it("preserves each built-in tool's native renderers, shell and argument schema", () => {
 	const define = createDashboardToolDefinitions(cwd);
-	for (const factory of [createReadToolDefinition, createBashToolDefinition, createEditToolDefinition, createWriteToolDefinition, createGrepToolDefinition, createFindToolDefinition, createLsToolDefinition, createPowerShellToolDefinition]) {
+	for (const factory of [
+		createReadToolDefinition,
+		createBashToolDefinition,
+		createEditToolDefinition,
+		createWriteToolDefinition,
+		createGrepToolDefinition,
+		createFindToolDefinition,
+		createLsToolDefinition,
+		createPowerShellToolDefinition,
+	]) {
 		const native = factory(cwd);
 		const display = define(native.name);
 		assert.equal(typeof display.renderCall, typeof native.renderCall, native.name);
 		assert.equal(typeof display.renderResult, typeof native.renderResult, native.name);
-		assert.equal(define(native.name).renderCall, display.renderCall, "renderer identities stay stable within the transcript");
+		assert.equal(
+			define(native.name).renderCall,
+			display.renderCall,
+			"renderer identities stay stable within the transcript",
+		);
 		const args = { path: "file.txt", command: "echo native", pattern: "example", content: "text", edits: [] };
 		const result = { content: [{ type: "text", text: "native output" }], isError: false };
-		for (const expanded of [false, true]) assert.deepEqual(rendered(display, args, result, expanded), rendered(native, args, result, expanded), native.name);
+		for (const expanded of [false, true])
+			assert.deepEqual(
+				rendered(display, args, result, expanded),
+				rendered(native, args, result, expanded),
+				native.name,
+			);
 		assert.equal(display.renderShell, native.renderShell, native.name);
 		assert.deepEqual(display.parameters, native.parameters, native.name);
 	}
@@ -80,7 +143,10 @@ it("uses Pi's coloured shell and collapsed preview for a built-in shell tool", (
 	const display = createDashboardToolDefinitions(cwd)("bash");
 	const native = createBashToolDefinition(cwd);
 	const args = { command: "printf native-output" };
-	const result = { content: [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `row ${i + 1}`).join("\n") }], isError: false };
+	const result = {
+		content: [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `row ${i + 1}`).join("\n") }],
+		isError: false,
+	};
 	for (const expanded of [false, true]) {
 		const lines = rendered(display, args, result, expanded);
 		assert.deepEqual(lines, rendered(native, args, result, expanded));
@@ -93,7 +159,10 @@ it("uses Pi's coloured shell and collapsed preview for a built-in shell tool", (
 
 it("uses Pi's generic fallback for unknown calls, missing calls and every result state", () => {
 	const define = createDashboardToolDefinitions(cwd);
-	for (const [name, known] of [["unregistered_tool", true], ["read", false]] as const) {
+	for (const [name, known] of [
+		["unregistered_tool", true],
+		["read", false],
+	] as const) {
 		const display = define(name, known);
 		assert.equal(display.renderCall, undefined);
 		assert.equal(display.renderResult, undefined);
@@ -103,7 +172,10 @@ it("uses Pi's generic fallback for unknown calls, missing calls and every result
 			for (const isError of [false, true]) {
 				const result = payload === undefined ? undefined : { content: [{ type: "text", text: payload }], isError };
 				for (const expanded of [false, true]) {
-					assert.deepEqual(rendered(display, { topic: "named argument" }, result, expanded), rendered(fallback, { topic: "named argument" }, result, expanded));
+					assert.deepEqual(
+						rendered(display, { topic: "named argument" }, result, expanded),
+						rendered(fallback, { topic: "named argument" }, result, expanded),
+					);
 				}
 			}
 		}
@@ -111,8 +183,12 @@ it("uses Pi's generic fallback for unknown calls, missing calls and every result
 });
 
 it("preserves custom presentation and renderer identity across retained calls", () => {
-	const custom: ToolRenderers = { renderShell: "default", renderCall: () => new Text("custom call", 0, 0), renderResult: () => new Text("custom result", 0, 0) };
-	const define = createDashboardToolDefinitions(cwd, (name) => name === "custom" ? custom : undefined);
+	const custom: ToolRenderers = {
+		renderShell: "default",
+		renderCall: () => new Text("custom call", 0, 0),
+		renderResult: () => new Text("custom result", 0, 0),
+	};
+	const define = createDashboardToolDefinitions(cwd, (name) => (name === "custom" ? custom : undefined));
 	const display = define("custom");
 	assert.equal(display.renderCall, custom.renderCall);
 	assert.equal(display.renderResult, custom.renderResult);
@@ -123,7 +199,20 @@ it("preserves custom presentation and renderer identity across retained calls", 
 
 it("suppresses the expansion hint under a self-rendered agent card", () => {
 	const identity = "01a106df-0000-4000-8000-000000000001";
-	const rows: AgentConversationSummary[] = [{ id: identity, storageId: identity, name: "Named target", cwd, modifiedAt: 0, owner: "here", state: "idle", cost: 0, partial: false, model: { provider: "provider", modelId: "model", thinkingLevel: "high" } }];
+	const rows: AgentConversationSummary[] = [
+		{
+			id: identity,
+			storageId: identity,
+			name: "Named target",
+			cwd,
+			modifiedAt: 0,
+			owner: "here",
+			state: "idle",
+			cost: 0,
+			partial: false,
+			model: { provider: "provider", modelId: "model", thinkingLevel: "high" },
+		},
+	];
 	const define = createDashboardToolDefinitions(cwd, undefined, () => rows);
 	const definition = define("agent_send");
 	assert.equal(definition.renderShell, "self");
@@ -136,8 +225,20 @@ it("suppresses the expansion hint under a self-rendered agent card", () => {
 it("keeps native codemode collapsed previews and expanded details at every width", () => {
 	const args = { code: Array.from({ length: 14 }, (_, i) => `console.log("code line ${i + 1}");`).join("\n") };
 	const result = {
-		content: [{ type: "text", text: "Script completed\nWall time 1.0 seconds\nOutput:\n" }, { type: "text", text: Array.from({ length: 9 }, (_, i) => `output ${i}`).join("\n") }],
-		details: { calls: Array.from({ length: 12 }, (_, i) => ({ id: i + 1, name: "lookup", status: "ok", args: "{}", durationMs: i * 100 })), fullOutputPath: "output.txt" },
+		content: [
+			{ type: "text", text: "Script completed\nWall time 1.0 seconds\nOutput:\n" },
+			{ type: "text", text: Array.from({ length: 9 }, (_, i) => `output ${i}`).join("\n") },
+		],
+		details: {
+			calls: Array.from({ length: 12 }, (_, i) => ({
+				id: i + 1,
+				name: "lookup",
+				status: "ok",
+				args: "{}",
+				durationMs: i * 100,
+			})),
+			fullOutputPath: "output.txt",
+		},
 		isError: false,
 	};
 	const native = nativeCodemode();
@@ -171,11 +272,23 @@ assert.equal(definition.renderResult, undefined);
 await assert.rejects(definition.execute(), /Transcript tools cannot execute/);
 `;
 		for (const failure of ["unsupported", "missing", "async"]) {
-			const child = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--input-type=module", "-e", code], {
-				encoding: "utf8", timeout: 30000,
-				env: { ...process.env, CAPTURE_FAILURE: failure, PI_AGENT_DIR: join(root, "agent"), PI_AGENT_SESSIONS_DIR: join(root, "sessions") },
-			});
+			const child = spawnSync(
+				process.execPath,
+				["--experimental-test-module-mocks", "--input-type=module", "-e", code],
+				{
+					encoding: "utf8",
+					timeout: 30000,
+					env: {
+						...process.env,
+						CAPTURE_FAILURE: failure,
+						PI_AGENT_DIR: join(root, "agent"),
+						PI_AGENT_SESSIONS_DIR: join(root, "sessions"),
+					},
+				},
+			);
 			assert.equal(child.status, 0, child.stderr || String(child.error));
 		}
-	} finally { rmSync(root, { recursive: true, force: true }); }
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });

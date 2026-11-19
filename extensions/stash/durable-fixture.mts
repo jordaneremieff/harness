@@ -59,7 +59,11 @@ async function main(): Promise<number> {
 		inventory: { contributions: [], ordinaryOnly: [] },
 	};
 	const registry = createRegistry();
-	const contribution = stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), createEventBus(), () => {});
+	const contribution = stashDurableContribution(
+		fileURLToPath(new URL("./index.ts", import.meta.url)),
+		createEventBus(),
+		() => {},
+	);
 	registry.install(contribution.create(host));
 	registry.install(blockingHook(mode === "write" ? "stash_write" : "stash_complete"));
 	faux.setResponses([

@@ -7,7 +7,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { JsonValue } from "@earendil-works/chord/json";
-import { initTheme, createCodemodeExtension, AssistantMessageComponent, ToolExecutionComponent, getMarkdownTheme, type ExtensionAPI, type ToolDefinition, type ToolRenderers } from "@earendil-works/pi-coding-agent";
+import {
+	initTheme,
+	createCodemodeExtension,
+	AssistantMessageComponent,
+	ToolExecutionComponent,
+	getMarkdownTheme,
+	type ExtensionAPI,
+	type ToolDefinition,
+	type ToolRenderers,
+} from "@earendil-works/pi-coding-agent";
 import { MouseRegion, Text, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
@@ -16,7 +25,14 @@ import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversati
 import type { Communication } from "./communication.ts";
 import { dashboardClock } from "./dashboard-time.ts";
 import { DurableHost } from "./durable-host.ts";
-import { answerMessage, fixtureRegistry, gateTool, hostOptions, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
+import {
+	answerMessage,
+	fixtureRegistry,
+	gateTool,
+	hostOptions,
+	scriptedRuntime,
+	toolCallMessage,
+} from "./durable-host-fixture.mts";
 import { profileText } from "./profile-dialog.ts";
 import type { AgentProfile } from "./profile-schema.ts";
 import { deferred } from "./dashboard-test-fixture.mts";
@@ -57,7 +73,17 @@ const result = (
 ): AgentConversationEntry => ({
 	id,
 	kind: "pi.tool-result",
-	model: [{ role: "toolResult", toolCallId, toolName, content: [{ type: "text", text }], isError, timestamp: 3, ...(details === undefined ? {} : { details }) }],
+	model: [
+		{
+			role: "toolResult",
+			toolCallId,
+			toolName,
+			content: [{ type: "text", text }],
+			isError,
+			timestamp: 3,
+			...(details === undefined ? {} : { details }),
+		},
+	],
 });
 const user = (id: string, content: string): AgentConversationEntry => ({
 	id,
@@ -75,8 +101,20 @@ it("passes native tool durations to terminal components without using transcript
 	assert.ok(message?.role === "toolResult");
 	message.timestamp = 900_000;
 	message.durationMs = 7;
-	const renderer: ToolRenderers = { renderResult: (_result, _options, _theme, context) => new Text(context.durationMs === undefined ? "Untimed result" : `Native execution: ${context.durationMs} ms`) };
-	const conversation = new AgentConversation([call, completed], "/work", tui, true, false, undefined, undefined, () => renderer);
+	const renderer: ToolRenderers = {
+		renderResult: (_result, _options, _theme, context) =>
+			new Text(context.durationMs === undefined ? "Untimed result" : `Native execution: ${context.durationMs} ms`),
+	};
+	const conversation = new AgentConversation(
+		[call, completed],
+		"/work",
+		tui,
+		true,
+		false,
+		undefined,
+		undefined,
+		() => renderer,
+	);
 	const passed = updates.mock.calls.at(-1)?.arguments[0] as { durationMs?: number };
 	assert.equal(passed.durationMs, 7);
 	assert.match(screen(conversation), /Native execution: 7 ms/u);
@@ -92,17 +130,59 @@ it("passes native tool durations to terminal components without using transcript
 
 it("agent cards name their targets from the observed roster and repaint when those facts change", () => {
 	const identity = "01a106df-0000-4000-8000-000000000001";
-	let rows: AgentConversationSummary[] = [{ id: identity, storageId: identity, name: "Named target", cwd: "/work", modifiedAt: 0, owner: "here", state: "idle", cost: 0, partial: false, model: { provider: "provider", modelId: "model", thinkingLevel: "high" } }];
-	const entries = [assistant("call", [{ type: "toolCall", id: "send-call", name: "agent_send", arguments: { sessionId: identity, message: "Task text" } }])];
-	const conversation = new AgentConversation(entries, "/work", tui, false, false, undefined, undefined, undefined, () => rows);
+	let rows: AgentConversationSummary[] = [
+		{
+			id: identity,
+			storageId: identity,
+			name: "Named target",
+			cwd: "/work",
+			modifiedAt: 0,
+			owner: "here",
+			state: "idle",
+			cost: 0,
+			partial: false,
+			model: { provider: "provider", modelId: "model", thinkingLevel: "high" },
+		},
+	];
+	const entries = [
+		assistant("call", [
+			{
+				type: "toolCall",
+				id: "send-call",
+				name: "agent_send",
+				arguments: { sessionId: identity, message: "Task text" },
+			},
+		]),
+	];
+	const conversation = new AgentConversation(
+		entries,
+		"/work",
+		tui,
+		false,
+		false,
+		undefined,
+		undefined,
+		undefined,
+		() => rows,
+	);
 	assert.match(screen(conversation, 120), /Named target/u);
 	assert.match(screen(conversation, 120), /provider\/model/u);
-	rows = [{ ...rows[0], name: "Renamed target", model: { provider: "provider", modelId: "other-model", thinkingLevel: "low" } }];
+	rows = [
+		{
+			...rows[0],
+			name: "Renamed target",
+			model: { provider: "provider", modelId: "other-model", thinkingLevel: "low" },
+		},
+	];
 	conversation.refreshCards();
 	assert.match(screen(conversation, 120), /Renamed target/u);
 	assert.match(screen(conversation, 120), /provider\/other-model/u);
 	assert.doesNotMatch(screen(conversation, 120), /Named target/u);
-	assert.doesNotMatch(screen(new AgentConversation(entries, "/work", tui, false, false), 120), /Named target|provider\/model/u, "without observed rows the card shows only the retained identity");
+	assert.doesNotMatch(
+		screen(new AgentConversation(entries, "/work", tui, false, false), 120),
+		/Named target|provider\/model/u,
+		"without observed rows the card shows only the retained identity",
+	);
 });
 
 it("uses native built-in tools, generic unknown tools and unmatched results without execution", () => {
@@ -134,11 +214,20 @@ it("generic tools use native previews and keep the full output on expansion", ()
 	for (const width of [30, 80, 120]) {
 		const output = Array.from({ length: 13 }, (_, i) => `row ${i + 1} ${"界🙂".repeat(20)}`).join("\n");
 		const entries = [
-			assistant("call", [{ type: "toolCall", id: "unknown", name: "extension_tool", arguments: { query: "first line\nsecond line", count: 23 } }]),
+			assistant("call", [
+				{
+					type: "toolCall",
+					id: "unknown",
+					name: "extension_tool",
+					arguments: { query: "first line\nsecond line", count: 23 },
+				},
+			]),
 			result("result", "unknown", "extension_tool", output),
 			assistant("reply", [{ type: "text", text: "The agent answer leads." }]),
 		];
-		const collapsed = new AgentConversation(entries, "/work", tui, false, false).render(width).lines.map(stripVTControlCharacters);
+		const collapsed = new AgentConversation(entries, "/work", tui, false, false)
+			.render(width)
+			.lines.map(stripVTControlCharacters);
 		assert.ok(collapsed.every((line) => visibleWidth(line) <= width));
 		const summaries = collapsed.filter((line) => line.includes("extension_tool"));
 		assert.equal(summaries.length, 1);
@@ -189,18 +278,30 @@ it("renders tool-call-only and thinking-only assistant entries and attaches thei
 
 it("hides the thinking row for a message that also shows text, a tool call or a stop error", () => {
 	const entries = [
-		assistant("answer", [{ type: "thinking", thinking: "hidden text reasoning" }, { type: "text", text: "Visible answer" }]),
-		assistant("call", [{ type: "thinking", thinking: "hidden tool reasoning" }, { type: "toolCall", id: "read", name: "read", arguments: { path: "a.ts" } }]),
+		assistant("answer", [
+			{ type: "thinking", thinking: "hidden text reasoning" },
+			{ type: "text", text: "Visible answer" },
+		]),
+		assistant("call", [
+			{ type: "thinking", thinking: "hidden tool reasoning" },
+			{ type: "toolCall", id: "read", name: "read", arguments: { path: "a.ts" } },
+		]),
 	];
 	const collapsed = screen(new AgentConversation(entries, "/work", tui, false, false));
 	assert.doesNotMatch(collapsed, /▸ Thinking|hidden text reasoning|hidden tool reasoning/u);
 	assert.match(collapsed, /Visible answer/u);
-	assert.match(screen(new AgentConversation(entries, "/work", tui, false, true)), /hidden text reasoning|hidden tool reasoning/u);
+	assert.match(
+		screen(new AgentConversation(entries, "/work", tui, false, true)),
+		/hidden text reasoning|hidden tool reasoning/u,
+	);
 	for (const stopReason of ["error", "aborted", "length"] as const) {
-		const message = assistant("failed", [{ type: "thinking", thinking: "failed reasoning" }]).model?.[0] as AssistantMessage;
+		const message = assistant("failed", [{ type: "thinking", thinking: "failed reasoning" }])
+			.model?.[0] as AssistantMessage;
 		message.stopReason = stopReason;
 		message.errorMessage = "diagnostic sentinel";
-		const stopped = screen(new AgentConversation([{ id: "failed", kind: "pi.assistant", model: [message] }], "/work", tui, false, false));
+		const stopped = screen(
+			new AgentConversation([{ id: "failed", kind: "pi.assistant", model: [message] }], "/work", tui, false, false),
+		);
 		assert.doesNotMatch(stopped, /▸ Thinking|failed reasoning/u, stopReason);
 		assert.match(stopped, /diagnostic sentinel|truncated before completion/u, stopReason);
 	}
@@ -222,8 +323,15 @@ it("shows a retained result whose call is absent without an empty argument objec
 });
 
 it("renders body text at the shared reading width with a two-column margin", () => {
-	for (const [pane, expected] of [[159, 100], [89, 86], [80, 77], [60, 57]] as const) {
-		const lines = new AgentConversation([user("u", "The task")], "/work", tui, false, false).render(pane - 1).lines.map(stripVTControlCharacters);
+	for (const [pane, expected] of [
+		[159, 100],
+		[89, 86],
+		[80, 77],
+		[60, 57],
+	] as const) {
+		const lines = new AgentConversation([user("u", "The task")], "/work", tui, false, false)
+			.render(pane - 1)
+			.lines.map(stripVTControlCharacters);
 		const content = lines.filter((line) => line.trim().length > 0);
 		assert.ok(content.length > 0);
 		for (const line of content) {
@@ -235,7 +343,10 @@ it("renders body text at the shared reading width with a two-column margin", () 
 
 it("reuses the cached summary on an unchanged second render", (t) => {
 	const renders = t.mock.method(ToolExecutionComponent.prototype, "render");
-	const entries = [assistant("call", [{ type: "toolCall", id: "cache", name: "example_tool", arguments: { query: "cached" } }]), result("result", "cache", "example_tool", "cached output")];
+	const entries = [
+		assistant("call", [{ type: "toolCall", id: "cache", name: "example_tool", arguments: { query: "cached" } }]),
+		result("result", "cache", "example_tool", "cached output"),
+	];
 	const conversation = new AgentConversation(entries, "/work", tui, false, false);
 	conversation.render(80);
 	const count = renders.mock.callCount();
@@ -247,8 +358,12 @@ it("reuses the cached summary on an unchanged second render", (t) => {
 it("wraps a long assistant failure in full at the reading width", () => {
 	const error = `429 Usage limit reached for 5 hour. The limit resets at 03:53. Your draft and history stay. ${"detail ".repeat(20)}`;
 	const message = assistant("fail", [{ type: "text", text: "Partial answer" }]).model?.[0] as AssistantMessage;
-	message.stopReason = "error"; message.errorMessage = error;
-	const text = screen(new AgentConversation([{ id: "fail", kind: "pi.assistant", model: [message] }], "/work", tui, false, false), 120).replace(/\s+/gu, " ");
+	message.stopReason = "error";
+	message.errorMessage = error;
+	const text = screen(
+		new AgentConversation([{ id: "fail", kind: "pi.assistant", model: [message] }], "/work", tui, false, false),
+		120,
+	).replace(/\s+/gu, " ");
 	assert.ok(text.includes("429 Usage limit reached for 5 hour."));
 	assert.ok(text.includes("Your draft and history stay."));
 	assert.equal(text.match(/429 Usage limit reached/gu)?.length, 1, "the failure appears once in the body");
@@ -275,7 +390,15 @@ it("separates blocks with one blank row and owns the reading margin", () => {
 		assert.equal(text.slice(task + 1, working).filter((line) => line.trim()).length, 0);
 		assert.equal(text.slice(working + 1, toolHeader).filter((line) => line.trim()).length, 0);
 	}
-	const tool = new ToolExecutionComponent("example_tool", "missing-call", undefined, { showImages: false }, createDashboardToolDefinitions("/work")("example_tool", false), tui, "/work");
+	const tool = new ToolExecutionComponent(
+		"example_tool",
+		"missing-call",
+		undefined,
+		{ showImages: false },
+		createDashboardToolDefinitions("/work")("example_tool", false),
+		tui,
+		"/work",
+	);
 	tool.updateResult({ content: [{ type: "text", text: "kept output" }], isError: false });
 	const rows = tool.render(80);
 	assert.equal(rows[0], "", "Pi's own leading spacer stays at component level");
@@ -293,7 +416,9 @@ it("consecutive one-line tool steps share a run and commentary keeps its gap", (
 		result("result-two", "read-two", "read", "line b"),
 		assistant("commentary", [{ type: "text", text: "Commentary line" }]),
 	];
-	const lines = new AgentConversation(entries, "/work", tui, false, false).renderWindow(100, 0, 20, true).lines.map(stripVTControlCharacters);
+	const lines = new AgentConversation(entries, "/work", tui, false, false)
+		.renderWindow(100, 0, 20, true)
+		.lines.map(stripVTControlCharacters);
 	const first = lines.findIndex((line) => line.includes("read a.ts"));
 	const second = lines.findIndex((line) => line.includes("read b.ts"));
 	const commentary = lines.findIndex((line) => line.includes("Commentary line"));
@@ -304,20 +429,36 @@ it("consecutive one-line tool steps share a run and commentary keeps its gap", (
 it("non-agent tool lines use the wide pane while prose, notices and agent cards keep the reading column", () => {
 	const entries: AgentConversationEntry[] = [
 		user("task", "Short prose"),
-		assistant("bash", [{ type: "toolCall", id: "bash-call", name: "bash", arguments: { command: `echo ${"x".repeat(200)}` } }]),
+		assistant("bash", [
+			{ type: "toolCall", id: "bash-call", name: "bash", arguments: { command: `echo ${"x".repeat(200)}` } },
+		]),
 		result("bash-result", "bash-call", "bash", "done"),
-		assistant("send", [{ type: "toolCall", id: "send-call", name: "agent_send", arguments: { sessionId: "01a106df-0000-4000-8000-000000000001", message: "A message body" } }]),
+		assistant("send", [
+			{
+				type: "toolCall",
+				id: "send-call",
+				name: "agent_send",
+				arguments: { sessionId: "01a106df-0000-4000-8000-000000000001", message: "A message body" },
+			},
+		]),
 		communicationEntry(reportValue()),
 	];
 	const lines = new AgentConversation(entries, "/work", tui, false, false).render(158).lines;
-	const widths = (needle: string) => lines.filter((line) => stripVTControlCharacters(line).includes(needle)).map((line) => visibleWidth(line));
+	const widths = (needle: string) =>
+		lines.filter((line) => stripVTControlCharacters(line).includes(needle)).map((line) => visibleWidth(line));
 	assert.deepEqual(widths("Short prose"), [102], "prose keeps the 100-column reading width plus its margin");
 	const tool = widths("$ echo");
 	assert.equal(tool.length, 1);
 	assert.ok(tool[0] > 102, "the tool line passes the reading column");
 	assert.ok(tool[0] <= 158);
-	assert.ok(widths("A message body").every((width) => width <= 102), "agent cards keep the reading column");
-	assert.ok(widths("Report from Peer name").every((width) => width <= 102), "notices keep the reading column");
+	assert.ok(
+		widths("A message body").every((width) => width <= 102),
+		"agent cards keep the reading column",
+	);
+	assert.ok(
+		widths("Report from Peer name").every((width) => width <= 102),
+		"notices keep the reading column",
+	);
 });
 
 it("a transcript shows its first retained message without a pinned task summary", () => {
@@ -328,37 +469,67 @@ it("a transcript shows its first retained message without a pinned task summary"
 	assert.doesNotMatch(shown, /First task/u);
 	const partial = screen(new AgentConversation(entries.slice(1), "/work", tui, false, true));
 	assert.match(partial, /Late answer/u);
-	assert.doesNotMatch(partial, /Run the checks|First task/u, "an omitted first message is not reconstructed above history");
+	assert.doesNotMatch(
+		partial,
+		/Run the checks|First task/u,
+		"an omitted first message is not reconstructed above history",
+	);
 });
 
 const naturalTask = "What changed since yesterday?";
 const taskInputs: Array<{ name: string; content: UserMessage["content"]; text: string; image?: boolean }> = [
 	{ name: "text", content: naturalTask, text: naturalTask },
 	{ name: "leading whitespace", content: ` \n${naturalTask}`, text: naturalTask },
-	{ name: "image before text", content: [{ type: "image", data: "aGVsbG8=", mimeType: "image/png" }, { type: "text", text: naturalTask }], text: naturalTask, image: true },
+	{
+		name: "image before text",
+		content: [
+			{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+			{ type: "text", text: naturalTask },
+		],
+		text: naturalTask,
+		image: true,
+	},
 ];
 for (const input of taskInputs) {
 	it(`shows the first ${input.name} message once without a pinned task`, () => {
-		const entries: AgentConversationEntry[] = [{ id: "task", kind: "pi.user", model: [{ role: "user", content: input.content, timestamp: 1 }] }];
+		const entries: AgentConversationEntry[] = [
+			{ id: "task", kind: "pi.user", model: [{ role: "user", content: input.content, timestamp: 1 }] },
+		];
 		const shown = screen(new AgentConversation(entries, "/work", tui, false, true));
 		assert.equal(shown.match(/What changed since yesterday\?/gu)?.length, 1);
 		assert.doesNotMatch(shown, /First task/u);
 		if (input.image) assert.match(shown, /\[Image\]/u);
 	});
-	it(`native ${input.name} admission displays the task without host routes or a duplicate historical input`, { timeout: 10000 }, async (t) => {
+	it(`native ${input.name} admission displays the task without host routes or a duplicate historical input`, {
+		timeout: 10000,
+	}, async (t) => {
 		const root = mkdtempSync(join(tmpdir(), "dashboard-request-"));
 		const released = deferred();
 		const started = deferred();
 		let host: DurableHost | undefined;
-		t.after(async () => { released.resolve(); await host?.close(); rmSync(root, { recursive: true, force: true }); });
-		host = await DurableHost.open(hostOptions(join(root, "agent.sqlite"),
-			await scriptedRuntime([toolCallMessage("gate"), answerMessage()]),
-			fixtureRegistry([gateTool(released.promise, started.resolve)]), root));
-		const route = { requestId: "display-request", requester: "requester-sentinel", replyTo: "recipient-sentinel", origin: "operator" };
+		t.after(async () => {
+			released.resolve();
+			await host?.close();
+			rmSync(root, { recursive: true, force: true });
+		});
+		host = await DurableHost.open(
+			hostOptions(
+				join(root, "agent.sqlite"),
+				await scriptedRuntime([toolCallMessage("gate"), answerMessage()]),
+				fixtureRegistry([gateTool(released.promise, started.resolve)]),
+				root,
+			),
+		);
+		const route = {
+			requestId: "display-request",
+			requester: "requester-sentinel",
+			replyTo: "recipient-sentinel",
+			origin: "operator",
+		};
 		await host.request("task-submit", { sessionId: host.storageId, message: input.content, ...route });
 		await started.promise;
-		const snapshot = await host.request("snapshot", { sessionId: host.storageId }) as AgentConversationSnapshot;
-		const rows = await host.request("dashboard", {}) as AgentConversationSummary[];
+		const snapshot = (await host.request("snapshot", { sessionId: host.storageId })) as AgentConversationSnapshot;
+		const rows = (await host.request("dashboard", {})) as AgentConversationSummary[];
 		const row = rows.find((value) => value.id === host?.storageId);
 		assert.ok(row?.firstMessage);
 		assert.equal(row.firstMessage.trim(), input.text);
@@ -369,11 +540,14 @@ for (const input of taskInputs) {
 			const text = stripVTControlCharacters(lines.join("\n"));
 			assert.ok(lines.every((line) => visibleWidth(line) <= width));
 			assert.match(text, /What changed since yesterday\?/);
-			assert.doesNotMatch(text, /Host request context|Task content|requester-sentinel|recipient-sentinel|mode:.*report|First task ·/);
+			assert.doesNotMatch(
+				text,
+				/Host request context|Task content|requester-sentinel|recipient-sentinel|mode:.*report|First task ·/,
+			);
 			assert.equal(text.match(/What changed since yesterday\?/g)?.length, 1);
 			if (input.image) assert.match(text, /\[Image\]/);
 		}
-		const profile = await host.request("profile-read", { sessionId: host.storageId }) as AgentProfile;
+		const profile = (await host.request("profile-read", { sessionId: host.storageId })) as AgentProfile;
 		assert.deepEqual(profile.requests, [{ ...route, status: "placed" }]);
 		assert.ok(profileText(profile).includes("Requester: requester-sentinel\n  Reply recipient: recipient-sentinel"));
 	});
@@ -469,21 +643,60 @@ it("a committed result replaces its partial on the existing committed call", () 
 	assert.equal(screen(conversation), text);
 });
 
-const click = (width: number, height: number, y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 2, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
+const click = (width: number, height: number, y: number): TuiMouseEvent => ({
+	type: "click",
+	button: "left",
+	x: 2,
+	y,
+	screenX: 2,
+	screenY: y,
+	width,
+	height,
+	shift: false,
+	alt: false,
+	ctrl: false,
+	clickCount: 1,
+});
 
-function checkCodemodeCase(t: TestContext, width: number, expanded: boolean, isError: boolean, partial: boolean, args: { code: string }, details: unknown, definition: ToolDefinition): void {
+function checkCodemodeCase(
+	t: TestContext,
+	width: number,
+	expanded: boolean,
+	isError: boolean,
+	partial: boolean,
+	args: { code: string },
+	details: unknown,
+	definition: ToolDefinition,
+): void {
 	const call = assistant("call", [{ type: "toolCall", id: "outer", name: "codemode", arguments: args }]);
 	const completed = result(partial ? "live:tool:outer" : "result", "outer", "codemode", "", isError);
-	const message = completed.model?.[0]; assert.ok(message?.role === "toolResult");
-	message.content = [{ type: "text", text: "Script failed\nWall time 1.0 seconds\nOutput:\n" }, { type: "text", text: Array.from({ length: 9 }, (_, i) => `output ${i}`).join("\n") }];
+	const message = completed.model?.[0];
+	assert.ok(message?.role === "toolResult");
+	message.content = [
+		{ type: "text", text: "Script failed\nWall time 1.0 seconds\nOutput:\n" },
+		{ type: "text", text: Array.from({ length: 9 }, (_, i) => `output ${i}`).join("\n") },
+	];
 	message.details = details as typeof message.details;
-	const native = new ToolExecutionComponent("codemode", "outer", args, { showImages: false }, { ...definition, renderShell: "default" }, tui, "/work");
+	const native = new ToolExecutionComponent(
+		"codemode",
+		"outer",
+		args,
+		{ showImages: false },
+		{ ...definition, renderShell: "default" },
+		tui,
+		"/work",
+	);
 	let conversation: AgentConversation | undefined;
 	t.after(() => {
-		try { native.updateResult(message, false); }
-		finally { conversation?.dispose(); }
+		try {
+			native.updateResult(message, false);
+		} finally {
+			conversation?.dispose();
+		}
 	});
-	native.setArgsComplete(); native.markExecutionStarted(); native.setExpanded(expanded);
+	native.setArgsComplete();
+	native.markExecutionStarted();
+	native.setExpanded(expanded);
 	native.updateResult(message, partial);
 	conversation = new AgentConversation([call, completed], "/work", tui, expanded, false);
 	const rendered = conversation.render(width).lines;
@@ -495,36 +708,62 @@ function checkCodemodeCase(t: TestContext, width: number, expanded: boolean, isE
 	if (expanded && !partial) assert.match(visible, /output 8/u);
 	const nativeText = stripVTControlCharacters(native.render(width - 2).join("\n"));
 	const contentRows = (text: string) => {
-		const rows = text.split("\n").map((line) => line.trim().replace(/^(Took|Elapsed) \d+(?:\.\d+)?s$/u, "$1 <duration>"));
+		const rows = text
+			.split("\n")
+			.map((line) => line.trim().replace(/^(Took|Elapsed) \d+(?:\.\d+)?s$/u, "$1 <duration>"));
 		while (rows[0] === "") rows.shift();
 		while (rows.at(-1) === "") rows.pop();
 		return rows;
 	};
-	assert.deepEqual(contentRows(visible), contentRows(nativeText), "the transcript keeps every native row with its default shell");
+	assert.deepEqual(
+		contentRows(visible),
+		contentRows(nativeText),
+		"the transcript keeps every native row with its default shell",
+	);
 	const settled = { ...completed, id: "result" };
 	conversation.update([call, settled]);
 }
 
-for (const partial of [false, true]) it(`matches a real native codemode component with current details: partial=${partial}`, (t) => {
-	const definitions: ToolDefinition[] = [];
-	const standIn = { registerTool: ((definition: ToolDefinition) => { definitions.push(definition); }) as ExtensionAPI["registerTool"] };
-	createCodemodeExtension()(standIn as ExtensionAPI);
-	assert.equal(definitions.length, 1);
-	assert.equal(definitions[0].name, "codemode");
-	assert.equal(typeof definitions[0].renderCall, "function");
-	assert.equal(typeof definitions[0].renderResult, "function");
-	assert.ok([undefined, "default", "self"].includes(definitions[0].renderShell));
-	const args = { code: Array.from({ length: 14 }, (_, i) => `console.log("code line ${i}");`).join("\n") };
-	const details = { calls: Array.from({ length: 12 }, (_, i) => ({ name: i % 2 ? "models.classify" : "lookup", status: ["ok", "error", "cancelled", partial ? "running" : "cancelled"][i % 4], id: i + 1, args: "a".repeat(200), error: "failure", durationMs: i * 100 })), fullOutputPath: "output.txt" };
-	for (const width of [30, 80, 120]) for (const expanded of [false, true]) for (const isError of [false, true]) checkCodemodeCase(t, width, expanded, isError, partial, args, details, definitions[0]);
-	assert.equal(details.calls[0].args.length, 200);
-});
+for (const partial of [false, true])
+	it(`matches a real native codemode component with current details: partial=${partial}`, (t) => {
+		const definitions: ToolDefinition[] = [];
+		const standIn = {
+			registerTool: ((definition: ToolDefinition) => {
+				definitions.push(definition);
+			}) as ExtensionAPI["registerTool"],
+		};
+		createCodemodeExtension()(standIn as ExtensionAPI);
+		assert.equal(definitions.length, 1);
+		assert.equal(definitions[0].name, "codemode");
+		assert.equal(typeof definitions[0].renderCall, "function");
+		assert.equal(typeof definitions[0].renderResult, "function");
+		assert.ok([undefined, "default", "self"].includes(definitions[0].renderShell));
+		const args = { code: Array.from({ length: 14 }, (_, i) => `console.log("code line ${i}");`).join("\n") };
+		const details = {
+			calls: Array.from({ length: 12 }, (_, i) => ({
+				name: i % 2 ? "models.classify" : "lookup",
+				status: ["ok", "error", "cancelled", partial ? "running" : "cancelled"][i % 4],
+				id: i + 1,
+				args: "a".repeat(200),
+				error: "failure",
+				durationMs: i * 100,
+			})),
+			fullOutputPath: "output.txt",
+		};
+		for (const width of [30, 80, 120])
+			for (const expanded of [false, true])
+				for (const isError of [false, true])
+					checkCodemodeCase(t, width, expanded, isError, partial, args, details, definitions[0]);
+		assert.equal(details.calls[0].args.length, 200);
+	});
 
 it("exits after a deliberate assertion failure while a codemode card is live", () => {
 	const root = mkdtempSync(join(tmpdir(), "codemode-card-exit-"));
 	try {
 		const script = join(root, "failing-card.mjs");
-		writeFileSync(script, `
+		writeFileSync(
+			script,
+			`
 import assert from "node:assert/strict";
 import { createCodemodeExtension, initTheme, ToolExecutionComponent } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-coding-agent"))};
 initTheme("dark");
@@ -542,7 +781,8 @@ try {
 } finally {
   card.updateResult(message, false);
 }
-`);
+`,
+		);
 		const result = spawnSync(process.execPath, [script], {
 			cwd: process.cwd(),
 			encoding: "utf8",
@@ -559,14 +799,31 @@ try {
 
 it("retains whole-card and pending-card choices through result arrival and changed arguments", () => {
 	const state = agentState(createDashboardState(), "one").view;
-	let call = assistant("call", [{ type: "toolCall", id: "outer", name: "example_tool", arguments: { topic: "first" } }]);
-	const conversation = new AgentConversation([user("task", "The task"), call], "/work", tui, false, false, undefined, state);
+	let call = assistant("call", [
+		{ type: "toolCall", id: "outer", name: "example_tool", arguments: { topic: "first" } },
+	]);
+	const conversation = new AgentConversation(
+		[user("task", "The task"), call],
+		"/work",
+		tui,
+		false,
+		false,
+		undefined,
+		state,
+	);
 	let document = conversation.render(80);
-	assert.equal(conversation.handleMouse(click(80, document.lines.length, 1)), undefined, "the shared gap row belongs to no block");
+	assert.equal(
+		conversation.handleMouse(click(80, document.lines.length, 1)),
+		undefined,
+		"the shared gap row belongs to no block",
+	);
 	assert.ok(conversation.handleMouse(click(80, document.lines.length, 2)), "the card row toggles");
 	assert.equal(state.toolExpanded.get("outer"), true);
 	call = assistant("call", [{ type: "toolCall", id: "outer", name: "example_tool", arguments: { topic: "changed" } }]);
-	conversation.update([call, result("result", "outer", "example_tool", Array.from({ length: 13 }, (_, i) => `row ${i}`).join("\n"))]);
+	conversation.update([
+		call,
+		result("result", "outer", "example_tool", Array.from({ length: 13 }, (_, i) => `row ${i}`).join("\n")),
+	]);
 	document = conversation.render(80);
 	assert.match(stripVTControlCharacters(document.lines.join("\n")), /row 12/u);
 	assert.match(stripVTControlCharacters(document.lines.join("\n")), /topic: changed/u);
@@ -584,7 +841,14 @@ const communicationEntry = (value: Communication): AgentConversationEntry => ({
 	communication: {
 		state: "ready",
 		recordEntryId: "9",
-		target: { mode: "input", storageId: value.sender.identity, conversationId: 1, entryId: "9", submissionId: 3, requestId: "source" },
+		target: {
+			mode: "input",
+			storageId: value.sender.identity,
+			conversationId: 1,
+			entryId: "9",
+			submissionId: 3,
+			requestId: "source",
+		},
 		value,
 	},
 });
@@ -596,8 +860,10 @@ const reportValue = (sender: Communication["sender"] = noticeSender, text = repo
 	recordedAt: 1_700_000_000_000,
 	metadata: { sourceId: "report:source", requestId: "request-source" },
 });
-const observedLookup = (facts: { nameFor?: (identity: string) => string | undefined; threadTitle?: (id: string) => string | undefined }) =>
-	Object.assign(() => [] as readonly AgentConversationSummary[], facts);
+const observedLookup = (facts: {
+	nameFor?: (identity: string) => string | undefined;
+	threadTitle?: (id: string) => string | undefined;
+}) => Object.assign(() => [] as readonly AgentConversationSummary[], facts);
 
 it("a retained report collapses to one header row, two preview rows and a line count", () => {
 	const shown = screen(new AgentConversation([communicationEntry(reportValue())], "/work", tui, false, false));
@@ -610,7 +876,15 @@ it("a retained report collapses to one header row, two preview rows and a line c
 });
 
 it("a preview skips blank rows, so a one-line first paragraph still shows two rows of text", () => {
-	const shown = screen(new AgentConversation([communicationEntry(reportValue(noticeSender, "First line.\n\n- item one\n- item two\n- item three"))], "/work", tui, false, false));
+	const shown = screen(
+		new AgentConversation(
+			[communicationEntry(reportValue(noticeSender, "First line.\n\n- item one\n- item two\n- item three"))],
+			"/work",
+			tui,
+			false,
+			false,
+		),
+	);
 	const lines = shown.split("\n").map((line) => line.trimEnd());
 	assert.equal(lines.length, 3);
 	assert.equal(lines[1].trim(), "First line.");
@@ -643,11 +917,19 @@ it("a report disclosure lives in the reading state and a global change clears it
 	const document = kept.render(80);
 	assert.ok(kept.handleMouse(click(80, document.lines.length, 0)));
 	assert.match(screen(kept), /line five/u);
-	assert.match(screen(new AgentConversation([entry], "/work", tui, false, false, undefined, reading)), /line five/u, "a rebuilt transcript over the same reading state keeps the choice");
+	assert.match(
+		screen(new AgentConversation([entry], "/work", tui, false, false, undefined, reading)),
+		/line five/u,
+		"a rebuilt transcript over the same reading state keeps the choice",
+	);
 	kept.setExpanded(true);
 	kept.setExpanded(false);
 	assert.doesNotMatch(screen(kept), /line five/u, "a global change owns the card again");
-	assert.doesNotMatch(screen(new AgentConversation([entry], "/work", tui, false, false, undefined, reading)), /line five/u, "the global change cleared the kept choice");
+	assert.doesNotMatch(
+		screen(new AgentConversation([entry], "/work", tui, false, false, undefined, reading)),
+		/line five/u,
+		"the global change cleared the kept choice",
+	);
 });
 
 it("a notice names its thread, post number and copy notes when opened", () => {
@@ -660,27 +942,81 @@ it("a notice names its thread, post number and copy notes when opened", () => {
 		metadata: { threadId: "storage/thread-1", event: 25, passive: true },
 	};
 	const lookup = observedLookup({ threadTitle: (id) => (id === "storage/thread-1" ? "Density round" : undefined) });
-	assert.match(screen(new AgentConversation([communicationEntry(value)], "/work", tui, false, false, undefined, undefined, undefined, lookup)), /▸ Thread notice · Density round\s+from Peer name · #25 · /u);
-	const opened = screen(new AgentConversation([communicationEntry(value)], "/work", tui, true, false)).replace(/\s+/gu, " ");
+	assert.match(
+		screen(
+			new AgentConversation(
+				[communicationEntry(value)],
+				"/work",
+				tui,
+				false,
+				false,
+				undefined,
+				undefined,
+				undefined,
+				lookup,
+			),
+		),
+		/▸ Thread notice · Density round\s+from Peer name · #25 · /u,
+	);
+	const opened = screen(new AgentConversation([communicationEntry(value)], "/work", tui, true, false)).replace(
+		/\s+/gu,
+		" ",
+	);
 	assert.match(opened, /Notice copy; the full post #25 is in Threads\./u);
 	assert.match(opened, /Thread ID: storage\/thread-1 Event: #25 Delivery: passive, no wake requested/u);
 	assert.match(opened, /Recorded: 2023-11-14T22:13:20\.000Z/u);
-	const closed = screen(new AgentConversation([communicationEntry({ ...value, metadata: { ...value.metadata, eventKind: "close" } })], "/work", tui, false, false, undefined, undefined, undefined, lookup));
-	assert.match(closed, /▸ Thread closed · Density round\s+from Peer name · #25 · /u, "a known event kind says what happened");
+	const closed = screen(
+		new AgentConversation(
+			[communicationEntry({ ...value, metadata: { ...value.metadata, eventKind: "close" } })],
+			"/work",
+			tui,
+			false,
+			false,
+			undefined,
+			undefined,
+			undefined,
+			lookup,
+		),
+	);
+	assert.match(
+		closed,
+		/▸ Thread closed · Density round\s+from Peer name · #25 · /u,
+		"a known event kind says what happened",
+	);
 });
 
 it("an open result card lists every retained reference and the full request identifiers", () => {
 	const sender = "7f7f7f7f-1111-4222-8333-444444444444";
 	const longRequest = `request-${"x".repeat(600)}-END`;
-	const references = Array.from({ length: 16 }, (_, index) => ({ submissionId: index + 1, requestId: index === 15 ? longRequest : `req-${index + 1}`, entryId: String(index + 10), answerEntryId: String(index + 100) }));
-	const value: Communication = { format: "agent.communication/1", kind: "result", sender: { identity: sender, name: "Peer" }, body: { text: "Result body", complete: true, redacted: false }, recordedAt: 1_700_000_000_000, metadata: { status: "done", references, omittedReferences: 2 } };
+	const references = Array.from({ length: 16 }, (_, index) => ({
+		submissionId: index + 1,
+		requestId: index === 15 ? longRequest : `req-${index + 1}`,
+		entryId: String(index + 10),
+		answerEntryId: String(index + 100),
+	}));
+	const value: Communication = {
+		format: "agent.communication/1",
+		kind: "result",
+		sender: { identity: sender, name: "Peer" },
+		body: { text: "Result body", complete: true, redacted: false },
+		recordedAt: 1_700_000_000_000,
+		metadata: { status: "done", references, omittedReferences: 2 },
+	};
 	const conversation = new AgentConversation([communicationEntry(value)], "/work", tui, true, false);
 	const text = stripVTControlCharacters(conversation.render(200).lines.join("\n"));
 	assert.match(text, /▾ Result from Peer · /u);
 	assert.match(text, /references: 16 retained \u00b7 2 omitted at retention/u);
-	for (let index = 1; index <= 16; index++) assert.match(text, new RegExp(`reference ${index}: submission ${index} \\u00b7 request `, "u"));
+	for (let index = 1; index <= 16; index++)
+		assert.match(text, new RegExp(`reference ${index}: submission ${index} \\u00b7 request `, "u"));
 	assert.match(text, /reference 15: submission 15 \u00b7 request req-15 \u00b7 entry 24 \u00b7 answer entry 114/u);
-	assert.ok(conversation.render(200).lines.map((line) => stripVTControlCharacters(line).trim()).join("").includes(longRequest), "a long valid identifier stays complete across its wrapped rows");
+	assert.ok(
+		conversation
+			.render(200)
+			.lines.map((line) => stripVTControlCharacters(line).trim())
+			.join("")
+			.includes(longRequest),
+		"a long valid identifier stays complete across its wrapped rows",
+	);
 	assert.doesNotMatch(text, /\u2026/u, "no retained field is shortened in the open card");
 });
 
@@ -688,20 +1024,43 @@ it("names an unnamed sender by its kind and short identity until the lookup know
 	const agentSender: Communication["sender"] = { identity: "7f7f7f7f-1111-4222-8333-444444444444", kind: "agent" };
 	const entry = communicationEntry(reportValue(agentSender));
 	assert.match(screen(new AgentConversation([entry], "/work", tui, false, false)), /Report from Agent 7f7f7f7f · /u);
-	assert.match(screen(new AgentConversation([entry], "/work", tui, true, false)), /Sender identity: 7f7f7f7f-1111-4222-8333-444444444444 \(agent\)/u);
-	const session = communicationEntry(reportValue({ identity: "7f7f7f7f-1111-4222-8333-444444444444", kind: "session" }));
-	assert.match(screen(new AgentConversation([session], "/work", tui, false, false)), /Report from Session 7f7f7f7f · /u);
-	const lookup = observedLookup({ nameFor: (identity) => (identity === agentSender.identity ? "Lookup name" : undefined) });
-	assert.match(screen(new AgentConversation([entry], "/work", tui, false, false, undefined, undefined, undefined, lookup)), /Report from Lookup name · /u);
+	assert.match(
+		screen(new AgentConversation([entry], "/work", tui, true, false)),
+		/Sender identity: 7f7f7f7f-1111-4222-8333-444444444444 \(agent\)/u,
+	);
+	const session = communicationEntry(
+		reportValue({ identity: "7f7f7f7f-1111-4222-8333-444444444444", kind: "session" }),
+	);
+	assert.match(
+		screen(new AgentConversation([session], "/work", tui, false, false)),
+		/Report from Session 7f7f7f7f · /u,
+	);
+	const lookup = observedLookup({
+		nameFor: (identity) => (identity === agentSender.identity ? "Lookup name" : undefined),
+	});
+	assert.match(
+		screen(new AgentConversation([entry], "/work", tui, false, false, undefined, undefined, undefined, lookup)),
+		/Report from Lookup name · /u,
+	);
 });
 
 it("an agent_collaborate card uses the observed thread title and its receipt number", () => {
 	const entries = [
-		assistant("call", [{ type: "toolCall", id: "collab", name: "agent_collaborate", arguments: { action: "post", threadId: "storage/thread-1", message: "Body of the post" } }]),
+		assistant("call", [
+			{
+				type: "toolCall",
+				id: "collab",
+				name: "agent_collaborate",
+				arguments: { action: "post", threadId: "storage/thread-1", message: "Body of the post" },
+			},
+		]),
 		result("done", "collab", "agent_collaborate", "posted", false, { threadId: "storage/thread-1", sequence: 25 }),
 	];
 	const lookup = observedLookup({ threadTitle: (id) => (id === "storage/thread-1" ? "Density round" : undefined) });
-	const named = screen(new AgentConversation(entries, "/work", tui, false, false, undefined, undefined, undefined, lookup), 120);
+	const named = screen(
+		new AgentConversation(entries, "/work", tui, false, false, undefined, undefined, undefined, lookup),
+		120,
+	);
 	assert.match(named, /agent_collaborate · post · Density round/u);
 	assert.match(named, /Posted · #25/u);
 	assert.doesNotMatch(named, /thread storage/u);
@@ -711,7 +1070,15 @@ it("an agent_collaborate card uses the observed thread title and its receipt num
 });
 
 it("native thinking clicks retain choices only on the actual assistant instance", () => {
-	const content: AssistantMessage["content"] = [{ type: "thinking", thinking: "" }, { type: "thinking", thinking: "first" }, { type: "thinking", thinking: "adjacent" }, { type: "text", text: " " }, { type: "thinking", thinking: "" }, { type: "text", text: " " }, { type: "thinking", thinking: "second" }];
+	const content: AssistantMessage["content"] = [
+		{ type: "thinking", thinking: "" },
+		{ type: "thinking", thinking: "first" },
+		{ type: "thinking", thinking: "adjacent" },
+		{ type: "text", text: " " },
+		{ type: "thinking", thinking: "" },
+		{ type: "text", text: " " },
+		{ type: "thinking", thinking: "second" },
+	];
 	const message = assistant("runs", content).model?.[0] as AssistantMessage;
 	const native = new AssistantMessageComponent(message, true, getMarkdownTheme(), "Thinking...");
 	assert.ok(native.render(80).length);
@@ -719,7 +1086,9 @@ it("native thinking clicks retain choices only on the actual assistant instance"
 	const entries = [{ id: "runs", kind: "pi.assistant", model: [message, message] }];
 	const conversation = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
 	const document = conversation.render(80);
-	const labels = document.lines.flatMap((line, index) => stripVTControlCharacters(line).includes("▸ Thinking") ? [index] : []);
+	const labels = document.lines.flatMap((line, index) =>
+		stripVTControlCharacters(line).includes("▸ Thinking") ? [index] : [],
+	);
 	assert.equal(labels.length, 4);
 	assert.ok(conversation.handleMouse(click(80, document.lines.length, labels[3])));
 	assert.equal(screen(conversation).match(/▸ Thinking/gu)?.length, 3);
@@ -733,37 +1102,72 @@ it("native thinking clicks retain choices only on the actual assistant instance"
 it("dashboard codemode cards fall back to standard presentation when capture fails", () => {
 	const root = mkdtempSync(join(tmpdir(), "dashboard-capture-"));
 	try {
-		const entries = [assistant("call", [{ type: "toolCall", id: "outer", name: "codemode", arguments: { code: "return 42;" } }]), result("result", "outer", "codemode", Array.from({ length: 13 }, (_, i) => `row ${i + 1}`).join("\n"))];
-		const code = 'import assert from "node:assert/strict"; import { mock } from "node:test"; import * as pi from "@earendil-works/pi-coding-agent"; import { stripVTControlCharacters } from "node:util";' +
+		const entries = [
+			assistant("call", [{ type: "toolCall", id: "outer", name: "codemode", arguments: { code: "return 42;" } }]),
+			result("result", "outer", "codemode", Array.from({ length: 13 }, (_, i) => `row ${i + 1}`).join("\n")),
+		];
+		const code =
+			'import assert from "node:assert/strict"; import { mock } from "node:test"; import * as pi from "@earendil-works/pi-coding-agent"; import { stripVTControlCharacters } from "node:util";' +
 			'pi.initTheme("dark"); mock.module("@earendil-works/pi-coding-agent", { namedExports: { ...pi, createCodemodeExtension: () => () => {} } });' +
-			'const { AgentConversation } = await import(' + JSON.stringify(new URL("./dashboard-conversation.ts", import.meta.url).href) + ');' +
-			'const view = new AgentConversation(' + JSON.stringify(entries) + ', "/work", { requestRender() {} }, false, false); const text = stripVTControlCharacters(view.render(80).lines.join("\\n")); assert.match(text, /codemode code="return 42;"/); assert.match(text, /row 10/); assert.doesNotMatch(text, /row 13|codemode ·|→/); assert.equal(text.split("\\n").filter((line) => line.includes("codemode")).length, 1);';
-		const child = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 30000, env: { ...process.env, PI_AGENT_DIR: join(root, "agent"), PI_AGENT_SESSIONS_DIR: join(root, "sessions") } });
+			"const { AgentConversation } = await import(" +
+			JSON.stringify(new URL("./dashboard-conversation.ts", import.meta.url).href) +
+			");" +
+			"const view = new AgentConversation(" +
+			JSON.stringify(entries) +
+			', "/work", { requestRender() {} }, false, false); const text = stripVTControlCharacters(view.render(80).lines.join("\\n")); assert.match(text, /codemode code="return 42;"/); assert.match(text, /row 10/); assert.doesNotMatch(text, /row 13|codemode ·|→/); assert.equal(text.split("\\n").filter((line) => line.includes("codemode")).length, 1);';
+		const child = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--input-type=module", "-e", code], {
+			encoding: "utf8",
+			timeout: 30000,
+			env: { ...process.env, PI_AGENT_DIR: join(root, "agent"), PI_AGENT_SESSIONS_DIR: join(root, "sessions") },
+		});
 		assert.equal(child.status, 0, child.stderr || String(child.error));
-	} finally { rmSync(root, { recursive: true, force: true }); }
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 it("native renderer render requests clear transcript string and height caches", (t) => {
 	const original = ToolExecutionComponent.prototype.render;
 	let native: ToolExecutionComponent | undefined;
-	t.mock.method(ToolExecutionComponent.prototype, "render", function(this: ToolExecutionComponent, width: number) { native = this; return original.call(this, width); });
-	const entries = [assistant("call", [{ type: "toolCall", id: "outer", name: "example_tool", arguments: {} }]), result("result", "outer", "example_tool", Array.from({ length: 13 }, (_, i) => `row ${i}`).join("\n"))];
+	t.mock.method(ToolExecutionComponent.prototype, "render", function (this: ToolExecutionComponent, width: number) {
+		native = this;
+		return original.call(this, width);
+	});
+	const entries = [
+		assistant("call", [{ type: "toolCall", id: "outer", name: "example_tool", arguments: {} }]),
+		result("result", "outer", "example_tool", Array.from({ length: 13 }, (_, i) => `row ${i}`).join("\n")),
+	];
 	const conversation = new AgentConversation(entries, "/work", tui, false, false);
 	const before = conversation.render(80).lines;
 	assert.doesNotMatch(stripVTControlCharacters(before.join("\n")), /row 12/u);
 	assert.ok(native);
-	native.setExpanded(true); native.markExecutionStarted();
+	native.setExpanded(true);
+	native.markExecutionStarted();
 	assert.match(stripVTControlCharacters(conversation.render(80).lines.join("\n")), /row 12/u);
 	assert.ok(conversation.renderWindow(80, 0, 40, false).height > before.length);
 });
 
-
 it("custom child clicks leave card choices untouched and a plain card click records one choice", (t) => {
 	let childClicks = 0;
-	const renderer: ToolRenderers = { renderCall: () => new MouseRegion(new Text("child action"), () => { childClicks++; return { handled: true }; }) };
+	const renderer: ToolRenderers = {
+		renderCall: () =>
+			new MouseRegion(new Text("child action"), () => {
+				childClicks++;
+				return { handled: true };
+			}),
+	};
 	const state = agentState(createDashboardState(), "one").view;
 	const call = assistant("call", [{ type: "toolCall", id: "custom", name: "custom", arguments: {} }]);
-	const conversation = new AgentConversation([call, result("done", "custom", "custom", "result action")], "/work", tui, true, false, undefined, state, () => renderer);
+	const conversation = new AgentConversation(
+		[call, result("done", "custom", "custom", "result action")],
+		"/work",
+		tui,
+		true,
+		false,
+		undefined,
+		state,
+		() => renderer,
+	);
 	let document = conversation.render(80);
 	const setters = t.mock.method(ToolExecutionComponent.prototype, "setExpanded");
 	const y = document.lines.findIndex((line) => line.includes("child action"));
@@ -772,46 +1176,89 @@ it("custom child clicks leave card choices untouched and a plain card click reco
 	assert.equal(setters.mock.callCount(), 0);
 	assert.equal(state.toolExpanded.size, 0);
 	document = conversation.render(80);
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, document.lines.findIndex((line) => line.includes("result action")))));
+	assert.ok(
+		conversation.handleMouse(
+			click(
+				80,
+				document.lines.length,
+				document.lines.findIndex((line) => line.includes("result action")),
+			),
+		),
+	);
 	assert.equal(state.toolExpanded.get("custom"), false);
 });
 
 it("custom renderers receive sanitized initial and updated display data on the same native card", (t) => {
 	const received: unknown[] = [];
 	const renderer: ToolRenderers = {
-		renderCall(args) { received.push(args); return new Text("custom call"); },
-		renderResult(value) { received.push(value); return new Text("custom result"); },
+		renderCall(args) {
+			received.push(args);
+			return new Text("custom call");
+		},
+		renderResult(value) {
+			received.push(value);
+			return new Text("custom result");
+		},
 	};
 	const argsUpdates = t.mock.method(ToolExecutionComponent.prototype, "updateArgs");
 	const resultUpdates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
 	const entries = (revision: number): AgentConversationEntry[] => {
-		const unsafe = { text: `safe${revision}\x1b[2J\u202e`, signature: "SIGNATURE_SECRET", image: { type: "image", data: "IMAGE_SECRET" }, thought: { type: "thinking", thinking: "THINKING_SECRET", redacted: true } };
+		const unsafe = {
+			text: `safe${revision}\x1b[2J\u202e`,
+			signature: "SIGNATURE_SECRET",
+			image: { type: "image", data: "IMAGE_SECRET" },
+			thought: { type: "thinking", thinking: "THINKING_SECRET", redacted: true },
+		};
 		const call = assistant("call", [{ type: "toolCall", id: "custom", name: "custom", arguments: unsafe }]);
 		const done = result("done", "custom", "custom", `output${revision}\x1b[2J`);
-		const message = done.model?.[0]; assert.ok(message?.role === "toolResult"); message.details = unsafe;
+		const message = done.model?.[0];
+		assert.ok(message?.role === "toolResult");
+		message.details = unsafe;
 		return [call, done];
 	};
-	const conversation = new AgentConversation(entries(1), "/work", tui, true, false, undefined, undefined, () => renderer);
+	const conversation = new AgentConversation(
+		entries(1),
+		"/work",
+		tui,
+		true,
+		false,
+		undefined,
+		undefined,
+		() => renderer,
+	);
 	conversation.render(80);
 	const native = resultUpdates.mock.calls.at(-1)?.this;
 	assert.match(JSON.stringify(received), /safe1/);
-	assert.doesNotMatch(JSON.stringify(received), /SIGNATURE_SECRET|IMAGE_SECRET|THINKING_SECRET|signature|\\u001b|\u202e/);
+	assert.doesNotMatch(
+		JSON.stringify(received),
+		/SIGNATURE_SECRET|IMAGE_SECRET|THINKING_SECRET|signature|\\u001b|\u202e/,
+	);
 	received.length = 0;
-	conversation.update(entries(2)); conversation.render(80);
+	conversation.update(entries(2));
+	conversation.render(80);
 	assert.equal(argsUpdates.mock.calls.at(-1)?.this, native);
 	assert.equal(resultUpdates.mock.calls.at(-1)?.this, native);
 	assert.match(JSON.stringify(received), /safe2/);
-	assert.doesNotMatch(JSON.stringify(received), /SIGNATURE_SECRET|IMAGE_SECRET|THINKING_SECRET|signature|\\u001b|\u202e/);
+	assert.doesNotMatch(
+		JSON.stringify(received),
+		/SIGNATURE_SECRET|IMAGE_SECRET|THINKING_SECRET|signature|\\u001b|\u202e/,
+	);
 });
 
 it("renderer invalidation refreshes lines and heights and remains safe after eviction", () => {
 	let invalidate: (() => void) | undefined;
 	let text = "before";
-	const renderer: ToolRenderers = { renderCall(_args, _theme, context) { invalidate = context.invalidate; return new Text(text, 0, 0); } };
+	const renderer: ToolRenderers = {
+		renderCall(_args, _theme, context) {
+			invalidate = context.invalidate;
+			return new Text(text, 0, 0);
+		},
+	};
 	const call = assistant("call", [{ type: "toolCall", id: "custom", name: "custom", arguments: {} }]);
 	const conversation = new AgentConversation([call], "/work", tui, true, false, undefined, undefined, () => renderer);
 	const before = conversation.render(80).lines.length;
-	text = "after\nsecond\nthird"; invalidate?.();
+	text = "after\nsecond\nthird";
+	invalidate?.();
 	assert.match(screen(conversation), /after\s+second\s+third/);
 	assert.equal(conversation.render(80).lines.length, before + 2);
 	conversation.update([]);
@@ -831,7 +1278,15 @@ it("global toggles clear every native choice without replacing components", (t) 
 	const conversation = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
 	const instances = new Set(updates.mock.calls.map((call) => call.this));
 	let document = conversation.render(80);
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, document.lines.findIndex((line) => line.includes("▸ Thinking")))));
+	assert.ok(
+		conversation.handleMouse(
+			click(
+				80,
+				document.lines.length,
+				document.lines.findIndex((line) => line.includes("▸ Thinking")),
+			),
+		),
+	);
 	assert.match(screen(conversation), /first reason/);
 	const hidden = t.mock.method(AssistantMessageComponent.prototype, "setHideThinkingBlock");
 	conversation.setShowThinking(false);
@@ -839,17 +1294,29 @@ it("global toggles clear every native choice without replacing components", (t) 
 	assert.deepEqual(new Set(hidden.mock.calls.map((call) => call.this)), instances);
 	assert.doesNotMatch(screen(conversation), /first reason|second reason/);
 	conversation.setShowThinking(true);
-	assert.match(screen(conversation), /first reason/); assert.match(screen(conversation), /second reason/);
+	assert.match(screen(conversation), /first reason/);
+	assert.match(screen(conversation), /second reason/);
 	document = conversation.render(80);
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, document.lines.findIndex((line) => line.includes("custom")))));
+	assert.ok(
+		conversation.handleMouse(
+			click(
+				80,
+				document.lines.length,
+				document.lines.findIndex((line) => line.includes("custom")),
+			),
+		),
+	);
 	assert.equal(state.toolExpanded.size, 1);
 	const expanded = t.mock.method(ToolExecutionComponent.prototype, "setExpanded");
 	conversation.setExpanded(false);
 	assert.equal(expanded.mock.callCount(), 2);
 	assert.equal(state.toolExpanded.size, 0);
-	assert.deepEqual(new Set(updates.mock.calls.map((call) => call.this)), instances, "no assistant instance is replaced");
+	assert.deepEqual(
+		new Set(updates.mock.calls.map((call) => call.this)),
+		instances,
+		"no assistant instance is replaced",
+	);
 });
-
 
 it("result removal and call eviction keep a retained card instance without stale output", (t) => {
 	const updates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
@@ -866,7 +1333,6 @@ it("result removal and call eviction keep a retained card instance without stale
 	assert.match(screen(conversation), /visible result/);
 });
 
-
 it("a result-first builtin acquires native presentation when its call arrives", (t) => {
 	const renders = t.mock.method(ToolExecutionComponent.prototype, "render");
 	const state = agentState(createDashboardState(), "one").view;
@@ -876,7 +1342,9 @@ it("a result-first builtin acquires native presentation when its call arrives", 
 	const unmatched = renders.mock.calls.at(-1)?.this;
 	assert.ok(conversation.handleMouse(click(80, document.lines.length, 0)));
 	assert.equal(state.toolExpanded.get("read-call"), true);
-	const call = assistant("call", [{ type: "toolCall", id: "read-call", name: "read", arguments: { path: "source.ts", offset: 3, limit: 2 } }]);
+	const call = assistant("call", [
+		{ type: "toolCall", id: "read-call", name: "read", arguments: { path: "source.ts", offset: 3, limit: 2 } },
+	]);
 	conversation.update([call, done]);
 	document = conversation.render(80);
 	const matched = renders.mock.calls.at(-1)?.this;
@@ -885,12 +1353,16 @@ it("a result-first builtin acquires native presentation when its call arrives", 
 	assert.match(stripVTControlCharacters(document.lines.join("\n")), /source\.ts:3-4/);
 	assert.equal(state.toolExpanded.get("read-call"), true);
 	const args = t.mock.method(ToolExecutionComponent.prototype, "updateArgs");
-	conversation.update([assistant("call", [{ type: "toolCall", id: "read-call", name: "read", arguments: { path: "source.ts", offset: 4, limit: 1 } }]), result("done", "read-call", "read", "updated final output")]);
+	conversation.update([
+		assistant("call", [
+			{ type: "toolCall", id: "read-call", name: "read", arguments: { path: "source.ts", offset: 4, limit: 1 } },
+		]),
+		result("done", "read-call", "read", "updated final output"),
+	]);
 	assert.equal(args.mock.calls.at(-1)?.this, matched);
 	assert.match(screen(conversation), /updated final output/);
 	assert.equal(state.toolExpanded.get("read-call"), true);
 });
-
 
 it("a result-first custom card keeps its instance when the call adds no renderer capability", (t) => {
 	const updates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
@@ -899,41 +1371,51 @@ it("a result-first custom card keeps its instance when the call adds no renderer
 	const done = result("done", "published", "custom", "output");
 	const conversation = new AgentConversation([done], "/work", tui, true, false, undefined, undefined, () => renderer);
 	const instance = updates.mock.calls.at(-1)?.this;
-	conversation.update([assistant("call", [{ type: "toolCall", id: "published", name: "custom", arguments: { topic: "known" } }]), done]);
+	conversation.update([
+		assistant("call", [{ type: "toolCall", id: "published", name: "custom", arguments: { topic: "known" } }]),
+		done,
+	]);
 	assert.equal(args.mock.calls.at(-1)?.this, instance);
 	assert.match(screen(conversation), /published card/);
 });
 
 it("passes settled native codemode rows unchanged and preserves final nested visibility", (t) => {
 	const updates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
-	const call = assistant("call", [{ type: "toolCall", id: "script", name: "codemode", arguments: { code: "await tools.lookup({});" } }]);
+	const call = assistant("call", [
+		{ type: "toolCall", id: "script", name: "codemode", arguments: { code: "await tools.lookup({});" } },
+	]);
 	const entry = result("done", "script", "codemode", "Script completed\nWall time 0.1 seconds\nOutput:\n");
-	const message = entry.model?.[0]; assert.ok(message?.role === "toolResult");
-	message.details = { calls: [
-		{ id: 1, name: "lookup", args: "{}", status: "ok", durationMs: 4 },
-		{ id: 2, name: "failed", args: "{}", status: "error", error: "rejected", durationMs: 2 },
-		{ id: 3, name: "stopped", args: "{}", status: "cancelled" },
-	] };
+	const message = entry.model?.[0];
+	assert.ok(message?.role === "toolResult");
+	message.details = {
+		calls: [
+			{ id: 1, name: "lookup", args: "{}", status: "ok", durationMs: 4 },
+			{ id: 2, name: "failed", args: "{}", status: "error", error: "rejected", durationMs: 2 },
+			{ id: 3, name: "stopped", args: "{}", status: "cancelled" },
+		],
+	};
 	const original = structuredClone(entry);
-	for (const width of [40, 80, 120]) for (const expanded of [false, true]) {
-		const conversation = new AgentConversation([call, entry], "/work", tui, expanded, false);
-		assert.deepEqual(updates.mock.calls.at(-1)?.arguments, [message, false]);
-		const text = screen(conversation, width);
-		assert.match(text, /codemode/u);
-		assert.match(text, /await tools\.lookup\(\{\}\);/u);
-		assert.match(text, /✓ lookup.*4ms/u);
-		assert.match(text, /✗ failed/u);
-		assert.match(text, /⊘ stopped/u);
-		assert.doesNotMatch(text, /codemode ·|→ Script/u);
-		assert.doesNotMatch(text, /\$/u);
-	}
+	for (const width of [40, 80, 120])
+		for (const expanded of [false, true]) {
+			const conversation = new AgentConversation([call, entry], "/work", tui, expanded, false);
+			assert.deepEqual(updates.mock.calls.at(-1)?.arguments, [message, false]);
+			const text = screen(conversation, width);
+			assert.match(text, /codemode/u);
+			assert.match(text, /await tools\.lookup\(\{\}\);/u);
+			assert.match(text, /✓ lookup.*4ms/u);
+			assert.match(text, /✗ failed/u);
+			assert.match(text, /⊘ stopped/u);
+			assert.doesNotMatch(text, /codemode ·|→ Script/u);
+			assert.doesNotMatch(text, /\$/u);
+		}
 	assert.deepEqual(entry, original);
 });
 
 it("terminal results for other tools retain running status details", (t) => {
 	const updates = t.mock.method(ToolExecutionComponent.prototype, "updateResult");
 	const entry = result("result", "custom", "custom", "Done");
-	const message = entry.model?.[0]; assert.ok(message?.role === "toolResult");
+	const message = entry.model?.[0];
+	assert.ok(message?.role === "toolResult");
 	message.details = { calls: [{ id: "nested", name: "pending", args: "{}", status: "running" }] };
 	new AgentConversation([entry], "/work", tui, false, false);
 	assert.deepEqual(updates.mock.calls.at(-1)?.arguments, [message, false]);

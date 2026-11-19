@@ -61,46 +61,72 @@
 		receive?: (envelope: unknown) => boolean;
 	}
 
-  const connectionLabels: Record<string, string> = { connecting: "Connecting…", reconnecting: "Reconnecting to Pi…", ended: "Pi ended" };
-  const stateLabels: Record<string, string> = { waiting: "Pi needs an answer in the terminal", compacting: "Compacting", working: "Working" };
-  function isWorking(state?: string): boolean { return state === "working" || state === "compacting"; }
-  function stateLabel(status: ComposerStatus): string {
-    if (status.state === "waiting" && status.command) return `/${status.command} is open in the terminal`;
-    return stateLabels[status.state ?? ""] ?? "";
-  }
-  function statusView(status?: ComposerStatus): StatusView {
-    return {
-      connectionLabel: connectionLabels[status?.connection ?? "connecting"] ?? "",
-      stateLabel: status?.connection === "connected" ? stateLabel(status) : "",
-      waiting: status?.state === "waiting",
-      working: isWorking(status?.state),
-    };
-  }
-  function submitBehavior(state?: string, delivery: "steer" | "queue" = "steer"): Behavior { return isWorking(state) ? delivery : "send"; }
-  function actionFor(state: string | undefined, options: ActionOptions = {}): Action {
-    const disabled = options.connection !== "connected" || options.submitting === true || state === "waiting";
-    if (isWorking(state)) return { kind: "stop", label: "Stop", disabled };
-    return { kind: "send", label: "Send", disabled: disabled || !options.hasDraft };
-  }
-  function showReturn(state?: string): boolean { return state === "waiting"; }
-  function isSendKey(event: ComposerKey, key: SendKey) {
-    return event.key === "Enter" && !event.shiftKey && !event.ctrlKey && (event.altKey || Boolean(event.metaKey) === (key === "command"));
-  }
-  function unavailable(context: KeyContext) {
-    return context.submitting || context.readonly || !context.hasDraft || context.connection !== "connected" || context.state === "waiting";
-  }
-  function chosenDelivery(event: ComposerKey, context: KeyContext): "steer" | "queue" {
-    const mode = context.delivery ?? "steer";
-    if (!event.altKey) return mode;
-    return mode === "queue" ? "steer" : "queue";
-  }
-  function keyDecision(event: ComposerKey, context: KeyContext): KeyDecision {
-    if (event.isComposing) return { kind: "none" };
-    if (event.key === "Escape") return { kind: context.connection === "connected" && isWorking(context.state) ? "abort" : "release" };
-    if (!isSendKey(event, context.sendKey)) return { kind: "none" };
-    if (unavailable(context)) return { kind: "consume" };
-    return { kind: "submit", behavior: submitBehavior(context.state, chosenDelivery(event, context)) };
-  }
+	const connectionLabels: Record<string, string> = {
+		connecting: "Connecting…",
+		reconnecting: "Reconnecting to Pi…",
+		ended: "Pi ended",
+	};
+	const stateLabels: Record<string, string> = {
+		waiting: "Pi needs an answer in the terminal",
+		compacting: "Compacting",
+		working: "Working",
+	};
+	function isWorking(state?: string): boolean {
+		return state === "working" || state === "compacting";
+	}
+	function stateLabel(status: ComposerStatus): string {
+		if (status.state === "waiting" && status.command) return `/${status.command} is open in the terminal`;
+		return stateLabels[status.state ?? ""] ?? "";
+	}
+	function statusView(status?: ComposerStatus): StatusView {
+		return {
+			connectionLabel: connectionLabels[status?.connection ?? "connecting"] ?? "",
+			stateLabel: status?.connection === "connected" ? stateLabel(status) : "",
+			waiting: status?.state === "waiting",
+			working: isWorking(status?.state),
+		};
+	}
+	function submitBehavior(state?: string, delivery: "steer" | "queue" = "steer"): Behavior {
+		return isWorking(state) ? delivery : "send";
+	}
+	function actionFor(state: string | undefined, options: ActionOptions = {}): Action {
+		const disabled = options.connection !== "connected" || options.submitting === true || state === "waiting";
+		if (isWorking(state)) return { kind: "stop", label: "Stop", disabled };
+		return { kind: "send", label: "Send", disabled: disabled || !options.hasDraft };
+	}
+	function showReturn(state?: string): boolean {
+		return state === "waiting";
+	}
+	function isSendKey(event: ComposerKey, key: SendKey) {
+		return (
+			event.key === "Enter" &&
+			!event.shiftKey &&
+			!event.ctrlKey &&
+			(event.altKey || Boolean(event.metaKey) === (key === "command"))
+		);
+	}
+	function unavailable(context: KeyContext) {
+		return (
+			context.submitting ||
+			context.readonly ||
+			!context.hasDraft ||
+			context.connection !== "connected" ||
+			context.state === "waiting"
+		);
+	}
+	function chosenDelivery(event: ComposerKey, context: KeyContext): "steer" | "queue" {
+		const mode = context.delivery ?? "steer";
+		if (!event.altKey) return mode;
+		return mode === "queue" ? "steer" : "queue";
+	}
+	function keyDecision(event: ComposerKey, context: KeyContext): KeyDecision {
+		if (event.isComposing) return { kind: "none" };
+		if (event.key === "Escape")
+			return { kind: context.connection === "connected" && isWorking(context.state) ? "abort" : "release" };
+		if (!isSendKey(event, context.sendKey)) return { kind: "none" };
+		if (unavailable(context)) return { kind: "consume" };
+		return { kind: "submit", behavior: submitBehavior(context.state, chosenDelivery(event, context)) };
+	}
 	function editCommand(text: string): "insertText" | "delete" {
 		return text.length > 0 ? "insertText" : "delete";
 	}

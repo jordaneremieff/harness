@@ -22,7 +22,9 @@ export async function findSessionFile(sessionsRoot: string, id: string): Promise
 	const suffix = `_${id}.jsonl`;
 	let directories: string[];
 	try {
-		directories = (await readdir(sessionsRoot, { withFileTypes: true })).filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).map((entry) => entry.name);
+		directories = (await readdir(sessionsRoot, { withFileTypes: true }))
+			.filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+			.map((entry) => entry.name);
 	} catch {
 		return undefined;
 	}
@@ -49,12 +51,15 @@ function lineFacts(line: string): { model?: { provider: string; modelId: string 
 	}
 	if (!entry || typeof entry !== "object") return {};
 	const record = entry as Record<string, unknown>;
-	if (record.type === "model_change" && typeof record.provider === "string" && typeof record.modelId === "string") return { model: { provider: record.provider, modelId: record.modelId } };
-	if (record.type === "thinking_level_change" && typeof record.thinkingLevel === "string") return { thinkingLevel: record.thinkingLevel };
+	if (record.type === "model_change" && typeof record.provider === "string" && typeof record.modelId === "string")
+		return { model: { provider: record.provider, modelId: record.modelId } };
+	if (record.type === "thinking_level_change" && typeof record.thinkingLevel === "string")
+		return { thinkingLevel: record.thinkingLevel };
 	const message = record.type === "message" ? record.message : undefined;
 	if (message && typeof message === "object") {
 		const value = message as Record<string, unknown>;
-		if (value.role === "assistant" && typeof value.provider === "string" && typeof value.model === "string") return { model: { provider: value.provider, modelId: value.model } };
+		if (value.role === "assistant" && typeof value.provider === "string" && typeof value.model === "string")
+			return { model: { provider: value.provider, modelId: value.model } };
 	}
 	return {};
 }
@@ -90,7 +95,9 @@ export async function readSessionModel(path: string): Promise<SessionModel | und
 	const long = size > TAIL_BYTES + HEAD_BYTES;
 	let text: string;
 	try {
-		text = long ? `${await readRange(path, 0, HEAD_BYTES)}\n${(await readRange(path, size - TAIL_BYTES, TAIL_BYTES)).split("\n").slice(1).join("\n")}` : await readRange(path, 0, size);
+		text = long
+			? `${await readRange(path, 0, HEAD_BYTES)}\n${(await readRange(path, size - TAIL_BYTES, TAIL_BYTES)).split("\n").slice(1).join("\n")}`
+			: await readRange(path, 0, size);
 	} catch {
 		return undefined;
 	}

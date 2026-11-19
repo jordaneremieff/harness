@@ -294,7 +294,10 @@ export class PlaceBook {
 	 */
 	async withArea<T>(
 		area: string,
-		operation: (current: PlaceBinding | undefined, admit: (sessionId: string, topic?: string) => void) => Promise<PlaceOperation<T>>,
+		operation: (
+			current: PlaceBinding | undefined,
+			admit: (sessionId: string, topic?: string) => void,
+		) => Promise<PlaceOperation<T>>,
 	): Promise<PlaceTransaction<T>> {
 		const release = this.lock();
 		try {
@@ -357,8 +360,11 @@ export class PlaceBook {
 		if (!held) {
 			const file = this.readLock(lockFile);
 			const observed = classifyProcessClaim(file.claim, this.claimIdentity());
-			throw new PlaceLockedError(lockFile, isClaim(file.claim) ? file.claim : undefined,
-				observed.kind === "live" ? undefined : "offline recovery requires all relevant writers and launchers stopped");
+			throw new PlaceLockedError(
+				lockFile,
+				isClaim(file.claim) ? file.claim : undefined,
+				observed.kind === "live" ? undefined : "offline recovery requires all relevant writers and launchers stopped",
+			);
 		}
 		return () => this.release(lockFile, held);
 	}
@@ -428,8 +434,11 @@ export class PlaceBook {
 		const temporary = `${this.file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
 		const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow(), 0o600);
 		try {
-			try { writeFileSync(fd, serialized, "utf8"); }
-			finally { closeSync(fd); }
+			try {
+				writeFileSync(fd, serialized, "utf8");
+			} finally {
+				closeSync(fd);
+			}
 			renameSync(temporary, this.file);
 		} catch (error) {
 			try {

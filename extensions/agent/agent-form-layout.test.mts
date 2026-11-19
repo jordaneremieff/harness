@@ -68,7 +68,9 @@ it("the profile editor reveals the expertise caret at the end of a long value", 
 	const calls: FormCall[] = [];
 	const host: AgentFormHost = formsHost(target, createDashboardState(), source([target]), calls, {
 		profile: async (method) =>
-			method === "profile-read" ? profile : { outcome: "applied", deduped: false, profile: { ...profile, revision: "b".repeat(64) } },
+			method === "profile-read"
+				? profile
+				: { outcome: "applied", deduped: false, profile: { ...profile, revision: "b".repeat(64) } },
 	});
 	const frame = new Inspector({
 		theme,
@@ -91,7 +93,17 @@ it("the profile editor reveals the expertise caret at the end of a long value", 
 	frame.handleInput(END);
 	for (let step = 0; step < 2; step++) frame.handleInput("Z");
 	const lines = raw();
-	assert.ok(lines.some((line) => plain(line).includes("ZZ") && line.includes(CURSOR_MARKER)), "typing at the caret is visible");
-	assert.ok(lines.some((line) => /esc cancel/.test(plain(line))), "the footer stays on the last row");
-	assert.deepEqual(calls.filter((call) => call.name === "profile-update"), [], "nothing was saved");
+	assert.ok(
+		lines.some((line) => plain(line).includes("ZZ") && line.includes(CURSOR_MARKER)),
+		"typing at the caret is visible",
+	);
+	assert.ok(
+		lines.some((line) => /esc cancel/.test(plain(line))),
+		"the footer stays on the last row",
+	);
+	assert.deepEqual(
+		calls.filter((call) => call.name === "profile-update"),
+		[],
+		"nothing was saved",
+	);
 });

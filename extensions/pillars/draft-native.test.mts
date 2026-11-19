@@ -17,7 +17,9 @@ const sdk: typeof import("@earendil-works/pi-coding-agent") = await import(
 	hostRoot ? pathToFileURL(join(hostRoot, "dist/index.js")).href : "@earendil-works/pi-coding-agent"
 );
 const ai: typeof import("@earendil-works/pi-ai") = await import(
-	hostRoot ? pathToFileURL(join(hostRoot, "node_modules/@earendil-works/pi-ai/dist/index.js")).href : "@earendil-works/pi-ai"
+	hostRoot
+		? pathToFileURL(join(hostRoot, "node_modules/@earendil-works/pi-ai/dist/index.js")).href
+		: "@earendil-works/pi-ai"
 );
 const entry = fileURLToPath(new URL("./index.ts", import.meta.url));
 const proposal = "A concrete proposed answer with a questionable qualification.";
@@ -25,7 +27,10 @@ const proposal = "A concrete proposed answer with a questionable qualification."
 function text(message: { content: unknown }): string {
 	if (typeof message.content === "string") return message.content;
 	assert.ok(Array.isArray(message.content));
-	return message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+	return message.content
+		.filter((block) => block.type === "text")
+		.map((block) => block.text)
+		.join("\n");
 }
 
 test("draft limits preserve combined units without Unicode grapheme segmentation", () => {
@@ -46,31 +51,46 @@ test("draft limits preserve combined units without Unicode grapheme segmentation
 		const above = `${at}x`;
 		for (const draft of [below, at]) {
 			assert.equal(compile(DraftSchema).check(draft), true, name);
-			assert.deepEqual(splitDraft({ draft, resource: "inventory" }), { draft, source: { resource: "inventory" } }, name);
+			assert.deepEqual(
+				splitDraft({ draft, resource: "inventory" }),
+				{ draft, source: { resource: "inventory" } },
+				name,
+			);
 		}
-		assert.throws(() => splitDraft({ draft: above }), (error: unknown) => {
-			assert.ok(error instanceof DraftInputError, name);
-			assert.match(error.message, /character limit exceeded/);
-			assert.match(error.message, /Measured 8193 characters/);
-			assert.ok(error.message.includes(`${Buffer.byteLength(above, "utf8")} UTF-8 bytes`), name);
-			return true;
-		});
+		assert.throws(
+			() => splitDraft({ draft: above }),
+			(error: unknown) => {
+				assert.ok(error instanceof DraftInputError, name);
+				assert.match(error.message, /character limit exceeded/);
+				assert.match(error.message, /Measured 8193 characters/);
+				assert.ok(error.message.includes(`${Buffer.byteLength(above, "utf8")} UTF-8 bytes`), name);
+				return true;
+			},
+		);
 	}
 	for (const draft of ["\ud800", "\udc00", `${"a".repeat(MAX_DRAFT_CHARACTERS)}\ud800`]) {
-		assert.throws(() => splitDraft({ draft }), (error: unknown) => {
-			assert.ok(error instanceof DraftInputError);
-			assert.match(error.message, /malformed Unicode: unpaired surrogate/);
-			assert.ok(error.message.includes(`Measured ${draft.length} characters`));
-			assert.ok(error.message.includes(`${Buffer.byteLength(draft, "utf8")} UTF-8 bytes`));
-			assert.doesNotMatch(error.message, /character limit exceeded/);
-			return true;
-		});
+		assert.throws(
+			() => splitDraft({ draft }),
+			(error: unknown) => {
+				assert.ok(error instanceof DraftInputError);
+				assert.match(error.message, /malformed Unicode: unpaired surrogate/);
+				assert.ok(error.message.includes(`Measured ${draft.length} characters`));
+				assert.ok(error.message.includes(`${Buffer.byteLength(draft, "utf8")} UTF-8 bytes`));
+				assert.doesNotMatch(error.message, /character limit exceeded/);
+				return true;
+			},
+		);
 	}
-	assert.throws(() => splitDraft({ draft: " ".repeat(MAX_DRAFT_CHARACTERS + 1) }), /blank text.*Measured 8193 characters/);
+	assert.throws(
+		() => splitDraft({ draft: " ".repeat(MAX_DRAFT_CHARACTERS + 1) }),
+		/blank text.*Measured 8193 characters/,
+	);
 	assert.throws(() => splitDraft({ draft: "\r\n" }), /blank text.*Measured 2 characters/);
 });
 
-test("native draft assessment follows source results without a context transform or extra turn", { timeout: 30000 }, async (t) => {
+test("native draft assessment follows source results without a context transform or extra turn", {
+	timeout: 30000,
+}, async (t) => {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "pillars-draft-test-")));
 	const corpus = join(root, "corpus");
 	const prior = {
@@ -87,48 +107,98 @@ test("native draft assessment follows source results without a context transform
 		process.env.PI_PILLARS_CORPUS = corpus;
 		process.env.PI_PILLARS_DIR = join(root, "store");
 		process.env.PI_PILLARS_COLLECT = "1";
-		const faux = ai.fauxProvider({ provider: "pillars-draft-test", models: [{ id: "controlled", contextWindow: 100000 }], tokensPerSecond: 0 });
-		const modelRuntime = await sdk.ModelRuntime.create({ credentials: new ai.InMemoryCredentialStore(), modelsStore: new ai.InMemoryModelsStore(), modelsPath: null, refreshOnCreate: false });
+		const faux = ai.fauxProvider({
+			provider: "pillars-draft-test",
+			models: [{ id: "controlled", contextWindow: 100000 }],
+			tokensPerSecond: 0,
+		});
+		const modelRuntime = await sdk.ModelRuntime.create({
+			credentials: new ai.InMemoryCredentialStore(),
+			modelsStore: new ai.InMemoryModelsStore(),
+			modelsPath: null,
+			refreshOnCreate: false,
+		});
 		modelRuntime.registerNativeProvider(faux.provider);
 		const errors: string[] = [];
 		async function create(manager: ReturnType<typeof sdk.SessionManager.create>) {
-			const settingsManager = sdk.SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+			const settingsManager = sdk.SettingsManager.inMemory({
+				compaction: { enabled: false },
+				retry: { enabled: false },
+			});
 			const loader = new sdk.DefaultResourceLoader({
-				cwd: root, agentDir: join(root, "agent"), settingsManager,
-				noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+				cwd: root,
+				agentDir: join(root, "agent"),
+				settingsManager,
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: true,
 				additionalExtensionPaths: [entry],
-				extensionFactories: [(pi) => {
-					pi.registerTool({ name: "fixture_echo", label: "Fixture echo", description: "Return synthetic data.", parameters: obj({}, { open: true }),
-						async execute() { return { content: [{ type: "text", text: "Other result." }], details: undefined }; },
-					});
-				}],
+				extensionFactories: [
+					(pi) => {
+						pi.registerTool({
+							name: "fixture_echo",
+							label: "Fixture echo",
+							description: "Return synthetic data.",
+							parameters: obj({}, { open: true }),
+							async execute() {
+								return { content: [{ type: "text", text: "Other result." }], details: undefined };
+							},
+						});
+					},
+				],
 			});
 			await loader.reload();
 			assert.deepEqual(loader.getExtensions().errors, []);
-			const result = await sdk.createAgentSession({ cwd: root, agentDir: join(root, "agent"), modelRuntime, model: faux.getModel(),
-				settingsManager, resourceLoader: loader, sessionManager: manager, tools: ["pillars", "fixture_echo"] });
+			const result = await sdk.createAgentSession({
+				cwd: root,
+				agentDir: join(root, "agent"),
+				modelRuntime,
+				model: faux.getModel(),
+				settingsManager,
+				resourceLoader: loader,
+				sessionManager: manager,
+				tools: ["pillars", "fixture_echo"],
+			});
 			await result.session.bindExtensions({ mode: "json", onError: (error) => errors.push(error.error) });
 			assert.equal(result.session.extensionRunner.hasHandlers("context"), false);
 			assert.equal(result.session.extensionRunner.hasHandlers("context_with_system"), false);
 			return result.session;
 		}
-		function active() { assert.ok(session); return session; }
+		function active() {
+			assert.ok(session);
+			return session;
+		}
 		function tool() {
 			const definition = active().extensionRunner.getToolDefinition("pillars");
 			assert.ok(definition);
 			return definition;
 		}
-		function assessments() { return active().messages.filter((message) => message.role === "custom" && message.customType === "pillars-draft"); }
+		function assessments() {
+			return active().messages.filter((message) => message.role === "custom" && message.customType === "pillars-draft");
+		}
 		function responses(...steps: FauxResponseStep[]) {
 			const before = faux.state.callCount;
 			const failures: unknown[] = [];
-			faux.setResponses(steps.map((step) => async (context, options, state, model) => {
-				try {
-					assert.deepEqual(context.messages, sdk.convertToLlm(active().sessionManager.buildSessionContext().messages));
-				} catch (error) { failures.push(error); }
-				try { return typeof step === "function" ? await step(context, options, state, model) : step; }
-				catch (error) { failures.push(error); return ai.fauxAssistantMessage("Synthetic assertion failed."); }
-			}));
+			faux.setResponses(
+				steps.map((step) => async (context, options, state, model) => {
+					try {
+						assert.deepEqual(
+							context.messages,
+							sdk.convertToLlm(active().sessionManager.buildSessionContext().messages),
+						);
+					} catch (error) {
+						failures.push(error);
+					}
+					try {
+						return typeof step === "function" ? await step(context, options, state, model) : step;
+					} catch (error) {
+						failures.push(error);
+						return ai.fauxAssistantMessage("Synthetic assertion failed.");
+					}
+				}),
+			);
 			return () => {
 				if (failures.length) throw failures[0];
 				assert.equal(faux.state.callCount - before, steps.length, "no additional provider request");
@@ -138,62 +208,107 @@ test("native draft assessment follows source results without a context transform
 		}
 		session = await create(sdk.SessionManager.create(root, join(root, "sessions")));
 		let sourceJSON = "";
-		await t.test("registered validation rejects unsafe draft shapes without echoing contents or sending tasks", async () => {
-			const definition = tool();
-			const schema = definition.parameters as { type: string; properties: { draft: { maxLength: number } }; required?: string[] };
-			assert.equal(schema.type, "object");
-			assert.equal(Object.hasOwn(schema.properties.draft, "maxLength"), false);
-			assert.equal(Object.hasOwn(schema.properties.draft, "pattern"), false);
-			assert.ok(!schema.required?.includes("draft"));
-			const prepare = definition.prepareArguments;
-			assert.ok(prepare);
-			assert.deepEqual(prepare({}), { resource: "inventory", offset: 0 });
-			const valid = { resource: "principle-example", draft: "😀".repeat(MAX_DRAFT_CHARACTERS) };
-			assert.deepEqual(prepare(valid), { ...valid, offset: 0 });
-			for (const draft of ["", " \n", null, 731905, { private: "do not echo" }, "a".repeat(MAX_DRAFT_CHARACTERS + 1), "😀".repeat(MAX_DRAFT_CHARACTERS + 1), "\ud800"]) {
-				if (draft === " \n" || draft === "\ud800") assert.equal(compile(definition.parameters).check({ draft }), true);
-				const matches = (error: unknown) => {
-					assert.ok(error instanceof Error);
-					const result = JSON.parse(error.message);
-					assert.equal(result.schema, "pillars-source-error");
-					assert.equal(result.code, "invalid_input");
-					assert.match(result.message, /8192 characters \(base code points with attached marks, selectors, joiner sequences and paired flag indicators\)/);
-					if (draft === " \n") assert.match(result.message, /blank text/);
-					if (draft === "\ud800") assert.match(result.message, /malformed Unicode: unpaired surrogate/);
-					assert.doesNotMatch(result.message, /private|731905|do not echo/);
-					return true;
+		await t.test(
+			"registered validation rejects unsafe draft shapes without echoing contents or sending tasks",
+			async () => {
+				const definition = tool();
+				const schema = definition.parameters as {
+					type: string;
+					properties: { draft: { maxLength: number } };
+					required?: string[];
 				};
-				assert.throws(() => prepare({ draft }), matches);
-				await assert.rejects(definition.execute("invalid-draft", { draft }, undefined, undefined, active().extensionRunner.createToolContext("invalid-draft", undefined)), matches);
-			}
-			assert.equal(assessments().length, 0);
-		});
+				assert.equal(schema.type, "object");
+				assert.equal(Object.hasOwn(schema.properties.draft, "maxLength"), false);
+				assert.equal(Object.hasOwn(schema.properties.draft, "pattern"), false);
+				assert.ok(!schema.required?.includes("draft"));
+				const prepare = definition.prepareArguments;
+				assert.ok(prepare);
+				assert.deepEqual(prepare({}), { resource: "inventory", offset: 0 });
+				const valid = { resource: "principle-example", draft: "😀".repeat(MAX_DRAFT_CHARACTERS) };
+				assert.deepEqual(prepare(valid), { ...valid, offset: 0 });
+				for (const draft of [
+					"",
+					" \n",
+					null,
+					731905,
+					{ private: "do not echo" },
+					"a".repeat(MAX_DRAFT_CHARACTERS + 1),
+					"😀".repeat(MAX_DRAFT_CHARACTERS + 1),
+					"\ud800",
+				]) {
+					if (draft === " \n" || draft === "\ud800")
+						assert.equal(compile(definition.parameters).check({ draft }), true);
+					const matches = (error: unknown) => {
+						assert.ok(error instanceof Error);
+						const result = JSON.parse(error.message);
+						assert.equal(result.schema, "pillars-source-error");
+						assert.equal(result.code, "invalid_input");
+						assert.match(
+							result.message,
+							/8192 characters \(base code points with attached marks, selectors, joiner sequences and paired flag indicators\)/,
+						);
+						if (draft === " \n") assert.match(result.message, /blank text/);
+						if (draft === "\ud800") assert.match(result.message, /malformed Unicode: unpaired surrogate/);
+						assert.doesNotMatch(result.message, /private|731905|do not echo/);
+						return true;
+					};
+					assert.throws(() => prepare({ draft }), matches);
+					await assert.rejects(
+						definition.execute(
+							"invalid-draft",
+							{ draft },
+							undefined,
+							undefined,
+							active().extensionRunner.createToolContext("invalid-draft", undefined),
+						),
+						matches,
+					);
+				}
+				assert.equal(assessments().length, 0);
+			},
+		);
 		await t.test("a source-only call keeps its exact source JSON and sends no assessment", async () => {
-			const done = responses(ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { resource: "principle-example" }, { id: "plain-read" })), (context) => {
-				const result = context.messages.at(-1);
-				assert.ok(result?.role === "toolResult" && !result.isError);
-				assert.equal(result.content.length, 1);
-				sourceJSON = text(result);
-				return ai.fauxAssistantMessage("Source read completed.");
-			});
+			const done = responses(
+				ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { resource: "principle-example" }, { id: "plain-read" })),
+				(context) => {
+					const result = context.messages.at(-1);
+					assert.ok(result?.role === "toolResult" && !result.isError);
+					assert.equal(result.content.length, 1);
+					sourceJSON = text(result);
+					return ai.fauxAssistantMessage("Source read completed.");
+				},
+			);
 			await active().prompt("Read the example source.");
 			done();
-			const expected = await access({ resources: [{ resourceId: "principle-example", resourceClass: "entry", path: join(corpus, "principle-example.md") }] }, { resource: "principle-example" });
+			const expected = await access(
+				{
+					resources: [
+						{ resourceId: "principle-example", resourceClass: "entry", path: join(corpus, "principle-example.md") },
+					],
+				},
+				{ resource: "principle-example" },
+			);
 			assert.equal(sourceJSON, JSON.stringify(expected));
 			assert.equal(assessments().length, 0);
 		});
 		await t.test("a draft task reaches the actual next request after every result in a tool batch", async () => {
-			const done = responses(ai.fauxAssistantMessage([
-				ai.fauxToolCall("pillars", { resource: "principle-example", draft: proposal }, { id: "draft-read" }),
-				ai.fauxToolCall("fixture_echo", {}, { id: "other-call" }),
-			]), (context) => {
-				const tail = context.messages.slice(-3);
-				assert.deepEqual(tail.map((message) => message.role), ["toolResult", "toolResult", "user"]);
-				assert.equal(text(tail[0]), sourceJSON);
-				assert.equal(text(tail[1]), "Other result.");
-				assert.equal(text(tail[2]), draftAssessment(proposal));
-				return ai.fauxAssistantMessage("The corrected work is the answer.");
-			});
+			const done = responses(
+				ai.fauxAssistantMessage([
+					ai.fauxToolCall("pillars", { resource: "principle-example", draft: proposal }, { id: "draft-read" }),
+					ai.fauxToolCall("fixture_echo", {}, { id: "other-call" }),
+				]),
+				(context) => {
+					const tail = context.messages.slice(-3);
+					assert.deepEqual(
+						tail.map((message) => message.role),
+						["toolResult", "toolResult", "user"],
+					);
+					assert.equal(text(tail[0]), sourceJSON);
+					assert.equal(text(tail[1]), "Other result.");
+					assert.equal(text(tail[2]), draftAssessment(proposal));
+					return ai.fauxAssistantMessage("The corrected work is the answer.");
+				},
+			);
 			await active().prompt("Prepare the authorized answer.");
 			done();
 			assert.equal(assessments().length, 1);
@@ -205,47 +320,84 @@ test("native draft assessment follows source results without a context transform
 		await t.test("host validation preserves combined-character drafts at the character limit", async () => {
 			const draft = "e\u0301".repeat(MAX_DRAFT_CHARACTERS);
 			const before = assessments().length;
-			const done = responses(ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { resource: "principle-example", draft }, { id: "combined-draft" })), (context) => {
-				const result = context.messages.at(-2);
-				assert.ok(result?.role === "toolResult" && !result.isError);
-				assert.equal(text(result), sourceJSON);
-				assert.equal(text(context.messages.at(-1) as { content: unknown }), draftAssessment(draft));
-				return ai.fauxAssistantMessage("The combined-character draft is intact.");
-			});
+			const done = responses(
+				ai.fauxAssistantMessage(
+					ai.fauxToolCall("pillars", { resource: "principle-example", draft }, { id: "combined-draft" }),
+				),
+				(context) => {
+					const result = context.messages.at(-2);
+					assert.ok(result?.role === "toolResult" && !result.isError);
+					assert.equal(text(result), sourceJSON);
+					assert.equal(text(context.messages.at(-1) as { content: unknown }), draftAssessment(draft));
+					return ai.fauxAssistantMessage("The combined-character draft is intact.");
+				},
+			);
 			await active().prompt("Check a draft with combined characters.");
 			done();
 			assert.equal(assessments().length, before + 1);
 		});
 		await t.test("source errors and already-cancelled access send no assessment", async () => {
 			const before = assessments().length;
-			const done = responses(ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { resource: "governance", draft: proposal, offset: 1, referenceBodyDigest: "0".repeat(64) }, { id: "source-error" })), (context) => {
-				const result = context.messages.at(-1);
-				assert.ok(result?.role === "toolResult" && result.isError);
-				assert.equal(JSON.parse(text(result)).code, "source_changed");
-				return ai.fauxAssistantMessage("Source error received.");
-			});
+			const done = responses(
+				ai.fauxAssistantMessage(
+					ai.fauxToolCall(
+						"pillars",
+						{ resource: "governance", draft: proposal, offset: 1, referenceBodyDigest: "0".repeat(64) },
+						{ id: "source-error" },
+					),
+				),
+				(context) => {
+					const result = context.messages.at(-1);
+					assert.ok(result?.role === "toolResult" && result.isError);
+					assert.equal(JSON.parse(text(result)).code, "source_changed");
+					return ai.fauxAssistantMessage("Source error received.");
+				},
+			);
 			await active().prompt("Check a source with a stale digest.");
 			done();
 			const controller = new AbortController();
 			controller.abort();
-			await assert.rejects(tool().execute("cancelled-read", { resource: "governance", draft: proposal }, controller.signal, undefined, active().extensionRunner.createToolContext("cancelled-read", controller.signal)), /source_unavailable/);
+			await assert.rejects(
+				tool().execute(
+					"cancelled-read",
+					{ resource: "governance", draft: proposal },
+					controller.signal,
+					undefined,
+					active().extensionRunner.createToolContext("cancelled-read", controller.signal),
+				),
+				/source_unavailable/,
+			);
 			assert.equal(assessments().length, before);
 		});
-		await t.test("cancellation after admission preserves native assessment history without another request", async () => {
-			const before = assessments().length;
-			let aborted: Promise<void> | undefined;
-			const unsubscribe = active().subscribe((event) => {
-				if (event.type === "tool_execution_end" && event.toolCallId === "cancel-after-admission") aborted = active().abort();
-			});
-			try {
-				const done = responses(ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { resource: "principle-example", draft: "A draft admitted before cancellation." }, { id: "cancel-after-admission" })));
-				await active().prompt("Read and submit a draft before cancellation.");
-				await aborted;
-				assert.ok(aborted);
-				done();
-				assert.equal(assessments().length, before + 1);
-			} finally { unsubscribe(); }
-		});
+		await t.test(
+			"cancellation after admission preserves native assessment history without another request",
+			async () => {
+				const before = assessments().length;
+				let aborted: Promise<void> | undefined;
+				const unsubscribe = active().subscribe((event) => {
+					if (event.type === "tool_execution_end" && event.toolCallId === "cancel-after-admission")
+						aborted = active().abort();
+				});
+				try {
+					const done = responses(
+						ai.fauxAssistantMessage(
+							ai.fauxToolCall(
+								"pillars",
+								{ resource: "principle-example", draft: "A draft admitted before cancellation." },
+								{ id: "cancel-after-admission" },
+							),
+						),
+					);
+					await active().prompt("Read and submit a draft before cancellation.");
+					await aborted;
+					assert.ok(aborted);
+					done();
+					assert.equal(assessments().length, before + 1);
+				} finally {
+					unsubscribe();
+				}
+			},
+		);
 		await t.test("reload and disk resume retain history without autonomous execution or duplicate tasks", async () => {
 			const count = assessments().length;
 			const before = faux.state.callCount;
@@ -271,7 +423,11 @@ test("native draft assessment follows source results without a context transform
 		});
 		await active().extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		const evidence = await new PillarsStore(join(root, "store")).capture(utcDay());
-		assert.ok(Object.values(evidence.shards).flatMap((shard) => shard.cells).some((cell) => cell.resourceId === "principle-example" && cell.counters.bodyVerifiedAtObservation > 0));
+		assert.ok(
+			Object.values(evidence.shards)
+				.flatMap((shard) => shard.cells)
+				.some((cell) => cell.resourceId === "principle-example" && cell.counters.bodyVerifiedAtObservation > 0),
+		);
 		assert.ok(!JSON.stringify(evidence).includes(proposal));
 		assert.deepEqual(errors, []);
 	} finally {
@@ -281,7 +437,8 @@ test("native draft assessment follows source results without a context transform
 			session?.dispose();
 		} finally {
 			for (const [key, value] of Object.entries(prior)) {
-				if (value === undefined) delete process.env[key]; else process.env[key] = value;
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
 			}
 			await rm(root, { recursive: true, force: true });
 		}

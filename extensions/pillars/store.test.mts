@@ -16,19 +16,44 @@ const TODAY = "2026-09-07";
 const STALE = new Date(Date.now() - 120_000);
 
 function batch(owner = 1, seq = 1, day = TODAY): Batch {
-	return { owner: owner.toString(16).padStart(32, "0"), seq, day, cells: [{
-		day, observationStage: "tool_request", resourceClass: "entry", resourceId: "synthetic", model: "test/model",
-		reasoning: "high", referenceBodyDigest: "a".repeat(64), observerVersion: "1.0.0", piVersion: "1.0.0",
-		counters: { ...zero(), readRequests: 1 },
-	}] };
+	return {
+		owner: owner.toString(16).padStart(32, "0"),
+		seq,
+		day,
+		cells: [
+			{
+				day,
+				observationStage: "tool_request",
+				resourceClass: "entry",
+				resourceId: "synthetic",
+				model: "test/model",
+				reasoning: "high",
+				referenceBodyDigest: "a".repeat(64),
+				observerVersion: "1.0.0",
+				piVersion: "1.0.0",
+				counters: { ...zero(), readRequests: 1 },
+			},
+		],
+	};
 }
 async function fixture() {
 	const directory = await mkdtemp(join(process.env.PI_TEST_FIXTURE_ROOT ?? process.cwd(), ".pillars-store-test-"));
 	const root = join(directory, "store");
-	return { directory, root, store: new PillarsStore(root), async [Symbol.asyncDispose]() { await rm(directory, { recursive: true, force: true }); } };
+	return {
+		directory,
+		root,
+		store: new PillarsStore(root),
+		async [Symbol.asyncDispose]() {
+			await rm(directory, { recursive: true, force: true });
+		},
+	};
 }
 async function holdLock(root: string) {
-	return open(join(root, "store.lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20, 0o600);
+	return open(
+		join(root, "store.lock"),
+		constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20,
+		0o600,
+	);
 }
 
 async function capacityExperiment(root: string) {
@@ -37,13 +62,28 @@ async function capacityExperiment(root: string) {
 	for (let ago = 0; ago < LIMITS.days; ago++) {
 		const day = new Date((dayNumber(TODAY) - ago) * 86400000).toISOString().slice(0, 10);
 		const shard = emptyShard(day);
-		shard.cells = Array.from({ length: LIMITS.cellsPerDay }, (_, index) => ({ ...batch(1, 1, day).cells[0],
-			resourceId: `${String(index).padStart(4, "0")}${"a".repeat(60)}`, model: "m".repeat(64),
-			observerVersion: "1234567890.1234567890.1234567890", piVersion: "1234567890.1234567890.1234567890" }));
+		shard.cells = Array.from({ length: LIMITS.cellsPerDay }, (_, index) => ({
+			...batch(1, 1, day).cells[0],
+			resourceId: `${String(index).padStart(4, "0")}${"a".repeat(60)}`,
+			model: "m".repeat(64),
+			observerVersion: "1234567890.1234567890.1234567890",
+			piVersion: "1234567890.1234567890.1234567890",
+		}));
 		shard.cells.push(overflowCell(batch(1, 1, day).cells[0]));
-		shard.cells.push({ ...overflowCell(batch(1, 1, day).cells[0]), observationStage: "tool_result", counters: {
-			...zero(), readResults: 1, resultUnknown: 1, bodyUnverifiable: 1 } });
-		shard.receipts = Array.from({ length: LIMITS.ownersPerDay }, (_, index) => ({ owner: batch(index + 1).owner, seq: LIMITS.maxSeq }));
+		shard.cells.push({
+			...overflowCell(batch(1, 1, day).cells[0]),
+			observationStage: "tool_result",
+			counters: {
+				...zero(),
+				readResults: 1,
+				resultUnknown: 1,
+				bodyUnverifiable: 1,
+			},
+		});
+		shard.receipts = Array.from({ length: LIMITS.ownersPerDay }, (_, index) => ({
+			owner: batch(index + 1).owner,
+			seq: LIMITS.maxSeq,
+		}));
 		await writeFile(join(root, slotFor(day)), JSON.stringify(shard), { mode: 0o600 });
 	}
 	const before = process.memoryUsage();
@@ -87,12 +127,19 @@ test("absent and empty read capture leave storage unchanged", async () => {
 	assert.deepEqual(await readdir(f.root), []);
 });
 
-test("a shard replaced by a writerless FIFO after inspection refuses without blocking", { skip: process.platform === "win32" }, async () => {
+test("a shard replaced by a writerless FIFO after inspection refuses without blocking", {
+	skip: process.platform === "win32",
+}, async () => {
 	await using f = await fixture();
 	const path = join(f.root, slotFor(TODAY));
 	await mkdir(f.root, { mode: 0o700 });
 	await writeFile(path, JSON.stringify(emptyShard(TODAY)), { mode: 0o600 });
-	const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+	const child = spawnSync(
+		process.execPath,
+		[
+			"--input-type=module",
+			"-e",
+			`
 		import assert from "node:assert/strict";
 		import { execFileSync } from "node:child_process";
 		import fs from "node:fs/promises";
@@ -115,7 +162,14 @@ test("a shard replaced by a writerless FIFO after inspection refuses without blo
 		await assert.rejects(new PillarsStore(root).capture(today), StoreUnavailableError);
 		assert.equal(replaced, true);
 		console.log("fifo-refused");
-	`, new URL("./store.ts", import.meta.url).href, f.root, path, TODAY], { timeout: 5000, encoding: "utf8", maxBuffer: 8192 });
+	`,
+			new URL("./store.ts", import.meta.url).href,
+			f.root,
+			path,
+			TODAY,
+		],
+		{ timeout: 5000, encoding: "utf8", maxBuffer: 8192 },
+	);
 	assert.match(child.stdout, /fifo-installed/);
 	assert.equal(child.error, undefined, child.error?.message);
 	assert.equal(child.status, 0, child.stderr);
@@ -124,7 +178,8 @@ test("a shard replaced by a writerless FIFO after inspection refuses without blo
 
 test("atomic local publication gives coherent snapshots and idempotent receipts", async () => {
 	await using f = await fixture();
-	const input = batch(); input.health = { writeFailures: 2 };
+	const input = batch();
+	input.health = { writeFailures: 2 };
 	assert.equal(await f.store.commit(input, TODAY), "committed");
 	assert.equal(await f.store.commit(input, TODAY), "duplicate");
 	const snapshot = await f.store.capture(TODAY);
@@ -141,13 +196,16 @@ test("atomic local publication gives coherent snapshots and idempotent receipts"
 test("descriptor contention leaves shards intact and close releases the same inode", async () => {
 	await using f = await fixture();
 	await f.store.commit(batch(), TODAY);
-	const path = join(f.root, "store.lock"), before = await lstat(path);
+	const path = join(f.root, "store.lock"),
+		before = await lstat(path);
 	const held = await holdLock(f.root);
 	try {
 		await utimes(path, STALE, STALE);
 		await assert.rejects(f.store.commit(batch(1, 2), TODAY), StoreBusyError);
 		assert.equal((await f.store.capture(TODAY)).shards[TODAY].revision, 1);
-	} finally { await held.close(); }
+	} finally {
+		await held.close();
+	}
 	assert.equal(await f.store.commit(batch(1, 2), TODAY), "committed");
 	assert.equal((await lstat(path)).ino, before.ino);
 });
@@ -155,12 +213,17 @@ test("descriptor contention leaves shards intact and close releases the same ino
 test("duplicate receipts retry directory sync before acknowledgement", async (t) => {
 	await using f = await fixture();
 	const original = fs.open;
-	let attempts = 0, fail = true;
+	let attempts = 0,
+		fail = true;
 	const mocked = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
 		const handle = await original(...args);
 		if (args[0] === f.root) {
 			const sync = handle.sync.bind(handle);
-			handle.sync = async () => { attempts += 1; if (fail) throw new Error("directory sync failed"); await sync(); };
+			handle.sync = async () => {
+				attempts += 1;
+				if (fail) throw new Error("directory sync failed");
+				await sync();
+			};
 		}
 		return handle;
 	});
@@ -173,7 +236,10 @@ test("duplicate receipts retry directory sync before acknowledgement", async (t)
 		assert.equal(await new PillarsStore(f.root).commit(batch(), TODAY), "duplicate");
 		assert.equal(attempts, 3);
 		assert.equal((await f.store.capture(TODAY)).shards[TODAY].cells[0].counters.readRequests, 1);
-	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+	} finally {
+		mocked.mock.restore();
+		syncBuiltinESMExports();
+	}
 });
 
 test("the collector retains its sealed contribution through repeated sync failure and reopened dedupe", async (t) => {
@@ -184,33 +250,55 @@ test("the collector retains its sealed contribution through repeated sync failur
 		const handle = await original(...args);
 		if (args[0] === f.root) {
 			const sync = handle.sync.bind(handle);
-			handle.sync = async () => { if (fail) throw new Error("directory sync failed"); await sync(); };
+			handle.sync = async () => {
+				if (fail) throw new Error("directory sync failed");
+				await sync();
+			};
 		}
 		return handle;
 	});
 	syncBuiltinESMExports();
-	const collector = new Collector({ commit: (input, day, signal) => new PillarsStore(f.root).commit(input, day, signal) }, { now: () => Date.parse(TODAY) });
+	const collector = new Collector(
+		{ commit: (input, day, signal) => new PillarsStore(f.root).commit(input, day, signal) },
+		{ now: () => Date.parse(TODAY) },
+	);
 	try {
 		collector.admit(batch().cells[0]);
-		await collector.flush(true); assert.equal(collector.bufferedEvents, 1);
-		await collector.flush(true); assert.equal(collector.bufferedEvents, 1);
+		await collector.flush(true);
+		assert.equal(collector.bufferedEvents, 1);
+		await collector.flush(true);
+		assert.equal(collector.bufferedEvents, 1);
 		fail = false;
-		await collector.flush(true); assert.equal(collector.bufferedEvents, 0);
+		await collector.flush(true);
+		assert.equal(collector.bufferedEvents, 0);
 		assert.equal((await f.store.capture(TODAY)).shards[TODAY].cells[0].counters.readRequests, 1);
-	} finally { await collector.shutdown(); mocked.mock.restore(); syncBuiltinESMExports(); }
+	} finally {
+		await collector.shutdown();
+		mocked.mock.restore();
+		syncBuiltinESMExports();
+	}
 });
 
 test("a paused publication keeps kernel exclusion regardless of lock age", async (t) => {
 	await using f = await fixture();
 	const original = fs.open;
-	let release = () => {}, entered = () => {};
-	const held = new Promise<void>((resolve) => { release = resolve; });
-	const publishing = new Promise<void>((resolve) => { entered = resolve; });
+	let release = () => {},
+		entered = () => {};
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const publishing = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
 	const mocked = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
 		const handle = await original(...args);
 		if (String(args[0]).endsWith("pending.tmp")) {
 			const sync = handle.sync.bind(handle);
-			handle.sync = async () => { await sync(); entered(); await held; };
+			handle.sync = async () => {
+				await sync();
+				entered();
+				await held;
+			};
 		}
 		return handle;
 	});
@@ -224,7 +312,12 @@ test("a paused publication keeps kernel exclusion regardless of lock age", async
 		assert.equal(await first, "committed");
 		assert.equal(await new PillarsStore(f.root).commit(batch(2), TODAY), "committed");
 		assert.equal((await f.store.capture(TODAY)).shards[TODAY].cells[0].counters.readRequests, 2);
-	} finally { release(); await first.catch(() => {}); mocked.mock.restore(); syncBuiltinESMExports(); }
+	} finally {
+		release();
+		await first.catch(() => {});
+		mocked.mock.restore();
+		syncBuiltinESMExports();
+	}
 });
 
 test("identity loss after rename preserves the published slot and replacement lock", async (t) => {
@@ -240,7 +333,10 @@ test("identity loss after rename preserves the published slot and replacement lo
 		await assert.rejects(f.store.commit(batch(), TODAY), StoreLockIdentityError);
 		assert.equal(await readFile(join(f.root, "store.lock"), "utf8"), "replacement");
 		assert.equal(JSON.parse(await readFile(join(f.root, slotFor(TODAY)), "utf8")).receipts[0].seq, 1);
-	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+	} finally {
+		mocked.mock.restore();
+		syncBuiltinESMExports();
+	}
 });
 
 test("read capture rejects unresolved temporary state; the next writer reconciles it", async () => {
@@ -263,7 +359,9 @@ test("a held descriptor preserves pending bytes until its owner releases", async
 		await assert.rejects(f.store.capture(TODAY), /store_unreadable/);
 		await assert.rejects(f.store.commit(batch(), TODAY), StoreBusyError);
 		assert.equal(await readFile(join(f.root, "pending.tmp"), "utf8"), "incomplete");
-	} finally { await held.close(); }
+	} finally {
+		await held.close();
+	}
 	assert.equal(await f.store.commit(batch(), TODAY), "duplicate");
 });
 
@@ -285,7 +383,13 @@ test("untrusted files fail the complete capture instead of a partial overview", 
 	await f.store.commit(batch(), TODAY);
 	const file = join(f.root, slotFor(TODAY));
 	const valid = await readFile(file);
-	for (const corrupt of ["{", '{"value":NaN}', '{"value":Infinity}', '{"value":1e999}', JSON.stringify({ ...emptyShard(TODAY), extra: true })]) {
+	for (const corrupt of [
+		"{",
+		'{"value":NaN}',
+		'{"value":Infinity}',
+		'{"value":1e999}',
+		JSON.stringify({ ...emptyShard(TODAY), extra: true }),
+	]) {
 		await writeFile(file, corrupt);
 		await assert.rejects(f.store.capture(TODAY), /store_corrupt/);
 	}
@@ -307,7 +411,12 @@ test("bounded decoding rejects deep, excessive, and oversized scalar JSON before
 	await using f = await fixture();
 	await f.store.commit(batch(), TODAY);
 	const file = join(f.root, slotFor(TODAY));
-	for (const raw of ["[".repeat(10000) + "]".repeat(10000), `[${"0,".repeat(250000)}0]`, JSON.stringify({ value: "x".repeat(1024 * 1024) }), "{\"day\":\"\\ufffd\"}"]) {
+	for (const raw of [
+		"[".repeat(10000) + "]".repeat(10000),
+		`[${"0,".repeat(250000)}0]`,
+		JSON.stringify({ value: "x".repeat(1024 * 1024) }),
+		'{"day":"\\ufffd"}',
+	]) {
 		await writeFile(file, raw);
 		await assert.rejects(f.store.capture(TODAY), /store_corrupt/);
 	}
@@ -318,13 +427,22 @@ test("bounded decoding rejects deep, excessive, and oversized scalar JSON before
 test("heap, RSS, and heap-reserve refusals release the transaction with a fixed error", async (t) => {
 	await using f = await fixture();
 	await f.store.commit(batch(), TODAY);
-	for (const [field, increase] of [["heapUsed", 193 * 1024 * 1024], ["rss", 257 * 1024 * 1024], ["heapUsed", Number.MAX_SAFE_INTEGER]] as const) {
+	for (const [field, increase] of [
+		["heapUsed", 193 * 1024 * 1024],
+		["rss", 257 * 1024 * 1024],
+		["heapUsed", Number.MAX_SAFE_INTEGER],
+	] as const) {
 		const baseline = process.memoryUsage();
 		let calls = 0;
-		const mocked = t.mock.method(process, "memoryUsage", () => ({ ...baseline,
-			[field]: baseline[field] + (increase === Number.MAX_SAFE_INTEGER || calls++ >= 2 ? increase : 0) }));
-		try { await assert.rejects(f.store.capture(TODAY), /response_overflow/); }
-		finally { mocked.mock.restore(); }
+		const mocked = t.mock.method(process, "memoryUsage", () => ({
+			...baseline,
+			[field]: baseline[field] + (increase === Number.MAX_SAFE_INTEGER || calls++ >= 2 ? increase : 0),
+		}));
+		try {
+			await assert.rejects(f.store.capture(TODAY), /response_overflow/);
+		} finally {
+			mocked.mock.restore();
+		}
 		assert.equal((await f.store.capture(TODAY)).shards[TODAY].revision, 1);
 	}
 });
@@ -332,7 +450,8 @@ test("heap, RSS, and heap-reserve refusals release the transaction with a fixed 
 test("a cancelled transaction rejects without acquiring another lease", async () => {
 	await using f = await fixture();
 	await f.store.commit(batch(), TODAY);
-	const cancelled = new AbortController(); cancelled.abort();
+	const cancelled = new AbortController();
+	cancelled.abort();
 	await using empty = await fixture();
 	await assert.rejects(empty.store.commit(batch(), TODAY, cancelled.signal), { name: "AbortError" });
 	await assert.rejects(lstat(empty.root), { code: "ENOENT" });
@@ -347,7 +466,15 @@ test("kernel death releases exclusion without deleting the lock inode", { timeou
 	await using f = await fixture();
 	await mkdir(f.root, { mode: 0o700 });
 	const path = join(f.root, "store.lock");
-	const child = spawn(process.execPath, ["-e", `const fs=require('node:fs'); const fd=fs.openSync(process.argv[1],fs.constants.O_RDWR|fs.constants.O_CREAT|fs.constants.O_NONBLOCK|fs.constants.O_NOFOLLOW|0x20,0o600);process.send('ready');process.on('message',()=>{});`, path], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+	const child = spawn(
+		process.execPath,
+		[
+			"-e",
+			`const fs=require('node:fs'); const fd=fs.openSync(process.argv[1],fs.constants.O_RDWR|fs.constants.O_CREAT|fs.constants.O_NONBLOCK|fs.constants.O_NOFOLLOW|0x20,0o600);process.send('ready');process.on('message',()=>{});`,
+			path,
+		],
+		{ stdio: ["ignore", "ignore", "pipe", "ipc"] },
+	);
 	try {
 		await once(child, "message");
 		const before = await lstat(path);
@@ -357,13 +484,16 @@ test("kernel death releases exclusion without deleting the lock inode", { timeou
 		await closed;
 		assert.equal(await f.store.commit(batch(), TODAY), "committed");
 		assert.equal((await lstat(path)).ino, before.ino);
-	} finally { child.kill("SIGKILL"); }
+	} finally {
+		child.kill("SIGKILL");
+	}
 });
 
 test("safe lock bodies, modes and aliases remain unchanged across acquisition", async () => {
 	await using f = await fixture();
 	await mkdir(f.root, { mode: 0o700 });
-	const path = join(f.root, "store.lock"), alias = join(f.directory, "alias");
+	const path = join(f.root, "store.lock"),
+		alias = join(f.directory, "alias");
 	await writeFile(path, "metadata", { mode: 0o600 });
 	const before = await lstat(path);
 	await fs.link(path, alias);
@@ -372,8 +502,11 @@ test("safe lock bodies, modes and aliases remain unchanged across acquisition", 
 	assert.equal(await readFile(path, "utf8"), "metadata");
 	assert.equal((await lstat(path)).ino, before.ino);
 	const held = await open(alias, constants.O_RDWR | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20);
-	try { await assert.rejects(f.store.commit(batch(1, 2), TODAY), StoreBusyError); }
-	finally { await held.close(); }
+	try {
+		await assert.rejects(f.store.commit(batch(1, 2), TODAY), StoreBusyError);
+	} finally {
+		await held.close();
+	}
 	for (const mode of [0o400, 0o200, 0, 0o640, 0o644, 0o660]) {
 		await chmod(path, mode);
 		await assert.rejects(f.store.commit(batch(1, 2), TODAY), /store_unreadable/);
@@ -405,17 +538,23 @@ test("unsupported platforms refuse writes without creating storage and permit re
 	assert.ok(platform);
 	Object.defineProperty(process, "platform", { value: "linux", configurable: true });
 	try {
-		await assert.rejects(f.store.commit(batch(), TODAY), { name: "StorePlatformError", message: "Pillars aggregate writes require macOS." });
+		await assert.rejects(f.store.commit(batch(), TODAY), {
+			name: "StorePlatformError",
+			message: "Pillars aggregate writes require macOS.",
+		});
 		assert.ok(new StorePlatformError() instanceof Error);
 		assert.deepEqual(await f.store.capture(TODAY), { shards: {} });
 		await assert.rejects(lstat(f.root), { code: "ENOENT" });
-	} finally { Object.defineProperty(process, "platform", platform); }
+	} finally {
+		Object.defineProperty(process, "platform", platform);
+	}
 });
 
 test("identity loss before publication retains the sealed batch and successor pending state", async (t) => {
 	await using f = await fixture();
 	const original = fs.open;
-	let intercept = true, calls = 0;
+	let intercept = true,
+		calls = 0;
 	let successor: Awaited<ReturnType<typeof lstat>> | undefined;
 	const warnings: string[] = [];
 	const mocked = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
@@ -434,13 +573,23 @@ test("identity loss before publication retains the sealed batch and successor pe
 		return handle;
 	});
 	syncBuiltinESMExports();
-	const collector = new Collector({ commit: async (input, day, signal) => { calls++; return f.store.commit(input, day, signal); } }, { now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) });
+	const collector = new Collector(
+		{
+			commit: async (input, day, signal) => {
+				calls++;
+				return f.store.commit(input, day, signal);
+			},
+		},
+		{ now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) },
+	);
 	try {
 		collector.admit(batch().cells[0]);
 		await collector.flush(true);
 		assert.equal(collector.bufferedEvents, 1);
 		assert.deepEqual(warnings, [new StoreLockIdentityError().message]);
-		await collector.flush(true); await collector.shutdown(); await collector.shutdown();
+		await collector.flush(true);
+		await collector.shutdown();
+		await collector.shutdown();
 		assert.equal(calls, 1);
 		assert.equal(collector.bufferedEvents, 1);
 		assert.equal(await readFile(join(f.root, "pending.tmp"), "utf8"), "successor");
@@ -451,7 +600,10 @@ test("identity loss before publication retains the sealed batch and successor pe
 		const shard = JSON.parse(await readFile(join(f.root, slotFor(TODAY)), "utf8"));
 		assert.equal(shard.cells[0].counters.readRequests, 1);
 		assert.deepEqual(shard.receipts, [{ owner: batch(2).owner, seq: 1 }]);
-	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+	} finally {
+		mocked.mock.restore();
+		syncBuiltinESMExports();
+	}
 });
 
 test("missing lock identity stops publication without recreating its pathname", async (t) => {
@@ -461,7 +613,10 @@ test("missing lock identity stops publication without recreating its pathname", 
 		const handle = await original(...args);
 		if (String(args[0]).endsWith("pending.tmp")) {
 			const sync = handle.sync.bind(handle);
-			handle.sync = async () => { await sync(); await rm(join(f.root, "store.lock")); };
+			handle.sync = async () => {
+				await sync();
+				await rm(join(f.root, "store.lock"));
+			};
 		}
 		return handle;
 	});
@@ -470,7 +625,10 @@ test("missing lock identity stops publication without recreating its pathname", 
 		await assert.rejects(f.store.commit(batch(), TODAY), StoreLockIdentityError);
 		await assert.rejects(lstat(join(f.root, "store.lock")), { code: "ENOENT" });
 		await assert.rejects(lstat(join(f.root, slotFor(TODAY))), { code: "ENOENT" });
-	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+	} finally {
+		mocked.mock.restore();
+		syncBuiltinESMExports();
+	}
 });
 
 test("identity loss after watermark publication does not remove expired slots", async (t) => {
@@ -479,24 +637,32 @@ test("identity loss after watermark publication does not remove expired slots", 
 	await f.store.commit(batch(1, 1, old), old);
 	const original = syncFs.renameSync;
 	const mocked = t.mock.method(syncFs, "renameSync", (...args: Parameters<typeof syncFs.renameSync>) => {
-		original(...args); syncFs.unlinkSync(join(f.root, "store.lock"));
+		original(...args);
+		syncFs.unlinkSync(join(f.root, "store.lock"));
 	});
 	syncBuiltinESMExports();
 	try {
 		await assert.rejects(f.store.commit(batch(2), TODAY), StoreLockIdentityError);
 		assert.ok((await lstat(join(f.root, slotFor(old)))).isFile());
 		assert.ok((await lstat(join(f.root, slotFor(TODAY)))).isFile());
-	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+	} finally {
+		mocked.mock.restore();
+		syncBuiltinESMExports();
+	}
 });
 
 test("a cancelled publication closes its lease after the protected operation", async (t) => {
 	await using f = await fixture();
-	const controller = new AbortController(), original = fs.open;
+	const controller = new AbortController(),
+		original = fs.open;
 	const mocked = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
 		const handle = await original(...args);
 		if (String(args[0]).endsWith("pending.tmp")) {
 			const sync = handle.sync.bind(handle);
-			handle.sync = async () => { controller.abort(); await sync(); };
+			handle.sync = async () => {
+				controller.abort();
+				await sync();
+			};
 		}
 		return handle;
 	});
@@ -504,17 +670,26 @@ test("a cancelled publication closes its lease after the protected operation", a
 	try {
 		await assert.rejects(f.store.commit(batch(), TODAY, controller.signal), { name: "AbortError" });
 		assert.equal(await new PillarsStore(f.root).commit(batch(), TODAY), "duplicate");
-	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+	} finally {
+		mocked.mock.restore();
+		syncBuiltinESMExports();
+	}
 });
 
 test("collector contention defers twice and reports the third consecutive busy attempt once", async (t) => {
 	let busy = true;
-	const inputs: Batch[] = [], warnings: string[] = [];
-	const collector = new Collector({ commit: async (input) => {
-		inputs.push(input);
-		if (busy) throw new StoreBusyError();
-		return "committed";
-	} }, { now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) });
+	const inputs: Batch[] = [],
+		warnings: string[] = [];
+	const collector = new Collector(
+		{
+			commit: async (input) => {
+				inputs.push(input);
+				if (busy) throw new StoreBusyError();
+				return "committed";
+			},
+		},
+		{ now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) },
+	);
 	const incidents = t.mock.method(collector, "incident");
 	collector.admit(batch().cells[0]);
 	await collector.observed();
@@ -525,8 +700,13 @@ test("collector contention defers twice and reports the third consecutive busy a
 	assert.deepEqual(warnings, []);
 	assert.equal(incidents.mock.callCount(), 0);
 	await collector.flush(true);
-	assert.deepEqual(warnings, ["Pillars aggregate writer is busy. The next publication event retries. This writer never removes the lock file. Do not remove it."]);
-	assert.deepEqual(incidents.mock.calls.map((call) => call.arguments), [["writeFailures"]]);
+	assert.deepEqual(warnings, [
+		"Pillars aggregate writer is busy. The next publication event retries. This writer never removes the lock file. Do not remove it.",
+	]);
+	assert.deepEqual(
+		incidents.mock.calls.map((call) => call.arguments),
+		[["writeFailures"]],
+	);
 	await collector.flush(true);
 	assert.equal(warnings.length, 1);
 	assert.equal(incidents.mock.callCount(), 1);
@@ -550,22 +730,40 @@ test("collector contention defers twice and reports the third consecutive busy a
 test("a busy shutdown probe reports its lost tail without another attempt", async (t) => {
 	let calls = 0;
 	const warnings: string[] = [];
-	const collector = new Collector({ commit: async () => { calls++; throw new StoreBusyError(); } },
-		{ now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) });
+	const collector = new Collector(
+		{
+			commit: async () => {
+				calls++;
+				throw new StoreBusyError();
+			},
+		},
+		{ now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) },
+	);
 	const incidents = t.mock.method(collector, "incident");
 	collector.admit(batch().cells[0]);
 	await collector.shutdown();
 	await collector.shutdown();
 	await collector.flush(true);
 	assert.equal(calls, 1);
-	assert.deepEqual(incidents.mock.calls.map((call) => call.arguments), [["writeFailures"]]);
-	assert.deepEqual(warnings, ["Pillars shutdown publication is busy. The unpublished delta is lost when this collector closes."]);
+	assert.deepEqual(
+		incidents.mock.calls.map((call) => call.arguments),
+		[["writeFailures"]],
+	);
+	assert.deepEqual(warnings, [
+		"Pillars shutdown publication is busy. The unpublished delta is lost when this collector closes.",
+	]);
 });
 
 test("unsupported publication emits one diagnostic per collector", async () => {
 	const warnings: string[] = [];
-	const collector = new Collector({ commit: async () => { throw new StorePlatformError(); } },
-		{ now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) });
+	const collector = new Collector(
+		{
+			commit: async () => {
+				throw new StorePlatformError();
+			},
+		},
+		{ now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) },
+	);
 	collector.admit(batch().cells[0]);
 	await collector.flush(true);
 	await collector.flush(true);
@@ -576,7 +774,8 @@ test("unsupported publication emits one diagnostic per collector", async () => {
 test("identity loss during scan blocks collector retries without recreating the lock", async (t) => {
 	await using f = await fixture();
 	const original = fs.lstat;
-	let removed = false, calls = 0;
+	let removed = false,
+		calls = 0;
 	const warnings: string[] = [];
 	const mocked = t.mock.method(fs, "lstat", async (...args: Parameters<typeof fs.lstat>) => {
 		if (args[0] === join(f.root, "store.lock") && !removed) {
@@ -586,7 +785,15 @@ test("identity loss during scan blocks collector retries without recreating the 
 		return original(...args);
 	});
 	syncBuiltinESMExports();
-	const collector = new Collector({ commit: async (input, day, signal) => { calls++; return f.store.commit(input, day, signal); } }, { now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) });
+	const collector = new Collector(
+		{
+			commit: async (input, day, signal) => {
+				calls++;
+				return f.store.commit(input, day, signal);
+			},
+		},
+		{ now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) },
+	);
 	try {
 		collector.admit(batch().cells[0]);
 		await collector.flush(true);
@@ -597,7 +804,10 @@ test("identity loss during scan blocks collector retries without recreating the 
 		assert.deepEqual(warnings, [new StoreLockIdentityError().message]);
 		await assert.rejects(lstat(join(f.root, "store.lock")), { code: "ENOENT" });
 		await assert.rejects(lstat(join(f.root, slotFor(TODAY))), { code: "ENOENT" });
-	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+	} finally {
+		mocked.mock.restore();
+		syncBuiltinESMExports();
+	}
 });
 
 test("pending recovery checks the current lock identity before removal", async (t) => {
@@ -620,19 +830,35 @@ test("pending recovery checks the current lock identity before removal", async (
 		await assert.rejects(f.store.commit(batch(1, 2), TODAY), StoreLockIdentityError);
 		assert.equal(await readFile(join(f.root, "pending.tmp"), "utf8"), "unpublished");
 		assert.equal(await readFile(join(f.root, "store.lock"), "utf8"), "successor");
-	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+	} finally {
+		mocked.mock.restore();
+		syncBuiltinESMExports();
+	}
 });
 
 test("an unlink after the identity check still permits a split-inode publication", async (t) => {
 	await using f = await fixture();
-	const originalStat = syncFs.lstatSync, originalRename = syncFs.renameSync;
-	let replacement: number | undefined, publications = 0;
-	const rename = t.mock.method(syncFs, "renameSync", (...args: Parameters<typeof syncFs.renameSync>) => { publications++; originalRename(...args); });
+	const originalStat = syncFs.lstatSync,
+		originalRename = syncFs.renameSync;
+	let replacement: number | undefined,
+		publications = 0;
+	const rename = t.mock.method(syncFs, "renameSync", (...args: Parameters<typeof syncFs.renameSync>) => {
+		publications++;
+		originalRename(...args);
+	});
 	const stat = t.mock.method(syncFs, "lstatSync", (...args: Parameters<typeof syncFs.lstatSync>) => {
 		const info = originalStat(...args);
-		if (args[0] === join(f.root, "store.lock") && replacement === undefined && syncFs.existsSync(join(f.root, "pending.tmp"))) {
+		if (
+			args[0] === join(f.root, "store.lock") &&
+			replacement === undefined &&
+			syncFs.existsSync(join(f.root, "pending.tmp"))
+		) {
 			syncFs.unlinkSync(join(f.root, "store.lock"));
-			replacement = syncFs.openSync(join(f.root, "store.lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20, 0o600);
+			replacement = syncFs.openSync(
+				join(f.root, "store.lock"),
+				constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20,
+				0o600,
+			);
 			const candidate = join(f.directory, "candidate");
 			syncFs.writeFileSync(candidate, "successor publication", { mode: 0o600 });
 			syncFs.renameSync(candidate, join(f.root, slotFor(TODAY)));
@@ -645,7 +871,9 @@ test("an unlink after the identity check still permits a split-inode publication
 		assert.equal(publications, 2);
 		assert.equal(JSON.parse(await readFile(join(f.root, slotFor(TODAY)), "utf8")).receipts[0].owner, batch().owner);
 	} finally {
-		stat.mock.restore(); rename.mock.restore(); syncBuiltinESMExports();
+		stat.mock.restore();
+		rename.mock.restore();
+		syncBuiltinESMExports();
 		if (replacement !== undefined) syncFs.closeSync(replacement);
 	}
 });
@@ -653,14 +881,19 @@ test("an unlink after the identity check still permits a split-inode publication
 test("maximum retained cells and receipts pass the bounded filesystem capture", { timeout: 60000 }, async (t) => {
 	await using f = await fixture();
 	const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "--capacity-worker", f.root], {
-		stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+		stdio: ["ignore", "pipe", "pipe"],
+		windowsHide: true,
 	});
 	let stdout = "";
 	let stderr = "";
 	assert.ok(child.stdout);
 	assert.ok(child.stderr);
-	child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-	child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+	child.stdout.on("data", (chunk) => {
+		stdout += String(chunk);
+	});
+	child.stderr.on("data", (chunk) => {
+		stderr += String(chunk);
+	});
 	try {
 		const closed = once(child, "close");
 		const timer = setTimeout(() => child.kill("SIGKILL"), 45000);
@@ -670,7 +903,14 @@ test("maximum retained cells and receipts pass the bounded filesystem capture", 
 		const result = JSON.parse(stdout);
 		assert.equal(result.cells, 61500);
 		assert.equal(result.receipts, 122880);
-		t.diagnostic(JSON.stringify({ platform: result.platform,
-			heapDeltaBytes: result.heapDeltaBytes, rssDeltaBytes: result.rssDeltaBytes }));
-	} finally { child.kill("SIGKILL"); }
+		t.diagnostic(
+			JSON.stringify({
+				platform: result.platform,
+				heapDeltaBytes: result.heapDeltaBytes,
+				rssDeltaBytes: result.rssDeltaBytes,
+			}),
+		);
+	} finally {
+		child.kill("SIGKILL");
+	}
 });

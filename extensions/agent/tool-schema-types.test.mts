@@ -8,7 +8,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createAgentContribution, type AgentContributionHost } from "./durable-agents.ts";
 import registerAgentExtension from "./index.ts";
 
-interface DeclaredTool { readonly name: string; readonly parameters: unknown }
+interface DeclaredTool {
+	readonly name: string;
+	readonly parameters: unknown;
+}
 
 /**
  * Some providers reject a tool schema whose parameters root is not `type: "object"`
@@ -21,10 +24,12 @@ function untypedNodes(node: unknown, path: string, out: string[]): void {
 	if (node === null || typeof node !== "object") return;
 	const schema = node as Record<string, unknown>;
 	if (schema.type === undefined) out.push(path || "(root)");
-	for (const [name, child] of Object.entries((schema.properties ?? {}) as Record<string, unknown>)) untypedNodes(child, `${path}.properties.${name}`, out);
+	for (const [name, child] of Object.entries((schema.properties ?? {}) as Record<string, unknown>))
+		untypedNodes(child, `${path}.properties.${name}`, out);
 	if (schema.items !== undefined) untypedNodes(schema.items, `${path}.items`, out);
 	for (const branch of ["anyOf", "oneOf", "allOf"] as const) {
-		for (const [index, child] of ((schema[branch] ?? []) as unknown[]).entries()) untypedNodes(child, `${path}.${branch}[${index}]`, out);
+		for (const [index, child] of ((schema[branch] ?? []) as unknown[]).entries())
+			untypedNodes(child, `${path}.${branch}[${index}]`, out);
 	}
 }
 
@@ -32,7 +37,8 @@ function collectViolations(tools: readonly DeclaredTool[], surface: string): str
 	const violations: string[] = [];
 	for (const tool of tools) {
 		const root = tool.parameters as Record<string, unknown>;
-		if (root.type !== "object") violations.push(`${surface} ${tool.name}: parameters root type is ${JSON.stringify(root.type)}`);
+		if (root.type !== "object")
+			violations.push(`${surface} ${tool.name}: parameters root type is ${JSON.stringify(root.type)}`);
 		const nodes: string[] = [];
 		untypedNodes(root, "", nodes);
 		for (const node of nodes) violations.push(`${surface} ${tool.name}: untyped schema at ${node}`);
@@ -56,14 +62,19 @@ it("declares an explicit JSON Schema type on every agent tool parameter, ordinar
 	await registerAgentExtension({
 		events: { on: () => () => {}, emit() {} },
 		on() {},
-		registerTool(tool: DeclaredTool) { ordinary.push(tool); },
+		registerTool(tool: DeclaredTool) {
+			ordinary.push(tool);
+		},
 		registerCommand() {},
 		registerShortcut() {},
 		registerMessageRenderer() {},
 		registerToolRenderer() {},
 	} as unknown as ExtensionAPI);
 
-	const contribution = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts" });
+	const contribution = createAgentContribution({
+		configureSettings: () => {},
+		source: "/abs/extensions/agent/index.ts",
+	});
 	const extension = contribution.create({
 		onClose() {},
 		durable: Durable,
@@ -74,10 +85,24 @@ it("declares an explicit JSON Schema type on every agent tool parameter, ordinar
 	} as unknown as AgentContributionHost) as Durable.Extension & { tools?: DeclaredTool[] };
 	const native = extension.tools ?? [];
 
-	for (const [surface, tools] of [["ordinary", ordinary], ["native", native]] as const) {
+	for (const [surface, tools] of [
+		["ordinary", ordinary],
+		["native", native],
+	] as const) {
 		assert.ok(tools.length > 0, `${surface} surface exposes agent tools`);
-		for (const name of ["agent_spawn", "agent_send", "agent_configure", "agent_inspect", "agent_profile", "agent_collaborate", "agent_status"]) {
-			assert.ok(tools.some((tool) => tool.name === name), `${surface} surface exposes ${name}`);
+		for (const name of [
+			"agent_spawn",
+			"agent_send",
+			"agent_configure",
+			"agent_inspect",
+			"agent_profile",
+			"agent_collaborate",
+			"agent_status",
+		]) {
+			assert.ok(
+				tools.some((tool) => tool.name === name),
+				`${surface} surface exposes ${name}`,
+			);
 		}
 	}
 	assert.deepEqual([...collectViolations(ordinary, "ordinary"), ...collectViolations(native, "native")], []);

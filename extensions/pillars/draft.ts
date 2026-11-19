@@ -8,21 +8,24 @@ export const DraftSchema = str({
 	minLength: 1,
 	description: `Concrete agent-authored proposal to assess after this source read. At most 8192 characters (${CHARACTER_UNIT}), enforced by the extension. The handler rejects blank text and malformed Unicode with specific errors. Retained in native history, not private scratch.`,
 });
-export const DRAFT_GUIDANCE =
-	`Before a consequential decision, action, or answer, include your concrete proposal as draft to check it before delivery; do not wait for an operator cue. A successful source read delivers an assessment task after the tool results for you to apply in the ordinary continuation. Preserve routine execution and exact-output tasks without added ceremony. The optional draft accepts at most 8192 characters (${CHARACTER_UNIT}) and stays in native history, not private scratch. Source JSON remains unchanged.`;
+export const DRAFT_GUIDANCE = `Before a consequential decision, action, or answer, include your concrete proposal as draft to check it before delivery; do not wait for an operator cue. A successful source read delivers an assessment task after the tool results for you to apply in the ordinary continuation. Preserve routine execution and exact-output tasks without added ceremony. The optional draft accepts at most 8192 characters (${CHARACTER_UNIT}) and stays in native history, not private scratch. Source JSON remains unchanged.`;
 
 export class DraftInputError extends Error {
 	constructor(condition: string, size?: { characters: number; bytes: number }) {
-		super(`draft: ${condition}.${size ? ` Measured ${size.characters} characters (${CHARACTER_UNIT}), ${size.bytes} UTF-8 bytes.` : ""} Use a nonblank, well-formed Unicode string of at most ${MAX_DRAFT_CHARACTERS} characters (${CHARACTER_UNIT}), or omit draft for source access only. Draft contents are withheld.`);
+		super(
+			`draft: ${condition}.${size ? ` Measured ${size.characters} characters (${CHARACTER_UNIT}), ${size.bytes} UTF-8 bytes.` : ""} Use a nonblank, well-formed Unicode string of at most ${MAX_DRAFT_CHARACTERS} characters (${CHARACTER_UNIT}), or omit draft for source access only. Draft contents are withheld.`,
+		);
 	}
 }
 
 function attached(point: number): boolean {
-	return (point >= 0x0300 && point <= 0x036f) ||
+	return (
+		(point >= 0x0300 && point <= 0x036f) ||
 		(point >= 0x1ab0 && point <= 0x1aff) ||
 		(point >= 0x1dc0 && point <= 0x1dff) ||
 		(point >= 0xfe20 && point <= 0xfe2f) ||
-		(point >= 0xfe00 && point <= 0xfe0f);
+		(point >= 0xfe00 && point <= 0xfe0f)
+	);
 }
 
 function attachedEnd(value: string, index: number): number {
@@ -38,7 +41,7 @@ function attachedEnd(value: string, index: number): number {
 function characterCount(value: string): number {
 	let count = 0;
 	let index = 0;
-	const width = (point: number) => point > 0xffff ? 2 : 1;
+	const width = (point: number) => (point > 0xffff ? 2 : 1);
 	const flag = (point: number) => point >= 0x1f1e6 && point <= 0x1f1ff;
 	while (index < value.length) {
 		const first = value.codePointAt(index);
@@ -59,8 +62,13 @@ function characterCount(value: string): number {
 }
 
 export function splitDraft(input: unknown): { source: unknown; draft?: string } {
-	if (!input || typeof input !== "object" || Array.isArray(input) ||
-		![Object.prototype, null].includes(Object.getPrototypeOf(input)) || !Object.hasOwn(input, "draft"))
+	if (
+		!input ||
+		typeof input !== "object" ||
+		Array.isArray(input) ||
+		![Object.prototype, null].includes(Object.getPrototypeOf(input)) ||
+		!Object.hasOwn(input, "draft")
+	)
 		return { source: input };
 	const { draft, ...source } = input as Record<string, unknown>;
 	if (typeof draft !== "string") throw new DraftInputError("expected a string; received a non-string value");

@@ -8,15 +8,34 @@ import { RequestContextDoc, type RequestContext } from "./request-context.ts";
 import { retainedIntent } from "./delivery-store.ts";
 
 function interventionConversation(storageId: string, sender: string, recipient: string): ConversationId {
-	if (!communicationIdentity(sender) || !communicationIdentity(recipient)) throw new Error("Report intervention requires canonical sender and recipient identities");
-	const conversationId = sender === storageId ? 1 : sender.startsWith(`${storageId}:`) ? Number(sender.slice(storageId.length + 1)) : Number.NaN;
-	if (!Number.isSafeInteger(conversationId) || conversationId < 1 || canonicalIdentity(storageId, conversationId as ConversationId) !== sender) throw new Error("Report intervention sender is not in this storage");
+	if (!communicationIdentity(sender) || !communicationIdentity(recipient))
+		throw new Error("Report intervention requires canonical sender and recipient identities");
+	const conversationId =
+		sender === storageId
+			? 1
+			: sender.startsWith(`${storageId}:`)
+				? Number(sender.slice(storageId.length + 1))
+				: Number.NaN;
+	if (
+		!Number.isSafeInteger(conversationId) ||
+		conversationId < 1 ||
+		canonicalIdentity(storageId, conversationId as ConversationId) !== sender
+	)
+		throw new Error("Report intervention sender is not in this storage");
 	return conversationId as ConversationId;
 }
 
-async function recipientInput(tx: Tx, conversationId: ConversationId, sender: string, recipient: string, inputId: SubmissionId, routes: readonly RequestContext[]): Promise<ResultReference | undefined> {
+async function recipientInput(
+	tx: Tx,
+	conversationId: ConversationId,
+	sender: string,
+	recipient: string,
+	inputId: SubmissionId,
+	routes: readonly RequestContext[],
+): Promise<ResultReference | undefined> {
 	const input = await tx.submission(inputId);
-	if (input?.type !== "input" || input.conversationId !== conversationId || input.requestId === undefined) return undefined;
+	if (input?.type !== "input" || input.conversationId !== conversationId || input.requestId === undefined)
+		return undefined;
 	const intent = await retainedIntent(tx, conversationId, input.requestId);
 	const route = routes.find((item) => item.requestId === input.requestId);
 	const owner = intent?.ownerId ?? route?.replyTo;
@@ -25,10 +44,17 @@ async function recipientInput(tx: Tx, conversationId: ConversationId, sender: st
 	return { sessionId: sender, submissionId: input.id, requestId: input.requestId };
 }
 
-export async function validateReportIntervention(tx: Tx, storageId: string, sender: string, recipient: string, intervention: ReportIntervention): Promise<void> {
+export async function validateReportIntervention(
+	tx: Tx,
+	storageId: string,
+	sender: string,
+	recipient: string,
+	intervention: ReportIntervention,
+): Promise<void> {
 	const conversationId = interventionConversation(storageId, sender, recipient);
 	const live = await tx.doc(LiveDoc, conversationId);
-	if (live.run?.taskId !== intervention.producerRunId) throw new Error("Report intervention does not identify the current producer run");
+	if (live.run?.taskId !== intervention.producerRunId)
+		throw new Error("Report intervention does not identify the current producer run");
 	const routes = await tx.doc(RequestContextDoc, conversationId);
 	const associated: ResultReference[] = [];
 	for (const inputId of live.run.inputs) {
@@ -36,7 +62,9 @@ export async function validateReportIntervention(tx: Tx, storageId: string, send
 		if (input === undefined) continue;
 		const supplied = intervention.producerResults.find((result) => result.submissionId === inputId);
 		associated.push(input);
-		if (supplied === undefined || supplied.sessionId !== sender || supplied.requestId !== input.requestId) throw new Error("Report intervention omits or disagrees with a recipient input");
+		if (supplied === undefined || supplied.sessionId !== sender || supplied.requestId !== input.requestId)
+			throw new Error("Report intervention omits or disagrees with a recipient input");
 	}
-	if (associated.length === 0 || associated.length !== intervention.producerResults.length) throw new Error("Report intervention includes another run, recipient or input");
+	if (associated.length === 0 || associated.length !== intervention.producerResults.length)
+		throw new Error("Report intervention includes another run, recipient or input");
 }

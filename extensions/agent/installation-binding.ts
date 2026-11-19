@@ -43,7 +43,8 @@ export function bindInstallationPackages(packageDir: string, sourceRoot: URL): v
 	const scope = sourceRoot.href.endsWith("/") ? sourceRoot.href : `${sourceRoot.href}/`;
 	registerHooks({
 		resolve(specifier, context, nextResolve) {
-			if (!isInstallationImport(specifier) || context.parentURL?.startsWith(scope) !== true) return nextResolve(specifier, context);
+			if (!isInstallationImport(specifier) || context.parentURL?.startsWith(scope) !== true)
+				return nextResolve(specifier, context);
 			return nextResolve(specifier, { ...context, parentURL: installation });
 		},
 	});

@@ -10,7 +10,8 @@ import type { AgentConversationPage } from "./dashboard-types.ts";
 type Fixture = ReturnType<typeof fixture>;
 
 /** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
-const visible = (f: Fixture) => f.ui.render(f.tui.terminal.columns).map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+const visible = (f: Fixture) =>
+	f.ui.render(f.tui.terminal.columns).map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
 const shown = (f: Fixture) => visible(f).join("\n");
 
 function press(f: Fixture, ...keys: string[]): void {
@@ -29,7 +30,20 @@ function clickLabel(f: Fixture, label: string): void {
 	for (let y = lines.length - 1; y >= 0; y--) {
 		const x = lines[y]?.indexOf(label) ?? -1;
 		if (x < 0) continue;
-		const event: TuiMouseEvent = { type: "click", button: "left", x: x + 1, y, screenX: x + 1, screenY: y, width: f.tui.terminal.columns, height: f.tui.terminal.rows, shift: false, alt: false, ctrl: false, clickCount: 1 };
+		const event: TuiMouseEvent = {
+			type: "click",
+			button: "left",
+			x: x + 1,
+			y,
+			screenX: x + 1,
+			screenY: y,
+			width: f.tui.terminal.columns,
+			height: f.tui.terminal.rows,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 1,
+		};
 		f.ui.handleMouse(event);
 		return;
 	}
@@ -75,9 +89,14 @@ for (const outcome of ["resolves", "fails"] as const) {
 		const panels = new Promise<readonly OwnerView[]>((resolve, reject) => {
 			finish = (opened) => (opened ? resolve([destination("Stash")]) : reject(new Error("host unavailable")));
 		});
-		const f = fixture(140, 40, source([row("one", { state: "idle", name: "Alpha" }), row("two", { state: "idle", name: "Bravo" })]), {
-			panels: () => panels,
-		});
+		const f = fixture(
+			140,
+			40,
+			source([row("one", { state: "idle", name: "Alpha" }), row("two", { state: "idle", name: "Bravo" })]),
+			{
+				panels: () => panels,
+			},
+		);
 		try {
 			await turn();
 			await turn();
@@ -104,18 +123,29 @@ for (const outcome of ["resolves", "fails"] as const) {
 
 it("New, leave, select B, then onCreated keeps B and its draft and retains the created record", async () => {
 	const ordinary = "11111111-1111-1111-1111-111111111111";
-	const rows = [row("one", { name: "Alpha", creatingOwnerId: ordinary }), row("two", { name: "Bravo", creatingOwnerId: ordinary })];
+	const rows = [
+		row("one", { name: "Alpha", creatingOwnerId: ordinary }),
+		row("two", { name: "Bravo", creatingOwnerId: ordinary }),
+	];
 	const observed = source(rows);
 	observed.list = async (): Promise<AgentConversationPage> => page(rows);
 	let createdCallback: ((value: ReturnType<typeof row>) => void) | undefined;
 	const creation = deferred();
-	const f = fixture(140, 40, observed, {
-		newAgent: async ({ onCreated }) => {
-			createdCallback = onCreated;
-			await creation.promise;
-			return { text: "Started", sessionId: "three" };
+	const f = fixture(
+		140,
+		40,
+		observed,
+		{
+			newAgent: async ({ onCreated }) => {
+				createdCallback = onCreated;
+				await creation.promise;
+				return { text: "Started", sessionId: "three" };
+			},
 		},
-	}, undefined, undefined, ordinary);
+		undefined,
+		undefined,
+		ordinary,
+	);
 	try {
 		await turn();
 		await turn();
@@ -161,7 +191,9 @@ it("several owner views open as a list, and Open shows the chosen one alone with
 		label,
 		open: () => ({ title: label, render: (width) => [`${label} body`.padEnd(width)], handleInput: () => true }),
 	});
-	const f = fixture(140, 40, source([row("one", { state: "idle", name: "Alpha" })]), { panels: async () => [body("Stash"), body("Notes")] });
+	const f = fixture(140, 40, source([row("one", { state: "idle", name: "Alpha" })]), {
+		panels: async () => [body("Stash"), body("Notes")],
+	});
 	try {
 		await turn();
 		await turn();
@@ -191,7 +223,11 @@ it("several owner views open as a list, and Open shows the chosen one alone with
 });
 
 it("one owner view opens alone under its own title, and Escape returns to the agent", async () => {
-	const stash: OwnerView = { key: "stash", label: "Stash", open: () => ({ title: "Stashes", render: (width) => ["Stash body".padEnd(width)], handleInput: () => true }) };
+	const stash: OwnerView = {
+		key: "stash",
+		label: "Stash",
+		open: () => ({ title: "Stashes", render: (width) => ["Stash body".padEnd(width)], handleInput: () => true }),
+	};
 	const f = fixture(140, 40, source([row("one", { state: "idle", name: "Alpha" })]), { panels: async () => [stash] });
 	try {
 		await turn();

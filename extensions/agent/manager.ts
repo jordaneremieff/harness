@@ -3,17 +3,39 @@ import { storageStatusPageInput, type StorageStatusPageInput } from "./storage-s
 import { PluginError, isChordError } from "@earendil-works/chord";
 import { createColdObservationCache } from "./cold-observation.ts";
 import { nativeRecipientAvailability, readDeliveryWake } from "./delivery-wake.ts";
-import { launchIndependentCommand, type IndependentCommandInput, type IndependentCommandReceipt } from "./independent-launch.ts";
+import {
+	launchIndependentCommand,
+	type IndependentCommandInput,
+	type IndependentCommandReceipt,
+} from "./independent-launch.ts";
 import { REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
 import { readFleetStatus, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
 import { handleSlug, handleStorageId } from "./identity.ts";
 import { profileText, type AgentProfile } from "./profile-schema.ts";
 import { NativeListOutputSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
-import { composeListRow, matchesListRow, enrichDashboardRow, planListScan, compareListStorages, listCoverageBasis, type ListPass, type ListScanPlan, type ListScanStep } from "./profile-discovery.ts";
+import {
+	composeListRow,
+	matchesListRow,
+	enrichDashboardRow,
+	planListScan,
+	compareListStorages,
+	listCoverageBasis,
+	type ListPass,
+	type ListScanPlan,
+	type ListScanStep,
+} from "./profile-discovery.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { AgentCatalog, CatalogObservation, projectCatalogPriority, hostMetadata, storageIdOf, type CatalogInventory, type CatalogRecord } from "./catalog.ts";
+import {
+	AgentCatalog,
+	CatalogObservation,
+	projectCatalogPriority,
+	hostMetadata,
+	storageIdOf,
+	type CatalogInventory,
+	type CatalogRecord,
+} from "./catalog.ts";
 import type { CatalogView } from "./catalog-view.ts";
 import type { NativeOwnerEvidence } from "./host-changes.ts";
 import { subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
@@ -24,25 +46,61 @@ import { recordAdmission } from "./ordinary-continuity.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { firstInteractivePurpose, purposeExcerpt } from "./effort-purpose.ts";
 import { readEffortAwareness, type EffortAwareness } from "./effort-awareness.ts";
-import { createPrimaryChannel, connectPrimaryChannel, primaryEndpointStatus, readPrimaryEndpointDescriptor, type PrimaryChannel, type PrimaryInfo, type PrimaryIntentClaim } from "./primary-channel.ts";
+import {
+	createPrimaryChannel,
+	connectPrimaryChannel,
+	primaryEndpointStatus,
+	readPrimaryEndpointDescriptor,
+	type PrimaryChannel,
+	type PrimaryInfo,
+	type PrimaryIntentClaim,
+} from "./primary-channel.ts";
 import { readPrimaryObservation, type OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { readRelatedEfforts, type EffortPresencePage, type EffortReadResources } from "./effort-presence.ts";
 import { createPrimaryLocationResolver, type PrimaryLocationResolver } from "./effort-location.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
-import { acquireHost, connectHost, HostBusyEndpointUnavailableError, HostEndpointUnavailableError, type HostConnection, type HostObservationListener } from "./host-client.ts";
+import {
+	acquireHost,
+	connectHost,
+	HostBusyEndpointUnavailableError,
+	HostEndpointUnavailableError,
+	type HostConnection,
+	type HostObservationListener,
+} from "./host-client.ts";
 import { HostError, hostPaths, hostRequestVersionError, type HostMetadata } from "./host-protocol.ts";
 import { observeClaim, type ClaimObservation } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
-import type { AgentConversationPage, AgentConversationSummary, AgentPriorityPage, AgentPrioritySummary } from "./dashboard-types.ts";
+import type {
+	AgentConversationPage,
+	AgentConversationSummary,
+	AgentPriorityPage,
+	AgentPrioritySummary,
+} from "./dashboard-types.ts";
 import type { ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
 
-import { HOST_CONTRACT, MANAGER_CONTRACT, operationContractMismatch, type RuntimeContract } from "./version-contract.ts";
+import {
+	HOST_CONTRACT,
+	MANAGER_CONTRACT,
+	operationContractMismatch,
+	type RuntimeContract,
+} from "./version-contract.ts";
 import { collaborationStorage, validateCollaborationTextLimits } from "./collaboration-contract.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 
-import { readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, parseExecutionSelection, parsePreferenceSnapshot, executionInputDigest, type ExecutionSelection, type ExecutionFields, type PreferenceCatalog, type PreferenceSnapshot } from "./agent-preferences.ts";
+import {
+	readAgentPreferences,
+	resolveExecutionPreset,
+	effectiveExecutionSelection,
+	parseExecutionSelection,
+	parsePreferenceSnapshot,
+	executionInputDigest,
+	type ExecutionSelection,
+	type ExecutionFields,
+	type PreferenceCatalog,
+	type PreferenceSnapshot,
+} from "./agent-preferences.ts";
 
 let resultReferencePromise: Promise<typeof import("./result-reference.ts")> | undefined;
 function loadResultReference(): Promise<typeof import("./result-reference.ts")> {
@@ -102,15 +160,45 @@ export interface AgentManagerOptions {
 	deliveredLimit?: number;
 	createPrimary?: typeof createPrimaryChannel;
 	/** Validate catalog presence; return the effective thinking level when Pi clamps it. */
-	validateModel?: (model: { provider: string; modelId: string }, thinkingLevel: string) => string | void | Promise<string> | Promise<void>;
+	validateModel?: (
+		model: { provider: string; modelId: string },
+		thinkingLevel: string,
+	) => string | void | Promise<string> | Promise<void>;
 	/** Largest recorded-failure memory; the oldest failure evicts first. */
 	failureLimit?: number;
 }
-interface PrimaryClient { sentWork?: Set<string>; retainSentWork?(sessionId: string): void; retainContinuity?(fact: ContinuityFact): void; send(text: string, details: unknown, sourceId: string, requireRetained: boolean): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; sessionFile?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; observedInputCanCapture?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
+interface PrimaryClient {
+	sentWork?: Set<string>;
+	retainSentWork?(sessionId: string): void;
+	retainContinuity?(fact: ContinuityFact): void;
+	send(text: string, details: unknown, sourceId: string, requireRetained: boolean): void;
+	status?(text: string | undefined): void;
+	signal: AbortSignal;
+	cwd?: string;
+	sessionFile?: string;
+	name?: string;
+	observedInput?: string;
+	observedInputComplete?: boolean;
+	observedInputCanCapture?: boolean;
+	model?: { provider: string; modelId: string };
+	thinkingLevel?: string;
+	promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined>;
+}
 type RecoveryOwner = { signal: AbortSignal };
-interface ConversationPage { items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>; next?: unknown }
+interface ConversationPage {
+	items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>;
+	next?: unknown;
+}
 /** `after` is the last storage the pass finished; `storage` and `native` hold a storage page in progress. */
-interface ListCursor { query: string; cwd: string; pass: ListPass; since: number; after?: string; storage?: string; native?: unknown }
+interface ListCursor {
+	query: string;
+	cwd: string;
+	pass: ListPass;
+	since: number;
+	after?: string;
+	storage?: string;
+	native?: unknown;
+}
 
 const DEFAULT_DELIVERED_LIMIT = 1024;
 const DEFAULT_FAILURE_LIMIT = 256;
@@ -146,7 +234,9 @@ function compactStatus(value: unknown): unknown {
 	const agent = record(conversation.agent);
 	const model = record(agent.model);
 	const inventory = record(wrapper.inventory);
-	const ordinaryOnly = Array.isArray(inventory.ordinaryOnly) ? inventory.ordinaryOnly.filter((item): item is string => typeof item === "string") : [];
+	const ordinaryOnly = Array.isArray(inventory.ordinaryOnly)
+		? inventory.ordinaryOnly.filter((item): item is string => typeof item === "string")
+		: [];
 	const provider = stringField(model.provider);
 	const modelId = stringField(model.modelId);
 	const name = stringField(conversation.name);
@@ -192,7 +282,9 @@ class BoundedMap<V> {
 			this.items.delete(oldest);
 		}
 	}
-	get(key: string): V | undefined { return this.items.get(key); }
+	get(key: string): V | undefined {
+		return this.items.get(key);
+	}
 	has(key: string): boolean {
 		return this.items.has(key);
 	}
@@ -212,26 +304,50 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promis
 		if (signal.aborted) abort();
 		else signal.addEventListener("abort", abort, { once: true });
 		work.then(
-			(value) => { signal.removeEventListener("abort", abort); resolve(value); },
-			(error: unknown) => { signal.removeEventListener("abort", abort); reject(error); },
+			(value) => {
+				signal.removeEventListener("abort", abort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", abort);
+				reject(error);
+			},
 		);
 	});
 }
 
 /** A primary owns client connections, never a Durable scheduler or storage writer. */
 function catalogOwner(storageId: string, observedClaim: ClaimObservation, evidence: NativeOwnerEvidence | undefined) {
-	const verified = evidence?.kind === "verified" && evidence.storageId === storageId
-		&& !(observedClaim.kind === "dead" && observedClaim.endedAt !== undefined && observedClaim.writerId === evidence.writerId);
+	const verified =
+		evidence?.kind === "verified" &&
+		evidence.storageId === storageId &&
+		!(
+			observedClaim.kind === "dead" &&
+			observedClaim.endedAt !== undefined &&
+			observedClaim.writerId === evidence.writerId
+		);
 	const publication = verified ? evidence.view : undefined;
-	const resolvedClaim = publication !== undefined || (!verified && (observedClaim.kind === "absent" || observedClaim.kind === "dead"));
-	const claim: ClaimObservation = publication ? { kind: "live", label: "Verified current host" }
-		: verified ? { kind: "unknown", error: "The current host has no successful bounded publication" } : observedClaim;
-	const unknownReason = evidence && evidence.kind !== "verified" ? evidence.reason
-		: !evidence && observedClaim.kind === "unknown" ? observedClaim.error : "The current host has no successful bounded publication";
+	const resolvedClaim =
+		publication !== undefined || (!verified && (observedClaim.kind === "absent" || observedClaim.kind === "dead"));
+	const claim: ClaimObservation = publication
+		? { kind: "live", label: "Verified current host" }
+		: verified
+			? { kind: "unknown", error: "The current host has no successful bounded publication" }
+			: observedClaim;
+	const unknownReason =
+		evidence && evidence.kind !== "verified"
+			? evidence.reason
+			: !evidence && observedClaim.kind === "unknown"
+				? observedClaim.error
+				: "The current host has no successful bounded publication";
 	return { publication, resolvedClaim, claim, unknownReason };
 }
 
-function publishedRows(view: CatalogView, observedAt: string, { claim, publication, unknownReason }: ReturnType<typeof catalogOwner>): AgentConversationSummary[] {
+function publishedRows(
+	view: CatalogView,
+	observedAt: string,
+	{ claim, publication, unknownReason }: ReturnType<typeof catalogOwner>,
+): AgentConversationSummary[] {
 	const hints = new Map((view.attention?.rows ?? []).map((hint) => [hint.identity, hint.kind]));
 	const ownerLabel = `${publication ? "Current host publication" : "Host metadata"} at ${view.updatedAt}; claim observed at ${observedAt}${claim.kind === "unknown" ? `; ${unknownReason}` : ""}`;
 	return view.rows.map((source) => {
@@ -267,16 +383,23 @@ export class AgentManager {
 	private toolCardRows: readonly AgentConversationSummary[] = [];
 
 	/** Latest roster facts already observed for the primary footer; this lookup performs no I/O. */
-	observedToolCardRows(): readonly AgentConversationSummary[] { return this.toolCardRows; }
+	observedToolCardRows(): readonly AgentConversationSummary[] {
+		return this.toolCardRows;
+	}
 
-	private observeToolCardRows(page: AgentConversationPage): void { this.toolCardRows = page.rows; }
+	private observeToolCardRows(page: AgentConversationPage): void {
+		this.toolCardRows = page.rows;
+	}
 	private readonly rosterListeners = new Set<() => void>();
 	private stopCatalogObservation?: () => void;
 	private observeCatalogChanges(): void {
 		if (this.stopCatalogObservation) return;
 		const changed = (change: CatalogChange) => this.catalogChanged(change);
 		this.stopCatalogObservation = subscribeCatalogChanges(this.catalog.root, changed, (error) => {
-			this.failures.set("catalog-observation", `Catalog updates are unavailable: ${error.message}. Restart this Pi process.`);
+			this.failures.set(
+				"catalog-observation",
+				`Catalog updates are unavailable: ${error.message}. Restart this Pi process.`,
+			);
 			changed(undefined);
 		});
 		this.inventory.invalidate();
@@ -315,7 +438,9 @@ export class AgentManager {
 			this.observationOwnerEnded();
 		};
 	}
-	private rosterChanged(): void { for (const listener of this.rosterListeners) listener(); }
+	private rosterChanged(): void {
+		for (const listener of this.rosterListeners) listener();
+	}
 	readonly catalog: AgentCatalog;
 	private readonly locations: PrimaryLocationResolver;
 	private readonly inventory: CatalogObservation;
@@ -332,7 +457,10 @@ export class AgentManager {
 	private catalogueScan?: Promise<void>;
 	private catalogueScanAgain = false;
 	private readonly wakeAttempts = new BoundedMap<ReadonlyMap<string, string>>(MAX_INVENTORY_PAGES * 20);
-	private readonly recoveryClients = new Map<string, { client: HostConnection; close: () => void; refresh: () => Promise<void> }>();
+	private readonly recoveryClients = new Map<
+		string,
+		{ client: HostConnection; close: () => void; refresh: () => Promise<void> }
+	>();
 	private readonly primaries = new Map<string, PrimaryClient>();
 	private readonly primaryChannels = new Map<string, PrimaryChannel>();
 	private readonly closingPrimaries = new Map<string, Promise<void>>();
@@ -366,26 +494,40 @@ export class AgentManager {
 		const pending = this.opening.get(record.storageId);
 		if (pending) {
 			if (!launch || !this.attaching.has(record.storageId)) return pending;
-			try { return await pending; }
-			catch { return this.connection(record, primary, true); }
+			try {
+				return await pending;
+			} catch {
+				return this.connection(record, primary, true);
+			}
 		}
 		if (!launch) this.attaching.add(record.storageId);
-		const acquire = launch ? this.options.acquire ?? acquireHost : this.options.connect ?? connectHost;
+		const acquire = launch ? (this.options.acquire ?? acquireHost) : (this.options.connect ?? connectHost);
 		const metadata = hostMetadata(record, this.options.packageDir);
-		const open = Promise.resolve().then(() => acquire(metadata, MANAGED_LINK))
+		const open = Promise.resolve()
+			.then(() => acquire(metadata, MANAGED_LINK))
 			.then((client) => this.adoptClient(record, client, primary))
-			.finally(() => { this.opening.delete(record.storageId); this.attaching.delete(record.storageId); });
+			.finally(() => {
+				this.opening.delete(record.storageId);
+				this.attaching.delete(record.storageId);
+			});
 		this.opening.set(record.storageId, open);
 		return open;
 	}
 
-	private async adoptClient(record: CatalogRecord, client: HostConnection, primary: PrimaryClient | undefined): Promise<HostConnection> {
+	private async adoptClient(
+		record: CatalogRecord,
+		client: HostConnection,
+		primary: PrimaryClient | undefined,
+	): Promise<HostConnection> {
 		if (this.shuttingDown || primary?.signal.aborted) {
 			await client.close().catch(() => undefined);
 			throw new Error("Agent manager or primary released while opening its host");
 		}
 		const winner = this.clients.get(record.storageId);
-		if (winner && winner !== client && !winner.closed) { await client.close(); return winner; }
+		if (winner && winner !== client && !winner.closed) {
+			await client.close();
+			return winner;
+		}
 		await this.subscribeClient(record.storageId, client);
 		return client;
 	}
@@ -398,7 +540,10 @@ export class AgentManager {
 			this.failures.delete(`changes:${storageId}`);
 		} catch (error) {
 			if (!client.closed && !this.shuttingDown && !this.lifecycle.signal.aborted) {
-				this.failures.set(`changes:${storageId}`, `Live change notices are unavailable. Restart the caller or let the idle host retire, then use agent_attach. Compatible reads and controls remain available. ${errorText(error)}`);
+				this.failures.set(
+					`changes:${storageId}`,
+					`Live change notices are unavailable. Restart the caller or let the idle host retire, then use agent_attach. Compatible reads and controls remain available. ${errorText(error)}`,
+				);
 				void this.refreshFooter();
 				return;
 			}
@@ -409,9 +554,13 @@ export class AgentManager {
 	}
 
 	/** Reuse a writer or a launch already owned by this manager; never acquire one. */
-	private async observationConnection(record: CatalogRecord, primary?: PrimaryClient): Promise<HostConnection | undefined> {
-		try { return await this.connection(record, primary, false); }
-		catch (error) {
+	private async observationConnection(
+		record: CatalogRecord,
+		primary?: PrimaryClient,
+	): Promise<HostConnection | undefined> {
+		try {
+			return await this.connection(record, primary, false);
+		} catch (error) {
 			if (this.shuttingDown || primary?.signal.aborted) throw error;
 			if (error instanceof HostEndpointUnavailableError) return undefined;
 			if (error instanceof HostError || isChordError(error) || error instanceof PluginError) throw error;
@@ -423,35 +572,64 @@ export class AgentManager {
 	private observationPeerError(error: unknown, peer: RuntimeContract): Error {
 		const message = error instanceof Error ? error.message : String(error);
 		const local = HOST_CONTRACT;
-		if (peer.release === local.release && peer.upstream.codingAgent === local.upstream.codingAgent && peer.upstream.durable === local.upstream.durable) return error instanceof Error ? error : new Error(message);
-		const older = peer.release.localeCompare(local.release, undefined, { numeric: true }) < 0 || peer.upstream.codingAgent.localeCompare(local.upstream.codingAgent, undefined, { numeric: true }) < 0 || peer.upstream.durable.localeCompare(local.upstream.durable, undefined, { numeric: true }) < 0;
-		return new Error(`The peer runs ${older ? "older" : "different"} code: agent ${peer.release}, Pi ${peer.upstream.codingAgent}, Durable ${peer.upstream.durable}; this caller uses agent ${local.release}, Pi ${local.upstream.codingAgent}, Durable ${local.upstream.durable}. Replace the peer's loaded code: let its active work finish, then use agent_abort with release: true when it is idle. A host without release support names its stop step in that refusal. Then use agent_attach to start a host from the current installation. Restart an ordinary primary to replace its loaded code. No older observation shape was accepted. ${message}`, { cause: error });
+		if (
+			peer.release === local.release &&
+			peer.upstream.codingAgent === local.upstream.codingAgent &&
+			peer.upstream.durable === local.upstream.durable
+		)
+			return error instanceof Error ? error : new Error(message);
+		const older =
+			peer.release.localeCompare(local.release, undefined, { numeric: true }) < 0 ||
+			peer.upstream.codingAgent.localeCompare(local.upstream.codingAgent, undefined, { numeric: true }) < 0 ||
+			peer.upstream.durable.localeCompare(local.upstream.durable, undefined, { numeric: true }) < 0;
+		return new Error(
+			`The peer runs ${older ? "older" : "different"} code: agent ${peer.release}, Pi ${peer.upstream.codingAgent}, Durable ${peer.upstream.durable}; this caller uses agent ${local.release}, Pi ${local.upstream.codingAgent}, Durable ${local.upstream.durable}. Replace the peer's loaded code: let its active work finish, then use agent_abort with release: true when it is idle. A host without release support names its stop step in that refusal. Then use agent_attach to start a host from the current installation. Restart an ordinary primary to replace its loaded code. No older observation shape was accepted. ${message}`,
+			{ cause: error },
+		);
 	}
 
-	private async observePeer(client: HostConnection, method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+	private async observePeer(
+		client: HostConnection,
+		method: string,
+		params: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<unknown> {
 		try {
 			const value = await client.request(method, params, signal === undefined ? undefined : { signal });
 			if (method === "list") return structuredObservation(NativeListOutputSchema, value);
-			return method === "status" || method === "inspect" ? structuredObservation(observationSchema(method), value) : value;
-		} catch (error) { throw this.observationPeerError(error, client.runtimeContract); }
+			return method === "status" || method === "inspect"
+				? structuredObservation(observationSchema(method), value)
+				: value;
+		} catch (error) {
+			throw this.observationPeerError(error, client.runtimeContract);
+		}
 	}
 
 	/**
 	 * An aborted `signal` ends the caller's wait at once and cancels a live host request. A cold read
 	 * cannot stop part way; it finishes, and only its result cache keeps the value.
 	 */
-	private observe(record: CatalogRecord, method: string, params: Record<string, unknown>, primary?: PrimaryClient, signal?: AbortSignal): Promise<unknown> {
+	private observe(
+		record: CatalogRecord,
+		method: string,
+		params: Record<string, unknown>,
+		primary?: PrimaryClient,
+		signal?: AbortSignal,
+	): Promise<unknown> {
 		const cold = this.coldObservations;
-		return abortable((async () => {
-			signal?.throwIfAborted();
-			if (this.shuttingDown) throw new Error("Agent manager is closed");
-			const client = await this.observationConnection(record, primary);
-			if (client) return this.observePeer(client, method, params, signal);
-			if (primary?.signal.aborted) throw new Error("Agent primary released during observation");
-			if (this.options.observe) return this.options.observe(record, method, params);
-			if (this.shuttingDown) throw new Error("Agent manager is closed");
-			return cold.observe(record, method, params);
-		})(), signal);
+		return abortable(
+			(async () => {
+				signal?.throwIfAborted();
+				if (this.shuttingDown) throw new Error("Agent manager is closed");
+				const client = await this.observationConnection(record, primary);
+				if (client) return this.observePeer(client, method, params, signal);
+				if (primary?.signal.aborted) throw new Error("Agent primary released during observation");
+				if (this.options.observe) return this.options.observe(record, method, params);
+				if (this.shuttingDown) throw new Error("Agent manager is closed");
+				return cold.observe(record, method, params);
+			})(),
+			signal,
+		);
 	}
 
 	/** Resolve one retained native target without guessing an ordinary primary or copying its catalog. */
@@ -468,99 +646,207 @@ export class AgentManager {
 		if (!selector.startsWith("@")) return selector;
 		const id = handleStorageId(selector.slice(1), this.catalog.root);
 		const record = this.catalog.read(id);
-		if (record.view?.profileSeed?.handle === selector.slice(1) || record.view?.profiles?.rows.some((row) => row.identity === id && row.handle === selector)) return id;
-		const profile = await this.observe(record, "profile-read", { sessionId: id }) as AgentProfile;
+		if (
+			record.view?.profileSeed?.handle === selector.slice(1) ||
+			record.view?.profiles?.rows.some((row) => row.identity === id && row.handle === selector)
+		)
+			return id;
+		const profile = (await this.observe(record, "profile-read", { sessionId: id })) as AgentProfile;
 		if (profile.handle !== selector) throw new Error("Handle address belongs to a different retained agent");
 		return id;
 	}
 
-	private executionInput(input: AgentSpawnInput, caller: AgentCaller, retained?: ExecutionFields): AgentSpawnInput & { selection: ExecutionSelection } {
+	private executionInput(
+		input: AgentSpawnInput,
+		caller: AgentCaller,
+		retained?: ExecutionFields,
+	): AgentSpawnInput & { selection: ExecutionSelection } {
 		if (input.selection !== undefined) {
 			const selection = parseExecutionSelection(input.selection);
-			if (selection.inputDigest !== executionInputDigest(input)) throw new Error("Request ID already belongs to different execution inputs");
+			if (selection.inputDigest !== executionInputDigest(input))
+				throw new Error("Request ID already belongs to different execution inputs");
 			return { ...input, ...selection.values, selection };
 		}
-		const preferenceSnapshot = input.preferenceSnapshot === undefined ? readAgentPreferences(this.options.agentDir, caller.preferenceCatalog) : parsePreferenceSnapshot(input.preferenceSnapshot);
-		let selection = resolveExecutionPreset(preferenceSnapshot, input, retained ?? {}, { creation: !retained, reused: !!retained, role: !!input.handle || input.role !== undefined, checkIn: input.prompt !== undefined });
-		if (input.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined, input.origin ?? "operator", this.options.agentDir); selection.origins.checkInMinutes = "default"; }
+		const preferenceSnapshot =
+			input.preferenceSnapshot === undefined
+				? readAgentPreferences(this.options.agentDir, caller.preferenceCatalog)
+				: parsePreferenceSnapshot(input.preferenceSnapshot);
+		let selection = resolveExecutionPreset(preferenceSnapshot, input, retained ?? {}, {
+			creation: !retained,
+			reused: !!retained,
+			role: !!input.handle || input.role !== undefined,
+			checkIn: input.prompt !== undefined,
+		});
+		if (input.prompt !== undefined && selection.values.checkInMinutes === undefined) {
+			selection.values.checkInMinutes = checkInMinutes(undefined, input.origin ?? "operator", this.options.agentDir);
+			selection.origins.checkInMinutes = "default";
+		}
 		if (retained) selection = effectiveExecutionSelection(selection, retained.thinkingLevel);
 		const { role: _role, ...base } = input;
 		return { ...base, ...selection.values, selection, preferenceSnapshot };
 	}
 
-	private async reuseExecutionInput(input: AgentSpawnInput, caller: AgentCaller, record: CatalogRecord): Promise<AgentSpawnInput & { selection: ExecutionSelection }> {
+	private async reuseExecutionInput(
+		input: AgentSpawnInput,
+		caller: AgentCaller,
+		record: CatalogRecord,
+	): Promise<AgentSpawnInput & { selection: ExecutionSelection }> {
 		if (input.selection !== undefined) return this.executionInput(input, caller);
 		let fields: ExecutionFields = {};
 		let unavailable: string | undefined;
 		try {
-			const profile = await this.observe(record, "profile-read", { sessionId: record.storageId }) as AgentProfile;
-			fields = { model: profile.model ? `${profile.model.provider}/${profile.model.modelId}` : undefined, thinkingLevel: profile.thinkingLevel ?? undefined };
-			if (fields.model === undefined || fields.thinkingLevel === undefined) unavailable = "The target profile has no complete retained model and thinking evidence.";
-		} catch (error) { unavailable = errorText(error).slice(0, 512); }
+			const profile = (await this.observe(record, "profile-read", { sessionId: record.storageId })) as AgentProfile;
+			fields = {
+				model: profile.model ? `${profile.model.provider}/${profile.model.modelId}` : undefined,
+				thinkingLevel: profile.thinkingLevel ?? undefined,
+			};
+			if (fields.model === undefined || fields.thinkingLevel === undefined)
+				unavailable = "The target profile has no complete retained model and thinking evidence.";
+		} catch (error) {
+			unavailable = errorText(error).slice(0, 512);
+		}
 		const selected = this.executionInput(input, caller, fields);
-		if (unavailable) selected.selection.diagnostics.push({ field: "retained", message: `Current retained execution evidence is unavailable: ${unavailable}` });
+		if (unavailable)
+			selected.selection.diagnostics.push({
+				field: "retained",
+				message: `Current retained execution evidence is unavailable: ${unavailable}`,
+			});
 		return selected;
 	}
 
-	private async handledRecord(input: AgentSpawnInput, caller: AgentCaller, handle: string): Promise<{ record: CatalogRecord; created: boolean }> {
-		try { return { record: this.catalog.read(handleStorageId(handle, this.catalog.root)), created: false }; }
-		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+	private async handledRecord(
+		input: AgentSpawnInput,
+		caller: AgentCaller,
+		handle: string,
+	): Promise<{ record: CatalogRecord; created: boolean }> {
+		try {
+			return { record: this.catalog.read(handleStorageId(handle, this.catalog.root)), created: false };
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
 		const metadata = await this.creationMetadata(input, caller);
 		return this.catalog.createHandled(metadata, handle, input.role ?? "");
 	}
 
 	private async retainedHandle(record: CatalogRecord, handle: string): Promise<unknown> {
 		const base = { sessionId: record.storageId, cwd: record.cwd, handle: `@${handle}`, created: false };
-		if (record.view?.profileSeed) return { ...base, profile: null, availability: "initializing", creation: { ...record.view.profileSeed, name: record.name ?? null, model: record.model, thinkingLevel: record.thinkingLevel, cwd: record.cwd } };
-		const profile = await this.observe(record, "profile-read", { sessionId: record.storageId }) as AgentProfile;
+		if (record.view?.profileSeed)
+			return {
+				...base,
+				profile: null,
+				availability: "initializing",
+				creation: {
+					...record.view.profileSeed,
+					name: record.name ?? null,
+					model: record.model,
+					thinkingLevel: record.thinkingLevel,
+					cwd: record.cwd,
+				},
+			};
+		const profile = (await this.observe(record, "profile-read", { sessionId: record.storageId })) as AgentProfile;
 		if (profile.handle !== base.handle) throw new Error("Handle address belongs to a different retained agent");
 		return { ...base, profile, availability: profile.live ? "live" : "retained" };
 	}
 
 	private async selectedHandle(input: AgentSpawnInput & { handle: string }, caller: AgentCaller, handle: string) {
 		let previous: CatalogRecord | undefined;
-		try { previous = this.catalog.read(handleStorageId(handle, this.catalog.root)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-		let selected = { ...(previous ? await this.reuseExecutionInput(input, caller, previous) : this.executionInput(input, caller)), handle };
+		try {
+			previous = this.catalog.read(handleStorageId(handle, this.catalog.root));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		let selected = {
+			...(previous ? await this.reuseExecutionInput(input, caller, previous) : this.executionInput(input, caller)),
+			handle,
+		};
 		const { record: retained, created } = await this.handledRecord(selected, caller, handle);
-		if (!created && !previous) selected = { ...await this.reuseExecutionInput({ ...input, selection: undefined, preferenceSnapshot: selected.preferenceSnapshot }, caller, retained), handle };
+		if (!created && !previous)
+			selected = {
+				...(await this.reuseExecutionInput(
+					{ ...input, selection: undefined, preferenceSnapshot: selected.preferenceSnapshot },
+					caller,
+					retained,
+				)),
+				handle,
+			};
 		if (created) selected.selection = effectiveExecutionSelection(selected.selection, retained.thinkingLevel);
 		return { selected, retained, created };
 	}
 
-	private async spawnHandled(input: AgentSpawnInput & { handle: string }, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
+	private async spawnHandled(
+		input: AgentSpawnInput & { handle: string },
+		caller: AgentCaller,
+		onCreated?: (row: AgentConversationSummary) => void,
+	): Promise<unknown> {
 		const handle = handleSlug(input.handle);
 		const { selected, retained, created } = await this.selectedHandle(input, caller, handle);
 		input = selected;
 		await caller.retainExecutionSelection?.(selected.selection);
 		const id = retained.storageId;
-		if (input.cwd !== undefined && retained.cwd !== realpathSync(resolve(caller.cwd, input.cwd))) throw new Error("The retained handle has a different cwd; creation defaults cannot change it");
-		const row: AgentConversationSummary = { id, storageId: id, cwd: retained.cwd, name: retained.name, model: { ...retained.model, thinkingLevel: retained.thinkingLevel }, modifiedAt: Date.parse(retained.createdAt), owner: "unknown", state: "starting", cost: 0, partial: false };
+		if (input.cwd !== undefined && retained.cwd !== realpathSync(resolve(caller.cwd, input.cwd)))
+			throw new Error("The retained handle has a different cwd; creation defaults cannot change it");
+		const row: AgentConversationSummary = {
+			id,
+			storageId: id,
+			cwd: retained.cwd,
+			name: retained.name,
+			model: { ...retained.model, thinkingLevel: retained.thinkingLevel },
+			modifiedAt: Date.parse(retained.createdAt),
+			owner: "unknown",
+			state: "starting",
+			cost: 0,
+			partial: false,
+		};
 		if (!created && input.prompt === undefined) {
 			onCreated?.(row);
-			return { ...await this.retainedHandle(retained, handle) as object, selection: input.selection };
+			return { ...((await this.retainedHandle(retained, handle)) as object), selection: input.selection };
 		}
 		const requestId = input.requestId ?? randomUUID();
 		const client = await this.connection(retained);
-		const profile = await client.request("profile-read", { sessionId: id }) as AgentProfile;
+		const profile = (await client.request("profile-read", { sessionId: id })) as AgentProfile;
 		if (profile.handle !== `@${handle}`) throw new Error("Handle address belongs to a different retained agent");
 		onCreated?.(row);
 		const admission = await this.submitSpawnPrompt(client, id, caller, input, requestId, "followUp");
 		const result = admission === undefined ? undefined : await this.sentWorkResult(caller.id, id, admission, requestId);
 		this.rosterChanged();
-		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, selection: input.selection, ...(created ? this.spawnThinking(input, retained) : {}), ...(admission === undefined ? {} : { admission, result }) };
+		return {
+			sessionId: id,
+			cwd: retained.cwd,
+			handle: `@${handle}`,
+			created,
+			profile,
+			selection: input.selection,
+			...(created ? this.spawnThinking(input, retained) : {}),
+			...(admission === undefined ? {} : { admission, result }),
+		};
 	}
 
-	private async creationMetadata(input: AgentSpawnInput, caller: AgentCaller): Promise<Omit<HostMetadata, "storageId" | "storagePath">> {
+	private async creationMetadata(
+		input: AgentSpawnInput,
+		caller: AgentCaller,
+	): Promise<Omit<HostMetadata, "storageId" | "storagePath">> {
 		const cwd = realpathSync(resolve(caller.cwd, input.cwd ?? "."));
 		if (!statSync(cwd).isDirectory()) throw new Error("Agent cwd must be a directory");
 		const separator = input.model?.indexOf("/") ?? -1;
-		const model = input.model !== undefined && separator > 0 ? { provider: input.model.slice(0, separator), modelId: input.model.slice(separator + 1) } : undefined;
+		const model =
+			input.model !== undefined && separator > 0
+				? { provider: input.model.slice(0, separator), modelId: input.model.slice(separator + 1) }
+				: undefined;
 		if (!model?.modelId) throw new Error("Creation requires a resolved exact provider/model");
 		const thinkingLevel = input.thinkingLevel ?? "off";
 		const validate = caller.validateModel ?? this.options.validateModel;
 		if (!validate) throw new Error("Spawn requires the caller's configured model catalog");
 		const effective = await validate(model, thinkingLevel);
-		return { cwd, model, thinkingLevel: effective ?? thinkingLevel, name: input.name, trust: input.trust, ownerId: caller.id, agentDir: this.options.agentDir, packageDir: this.options.packageDir };
+		return {
+			cwd,
+			model,
+			thinkingLevel: effective ?? thinkingLevel,
+			name: input.name,
+			trust: input.trust,
+			ownerId: caller.id,
+			agentDir: this.options.agentDir,
+			packageDir: this.options.packageDir,
+		};
 	}
 
 	/** Admit independent contributed work without adopting its link or subscribing the primary. */
@@ -569,67 +855,142 @@ export class AgentManager {
 		const primary = this.primaries.get(input.creatorId);
 		const askPrimary = primary?.promptTrust?.bind(primary);
 		return launchIndependentCommand(input, {
-			root: this.options.root, agentDir: this.options.agentDir, packageDir: this.options.packageDir,
+			root: this.options.root,
+			agentDir: this.options.agentDir,
+			packageDir: this.options.packageDir,
 			...(this.options.acquire === undefined ? {} : { acquire: this.options.acquire }),
 			...(askPrimary === undefined ? {} : { askPrimary }),
 		});
 	}
 
-	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void, beforeCreate?: (storageId: string) => void): Promise<unknown> {
+	async spawn(
+		input: AgentSpawnInput,
+		caller: AgentCaller,
+		onCreated?: (row: AgentConversationSummary) => void,
+		beforeCreate?: (storageId: string) => void,
+	): Promise<unknown> {
 		if (input.handle !== undefined) return this.spawnHandled({ ...input, handle: input.handle }, caller, onCreated);
 		return this.spawnIndependent(input, caller, onCreated, beforeCreate);
 	}
 
-	private async spawnIndependent(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void, beforeCreate?: (storageId: string) => void): Promise<unknown> {
+	private async spawnIndependent(
+		input: AgentSpawnInput,
+		caller: AgentCaller,
+		onCreated?: (row: AgentConversationSummary) => void,
+		beforeCreate?: (storageId: string) => void,
+	): Promise<unknown> {
 		if (input.role !== undefined) profileText(input.role, "role");
 		const previous = input.requestId === undefined ? undefined : this.catalog.readRequest(caller.id, input.requestId);
-		if (previous && ((input.cwd !== undefined && realpathSync(resolve(caller.cwd, input.cwd)) !== previous.cwd) || input.name !== previous.name)) throw new Error("Spawn request ID already belongs to different agent configuration");
+		if (
+			previous &&
+			((input.cwd !== undefined && realpathSync(resolve(caller.cwd, input.cwd)) !== previous.cwd) ||
+				input.name !== previous.name)
+		)
+			throw new Error("Spawn request ID already belongs to different agent configuration");
 		const selected = this.executionInput(input, caller);
 		input = selected;
-		const metadata = previous ?? await this.creationMetadata(input, caller);
+		const metadata = previous ?? (await this.creationMetadata(input, caller));
 		const { cwd, model, thinkingLevel } = metadata;
-		const selection = input.selection?.thinking ? selected.selection : effectiveExecutionSelection(selected.selection, thinkingLevel);
+		const selection = input.selection?.thinking
+			? selected.selection
+			: effectiveExecutionSelection(selected.selection, thinkingLevel);
 		input = { ...selected, selection };
 		await caller.retainExecutionSelection?.(selection);
 		if (previous) beforeCreate?.(previous.storageId);
-		const { record, created } = previous ? { record: previous, created: false } : this.catalog.createTracked(metadata, input.requestId, beforeCreate);
+		const { record, created } = previous
+			? { record: previous, created: false }
+			: this.catalog.createTracked(metadata, input.requestId, beforeCreate);
 		const row: AgentConversationSummary = {
-			id: record.storageId, storageId: record.storageId, cwd, name: input.name,
-			firstMessage: input.prompt, model: { ...model, thinkingLevel },
-			modifiedAt: Date.parse(record.createdAt), owner: "unknown", state: "starting",
-			cost: 0, partial: false,
+			id: record.storageId,
+			storageId: record.storageId,
+			cwd,
+			name: input.name,
+			firstMessage: input.prompt,
+			model: { ...model, thinkingLevel },
+			modifiedAt: Date.parse(record.createdAt),
+			owner: "unknown",
+			state: "starting",
+			cost: 0,
+			partial: false,
 		};
 		return this.startSpawn(record, created, row, input, caller, onCreated);
 	}
 
-	private spawnThinking(input: AgentSpawnInput, record: CatalogRecord): { thinking?: { requested: string; effective: string } } {
+	private spawnThinking(
+		input: AgentSpawnInput,
+		record: CatalogRecord,
+	): { thinking?: { requested: string; effective: string } } {
 		const requested = input.thinkingLevel ?? "off";
 		return requested === record.thinkingLevel ? {} : { thinking: { requested, effective: record.thinkingLevel } };
 	}
 
-	private startSpawn(record: CatalogRecord, created: boolean, row: AgentConversationSummary, input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
+	private startSpawn(
+		record: CatalogRecord,
+		created: boolean,
+		row: AgentConversationSummary,
+		input: AgentSpawnInput,
+		caller: AgentCaller,
+		onCreated?: (row: AgentConversationSummary) => void,
+	): Promise<unknown> {
 		return this.performSpawn(record, created, row, input, caller, onCreated);
 	}
 
-	private async saveSpawnRole(client: HostConnection, sessionId: string, created: boolean, role: string | undefined, requestId: string, senderIdentity: string): Promise<void> {
+	private async saveSpawnRole(
+		client: HostConnection,
+		sessionId: string,
+		created: boolean,
+		role: string | undefined,
+		requestId: string,
+		senderIdentity: string,
+	): Promise<void> {
 		if (role === undefined) return;
-		const profile = await client.request("profile-read", { sessionId }) as AgentProfile;
+		const profile = (await client.request("profile-read", { sessionId })) as AgentProfile;
 		if (profile.role === role || (!created && profile.role !== "")) return;
-		const update = await client.request("profile-update", { sessionId, role, expectedRevision: profile.revision, requestId: `spawn-role:${requestId}`, senderIdentity }) as { outcome: string };
-		if (update.outcome !== "applied") throw new Error("The new agent's role changed before its creation role was saved; read agent_profile before retrying");
+		const update = (await client.request("profile-update", {
+			sessionId,
+			role,
+			expectedRevision: profile.revision,
+			requestId: `spawn-role:${requestId}`,
+			senderIdentity,
+		})) as { outcome: string };
+		if (update.outcome !== "applied")
+			throw new Error(
+				"The new agent's role changed before its creation role was saved; read agent_profile before retrying",
+			);
 	}
 
-	private submitSpawnPrompt(client: HostConnection, sessionId: string, caller: AgentCaller, input: AgentSpawnInput, requestId: string, whenBusy?: "followUp"): Promise<unknown> | undefined {
+	private submitSpawnPrompt(
+		client: HostConnection,
+		sessionId: string,
+		caller: AgentCaller,
+		input: AgentSpawnInput,
+		requestId: string,
+		whenBusy?: "followUp",
+	): Promise<unknown> | undefined {
 		const message = input.prompt;
 		if (message === undefined) return undefined;
 		const origin = input.origin ?? "operator";
-		return this.admission(caller.id, sessionId, requestId, undefined, () => client.request("task-submit", {
-			sessionId, message, requestId, requester: caller.id, origin, ...(whenBusy === undefined ? {} : { whenBusy }),
-			checkInMinutes: checkInMinutes(input.checkInMinutes, origin, this.options.agentDir),
-		}));
+		return this.admission(caller.id, sessionId, requestId, undefined, () =>
+			client.request("task-submit", {
+				sessionId,
+				message,
+				requestId,
+				requester: caller.id,
+				origin,
+				...(whenBusy === undefined ? {} : { whenBusy }),
+				checkInMinutes: checkInMinutes(input.checkInMinutes, origin, this.options.agentDir),
+			}),
+		);
 	}
 
-	private async performSpawn(record: CatalogRecord, created: boolean, row: AgentConversationSummary, input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
+	private async performSpawn(
+		record: CatalogRecord,
+		created: boolean,
+		row: AgentConversationSummary,
+		input: AgentSpawnInput,
+		caller: AgentCaller,
+		onCreated?: (row: AgentConversationSummary) => void,
+	): Promise<unknown> {
 		this.launchRows.set(record.storageId, row);
 		try {
 			const requestId = input.requestId ?? randomUUID();
@@ -637,13 +998,27 @@ export class AgentManager {
 			onCreated?.(row);
 			this.rosterChanged();
 			let client: HostConnection;
-			try { client = await opening; }
-			catch (error) { if (created) this.catalog.discardUnopened(record); throw error; }
-			const versionError = input.prompt === undefined ? undefined : hostRequestVersionError("task-submit", client.runtimeContract);
+			try {
+				client = await opening;
+			} catch (error) {
+				if (created) this.catalog.discardUnopened(record);
+				throw error;
+			}
+			const versionError =
+				input.prompt === undefined ? undefined : hostRequestVersionError("task-submit", client.runtimeContract);
 			if (versionError) throw versionError;
 			await this.saveSpawnRole(client, record.storageId, created, input.role, requestId, caller.id);
 			const admission = await this.submitSpawnPrompt(client, record.storageId, caller, input, requestId);
-			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: await this.sentWorkResult(caller.id, record.storageId, admission, requestId) }) };
+			const outcome = {
+				sessionId: record.storageId,
+				cwd: record.cwd,
+				selection: input.selection,
+				...this.spawnThinking(input, record),
+				lifetime: "independent host process",
+				...(admission === undefined
+					? {}
+					: { admission, result: await this.sentWorkResult(caller.id, record.storageId, admission, requestId) }),
+			};
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
 			this.rosterChanged();
@@ -655,10 +1030,22 @@ export class AgentManager {
 		}
 	}
 
-	private nativeControlParams(method: string, input: Record<string, unknown>, sessionId: string, callerId: string): Record<string, unknown> {
+	private nativeControlParams(
+		method: string,
+		input: Record<string, unknown>,
+		sessionId: string,
+		callerId: string,
+	): Record<string, unknown> {
 		const params: Record<string, unknown> = { ...input, sessionId, ownerId: callerId };
-		if (method === "task-submit") { params.requester = callerId; params.origin ??= "operator"; params.requestId ??= randomUUID(); }
-		if (method === "profile-update") { params.senderIdentity = callerId; params.requestId ??= randomUUID(); }
+		if (method === "task-submit") {
+			params.requester = callerId;
+			params.origin ??= "operator";
+			params.requestId ??= randomUUID();
+		}
+		if (method === "profile-update") {
+			params.senderIdentity = callerId;
+			params.requestId ??= randomUUID();
+		}
 		return params;
 	}
 
@@ -668,20 +1055,32 @@ export class AgentManager {
 	 * `options.launch: false` uses only a running host or a launch this manager already owns, and
 	 * fails instead of starting one.
 	 */
-	async control(method: string, input: Record<string, unknown>, caller: AgentCaller, options?: { readonly signal?: AbortSignal; readonly launch?: boolean }): Promise<unknown> {
+	async control(
+		method: string,
+		input: Record<string, unknown>,
+		caller: AgentCaller,
+		options?: { readonly signal?: AbortSignal; readonly launch?: boolean },
+	): Promise<unknown> {
 		const selector = String(input.sessionId ?? "");
 		const sessionId = await this.resolveTarget(selector);
 		if (typeof input.replyTo === "string") input = { ...input, replyTo: await this.resolveTarget(input.replyTo) };
-		if (sessionId === caller.id && ["abort", "release", "fork", "rewind", "compact", "configure", "command"].includes(method)) throw new Error("This control cannot target the calling primary session");
+		if (
+			sessionId === caller.id &&
+			["abort", "release", "fork", "rewind", "compact", "configure", "command"].includes(method)
+		)
+			throw new Error("This control cannot target the calling primary session");
 		let record: CatalogRecord;
-		try { record = this.nativeTarget(sessionId); }
-		catch (error) {
+		try {
+			record = this.nativeTarget(sessionId);
+		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			if (!readPrimaryEndpointDescriptor(this.options.root, sessionId).info) throw new Error("The exact native target is not retained and no ordinary primary is registered");
+			if (!readPrimaryEndpointDescriptor(this.options.root, sessionId).info)
+				throw new Error("The exact native target is not retained and no ordinary primary is registered");
 			return this.primaryControl(method, input, sessionId, caller);
 		}
 		const params = this.nativeControlParams(method, input, sessionId, caller.id);
-		if (["inspect", "status", "snapshot", "dashboard", "profile-read"].includes(method)) return this.observe(record, method, params, undefined, options?.signal);
+		if (["inspect", "status", "snapshot", "dashboard", "profile-read"].includes(method))
+			return this.observe(record, method, params, undefined, options?.signal);
 		if (method === "attach") {
 			this.crashes.delete(record.storageId);
 			this.recoveryErrors.delete(record.storageId);
@@ -690,16 +1089,31 @@ export class AgentManager {
 		return this.selectedControl(record, method, params, caller, selector, options?.signal, options?.launch ?? true);
 	}
 
-	private async selectedControl(record: CatalogRecord, method: string, params: Record<string, unknown>, caller: AgentCaller, selector: string, signal: AbortSignal | undefined, launch: boolean): Promise<unknown> {
+	private async selectedControl(
+		record: CatalogRecord,
+		method: string,
+		params: Record<string, unknown>,
+		caller: AgentCaller,
+		selector: string,
+		signal: AbortSignal | undefined,
+		launch: boolean,
+	): Promise<unknown> {
 		if (method === "release") return this.releaseControl(record, params, caller);
-		try { return await this.controlClient(await this.connection(record, undefined, launch), method, params, caller, signal); }
-		catch (error) {
+		try {
+			return await this.controlClient(await this.connection(record, undefined, launch), method, params, caller, signal);
+		} catch (error) {
 			if (method !== "configure" || !selector.startsWith("@")) throw error;
-			throw new Error(`Configure of ${String(params.sessionId)} (${selector}) failed: ${errorText(error)}`, { cause: error });
+			throw new Error(`Configure of ${String(params.sessionId)} (${selector}) failed: ${errorText(error)}`, {
+				cause: error,
+			});
 		}
 	}
 
-	private async releaseControl(record: CatalogRecord, params: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
+	private async releaseControl(
+		record: CatalogRecord,
+		params: Record<string, unknown>,
+		caller: AgentCaller,
+	): Promise<unknown> {
 		const client = await this.connection(record, undefined, false);
 		return this.controlClient(client, "release", params, caller);
 	}
@@ -712,12 +1126,27 @@ export class AgentManager {
 	}
 
 	/** A primary keeps the admission phases of its answer-bearing request; a fact that is not saved never changes the host call. */
-	private admission<T>(ownerId: string, sessionId: string, requestId: string, replyTo: unknown, call: () => Promise<T>): Promise<T> {
+	private admission<T>(
+		ownerId: string,
+		sessionId: string,
+		requestId: string,
+		replyTo: unknown,
+		call: () => Promise<T>,
+	): Promise<T> {
 		const primary = this.primaries.get(ownerId);
-		const record = primary?.retainContinuity === undefined ? undefined : (fact: ContinuityFact): void => {
-			try { primary.retainContinuity?.(fact); }
-			catch (error) { this.failures.set(`continuity:${ownerId}`, `An admission fact was not saved; the continuity note after a compaction can omit or misstate this request. ${errorText(error)}`); }
-		};
+		const record =
+			primary?.retainContinuity === undefined
+				? undefined
+				: (fact: ContinuityFact): void => {
+						try {
+							primary.retainContinuity?.(fact);
+						} catch (error) {
+							this.failures.set(
+								`continuity:${ownerId}`,
+								`An admission fact was not saved; the continuity note after a compaction can omit or misstate this request. ${errorText(error)}`,
+							);
+						}
+					};
 		return recordAdmission(record, { ownerId, sessionId, requestId, replyTo }, call);
 	}
 
@@ -728,27 +1157,60 @@ export class AgentManager {
 	}
 
 	/** Only the plain forwarded request carries the caller's withdrawal; task submission keeps its own admission path. */
-	private forwardControl(client: HostConnection, method: string, requested: string, params: Record<string, unknown>, caller: AgentCaller, signal: AbortSignal | undefined): Promise<unknown> {
-		if (requested === "task-submit") return this.admission(caller.id, String(params.sessionId), String(params.requestId), params.replyTo, () => client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" }));
+	private forwardControl(
+		client: HostConnection,
+		method: string,
+		requested: string,
+		params: Record<string, unknown>,
+		caller: AgentCaller,
+		signal: AbortSignal | undefined,
+	): Promise<unknown> {
+		if (requested === "task-submit")
+			return this.admission(caller.id, String(params.sessionId), String(params.requestId), params.replyTo, () =>
+				client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" }),
+			);
 		return client.request(method, params, signal ? { signal } : undefined);
 	}
 
-	private async controlClient(client: HostConnection, method: string, params: Record<string, unknown>, caller: AgentCaller, signal?: AbortSignal): Promise<unknown> {
+	private async controlClient(
+		client: HostConnection,
+		method: string,
+		params: Record<string, unknown>,
+		caller: AgentCaller,
+		signal?: AbortSignal,
+	): Promise<unknown> {
 		const sessionId = String(params.sessionId);
 		const requested = this.requestedOperation(method, params);
 		const versionError = hostRequestVersionError(requested, client.runtimeContract);
 		if (versionError) throw versionError;
 		if (method === "attach") return this.attachClient(client, sessionId, params.model);
 		if (method === "report") {
-			const receipt = await client.request("submit", { sessionId, message: `Report from ${caller.id}:\n${String(params.message ?? "")}`, requestId: params.requestId ?? randomUUID(), whenBusy: "followUp", inputClass: "report", inputSender: caller.id });
+			const receipt = await client.request("submit", {
+				sessionId,
+				message: `Report from ${caller.id}:\n${String(params.message ?? "")}`,
+				requestId: params.requestId ?? randomUUID(),
+				whenBusy: "followUp",
+				inputClass: "report",
+				inputSender: caller.id,
+			});
 			return { ...(receipt as Record<string, unknown>), boundary: REPORT_DELIVERY_BOUNDARY };
 		}
 		if (["submit", "rewind", "fork"].includes(method)) params.requestId ??= randomUUID();
 		const outcome = await this.forwardControl(client, method, requested, params, caller, signal);
-		if (requested === "task-submit") return { ...outcome as object, result: await this.sentWorkResult(caller.id, sessionId, outcome, String(params.requestId)) };
+		if (requested === "task-submit")
+			return {
+				...(outcome as object),
+				result: await this.sentWorkResult(caller.id, sessionId, outcome, String(params.requestId)),
+			};
 		const values = record(outcome);
-		if ((method === "rewind" && Number.isSafeInteger(values.submissionId) && Number(values.submissionId) > 0) || (method === "timer-schedule" && Number.isSafeInteger(values.timerId) && Number(values.timerId) > 0)) this.rememberSentWork(caller.id, values.identity);
-		return ["fork", "rewind", "configure"].includes(method) ? this.mutationSnapshot(client, outcome, sessionId) : outcome;
+		if (
+			(method === "rewind" && Number.isSafeInteger(values.submissionId) && Number(values.submissionId) > 0) ||
+			(method === "timer-schedule" && Number.isSafeInteger(values.timerId) && Number(values.timerId) > 0)
+		)
+			this.rememberSentWork(caller.id, values.identity);
+		return ["fork", "rewind", "configure"].includes(method)
+			? this.mutationSnapshot(client, outcome, sessionId)
+			: outcome;
 	}
 
 	private async attachClient(client: HostConnection, sessionId: string, model: unknown): Promise<unknown> {
@@ -756,50 +1218,125 @@ export class AgentManager {
 			const outcome = await client.request("configure", { sessionId, model });
 			if ((outcome as { outcome?: string })?.outcome === "failed") return outcome;
 		}
-		return { sessionId, status: compactStatus(await client.request("status", { sessionId })), recovery: "retained work resumes; no new input was submitted" };
+		return {
+			sessionId,
+			status: compactStatus(await client.request("status", { sessionId })),
+			recovery: "retained work resumes; no new input was submitted",
+		};
 	}
 
 	/** Retained ordinary evidence never connects to a peer or acquires a Durable host. */
 	async observePrimary(sessionId: string, input: Record<string, unknown> = {}): Promise<OrdinaryPrimaryObservation> {
 		const exactCursor = (input.cursor as { view?: unknown } | undefined)?.view === "exact";
 		// An exact cursor selects its view; the native tool fills an omitted view with "history".
-		const view = exactCursor && (input.view === undefined || input.view === "history") ? "exact" : input.view ?? "activity";
-		if (view === "exact" && !exactCursor) throw new Error("Ordinary primary exact inspection requires the textCursor of a clipped entry, or a nextCursor from an exact page, as cursor.");
-		if (view !== "status" && view !== "activity" && view !== "history" && view !== "exact") throw new Error("Ordinary primary inspection supports activity, history and cursor-selected exact pages only; native branch, search and result views are unavailable.");
-		for (const key of ["entryId", "fromId", "offset", "query", "source", "submissionId", "operationId", "receiptCursor", "finalReport"]) {
-			if (input[key] !== undefined) throw new Error(`Ordinary primary inspection does not support ${key}; use its returned cursor for retained ancestry.`);
+		const view =
+			exactCursor && (input.view === undefined || input.view === "history") ? "exact" : (input.view ?? "activity");
+		if (view === "exact" && !exactCursor)
+			throw new Error(
+				"Ordinary primary exact inspection requires the textCursor of a clipped entry, or a nextCursor from an exact page, as cursor.",
+			);
+		if (view !== "status" && view !== "activity" && view !== "history" && view !== "exact")
+			throw new Error(
+				"Ordinary primary inspection supports activity, history and cursor-selected exact pages only; native branch, search and result views are unavailable.",
+			);
+		for (const key of [
+			"entryId",
+			"fromId",
+			"offset",
+			"query",
+			"source",
+			"submissionId",
+			"operationId",
+			"receiptCursor",
+			"finalReport",
+		]) {
+			if (input[key] !== undefined)
+				throw new Error(
+					`Ordinary primary inspection does not support ${key}; use its returned cursor for retained ancestry.`,
+				);
 		}
 		const descriptor = readPrimaryEndpointDescriptor(this.options.root, sessionId);
-		if (!descriptor.info) throw new Error(`Ordinary primary observation is unavailable: ${descriptor.unreadable ? "endpoint unreadable" : descriptor.state}. No peer was contacted.`);
-		return readPrimaryObservation(descriptor.info, { view, limit: input.limit as number | undefined, cursor: input.cursor });
+		if (!descriptor.info)
+			throw new Error(
+				`Ordinary primary observation is unavailable: ${descriptor.unreadable ? "endpoint unreadable" : descriptor.state}. No peer was contacted.`,
+			);
+		return readPrimaryObservation(descriptor.info, {
+			view,
+			limit: input.limit as number | undefined,
+			cursor: input.cursor,
+		});
 	}
 
-	private async primaryControl(method: string, input: Record<string, unknown>, sessionId: string, caller: AgentCaller): Promise<unknown> {
-		if (method === "status" || method === "inspect") return this.observePrimary(sessionId, method === "status" ? { view: "status" } : input);
-		if (method === "collaboration-mutate") throw new Error("A registered primary accepts messages, not Durable session controls; call agent_list, then repeat agent_collaborate with sessionId set to a discovered Durable agent identity, not this primary");
+	private async primaryControl(
+		method: string,
+		input: Record<string, unknown>,
+		sessionId: string,
+		caller: AgentCaller,
+	): Promise<unknown> {
+		if (method === "status" || method === "inspect")
+			return this.observePrimary(sessionId, method === "status" ? { view: "status" } : input);
+		if (method === "collaboration-mutate")
+			throw new Error(
+				"A registered primary accepts messages, not Durable session controls; call agent_list, then repeat agent_collaborate with sessionId set to a discovered Durable agent identity, not this primary",
+			);
 		return this.primaryMessage(method, input, sessionId, caller);
 	}
 
-	private async primaryMessage(method: string, input: Record<string, unknown>, sessionId: string, caller: AgentCaller): Promise<unknown> {
+	private async primaryMessage(
+		method: string,
+		input: Record<string, unknown>,
+		sessionId: string,
+		caller: AgentCaller,
+	): Promise<unknown> {
 		const channel = await connectPrimaryChannel({ id: sessionId, sessionsRoot: this.options.root });
 		try {
-			if (method !== "submit" && method !== "report") throw new Error("A registered primary accepts messages, not Durable session controls");
+			if (method !== "submit" && method !== "report")
+				throw new Error("A registered primary accepts messages, not Durable session controls");
 			const sourceId = typeof input.requestId === "string" ? input.requestId : randomUUID();
 			const origin: DeliveryOrigin = input.origin === "operator" ? "operator" : "model";
 			const sender = this.primaryChannels.get(caller.id)?.info();
 			const name = "name" in caller ? caller.name : sender?.name;
 			const observedPurpose = caller.observedPurpose ?? sender?.observedPurpose;
-			await channel.deliver({ sourceId, requireRetained: false, text: String(input.message ?? ""), details: { kind: method === "report" ? "report" : "message", senderKind: "session", senderIdentity: caller.id, source: sourceId, liveOwner: true, saved: false, origin, wake: origin !== "operator", ...(name === undefined ? {} : { name }), ...(observedPurpose === undefined ? {} : { observedPurpose: observedPurpose.text }), ...(caller.model === undefined ? {} : { provider: caller.model.provider, modelId: caller.model.modelId }), ...(caller.thinkingLevel === undefined ? {} : { thinkingLevel: caller.thinkingLevel }) }, ...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}) });
-			return { sessionId, admitted: true, sourceId, boundary: "Queued admission does not prove retention, action, or task acceptance" };
-		} finally { await channel.close(); }
+			await channel.deliver({
+				sourceId,
+				requireRetained: false,
+				text: String(input.message ?? ""),
+				details: {
+					kind: method === "report" ? "report" : "message",
+					senderKind: "session",
+					senderIdentity: caller.id,
+					source: sourceId,
+					liveOwner: true,
+					saved: false,
+					origin,
+					wake: origin !== "operator",
+					...(name === undefined ? {} : { name }),
+					...(observedPurpose === undefined ? {} : { observedPurpose: observedPurpose.text }),
+					...(caller.model === undefined ? {} : { provider: caller.model.provider, modelId: caller.model.modelId }),
+					...(caller.thinkingLevel === undefined ? {} : { thinkingLevel: caller.thinkingLevel }),
+				},
+				...(typeof input.replyTo === "string" ? { replyTo: input.replyTo } : {}),
+			});
+			return {
+				sessionId,
+				admitted: true,
+				sourceId,
+				boundary: "Queued admission does not prove retention, action, or task acceptance",
+			};
+		} finally {
+			await channel.close();
+		}
 	}
 
 	private async mutationSnapshot(client: HostConnection, outcome: unknown, sessionId: string): Promise<unknown> {
 		if (outcome === null || typeof outcome !== "object" || Array.isArray(outcome)) return outcome;
 		const values = outcome as Record<string, unknown>;
 		const target = typeof values.identity === "string" ? values.identity : sessionId;
-		try { return { ...values, status: compactStatus(await client.request("status", { sessionId: target })) }; }
-		catch (error) { return { ...values, snapshotError: errorText(error) }; }
+		try {
+			return { ...values, status: compactStatus(await client.request("status", { sessionId: target })) };
+		} catch (error) {
+			return { ...values, snapshotError: errorText(error) };
+		}
 	}
 
 	async place(input: AgentSpawnInput & { area?: string; topic?: string }, caller: AgentCaller): Promise<unknown> {
@@ -810,10 +1347,44 @@ export class AgentManager {
 				const selected = await this.reuseExecutionInput(input, caller, this.catalog.read(existing.sessionId));
 				input = { ...input, ...selected };
 				await caller.retainExecutionSelection?.(selected.selection);
-				const response = input.prompt ? await this.control("submit", { sessionId: existing.sessionId, message: input.prompt, checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir), ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) : await this.control("attach", { sessionId: existing.sessionId }, caller);
-				return { value: { ...response as object, sessionId: existing.sessionId, selection: input.selection }, sessionId: existing.sessionId, topic: existing.topic };
+				const response = input.prompt
+					? await this.control(
+							"submit",
+							{
+								sessionId: existing.sessionId,
+								message: input.prompt,
+								checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir),
+								...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+								...originParams(input.origin),
+							},
+							caller,
+						)
+					: await this.control("attach", { sessionId: existing.sessionId }, caller);
+				return {
+					value: { ...(response as object), sessionId: existing.sessionId, selection: input.selection },
+					sessionId: existing.sessionId,
+					topic: existing.topic,
+				};
 			}
-			const created = await this.spawn({ preset: input.preset, selection: input.selection, preferenceSnapshot: input.preferenceSnapshot, model: input.model, thinkingLevel: input.thinkingLevel, cwd: area, name: input.topic, prompt: input.prompt, trust: input.trust, checkInMinutes: input.checkInMinutes, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller, undefined, (storageId) => admit(storageId, input.topic)) as { sessionId: string };
+			const created = (await this.spawn(
+				{
+					preset: input.preset,
+					selection: input.selection,
+					preferenceSnapshot: input.preferenceSnapshot,
+					model: input.model,
+					thinkingLevel: input.thinkingLevel,
+					cwd: area,
+					name: input.topic,
+					prompt: input.prompt,
+					trust: input.trust,
+					checkInMinutes: input.checkInMinutes,
+					...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+					...originParams(input.origin),
+				},
+				caller,
+				undefined,
+				(storageId) => admit(storageId, input.topic),
+			)) as { sessionId: string };
 			return { value: created, sessionId: created.sessionId, topic: input.topic };
 		});
 		return result.value;
@@ -824,9 +1395,18 @@ export class AgentManager {
 		const cwd = input.cwd ?? "";
 		if (input.cursor === undefined) return { query, cwd, pass: "candidates", since: Date.now() };
 		let parsed: Partial<ListCursor> | null;
-		try { parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as Partial<ListCursor> | null; }
-		catch { parsed = null; }
-		if (parsed === null || typeof parsed !== "object" || (parsed.pass !== "candidates" && parsed.pass !== "remainder") || typeof parsed.since !== "number" || !Number.isFinite(parsed.since))
+		try {
+			parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as Partial<ListCursor> | null;
+		} catch {
+			parsed = null;
+		}
+		if (
+			parsed === null ||
+			typeof parsed !== "object" ||
+			(parsed.pass !== "candidates" && parsed.pass !== "remainder") ||
+			typeof parsed.since !== "number" ||
+			!Number.isFinite(parsed.since)
+		)
 			throw new Error("List cursor is not an agent_list continuation; restart discovery without a cursor");
 		if (parsed.query !== query || parsed.cwd !== cwd) throw new Error("Repeat the same query and cwd with the cursor");
 		return {
@@ -840,9 +1420,18 @@ export class AgentManager {
 		};
 	}
 
-	private async collectListPage(record: CatalogRecord, cursor: ListCursor, limit: number, rows: unknown[], unavailable: Array<{ storageId: string; reason: string }>): Promise<void> {
+	private async collectListPage(
+		record: CatalogRecord,
+		cursor: ListCursor,
+		limit: number,
+		rows: unknown[],
+		unavailable: Array<{ storageId: string; reason: string }>,
+	): Promise<void> {
 		try {
-			const page = await this.observe(record, "list", { limit, ...(cursor.native === undefined ? {} : { cursor: cursor.native }) }) as ConversationPage;
+			const page = (await this.observe(record, "list", {
+				limit,
+				...(cursor.native === undefined ? {} : { cursor: cursor.native }),
+			})) as ConversationPage;
 			for (const row of page.items) {
 				const composite = composeListRow(row, record.view?.profiles, record.cwd, record.storageId);
 				if (matchesListRow(composite, cursor.query)) rows.push(composite);
@@ -858,7 +1447,10 @@ export class AgentManager {
 	private listQueue(plan: ListScanPlan, cursor: ListCursor, facts: CatalogInventory["facts"]): ListScanStep[] {
 		const steps = cursor.pass === "candidates" ? plan.candidates : plan.remainder;
 		const position = cursor.storage ?? cursor.after;
-		const queue = position === undefined ? steps : steps.filter((step) => compareListStorages(facts, cursor.query, step.storageId, position) > 0);
+		const queue =
+			position === undefined
+				? steps
+				: steps.filter((step) => compareListStorages(facts, cursor.query, step.storageId, position) > 0);
 		if (cursor.storage === undefined) return queue;
 		const record = facts.get(cursor.storage)?.record;
 		if (record) return [{ storageId: cursor.storage, record }, ...queue];
@@ -868,7 +1460,14 @@ export class AgentManager {
 	}
 
 	/** Observe queued storages until the row limit or the observation budget ends the call; return the steps left. */
-	private async observeListSteps(queue: ListScanStep[], cursor: ListCursor, limit: number, rows: unknown[], unavailable: Array<{ storageId: string; reason: string }>, progress: { visits: number; finished: Set<string> }): Promise<number> {
+	private async observeListSteps(
+		queue: ListScanStep[],
+		cursor: ListCursor,
+		limit: number,
+		rows: unknown[],
+		unavailable: Array<{ storageId: string; reason: string }>,
+		progress: { visits: number; finished: Set<string> },
+	): Promise<number> {
 		let index = 0;
 		while (index < queue.length && rows.length < limit && progress.visits < MAX_LIST_VISITS) {
 			const step = queue[index];
@@ -896,7 +1495,14 @@ export class AgentManager {
 		const inventory = await this.inventory.read();
 		const plan = planListScan(inventory.facts, cursor.query, cursor.cwd, cursor.since);
 		const progress = { visits: 0, finished: new Set<string>() };
-		let open = await this.observeListSteps(this.listQueue(plan, cursor, inventory.facts), cursor, limit, rows, unavailable, progress);
+		let open = await this.observeListSteps(
+			this.listQueue(plan, cursor, inventory.facts),
+			cursor,
+			limit,
+			rows,
+			unavailable,
+			progress,
+		);
 		// The remainder pass repeats no storage that this call finished as a candidate.
 		const remainder = plan.remainder.filter((step) => !progress.finished.has(step.storageId));
 		if (open === 0 && cursor.pass === "candidates" && remainder.length > 0) {
@@ -908,39 +1514,85 @@ export class AgentManager {
 		const pending = open + (cursor.pass === "candidates" ? remainder.length : 0);
 		const complete = pending === 0;
 		const nextCursor = complete ? null : Buffer.from(JSON.stringify(cursor)).toString("base64url");
-		const next = nextCursor === null ? null : { tool: "agent_list" as const,
-			...(input.query === undefined ? {} : { query: input.query }), ...(input.cwd === undefined ? {} : { cwd: input.cwd }), ...(input.limit === undefined ? {} : { limit }), cursor: nextCursor };
-		const coverage = { complete, storagesVisited: visits, unavailable, profileHints: plan.profileHints,
+		const next =
+			nextCursor === null
+				? null
+				: {
+						tool: "agent_list" as const,
+						...(input.query === undefined ? {} : { query: input.query }),
+						...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+						...(input.limit === undefined ? {} : { limit }),
+						cursor: nextCursor,
+					};
+		const coverage = {
+			complete,
+			storagesVisited: visits,
+			unavailable,
+			profileHints: plan.profileHints,
 			catalog: { storages: plan.storages, pass: cursor.pass, pending, settled: plan.settled },
-			basis: listCoverageBasis({ query: cursor.query, pass: cursor.pass, pending, settled: plan.settled }), next };
-		return { rows, nextCursor, coverage, observedAt: new Date().toISOString(), authority: "Observation grants no control or task authority" };
+			basis: listCoverageBasis({ query: cursor.query, pass: cursor.pass, pending, settled: plan.settled }),
+			next,
+		};
+		return {
+			rows,
+			nextCursor,
+			coverage,
+			observedAt: new Date().toISOString(),
+			authority: "Observation grants no control or task authority",
+		};
 	}
 
 	async dashboardPage(input: { cursor?: string; ownerId?: string } = {}): Promise<AgentPriorityPage> {
 		const rows: AgentPrioritySummary[] = [];
 		const inventory = await this.inventory.read();
 		const activeStorageIds = [...new Set([...this.launchRows.keys(), ...this.opening.keys(), ...this.recovering])];
-		const page = projectCatalogPriority(inventory, { cursor: input.cursor, ownerIds: input.ownerId ? [input.ownerId] : [...this.primaries.keys()], activeStorageIds, limit: MAX_INVENTORY_PAGES * 20 });
-		const coverage = { complete: page.nextCursor === null && page.coverage.remaining === 0 && page.coverage.unreadable === 0, storagesVisited: page.coverage.inspected,
-			skipped: page.coverage.unreadable, omitted: 0, nextCursor: page.nextCursor, inventory: page.coverage,
-			projections: {} as Record<string, { skipped: number; omitted: number; unresolvedClaim: boolean }>, unresolvedClaims: 0 };
+		const page = projectCatalogPriority(inventory, {
+			cursor: input.cursor,
+			ownerIds: input.ownerId ? [input.ownerId] : [...this.primaries.keys()],
+			activeStorageIds,
+			limit: MAX_INVENTORY_PAGES * 20,
+		});
+		const coverage = {
+			complete: page.nextCursor === null && page.coverage.remaining === 0 && page.coverage.unreadable === 0,
+			storagesVisited: page.coverage.inspected,
+			skipped: page.coverage.unreadable,
+			omitted: 0,
+			nextCursor: page.nextCursor,
+			inventory: page.coverage,
+			projections: {} as Record<string, { skipped: number; omitted: number; unresolvedClaim: boolean }>,
+			unresolvedClaims: 0,
+		};
 		for (const { record, modifiedAt, priority, claim, observedAt } of page.items) {
 			const projection = await this.catalogRows(record, claim, observedAt);
 			coverage.skipped += projection.skipped;
 			if (!projection.resolvedClaim) coverage.unresolvedClaims++;
 			coverage.omitted += projection.omitted;
-			coverage.projections[record.storageId] = { skipped: projection.skipped, omitted: projection.omitted, unresolvedClaim: !projection.resolvedClaim };
+			coverage.projections[record.storageId] = {
+				skipped: projection.skipped,
+				omitted: projection.omitted,
+				unresolvedClaim: !projection.resolvedClaim,
+			};
 			const recoveryError = this.recoveryErrors.get(record.storageId);
 			const note = this.recoveryNotes.get(record.storageId);
-			rows.push(...projection.rows.map((row) => ({ ...row, rosterOrder: { priority, modifiedAt }, ...(record.ownerId ? { creatingOwnerId: record.ownerId } : {}),
-				...(note === undefined ? {} : { ownerLabel: `${note} ${row.ownerLabel ?? ""}`.trim() }),
-				...(recoveryError === undefined ? {} : { health: { ...row.health, lastError: recoveryError } }) })));
+			rows.push(
+				...projection.rows.map((row) => ({
+					...row,
+					rosterOrder: { priority, modifiedAt },
+					...(record.ownerId ? { creatingOwnerId: record.ownerId } : {}),
+					...(note === undefined ? {} : { ownerLabel: `${note} ${row.ownerLabel ?? ""}`.trim() }),
+					...(recoveryError === undefined ? {} : { health: { ...row.health, lastError: recoveryError } }),
+				})),
+			);
 		}
 		coverage.complete &&= coverage.unresolvedClaims === 0 && coverage.skipped === 0 && coverage.omitted === 0;
 		return { rows, coverage, observedAt: page.observedAt };
 	}
 
-	private async catalogRows(record: CatalogRecord, observedClaim: ClaimObservation, observedAt: string): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number; resolvedClaim: boolean }> {
+	private async catalogRows(
+		record: CatalogRecord,
+		observedClaim: ClaimObservation,
+		observedAt: string,
+	): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number; resolvedClaim: boolean }> {
 		const connection = this.clients.get(record.storageId) ?? this.recoveryClients.get(record.storageId)?.client;
 		const owner = catalogOwner(record.storageId, observedClaim, connection?.ownerEvidence);
 		const { publication, resolvedClaim } = owner;
@@ -948,24 +1600,53 @@ export class AgentManager {
 		const view = publication ?? record.view;
 		if (starting) {
 			const published = view?.rows.find((row) => row.id === record.storageId);
-			if (this.opening.has(record.storageId) || !published || view?.unavailable || (starting.firstMessage && !published.firstMessage))
+			if (
+				this.opening.has(record.storageId) ||
+				!published ||
+				view?.unavailable ||
+				(starting.firstMessage && !published.firstMessage)
+			)
 				return { rows: [starting], skipped: 0, omitted: 0, resolvedClaim };
 			this.launchRows.delete(record.storageId);
 		}
 		if (!view || view.unavailable) {
-			return { skipped: 1, omitted: 0, resolvedClaim, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, name: record.name, modifiedAt: Date.parse(view?.updatedAt ?? record.createdAt), owner: claimOwner(observedClaim), state: "unavailable", cost: 0, partial: true, error: view?.unavailable ?? "Host metadata is unavailable; inspect this conversation for native state" }] };
+			return {
+				skipped: 1,
+				omitted: 0,
+				resolvedClaim,
+				rows: [
+					{
+						id: record.storageId,
+						storageId: record.storageId,
+						cwd: record.cwd,
+						name: record.name,
+						modifiedAt: Date.parse(view?.updatedAt ?? record.createdAt),
+						owner: claimOwner(observedClaim),
+						state: "unavailable",
+						cost: 0,
+						partial: true,
+						error: view?.unavailable ?? "Host metadata is unavailable; inspect this conversation for native state",
+					},
+				],
+			};
 		}
 		const rows = publishedRows(view, observedAt, owner);
 		return { rows, skipped: view.coverage.complete ? 0 : 1, omitted: view.coverage.omitted, resolvedClaim };
 	}
 
-	async snapshot(sessionId: string, params: { before?: number; limit?: number; maxBytes?: number } = {}): Promise<ConversationSnapshotPage> {
+	async snapshot(
+		sessionId: string,
+		params: { before?: number; limit?: number; maxBytes?: number } = {},
+	): Promise<ConversationSnapshotPage> {
 		sessionId = await this.resolveTarget(sessionId);
 		if (this.launchRows.has(storageIdOf(sessionId)) && this.opening.has(storageIdOf(sessionId))) {
 			const { emptyConversationSnapshot } = await loadDurableObservation();
 			return emptyConversationSnapshot();
 		}
-		return this.observe(this.nativeTarget(sessionId), "snapshot", { sessionId, ...params }) as Promise<ConversationSnapshotPage>;
+		return this.observe(this.nativeTarget(sessionId), "snapshot", {
+			sessionId,
+			...params,
+		}) as Promise<ConversationSnapshotPage>;
 	}
 
 	/**
@@ -987,10 +1668,14 @@ export class AgentManager {
 			if (!client?.observe || signal?.aborted) return undefined;
 			const versionError = hostRequestVersionError("observe-open", client.runtimeContract);
 			if (versionError) throw versionError;
-			const observationScope: HostObservationScope = scope === "tasks" ? { scope: "tasks", sessionId: record.storageId } : { scope: "conversation", sessionId };
+			const observationScope: HostObservationScope =
+				scope === "tasks" ? { scope: "tasks", sessionId: record.storageId } : { scope: "conversation", sessionId };
 			const observation = await client.observe(observationScope, { ...(signal === undefined ? {} : { signal }) });
 			const off = observation.onFrame(listener);
-			return () => { off(); void observation.close().catch(() => undefined); };
+			return () => {
+				off();
+				void observation.close().catch(() => undefined);
+			};
 		})();
 	}
 
@@ -1000,13 +1685,20 @@ export class AgentManager {
 		const resolveIdentity = async (value: unknown, field: string): Promise<string> => {
 			let resolved = value;
 			if (typeof value === "string" && value.startsWith("@")) {
-				try { resolved = await this.resolveTarget(value); }
-				catch (error) { throw new Error(`${field}: handle resolution failed: ${errorText(error)}. Call agent_list and copy a discovered identity into ${field}${field === "integrator" ? "; omit integrator to use the caller" : ""}`); }
+				try {
+					resolved = await this.resolveTarget(value);
+				} catch (error) {
+					throw new Error(
+						`${field}: handle resolution failed: ${errorText(error)}. Call agent_list and copy a discovered identity into ${field}${field === "integrator" ? "; omit integrator to use the caller" : ""}`,
+					);
+				}
 			}
 			return collaborationIdentity(resolved, field);
 		};
-		for (const key of ["sessionId", "integrator"]) if (params[key] !== undefined) params[key] = await resolveIdentity(params[key], key);
-		if (Array.isArray(params.notify)) params.notify = await Promise.all(params.notify.map((id, index) => resolveIdentity(id, `notify[${index}]`)));
+		for (const key of ["sessionId", "integrator"])
+			if (params[key] !== undefined) params[key] = await resolveIdentity(params[key], key);
+		if (Array.isArray(params.notify))
+			params.notify = await Promise.all(params.notify.map((id, index) => resolveIdentity(id, `notify[${index}]`)));
 		return params;
 	}
 
@@ -1016,41 +1708,76 @@ export class AgentManager {
 		input = await this.collaborationTargets(input);
 		const action = String(input.action ?? "");
 		const threadId = typeof input.threadId === "string" ? input.threadId : undefined;
-		const sessionId = typeof input.sessionId === "string" ? input.sessionId : threadId ? collaborationStorage(threadId) : undefined;
+		const sessionId =
+			typeof input.sessionId === "string" ? input.sessionId : threadId ? collaborationStorage(threadId) : undefined;
 		if (action === "list" && !sessionId) return discoverCollaboration(this.catalog, input);
 		if (!sessionId) throw new Error("Create requires an agent sessionId; discover an agent or create one first.");
-		if (action === "list" || action === "read") return this.observe(this.nativeTarget(sessionId), action === "list" ? "collaboration-list" : "collaboration-read", { ...input, sessionId });
-		return this.control("collaboration-mutate", { ...input, sessionId, senderIdentity: caller.id, origin: input.origin ?? "model", requestId: input.requestId ?? randomUUID() }, caller);
+		if (action === "list" || action === "read")
+			return this.observe(
+				this.nativeTarget(sessionId),
+				action === "list" ? "collaboration-list" : "collaboration-read",
+				{ ...input, sessionId },
+			);
+		return this.control(
+			"collaboration-mutate",
+			{
+				...input,
+				sessionId,
+				senderIdentity: caller.id,
+				origin: input.origin ?? "model",
+				requestId: input.requestId ?? randomUUID(),
+			},
+			caller,
+		);
 	}
 
 	private async selectedStatus(selector: string): Promise<unknown> {
 		const sessionId = await this.resolveTarget(selector);
 		let record: CatalogRecord;
-		try { record = this.nativeTarget(sessionId); }
-		catch (error) {
+		try {
+			record = this.nativeTarget(sessionId);
+		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 			return this.observePrimary(sessionId, { view: "status" });
 		}
 		return this.observe(record, "status", { sessionId });
 	}
 
-	async status(sessionId?: string | StorageStatusPageInput, view?: "fleet", caller?: AgentCaller, selection: FleetSelection = {}): Promise<unknown> {
+	async status(
+		sessionId?: string | StorageStatusPageInput,
+		view?: "fleet",
+		caller?: AgentCaller,
+		selection: FleetSelection = {},
+	): Promise<unknown> {
 		if (typeof sessionId === "object") {
 			const input = storageStatusPageInput(sessionId);
-			if (view !== undefined || Object.keys(selection).length !== 0) throw new Error("Storage status does not accept fleet selectors");
+			if (view !== undefined || Object.keys(selection).length !== 0)
+				throw new Error("Storage status does not accept fleet selectors");
 			return this.observe(this.nativeTarget(input.storageId), "status", { ...input });
 		}
 		validateFleetSelection({ ...selection, view, sessionId });
 		if (view === "fleet") {
-			return readFleetStatus(this.catalog, { ...selection, ...(caller ? { effort: { callerId: caller.id, callerUsage: caller.reportedUsage } } : {}) });
+			return readFleetStatus(this.catalog, {
+				...selection,
+				...(caller ? { effort: { callerId: caller.id, callerUsage: caller.reportedUsage } } : {}),
+			});
 		}
 		if (sessionId) return this.selectedStatus(sessionId);
 		const page = await this.dashboardPage({ ownerId: caller?.id });
-		const failures = [
-			[...this.failures.entries].map(([storageId, error]) => ({ storageId, error })),
-		].flat();
+		const failures = [[...this.failures.entries].map(([storageId, error]) => ({ storageId, error }))].flat();
 		const awareness = caller ? await this.awareness(caller.id, caller.cwd) : undefined;
-		return buildStatusOverview({ ...page, rows: page.rows.map(({ profile: _profile, creatingOwnerId: _creatingOwnerId, ...row }) => row) }, [...this.primaries].map(([sessionId, primary]) => ({ sessionId, cwd: primary.cwd ?? "", name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel })), failures, awareness);
+		return buildStatusOverview(
+			{ ...page, rows: page.rows.map(({ profile: _profile, creatingOwnerId: _creatingOwnerId, ...row }) => row) },
+			[...this.primaries].map(([sessionId, primary]) => ({
+				sessionId,
+				cwd: primary.cwd ?? "",
+				name: primary.name,
+				model: primary.model,
+				thinkingLevel: primary.thinkingLevel,
+			})),
+			failures,
+			awareness,
+		);
 	}
 
 	registerPrimary(ownerId: string, primary: PrimaryClient): Promise<void> {
@@ -1071,10 +1798,21 @@ export class AgentManager {
 		if (this.stopping(primary)) return;
 		const location = await this.locations.resolve(primary.cwd ?? this.options.root);
 		if (this.stopping(primary)) return;
-		const channel = await (this.options.createPrimary ?? createPrimaryChannel)({ id: ownerId, ...location, lastActivityAt: new Date().toISOString(), observedPurpose: this.observedPurpose(primary), sessionFile: primary.sessionFile, name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel, sessionsRoot: this.options.root, signal: primary.signal,
+		const channel = await (this.options.createPrimary ?? createPrimaryChannel)({
+			id: ownerId,
+			...location,
+			lastActivityAt: new Date().toISOString(),
+			observedPurpose: this.observedPurpose(primary),
+			sessionFile: primary.sessionFile,
+			name: primary.name,
+			model: primary.model,
+			thinkingLevel: primary.thinkingLevel,
+			sessionsRoot: this.options.root,
+			signal: primary.signal,
 			promptTrust: (cwd) => primary.promptTrust?.(cwd) ?? Promise.resolve(undefined),
 			deliver: (message) => {
-				if (this.stopping(primary) || this.primaries.get(ownerId) !== primary) throw new Error("Primary session is closed");
+				if (this.stopping(primary) || this.primaries.get(ownerId) !== primary)
+					throw new Error("Primary session is closed");
 				const requireRetained = message.requireRetained !== false;
 				const key = `${ownerId}:${requireRetained ? "retained" : "queued"}:${message.sourceId}`;
 				if (this.delivered.has(key)) return;
@@ -1082,14 +1820,29 @@ export class AgentManager {
 				this.delivered.set(key, true);
 			},
 		});
-		if (this.stopping(primary)) { await channel.close(); return; }
+		if (this.stopping(primary)) {
+			await channel.close();
+			return;
+		}
 		this.primaryClosures.get(primary.signal)?.delete(ownerId);
 		this.primaryChannels.set(ownerId, channel);
 		this.primaries.set(ownerId, primary);
 		this.retainColdObservations();
-		primary.signal.addEventListener("abort", () => { void this.closePrimary(ownerId, primary.signal).catch(() => {}); }, { once: true });
-		try { this.observeCatalogChanges(); }
-		catch (error) { this.failures.set("catalog-observation", `Catalog updates are unavailable: ${errorText(error)}. Restart this Pi process.`); }
+		primary.signal.addEventListener(
+			"abort",
+			() => {
+				void this.closePrimary(ownerId, primary.signal).catch(() => {});
+			},
+			{ once: true },
+		);
+		try {
+			this.observeCatalogChanges();
+		} catch (error) {
+			this.failures.set(
+				"catalog-observation",
+				`Catalog updates are unavailable: ${errorText(error)}. Restart this Pi process.`,
+			);
+		}
 		this.rosterChanged();
 		await this.refreshFooter();
 		await this.scanRecovery(primary, ownerId);
@@ -1100,15 +1853,24 @@ export class AgentManager {
 		try {
 			const record = this.nativeTarget(identity);
 			return nativeRecipientAvailability(record, this.options.packageDir);
-		} catch { /* An ordinary primary has no native catalogue record. */ }
+		} catch {
+			/* An ordinary primary has no native catalogue record. */
+		}
 		if (primaryEndpointStatus(this.options.root, identity).state !== "live") return undefined;
 		const info = readPrimaryEndpointDescriptor(this.options.root, identity).info;
-		return info === undefined ? undefined : createHash("sha256").update(JSON.stringify([info.pid, info.hostname, info.startedAt, info.socketPath])).digest("hex");
+		return info === undefined
+			? undefined
+			: createHash("sha256")
+					.update(JSON.stringify([info.pid, info.hostname, info.startedAt, info.socketPath]))
+					.digest("hex");
 	}
 
 	private parkedWakeDue(record: CatalogRecord, registeringPrimary?: string): boolean {
 		const wake = readDeliveryWake(this.options.root, record.storageId);
-		if (wake === undefined) { this.wakeAttempts.delete(record.storageId); return false; }
+		if (wake === undefined) {
+			this.wakeAttempts.delete(record.storageId);
+			return false;
+		}
 		if (registeringPrimary !== undefined) {
 			if (!wake.recipients.includes(registeringPrimary)) return false;
 			if (wake.failedAvailability[registeringPrimary] === null) return true;
@@ -1119,7 +1881,8 @@ export class AgentManager {
 		const available = new Map<string, string>();
 		for (const recipient of wake.recipients) {
 			const fingerprint = this.recipientAvailability(recipient);
-			if (fingerprint !== undefined && fingerprint !== wake.failedAvailability[recipient]) available.set(recipient, fingerprint);
+			if (fingerprint !== undefined && fingerprint !== wake.failedAvailability[recipient])
+				available.set(recipient, fingerprint);
 		}
 		this.wakeAttempts.set(record.storageId, available);
 		return [...available].some(([recipient, fingerprint]) => previous?.get(recipient) !== fingerprint);
@@ -1127,12 +1890,19 @@ export class AgentManager {
 
 	private recoveryCandidate(record: CatalogRecord, registeringPrimary?: string): boolean {
 		if (record.recoveryDue === true) return true;
-		try { return this.parkedWakeDue(record, registeringPrimary); }
-		catch (error) { this.recordRecoveryError(record.storageId, `Delivery wake metadata: ${errorText(error)}`); return false; }
+		try {
+			return this.parkedWakeDue(record, registeringPrimary);
+		} catch (error) {
+			this.recordRecoveryError(record.storageId, `Delivery wake metadata: ${errorText(error)}`);
+			return false;
+		}
 	}
 
 	private recoverCatalogueChanges(): void {
-		if (this.catalogueScan !== undefined) { this.catalogueScanAgain = true; return; }
+		if (this.catalogueScan !== undefined) {
+			this.catalogueScanAgain = true;
+			return;
+		}
 		this.catalogueScan = (async () => {
 			do {
 				this.catalogueScanAgain = false;
@@ -1140,10 +1910,14 @@ export class AgentManager {
 				if (owner === undefined || this.stopping(owner)) return;
 				await this.scanRecovery(owner);
 			} while (this.catalogueScanAgain && !this.shuttingDown);
-		})().catch((error) => { this.failures.set("catalog-recovery", errorText(error)); }).finally(() => {
-			this.catalogueScan = undefined;
-			if (this.catalogueScanAgain && !this.shuttingDown) this.recoverCatalogueChanges();
-		});
+		})()
+			.catch((error) => {
+				this.failures.set("catalog-recovery", errorText(error));
+			})
+			.finally(() => {
+				this.catalogueScan = undefined;
+				if (this.catalogueScanAgain && !this.shuttingDown) this.recoverCatalogueChanges();
+			});
 	}
 
 	private async scanRecovery(owner: RecoveryOwner, registeringPrimary?: string): Promise<void> {
@@ -1152,12 +1926,22 @@ export class AgentManager {
 		let visited = 0;
 		let complete = true;
 		for (const fact of inventory.facts.values()) {
-			if (this.stopping(owner) || visited >= MAX_INVENTORY_PAGES * 20) { complete = false; break; }
-			if (!fact) { complete = false; continue; }
+			if (this.stopping(owner) || visited >= MAX_INVENTORY_PAGES * 20) {
+				complete = false;
+				break;
+			}
+			if (!fact) {
+				complete = false;
+				continue;
+			}
 			visited++;
 			if (this.recoveryCandidate(fact.record, registeringPrimary)) due.push(fact.record);
 		}
-		if (!complete) this.failures.set("startup", "Startup recovery reached its inventory bound or unreadable metadata; use agent_list for the remaining storage");
+		if (!complete)
+			this.failures.set(
+				"startup",
+				"Startup recovery reached its inventory bound or unreadable metadata; use agent_list for the remaining storage",
+			);
 		await this.enqueueRecovery(due, owner, registeringPrimary !== undefined);
 	}
 
@@ -1172,21 +1956,30 @@ export class AgentManager {
 		const channel = this.primaryChannels.get(ownerId);
 		this.primaries.delete(ownerId);
 		this.primaryChannels.delete(ownerId);
-		const closing = Promise.resolve().then(async () => {
-			try { await channel?.close(); }
-			finally { await this.releaseObservation(); }
-		}).catch((error) => {
-			this.failures.set(`primary:${ownerId}`, errorText(error));
-			throw error;
-		}).finally(() => {
-			if (this.closingPrimaries.get(ownerId) === closing) this.closingPrimaries.delete(ownerId);
-		});
+		const closing = Promise.resolve()
+			.then(async () => {
+				try {
+					await channel?.close();
+				} finally {
+					await this.releaseObservation();
+				}
+			})
+			.catch((error) => {
+				this.failures.set(`primary:${ownerId}`, errorText(error));
+				throw error;
+			})
+			.finally(() => {
+				if (this.closingPrimaries.get(ownerId) === closing) this.closingPrimaries.delete(ownerId);
+			});
 		const ownedClosures = closures ?? new Map<string, Promise<void>>();
 		ownedClosures.set(ownerId, closing);
 		this.primaryClosures.set(signal, ownedClosures);
 		this.closingPrimaries.set(ownerId, closing);
-		try { primary.status?.(undefined); }
-		catch (error) { this.failures.set(`primary-status:${ownerId}`, errorText(error)); }
+		try {
+			primary.status?.(undefined);
+		} catch (error) {
+			this.failures.set(`primary-status:${ownerId}`, errorText(error));
+		}
 		if (!this.primaries.size) this.releaseClients();
 		this.observationOwnerEnded();
 		await closing;
@@ -1194,7 +1987,10 @@ export class AgentManager {
 
 	/** Bounded local-machine efforts with full intent only for a shared repository or cwd. */
 	async efforts(ownerId: string, cwd?: string): Promise<EffortPresencePage> {
-		const self = this.primaryChannels.get(ownerId)?.info() ?? { id: ownerId, ...await this.locations.resolve(cwd ?? this.options.root) };
+		const self = this.primaryChannels.get(ownerId)?.info() ?? {
+			id: ownerId,
+			...(await this.locations.resolve(cwd ?? this.options.root)),
+		};
 		return readRelatedEfforts(this.effortResources(), self);
 	}
 
@@ -1202,7 +1998,13 @@ export class AgentManager {
 	async awareness(ownerId: string, cwd?: string): Promise<EffortAwareness> {
 		const self = this.primaryChannels.get(ownerId)?.info() ?? { id: ownerId, cwd: cwd ?? this.options.root };
 		const awareness = await readEffortAwareness(this.effortResources(), self);
-		if ((this.primaries.get(ownerId)?.observedInputComplete === false || this.primaries.get(ownerId)?.observedInputCanCapture === false) && !awareness.self.observedPurpose && !awareness.self.intentClaim) awareness.self.omitted = true;
+		if (
+			(this.primaries.get(ownerId)?.observedInputComplete === false ||
+				this.primaries.get(ownerId)?.observedInputCanCapture === false) &&
+			!awareness.self.observedPurpose &&
+			!awareness.self.intentClaim
+		)
+			awareness.self.omitted = true;
 		return awareness;
 	}
 
@@ -1211,7 +2013,10 @@ export class AgentManager {
 	}
 
 	/** Publish a session's claim without changing host facts or another primary. */
-	async publishIntent(ownerId: string, input: Omit<PrimaryIntentClaim, "updatedAt"> | undefined): Promise<{ published: PrimaryInfo; awareness: EffortAwareness }> {
+	async publishIntent(
+		ownerId: string,
+		input: Omit<PrimaryIntentClaim, "updatedAt"> | undefined,
+	): Promise<{ published: PrimaryInfo; awareness: EffortAwareness }> {
 		const channel = this.primaryChannels.get(ownerId);
 		if (!channel) throw new Error("Intent publication requires this live ordinary primary session");
 		channel.publishIntent(input === undefined ? undefined : { ...input, updatedAt: new Date().toISOString() });
@@ -1219,17 +2024,27 @@ export class AgentManager {
 		return { published: channel.info(), awareness: await this.awareness(ownerId) };
 	}
 
-
 	private observedPurpose(primary: PrimaryClient): PrimaryInfo["observedPurpose"] {
 		const name = purposeExcerpt(primary.name ?? "");
-		return name ? { source: "session-name", text: name } : primary.observedInput ? { source: "interactive-input", text: purposeExcerpt(primary.observedInput) } : undefined;
+		return name
+			? { source: "session-name", text: name }
+			: primary.observedInput
+				? { source: "interactive-input", text: purposeExcerpt(primary.observedInput) }
+				: undefined;
 	}
 
 	/** Only interactive input supplies an observed fallback; extension-generated text never does. */
 	recordPrimaryInput(ownerId: string, text: string, source: string): boolean {
 		const primary = this.primaries.get(ownerId);
 		if (!primary) return false;
-		const excerpt = firstInteractivePurpose({ text: primary.observedInput, complete: primary.observedInputComplete === true, canCapture: primary.observedInputCanCapture === true }, { source, text });
+		const excerpt = firstInteractivePurpose(
+			{
+				text: primary.observedInput,
+				complete: primary.observedInputComplete === true,
+				canCapture: primary.observedInputCanCapture === true,
+			},
+			{ source, text },
+		);
 		if (source === "interactive") primary.observedInputCanCapture = false;
 		if (!excerpt) return false;
 		primary.observedInput = excerpt;
@@ -1244,19 +2059,27 @@ export class AgentManager {
 		if (!channel) return;
 		const previous = Date.parse(channel.info().lastActivityAt ?? channel.info().startedAt);
 		if (Number.isFinite(previous) && now - previous < PRIMARY_ACTIVITY_INTERVAL_MS) return;
-		try { channel.touch(new Date(now).toISOString()); }
-		catch (error) { this.failures.set(`primary:${ownerId}`, errorText(error)); }
+		try {
+			channel.touch(new Date(now).toISOString());
+		} catch (error) {
+			this.failures.set(`primary:${ownerId}`, errorText(error));
+		}
 	}
 
 	/** Refresh the recorded identity of a registered primary; the channel endpoint record is rewritten. */
-	updatePrimary(ownerId: string, info: { name?: string; model?: { provider: string; modelId: string }; thinkingLevel?: string }): void {
+	updatePrimary(
+		ownerId: string,
+		info: { name?: string; model?: { provider: string; modelId: string }; thinkingLevel?: string },
+	): void {
 		const primary = this.primaries.get(ownerId);
 		if (!primary) return;
 		if ("name" in info) primary.name = info.name;
 		if ("model" in info) primary.model = info.model;
 		if ("thinkingLevel" in info) primary.thinkingLevel = info.thinkingLevel;
 		try {
-			this.primaryChannels.get(ownerId)?.update({ name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel });
+			this.primaryChannels
+				.get(ownerId)
+				?.update({ name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel });
 			if ("name" in info) {
 				this.primaryChannels.get(ownerId)?.setObservedPurpose(this.observedPurpose(primary));
 				this.rosterChanged();
@@ -1277,7 +2100,9 @@ export class AgentManager {
 				}
 			}
 		};
-		const recovery = this.recoveryQueue.then(async () => { await Promise.all([recover(), recover()]); });
+		const recovery = this.recoveryQueue.then(async () => {
+			await Promise.all([recover(), recover()]);
+		});
 		this.recoveryQueue = recovery.catch(() => undefined);
 		await recovery;
 		for (const record of due.slice(next)) this.queuedRecovery.delete(record.storageId);
@@ -1287,12 +2112,18 @@ export class AgentManager {
 		if (this.crashes.get(record.storageId)?.stopped) return;
 		const cached = this.clients.get(record.storageId);
 		if (cached) {
-			try { await this.readRecoveryState(record.storageId, cached); }
-			catch (error) { this.recordRecoveryError(record.storageId, errorText(error)); }
+			try {
+				await this.readRecoveryState(record.storageId, cached);
+			} catch (error) {
+				this.recordRecoveryError(record.storageId, errorText(error));
+			}
 			return;
 		}
 		const recovering = this.recoveryClients.get(record.storageId);
-		if (recovering) { await recovering.refresh(); return; }
+		if (recovering) {
+			await recovering.refresh();
+			return;
+		}
 		if (this.recovering.has(record.storageId)) return;
 		if (record.recoveryDue === true && this.recoveryHolds.has(record.storageId)) {
 			if (!fromRegistration) return;
@@ -1302,7 +2133,11 @@ export class AgentManager {
 		try {
 			const open = this.options.acquire ?? acquireHost;
 			const client = await open(hostMetadata(record, this.options.packageDir), MANAGED_LINK);
-			if (this.stopping(primary)) { await client.close(); this.recovering.delete(record.storageId); return; }
+			if (this.stopping(primary)) {
+				await client.close();
+				this.recovering.delete(record.storageId);
+				return;
+			}
 			this.recoveryErrors.delete(record.storageId);
 			this.recoveryHolds.delete(record.storageId);
 			await this.monitorRecovery(record.storageId, client, primary);
@@ -1323,7 +2158,10 @@ export class AgentManager {
 		this.recoveryErrors.delete(storageId);
 		this.failures.delete(storageId);
 		const mismatch = operationContractMismatch("recovery-state", client.runtimeContract.operations["recovery-state"]);
-		if (!mismatch) { this.recoveryNotes.delete(storageId); return true; }
+		if (!mismatch) {
+			this.recoveryNotes.delete(storageId);
+			return true;
+		}
 		const note = `${mismatch} Host code updates on its next start.`;
 		if (this.recoveryNotes.get(storageId) !== note) {
 			this.recoveryNotes.set(storageId, note);
@@ -1332,10 +2170,18 @@ export class AgentManager {
 		return false;
 	}
 
-	private async readRecoveryState(storageId: string, client: HostConnection): Promise<{ workPending?: boolean; deliveriesPending?: boolean; deliveriesActive?: boolean } | undefined> {
+	private async readRecoveryState(
+		storageId: string,
+		client: HostConnection,
+	): Promise<{ workPending?: boolean; deliveriesPending?: boolean; deliveriesActive?: boolean } | undefined> {
 		if (!this.recoveryCompatible(storageId, client)) return undefined;
-		try { return await client.request("recovery-state") as { workPending?: boolean; deliveriesPending?: boolean; deliveriesActive?: boolean }; }
-		catch (error) {
+		try {
+			return (await client.request("recovery-state")) as {
+				workPending?: boolean;
+				deliveriesPending?: boolean;
+				deliveriesActive?: boolean;
+			};
+		} catch (error) {
 			if (this.recoveryCompatible(storageId, client)) throw error;
 			return undefined;
 		}
@@ -1353,8 +2199,13 @@ export class AgentManager {
 		this.recoveryHolds.set(storageId, loss);
 		if (client.ownerReleased) return;
 		let record: CatalogRecord;
-		try { record = this.catalog.read(storageId); if (record.recoveryDue !== true) return; }
-		catch (error) { this.recordRecoveryError(storageId, errorText(error)); return; }
+		try {
+			record = this.catalog.read(storageId);
+			if (record.recoveryDue !== true) return;
+		} catch (error) {
+			this.recordRecoveryError(storageId, errorText(error));
+			return;
+		}
 		const recover = () => {
 			if (this.recoveryHolds.get(storageId) !== loss || this.shuttingDown || client.ownerReleased) return;
 			const primary = [...this.primaries.values()].find((candidate) => !this.stopping(candidate));
@@ -1367,11 +2218,22 @@ export class AgentManager {
 				times.push(now);
 				const stopped = times.length > MAX_AUTOMATIC_RESTARTS;
 				this.crashes.set(storageId, { times, stopped });
-				if (stopped) { this.recordRecoveryError(storageId, "Automatic recovery stopped after repeated host losses within 60 seconds. A running host's error output is not retained; use agent_attach to retry, and a host that fails before readiness returns its error output in that refusal."); return; }
+				if (stopped) {
+					this.recordRecoveryError(
+						storageId,
+						"Automatic recovery stopped after repeated host losses within 60 seconds. A running host's error output is not retained; use agent_attach to retry, and a host that fails before readiness returns its error output in that refusal.",
+					);
+					return;
+				}
 				this.recoveryHolds.delete(storageId);
 				this.queuedRecovery.add(storageId);
-				void this.enqueueRecovery([record], primary).catch((error) => { this.queuedRecovery.delete(storageId); this.recordRecoveryError(storageId, errorText(error)); });
-			} catch (error) { this.recordRecoveryError(storageId, errorText(error)); }
+				void this.enqueueRecovery([record], primary).catch((error) => {
+					this.queuedRecovery.delete(storageId);
+					this.recordRecoveryError(storageId, errorText(error));
+				});
+			} catch (error) {
+				this.recordRecoveryError(storageId, errorText(error));
+			}
 		};
 		if (!client.ownedExit) {
 			const paths = hostPaths(record);
@@ -1381,12 +2243,21 @@ export class AgentManager {
 				this.failures.delete(storageId);
 				return;
 			}
-			this.recordRecoveryError(storageId, "Host link is unavailable without an owned child-exit event. Retained work remains; use agent_attach for explicit recovery.");
+			this.recordRecoveryError(
+				storageId,
+				"Host link is unavailable without an owned child-exit event. Retained work remains; use agent_attach for explicit recovery.",
+			);
 			return;
 		}
-		void client.ownedExit.then((outcome) => { if (outcome.failed && !client.ownerReleased) recover(); }, (error: unknown) => {
-			if (!this.shuttingDown && this.recoveryHolds.get(storageId) === loss) this.recordRecoveryError(storageId, `Owned host exit is unavailable: ${errorText(error)}`);
-		});
+		void client.ownedExit.then(
+			(outcome) => {
+				if (outcome.failed && !client.ownerReleased) recover();
+			},
+			(error: unknown) => {
+				if (!this.shuttingDown && this.recoveryHolds.get(storageId) === loss)
+					this.recordRecoveryError(storageId, `Owned host exit is unavailable: ${errorText(error)}`);
+			},
+		);
 	}
 
 	private async monitorRecovery(storageId: string, client: HostConnection, primary: RecoveryOwner): Promise<void> {
@@ -1424,7 +2295,10 @@ export class AgentManager {
 		};
 		const check = async () => {
 			if (closed) return;
-			if (checking) { again = true; return; }
+			if (checking) {
+				again = true;
+				return;
+			}
 			checking = true;
 			try {
 				do {
@@ -1435,16 +2309,24 @@ export class AgentManager {
 					}
 					void this.refreshFooter();
 				} while (again && !closed);
-			} catch (error) { failed(error); }
-			finally { checking = false; }
+			} catch (error) {
+				failed(error);
+			} finally {
+				checking = false;
+			}
 		};
 		try {
 			if (client.subscribeChanges) {
-				unsubscribe = await client.subscribeChanges(() => { void check(); }, primary.signal);
+				unsubscribe = await client.subscribeChanges(() => {
+					void check();
+				}, primary.signal);
 				if (closed) unsubscribe();
 			}
 			await check();
-		} catch (error) { close(); throw error; }
+		} catch (error) {
+			close();
+			throw error;
+		}
 	}
 
 	private stopping(primary: RecoveryOwner): boolean {
@@ -1488,35 +2370,54 @@ export class AgentManager {
 		primary.sentWork ??= new Set();
 		if (primary.sentWork.has(identity)) return;
 		primary.sentWork.add(identity);
-		try { primary.retainSentWork?.(identity); }
-		catch (error) { this.failures.set(`sent-work:${ownerId}`, `Sent-work marker was not saved; this target may be absent after restart. ${errorText(error)}`); }
-		try { primary.status?.(this.figuresForRows(ownerId, this.toolCardRows) || undefined); }
-		catch (error) { this.failures.set("footer", errorText(error)); }
-		try { this.rosterChanged(); }
-		catch (error) { this.failures.set("footer", errorText(error)); }
+		try {
+			primary.retainSentWork?.(identity);
+		} catch (error) {
+			this.failures.set(
+				`sent-work:${ownerId}`,
+				`Sent-work marker was not saved; this target may be absent after restart. ${errorText(error)}`,
+			);
+		}
+		try {
+			primary.status?.(this.figuresForRows(ownerId, this.toolCardRows) || undefined);
+		} catch (error) {
+			this.failures.set("footer", errorText(error));
+		}
+		try {
+			this.rosterChanged();
+		} catch (error) {
+			this.failures.set("footer", errorText(error));
+		}
 	}
 
 	/** Exact successful task admissions, for presentation-side relationship joins only. */
 	dashboardTaskTargets(ownerId: string): readonly string[] {
-		return [...this.primaries.get(ownerId)?.sentWork ?? []];
+		return [...(this.primaries.get(ownerId)?.sentWork ?? [])];
 	}
 
 	/** UI-local session totals reuse the roster and the primary's retained sent-work identities. */
 	async sessionFigures(ownerId: string, page?: AgentConversationPage): Promise<string> {
-		const observed = page ?? await this.dashboardPage({ ownerId });
+		const observed = page ?? (await this.dashboardPage({ ownerId }));
 		const text = this.figuresForRows(ownerId, observed.rows);
-		return !observed.coverage.complete
-			? text.replace(/(agents: \d+\/\d+)( active)/u, "$1+$2") : text;
+		return !observed.coverage.complete ? text.replace(/(agents: \d+\/\d+)( active)/u, "$1+$2") : text;
 	}
 
 	private figuresForRows(ownerId: string, rows: readonly AgentConversationSummary[]): string {
-		return sessionFigures(rows, ownerId, (storageId) => this.inventory.ownerId(storageId), this.primaries.get(ownerId)?.sentWork);
+		return sessionFigures(
+			rows,
+			ownerId,
+			(storageId) => this.inventory.ownerId(storageId),
+			this.primaries.get(ownerId)?.sentWork,
+		);
 	}
 
 	private async refreshFooter(): Promise<void> {
 		this.rosterChanged();
 		if (this.shuttingDown || !this.primaries.size) return;
-		if (this.refreshing) { this.refreshAgain = true; return; }
+		if (this.refreshing) {
+			this.refreshAgain = true;
+			return;
+		}
 		this.refreshing = true;
 		try {
 			do {
@@ -1528,8 +2429,11 @@ export class AgentManager {
 					if (!primary.signal.aborted) primary.status?.(text || undefined);
 				}
 			} while (this.refreshAgain && !this.shuttingDown && this.primaries.size);
-		} catch (error) { this.failures.set("footer", errorText(error)); }
-		finally { this.refreshing = false; }
+		} catch (error) {
+			this.failures.set("footer", errorText(error));
+		} finally {
+			this.refreshing = false;
+		}
 	}
 
 	private releaseClients(): void {
@@ -1556,6 +2460,10 @@ export class AgentManager {
 		return this.closing;
 	}
 
-	connectedStorageIds(): string[] { return [...this.clients.keys()]; }
-	storageId(sessionId: string): string { return storageIdOf(sessionId); }
+	connectedStorageIds(): string[] {
+		return [...this.clients.keys()];
+	}
+	storageId(sessionId: string): string {
+		return storageIdOf(sessionId);
+	}
 }

@@ -2,35 +2,119 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 import type { SettingsSnapshot } from "./configuration.ts";
 import type { SettingRecord } from "./configuration-protocol.ts";
 
-export interface NoteResource { kind: "extension" | "skill" | "prompt"; name: string; path: string; entryPath?: string; tool?: string }
+export interface NoteResource {
+	kind: "extension" | "skill" | "prompt";
+	name: string;
+	path: string;
+	entryPath?: string;
+	tool?: string;
+}
 export interface NoteKnowledge {
-	cwd: string; home: string; agentDir: string;
-	version: string; packageDir: string; docsPath: string; examplesPath: string;
+	cwd: string;
+	home: string;
+	agentDir: string;
+	version: string;
+	packageDir: string;
+	docsPath: string;
+	examplesPath: string;
 	resources: readonly NoteResource[] | null;
 	settings: SettingsSnapshot;
 }
-export interface NoteCall { name: string; input: Record<string, unknown> }
-type Target = { key: string; kind: "document" | "setting" | "extension" | "pi-settings" | "root" | "host"; value: string };
-interface Word { text: string; raw: string; redirect?: "input" | "output" }
-interface Command { words: Word[]; inputs: Word[]; pipe: boolean }
+export interface NoteCall {
+	name: string;
+	input: Record<string, unknown>;
+}
+type Target = {
+	key: string;
+	kind: "document" | "setting" | "extension" | "pi-settings" | "root" | "host";
+	value: string;
+};
+interface Word {
+	text: string;
+	raw: string;
+	redirect?: "input" | "output";
+}
+interface Command {
+	words: Word[];
+	inputs: Word[];
+	pipe: boolean;
+}
 const READERS = new Set(["cat", "head", "tail", "less", "more", "bat", "jq", "rg", "grep", "sed", "awk", "wc"]);
 const ENUMERATORS = new Set(["ls", "fd", "find", "tree"]);
-const SEARCH_OPTION_VALUES = new Set(["-A", "-B", "-C", "--after-context", "--before-context", "--context", "-M", "--max-columns", "--max-filesize", "-j", "--threads", "-r", "--replace", "--sort", "--sortr", "--color", "--colors", "--type-add", "--include", "--exclude"]);
-const FD_OPTION_VALUES = new Set(["--max-results", "--changed-within", "--changed-before", "-S", "--size", "-j", "--threads", "--exact-depth", "--format"]);
+const SEARCH_OPTION_VALUES = new Set([
+	"-A",
+	"-B",
+	"-C",
+	"--after-context",
+	"--before-context",
+	"--context",
+	"-M",
+	"--max-columns",
+	"--max-filesize",
+	"-j",
+	"--threads",
+	"-r",
+	"--replace",
+	"--sort",
+	"--sortr",
+	"--color",
+	"--colors",
+	"--type-add",
+	"--include",
+	"--exclude",
+]);
+const FD_OPTION_VALUES = new Set([
+	"--max-results",
+	"--changed-within",
+	"--changed-before",
+	"-S",
+	"--size",
+	"-j",
+	"--threads",
+	"--exact-depth",
+	"--format",
+]);
 const FD_EXEC_OPTIONS = new Set(["-x", "--exec", "-X", "--exec-batch"]);
 
 function redirectArguments(words: Word[]): { words: Word[]; inputs: Word[] } {
-	const args: Word[] = [], inputs: Word[] = [];
+	const args: Word[] = [],
+		inputs: Word[] = [];
 	for (let i = 0; i < words.length; i += 1) {
 		const word = words[i];
-		if (!word.redirect) { args.push(word); continue; }
+		if (!word.redirect) {
+			args.push(word);
+			continue;
+		}
 		const target = words[++i];
 		if (!target || target.redirect) throw new Error("Missing redirection target");
 		if (word.redirect === "input") inputs.push(target);
 	}
 	return { words: args, inputs };
 }
-const OPTION_VALUES = new Set(["-e", "--regexp", "-f", "--file", "-g", "--glob", "--iglob", "-t", "--type", "-T", "--type-not", "-n", "--lines", "-c", "--bytes", "-m", "--max-count", "--max-depth", "-d", "--maxdepth", "-L", "--level"]);
+const OPTION_VALUES = new Set([
+	"-e",
+	"--regexp",
+	"-f",
+	"--file",
+	"-g",
+	"--glob",
+	"--iglob",
+	"-t",
+	"--type",
+	"-T",
+	"--type-not",
+	"-n",
+	"--lines",
+	"-c",
+	"--bytes",
+	"-m",
+	"--max-count",
+	"--max-depth",
+	"-d",
+	"--maxdepth",
+	"-L",
+	"--level",
+]);
 
 class ShellWords {
 	commands: Command[] = [];
@@ -42,12 +126,14 @@ class ShellWords {
 	private pipe = false;
 	private word(): void {
 		if (this.raw) this.words.push({ text: this.text, raw: this.raw });
-		this.text = ""; this.raw = "";
+		this.text = "";
+		this.raw = "";
 	}
 	private command(pipe: boolean): void {
 		this.word();
 		if (this.words.length) this.commands.push({ ...redirectArguments(this.words), pipe: this.pipe });
-		this.words = []; this.pipe = pipe;
+		this.words = [];
+		this.pipe = pipe;
 	}
 	private quoted(char: string): void {
 		this.raw += char;
@@ -62,33 +148,60 @@ class ShellWords {
 	}
 	private redirection(char: string, next: string): number {
 		if (next === "(" || (char === "<" && next === "<")) throw new Error("Shell expression");
-		if (/^\d+$/.test(this.raw)) { this.text = ""; this.raw = ""; }
-		else this.word();
+		if (/^\d+$/.test(this.raw)) {
+			this.text = "";
+			this.raw = "";
+		} else this.word();
 		this.words.push({ text: char, raw: char, redirect: char === "<" ? "input" : "output" });
 		return Number(char === ">" && [">", "&"].includes(next));
 	}
 	private unquoted(char: string, next: string): number {
-		if (char === "'" || char === '"') { this.raw += char; this.quote = char; return 0; }
-		if (char === "&" && next === ">") { this.redirection(">", ""); return 1; }
+		if (char === "'" || char === '"') {
+			this.raw += char;
+			this.quote = char;
+			return 0;
+		}
+		if (char === "&" && next === ">") {
+			this.redirection(">", "");
+			return 1;
+		}
 		if (char === "<" || char === ">") return this.redirection(char, next);
 		if (["\n", ";", "|", "&"].includes(char)) return this.separator(char, next);
-		if (/\s/.test(char)) { this.word(); return 0; }
+		if (/\s/.test(char)) {
+			this.word();
+			return 0;
+		}
 		if (char === "#" && !this.raw) return -1;
 		if ("()".includes(char)) throw new Error("Shell expression");
-		this.raw += char; this.text += char;
+		this.raw += char;
+		this.text += char;
 		return 0;
 	}
 	private character(char: string, next: string): number {
-		if (this.escaped) { this.raw += char; this.text += char; this.escaped = false; return 0; }
-		if (char === "\\" && this.quote !== "'") { this.raw += char; this.escaped = true; return 0; }
-		if (this.quote) { this.quoted(char); return 0; }
+		if (this.escaped) {
+			this.raw += char;
+			this.text += char;
+			this.escaped = false;
+			return 0;
+		}
+		if (char === "\\" && this.quote !== "'") {
+			this.raw += char;
+			this.escaped = true;
+			return 0;
+		}
+		if (this.quote) {
+			this.quoted(char);
+			return 0;
+		}
 		return this.unquoted(char, next);
 	}
 	parse(script: string): Command[] {
 		for (let i = 0; i < script.length; i += 1) {
 			const skip = this.character(script[i], script[i + 1]);
-			if (skip < 0) { while (i < script.length && script[i] !== "\n") i += 1; this.command(false); }
-			else i += skip;
+			if (skip < 0) {
+				while (i < script.length && script[i] !== "\n") i += 1;
+				this.command(false);
+			} else i += skip;
 			if (this.words.length > 512 || this.commands.length > 32) return [];
 		}
 		if (this.quote || this.escaped) return [];
@@ -99,11 +212,22 @@ class ShellWords {
 /** A deliberately small shell lexer. It executes nothing and refuses expansions it cannot resolve. */
 export function simpleCommands(script: string): Command[] {
 	if (script.length > 32768 || script.includes("<<") || /\$\(|`/.test(script)) return [];
-	try { return new ShellWords().parse(script); } catch { return []; }
+	try {
+		return new ShellWords().parse(script);
+	} catch {
+		return [];
+	}
 }
 function pathOf(word: Word, knowledge: NoteKnowledge, cwd: string | null = knowledge.cwd): string | undefined {
 	let value = word.text;
-	if (!value || value.length > 4096 || /[*?`\n]/.test(value) || word.raw.includes("\\$") || (word.raw.includes("'") && /\$|^~/.test(value))) return;
+	if (
+		!value ||
+		value.length > 4096 ||
+		/[*?`\n]/.test(value) ||
+		word.raw.includes("\\$") ||
+		(word.raw.includes("'") && /\$|^~/.test(value))
+	)
+		return;
 	if (value.startsWith("~") && word.raw.startsWith('"')) return;
 	value = value.replace(/^~(?=\/|$)/, knowledge.home).replace(/\$\{HOME\}|\$HOME(?=\/|$)/g, knowledge.home);
 	if (value.includes("$") || value.startsWith("~")) return;
@@ -122,15 +246,21 @@ function eligiblePath(path: string, knowledge: NoteKnowledge): boolean {
 function whole(text: string, token: string): boolean {
 	let start = text.indexOf(token);
 	while (start !== -1) {
-		const before = text[start - 1] ?? "", after = text[start + token.length] ?? "";
+		const before = text[start - 1] ?? "",
+			after = text[start + token.length] ?? "";
 		if ((!before || !/[\w.]/.test(before)) && (!after || !/[\w.]/.test(after))) return true;
 		start = text.indexOf(token, start + token.length);
 	}
 	return false;
 }
 function complete(snapshot: SettingsSnapshot): boolean {
-	return snapshot.available && snapshot.collection.status === "available" && snapshot.collection.malformed === 0 && snapshot.collection.omitted === 0 &&
-		!snapshot.publications.some((pub) => pub.diagnostics.some((fact) => fact.code === "coverage"));
+	return (
+		snapshot.available &&
+		snapshot.collection.status === "available" &&
+		snapshot.collection.malformed === 0 &&
+		snapshot.collection.omitted === 0 &&
+		!snapshot.publications.some((pub) => pub.diagnostics.some((fact) => fact.code === "coverage"))
+	);
 }
 function optionTakesValue(word: string, next: string, search: boolean): boolean {
 	if (!OPTION_VALUES.has(word)) return false;
@@ -153,15 +283,24 @@ function optionValueCount(program: string, word: string, next: string, search: b
 }
 function positionals(words: Word[], search: boolean, program = ""): { args: Word[]; pattern?: Word } {
 	const args: Word[] = [];
-	let pattern: Word | undefined, options = true;
+	let pattern: Word | undefined,
+		options = true;
 	for (let i = 0; i < words.length; i += 1) {
 		const word = words[i];
 		if (program === "fd" && options && FD_EXEC_OPTIONS.has(word.text)) break;
 		switch (optionKind(word.text, options)) {
-			case "end": options = false; break;
-			case "pattern": pattern = words[++i]; break;
-			case "option": i += optionValueCount(program, word.text, words[i + 1]?.text ?? "", search); break;
-			case "argument": args.push(word); break;
+			case "end":
+				options = false;
+				break;
+			case "pattern":
+				pattern = words[++i];
+				break;
+			case "option":
+				i += optionValueCount(program, word.text, words[i + 1]?.text ?? "", search);
+				break;
+			case "argument":
+				args.push(word);
+				break;
 		}
 	}
 	if (search && !pattern) pattern = args.shift();
@@ -187,7 +326,10 @@ function enumerationPaths(program: string, words: Word[]): Word[] {
 	return words.slice(0, expression < 0 ? words.length : expression);
 }
 function echoedName(word: Word | undefined): string | undefined {
-	const match = /^(?:\$([A-Z][A-Z0-9_]*)|\$\{([A-Z][A-Z0-9_]*)\}|"\$([A-Z][A-Z0-9_]*)"|"\$\{([A-Z][A-Z0-9_]*)\}")$/.exec(word?.raw ?? "");
+	const match =
+		/^(?:\$([A-Z][A-Z0-9_]*)|\$\{([A-Z][A-Z0-9_]*)\}|"\$([A-Z][A-Z0-9_]*)"|"\$\{([A-Z][A-Z0-9_]*)\}")$/.exec(
+			word?.raw ?? "",
+		);
 	return match?.slice(1).find(Boolean);
 }
 class NoteDetector {
@@ -220,7 +362,14 @@ class NoteDetector {
 		}
 		if (this.publications.some((pub) => pub.source.path === path)) this.add("document", path);
 		if (piSettings && path === resolve(this.knowledge.agentDir, "settings.json")) this.add("pi-settings", path);
-		if (host && [resolve(this.knowledge.agentDir, "install/current-version"), resolve(this.knowledge.packageDir, "package.json")].includes(path)) this.add("host", "pi");
+		if (
+			host &&
+			[
+				resolve(this.knowledge.agentDir, "install/current-version"),
+				resolve(this.knowledge.packageDir, "package.json"),
+			].includes(path)
+		)
+			this.add("host", "pi");
 	}
 	private names(pattern: string, exactEnv = false): void {
 		if (pattern.length > 32768) return;
@@ -230,7 +379,10 @@ class NoteDetector {
 		}
 	}
 	private search(pattern: string, args: Word[], pipedEnv = false): void {
-		if (pipedEnv) { this.names(pattern); return; }
+		if (pipedEnv) {
+			this.names(pattern);
+			return;
+		}
 		if (!args.length) return;
 		const paths = args.map((word) => pathOf(word, this.knowledge, this.scriptCwd));
 		if (paths.some((path) => !path || !eligiblePath(path, this.knowledge))) return;
@@ -246,16 +398,28 @@ class NoteDetector {
 	}
 	private simpleProgram(program: string, words: Word[]): boolean {
 		switch (program) {
-			case "printenv": if (words.length === 1) this.names(words[0].text, true); return true;
-			case "echo": { const name = words.length === 1 ? echoedName(words[0]) : undefined; if (name) this.names(name, true); return true; }
-			case "pi": if (words.length === 1 && ["--version", "-v"].includes(words[0].text)) this.add("host", "pi"); return true;
-			default: return false;
+			case "printenv":
+				if (words.length === 1) this.names(words[0].text, true);
+				return true;
+			case "echo": {
+				const name = words.length === 1 ? echoedName(words[0]) : undefined;
+				if (name) this.names(name, true);
+				return true;
+			}
+			case "pi":
+				if (words.length === 1 && ["--version", "-v"].includes(words[0].text)) this.add("host", "pi");
+				return true;
+			default:
+				return false;
 		}
 	}
 	private shellCommand(command: Command, pipedEnv: boolean): void {
 		let [program, ...words] = command.words;
 		if (!program || /['"\\/$]/.test(program.raw)) return;
-		if (program.text === "git" && words[0]?.text === "grep") { program = words[0]; words = words.slice(1); }
+		if (program.text === "git" && words[0]?.text === "grep") {
+			program = words[0];
+			words = words.slice(1);
+		}
 		if (this.simpleProgram(program.text, words)) return;
 		if (ENUMERATORS.has(program.text) || (program.text === "rg" && words.some((word) => word.text === "--files"))) {
 			for (const word of enumerationPaths(program.text, words)) this.path(word, true);
@@ -266,7 +430,10 @@ class NoteDetector {
 	private changeDirectory(command: Command): void {
 		if (this.scriptCwd === null) return;
 		const args = command.words;
-		if (args.length !== 2 || args[1].text.startsWith("-")) { this.scriptCwd = null; return; }
+		if (args.length !== 2 || args[1].text.startsWith("-")) {
+			this.scriptCwd = null;
+			return;
+		}
 		this.scriptCwd = pathOf(args[1], this.knowledge, this.scriptCwd) ?? null;
 	}
 	private shell(script: string): void {
@@ -290,19 +457,36 @@ class NoteDetector {
 	match(call: NoteCall): Target[] {
 		const path = typeof call.input.path === "string" ? { text: call.input.path, raw: call.input.path } : undefined;
 		switch (call.name) {
-			case "read": if (path) this.path(path, false, true, true); break;
-			case "ls": case "find": if (path) this.path(path, true); break;
-			case "grep": if (typeof call.input.pattern === "string") this.grep(call.input.pattern, path); break;
-			case "bash": if (typeof call.input.command === "string") this.shell(call.input.command); break;
+			case "read":
+				if (path) this.path(path, false, true, true);
+				break;
+			case "ls":
+			case "find":
+				if (path) this.path(path, true);
+				break;
+			case "grep":
+				if (typeof call.input.pattern === "string") this.grep(call.input.pattern, path);
+				break;
+			case "bash":
+				if (typeof call.input.command === "string") this.shell(call.input.command);
+				break;
 		}
 		return [...this.targets.values()];
 	}
 }
 /** Match only exact registered paths or published names, never guessed sibling copies. */
-export function noteTargets(call: NoteCall, knowledge: NoteKnowledge): Target[] { return new NoteDetector(knowledge).match(call); }
-function clip(value: string, length: number): string { return [...value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")].slice(0, length).join(""); }
+export function noteTargets(call: NoteCall, knowledge: NoteKnowledge): Target[] {
+	return new NoteDetector(knowledge).match(call);
+}
+function clip(value: string, length: number): string {
+	return [...value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")].slice(0, length).join("");
+}
 function rowText(row: SettingRecord, length = 80): string {
-	const value = row.secret ? row.secretState ?? "unset" : row.value === undefined ? "unset" : JSON.stringify(row.value);
+	const value = row.secret
+		? (row.secretState ?? "unset")
+		: row.value === undefined
+			? "unset"
+			: JSON.stringify(row.value);
 	return `${row.name} = ${clip(value, length)} (origin ${row.origin}, env ${row.env}${row.status === "invalid" ? ", validity invalid" : ""})`;
 }
 function bounded(header: string, facts: string[], call: string, limit = 8, summary = ""): string | undefined {
@@ -320,7 +504,9 @@ function documentNote(header: string, publications: SettingsSnapshot["publicatio
 	const rows = publications.flatMap((pub) => pub.records);
 	const overrides = rows.filter((row) => row.origin === "env").map((row) => rowText(row, 60));
 	const invalid = rows.filter((row) => row.origin !== "env" && row.status === "invalid").map((row) => rowText(row));
-	const diagnostics = publications.flatMap((pub) => pub.diagnostics.map((fact) => `${clip(fact.field, 256)}: ${fact.code} (${fact.source})`));
+	const diagnostics = publications.flatMap((pub) =>
+		pub.diagnostics.map((fact) => `${clip(fact.field, 256)}: ${fact.code} (${fact.source})`),
+	);
 	const defaults = publications.flatMap((pub) => {
 		const keys = pub.records.filter((row) => row.origin === "default").map((row) => row.key);
 		return keys.length ? [`${pub.slice}: ${keys.join(", ")} (defaults apply)`] : [];
@@ -350,51 +536,95 @@ function extensionNote(path: string, knowledge: NoteKnowledge): string | undefin
 	const resource = resources.find((resource) => resource.tool !== undefined) ?? resources[0];
 	if (!resource?.entryPath) return;
 	const publication = knowledge.settings.publications.find((pub) => pub.slice === basename(path));
-	const rows = [...(publication?.records ?? [])].sort((a, b) => Number(b.origin === "env") - Number(a.origin === "env"));
+	const rows = [...(publication?.records ?? [])].sort(
+		(a, b) => Number(b.origin === "env") - Number(a.origin === "env"),
+	);
 	const facts = publication ? rows.map((row) => rowText(row)) : ["It publishes no harness settings."];
 	const calls: string[] = [];
 	if (publication) calls.push(`registry ${JSON.stringify({ kind: "setting", search: `${basename(path)}.` })}`);
 	if (resource.tool) calls.push(`registry ${JSON.stringify({ kind: "tool", name: resource.tool, detail: true })}`);
 	const hint = rows.some((row) => row.origin === "env") ? "file values do not apply while the env var is set" : "";
 	const boundary = publication ? settingsBoundary() : "";
-	return bounded(`[registry] ${clip(resource.name, 256)} is loaded in this session from ${clip(resource.entryPath, 4096)}.`,
-		facts, calls.join("; "), 6, [boundary, hint].filter(Boolean).join(" "));
+	return bounded(
+		`[registry] ${clip(resource.name, 256)} is loaded in this session from ${clip(resource.entryPath, 4096)}.`,
+		facts,
+		calls.join("; "),
+		6,
+		[boundary, hint].filter(Boolean).join(" "),
+	);
 }
 function piSettingsNote(knowledge: NoteKnowledge): string | undefined {
 	if (knowledge.resources === null || !complete(knowledge.settings)) return;
-	const extensions = new Set(knowledge.resources.filter((resource) => resource.kind === "extension").map((resource) => resource.entryPath ?? resource.path));
+	const extensions = new Set(
+		knowledge.resources
+			.filter((resource) => resource.kind === "extension")
+			.map((resource) => resource.entryPath ?? resource.path),
+	);
 	const rows = knowledge.settings.publications.flatMap((pub) => pub.records).filter((row) => row.origin === "env");
-	const facts = rows.length ? ["Harness settings set by environment (file values do not apply while set):", ...rows.map((row) => rowText(row))]
+	const facts = rows.length
+		? ["Harness settings set by environment (file values do not apply while set):", ...rows.map((row) => rowText(row))]
 		: ["No harness setting is set by environment."];
-	return bounded(`[registry] This session loaded ${extensions.size} extensions; Pi settings list configured sources, not load results.`, facts,
-		'registry {"kind":"setting"}; registry {"kind":"setting","search":"<extension>."}', 7,
-		`Extension count follows available host provenance. ${settingsBoundary()}`);
+	return bounded(
+		`[registry] This session loaded ${extensions.size} extensions; Pi settings list configured sources, not load results.`,
+		facts,
+		'registry {"kind":"setting"}; registry {"kind":"setting","search":"<extension>."}',
+		7,
+		`Extension count follows available host provenance. ${settingsBoundary()}`,
+	);
 }
 function compose(target: Target, knowledge: NoteKnowledge): string | undefined {
 	if (target.kind === "extension") return extensionNote(target.value, knowledge);
 	if (target.kind === "pi-settings") return piSettingsNote(knowledge);
 	if (target.kind === "host") {
-		const text = ["[registry] Running Pi facts from this process.", `version = ${knowledge.version}`,
-			`package = ${clip(knowledge.packageDir, 4096)}`, `docs = ${clip(knowledge.docsPath, 4096)}`, `examples = ${clip(knowledge.examplesPath, 4096)}`, "registry {}"].join("\n");
+		const text = [
+			"[registry] Running Pi facts from this process.",
+			`version = ${knowledge.version}`,
+			`package = ${clip(knowledge.packageDir, 4096)}`,
+			`docs = ${clip(knowledge.docsPath, 4096)}`,
+			`examples = ${clip(knowledge.examplesPath, 4096)}`,
+			"registry {}",
+		].join("\n");
 		return Buffer.byteLength(text) <= 1200 ? text : undefined;
 	}
 	if (target.kind === "root") {
 		const resources = roots(knowledge)?.get(target.value);
 		if (!resources) return;
 		const names = [...new Set(resources.map((resource) => `${resource.kind} ${clip(resource.name, 256)}`))].sort();
-		const otherDirectories = new Set((knowledge.resources ?? []).filter((resource) => resource.kind === "extension" && dirname(resource.path) !== target.value && resource.path !== target.value).map((resource) => resource.path));
-		return bounded("[registry] Loaded resources from host provenance; a directory listing also shows files this session did not load.", names,
-			'registry {"kind":"tool"}; registry {"kind":"skill"}; registry {"kind":"prompt"}', 8,
-			`${otherDirectories.size} other loaded extension directories; source and scope: registry {"kind":"tool","name":"<tool>"}`);
+		const otherDirectories = new Set(
+			(knowledge.resources ?? [])
+				.filter(
+					(resource) =>
+						resource.kind === "extension" && dirname(resource.path) !== target.value && resource.path !== target.value,
+				)
+				.map((resource) => resource.path),
+		);
+		return bounded(
+			"[registry] Loaded resources from host provenance; a directory listing also shows files this session did not load.",
+			names,
+			'registry {"kind":"tool"}; registry {"kind":"skill"}; registry {"kind":"prompt"}',
+			8,
+			`${otherDirectories.size} other loaded extension directories; source and scope: registry {"kind":"tool","name":"<tool>"}`,
+		);
 	}
 	if (!complete(knowledge.settings)) return;
 	const pubs = knowledge.settings.publications;
-	const selected = pubs.filter((pub) => target.kind === "document" ? pub.source.path === target.value : pub.records.some((row) => row.name === target.value));
+	const selected = pubs.filter((pub) =>
+		target.kind === "document"
+			? pub.source.path === target.value
+			: pub.records.some((row) => row.name === target.value),
+	);
 	if (!selected.length) return;
-	const rows = selected.flatMap((pub) => pub.records).filter((row) => target.kind !== "setting" || row.name === target.value);
+	const rows = selected
+		.flatMap((pub) => pub.records)
+		.filter((row) => target.kind !== "setting" || row.name === target.value);
 	const header = `[registry] Configured values published by loaded extensions at ${new Date().toISOString()}; running processes may not have applied file edits.`;
 	if (target.kind === "document") return documentNote(header, selected);
-	return bounded(header, rows.map((row) => rowText(row)), `registry ${JSON.stringify({ kind: "setting", name: target.value })}`, 6);
+	return bounded(
+		header,
+		rows.map((row) => rowText(row)),
+		`registry ${JSON.stringify({ kind: "setting", name: target.value })}`,
+		6,
+	);
 }
 
 /** Session-local budget and nested-result transport. No result object enters this state. */
@@ -406,10 +636,18 @@ export class RegistryNotes {
 	private readonly refresh: () => SettingsSnapshot;
 	private readonly enabled: () => boolean;
 	constructor(knowledge: () => NoteKnowledge, refresh: () => SettingsSnapshot, enabled: () => boolean) {
-		this.knowledge = knowledge; this.refresh = refresh; this.enabled = enabled;
+		this.knowledge = knowledge;
+		this.refresh = refresh;
+		this.enabled = enabled;
 	}
-	reset(): void { this.seen.clear(); this.queued.clear(); this.count = 0; }
-	private fits(notes: string[], note: string): boolean { return notes.length < 2 && Buffer.byteLength([...notes, note].join("")) <= 1600; }
+	reset(): void {
+		this.seen.clear();
+		this.queued.clear();
+		this.count = 0;
+	}
+	private fits(notes: string[], note: string): boolean {
+		return notes.length < 2 && Buffer.byteLength([...notes, note].join("")) <= 1600;
+	}
 	private append(call: NoteCall, pending: string[]): void {
 		if (this.count >= 6 || !["read", "bash", "grep", "ls", "find"].includes(call.name)) return;
 		const knowledge = this.knowledge();
@@ -422,7 +660,9 @@ export class RegistryNotes {
 			if (!freshTargets.has(target.key)) continue;
 			const note = compose(target, knowledge);
 			if (!note || !this.fits(pending, note)) continue;
-			pending.push(note); this.seen.add(target.key); this.count += 1;
+			pending.push(note);
+			this.seen.add(target.key);
+			this.count += 1;
 		}
 	}
 	private forward(parent: string, pending: string[]): void {
@@ -438,6 +678,8 @@ export class RegistryNotes {
 			if (!parent) return pending;
 			this.forward(parent, pending);
 			return [];
-		} catch { return []; }
+		} catch {
+			return [];
+		}
 	}
 }

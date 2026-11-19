@@ -88,13 +88,10 @@ export class AgentComposer implements Component, Focusable {
 				return typeof value === "function" ? value.bind(target) : value;
 			},
 		});
-		this.editor = new ComposerEditor(
-			tui,
-			{
-				borderColor: (text) => options.theme.fg("borderMuted", text),
-				selectList: getSelectListTheme(),
-			},
-		);
+		this.editor = new ComposerEditor(tui, {
+			borderColor: (text) => options.theme.fg("borderMuted", text),
+			selectList: getSelectListTheme(),
+		});
 		this.editor.disableSubmit = true;
 		this.editor.onChange = () => options.onChange?.(this.editor.getExpandedText());
 	}
@@ -134,7 +131,10 @@ export class AgentComposer implements Component, Focusable {
 			this.options.onChange?.(this.getText());
 			return;
 		}
-		if ((matchesKey(data, "escape") || this.options.keys.matches(data, "app.interrupt")) && !this.editor.isShowingAutocomplete()) {
+		if (
+			(matchesKey(data, "escape") || this.options.keys.matches(data, "app.interrupt")) &&
+			!this.editor.isShowingAutocomplete()
+		) {
 			this.options.onEscape();
 			return;
 		}
@@ -168,7 +168,13 @@ export class AgentComposer implements Component, Focusable {
 			return;
 		}
 		const y = event.y >= this.bottomRow ? event.y - this.paddingRows : event.y;
-		return this.editor.handleMouse({ ...event, x: event.x - 1, y, width: event.width - 2, height: event.height - this.paddingRows });
+		return this.editor.handleMouse({
+			...event,
+			x: event.x - 1,
+			y,
+			width: event.width - 2,
+			height: event.height - this.paddingRows,
+		});
 	}
 
 	private topFrame(width: number, caption: string | ((width: number) => string), mode: string): string {
@@ -182,7 +188,10 @@ export class AgentComposer implements Component, Focusable {
 		// The delivery effect ends the right segment, just before its trailing space and the corner.
 		this.spans.mode = mode ? { x: frameWidth - 2 - visibleWidth(mode), width: visibleWidth(mode) } : undefined;
 		if (!this.grip) return top;
-		return sliceByColumn(top, 0, width - 5, true) + theme.fg(this.grip === "normal" ? "borderMuted" : "accent", `─${this.grip === "active" ? "━━━" : "┄┄┄"}╮`);
+		return (
+			sliceByColumn(top, 0, width - 5, true) +
+			theme.fg(this.grip === "normal" ? "borderMuted" : "accent", `─${this.grip === "active" ? "━━━" : "┄┄┄"}╮`)
+		);
 	}
 
 	/** The bottom border: the receipt on the left and how many draft lines sit below. Its keys are in the key footer. */
@@ -198,7 +207,8 @@ export class AgentComposer implements Component, Focusable {
 		this.textRows = Math.max(1, bottom - 1);
 		this.paddingRows = Math.max(0, (this.viewportRows ?? this.textRows) - this.textRows);
 		this.bottomRow = bottom + this.paddingRows;
-		if (this.paddingRows) lines.splice(bottom, 0, ...Array.from({ length: this.paddingRows }, () => " ".repeat(Math.max(1, width - 2))));
+		if (this.paddingRows)
+			lines.splice(bottom, 0, ...Array.from({ length: this.paddingRows }, () => " ".repeat(Math.max(1, width - 2))));
 		const theme = this.options.theme;
 		const border = (text: string) => theme.fg(this.focused ? "accent" : "borderMuted", text);
 		this.spans = {};

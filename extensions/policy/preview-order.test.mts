@@ -186,10 +186,7 @@ describe("preview correction order", () => {
 			assert.equal(f.telemetry.length, 1);
 			const telemetry = f.telemetry[0];
 			assert.ok(telemetry.policy);
-			assert.deepEqual(
-				evaluations(preview.results),
-				evaluations(telemetry.policy.evaluations as ProgramEvaluation[]),
-			);
+			assert.deepEqual(evaluations(preview.results), evaluations(telemetry.policy.evaluations as ProgramEvaluation[]));
 		});
 	}
 
@@ -198,8 +195,14 @@ describe("preview correction order", () => {
 		t.after(() => f.writer.close());
 		const result = { isError: false, details: { failed: false } };
 		const preview = await f.preview({ old: "x" }, result);
-		assert.equal(preview.results.find((row) => row.id === "result.error"), undefined);
-		assert.equal(preview.results.find((row) => row.id === "guide.error"), undefined);
+		assert.equal(
+			preview.results.find((row) => row.id === "result.error"),
+			undefined,
+		);
+		assert.equal(
+			preview.results.find((row) => row.id === "guide.error"),
+			undefined,
+		);
 		assert.equal((await f.live({ old: "x" }, result))?.isError, undefined);
 	});
 
@@ -208,7 +211,10 @@ describe("preview correction order", () => {
 		t.after(() => f.writer.close());
 		const result = { isError: true, details: { failed: false } };
 		const preview = await f.preview({ old: "x" }, result);
-		assert.equal(preview.results.find((row) => row.id === "result.error"), undefined);
+		assert.equal(
+			preview.results.find((row) => row.id === "result.error"),
+			undefined,
+		);
 		assert.equal(preview.results.find((row) => row.id === "guide.error")?.truth, true);
 		const patch = await f.live({ old: "x" }, result);
 		assert.equal(patch?.isError, undefined);

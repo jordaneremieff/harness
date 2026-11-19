@@ -8,11 +8,19 @@ const scope = { cwd: "/project", provider: "test", model: "test/model" };
 const context = { tools: { read: { active: true } } };
 function rule(id = "local.shell", note = "Use sample --limit 10."): RuleRecord {
 	return {
-		id, source: { kind: "package" },
+		id,
+		source: { kind: "package" },
 		matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "sample" } },
-		definition: { purpose: "Bound the sample output.", authority: "steer-or-block", revision: "123456abcdef",
-			state: "active", effect: "block", note },
-		matcherAvailable: true, staleOverride: false,
+		definition: {
+			purpose: "Bound the sample output.",
+			authority: "steer-or-block",
+			revision: "123456abcdef",
+			state: "active",
+			effect: "block",
+			note,
+		},
+		matcherAvailable: true,
+		staleOverride: false,
 	};
 }
 const card = (records: RuleRecord[], facts = context) => shellContractCard(records, scope, facts);
@@ -29,10 +37,16 @@ describe("installed shell contract card", () => {
 	});
 
 	it("summarizes the entire starter command catalog without repeating identical notes", () => {
-		const records = PACKAGE_CATALOG.map((row): RuleRecord => ({
-			id: row.id, source: { kind: "package" }, matcher: row.matcher,
-			definition: { ...row, state: "active" }, matcherAvailable: true, staleOverride: false,
-		}));
+		const records = PACKAGE_CATALOG.map(
+			(row): RuleRecord => ({
+				id: row.id,
+				source: { kind: "package" },
+				matcher: row.matcher,
+				definition: { ...row, state: "active" },
+				matcherAvailable: true,
+				staleOverride: false,
+			}),
+		);
 		const text = card(records) ?? "";
 		const count = records.filter((record) => record.matcher.kind === "code").length;
 		assert.match(text, new RegExp(`Command rules in scope: ${count}; summarized: ${count}; omitted by text bound: 0`));
@@ -42,10 +56,16 @@ describe("installed shell contract card", () => {
 
 	it("keeps preparation notes for both denied and guided command shapes", () => {
 		const ids = new Set(["routing.cat-read", "form.find-discovery", "bounds.fd-uncapped"]);
-		const records = PACKAGE_CATALOG.filter((row) => ids.has(row.id)).map((row): RuleRecord => ({
-			id: row.id, source: { kind: "package" }, matcher: row.matcher,
-			definition: { ...row, state: "active" }, matcherAvailable: true, staleOverride: false,
-		}));
+		const records = PACKAGE_CATALOG.filter((row) => ids.has(row.id)).map(
+			(row): RuleRecord => ({
+				id: row.id,
+				source: { kind: "package" },
+				matcher: row.matcher,
+				definition: { ...row, state: "active" },
+				matcherAvailable: true,
+				staleOverride: false,
+			}),
+		);
 		assert.equal(records.find((row) => row.id === "routing.cat-read")?.definition.effect, "steer");
 		assert.equal(records.find((row) => row.id === "form.find-discovery")?.definition.effect, "block");
 		const text = card(records) ?? "";
@@ -57,8 +77,12 @@ describe("installed shell contract card", () => {
 		const retired = rule("retired", "Retired note.");
 		retired.definition.state = "retired";
 		const disabled = rule("disabled", "Disabled note.");
-		disabled.override = { state: "disabled", reason: "Operator choice", againstDefinitionRevision: "123456abcdef",
-			audit: { at: "2026-01-01T00:00:00Z", surface: "command", model: null, session: "test" } };
+		disabled.override = {
+			state: "disabled",
+			reason: "Operator choice",
+			againstDefinitionRevision: "123456abcdef",
+			audit: { at: "2026-01-01T00:00:00Z", surface: "command", model: null, session: "test" },
+		};
 		const outside = rule("outside", "Other scope.");
 		outside.definition.scope = { cwdPrefixes: ["/elsewhere"] };
 		assert.equal(card([retired, disabled, outside]), undefined);
@@ -78,10 +102,17 @@ describe("installed shell contract card", () => {
 
 	it("does not translate arbitrary facts programs into shell instructions", () => {
 		const facts = rule();
-		facts.matcher = { kind: "declarative", language: "facts/v1", spec: {
-			phase: "input", selector: { tools: ["bash"] }, when: { op: "exists", path: ["input"] },
-			action: { kind: "deny" }, onUnavailable: "skip",
-		} };
+		facts.matcher = {
+			kind: "declarative",
+			language: "facts/v1",
+			spec: {
+				phase: "input",
+				selector: { tools: ["bash"] },
+				when: { op: "exists", path: ["input"] },
+				action: { kind: "deny" },
+				onUnavailable: "skip",
+			},
+		};
 		assert.equal(card([facts]), undefined);
 		assert.equal(card([]), undefined);
 	});

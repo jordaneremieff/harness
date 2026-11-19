@@ -10,11 +10,19 @@ test("pinned pane commands require the explicit native request capability", asyn
 	try {
 		const resources = join(root, "Contents", "Resources");
 		await mkdir(resources, { recursive: true });
-		for (const build of [{ contract: 1 }, { contract: 1, pane: 1, paneOpen: 1 }, { contract: 1, pane: 1, paneOpenRequest: 2 }]) {
+		for (const build of [
+			{ contract: 1 },
+			{ contract: 1, pane: 1, paneOpen: 1 },
+			{ contract: 1, pane: 1, paneOpenRequest: 2 },
+		]) {
 			await writeFile(join(resources, "build.json"), JSON.stringify(build));
 			assert.ok("showUnavailable" in paneRequestCommand(root, "/store/opens/request.json"));
 		}
 		await writeFile(join(resources, "build.json"), JSON.stringify({ contract: 1, pane: 1, paneOpenRequest: 1 }));
-		assert.deepEqual(paneRequestCommand(root, "/store/opens/request.json"), { show: [join(root, "Contents", "MacOS", "MarkdownReader"), "--pane", "/store/opens/request.json"] });
-	} finally { await rm(root, { recursive: true, force: true }); }
+		assert.deepEqual(paneRequestCommand(root, "/store/opens/request.json"), {
+			show: [join(root, "Contents", "MacOS", "MarkdownReader"), "--pane", "/store/opens/request.json"],
+		});
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 });

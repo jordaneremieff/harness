@@ -33,8 +33,7 @@ const examples: Record<string, string> = {
 		"- Save stays visible on small screens.\n- Keyboard focus returns to the name field after an error.\n- Cancel discards unsaved edits.\n\nThese changes are not released.",
 	"shipped-with-optional-cleanup":
 		"The search improvement is released, so repeated imports no longer clutter your results with duplicates.",
-	"pushed-history-decision":
-		"The report fix is released and ready to use.",
+	"pushed-history-decision": "The report fix is released and ready to use.",
 	"agent-work-attribution":
 		"I corrected the guide to explain that exports are limited to 20 MB. The guide is not published yet. You need to decide whether to publish the correction.",
 	"agent-coined-term":
@@ -56,8 +55,7 @@ const examples: Record<string, string> = {
 	"exact-command":
 		"The check failed because two entries share a name. Rename the duplicate in config/index.json, then run `npm run verify:index -- --local --limit=25` to check local entries without publishing.",
 	"nothing-to-summarize": "There is no substantive discussion to summarize.",
-	"slop-source":
-		"The client reconnects after a dropped connection in the local test. Long outages remain untested.",
+	"slop-source": "The client reconnects after a dropped connection in the local test. Long outages remain untested.",
 	"repeated-summary": "The local backup matches the original, but a restore remains untested.",
 	"more-detail":
 		"The cache saves each query's results for five minutes. Repeat searches use those saved results. An edit does not clear them. After five minutes, the next search gets and saves fresh results. This is expected behavior, and no fix is proposed or implemented.",
@@ -71,7 +69,10 @@ it("the tldr suite validates and resolves both variants without inference", () =
 	assert.equal(suite.subject.adapter, "pi-sdk");
 	assert.equal(suite.subject.kind, "prompt");
 	assert.equal(suite.adjudication.policy, "human-required");
-	assert.deepEqual(suite.subject.variants.map((variant) => variant.id), ["maintained", "plain-request"]);
+	assert.deepEqual(
+		suite.subject.variants.map((variant) => variant.id),
+		["maintained", "plain-request"],
+	);
 	assert.deepEqual(suite.authority.requestedEffects, {
 		providerNetwork: ["paid-model-inference"],
 		credentials: ["read-approved-model-credentials", "credential-resolution"],
@@ -85,7 +86,14 @@ it("the tldr suite validates and resolves both variants without inference", () =
 	});
 	for (const variant of suite.subject.variants) {
 		assert.deepEqual(jsonObject(variant.config).tools, []);
-		assert.ok(piSdkAdapter.resolve({ suitePath, subjectKind: suite.subject.kind, subjectConfig: suite.subject.config, variant }));
+		assert.ok(
+			piSdkAdapter.resolve({
+				suitePath,
+				subjectKind: suite.subject.kind,
+				subjectConfig: suite.subject.config,
+				variant,
+			}),
+		);
 	}
 	assert.deepEqual(jsonObject(suite.subject.variants[1].config).promptTemplates, [
 		{ name: "tldr", source: { inline: "tldr $ARGUMENTS" } },
@@ -97,7 +105,11 @@ it("every tldr case has a readable synthetic output that passes its deterministi
 	for (const entry of suite.cases) {
 		assert.ok(reviewCriteria(entry.reviewMetadata).length, `${entry.id} requires semantic review criteria`);
 		const results = runDeterministicChecks(examples[entry.id], entry.checks, [], entry.id);
-		assert.deepEqual(results.filter((result) => !result.passed), [], entry.id);
+		assert.deepEqual(
+			results.filter((result) => !result.passed),
+			[],
+			entry.id,
+		);
 	}
 });
 
@@ -125,7 +137,11 @@ it("each tldr deterministic floor rejects its own isolated violation", () => {
 			}
 			for (const violation of violations) {
 				const failed = runDeterministicChecks(violation, entry.checks, [], entry.id).filter((result) => !result.passed);
-				assert.deepEqual(failed.map((result) => result.checkId), [check.id], `${entry.id}: ${check.id}`);
+				assert.deepEqual(
+					failed.map((result) => result.checkId),
+					[check.id],
+					`${entry.id}: ${check.id}`,
+				);
 			}
 		}
 	}
@@ -148,13 +164,20 @@ it("a bookkeeping-only summary still needs human review when lexical floors pass
 	const output = "The /brief command passed its checks. The evaluation still awaits your verdict.";
 	assert.ok(runDeterministicChecks(output, entry.checks, [], entry.id).every((result) => result.passed));
 	assert.equal(suite.adjudication.policy, "human-required");
-	assert.ok(reviewCriteria(entry.reviewMetadata).some((criterion) => criterion.includes("optional evaluation verdicts")));
+	assert.ok(
+		reviewCriteria(entry.reviewMetadata).some((criterion) => criterion.includes("optional evaluation verdicts")),
+	);
 });
 
 it("a short but false answer still needs human review", () => {
 	const entry = suite.cases.find((entry) => entry.id === "proposal-approval");
 	assert.ok(entry);
-	const results = runDeterministicChecks("The search fix is deployed and makes every search instant.", entry.checks, [], entry.id);
+	const results = runDeterministicChecks(
+		"The search fix is deployed and makes every search instant.",
+		entry.checks,
+		[],
+		entry.id,
+	);
 	assert.ok(results.every((result) => result.passed));
 	assert.equal(suite.adjudication.policy, "human-required");
 	assert.ok(reviewCriteria(entry.reviewMetadata).some((criterion) => criterion.includes("No implementation")));

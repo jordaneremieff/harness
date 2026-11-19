@@ -61,8 +61,10 @@ const MESSAGES: Record<ErrorCode, string> = {
 	invalid_input: "input: received an invalid request. Send {} for the default overview.",
 	store_unreadable: "The retained aggregate store is unreadable.",
 	store_corrupt: "The retained aggregate store is invalid.",
-	cursor_expired: "The frozen capture expired or was replaced. Send {} for a fresh overview, or send view and windowDays without cursor.",
-	cursor_invalid: "cursor: received a cursor outside the capture page range (value withheld). Copy nextCursor unchanged and send cursor alone, or send {} for a fresh overview.",
+	cursor_expired:
+		"The frozen capture expired or was replaced. Send {} for a fresh overview, or send view and windowDays without cursor.",
+	cursor_invalid:
+		"cursor: received a cursor outside the capture page range (value withheld). Copy nextCursor unchanged and send cursor alone, or send {} for a fresh overview.",
 	response_overflow: "The bounded capture exceeded its row, byte, or memory limit.",
 };
 export function errorResponse(code: ErrorCode, message = MESSAGES[code]) {
@@ -201,15 +203,33 @@ export function parseRequest(input: unknown = {}): Request {
 	const args = inputObject(input, ["view", "windowDays", "cursor"]);
 	if (Object.hasOwn(args, "cursor")) {
 		if (Object.hasOwn(args, "view") || Object.hasOwn(args, "windowDays"))
-			throw new InputError("cursor", args.cursor, "The request also contains view or windowDays. Send cursor alone to continue; omit cursor for a fresh view.");
+			throw new InputError(
+				"cursor",
+				args.cursor,
+				"The request also contains view or windowDays. Send cursor alone to continue; omit cursor for a fresh view.",
+			);
 		if (typeof args.cursor !== "string" || !/^[-_A-Za-z0-9]{4,256}$/.test(args.cursor))
-			throw new InputError("cursor", args.cursor, "Use 4–256 letters, digits, hyphens, or underscores. Copy nextCursor unchanged and send cursor alone, or send {} for a fresh overview.");
+			throw new InputError(
+				"cursor",
+				args.cursor,
+				"Use 4–256 letters, digits, hyphens, or underscores. Copy nextCursor unchanged and send cursor alone, or send {} for a fresh overview.",
+			);
 		return { cursor: args.cursor };
 	}
 	if (Object.hasOwn(args, "view") && args.view !== "overview" && args.view !== "revisions")
 		throw new InputError("view", args.view, 'Use "overview" or "revisions", or omit view for the default overview.');
-	if (Object.hasOwn(args, "windowDays") && (typeof args.windowDays !== "number" || !Number.isInteger(args.windowDays) || args.windowDays < 1 || args.windowDays > 30))
-		throw new InputError("windowDays", args.windowDays, "Use an integer from 1 through 30, or omit windowDays for 30 days.");
+	if (
+		Object.hasOwn(args, "windowDays") &&
+		(typeof args.windowDays !== "number" ||
+			!Number.isInteger(args.windowDays) ||
+			args.windowDays < 1 ||
+			args.windowDays > 30)
+	)
+		throw new InputError(
+			"windowDays",
+			args.windowDays,
+			"Use an integer from 1 through 30, or omit windowDays for 30 days.",
+		);
 	return { view: (args.view ?? "overview") as "overview" | "revisions", windowDays: (args.windowDays ?? 30) as number };
 }
 function add(a: number, b: number): number {
@@ -337,7 +357,13 @@ function scanShards(snapshot: Snapshot, today: string, fromDay: string, memorySt
 	rows.sort(order);
 	return { rows, health, shardCount };
 }
-function project(snapshot: Snapshot, today: string, windowDays: number, enabled: boolean, memoryStart: number): Projection {
+function project(
+	snapshot: Snapshot,
+	today: string,
+	windowDays: number,
+	enabled: boolean,
+	memoryStart: number,
+): Projection {
 	dayNumber(today);
 	if (
 		!object(snapshot) ||
@@ -385,8 +411,7 @@ function validateHeader(value: Header | ExportDocument): void {
 	if (dayNumber(value.window.toDay) - dayNumber(value.window.fromDay) !== value.window.requestedDays - 1)
 		throw new Error("invalid_response");
 	const retained = value.coverage.retainedDayShards;
-	if ((retained === 0) !== (value.coverage.dataState === "no_persisted_aggregate"))
-		throw new Error("invalid_response");
+	if ((retained === 0) !== (value.coverage.dataState === "no_persisted_aggregate")) throw new Error("invalid_response");
 	const h = value.storageEvidence;
 	const incidents = recordedIncidents(h);
 	if (
@@ -415,7 +440,11 @@ function validatePartitions(c: Counters): void {
 type RevisionPage = Extract<Page, { view: "revisions" }>;
 type ResourcePage = Extract<Page, { view: "overview" }>;
 function validateErrorResponse(response: ErrorResponse): void {
-	if ((!["invalid_input", "cursor_invalid", "cursor_expired"].includes(response.code) && response.message !== MESSAGES[response.code]) || response.retryable !== (response.code !== "store_corrupt"))
+	if (
+		(!["invalid_input", "cursor_invalid", "cursor_expired"].includes(response.code) &&
+			response.message !== MESSAGES[response.code]) ||
+		response.retryable !== (response.code !== "store_corrupt")
+	)
 		throw new Error("invalid_response");
 }
 function validatePagination(response: Page): void {
@@ -438,7 +467,8 @@ function validatePagination(response: Page): void {
 	const pageTotals = sum(rows);
 	if (
 		COUNTERS.some(
-			(key) => pageTotals[key] > response.totals[key] || (p.pageCount === 1 && pageTotals[key] !== response.totals[key]),
+			(key) =>
+				pageTotals[key] > response.totals[key] || (p.pageCount === 1 && pageTotals[key] !== response.totals[key]),
 		)
 	)
 		throw new Error("invalid_response");
@@ -592,12 +622,22 @@ export function createReader(
 	}
 	function continueCapture(cursor: string): Response {
 		const decoded = decodeCursor(cursor);
-		if (!decoded) return errorResponse("cursor_invalid", `cursor: received ${received(cursor)} with invalid encoding. Copy nextCursor unchanged and send cursor alone, or send {} for a fresh overview.`);
+		if (!decoded)
+			return errorResponse(
+				"cursor_invalid",
+				`cursor: received ${received(cursor)} with invalid encoding. Copy nextCursor unchanged and send cursor alone, or send {} for a fresh overview.`,
+			);
 		if (capture && now() >= capture.expires) clear();
 		if (!capture || capture.key !== decoded.key)
 			return retired.has(decoded.key)
-				? errorResponse("cursor_expired", `cursor: received ${received(cursor)} for a capture that expired or was replaced. Send {} for a fresh overview, or send view and windowDays without cursor.`)
-				: errorResponse("cursor_invalid", `cursor: received ${received(cursor)} for an unknown capture. Copy nextCursor from the current capture and send cursor alone, or send {} for a fresh overview.`);
+				? errorResponse(
+						"cursor_expired",
+						`cursor: received ${received(cursor)} for a capture that expired or was replaced. Send {} for a fresh overview, or send view and windowDays without cursor.`,
+					)
+				: errorResponse(
+						"cursor_invalid",
+						`cursor: received ${received(cursor)} for an unknown capture. Copy nextCursor from the current capture and send cursor alone, or send {} for a fresh overview.`,
+					);
 		try {
 			return page(decoded.index);
 		} catch (error) {
@@ -638,8 +678,9 @@ export function createReader(
 		clear,
 		async read(input: unknown = {}, signal?: AbortSignal): Promise<Response> {
 			let request: Request;
-			try { request = parseRequest(input); }
-			catch (error) {
+			try {
+				request = parseRequest(input);
+			} catch (error) {
 				if (!(error instanceof InputError)) throw error;
 				return errorResponse("invalid_input", error.message);
 			}

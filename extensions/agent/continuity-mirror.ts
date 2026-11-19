@@ -1,7 +1,13 @@
 import { withAbortSignal, type Context } from "@earendil-works/chord/context";
 import type { CommitPublication, ConversationId, Cursor, EntryRecord, Harness } from "@earendil-works/pi-durable";
 import { onStoredCommit } from "./commit-observation.ts";
-import { CONTINUITY_ENTRY, nativeContinuityText, validateContinuityState, type ContinuityEvent, type ContinuityWork } from "./continuity-facts.ts";
+import {
+	CONTINUITY_ENTRY,
+	nativeContinuityText,
+	validateContinuityState,
+	type ContinuityEvent,
+	type ContinuityWork,
+} from "./continuity-facts.ts";
 import { ContinuityDoc, freezeContinuityWork } from "./continuity-native.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 
@@ -16,7 +22,10 @@ interface MirroredConversation {
 	reading?: Promise<void>;
 	text?: string;
 }
-export interface FrozenContinuity { readonly head: EntryRecord; readonly text: string }
+export interface FrozenContinuity {
+	readonly head: EntryRecord;
+	readonly text: string;
+}
 
 /** Synchronous stored-publication mirror. Initialise before any scheduling-enabling act. */
 export class ContinuityMirror {
@@ -31,19 +40,37 @@ export class ContinuityMirror {
 	}
 	private row(id: ConversationId): MirroredConversation {
 		let row = this.conversations.get(id);
-		if (row === undefined) { row = { events: [] }; this.conversations.set(id, row); }
+		if (row === undefined) {
+			row = { events: [] };
+			this.conversations.set(id, row);
+		}
 		return row;
 	}
 	advance(publication: CommitPublication): void {
 		for (const change of publication.changes) {
-			if (change.type === "document" && change.record.kind === CONTINUITY_ENTRY && change.conversationId !== undefined) {
+			if (
+				change.type === "document" &&
+				change.record.kind === CONTINUITY_ENTRY &&
+				change.conversationId !== undefined
+			) {
 				const row = this.row(change.conversationId);
-				if (change.kind === "retire") { row.events = []; row.work = undefined; row.text = undefined; }
-				else { validateContinuityState(change.value); row.events = change.value.events; row.work = change.value.work; }
+				if (change.kind === "retire") {
+					row.events = [];
+					row.work = undefined;
+					row.text = undefined;
+				} else {
+					validateContinuityState(change.value);
+					row.events = change.value.events;
+					row.work = change.value.work;
+				}
 			}
 			if (change.type === "entry" && change.value.head !== undefined) {
 				const row = this.row(change.value.conversationId);
-				if (row.head === undefined || change.value.id > row.head.id) { row.head = change.value; row.text = undefined; row.unread = undefined; }
+				if (row.head === undefined || change.value.id > row.head.id) {
+					row.head = change.value;
+					row.text = undefined;
+					row.unread = undefined;
+				}
 			}
 		}
 	}
@@ -57,7 +84,11 @@ export class ContinuityMirror {
 					const state = await tx.doc(ContinuityDoc, conversation.id);
 					validateContinuityState(state);
 					const head = await tx.latestHeadMarker(conversation.id);
-					this.conversations.set(conversation.id, { events: state.events.map((event) => ({ ...event })), ...(head === undefined ? {} : { head }), ...(state.work === undefined ? {} : { work: JSON.parse(JSON.stringify(state.work)) as ContinuityWork }) });
+					this.conversations.set(conversation.id, {
+						events: state.events.map((event) => ({ ...event })),
+						...(head === undefined ? {} : { head }),
+						...(state.work === undefined ? {} : { work: JSON.parse(JSON.stringify(state.work)) as ContinuityWork }),
+					});
 				}
 				return page;
 			}, loading);
@@ -74,10 +105,17 @@ export class ContinuityMirror {
 		const row = this.conversations.get(conversationId);
 		const headId = row?.head?.id;
 		if (row === undefined || headId === undefined || row.work?.headId === headId || row.unread === headId) return;
-		row.reading ??= this.read(row, conversationId, headId, context).finally(() => { row.reading = undefined; });
+		row.reading ??= this.read(row, conversationId, headId, context).finally(() => {
+			row.reading = undefined;
+		});
 		await row.reading;
 	}
-	private async read(row: MirroredConversation, conversationId: ConversationId, headId: number, context: Context): Promise<void> {
+	private async read(
+		row: MirroredConversation,
+		conversationId: ConversationId,
+		headId: number,
+		context: Context,
+	): Promise<void> {
 		try {
 			const work = await this.harness.commit((tx) => freezeContinuityWork(tx, conversationId, headId), context);
 			if (work !== undefined && row.head?.id === headId) row.work = work;
@@ -94,9 +132,13 @@ export class ContinuityMirror {
 		const row = this.conversations.get(conversationId);
 		if (row?.head === undefined) return undefined;
 		const head = row.head;
-		const text = row.text ?? nativeContinuityText(canonicalIdentity(this.storageId, conversationId), head.id, row.events, row.work);
+		const text =
+			row.text ??
+			nativeContinuityText(canonicalIdentity(this.storageId, conversationId), head.id, row.events, row.work);
 		if (row.work?.headId === head.id || row.unread === head.id) row.text = text;
 		return { head, text };
 	}
-	close(): void { this.detach(); }
+	close(): void {
+		this.detach();
+	}
 }

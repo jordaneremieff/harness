@@ -9,13 +9,23 @@ import { parseInspectParams } from "./durable-observation.ts";
 import { AGENT_CONTROL_TOOL_NAMES, agentControlGuidance } from "./control-guidance.ts";
 import { StatusToolOutputSchema, InspectToolOutputSchema } from "./observation-schema.ts";
 
-interface ToolDeclaration { name: string; parameters: Schema; outputSchema?: Schema; promptSnippet?: string; promptGuidelines?: string[] }
+interface ToolDeclaration {
+	name: string;
+	parameters: Schema;
+	outputSchema?: Schema;
+	promptSnippet?: string;
+	promptGuidelines?: string[];
+}
 async function declarations(): Promise<Map<string, ToolDeclaration>> {
 	const tools = new Map<string, ToolDeclaration>();
 	await register({
-		events: { emit() {}, on: () => () => {} }, on: () => () => {},
+		events: { emit() {}, on: () => () => {} },
+		on: () => () => {},
 		registerTool: (tool: ToolDeclaration) => tools.set(tool.name, tool),
-		registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {},
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
 	} as unknown as ExtensionAPI);
 	return tools;
 }
@@ -28,16 +38,25 @@ it("declares shared task guidance and exact observation results on primary tools
 		assert.ok(declaration);
 		const guidance = agentControlGuidance(name, "ordinary");
 		assert.equal(declaration.promptSnippet, guidance.snippet);
-		assert.deepEqual(declaration.promptGuidelines, [...guidance.guidelines ?? []]);
+		assert.deepEqual(declaration.promptGuidelines, [...(guidance.guidelines ?? [])]);
 	}
 	assert.deepEqual(tools.get("agent_list")?.outputSchema, ProfiledListOutputSchema);
 	const status = tools.get("agent_status")?.outputSchema;
 	assert.ok(status);
 	assert.equal(status, StatusToolOutputSchema);
-	const selected = { conversation: {
-		conversationId: 1, identity: "storage", busy: false, lastText: null, live: null, inbox: null,
-		agent: { thinkingLevel: "off", tools: [], extensions: [] }, tasks: [], submissions: [],
-	} };
+	const selected = {
+		conversation: {
+			conversationId: 1,
+			identity: "storage",
+			busy: false,
+			lastText: null,
+			live: null,
+			inbox: null,
+			agent: { thinkingLevel: "off", tools: [], extensions: [] },
+			tasks: [],
+			submissions: [],
+		},
+	};
 	assert.equal(matchesSchema(status, selected), true);
 	assert.deepEqual(tools.get("agent_inspect")?.outputSchema, InspectToolOutputSchema);
 });
@@ -63,7 +82,10 @@ it("keeps receipt cursors separate from entry cursors and rejects non-result sel
 	const selected = { view: "result", submissionId: 7, receiptCursor: "recipient-page" };
 	assert.equal(parseInspectParams(selected).receiptCursor, selected.receiptCursor);
 	assert.equal(parseInspectParams({ ...selected, offset: 4095 }).offset, 4095);
-	for (const view of [undefined, "activity", "history", "branch", "search", "exact"]) assert.throws(() => parseInspectParams({ ...selected, view }), /receiptCursor.*only the result view/u);
-	for (const receiptCursor of [null, 1, {}, [], "", "x".repeat(2049)]) assert.throws(() => parseInspectParams({ ...selected, receiptCursor }), /receiptCursor/u);
-	for (const offset of [-1, 0.25, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) assert.throws(() => parseInspectParams({ view: "result", submissionId: 7, offset }), /offset|integer/u);
+	for (const view of [undefined, "activity", "history", "branch", "search", "exact"])
+		assert.throws(() => parseInspectParams({ ...selected, view }), /receiptCursor.*only the result view/u);
+	for (const receiptCursor of [null, 1, {}, [], "", "x".repeat(2049)])
+		assert.throws(() => parseInspectParams({ ...selected, receiptCursor }), /receiptCursor/u);
+	for (const offset of [-1, 0.25, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])
+		assert.throws(() => parseInspectParams({ view: "result", submissionId: 7, offset }), /offset|integer/u);
 });

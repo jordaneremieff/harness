@@ -30,9 +30,16 @@ export class DashboardResize {
 	hover?: Divider;
 	private readonly layout: DashboardLayout;
 	private readonly save: () => void;
-	constructor(layout: DashboardLayout, save: () => void) { this.layout = layout; this.save = save; }
-	get selected(): Divider | undefined { return this.gesture?.kind; }
-	active(kind: Divider): boolean { return this.selected === kind; }
+	constructor(layout: DashboardLayout, save: () => void) {
+		this.layout = layout;
+		this.save = save;
+	}
+	get selected(): Divider | undefined {
+		return this.gesture?.kind;
+	}
+	active(kind: Divider): boolean {
+		return this.selected === kind;
+	}
 	begin(width: number, height: number, screen: string): void {
 		if (width !== this.width || height !== this.height || screen !== this.screen) this.cancel();
 		this.width = width;
@@ -43,7 +50,9 @@ export class DashboardResize {
 	beginInputGeometry(width: number, height: number, screen: string): void {
 		if (width !== this.width || height !== this.height || screen !== this.screen) this.begin(width, height, screen);
 	}
-	add(handle: ResizeHandle): void { this.handles.push(handle); }
+	add(handle: ResizeHandle): void {
+		this.handles.push(handle);
+	}
 	end(): void {
 		if (this.selected && !this.handles.some((handle) => handle.kind === this.selected)) {
 			const handles = this.handles;
@@ -65,7 +74,10 @@ export class DashboardResize {
 		this.hover = undefined;
 		return changed;
 	}
-	clear(): void { this.cancel(); this.handles = []; }
+	clear(): void {
+		this.cancel();
+		this.handles = [];
+	}
 	private same(start: DashboardLayout): boolean {
 		return start.rosterRatio === this.layout.rosterRatio && start.composerRows === this.layout.composerRows;
 	}
@@ -86,7 +98,8 @@ export class DashboardResize {
 		if (kind === "roster") delete this.layout.rosterRatio;
 		else delete this.layout.composerRows;
 		const handle = this.handles.find((h) => h.kind === kind);
-		if (handle) handle.value = kind === "roster" ? dashboardGeometry(this.width, this.height, 0).rosterWidth : handle.min;
+		if (handle)
+			handle.value = kind === "roster" ? dashboardGeometry(this.width, this.height, 0).rosterWidth : handle.min;
 	}
 	/** A key also ends a drag whose release was lost outside the terminal. */
 	input(data: string): boolean {
@@ -96,18 +109,24 @@ export class DashboardResize {
 	}
 	private captured(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (!this.gesture) return;
-		if (event.type === "release") { this.commit(); return { handled: true, render: true }; }
+		if (event.type === "release") {
+			this.commit();
+			return { handled: true, render: true };
+		}
 		if (event.type !== "drag") return;
 		const handle = this.handles.find((h) => h.kind === this.selected);
 		if (!handle || event.shift || event.alt || event.ctrl || event.button !== "left") {
-			this.cancel(); return { handled: true, render: true };
+			this.cancel();
+			return { handled: true, render: true };
 		}
 		const pointer = handle.kind === "roster" ? event.x : -event.y;
 		return { handled: true, render: this.change(handle, this.gesture.value + pointer - this.gesture.pointer) };
 	}
 	private pointer(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (event.shift || event.alt || event.ctrl) return;
-		const handle = this.handles.find((h) => event.x >= h.x && event.x < h.x + h.width && event.y >= h.y && event.y < h.y + h.height);
+		const handle = this.handles.find(
+			(h) => event.x >= h.x && event.x < h.x + h.width && event.y >= h.y && event.y < h.y + h.height,
+		);
 		if (event.type === "move") {
 			const hover = handle?.kind;
 			if (hover === this.hover) return;
@@ -119,11 +138,20 @@ export class DashboardResize {
 	}
 	private activate(event: TuiMouseEvent, handle: ResizeHandle): TuiMouseEventResult | undefined {
 		if (event.type === "press") {
-			this.gesture = { kind: handle.kind, start: { ...this.layout }, value: handle.value, handles: this.handles.map((item) => ({ ...item })), pointer: handle.kind === "roster" ? event.x : -event.y };
+			this.gesture = {
+				kind: handle.kind,
+				start: { ...this.layout },
+				value: handle.value,
+				handles: this.handles.map((item) => ({ ...item })),
+				pointer: handle.kind === "roster" ? event.x : -event.y,
+			};
 			return { handled: true, capture: true, render: true };
 		}
 		if (event.type === "click" && (event.clickCount ?? 1) <= 2) {
-			if (event.clickCount === 2) { this.reset(handle.kind); this.save(); }
+			if (event.clickCount === 2) {
+				this.reset(handle.kind);
+				this.save();
+			}
 			return { handled: true, render: event.clickCount === 2 };
 		}
 	}

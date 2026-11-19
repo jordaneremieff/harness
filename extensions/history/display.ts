@@ -10,7 +10,12 @@ export function toolDisplay(): ToolDisplayPublication {
 	return {
 		version: 1,
 		tools: [
-			{ name: "history_search", renderCall: renderSearchCall, renderResult: renderSearchResult, renderShell: undefined },
+			{
+				name: "history_search",
+				renderCall: renderSearchCall,
+				renderResult: renderSearchResult,
+				renderShell: undefined,
+			},
 			{ name: "history_read", renderCall: renderReadCall, renderResult: renderReadResult, renderShell: undefined },
 		],
 	};

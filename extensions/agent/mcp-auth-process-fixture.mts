@@ -5,7 +5,12 @@ if (!agentDir || !url || !process.send) throw new Error("Expected isolated auth 
 const owner = new NativeMcpAuth(agentDir);
 try {
 	const auth = owner.provider("docs", { url }, (value) => value);
-	const refresh = auth.onUnauthorized({ token: "synthetic-old", serverUrl: new URL(url), fetch: globalThis.fetch, response: new Response(null, { status: 401 }) });
+	const refresh = auth.onUnauthorized({
+		token: "synthetic-old",
+		serverUrl: new URL(url),
+		fetch: globalThis.fetch,
+		response: new Response(null, { status: 401 }),
+	});
 	process.send({ type: "starting" });
 	await refresh;
 	console.log(JSON.stringify({ token: await auth.token() }));

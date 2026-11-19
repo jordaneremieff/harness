@@ -33,7 +33,8 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 		on: () => () => {},
 		registerTool() {},
 		registerShortcut() {},
-		registerMessageRenderer() {}, registerToolRenderer() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
 		getThinkingLevel: () => "off",
 		registerCommand: (name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) => {
 			commands.set(name, command);

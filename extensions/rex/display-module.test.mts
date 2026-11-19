@@ -7,7 +7,10 @@ import { toolDisplay } from "./display.ts";
 import { registerRex } from "./index.ts";
 import { toolSpecs } from "./schema.ts";
 
-type Publication = { version: number; tools: Array<Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">> };
+type Publication = {
+	version: number;
+	tools: Array<Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">>;
+};
 type Contribution = { name: string; source: string; display?: { version: number; entry: string; export: string } };
 
 test("display.ts is a pure presentation module: one export, no operational imports", async () => {
@@ -15,13 +18,20 @@ test("display.ts is a pure presentation module: one export, no operational impor
 	assert.deepEqual(Object.keys(namespace).sort(), ["toolDisplay"]);
 	const source = await readFile(new URL("./display.ts", import.meta.url), "utf8");
 	assert.equal(/from "\.\/(index|durable)\.ts"/.test(source), false, "display.ts must not import the factory");
-	assert.equal(/registerTool|registerCommand|events\.|emit\(/.test(source), false, "display.ts must not register or emit");
+	assert.equal(
+		/registerTool|registerCommand|events\.|emit\(/.test(source),
+		false,
+		"display.ts must not register or emit",
+	);
 });
 
 test("toolDisplay() returns version 1 with a renderer record for every Rex tool", () => {
 	const publication = toolDisplay();
 	assert.equal(publication.version, 1);
-	assert.deepEqual(publication.tools.map((tool) => tool.name), toolSpecs.map((spec) => spec.name));
+	assert.deepEqual(
+		publication.tools.map((tool) => tool.name),
+		toolSpecs.map((spec) => spec.name),
+	);
 	for (const record of publication.tools) {
 		assert.equal(typeof record.renderCall, "function");
 		assert.equal(typeof record.renderResult, "function");
@@ -40,13 +50,21 @@ test("the factory publishes the display module's records and the contribution ca
 	const pi = {
 		events: bus,
 		on: () => () => {},
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {},
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerCommand: () => {},
 	} as unknown as ExtensionAPI;
-	registerRex(pi, { createCore: () => { throw new Error("Rendering fixtures must not execute tools."); } });
+	registerRex(pi, {
+		createCore: () => {
+			throw new Error("Rendering fixtures must not execute tools.");
+		},
+	});
 	const records = toolDisplay().tools;
 	for (const publication of publications) {
 		assert.equal(publication.version, 1);
-		assert.deepEqual(publication.tools.map((tool) => tool.name), records.map((tool) => tool.name));
+		assert.deepEqual(
+			publication.tools.map((tool) => tool.name),
+			records.map((tool) => tool.name),
+		);
 		for (const display of publication.tools) {
 			const record = records.find((tool) => tool.name === display.name);
 			const definition = tools.get(display.name);

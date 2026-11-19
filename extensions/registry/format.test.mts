@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BOUNDARY_LINES, boundResult, MAX_RESULT_BYTES, MAX_RESULT_LINES, terminalSafe, escapeJsonControls, oneLine } from "./format.ts";
+import {
+	BOUNDARY_LINES,
+	boundResult,
+	MAX_RESULT_BYTES,
+	MAX_RESULT_LINES,
+	terminalSafe,
+	escapeJsonControls,
+	oneLine,
+} from "./format.ts";
 import { lookup } from "./lookup.ts";
 import type { HostSnapshot } from "./records.ts";
 
@@ -11,10 +19,21 @@ describe("observation boundaries", () => {
 		assert.doesNotMatch(BOUNDARY_LINES.join("\n"), /modelInvocable|shadow|scope order/);
 	});
 	it("includes shared boundaries on every resource kind and the host summary", async () => {
-		const snapshot: HostSnapshot = { tools: [], activeTools: [], commands: [], observation: null,
-			availability: { tools: true, commands: true, activeTools: true }, at: 1 };
+		const snapshot: HostSnapshot = {
+			tools: [],
+			activeTools: [],
+			commands: [],
+			observation: null,
+			availability: { tools: true, commands: true, activeTools: true },
+			at: 1,
+		};
 		for (const kind of [undefined, "tool", "skill", "prompt", "command", "model", "context_file"] as const) {
-			const result = await lookup({ params: kind === undefined ? {} : { kind }, snapshot, session: {}, epoch: "fixture" });
+			const result = await lookup({
+				params: kind === undefined ? {} : { kind },
+				snapshot,
+				session: {},
+				epoch: "fixture",
+			});
 			for (const line of BOUNDARY_LINES) assert.ok(result.text.split("\n").includes(line), kind ?? "host_summary");
 		}
 	});
@@ -27,8 +46,12 @@ describe("complete result bounds", () => {
 		["lines", "x\n".repeat(4000)],
 	] as const) {
 		it(`bounds oversized ${label} in headers and details`, () => {
-			const result = boundResult({ header: ["registry outcome=ok", value], blocks: [], footer: BOUNDARY_LINES,
-				details: { outcome: "ok", sourceInfo: { path: value } } });
+			const result = boundResult({
+				header: ["registry outcome=ok", value],
+				blocks: [],
+				footer: BOUNDARY_LINES,
+				details: { outcome: "ok", sourceInfo: { path: value } },
+			});
 			const envelope = { content: [{ type: "text", text: result.text }], details: result.details };
 			assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= MAX_RESULT_BYTES);
 			assert.ok(JSON.stringify(envelope, null, 2).replace(/\\n/g, "\n").split("\n").length <= MAX_RESULT_LINES);
@@ -41,21 +64,40 @@ describe("complete result bounds", () => {
 	}
 
 	it("recomputes continuation from the retained blocks", () => {
-		const blocks = Array.from({ length: 100 }, (_, i) => ({ lines: [`record ${i}`], detail: { path: "x".repeat(2000), i } }));
-		const result = boundResult({ header: ["registry outcome=ok"], blocks, footer: BOUNDARY_LINES,
-			details: {}, page: { total: blocks.length, offset: 0 }, pageSummary: (kept) => `records: ${kept} shown`, continuation: (kept) => String(kept) });
+		const blocks = Array.from({ length: 100 }, (_, i) => ({
+			lines: [`record ${i}`],
+			detail: { path: "x".repeat(2000), i },
+		}));
+		const result = boundResult({
+			header: ["registry outcome=ok"],
+			blocks,
+			footer: BOUNDARY_LINES,
+			details: {},
+			page: { total: blocks.length, offset: 0 },
+			pageSummary: (kept) => `records: ${kept} shown`,
+			continuation: (kept) => String(kept),
+		});
 		assert.ok(result.droppedBlocks > 0);
 		assert.equal(result.details.pageTruncated, true);
 		assert.equal(result.details.continuationStatus, "available");
 		assert.equal(Number(result.details.cursor), (result.details.records as unknown[]).length);
 		assert.ok(result.text.includes(`records: ${result.details.returnedRecords} shown`));
-		assert.ok(Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: result.text }], details: result.details })) <= MAX_RESULT_BYTES);
+		assert.ok(
+			Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: result.text }], details: result.details })) <=
+				MAX_RESULT_BYTES,
+		);
 	});
 
 	it("reports a record that cannot fit instead of emitting a nonadvancing cursor", () => {
-		const result = boundResult({ header: ["registry outcome=ok"], footer: BOUNDARY_LINES,
-			blocks: [{ lines: ["record"], detail: { source: "x".repeat(100000) } }], details: {}, page: { total: 1, offset: 0 },
-			pageSummary: (kept) => `records: ${kept} shown`, continuation: () => "next" });
+		const result = boundResult({
+			header: ["registry outcome=ok"],
+			footer: BOUNDARY_LINES,
+			blocks: [{ lines: ["record"], detail: { source: "x".repeat(100000) } }],
+			details: {},
+			page: { total: 1, offset: 0 },
+			pageSummary: (kept) => `records: ${kept} shown`,
+			continuation: () => "next",
+		});
 		assert.equal(result.details.pageBlocked, true);
 		assert.equal(result.details.pageTruncated, true);
 		assert.equal(result.details.continuationStatus, "blocked");
@@ -66,9 +108,13 @@ describe("complete result bounds", () => {
 	});
 
 	it("keeps incomplete evidence explicit even when every known record fits", () => {
-		const result = boundResult({ header: ["registry outcome=partial"], footer: [],
-			blocks: [{ lines: ["known record"], detail: { name: "known" } }], details: { outcome: "partial" },
-			page: { total: 1, offset: 0, unavailableReason: "The inventory is incomplete." } });
+		const result = boundResult({
+			header: ["registry outcome=partial"],
+			footer: [],
+			blocks: [{ lines: ["known record"], detail: { name: "known" } }],
+			details: { outcome: "partial" },
+			page: { total: 1, offset: 0, unavailableReason: "The inventory is incomplete." },
+		});
 		assert.equal(result.details.pageTruncated, false);
 		assert.equal(result.details.continuationStatus, "unavailable");
 		assert.equal(result.details.continuationReason, "The inventory is incomplete.");
@@ -78,8 +124,14 @@ describe("complete result bounds", () => {
 	});
 
 	it("marks an empty complete page without a nonadvancing cursor", () => {
-		const result = boundResult({ header: ["registry outcome=missing"], footer: [], blocks: [], details: { outcome: "missing" },
-			page: { total: 0, offset: 0 }, continuation: () => "must-not-appear" });
+		const result = boundResult({
+			header: ["registry outcome=missing"],
+			footer: [],
+			blocks: [],
+			details: { outcome: "missing" },
+			page: { total: 0, offset: 0 },
+			continuation: () => "must-not-appear",
+		});
 		assert.equal(result.details.pageTruncated, false);
 		assert.equal(result.details.continuationStatus, "complete");
 		assert.equal(result.details.cursor, undefined);
@@ -87,9 +139,14 @@ describe("complete result bounds", () => {
 	});
 
 	it("retains blocked continuation and known omission after oversized metadata fallback", () => {
-		const result = boundResult({ header: ["registry outcome=ok", "x".repeat(100000)], footer: [],
-			blocks: [{ lines: ["record"], detail: { name: "known" } }], details: { outcome: "ok" },
-			page: { total: 3, offset: 0 }, continuation: () => "next" });
+		const result = boundResult({
+			header: ["registry outcome=ok", "x".repeat(100000)],
+			footer: [],
+			blocks: [{ lines: ["record"], detail: { name: "known" } }],
+			details: { outcome: "ok" },
+			page: { total: 3, offset: 0 },
+			continuation: () => "next",
+		});
 		assert.equal(result.details.omittedDetails, true);
 		assert.equal(result.details.pageTruncated, true);
 		assert.equal(result.details.continuationStatus, "blocked");
@@ -99,7 +156,8 @@ describe("complete result bounds", () => {
 	});
 
 	it("escapes controls in JSON without changing parsed keys or values", () => {
-		const controls = "\u001b\u007f\u0085\u009d\u200e\u200f\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069";
+		const controls =
+			"\u001b\u007f\u0085\u009d\u200e\u200f\u2028\u2029\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069";
 		const value = { [`key${controls}`]: `value${controls}`, other: "漢" };
 		const escaped = escapeJsonControls(JSON.stringify(value));
 		assert.equal(terminalSafe(escaped), escaped);

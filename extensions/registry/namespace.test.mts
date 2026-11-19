@@ -12,11 +12,19 @@ type Namespace = NonNullable<ToolInfo["namespace"]>;
 const GUIDANCE = "Call lookup-doc with one topic string.";
 const sourceInfo = { path: "mcp:fixture", source: "mcp", scope: "temporary" as const, origin: "top-level" as const };
 const guidance = (repeat: number): string => `Docs server. ${`${GUIDANCE} `.repeat(repeat)}`;
-const namespaceWith = (instructions?: string): Namespace => ({ name: "mcp__docs", description: "Search the docs", ...(instructions === undefined ? {} : { instructions }) });
+const namespaceWith = (instructions?: string): Namespace => ({
+	name: "mcp__docs",
+	description: "Search the docs",
+	...(instructions === undefined ? {} : { instructions }),
+});
 
 function piWith(namespace: ToolInfo["namespace"]): ExtensionAPI {
 	const tools: ToolInfo[] = ["lookup_doc", "list_topics", "search_docs"].map((name) => ({
-		name: `mcp__docs__${name}`, description: `Fixture ${name}`, parameters: obj({}, { open: true }), sourceInfo, exposure: "deferred" as const,
+		name: `mcp__docs__${name}`,
+		description: `Fixture ${name}`,
+		parameters: obj({}, { open: true }),
+		sourceInfo,
+		exposure: "deferred" as const,
 		...(namespace === undefined ? {} : { namespace }),
 	}));
 	return { getAllTools: () => tools, getActiveTools: () => [], getCommands: () => [] } as unknown as ExtensionAPI;
@@ -26,8 +34,15 @@ const run = (namespace: ToolInfo["namespace"], params: Parameters<typeof lookup>
 	lookup({ params, snapshot: readSnapshot(piWith(namespace), null, 1000), session: {}, epoch: "fixture" });
 
 function validate(result: LookupResult): LookupResult {
-	assert.ok(compile(RegistryOutputSchema).check(result.structuredContent), JSON.stringify(compile(RegistryOutputSchema).errors(result.structuredContent)));
-	const envelope = { content: [{ type: "text", text: result.text }], details: result.details, structuredContent: result.structuredContent };
+	assert.ok(
+		compile(RegistryOutputSchema).check(result.structuredContent),
+		JSON.stringify(compile(RegistryOutputSchema).errors(result.structuredContent)),
+	);
+	const envelope = {
+		content: [{ type: "text", text: result.text }],
+		details: result.details,
+		structuredContent: result.structuredContent,
+	};
 	assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= MAX_RESULT_BYTES);
 	assert.ok(!result.text.includes(GUIDANCE));
 	assert.ok(!JSON.stringify(result.structuredContent).includes(GUIDANCE));
@@ -35,7 +50,8 @@ function validate(result: LookupResult): LookupResult {
 	return result;
 }
 
-const records = (result: LookupResult) => result.details.records as Array<{ name: string; namespace?: Record<string, unknown> }>;
+const records = (result: LookupResult) =>
+	result.details.records as Array<{ name: string; namespace?: Record<string, unknown> }>;
 
 describe("tool namespace aliases", () => {
 	it("copies aliases without retaining the host array and exposes them in full and compact pages", async () => {
@@ -44,7 +60,10 @@ describe("tool namespace aliases", () => {
 		const snapshot = readSnapshot(piWith(namespace), null, 1000);
 		aliases.push("later");
 		assert.deepEqual(snapshot.tools[0].namespace?.aliases, ["docs", "reference-guide"]);
-		for (const query of [{ kind: "tool", search: "reference-guide" }, { kind: "tool", name: "mcp__docs__lookup_doc", detail: true }] as const) {
+		for (const query of [
+			{ kind: "tool", search: "reference-guide" },
+			{ kind: "tool", name: "mcp__docs__lookup_doc", detail: true },
+		] as const) {
 			const result = validate(await run(namespace, query));
 			assert.equal(result.outcome, "ok");
 			assert.deepEqual(records(result)[0].namespace?.aliases, aliases);
@@ -81,7 +100,11 @@ describe("tool namespace aliases", () => {
 		assert.equal(result.details.resultBounded, true);
 		assert.equal(result.details.cursor, undefined);
 		assert.deepEqual(result.details.records, []);
-		const envelope = { content: [{ type: "text", text: result.text }], details: result.details, structuredContent: result.structuredContent };
+		const envelope = {
+			content: [{ type: "text", text: result.text }],
+			details: result.details,
+			structuredContent: result.structuredContent,
+		};
 		assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= MAX_RESULT_BYTES);
 		assert.match(result.text, /cannot advance/);
 	});
@@ -100,7 +123,11 @@ describe("tool namespace instructions", () => {
 			assert.equal(result.outcome, "ok");
 			assert.ok(records(result).length > 0);
 			for (const record of records(result)) {
-				assert.deepEqual(record.namespace, { name: "mcp__docs", description: "Search the docs", instructionsOmitted: true });
+				assert.deepEqual(record.namespace, {
+					name: "mcp__docs",
+					description: "Search the docs",
+					instructionsOmitted: true,
+				});
 			}
 			assert.match(result.text, /instructionsOmitted/);
 			assert.match(result.text, /describeNamespace\(name\)/);
@@ -133,7 +160,12 @@ describe("tool namespace instructions", () => {
 		const future = { ...namespaceWith(guidance(40)), futureGuidance: "Not part of the projection." } as Namespace;
 		const host = readSnapshot(piWith(future), null, 1000);
 		assert.ok(host.tools.length > 0);
-		for (const tool of host.tools) assert.deepEqual(tool.namespace, { name: "mcp__docs", description: "Search the docs", instructionsOmitted: true });
+		for (const tool of host.tools)
+			assert.deepEqual(tool.namespace, {
+				name: "mcp__docs",
+				description: "Search the docs",
+				instructionsOmitted: true,
+			});
 		const serialized = JSON.stringify(host);
 		assert.ok(!serialized.includes(GUIDANCE));
 		assert.ok(!serialized.includes("futureGuidance"));
@@ -151,6 +183,9 @@ describe("tool namespace instructions", () => {
 			assert.equal(validate(await run(changed, { cursor })).outcome, "stale_cursor");
 		}
 		const plain = validate(await run(namespaceWith(), query));
-		assert.equal(validate(await run(namespaceWith(guidance(3)), { cursor: plain.details.cursor as string })).outcome, "stale_cursor");
+		assert.equal(
+			validate(await run(namespaceWith(guidance(3)), { cursor: plain.details.cursor as string })).outcome,
+			"stale_cursor",
+		);
 	});
 });

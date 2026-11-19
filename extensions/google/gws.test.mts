@@ -97,7 +97,9 @@ test("cancellation stops an account-lock wait without dispatch or a late held lo
 		});
 		const result = await Promise.race([
 			pending,
-			new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), 500); }),
+			new Promise<"timeout">((resolve) => {
+				timer = setTimeout(() => resolve("timeout"), 500);
+			}),
 		]);
 		assert.notEqual(result, "timeout", "cancellation must not wait for the account lock to become available");
 		assert.equal(typeof result === "object" && result.error?.code, "ABORTED");
@@ -205,11 +207,12 @@ test("equal credential size and mtime do not share authentication across configu
 		assert.equal(firstInfo.size, secondInfo.size);
 		assert.equal(firstInfo.mtimeMs, secondInfo.mtimeMs);
 		let handled = 0;
-		const run = () => first.runtime.run({ profile: true }, undefined, async ({ call }) => {
-			handled++;
-			await call("gmail", ["users", "getProfile"]);
-			return { schemaVersion: 1, status: "ok" };
-		});
+		const run = () =>
+			first.runtime.run({ profile: true }, undefined, async ({ call }) => {
+				handled++;
+				await call("gmail", ["users", "getProfile"]);
+				return { schemaVersion: 1, status: "ok" };
+			});
 		assert.equal((await run()).status, "ok");
 		first.env.PI_GOOGLE_CONFIG_DIR = second.configDir;
 		assert.equal(errorCode(await run()), "WRONG_ACCOUNT");
@@ -234,7 +237,10 @@ test("replacing a credential file with equal size and mtime revalidates authenti
 		const path = join(fake.configDir, "credentials.enc");
 		const timestamp = new Date("2026-01-01T00:00:00Z");
 		await utimes(path, timestamp, timestamp);
-		assert.equal((await fake.runtime.run({}, undefined, async () => ({ schemaVersion: 1, status: "ok" }))).status, "ok");
+		assert.equal(
+			(await fake.runtime.run({}, undefined, async () => ({ schemaVersion: 1, status: "ok" }))).status,
+			"ok",
+		);
 		const replacement = join(fake.configDir, "replacement.enc");
 		await writeFile(replacement, "encrypted");
 		await utimes(replacement, timestamp, timestamp);
@@ -286,7 +292,7 @@ test("authentication, profile and handler calls use one captured environment", a
 	try {
 		const home = fake.env.HOME;
 		let reads = 0;
-		Object.defineProperty(fake.env, "HOME", { get: () => reads++ < 2 ? home : fake.root });
+		Object.defineProperty(fake.env, "HOME", { get: () => (reads++ < 2 ? home : fake.root) });
 		const result = await fake.runtime.run({ profile: true }, undefined, async ({ call, settings }) => {
 			fake.env.PI_GOOGLE_CONFIG_DIR = join(fake.root, "unselected-config");
 			fake.env.PI_GOOGLE_EXECUTABLE = join(fake.root, "unselected-gws");

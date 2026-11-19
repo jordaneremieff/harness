@@ -23,10 +23,16 @@ it("bounds the source ancestry walk rather than a materialized branch", (t) => {
 	const session = SessionManager.inMemory();
 	session.appendCustomEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: "Original task" });
 	for (let i = 0; i < 10_000; i++) session.appendCustomEntry("other", { text: "Later entry" });
-	for (const name of ["getBranch", "getEntries", "getTree"] as const) t.mock.method(session, name, () => { throw new Error("Unbounded materialization is forbidden"); });
+	for (const name of ["getBranch", "getEntries", "getTree"] as const)
+		t.mock.method(session, name, () => {
+			throw new Error("Unbounded materialization is forbidden");
+		});
 	const lookup = session.getEntry.bind(session);
 	let visits = 0;
-	t.mock.method(session, "getEntry", (id: string) => { visits++; return lookup(id); });
+	t.mock.method(session, "getEntry", (id: string) => {
+		visits++;
+		return lookup(id);
+	});
 	assert.deepEqual(retainedPurpose(session), { complete: false, canCapture: false });
 	assert.equal(visits, 256);
 });
@@ -44,7 +50,10 @@ it("does not trust a found projection when its earlier history remains outside t
 	for (let i = 0; i < 300; i++) session.appendCustomEntry("other");
 	session.appendCustomEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: "Unproven first input" });
 	assert.deepEqual(retainedPurpose(session), { complete: false, canCapture: false });
-	assert.deepEqual(retainedPurpose({ getLeafId: () => "missing", getEntry: () => undefined }), { complete: false, canCapture: false });
+	assert.deepEqual(retainedPurpose({ getLeafId: () => "missing", getEntry: () => undefined }), {
+		complete: false,
+		canCapture: false,
+	});
 });
 
 it("never adopts a continuation or later remark after resume with ambiguous message history", () => {
@@ -68,7 +77,11 @@ it("never reopens first-input capture for explicit resume, reload or fork withou
 		assert.equal(firstInteractivePurpose(state, { source: "interactive", text: "continue" }), undefined);
 	}
 	session.appendCustomEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: "Known first input" });
-	assert.deepEqual(retainedPurpose(session, "resume"), { text: "Known first input", complete: true, canCapture: false });
+	assert.deepEqual(retainedPurpose(session, "resume"), {
+		text: "Known first input",
+		complete: true,
+		canCapture: false,
+	});
 });
 
 it("does not infer an absent first input from compacted history or malformed own attribution", () => {
@@ -88,9 +101,16 @@ it("does not infer an absent first input from compacted history or malformed own
 it("captures the first interactive input only and does not replace it on later inputs", () => {
 	const session = SessionManager.inMemory();
 	const state = retainedPurpose(session);
-	for (const source of ["rpc", "extension"]) assert.equal(firstInteractivePurpose(state, { source, text: "Generated input" }), undefined);
+	for (const source of ["rpc", "extension"])
+		assert.equal(firstInteractivePurpose(state, { source, text: "Generated input" }), undefined);
 	assert.equal(firstInteractivePurpose(state, { source: "interactive", text: "  " }), undefined);
-	assert.equal(firstInteractivePurpose({ ...state, canCapture: false }, { source: "interactive", text: "After blank first input" }), undefined);
+	assert.equal(
+		firstInteractivePurpose(
+			{ ...state, canCapture: false },
+			{ source: "interactive", text: "After blank first input" },
+		),
+		undefined,
+	);
 	const text = firstInteractivePurpose(state, { source: "interactive", text: "Review\n the parser" });
 	assert.equal(text, "Review the parser");
 	session.appendCustomEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text });
@@ -99,5 +119,8 @@ it("captures the first interactive input only and does not replace it on later i
 	assert.equal(firstInteractivePurpose(resumed, { source: "interactive", text: "continue" }), undefined);
 	session.appendCustomEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: "Later input" });
 	assert.equal(retainedPurpose(session).text, "Review the parser");
-	assert.equal(firstInteractivePurpose({ complete: false, canCapture: true }, { source: "interactive", text: "Not proven" }), undefined);
+	assert.equal(
+		firstInteractivePurpose({ complete: false, canCapture: true }, { source: "interactive", text: "Not proven" }),
+		undefined,
+	);
 });

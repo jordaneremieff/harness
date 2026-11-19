@@ -120,9 +120,7 @@ async function fixture(
 					description: "A harmless local write.",
 					replay: options.safe ? "safe" : "unsafe",
 					deferred: options.deferred ? true : undefined,
-					parameters:
-						options.schema ??
-						obj({ room: str(), text: str() }, { open: false }),
+					parameters: options.schema ?? obj({ room: str(), text: str() }, { open: false }),
 					...(options.prepare ? { prepareArguments: options.prepare } : {}),
 					execute: async (args, api, ctx) => {
 						writes.push({ tool: name, arguments: structuredClone(args) });
@@ -153,8 +151,14 @@ async function fixture(
 				],
 			}),
 		);
-	const policyTools = registry.snapshot().installed().filter((entry) => entry.name === "policy").flatMap((entry) => entry.tools ?? []);
-	const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: policyTools } } });
+	const policyTools = registry
+		.snapshot()
+		.installed()
+		.filter((entry) => entry.name === "policy")
+		.flatMap((entry) => entry.tools ?? []);
+	const root = await harness.root(context, {
+		agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: policyTools } },
+	});
 	const call = async (name: string, args: Durable.JsonObject, prompt = "Use the selected operation.") => {
 		faux.appendResponses([
 			fauxAssistantMessage(fauxToolCall(name, args, { id: `action-${++sequence}` }), { stopReason: "toolUse" }),
@@ -393,16 +397,18 @@ test("native pinned phase hooks cannot change the executed approved payload", { 
 	let tailCalls = 0;
 	let currentWithoutTail = false;
 	const f = await fixture({
-		beforeHook: (harness) => async (call, api, ctx): Promise<undefined> => {
-			if (!enabled || call.name !== SEND) return;
-			const conversation = await harness.conversation(api.conversationId, ctx);
-			assert.ok(conversation);
-			await conversation.configure({ extensions: { remove: [{ name: "after-input" }] } }, ctx);
-			setupCalls++;
-			currentWithoutTail = !(await conversation.agent(ctx)).extensions.some(
-				(extension) => extension.name === "after-input",
-			);
-		},
+		beforeHook:
+			(harness) =>
+			async (call, api, ctx): Promise<undefined> => {
+				if (!enabled || call.name !== SEND) return;
+				const conversation = await harness.conversation(api.conversationId, ctx);
+				assert.ok(conversation);
+				await conversation.configure({ extensions: { remove: [{ name: "after-input" }] } }, ctx);
+				setupCalls++;
+				currentWithoutTail = !(await conversation.agent(ctx)).extensions.some(
+					(extension) => extension.name === "after-input",
+				);
+			},
 		afterHook: (call) => {
 			if (!enabled || call.name !== SEND) return;
 			tailCalls++;

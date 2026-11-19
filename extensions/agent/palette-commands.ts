@@ -38,7 +38,10 @@ function errorDetail(error: unknown): string {
 }
 
 function deliveryUncertain(detail: string): PaletteReply {
-	return { error: `Delivery was not confirmed. Your message may have arrived. Check the conversation before sending again. ${detail}`.trimEnd() };
+	return {
+		error:
+			`Delivery was not confirmed. Your message may have arrived. Check the conversation before sending again. ${detail}`.trimEnd(),
+	};
 }
 
 function pauseAtDeadline<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -76,7 +79,13 @@ function rosterItems(rows: readonly RosterRow[]) {
 			for (let n = 2; usedTitles.has(title); n++) title = `${base} (${row.id}, ${n})`;
 			usedTitles.add(title);
 		}
-		return { id: row.id, title, subtitle: shortLine(`${row.state} · ${basename(row.cwd) || row.cwd}`, 100), detail: row.state, icon: "person" };
+		return {
+			id: row.id,
+			title,
+			subtitle: shortLine(`${row.state} · ${basename(row.cwd) || row.cwd}`, 100),
+			detail: row.state,
+			icon: "person",
+		};
 	});
 }
 
@@ -85,15 +94,22 @@ function readRoster(manager: PaletteManager, signal?: AbortSignal): Promise<Rost
 	return signal ? pauseAtDeadline(roster, signal) : roster;
 }
 
-export async function runAgentPaletteStep(request: PaletteRequest, paths: PalettePaths, manager: PaletteManager, signal?: AbortSignal): Promise<PaletteReply> {
+export async function runAgentPaletteStep(
+	request: PaletteRequest,
+	paths: PalettePaths,
+	manager: PaletteManager,
+	signal?: AbortSignal,
+): Promise<PaletteReply> {
 	const command = agentPaletteCommands.find(({ id }) => id === request.command);
 	if (!command) return { error: "Unknown Agent palette command." };
 	const opening = command.id === "agent.open";
 	const { answers } = request;
 	if (answers.length > (opening ? 1 : 2)) return { error: "Too many answers for this command." };
 	const [identity, message] = answers;
-	if (answers.length && (typeof identity !== "string" || !identity.trim())) return { error: "Choose an agent from the list." };
-	if (answers.length === 2 && (typeof message !== "string" || !message.trim())) return { error: "Enter a message before sending." };
+	if (answers.length && (typeof identity !== "string" || !identity.trim()))
+		return { error: "Choose an agent from the list." };
+	if (answers.length === 2 && (typeof message !== "string" || !message.trim()))
+		return { error: "Enter a message before sending." };
 
 	const { rows } = await readRoster(manager, signal);
 	const items = rosterItems(rows);
@@ -101,31 +117,62 @@ export async function runAgentPaletteStep(request: PaletteRequest, paths: Palett
 	const target = rows.find((row) => row.id === identity);
 	if (!target) return { error: "The selected agent is not in the retained roster." };
 	const name = items.find((item) => item.id === target.id)?.title ?? baseTitle(target);
-	if (opening) return { show: {
-		argv: ["/usr/bin/env", ...paletteEnvironmentKeys.map((key) => `${key}=${paths[key]}`), process.execPath, terminalFile, "--session", target.id],
-		label: shortLine(`agent ${name}`, 32), cwd: packageRoot, placement: "right",
-	} };
-	if (typeof message !== "string") return { ask: { kind: "input", prompt: { title: `Message ${name}`, placeholder: "Type a message" } } };
+	if (opening)
+		return {
+			show: {
+				argv: [
+					"/usr/bin/env",
+					...paletteEnvironmentKeys.map((key) => `${key}=${paths[key]}`),
+					process.execPath,
+					terminalFile,
+					"--session",
+					target.id,
+				],
+				label: shortLine(`agent ${name}`, 32),
+				cwd: packageRoot,
+				placement: "right",
+			},
+		};
+	if (typeof message !== "string")
+		return { ask: { kind: "input", prompt: { title: `Message ${name}`, placeholder: "Type a message" } } };
 	return sendMessage(target.id, name, message, manager, signal);
 }
 
-async function sendMessage(id: string, name: string, message: string, manager: PaletteManager, signal?: AbortSignal): Promise<PaletteReply> {
+async function sendMessage(
+	id: string,
+	name: string,
+	message: string,
+	manager: PaletteManager,
+	signal?: AbortSignal,
+): Promise<PaletteReply> {
 	if (signal?.aborted) return { error: "The palette step timed out before sending." };
 	try {
-		const admission = manager.control("submit", { sessionId: id, message, whenBusy: "steer", origin: "operator", replyTo: id }, { id: `terminal:${randomUUID()}`, cwd: packageRoot });
+		const admission = manager.control(
+			"submit",
+			{ sessionId: id, message, whenBusy: "steer", origin: "operator", replyTo: id },
+			{ id: `terminal:${randomUUID()}`, cwd: packageRoot },
+		);
 		admittedResult(id, await (signal ? pauseAtDeadline(admission, signal) : admission));
 		return { done: { notice: `Sent to ${name}.` } };
 	} catch (error) {
 		const detail = errorDetail(error);
-		if (error instanceof HostError && (error.code === "invalid" || error.code === "claim")) return { error: `Message refused: ${detail}` };
+		if (error instanceof HostError && (error.code === "invalid" || error.code === "claim"))
+			return { error: `Message refused: ${detail}` };
 		return deliveryUncertain(detail);
 	}
 }
 
 function parseRequest(raw: string): PaletteRequest {
 	const value = JSON.parse(raw) as Partial<PaletteRequest> | null;
-	if (value?.version !== 1 || typeof value.command !== "string" || !Array.isArray(value.answers)
-		|| value.context === null || typeof value.context !== "object" || Array.isArray(value.context)) throw new Error("Invalid palette request.");
+	if (
+		value?.version !== 1 ||
+		typeof value.command !== "string" ||
+		!Array.isArray(value.answers) ||
+		value.context === null ||
+		typeof value.context !== "object" ||
+		Array.isArray(value.context)
+	)
+		throw new Error("Invalid palette request.");
 	return { version: 1, command: value.command, context: value.context, answers: value.answers };
 }
 
@@ -141,20 +188,34 @@ async function run(args: string[], signal: AbortSignal): Promise<PaletteReply> {
 	try {
 		const [{ AgentManager }, { acquireHost }] = await Promise.all([import("./manager.ts"), import("./host-client.ts")]);
 		let root = paths.PI_AGENT_SESSIONS_DIR;
-		try { root = realpathSync(root); }
-		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+		try {
+			root = realpathSync(root);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
 		const packageDir = fileURLToPath(new URL("./node_modules/@earendil-works/pi-coding-agent", release.anchor));
-		const manager = new AgentManager({ root, agentDir: paths.PI_AGENT_DIR, packageDir,
-			acquire: (metadata, options) => acquireHost(metadata, { ...options, signal, retryAttempts: 0 }) });
-		try { return await runAgentPaletteStep(request, paths, manager, signal); }
-		finally { await manager.close(); }
-	} finally { hook.deregister(); }
+		const manager = new AgentManager({
+			root,
+			agentDir: paths.PI_AGENT_DIR,
+			packageDir,
+			acquire: (metadata, options) => acquireHost(metadata, { ...options, signal, retryAttempts: 0 }),
+		});
+		try {
+			return await runAgentPaletteStep(request, paths, manager, signal);
+		} finally {
+			await manager.close();
+		}
+	} finally {
+		hook.deregister();
+	}
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
 	const deadline = new AbortController();
 	const timer = setTimeout(() => deadline.abort(new Error("The palette step timed out.")), replyBudgetMs);
-	const reply = await run(process.argv.slice(2), deadline.signal).catch((error) => ({ error: errorDetail(error) || "The Agent command failed." }));
+	const reply = await run(process.argv.slice(2), deadline.signal).catch((error) => ({
+		error: errorDetail(error) || "The Agent command failed.",
+	}));
 	clearTimeout(timer);
 	// End this one-step client, not a Durable host. Flush the sole reply first.
 	process.stdout.write(`${JSON.stringify(reply)}\n`, () => process.exit(0));

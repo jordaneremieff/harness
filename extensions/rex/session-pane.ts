@@ -1,5 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fstatSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readSync,
+	renameSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { boundedText, fullId } from "./ownership.ts";
@@ -64,15 +76,27 @@ export function launchPane(env: Readonly<Record<string, string | undefined>>): S
 }
 
 /** Record a process's pane for one ordinary session, replacing an earlier record, then remove records of ended processes. */
-export function registerSessionPane(options: { agentDir: string; sessionId: string; pid: number; pane: SessionPane; now?: Date; alive?: (pid: number) => boolean }): void {
-	if (!boundedText(options.sessionId, 512) || !Number.isSafeInteger(options.pid) || options.pid <= 0) throw new Error("A session pane needs a bounded session ID and a process ID.");
+export function registerSessionPane(options: {
+	agentDir: string;
+	sessionId: string;
+	pid: number;
+	pane: SessionPane;
+	now?: Date;
+	alive?: (pid: number) => boolean;
+}): void {
+	if (!boundedText(options.sessionId, 512) || !Number.isSafeInteger(options.pid) || options.pid <= 0)
+		throw new Error("A session pane needs a bounded session ID and a process ID.");
 	const now = options.now ?? new Date();
 	const directory = sessionPaneDirectory(options.agentDir);
 	mkdirSync(directory, { recursive: true, mode: 0o700 });
 	const record: SessionPaneRecord = {
-		version: 1, sessionId: options.sessionId, pid: options.pid,
+		version: 1,
+		sessionId: options.sessionId,
+		pid: options.pid,
 		...(options.pane.server === undefined ? {} : { server: options.pane.server }),
-		session: options.pane.session, block: options.pane.block, updatedAt: now.toISOString(),
+		session: options.pane.session,
+		block: options.pane.block,
+		updatedAt: now.toISOString(),
 	};
 	const path = recordPath(options.agentDir, options.sessionId);
 	const temporary = join(directory, `.tmp-${randomUUID()}`);
@@ -80,7 +104,11 @@ export function registerSessionPane(options: { agentDir: string; sessionId: stri
 		writeFileSync(temporary, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
 		renameSync(temporary, path);
 	} catch (error) {
-		try { unlinkSync(temporary); } catch { /* The rename consumed it, or the write never created it. */ }
+		try {
+			unlinkSync(temporary);
+		} catch {
+			/* The rename consumed it, or the write never created it. */
+		}
 		throw error;
 	}
 	prune(directory, path, options.alive ?? processAlive, now);
@@ -90,17 +118,29 @@ export function registerSessionPane(options: { agentDir: string; sessionId: stri
 export function releaseSessionPane(options: { agentDir: string; sessionId: string; pid: number }): void {
 	const path = recordPath(options.agentDir, options.sessionId);
 	const read = readRecord(path);
-	if (read?.record === undefined || read.record.sessionId !== options.sessionId || read.record.pid !== options.pid) return;
+	if (read?.record === undefined || read.record.sessionId !== options.sessionId || read.record.pid !== options.pid)
+		return;
 	removeUnchanged(path, read);
 }
 
 /** The registered pane of an ordinary session whose process still runs. */
-export function readSessionPane(agentDir: string, sessionId: string, alive: (pid: number) => boolean = processAlive): SessionPaneLookup {
+export function readSessionPane(
+	agentDir: string,
+	sessionId: string,
+	alive: (pid: number) => boolean = processAlive,
+): SessionPaneLookup {
 	const read = readRecord(recordPath(agentDir, sessionId));
 	const record = read?.record;
 	if (record === undefined || record.sessionId !== sessionId) return { ok: false, reason: "unregistered" };
 	if (!alive(record.pid)) return { ok: false, reason: "ended" };
-	return { ok: true, pane: { ...(record.server === undefined ? {} : { server: record.server }), session: record.session, block: record.block } };
+	return {
+		ok: true,
+		pane: {
+			...(record.server === undefined ? {} : { server: record.server }),
+			session: record.session,
+			block: record.block,
+		},
+	};
 }
 
 export interface SessionPaneRegistrar {
@@ -125,8 +165,11 @@ export function createSessionPaneRegistrar(options: SessionPaneRegistrarOptions)
 		const sessionId = registered;
 		registered = undefined;
 		if (sessionId === undefined) return;
-		try { releaseSessionPane({ agentDir: options.agentDir, sessionId, pid }); }
-		catch { /* A later registration prunes the record once this process ends. */ }
+		try {
+			releaseSessionPane({ agentDir: options.agentDir, sessionId, pid });
+		} catch {
+			/* A later registration prunes the record once this process ends. */
+		}
 	};
 	return {
 		start(ctx) {
@@ -135,9 +178,17 @@ export function createSessionPaneRegistrar(options: SessionPaneRegistrarOptions)
 			if (pane === undefined) return;
 			try {
 				const sessionId = ctx.sessionManager.getSessionId();
-				registerSessionPane({ agentDir: options.agentDir, sessionId, pid, pane, ...(options.now ? { now: options.now() } : {}) });
+				registerSessionPane({
+					agentDir: options.agentDir,
+					sessionId,
+					pid,
+					pane,
+					...(options.now ? { now: options.now() } : {}),
+				});
 				registered = sessionId;
-			} catch { /* Without a record, this session's agents report that its pane is unknown. */ }
+			} catch {
+				/* Without a record, this session's agents report that its pane is unknown. */
+			}
 		},
 		shutdown: release,
 	};
@@ -152,8 +203,9 @@ interface ReadRecord {
 
 function readRecord(path: string): ReadRecord | undefined {
 	let fd: number;
-	try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
-	catch (error) {
+	try {
+		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+	} catch (error) {
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code === "ENOENT" || code === "ELOOP") return undefined;
 		throw error;
@@ -172,13 +224,24 @@ function readRecord(path: string): ReadRecord | undefined {
 
 function parseRecord(text: string): SessionPaneRecord | undefined {
 	let value: unknown;
-	try { value = JSON.parse(text); } catch { return undefined; }
+	try {
+		value = JSON.parse(text);
+	} catch {
+		return undefined;
+	}
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const record = value as Record<string, unknown>;
 	if (Object.keys(record).some((key) => !RECORD_FIELDS.has(key))) return undefined;
-	if (record.version !== 1 || !boundedText(record.sessionId, 512) || !Number.isSafeInteger(record.pid) || (record.pid as number) <= 0) return undefined;
+	if (
+		record.version !== 1 ||
+		!boundedText(record.sessionId, 512) ||
+		!Number.isSafeInteger(record.pid) ||
+		(record.pid as number) <= 0
+	)
+		return undefined;
 	if (record.server !== undefined && !boundedText(record.server, 4096)) return undefined;
-	if (!fullId(record.session, "session") || !fullId(record.block, "block") || typeof record.updatedAt !== "string") return undefined;
+	if (!fullId(record.session, "session") || !fullId(record.block, "block") || typeof record.updatedAt !== "string")
+		return undefined;
 	return record as unknown as SessionPaneRecord;
 }
 
@@ -190,10 +253,17 @@ function removeUnchanged(path: string, read: ReadRecord): void {
 
 function prune(directory: string, own: string, alive: (pid: number) => boolean, now: Date): void {
 	let names: string[];
-	try { names = readdirSync(directory).slice(0, PRUNE_SCAN); } catch { return; }
+	try {
+		names = readdirSync(directory).slice(0, PRUNE_SCAN);
+	} catch {
+		return;
+	}
 	for (const name of names) {
-		try { pruneEntry(join(directory, name), name, own, alive, now); }
-		catch { /* A record that cannot be read or removed now stays for a later registration. */ }
+		try {
+			pruneEntry(join(directory, name), name, own, alive, now);
+		} catch {
+			/* A record that cannot be read or removed now stays for a later registration. */
+		}
 	}
 }
 

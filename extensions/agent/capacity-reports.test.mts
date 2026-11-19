@@ -2,10 +2,39 @@ import assert from "node:assert/strict";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { AssistantMessage, Model, Models } from "@earendil-works/pi-ai";
-import { createRegistry, defineExtension, defineTool, GenerationTask, Harness, hook, LiveDoc, MemoryStorage, type CompactionResult, type Conversation, type ConversationId, type EntryRecord, type LiveRun, type TaskId, type ToolRegistration } from "@earendil-works/pi-durable";
+import {
+	createRegistry,
+	defineExtension,
+	defineTool,
+	GenerationTask,
+	Harness,
+	hook,
+	LiveDoc,
+	MemoryStorage,
+	type CompactionResult,
+	type Conversation,
+	type ConversationId,
+	type EntryRecord,
+	type LiveRun,
+	type TaskId,
+	type ToolRegistration,
+} from "@earendil-works/pi-durable";
 import { obj } from "@earendil-works/pi-schema";
-import { CHILD_CAPACITY_REPORT_PERCENT, childCapacityRequestId, childContinuityFact, ChildCapacityReports, continuityLines, PLANNING_BUDGET_NOTICE_KIND, runIdentity } from "./capacity-reports.ts";
-import { planningBudgetBody, planningBudgetSelfBody, planningBudgetSelfId, planningBudgetSourceId } from "./continuity-budget.ts";
+import {
+	CHILD_CAPACITY_REPORT_PERCENT,
+	childCapacityRequestId,
+	childContinuityFact,
+	ChildCapacityReports,
+	continuityLines,
+	PLANNING_BUDGET_NOTICE_KIND,
+	runIdentity,
+} from "./capacity-reports.ts";
+import {
+	planningBudgetBody,
+	planningBudgetSelfBody,
+	planningBudgetSelfId,
+	planningBudgetSourceId,
+} from "./continuity-budget.ts";
 import { answerMessage, completed, fixtureRegistry } from "./durable-host-fixture.mts";
 import { readOutcome, submitConversation, undeliveredReports, type DeliveryReport } from "./durable-controls.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
@@ -28,7 +57,14 @@ const budgets: Record<string, number> = { [`${provider}/${mid.id}`]: 250_000, [`
 const budgetOf = (providerId: string, modelId: string): number | undefined => budgets[`${providerId}/${modelId}`];
 
 function usage(tokens: number): AssistantMessage["usage"] {
-	return { input: tokens - 7, output: 7, cacheRead: 0, cacheWrite: 0, totalTokens: tokens, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+	return {
+		input: tokens - 7,
+		output: 7,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: tokens,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
 }
 function answer(model: Model<"openai-completions">, tokens: number, text = "finished"): AssistantMessage {
 	return { ...answerMessage(text), provider, model: model.id, usage: usage(tokens) };
@@ -36,7 +72,16 @@ function answer(model: Model<"openai-completions">, tokens: number, text = "fini
 let callIds = 0;
 function gateCall(model: Model<"openai-completions">, tokens: number): AssistantMessage {
 	callIds += 1;
-	return { role: "assistant", content: [{ type: "toolCall", id: `gate-call-${callIds}`, name: "gate", arguments: {} }], api: "openai-completions", provider, model: model.id, usage: usage(tokens), stopReason: "toolUse", timestamp: Date.now() };
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", id: `gate-call-${callIds}`, name: "gate", arguments: {} }],
+		api: "openai-completions",
+		provider,
+		model: model.id,
+		usage: usage(tokens),
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	};
 }
 
 type Scripted = { models: Models; requests: () => number };
@@ -65,12 +110,21 @@ type Step = { entered: Promise<void>; enter: () => void; released: Promise<void>
 function newStep(): Step {
 	let enter = () => {};
 	let release = () => {};
-	const entered = new Promise<void>((resolve) => { enter = resolve; });
-	const released = new Promise<void>((resolve) => { release = resolve; });
+	const entered = new Promise<void>((resolve) => {
+		enter = resolve;
+	});
+	const released = new Promise<void>((resolve) => {
+		release = resolve;
+	});
 	return { entered, enter, released, release };
 }
 /** Each call of the tool is one step: the test sees it start and decides when it returns. */
-function stepGate(): { tool: ToolRegistration; entered(index: number): Promise<void>; release(index: number): void; open(): void } {
+function stepGate(): {
+	tool: ToolRegistration;
+	entered(index: number): Promise<void>;
+	release(index: number): void;
+	open(): void;
+} {
 	const steps: Step[] = [];
 	const step = (index: number): Step => {
 		while (steps.length <= index) steps.push(newStep());
@@ -95,26 +149,72 @@ function stepGate(): { tool: ToolRegistration; entered(index: number): Promise<v
 			return {};
 		},
 	});
-	return { tool, entered: (index) => step(index).entered, release: (index) => step(index).release(), open: () => { open = true; for (const item of steps) item.release(); } };
+	return {
+		tool,
+		entered: (index) => step(index).entered,
+		release: (index) => step(index).release(),
+		open: () => {
+			open = true;
+			for (const item of steps) item.release();
+		},
+	};
 }
 
-type Fixture = { harness: Harness; root: Conversation; gate: ReturnType<typeof stepGate>; provider: Scripted; errors: unknown[]; reports: ChildCapacityReports; observer(): ChildCapacityReports };
-type FixtureOptions = { observe?: boolean; compaction?: boolean; onYield?: () => Promise<{ continue: string } | undefined> };
-async function fixture(t: TestContext, model: Model<"openai-completions">, responses: readonly AssistantMessage[], options: FixtureOptions = {}): Promise<Fixture> {
+type Fixture = {
+	harness: Harness;
+	root: Conversation;
+	gate: ReturnType<typeof stepGate>;
+	provider: Scripted;
+	errors: unknown[];
+	reports: ChildCapacityReports;
+	observer(): ChildCapacityReports;
+};
+type FixtureOptions = {
+	observe?: boolean;
+	compaction?: boolean;
+	onYield?: () => Promise<{ continue: string } | undefined>;
+};
+async function fixture(
+	t: TestContext,
+	model: Model<"openai-completions">,
+	responses: readonly AssistantMessage[],
+	options: FixtureOptions = {},
+): Promise<Fixture> {
 	const gate = stepGate();
 	const scriptedProvider = await scripted(responses);
 	const registry = createRegistry();
 	const onYield = options.onYield;
-	registry.install(defineExtension({ name: "capacity-test", tools: [gate.tool], ...(onYield === undefined ? {} : { hooks: [hook(GenerationTask, { onYield: () => onYield() })] }) }));
-	const harness = await Harness.open(new MemoryStorage(), {
-		models: scriptedProvider.models,
-		registry,
-		settings: { retry: { enabled: false }, steeringMode: "all", compaction: options.compaction ? { keepRecentTokens: 1 } : { enabled: false } },
-	}, context);
+	registry.install(
+		defineExtension({
+			name: "capacity-test",
+			tools: [gate.tool],
+			...(onYield === undefined ? {} : { hooks: [hook(GenerationTask, { onYield: () => onYield() })] }),
+		}),
+	);
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{
+			models: scriptedProvider.models,
+			registry,
+			settings: {
+				retry: { enabled: false },
+				steeringMode: "all",
+				compaction: options.compaction ? { keepRecentTokens: 1 } : { enabled: false },
+			},
+		},
+		context,
+	);
 	const errors: unknown[] = [];
 	const observers: ChildCapacityReports[] = [];
 	const observer = () => {
-		const created = new ChildCapacityReports(harness, storageId, () => scriptedProvider.models, budgetOf, (error) => errors.push(error), () => 1_700_000_000_000);
+		const created = new ChildCapacityReports(
+			harness,
+			storageId,
+			() => scriptedProvider.models,
+			budgetOf,
+			(error) => errors.push(error),
+			() => 1_700_000_000_000,
+		);
 		observers.push(created);
 		return created;
 	};
@@ -124,13 +224,32 @@ async function fixture(t: TestContext, model: Model<"openai-completions">, respo
 		await harness.close(context);
 	});
 	const root = await harness.root(context, { agent: { model: { provider, modelId: model.id } } });
-	const result: Fixture = { harness, root, gate, provider: scriptedProvider, errors, reports: undefined as unknown as ChildCapacityReports, observer };
+	const result: Fixture = {
+		harness,
+		root,
+		gate,
+		provider: scriptedProvider,
+		errors,
+		reports: undefined as unknown as ChildCapacityReports,
+		observer,
+	};
 	if (options.observe !== false) result.reports = observer();
 	return result;
 }
 
 function send(f: Fixture, requestId: string, ownerId: string, origin: "model" | "operator", whenBusy?: "steer") {
-	return submitConversation(f.root, { message: `work for ${requestId}`, requestId, ownerId, origin, requestContext: { requestId, requester, replyTo: ownerId, origin }, ...(whenBusy === undefined ? {} : { whenBusy }) }, context);
+	return submitConversation(
+		f.root,
+		{
+			message: `work for ${requestId}`,
+			requestId,
+			ownerId,
+			origin,
+			requestContext: { requestId, requester, replyTo: ownerId, origin },
+			...(whenBusy === undefined ? {} : { whenBusy }),
+		},
+		context,
+	);
 }
 async function liveRun(f: Fixture): Promise<LiveRun> {
 	const run = (await f.harness.snapshot(LiveDoc, f.root.id, context))?.run;
@@ -138,10 +257,18 @@ async function liveRun(f: Fixture): Promise<LiveRun> {
 	return run;
 }
 async function reportsFor(f: Fixture, ownerId: string, prefix: string): Promise<DeliveryReport[]> {
-	return (await undeliveredReports(f.harness, ownerId, context)).filter((report) => report.requestId.startsWith(prefix));
+	return (await undeliveredReports(f.harness, ownerId, context)).filter((report) =>
+		report.requestId.startsWith(prefix),
+	);
 }
 async function entriesOfKind(f: Fixture, kind: string): Promise<EntryRecord[]> {
-	return f.harness.commit(async (tx) => (await tx.scanEntries({ conversationId: f.root.id, order: "ascending" }, 512)).items.filter((entry) => entry.kind === kind), context);
+	return f.harness.commit(
+		async (tx) =>
+			(await tx.scanEntries({ conversationId: f.root.id, order: "ascending" }, 512)).items.filter(
+				(entry) => entry.kind === kind,
+			),
+		context,
+	);
 }
 function noticeText(entry: EntryRecord): string {
 	const message = entry.model?.[0];
@@ -177,42 +304,98 @@ it("renders continuity lines for a done, an empty, an unanswered and an unread c
 	const done = continuityLines(known);
 	assert.deepEqual(done, ["Child context use: 100 of 200 tokens (50%, newest assistant usage)."]);
 
-	const unusable = "The child returned no usable answer. The facts above are its last observed state; they do not predict the next attempt. Inspect the child (agent_inspect) before another send. If its context is near the window or a compaction failed, agent_compact with instructions or agent_reset with a handoff that names its latest handover or checkpoint can restore room.";
-	assert.deepEqual(continuityLines(known, true), [...done, unusable], "an empty or unanswered result adds the fixed paragraph after the facts");
+	const unusable =
+		"The child returned no usable answer. The facts above are its last observed state; they do not predict the next attempt. Inspect the child (agent_inspect) before another send. If its context is near the window or a compaction failed, agent_compact with instructions or agent_reset with a handoff that names its latest handover or checkpoint can restore room.";
+	assert.deepEqual(
+		continuityLines(known, true),
+		[...done, unusable],
+		"an empty or unanswered result adds the fixed paragraph after the facts",
+	);
 	assert.deepEqual(continuityLines({}, true), [unusable], "an unanswered result without usage states no measurement");
-	assert.deepEqual(continuityLines({ ...known, compactionFailure: { trigger: "threshold", error: "summary failed" } }, true), [...done, "Last child compaction failure (threshold): summary failed", unusable]);
+	assert.deepEqual(
+		continuityLines({ ...known, compactionFailure: { trigger: "threshold", error: "summary failed" } }, true),
+		[...done, "Last child compaction failure (threshold): summary failed", unusable],
+	);
 
-	assert.deepEqual(continuityLines({ unavailable: "the native continuity fact read failed" }), ["Child continuity facts are unavailable: the native continuity fact read failed."]);
-	assert.deepEqual(continuityLines({ unavailable: "the native continuity fact read failed" }, true), ["Child continuity facts are unavailable: the native continuity fact read failed.", unusable]);
+	assert.deepEqual(continuityLines({ unavailable: "the native continuity fact read failed" }), [
+		"Child continuity facts are unavailable: the native continuity fact read failed.",
+	]);
+	assert.deepEqual(continuityLines({ unavailable: "the native continuity fact read failed" }, true), [
+		"Child continuity facts are unavailable: the native continuity fact read failed.",
+		unusable,
+	]);
 
-	assert.deepEqual(continuityLines({ tokens: 100 }), ["Child context use: 100 tokens; context window unavailable."], "an unknown window is stated, not estimated");
+	assert.deepEqual(
+		continuityLines({ tokens: 100 }),
+		["Child context use: 100 tokens; context window unavailable."],
+		"an unknown window is stated, not estimated",
+	);
 	assert.deepEqual(continuityLines({ window: 200 }), [], "a window without usage is no measurement");
 	assert.deepEqual(continuityLines({}), []);
-	assert.deepEqual(continuityLines({ tokens: 899, window: 1000 }), ["Child context use: 899 of 1000 tokens (89%, newest assistant usage)."], "the percentage never overstates the measurement");
-	for (const line of [...continuityLines(known, true), ...continuityLines({ unavailable: "x" }, true)]) assert.doesNotMatch(line, /stash|threshold|will fail/iu);
+	assert.deepEqual(
+		continuityLines({ tokens: 899, window: 1000 }),
+		["Child context use: 899 of 1000 tokens (89%, newest assistant usage)."],
+		"the percentage never overstates the measurement",
+	);
+	for (const line of [...continuityLines(known, true), ...continuityLines({ unavailable: "x" }, true)])
+		assert.doesNotMatch(line, /stash|threshold|will fail/iu);
 });
 
-it("reads the newest completed usage, the model window and the retained compaction failure", { timeout: 20000 }, async (t) => {
-	const f = await fixture(t, small, [answer(small, 4000, "continuity answer"), { ...answer(small, 5000), model: "unlisted-model" }], { observe: false });
+it("reads the newest completed usage, the model window and the retained compaction failure", {
+	timeout: 20000,
+}, async (t) => {
+	const f = await fixture(
+		t,
+		small,
+		[answer(small, 4000, "continuity answer"), { ...answer(small, 5000), model: "unlisted-model" }],
+		{ observe: false },
+	);
 	const models = () => f.provider.models;
-	assert.deepEqual(await childContinuityFact(f.harness, f.root.id, models, context), {}, "a context without a completed response has no measurement");
+	assert.deepEqual(
+		await childContinuityFact(f.harness, f.root.id, models, context),
+		{},
+		"a context without a completed response has no measurement",
+	);
 
 	await (await f.root.submit({ type: "input", content: "first", requestId: "first" }, context)).wait(context);
 	assert.deepEqual(await childContinuityFact(f.harness, f.root.id, models, context), { tokens: 4000, window: 128_000 });
-	assert.deepEqual(await childContinuityFact(f.harness, f.root.id, () => { throw new Error("catalog unavailable"); }, context), { tokens: 4000 }, "a failed window lookup leaves the window unavailable");
+	assert.deepEqual(
+		await childContinuityFact(
+			f.harness,
+			f.root.id,
+			() => {
+				throw new Error("catalog unavailable");
+			},
+			context,
+		),
+		{ tokens: 4000 },
+		"a failed window lookup leaves the window unavailable",
+	);
 
 	await f.harness.commit(async (tx) => {
-		(await tx.doc(LiveDoc, f.root.id)).compactionFailure = { taskId: 1 as TaskId<CompactionResult>, trigger: "threshold", error: "summary failed" };
+		(await tx.doc(LiveDoc, f.root.id)).compactionFailure = {
+			taskId: 1 as TaskId<CompactionResult>,
+			trigger: "threshold",
+			error: "summary failed",
+		};
 	}, context);
-	assert.deepEqual(await childContinuityFact(f.harness, f.root.id, models, context), { tokens: 4000, window: 128_000, compactionFailure: { trigger: "threshold", error: "summary failed" } });
+	assert.deepEqual(await childContinuityFact(f.harness, f.root.id, models, context), {
+		tokens: 4000,
+		window: 128_000,
+		compactionFailure: { trigger: "threshold", error: "summary failed" },
+	});
 
 	await (await f.root.submit({ type: "input", content: "second", requestId: "second" }, context)).wait(context);
 	const unlisted = await childContinuityFact(f.harness, f.root.id, models, context);
 	assert.equal(unlisted.tokens, 5000);
 	assert.equal(unlisted.window, undefined, "a model outside the catalog has no window");
-	assert.deepEqual(continuityLines(unlisted).slice(0, 1), ["Child context use: 5000 tokens; context window unavailable."]);
+	assert.deepEqual(continuityLines(unlisted).slice(0, 1), [
+		"Child context use: 5000 tokens; context window unavailable.",
+	]);
 
-	assert.deepEqual(await childContinuityFact(f.harness, 999_999 as ConversationId, models, context), { unavailable: "the native conversation is not retained" });
+	assert.deepEqual(await childContinuityFact(f.harness, 999_999 as ConversationId, models, context), {
+		unavailable: "the native conversation is not retained",
+	});
 });
 
 it("returns an unavailable fact when the fact read fails", { timeout: 20000 }, async () => {
@@ -222,16 +405,30 @@ it("returns an unavailable fact when the fact read fails", { timeout: 20000 }, a
 	await harness.close(context);
 	const fact = await childContinuityFact(harness, root.id, () => models, context);
 	assert.deepEqual(fact, { unavailable: "the native continuity fact read failed" });
-	assert.deepEqual(continuityLines(fact), ["Child continuity facts are unavailable: the native continuity fact read failed."]);
+	assert.deepEqual(continuityLines(fact), [
+		"Child continuity facts are unavailable: the native continuity fact read failed.",
+	]);
 });
 
-it("records one capacity report per model-origin recipient and run, with every exact input of that recipient", { timeout: 30000 }, async (t) => {
-	const f = await fixture(t, small, [gateCall(small, 60_000), gateCall(small, 120_007), gateCall(small, 121_000), answer(small, 122_000, "the secret answer text")]);
+it("records one capacity report per model-origin recipient and run, with every exact input of that recipient", {
+	timeout: 30000,
+}, async (t) => {
+	const f = await fixture(t, small, [
+		gateCall(small, 60_000),
+		gateCall(small, 120_007),
+		gateCall(small, 121_000),
+		answer(small, 122_000, "the secret answer text"),
+	]);
 	const a1 = await send(f, "a-1", ownerA, "model");
 	await f.gate.entered(0);
 	const firstRound = await liveRun(f);
 	await f.reports.flush();
-	for (const owner of [ownerA, ownerB, operatorReply]) assert.equal((await undeliveredReports(f.harness, owner, context)).length, 0, "usage below 90% of the window records no report");
+	for (const owner of [ownerA, ownerB, operatorReply])
+		assert.equal(
+			(await undeliveredReports(f.harness, owner, context)).length,
+			0,
+			"usage below 90% of the window records no report",
+		);
 
 	const a2 = await send(f, "a-2", ownerA, "model", "steer");
 	const b1 = await send(f, "b-1", ownerB, "model", "steer");
@@ -254,23 +451,41 @@ it("records one capacity report per model-origin recipient and run, with every e
 	assert.equal(toA[0].replyTo, ownerA);
 	assert.equal(toA[0].message, body);
 	assert.notEqual(toA[0].passive, true, "an intervention stays an active report");
-	assert.deepEqual(toA[0].intervention, { producerRunId: run.taskId, producerResults: [
-		{ sessionId: storageId, submissionId: a1.submissionId, requestId: "a-1" },
-		{ sessionId: storageId, submissionId: a2.submissionId, requestId: "a-2" },
-	] });
+	assert.deepEqual(toA[0].intervention, {
+		producerRunId: run.taskId,
+		producerResults: [
+			{ sessionId: storageId, submissionId: a1.submissionId, requestId: "a-1" },
+			{ sessionId: storageId, submissionId: a2.submissionId, requestId: "a-2" },
+		],
+	});
 	const toB = await undeliveredReports(f.harness, ownerB, context);
 	assert.equal(toB.length, 1, "a second recipient has its own row");
 	assert.equal(toB[0].requestId, childCapacityRequestId(ownerB, storageId, a1.submissionId));
 	assert.equal(toB[0].message, body);
-	assert.deepEqual(toB[0].intervention, { producerRunId: run.taskId, producerResults: [{ sessionId: storageId, submissionId: b1.submissionId, requestId: "b-1" }] });
-	assert.equal((await undeliveredReports(f.harness, operatorReply, context)).length, 0, "an operator-origin route gets no report");
-	assert.equal((await undeliveredReports(f.harness, requester, context)).length, 0, "the requester is not the reply recipient");
+	assert.deepEqual(toB[0].intervention, {
+		producerRunId: run.taskId,
+		producerResults: [{ sessionId: storageId, submissionId: b1.submissionId, requestId: "b-1" }],
+	});
+	assert.equal(
+		(await undeliveredReports(f.harness, operatorReply, context)).length,
+		0,
+		"an operator-origin route gets no report",
+	);
+	assert.equal(
+		(await undeliveredReports(f.harness, requester, context)).length,
+		0,
+		"the requester is not the reply recipient",
+	);
 
 	f.gate.release(1);
 	await f.gate.entered(2);
 	await f.reports.flush();
 	assert.notEqual((await liveRun(f)).taskId, run.taskId);
-	assert.equal((await undeliveredReports(f.harness, ownerA, context)).length, 1, "a later round of the same run at 94% adds no row");
+	assert.equal(
+		(await undeliveredReports(f.harness, ownerA, context)).length,
+		1,
+		"a later round of the same run at 94% adds no row",
+	);
 	assert.equal((await undeliveredReports(f.harness, ownerB, context)).length, 1);
 
 	f.gate.release(2);
@@ -278,19 +493,37 @@ it("records one capacity report per model-origin recipient and run, with every e
 	assert.equal(outcome.status, "done", "the report did not stop the run");
 	await f.reports.close();
 	assert.deepEqual(f.errors, []);
-	for (const report of [...await undeliveredReports(f.harness, ownerA, context), ...await undeliveredReports(f.harness, ownerB, context)]) {
+	for (const report of [
+		...(await undeliveredReports(f.harness, ownerA, context)),
+		...(await undeliveredReports(f.harness, ownerB, context)),
+	]) {
 		assert.doesNotMatch(report.message, /secret answer text/u, "the report carries no answer text");
-		assert.doesNotMatch(report.message, /stash|threshold|will fail|overflow/iu, "the report names no other extension's threshold and predicts nothing");
+		assert.doesNotMatch(
+			report.message,
+			/stash|threshold|will fail|overflow/iu,
+			"the report names no other extension's threshold and predicts nothing",
+		);
 	}
 	assert.equal((await undeliveredReports(f.harness, ownerA, context)).length, 1);
 });
 
-it("reports at exactly 90% and does not repeat the retained report after the observer restarts on the same storage", { timeout: 30000 }, async (t) => {
-	const f = await fixture(t, small, [gateCall(small, 115_199), gateCall(small, 115_200), gateCall(small, 121_000), answer(small, 122_000)]);
+it("reports at exactly 90% and does not repeat the retained report after the observer restarts on the same storage", {
+	timeout: 30000,
+}, async (t) => {
+	const f = await fixture(t, small, [
+		gateCall(small, 115_199),
+		gateCall(small, 115_200),
+		gateCall(small, 121_000),
+		answer(small, 122_000),
+	]);
 	const a1 = await send(f, "a-1", ownerA, "model");
 	await f.gate.entered(0);
 	await f.reports.flush();
-	assert.equal((await undeliveredReports(f.harness, ownerA, context)).length, 0, "one token below 90% of the window records nothing");
+	assert.equal(
+		(await undeliveredReports(f.harness, ownerA, context)).length,
+		0,
+		"one token below 90% of the window records nothing",
+	);
 	f.gate.release(0);
 	await f.gate.entered(1);
 	await f.reports.flush();
@@ -329,21 +562,38 @@ it("records no report for usage first observed in the final answer of a run", { 
 	const admitted = await send(f, "a-1", ownerA, "model");
 	assert.equal((await readOutcome(f.harness, admitted.submissionId, context)).status, "done");
 	await f.reports.close();
-	assert.equal((await undeliveredReports(f.harness, ownerA, context)).length, 0, "a report names a live run; the result itself carries the continuity lines");
-	assert.deepEqual(continuityLines(await childContinuityFact(f.harness, f.root.id, () => f.provider.models, context)), ["Child context use: 125000 of 128000 tokens (97%, newest assistant usage)."]);
+	assert.equal(
+		(await undeliveredReports(f.harness, ownerA, context)).length,
+		0,
+		"a report names a live run; the result itself carries the continuity lines",
+	);
+	assert.deepEqual(continuityLines(await childContinuityFact(f.harness, f.root.id, () => f.provider.models, context)), [
+		"Child context use: 125000 of 128000 tokens (97%, newest assistant usage).",
+	]);
 	assert.deepEqual(f.errors, []);
 });
 
-it("records one planning-budget report at the first same-run crossing and none for a run that starts above the budget", { timeout: 30000 }, async (t) => {
+it("records one planning-budget report at the first same-run crossing and none for a run that starts above the budget", {
+	timeout: 30000,
+}, async (t) => {
 	const f = await fixture(t, mid, [
-		gateCall(mid, 200_000), gateCall(mid, 260_000), gateCall(mid, 270_000), answer(mid, 280_000),
-		gateCall(mid, 290_000), gateCall(mid, 300_000), answer(mid, 310_000),
+		gateCall(mid, 200_000),
+		gateCall(mid, 260_000),
+		gateCall(mid, 270_000),
+		answer(mid, 280_000),
+		gateCall(mid, 290_000),
+		gateCall(mid, 300_000),
+		answer(mid, 310_000),
 	]);
 	const a1 = await send(f, "a-1", ownerA, "model");
 	await f.gate.entered(0);
 	const op = await send(f, "op-1", operatorReply, "operator", "steer");
 	await f.reports.flush();
-	assert.equal((await reportsFor(f, ownerA, "child-budget:")).length, 0, "a first sample below the budget is no crossing");
+	assert.equal(
+		(await reportsFor(f, ownerA, "child-budget:")).length,
+		0,
+		"a first sample below the budget is no crossing",
+	);
 
 	f.gate.release(0);
 	await f.gate.entered(1);
@@ -354,15 +604,30 @@ it("records one planning-budget report at the first same-run crossing and none f
 	assert.equal(crossed[0].requestId, planningBudgetSourceId(ownerA, storageId, a1.submissionId));
 	assert.equal(crossed[0].message, planningBudgetBody(storageId, 260_000, 250_000, `${provider}/${mid.id}`));
 	assert.notEqual(crossed[0].passive, true);
-	assert.deepEqual(crossed[0].intervention, { producerRunId: run.taskId, producerResults: [{ sessionId: storageId, submissionId: a1.submissionId, requestId: "a-1" }] });
+	assert.deepEqual(crossed[0].intervention, {
+		producerRunId: run.taskId,
+		producerResults: [{ sessionId: storageId, submissionId: a1.submissionId, requestId: "a-1" }],
+	});
 	assert.ok(run.inputs.includes(op.submissionId), "the operator-origin input is in the run");
-	assert.equal((await undeliveredReports(f.harness, operatorReply, context)).length, 0, "only model-origin recipients get the report");
-	assert.equal((await reportsFor(f, ownerA, "child-capacity:")).length, 0, "52% of the window is below the capacity report");
+	assert.equal(
+		(await undeliveredReports(f.harness, operatorReply, context)).length,
+		0,
+		"only model-origin recipients get the report",
+	);
+	assert.equal(
+		(await reportsFor(f, ownerA, "child-capacity:")).length,
+		0,
+		"52% of the window is below the capacity report",
+	);
 
 	f.gate.release(1);
 	await f.gate.entered(2);
 	await f.reports.flush();
-	assert.equal((await reportsFor(f, ownerA, "child-budget:")).length, 1, "a later sample above the budget is no second crossing");
+	assert.equal(
+		(await reportsFor(f, ownerA, "child-budget:")).length,
+		1,
+		"a later sample above the budget is no second crossing",
+	);
 	f.gate.release(2);
 	assert.equal((await readOutcome(f.harness, a1.submissionId, context)).status, "done");
 
@@ -377,12 +642,20 @@ it("records one planning-budget report at the first same-run crossing and none f
 	assert.equal((await readOutcome(f.harness, a2.submissionId, context)).status, "done");
 	await f.reports.close();
 	assert.deepEqual(f.errors, []);
-	assert.deepEqual(await reportsFor(f, ownerA, "child-budget:"), crossed, "a run that starts above the budget records none");
+	assert.deepEqual(
+		await reportsFor(f, ownerA, "child-budget:"),
+		crossed,
+		"a run that starts above the budget records none",
+	);
 	assert.equal((await undeliveredReports(f.harness, operatorReply, context)).length, 0);
 });
 
-it("reads the sample before its start from the transcript, so a crossing that began earlier is not lost", { timeout: 30000 }, async (t) => {
-	const f = await fixture(t, mid, [gateCall(mid, 200_000), gateCall(mid, 260_000), answer(mid, 270_000)], { observe: false });
+it("reads the sample before its start from the transcript, so a crossing that began earlier is not lost", {
+	timeout: 30000,
+}, async (t) => {
+	const f = await fixture(t, mid, [gateCall(mid, 200_000), gateCall(mid, 260_000), answer(mid, 270_000)], {
+		observe: false,
+	});
 	const a1 = await send(f, "a-1", ownerA, "model");
 	await f.gate.entered(0);
 	f.reports = f.observer();
@@ -391,34 +664,67 @@ it("reads the sample before its start from the transcript, so a crossing that be
 	const run = await liveRun(f);
 	await f.reports.flush();
 	const crossed = await reportsFor(f, ownerA, "child-budget:");
-	assert.equal(crossed.length, 1, "the unobserved sample below the budget and the observed one above it are one crossing");
+	assert.equal(
+		crossed.length,
+		1,
+		"the unobserved sample below the budget and the observed one above it are one crossing",
+	);
 	assert.equal(crossed[0].message, planningBudgetBody(storageId, 260_000, 250_000, `${provider}/${mid.id}`));
 	f.gate.release(1);
 	assert.equal((await readOutcome(f.harness, a1.submissionId, context)).status, "done");
 	await f.reports.close();
 	const notices = await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND);
 	assert.equal(notices.length, 1, "the same crossing gives the conversation its own notice");
-	assert.equal(noticeText(notices[0]), planningBudgetSelfBody(260_000, 250_000, `${provider}/${mid.id}`, 1_700_000_000_000));
+	assert.equal(
+		noticeText(notices[0]),
+		planningBudgetSelfBody(260_000, 250_000, `${provider}/${mid.id}`, 1_700_000_000_000),
+	);
 	assert.equal(crossed[0].requestId, planningBudgetSourceId(ownerA, storageId, a1.submissionId));
-	assert.deepEqual(crossed[0].intervention, { producerRunId: run.taskId, producerResults: [{ sessionId: storageId, submissionId: a1.submissionId, requestId: "a-1" }] });
+	assert.deepEqual(crossed[0].intervention, {
+		producerRunId: run.taskId,
+		producerResults: [{ sessionId: storageId, submissionId: a1.submissionId, requestId: "a-1" }],
+	});
 	assert.deepEqual(f.errors, []);
 });
 
-it("keeps one run identity when the first entry of the run appears after its first sample", { timeout: 30000 }, async (t) => {
+it("keeps one run identity when the first entry of the run appears after its first sample", {
+	timeout: 30000,
+}, async (t) => {
 	let yields = 0;
 	const paused = newStep();
-	const f = await fixture(t, mid, [answer(mid, 100_000), answer(mid, 200_000, "partial"), gateCall(mid, 210_000), gateCall(mid, 260_000), gateCall(mid, 270_000), answer(mid, 280_000)], {
-		onYield: async () => {
-			yields += 1;
-			if (yields !== 2) return undefined;
-			paused.enter();
-			await paused.released;
-			return { continue: "continue the work" };
+	const f = await fixture(
+		t,
+		mid,
+		[
+			answer(mid, 100_000),
+			answer(mid, 200_000, "partial"),
+			gateCall(mid, 210_000),
+			gateCall(mid, 260_000),
+			gateCall(mid, 270_000),
+			answer(mid, 280_000),
+		],
+		{
+			onYield: async () => {
+				yields += 1;
+				if (yields !== 2) return undefined;
+				paused.enter();
+				await paused.released;
+				return { continue: "continue the work" };
+			},
 		},
-	});
+	);
 	await turn(f, "earlier");
 	// A continue reaches the model only when the context ends in a user message; an idle write supplies one and places no input.
-	await f.root.submit({ type: "write", entry: { kind: "capacity-test.note", model: [{ role: "user", content: "a note for the next request", timestamp: 1 }] } }, context);
+	await f.root.submit(
+		{
+			type: "write",
+			entry: {
+				kind: "capacity-test.note",
+				model: [{ role: "user", content: "a note for the next request", timestamp: 1 }],
+			},
+		},
+		context,
+	);
 	const continued = await f.root.submit({ type: "continue" }, context);
 	await paused.entered;
 	const started = await liveRun(f);
@@ -430,10 +736,18 @@ it("keeps one run identity when the first entry of the run appears after its fir
 	const withFirst = await liveRun(f);
 	assert.notEqual(withFirst.first, undefined, "the first tool-calling answer becomes the first entry of the run");
 	assert.notEqual(withFirst.taskId, started.taskId);
-	assert.equal(runIdentity(withFirst), runIdentity(started), "the run identity does not change with its first entry or its task");
+	assert.equal(
+		runIdentity(withFirst),
+		runIdentity(started),
+		"the run identity does not change with its first entry or its task",
+	);
 	const a1 = await send(f, "a-1", ownerA, "model", "steer");
 	await f.reports.flush();
-	assert.equal((await undeliveredReports(f.harness, ownerA, context)).length, 0, "two samples below the budget are no crossing");
+	assert.equal(
+		(await undeliveredReports(f.harness, ownerA, context)).length,
+		0,
+		"two samples below the budget are no crossing",
+	);
 	assert.equal((await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length, 0);
 
 	f.gate.release(0);
@@ -444,7 +758,10 @@ it("keeps one run identity when the first entry of the run appears after its fir
 	assert.equal(crossed.length, 1);
 	assert.equal(crossed[0].requestId, planningBudgetSourceId(ownerA, storageId, continued.id));
 	assert.equal(crossed[0].message, planningBudgetBody(storageId, 260_000, 250_000, `${provider}/${mid.id}`));
-	assert.deepEqual(crossed[0].intervention, { producerRunId: crossing.taskId, producerResults: [{ sessionId: storageId, submissionId: a1.submissionId, requestId: "a-1" }] });
+	assert.deepEqual(crossed[0].intervention, {
+		producerRunId: crossing.taskId,
+		producerResults: [{ sessionId: storageId, submissionId: a1.submissionId, requestId: "a-1" }],
+	});
 	await f.reports.close();
 
 	const restarted = f.observer();
@@ -454,10 +771,17 @@ it("keeps one run identity when the first entry of the run appears after its fir
 	f.gate.release(2);
 	assert.equal((await continued.wait(context)).status, "done");
 	await restarted.close();
-	assert.deepEqual(await undeliveredReports(f.harness, ownerA, context), crossed, "a restarted observer adds no row for the same run");
+	assert.deepEqual(
+		await undeliveredReports(f.harness, ownerA, context),
+		crossed,
+		"a restarted observer adds no row for the same run",
+	);
 	const notices = await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND);
 	assert.equal(notices.length, 1, "the same run gives one own-budget notice across the restart");
-	assert.equal(noticeText(notices[0]), planningBudgetSelfBody(260_000, 250_000, `${provider}/${mid.id}`, 1_700_000_000_000));
+	assert.equal(
+		noticeText(notices[0]),
+		planningBudgetSelfBody(260_000, 250_000, `${provider}/${mid.id}`, 1_700_000_000_000),
+	);
 	assert.equal((await noticeWrite(f, 0, continued.id))?.entry, notices[0].id);
 	assert.equal(f.provider.requests(), 6);
 	assert.deepEqual(f.errors, []);
@@ -466,7 +790,16 @@ it("keeps one run identity when the first entry of the run appears after its fir
 /** A run that an idle continue starts with nothing to place: its first input is the continue, which has no entry. */
 async function continueRun(f: Fixture) {
 	await turn(f, "earlier");
-	await f.root.submit({ type: "write", entry: { kind: "capacity-test.note", model: [{ role: "user", content: "a note for the next request", timestamp: 1 }] } }, context);
+	await f.root.submit(
+		{
+			type: "write",
+			entry: {
+				kind: "capacity-test.note",
+				model: [{ role: "user", content: "a note for the next request", timestamp: 1 }],
+			},
+		},
+		context,
+	);
 	const continued = await f.root.submit({ type: "continue" }, context);
 	await f.gate.entered(0);
 	assert.deepEqual((await liveRun(f)).inputs, [continued.id]);
@@ -474,11 +807,21 @@ async function continueRun(f: Fixture) {
 }
 
 it("assigns the sample before an observer restart to a run that a continue started", { timeout: 30000 }, async (t) => {
-	const f = await fixture(t, mid, [answer(mid, 100_000), gateCall(mid, 210_000), gateCall(mid, 260_000), gateCall(mid, 270_000), answer(mid, 280_000)]);
+	const f = await fixture(t, mid, [
+		answer(mid, 100_000),
+		gateCall(mid, 210_000),
+		gateCall(mid, 260_000),
+		gateCall(mid, 270_000),
+		answer(mid, 280_000),
+	]);
 	const continued = await continueRun(f);
 	const a1 = await send(f, "a-1", ownerA, "model", "steer");
 	await f.reports.close();
-	assert.equal((await undeliveredReports(f.harness, ownerA, context)).length, 0, "the sample below the budget is no crossing");
+	assert.equal(
+		(await undeliveredReports(f.harness, ownerA, context)).length,
+		0,
+		"the sample below the budget is no crossing",
+	);
 
 	const restarted = f.observer();
 	f.gate.release(0);
@@ -487,10 +830,17 @@ it("assigns the sample before an observer restart to a run that a continue start
 	assert.equal(runIdentity(crossing), continued.id);
 	await restarted.flush();
 	const crossed = await reportsFor(f, ownerA, "child-budget:");
-	assert.equal(crossed.length, 1, "the sample stored before the restart and the first one after it are one crossing of the run");
+	assert.equal(
+		crossed.length,
+		1,
+		"the sample stored before the restart and the first one after it are one crossing of the run",
+	);
 	assert.equal(crossed[0].requestId, planningBudgetSourceId(ownerA, storageId, continued.id));
 	assert.equal(crossed[0].message, planningBudgetBody(storageId, 260_000, 250_000, `${provider}/${mid.id}`));
-	assert.deepEqual(crossed[0].intervention, { producerRunId: crossing.taskId, producerResults: [{ sessionId: storageId, submissionId: a1.submissionId, requestId: "a-1" }] });
+	assert.deepEqual(crossed[0].intervention, {
+		producerRunId: crossing.taskId,
+		producerResults: [{ sessionId: storageId, submissionId: a1.submissionId, requestId: "a-1" }],
+	});
 
 	f.gate.release(1);
 	await f.gate.entered(2);
@@ -498,17 +848,34 @@ it("assigns the sample before an observer restart to a run that a continue start
 	f.gate.release(2);
 	assert.equal((await continued.wait(context)).status, "done");
 	await restarted.close();
-	assert.deepEqual(await undeliveredReports(f.harness, ownerA, context), crossed, "a later sample of the run adds no row");
-	assert.equal((await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length, 1, "the crossing gives one own-budget notice");
+	assert.deepEqual(
+		await undeliveredReports(f.harness, ownerA, context),
+		crossed,
+		"a later sample of the run adds no row",
+	);
+	assert.equal(
+		(await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length,
+		1,
+		"the crossing gives one own-budget notice",
+	);
 	assert.deepEqual(f.errors, []);
 });
 
 it("retains one own-budget notice per context episode and starts no run for it", { timeout: 30000 }, async (t) => {
-	const f = await fixture(t, large, [
-		answer(large, 200_000), answer(large, 310_000), answer(large, 320_000),
-		answer(large, 1_000, "summary of the earlier work"),
-		answer(large, 100_000), answer(large, 305_000), answer(large, 306_000),
-	], { compaction: true });
+	const f = await fixture(
+		t,
+		large,
+		[
+			answer(large, 200_000),
+			answer(large, 310_000),
+			answer(large, 320_000),
+			answer(large, 1_000, "summary of the earlier work"),
+			answer(large, 100_000),
+			answer(large, 305_000),
+			answer(large, 306_000),
+		],
+		{ compaction: true },
+	);
 	await turn(f, "below");
 	assert.equal((await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length, 0, "a first sample is no crossing");
 
@@ -519,27 +886,43 @@ it("retains one own-budget notice per context episode and starts no run for it",
 	assert.equal(firstWrite?.type, "write", "the notice is a write submission keyed by the context head and the run");
 	assert.equal(firstWrite?.status, "done");
 	assert.equal(firstWrite?.entry, first[0].id);
-	assert.equal(noticeText(first[0]), planningBudgetSelfBody(310_000, 300_000, `${provider}/${large.id}`, 1_700_000_000_000));
+	assert.equal(
+		noticeText(first[0]),
+		planningBudgetSelfBody(310_000, 300_000, `${provider}/${large.id}`, 1_700_000_000_000),
+	);
 	assert.equal(first[0].head, undefined);
 	assert.equal(first[0].data, undefined);
 	assert.equal((await f.harness.snapshot(LiveDoc, f.root.id, context))?.run, undefined, "the notice started no run");
 	assert.equal(f.provider.requests(), 2, "the notice asked the model nothing");
 
 	await turn(f, "above");
-	assert.equal((await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length, 1, "later turns above the budget add no notice");
+	assert.equal(
+		(await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length,
+		1,
+		"later turns above the budget add no notice",
+	);
 	assert.equal(f.provider.requests(), 3);
-	const visible = (await f.root.context(context)).messages.filter((message) => message.role === "user" && message.content === noticeText(first[0]));
+	const visible = (await f.root.context(context)).messages.filter(
+		(message) => message.role === "user" && message.content === noticeText(first[0]),
+	);
 	assert.equal(visible.length, 1, "the next request carries the retained notice once");
 
 	const compaction = await f.root.compact("keep the purpose", context);
 	assert.equal((await f.harness.waitForTask(compaction, context)).state.outcome.status, "completed");
 	await f.reports.flush();
 	await turn(f, "after-compaction");
-	assert.equal((await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length, 1, "the first sample of a new episode is no crossing");
+	assert.equal(
+		(await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length,
+		1,
+		"the first sample of a new episode is no crossing",
+	);
 	const secondRun = await turn(f, "second-crossing");
 	const second = await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND);
 	assert.equal(second.length, 2, "a new crossing after a compaction retains another notice");
-	assert.equal(noticeText(second[1]), planningBudgetSelfBody(305_000, 300_000, `${provider}/${large.id}`, 1_700_000_000_000));
+	assert.equal(
+		noticeText(second[1]),
+		planningBudgetSelfBody(305_000, 300_000, `${provider}/${large.id}`, 1_700_000_000_000),
+	);
 	await turn(f, "above-again");
 	assert.equal((await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length, 2);
 	assert.equal(f.provider.requests(), 7, "six answers and one summary; no notice asked for a response");
@@ -553,21 +936,30 @@ it("retains one own-budget notice per context episode and starts no run for it",
 	assert.deepEqual(f.errors, []);
 });
 
-it("places the own-budget notice in a busy run at its next boundary without another run", { timeout: 30000 }, async (t) => {
+it("places the own-budget notice in a busy run at its next boundary without another run", {
+	timeout: 30000,
+}, async (t) => {
 	const f = await fixture(t, large, [gateCall(large, 200_000), gateCall(large, 310_000), answer(large, 320_000)]);
 	const admitted = await f.root.submit({ type: "input", content: "busy work", requestId: "busy" }, context);
 	await f.gate.entered(0);
 	f.gate.release(0);
 	await f.gate.entered(1);
 	await f.reports.flush();
-	assert.equal((await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length, 0, "the notice waits for the boundary of the running tool round");
+	assert.equal(
+		(await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND)).length,
+		0,
+		"the notice waits for the boundary of the running tool round",
+	);
 	f.gate.release(1);
 	const settled = await admitted.wait(context);
 	assert.equal(settled.status, "done");
 	await f.reports.close();
 	const notices = await entriesOfKind(f, PLANNING_BUDGET_NOTICE_KIND);
 	assert.equal(notices.length, 1);
-	assert.equal(noticeText(notices[0]), planningBudgetSelfBody(310_000, 300_000, `${provider}/${large.id}`, 1_700_000_000_000));
+	assert.equal(
+		noticeText(notices[0]),
+		planningBudgetSelfBody(310_000, 300_000, `${provider}/${large.id}`, 1_700_000_000_000),
+	);
 	const answerId = settled.status === "done" ? settled.answer : undefined;
 	assert.ok(answerId !== undefined && notices[0].id < answerId, "the notice precedes the answer of the same run");
 	assert.equal(f.provider.requests(), 3, "the run made its three requests and the notice added none");
@@ -576,7 +968,12 @@ it("places the own-budget notice in a busy run at its next boundary without anot
 });
 
 it("retains no own-budget notice for a model without a configured planning budget", { timeout: 30000 }, async (t) => {
-	const f = await fixture(t, plain, [answer(plain, 200_000), answer(plain, 310_000), gateCall(plain, 320_000), answer(plain, 330_000)]);
+	const f = await fixture(t, plain, [
+		answer(plain, 200_000),
+		answer(plain, 310_000),
+		gateCall(plain, 320_000),
+		answer(plain, 330_000),
+	]);
 	await turn(f, "below");
 	await turn(f, "above");
 	const a1 = await send(f, "a-1", ownerA, "model");
@@ -590,7 +987,9 @@ it("retains no own-budget notice for a model without a configured planning budge
 	assert.deepEqual(f.errors, []);
 });
 
-it("reports a failed retention once, stops observing, and leaves the run and its sends untouched", { timeout: 30000 }, async (t) => {
+it("reports a failed retention once, stops observing, and leaves the run and its sends untouched", {
+	timeout: 30000,
+}, async (t) => {
 	const f = await fixture(t, small, [gateCall(small, 120_007), gateCall(small, 121_000), answer(small, 122_000)]);
 	// A reply recipient that is no canonical identity makes the report association invalid at its commit.
 	const invalidOwner = `${ownerA}:1`;
@@ -604,10 +1003,22 @@ it("reports a failed retention once, stops observing, and leaves the run and its
 	f.gate.release(0);
 	await f.gate.entered(1);
 	await f.reports.flush();
-	assert.equal((await undeliveredReports(f.harness, ownerA, context)).length, 0, "a stopped observer records nothing more");
+	assert.equal(
+		(await undeliveredReports(f.harness, ownerA, context)).length,
+		0,
+		"a stopped observer records nothing more",
+	);
 	f.gate.release(1);
-	assert.equal((await readOutcome(f.harness, refused.submissionId, context)).status, "done", "the producer was not cancelled");
-	assert.equal((await readOutcome(f.harness, later.submissionId, context)).status, "done", "a later send was not refused");
+	assert.equal(
+		(await readOutcome(f.harness, refused.submissionId, context)).status,
+		"done",
+		"the producer was not cancelled",
+	);
+	assert.equal(
+		(await readOutcome(f.harness, later.submissionId, context)).status,
+		"done",
+		"a later send was not refused",
+	);
 	await f.reports.close();
 	assert.equal(f.errors.length, 1);
 });

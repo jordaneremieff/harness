@@ -18,11 +18,31 @@ import type { CliResult, RexTransport } from "./transport.ts";
 import { rexStatus, type StatusBinding } from "./status.ts";
 
 const server = { endpoint: "unix:///synthetic-rex", hostId: "host", instanceId: "instance", selection: "test" };
-const target = { server, source: "explicit" as const, sessionId: "session:00000000-0000-0000-0000-000000000001", blockId: "block:00000000-0000-0000-0000-000000000002" };
-const ok = (data: unknown): RexResult => ({ ok: true, outcome: "test_snapshot", data, effects: { state: "none" }, coverage: { bounded: true } });
+const target = {
+	server,
+	source: "explicit" as const,
+	sessionId: "session:00000000-0000-0000-0000-000000000001",
+	blockId: "block:00000000-0000-0000-0000-000000000002",
+};
+const ok = (data: unknown): RexResult => ({
+	ok: true,
+	outcome: "test_snapshot",
+	data,
+	effects: { state: "none" },
+	coverage: { bounded: true },
+});
 
 function cliReply(value: unknown): CliResult {
-	return { outcome: "exited", exitCode: 0, signal: null, stdout: JSON.stringify(value), stderr: "", bytes: 0, truncated: false, started: true };
+	return {
+		outcome: "exited",
+		exitCode: 0,
+		signal: null,
+		stdout: JSON.stringify(value),
+		stderr: "",
+		bytes: 0,
+		truncated: false,
+		started: true,
+	};
 }
 
 /** Answers only server discovery and one verified read, so the real core can run without a Rex server. */
@@ -37,23 +57,75 @@ const readTransport: RexTransport = {
 };
 
 function resultValues(entries: readonly Durable.EntryRecord[]): RexResult[] {
-	return entries.flatMap((entry) => (entry.model ?? []).flatMap((message) => {
-		if (message.role !== "toolResult") return [];
-		const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("");
-		try { return [JSON.parse(text) as RexResult]; } catch { return []; }
-	}));
+	return entries.flatMap((entry) =>
+		(entry.model ?? []).flatMap((message) => {
+			if (message.role !== "toolResult") return [];
+			const text = message.content
+				.filter((part) => part.type === "text")
+				.map((part) => part.text)
+				.join("");
+			try {
+				return [JSON.parse(text) as RexResult];
+			} catch {
+				return [];
+			}
+		}),
+	);
 }
 
 function mockResult(request: RexRequest, callId: string): RexResult {
-	if (request.op === "observe") return { ...ok({ reports: [{ recordId: "retained-call", phase: "unknown", complete: true, observedAt: "2026-01-01T00:00:00.000Z", observations: [{ presence: "present", childState: "exited", process: { last_exit: { exit_code: 7 } }, capture: { content: "final output", start: 0, end: 12, total: 12 } }] }] }), outcome: "observed" };
-	if (request.op === "inspect" && request.view === "status") return { ...ok({ payload: "s".repeat(200000) }), outcome: "snapshot", target, coverage: { bounded: true, note: "Native status source qualification." } };
-	if (request.op === "input") return {
-		...ok({ payload: "x".repeat(80000) }), outcome: "input_delivered", target,
-		records: [{ recordId: callId, server, resources: [{ kind: "block", sessionId: target.sessionId, blockId: target.blockId }] }],
-		effects: { state: "confirmed", recordId: callId, note: "Input delivery does not prove application success." },
-		coverage: { bounded: true, truncated: false, note: "Source observation qualification." },
-	};
-	if (request.op === "native" && request.code === "fail") return { ...ok({ layer: "script" }), ok: false, outcome: "script_failed", error: "synthetic failure", effects: { state: "unknown" } };
+	if (request.op === "observe")
+		return {
+			...ok({
+				reports: [
+					{
+						recordId: "retained-call",
+						phase: "unknown",
+						complete: true,
+						observedAt: "2026-01-01T00:00:00.000Z",
+						observations: [
+							{
+								presence: "present",
+								childState: "exited",
+								process: { last_exit: { exit_code: 7 } },
+								capture: { content: "final output", start: 0, end: 12, total: 12 },
+							},
+						],
+					},
+				],
+			}),
+			outcome: "observed",
+		};
+	if (request.op === "inspect" && request.view === "status")
+		return {
+			...ok({ payload: "s".repeat(200000) }),
+			outcome: "snapshot",
+			target,
+			coverage: { bounded: true, note: "Native status source qualification." },
+		};
+	if (request.op === "input")
+		return {
+			...ok({ payload: "x".repeat(80000) }),
+			outcome: "input_delivered",
+			target,
+			records: [
+				{
+					recordId: callId,
+					server,
+					resources: [{ kind: "block", sessionId: target.sessionId, blockId: target.blockId }],
+				},
+			],
+			effects: { state: "confirmed", recordId: callId, note: "Input delivery does not prove application success." },
+			coverage: { bounded: true, truncated: false, note: "Source observation qualification." },
+		};
+	if (request.op === "native" && request.code === "fail")
+		return {
+			...ok({ layer: "script" }),
+			ok: false,
+			outcome: "script_failed",
+			error: "synthetic failure",
+			effects: { state: "unknown" },
+		};
 	return { ...ok({ operation: request.op }), target };
 }
 
@@ -64,10 +136,22 @@ test("native ownership reads report resolution without an effect", async () => {
 			const budget = createRexBudget(1000, 300000, undefined, { now: () => now, schedule: () => () => {} });
 			const api = {
 				conversationId: 1,
-				snapshot: async () => { if (late) now = 900; return undefined; },
-				commit: async () => { throw new Error("A read does not commit."); },
+				snapshot: async () => {
+					if (late) now = 900;
+					return undefined;
+				},
+				commit: async () => {
+					throw new Error("A read does not commit.");
+				},
 			} as unknown as Parameters<typeof nativeOwnershipStore>[0];
-			const store = nativeOwnershipStore(api, {} as Parameters<typeof nativeOwnershipStore>[1], "storage:1", 128, BACKGROUND_CONTEXT, budget);
+			const store = nativeOwnershipStore(
+				api,
+				{} as Parameters<typeof nativeOwnershipStore>[1],
+				"storage:1",
+				128,
+				BACKGROUND_CONTEXT,
+				budget,
+			);
 			const core = new RexCore({ store, transport: readTransport });
 			try {
 				const result = await core.execute({ op }, { ownerId: "storage:1", callId: "read", cwd: "/test", budget });
@@ -77,7 +161,10 @@ test("native ownership reads report resolution without an effect", async () => {
 					assert.equal(result.outcome, "timeout");
 					assert.equal((result.data as { phase: string }).phase, "resolve");
 				}
-			} finally { core.dispose(); budget.dispose(); }
+			} finally {
+				core.dispose();
+				budget.dispose();
+			}
 		}
 	}
 });
@@ -96,12 +183,23 @@ test("native status commits retain confirmed binding effects past the cutoff", a
 			now = 1200;
 		},
 	} as unknown as Parameters<typeof nativeStatusStore>[0];
-	const store = nativeStatusStore(api, {} as Parameters<typeof nativeStatusStore>[1], "storage:1", BACKGROUND_CONTEXT, budget);
+	const store = nativeStatusStore(
+		api,
+		{} as Parameters<typeof nativeStatusStore>[1],
+		"storage:1",
+		BACKGROUND_CONTEXT,
+		budget,
+	);
 	try {
-		const value = await rexStatus({ op: "bind", target: { server: server.endpoint, session: target.sessionId, block: target.blockId } },
+		const value = await rexStatus(
+			{ op: "bind", target: { server: server.endpoint, session: target.sessionId, block: target.blockId } },
 			{ ownerId: "storage:1", callId: "bind", cwd: "/test", budget, signal: budget.signal },
-			{ dispose: () => {}, execute: async () => ({ ...ok({}), target }) }, store,
-			async () => { throw new Error("Binding does not inspect host activity."); });
+			{ dispose: () => {}, execute: async () => ({ ...ok({}), target }) },
+			store,
+			async () => {
+				throw new Error("Binding does not inspect host activity.");
+			},
+		);
 		const result = deadlineResult(value, budget, "bind");
 		assert.equal(commits, 1);
 		assert.equal((document.binding as StatusBinding).ownerId, "storage:1");
@@ -110,7 +208,9 @@ test("native status commits retain confirmed binding effects past the cutoff", a
 		assert.equal(result.effects.state, "confirmed");
 		assert.match(result.effects.note ?? "", /no terminal effect occurred/);
 		assert.deepEqual(result.coverage.deadline, { effectiveMs: 1000, elapsedMs: 1200, phase: "effect", overrunMs: 200 });
-	} finally { budget.dispose(); }
+	} finally {
+		budget.dispose();
+	}
 });
 
 test("native ownership detaches work cancellation only for bounded mandatory settlement", async () => {
@@ -129,22 +229,39 @@ test("native ownership detaches work cancellation only for bounded mandatory set
 			return change({ doc: async () => document });
 		},
 	} as unknown as Parameters<typeof nativeOwnershipStore>[0];
-	const store = nativeOwnershipStore(api, {} as unknown as Parameters<typeof nativeOwnershipStore>[1], "storage:1", 128, context, budget);
+	const store = nativeOwnershipStore(
+		api,
+		{} as unknown as Parameters<typeof nativeOwnershipStore>[1],
+		"storage:1",
+		128,
+		context,
+		budget,
+	);
 	try {
 		caller.abort();
 		assert.equal(context.abortSignal?.aborted, true);
-		await assert.rejects(store.update("storage:1", (state) => state, "work"), /cancelled/);
+		await assert.rejects(
+			store.update("storage:1", (state) => state, "work"),
+			/cancelled/,
+		);
 		assert.equal(commits.length, 0);
 		await store.update("storage:1", (state) => state, "finalise");
 		assert.equal(commits.length, 1);
 		assert.equal(document.ownerId, "storage:1");
 		now = 100;
-		await assert.rejects(store.update("storage:1", (state) => state, "finalise"), /cancelled/);
+		await assert.rejects(
+			store.update("storage:1", (state) => state, "finalise"),
+			/cancelled/,
+		);
 		assert.equal(commits.length, 1);
-	} finally { budget.dispose(); }
+	} finally {
+		budget.dispose();
+	}
 });
 
-test("native tools use real model calls, structured channels, unsafe replay and fork-isolated ownership", { timeout: 30000 }, async () => {
+test("native tools use real model calls, structured channels, unsafe replay and fork-isolated ownership", {
+	timeout: 30000,
+}, async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "rex-native-"));
 	const previousRecords = process.env.PI_REX_MAX_RECORDS;
 	const previousOutput = process.env.PI_REX_MAX_OUTPUT_BYTES;
@@ -163,7 +280,9 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 	const endedCalls: Array<() => boolean | undefined> = [];
 	const contribution = rexContribution("/test/rex/index.ts", createEventBus(), () => {}, {
 		createCore: (options) => ({
-			dispose: () => { disposed++; },
+			dispose: () => {
+				disposed++;
+			},
 			execute: async (request, context) => {
 				assert.ok(context.budget);
 				assert.equal(context.signal, context.budget.signal);
@@ -173,13 +292,36 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 				endedCalls.push(() => options.isCallActive?.(context.ownerId, context.callId));
 				if (request.op === "create") {
 					const now = new Date().toISOString();
-					await options.store.update(context.ownerId, (state) => beginOwnership(state, { ownerId: context.ownerId, callId: context.callId, requestDigest: requestDigest(request), server, operation: "create", phase: "pending", resources: [], createdAt: now, updatedAt: now }), "work");
+					await options.store.update(
+						context.ownerId,
+						(state) =>
+							beginOwnership(state, {
+								ownerId: context.ownerId,
+								callId: context.callId,
+								requestDigest: requestDigest(request),
+								server,
+								operation: "create",
+								phase: "pending",
+								resources: [],
+								createdAt: now,
+								updatedAt: now,
+							}),
+						"work",
+					);
 					const retained = await options.store.read(context.ownerId);
-					assert.equal(retained.records[0]?.phase, "pending", "native commit resolves before the external-effect boundary");
+					assert.equal(
+						retained.records[0]?.phase,
+						"pending",
+						"native commit resolves before the external-effect boundary",
+					);
 				}
 				if (request.op === "native" && request.kind === "api" && request.method === "block_creator.list") {
 					const core = new RexCore({ ...options, transport: readTransport });
-					try { return await core.execute(request, context); } finally { core.dispose(); }
+					try {
+						return await core.execute(request, context);
+					} finally {
+						core.dispose();
+					}
 				}
 				if (request.op === "owned") return ok(await options.store.read(context.ownerId));
 				return mockResult(request, context.callId);
@@ -187,7 +329,16 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		}),
 	});
 	try {
-		const extension = await contribution.create({ durable: Durable, cwd: agentDir, agentDir, storageId: "test-storage", harness, signal: controller.signal, onClose: (close) => closers.push(close), ordinarySession: () => undefined });
+		const extension = await contribution.create({
+			durable: Durable,
+			cwd: agentDir,
+			agentDir,
+			storageId: "test-storage",
+			harness,
+			signal: controller.signal,
+			onClose: (close) => closers.push(close),
+			ordinarySession: () => undefined,
+		});
 		assert.ok(extension.tools?.every((tool) => tool.replay === "unsafe"));
 		assert.ok(extension.tools?.every((tool) => tool.structuredOutputSchema !== undefined));
 		registry.install(extension);
@@ -197,39 +348,76 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		let verifiedRead: Durable.NestedToolExecutionResult | undefined;
 		let verifiedRecords = -1;
 		let concurrentRecords = 0;
-		registry.install(Durable.defineExtension({ name: "test-caller", tools: [Durable.defineTool({
-			name: "test_nested", description: "Exercise concurrent commits and the native structured error channel.", parameters: obj({}, { open: true }), replay: "safe",
-			execute: async (_args, api, context) => {
-				const created = await Promise.all([
-					api.executeTool("rex_terminal", { op: "create", kind: "session", label: "parallel-one" }, context),
-					api.executeTool("rex_terminal", { op: "create", kind: "session", label: "parallel-two" }, context),
-				]);
-				assert.ok(created.every((result) => !result.isError), JSON.stringify(created));
-				const owned = await api.executeTool("rex_owned", { op: "owned" }, context);
-				concurrentRecords = ((owned.structuredOutput as unknown as RexResult).data as { records: unknown[] }).records.length;
-				observedWork = await api.executeTool("rex_owned", { op: "observe", recordId: "retained-call", maxBytes: 256 }, context);
-				verifiedRead = await api.executeTool("rex_native", { op: "native", kind: "api", method: "block_creator.list", args: {} }, context);
-				const recheck = await api.executeTool("rex_owned", { op: "owned" }, context);
-				verifiedRecords = ((recheck.structuredOutput as unknown as RexResult).data as { records: unknown[] }).records.length;
-				invalidCleanup = await api.executeTool("rex_owned", { op: "cleanup" }, context);
-				nested = await api.executeTool("rex_native", { op: "native", kind: "lua", code: "fail" }, context);
-				return { output: [{ type: "text", text: "Nested results inspected." }] };
-			},
-		})] }));
+		registry.install(
+			Durable.defineExtension({
+				name: "test-caller",
+				tools: [
+					Durable.defineTool({
+						name: "test_nested",
+						description: "Exercise concurrent commits and the native structured error channel.",
+						parameters: obj({}, { open: true }),
+						replay: "safe",
+						execute: async (_args, api, context) => {
+							const created = await Promise.all([
+								api.executeTool("rex_terminal", { op: "create", kind: "session", label: "parallel-one" }, context),
+								api.executeTool("rex_terminal", { op: "create", kind: "session", label: "parallel-two" }, context),
+							]);
+							assert.ok(
+								created.every((result) => !result.isError),
+								JSON.stringify(created),
+							);
+							const owned = await api.executeTool("rex_owned", { op: "owned" }, context);
+							concurrentRecords = ((owned.structuredOutput as unknown as RexResult).data as { records: unknown[] })
+								.records.length;
+							observedWork = await api.executeTool(
+								"rex_owned",
+								{ op: "observe", recordId: "retained-call", maxBytes: 256 },
+								context,
+							);
+							verifiedRead = await api.executeTool(
+								"rex_native",
+								{ op: "native", kind: "api", method: "block_creator.list", args: {} },
+								context,
+							);
+							const recheck = await api.executeTool("rex_owned", { op: "owned" }, context);
+							verifiedRecords = ((recheck.structuredOutput as unknown as RexResult).data as { records: unknown[] })
+								.records.length;
+							invalidCleanup = await api.executeTool("rex_owned", { op: "cleanup" }, context);
+							nested = await api.executeTool("rex_native", { op: "native", kind: "lua", code: "fail" }, context);
+							return { output: [{ type: "text", text: "Nested results inspected." }] };
+						},
+					}),
+				],
+			}),
+		);
 		const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 		faux.setResponses([
 			fauxAssistantMessage(fauxToolCall("rex_environment", { op: "environment" }), { stopReason: "toolUse" }),
-			fauxAssistantMessage(fauxToolCall("rex_terminal", { op: "create", kind: "session", label: "owned-repl" }), { stopReason: "toolUse" }),
-			fauxAssistantMessage(fauxToolCall("rex_terminal", { op: "input", text: "large observation", observe: true }), { stopReason: "toolUse" }),
-			fauxAssistantMessage(fauxToolCall("rex_wait", { op: "wait", condition: "child_exit" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("rex_terminal", { op: "create", kind: "session", label: "owned-repl" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage(fauxToolCall("rex_terminal", { op: "input", text: "large observation", observe: true }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage(fauxToolCall("rex_wait", { op: "wait", condition: "child_exit" }), {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage(fauxToolCall("rex_native", { op: "native", kind: "catalog" }), { stopReason: "toolUse" }),
 			fauxAssistantMessage(fauxToolCall("rex_owned", { op: "owned" }), { stopReason: "toolUse" }),
 			fauxAssistantMessage(fauxToolCall("rex_terminal", { op: "create", kind: "session" }), { stopReason: "toolUse" }),
-			fauxAssistantMessage(fauxToolCall("rex_status", { op: "snapshot", target: { server: server.endpoint, session: target.sessionId, block: target.blockId } }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(
+				fauxToolCall("rex_status", {
+					op: "snapshot",
+					target: { server: server.endpoint, session: target.sessionId, block: target.blockId },
+				}),
+				{ stopReason: "toolUse" },
+			),
 			fauxAssistantMessage(fauxToolCall("test_nested", {}), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Complete."),
 		]);
-		await (await root.submit({ type: "input", content: "Exercise the Rex contracts." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		await (await root.submit({ type: "input", content: "Exercise the Rex contracts." }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
 		const entries = (await root.entries({ order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT)).items;
 		const values = resultValues(entries);
 		assert.equal(values.length, 8);
@@ -247,7 +435,10 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		const observedInput = values.find((value) => value.outcome === "input_delivered");
 		assert.ok(observedInput);
 		assert.equal((observedInput.data as { payload: string }).payload.length, 80000);
-		assert.ok(Buffer.byteLength(JSON.stringify(observedInput), "utf8") > 50 * 1024, "the native declaration preserves complete JSON beyond the host default");
+		assert.ok(
+			Buffer.byteLength(JSON.stringify(observedInput), "utf8") > 50 * 1024,
+			"the native declaration preserves complete JSON beyond the host default",
+		);
 		assert.equal(observedInput.effects.state, "confirmed");
 		assert.equal(observedInput.effects.recordId, observedInput.records?.[0]?.recordId);
 		assert.match(observedInput.effects.note ?? "", /does not prove application success/);
@@ -261,7 +452,9 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		const owned = values.find((value) => (value.data as { version?: number })?.version === 1);
 		assert.ok(owned);
 		assert.equal((owned.data as { records: unknown[] }).records.length, 1);
-		const nestedCall = entries.flatMap((entry) => entry.model ?? []).find((message) => message.role === "toolResult" && message.toolName === "test_nested");
+		const nestedCall = entries
+			.flatMap((entry) => entry.model ?? [])
+			.find((message) => message.role === "toolResult" && message.toolName === "test_nested");
 		assert.ok(nestedCall?.role === "toolResult", "the model-issued nested caller returned a result");
 		assert.equal(nestedCall.isError, false, JSON.stringify(nestedCall));
 		assert.equal(concurrentRecords, 3, "concurrent native updates preserve both new pending records");
@@ -289,15 +482,25 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		const last = entries.at(-1);
 		assert.ok(last);
 		const fork = await root.fork(last.id, { ownership: { kind: "ownerless" } }, BACKGROUND_CONTEXT);
-		faux.setResponses([fauxAssistantMessage(fauxToolCall("rex_owned", { op: "owned" }), { stopReason: "toolUse" }), fauxAssistantMessage("No inherited claims.")]);
-		await (await fork.submit({ type: "input", content: "Inspect my own resources." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
-		const forkValues = resultValues((await fork.entries({ order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT)).items);
+		faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("rex_owned", { op: "owned" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("No inherited claims."),
+		]);
+		await (await fork.submit({ type: "input", content: "Inspect my own resources." }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
+		const forkValues = resultValues(
+			(await fork.entries({ order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT)).items,
+		);
 		const forkOwned = forkValues.at(-1);
 		assert.ok(forkOwned);
 		assert.equal((forkOwned.data as { records: unknown[] }).records.length, 0);
 		assert.ok(owners.includes(`test-storage:${fork.id}`));
 		assert.ok(disposed >= 8);
-		assert.ok(endedCalls.every((active) => active() === false), "native finally releases each invocation after settlement");
+		assert.ok(
+			endedCalls.every((active) => active() === false),
+			"native finally releases each invocation after settlement",
+		);
 	} finally {
 		controller.abort();
 		for (const close of closers.reverse()) await close();
@@ -312,30 +515,66 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 
 const paneSession = "session:11111111-1111-4111-8111-111111111111";
 const paneBlock = "block:33333333-3333-4333-8333-333333333333";
-const hostEnv = { PATH: "/bin", REX_SERVER: "unix:///host.sock", REX_SESSION: "session:44444444-4444-4444-8444-444444444444", REX_BLOCK: "block:55555555-5555-4555-8555-555555555555", REX_CLIENT: "client:66666666-6666-4666-8666-666666666666" };
+const hostEnv = {
+	PATH: "/bin",
+	REX_SERVER: "unix:///host.sock",
+	REX_SESSION: "session:44444444-4444-4444-8444-444444444444",
+	REX_BLOCK: "block:55555555-5555-4555-8555-555555555555",
+	REX_CLIENT: "client:66666666-6666-4666-8666-666666666666",
+};
 
 test("a native conversation inherits the registered pane of its storage's ordinary session, never the host's own", async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "rex-native-launch-"));
 	try {
-		registerSessionPane({ agentDir, sessionId: "ordinary", pid: 4242, pane: { server: "unix:///pane.sock", session: paneSession, block: paneBlock }, alive: () => true });
+		registerSessionPane({
+			agentDir,
+			sessionId: "ordinary",
+			pid: 4242,
+			pane: { server: "unix:///pane.sock", session: paneSession, block: paneBlock },
+			alive: () => true,
+		});
 		const known = durableLaunch({ agentDir, ordinarySession: () => "ordinary" }, hostEnv, () => true);
-		assert.deepEqual(known.env, { PATH: "/bin", REX_SERVER: "unix:///pane.sock", REX_SESSION: paneSession, REX_BLOCK: paneBlock });
+		assert.deepEqual(known.env, {
+			PATH: "/bin",
+			REX_SERVER: "unix:///pane.sock",
+			REX_SESSION: paneSession,
+			REX_BLOCK: paneBlock,
+		});
 		assert.match(known.launch.description, /pane of ordinary Pi session ordinary/);
 		assert.equal(known.launch.unavailable, undefined);
 		const cases: Array<[Parameters<typeof durableLaunch>[0], (pid: number) => boolean, RegExp]> = [
 			[{ agentDir, ordinarySession: () => "ordinary" }, () => false, /its ordinary session ordinary has ended/],
-			[{ agentDir, ordinarySession: () => "other" }, () => true, /its ordinary session other has no registered Rex pane/],
+			[
+				{ agentDir, ordinarySession: () => "other" },
+				() => true,
+				/its ordinary session other has no registered Rex pane/,
+			],
 			[{ agentDir, ordinarySession: () => undefined }, () => true, /names no ordinary session/],
-			[{ agentDir, ordinarySession: () => { throw new Error("catalog unreadable"); } }, () => true, /could not be read \(catalog unreadable\)/],
+			[
+				{
+					agentDir,
+					ordinarySession: () => {
+						throw new Error("catalog unreadable");
+					},
+				},
+				() => true,
+				/could not be read \(catalog unreadable\)/,
+			],
 		];
 		for (const [host, alive, reason] of cases) {
 			const launch = durableLaunch(host, hostEnv, alive);
-			assert.deepEqual(launch.env, { PATH: "/bin", REX_SERVER: "unix:///host.sock" }, "the host's own session, block and client never reach a conversation");
+			assert.deepEqual(
+				launch.env,
+				{ PATH: "/bin", REX_SERVER: "unix:///host.sock" },
+				"the host's own session, block and client never reach a conversation",
+			);
 			assert.match(launch.launch.unavailable ?? "", reason);
 			assert.match(launch.launch.unavailable ?? "", /request source focus to use the operator's current focus\.$/);
 			assert.match(launch.launch.description, reason);
 		}
-	} finally { await rm(agentDir, { recursive: true, force: true }); }
+	} finally {
+		await rm(agentDir, { recursive: true, force: true });
+	}
 });
 
 test("each native tool call builds its core from the current ordinary pane", { timeout: 30000 }, async () => {
@@ -352,26 +591,62 @@ test("each native tool call builds its core from the current ordinary pane", { t
 		createCore: (options) => ({
 			dispose: () => {},
 			execute: async (request) => {
-				launches.push({ ...(options.env?.REX_BLOCK === undefined ? {} : { block: options.env.REX_BLOCK }), ...(options.launch?.unavailable === undefined ? {} : { unavailable: options.launch.unavailable }) });
+				launches.push({
+					...(options.env?.REX_BLOCK === undefined ? {} : { block: options.env.REX_BLOCK }),
+					...(options.launch?.unavailable === undefined ? {} : { unavailable: options.launch.unavailable }),
+				});
 				return { ...ok({ operation: request.op }), target };
 			},
 		}),
 	});
 	try {
-		const extension = await contribution.create({ durable: Durable, cwd: agentDir, agentDir, storageId: "test-storage", harness, signal: controller.signal, onClose: (close) => closers.push(close), ordinarySession: () => "ordinary" });
+		const extension = await contribution.create({
+			durable: Durable,
+			cwd: agentDir,
+			agentDir,
+			storageId: "test-storage",
+			harness,
+			signal: controller.signal,
+			onClose: (close) => closers.push(close),
+			ordinarySession: () => "ordinary",
+		});
 		registry.install(extension);
 		const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 		const run = async () => {
-			faux.setResponses([fauxAssistantMessage(fauxToolCall("rex_terminal", { op: "create", kind: "float", label: "reader", command: ["reader"], keepFloating: true }), { stopReason: "toolUse" }), fauxAssistantMessage("Shown.")]);
-			await (await root.submit({ type: "input", content: "Show the document." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+			faux.setResponses([
+				fauxAssistantMessage(
+					fauxToolCall("rex_terminal", {
+						op: "create",
+						kind: "float",
+						label: "reader",
+						command: ["reader"],
+						keepFloating: true,
+					}),
+					{ stopReason: "toolUse" },
+				),
+				fauxAssistantMessage("Shown."),
+			]);
+			await (await root.submit({ type: "input", content: "Show the document." }, BACKGROUND_CONTEXT)).wait(
+				BACKGROUND_CONTEXT,
+			);
 		};
 		await run();
-		registerSessionPane({ agentDir, sessionId: "ordinary", pid: process.pid, pane: { session: paneSession, block: paneBlock }, alive: () => true });
+		registerSessionPane({
+			agentDir,
+			sessionId: "ordinary",
+			pid: process.pid,
+			pane: { session: paneSession, block: paneBlock },
+			alive: () => true,
+		});
 		await run();
 		assert.equal(launches.length, 2);
 		assert.match(launches[0]?.unavailable ?? "", /its ordinary session ordinary has no registered Rex pane/);
 		assert.equal(launches[0]?.block, undefined);
-		assert.deepEqual(launches[1], { block: paneBlock }, "a pane registered after the host started applies to the next call");
+		assert.deepEqual(
+			launches[1],
+			{ block: paneBlock },
+			"a pane registered after the host started applies to the next call",
+		);
 	} finally {
 		controller.abort();
 		for (const close of closers.reverse()) await close();
@@ -395,20 +670,54 @@ test("a native question waits on its own allowance and names its working directo
 			dispose: () => {},
 			execute: async (request, context) => {
 				seen.push({ effectiveMs: context.budget?.effectiveMs, asker: context.asker });
-				return { ok: true, outcome: "answered", data: { question: request.op === "ask" ? request.question : "", channel: "rex", answer: { choice: "hold" } }, effects: { state: "none" }, coverage: { bounded: true } };
+				return {
+					ok: true,
+					outcome: "answered",
+					data: { question: request.op === "ask" ? request.question : "", channel: "rex", answer: { choice: "hold" } },
+					effects: { state: "none" },
+					coverage: { bounded: true },
+				};
 			},
 		}),
 	});
 	try {
-		const extension = await contribution.create({ durable: Durable, cwd: agentDir, agentDir, storageId: "test-storage", harness, signal: controller.signal, onClose: (close) => closers.push(close), ordinarySession: () => undefined });
+		const extension = await contribution.create({
+			durable: Durable,
+			cwd: agentDir,
+			agentDir,
+			storageId: "test-storage",
+			harness,
+			signal: controller.signal,
+			onClose: (close) => closers.push(close),
+			ordinarySession: () => undefined,
+		});
 		assert.ok(extension.tools?.some((tool) => tool.name === "rex_ask"));
 		registry.install(extension);
-		const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: agentDir } });
-		faux.setResponses([fauxAssistantMessage(fauxToolCall("rex_ask", { op: "ask", question: "Publish?", choices: [{ id: "hold" }, { id: "publish" }], timeoutMs: 1800000 }), { stopReason: "toolUse" }), fauxAssistantMessage("Asked.")]);
-		await (await root.submit({ type: "input", content: "Ask before you publish." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const root = await harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: agentDir },
+		});
+		faux.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall("rex_ask", {
+					op: "ask",
+					question: "Publish?",
+					choices: [{ id: "hold" }, { id: "publish" }],
+					timeoutMs: 1800000,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("Asked."),
+		]);
+		await (await root.submit({ type: "input", content: "Ask before you publish." }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
 		const values = resultValues((await root.entries({ order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT)).items);
 		assert.equal(values.at(-1)?.outcome, "answered", JSON.stringify(values));
-		assert.deepEqual(seen, [{ effectiveMs: 1830000, asker: agentDir.split("/").at(-1) }], "the wait is the question's own, not the terminal cap");
+		assert.deepEqual(
+			seen,
+			[{ effectiveMs: 1830000, asker: agentDir.split("/").at(-1) }],
+			"the wait is the question's own, not the terminal cap",
+		);
 	} finally {
 		controller.abort();
 		for (const close of closers.reverse()) await close();

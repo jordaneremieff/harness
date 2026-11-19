@@ -14,7 +14,10 @@ it("display.ts is a pure presentation module: one export, no operational imports
 it("toolDisplay() returns version 1 with the two tool renderer records", () => {
 	const publication = toolDisplay();
 	assert.equal(publication.version, 1);
-	assert.deepEqual(publication.tools.map((tool) => tool.name), ["pillars", "pillars_usage"]);
+	assert.deepEqual(
+		publication.tools.map((tool) => tool.name),
+		["pillars", "pillars_usage"],
+	);
 	for (const record of publication.tools) {
 		assert.equal(typeof record.renderCall, "function");
 		assert.equal(typeof record.renderResult, "function");

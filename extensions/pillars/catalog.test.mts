@@ -17,7 +17,10 @@ async function corpus() {
 	const root = await mkdtemp(join(process.cwd(), ".pillars-catalog-test-"));
 	const corpusDir = join(root, "pillars");
 	await mkdir(corpusDir);
-	await writeFile(join(corpusDir, "README.md"), "# Inventory\n[Example](principle-example.md)\n[Governance](GOVERNANCE.md)\n");
+	await writeFile(
+		join(corpusDir, "README.md"),
+		"# Inventory\n[Example](principle-example.md)\n[Governance](GOVERNANCE.md)\n",
+	);
 	await writeFile(join(corpusDir, "GOVERNANCE.md"), "# Consultation\nRead the matching entry.\n");
 	await writeFile(join(corpusDir, "principle-example.md"), "# Example\nSynthetic source.\n");
 	return {
@@ -180,11 +183,11 @@ test("source continuation retains exact UTF-8 boundaries and rejects changed ref
 		const invalid = await access(catalog, { resource: "principle-example", offset: 1, referenceBodyDigest });
 		assert.equal(invalid.schema, "pillars-source-error");
 		assert.equal("code" in invalid && invalid.code, "invalid_input");
-		assert.match("message" in invalid ? invalid.message ?? "" : "", /inside a UTF-8 character/);
+		assert.match("message" in invalid ? (invalid.message ?? "") : "", /inside a UTF-8 character/);
 		await writeFile(path, "Changed.");
 		const changed = await access(catalog, { resource: "principle-example", offset: 24000, referenceBodyDigest });
 		assert.equal("code" in changed && changed.code, "source_changed");
-		assert.match("message" in changed ? changed.message ?? "" : "", /omit offset and referenceBodyDigest/);
+		assert.match("message" in changed ? (changed.message ?? "") : "", /omit offset and referenceBodyDigest/);
 	} finally {
 		restore();
 	}

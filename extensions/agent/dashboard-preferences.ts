@@ -12,8 +12,12 @@ export function validDashboardLayout(value: unknown): DashboardLayout {
 	const { rosterRatio, composerRows, listHidden } = value as Record<string, unknown>;
 	return {
 		...(listHidden === true ? { listHidden } : {}),
-		...(typeof rosterRatio === "number" && Number.isFinite(rosterRatio) && rosterRatio > 0 && rosterRatio < 1 ? { rosterRatio } : {}),
-		...(typeof composerRows === "number" && Number.isSafeInteger(composerRows) && composerRows >= 5 ? { composerRows } : {}),
+		...(typeof rosterRatio === "number" && Number.isFinite(rosterRatio) && rosterRatio > 0 && rosterRatio < 1
+			? { rosterRatio }
+			: {}),
+		...(typeof composerRows === "number" && Number.isSafeInteger(composerRows) && composerRows >= 5
+			? { composerRows }
+			: {}),
 	};
 }
 /** Each primary loads once; atomic publication affects only later fresh primaries. */
@@ -24,7 +28,9 @@ export function dashboardPreferences(agentDir: string): DashboardPreferences {
 			try {
 				if (statSync(path).size > 4096) return {};
 				return validDashboardLayout(JSON.parse(readFileSync(path, "utf8")));
-			} catch { return {}; }
+			} catch {
+				return {};
+			}
 		},
 		save(layout) {
 			mkdirSync(agentDir, { recursive: true, mode: 0o700 });
@@ -33,7 +39,11 @@ export function dashboardPreferences(agentDir: string): DashboardPreferences {
 				writeFileSync(temporary, `${JSON.stringify(validDashboardLayout(layout))}\n`, { flag: "wx", mode: 0o600 });
 				renameSync(temporary, path);
 			} finally {
-				try { unlinkSync(temporary); } catch { /* Rename removes the temporary file. */ }
+				try {
+					unlinkSync(temporary);
+				} catch {
+					/* Rename removes the temporary file. */
+				}
 			}
 		},
 	};

@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { initTheme, ToolExecutionComponent, type ExtensionAPI, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+	initTheme,
+	ToolExecutionComponent,
+	type ExtensionAPI,
+	type Theme,
+	type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { compile } from "@earendil-works/pi-schema";
 import type { TUI } from "@earendil-works/pi-tui";
 import { JOB_COMPLETION_MESSAGE } from "./completion.ts";
@@ -32,21 +38,36 @@ function fixture(mode = "tui", open: () => readonly YieldRow[] = () => [], now =
 	let tool: ToolDefinition | undefined;
 	const handlers = new Map<string, Handler[]>();
 	const pi = {
-		registerTool: (definition: ToolDefinition) => { tool = definition; },
-		on: (name: string, handler: Handler) => { handlers.set(name, [...(handlers.get(name) ?? []), handler]); return () => {}; },
+		registerTool: (definition: ToolDefinition) => {
+			tool = definition;
+		},
+		on: (name: string, handler: Handler) => {
+			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+			return () => {};
+		},
 	};
-	registerYield(pi as unknown as ExtensionAPI, { open, now, renderCall: display?.renderCall, renderResult: display?.renderResult, renderShell: display?.renderShell });
+	registerYield(pi as unknown as ExtensionAPI, {
+		open,
+		now,
+		renderCall: display?.renderCall,
+		renderResult: display?.renderResult,
+		renderShell: display?.renderShell,
+	});
 	assert.ok(tool);
 	const registered = tool;
 	const ctx = { mode };
-	const emit = (name: string, event: Record<string, unknown>) => (handlers.get(name) ?? []).map((handler) => handler({ type: name, ...event }, ctx)).at(-1);
+	const emit = (name: string, event: Record<string, unknown>) =>
+		(handlers.get(name) ?? []).map((handler) => handler({ type: name, ...event }, ctx)).at(-1);
 	return {
 		tool: registered,
 		run: (input: unknown) => registered.execute("call", input as never, undefined, undefined, ctx as never),
 		deliver: (message: Record<string, unknown>) => emit("message_end", { message }),
 		settle: () => emit("agent_before_settle", { entries: [], continue: false }),
 		settled: () => emit("agent_settled", { aborted: false }),
-		start: (selectedTools: string[]) => { emit("before_agent_start", { systemPromptOptions: { selectedTools } }); return selectedTools; },
+		start: (selectedTools: string[]) => {
+			emit("before_agent_start", { systemPromptOptions: { selectedTools } });
+			return selectedTools;
+		},
 	};
 }
 
@@ -55,20 +76,35 @@ const COMPLETION = { role: "custom", customType: JOB_COMPLETION_MESSAGE, content
 const PEER = { role: "custom", customType: "fixture.note", content: "Another message." };
 const text = (value: string) => ({ role: "assistant", stopReason: "stop", content: [{ type: "text", text: value }] });
 const RUNNING: YieldRow = { id: "4f2a9c1e-0000-4000-8000-000000000001", commandPreview: "npm test", state: "running" };
-const SETTLED: YieldRow = { id: "7b3d2e10-0000-4000-8000-000000000002", commandPreview: "npm run lint", state: "settled" };
+const SETTLED: YieldRow = {
+	id: "7b3d2e10-0000-4000-8000-000000000002",
+	commandPreview: "npm run lint",
+	state: "settled",
+};
 
 describe("jobs_yield", () => {
 	it("ends the turn with the note, the time and the jobs still to deliver", async () => {
-		const result = await fixture("tui", () => [RUNNING, SETTLED], () => 42).run({ note: "The suite and the lint run; their results follow." });
+		const result = await fixture(
+			"tui",
+			() => [RUNNING, SETTLED],
+			() => 42,
+		).run({ note: "The suite and the lint run; their results follow." });
 		assert.equal(result.terminate, true);
 		assert.deepEqual(result.content, [{ type: "text", text: YIELD_ENDED_TEXT }]);
-		assert.deepEqual(result.details, { note: "The suite and the lint run; their results follow.", at: 42, jobs: [RUNNING, SETTLED] });
+		assert.deepEqual(result.details, {
+			note: "The suite and the lint run; their results follow.",
+			at: 42,
+			jobs: [RUNNING, SETTLED],
+		});
 		assert.deepEqual((result as { structuredContent?: unknown }).structuredContent, result.details);
 		assert.equal(compile(YieldOutputSchema).check(result.details), true);
 	});
 
 	it("bounds the listed jobs and counts the rest", async () => {
-		const open = Array.from({ length: YIELD_ROWS + 3 }, (_, index): YieldRow => ({ id: `job-${index}`, state: "running" }));
+		const open = Array.from(
+			{ length: YIELD_ROWS + 3 },
+			(_, index): YieldRow => ({ id: `job-${index}`, state: "running" }),
+		);
 		const result = await fixture("tui", () => open).run({ note: "Many checks run." });
 		const details = result.details as { jobs: YieldRow[]; omitted?: number };
 		assert.deepEqual(details.jobs, open.slice(0, YIELD_ROWS));
@@ -97,18 +133,37 @@ describe("jobs_yield", () => {
 		assert.match(YIELD_DESCRIPTION, /what still runs and what happens next/u);
 		assert.match(YIELD_DESCRIPTION, /every call in the last tool batch ends the turn/u);
 		assert.match(YIELD_DESCRIPTION, /alone or with other calls that also end the turn/u);
-		assert.match(YIELD_DESCRIPTION, /cover only this session's jobs: when other work of this session is also open and has its own tool that ends the turn, call that tool in the same batch/u);
-		const texts = [YIELD_DESCRIPTION, YIELD_SNIPPET, YIELD_GUIDELINE, YIELD_ENDED_TEXT, YIELD_REFUSED, COMPLETE_ANSWER].join("\n");
-		assert.doesNotMatch(texts, /\bagent_|delegat|nothing (is )?(needed|needs) (from )?you|needs? nothing from|nothing for you|\bwait/iu, "no sibling vocabulary, no wait wording and no pseudo-state line");
+		assert.match(
+			YIELD_DESCRIPTION,
+			/cover only this session's jobs: when other work of this session is also open and has its own tool that ends the turn, call that tool in the same batch/u,
+		);
+		const texts = [
+			YIELD_DESCRIPTION,
+			YIELD_SNIPPET,
+			YIELD_GUIDELINE,
+			YIELD_ENDED_TEXT,
+			YIELD_REFUSED,
+			COMPLETE_ANSWER,
+		].join("\n");
+		assert.doesNotMatch(
+			texts,
+			/\bagent_|delegat|nothing (is )?(needed|needs) (from )?you|needs? nothing from|nothing for you|\bwait/iu,
+			"no sibling vocabulary, no wait wording and no pseudo-state line",
+		);
 	});
 
 	it("is not offered in print and JSON runs", () => {
-		for (const mode of ["print", "json"]) assert.deepEqual(fixture(mode).start(["bash", "jobs", YIELD_TOOL, "read"]), ["bash", "jobs", "read"], mode);
-		for (const mode of ["tui", "rpc"]) assert.deepEqual(fixture(mode).start(["bash", YIELD_TOOL]), ["bash", YIELD_TOOL], mode);
+		for (const mode of ["print", "json"])
+			assert.deepEqual(fixture(mode).start(["bash", "jobs", YIELD_TOOL, "read"]), ["bash", "jobs", "read"], mode);
+		for (const mode of ["tui", "rpc"])
+			assert.deepEqual(fixture(mode).start(["bash", YIELD_TOOL]), ["bash", YIELD_TOOL], mode);
 	});
 
 	it("asks print and JSON runs once for the complete answer after a job completion that follows their answer", () => {
-		const request = { entries: [{ type: "custom_message", customType: COMPLETE_ANSWER_TYPE, content: COMPLETE_ANSWER, display: false }], continue: true };
+		const request = {
+			entries: [{ type: "custom_message", customType: COMPLETE_ANSWER_TYPE, content: COMPLETE_ANSWER, display: false }],
+			continue: true,
+		};
 		for (const mode of ["print", "json"]) {
 			const f = fixture(mode);
 			f.deliver(USER);
@@ -156,20 +211,42 @@ describe("jobs_yield", () => {
 });
 
 describe("the jobs_yield card", () => {
-	const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value, bg: (color: string, value: string) => `<${color}>${value}`, getBgAnsi: () => "" } as unknown as Theme;
+	const theme = {
+		fg: (_color: string, value: string) => value,
+		bold: (value: string) => value,
+		bg: (color: string, value: string) => `<${color}>${value}`,
+		getBgAnsi: () => "",
+	} as unknown as Theme;
 	const today = new Date();
 	const at = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 9, 5).getTime();
-	const note = "The test suite and the lint run in the background; each result follows as it settles. ".repeat(4).trim();
+	const note = "The test suite and the lint run in the background; each result follows as it settles. "
+		.repeat(4)
+		.trim();
 	const details = { note, at, jobs: [RUNNING, SETTLED] };
-	const base = { expanded: false, isError: false, keyText: (id: string) => (id === "app.tools.expand" ? "ctrl+o" : ""), outputPad: 1 };
-	const plain = (lines: readonly string[] | undefined) => (lines ?? []).map((line) => stripVTControlCharacters(line).replace(/<[A-Za-z]+>/gu, "").trimEnd());
+	const base = {
+		expanded: false,
+		isError: false,
+		keyText: (id: string) => (id === "app.tools.expand" ? "ctrl+o" : ""),
+		outputPad: 1,
+	};
+	const plain = (lines: readonly string[] | undefined) =>
+		(lines ?? []).map((line) =>
+			stripVTControlCharacters(line)
+				.replace(/<[A-Za-z]+>/gu, "")
+				.trimEnd(),
+		);
 
 	function row(context: Record<string, unknown>, value: Record<string, unknown> = details, output = YIELD_ENDED_TEXT) {
 		const f = fixture();
 		const state: Record<string, unknown> = {};
 		const shared = { ...base, ...context, state, args: { note: value.note } };
 		const call = f.tool.renderCall?.({ note: value.note } as never, theme, shared as never);
-		const result = f.tool.renderResult?.({ content: [{ type: "text", text: output }], details: value, isError: shared.isError } as never, { expanded: shared.expanded === true, isPartial: false }, theme, shared as never);
+		const result = f.tool.renderResult?.(
+			{ content: [{ type: "text", text: output }], details: value, isError: shared.isError } as never,
+			{ expanded: shared.expanded === true, isPartial: false },
+			theme,
+			shared as never,
+		);
 		return { call, result };
 	}
 
@@ -196,8 +273,16 @@ describe("the jobs_yield card", () => {
 		const streaming = call?.render(60) ?? [];
 		assert.deepEqual(plain(streaming), ["", " jobs_yield · ending turn", " The suite runs.", ""]);
 		assert.ok(streaming.every((line) => line.startsWith("<customMessageBg>")));
-		assert.ok(streaming.every((line) => stripVTControlCharacters(line).replace(/<[A-Za-z]+>/gu, "").length === 60), "the background reaches the edge");
-		f.tool.renderResult?.({ content: [{ type: "text", text: YIELD_ENDED_TEXT }], details } as never, { expanded: false, isPartial: false }, theme, { ...base, state, args: { note } } as never);
+		assert.ok(
+			streaming.every((line) => stripVTControlCharacters(line).replace(/<[A-Za-z]+>/gu, "").length === 60),
+			"the background reaches the edge",
+		);
+		f.tool.renderResult?.(
+			{ content: [{ type: "text", text: YIELD_ENDED_TEXT }], details } as never,
+			{ expanded: false, isPartial: false },
+			theme,
+			{ ...base, state, args: { note } } as never,
+		);
 		assert.deepEqual(call?.render(60), [], "the result slot draws the settled card");
 	});
 
@@ -207,8 +292,13 @@ describe("the jobs_yield card", () => {
 		assert.equal(lines.length, 1 + 1 + 3 + 1 + 1, "padding, title, three note lines, hint, padding");
 		assert.match(lines[5] ?? "", /^ \.\.\. \(\d+ more lines?, ctrl\+o to expand\)$/u);
 		assert.doesNotMatch(lines.join("\n"), /npm test|starts the next turn/u, "details wait for expansion");
-		assert.equal(plain(row({}, { ...details, note: "Short note." }).result?.render(100)).at(-2), " ... (ctrl+o to expand)");
-		const hinted = plain(row({ keyHint: (id: string, description: string) => `[${id}] ${description}` }).result?.render(100));
+		assert.equal(
+			plain(row({}, { ...details, note: "Short note." }).result?.render(100)).at(-2),
+			" ... (ctrl+o to expand)",
+		);
+		const hinted = plain(
+			row({ keyHint: (id: string, description: string) => `[${id}] ${description}` }).result?.render(100),
+		);
 		assert.match(hinted[5] ?? "", /^ \.\.\. \(\d+ more lines?, \[app\.tools\.expand\] to expand\)$/u);
 	});
 
@@ -218,8 +308,17 @@ describe("the jobs_yield card", () => {
 		assert.equal(lines.slice(2).join(" ").replace(/\s+/gu, " ").includes(note), true);
 		assert.match(joined, /^ {3}job 4f2a9c1e · running · npm test$/mu);
 		assert.match(joined, /^ {3}job 7b3d2e10 · completion pending · npm run lint$/mu);
-		const long = plain(row({ expanded: true }, { ...details, jobs: [{ ...RUNNING, commandPreview: `npm test -- ${"--flag ".repeat(30)}` }] }).result?.render(60));
-		assert.match(long.join("\n"), /^ {3}job 4f2a9c1e · running · npm test -- --flag/mu, "a long command loses only its own end");
+		const long = plain(
+			row(
+				{ expanded: true },
+				{ ...details, jobs: [{ ...RUNNING, commandPreview: `npm test -- ${"--flag ".repeat(30)}` }] },
+			).result?.render(60),
+		);
+		assert.match(
+			long.join("\n"),
+			/^ {3}job 4f2a9c1e · running · npm test -- --flag/mu,
+			"a long command loses only its own end",
+		);
 		assert.match(joined, /^ Each job completion starts the next turn\.$/mu);
 		assert.doesNotMatch(joined, /to expand|nothing/iu);
 		const omitted = plain(row({ expanded: true }, { ...details, omitted: 2 }).result?.render(100));
@@ -237,30 +336,68 @@ describe("the jobs_yield card", () => {
 	it("draws a refused call in the error background with its error", () => {
 		const drawn = row({ isError: true }, { note: "Short note." }, YIELD_REFUSED).result?.render(200) ?? [];
 		assert.ok(drawn.every((line) => line.startsWith("<toolErrorBg>")));
-		assert.deepEqual(plain(drawn), ["", " jobs_yield · could not end the turn", " Short note.", ` ${YIELD_REFUSED}`, ""]);
+		assert.deepEqual(plain(drawn), [
+			"",
+			" jobs_yield · could not end the turn",
+			" Short note.",
+			` ${YIELD_REFUSED}`,
+			"",
+		]);
 	});
 
 	it("keeps narrow widths inside the card", () => {
 		for (const width of [8, 20, 33]) {
 			for (const expanded of [false, true]) {
 				const lines = row({ expanded }).result?.render(width) ?? [];
-				assert.ok(lines.every((line) => stripVTControlCharacters(line).replace(/<[A-Za-z]+>/gu, "").length === width), `width ${width}`);
+				assert.ok(
+					lines.every((line) => stripVTControlCharacters(line).replace(/<[A-Za-z]+>/gu, "").length === width),
+					`width ${width}`,
+				);
 			}
 		}
 	});
 
 	it("expands and collapses on a click inside Pi's tool row", async (t) => {
 		initTheme("dark", false);
-		const nativeTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
+		const nativeTui = await import(
+			createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui")
+		);
 		const previous = nativeTui.getKeybindings();
-		nativeTui.setKeybindings(new nativeTui.KeybindingsManager({ ...nativeTui.TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" } }));
+		nativeTui.setKeybindings(
+			new nativeTui.KeybindingsManager({
+				...nativeTui.TUI_KEYBINDINGS,
+				"app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" },
+			}),
+		);
 		t.after(() => nativeTui.setKeybindings(previous));
 		const f = fixture();
-		const component = new ToolExecutionComponent(YIELD_TOOL, "call-yield", { note }, undefined, f.tool, { requestRender() {} } as unknown as TUI, ".");
+		const component = new ToolExecutionComponent(
+			YIELD_TOOL,
+			"call-yield",
+			{ note },
+			undefined,
+			f.tool,
+			{ requestRender() {} } as unknown as TUI,
+			".",
+		);
 		component.updateResult({ content: [{ type: "text", text: YIELD_ENDED_TEXT }], details, isError: false });
 		const width = 100;
 		const lines = () => component.render(width).map((line) => stripVTControlCharacters(line));
-		const click = (y: number) => component.handleMouse({ type: "click", button: "left", x: 4, y, screenX: 4, screenY: y, width, height: lines().length, shift: false, alt: false, ctrl: false, clickCount: 1 } as never);
+		const click = (y: number) =>
+			component.handleMouse({
+				type: "click",
+				button: "left",
+				x: 4,
+				y,
+				screenX: 4,
+				screenY: y,
+				width,
+				height: lines().length,
+				shift: false,
+				alt: false,
+				ctrl: false,
+				clickCount: 1,
+			} as never);
 		assert.match(lines().join("\n"), /\.\.\. \(\d+ more lines?, ctrl\+o to expand\)/u);
 		const noteRow = lines().findIndex((line) => line.includes("The test suite and the lint"));
 		assert.ok(noteRow > 0);

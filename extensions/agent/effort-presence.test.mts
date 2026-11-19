@@ -27,11 +27,31 @@ function readPage(root: string, self: Parameters<typeof readRelatedEfforts>[1]) 
 	return readRelatedEfforts(resources(root), self);
 }
 function intent(paths = ["extensions/agent"], branches = ["topic"]): PrimaryIntentClaim {
-	return { purpose: "Effort awareness", integration: "Compose the change", authority: "The operator requested the change", scope: { paths, branches }, contactThread: "storage/thread", updatedAt: "2026-10-04T10:00:00Z" };
+	return {
+		purpose: "Effort awareness",
+		integration: "Compose the change",
+		authority: "The operator requested the change",
+		scope: { paths, branches },
+		contactThread: "storage/thread",
+		updatedAt: "2026-10-04T10:00:00Z",
+	};
 }
 function record(root: string, fields: Record<string, unknown> = {}): string {
 	const id = typeof fields.id === "string" ? fields.id : randomUUID();
-	writeFileSync(primaryEndpointPath(root, id), JSON.stringify({ id, version: PRIMARY_ENDPOINT_VERSION, serverId: randomUUID(), cwd: "/work/topic", hostname: hostname(), pid: process.pid, socketPath: join(root, "missing.sock"), startedAt: "2026-10-04T09:00:00Z", ...fields }));
+	writeFileSync(
+		primaryEndpointPath(root, id),
+		JSON.stringify({
+			id,
+			version: PRIMARY_ENDPOINT_VERSION,
+			serverId: randomUUID(),
+			cwd: "/work/topic",
+			hostname: hostname(),
+			pid: process.pid,
+			socketPath: join(root, "missing.sock"),
+			startedAt: "2026-10-04T09:00:00Z",
+			...fields,
+		}),
+	);
 	return id;
 }
 const self = () => ({ id: randomUUID(), cwd: "/work/topic", intentClaim: intent() });
@@ -41,9 +61,20 @@ it("uses the canonical common Git directory for separate worktrees", async (t) =
 	const repository = join(root, "repository");
 	const worktree = join(root, "worktree");
 	mkdirSync(repository);
-	const git = (args: string[]) => execFileSync("git", args, { cwd: repository, timeout: 3000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] });
+	const git = (args: string[]) =>
+		execFileSync("git", args, { cwd: repository, timeout: 3000, maxBuffer: 4096, stdio: ["ignore", "pipe", "pipe"] });
 	git(["init", "-q"]);
-	git(["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-q", "--allow-empty", "-m", "initial"]);
+	git([
+		"-c",
+		"user.name=Test",
+		"-c",
+		"user.email=test@example.invalid",
+		"commit",
+		"-q",
+		"--allow-empty",
+		"-m",
+		"initial",
+	]);
 	git(["worktree", "add", "-q", "-b", "effort", worktree]);
 	const main = await discoverPrimaryLocation(repository);
 	const linked = await discoverPrimaryLocation(worktree);
@@ -68,15 +99,33 @@ it("excludes proven dead records and retains distinct foreign unknown and incomp
 	const reader = self();
 	record(root, { id: reader.id });
 	const page = await readPage(root, reader);
-	assert.deepEqual(new Map(page.efforts.map((row) => [row.id, row.liveness])), new Map([[unknown, "unknown"], [incompatible, "incompatible"], [live, "live"], [unrelated, "live"]]));
-	assert.deepEqual(page.coverage, { visited: 6, unreadable: 0, dead: 1, unrelated: 1, omitted: 0, complete: true, reasons: [] });
+	assert.deepEqual(
+		new Map(page.efforts.map((row) => [row.id, row.liveness])),
+		new Map([
+			[unknown, "unknown"],
+			[incompatible, "incompatible"],
+			[live, "live"],
+			[unrelated, "live"],
+		]),
+	);
+	assert.deepEqual(page.coverage, {
+		visited: 6,
+		unreadable: 0,
+		dead: 1,
+		unrelated: 1,
+		omitted: 0,
+		complete: true,
+		reasons: [],
+	});
 	for (const id of [deadId, unknown, incompatible, unrelated]) assert.ok(existsSync(primaryEndpointPath(root, id)));
 });
 
 it("classifies permission-denied process probes as unknown rather than dead", async (t) => {
 	const root = rootFor(t);
 	record(root);
-	t.mock.method(process, "kill", () => { throw Object.assign(new Error("permission denied"), { code: "EPERM" }); });
+	t.mock.method(process, "kill", () => {
+		throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+	});
 	const page = await readPage(root, self());
 	assert.equal(page.efforts[0]?.liveness, "unknown");
 	assert.equal(page.coverage.dead, 0);
@@ -84,12 +133,18 @@ it("classifies permission-denied process probes as unknown rather than dead", as
 
 it("matches cwd independently from Git and labels exact or prefix scope overlap as claim-derived", async (t) => {
 	const root = rootFor(t);
-	const id = record(root, { intentClaim: intent(["extensions/agent/manager.ts", "extensions/agent-other", "glob*"], ["topic", "other"]) });
+	const id = record(root, {
+		intentClaim: intent(["extensions/agent/manager.ts", "extensions/agent-other", "glob*"], ["topic", "other"]),
+	});
 	record(root, { repository: "/work/git-common" });
 	const page = await readPage(root, self());
 	assert.equal(page.efforts.length, 2);
 	const declared = page.efforts.find((row) => row.id === id);
-	assert.deepEqual(declared?.overlap, { basis: "intentClaim", paths: ["extensions/agent/manager.ts"], branches: ["topic"] });
+	assert.deepEqual(declared?.overlap, {
+		basis: "intentClaim",
+		paths: ["extensions/agent/manager.ts"],
+		branches: ["topic"],
+	});
 	assert.equal(declared?.relationship, "cwd");
 	const gitPage = await readPage(root, { ...self(), repository: "/different/git" });
 	assert.equal(gitPage.efforts.length, 2);
@@ -102,7 +157,15 @@ it("reports malformed optional intent as unreadable without pretending the direc
 	record(root, { repository: 12 });
 	writeFileSync(join(root, ".primaries", `${randomUUID()}.json`), "not JSON");
 	const page = await readPage(root, self());
-	assert.deepEqual(page.coverage, { visited: 3, unreadable: 3, dead: 0, unrelated: 0, omitted: 0, complete: false, reasons: ["unreadable"] });
+	assert.deepEqual(page.coverage, {
+		visited: 3,
+		unreadable: 3,
+		dead: 0,
+		unrelated: 0,
+		omitted: 0,
+		complete: false,
+		reasons: ["unreadable"],
+	});
 	assert.equal(page.efforts.length, 0);
 });
 
@@ -145,10 +208,17 @@ it("reports failed Git discovery explicitly instead of outside-git or unrelated"
 	const previous = process.env.PATH;
 	process.env.PATH = "";
 	let location: Awaited<ReturnType<typeof discoverPrimaryLocation>>;
-	try { location = await discoverPrimaryLocation(root); }
-	finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; }
+	try {
+		location = await discoverPrimaryLocation(root);
+	} finally {
+		if (previous === undefined) delete process.env.PATH;
+		else process.env.PATH = previous;
+	}
 	assert.equal(location.repositoryState, "unknown");
-	assert.deepEqual(await discoverPrimaryLocation(join(root, "missing")), { cwd: join(root, "missing"), repositoryState: "unknown" });
+	assert.deepEqual(await discoverPrimaryLocation(join(root, "missing")), {
+		cwd: join(root, "missing"),
+		repositoryState: "unknown",
+	});
 	record(root);
 	const page = await readPage(root, { id: randomUUID(), ...location });
 	assert.equal(page.coverage.unrelated, 0);
@@ -196,7 +266,6 @@ it("labels fallback origin only without intent and clears without retaining a st
 	assert.equal(row?.observedPurpose, undefined);
 });
 
-
 it("lists all local efforts, exposes machine purpose only, and marks declared gate plans", async (t) => {
 	const root = rootFor(t);
 	const claim = { ...intent(), scope: { ...intent().scope, fullGate: true } };
@@ -230,10 +299,17 @@ it("does not claim a shared machine gate for foreign-host records", async (t) =>
 });
 
 function unsupportedNative(root: string) {
-	return new AgentCatalog(root).create({ cwd: "/work/topic", agentDir: root, packageDir: root, model: { provider: "fixture", modelId: "model" }, thinkingLevel: "off", trust: true });
+	return new AgentCatalog(root).create({
+		cwd: "/work/topic",
+		agentDir: root,
+		packageDir: root,
+		model: { provider: "fixture", modelId: "model" },
+		thinkingLevel: "off",
+		trust: true,
+	});
 }
 
-it("counts unsupported native producers separately from omitted claims and contains corrupt records", async t => {
+it("counts unsupported native producers separately from omitted claims and contains corrupt records", async (t) => {
 	const root = rootFor(t);
 	unsupportedNative(root);
 	let page = await readPage(root, self());
@@ -249,10 +325,33 @@ it("counts unsupported native producers separately from omitted claims and conta
 	assert.deepEqual(page.coverage.reasons, ["native-record-unreadable"]);
 });
 
-it("does not count an omitted native claim again as an unsupported producer", async t => {
-	const root = rootFor(t), record = unsupportedNative(root), catalog = new AgentCatalog(root);
-	const view = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", storageId: record.storageId, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, modifiedAt: 1, owner: "here", state: "idle", cost: 0, partial: false }] });
-	writeFileSync(catalog.path(record.storageId), JSON.stringify({ ...record, view: { ...view, intentClaims: { rows: {}, coverage: { complete: false, omitted: 1 } } } }));
+it("does not count an omitted native claim again as an unsupported producer", async (t) => {
+	const root = rootFor(t),
+		record = unsupportedNative(root),
+		catalog = new AgentCatalog(root);
+	const view = boundCatalogView({
+		updatedAt: "2026-01-01T00:00:00.000Z",
+		storageId: record.storageId,
+		rows: [
+			{
+				id: record.storageId,
+				storageId: record.storageId,
+				cwd: record.cwd,
+				modifiedAt: 1,
+				owner: "here",
+				state: "idle",
+				cost: 0,
+				partial: false,
+			},
+		],
+	});
+	writeFileSync(
+		catalog.path(record.storageId),
+		JSON.stringify({
+			...record,
+			view: { ...view, intentClaims: { rows: {}, coverage: { complete: false, omitted: 1 } } },
+		}),
+	);
 	const page = await readPage(root, self());
 	assert.equal(page.coverage.unsupported, undefined);
 	assert.equal(page.coverage.omitted, 1);
@@ -264,38 +363,90 @@ it("retains unknown native efforts and omits ended generations with their declar
 	const root = rootFor(t);
 	const native = unsupportedNative(root);
 	const catalog = new AgentCatalog(root);
-	const metadata: NativeIntentMetadata = { claim: { ...intent(), scope: { ...intent().scope, fullGate: true } }, cwd: native.cwd, repository: null, repositoryState: "outside-git", hostname: hostname(), startedAt: "2026-01-01T00:00:00.000Z", taskId: 2 };
+	const metadata: NativeIntentMetadata = {
+		claim: { ...intent(), scope: { ...intent().scope, fullGate: true } },
+		cwd: native.cwd,
+		repository: null,
+		repositoryState: "outside-git",
+		hostname: hostname(),
+		startedAt: "2026-01-01T00:00:00.000Z",
+		taskId: 2,
+	};
 	const rows = [
-		{ id: native.storageId, storageId: native.storageId, cwd: native.cwd, modifiedAt: 1, owner: "here", state: "idle", cost: 0, partial: false },
-		{ id: `${native.storageId}:2`, storageId: native.storageId, cwd: native.cwd, modifiedAt: 2, owner: "here", state: "idle", cost: 0, partial: false },
+		{
+			id: native.storageId,
+			storageId: native.storageId,
+			cwd: native.cwd,
+			modifiedAt: 1,
+			owner: "here",
+			state: "idle",
+			cost: 0,
+			partial: false,
+		},
+		{
+			id: `${native.storageId}:2`,
+			storageId: native.storageId,
+			cwd: native.cwd,
+			modifiedAt: 2,
+			owner: "here",
+			state: "idle",
+			cost: 0,
+			partial: false,
+		},
 	];
-	const view = withIntentClaims(boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", storageId: native.storageId, rows }), {
-		rows: Object.fromEntries(rows.map(row => [row.id, metadata])),
-		coverage: { complete: true, omitted: 0 },
-	});
+	const view = withIntentClaims(
+		boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", storageId: native.storageId, rows }),
+		{
+			rows: Object.fromEntries(rows.map((row) => [row.id, metadata])),
+			coverage: { complete: true, omitted: 0 },
+		},
+	);
 	writeFileSync(catalog.path(native.storageId), JSON.stringify({ ...native, view }));
 	const paths = hostPaths(native);
 	mkdirSync(dirname(paths.claim), { recursive: true });
-	writeFileSync(paths.claim, JSON.stringify({ token: "writer", sessionId: native.storageId, cwd: native.cwd, host: hostname(), createdAt: new Date().toISOString(), pid: process.pid }));
+	writeFileSync(
+		paths.claim,
+		JSON.stringify({
+			token: "writer",
+			sessionId: native.storageId,
+			cwd: native.cwd,
+			host: hostname(),
+			createdAt: new Date().toISOString(),
+			pid: process.pid,
+		}),
+	);
 	const spy = t.mock.method(process, "kill", () => true);
 	const page = await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() });
 	assert.equal(page.efforts.length, 2);
-	assert.ok(page.efforts.every(row => row.liveness === "unknown"));
-	assert.ok(page.efforts.every(row => row.intentClaim?.scope.fullGate === true));
+	assert.ok(page.efforts.every((row) => row.liveness === "unknown"));
+	assert.ok(page.efforts.every((row) => row.intentClaim?.scope.fullGate === true));
 	assert.ok(spy.mock.callCount() > 0, "process presence remains unknown");
-	const ended = { token: "writer", sessionId: native.storageId, cwd: native.cwd, host: hostname(), createdAt: "2026-01-01T00:00:00.000Z", endedAt: "2026-01-01T00:00:01.000Z", pid: process.pid };
+	const ended = {
+		token: "writer",
+		sessionId: native.storageId,
+		cwd: native.cwd,
+		host: hostname(),
+		createdAt: "2026-01-01T00:00:00.000Z",
+		endedAt: "2026-01-01T00:00:01.000Z",
+		pid: process.pid,
+	};
 	writeFileSync(paths.claim, JSON.stringify(ended));
 	const retired = await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() });
 	assert.deepEqual(retired.efforts, []);
-	spy.mock.mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
+	spy.mock.mockImplementation(() => {
+		throw Object.assign(new Error("gone"), { code: "ESRCH" });
+	});
 	const { endedAt: _endedAt, ...unmarked } = ended;
 	writeFileSync(paths.claim, JSON.stringify(unmarked));
 	assert.deepEqual((await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() })).efforts, []);
 });
 
-it("shares visit, result and byte caps across ordinary and native roots without counting unsupported claims as omissions", async t => {
+it("shares visit, result and byte caps across ordinary and native roots without counting unsupported claims as omissions", async (t) => {
 	const root = rootFor(t);
-	for (let index = 0; index < 140; index++) { record(root); unsupportedNative(root); }
+	for (let index = 0; index < 140; index++) {
+		record(root);
+		unsupportedNative(root);
+	}
 	const page = await readPage(root, self());
 	assert.equal(page.coverage.visited, page.limits.visits);
 	assert.equal(page.efforts.length, page.limits.results);

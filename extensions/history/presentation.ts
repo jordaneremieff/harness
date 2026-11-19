@@ -11,12 +11,7 @@
  * walked scope, and a bounded page never reads as the end of the ancestry.
  */
 
-import type {
-	AgentToolResult,
-	KeybindingHints,
-	Theme,
-	ToolRenderResultOptions,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { type Component, Text } from "@earendil-works/pi-tui";
 
 const DISPLAY_LIMIT = 32_000;
@@ -104,7 +99,9 @@ function textComponent(text: string, previous?: Component): Text {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
 }
 
 function field(value: Record<string, unknown>, key: string): unknown {
@@ -144,7 +141,8 @@ function callCard(
 	theme: Theme,
 	context: CallContext,
 ): Text {
-	const heading = theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${rowSafe(subject)}`) : "");
+	const heading =
+		theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${rowSafe(subject)}`) : "");
 	if (context.expanded) {
 		return textComponent(
 			[heading, theme.fg("toolOutput", boundedBody(JSON.stringify(args ?? {}, null, 2)))].join("\n"),
@@ -203,7 +201,8 @@ function filterLabel(filter: unknown): string {
 	if (!value) return "";
 	const source = stringField(value, "source");
 	if (!source) return "";
-	const toolName = typeof value.toolName === "string" && value.toolName ? `(${previewMark(value.toolName, 60).text})` : "";
+	const toolName =
+		typeof value.toolName === "string" && value.toolName ? `(${previewMark(value.toolName, 60).text})` : "";
 	const errorsOnly = value.errorsOnly === true ? " errors only" : "";
 	return `filter ${source}${toolName}${errorsOnly}`;
 }
@@ -217,7 +216,10 @@ function entryIdentity(entry: Record<string, unknown>): string {
 	const error = field(entry, "isError") === true ? "error" : "";
 	const timestamp = stringField(entry, "timestamp");
 	const time = timestamp ? previewMark(timestamp, 40).text : "";
-	return [kind, actor, error, time].filter(Boolean).map((part) => rowSafe(part)).join(" · ");
+	return [kind, actor, error, time]
+		.filter(Boolean)
+		.map((part) => rowSafe(part))
+		.join(" · ");
 }
 
 /** Stored entry ID: native IDs are numbers and read as ranks; ordinary IDs stay verbatim. */
@@ -252,7 +254,12 @@ export function renderSearchCall(input: unknown, theme: Theme, context: CallCont
 	} else if (typeof args?.slot === "number" || typeof args?.offset === "number") {
 		qualifiers.push(`continuation slot ${args?.slot ?? 0} offset ${args?.offset ?? 0}`);
 	}
-	if (args?.maxVisits !== undefined || args?.maxScanBytes !== undefined || args?.maxMatches !== undefined || args?.maxOutputBytes !== undefined) {
+	if (
+		args?.maxVisits !== undefined ||
+		args?.maxScanBytes !== undefined ||
+		args?.maxMatches !== undefined ||
+		args?.maxOutputBytes !== undefined
+	) {
 		hint = true;
 	}
 	return callCard("history_search", subject, qualifiers, hint, input, theme, context);
@@ -263,13 +270,15 @@ function positionLabel(position: Record<string, unknown>): string {
 	const message = numberField(position, "message");
 	const block = numberField(position, "block");
 	const path = Array.isArray(position.path) ? position.path.filter((item) => typeof item === "number") : [];
-	return [
-		message !== undefined ? `message ${message}` : "",
-		block !== undefined ? `block ${block}` : "",
-		path.length > 0 ? previewMark(`path ${path.join("/")}`, 48).text : "",
-	]
-		.filter(Boolean)
-		.join(" ") || "position";
+	return (
+		[
+			message !== undefined ? `message ${message}` : "",
+			block !== undefined ? `block ${block}` : "",
+			path.length > 0 ? previewMark(`path ${path.join("/")}`, 48).text : "",
+		]
+			.filter(Boolean)
+			.join(" ") || "position"
+	);
 }
 
 const SEARCH_STATUS: Record<string, string> = {
@@ -299,7 +308,10 @@ function typeTally(matches: unknown[]): string {
 		if (type) counts.set(type, (counts.get(type) ?? 0) + 1);
 	}
 	const entries = [...counts.entries()];
-	const shown = entries.slice(0, 4).map(([type, count]) => countNoun(count, type, pluralType(type))).join(", ");
+	const shown = entries
+		.slice(0, 4)
+		.map(([type, count]) => countNoun(count, type, pluralType(type)))
+		.join(", ");
 	const omitted = entries.length - 4;
 	if (omitted > 0) return `${shown}, +${omitted} more`;
 	return shown;
@@ -328,7 +340,8 @@ function searchEvidence(matches: unknown[]): string {
 	if (matches.length === 0) return "No matches in this page.";
 	const lines = [`Matches (first ${Math.min(EVIDENCE_MATCHES, matches.length)} of ${matches.length}):`];
 	for (const [index, match] of matches.slice(0, EVIDENCE_MATCHES).entries()) lines.push(...matchEvidence(match, index));
-	if (matches.length > EVIDENCE_MATCHES) lines.push(`(+${matches.length - EVIDENCE_MATCHES} more matches in the raw payload)`);
+	if (matches.length > EVIDENCE_MATCHES)
+		lines.push(`(+${matches.length - EVIDENCE_MATCHES} more matches in the raw payload)`);
 	return lines.join("\n");
 }
 
@@ -342,7 +355,8 @@ function searchScope(value: Record<string, unknown>, statusWord: string): string
 	];
 	if (numberField(value, "excluded") !== undefined) parts.push(`${numberField(value, "excluded")} excluded by filter`);
 	const skipped = asRecord(field(value, "skipped"));
-	const unexamined = (skipped ? numberField(skipped, "depth") ?? 0 : 0) + (skipped ? numberField(skipped, "pointerLength") ?? 0 : 0);
+	const unexamined =
+		(skipped ? (numberField(skipped, "depth") ?? 0) : 0) + (skipped ? (numberField(skipped, "pointerLength") ?? 0) : 0);
 	if (unexamined > 0) parts.push(countNoun(unexamined, "argument value skipped", "argument values skipped"));
 	const next = continuationWord(value);
 	if (next) parts.push(next);
@@ -382,7 +396,10 @@ export function renderSearchResult(
 		JSON.stringify(value, null, 2),
 	].join("\n\n");
 	return resultCard(
-		{ color: searchColor(status, matches.length), line: `${countNoun(matches.length, "match", "matches")} · ${countNoun(visited, "entry visited", "entries visited")} · ${statusWord}` },
+		{
+			color: searchColor(status, matches.length),
+			line: `${countNoun(matches.length, "match", "matches")} · ${countNoun(visited, "entry visited", "entries visited")} · ${statusWord}`,
+		},
 		[typeTally(matches), continuation].filter(Boolean).join(" · "),
 		matches.length > 0,
 		expandedBody,
@@ -455,11 +472,15 @@ function readColor(status: string): OutcomeColor {
 /** The returned text with its continuation, or the action or reason when there is none. */
 function readSecondRow(value: Record<string, unknown>, continued: boolean): { text: string; hinted: boolean } {
 	const preview = typeof value.text === "string" && value.text ? previewMark(value.text, 48).text : "";
-	if (preview) return { text: [preview, continued ? "continuation available" : ""].filter(Boolean).join(" · "), hinted: true };
+	if (preview)
+		return { text: [preview, continued ? "continuation available" : ""].filter(Boolean).join(" · "), hinted: true };
 	const action = typeof value.action === "string" && value.action ? previewMark(value.action, 160).text : "";
 	const reason = typeof value.reason === "string" && value.reason ? previewMark(value.reason, 160).text : "";
 	const detail = action || reason;
-	return { text: [detail, continued ? "continuation available" : ""].filter(Boolean).join(" · "), hinted: detail !== "" || continued };
+	return {
+		text: [detail, continued ? "continuation available" : ""].filter(Boolean).join(" · "),
+		hinted: detail !== "" || continued,
+	};
 }
 
 /** The exact stored evidence this page returns: text first, then item pointers. */
@@ -475,7 +496,8 @@ function readEvidence(value: Record<string, unknown>): string {
 			const kind = stringField(item, "kind");
 			lines.push(`  ${[pointer ? previewMark(pointer, 96).text : "", kind].filter(Boolean).join(" · ")}`);
 		}
-		if (value.items.length > EVIDENCE_ITEMS) lines.push(`(+${value.items.length - EVIDENCE_ITEMS} more items in the raw payload)`);
+		if (value.items.length > EVIDENCE_ITEMS)
+			lines.push(`(+${value.items.length - EVIDENCE_ITEMS} more items in the raw payload)`);
 	} else {
 		const action = stringField(value, "action");
 		const reason = stringField(value, "reason");

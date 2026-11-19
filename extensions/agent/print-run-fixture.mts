@@ -21,10 +21,14 @@ const providerExtension = fileURLToPath(new URL("./testdata/profile-process/prov
 export type Reply = { content: AssistantMessage["content"]; stopReason: "stop" | "toolUse" };
 export const text = (value: string): Reply => ({ content: [{ type: "text", text: value }], stopReason: "stop" });
 export const call = (name: string, args: JsonObject, before?: string): Reply => ({
-	content: [...(before === undefined ? [] : [{ type: "text" as const, text: before }]), { type: "toolCall", id: randomUUID(), name, arguments: args }],
+	content: [
+		...(before === undefined ? [] : [{ type: "text" as const, text: before }]),
+		{ type: "toolCall", id: randomUUID(), name, arguments: args },
+	],
 	stopReason: "toolUse",
 });
-export const work = (before?: string): Reply => call("agent_yield", { note: "Two workers review the parser; their results follow." }, before);
+export const work = (before?: string): Reply =>
+	call("agent_yield", { note: "Two workers review the parser; their results follow." }, before);
 
 export interface PrintRun {
 	stdout: string;
@@ -33,7 +37,19 @@ export interface PrintRun {
 	/** The provider context of each request, in order. */
 	requests: TranscriptContext[];
 	/** The entries of the retained session file. */
-	entries: Array<Record<string, unknown> & { type: string; message?: { role: string; toolName?: string; content: unknown; isError?: boolean; stopReason?: string; errorMessage?: string } }>;
+	entries: Array<
+		Record<string, unknown> & {
+			type: string;
+			message?: {
+				role: string;
+				toolName?: string;
+				content: unknown;
+				isError?: boolean;
+				stopReason?: string;
+				errorMessage?: string;
+			};
+		}
+	>;
 }
 
 /**
@@ -67,45 +83,81 @@ export async function printRun(options: {
 			socket.removeAllListeners("data");
 			const { context } = JSON.parse(buffer.slice(0, buffer.indexOf("\n"))) as { context: TranscriptContext };
 			const index = requests.push(context) - 1;
-			void Promise.resolve(options.script(context, index)).then((reply) => {
-				if (reply) socket.end(`${JSON.stringify(reply)}\n`);
-				else socket.destroy();
-			}, (error: unknown) => { failures.push(error); socket.destroy(); });
+			void Promise.resolve(options.script(context, index)).then(
+				(reply) => {
+					if (reply) socket.end(`${JSON.stringify(reply)}\n`);
+					else socket.destroy();
+				},
+				(error: unknown) => {
+					failures.push(error);
+					socket.destroy();
+				},
+			);
 		});
 		socket.on("error", () => {});
 		socket.on("close", () => sockets.delete(socket));
 	});
-	await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
 	const address = server.address();
 	assert.ok(address && typeof address === "object");
 	try {
 		const args = [
-			piCli, ...(options.mode === "json" ? ["--mode", "json"] : []), "-p",
-			"--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-mcp",
-			"--session-dir", sessions,
+			piCli,
+			...(options.mode === "json" ? ["--mode", "json"] : []),
+			"-p",
+			"--offline",
+			"--no-extensions",
+			"--no-skills",
+			"--no-prompt-templates",
+			"--no-themes",
+			"--no-context-files",
+			"--no-mcp",
+			"--session-dir",
+			sessions,
 			...[providerExtension, agentExtension, ...(options.extensions ?? [])].flatMap((path) => ["-e", path]),
-			"--model", "profile-process-fixture/expert",
+			"--model",
+			"profile-process-fixture/expert",
 			options.prompt,
 		];
 		const child = spawn(process.execPath, args, {
 			cwd,
 			env: {
-				...process.env, ...options.env,
-				PI_CODING_AGENT_DIR: agentDir, PI_AGENT_DIR: agentDir, PI_AGENT_SESSIONS_DIR: join(root, "agent-sessions"), PI_OFFLINE: "1",
+				...process.env,
+				...options.env,
+				PI_CODING_AGENT_DIR: agentDir,
+				PI_AGENT_DIR: agentDir,
+				PI_AGENT_SESSIONS_DIR: join(root, "agent-sessions"),
+				PI_OFFLINE: "1",
 				PROFILE_TEST_PORT: String(address.port),
 			},
 			stdio: ["ignore", "pipe", "pipe"],
 		});
-		let stdout = "", stderr = "";
-		child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
-		child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+		let stdout = "",
+			stderr = "";
+		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+			stdout += chunk;
+		});
+		child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+			stderr += chunk;
+		});
 		const timer = setTimeout(() => child.kill("SIGKILL"), options.timeoutMs ?? 60000);
-		const code = await new Promise<number | null>((resolve, reject) => { child.once("error", reject); child.once("close", (exit) => resolve(exit)); });
+		const code = await new Promise<number | null>((resolve, reject) => {
+			child.once("error", reject);
+			child.once("close", (exit) => resolve(exit));
+		});
 		clearTimeout(timer);
 		if (failures.length > 0) throw failures[0];
-		const files = readdirSync(sessions, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".jsonl"));
+		const files = readdirSync(sessions, { recursive: true, encoding: "utf8" }).filter((name) =>
+			name.endsWith(".jsonl"),
+		);
 		assert.equal(files.length, 1, `one retained session file; stderr: ${stderr}`);
-		const entries = readFileSync(join(sessions, files[0]), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as PrintRun["entries"][number]);
+		const entries = readFileSync(join(sessions, files[0]), "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as PrintRun["entries"][number]);
 		return { stdout, stderr, code, requests, entries };
 	} finally {
 		for (const socket of sockets) socket.destroy();
@@ -117,5 +169,7 @@ export async function printRun(options: {
 /** The text of the latest `agent_yield` tool result in a provider request. */
 export function lastWorkResult(context: TranscriptContext): string | undefined {
 	const message = context.messages.findLast((item) => item.role === "toolResult" && item.toolName === "agent_yield");
-	return message?.role === "toolResult" ? message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n") : undefined;
+	return message?.role === "toolResult"
+		? message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
+		: undefined;
 }

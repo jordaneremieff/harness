@@ -48,9 +48,15 @@ import {
 	type RuleRecord,
 } from "./rule.ts";
 
-const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({
+	type: "string",
+	enum: [...values],
+});
 const StringLiteral = <const V extends string>(value: V): Schema<V> => ({ type: "string", const: value });
-const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({ ...union(schemas), type: "object" });
+const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({
+	...union(schemas),
+	type: "object",
+});
 const AnyJson: Schema<unknown> = { type: ["object", "array", "string", "number", "boolean", "null"] };
 const StringEntry = str({ minLength: 1, maxLength: MAX_LIST_ENTRY_LENGTH });
 const StringList = arr(StringEntry, { maxItems: MAX_LIST_ENTRIES });
@@ -185,25 +191,13 @@ const CliProposal = { ...CommandProposal, match: CliMatchSchema, onUnavailable: 
 
 const ProposalVariants = [
 	obj({ operation: StringLiteral("add"), ...PredicateProposal }, { open: false }),
-	obj(
-		{ operation: StringLiteral("replace"), ...PredicateProposal, expectedRevision: RevisionSchema },
-		{ open: false },
-	),
+	obj({ operation: StringLiteral("replace"), ...PredicateProposal, expectedRevision: RevisionSchema }, { open: false }),
 	obj({ operation: StringLiteral("add"), ...FactsProposal }, { open: false }),
-	obj(
-		{ operation: StringLiteral("replace"), ...FactsProposal, expectedRevision: RevisionSchema },
-		{ open: false },
-	),
+	obj({ operation: StringLiteral("replace"), ...FactsProposal, expectedRevision: RevisionSchema }, { open: false }),
 	obj({ operation: StringLiteral("add"), ...CommandProposal }, { open: false }),
-	obj(
-		{ operation: StringLiteral("replace"), ...CommandProposal, expectedRevision: RevisionSchema },
-		{ open: false },
-	),
+	obj({ operation: StringLiteral("replace"), ...CommandProposal, expectedRevision: RevisionSchema }, { open: false }),
 	obj({ operation: StringLiteral("add"), ...CliProposal }, { open: false }),
-	obj(
-		{ operation: StringLiteral("replace"), ...CliProposal, expectedRevision: RevisionSchema },
-		{ open: false },
-	),
+	obj({ operation: StringLiteral("replace"), ...CliProposal, expectedRevision: RevisionSchema }, { open: false }),
 	obj(
 		{
 			operation: StringLiteral("retire"),
@@ -264,31 +258,41 @@ export const PolicyProposeParams = obj(
 
 const MAX_PREVIEW_CONTENT_BLOCKS = 64;
 const PreviewContentSchema = arr(
-	obj(
-		{ type: StringLiteral("text"), text: str({ maxLength: MAX_RULE_EVENT_BYTES }) },
-		{ open: false },
-	),
+	obj({ type: StringLiteral("text"), text: str({ maxLength: MAX_RULE_EVENT_BYTES }) }, { open: false }),
 	{ maxItems: MAX_PREVIEW_CONTENT_BLOCKS },
 );
 
 export const PolicyRulesParams = obj(
 	{
-		view: opt(StringEnum(["rules", "catalog", "capabilities", "state", "health", "explain", "preview", "data", "authoring", "check"])),
-		id: opt(str({ minLength: 1, maxLength: 261 })),
-		draft: opt(
-			{
-				type: "object",
-				patternProperties: { "^.*$": {} },
-				maxProperties: 16,
-				description:
-					"An existing policy_propose add/replace object, not a new rule format. Full proposal and candidate validation returns admission diagnostics. Read view=authoring for the check workflow.",
-			} as Schema<Record<string, unknown>>,
+		view: opt(
+			StringEnum([
+				"rules",
+				"catalog",
+				"capabilities",
+				"state",
+				"health",
+				"explain",
+				"preview",
+				"data",
+				"authoring",
+				"check",
+			]),
 		),
+		id: opt(str({ minLength: 1, maxLength: 261 })),
+		draft: opt({
+			type: "object",
+			patternProperties: { "^.*$": {} },
+			maxProperties: 16,
+			description:
+				"An existing policy_propose add/replace object, not a new rule format. Full proposal and candidate validation returns admission diagnostics. Read view=authoring for the check workflow.",
+		} as Schema<Record<string, unknown>>),
 		effect: opt(StringEnum(["steer", "block"])),
 		cases: opt(DraftCasesSchema),
 		tool: opt(str({ minLength: 1, maxLength: 200 })),
 		input: opt({
-			type: "object", patternProperties: { "^.*$": {} }, maxProperties: 128,
+			type: "object",
+			patternProperties: { "^.*$": {} },
+			maxProperties: 128,
 		} as Schema<Record<string, unknown>>),
 		result: opt(
 			obj(
@@ -808,7 +812,10 @@ function proposalAdmissionError(value: unknown): string {
 		if (value.operation === "retire" || value.operation === "disable") return true;
 		if (!(forms[0] in fields)) return false;
 		if ("match" in fields)
-			return "cli" in (fields.match.properties as Record<string, Schema>) === (isJsonObject(value.match) && "cli" in value.match);
+			return (
+				"cli" in (fields.match.properties as Record<string, Schema>) ===
+				(isJsonObject(value.match) && "cli" in value.match)
+			);
 		return true;
 	});
 	return compile(branch ?? PolicyProposalSchema)

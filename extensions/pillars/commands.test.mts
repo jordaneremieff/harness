@@ -35,7 +35,10 @@ test("judgment scaffolds distinguish corrected continuation, derivation, and dia
 	assert.match(check, /do not turn this into a recital or scorecard/);
 	assert.match(check, /correct its affected reasoning, plans, and artifacts within the existing authorization/);
 	assert.match(check, /continue that task in this turn/);
-	assert.match(check, /Do not stop at the assessment or ask for permission to resume work the operator already authorized/);
+	assert.match(
+		check,
+		/Do not stop at the assessment or ask for permission to resume work the operator already authorized/,
+	);
 	assert.match(check, /continue the task unchanged rather than manufacture one/);
 	assert.match(check, /If no task is in progress, the assessment completes this request/);
 	assert.match(check, /name that exact boundary, hold only the actions that depend on it, and complete the rest/);

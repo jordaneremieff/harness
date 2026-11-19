@@ -16,7 +16,11 @@ function root(): string {
 	return path;
 }
 const HEADER = "---\ntitle: Alpha\ntags:\nstatus: active\nsuperseded_by: null\n---\n# Alpha\n\nBody\n";
-function headerOf(cache: ReturnType<typeof createMemorySourceCache>, directory: string, text: string): ParsedMemoryHeader {
+function headerOf(
+	cache: ReturnType<typeof createMemorySourceCache>,
+	directory: string,
+	text: string,
+): ParsedMemoryHeader {
 	return cache.read(directory, "alpha.md", { text, truncated: false });
 }
 
@@ -102,7 +106,7 @@ test("keeps complete and truncated interpretations of one window distinct", () =
 test("caches malformed frontmatter with its qualification and unusable cues", () => {
 	const cache = createMemorySourceCache();
 	const directory = root();
-	const malformedYaml = "---\ntitle: \"Alpha\n---\n# Alpha\n";
+	const malformedYaml = '---\ntitle: "Alpha\n---\n# Alpha\n';
 	const header = headerOf(cache, directory, malformedYaml);
 	assert.equal(header.metadata, "malformed");
 	assert.equal(header.parsed, undefined);

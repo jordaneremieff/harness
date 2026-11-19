@@ -384,7 +384,10 @@ test("real evo command retains pending releases despite aligned dependencies and
 		for (const text of texts) {
 			assert.match(text, /^Latest Pi alignment:$/m);
 			assert.match(text, /Start from the Pi version facts below/);
-			assert.match(text, /Inspect every release entry in scope, then trace each changed, added, removed, or deprecated contract/);
+			assert.match(
+				text,
+				/Inspect every release entry in scope, then trace each changed, added, removed, or deprecated contract/,
+			);
 		}
 		assert.match(texts[0], /This run has no direction\. Pending alignment is part of its purpose/);
 		assert.match(texts[1], /This run is directed\. Align first only when the direction targets Pi alignment/);
@@ -453,8 +456,20 @@ test("real evo command delivers four separate version facts and bounds a silent 
 		assert.ok(delay >= PI_PUBLICATION_DEADLINE_MS - 20 && delay < PI_PUBLICATION_DEADLINE_MS + 2_000, `${delay} ms`);
 		await settled.promise;
 		const silent = userTexts(runtime.requests[1]).at(-1) ?? "";
-		assert.match(silent, new RegExp(`^- Published versions: unavailable at \\S+: "No registry answer within ${PI_PUBLICATION_DEADLINE_MS} ms\\."$`, "m"));
-		assert.ok(silent.split("\n").includes(`- Review coverage: reviewed-through ${VERSION} in "docs/pi-durable-harness.md" at ${commit}, the tip of local main.`));
+		assert.match(
+			silent,
+			new RegExp(
+				`^- Published versions: unavailable at \\S+: "No registry answer within ${PI_PUBLICATION_DEADLINE_MS} ms\\."$`,
+				"m",
+			),
+		);
+		assert.ok(
+			silent
+				.split("\n")
+				.includes(
+					`- Review coverage: reviewed-through ${VERSION} in "docs/pi-durable-harness.md" at ${commit}, the tip of local main.`,
+				),
+		);
 		assert.match(silent, /A registry failure is not a gate\./);
 		assert.match(silent, /<evo-direction-json>\n"Improve document explanations"/);
 		assert.equal(fixture.git("rev-parse", "HEAD").trim(), commit);
@@ -478,7 +493,10 @@ function installFixtureExtension(root: string): string {
 async function settleCommand(runtime: Awaited<ReturnType<typeof ordinarySession>>, text: string): Promise<void> {
 	const settled = deferred();
 	const stop = runtime.session.subscribe((event) => {
-		if (event.type === "agent_settled") { stop(); settled.resolve(); }
+		if (event.type === "agent_settled") {
+			stop();
+			settled.resolve();
+		}
 	});
 	await runtime.session.prompt(text);
 	await settled.promise;
@@ -514,12 +532,14 @@ test("long directions retain their user entry", { timeout: 30000 }, async () => 
 			assert.equal(JSON.parse(encoded), direction);
 			const delivered = request.messages.find((message) => message.role === "user");
 			assert.ok(delivered);
-			const stored = runtime.session.sessionManager.getEntries().find(
-				(entry) => entry.type === "message" && entry.message.role === "user",
-			);
+			const stored = runtime.session.sessionManager
+				.getEntries()
+				.find((entry) => entry.type === "message" && entry.message.role === "user");
 			assert.ok(stored?.type === "message" && stored.message.role === "user");
 			assert.deepEqual(stored.message.content, delivered.content);
 			assert.deepEqual(runtime.errors, []);
-		} finally { await runtime.close(); }
+		} finally {
+			await runtime.close();
+		}
 	}
 });

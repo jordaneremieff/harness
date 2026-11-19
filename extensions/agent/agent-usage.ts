@@ -58,8 +58,15 @@ export interface AgentUsageFacts {
 	input?: number;
 	output?: number;
 }
-export function usageFacts(context: number | undefined, window: number | undefined, usage?: UsageState): AgentUsageFacts {
-	const facts: AgentUsageFacts = { context, window: window !== undefined && window > 0 && Number.isFinite(window) ? window : undefined };
+export function usageFacts(
+	context: number | undefined,
+	window: number | undefined,
+	usage?: UsageState,
+): AgentUsageFacts {
+	const facts: AgentUsageFacts = {
+		context,
+		window: window !== undefined && window > 0 && Number.isFinite(window) ? window : undefined,
+	};
 	if (!usage) return facts;
 	let input = 0;
 	let output = 0;

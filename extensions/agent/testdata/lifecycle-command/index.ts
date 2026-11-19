@@ -7,10 +7,16 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function registerLifecycleCommandFixture(pi: ExtensionAPI) {
-	pi.on("session_before_tree", () => ({ customInstructions: "REPLACED_BRANCH_INSTRUCTIONS", replaceInstructions: true, label: "selected branch" }));
+	pi.on("session_before_tree", () => ({
+		customInstructions: "REPLACED_BRANCH_INSTRUCTIONS",
+		replaceInstructions: true,
+		label: "selected branch",
+	}));
 	pi.registerCommand("agent-tree-test", {
 		description: "Select a branch with replaced summary instructions",
-		handler: async (args, ctx) => { await ctx.navigateTree(args, { summarize: true }); },
+		handler: async (args, ctx) => {
+			await ctx.navigateTree(args, { summarize: true });
+		},
 	});
 	pi.registerCommand("agent-ui-context-test", {
 		description: "Record the native headless UI contract",
@@ -19,11 +25,15 @@ export default function registerLifecycleCommandFixture(pi: ExtensionAPI) {
 			ctx.ui.setStatus("worker", "status");
 			ctx.ui.setEditorText("Worker draft");
 			pi.appendEntry("agent.ui-context", {
-				mode: ctx.mode, hasUI: ctx.hasUI,
+				mode: ctx.mode,
+				hasUI: ctx.hasUI,
 				confirmed: await ctx.ui.confirm("Worker", "Confirm"),
-				selected: await ctx.ui.select("Worker", ["Choice"]) ?? null,
-				input: await ctx.ui.input("Worker") ?? null,
-				custom: await ctx.ui.custom(() => { throw new Error("Headless custom UI executed"); }) ?? null,
+				selected: (await ctx.ui.select("Worker", ["Choice"])) ?? null,
+				input: (await ctx.ui.input("Worker")) ?? null,
+				custom:
+					(await ctx.ui.custom(() => {
+						throw new Error("Headless custom UI executed");
+					})) ?? null,
 				editor: ctx.ui.getEditorText(),
 			});
 		},
@@ -32,7 +42,9 @@ export default function registerLifecycleCommandFixture(pi: ExtensionAPI) {
 		description: "Record immediate and committed read observations",
 		handler: async (_args, ctx) => {
 			pi.appendEntry("agent.pending-write", { value: "persisted" });
-			const immediate = ctx.sessionManager.getEntries().some((entry) => entry.type === "custom" && entry.customType === "agent.pending-write");
+			const immediate = ctx.sessionManager
+				.getEntries()
+				.some((entry) => entry.type === "custom" && entry.customType === "agent.pending-write");
 			pi.appendEntry("agent.immediate-read", { immediate });
 		},
 	});

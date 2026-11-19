@@ -197,7 +197,10 @@ function assembleScanResult(read: ScanRead): ScanResult {
 }
 
 export async function scanFile(
-	path: string, needle: string, signal?: AbortSignal, io: ScanIO = { stat, open },
+	path: string,
+	needle: string,
+	signal?: AbortSignal,
+	io: ScanIO = { stat, open },
 ): Promise<ScanResult> {
 	if (signal?.aborted) return cancelledResult();
 	if (!isRealFilePath(path)) return ioErrorResult("the resolved source is not an absolute file path");
@@ -207,7 +210,9 @@ export async function scanFile(
 		if (handle) closing ??= handle.close().catch(() => {});
 		return closing;
 	};
-	const onAbort = () => { void close(); };
+	const onAbort = () => {
+		void close();
+	};
 	signal?.addEventListener("abort", onAbort, { once: true });
 	try {
 		const rejection = await statTarget(path, io, signal);
@@ -218,8 +223,15 @@ export async function scanFile(
 		const stat2 = await handle.stat();
 		signal?.throwIfAborted();
 		if (!stat2.isFile()) return ioErrorResult("the resolved source stopped being a regular file before the read");
-		const stamp: FileStamp = { path, size: stat2.size, mtimeMs: stat2.mtimeMs,
-			ctimeMs: stat2.ctimeMs, ino: stat2.ino, dev: stat2.dev, digest: "" };
+		const stamp: FileStamp = {
+			path,
+			size: stat2.size,
+			mtimeMs: stat2.mtimeMs,
+			ctimeMs: stat2.ctimeMs,
+			ino: stat2.ino,
+			dev: stat2.dev,
+			digest: "",
+		};
 		const budget = Math.min(stat2.size, SCAN_MAX_BYTES);
 		const buffer = Buffer.alloc(budget);
 		const { bytesRead } = budget > 0 ? await handle.read(buffer, 0, budget, 0) : { bytesRead: 0 };

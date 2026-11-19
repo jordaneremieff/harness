@@ -1,25 +1,63 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-	addCounters, bytes, capture, commit, dayNumber, emptyShard, emptyStore, HEALTH_COUNTERS, key, LIMITS,
-	overflowCell, planBytes, planCommit, slotFor, validateBatch, validateCell, validateShard, validateSnapshot, zero,
-	type Batch, type Cell, type Snapshot,
+	addCounters,
+	bytes,
+	capture,
+	commit,
+	dayNumber,
+	emptyShard,
+	emptyStore,
+	HEALTH_COUNTERS,
+	key,
+	LIMITS,
+	overflowCell,
+	planBytes,
+	planCommit,
+	slotFor,
+	validateBatch,
+	validateCell,
+	validateShard,
+	validateSnapshot,
+	zero,
+	type Batch,
+	type Cell,
+	type Snapshot,
 } from "./capacity.ts";
 
 const TODAY = "2026-09-07";
 function cell(day = TODAY, resourceId = "example"): Cell {
-	return { day, observationStage: "tool_request", resourceClass: "entry", resourceId, model: "test/model",
-		reasoning: "high", referenceBodyDigest: "a".repeat(64), observerVersion: "1.0.0", piVersion: "1.0.0",
-		counters: { ...zero(), readRequests: 1 } };
+	return {
+		day,
+		observationStage: "tool_request",
+		resourceClass: "entry",
+		resourceId,
+		model: "test/model",
+		reasoning: "high",
+		referenceBodyDigest: "a".repeat(64),
+		observerVersion: "1.0.0",
+		piVersion: "1.0.0",
+		counters: { ...zero(), readRequests: 1 },
+	};
 }
 function batch(owner = 1, seq = 1, cells = [cell()]): Batch {
 	return { owner: owner.toString(16).padStart(32, "0"), seq, day: cells[0]?.day ?? TODAY, cells };
 }
 function result(resourceId = "example"): Cell {
-	return { ...cell(TODAY, resourceId), observationStage: "tool_result", counters: {
-		...zero(), readResults: 4, resultComplete: 1, resultPartial: 1, resultError: 1, resultUnknown: 1,
-		bodyVerifiedAtObservation: 1, bodyUnverifiable: 3,
-	} };
+	return {
+		...cell(TODAY, resourceId),
+		observationStage: "tool_result",
+		counters: {
+			...zero(),
+			readResults: 4,
+			resultComplete: 1,
+			resultPartial: 1,
+			resultError: 1,
+			resultUnknown: 1,
+			bodyVerifiedAtObservation: 1,
+			bodyUnverifiable: 3,
+		},
+	};
 }
 function envelopeShard(day: string) {
 	const shard = emptyShard(day);
@@ -27,9 +65,13 @@ function envelopeShard(day: string) {
 		for (let model = 0; model < 4; model++) {
 			for (let digest = 0; digest < 4; digest++) {
 				for (const stage of ["tool_request", "tool_result"] as const) {
-					shard.cells.push({ ...cell(day, `resource-${resource}`), model: `model-${model}`,
-						referenceBodyDigest: String(digest).repeat(64), observationStage: stage,
-						counters: stage === "tool_request" ? cell().counters : result().counters });
+					shard.cells.push({
+						...cell(day, `resource-${resource}`),
+						model: `model-${model}`,
+						referenceBodyDigest: String(digest).repeat(64),
+						observationStage: stage,
+						counters: stage === "tool_request" ? cell().counters : result().counters,
+					});
 				}
 			}
 		}
@@ -71,7 +113,10 @@ test("a thousand short-lived owners share one daily aggregate", () => {
 
 test("receipt quota publishes one sticky day flag without false exact losses", () => {
 	const shard = emptyShard(TODAY);
-	shard.receipts = Array.from({ length: LIMITS.ownersPerDay }, (_, index) => ({ owner: batch(index + 1).owner, seq: 1 }));
+	shard.receipts = Array.from({ length: LIMITS.ownersPerDay }, (_, index) => ({
+		owner: batch(index + 1).owner,
+		seq: 1,
+	}));
 	const source = { shards: { [TODAY]: shard } };
 	const refusal = commit(source, batch(5000), TODAY);
 	assert.equal(refusal.status, "receipt_quota");
@@ -80,13 +125,20 @@ test("receipt quota publishes one sticky day flag without false exact losses", (
 	assert.equal(refusal.store.shards[TODAY].receipts.length, 4096);
 	assert.equal(commit(refusal.store, batch(5000), TODAY).store.shards[TODAY].health.pendingDroppedEvents, 0);
 	assert.equal(commit(refusal.store, batch(1, 2), TODAY).status, "committed");
-	assert.equal(commit(source, batch(5000), TODAY, { publish: false }).store.shards[TODAY].health.receiptQuotaReached, false);
+	assert.equal(
+		commit(source, batch(5000), TODAY, { publish: false }).store.shards[TODAY].health.receiptQuotaReached,
+		false,
+	);
 });
 
 test("daily overflow preserves result classes and removes only body attribution", () => {
 	const full = Array.from({ length: LIMITS.cellsPerDay }, (_, index) => cell(TODAY, `resource-${index}`));
 	const first = commit(emptyStore(), batch(1, 1, full), TODAY);
-	const second = commit(first.store, batch(1, 2, [cell(TODAY, "new"), result("new"), cell(TODAY, "resource-0")]), TODAY);
+	const second = commit(
+		first.store,
+		batch(1, 2, [cell(TODAY, "new"), result("new"), cell(TODAY, "resource-0")]),
+		TODAY,
+	);
 	const shard = second.store.shards[TODAY];
 	assert.equal(shard.cells.length, 2050);
 	assert.equal(shard.health.cellsOverflowedEvents, 5);
@@ -107,7 +159,10 @@ test("all thirty dates retain the specified resource/model/digest/stage envelope
 		snapshot.shards[day] = shard;
 	}
 	validateSnapshot(snapshot, TODAY);
-	assert.equal(Object.values(capture(snapshot, TODAY).shards).reduce((sum, shard) => sum + shard.cells.length, 0), 60480);
+	assert.equal(
+		Object.values(capture(snapshot, TODAY).shards).reduce((sum, shard) => sum + shard.cells.length, 0),
+		60480,
+	);
 	const added = commit(snapshot, batch(1, 1, [cell()]), TODAY);
 	assert.equal(added.status, "committed");
 	assert.equal(Object.keys(added.store.shards).length, 30);
@@ -129,16 +184,22 @@ test("retention checks reject stale retries and rollback before receipt admissio
 });
 
 test("safe arithmetic rejects the complete candidate and its receipt", () => {
-	const input = cell(); input.counters.readRequests = Number.MAX_SAFE_INTEGER;
+	const input = cell();
+	input.counters.readRequests = Number.MAX_SAFE_INTEGER;
 	const source = commit(emptyStore(), batch(1, 1, [input]), TODAY).store;
 	const saturated = commit(source, batch(1, 2), TODAY);
 	assert.equal(saturated.status, "counter_saturated");
 	assert.equal(saturated.store, source);
 	assert.equal(source.shards[TODAY].receipts[0].seq, 1);
 	assert.equal(commit(source, batch(1, 2, [cell(TODAY, "different")]), TODAY).status, "counter_saturated");
-	const health = emptyShard(TODAY); health.health.writeFailures = Number.MAX_SAFE_INTEGER;
-	assert.equal(commit({ shards: { [TODAY]: health } }, { ...batch(), health: { writeFailures: 1 } }, TODAY).status, "counter_saturated");
-	const revision = emptyShard(TODAY); revision.revision = Number.MAX_SAFE_INTEGER;
+	const health = emptyShard(TODAY);
+	health.health.writeFailures = Number.MAX_SAFE_INTEGER;
+	assert.equal(
+		commit({ shards: { [TODAY]: health } }, { ...batch(), health: { writeFailures: 1 } }, TODAY).status,
+		"counter_saturated",
+	);
+	const revision = emptyShard(TODAY);
+	revision.revision = Number.MAX_SAFE_INTEGER;
 	assert.equal(commit({ shards: { [TODAY]: revision } }, batch(), TODAY).status, "revision_saturated");
 	assert.throws(() => addCounters(input.counters, cell().counters), /counter_saturated/);
 });
@@ -146,26 +207,53 @@ test("safe arithmetic rejects the complete candidate and its receipt", () => {
 test("closed validators reject malformed, duplicated, and semantically impossible data", () => {
 	for (const day of ["2026-02-29", "2026-13-01", "1999-01-01", "2026-09-07x"]) assert.throws(() => dayNumber(day));
 	const mutations: Array<(row: Cell) => void> = [
-		(row) => { Object.assign(row, { resourceClass: "foreign" }); },
-		(row) => { row.piVersion = "other"; },
-		(row) => { row.model = "not a model"; },
-		(row) => { row.referenceBodyDigest = "a"; },
-		(row) => { row.counters.readRequests = -1; },
-		(row) => { row.counters.readResults = 1; },
-		(row) => { Object.assign(row, { extra: true }); },
-		(row) => { Object.assign(row.counters, { extra: true }); },
+		(row) => {
+			Object.assign(row, { resourceClass: "foreign" });
+		},
+		(row) => {
+			row.piVersion = "other";
+		},
+		(row) => {
+			row.model = "not a model";
+		},
+		(row) => {
+			row.referenceBodyDigest = "a";
+		},
+		(row) => {
+			row.counters.readRequests = -1;
+		},
+		(row) => {
+			row.counters.readResults = 1;
+		},
+		(row) => {
+			Object.assign(row, { extra: true });
+		},
+		(row) => {
+			Object.assign(row.counters, { extra: true });
+		},
 	];
-	for (const mutate of mutations) { const row = cell(); mutate(row); assert.throws(() => validateCell(row, TODAY)); }
-	const badBody = result(); badBody.referenceBodyDigest = "unresolved";
+	for (const mutate of mutations) {
+		const row = cell();
+		mutate(row);
+		assert.throws(() => validateCell(row, TODAY));
+	}
+	const badBody = result();
+	badBody.referenceBodyDigest = "unresolved";
 	assert.throws(() => validateCell(badBody, TODAY));
-	const badStage = result(); badStage.counters.readRequests = 1;
+	const badStage = result();
+	badStage.counters.readRequests = 1;
 	assert.throws(() => validateCell(badStage, TODAY));
-	const folded = overflowCell(cell()); folded.model = "wrong";
+	const folded = overflowCell(cell());
+	folded.model = "wrong";
 	assert.throws(() => validateCell(folded, TODAY));
 	const shard = emptyShard(TODAY);
 	shard.cells = [cell(), cell()];
 	assert.throws(() => validateShard(shard));
-	shard.cells = []; shard.receipts = [{ owner: batch().owner, seq: 1 }, { owner: batch().owner, seq: 1 }];
+	shard.cells = [];
+	shard.receipts = [
+		{ owner: batch().owner, seq: 1 },
+		{ owner: batch().owner, seq: 1 },
+	];
 	assert.throws(() => validateShard(shard));
 	assert.throws(() => validateShard(emptyShard(TODAY), "day-99.json"));
 	assert.throws(() => validateBatch({ ...batch(), surprise: 1 }));

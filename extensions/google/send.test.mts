@@ -32,7 +32,10 @@ test("a staging failure leaves no send record and permits a retry after the loca
 		await writeFile(mimeDir, "not a directory");
 		assert.equal((await fake.tool("gmail_send", { operationId: "op-stage", mail: MAIL })).status, "error");
 		assert.equal(methodCalls(await fake.calls(), SEND).length, 0);
-		assert.equal(errorCode(await fake.tool("gmail_operation_status", { operationId: "op-stage" })), "OPERATION_NOT_FOUND");
+		assert.equal(
+			errorCode(await fake.tool("gmail_operation_status", { operationId: "op-stage" })),
+			"OPERATION_NOT_FOUND",
+		);
 		await rm(mimeDir);
 		const retry = await fake.tool("gmail_send", { operationId: "op-stage", mail: MAIL });
 		assert.equal(retry.status, "ok", JSON.stringify(retry));
@@ -49,7 +52,12 @@ test("draft creation, replacement and send use backend-local MIME files", async 
 			"gmail users drafts update": { stdout: { id: "draft", message: { id: "rev-2" } } },
 			"gmail users drafts get": [
 				{ stdout: { id: "draft", message: { id: "rev-1" } } },
-				{ stdout: { id: "draft", message: { id: "rev-2", raw: base64url("To: friend@example.org\r\nSubject: Plan\r\n\r\nHello") } } },
+				{
+					stdout: {
+						id: "draft",
+						message: { id: "rev-2", raw: base64url("To: friend@example.org\r\nSubject: Plan\r\n\r\nHello") },
+					},
+				},
 			],
 			"gmail users drafts send": { stdout: { id: "sent-draft" } },
 		},

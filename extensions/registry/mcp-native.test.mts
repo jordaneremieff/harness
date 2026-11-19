@@ -8,7 +8,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
+import {
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxToolCall,
+	InMemoryCredentialStore,
+	InMemoryModelsStore,
+} from "@earendil-works/pi-ai";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import {
 	createAgentSessionFromServices,
@@ -54,7 +60,10 @@ rl.on("line", (line) => {
 `;
 
 function toolResult(messages: readonly { role: string }[], id: string): ToolResultMessage {
-	const found = messages.find((message): message is ToolResultMessage => message.role === "toolResult" && (message as ToolResultMessage).toolCallId === id);
+	const found = messages.find(
+		(message): message is ToolResultMessage =>
+			message.role === "toolResult" && (message as ToolResultMessage).toolCallId === id,
+	);
 	assert.ok(found, `missing tool result ${id}`);
 	return found;
 }
@@ -69,13 +78,18 @@ function envelopeBytes(result: ToolResultMessage): number {
 
 function assertBounded(result: ToolResultMessage) {
 	assert.equal(result.isError, false, textOf(result));
-	assert.ok(compile(RegistryOutputSchema).check(result.details), JSON.stringify(compile(RegistryOutputSchema).errors(result.details)));
+	assert.ok(
+		compile(RegistryOutputSchema).check(result.details),
+		JSON.stringify(compile(RegistryOutputSchema).errors(result.details)),
+	);
 	assert.ok(!JSON.stringify(result).includes(SENTENCE), "the server instructions reached the registry result");
 	assert.equal((result.details as { pageBlocked?: boolean }).pageBlocked, undefined);
 }
 
 /** One session against a server whose instructions repeat a sentence `repeat` times. */
-async function observe(repeat: number): Promise<{ instructionsLength: number; listBytes: number; detailBytes: number }> {
+async function observe(
+	repeat: number,
+): Promise<{ instructionsLength: number; listBytes: number; detailBytes: number }> {
 	const root = await mkdtemp(join(tmpdir(), "registry-mcp-native-"));
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const agentDir = join(root, "agent");
@@ -85,35 +99,68 @@ async function observe(repeat: number): Promise<{ instructionsLength: number; li
 		const serverPath = join(root, "server.mjs");
 		await writeFile(serverPath, SERVER_SOURCE);
 		const loadConfig: NonNullable<McpExtensionOptions["loadConfig"]> = () => ({
-			servers: [{ name: SERVER_NAME, source: "test", scope: "global",
-				config: { command: process.execPath, args: [serverPath, String(repeat)], description: "Search the product docs" } }],
+			servers: [
+				{
+					name: SERVER_NAME,
+					source: "test",
+					scope: "global",
+					config: {
+						command: process.execPath,
+						args: [serverPath, String(repeat)],
+						description: "Search the product docs",
+					},
+				},
+			],
 			errors: [],
 		});
-		const faux = fauxProvider({ provider: "registry-mcp-test", models: [{ id: "reader", contextWindow: 100000 }], tokensPerSecond: 0 });
+		const faux = fauxProvider({
+			provider: "registry-mcp-test",
+			models: [{ id: "reader", contextWindow: 100000 }],
+			tokensPerSecond: 0,
+		});
 		const modelRuntime = await ModelRuntime.create({
-			credentials: new InMemoryCredentialStore(), modelsStore: new InMemoryModelsStore(), modelsPath: null, refreshOnCreate: false,
+			credentials: new InMemoryCredentialStore(),
+			modelsStore: new InMemoryModelsStore(),
+			modelsPath: null,
+			refreshOnCreate: false,
 		});
 		modelRuntime.registerNativeProvider(faux.provider);
 		const errors: string[] = [];
-		runtime = await createAgentSessionRuntime(async ({ cwd, agentDir: dir, sessionManager, sessionStartEvent }) => {
-			const services = await createAgentSessionServices({
-				cwd, agentDir: dir, modelRuntime,
-				settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
-				resourceLoaderOptions: {
-					noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-					extensionFactories: [
-						registerRegistry,
-						createCodemodeExtension({ models: false }),
-						createMcpExtension({ loadConfig, logPath: join(root, "mcp.log") }),
-					],
-				},
-			});
-			assert.deepEqual(services.resourceLoader.getExtensions().errors, []);
-			return {
-				...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent, model: faux.getModel(), thinkingLevel: "off" })),
-				services, diagnostics: services.diagnostics,
-			};
-		}, { cwd: root, agentDir, sessionManager: SessionManager.inMemory(root) });
+		runtime = await createAgentSessionRuntime(
+			async ({ cwd, agentDir: dir, sessionManager, sessionStartEvent }) => {
+				const services = await createAgentSessionServices({
+					cwd,
+					agentDir: dir,
+					modelRuntime,
+					settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
+					resourceLoaderOptions: {
+						noExtensions: true,
+						noSkills: true,
+						noPromptTemplates: true,
+						noThemes: true,
+						noContextFiles: true,
+						extensionFactories: [
+							registerRegistry,
+							createCodemodeExtension({ models: false }),
+							createMcpExtension({ loadConfig, logPath: join(root, "mcp.log") }),
+						],
+					},
+				});
+				assert.deepEqual(services.resourceLoader.getExtensions().errors, []);
+				return {
+					...(await createAgentSessionFromServices({
+						services,
+						sessionManager,
+						sessionStartEvent,
+						model: faux.getModel(),
+						thinkingLevel: "off",
+					})),
+					services,
+					diagnostics: services.diagnostics,
+				};
+			},
+			{ cwd: root, agentDir, sessionManager: SessionManager.inMemory(root) },
+		);
 		const session = runtime.session;
 		await session.bindExtensions({ mode: "print", onError: (error) => errors.push(error.error) });
 		// The command handler awaits every startup connection, so the tools are registered afterwards.
@@ -135,16 +182,30 @@ async function observe(repeat: number): Promise<{ instructionsLength: number; li
 		const list = toolResult(session.messages, "list");
 		assertBounded(list);
 		const listed = list.details as { records: Array<{ name: string; namespace?: unknown }> };
-		assert.deepEqual(listed.records.map((record) => record.name), [`${NAMESPACE}__list_topics`, `${NAMESPACE}__lookup_doc`, `${NAMESPACE}__search_docs`]);
+		assert.deepEqual(
+			listed.records.map((record) => record.name),
+			[`${NAMESPACE}__list_topics`, `${NAMESPACE}__lookup_doc`, `${NAMESPACE}__search_docs`],
+		);
 		for (const record of listed.records) {
-			assert.deepEqual(record.namespace, { name: NAMESPACE, aliases: [SERVER_NAME], description: "Search the product docs", instructionsOmitted: true });
+			assert.deepEqual(record.namespace, {
+				name: NAMESPACE,
+				aliases: [SERVER_NAME],
+				description: "Search the product docs",
+				instructionsOmitted: true,
+			});
 		}
 		assert.match(textOf(list), /describeNamespace\(name\)/);
 
 		faux.setResponses([
 			fauxAssistantMessage([
 				fauxToolCall("registry", { kind: "tool", name: `${NAMESPACE}__lookup_doc`, detail: true }, { id: "detail" }),
-				fauxToolCall("codemode", { code: `const ns = await describeNamespace(${JSON.stringify(SERVER_NAME)}); const page = await tools.registry({kind: "tool", search: ${JSON.stringify(SERVER_NAME)}}); return { instructions: ns.instructions.length, tools: ns.tools.length, aliases: page.records.map(r => r.namespace.aliases) };` }, { id: "describe" }),
+				fauxToolCall(
+					"codemode",
+					{
+						code: `const ns = await describeNamespace(${JSON.stringify(SERVER_NAME)}); const page = await tools.registry({kind: "tool", search: ${JSON.stringify(SERVER_NAME)}}); return { instructions: ns.instructions.length, tools: ns.tools.length, aliases: page.records.map(r => r.namespace.aliases) };`,
+					},
+					{ id: "describe" },
+				),
 			]),
 			fauxAssistantMessage("Described."),
 		]);
@@ -159,10 +220,15 @@ async function observe(repeat: number): Promise<{ instructionsLength: number; li
 		assert.match(textOf(described), new RegExp(`"instructions":\\s*${nativeInstructions.length}`));
 		assert.match(textOf(described), /"aliases":\s*\[\s*\[\s*"dev-docs"\s*\]/);
 		assert.deepEqual(errors, []);
-		return { instructionsLength: nativeInstructions.length, listBytes: envelopeBytes(list), detailBytes: envelopeBytes(detail) };
+		return {
+			instructionsLength: nativeInstructions.length,
+			listBytes: envelopeBytes(list),
+			detailBytes: envelopeBytes(detail),
+		};
 	} finally {
-		try { await runtime?.dispose(); }
-		finally {
+		try {
+			await runtime?.dispose();
+		} finally {
 			if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 			await rm(root, { recursive: true, force: true });
@@ -170,7 +236,9 @@ async function observe(repeat: number): Promise<{ instructionsLength: number; li
 	}
 }
 
-test("registry lists a real MCP server's tools without its instructions, whatever their length", { timeout: 120000 }, async () => {
+test("registry lists a real MCP server's tools without its instructions, whatever their length", {
+	timeout: 120000,
+}, async () => {
 	const short = await observe(40);
 	const long = await observe(2000);
 	assert.ok(short.instructionsLength < 4 * 1024);

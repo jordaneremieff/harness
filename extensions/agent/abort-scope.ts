@@ -14,7 +14,11 @@ async function taskPathCrossesBackground(tx: Durable.Tx, first: Durable.TaskId):
 	return false;
 }
 
-async function abortParent(tx: Durable.Tx, current: Durable.ConversationId, background: boolean): Promise<Durable.ConversationId | "unknown" | undefined> {
+async function abortParent(
+	tx: Durable.Tx,
+	current: Durable.ConversationId,
+	background: boolean,
+): Promise<Durable.ConversationId | "unknown" | undefined> {
 	const record = await tx.conversation(current);
 	if (!record) return "unknown";
 	if (!record.owner) return undefined;
@@ -27,7 +31,12 @@ async function abortParent(tx: Durable.Tx, current: Durable.ConversationId, back
 }
 
 /** Exact ownership walk: true only when every record of the chain from `start` up to the target is retained. */
-async function belowTarget(tx: Durable.Tx, start: Durable.ConversationId, targetId: Durable.ConversationId, background: boolean): Promise<boolean> {
+async function belowTarget(
+	tx: Durable.Tx,
+	start: Durable.ConversationId,
+	targetId: Durable.ConversationId,
+	background: boolean,
+): Promise<boolean> {
 	const visited = new Set<Durable.ConversationId>([start]);
 	let current = await abortParent(tx, start, background);
 	while (current !== undefined && current !== "unknown") {
@@ -44,19 +53,29 @@ async function belowTarget(tx: Durable.Tx, start: Durable.ConversationId, target
  * chain leads up to it. Without `background`, a chain through a background task is outside the scope. Read it before
  * the abort, while the owning tasks are retained.
  */
-export async function abortScopeConversations(tx: Durable.Tx, targetId: Durable.ConversationId, background: boolean): Promise<Durable.ConversationId[]> {
+export async function abortScopeConversations(
+	tx: Durable.Tx,
+	targetId: Durable.ConversationId,
+	background: boolean,
+): Promise<Durable.ConversationId[]> {
 	const scope: Durable.ConversationId[] = [targetId];
 	let cursor: Durable.Cursor | undefined;
 	do {
 		const page = await tx.scanConversations({}, 50, cursor);
-		for (const record of page.items) if (record.id !== targetId && await belowTarget(tx, record.id, targetId, background)) scope.push(record.id);
+		for (const record of page.items)
+			if (record.id !== targetId && (await belowTarget(tx, record.id, targetId, background))) scope.push(record.id);
 		cursor = page.next;
 	} while (cursor);
 	return scope;
 }
 
 /** Conservative ownership walk for a caller in the target storage. */
-export async function abortScopeContains(tx: Durable.Tx, caller: Durable.ConversationId, targetId: Durable.ConversationId, background: boolean): Promise<boolean> {
+export async function abortScopeContains(
+	tx: Durable.Tx,
+	caller: Durable.ConversationId,
+	targetId: Durable.ConversationId,
+	background: boolean,
+): Promise<boolean> {
 	let current: Durable.ConversationId | "unknown" | undefined = caller;
 	const visited = new Set<Durable.ConversationId>();
 	while (current !== undefined && current !== "unknown") {

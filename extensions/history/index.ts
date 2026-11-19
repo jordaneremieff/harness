@@ -27,9 +27,7 @@ const filter = opt({
 			obj(
 				{
 					source: StringLiteral("toolResult"),
-					toolName: opt(
-						str({ minLength: 1, maxLength: 256, description: "Exact stored tool name." }),
-					),
+					toolName: opt(str({ minLength: 1, maxLength: 256, description: "Exact stored tool name." })),
 					errorsOnly: opt(
 						bool({
 							description: "True selects stored isError === true; false or omission selects any error flag.",
@@ -54,56 +52,60 @@ const outputBytes = opt(
 	}),
 );
 
-const HistorySearchParameters = obj({
-	query: opt(str({ minLength: 1, maxLength: 256 })),
-	mode: opt(
-		StringEnum(
-			["text", "arguments"],
-			"text (default) searches text fields. arguments searches string values inside earlier tool-call arguments, such as a file path or command; it requires query and takes no filter.",
+const HistorySearchParameters = obj(
+	{
+		query: opt(str({ minLength: 1, maxLength: 256 })),
+		mode: opt(
+			StringEnum(
+				["text", "arguments"],
+				"text (default) searches text fields. arguments searches string values inside earlier tool-call arguments, such as a file path or command; it requires query and takes no filter.",
+			),
 		),
-	),
-	filter,
-	sessionId,
-	fromId: opt(str({ minLength: 1, maxLength: 256 })),
-	slot: opt(int({ minimum: 0, description: "Text-slot index from next; retain with fromId." })),
-	position: opt(
-		obj(
-			{
-				block: int({ minimum: 0, description: "Content block index." }),
-				path: opt(
-					arr(int({ minimum: 0 }), {
-						maxItems: LIMITS.argumentDepth,
-						description: "Child indexes below the tool call's arguments.",
-					}),
-				),
-			},
-			{ open: false, description: "Argument-search position from next; retain with fromId, mode and offset." },
+		filter,
+		sessionId,
+		fromId: opt(str({ minLength: 1, maxLength: 256 })),
+		slot: opt(int({ minimum: 0, description: "Text-slot index from next; retain with fromId." })),
+		position: opt(
+			obj(
+				{
+					block: int({ minimum: 0, description: "Content block index." }),
+					path: opt(
+						arr(int({ minimum: 0 }), {
+							maxItems: LIMITS.argumentDepth,
+							description: "Child indexes below the tool call's arguments.",
+						}),
+					),
+				},
+				{ open: false, description: "Argument-search position from next; retain with fromId, mode and offset." },
+			),
 		),
-	),
-	offset: opt(
-		int({ minimum: 0, description: "UTF-16 offset from next; retain with fromId and slot or position." }),
-	),
-	maxVisits: opt(int({ minimum: 1, maximum: LIMITS.visits })),
-	maxScanBytes: opt(int({ minimum: 2048, maximum: LIMITS.scanBytes })),
-	maxMatches: opt(int({ minimum: 1, maximum: LIMITS.matches })),
-	maxOutputBytes: outputBytes,
-}, { open: true });
+		offset: opt(int({ minimum: 0, description: "UTF-16 offset from next; retain with fromId and slot or position." })),
+		maxVisits: opt(int({ minimum: 1, maximum: LIMITS.visits })),
+		maxScanBytes: opt(int({ minimum: 2048, maximum: LIMITS.scanBytes })),
+		maxMatches: opt(int({ minimum: 1, maximum: LIMITS.matches })),
+		maxOutputBytes: outputBytes,
+	},
+	{ open: true },
+);
 
-const HistoryReadParameters = obj({
-	entryId: str({ minLength: 1, maxLength: 256 }),
-	sessionId,
-	pointer: opt(
-		str({
-			maxLength: LIMITS.pointerUnits,
-			description:
-				"JSON pointer; escape ~ as ~0 and / as ~1. Maximum depth 32. Empty selects the standard entry manifest.",
-		}),
-	),
-	offset: opt(int({ minimum: 0 })),
-	maxBytes: opt(int({ minimum: 4, maximum: LIMITS.readBytes })),
-	maxItems: opt(int({ minimum: 1, maximum: LIMITS.items })),
-	maxOutputBytes: outputBytes,
-}, { open: true });
+const HistoryReadParameters = obj(
+	{
+		entryId: str({ minLength: 1, maxLength: 256 }),
+		sessionId,
+		pointer: opt(
+			str({
+				maxLength: LIMITS.pointerUnits,
+				description:
+					"JSON pointer; escape ~ as ~0 and / as ~1. Maximum depth 32. Empty selects the standard entry manifest.",
+			}),
+		),
+		offset: opt(int({ minimum: 0 })),
+		maxBytes: opt(int({ minimum: 4, maximum: LIMITS.readBytes })),
+		maxItems: opt(int({ minimum: 1, maximum: LIMITS.items })),
+		maxOutputBytes: outputBytes,
+	},
+	{ open: true },
+);
 
 export default function history(pi: ExtensionAPI) {
 	const display = toolDisplay();

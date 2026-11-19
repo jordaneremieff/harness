@@ -25,9 +25,13 @@ function textContent(result: AgentToolResult<unknown>): string {
 		.join("\n");
 }
 
-function accessErrorText(result: AgentToolResult<AccessPage | AccessError | undefined>, context: RenderContext): string {
+function accessErrorText(
+	result: AgentToolResult<AccessPage | AccessError | undefined>,
+	context: RenderContext,
+): string {
 	const details = result.details;
-	if (details?.schema === "pillars-source-error") return `pillars: ${details.code}${details.message ? `: ${details.message}` : ""}`;
+	if (details?.schema === "pillars-source-error")
+		return `pillars: ${details.code}${details.message ? `: ${details.message}` : ""}`;
 	if (context.isError) return textContent(result) || "pillars: unavailable";
 	return "pillars: unavailable";
 }
@@ -52,7 +56,7 @@ export function accessRenderers(): {
 } {
 	return {
 		renderCall(input, theme) {
-			const args = input !== null && typeof input === "object" ? input as Record<string, unknown> : undefined;
+			const args = input !== null && typeof input === "object" ? (input as Record<string, unknown>) : undefined;
 			let text = theme.fg("toolTitle", theme.bold("pillars "));
 			text += theme.fg("accent", typeof args?.resource === "string" ? args.resource : "inventory");
 			if (typeof args?.offset === "number") text += theme.fg("dim", ` (offset ${args.offset})`);
@@ -85,7 +89,7 @@ export function usageRenderers(): {
 } {
 	return {
 		renderCall(input, theme) {
-			const args = input !== null && typeof input === "object" ? input as Record<string, unknown> : undefined;
+			const args = input !== null && typeof input === "object" ? (input as Record<string, unknown>) : undefined;
 			let text = theme.fg("toolTitle", theme.bold("pillars_usage"));
 			const parts: string[] = [];
 			if (typeof args?.view === "string") parts.push(args.view);
@@ -99,7 +103,9 @@ export function usageRenderers(): {
 			const details = result.details;
 			if (context.isError || !details || details.kind === "error") {
 				const message =
-					details && details.kind === "error" ? details.message : textContent(result) || "The access-evidence read did not complete.";
+					details && details.kind === "error"
+						? details.message
+						: textContent(result) || "The access-evidence read did not complete.";
 				return new Text(`\n${theme.fg("error", `pillars_usage: ${message}`)}`, 0, 0);
 			}
 			let text = `\n${theme.fg("success", details.view)}`;

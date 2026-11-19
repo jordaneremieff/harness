@@ -11,12 +11,7 @@
  * absence.
  */
 
-import type {
-	AgentToolResult,
-	KeybindingHints,
-	Theme,
-	ToolRenderResultOptions,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { type Component, Text } from "@earendil-works/pi-tui";
 import { parseFrontmatter } from "./format.ts";
 
@@ -184,11 +179,7 @@ function countLabel(n: number, singular: string, plural: string): string {
 }
 
 /** The request row names what will be stashed and the payload's shape. */
-export function renderWriteCall(
-	input: unknown,
-	theme: Theme,
-	context: CallContext,
-): Component {
+export function renderWriteCall(input: unknown, theme: Theme, context: CallContext): Component {
 	const args = record(input);
 	const title = typeof args?.title === "string" ? previewMark(args.title, 64).text : "";
 	const subject = title || (context.argsComplete === false ? "" : "(untitled)");
@@ -256,11 +247,7 @@ export function renderWriteResult(
 }
 
 /** The subject is the remembered phrase when searching, otherwise the recent list. */
-export function renderListCall(
-	input: unknown,
-	theme: Theme,
-	context: CallContext,
-): Component {
+export function renderListCall(input: unknown, theme: Theme, context: CallContext): Component {
 	const args = record(input);
 	const query = typeof args?.query === "string" ? previewMark(args.query, 64) : { text: "", clipped: false };
 	const subject = query.text ? `"${query.text}"` : "recent";
@@ -336,7 +323,10 @@ function listingCard(
 	const tally = stateTally(states);
 	const second = details.truncated === true ? `${tally ? `${tally} · ` : ""}list truncated` : tally;
 	return resultCard(
-		{ color: count > 0 ? "success" : "muted", line: `${details.provisional === true ? countLabel(count, "checkpoint", "checkpoints") : countLabel(count, "stash", "stashes")} listed` },
+		{
+			color: count > 0 ? "success" : "muted",
+			line: `${details.provisional === true ? countLabel(count, "checkpoint", "checkpoints") : countLabel(count, "stash", "stashes")} listed`,
+		},
 		details.provisional === true ? `provisional working material${second ? ` · ${second}` : ""}` : second,
 		count > 0,
 		textContent(result),
@@ -377,15 +367,19 @@ export interface ReadDisplayArgs {
 	id: string;
 }
 
-export function renderReadCall(
-	input: unknown,
-	theme: Theme,
-	context: CallContext,
-): Component {
+export function renderReadCall(input: unknown, theme: Theme, context: CallContext): Component {
 	const args = record(input);
 	const id = typeof args?.id === "string" ? previewMark(args.id, 72) : { text: "", clipped: false };
 	const subject = id.text || (context.argsComplete === false ? "" : "(id pending)");
-	return callCard("stash_read", subject, args?.collection === "checkpoints" ? ["provisional checkpoint"] : [], false, input, theme, context);
+	return callCard(
+		"stash_read",
+		subject,
+		args?.collection === "checkpoints" ? ["provisional checkpoint"] : [],
+		false,
+		input,
+		theme,
+		context,
+	);
 }
 
 /** The outcome row separates the returned page from the artifact that remains on disk. */
@@ -400,7 +394,12 @@ export function renderReadResult(
 	const details = record(result.details);
 	const text = textContent(result);
 	const meta = parseFrontmatter(text).meta;
-	const state = details.provisional === true ? "provisional checkpoint" : typeof meta.state === "string" ? previewMark(meta.state, 40).text : "";
+	const state =
+		details.provisional === true
+			? "provisional checkpoint"
+			: typeof meta.state === "string"
+				? previewMark(meta.state, 40).text
+				: "";
 	const title = typeof meta.title === "string" ? previewMark(meta.title, 80).text : "";
 	const lines = typeof details.totalLines === "number" ? `${details.totalLines} lines` : "";
 	const truncated = details.truncated === true ? " · truncated, full artifact remains in the file" : "";
@@ -420,11 +419,7 @@ export function renderReadResult(
 	);
 }
 
-export function renderEditCall(
-	input: unknown,
-	theme: Theme,
-	context: CallContext,
-): Component {
+export function renderEditCall(input: unknown, theme: Theme, context: CallContext): Component {
 	const args = record(input);
 	const id = typeof args?.id === "string" ? previewMark(args.id, 72).text : "";
 	const qualifiers: string[] = [];
@@ -457,11 +452,7 @@ export function renderEditResult(
 	);
 }
 
-export function renderCompleteCall(
-	input: unknown,
-	theme: Theme,
-	context: CallContext,
-): Component {
+export function renderCompleteCall(input: unknown, theme: Theme, context: CallContext): Component {
 	const args = record(input);
 	const id = typeof args?.id === "string" ? previewMark(args.id, 72) : { text: "", clipped: false };
 	const subject = id.text || (context.argsComplete === false ? "" : "(id pending)");
@@ -495,11 +486,7 @@ export function renderCompleteResult(
 	);
 }
 
-export function renderRotateCall(
-	input: unknown,
-	theme: Theme,
-	context: CallContext,
-): Component {
+export function renderRotateCall(input: unknown, theme: Theme, context: CallContext): Component {
 	const args = record(input);
 	const id = typeof args?.id === "string" ? previewMark(args.id, 72) : { text: "", clipped: false };
 	const subject = id.text || (context.argsComplete === false ? "" : "(id pending)");

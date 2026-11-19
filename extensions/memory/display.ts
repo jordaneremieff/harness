@@ -12,7 +12,13 @@ type ToolDisplayPublication = {
 };
 
 const tools: ToolDisplayPublication["tools"] = [
-	"memory_search", "memory_read", "memory_history", "memory_write", "memory_edit", "memory_review", "memory_retire",
+	"memory_search",
+	"memory_read",
+	"memory_history",
+	"memory_write",
+	"memory_edit",
+	"memory_review",
+	"memory_retire",
 ].map((name) => ({
 	name,
 	renderCall: (args, theme, context) => renderCall(name, args, theme, context),

@@ -15,8 +15,18 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
-import { DefaultResourceLoader, SessionManager, SettingsManager, createAgentSession, type AgentSession } from "@earendil-works/pi-coding-agent";
+import {
+	createAssistantMessageEventStream,
+	type AssistantMessage,
+	type TranscriptContext,
+} from "@earendil-works/pi-ai";
+import {
+	DefaultResourceLoader,
+	SessionManager,
+	SettingsManager,
+	createAgentSession,
+	type AgentSession,
+} from "@earendil-works/pi-coding-agent";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
 export type PrimaryScenario = "resume" | "prior-drafts" | "collision" | "abort-before" | "abort-after";
@@ -32,17 +42,20 @@ export interface PrimaryFixture {
 	run(text: string): Promise<void>;
 }
 
-const SUMMARY = "CONTINUITY_CONTRACT: Finish the assigned local task. No publication authority. Retain source qualifications. Review the sibling result and return completed delivery.";
+const SUMMARY =
+	"CONTINUITY_CONTRACT: Finish the assigned local task. No publication authority. Retain source qualifications. Review the sibling result and return completed delivery.";
 
 /** The scenario wrapper registers the current extension and the sibling tool. */
 function wrapperSource(scenario: PrimaryScenario, indexPath: string): string {
 	const before = scenario === "abort-before" ? '\tpi.on("turn_end", (_event, ctx) => { ctx.abort(); });' : "";
-	const priorDrafts = scenario === "prior-drafts"
-		? '\tpi.on("turn_end", (event) => event.toolResults.length ? ({ entries: [{ type: "custom", customType: "boundary.record", data: { retained: true } }, { type: "custom_message", customType: "boundary.message", content: "PRIOR_BOUNDARY_MESSAGE", display: false }, { type: "context_edit", targetId: event.toolResultEntryIds[1], replacement: { content: [{ type: "text", text: "EDITED_SIBLING_EVIDENCE" }] } }], continue: true }) : undefined);'
-		: "";
-	const collision = scenario === "collision"
-		? '\tpi.on("turn_end", (event) => event.toolResults.length ? ({ entries: [{ type: "compaction", summary: "OTHER_CONTRACT", firstKeptEntryId: event.messageEntryId }], continue: true }) : undefined);'
-		: "";
+	const priorDrafts =
+		scenario === "prior-drafts"
+			? '\tpi.on("turn_end", (event) => event.toolResults.length ? ({ entries: [{ type: "custom", customType: "boundary.record", data: { retained: true } }, { type: "custom_message", customType: "boundary.message", content: "PRIOR_BOUNDARY_MESSAGE", display: false }, { type: "context_edit", targetId: event.toolResultEntryIds[1], replacement: { content: [{ type: "text", text: "EDITED_SIBLING_EVIDENCE" }] } }], continue: true }) : undefined);'
+			: "";
+	const collision =
+		scenario === "collision"
+			? '\tpi.on("turn_end", (event) => event.toolResults.length ? ({ entries: [{ type: "compaction", summary: "OTHER_CONTRACT", firstKeptEntryId: event.messageEntryId }], continue: true }) : undefined);'
+			: "";
 	const after = scenario === "abort-after" ? '\t\t\tpi.on("turn_end", (_event, ctx) => { ctx.abort(); });' : "";
 	return `import register from ${JSON.stringify(indexPath)};
 import { obj } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@earendil-works/pi-schema")))};
@@ -72,7 +85,7 @@ function primaryStream(requests: TranscriptContext[], sessionId: () => string) {
 		calls += 1;
 		requests.push(structuredClone(context));
 		const first = calls === 1;
-		const reason = first ? "toolUse" as const : "stop" as const;
+		const reason = first ? ("toolUse" as const) : ("stop" as const);
 		const message: AssistantMessage = {
 			role: "assistant",
 			api: testModel.api,
@@ -80,13 +93,25 @@ function primaryStream(requests: TranscriptContext[], sessionId: () => string) {
 			model: testModel.id,
 			content: first
 				? [
-						{ type: "toolCall", id: "self-continuity", name: "agent_compact", arguments: { sessionId: sessionId(), summary: SUMMARY } },
+						{
+							type: "toolCall",
+							id: "self-continuity",
+							name: "agent_compact",
+							arguments: { sessionId: sessionId(), summary: SUMMARY },
+						},
 						{ type: "toolCall", id: "sibling", name: "batch_evidence", arguments: {} },
 					]
 				: [{ type: "text", text: "DELIVERY_COMPLETE" }],
 			stopReason: reason,
 			timestamp: Date.now(),
-			usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 		};
 		const events = createAssistantMessageEventStream();
 		events.push({ type: "start", partial: message });
@@ -97,7 +122,10 @@ function primaryStream(requests: TranscriptContext[], sessionId: () => string) {
 }
 
 /** Create one primary session for one self-compaction scenario. */
-export async function primaryFixture(t: { after(fn: () => void): void }, scenario: PrimaryScenario): Promise<PrimaryFixture> {
+export async function primaryFixture(
+	t: { after(fn: () => void): void },
+	scenario: PrimaryScenario,
+): Promise<PrimaryFixture> {
 	const root = mkdtempSync(join(tmpdir(), "primary-self-compaction-"));
 	const cwd = join(root, "work");
 	const agentDir = join(root, "agent");
@@ -106,7 +134,10 @@ export async function primaryFixture(t: { after(fn: () => void): void }, scenari
 	mkdirSync(agentDir);
 	mkdirSync(sessionsRoot);
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false } }));
-	writeFileSync(join(root, "continuity.ts"), wrapperSource(scenario, fileURLToPath(new URL("./index.ts", import.meta.url))));
+	writeFileSync(
+		join(root, "continuity.ts"),
+		wrapperSource(scenario, fileURLToPath(new URL("./index.ts", import.meta.url))),
+	);
 
 	const previousAgentDir = process.env.PI_AGENT_DIR;
 	const previousSessionsDir = process.env.PI_AGENT_SESSIONS_DIR;
@@ -138,9 +169,24 @@ export async function primaryFixture(t: { after(fn: () => void): void }, scenari
 		streamSimple: stream,
 	});
 	const settingsManager = SettingsManager.create(cwd, agentDir);
-	const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, additionalExtensionPaths: [join(root, "continuity.ts")] });
+	const loader = new DefaultResourceLoader({
+		cwd,
+		agentDir,
+		settingsManager,
+		additionalExtensionPaths: [join(root, "continuity.ts")],
+	});
 	await loader.reload();
-	session = (await createAgentSession({ cwd, agentDir, modelRuntime: runtime, settingsManager, sessionManager, model: testModel, resourceLoader: loader })).session;
+	session = (
+		await createAgentSession({
+			cwd,
+			agentDir,
+			modelRuntime: runtime,
+			settingsManager,
+			sessionManager,
+			model: testModel,
+			resourceLoader: loader,
+		})
+	).session;
 
 	return {
 		cwd,

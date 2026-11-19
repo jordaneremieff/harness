@@ -33,10 +33,14 @@ const table = (name: string, rows: { key: string; value: string }[]): NamedData 
 const context = { tool: "dispatch", schema: { type: "object", additionalProperties: true } };
 
 test("one frame reuses facts, applicability truth, and schema checks per candidate", () => {
-	const scoped = rule("frame", { kind: "deny" }, {
-		selector: { tools: ["dispatch"] },
-		when: { op: "eq", path: ["input", "mode"], value: "strict" },
-	});
+	const scoped = rule(
+		"frame",
+		{ kind: "deny" },
+		{
+			selector: { tools: ["dispatch"] },
+			when: { op: "eq", path: ["input", "mode"], value: "strict" },
+		},
+	);
 	scoped.applicability = { op: "eq", path: ["input", "mode"], value: "strict" };
 	const candidate = ownInput({ mode: "strict" });
 	const frame = createEvaluationFrame(
@@ -319,10 +323,7 @@ test("context selectors qualify completed observations and do not invent a curre
 	state.complete(pin, { outcome: { kind: "success" } }, 1, 1);
 	const completed = state.view(scoped.id, 1);
 	assert.ok(completed);
-	assert.equal(
-		evaluatePrograms([scoped], "context", { tool: "", states: { context: completed } })[0].truth,
-		true,
-	);
+	assert.equal(evaluatePrograms([scoped], "context", { tool: "", states: { context: completed } })[0].truth, true);
 	assert.equal(programFacts(scoped, { tool: "" }).tool, UNKNOWN);
 	const noState = { ...scoped.program };
 	delete noState.state;
@@ -348,7 +349,9 @@ test("removed schema operators and fields fail closed admission at every conditi
 		assert.ok(validateFactsProgram({ ...base, state: { observe: yes, resetWhen: condition } }));
 	}
 	assert.ok(validateFactsProgram({ ...base, schemaData: "shape" }));
-	assert.ok(validateFactsProgram({ ...base, selector: { codec: { argumentsPath: ["arguments"], schemaData: "shape" } } }));
+	assert.ok(
+		validateFactsProgram({ ...base, selector: { codec: { argumentsPath: ["arguments"], schemaData: "shape" } } }),
+	);
 });
 
 test("only actual result facts support structural error assertions", () => {

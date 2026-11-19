@@ -4,7 +4,17 @@ import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { formatDurableFooter } from "./footer.ts";
 
 function row(id = "a", overrides: Partial<AgentConversationSummary> = {}): AgentConversationSummary {
-	return { id, storageId: "storage", cwd: "/work", owner: "here", modifiedAt: 1, state: "idle", cost: 0, partial: false, ...overrides };
+	return {
+		id,
+		storageId: "storage",
+		cwd: "/work",
+		owner: "here",
+		modifiedAt: 1,
+		state: "idle",
+		cost: 0,
+		partial: false,
+		...overrides,
+	};
 }
 
 test("re-observing the same native totals is idempotent and never double-counts", () => {

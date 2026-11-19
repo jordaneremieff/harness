@@ -108,7 +108,7 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 			return message;
 		};
 		const usageText = (message: import("@earendil-works/pi-ai").ToolResultMessage) =>
-			message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
+			message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
 		const assertUsageOutcomes = async () => {
 			const empty = await callUsageTool("pillars_usage", {});
 			assert.equal(empty.isError, false);
@@ -121,11 +121,26 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 			assert.match(usageText(cursor), /fresh|Send/);
 			assert.deepEqual(cursor.details, JSON.parse(usageText(cursor)));
 			const day = utcDay();
-			await new PillarsStore(join(root, "store")).commit({ owner: "a".repeat(32), seq: 1, day,
-				cells: Array.from({ length: 25 }, (_, index) => ({ day, observationStage: "tool_request", resourceClass: "entry",
-					resourceId: `synthetic-${index}`, model: "test/model", reasoning: "high", referenceBodyDigest: "a".repeat(64),
-					observerVersion: "1.0.0", piVersion: "1.0.0", counters: { ...zero(), readRequests: 1 } })),
-			}, day);
+			await new PillarsStore(join(root, "store")).commit(
+				{
+					owner: "a".repeat(32),
+					seq: 1,
+					day,
+					cells: Array.from({ length: 25 }, (_, index) => ({
+						day,
+						observationStage: "tool_request",
+						resourceClass: "entry",
+						resourceId: `synthetic-${index}`,
+						model: "test/model",
+						reasoning: "high",
+						referenceBodyDigest: "a".repeat(64),
+						observerVersion: "1.0.0",
+						piVersion: "1.0.0",
+						counters: { ...zero(), readRequests: 1 },
+					})),
+				},
+				day,
+			);
 			const paged = await callUsageTool("pillars_usage", { view: "revisions" });
 			const next = JSON.parse(usageText(paged)).pagination.nextCursor;
 			assert.equal(typeof next, "string");
@@ -143,7 +158,9 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 				assert.equal(unreadable.isError, true);
 				assert.match(diagnostic, /"kind":"error".*"code":"store_unreadable"/);
 				assert.deepEqual(unreadable.details, JSON.parse(diagnostic));
-				const caught = await callUsageTool("codemode", { code: 'try { await tools.pillars_usage({}); throw new Error("expected rejection"); } catch (error) { if (JSON.parse(error.message).code !== "store_unreadable") throw error; text(error.message); }' });
+				const caught = await callUsageTool("codemode", {
+					code: 'try { await tools.pillars_usage({}); throw new Error("expected rejection"); } catch (error) { if (JSON.parse(error.message).code !== "store_unreadable") throw error; text(error.message); }',
+				});
 				assert.equal(caught.isError, false, usageText(caught));
 				assert.ok(usageText(caught).includes(diagnostic));
 				const uncaught = await callUsageTool("codemode", { code: "await tools.pillars_usage({});" });
@@ -168,7 +185,9 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 			ai.fauxAssistantMessage("Synthetic run finished."),
 		]);
 		await session.prompt("Consult the synthetic principle and its governance.");
-		const messages = session.messages.filter((message) => message.role === "toolResult" && ["source-call", "read-call"].includes(message.toolCallId));
+		const messages = session.messages.filter(
+			(message) => message.role === "toolResult" && ["source-call", "read-call"].includes(message.toolCallId),
+		);
 		assert.equal(messages.length, 2);
 		const sourceMessage = messages[0];
 		assert.ok(sourceMessage?.role === "toolResult");
@@ -183,7 +202,9 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		);
 		const assertSource = async (expected: string) => {
 			faux.setResponses([
-				ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { resource: "principle-example" }, { id: "refresh-source" })),
+				ai.fauxAssistantMessage(
+					ai.fauxToolCall("pillars", { resource: "principle-example" }, { id: "refresh-source" }),
+				),
 				ai.fauxAssistantMessage("Synthetic source checked."),
 			]);
 			await activeSession.prompt("Read the configured synthetic source.");
@@ -274,7 +295,10 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		await assertHelpCommands();
 		const assertJudgmentRefresh = async () => {
 			const warnings: string[] = [];
-			const stderr = t.mock.method(process.stderr, "write", (text: string | Uint8Array) => { warnings.push(String(text)); return true; });
+			const stderr = t.mock.method(process.stderr, "write", (text: string | Uint8Array) => {
+				warnings.push(String(text));
+				return true;
+			});
 			try {
 				for (const action of ["check", "derive", "review"]) {
 					const before = completions("read ");
@@ -290,7 +314,13 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 						await activeSession.prompt(`/pillars ${action} inspect the configured corpus`);
 						await activeSession.waitForIdle();
 						assert.deepEqual(completions("read "), before);
-						assert.ok(warnings.some((text) => text === "Pillars catalogue refresh failed. The judgment uses the last available catalogue; source reads still verify current body bytes.\n"));
+						assert.ok(
+							warnings.some(
+								(text) =>
+									text ===
+									"Pillars catalogue refresh failed. The judgment uses the last available catalogue; source reads still verify current body bytes.\n",
+							),
+						);
 						const result = activeSession.messages.findLast((message) => message.role === "toolResult");
 						assert.ok(result?.role === "toolResult");
 						assert.equal(result.isError, false);
@@ -301,7 +331,9 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 					}
 					await activeSession.prompt("/pillars browse");
 				}
-			} finally { stderr.mock.restore(); }
+			} finally {
+				stderr.mock.restore();
+			}
 		};
 		await assertJudgmentRefresh();
 		const assertJudgmentRequests = async () => {
@@ -407,7 +439,9 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 				ai.fauxAssistantMessage("Synthetic invalid input checked."),
 			]);
 			await session.prompt("Check an invalid tool input.");
-			const invalid: import("@earendil-works/pi-agent-core").AgentMessage | undefined = session.messages.findLast((message) => message.role === "toolResult");
+			const invalid: import("@earendil-works/pi-agent-core").AgentMessage | undefined = session.messages.findLast(
+				(message) => message.role === "toolResult",
+			);
 			assert.ok(invalid?.role === "toolResult");
 			const content = invalid.content.find((block) => block.type === "text");
 			assert.ok(content?.type === "text");

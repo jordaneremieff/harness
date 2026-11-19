@@ -9,25 +9,67 @@ import type { Outcome } from "./format.ts";
 import type { HostSnapshot } from "./records.ts";
 import { SCAN_MAX_BYTES, type ScanResult } from "./scan.ts";
 
-const source = (path: string) => ({ path, source: "fixture", scope: "temporary" as const, origin: "top-level" as const, baseDir: "/fixtures" });
+const source = (path: string) => ({
+	path,
+	source: "fixture",
+	scope: "temporary" as const,
+	origin: "top-level" as const,
+	baseDir: "/fixtures",
+});
 function snapshot(commands: HostSnapshot["commands"] = []): HostSnapshot {
-	return { tools: [{ name: "tool", sourceInfo: source("/fixtures/extension.ts") }], activeTools: [], commands,
-		observation: null, availability: { tools: true, activeTools: true, commands: true }, at: 1000 };
+	return {
+		tools: [{ name: "tool", sourceInfo: source("/fixtures/extension.ts") }],
+		activeTools: [],
+		commands,
+		observation: null,
+		availability: { tools: true, activeTools: true, commands: true },
+		at: 1000,
+	};
 }
-const request = (over: Partial<LookupRequest> = {}): LookupRequest => ({ params: {}, snapshot: snapshot(), session: { cwd: "/fixtures", mode: "rpc" }, epoch: "session", ...over });
-const cursor = (result: LookupResult) => { assert.equal(typeof result.details.cursor, "string"); return result.details.cursor as string; };
+const request = (over: Partial<LookupRequest> = {}): LookupRequest => ({
+	params: {},
+	snapshot: snapshot(),
+	session: { cwd: "/fixtures", mode: "rpc" },
+	epoch: "session",
+	...over,
+});
+const cursor = (result: LookupResult) => {
+	assert.equal(typeof result.details.cursor, "string");
+	return result.details.cursor as string;
+};
 let dir = "";
-before(async () => { dir = await mkdtemp(join(tmpdir(), "registry-lookup-")); });
-after(async () => { await rm(dir, { recursive: true, force: true }); });
+before(async () => {
+	dir = await mkdtemp(join(tmpdir(), "registry-lookup-"));
+});
+after(async () => {
+	await rm(dir, { recursive: true, force: true });
+});
 
 describe("lookup outcomes", () => {
 	it("maps each typed outcome to query failure rather than incomplete coverage", () => {
-		const expected: Record<Outcome, boolean> = { invalid_arguments: true, stale_cursor: true, io_error: true, cancelled: true,
-			ok: false, host_summary: false, missing: false, ambiguous: false, unavailable: false, partial: false };
-		for (const outcome of Object.keys(expected) as Outcome[]) assert.equal(lookupIsError(outcome), expected[outcome], outcome);
+		const expected: Record<Outcome, boolean> = {
+			invalid_arguments: true,
+			stale_cursor: true,
+			io_error: true,
+			cancelled: true,
+			ok: false,
+			host_summary: false,
+			missing: false,
+			ambiguous: false,
+			unavailable: false,
+			partial: false,
+		};
+		for (const outcome of Object.keys(expected) as Outcome[])
+			assert.equal(lookupIsError(outcome), expected[outcome], outcome);
 	});
 	it("returns an explicit no-argument host summary without scanning", async () => {
-		const result = await lookup(request({ scan: async () => { throw new Error("unexpected scan"); } }));
+		const result = await lookup(
+			request({
+				scan: async () => {
+					throw new Error("unexpected scan");
+				},
+			}),
+		);
 		assert.equal(result.outcome, "host_summary");
 		assert.match(result.text, /not_yet_observed/);
 		assert.match(result.text, /BOUNDARIES/);
@@ -39,13 +81,20 @@ describe("lookup outcomes", () => {
 		assert.equal(missing.details.pageTruncated, false);
 		assert.equal(missing.details.continuationStatus, "complete");
 		assert.equal(missing.details.cursor, undefined);
-		const host = snapshot(); host.availability.commands = false;
+		const host = snapshot();
+		host.availability.commands = false;
 		assert.equal((await lookup(request({ params: { name: "absent" }, snapshot: host }))).outcome, "unavailable");
 		assert.equal((await lookup(request({ params: { name: "tool", kind: "tool" }, snapshot: host }))).outcome, "ok");
 		assert.equal((await lookup(request({ signal: AbortSignal.abort() }))).outcome, "cancelled");
 	});
 	it("returns bounded invalid argument outcomes", async () => {
-		for (const params of [{ name: "" }, { limit: 101 }, { cursor: "x" }, { cursor: "x", kind: "tool" }, { path: "/arbitrary" }]) {
+		for (const params of [
+			{ name: "" },
+			{ limit: 101 },
+			{ cursor: "x" },
+			{ cursor: "x", kind: "tool" },
+			{ path: "/arbitrary" },
+		]) {
 			const result = await lookup(request({ params }));
 			assert.equal(result.outcome, "invalid_arguments");
 			assert.ok(Buffer.byteLength(JSON.stringify(result)) < 4096);
@@ -62,30 +111,50 @@ describe("lookup outcomes", () => {
 	});
 	it("reports synthetic sources as unavailable instead of missing", async () => {
 		const host = snapshot([{ name: "skill:example", source: "skill", sourceInfo: source("<sdk>") }]);
-		assert.equal((await lookup(request({ params: { name: "example", contains: "needle" }, snapshot: host }))).outcome, "unavailable");
+		assert.equal(
+			(await lookup(request({ params: { name: "example", contains: "needle" }, snapshot: host }))).outcome,
+			"unavailable",
+		);
 	});
 });
 
 describe("registration pages", () => {
 	it("resumes cursor-only pages and invalidates session or source changes", async () => {
-		const host = snapshot(Array.from({ length: 5 }, (_, i) => ({ name: `command-${i}`, source: "extension" as const, sourceInfo: source(`/fixtures/${i}.ts`) })));
+		const host = snapshot(
+			Array.from({ length: 5 }, (_, i) => ({
+				name: `command-${i}`,
+				source: "extension" as const,
+				sourceInfo: source(`/fixtures/${i}.ts`),
+			})),
+		);
 		const first = await lookup(request({ params: { kind: "command", limit: 2 }, snapshot: host }));
 		const next = await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }));
 		assert.equal(first.details.pageTruncated, true);
 		assert.equal(first.details.continuationStatus, "available");
 		assert.equal(first.details.resultBounded, false);
 		assert.equal(next.details.offset, 2);
-		assert.deepEqual((next.details.records as { name: string }[]).map((r) => r.name), ["command-2", "command-3"]);
-		assert.equal((await lookup(request({ params: { cursor: cursor(first) }, snapshot: host, epoch: "new-session" }))).outcome, "stale_cursor");
+		assert.deepEqual(
+			(next.details.records as { name: string }[]).map((r) => r.name),
+			["command-2", "command-3"],
+		);
+		assert.equal(
+			(await lookup(request({ params: { cursor: cursor(first) }, snapshot: host, epoch: "new-session" }))).outcome,
+			"stale_cursor",
+		);
 		host.commands[0].sourceInfo.path = "/fixtures/changed.ts";
-		assert.equal((await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }))).outcome, "stale_cursor");
+		assert.equal(
+			(await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }))).outcome,
+			"stale_cursor",
+		);
 	});
 	it("states why an ambiguous detail page has no continuation", async () => {
 		const base = snapshot();
 		const tool = base.tools[0];
 		assert.ok(tool);
 		const host: HostSnapshot = { ...base, tools: [tool, { ...tool, sourceInfo: source("/fixtures/second.ts") }] };
-		const result = await lookup(request({ params: { kind: "tool", name: "tool", detail: true, limit: 1 }, snapshot: host }));
+		const result = await lookup(
+			request({ params: { kind: "tool", name: "tool", detail: true, limit: 1 }, snapshot: host }),
+		);
 		assert.equal(result.outcome, "ambiguous");
 		assert.equal(result.details.pageTruncated, true);
 		assert.equal(result.details.continuationStatus, "unavailable");
@@ -94,14 +163,22 @@ describe("registration pages", () => {
 		assert.equal(result.details.resultBounded, false);
 	});
 	it("does not skip records when full-envelope bounds reduce a page", async () => {
-		const host = snapshot(Array.from({ length: 100 }, (_, i) => ({ name: `command-${String(i).padStart(3, "0")}`, source: "extension" as const, sourceInfo: source(`/fixtures/${"x".repeat(2000)}${i}`) })));
+		const host = snapshot(
+			Array.from({ length: 100 }, (_, i) => ({
+				name: `command-${String(i).padStart(3, "0")}`,
+				source: "extension" as const,
+				sourceInfo: source(`/fixtures/${"x".repeat(2000)}${i}`),
+			})),
+		);
 		let result = await lookup(request({ params: { kind: "command", limit: 100 }, snapshot: host }));
 		const names: string[] = [];
 		assert.equal(result.details.resultBounded, true);
 		for (let page = 0; page < 100; page += 1) {
 			const returned = result.details.records as { name: string }[];
 			assert.equal(result.details.returnedRecords, returned.length);
-			assert.ok(result.text.includes(`records: ${returned.length} shown of 100 matched | offset ${names.length} | limit 100`));
+			assert.ok(
+				result.text.includes(`records: ${returned.length} shown of 100 matched | offset ${names.length} | limit 100`),
+			);
 			names.push(...returned.map((r) => r.name));
 			assert.equal(result.details.pageTruncated, names.length < 100);
 			assert.equal(result.details.continuationStatus, names.length < 100 ? "available" : "complete");
@@ -115,11 +192,18 @@ describe("registration pages", () => {
 });
 
 describe("incomplete inventories", () => {
-	const threeDocs = (padding = 0): HostSnapshot => ({ tools: ["alpha", "beta", "gamma"].map((name) => ({
-		name, description: "reads documents",
-		sourceInfo: source(`/fixtures/${"x".repeat(padding)}${name}.ts`),
-	})), activeTools: [], commands: [], observation: null,
-		availability: { tools: true, activeTools: true, commands: false }, at: 1000 });
+	const threeDocs = (padding = 0): HostSnapshot => ({
+		tools: ["alpha", "beta", "gamma"].map((name) => ({
+			name,
+			description: "reads documents",
+			sourceInfo: source(`/fixtures/${"x".repeat(padding)}${name}.ts`),
+		})),
+		activeTools: [],
+		commands: [],
+		observation: null,
+		availability: { tools: true, activeTools: true, commands: false },
+		at: 1000,
+	});
 	it("reports shown of known matches and incomplete inventory without a cursor", async () => {
 		const result = await lookup(request({ params: { search: "documents", limit: 2 }, snapshot: threeDocs() }));
 		assert.equal(result.outcome, "unavailable");
@@ -133,7 +217,10 @@ describe("incomplete inventories", () => {
 		const allKnown = await lookup(request({ params: { search: "documents", limit: 100 }, snapshot: threeDocs() }));
 		assert.equal(allKnown.details.pageTruncated, false);
 		assert.equal(allKnown.details.continuationStatus, "unavailable");
-		assert.deepEqual((result.details.records as { name: string }[]).map((r) => r.name), ["alpha", "beta"]);
+		assert.deepEqual(
+			(result.details.records as { name: string }[]).map((r) => r.name),
+			["alpha", "beta"],
+		);
 		assert.ok(result.text.includes("records: 2 shown of 3 known matches | limit 2 (inventory incomplete)"));
 		assert.match(result.text, /no continuation/);
 		assert.match(result.text, /query an available resource kind/);
@@ -157,9 +244,22 @@ describe("incomplete inventories", () => {
 
 describe("file-backed lookup", () => {
 	it("requires a unique file-backed match and bounds ambiguous pages", async () => {
-		const host = snapshot(Array.from({ length: 5 }, (_, i) => ({ name: `skill:example-${i}`, source: "skill" as const, sourceInfo: source(`/fixtures/${i}/SKILL.md`) })));
-		const result = await lookup(request({ params: { kind: "skill", contains: "needle", limit: 2 }, snapshot: host,
-			scan: async () => { throw new Error("ambiguous queries must not scan"); } }));
+		const host = snapshot(
+			Array.from({ length: 5 }, (_, i) => ({
+				name: `skill:example-${i}`,
+				source: "skill" as const,
+				sourceInfo: source(`/fixtures/${i}/SKILL.md`),
+			})),
+		);
+		const result = await lookup(
+			request({
+				params: { kind: "skill", contains: "needle", limit: 2 },
+				snapshot: host,
+				scan: async () => {
+					throw new Error("ambiguous queries must not scan");
+				},
+			}),
+		);
 		assert.equal(result.outcome, "ambiguous");
 		assert.equal((result.details.records as unknown[]).length, 2);
 		assert.equal(decodeCursor(cursor(result)).offset, 2);
@@ -169,21 +269,40 @@ describe("file-backed lookup", () => {
 	it("retains stamped partial-scan cursors and never calls the known prefix complete", async () => {
 		const path = join(dir, "partial.md");
 		const host = snapshot([{ name: "skill:example", source: "skill", sourceInfo: source(path) }]);
-		const scanned: ScanResult = { outcome: "partial", truncated: true, bytesRead: 100, fileSize: 200,
-			matches: [{ line: 1, text: "needle one" }, { line: 2, text: "needle two" }],
-			stamp: { path, size: 200, mtimeMs: 1, ctimeMs: 1, ino: 1, dev: 1, digest: "0".repeat(64) } };
-		const first = await lookup(request({ params: { name: "example", contains: "needle", limit: 1 }, snapshot: host, scan: async () => scanned }));
+		const scanned: ScanResult = {
+			outcome: "partial",
+			truncated: true,
+			bytesRead: 100,
+			fileSize: 200,
+			matches: [
+				{ line: 1, text: "needle one" },
+				{ line: 2, text: "needle two" },
+			],
+			stamp: { path, size: 200, mtimeMs: 1, ctimeMs: 1, ino: 1, dev: 1, digest: "0".repeat(64) },
+		};
+		const first = await lookup(
+			request({ params: { name: "example", contains: "needle", limit: 1 }, snapshot: host, scan: async () => scanned }),
+		);
 		assert.equal(first.details.partialScan, true);
 		assert.equal(first.details.pageTruncated, true);
 		assert.equal(first.details.continuationStatus, "available");
-		const last = await lookup(request({ params: { cursor: cursor(first) }, snapshot: host, scan: async () => scanned }));
+		const last = await lookup(
+			request({ params: { cursor: cursor(first) }, snapshot: host, scan: async () => scanned }),
+		);
 		assert.equal(last.details.partialScan, true);
 		assert.equal(last.details.pageTruncated, false);
 		assert.equal(last.details.continuationStatus, "unavailable");
 		assert.match(String(last.details.continuationReason), /incomplete.*unknown/);
 		assert.equal(last.details.cursor, undefined);
-		const unstamped = { ...scanned }; delete unstamped.stamp;
-		const noStamp = await lookup(request({ params: { name: "example", contains: "needle", limit: 1 }, snapshot: host, scan: async () => unstamped }));
+		const unstamped = { ...scanned };
+		delete unstamped.stamp;
+		const noStamp = await lookup(
+			request({
+				params: { name: "example", contains: "needle", limit: 1 },
+				snapshot: host,
+				scan: async () => unstamped,
+			}),
+		);
 		assert.equal(noStamp.details.partialScan, true);
 		assert.equal(noStamp.details.pageTruncated, true);
 		assert.equal(noStamp.details.continuationStatus, "unavailable");
@@ -192,7 +311,10 @@ describe("file-backed lookup", () => {
 	});
 	it("finds literal content with context in one call and invalidates affected-file continuation", async () => {
 		const path = join(dir, "content.md");
-		await writeFile(path, "---\ndisable-model-invocation: true\n---\nBefore\nMemory instruction\nMEMORY second\nAfter\n");
+		await writeFile(
+			path,
+			"---\ndisable-model-invocation: true\n---\nBefore\nMemory instruction\nMEMORY second\nAfter\n",
+		);
 		const host = snapshot([{ name: "skill:example", source: "skill", sourceInfo: source(path) }]);
 		const first = await lookup(request({ params: { name: "example", contains: "memory", limit: 1 }, snapshot: host }));
 		assert.equal(first.outcome, "ok");
@@ -208,11 +330,20 @@ describe("file-backed lookup", () => {
 		assert.equal(second.details.continuationStatus, "complete");
 		const stamp = decodeCursor(cursor(first)).file;
 		assert.ok(stamp);
-		await writeFile(path, "---\ndisable-model-invocation: true\n---\nBefore\nmemory instruction\nMEMORY second\nAfter\n");
+		await writeFile(
+			path,
+			"---\ndisable-model-invocation: true\n---\nBefore\nmemory instruction\nMEMORY second\nAfter\n",
+		);
 		await utimes(path, new Date(), stamp.mtimeMs / 1000);
-		assert.equal((await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }))).outcome, "stale_cursor");
+		assert.equal(
+			(await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }))).outcome,
+			"stale_cursor",
+		);
 		await rm(path);
-		assert.equal((await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }))).outcome, "stale_cursor");
+		assert.equal(
+			(await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }))).outcome,
+			"stale_cursor",
+		);
 	});
 	it("reports only retained content matches after result bounds reduce a page", async () => {
 		const path = join(dir, "many-matches.md");
@@ -224,13 +355,18 @@ describe("file-backed lookup", () => {
 		for (let page = 0; page < 100; page += 1) {
 			const returned = result.details.records as { line: number }[];
 			assert.equal(result.details.returnedRecords, returned.length);
-			assert.ok(result.text.includes(`matches: ${returned.length} shown of 100 found | offset ${lines.length} | limit 100`));
+			assert.ok(
+				result.text.includes(`matches: ${returned.length} shown of 100 found | offset ${lines.length} | limit 100`),
+			);
 			lines.push(...returned.map((match) => match.line));
 			if (result.details.cursor === undefined) break;
 			assert.equal(decodeCursor(cursor(result)).offset, lines.length);
 			result = await lookup(request({ params: { cursor: cursor(result) }, snapshot: host }));
 		}
-		assert.deepEqual(lines, Array.from({ length: 100 }, (_, i) => i + 1));
+		assert.deepEqual(
+			lines,
+			Array.from({ length: 100 }, (_, i) => i + 1),
+		);
 	});
 	it("reports partial, missing, invalid metadata, I/O failure, and cancellation separately", async () => {
 		const path = join(dir, "outcomes.md");
@@ -243,8 +379,13 @@ describe("file-backed lookup", () => {
 		assert.equal((await run()).outcome, "missing");
 		await writeFile(path, "---\ninvalid: [\n---");
 		assert.equal((await run()).outcome, "unavailable");
-		const cancelled = await lookup(request({ params: { contains: "needle" }, snapshot: host,
-			scan: async () => ({ outcome: "cancelled", matches: [], bytesRead: 0, fileSize: 0, truncated: false }) }));
+		const cancelled = await lookup(
+			request({
+				params: { contains: "needle" },
+				snapshot: host,
+				scan: async () => ({ outcome: "cancelled", matches: [], bytesRead: 0, fileSize: 0, truncated: false }),
+			}),
+		);
 		assert.equal(cancelled.outcome, "cancelled");
 	});
 });

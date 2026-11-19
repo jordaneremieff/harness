@@ -1,23 +1,52 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { captureFor, classify, evaluateCommandRecords, matchRuleRecords, notesFor, redactFor, ruleScopeMatches } from "./classify.ts";
+import {
+	captureFor,
+	classify,
+	evaluateCommandRecords,
+	matchRuleRecords,
+	notesFor,
+	redactFor,
+	ruleScopeMatches,
+} from "./classify.ts";
 import type { RuleRecord } from "./rule.ts";
 
 describe("CLI command-operand evidence", () => {
 	const record: RuleRecord = {
-		id: "synthetic.git", source: { kind: "package" },
-		matcher: { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
-			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } },
-		definition: { purpose: "Evaluate the declared command.", authority: "exact", revision: "123456abcdef",
-			state: "active", effect: "block", note: "Use a permitted command shape." },
-		matcherAvailable: true, staleOverride: false,
+		id: "synthetic.git",
+		source: { kind: "package" },
+		matcher: {
+			kind: "declarative",
+			language: "command-shape/v1",
+			onUnavailable: "deny",
+			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } },
+		},
+		definition: {
+			purpose: "Evaluate the declared command.",
+			authority: "exact",
+			revision: "123456abcdef",
+			state: "active",
+			effect: "block",
+			note: "Use a permitted command shape.",
+		},
+		matcherAvailable: true,
+		staleOverride: false,
 	};
 	const scope = { cwd: "/project", provider: "test", model: "test/model" };
 	it("does not infer child argv from wrappers or find expressions", () => {
-		for (const command of ["timeout 1 git push", "setsid git push", "flock 9 git push",
-			"flock lock -c 'git push'", "parallel git push ::: origin", "xargs git push",
-			"find src -exec git push \\;", "find src -execdir git push +", "find src -ok git push \\;",
-			"find src -okdir git push \\;", "find src $expression"] ) {
+		for (const command of [
+			"timeout 1 git push",
+			"setsid git push",
+			"flock 9 git push",
+			"flock lock -c 'git push'",
+			"parallel git push ::: origin",
+			"xargs git push",
+			"find src -exec git push \\;",
+			"find src -execdir git push +",
+			"find src -ok git push \\;",
+			"find src -okdir git push \\;",
+			"find src $expression",
+		]) {
 			const evidence = evaluateCommandRecords("bash", command, [record], scope);
 			assert.equal(evidence.get(record.id), "unknown", command);
 			assert.deepEqual(evidence.reasons.get(record.id), ["opaque-command-operand"]);
@@ -27,14 +56,29 @@ describe("CLI command-operand evidence", () => {
 	it("retains lexical matches and lets direct true evidence win", () => {
 		for (const command of ["git push", "timeout 1 echo x; git push", "for x in a; do git push; done"])
 			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), true);
-		for (const command of ["git status", "find src -type f", "echo safe", 'for f in $(fd -t f design | head -n 20); do wc -c "$f"; done'])
+		for (const command of [
+			"git status",
+			"find src -type f",
+			"echo safe",
+			'for f in $(fd -t f design | head -n 20); do wc -c "$f"; done',
+		])
 			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), false, command);
-		const lexical = { ...record, matcher: { kind: "declarative" as const, language: "command-shape/v1" as const, spec: { command: "timeout" } } };
+		const lexical = {
+			...record,
+			matcher: { kind: "declarative" as const, language: "command-shape/v1" as const, spec: { command: "timeout" } },
+		};
 		assert.equal(evaluateCommandRecords("bash", "timeout 1 git push", [lexical], scope).get(record.id), true);
 	});
 	it("admits newline bodies but keeps malformed list and pipeline evidence unknown", () => {
-		assert.equal(evaluateCommandRecords("bash", "for x in a; do\necho safe\ndone", [record], scope).get(record.id), false);
-		for (const command of ["for x in a; do echo safe;; done", "for x in a; do echo safe |; done", "for x in a; do | echo safe; done"]) {
+		assert.equal(
+			evaluateCommandRecords("bash", "for x in a; do\necho safe\ndone", [record], scope).get(record.id),
+			false,
+		);
+		for (const command of [
+			"for x in a; do echo safe;; done",
+			"for x in a; do echo safe |; done",
+			"for x in a; do | echo safe; done",
+		]) {
 			const evidence = evaluateCommandRecords("bash", command, [record], scope);
 			assert.equal(evidence.get(record.id), "unknown", command);
 			assert.ok(evidence.reasons.get(record.id)?.includes("malformed-for-syntax"));
@@ -59,7 +103,10 @@ describe("CLI command-operand evidence", () => {
 		assert.equal(evidence.segments.get(record.id), "git push");
 	});
 	it("leaves escaped-only here-document evidence unavailable", () => {
-		assert.equal(evaluateCommandRecords("bash", "cat <<\\EOF\n$(git push)\nEOF", [record], scope).get(record.id), "unknown");
+		assert.equal(
+			evaluateCommandRecords("bash", "cat <<\\EOF\n$(git push)\nEOF", [record], scope).get(record.id),
+			"unknown",
+		);
 		for (const command of ["bash <<\\EOF\n$(git push)\nEOF", "cat <<\\EOF | sh\n$(git push)\nEOF"])
 			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), "unknown");
 	});
@@ -79,10 +126,18 @@ describe("CLI command-operand evidence", () => {
 		}
 	});
 	it("gives plain loops the command evidence of their standalone bodies", () => {
-		for (const body of ["trap 'git push' EXIT", "'trap' 'git push' EXIT", "command trap 'git push' EXIT",
-			"builtin trap 'git push' EXIT", "trap 'echo cleanup' EXIT", 'echo $[ 1 <<"2" ]\ngit push\n2\n',
-			"echo $(trap 'git push' EXIT)", "echo <(trap 'git push' EXIT)",
-			"cat <<\\EOF\n$(git push)\nEOF\n", "cat <<'EOF'\n$(git push)\nEOF\n"]) {
+		for (const body of [
+			"trap 'git push' EXIT",
+			"'trap' 'git push' EXIT",
+			"command trap 'git push' EXIT",
+			"builtin trap 'git push' EXIT",
+			"trap 'echo cleanup' EXIT",
+			'echo $[ 1 <<"2" ]\ngit push\n2\n',
+			"echo $(trap 'git push' EXIT)",
+			"echo <(trap 'git push' EXIT)",
+			"cat <<\\EOF\n$(git push)\nEOF\n",
+			"cat <<'EOF'\n$(git push)\nEOF\n",
+		]) {
 			const alone = evaluateCommandRecords("bash", body, [record], scope);
 			const loop = evaluateCommandRecords("bash", `for f in a; do ${body}\ndone\n`, [record], scope);
 			assert.equal(loop.get(record.id), alone.get(record.id), body);
@@ -100,27 +155,94 @@ describe("CLI command-operand evidence", () => {
 
 describe("deferred command meaning", () => {
 	const record: RuleRecord = {
-		id: "synthetic.git", source: { kind: "package" },
-		matcher: { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
-			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } },
-		definition: { purpose: "Evaluate the declared command.", authority: "exact", revision: "123456abcdef",
-			state: "active", effect: "block", note: "Use a permitted command shape." },
-		matcherAvailable: true, staleOverride: false,
+		id: "synthetic.git",
+		source: { kind: "package" },
+		matcher: {
+			kind: "declarative",
+			language: "command-shape/v1",
+			onUnavailable: "deny",
+			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } },
+		},
+		definition: {
+			purpose: "Evaluate the declared command.",
+			authority: "exact",
+			revision: "123456abcdef",
+			state: "active",
+			effect: "block",
+			note: "Use a permitted command shape.",
+		},
+		matcherAvailable: true,
+		staleOverride: false,
 	};
 	const scope = { cwd: "/project", provider: "test", model: "test/model" };
 	const truth = (command: string) => evaluateCommandRecords("bash", command, [record], scope).get(record.id);
-	const contexts = (body: string) => [body, `for x in a; do\n${body}\ndone`, `echo $(\n${body}\n)`, `cat <(\n${body}\n)`];
+	const contexts = (body: string) => [
+		body,
+		`for x in a; do\n${body}\ndone`,
+		`echo $(\n${body}\n)`,
+		`cat <(\n${body}\n)`,
+	];
 	it("matches literal trap actions as nested commands", () => {
-		for (const body of ["trap 'git push' EXIT", "'trap' -- 'git push' EXIT", "command trap 'git push' DEBUG", "builtin trap 'git push' EXIT"])
+		for (const body of [
+			"trap 'git push' EXIT",
+			"'trap' -- 'git push' EXIT",
+			"command trap 'git push' DEBUG",
+			"builtin trap 'git push' EXIT",
+		])
 			for (const command of contexts(body)) assert.equal(truth(command), true, command);
 	});
 	it("accepts decimal signal operands and named uppercase signal operands", () => {
-		const names = ["EXIT", "DEBUG", "ERR", "RETURN", "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "EMT", "FPE", "KILL", "BUS", "SEGV", "SYS", "PIPE", "ALRM", "TERM", "URG", "STOP", "TSTP", "CONT", "CHLD", "TTIN", "TTOU", "IO", "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "INFO", "USR1", "USR2"];
+		const names = [
+			"EXIT",
+			"DEBUG",
+			"ERR",
+			"RETURN",
+			"HUP",
+			"INT",
+			"QUIT",
+			"ILL",
+			"TRAP",
+			"ABRT",
+			"EMT",
+			"FPE",
+			"KILL",
+			"BUS",
+			"SEGV",
+			"SYS",
+			"PIPE",
+			"ALRM",
+			"TERM",
+			"URG",
+			"STOP",
+			"TSTP",
+			"CONT",
+			"CHLD",
+			"TTIN",
+			"TTOU",
+			"IO",
+			"XCPU",
+			"XFSZ",
+			"VTALRM",
+			"PROF",
+			"WINCH",
+			"INFO",
+			"USR1",
+			"USR2",
+		];
 		for (const signal of ["0", "2", "23", "000", ...names, ...names.map((name) => `SIG${name}`)]) {
 			assert.equal(truth(`trap 'git push' ${signal}`), true, signal);
 			assert.equal(truth(`trap 'rm -f "$tmp"' ${signal}`), false, signal);
 		}
-		for (const signal of [...names.map((name) => name.toLowerCase()), "sigEXIT", "SigINT", "SIGUNKNOWN", "-2", "+2", "2.0", "$signal"]) {
+		for (const signal of [
+			...names.map((name) => name.toLowerCase()),
+			"sigEXIT",
+			"SigINT",
+			"SIGUNKNOWN",
+			"-2",
+			"+2",
+			"2.0",
+			"$signal",
+		]) {
 			for (const action of ["git push", 'rm -f "$tmp"']) {
 				const command = `trap '${action}' ${signal}`;
 				const evidence = evaluateCommandRecords("bash", command, [record], scope);
@@ -130,15 +252,41 @@ describe("deferred command meaning", () => {
 		}
 	});
 	it("admits literal cleanup, reset, listing and signal-only forms", () => {
-		for (const body of ["trap 'rm -f \"$tmp\"' EXIT", "trap ': cleanup' EXIT", "trap cleanup EXIT", "trap - EXIT", "trap '' INT", "trap EXIT", "trap", "trap -p", "trap -l", "trap -p 'git push' EXIT", "alias", "alias -p", "alias -p p='git push'"])
+		for (const body of [
+			"trap 'rm -f \"$tmp\"' EXIT",
+			"trap ': cleanup' EXIT",
+			"trap cleanup EXIT",
+			"trap - EXIT",
+			"trap '' INT",
+			"trap EXIT",
+			"trap",
+			"trap -p",
+			"trap -l",
+			"trap -p 'git push' EXIT",
+			"alias",
+			"alias -p",
+			"alias -p p='git push'",
+		])
 			for (const command of contexts(body)) assert.equal(truth(command), false, command);
 	});
 	it("leaves expanded actions, definitions and continued dollar syntax unavailable", () => {
-		for (const body of ['trap "rm -f $tmp" EXIT', 'trap "echo $(printf safe)" EXIT', "trap $action EXIT", "trap $option 'git push' EXIT", "trap -z 'git push' EXIT",
-			"alias p=git\np push", "alias p='echo safe'", "alias $arg", "alias -z p=git",
-			"t=trap; $\\\nt 'git push' EXIT", "$\\\n\"trap\" 'git push' EXIT",
-			"shopt -s expand_aliases\na=alias; $\\\na p=git\np push", "shopt -s expand_aliases\n$\\\n\"alias\" p=git\np push",
-			'g=safe; echo "$\\\ng"', `echo "\${x:-$\\\n(printf safe)}"`]) {
+		for (const body of [
+			'trap "rm -f $tmp" EXIT',
+			'trap "echo $(printf safe)" EXIT',
+			"trap $action EXIT",
+			"trap $option 'git push' EXIT",
+			"trap -z 'git push' EXIT",
+			"alias p=git\np push",
+			"alias p='echo safe'",
+			"alias $arg",
+			"alias -z p=git",
+			"t=trap; $\\\nt 'git push' EXIT",
+			"$\\\n\"trap\" 'git push' EXIT",
+			"shopt -s expand_aliases\na=alias; $\\\na p=git\np push",
+			'shopt -s expand_aliases\n$\\\n"alias" p=git\np push',
+			'g=safe; echo "$\\\ng"',
+			`echo "\${x:-$\\\n(printf safe)}"`,
+		]) {
 			for (const command of contexts(body)) assert.notEqual(truth(command), false, command);
 		}
 		assert.notEqual(truth(`tmp='ordinary; git push'; trap "echo $tmp" EXIT`), false);
@@ -146,19 +294,31 @@ describe("deferred command meaning", () => {
 	});
 	it("leaves declared interpreter execution unavailable without changing lexical matches", () => {
 		for (const interpreter of ["sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish"]) {
-			for (const body of [`${interpreter} -c 'git push'`, `${interpreter} <<'EOF'\ngit push\nEOF\n`, `${interpreter} <<<'git push'`, `cat <<'EOF' | ${interpreter}\ngit push\nEOF\n`])
+			for (const body of [
+				`${interpreter} -c 'git push'`,
+				`${interpreter} <<'EOF'\ngit push\nEOF\n`,
+				`${interpreter} <<<'git push'`,
+				`cat <<'EOF' | ${interpreter}\ngit push\nEOF\n`,
+			])
 				assert.equal(truth(body), "unknown", body);
 			assert.equal(truth(`${interpreter} -c 'echo safe'; git push`), true);
 			const lexical = structuredClone(record);
 			lexical.matcher = { kind: "declarative", language: "command-shape/v1", spec: { command: interpreter } };
-			assert.equal(evaluateCommandRecords("bash", `${interpreter} -c 'git push'`, [lexical], scope).get(record.id), true);
+			assert.equal(
+				evaluateCommandRecords("bash", `${interpreter} -c 'git push'`, [lexical], scope).get(record.id),
+				true,
+			);
 		}
 	});
 	it("leaves loop-variable actions and numeric document delimiters unavailable", () => {
-		for (const body of [`for f in 'git push'; do trap "$f" EXIT; done`, `for f in 'git push'; do alias p="$f"; done\np`])
+		for (const body of [
+			`for f in 'git push'; do trap "$f" EXIT; done`,
+			`for f in 'git push'; do alias p="$f"; done\np`,
+		])
 			for (const command of contexts(body)) assert.notEqual(truth(command), false, command);
 		for (const word of ["2", "\\2", "'2'", '"2"'])
-			for (const command of contexts(`cat <<${word}>'x'\nfixture\n2\ngit push\nx\n`)) assert.equal(truth(command), "unknown", command);
+			for (const command of contexts(`cat <<${word}>'x'\nfixture\n2\ngit push\nx\n`))
+				assert.equal(truth(command), "unknown", command);
 	});
 	it("keeps lexical semantics and positive evidence ahead of added uncertainty", () => {
 		const lexical = structuredClone(record);

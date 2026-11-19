@@ -1,12 +1,30 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, parsePreferenceSnapshot, type ExecutionSelection, type ExecutionFields } from "./agent-preferences.ts";
+import {
+	readAgentPreferences,
+	resolveExecutionPreset,
+	effectiveExecutionSelection,
+	parsePreferenceSnapshot,
+	type ExecutionSelection,
+	type ExecutionFields,
+} from "./agent-preferences.ts";
 import { defineDocFamily, GenerationTask, hook } from "@earendil-works/pi-durable";
 
-const ExecutionSelectionDoc = defineDocFamily<{ input?: string; selection?: ExecutionSelection }, null>({ kind: "agent.execution-selection", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({}) });
+const ExecutionSelectionDoc = defineDocFamily<{ input?: string; selection?: ExecutionSelection }, null>({
+	kind: "agent.execution-selection",
+	family: true,
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "initial",
+	checkpointWhen: () => false,
+	initial: () => ({}),
+});
 import { launchIndependentCommand } from "./independent-launch.ts";
 
-function controlRequestId(params: Readonly<Record<string, unknown>>): string { return typeof params.requestId === "string" ? params.requestId : randomUUID(); }
+function controlRequestId(params: Readonly<Record<string, unknown>>): string {
+	return typeof params.requestId === "string" ? params.requestId : randomUUID();
+}
 import type { Context } from "@earendil-works/chord/context";
 import { collaborationStorage } from "./collaboration-contract.ts";
 import { projectCollaboration } from "./collaboration.ts";
@@ -37,13 +55,18 @@ import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-
 
 function validateControlRecipient(method: string, params: Readonly<Record<string, unknown>>): void {
 	if (method === "rewind" && params.selfOwned === true) return;
-	const recipient = method === "task-submit" ? params.replyTo ?? params.requester
-		: ["submit", "report", "rewind", "timer-schedule"].includes(method) ? params.ownerId : undefined;
+	const recipient =
+		method === "task-submit"
+			? (params.replyTo ?? params.requester)
+			: ["submit", "report", "rewind", "timer-schedule"].includes(method)
+				? params.ownerId
+				: undefined;
 	if (typeof recipient === "string") validateDeliveryRecipient(recipient);
 }
 
 function controlParams(input: unknown): Record<string, unknown> {
-	if (input !== undefined && (input === null || typeof input !== "object" || Array.isArray(input))) throw new Error("Control parameters must be an object");
+	if (input !== undefined && (input === null || typeof input !== "object" || Array.isArray(input)))
+		throw new Error("Control parameters must be an object");
 	return { ...(input as Record<string, unknown> | undefined) };
 }
 
@@ -54,31 +77,81 @@ import { RequestRouteState } from "./request-route-state.ts";
 import { withProfileHints, withIntentClaims } from "./catalog-view.ts";
 import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
 
-const ADMITTING_METHODS: ReadonlySet<string> = new Set(["task-submit", "profile-update", "resolve-agent", "submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule", "collaboration-mutate", "passive-submit"]);
-const FOREIGN_OBSERVATION_METHODS: ReadonlySet<string> = new Set(["inspect", "status", "snapshot", "dashboard", "profile-read"]);
+const ADMITTING_METHODS: ReadonlySet<string> = new Set([
+	"task-submit",
+	"profile-update",
+	"resolve-agent",
+	"submit",
+	"report",
+	"rewind",
+	"command",
+	"compact",
+	"spawn",
+	"place",
+	"reset",
+	"timer-schedule",
+	"collaboration-mutate",
+	"passive-submit",
+]);
+const FOREIGN_OBSERVATION_METHODS: ReadonlySet<string> = new Set([
+	"inspect",
+	"status",
+	"snapshot",
+	"dashboard",
+	"profile-read",
+]);
 /** Coalesce a burst of native commits into one catalog view publication. */
 const PUBLISH_COALESCE_MS = 250;
 /** A release decision waits this long for the delivery driver's scheduled pass before it refuses on a stale summary. */
 const RELEASE_OBSERVATION_WAIT_MS = 10_000;
 
-async function bootstrap(metadata: HostMetadata, controller: AbortController, execution: boolean, options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {}): Promise<DurableServices> {
+async function bootstrap(
+	metadata: HostMetadata,
+	controller: AbortController,
+	execution: boolean,
+	options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {},
+): Promise<DurableServices> {
 	const independent = metadata.independent;
-	return createDurableServices({ ...options, cwd: metadata.cwd, agentDir: metadata.agentDir, storageId: metadata.storageId, catalogRoot: dirname(metadata.storagePath),
-		packageDir: metadata.packageDir, agentExtensionPath: fileURLToPath(new URL("./index.ts", import.meta.url)), trusted: metadata.trust, signal: controller.signal,
+	return createDurableServices({
+		...options,
+		cwd: metadata.cwd,
+		agentDir: metadata.agentDir,
+		storageId: metadata.storageId,
+		catalogRoot: dirname(metadata.storagePath),
+		packageDir: metadata.packageDir,
+		agentExtensionPath: fileURLToPath(new URL("./index.ts", import.meta.url)),
+		trusted: metadata.trust,
+		signal: controller.signal,
 		...(independent === undefined ? {} : { resolveProjectTrust: async () => independent.projectTrusted }),
-		launchIndependent: (input) => launchIndependentCommand(input, {
-			root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir,
-		}),
+		launchIndependent: (input) =>
+			launchIndependentCommand(input, {
+				root: dirname(dirname(metadata.storagePath)),
+				agentDir: metadata.agentDir,
+				packageDir: metadata.packageDir,
+			}),
 		askPrimary: async (cwd) => {
 			const root = dirname(dirname(metadata.storagePath));
 			const primary = new AgentCatalog(root).ordinaryOwner(metadata.ownerId);
 			if (primary === undefined) return undefined;
 			const channel = await connectPrimaryChannel({ id: primary, sessionsRoot: root });
-			try { return await channel.trustPrompt(cwd, controller.signal); } finally { await channel.close(); }
+			try {
+				return await channel.trustPrompt(cwd, controller.signal);
+			} finally {
+				await channel.close();
+			}
 		},
 		ordinarySession: () => new AgentCatalog(dirname(dirname(metadata.storagePath))).ordinaryOwner(metadata.ownerId),
-		onReport: (error) => { process.stderr.write(`Durable host: ${String(error)}\n`); },
-		...(execution ? { buildBuiltin: async (host) => { const { createDurableExecution } = await import("./durable-execution.ts"); return createDurableExecution(host); } } : {}),
+		onReport: (error) => {
+			process.stderr.write(`Durable host: ${String(error)}\n`);
+		},
+		...(execution
+			? {
+					buildBuiltin: async (host) => {
+						const { createDurableExecution } = await import("./durable-execution.ts");
+						return createDurableExecution(host);
+					},
+				}
+			: {}),
 	});
 }
 function configuredModel(value: unknown): unknown {
@@ -88,7 +161,11 @@ function configuredModel(value: unknown): unknown {
 	return { provider: value.slice(0, split), modelId: value.slice(split + 1) };
 }
 
-function validateModel(services: DurableServices, model: { provider: string; modelId: string }, level: string): ModelThinkingLevel {
+function validateModel(
+	services: DurableServices,
+	model: { provider: string; modelId: string },
+	level: string,
+): ModelThinkingLevel {
 	const selected = services.services.modelRuntime.getModel(model.provider, model.modelId);
 	if (!selected) throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`);
 	if (!isThinkingLevel(level)) throw new Error("Unknown reasoning level");
@@ -100,8 +177,15 @@ export function modelChoices(services: Pick<DurableServices, "services">): Stati
 	const runtime = services.services.modelRuntime;
 	const error = runtime.getError();
 	return {
-		models: runtime.getAvailableSnapshot()
-			.map((model) => ({ provider: model.provider, modelId: model.id, name: model.name, reasoning: model.reasoning, ...(Number.isFinite(model.contextWindow) ? { contextWindow: model.contextWindow } : {}) }))
+		models: runtime
+			.getAvailableSnapshot()
+			.map((model) => ({
+				provider: model.provider,
+				modelId: model.id,
+				name: model.name,
+				reasoning: model.reasoning,
+				...(Number.isFinite(model.contextWindow) ? { contextWindow: model.contextWindow } : {}),
+			}))
 			.sort((a, b) => `${a.provider}/${a.modelId}`.localeCompare(`${b.provider}/${b.modelId}`)),
 		source: "available-snapshot",
 		...(error === undefined ? {} : { error: error.slice(0, 240) }),
@@ -110,7 +194,10 @@ export function modelChoices(services: Pick<DurableServices, "services">): Stati
 }
 
 /** Constructed only after the process claims the storage writer. */
-export async function createDurableRuntime(metadata: HostMetadata, options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {}): Promise<HostRuntime> {
+export async function createDurableRuntime(
+	metadata: HostMetadata,
+	options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {},
+): Promise<HostRuntime> {
 	const controller = new AbortController();
 	let services = await bootstrap(metadata, controller, true, options);
 	let host: DurableHost;
@@ -134,7 +221,9 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	const observationListeners = new Set<() => void>();
 	const activityListeners = new Set<() => void>();
 	const quiescentListeners = new Set<() => void>();
-	function notifyActivity(): void { for (const listener of activityListeners) listener(); }
+	function notifyActivity(): void {
+		for (const listener of activityListeners) listener();
+	}
 	let unsubscribeChanges: (() => void) | undefined;
 	let unsubscribeObservation: (() => void) | undefined;
 	let unsubscribeClose: (() => void) | undefined;
@@ -147,15 +236,28 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	let flushingView = false;
 	let publishAgain = false;
 
-	function runtimeUnavailable(): boolean { return closed || reloadFailed || retirementSealed; }
+	function runtimeUnavailable(): boolean {
+		return closed || reloadFailed || retirementSealed;
+	}
 
 	/** Check committed work and delivery under one unchanged admission generation. */
 	async function tryRetire(seal: () => boolean): Promise<boolean> {
 		if (runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy) return false;
 		const generation = activityGeneration;
 		const state = await recoveryState(true);
-		if (state.workPending || state.deliveriesActive || !host.isIdle()) { cancelRequestedRelease(); return false; }
-		if (generation !== activityGeneration || runtimeUnavailable() || reloading || activeRequests > 0 || !deliveries.summary(true).fresh || !seal()) return false;
+		if (state.workPending || state.deliveriesActive || !host.isIdle()) {
+			cancelRequestedRelease();
+			return false;
+		}
+		if (
+			generation !== activityGeneration ||
+			runtimeUnavailable() ||
+			reloading ||
+			activeRequests > 0 ||
+			!deliveries.summary(true).fresh ||
+			!seal()
+		)
+			return false;
 		deliveries.sealAdmission();
 		retirementSealed = true;
 		return true;
@@ -168,11 +270,15 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 
 	/** Pending delivery rows: unsettled intents, unacknowledged receipts, and unacknowledged reports. */
 	async function deliveriesPending(): Promise<boolean> {
-		return await deliveryPendingCount(host.harness, BACKGROUND_CONTEXT) > 0;
+		return (await deliveryPendingCount(host.harness, BACKGROUND_CONTEXT)) > 0;
 	}
 
 	/** Native work plus pending delivery state used by the marker and transient monitors. */
-	async function recoveryState(validateRecipients = false): Promise<{ readonly workPending: boolean; readonly deliveriesPending: boolean; readonly deliveriesActive: boolean }> {
+	async function recoveryState(validateRecipients = false): Promise<{
+		readonly workPending: boolean;
+		readonly deliveriesPending: boolean;
+		readonly deliveriesActive: boolean;
+	}> {
 		const generation = activityGeneration;
 		const idle = await host.refreshIdle();
 		const summary = deliveries?.summary(validateRecipients);
@@ -180,8 +286,20 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		const pending = summary?.fresh ? summary.pendingCount > 0 : await deliveriesPending();
 		if (generation === activityGeneration) {
 			if (summary?.fresh) {
-				const wake = writeDeliveryWake(dirname(dirname(metadata.storagePath)), metadata.storageId, summary.parkedRecipients, recipient => unavailableDeliveryTargets.get(storageIdOf(recipient))?.availability ?? null, summary.parkedOmitted, summary.parkedRows);
-				if (wake.changed && wake.omitted > 0) host.reportDeliveryError(new Error(`parked: delivery wake metadata omits ${wake.omitted} recipient rows at its bound; retained rows require explicit acquisition`));
+				const wake = writeDeliveryWake(
+					dirname(dirname(metadata.storagePath)),
+					metadata.storageId,
+					summary.parkedRecipients,
+					(recipient) => unavailableDeliveryTargets.get(storageIdOf(recipient))?.availability ?? null,
+					summary.parkedOmitted,
+					summary.parkedRows,
+				);
+				if (wake.changed && wake.omitted > 0)
+					host.reportDeliveryError(
+						new Error(
+							`parked: delivery wake metadata omits ${wake.omitted} recipient rows at its bound; retained rows require explicit acquisition`,
+						),
+					);
 			}
 			markRecoveryDue(activeAdmissions > 0 || !idle || deliveriesActive);
 		} else recoveryDirty = true;
@@ -203,13 +321,25 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 				recoveryDirty = false;
 				await settleRecoveryMarker();
 			} while (recoveryDirty && !closed && !reloading);
-		})().catch((error: unknown) => { process.stderr.write(`Recovery marker: ${String(error)}\n`); }).finally(() => { recoverySync = undefined; if (recoveryDirty) scheduleRecoveryMarker(); });
+		})()
+			.catch((error: unknown) => {
+				process.stderr.write(`Recovery marker: ${String(error)}\n`);
+			})
+			.finally(() => {
+				recoverySync = undefined;
+				if (recoveryDirty) scheduleRecoveryMarker();
+			});
 	}
 
 	async function nativeReleaseBlockers(): Promise<string[]> {
 		const graph = await readTaskGraph(host.harness, BACKGROUND_CONTEXT);
 		return Object.values(graph.tasks).map((task) => {
-			const kind = task.kind === "agent.timer" ? "A waiting timer" : (task.kind === "agent.check-in" || task.kind === "agent.check-in-deadline") ? "A waiting check-in task" : "Native work";
+			const kind =
+				task.kind === "agent.timer"
+					? "A waiting timer"
+					: task.kind === "agent.check-in" || task.kind === "agent.check-in-deadline"
+						? "A waiting check-in task"
+						: "Native work";
 			return `${kind} in conversation ${host.identity(task.conversationId)}`;
 		});
 	}
@@ -227,7 +357,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	function deliveryReleaseBlockers(): string[] {
 		const summary = deliveries.summary();
 		const blockers = summary.fresh ? [] : [summary.blocker ?? "Delivery observation has not completed"];
-		if (summary.active) blockers.push(...summary.activeRecipients.map(identity => `Active delivery to ${identity}`));
+		if (summary.active) blockers.push(...summary.activeRecipients.map((identity) => `Active delivery to ${identity}`));
 		return blockers;
 	}
 
@@ -242,8 +372,14 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		deliveries.summary(true);
 		if (!deliveryPassPending()) return;
 		await new Promise<void>((resolve) => {
-			const finish = (): void => { clearTimeout(timer); quiescentListeners.delete(listener); resolve(); };
-			const listener = (): void => { if (!deliveryPassPending()) finish(); };
+			const finish = (): void => {
+				clearTimeout(timer);
+				quiescentListeners.delete(listener);
+				resolve();
+			};
+			const listener = (): void => {
+				if (!deliveryPassPending()) finish();
+			};
 			const timer = setTimeout(finish, RELEASE_OBSERVATION_WAIT_MS);
 			quiescentListeners.add(listener);
 		});
@@ -258,15 +394,18 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		const state = await recoveryState(true);
 		if (state.workPending && native.length === 0) blockers.push("Native work remains in this storage");
 		blockers.push(...deliveryReleaseBlockers());
-		if (generation !== activityGeneration) blockers.push("Native state changed during the release check; retry the request");
+		if (generation !== activityGeneration)
+			blockers.push("Native state changed during the release check; retry the request");
 		return [...new Set(blockers)];
 	}
 
 	/** Release never cancels native tasks or removes retained delivery rows. */
 	async function requestRelease(): Promise<{ retiring: boolean; blockers: string[] }> {
-		if (runtimeUnavailable() || reloading) return { retiring: false, blockers: ["The runtime is closed or reload is in progress"] };
+		if (runtimeUnavailable() || reloading)
+			return { retiring: false, blockers: ["The runtime is closed or reload is in progress"] };
 		await awaitDeliveryObservation();
-		if (runtimeUnavailable() || reloading) return { retiring: false, blockers: ["The runtime is closed or reload is in progress"] };
+		if (runtimeUnavailable() || reloading)
+			return { retiring: false, blockers: ["The runtime is closed or reload is in progress"] };
 		const blockers = await releaseBlockers();
 		if (blockers.length > 0) return { retiring: false, blockers };
 		markRecoveryDue(false);
@@ -282,13 +421,43 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		publishPromise = (async () => {
 			try {
 				const projection = await host.catalogProjection();
-				const base = boundCatalogView({ updatedAt: projection.updatedAt, rows: projection.rows, storageId: metadata.storageId });
-				const attentionSources = base.rows.map((row) => ({ identity: row.id, conversationId: row.id === metadata.storageId ? ROOT_CONVERSATION_ID : Number(row.id.split(":")[1]) as ConversationId, state: row.state }));
-				const profiles = await projectProfiles(host.harness, metadata.storageId, attentionSources.map((source) => source.conversationId));
-				const profiled = withProfileHints(base, { ...profiles, coverage: { complete: profiles.coverage.complete && base.coverage.omitted === 0, omitted: profiles.coverage.omitted + base.coverage.omitted } });
+				const base = boundCatalogView({
+					updatedAt: projection.updatedAt,
+					rows: projection.rows,
+					storageId: metadata.storageId,
+				});
+				const attentionSources = base.rows.map((row) => ({
+					identity: row.id,
+					conversationId:
+						row.id === metadata.storageId ? ROOT_CONVERSATION_ID : (Number(row.id.split(":")[1]) as ConversationId),
+					state: row.state,
+				}));
+				const profiles = await projectProfiles(
+					host.harness,
+					metadata.storageId,
+					attentionSources.map((source) => source.conversationId),
+				);
+				const profiled = withProfileHints(base, {
+					...profiles,
+					coverage: {
+						complete: profiles.coverage.complete && base.coverage.omitted === 0,
+						omitted: profiles.coverage.omitted + base.coverage.omitted,
+					},
+				});
 				const attention = await projectCatalogAttention(host.harness, attentionSources);
-				const attentive = withAttentionHints(profiled, { ...attention, coverage: { complete: attention.coverage.complete && base.coverage.omitted === 0, omitted: attention.coverage.omitted + base.coverage.omitted } });
-				const intents = await projectConversationIntents(host.harness, metadata.storageId, projection.rows, BACKGROUND_CONTEXT);
+				const attentive = withAttentionHints(profiled, {
+					...attention,
+					coverage: {
+						complete: attention.coverage.complete && base.coverage.omitted === 0,
+						omitted: attention.coverage.omitted + base.coverage.omitted,
+					},
+				});
+				const intents = await projectConversationIntents(
+					host.harness,
+					metadata.storageId,
+					projection.rows,
+					BACKGROUND_CONTEXT,
+				);
 				const intended = withIntentClaims(attentive, intents);
 				const view = withModelEvidence(intended, projection.modelEvidence);
 				catalog.updateView(metadata.storageId, view, await projectCollaboration(host.harness, BACKGROUND_CONTEXT));
@@ -322,7 +491,9 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			if (publishPromise !== undefined) await publishPromise.catch(() => undefined);
 			publishAgain = false;
 			await publishCatalogView(true);
-		} finally { flushingView = false; }
+		} finally {
+			flushingView = false;
+		}
 	}
 
 	/** Coalesce native commits into one view publication. */
@@ -341,85 +512,190 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	}
 	async function primaryControl(method: string, params: Record<string, unknown>, sessionId: string): Promise<unknown> {
 		if (method === "status" || method === "inspect") {
-			const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
-			try { return await manager.observePrimary(sessionId, method === "status" ? { view: "status" } : params); }
-			finally { await manager.close(); }
+			const manager = new AgentManager({
+				root: dirname(dirname(metadata.storagePath)),
+				agentDir: metadata.agentDir,
+				packageDir: metadata.packageDir,
+			});
+			try {
+				return await manager.observePrimary(sessionId, method === "status" ? { view: "status" } : params);
+			} finally {
+				await manager.close();
+			}
 		}
-		const channel = await connectPrimaryChannel({ id: sessionId, sessionsRoot: dirname(dirname(metadata.storagePath)) });
+		const channel = await connectPrimaryChannel({
+			id: sessionId,
+			sessionsRoot: dirname(dirname(metadata.storagePath)),
+		});
 		try {
 			if (method !== "submit") throw new Error("A registered primary accepts messages, not Durable session controls");
 			markRecoveryDue(true);
-			const report = await host.request("report", { ...params, ownerId: sessionId }) as { sourceId: string };
-			return { sessionId, admitted: true, sourceId: report.sourceId, boundary: "Retained for delivery; does not prove action or task acceptance" };
-		} finally { await channel.close(); }
+			const report = (await host.request("report", { ...params, ownerId: sessionId })) as { sourceId: string };
+			return {
+				sessionId,
+				admitted: true,
+				sourceId: report.sourceId,
+				boundary: "Retained for delivery; does not prove action or task acceptance",
+			};
+		} finally {
+			await channel.close();
+		}
 	}
-	async function attachForeign(client: import("./host-client.ts").HostConnection, params: Record<string, unknown>, sessionId: string): Promise<unknown> {
+	async function attachForeign(
+		client: import("./host-client.ts").HostConnection,
+		params: Record<string, unknown>,
+		sessionId: string,
+	): Promise<unknown> {
 		if (params.model !== undefined) {
 			const outcome = await client.request("configure", params);
 			if ((outcome as { outcome?: string })?.outcome === "failed") return outcome;
 		}
 		return client.request("status", { sessionId });
 	}
-	async function acquiringForeignControl(manager: AgentManager, method: string, params: Record<string, unknown>, sessionId: string, context?: Context): Promise<unknown> {
+	async function acquiringForeignControl(
+		manager: AgentManager,
+		method: string,
+		params: Record<string, unknown>,
+		sessionId: string,
+		context?: Context,
+	): Promise<unknown> {
 		const client = await manager.connectNative(sessionId);
-		if (method === "submit" && typeof params.senderIdentity === "string" && (params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])) return await client.request("task-submit", { ...params, requester: params.senderIdentity }, { signal: context?.abortSignal });
+		if (
+			method === "submit" &&
+			typeof params.senderIdentity === "string" &&
+			(params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])
+		)
+			return await client.request(
+				"task-submit",
+				{ ...params, requester: params.senderIdentity },
+				{ signal: context?.abortSignal },
+			);
 		if (method !== "attach") return await client.request(method, params, { signal: context?.abortSignal });
 		return attachForeign(client, params, sessionId);
 	}
-	async function foreignControl(method: string, params: Record<string, unknown>, sessionId: string, context?: Context): Promise<unknown> {
-		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+	async function foreignControl(
+		method: string,
+		params: Record<string, unknown>,
+		sessionId: string,
+		context?: Context,
+	): Promise<unknown> {
+		const manager = new AgentManager({
+			root: dirname(dirname(metadata.storagePath)),
+			agentDir: metadata.agentDir,
+			packageDir: metadata.packageDir,
+		});
 		try {
-			try { manager.nativeTarget(sessionId); }
-			catch (error) {
+			try {
+				manager.nativeTarget(sessionId);
+			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-				if (!readPrimaryEndpointDescriptor(dirname(dirname(metadata.storagePath)), sessionId).info) throw new Error("The exact native target is not retained and no ordinary primary is registered");
+				if (!readPrimaryEndpointDescriptor(dirname(dirname(metadata.storagePath)), sessionId).info)
+					throw new Error("The exact native target is not retained and no ordinary primary is registered");
 				return await primaryControl(method, params, sessionId);
 			}
 			if (FOREIGN_OBSERVATION_METHODS.has(method)) {
-				const caller = { id: typeof params.senderIdentity === "string" ? params.senderIdentity : metadata.storageId, cwd: metadata.cwd };
+				const caller = {
+					id: typeof params.senderIdentity === "string" ? params.senderIdentity : metadata.storageId,
+					cwd: metadata.cwd,
+				};
 				return await manager.control(method, params, caller, { signal: context?.abortSignal });
 			}
 			return await acquiringForeignControl(manager, method, params, sessionId, context);
-		} finally { await manager.close(); }
+		} finally {
+			await manager.close();
+		}
 	}
 	async function collaborationObservation(method: string, params: Record<string, unknown>): Promise<unknown> {
-		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
-		try { return await manager.collaborate({ ...params, action: method === "collaboration-list" ? "list" : "read" }, { id: String(params.senderIdentity ?? metadata.storageId), cwd: metadata.cwd }); } finally { await manager.close(); }
+		const manager = new AgentManager({
+			root: dirname(dirname(metadata.storagePath)),
+			agentDir: metadata.agentDir,
+			packageDir: metadata.packageDir,
+		});
+		try {
+			return await manager.collaborate(
+				{ ...params, action: method === "collaboration-list" ? "list" : "read" },
+				{ id: String(params.senderIdentity ?? metadata.storageId), cwd: metadata.cwd },
+			);
+		} finally {
+			await manager.close();
+		}
 	}
-	async function resolveSelectors(input: Readonly<Record<string, unknown>>, collaboration: boolean): Promise<Record<string, unknown>> {
+	async function resolveSelectors(
+		input: Readonly<Record<string, unknown>>,
+		collaboration: boolean,
+	): Promise<Record<string, unknown>> {
 		const params = { ...input };
 		const selectors = ["sessionId", "replyTo", "integrator"] as const;
-		if (!collaboration && !selectors.some((key) => typeof params[key] === "string" && (params[key] as string).startsWith("@")) && !Array.isArray(params.notify)) return params;
-		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+		if (
+			!collaboration &&
+			!selectors.some((key) => typeof params[key] === "string" && (params[key] as string).startsWith("@")) &&
+			!Array.isArray(params.notify)
+		)
+			return params;
+		const manager = new AgentManager({
+			root: dirname(dirname(metadata.storagePath)),
+			agentDir: metadata.agentDir,
+			packageDir: metadata.packageDir,
+		});
 		try {
 			if (collaboration) return await manager.collaborationTargets(params);
-			for (const key of selectors) if (typeof params[key] === "string") params[key] = await manager.resolveTarget(params[key] as string);
-			if (Array.isArray(params.notify)) params.notify = await Promise.all(params.notify.map((id) => manager.resolveTarget(String(id))));
-		} finally { await manager.close(); }
+			for (const key of selectors)
+				if (typeof params[key] === "string") params[key] = await manager.resolveTarget(params[key] as string);
+			if (Array.isArray(params.notify))
+				params.notify = await Promise.all(params.notify.map((id) => manager.resolveTarget(String(id))));
+		} finally {
+			await manager.close();
+		}
 		return params;
 	}
-	async function dispatchForeign(method: string, params: Record<string, unknown>, sessionId: string, context?: Context): Promise<unknown> {
+	async function dispatchForeign(
+		method: string,
+		params: Record<string, unknown>,
+		sessionId: string,
+		context?: Context,
+	): Promise<unknown> {
 		if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
 		const observation = FOREIGN_OBSERVATION_METHODS.has(method);
 		if (observation) context?.abortSignal?.throwIfAborted();
 		activeRequests++;
 		activityGeneration++;
-		if (ADMITTING_METHODS.has(method)) { activeAdmissions++; cancelRequestedRelease(); }
+		if (ADMITTING_METHODS.has(method)) {
+			activeAdmissions++;
+			cancelRequestedRelease();
+		}
 		// Activity owns the full read and manager disposal, even after its caller stops waiting.
-		const work = Promise.resolve().then(() => foreignControl(method, params, sessionId, context)).finally(() => {
-			if (ADMITTING_METHODS.has(method)) activeAdmissions--;
-			activeRequests--; scheduleRecoveryMarker(); notifyActivity();
-		});
+		const work = Promise.resolve()
+			.then(() => foreignControl(method, params, sessionId, context))
+			.finally(() => {
+				if (ADMITTING_METHODS.has(method)) activeAdmissions--;
+				activeRequests--;
+				scheduleRecoveryMarker();
+				notifyActivity();
+			});
 		return observation ? awaitWithContext(work, context ?? BACKGROUND_CONTEXT) : work;
 	}
 	const readStoragePage = async (params: Record<string, unknown>, context: Context): Promise<unknown> => {
 		const input = storageStatusPageInput(params);
-		if (input.storageId === metadata.storageId) return request("status", { ...input }, controlRequestId(params), context.abortSignal);
-		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
-		try { return await manager.status(input); } finally { await manager.close(); }
+		if (input.storageId === metadata.storageId)
+			return request("status", { ...input }, controlRequestId(params), context.abortSignal);
+		const manager = new AgentManager({
+			root: dirname(dirname(metadata.storagePath)),
+			agentDir: metadata.agentDir,
+			packageDir: metadata.packageDir,
+		});
+		try {
+			return await manager.status(input);
+		} finally {
+			await manager.close();
+		}
 	};
-	const dispatchResolved = async (method: Parameters<AgentControlDispatch>[0], params: Record<string, unknown>, context: Context = BACKGROUND_CONTEXT): Promise<unknown> => {
-		if (method === "report") return request("report", { ...params, ownerId: params.sessionId }, controlRequestId(params));
+	const dispatchResolved = async (
+		method: Parameters<AgentControlDispatch>[0],
+		params: Record<string, unknown>,
+		context: Context = BACKGROUND_CONTEXT,
+	): Promise<unknown> => {
+		if (method === "report")
+			return request("report", { ...params, ownerId: params.sessionId }, controlRequestId(params));
 		if (["collaboration-list", "collaboration-read"].includes(method)) return collaborationObservation(method, params);
 		if (typeof params.threadId === "string") params.sessionId = collaborationStorage(params.threadId);
 		const sessionId = typeof params.sessionId === "string" ? params.sessionId : metadata.storageId;
@@ -428,8 +704,16 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	};
 	const dispatch: AgentControlDispatch = async (method, input, context = BACKGROUND_CONTEXT) => {
 		if (method === "resolve-target") {
-			const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
-			try { return await manager.resolveTarget(String(input.sessionId)); } finally { await manager.close(); }
+			const manager = new AgentManager({
+				root: dirname(dirname(metadata.storagePath)),
+				agentDir: metadata.agentDir,
+				packageDir: metadata.packageDir,
+			});
+			try {
+				return await manager.resolveTarget(String(input.sessionId));
+			} finally {
+				await manager.close();
+			}
 		}
 		if (method === "status" && input.view === "storage-page") return readStoragePage(input, context);
 		const params = await resolveSelectors(input, method.startsWith("collaboration-"));
@@ -437,39 +721,79 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	};
 	const restoreDispatch = publishAgentControlDispatch(dispatch);
 	/** Agent choices for the opened Harness; a missing retained model keeps its stored level for attach repair. */
-	function hostAgent(): { readonly model: HostMetadata["model"]; readonly thinkingLevel: ModelThinkingLevel; readonly cwd: string; readonly instructions?: string } {
+	function hostAgent(): {
+		readonly model: HostMetadata["model"];
+		readonly thinkingLevel: ModelThinkingLevel;
+		readonly cwd: string;
+		readonly instructions?: string;
+	} {
 		const selectedModel = services.services.modelRuntime.getModel(metadata.model.provider, metadata.model.modelId);
 		return {
 			model: metadata.model,
-			thinkingLevel: selectedModel ? clampThinkingLevel(selectedModel, metadata.thinkingLevel as ModelThinkingLevel) : metadata.thinkingLevel as ModelThinkingLevel,
+			thinkingLevel: selectedModel
+				? clampThinkingLevel(selectedModel, metadata.thinkingLevel as ModelThinkingLevel)
+				: (metadata.thinkingLevel as ModelThinkingLevel),
 			cwd: metadata.cwd,
 		};
 	}
 
 	/** Open the Harness without scheduling, install every contribution, then start scheduling. */
 	const openHost = async (): Promise<DurableHost> => {
-		const opened = await DurableHost.open({ storagePath: metadata.storagePath, storageId: metadata.storageId, cwd: metadata.cwd,
-			models: services.services.modelRuntime, registry: services.registry, settings: services.settings, env: services.env,
-			retryMaxAttempts: services.services.settingsManager.getRetrySettings().enabled ? services.services.settingsManager.getRetrySettings().maxRetries + 1 : 1,
+		const opened = await DurableHost.open({
+			storagePath: metadata.storagePath,
+			storageId: metadata.storageId,
+			cwd: metadata.cwd,
+			models: services.services.modelRuntime,
+			registry: services.registry,
+			settings: services.settings,
+			env: services.env,
+			retryMaxAttempts: services.services.settingsManager.getRetrySettings().enabled
+				? services.services.settingsManager.getRetrySettings().maxRetries + 1
+				: 1,
 			agent: hostAgent(),
-			meta: { name: metadata.name, owner: metadata.ownerId }, profileSeed: catalog.read(metadata.storageId).view?.profileSeed, commands: services.commands, contributionHost: services.contributionHost,
-			resume: false, onReport: (report) => { process.stderr.write(`Durable task: ${report.kind}: ${String(report.error)}\n`); },
-			planningBudget: (provider, modelId) => readAgentPreferences(metadata.agentDir).document?.preferences?.contextBudgetTokens?.[`${provider}/${modelId}`],
+			meta: { name: metadata.name, owner: metadata.ownerId },
+			profileSeed: catalog.read(metadata.storageId).view?.profileSeed,
+			commands: services.commands,
+			contributionHost: services.contributionHost,
+			resume: false,
+			onReport: (report) => {
+				process.stderr.write(`Durable task: ${report.kind}: ${String(report.error)}\n`);
+			},
+			planningBudget: (provider, modelId) =>
+				readAgentPreferences(metadata.agentDir).document?.preferences?.contextBudgetTokens?.[`${provider}/${modelId}`],
 			requestRelease: () => requestRelease(),
 		});
 		try {
 			await services.install(opened.harness);
 			host = opened;
 			opened.setForeignStop(async (references, context) => {
-				const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+				const manager = new AgentManager({
+					root: dirname(dirname(metadata.storagePath)),
+					agentDir: metadata.agentDir,
+					packageDir: metadata.packageDir,
+				});
 				const caller = { id: metadata.storageId, cwd: metadata.cwd };
-				try { return await stopForeignReferences((method, input) => manager.control(method, input, caller), references, context); }
-				finally { await manager.close(); }
+				try {
+					return await stopForeignReferences(
+						(method, input) => manager.control(method, input, caller),
+						references,
+						context,
+					);
+				} finally {
+					await manager.close();
+				}
 			});
 			const requestRoutes = new RequestRouteState();
-			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(opened.harness)], hooks: [hook(GenerationTask, requestContextHooks(opened.harness, requestRoutes))] });
+			services.registry.install({
+				name: "agent.request-context",
+				sections: [requestContextSection(opened.harness)],
+				hooks: [hook(GenerationTask, requestContextHooks(opened.harness, requestRoutes))],
+			});
 			// Thread ranges settle first; the continuity note is the last change and reads memory only.
-			services.registry.install({ name: "agent.continuity", hooks: [hook(GenerationTask, opened.threadNoticeHooks()), hook(GenerationTask, opened.continuityHooks())] });
+			services.registry.install({
+				name: "agent.continuity",
+				hooks: [hook(GenerationTask, opened.threadNoticeHooks()), hook(GenerationTask, opened.continuityHooks())],
+			});
 			unsubscribeClose?.();
 			unsubscribeClose = opened.harness.subscribeClose(() => {
 				activityGeneration++;
@@ -478,8 +802,11 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			void opened.harness.closed.then((end) => {
 				if (end.kind !== "failed" || host !== opened || closed) return;
 				sessionFailed = true;
-				try { markRecoveryDue(true); }
-				catch (error) { process.stderr.write(`Recovery marker: ${String(error)}\n`); }
+				try {
+					markRecoveryDue(true);
+				} catch (error) {
+					process.stderr.write(`Recovery marker: ${String(error)}\n`);
+				}
 				activityGeneration++;
 				notifyActivity();
 			});
@@ -491,34 +818,70 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			unsubscribeChanges = onStoredCommit(opened.harness, (publication) => {
 				requestRoutes.observe(publication);
 				activityGeneration++;
-				if (publication.changes.length) { scheduleRecoveryMarker(); notifyActivity(); scheduleCatalogView(); }
+				if (publication.changes.length) {
+					scheduleRecoveryMarker();
+					notifyActivity();
+					scheduleCatalogView();
+				}
 			});
 			await settleRecoveryMarker();
 			await opened.resume(BACKGROUND_CONTEXT);
 			scheduleCatalogView();
 			return opened;
 		} catch (error) {
-			try { await services.close(); } catch { /* Retain the open failure. */ }
-			try { await opened.close(); } catch { /* Retain the open failure. */ }
+			try {
+				await services.close();
+			} catch {
+				/* Retain the open failure. */
+			}
+			try {
+				await opened.close();
+			} catch {
+				/* Retain the open failure. */
+			}
 			throw error;
 		}
 	};
-	try { host = await openHost(); }
-	catch (error) { restoreDispatch(); controller.abort(); await services.close().catch(() => {}); throw error; }
+	try {
+		host = await openHost();
+	} catch (error) {
+		restoreDispatch();
+		controller.abort();
+		await services.close().catch(() => {});
+		throw error;
+	}
 	const delivery = () => {
 		const sessionsRoot = dirname(dirname(metadata.storagePath));
-		const targets = new AgentManager({ root: sessionsRoot, agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+		const targets = new AgentManager({
+			root: sessionsRoot,
+			agentDir: metadata.agentDir,
+			packageDir: metadata.packageDir,
+		});
 		const readDeliveryTarget = (identity: string) => {
-			try { return targets.nativeTarget(identity); }
-			catch (error) {
+			try {
+				return targets.nativeTarget(identity);
+			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 				return undefined;
 			}
 		};
-		return startDurableDelivery({ host, metadata, catalog, sessionsRoot, signal: controller.signal, unavailableTargets: unavailableDeliveryTargets, onIdle: () => { scheduleRecoveryMarker(); for (const listener of quiescentListeners) listener(); },
+		return startDurableDelivery({
+			host,
+			metadata,
+			catalog,
+			sessionsRoot,
+			signal: controller.signal,
+			unavailableTargets: unavailableDeliveryTargets,
+			onIdle: () => {
+				scheduleRecoveryMarker();
+				for (const listener of quiescentListeners) listener();
+			},
 			readTarget: readDeliveryTarget,
-			connectTarget: (record) => targets.connectNative(record.storageId), onClose: () => targets.close(),
-			onError: (error) => { process.stderr.write(`Agent delivery: ${error.message}\n`); },
+			connectTarget: (record) => targets.connectNative(record.storageId),
+			onClose: () => targets.close(),
+			onError: (error) => {
+				process.stderr.write(`Agent delivery: ${error.message}\n`);
+			},
 		});
 	};
 	deliveries = delivery();
@@ -528,30 +891,62 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	async function configure(params: Record<string, unknown>, requestId: string): Promise<ExecutionSelection> {
 		const conversation = await host.conversation(typeof params.sessionId === "string" ? params.sessionId : undefined);
 		const agent = await conversation.agent(BACKGROUND_CONTEXT);
-		const input = { ...(params as ExecutionFields & { preset?: string }), ...(typeof params.model === "object" && params.model !== null ? { model: `${(params.model as { provider: string }).provider}/${(params.model as { modelId: string }).modelId}` } : {}) };
-		const inputKey = createHash("sha256").update(JSON.stringify([input.preset, input.model, input.thinkingLevel, params.name])).digest("hex");
+		const input = {
+			...(params as ExecutionFields & { preset?: string }),
+			...(typeof params.model === "object" && params.model !== null
+				? {
+						model: `${(params.model as { provider: string }).provider}/${(params.model as { modelId: string }).modelId}`,
+					}
+				: {}),
+		};
+		const inputKey = createHash("sha256")
+			.update(JSON.stringify([input.preset, input.model, input.thinkingLevel, params.name]))
+			.digest("hex");
 		const selection = await host.harness.commit(async (tx) => {
-			const state = await tx.doc(ExecutionSelectionDoc, conversation.id, createHash("sha256").update(requestId).digest("hex"), null);
-			if (state.selection) { if (state.input !== inputKey) throw new Error("Configuration request ID belongs to different inputs"); return JSON.parse(JSON.stringify(state.selection)) as ExecutionSelection; }
-			const snapshot = params.preferenceSnapshot === undefined ? readAgentPreferences(metadata.agentDir, services.services.modelRuntime) : parsePreferenceSnapshot(params.preferenceSnapshot);
-			const selected = resolveExecutionPreset(snapshot, input, { model: agent.model ? `${agent.model.provider}/${agent.model.modelId}` : undefined, thinkingLevel: agent.thinkingLevel });
-			state.input = inputKey; state.selection = selected;
+			const state = await tx.doc(
+				ExecutionSelectionDoc,
+				conversation.id,
+				createHash("sha256").update(requestId).digest("hex"),
+				null,
+			);
+			if (state.selection) {
+				if (state.input !== inputKey) throw new Error("Configuration request ID belongs to different inputs");
+				return JSON.parse(JSON.stringify(state.selection)) as ExecutionSelection;
+			}
+			const snapshot =
+				params.preferenceSnapshot === undefined
+					? readAgentPreferences(metadata.agentDir, services.services.modelRuntime)
+					: parsePreferenceSnapshot(params.preferenceSnapshot);
+			const selected = resolveExecutionPreset(snapshot, input, {
+				model: agent.model ? `${agent.model.provider}/${agent.model.modelId}` : undefined,
+				thinkingLevel: agent.thinkingLevel,
+			});
+			state.input = inputKey;
+			state.selection = selected;
 			return selected;
 		}, BACKGROUND_CONTEXT);
 		for (const field of ["model", "thinkingLevel"] as const) {
-			if (selection.origins[field] === "explicit" || selection.origins[field] === "preset") params[field] = selection.values[field];
+			if (selection.origins[field] === "explicit" || selection.origins[field] === "preset")
+				params[field] = selection.values[field];
 		}
 		params.model = configuredModel(params.model);
 		return selection;
 	}
 	async function runCommand(params: Record<string, unknown>): Promise<unknown> {
 		if (params.name === "tree") {
-			if (typeof params.args !== "string" || !/^\d+$/u.test(params.args.trim())) throw new Error("tree requires one native entry ID");
-			return host.request("fork", { sessionId: params.sessionId, entryId: params.args.trim(), ownerId: params.ownerId });
+			if (typeof params.args !== "string" || !/^\d+$/u.test(params.args.trim()))
+				throw new Error("tree requires one native entry ID");
+			return host.request("fork", {
+				sessionId: params.sessionId,
+				entryId: params.args.trim(),
+				ownerId: params.ownerId,
+			});
 		}
 		if (params.name !== "reload") return host.request("command", params);
-		if (!host.isIdle()) throw new Error("Reload requires an idle storage; it cannot replace another conversation's active tasks");
-		if (host.observationCount > 0) throw new Error("Reload requires closed live observations; release every observer before reload");
+		if (!host.isIdle())
+			throw new Error("Reload requires an idle storage; it cannot replace another conversation's active tasks");
+		if (host.observationCount > 0)
+			throw new Error("Reload requires closed live observations; release every observer before reload");
 		await services.reloadResources();
 		try {
 			await deliveries.close();
@@ -565,7 +960,8 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			reloadClosingHost = host;
 			unsubscribeClose?.();
 			unsubscribeClose = undefined;
-			await services.close(); await host.close();
+			await services.close();
+			await host.close();
 			services = await bootstrap(metadata, controller, true, options);
 			host = await openHost();
 			reloadClosingHost = undefined;
@@ -579,14 +975,18 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	}
 	function beginRequest(method: string, counted: boolean): void {
 		if (counted) activeRequests++;
-		if (ADMITTING_METHODS.has(method)) { activeAdmissions++; cancelRequestedRelease(); }
+		if (ADMITTING_METHODS.has(method)) {
+			activeAdmissions++;
+			cancelRequestedRelease();
+		}
 	}
 
 	function finishRequest(method: string, counted: boolean, reload: boolean): void {
 		if (counted) activeRequests--;
 		if (ADMITTING_METHODS.has(method)) activeAdmissions--;
 		if (reload) reloading = false;
-		scheduleRecoveryMarker(); notifyActivity();
+		scheduleRecoveryMarker();
+		notifyActivity();
 	}
 
 	async function request(method: string, input: unknown, requestId: string, signal?: AbortSignal): Promise<unknown> {
@@ -598,44 +998,98 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		activityGeneration++;
 		beginRequest(method, counted);
 		reloading = reload;
-		try { return await requestScope.run(method, () => executeRequest(method, input, requestId, signal)); }
-		finally { finishRequest(method, counted, reload); }
+		try {
+			return await requestScope.run(method, () => executeRequest(method, input, requestId, signal));
+		} finally {
+			finishRequest(method, counted, reload);
+		}
 	}
-	async function spawn(params: Record<string, unknown>, requestId: string, method: "spawn" | "place" = "spawn"): Promise<unknown> {
+	async function spawn(
+		params: Record<string, unknown>,
+		requestId: string,
+		method: "spawn" | "place" = "spawn",
+	): Promise<unknown> {
 		if (typeof params.senderIdentity !== "string") throw new Error("A native spawn requires its sender identity");
 		const conversation = await host.conversation(params.senderIdentity);
 		const agent = await conversation.agent(BACKGROUND_CONTEXT);
-		const key = createHash("sha256").update(JSON.stringify([method, requestId])).digest("hex");
-		const inputKey = createHash("sha256").update(JSON.stringify([params.handle, params.area, params.cwd, params.name, params.topic, params.prompt, params.preset, params.model, params.thinkingLevel, params.role, params.checkInMinutes])).digest("hex");
+		const key = createHash("sha256")
+			.update(JSON.stringify([method, requestId]))
+			.digest("hex");
+		const inputKey = createHash("sha256")
+			.update(
+				JSON.stringify([
+					params.handle,
+					params.area,
+					params.cwd,
+					params.name,
+					params.topic,
+					params.prompt,
+					params.preset,
+					params.model,
+					params.thinkingLevel,
+					params.role,
+					params.checkInMinutes,
+				]),
+			)
+			.digest("hex");
 		const retained = await host.harness.snapshot(ExecutionSelectionDoc, conversation.id, key, BACKGROUND_CONTEXT);
-		if (retained?.input !== undefined && retained.input !== inputKey) throw new Error("Creation request ID belongs to different inputs");
+		if (retained?.input !== undefined && retained.input !== inputKey)
+			throw new Error("Creation request ID belongs to different inputs");
 		const selection = retained?.selection;
 		const retainExecutionSelection = async (selected: ExecutionSelection): Promise<void> => {
 			await host.harness.commit(async (tx) => {
 				const state = await tx.doc(ExecutionSelectionDoc, conversation.id, key, null);
 				if (state.selection !== undefined) {
-					if (state.input !== inputKey || JSON.stringify(state.selection) !== JSON.stringify(selected)) throw new Error("Creation request already retains a different execution selection");
+					if (state.input !== inputKey || JSON.stringify(state.selection) !== JSON.stringify(selected))
+						throw new Error("Creation request already retains a different execution selection");
 					return;
 				}
-				state.input = inputKey; state.selection = selected;
+				state.input = inputKey;
+				state.selection = selected;
 			}, BACKGROUND_CONTEXT);
 		};
-		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir, validateModel: (model, level) => validateModel(services, model, level) });
+		const manager = new AgentManager({
+			root: dirname(dirname(metadata.storagePath)),
+			agentDir: metadata.agentDir,
+			packageDir: metadata.packageDir,
+			validateModel: (model, level) => validateModel(services, model, level),
+		});
 		try {
-			const caller = { id: params.senderIdentity, cwd: metadata.cwd, model: agent.model, thinkingLevel: agent.thinkingLevel, preferenceCatalog: services.services.modelRuntime, retainExecutionSelection };
-			return method === "place" ? await manager.place({ ...params, requestId, selection }, caller) : await manager.spawn({ ...params, requestId, selection }, caller);
+			const caller = {
+				id: params.senderIdentity,
+				cwd: metadata.cwd,
+				model: agent.model,
+				thinkingLevel: agent.thinkingLevel,
+				preferenceCatalog: services.services.modelRuntime,
+				retainExecutionSelection,
+			};
+			return method === "place"
+				? await manager.place({ ...params, requestId, selection }, caller)
+				: await manager.spawn({ ...params, requestId, selection }, caller);
+		} finally {
+			await manager.close();
 		}
-		finally { await manager.close(); }
 	}
 	async function discover(params: Record<string, unknown>, profiles = false): Promise<unknown> {
-		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+		const manager = new AgentManager({
+			root: dirname(dirname(metadata.storagePath)),
+			agentDir: metadata.agentDir,
+			packageDir: metadata.packageDir,
+		});
 		try {
-			const result = await manager.list(params) as { rows: Record<string, unknown>[]; coverage: Record<string, unknown> };
+			const result = (await manager.list(params)) as {
+				rows: Record<string, unknown>[];
+				coverage: Record<string, unknown>;
+			};
 			if (profiles) return result;
 			const { profileHints: _hints, ...coverage } = result.coverage;
-			const rows = result.rows.map(({ handle: _handle, role: _role, profile: _profile, profileCoverage: _coverage, ...row }) => row);
+			const rows = result.rows.map(
+				({ handle: _handle, role: _role, profile: _profile, profileCoverage: _coverage, ...row }) => row,
+			);
 			return { ...result, rows, coverage };
-		} finally { await manager.close(); }
+		} finally {
+			await manager.close();
+		}
 	}
 	async function attach(params: Record<string, unknown>): Promise<unknown> {
 		if (params.model !== undefined) {
@@ -647,10 +1101,18 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	}
 	async function configureRequest(params: Record<string, unknown>, requestId: string): Promise<unknown> {
 		const selection = await configure(params, typeof params.requestId === "string" ? params.requestId : requestId);
-		const outcome = await host.request("configure", params) as { after?: { thinkingLevel?: string }; [key: string]: unknown };
+		const outcome = (await host.request("configure", params)) as {
+			after?: { thinkingLevel?: string };
+			[key: string]: unknown;
+		};
 		return { ...outcome, selection: effectiveExecutionSelection(selection, outcome.after?.thinkingLevel) };
 	}
-	async function executeRequest(method: string, input: unknown, requestId: string, signal?: AbortSignal): Promise<unknown> {
+	async function executeRequest(
+		method: string,
+		input: unknown,
+		requestId: string,
+		signal?: AbortSignal,
+	): Promise<unknown> {
 		const params = controlParams(input);
 		validateControlRecipient(method, params);
 		if (method === "recovery-state") {
@@ -658,17 +1120,40 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		}
 		if (ADMITTING_METHODS.has(method)) markRecoveryDue(true);
 		switch (method) {
-			case "spawn": case "resolve-agent": return spawn(params, requestId);
-			case "place": return spawn(params, requestId, "place");
-			case "list": return params.global === true ? discover(params) : host.request(method, params);
-			case "profile-list": return discover(params, true);
-			case "attach": return attach(params);
-			case "configure": return configureRequest(params, requestId);
-			case "command": params.invocationId ??= requestId; return runCommand(params);
-			case "models": return modelChoices(services);
-			case "status": return { ...await host.request(method, params) as Record<string, unknown>, inventory: services.inventory, pid: process.pid, storageId: metadata.storageId };
-			case "receipts": return host.request(method, params, signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT);
-			case "task-submit": case "profile-update": case "submit": case "rewind": case "report": params.requestId ??= requestId; break;
+			case "spawn":
+			case "resolve-agent":
+				return spawn(params, requestId);
+			case "place":
+				return spawn(params, requestId, "place");
+			case "list":
+				return params.global === true ? discover(params) : host.request(method, params);
+			case "profile-list":
+				return discover(params, true);
+			case "attach":
+				return attach(params);
+			case "configure":
+				return configureRequest(params, requestId);
+			case "command":
+				params.invocationId ??= requestId;
+				return runCommand(params);
+			case "models":
+				return modelChoices(services);
+			case "status":
+				return {
+					...((await host.request(method, params)) as Record<string, unknown>),
+					inventory: services.inventory,
+					pid: process.pid,
+					storageId: metadata.storageId,
+				};
+			case "receipts":
+				return host.request(method, params, signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT);
+			case "task-submit":
+			case "profile-update":
+			case "submit":
+			case "rewind":
+			case "report":
+				params.requestId ??= requestId;
+				break;
 		}
 		return host.request(method, params);
 	}
@@ -678,7 +1163,15 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			await settleRecoveryMarker();
 		} finally {
 			changeListeners.clear();
-			try { await deliveries.close(); } finally { try { await services.close(); } finally { await host.close(); } }
+			try {
+				await deliveries.close();
+			} finally {
+				try {
+					await services.close();
+				} finally {
+					await host.close();
+				}
+			}
 		}
 	}
 	const closeHost = async (): Promise<"process-exit" | undefined> => {
@@ -702,17 +1195,73 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		unsubscribeClose?.();
 		if (processExit) {
 			markRecoveryDue(true);
-			try { await flushCatalogView(); } catch (error) { process.stderr.write(`Catalog view: ${String(error)}\n`); }
+			try {
+				await flushCatalogView();
+			} catch (error) {
+				process.stderr.write(`Catalog view: ${String(error)}\n`);
+			}
 			changeListeners.clear();
 			// Native close seals admission synchronously, but joins even noncooperative task code.
 			// Process death ends those invocations without manufacturing a durable task outcome.
 			void host.close().catch((error: unknown) => process.stderr.write(`Native close: ${String(error)}\n`));
-			try { try { await deliveries.close(); } finally { await services.close(); } }
-			catch (error) { process.stderr.write(`Service close: ${String(error)}\n`); }
+			try {
+				try {
+					await deliveries.close();
+				} finally {
+					await services.close();
+				}
+			} catch (error) {
+				process.stderr.write(`Service close: ${String(error)}\n`);
+			}
 			return "process-exit";
 		}
 		await closeIdleRuntime();
 		return undefined;
 	};
-	return { request, requestRelease, get publishedView() { return publishedView; }, get releaseRequested() { return releaseRequested; }, onReleaseRequested: (listener) => { releaseListeners.add(listener); return () => { releaseListeners.delete(listener); }; }, onQuiescent: (listener) => { quiescentListeners.add(listener); return () => { quiescentListeners.delete(listener); }; }, get shutdownRequired() { return reloadFailed || sessionFailed || (host.sessionEnded && host !== reloadClosingHost); }, isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(), tryRetire, onActivity: (listener) => { activityListeners.add(listener); return () => { activityListeners.delete(listener); }; }, onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, onObservationChange: (listener) => { observationListeners.add(listener); return () => { observationListeners.delete(listener); }; }, close: closeHost };
+	return {
+		request,
+		requestRelease,
+		get publishedView() {
+			return publishedView;
+		},
+		get releaseRequested() {
+			return releaseRequested;
+		},
+		onReleaseRequested: (listener) => {
+			releaseListeners.add(listener);
+			return () => {
+				releaseListeners.delete(listener);
+			};
+		},
+		onQuiescent: (listener) => {
+			quiescentListeners.add(listener);
+			return () => {
+				quiescentListeners.delete(listener);
+			};
+		},
+		get shutdownRequired() {
+			return reloadFailed || sessionFailed || (host.sessionEnded && host !== reloadClosingHost);
+		},
+		isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(),
+		tryRetire,
+		onActivity: (listener) => {
+			activityListeners.add(listener);
+			return () => {
+				activityListeners.delete(listener);
+			};
+		},
+		onChange: (listener) => {
+			changeListeners.add(listener);
+			return () => {
+				changeListeners.delete(listener);
+			};
+		},
+		onObservationChange: (listener) => {
+			observationListeners.add(listener);
+			return () => {
+				observationListeners.delete(listener);
+			};
+		},
+		close: closeHost,
+	};
 }

@@ -152,9 +152,7 @@ export interface TelemetryContinuation {
 export interface TelemetryRecording {
 	/** Never complete: other writers and earlier processes report no losses to this reader. */
 	status: "incomplete" | "unknown";
-	writer:
-		| { scope: "this-process-since-start"; health: TelemetryHealth }
-		| { scope: "unavailable" };
+	writer: { scope: "this-process-since-start"; health: TelemetryHealth } | { scope: "unavailable" };
 	otherWriters: "unknown";
 }
 export interface TelemetrySummary {
@@ -285,7 +283,9 @@ function resolveSelection(request: TelemetryRequest): ResolvedSelection {
 	const dates = "from" in request || "to" in request;
 	const instants = "since" in request || "until" in request;
 	if (dates === instants)
-		throw new RangeError("Policy telemetry needs exactly one selection: from and to dates, or since and until instants.");
+		throw new RangeError(
+			"Policy telemetry needs exactly one selection: from and to dates, or since and until instants.",
+		);
 	if ("from" in request) {
 		const days = dayRange(request.from, request.to);
 		return {
@@ -342,7 +342,11 @@ function recording(health: TelemetryHealth | undefined): TelemetryRecording {
 		otherWriters: "unknown",
 	};
 }
-function initialSummary(resolved: ResolvedSelection, days: string[], health: TelemetryHealth | undefined): TelemetrySummary {
+function initialSummary(
+	resolved: ResolvedSelection,
+	days: string[],
+	health: TelemetryHealth | undefined,
+): TelemetrySummary {
 	const fileRange = resolved.selection.kind === "dates" ? resolved.selection : resolved.selection.dayFiles;
 	return {
 		from: fileRange.from,
@@ -523,8 +527,7 @@ class Aggregator {
 		) {
 			counts.writerOmitted = sum(counts.writerOmitted, coverage.omitted);
 			counts.irrelevant = sum(counts.irrelevant, coverage.irrelevant);
-		}
-		else counts.recordsWithUnknownCoverage++;
+		} else counts.recordsWithUnknownCoverage++;
 		counts.readerOmitted += Math.max(0, entries.length - TELEMETRY_LIMITS.entriesPerRecord);
 		for (const entry of entries.slice(0, TELEMETRY_LIMITS.entriesPerRecord)) {
 			if (!evaluation(entry)) {
@@ -627,7 +630,10 @@ interface CursorState {
 }
 function selectionDigest(dir: string, selection: TelemetrySelection): string {
 	const bounds = selection.kind === "dates" ? [selection.from, selection.to] : [selection.sinceUtc, selection.untilUtc];
-	return createHash("sha256").update(JSON.stringify([dir, selection.kind, ...bounds])).digest("hex").slice(0, 16);
+	return createHash("sha256")
+		.update(JSON.stringify([dir, selection.kind, ...bounds]))
+		.digest("hex")
+		.slice(0, 16);
 }
 function encodeCursor(state: CursorState): string {
 	const { position, oldest } = state;
@@ -671,7 +677,9 @@ function decodeCursor(text: unknown, selection: string): CursorState {
 	)
 		throw new RangeError("Policy telemetry cursor is malformed; start again without a cursor.");
 	if (value.s !== selection)
-		throw new RangeError("Policy telemetry cursor belongs to another selection; repeat the selection that returned it.");
+		throw new RangeError(
+			"Policy telemetry cursor belongs to another selection; repeat the selection that returned it.",
+		);
 	return {
 		selection: value.s,
 		position: { name: value.n, dev: value.d, ino: value.i, offset: value.o as number | null, midLine: value.m },
@@ -781,7 +789,13 @@ function processBuffer(
 	}
 	return { frontier: start + cut, midLine: false, lineCut: cut > first };
 }
-async function readRange(handle: FileHandle, segment: TelemetrySegmentRead, page: PageState, start: number, length: number): Promise<Buffer> {
+async function readRange(
+	handle: FileHandle,
+	segment: TelemetrySegmentRead,
+	page: PageState,
+	start: number,
+	length: number,
+): Promise<Buffer> {
 	const coverage = page.aggregate.summary.coverage;
 	const buffer = Buffer.alloc(length);
 	while (segment.bytesRead < length) {

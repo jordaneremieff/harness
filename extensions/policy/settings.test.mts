@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { test, mock } from "node:test";
 import { createEventBus, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
-import { publishSettings, readSettings, SETTINGS_PUBLISH, SETTINGS_REQUEST, type SettingsPublication } from "./settings.ts";
+import {
+	publishSettings,
+	readSettings,
+	SETTINGS_PUBLISH,
+	SETTINGS_REQUEST,
+	type SettingsPublication,
+} from "./settings.ts";
 import type { PolicyDurableContribution, PolicyDurableHost } from "./durable.ts";
 import registerPolicy from "./index.ts";
 import { settings } from "./settings.ts";
@@ -43,7 +49,9 @@ function hostAdapter(flag?: string) {
 				const entries = listeners.get(channel) ?? new Set();
 				entries.add(handler);
 				listeners.set(channel, entries);
-				return () => { entries.delete(handler); };
+				return () => {
+					entries.delete(handler);
+				};
 			},
 			emit(channel: string, value: unknown) {
 				if (channel === SETTINGS_PUBLISH) publications.push(value as SettingsPublication);
@@ -56,12 +64,28 @@ function hostAdapter(flag?: string) {
 			entries.push(handler);
 			handlers.set(name, entries);
 		},
-		registerTool(tool: ToolDefinition) { tools.set(tool.name, tool); },
-		registerFlag() {}, getFlag() { return flag; },
-		registerCommand(_name: string, definition: Parameters<ExtensionAPI["registerCommand"]>[1]) { command = definition; },
-		registerShortcut() {}, registerEntryRenderer() {},
+		registerTool(tool: ToolDefinition) {
+			tools.set(tool.name, tool);
+		},
+		registerFlag() {},
+		getFlag() {
+			return flag;
+		},
+		registerCommand(_name: string, definition: Parameters<ExtensionAPI["registerCommand"]>[1]) {
+			command = definition;
+		},
+		registerShortcut() {},
+		registerEntryRenderer() {},
 	} as unknown as ExtensionAPI;
-	return { pi, tools, publications, handlers, listeners, contribution: () => required(contribution), command: () => required(command) };
+	return {
+		pi,
+		tools,
+		publications,
+		handlers,
+		listeners,
+		contribution: () => required(contribution),
+		command: () => required(command),
+	};
 }
 
 function required<T>(value: T | undefined): T {
@@ -77,23 +101,39 @@ test("policy settings select environment, file, and portable defaults with rejec
 	const agentDir = await fixture(t);
 	const path = join(agentDir, "harness.json");
 	const defaults = readSettings({ agentDir, env: {} });
-	assert.deepEqual({ ...defaults.values }, { dir: join(agentDir, "policy"), mode: "observe", telemetryMaxBytes: 1073741824, telemetryMaxAgeDays: 30 });
+	assert.deepEqual(
+		{ ...defaults.values },
+		{ dir: join(agentDir, "policy"), mode: "observe", telemetryMaxBytes: 1073741824, telemetryMaxAgeDays: 30 },
+	);
 	assert.ok(defaults.records.every((entry) => entry.origin === "default"));
 	await writeFile(path, JSON.stringify({ version: 1, policy: { dir: "file-store", mode: "enforce" } }));
 	const file = readSettings({ agentDir, env: {} });
 	assert.deepEqual({ ...file.values }, { ...defaults.values, dir: join(agentDir, "file-store"), mode: "enforce" });
-	assert.ok(file.records.filter((entry) => entry.key === "dir" || entry.key === "mode").every((entry) => entry.origin === "file"));
+	assert.ok(
+		file.records
+			.filter((entry) => entry.key === "dir" || entry.key === "mode")
+			.every((entry) => entry.origin === "file"),
+	);
 	const env = readSettings({ agentDir, env: { PI_POLICY_DIR: "env-store", PI_POLICY_MODE: "notice" } });
 	assert.deepEqual({ ...env.values }, { ...defaults.values, dir: join(agentDir, "env-store"), mode: "notice" });
-	assert.ok(env.records.filter((entry) => entry.key === "dir" || entry.key === "mode").every((entry) => entry.origin === "env"));
+	assert.ok(
+		env.records.filter((entry) => entry.key === "dir" || entry.key === "mode").every((entry) => entry.origin === "env"),
+	);
 	for (const value of ["", "   ", "Observe", "invalid"]) {
 		const rejected = readSettings({ agentDir, env: { PI_POLICY_MODE: value, PI_POLICY_DIR: "" } });
 		assert.deepEqual(rejected.values, defaults.values);
 		assert.ok(rejected.records.every((entry) => entry.origin === "default"));
-		assert.deepEqual(rejected.records.filter((entry) => entry.status === "invalid").map((entry) => entry.key), ["dir", "mode"]);
-		assert.deepEqual(rejected.diagnostics.map(({ field, source }) => ({ field, source })), [
-			{ field: "policy.dir", source: "env" }, { field: "policy.mode", source: "env" },
-		]);
+		assert.deepEqual(
+			rejected.records.filter((entry) => entry.status === "invalid").map((entry) => entry.key),
+			["dir", "mode"],
+		);
+		assert.deepEqual(
+			rejected.diagnostics.map(({ field, source }) => ({ field, source })),
+			[
+				{ field: "policy.dir", source: "env" },
+				{ field: "policy.mode", source: "env" },
+			],
+		);
 	}
 	await writeFile(path, JSON.stringify({ version: 1, policy: { dir: 7, mode: "invalid", rules: [] } }));
 	const rejectedFile = readSettings({ agentDir, env: {} });
@@ -110,23 +150,37 @@ test("telemetry retention settings select environment, file, and defaults and re
 	assert.equal(defaults.values.telemetryMaxAgeDays, 30);
 	assert.equal(record(defaults, "telemetryMaxBytes").value, 1073741824);
 	assert.equal(record(defaults, "telemetryMaxAgeDays").status, "valid");
-	await writeFile(path, JSON.stringify({ version: 1, policy: { telemetryMaxBytes: 67108864, telemetryMaxAgeDays: 7 } }));
+	await writeFile(
+		path,
+		JSON.stringify({ version: 1, policy: { telemetryMaxBytes: 67108864, telemetryMaxAgeDays: 7 } }),
+	);
 	const file = readSettings({ agentDir, env: {} });
 	assert.equal(file.values.telemetryMaxBytes, 67108864);
 	assert.equal(file.values.telemetryMaxAgeDays, 7);
 	assert.equal(record(file, "telemetryMaxBytes").origin, "file");
-	const env = readSettings({ agentDir, env: { PI_POLICY_TELEMETRY_MAX_BYTES: "33554432", PI_POLICY_TELEMETRY_MAX_AGE_DAYS: "3" } });
+	const env = readSettings({
+		agentDir,
+		env: { PI_POLICY_TELEMETRY_MAX_BYTES: "33554432", PI_POLICY_TELEMETRY_MAX_AGE_DAYS: "3" },
+	});
 	assert.equal(env.values.telemetryMaxBytes, 33554432);
 	assert.equal(env.values.telemetryMaxAgeDays, 3);
 	assert.equal(record(env, "telemetryMaxAgeDays").origin, "env");
 	for (const bad of ["", "0", "-1", "1.5", "1e3", "abc", "33554431"]) {
-		const rejected = readSettings({ agentDir, env: { PI_POLICY_TELEMETRY_MAX_BYTES: bad, PI_POLICY_TELEMETRY_MAX_AGE_DAYS: bad === "33554431" ? "0" : bad } });
+		const rejected = readSettings({
+			agentDir,
+			env: { PI_POLICY_TELEMETRY_MAX_BYTES: bad, PI_POLICY_TELEMETRY_MAX_AGE_DAYS: bad === "33554431" ? "0" : bad },
+		});
 		assert.equal(rejected.values.telemetryMaxBytes, 1073741824, bad);
 		assert.equal(rejected.values.telemetryMaxAgeDays, 30, bad);
 		assert.equal(record(rejected, "telemetryMaxBytes").status, "invalid");
-		assert.ok(rejected.diagnostics.some((entry) => entry.field === "policy.telemetryMaxBytes" && entry.code === "invalid"));
+		assert.ok(
+			rejected.diagnostics.some((entry) => entry.field === "policy.telemetryMaxBytes" && entry.code === "invalid"),
+		);
 	}
-	await writeFile(path, JSON.stringify({ version: 1, policy: { telemetryMaxBytes: "67108864", telemetryMaxAgeDays: 1.5 } }));
+	await writeFile(
+		path,
+		JSON.stringify({ version: 1, policy: { telemetryMaxBytes: "67108864", telemetryMaxAgeDays: 1.5 } }),
+	);
 	const rejectedFile = readSettings({ agentDir, env: {} });
 	assert.equal(rejectedFile.values.telemetryMaxBytes, 1073741824);
 	assert.equal(rejectedFile.values.telemetryMaxAgeDays, 30);
@@ -135,13 +189,28 @@ test("telemetry retention settings select environment, file, and defaults and re
 
 test("ordinary flag overrides applied mode but publication stays a fresh machine snapshot", async (t) => {
 	const agentDir = await fixture(t);
-	environment(t, { PI_CODING_AGENT_DIR: agentDir, PI_HARNESS_FILE: join(agentDir, "harness.json"), PI_POLICY_DIR: undefined, PI_POLICY_MODE: "notice" });
+	environment(t, {
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_HARNESS_FILE: join(agentDir, "harness.json"),
+		PI_POLICY_DIR: undefined,
+		PI_POLICY_MODE: "notice",
+	});
 	await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, policy: { mode: "enforce" } }));
-	for (const [flag, expected] of [[undefined, "notice"], ["annotate", "annotate"], ["invalid", "unavailable"]] as const) {
+	for (const [flag, expected] of [
+		[undefined, "notice"],
+		["annotate", "annotate"],
+		["invalid", "unavailable"],
+	] as const) {
 		const warn = mock.method(console, "warn", () => {});
 		const adapter = hostAdapter(flag);
 		registerPolicy(adapter.pi);
-		const result = await required(adapter.tools.get("policy_control")).execute("mode", { operation: "mode" }, undefined, undefined, {} as never);
+		const result = await required(adapter.tools.get("policy_control")).execute(
+			"mode",
+			{ operation: "mode" },
+			undefined,
+			undefined,
+			{} as never,
+		);
 		assert.equal((result.details as { mode: string }).mode, expected);
 		assert.equal(record(required(adapter.publications.at(-1)), "mode").value, "notice");
 		assert.equal(record(required(adapter.publications.at(-1)), "mode").origin, "env");
@@ -157,7 +226,13 @@ test("ordinary flag overrides applied mode but publication stays a fresh machine
 	process.env.PI_POLICY_MODE = "observe";
 	adapter.pi.events.emit(SETTINGS_REQUEST, { version: 1 });
 	assert.equal(record(required(adapter.publications.at(-1)), "mode").value, "observe");
-	const result = await required(adapter.tools.get("policy_control")).execute("mode", { operation: "mode" }, undefined, undefined, {} as never);
+	const result = await required(adapter.tools.get("policy_control")).execute(
+		"mode",
+		{ operation: "mode" },
+		undefined,
+		undefined,
+		{} as never,
+	);
 	assert.equal((result.details as { mode: string }).mode, "enforce");
 	for (const shutdown of adapter.handlers.get("session_shutdown") ?? []) await shutdown();
 });
@@ -165,21 +240,32 @@ test("ordinary flag overrides applied mode but publication stays a fresh machine
 test("ordinary mode source distinguishes flag, environment, file, and default", async (t) => {
 	const agentDir = await fixture(t);
 	const path = join(agentDir, "harness.json");
-	environment(t, { PI_CODING_AGENT_DIR: agentDir, PI_HARNESS_FILE: path, PI_POLICY_DIR: undefined, PI_POLICY_MODE: undefined });
+	environment(t, {
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_HARNESS_FILE: path,
+		PI_POLICY_DIR: undefined,
+		PI_POLICY_MODE: undefined,
+	});
 	for (const [file, env, flag, source] of [
 		[undefined, undefined, undefined, "default"],
 		["enforce", undefined, undefined, "policy.mode"],
 		["enforce", "notice", undefined, "PI_POLICY_MODE"],
 		["enforce", "notice", "annotate", "--policy-mode"],
 	] as const) {
-		await writeFile(path, JSON.stringify({ version: 1, policy: { dir: "file-store", ...(file === undefined ? {} : { mode: file }) } }));
+		await writeFile(
+			path,
+			JSON.stringify({ version: 1, policy: { dir: "file-store", ...(file === undefined ? {} : { mode: file }) } }),
+		);
 		if (env === undefined) delete process.env.PI_POLICY_MODE;
 		else process.env.PI_POLICY_MODE = env;
 		const adapter = hostAdapter(flag);
 		registerPolicy(adapter.pi);
 		const messages: string[] = [];
 		await adapter.command().handler("mode", {
-			mode: "tui", hasUI: true, cwd: agentDir, model: undefined,
+			mode: "tui",
+			hasUI: true,
+			cwd: agentDir,
+			model: undefined,
 			ui: { notify: (message: string) => messages.push(message) },
 		} as never);
 		assert.ok(messages.at(-1)?.includes(source));
@@ -191,14 +277,32 @@ test("ordinary mode source distinguishes flag, environment, file, and default", 
 test("native creation replaces the ordinary publisher with the host directory and cleans up", async (t) => {
 	const ordinaryDir = await fixture(t);
 	const nativeDir = await fixture(t);
-	environment(t, { PI_CODING_AGENT_DIR: ordinaryDir, PI_HARNESS_FILE: undefined, PI_POLICY_DIR: undefined, PI_POLICY_MODE: undefined });
-	await writeFile(join(ordinaryDir, "harness.json"), JSON.stringify({ version: 1, policy: { dir: "ordinary-store", mode: "enforce" } }));
-	await writeFile(join(nativeDir, "harness.json"), JSON.stringify({ version: 1, policy: { dir: "native-store", mode: "notice" } }));
+	environment(t, {
+		PI_CODING_AGENT_DIR: ordinaryDir,
+		PI_HARNESS_FILE: undefined,
+		PI_POLICY_DIR: undefined,
+		PI_POLICY_MODE: undefined,
+	});
+	await writeFile(
+		join(ordinaryDir, "harness.json"),
+		JSON.stringify({ version: 1, policy: { dir: "ordinary-store", mode: "enforce" } }),
+	);
+	await writeFile(
+		join(nativeDir, "harness.json"),
+		JSON.stringify({ version: 1, policy: { dir: "native-store", mode: "notice" } }),
+	);
 	const adapter = hostAdapter("annotate");
 	registerPolicy(adapter.pi);
 	assert.equal(required(adapter.publications.at(-1)).source.path, join(ordinaryDir, "harness.json"));
 	const cleanups: Array<() => void | Promise<void>> = [];
-	const host = { durable: Durable, agentDir: nativeDir, harness: {}, storageId: "fixture", cwd: nativeDir, onClose: (cleanup: () => void | Promise<void>) => cleanups.push(cleanup) } as unknown as PolicyDurableHost;
+	const host = {
+		durable: Durable,
+		agentDir: nativeDir,
+		harness: {},
+		storageId: "fixture",
+		cwd: nativeDir,
+		onClose: (cleanup: () => void | Promise<void>) => cleanups.push(cleanup),
+	} as unknown as PolicyDurableHost;
 	await adapter.contribution().create(host);
 	assert.equal(adapter.listeners.get(SETTINGS_REQUEST)?.size, 1);
 	adapter.pi.events.emit(SETTINGS_REQUEST, { version: 1 });
@@ -237,22 +341,31 @@ test("unknown diagnostics bound their key text and retain publication records", 
 	const options = { agentDir, env: {} };
 	await writeFile(join(agentDir, "harness.json"), JSON.stringify({ version: 1, policy: { dir: 7 } }));
 	const baseline = readSettings(options);
-	await writeFile(join(agentDir, "harness.json"), JSON.stringify({
-		version: 1,
-		policy: { dir: 7, otherUnknown: true, ...Object.fromEntries(keys.map((key) => [key, true])) },
-	}));
+	await writeFile(
+		join(agentDir, "harness.json"),
+		JSON.stringify({
+			version: 1,
+			policy: { dir: 7, otherUnknown: true, ...Object.fromEntries(keys.map((key) => [key, true])) },
+		}),
+	);
 	const snapshot = readSettings(options);
 	assert.deepEqual(snapshot.records, baseline.records);
-	assert.deepEqual(snapshot.diagnostics.filter((item) => item.code !== "unknown"), baseline.diagnostics);
-	assert.deepEqual(snapshot.diagnostics.filter((item) => item.code === "unknown").map((item) => item.field), [
-		`${prefix}otherUnknown`,
-		`${prefix}${"a".repeat(63)}`,
-		`${prefix}${"a".repeat(64)}`,
-		`${prefix}${"a".repeat(62)}😀`,
-		`${prefix}${"😀".repeat(32)}`,
-		`${prefix}<invalid-key>`,
-		`${prefix}<invalid-key>`,
-	]);
+	assert.deepEqual(
+		snapshot.diagnostics.filter((item) => item.code !== "unknown"),
+		baseline.diagnostics,
+	);
+	assert.deepEqual(
+		snapshot.diagnostics.filter((item) => item.code === "unknown").map((item) => item.field),
+		[
+			`${prefix}otherUnknown`,
+			`${prefix}${"a".repeat(63)}`,
+			`${prefix}${"a".repeat(64)}`,
+			`${prefix}${"a".repeat(62)}😀`,
+			`${prefix}${"😀".repeat(32)}`,
+			`${prefix}<invalid-key>`,
+			`${prefix}<invalid-key>`,
+		],
+	);
 	for (const item of snapshot.diagnostics) {
 		assert.ok(item.field.startsWith(prefix));
 		assert.ok(item.field.slice(prefix.length).length <= 64);

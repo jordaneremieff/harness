@@ -49,81 +49,93 @@ export const CLIPBOARD_GUIDANCE = [
 	...LIST_GUIDELINES,
 ].join("\n");
 
-export const CopyParams = obj({
-	content: str({ description: "Content to copy to the clipboard", maxLength: 8 * 1024 * 1024 }),
-	label: opt(str({ description: "Brief label for what was copied", maxLength: 200 })),
-	archive: opt(
-		bool({
-			description:
-				"Add the copy to clipboard history (default true). False writes the clipboard only; the copy cannot be listed or restored later.",
-		}),
-	),
-}, { open: true });
+export const CopyParams = obj(
+	{
+		content: str({ description: "Content to copy to the clipboard", maxLength: 8 * 1024 * 1024 }),
+		label: opt(str({ description: "Brief label for what was copied", maxLength: 200 })),
+		archive: opt(
+			bool({
+				description:
+					"Add the copy to clipboard history (default true). False writes the clipboard only; the copy cannot be listed or restored later.",
+			}),
+		),
+	},
+	{ open: true },
+);
 
-const sourceIdParam = opt(str({
-	description: "SHA-256 sourceId from the previous read; pass unchanged with its nextOffset to reject changed content",
-	pattern: "^[a-f0-9]{64}$",
-	minLength: 64,
-	maxLength: 64,
-}));
+const sourceIdParam = opt(
+	str({
+		description:
+			"SHA-256 sourceId from the previous read; pass unchanged with its nextOffset to reject changed content",
+		pattern: "^[a-f0-9]{64}$",
+		minLength: 64,
+		maxLength: 64,
+	}),
+);
 
-export const PasteParams = obj({
-	sourceId: sourceIdParam,
-	offset: opt(int({ description: "Unicode-character offset (default 0)", minimum: 0, default: 0 })),
-	max_chars: opt(
-		int({
-			description: `Maximum Unicode characters in this page (default and max ${PAGE_CHARS})`,
-			minimum: 1,
-			maximum: PAGE_CHARS,
-			default: PAGE_CHARS,
-		}),
-	),
-}, { open: true });
+export const PasteParams = obj(
+	{
+		sourceId: sourceIdParam,
+		offset: opt(int({ description: "Unicode-character offset (default 0)", minimum: 0, default: 0 })),
+		max_chars: opt(
+			int({
+				description: `Maximum Unicode characters in this page (default and max ${PAGE_CHARS})`,
+				minimum: 1,
+				maximum: PAGE_CHARS,
+				default: PAGE_CHARS,
+			}),
+		),
+	},
+	{ open: true },
+);
 
-export const ListParams = obj({
-	limit: opt(
-		int({ description: "Max entries (default 10, max 50)", minimum: 1, maximum: 50, default: 10 }),
-	),
-	date: opt(str({ description: "YYYY-MM-DD local date", pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
-	query: opt(
-		str({
-			description: "Case-sensitive literal text in the full content or label; nonblank, at most 256 UTF-16 units",
-			minLength: 1,
-			maxLength: SEARCH_LIMITS.queryChars,
-		}),
-	),
-	cursor: opt(
-		str({
-			description: "Opaque query continuation. Repeat the same query and date; archive changes require a restart.",
-			minLength: 1,
-			maxLength: SEARCH_LIMITS.cursorChars,
-		}),
-	),
-}, { open: true });
+export const ListParams = obj(
+	{
+		limit: opt(int({ description: "Max entries (default 10, max 50)", minimum: 1, maximum: 50, default: 10 })),
+		date: opt(str({ description: "YYYY-MM-DD local date", pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
+		query: opt(
+			str({
+				description: "Case-sensitive literal text in the full content or label; nonblank, at most 256 UTF-16 units",
+				minLength: 1,
+				maxLength: SEARCH_LIMITS.queryChars,
+			}),
+		),
+		cursor: opt(
+			str({
+				description: "Opaque query continuation. Repeat the same query and date; archive changes require a restart.",
+				minLength: 1,
+				maxLength: SEARCH_LIMITS.cursorChars,
+			}),
+		),
+	},
+	{ open: true },
+);
 
-export const GetParams = obj({
-	sourceId: sourceIdParam,
-	id: str({ description: "Stable entry id from clipboard_list", minLength: 1, maxLength: 200 }),
-	date: opt(
-		str({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
-	),
-	offset: opt(int({ description: "Unicode-character offset (default 0)", minimum: 0, default: 0 })),
-	max_chars: opt(
-		int({
-			description: `Maximum Unicode characters in this page (default and max ${PAGE_CHARS})`,
-			minimum: 1,
-			maximum: PAGE_CHARS,
-			default: PAGE_CHARS,
-		}),
-	),
-}, { open: true });
+export const GetParams = obj(
+	{
+		sourceId: sourceIdParam,
+		id: str({ description: "Stable entry id from clipboard_list", minLength: 1, maxLength: 200 }),
+		date: opt(str({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
+		offset: opt(int({ description: "Unicode-character offset (default 0)", minimum: 0, default: 0 })),
+		max_chars: opt(
+			int({
+				description: `Maximum Unicode characters in this page (default and max ${PAGE_CHARS})`,
+				minimum: 1,
+				maximum: PAGE_CHARS,
+				default: PAGE_CHARS,
+			}),
+		),
+	},
+	{ open: true },
+);
 
-export const RestoreParams = obj({
-	id: str({ description: "Stable entry id from clipboard_list", minLength: 1, maxLength: 200 }),
-	date: opt(
-		str({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
-	),
-}, { open: true });
+export const RestoreParams = obj(
+	{
+		id: str({ description: "Stable entry id from clipboard_list", minLength: 1, maxLength: 200 }),
+		date: opt(str({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
+	},
+	{ open: true },
+);
 
 interface Page {
 	text: string;
@@ -306,16 +318,23 @@ function checkSource(content: string, expected: string | undefined, tool: string
 	}
 	const sourceId = createHash("sha256").update(content, "utf8").digest("hex");
 	if (expected !== undefined && expected !== sourceId) {
-		throw new Error(`${tool} content changed. Restart at offset 0 without sourceId; do not join the old and new pages.`);
+		throw new Error(
+			`${tool} content changed. Restart at offset 0 without sourceId; do not join the old and new pages.`,
+		);
 	}
 	return sourceId;
 }
 
-export async function clipboardPaste(params: { offset?: number; max_chars?: number; sourceId?: string }, signal?: AbortSignal) {
+export async function clipboardPaste(
+	params: { offset?: number; max_chars?: number; sourceId?: string },
+	signal?: AbortSignal,
+) {
 	if (signal?.aborted) throw new Error("clipboard_paste cancelled");
 	const offset = params.offset ?? 0;
 	if (offset > 0 && params.sourceId === undefined) {
-		throw new Error("clipboard_paste requires sourceId with a nonzero offset. Restart at offset 0 to read the current clipboard.");
+		throw new Error(
+			"clipboard_paste requires sourceId with a nonzero offset. Restart at offset 0 to read the current clipboard.",
+		);
 	}
 	let content: string;
 	try {
@@ -331,8 +350,7 @@ export async function clipboardPaste(params: { offset?: number; max_chars?: numb
 		};
 	}
 	const totalCharacters = countCharacters(content);
-	if (offset >= totalCharacters)
-		throw new Error(`clipboard offset ${offset} is outside ${totalCharacters} characters`);
+	if (offset >= totalCharacters) throw new Error(`clipboard offset ${offset} is outside ${totalCharacters} characters`);
 	const lines = content.split("\n").length;
 	const result = pageResult(
 		`Clipboard contents (${lines} lines, ${totalCharacters} characters):\nsourceId: ${sourceId}`,
@@ -410,11 +428,7 @@ export async function clipboardGet(
 	};
 }
 
-export async function clipboardRestore(
-	dir: string,
-	params: { id: string; date?: string },
-	signal?: AbortSignal,
-) {
+export async function clipboardRestore(dir: string, params: { id: string; date?: string }, signal?: AbortSignal) {
 	if (signal?.aborted) throw new Error("clipboard_restore cancelled");
 	const entry = await findEntry(dir, params.id, params.date, "clipboard_restore", signal);
 	try {

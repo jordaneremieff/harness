@@ -3,25 +3,66 @@ import assert from "node:assert/strict";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context, withAbortSignal } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
-import { CompactionEntry, GenerationTask, hook, Harness, LiveDoc, MemoryStorage, type Conversation, type ConversationId, type HookApi, type SubmissionId, type TaskId } from "@earendil-works/pi-durable";
-import { answerMessage, completed, fixtureRegistry, fixtureRuntime, gateTool, toolCallMessage } from "./durable-host-fixture.mts";
+import {
+	CompactionEntry,
+	GenerationTask,
+	hook,
+	Harness,
+	LiveDoc,
+	MemoryStorage,
+	type Conversation,
+	type ConversationId,
+	type HookApi,
+	type SubmissionId,
+	type TaskId,
+} from "@earendil-works/pi-durable";
+import {
+	answerMessage,
+	completed,
+	fixtureRegistry,
+	fixtureRuntime,
+	gateTool,
+	toolCallMessage,
+} from "./durable-host-fixture.mts";
 import { inputEntry } from "./input-entry.ts";
-import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, REQUEST_NOTE_BYTES, REQUEST_NOTE_LIMIT, requestContextHooks, requestContextSection, type RequestContext } from "./request-context.ts";
+import {
+	cleanupRequestContexts,
+	recordRequestContext,
+	RequestContextDoc,
+	REQUEST_NOTE_BYTES,
+	REQUEST_NOTE_LIMIT,
+	requestContextHooks,
+	requestContextSection,
+	type RequestContext,
+} from "./request-context.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { RequestRouteState } from "./request-route-state.ts";
 import { resetConversation } from "./durable-reset.ts";
 import { placeLeftoverWrites } from "./stranded-inputs.ts";
 
 const user = (content: string, timestamp = 1): Message => ({ role: "user", content, timestamp });
-const route = (requestId: string): RequestContext => ({ requestId, requester: "requester", replyTo: `recipient-${requestId}`, origin: "model" });
-const text = (message: Message) => "content" in message ? typeof message.content === "string" ? message.content : message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("") : "";
-const notes = (messages: readonly Message[]) => messages.filter((message) => text(message).startsWith("<agent-request-route "));
+const route = (requestId: string): RequestContext => ({
+	requestId,
+	requester: "requester",
+	replyTo: `recipient-${requestId}`,
+	origin: "model",
+});
+const text = (message: Message) =>
+	"content" in message
+		? typeof message.content === "string"
+			? message.content
+			: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("")
+		: "";
+const notes = (messages: readonly Message[]) =>
+	messages.filter((message) => text(message).startsWith("<agent-request-route "));
 
 async function fixture(t: TestContext, state = new RequestRouteState()) {
 	const models = await fixtureRuntime("answer");
 	const harness = await Harness.open(new MemoryStorage(), { models, registry: fixtureRegistry() }, context);
 	t.after(() => harness.close(context));
-	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
+	const conversation = await harness.root(context, {
+		agent: { model: { provider: testModel.provider, modelId: testModel.id } },
+	});
 	const unsubscribe = onStoredCommit(harness, (publication) => state.observe(publication));
 	t.after(unsubscribe);
 	const hook = requestContextHooks(harness, state).beforeRequest;
@@ -29,7 +70,10 @@ async function fixture(t: TestContext, state = new RequestRouteState()) {
 	let nextTask = 100;
 	function api(conversationId: ConversationId = conversation.id): HookApi {
 		const memos = new Map<string, unknown>();
-		return { conversationId, taskId: nextTask++ as TaskId, models,
+		return {
+			conversationId,
+			taskId: nextTask++ as TaskId,
+			models,
 			async memo(name: string, ...args: unknown[]) {
 				if (args.length === 2 && !memos.has(name)) memos.set(name, args[0]);
 				return memos.get(name);
@@ -39,12 +83,26 @@ async function fixture(t: TestContext, state = new RequestRouteState()) {
 	async function add(request: RequestContext | undefined, messages: Message[], target: Conversation = conversation) {
 		return harness.commit(async (tx) => {
 			if (request) await recordRequestContext(tx, target.id, request);
-			const entry = await tx.appendEntry(target.id, { kind: "pi.user", ...inputEntry("model", "requester"), model: messages });
-			return (await tx.createSubmission({ conversationId: target.id, requestId: request?.requestId ?? `unknown-${entry.id}`, type: "input", status: "placed", entry: entry.id })).id;
+			const entry = await tx.appendEntry(target.id, {
+				kind: "pi.user",
+				...inputEntry("model", "requester"),
+				model: messages,
+			});
+			return (
+				await tx.createSubmission({
+					conversationId: target.id,
+					requestId: request?.requestId ?? `unknown-${entry.id}`,
+					type: "input",
+					status: "placed",
+					entry: entry.id,
+				})
+			).id;
 		}, context);
 	}
 	async function run(ids: SubmissionId[], target: Conversation = conversation) {
-		await harness.commit(async (tx) => { (await tx.doc(LiveDoc, target.id)).run = { taskId: 123 as TaskId, inputs: ids, turns: 0 }; }, context);
+		await harness.commit(async (tx) => {
+			(await tx.doc(LiveDoc, target.id)).run = { taskId: 123 as TaskId, inputs: ids, turns: 0 };
+		}, context);
 	}
 	async function render(messages: readonly Message[], task = api(), selected = hook) {
 		assert.ok(selected);
@@ -61,7 +119,15 @@ async function overflowCompaction(f: Awaited<ReturnType<typeof fixture>>, id: Su
 	// Pi Durable 1.4.0 dist/harness/generation.js:406-419 resumes the same generation
 	// task after overflow compaction; this entry applies the native context change
 	// to the same hook API without a provider/compaction round trip.
-	await f.harness.commit((tx) => tx.appendEntry(CompactionEntry, f.conversation.id, { head: record.entry, data: { reason: "overflow" }, model: [user("Summary", 2)] }), context);
+	await f.harness.commit(
+		(tx) =>
+			tx.appendEntry(CompactionEntry, f.conversation.id, {
+				head: record.entry,
+				data: { reason: "overflow" },
+				model: [user("Summary", 2)],
+			}),
+		context,
+	);
 }
 
 it("preserves exact prefixes across a tool round, a new run and request settlement", async (t) => {
@@ -71,7 +137,14 @@ it("preserves exact prefixes across a tool round, a new run and request settleme
 	await f.run([a]);
 	const one = await f.render([first]);
 	assert.equal(notes(one).length, 1);
-	const tool: Message = { role: "toolResult", toolCallId: "call", toolName: "tool", content: [{ type: "text", text: "Result" }], isError: false, timestamp: 2 };
+	const tool: Message = {
+		role: "toolResult",
+		toolCallId: "call",
+		toolName: "tool",
+		content: [{ type: "text", text: "Result" }],
+		isError: false,
+		timestamp: 2,
+	};
 	const two = await f.render([first, tool]);
 	assert.ok(JSON.stringify(two.slice(0, one.length)) === JSON.stringify(one), "the first request is an exact prefix");
 	await f.harness.commit((tx) => tx.settleSubmission(a, { status: "unanswered", reason: "aborted" }), context);
@@ -80,7 +153,10 @@ it("preserves exact prefixes across a tool round, a new run and request settleme
 	const b = await f.add(route("b"), [second]);
 	await f.run([b]);
 	const three = await f.render([first, tool, second]);
-	assert.ok(JSON.stringify(three.slice(0, two.length)) === JSON.stringify(two), "the tool round remains an exact prefix");
+	assert.ok(
+		JSON.stringify(three.slice(0, two.length)) === JSON.stringify(two),
+		"the tool round remains an exact prefix",
+	);
 	assert.equal(notes(three).length, 2);
 	await f.harness.commit((tx) => tx.settleSubmission(b, { status: "unanswered", reason: "aborted" }), context);
 	await f.run([]);
@@ -127,7 +203,10 @@ it("distinguishes identical inputs by native order and includes timestamps in di
 	const c = await f.add(route("c"), [different]);
 	await f.run([b, c, a]);
 	const result = await f.render([same, same, different]);
-	assert.deepEqual(notes(result).map((note) => JSON.parse(text(note).split("\n")[1]).requestId), ["a", "b", "c"]);
+	assert.deepEqual(
+		notes(result).map((note) => JSON.parse(text(note).split("\n")[1]).requestId),
+		["a", "b", "c"],
+	);
 });
 
 it("resolves the same task memo by native entry after overflow compaction removes an identical input", async (t) => {
@@ -150,22 +229,26 @@ it("resolves the same task memo by native entry after overflow compaction remove
 	const c = await f.add(route("c"), [same]);
 	await f.run([b, c]);
 	const after = await f.render((await f.conversation.context(context)).messages);
-	assert.deepEqual(notes(after).map((note) => JSON.parse(text(note).split("\n")[1]).requestId), ["b", "c"]);
+	assert.deepEqual(
+		notes(after).map((note) => JSON.parse(text(note).split("\n")[1]).requestId),
+		["b", "c"],
+	);
 });
 
-for (const replay of [true, false]) it(`drops a routed input's note after compaction leaves an identical unrouted input, replay=${replay}`, async (t) => {
-	const f = await fixture(t);
-	const same = user("Identical task");
-	const a = await f.add(route("a"), [same]);
-	const b = await f.add(undefined, [same]);
-	await f.run([a, b]);
-	const task = f.api();
-	assert.equal(notes(await f.render([same, same], task)).length, 1);
-	await overflowCompaction(f, b);
-	const current = (await f.conversation.context(context)).messages;
-	assert.equal(notes(await f.render(current, replay ? task : f.api())).length, 0);
-	assert.equal(notes(await f.render(current)).length, 0, "a new task does not recreate the compacted input's note");
-});
+for (const replay of [true, false])
+	it(`drops a routed input's note after compaction leaves an identical unrouted input, replay=${replay}`, async (t) => {
+		const f = await fixture(t);
+		const same = user("Identical task");
+		const a = await f.add(route("a"), [same]);
+		const b = await f.add(undefined, [same]);
+		await f.run([a, b]);
+		const task = f.api();
+		assert.equal(notes(await f.render([same, same], task)).length, 1);
+		await overflowCompaction(f, b);
+		const current = (await f.conversation.context(context)).messages;
+		assert.equal(notes(await f.render(current, replay ? task : f.api())).length, 0);
+		assert.equal(notes(await f.render(current)).length, 0, "a new task does not recreate the compacted input's note");
+	});
 
 it("keeps the unique-digest fast path while the noted prefix holds despite a changing guidance tail", async (t) => {
 	const f = await fixture(t);
@@ -174,7 +257,9 @@ it("keeps the unique-digest fast path while the noted prefix holds despite a cha
 	await f.run([a]);
 	const task = f.api();
 	assert.equal(notes(await f.render([first, user("Guidance one", 8)], task)).length, 1);
-	const read = t.mock.method(f.harness, "conversation", async () => { throw new Error("Unexpected context view read"); });
+	const read = t.mock.method(f.harness, "conversation", async () => {
+		throw new Error("Unexpected context view read");
+	});
 	assert.equal(notes(await f.render([first, user("Guidance two", 9)], task)).length, 1);
 	assert.equal(notes(await f.render([first, user("Guidance three", 10)])).length, 1);
 	assert.equal(read.mock.callCount(), 0);
@@ -195,28 +280,36 @@ it("uses native entry validation for the first request after host restart", asyn
 	assert.equal(read.mock.callCount(), 1);
 });
 
-for (const replay of [true, false]) it(`drops an old route after a byte-identical fixed-clock reset, replay=${replay}`, async (t) => {
-	t.mock.method(Date, "now", () => 123456);
-	const f = await fixture(t);
-	const same = user("Identical reset handoff", Date.now());
-	const a = await f.add(route("a"), [same]);
-	await f.run([a]);
-	const task = f.api();
-	assert.equal(notes(await f.render([same], task)).length, 1);
-	await f.harness.commit(async (tx) => {
-		delete (await tx.doc(LiveDoc, f.conversation.id)).run;
-		tx.settleSubmission(a, { status: "unanswered", reason: "aborted" });
-	}, context);
-	assert.ok(f.state.get(f.conversation.id), "ending the run retains continuity until replacement places");
-	const reset = await resetConversation(f.conversation, { requestId: "identical-reset", handoff: "Identical reset handoff" }, context);
-	assert.equal(reset.status, "placed");
-	assert.equal(f.state.get(f.conversation.id), undefined, "placed reset invalidates the conversation state");
-	const current = (await f.conversation.context(context)).messages;
-	const users = current.filter((message) => message.role === "user");
-	assert.equal(users.length, 1);
-	assert.ok(JSON.stringify(users[0]) === JSON.stringify(same), "the reset reproduces the noted input, including its timestamp");
-	assert.equal(notes(await f.render(current, replay ? task : f.api())).length, 0);
-});
+for (const replay of [true, false])
+	it(`drops an old route after a byte-identical fixed-clock reset, replay=${replay}`, async (t) => {
+		t.mock.method(Date, "now", () => 123456);
+		const f = await fixture(t);
+		const same = user("Identical reset handoff", Date.now());
+		const a = await f.add(route("a"), [same]);
+		await f.run([a]);
+		const task = f.api();
+		assert.equal(notes(await f.render([same], task)).length, 1);
+		await f.harness.commit(async (tx) => {
+			delete (await tx.doc(LiveDoc, f.conversation.id)).run;
+			tx.settleSubmission(a, { status: "unanswered", reason: "aborted" });
+		}, context);
+		assert.ok(f.state.get(f.conversation.id), "ending the run retains continuity until replacement places");
+		const reset = await resetConversation(
+			f.conversation,
+			{ requestId: "identical-reset", handoff: "Identical reset handoff" },
+			context,
+		);
+		assert.equal(reset.status, "placed");
+		assert.equal(f.state.get(f.conversation.id), undefined, "placed reset invalidates the conversation state");
+		const current = (await f.conversation.context(context)).messages;
+		const users = current.filter((message) => message.role === "user");
+		assert.equal(users.length, 1);
+		assert.ok(
+			JSON.stringify(users[0]) === JSON.stringify(same),
+			"the reset reproduces the noted input, including its timestamp",
+		);
+		assert.equal(notes(await f.render(current, replay ? task : f.api())).length, 0);
+	});
 
 it("invalidates route continuity when a queued reset places, not when it is requested", async (t) => {
 	t.mock.method(Date, "now", () => 123456);
@@ -226,7 +319,11 @@ it("invalidates route continuity when a queued reset places, not when it is requ
 	await f.run([a]);
 	const task = f.api();
 	await f.render([first], task);
-	const reset = await resetConversation(f.conversation, { requestId: "queued-reset", handoff: "Queued reset handoff" }, context);
+	const reset = await resetConversation(
+		f.conversation,
+		{ requestId: "queued-reset", handoff: "Queued reset handoff" },
+		context,
+	);
 	assert.equal(reset.status, "queued");
 	assert.ok(f.state.get(f.conversation.id), "a queued reset preserves the old context and its route state");
 	await f.harness.commit(async (tx) => {
@@ -253,7 +350,10 @@ it("invalidates route continuity when a context edit omits a noted input", async
 		delete (await tx.doc(LiveDoc, f.conversation.id)).run;
 		tx.settleSubmission(a, { status: "unanswered", reason: "aborted" });
 	}, context);
-	await f.conversation.submit({ type: "write", entry: { kind: "fixture.context-edit", edits: [{ target: input.entry, action: "omit" }] } }, context);
+	await f.conversation.submit(
+		{ type: "write", entry: { kind: "fixture.context-edit", edits: [{ target: input.entry, action: "omit" }] } },
+		context,
+	);
 	assert.equal(f.state.get(f.conversation.id), undefined);
 	const current = (await f.conversation.context(context)).messages;
 	assert.equal(current.filter((message) => message.role === "user").length, 1);
@@ -265,7 +365,9 @@ it("returns no change after an internal harness read fails", async (t) => {
 	const first = user("Task");
 	const a = await f.add(route("a"), [first]);
 	await f.run([a]);
-	t.mock.method(f.harness, "commit", async () => { throw new Error("Read unavailable"); });
+	t.mock.method(f.harness, "commit", async () => {
+		throw new Error("Read unavailable");
+	});
 	assert.ok(f.hook);
 	assert.equal(await f.hook({ messages: [first] }, f.api(), context), undefined);
 });
@@ -273,12 +375,17 @@ it("returns no change after an internal harness read fails", async (t) => {
 it("propagates abort errors instead of returning no change", async (t) => {
 	const f = await fixture(t);
 	const failure = new Error("Aborted read");
-	t.mock.method(f.harness, "commit", async () => { throw failure; });
+	t.mock.method(f.harness, "commit", async () => {
+		throw failure;
+	});
 	const controller = new AbortController();
 	controller.abort();
 	const selected = f.hook;
 	assert.ok(selected);
-	await assert.rejects(async () => selected({ messages: [user("Task")] }, f.api(), withAbortSignal(controller.signal, context)), (error) => error === failure);
+	await assert.rejects(
+		async () => selected({ messages: [user("Task")] }, f.api(), withAbortSignal(controller.signal, context)),
+		(error) => error === failure,
+	);
 });
 
 it("freezes task notes for retries even after route settlement", async (t) => {
@@ -318,42 +425,65 @@ it("drops absent notes on compaction and reconstructs only active routes after r
 	assert.equal(notes(await f.render([first])).length, 0, "an absent note does not resurrect after compaction");
 });
 
-for (const bound of ["count", "bytes"] as const) it(`bounds retained note ${bound} by dropping oldest settled notes without stopping generation`, async (t) => {
-	const state = new RequestRouteState();
-	const f = await fixture(t, state);
-	const first = user("Retained task");
-	const a = await f.add(route("a"), [first]);
-	const ids = await f.harness.commit(async (tx) => {
-		const routes = await tx.doc(RequestContextDoc, f.conversation.id);
-		const submissions: SubmissionId[] = [a];
-		for (let index = 0; index < REQUEST_NOTE_LIMIT - 1; index++) {
-			const suffix = String(index);
-			const request = bound === "count" ? route(`new-${index}`) : { requestId: "界".repeat(1024 - suffix.length) + suffix, requester: "界".repeat(256), replyTo: "界".repeat(256), origin: "model" as const };
-			routes.requests.push(request);
-			const entry = await tx.appendEntry(f.conversation.id, { kind: "pi.user", ...inputEntry("model", "requester"), model: [user(`Task ${index}`, index + 2)] });
-			submissions.push((await tx.createSubmission({ conversationId: f.conversation.id, requestId: request.requestId, type: "input", status: "placed", entry: entry.id })).id);
-		}
-		return submissions;
-	}, context);
-	await f.run(ids);
-	const initial = notes(await f.render((await f.conversation.context(context)).messages));
-	assert.equal(initial.length, REQUEST_NOTE_LIMIT, "active notes always survive");
-	await f.harness.commit((tx) => {
-		for (const id of ids.slice(1)) tx.settleSubmission(id, { status: "unanswered", reason: "aborted" });
-	}, context);
-	const current = await f.add(route("current"), [user("Current task", REQUEST_NOTE_LIMIT + 2)]);
-	await f.run([a, current]);
-	const after = notes(await f.render((await f.conversation.context(context)).messages));
-	const routeIds = after.map((note) => JSON.parse(text(note).split("\n")[1]).requestId as string);
-	assert.ok(routeIds.includes("a"), "the oldest active input survives");
-	assert.ok(routeIds.includes("current"), "the new active input survives");
-	const oldestSettled = JSON.parse(text(initial[1]).split("\n")[1]).requestId as string;
-	const newestSettled = JSON.parse(text(initial.at(-1) as Message).split("\n")[1]).requestId as string;
-	assert.ok(!routeIds.includes(oldestSettled), "the oldest settled input leaves first");
-	assert.ok(routeIds.includes(newestSettled), "newer settled inputs remain");
-	assert.ok(after.length <= REQUEST_NOTE_LIMIT);
-	assert.ok(Buffer.byteLength(JSON.stringify(state.get(f.conversation.id)?.notes)) <= REQUEST_NOTE_BYTES);
-});
+for (const bound of ["count", "bytes"] as const)
+	it(`bounds retained note ${bound} by dropping oldest settled notes without stopping generation`, async (t) => {
+		const state = new RequestRouteState();
+		const f = await fixture(t, state);
+		const first = user("Retained task");
+		const a = await f.add(route("a"), [first]);
+		const ids = await f.harness.commit(async (tx) => {
+			const routes = await tx.doc(RequestContextDoc, f.conversation.id);
+			const submissions: SubmissionId[] = [a];
+			for (let index = 0; index < REQUEST_NOTE_LIMIT - 1; index++) {
+				const suffix = String(index);
+				const request =
+					bound === "count"
+						? route(`new-${index}`)
+						: {
+								requestId: "界".repeat(1024 - suffix.length) + suffix,
+								requester: "界".repeat(256),
+								replyTo: "界".repeat(256),
+								origin: "model" as const,
+							};
+				routes.requests.push(request);
+				const entry = await tx.appendEntry(f.conversation.id, {
+					kind: "pi.user",
+					...inputEntry("model", "requester"),
+					model: [user(`Task ${index}`, index + 2)],
+				});
+				submissions.push(
+					(
+						await tx.createSubmission({
+							conversationId: f.conversation.id,
+							requestId: request.requestId,
+							type: "input",
+							status: "placed",
+							entry: entry.id,
+						})
+					).id,
+				);
+			}
+			return submissions;
+		}, context);
+		await f.run(ids);
+		const initial = notes(await f.render((await f.conversation.context(context)).messages));
+		assert.equal(initial.length, REQUEST_NOTE_LIMIT, "active notes always survive");
+		await f.harness.commit((tx) => {
+			for (const id of ids.slice(1)) tx.settleSubmission(id, { status: "unanswered", reason: "aborted" });
+		}, context);
+		const current = await f.add(route("current"), [user("Current task", REQUEST_NOTE_LIMIT + 2)]);
+		await f.run([a, current]);
+		const after = notes(await f.render((await f.conversation.context(context)).messages));
+		const routeIds = after.map((note) => JSON.parse(text(note).split("\n")[1]).requestId as string);
+		assert.ok(routeIds.includes("a"), "the oldest active input survives");
+		assert.ok(routeIds.includes("current"), "the new active input survives");
+		const oldestSettled = JSON.parse(text(initial[1]).split("\n")[1]).requestId as string;
+		const newestSettled = JSON.parse(text(initial.at(-1) as Message).split("\n")[1]).requestId as string;
+		assert.ok(!routeIds.includes(oldestSettled), "the oldest settled input leaves first");
+		assert.ok(routeIds.includes(newestSettled), "newer settled inputs remain");
+		assert.ok(after.length <= REQUEST_NOTE_LIMIT);
+		assert.ok(Buffer.byteLength(JSON.stringify(state.get(f.conversation.id)?.notes)) <= REQUEST_NOTE_BYTES);
+	});
 
 it("evicts the least recently used conversation and reconstructs its active route", async (t) => {
 	const state = new RequestRouteState(900);
@@ -385,9 +515,13 @@ it("the route hook adds no per-request bytes across tool rounds and settled runs
 	const runtime = await createTestRuntime();
 	const requests: Message[][] = [];
 	runtime.registerNativeProvider({
-		id: testModel.provider, name: "Route prefix fixture", getModels: () => [testModel],
+		id: testModel.provider,
+		name: "Route prefix fixture",
+		getModels: () => [testModel],
 		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
-		stream: () => { throw new Error("Unexpected stream"); },
+		stream: () => {
+			throw new Error("Unexpected stream");
+		},
 		streamSimple: (_model, input) => {
 			requests.push(structuredClone([...input.messages]));
 			return completed(requests.length === 1 ? toolCallMessage("gate") : answerMessage("Done"));
@@ -395,29 +529,54 @@ it("the route hook adds no per-request bytes across tool rounds and settled runs
 	});
 	const registry = fixtureRegistry([gateTool(Promise.resolve())]);
 	let harness!: Harness;
-	registry.install({ name: "independent-input-notice", hooks: [hook(GenerationTask, {
-		beforeRequest(request) {
-			const messages = request.messages.flatMap((message) => message.role === "user" ? [user("Independent notice", message.timestamp), message] : [message]);
-			return { messages };
-		},
-	})] });
-	registry.install({ name: "route-notes", sections: [requestContextSection(() => harness)], hooks: [hook(GenerationTask, requestContextHooks(() => harness))] });
+	registry.install({
+		name: "independent-input-notice",
+		hooks: [
+			hook(GenerationTask, {
+				beforeRequest(request) {
+					const messages = request.messages.flatMap((message) =>
+						message.role === "user" ? [user("Independent notice", message.timestamp), message] : [message],
+					);
+					return { messages };
+				},
+			}),
+		],
+	});
+	registry.install({
+		name: "route-notes",
+		sections: [requestContextSection(() => harness)],
+		hooks: [
+			hook(
+				GenerationTask,
+				requestContextHooks(() => harness),
+			),
+		],
+	});
 	harness = await Harness.open(new MemoryStorage(), { models: runtime, registry }, context);
 	t.after(() => harness.close(context));
-	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
+	const conversation = await harness.root(context, {
+		agent: { model: { provider: testModel.provider, modelId: testModel.id } },
+	});
 	for (const id of ["a", "b"]) {
 		await harness.commit((tx) => recordRequestContext(tx, conversation.id, route(id)), context);
 		const submission = await conversation.submit({ type: "input", requestId: id, content: `Task ${id}` }, context);
 		await submission.wait(context);
 	}
 	assert.equal(requests.length, 3);
-	assert.ok(JSON.stringify(requests[1].slice(0, requests[0].length)) === JSON.stringify(requests[0]), "the first provider request is an exact prefix");
-	assert.ok(JSON.stringify(requests[2].slice(0, requests[1].length)) === JSON.stringify(requests[1]), "the settled run remains an exact prefix");
+	assert.ok(
+		JSON.stringify(requests[1].slice(0, requests[0].length)) === JSON.stringify(requests[0]),
+		"the first provider request is an exact prefix",
+	);
+	assert.ok(
+		JSON.stringify(requests[2].slice(0, requests[1].length)) === JSON.stringify(requests[1]),
+		"the settled run remains an exact prefix",
+	);
 	assert.equal(notes(requests[0]).length, 1);
 	assert.equal(notes(requests[2]).length, 2);
 	for (const request of requests) {
 		for (let index = 0; index < request.length; index++) {
-			if (text(request[index]).startsWith("<agent-request-route ")) assert.match(text(request[index - 1]), /^Task [ab]$/u);
+			if (text(request[index]).startsWith("<agent-request-route "))
+				assert.match(text(request[index - 1]), /^Task [ab]$/u);
 		}
 	}
 });

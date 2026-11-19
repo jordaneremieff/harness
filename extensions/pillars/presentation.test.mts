@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defineTool, getMarkdownTheme, initTheme, type Theme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import {
+	defineTool,
+	getMarkdownTheme,
+	initTheme,
+	type Theme,
+	ToolExecutionComponent,
+} from "@earendil-works/pi-coding-agent";
 import { Markdown, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import type { AccessPage } from "./access.ts";
@@ -223,10 +229,15 @@ test("tool renderers name the call, hide result bodies by default, and expand on
 			.join("\n"),
 	);
 	assert.match(usageFailed, /pillars_usage: The frozen capture expired or was replaced.*Send \{\}/);
-	const thrown = usage.renderResult(
-		{ content: [{ type: "text", text: JSON.stringify(errorResponse("invalid_input")) }], details: undefined },
-		{ expanded: false, isPartial: false }, bareTheme, { isError: true },
-	).render(240).join("\n");
+	const thrown = usage
+		.renderResult(
+			{ content: [{ type: "text", text: JSON.stringify(errorResponse("invalid_input")) }], details: undefined },
+			{ expanded: false, isPartial: false },
+			bareTheme,
+			{ isError: true },
+		)
+		.render(240)
+		.join("\n");
 	assert.match(thrown, /invalid_input[\s\S]*Send \{\}/);
 });
 

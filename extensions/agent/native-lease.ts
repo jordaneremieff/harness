@@ -23,8 +23,13 @@ export function tryNativeWriterLease(path: string, signal?: AbortSignal): Native
 	if (process.platform !== "darwin") throw new Error("Native writer leases require a private local Darwin filesystem");
 	signal?.throwIfAborted();
 	let descriptor: number;
-	try { descriptor = openSync(path, constants.O_RDWR | constants.O_CREAT | DARWIN_O_EXLOCK | constants.O_NONBLOCK | constants.O_NOFOLLOW, 0o600); }
-	catch (error) {
+	try {
+		descriptor = openSync(
+			path,
+			constants.O_RDWR | constants.O_CREAT | DARWIN_O_EXLOCK | constants.O_NONBLOCK | constants.O_NOFOLLOW,
+			0o600,
+		);
+	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "EAGAIN") return { kind: "busy" };
 		throw error;
 	}
@@ -34,14 +39,21 @@ export function tryNativeWriterLease(path: string, signal?: AbortSignal): Native
 		checkFile(opened);
 		let closed = false;
 		const lease: NativeWriterLease = {
-			dev: opened.dev, ino: opened.ino, descriptor,
+			dev: opened.dev,
+			ino: opened.ino,
+			descriptor,
 			assertNamed() {
 				if (closed) throw new Error("Native writer lease is closed");
 				const held = fstatSync(descriptor);
 				const named = lstatSync(path);
 				checkFile(held);
 				checkFile(named);
-				if (held.dev !== opened.dev || held.ino !== opened.ino || named.dev !== opened.dev || named.ino !== opened.ino) {
+				if (
+					held.dev !== opened.dev ||
+					held.ino !== opened.ino ||
+					named.dev !== opened.dev ||
+					named.ino !== opened.ino
+				) {
 					throw new Error("Native writer lease pathname changed; ownership is unavailable");
 				}
 			},

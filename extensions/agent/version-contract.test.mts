@@ -2,28 +2,54 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { AgentConversationSummarySchema, StatusOutputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
+import {
+	AgentConversationSummarySchema,
+	StatusOutputSchema,
+	StatusToolOutputSchema,
+	structuredObservation,
+} from "./observation-schema.ts";
 import { page as rosterPage } from "./dashboard-test-fixture.mts";
 import { buildStatusOverview } from "./status-overview.ts";
-import { HOST_CONTRACT, contractRefusal, operationContractMismatch, parseOperationContract, parseRuntimeContract, type RuntimeContract } from "./version-contract.ts";
+import {
+	HOST_CONTRACT,
+	contractRefusal,
+	operationContractMismatch,
+	parseOperationContract,
+	parseRuntimeContract,
+	type RuntimeContract,
+} from "./version-contract.ts";
 
 it("implements the operation identities and schema hashes published in the host contract", () => {
 	const docs = readFileSync(new URL("../../docs/agent-host-contract.md", import.meta.url), "utf8");
 	assert.ok(Buffer.byteLength(docs) <= 512 * 1024, "Documented contract byte bound");
-	const common = docs.slice(docs.indexOf("For every member in the following set"), docs.indexOf("Overrides and remaining members:"));
+	const common = docs.slice(
+		docs.indexOf("For every member in the following set"),
+		docs.indexOf("Overrides and remaining members:"),
+	);
 	const defaults = /```text\n([\s\S]*?)\n```/.exec(common);
 	assert.ok(defaults);
 	const documented: Record<string, RuntimeContract["operations"][string]> = {};
-	for (const member of defaults[1].trim().split(/\s+/u)) documented[member] = { request: `${member}/1.0.0`, response: `${member}/1.0.0` };
+	for (const member of defaults[1].trim().split(/\s+/u))
+		documented[member] = { request: `${member}/1.0.0`, response: `${member}/1.0.0` };
 	const table = docs.slice(docs.indexOf("| Member | Request | Response | Durable |"), docs.indexOf("Each `H-*`"));
-	for (const row of table.split("\n").filter(line => /^\| [a-z-]+ \|/u.test(line))) {
-		const cells = row.split("|").map(cell => cell.trim());
+	for (const row of table.split("\n").filter((line) => /^\| [a-z-]+ \|/u.test(line))) {
+		const cells = row.split("|").map((cell) => cell.trim());
 		const response = cells[3];
-		const hash = response.startsWith("H-") ? docs.split("\n").find(line => line.startsWith(`${response} `))?.trim().split(/\s+/u)[1] : response;
+		const hash = response.startsWith("H-")
+			? docs
+					.split("\n")
+					.find((line) => line.startsWith(`${response} `))
+					?.trim()
+					.split(/\s+/u)[1]
+			: response;
 		assert.ok(hash, `Missing documented response: ${response}`);
 		if (response.startsWith("H-")) assert.match(hash, /^[a-f0-9]{64}$/u);
 		assert.ok(cells[4] === "D" || cells[4] === "absent");
-		documented[cells[1]] = { request: cells[2], response: hash, ...(cells[4] === "D" ? { durable: HOST_CONTRACT.upstream.durable } : {}) };
+		documented[cells[1]] = {
+			request: cells[2],
+			response: hash,
+			...(cells[4] === "D" ? { durable: HOST_CONTRACT.upstream.durable } : {}),
+		};
 	}
 	assert.deepEqual(HOST_CONTRACT.operations, documented);
 });
@@ -36,28 +62,109 @@ it("keeps tool-only overview fields local without changing the published host st
 	assert.equal(hash(StatusOutputSchema), published);
 	assert.equal(HOST_CONTRACT.operations.status.response, hash(StatusOutputSchema));
 	const overview = buildStatusOverview(rosterPage([]), [], []);
-	const inventory = { candidates: 3, inspected: 3, unreadable: 0, unknownClaims: 0, returned: 2, remaining: 1, priorityRemaining: 1,
-		remainingRows: 2, priorityRemainingRows: 2, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 2 };
-	const local = { ...overview, coverage: { ...overview.coverage, inventory, omittedPriorityRows: 2, omittedPriorityRecords: 1, omittedOpenWorkRows: 1 } };
+	const inventory = {
+		candidates: 3,
+		inspected: 3,
+		unreadable: 0,
+		unknownClaims: 0,
+		returned: 2,
+		remaining: 1,
+		priorityRemaining: 1,
+		remainingRows: 2,
+		priorityRemainingRows: 2,
+		recordByteLimit: 32768,
+		claimByteLimit: 16384,
+		outputLimit: 2,
+	};
+	const local = {
+		...overview,
+		coverage: {
+			...overview.coverage,
+			inventory,
+			omittedPriorityRows: 2,
+			omittedPriorityRecords: 1,
+			omittedOpenWorkRows: 1,
+		},
+	};
 	assert.deepEqual(structuredObservation(StatusToolOutputSchema, local), local);
-	const { inventory: _inventory, omittedPriorityRows: _rows, omittedPriorityRecords: _records, omittedOpenWorkRows: _openWork, ...wireCoverage } = overview.coverage;
-	const { unavailable: _unavailable, summarizedUnavailable: _summarizedUnavailable, ...wireSessions } = overview.summary.sessions;
+	const {
+		inventory: _inventory,
+		omittedPriorityRows: _rows,
+		omittedPriorityRecords: _records,
+		omittedOpenWorkRows: _openWork,
+		...wireCoverage
+	} = overview.coverage;
+	const {
+		unavailable: _unavailable,
+		summarizedUnavailable: _summarizedUnavailable,
+		...wireSessions
+	} = overview.summary.sessions;
 	// This is a declared host-schema fixture, not output from a host producer.
 	const wire = { ...overview, summary: { ...overview.summary, sessions: wireSessions }, coverage: wireCoverage };
 	assert.deepEqual(structuredObservation(StatusOutputSchema, wire), wire);
 	for (const [field, value] of Object.entries({ unavailable: 0, summarizedUnavailable: 0 })) {
-		assert.throws(() => structuredObservation(StatusOutputSchema, { ...wire, summary: { ...wire.summary, sessions: { ...wireSessions, [field]: value } } }), /does not match its schema/u);
-		assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...local, summary: { ...local.summary, sessions: { ...local.summary.sessions, [field]: "invalid" } } }), /does not match its schema/u);
+		assert.throws(
+			() =>
+				structuredObservation(StatusOutputSchema, {
+					...wire,
+					summary: { ...wire.summary, sessions: { ...wireSessions, [field]: value } },
+				}),
+			/does not match its schema/u,
+		);
+		assert.throws(
+			() =>
+				structuredObservation(StatusToolOutputSchema, {
+					...local,
+					summary: { ...local.summary, sessions: { ...local.summary.sessions, [field]: "invalid" } },
+				}),
+			/does not match its schema/u,
+		);
 	}
-	for (const [field, value] of Object.entries({ inventory, omittedPriorityRows: 2, omittedPriorityRecords: 1, omittedOpenWorkRows: 1 })) {
-		assert.throws(() => structuredObservation(StatusOutputSchema, { ...wire, coverage: { ...wireCoverage, [field]: value } }), /does not match its schema/u);
-		assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...local, coverage: { ...local.coverage, [field]: "invalid" } }), /does not match its schema/u);
+	for (const [field, value] of Object.entries({
+		inventory,
+		omittedPriorityRows: 2,
+		omittedPriorityRecords: 1,
+		omittedOpenWorkRows: 1,
+	})) {
+		assert.throws(
+			() => structuredObservation(StatusOutputSchema, { ...wire, coverage: { ...wireCoverage, [field]: value } }),
+			/does not match its schema/u,
+		);
+		assert.throws(
+			() =>
+				structuredObservation(StatusToolOutputSchema, {
+					...local,
+					coverage: { ...local.coverage, [field]: "invalid" },
+				}),
+			/does not match its schema/u,
+		);
 	}
-	assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...local, coverage: { ...local.coverage, inventory: { ...inventory, inspected: -1 } } }), /does not match its schema/u);
-	assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...local, coverage: { ...local.coverage, unexpected: true } }), /does not match its schema/u);
+	assert.throws(
+		() =>
+			structuredObservation(StatusToolOutputSchema, {
+				...local,
+				coverage: { ...local.coverage, inventory: { ...inventory, inspected: -1 } },
+			}),
+		/does not match its schema/u,
+	);
+	assert.throws(
+		() =>
+			structuredObservation(StatusToolOutputSchema, { ...local, coverage: { ...local.coverage, unexpected: true } }),
+		/does not match its schema/u,
+	);
 	assert.equal(hash(StatusOutputSchema), published, "local output validation does not alter the wire schema");
-	assert.equal(hash(AgentConversationSummarySchema), /^H-dashboard\s+([a-f0-9]{64})$/mu.exec(docs)?.[1], "the tool overview row does not alter the roster identity");
-	assert.equal(contractRefusal("status", { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, status: { ...HOST_CONTRACT.operations.status, response: published } } }), undefined);
+	assert.equal(
+		hash(AgentConversationSummarySchema),
+		/^H-dashboard\s+([a-f0-9]{64})$/mu.exec(docs)?.[1],
+		"the tool overview row does not alter the roster identity",
+	);
+	assert.equal(
+		contractRefusal("status", {
+			...HOST_CONTRACT,
+			operations: { ...HOST_CONTRACT.operations, status: { ...HOST_CONTRACT.operations.status, response: published } },
+		}),
+		undefined,
+	);
 });
 
 it("refuses mismatched self-owned rewind and timer request contracts in both directions", () => {
@@ -78,11 +185,28 @@ it("refuses mismatched self-owned rewind and timer request contracts in both dir
 
 it("refuses a peer without the delivered-result request or the resolved timer-cancel identity", () => {
 	assert.deepEqual(HOST_CONTRACT.operations.submit, { request: "submit/1.7.0", response: "submit/1.4.0" });
-	assert.deepEqual(HOST_CONTRACT.operations["timer-cancel"], { request: "timer-cancel/1.0.0", response: "timer-cancel/1.1.0" });
-	const earlier = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, submit: { ...HOST_CONTRACT.operations.submit, request: "submit/1.4.0" }, "timer-cancel": { request: "timer-cancel/1.0.0", response: "timer-cancel/1.0.0" } } };
-	assert.match(contractRefusal("submit", earlier)?.message ?? "", /submit request contract submit\/1\.4\.0 differs from submit\/1\.7\.0/u);
-	assert.match(contractRefusal("timer-cancel", earlier)?.message ?? "", /timer-cancel response contract timer-cancel\/1\.0\.0 differs from timer-cancel\/1\.1\.0/u);
-	for (const name of Object.keys(HOST_CONTRACT.operations)) if (name !== "submit" && name !== "timer-cancel") assert.equal(contractRefusal(name, earlier), undefined, name);
+	assert.deepEqual(HOST_CONTRACT.operations["timer-cancel"], {
+		request: "timer-cancel/1.0.0",
+		response: "timer-cancel/1.1.0",
+	});
+	const earlier = {
+		...HOST_CONTRACT,
+		operations: {
+			...HOST_CONTRACT.operations,
+			submit: { ...HOST_CONTRACT.operations.submit, request: "submit/1.4.0" },
+			"timer-cancel": { request: "timer-cancel/1.0.0", response: "timer-cancel/1.0.0" },
+		},
+	};
+	assert.match(
+		contractRefusal("submit", earlier)?.message ?? "",
+		/submit request contract submit\/1\.4\.0 differs from submit\/1\.7\.0/u,
+	);
+	assert.match(
+		contractRefusal("timer-cancel", earlier)?.message ?? "",
+		/timer-cancel response contract timer-cancel\/1\.0\.0 differs from timer-cancel\/1\.1\.0/u,
+	);
+	for (const name of Object.keys(HOST_CONTRACT.operations))
+		if (name !== "submit" && name !== "timer-cancel") assert.equal(contractRefusal(name, earlier), undefined, name);
 });
 
 it("keeps abort compatible and refuses release when either peer lacks it", () => {
@@ -93,7 +217,10 @@ it("keeps abort compatible and refuses release when either peer lacks it", () =>
 	assert.match(refusal, /started on agent code without release support.*does not advertise release/u);
 	assert.match(refusal, /active work and result deliveries finish.*SIGTERM.*agent_attach/u);
 	assert.doesNotMatch(refusal, /This Pi uses agent release|Restart the caller|let an idle host retire/u);
-	assert.match(operationContractMismatch("release", HOST_CONTRACT.operations.release, oldRuntime) ?? "", /no current contract/u);
+	assert.match(
+		operationContractMismatch("release", HOST_CONTRACT.operations.release, oldRuntime) ?? "",
+		/no current contract/u,
+	);
 	assert.equal(contractRefusal("abort", oldRuntime), undefined);
 	assert.equal(operationContractMismatch("abort", HOST_CONTRACT.operations.abort, oldRuntime), undefined);
 });
@@ -111,34 +238,71 @@ it("advertises actual upstream releases separately from current operation contra
 });
 
 it("refuses only recovery-state for a peer without the active-delivery response", () => {
-	assert.deepEqual(HOST_CONTRACT.operations["recovery-state"], { request: "recovery-state/1.0.0", response: "recovery-state/1.1.0" });
-	const peer = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, "recovery-state": { request: "recovery-state/1.0.0", response: "recovery-state/1.0.0" } } };
+	assert.deepEqual(HOST_CONTRACT.operations["recovery-state"], {
+		request: "recovery-state/1.0.0",
+		response: "recovery-state/1.1.0",
+	});
+	const peer = {
+		...HOST_CONTRACT,
+		operations: {
+			...HOST_CONTRACT.operations,
+			"recovery-state": { request: "recovery-state/1.0.0", response: "recovery-state/1.0.0" },
+		},
+	};
 	assert.match(contractRefusal("recovery-state", peer)?.message ?? "", /response contract/u);
 	assert.equal(contractRefusal("submit", peer), undefined);
 	assert.equal(contractRefusal("receipts", peer), undefined);
 });
 
 it("refuses only thread read and mutation for a peer without forward reads and participation declarations", () => {
-	assert.deepEqual(HOST_CONTRACT.operations["collaboration-list"], { request: "collaboration-list/1.0.0", response: "collaboration-list/1.0.0" });
-	assert.deepEqual(HOST_CONTRACT.operations["collaboration-read"], { request: "collaboration-read/1.1.0", response: "collaboration-read/2.0.0" });
-	assert.deepEqual(HOST_CONTRACT.operations["collaboration-mutate"], { request: "collaboration-mutate/2.0.0", response: "collaboration-mutate/1.0.0" });
-	for (const [method, side] of [["collaboration-read", "request"], ["collaboration-read", "response"], ["collaboration-mutate", "request"]] as const) {
+	assert.deepEqual(HOST_CONTRACT.operations["collaboration-list"], {
+		request: "collaboration-list/1.0.0",
+		response: "collaboration-list/1.0.0",
+	});
+	assert.deepEqual(HOST_CONTRACT.operations["collaboration-read"], {
+		request: "collaboration-read/1.1.0",
+		response: "collaboration-read/2.0.0",
+	});
+	assert.deepEqual(HOST_CONTRACT.operations["collaboration-mutate"], {
+		request: "collaboration-mutate/2.0.0",
+		response: "collaboration-mutate/1.0.0",
+	});
+	for (const [method, side] of [
+		["collaboration-read", "request"],
+		["collaboration-read", "response"],
+		["collaboration-mutate", "request"],
+	] as const) {
 		const current = HOST_CONTRACT.operations[method];
-		const peer = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, [method]: { ...current, [side]: `${method}/1.0.0` } } };
+		const peer = {
+			...HOST_CONTRACT,
+			operations: { ...HOST_CONTRACT.operations, [method]: { ...current, [side]: `${method}/1.0.0` } },
+		};
 		const mismatch = `${method} ${side} contract ${method}/1.0.0 differs from ${current[side]}.`;
 		assert.equal(operationContractMismatch(method, peer.operations[method]), mismatch);
 		assert.ok(contractRefusal(method, peer)?.message.startsWith(`${mismatch} This Pi uses agent release`));
-		assert.equal(operationContractMismatch(method, current, peer), `${method} ${side} contract ${current[side]} differs from ${method}/1.0.0.`);
-		for (const name of Object.keys(HOST_CONTRACT.operations)) if (name !== method) assert.equal(contractRefusal(name, peer), undefined, name);
+		assert.equal(
+			operationContractMismatch(method, current, peer),
+			`${method} ${side} contract ${current[side]} differs from ${method}/1.0.0.`,
+		);
+		for (const name of Object.keys(HOST_CONTRACT.operations))
+			if (name !== method) assert.equal(contractRefusal(name, peer), undefined, name);
 	}
 	const peer = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations } };
-	for (const method of ["collaboration-read", "collaboration-mutate"]) peer.operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
-	assert.deepEqual(Object.keys(HOST_CONTRACT.operations).filter(name => contractRefusal(name, peer) !== undefined), ["collaboration-read", "collaboration-mutate"]);
+	for (const method of ["collaboration-read", "collaboration-mutate"])
+		peer.operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
+	assert.deepEqual(
+		Object.keys(HOST_CONTRACT.operations).filter((name) => contractRefusal(name, peer) !== undefined),
+		["collaboration-read", "collaboration-mutate"],
+	);
 	assert.equal(contractRefusal("collaboration-list", peer), undefined);
 });
 
 it("accepts unchanged operations despite added operations and different source releases", () => {
-	const peer: RuntimeContract = { ...HOST_CONTRACT, release: "8.0.0", operations: { ...HOST_CONTRACT.operations, extra: { request: "extra/1.0.0", response: "extra/1.0.0" } } };
+	const peer: RuntimeContract = {
+		...HOST_CONTRACT,
+		release: "8.0.0",
+		operations: { ...HOST_CONTRACT.operations, extra: { request: "extra/1.0.0", response: "extra/1.0.0" } },
+	};
 	assert.equal(contractRefusal("submit", peer), undefined);
 	assert.equal(contractRefusal("status", peer), undefined);
 	assert.equal(operationContractMismatch("close", peer.operations.close), undefined);
@@ -146,28 +310,63 @@ it("accepts unchanged operations despite added operations and different source r
 
 it("isolates missing operations, changed requests, changed responses, and native upstream mismatches", () => {
 	assert.match(operationContractMismatch("submit", undefined) ?? "", /does not advertise submit/u);
-	for (const method of ["constructor", "__proto__", "unknown"]) assert.match(contractRefusal(method, HOST_CONTRACT)?.message ?? "", /no current contract/u);
-	assert.match(operationContractMismatch("submit", { ...HOST_CONTRACT.operations.submit, request: "submit/2.0.0" }) ?? "", /request contract/u);
-	assert.match(operationContractMismatch("status", { ...HOST_CONTRACT.operations.status, response: "other" }) ?? "", /response contract/u);
-	assert.match(operationContractMismatch("status", { ...HOST_CONTRACT.operations.status, durable: "9.0.0" }) ?? "", /requires Pi Durable/u);
-	const peer = { ...HOST_CONTRACT, upstream: { codingAgent: "9.0.0", durable: "9.0.0" }, operations: { ...HOST_CONTRACT.operations, status: { ...HOST_CONTRACT.operations.status, durable: "9.0.0" } } };
-	assert.equal(contractRefusal("submit", peer), undefined, "a normalized harness operation does not assume a native ABI");
+	for (const method of ["constructor", "__proto__", "unknown"])
+		assert.match(contractRefusal(method, HOST_CONTRACT)?.message ?? "", /no current contract/u);
+	assert.match(
+		operationContractMismatch("submit", { ...HOST_CONTRACT.operations.submit, request: "submit/2.0.0" }) ?? "",
+		/request contract/u,
+	);
+	assert.match(
+		operationContractMismatch("status", { ...HOST_CONTRACT.operations.status, response: "other" }) ?? "",
+		/response contract/u,
+	);
+	assert.match(
+		operationContractMismatch("status", { ...HOST_CONTRACT.operations.status, durable: "9.0.0" }) ?? "",
+		/requires Pi Durable/u,
+	);
+	const peer = {
+		...HOST_CONTRACT,
+		upstream: { codingAgent: "9.0.0", durable: "9.0.0" },
+		operations: { ...HOST_CONTRACT.operations, status: { ...HOST_CONTRACT.operations.status, durable: "9.0.0" } },
+	};
+	assert.equal(
+		contractRefusal("submit", peer),
+		undefined,
+		"a normalized harness operation does not assume a native ABI",
+	);
 	const refusal = contractRefusal("status", peer);
 	assert.match(refusal?.message ?? "", /Pi Durable.*Restart.*Active work stays intact/u);
 });
 
 it("requires current host APIs without pinning newer releases", () => {
 	assert.deepEqual(HOST_CONTRACT.requires, { codingAgent: "1.5.0", durable: "1.5.1" });
-	for (const [upstream, floor] of [["codingAgent", "1.5.0"], ["durable", "1.5.1"]] as const) {
-		for (const version of ["0.99.9", "1.0.0", "1.3.0", "1.4.0", "1.4.99", `${floor}-alpha`, `${floor}-rc.1+build`, ...(upstream === "durable" ? ["1.5.0", "1.5.0+build"] : [])]) {
-			assert.throws(() => parseRuntimeContract({ ...HOST_CONTRACT, upstream: { ...HOST_CONTRACT.upstream, [upstream]: version } }), /requirements are unmet: Pi >=1\.5\.0, Durable >=1\.5\.1.*Update/u, `${upstream} ${version}`);
+	for (const [upstream, floor] of [
+		["codingAgent", "1.5.0"],
+		["durable", "1.5.1"],
+	] as const) {
+		for (const version of [
+			"0.99.9",
+			"1.0.0",
+			"1.3.0",
+			"1.4.0",
+			"1.4.99",
+			`${floor}-alpha`,
+			`${floor}-rc.1+build`,
+			...(upstream === "durable" ? ["1.5.0", "1.5.0+build"] : []),
+		]) {
+			assert.throws(
+				() => parseRuntimeContract({ ...HOST_CONTRACT, upstream: { ...HOST_CONTRACT.upstream, [upstream]: version } }),
+				/requirements are unmet: Pi >=1\.5\.0, Durable >=1\.5\.1.*Update/u,
+				`${upstream} ${version}`,
+			);
 		}
 		for (const version of [floor, `${floor}+build`, "1.5.2", "1.10.0", "2.0.0"]) {
 			const peer = { ...HOST_CONTRACT, upstream: { ...HOST_CONTRACT.upstream, [upstream]: version } };
 			const parsed = parseRuntimeContract(peer);
 			assert.equal(parsed.upstream[upstream], version);
 			assert.deepEqual(parsed.operations, HOST_CONTRACT.operations);
-			for (const method of Object.keys(HOST_CONTRACT.operations)) assert.equal(contractRefusal(method, parsed), undefined);
+			for (const method of Object.keys(HOST_CONTRACT.operations))
+				assert.equal(contractRefusal(method, parsed), undefined);
 		}
 	}
 });
@@ -179,7 +378,14 @@ it("keeps necessary upstream API floors separate from wildcard package declarati
 });
 
 it("refuses malformed descriptors instead of assuming a retired contract", () => {
-	for (const value of [undefined, 4, { version: 4 }, { ...HOST_CONTRACT, format: "unknown" }, { ...HOST_CONTRACT, operations: { "bad name": HOST_CONTRACT.operations.submit } }]) assert.throws(() => parseRuntimeContract(value));
+	for (const value of [
+		undefined,
+		4,
+		{ version: 4 },
+		{ ...HOST_CONTRACT, format: "unknown" },
+		{ ...HOST_CONTRACT, operations: { "bad name": HOST_CONTRACT.operations.submit } },
+	])
+		assert.throws(() => parseRuntimeContract(value));
 	assert.throws(() => parseOperationContract({ request: "submit/1.0.0", response: "submit/1.0.0", alias: "old" }));
 	assert.throws(() => parseOperationContract({ request: "", response: "x" }));
 	assert.throws(() => parseOperationContract({ request: "x", response: "y", durable: "*" }));

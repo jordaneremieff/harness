@@ -1,5 +1,15 @@
 import { createHash } from "node:crypto";
-import { BOUNDARY_LINES, MODEL_CATALOG_BOUNDARY, MODEL_SCOPE_BOUNDARY, boundResult, fullRecordQuery, isoTime, oneLine, type Block, type Outcome } from "./format.ts";
+import {
+	BOUNDARY_LINES,
+	MODEL_CATALOG_BOUNDARY,
+	MODEL_SCOPE_BOUNDARY,
+	boundResult,
+	fullRecordQuery,
+	isoTime,
+	oneLine,
+	type Block,
+	type Outcome,
+} from "./format.ts";
 import type { ModelRecord, ModelSnapshot } from "./models.ts";
 import { catalogHealth, HEALTH_BOUNDARIES, healthCoverage, type HealthFinding } from "./health.ts";
 import { encodeCursor, matchesSearch, paginate, type Page, type Query } from "./query.ts";
@@ -64,14 +74,18 @@ function discoveryFingerprint(
 				records: records.map(({ at: _at, ...record }) => record),
 				unavailable,
 				partial,
-				contextCoverage: modelQuery ? undefined : {
-					overflowRecords: observation?.overflowRecords,
-					overflowBytes: observation?.overflowBytes,
-				},
+				contextCoverage: modelQuery
+					? undefined
+					: {
+							overflowRecords: observation?.overflowRecords,
+							overflowBytes: observation?.overflowBytes,
+						},
 				scopeConfigured: models?.scopeConfigured,
 				scopeOrder: models?.scopeOrder ?? null,
-				settingsScope: models?.settingsScope === undefined ? null
-					: { status: models.settingsScope.status, patterns: models.settingsScope.patterns },
+				settingsScope:
+					models?.settingsScope === undefined
+						? null
+						: { status: models.settingsScope.status, patterns: models.settingsScope.patterns },
 			}),
 		)
 		.digest("hex")
@@ -93,9 +107,36 @@ function compactModelQuery(query: Query): boolean {
 	return query.kind === "model" && !fullRecordQuery(query) && !query.health;
 }
 
-const MODEL_LIST_FIELDS = ["displayName", "metadataAvailable", "input", "selected", "catalog", "available", "configuredAuth", "oauth", "subscriptionRecognized", "authSource", "catalogCost", "catalogCostHasTiers", "inScope", "scopeIndex", "providerHasScopedModels", "providerNamedInSettings", "reasoning", "contextWindow", "supportedThinkingLevels", "currentThinkingLevel"];
+const MODEL_LIST_FIELDS = [
+	"displayName",
+	"metadataAvailable",
+	"input",
+	"selected",
+	"catalog",
+	"available",
+	"configuredAuth",
+	"oauth",
+	"subscriptionRecognized",
+	"authSource",
+	"catalogCost",
+	"catalogCostHasTiers",
+	"inScope",
+	"scopeIndex",
+	"providerHasScopedModels",
+	"providerNamedInSettings",
+	"reasoning",
+	"contextWindow",
+	"supportedThinkingLevels",
+	"currentThinkingLevel",
+];
 
-const MODEL_LIST_LABELS: Record<string, string> = { subscriptionRecognized: "subscription", catalogCost: "price", catalogCostHasTiers: "tiers", providerHasScopedModels: "providerScoped", providerNamedInSettings: "providerSettings" };
+const MODEL_LIST_LABELS: Record<string, string> = {
+	subscriptionRecognized: "subscription",
+	catalogCost: "price",
+	catalogCostHasTiers: "tiers",
+	providerHasScopedModels: "providerScoped",
+	providerNamedInSettings: "providerSettings",
+};
 
 function compactModelValue(key: string, value: unknown): string {
 	if (key !== "catalogCost" || value === null) return oneLine(JSON.stringify(value));
@@ -110,27 +151,40 @@ function compactModelRecord(record: Record<string, unknown>): Record<string, unk
 	return { ...record, catalogCost: rates };
 }
 
-function discoveryBlocks(records: Record<string, unknown>[], stale: boolean, compact: boolean, exact: boolean): Block[] {
+function discoveryBlocks(
+	records: Record<string, unknown>[],
+	stale: boolean,
+	compact: boolean,
+	exact: boolean,
+): Block[] {
 	if (stale) return [];
 	return records.map((source) => {
 		const record = source.kind === "model" && !exact ? compactModelRecord(source) : source;
 		return {
-			lines: compact ? [
-				`MODEL ${oneLine(String(record.name))}`,
-				`  ${MODEL_LIST_FIELDS.filter((key) => key in record).map((key) => `${MODEL_LIST_LABELS[key] ?? key}=${compactModelValue(key, record[key])}`).join(" ")}`,
-				`  evidence: ${oneLine(String(record.evidence))} at ${isoTime(Number(record.at))}`,
-			] : [
-				"",
-				`${String(record.kind).toUpperCase()} ${oneLine(String(record.name))}`,
-				...Object.entries(record)
-					.filter(([key]) => key !== "name" && key !== "kind" && key !== "findings")
-					.map(([key, value]) => `  ${key}: ${oneLine(JSON.stringify(value))}`),
-				...((record.findings ?? []) as HealthFinding[]).flatMap((finding) => [
-					`  ${finding.code}: ${finding.reason}`,
-					`    boundary: ${finding.boundary}`,
-					...(finding.fields ? [`    conflicting fields: ${finding.fields.join(", ")} | duplicate records: ${finding.duplicateRecords}`] : []),
-				]),
-			],
+			lines: compact
+				? [
+						`MODEL ${oneLine(String(record.name))}`,
+						`  ${MODEL_LIST_FIELDS.filter((key) => key in record)
+							.map((key) => `${MODEL_LIST_LABELS[key] ?? key}=${compactModelValue(key, record[key])}`)
+							.join(" ")}`,
+						`  evidence: ${oneLine(String(record.evidence))} at ${isoTime(Number(record.at))}`,
+					]
+				: [
+						"",
+						`${String(record.kind).toUpperCase()} ${oneLine(String(record.name))}`,
+						...Object.entries(record)
+							.filter(([key]) => key !== "name" && key !== "kind" && key !== "findings")
+							.map(([key, value]) => `  ${key}: ${oneLine(JSON.stringify(value))}`),
+						...((record.findings ?? []) as HealthFinding[]).flatMap((finding) => [
+							`  ${finding.code}: ${finding.reason}`,
+							`    boundary: ${finding.boundary}`,
+							...(finding.fields
+								? [
+										`    conflicting fields: ${finding.fields.join(", ")} | duplicate records: ${finding.duplicateRecords}`,
+									]
+								: []),
+						]),
+					],
 			detail: record,
 		};
 	});
@@ -167,11 +221,16 @@ function discoveryHeader(
 			MODEL_SCOPE_BOUNDARY,
 			"price: catalog USD/Mtok, input/output/cacheRead/cacheWrite; not billed spend. subscription means Pi-recognized, not inferred from OAuth; false does not imply metered billing. tiers marks price tiers; exact model lookup returns them.",
 			...settingsScopeLines(request.models),
-			...(compactModelQuery(request.query) ? ["Compact models; use kind:model + exact provider/id name for full metadata."] : []),
+			...(compactModelQuery(request.query)
+				? ["Compact models; use kind:model + exact provider/id name for full metadata."]
+				: []),
 		);
 		if (request.query.health) {
 			lines.push(...HEALTH_BOUNDARIES);
-			if (!stale && !unavailable && !partial) lines.push("No flagged records means no supported signal matched the requested filters, not that the catalog is healthy.");
+			if (!stale && !unavailable && !partial)
+				lines.push(
+					"No flagged records means no supported signal matched the requested filters, not that the catalog is healthy.",
+				);
 		}
 	} else {
 		lines.push(
@@ -224,7 +283,8 @@ export function discoveryPage(request: DiscoveryRequest) {
 	const { query, models, observation } = request;
 	const modelQuery = query.kind === "model";
 	const unavailable = discoveryUnavailable(query, models, observation, modelQuery);
-	const partial = discoveryPartial(models, observation, modelQuery) ||
+	const partial =
+		discoveryPartial(models, observation, modelQuery) ||
 		Boolean(query.health && models?.records.some((record) => record.selected && record.configuredAuth === null));
 	const all = discoveryRecords(models, observation, modelQuery);
 	const fingerprint = discoveryFingerprint(all, modelQuery, unavailable, partial, models, observation);
@@ -237,16 +297,36 @@ export function discoveryPage(request: DiscoveryRequest) {
 	const result = boundResult({
 		header: discoveryHeader(outcome, request, modelQuery, observation, stale, unavailable, partial),
 		blocks: discoveryBlocks(page.items, stale, compactModelQuery(query), fullRecordQuery(query)),
-		page: stale ? undefined : { total: selected.length, offset: page.offset,
-			unavailableReason: unavailable || partial ? "The source coverage is incomplete or unavailable; no safe continuation is available." : undefined },
+		page: stale
+			? undefined
+			: {
+					total: selected.length,
+					offset: page.offset,
+					unavailableReason:
+						unavailable || partial
+							? "The source coverage is incomplete or unavailable; no safe continuation is available."
+							: undefined,
+				},
 		footer: ["", ...BOUNDARY_LINES],
 		details: {
 			...discoveryDetails(outcome, query, selected, page, modelQuery, models, observation, partial),
-			...(query.health ? { health: { ...healthCoverage(models), matchedRecords: matched.length,
-				unflaggedRecords: matched.length - selected.length, boundaries: HEALTH_BOUNDARIES } } : {}),
+			...(query.health
+				? {
+						health: {
+							...healthCoverage(models),
+							matchedRecords: matched.length,
+							unflaggedRecords: matched.length - selected.length,
+							boundaries: HEALTH_BOUNDARIES,
+						},
+					}
+				: {}),
 		},
-		...(query.health ? { pageSummary: (kept: number) =>
-			`flagged records: ${kept} shown of ${selected.length} | matched records: ${matched.length} | unflagged records: ${matched.length - selected.length}` } : {}),
+		...(query.health
+			? {
+					pageSummary: (kept: number) =>
+						`flagged records: ${kept} shown of ${selected.length} | matched records: ${matched.length} | unflagged records: ${matched.length - selected.length}`,
+				}
+			: {}),
 		continuation: (kept) =>
 			outcome === "ok" && request.offset + kept < selected.length
 				? encodeCursor({ query, offset: request.offset + kept, fingerprint, epoch: request.epoch })

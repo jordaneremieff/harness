@@ -1,4 +1,9 @@
-import { createBashToolDefinition, type AgentToolResult, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+	createBashToolDefinition,
+	type AgentToolResult,
+	type Theme,
+	type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { basename } from "node:path";
 import { displayText, executionErrorLabel } from "./completion.ts";
@@ -74,7 +79,8 @@ export function seconds(start: number, end: number): string {
 function duration(job: JobView): string {
 	if (typeof job.startedAt !== "number") return "duration unknown";
 	if (typeof job.endedAt === "number") return `final ${seconds(job.startedAt, job.endedAt)}`;
-	if (job.status === "running" && typeof job.observedAt === "number") return `elapsed ${seconds(job.startedAt, job.observedAt)} at observation`;
+	if (job.status === "running" && typeof job.observedAt === "number")
+		return `elapsed ${seconds(job.startedAt, job.observedAt)} at observation`;
 	return job.status === "running" ? "elapsed unknown" : "duration unknown";
 }
 
@@ -90,7 +96,12 @@ function stateLabel(job: JobView): string {
 
 /** A requested cancellation on a settled job is a fact worth a word; its absence is routine. */
 function requestLabel(job: JobView): string | undefined {
-	return job.cancellationRequested && job.status !== "running" && job.status !== "cancelled" && job.status !== "timed_out" ? "cancellation requested" : undefined;
+	return job.cancellationRequested &&
+		job.status !== "running" &&
+		job.status !== "cancelled" &&
+		job.status !== "timed_out"
+		? "cancellation requested"
+		: undefined;
 }
 
 /** Short stable identity and the context that tells repeated commands apart. */
@@ -98,7 +109,9 @@ function contextLine(job: JobView): string | undefined {
 	const id = lineOf(job.id);
 	const cwd = lineOf(job.cwd);
 	const folder = cwd ? basename(cwd) || cwd : undefined;
-	const parts = [id ? `job ${id}` : undefined, folder ? `in ${folder}` : undefined, lineOf(job.owner)].filter((part): part is string => part !== undefined);
+	const parts = [id ? `job ${id}` : undefined, folder ? `in ${folder}` : undefined, lineOf(job.owner)].filter(
+		(part): part is string => part !== undefined,
+	);
 	return parts.length ? parts.join(" · ") : undefined;
 }
 
@@ -118,9 +131,15 @@ function compactError(error: string | undefined): string | undefined {
 
 /** The exceptional state leads; exit and duration follow; the routine absence of a cancel request says nothing. */
 function compactJob(job: JobView): string[] {
-	const facts = [stateLabel(job), requestLabel(job), exitLabel(job), duration(job)].filter((fact): fact is string => fact !== undefined);
+	const facts = [stateLabel(job), requestLabel(job), exitLabel(job), duration(job)].filter(
+		(fact): fact is string => fact !== undefined,
+	);
 	const context = contextLine(job);
-	const lines = [lineOf(job.commandPreview) ?? "command unknown", ...(context ? [context] : []), [...new Set(facts)].join(" · ")];
+	const lines = [
+		lineOf(job.commandPreview) ?? "command unknown",
+		...(context ? [context] : []),
+		[...new Set(facts)].join(" · "),
+	];
 	const error = compactError(textOf(job.error));
 	if (error) lines.push(`${executionErrorLabel(job.status)}: ${error}`);
 	return lines;
@@ -201,12 +220,21 @@ function expansionHint(context: RenderContext): string {
 function card(lines: string[], theme: Theme, context: RenderContext, hint = false): Text {
 	const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
 	const [title, ...rest] = lines;
-	text.setText([theme.fg("toolTitle", title ?? "command unknown"), ...rest.map((line) => theme.fg("toolOutput", line)), ...(hint ? [theme.fg("muted", expansionHint(context))] : [])].join("\n"));
+	text.setText(
+		[
+			theme.fg("toolTitle", title ?? "command unknown"),
+			...rest.map((line) => theme.fg("toolOutput", line)),
+			...(hint ? [theme.fg("muted", expansionHint(context))] : []),
+		].join("\n"),
+	);
 	return text;
 }
 
 function resultText(result: AgentToolResult<unknown>): string {
-	return result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+	return result.content
+		.filter((part) => part.type === "text")
+		.map((part) => part.text)
+		.join("\n");
 }
 
 function logsLines(logs: LogView, expanded: boolean): string[] {
@@ -229,7 +257,12 @@ function listLines(jobs: unknown[], expanded: boolean, nextTaskCursor?: unknown)
 }
 
 /** Card lines and whether a collapsed card hides more. Fallback text is the model-visible result text. */
-function jobsLines(details: unknown, expanded: boolean, isError: boolean, fallback: string): { lines: string[]; more: boolean } {
+function jobsLines(
+	details: unknown,
+	expanded: boolean,
+	isError: boolean,
+	fallback: string,
+): { lines: string[]; more: boolean } {
 	const cleanFallback = displayText(fallback);
 	const logs = logView(details);
 	if (logs) {
@@ -237,7 +270,11 @@ function jobsLines(details: unknown, expanded: boolean, isError: boolean, fallba
 		return { lines: isError && cleanFallback ? [...lines, cleanFallback] : lines, more: !expanded };
 	}
 	const record = jobView(details) as { jobs?: unknown; job?: unknown; nextTaskCursor?: unknown } | undefined;
-	if (Array.isArray(record?.jobs)) return { lines: listLines(record.jobs, expanded, record.nextTaskCursor), more: !expanded && (record.jobs.length > 0 || record.nextTaskCursor !== undefined) };
+	if (Array.isArray(record?.jobs))
+		return {
+			lines: listLines(record.jobs, expanded, record.nextTaskCursor),
+			more: !expanded && (record.jobs.length > 0 || record.nextTaskCursor !== undefined),
+		};
 	const job = jobView(record?.job);
 	if (job) return { lines: expanded ? detailJob(job) : compactJob(job), more: !expanded };
 	if (cleanFallback) {
@@ -261,8 +298,18 @@ export function renderJobsCall(args: unknown, theme: Theme, context: RenderConte
 	return card([`jobs ${action}${id ? ` ${id}` : ""}`], theme, context);
 }
 
-export function renderJobsResult(result: AgentToolResult<unknown>, options: { expanded: boolean }, theme: Theme, context: RenderContext): Text {
-	const { lines, more } = jobsLines(result.details, options.expanded, result.isError === true, result.isError ? resultText(result) : "");
+export function renderJobsResult(
+	result: AgentToolResult<unknown>,
+	options: { expanded: boolean },
+	theme: Theme,
+	context: RenderContext,
+): Text {
+	const { lines, more } = jobsLines(
+		result.details,
+		options.expanded,
+		result.isError === true,
+		result.isError ? resultText(result) : "",
+	);
 	return card(lines, theme, context, more);
 }
 
@@ -279,7 +326,8 @@ export function renderBashResult(
 	theme: Theme,
 	context: RenderContext,
 ): Text | ReturnType<NonNullable<ReturnType<typeof createBashToolDefinition>["renderResult"]>> {
-	if (jobView(result.details) && jobView((result.details as { job?: unknown }).job)) return renderJobsResult(result, options, theme, context);
+	if (jobView(result.details) && jobView((result.details as { job?: unknown }).job))
+		return renderJobsResult(result, options, theme, context);
 	const native = nativeRenderers().renderResult;
 	if (native) return native(result as never, options, theme, context as NativeContext);
 	const { lines, more } = jobsLines(result.details, options.expanded, result.isError === true, resultText(result));
@@ -308,7 +356,11 @@ export function yieldClock(at: number, now = Date.now()): string {
 	const today = new Date(now);
 	const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
 	if (date.toDateString() === today.toDateString()) return time;
-	const day = date.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
+	const day = date.toLocaleDateString("en-US", {
+		month: "short",
+		day: "numeric",
+		...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }),
+	});
 	return `${day}, ${time}`;
 }
 
@@ -343,10 +395,13 @@ class YieldCard implements Component {
 	}
 	invalidate(): void {}
 	private title(theme: Theme): string {
-		const head = this.facts.error !== undefined ? "could not end the turn" : this.facts.settled ? "turn ended" : "ending turn";
+		const head =
+			this.facts.error !== undefined ? "could not end the turn" : this.facts.settled ? "turn ended" : "ending turn";
 		const parts = this.facts.error === undefined ? yieldSummary(this.facts.jobs, this.facts.omitted) : [];
 		const time = this.facts.at === undefined ? "" : theme.fg("muted", ` · ${yieldClock(this.facts.at)}`);
-		return theme.fg("toolTitle", theme.bold("jobs_yield")) + theme.fg("accent", ` · ${[head, ...parts].join(" · ")}`) + time;
+		return (
+			theme.fg("toolTitle", theme.bold("jobs_yield")) + theme.fg("accent", ` · ${[head, ...parts].join(" · ")}`) + time
+		);
 	}
 	private jobLines(theme: Theme, width: number): string[] {
 		const lines = this.facts.jobs.map((job) => {
@@ -361,7 +416,11 @@ class YieldCard implements Component {
 	private expandedLines(theme: Theme, width: number): string[] {
 		const lines = this.jobLines(theme, width);
 		const out = lines.length > 0 ? ["", ...lines] : [];
-		if (this.facts.settled && this.facts.error === undefined) out.push("", ...wrapTextWithAnsi("Each job completion starts the next turn.", width).map((line) => theme.fg("muted", line)));
+		if (this.facts.settled && this.facts.error === undefined)
+			out.push(
+				"",
+				...wrapTextWithAnsi("Each job completion starts the next turn.", width).map((line) => theme.fg("muted", line)),
+			);
 		return out;
 	}
 	/** Pi's tool card hint: `... (2 more lines, ctrl+o to expand)`, or `... (ctrl+o to expand)` when only details are hidden. */
@@ -371,7 +430,9 @@ class YieldCard implements Component {
 		const key = typeof context?.keyText === "function" ? context.keyText("app.tools.expand") : "";
 		const action = !key
 			? theme.fg("muted", "expand for full details")
-			: typeof context?.keyHint === "function" ? context.keyHint("app.tools.expand", "to expand") : theme.fg("dim", key) + theme.fg("muted", " to expand");
+			: typeof context?.keyHint === "function"
+				? context.keyHint("app.tools.expand", "to expand")
+				: theme.fg("dim", key) + theme.fg("muted", " to expand");
 		const more = hiddenLines > 0 ? `${hiddenLines} more line${hiddenLines === 1 ? "" : "s"}, ` : "";
 		return [truncateToWidth(theme.fg("muted", `... (${more}`) + action + theme.fg("muted", ")"), width)];
 	}
@@ -381,8 +442,12 @@ class YieldCard implements Component {
 		const note = this.facts.note ? wrapTextWithAnsi(this.facts.note, width) : [];
 		const shown = expanded ? note : note.slice(0, YIELD_NOTE_LINES);
 		lines.push(...shown.map((line) => theme.fg("text", line)));
-		if (this.facts.error !== undefined) lines.push(...wrapTextWithAnsi(this.facts.error, width).map((line) => theme.fg("error", line)));
-		return [...lines, ...(expanded ? this.expandedLines(theme, width) : this.hint(theme, width, note.length - shown.length))];
+		if (this.facts.error !== undefined)
+			lines.push(...wrapTextWithAnsi(this.facts.error, width).map((line) => theme.fg("error", line)));
+		return [
+			...lines,
+			...(expanded ? this.expandedLines(theme, width) : this.hint(theme, width, note.length - shown.length)),
+		];
 	}
 	render(width: number): string[] {
 		const theme = this.theme;
@@ -409,7 +474,13 @@ function yieldRows(value: unknown): YieldFacts["jobs"] {
 	return value.flatMap((entry) => {
 		const job = jobView(entry) as { id?: unknown; commandPreview?: unknown; state?: unknown } | undefined;
 		if (typeof job?.id !== "string" || job.id.length === 0) return [];
-		return [{ id: lineOf(job.id) ?? "", ...(typeof job.commandPreview === "string" ? { commandPreview: job.commandPreview } : {}), state: job.state === "settled" ? "settled" : "running" }];
+		return [
+			{
+				id: lineOf(job.id) ?? "",
+				...(typeof job.commandPreview === "string" ? { commandPreview: job.commandPreview } : {}),
+				state: job.state === "settled" ? "settled" : "running",
+			},
+		];
 	});
 }
 
@@ -417,25 +488,44 @@ function yieldRows(value: unknown): YieldFacts["jobs"] {
 export function renderYieldCall(args: unknown, theme: Theme, context: RenderContext): Component {
 	const card = context.lastComponent instanceof YieldCard ? context.lastComponent : new YieldCard();
 	const state = (context as YieldContext).state;
-	card.set({ note: yieldNote(args), jobs: [], omitted: 0, settled: false }, theme, context, () => state?.yieldResult === true);
+	card.set(
+		{ note: yieldNote(args), jobs: [], omitted: 0, settled: false },
+		theme,
+		context,
+		() => state?.yieldResult === true,
+	);
 	return card;
 }
 
 /** The result slot draws the whole card: the time the turn ended and the jobs, or the error in the error background. */
-export function renderYieldResult(result: AgentToolResult<unknown>, _options: { expanded: boolean }, theme: Theme, context: RenderContext): Component {
+export function renderYieldResult(
+	result: AgentToolResult<unknown>,
+	_options: { expanded: boolean },
+	theme: Theme,
+	context: RenderContext,
+): Component {
 	const state = (context as YieldContext).state;
 	if (state) state.yieldResult = true;
-	const details = jobView(result.details) as { note?: unknown; at?: unknown; jobs?: unknown; omitted?: unknown } | undefined;
+	const details = jobView(result.details) as
+		| { note?: unknown; at?: unknown; jobs?: unknown; omitted?: unknown }
+		| undefined;
 	const card = context.lastComponent instanceof YieldCard ? context.lastComponent : new YieldCard();
 	const at = details?.at;
 	const omitted = details?.omitted;
-	card.set({
-		note: yieldNote(context.args ?? details),
-		jobs: yieldRows(details?.jobs),
-		omitted: typeof omitted === "number" && Number.isSafeInteger(omitted) && omitted > 0 ? omitted : 0,
-		...(typeof at === "number" && Number.isSafeInteger(at) && at >= 0 ? { at } : {}),
-		...(result.isError === true || context.isError === true ? { error: lineOf(resultText(result)) ?? "unknown error" } : {}),
-		settled: true,
-	}, theme, context, () => false);
+	card.set(
+		{
+			note: yieldNote(context.args ?? details),
+			jobs: yieldRows(details?.jobs),
+			omitted: typeof omitted === "number" && Number.isSafeInteger(omitted) && omitted > 0 ? omitted : 0,
+			...(typeof at === "number" && Number.isSafeInteger(at) && at >= 0 ? { at } : {}),
+			...(result.isError === true || context.isError === true
+				? { error: lineOf(resultText(result)) ?? "unknown error" }
+				: {}),
+			settled: true,
+		},
+		theme,
+		context,
+		() => false,
+	);
 	return card;
 }

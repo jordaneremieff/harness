@@ -5,7 +5,15 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { CustomMessageComponent, defineTool, initTheme, ToolExecutionComponent, type ExtensionAPI, type ToolDefinition, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+	CustomMessageComponent,
+	defineTool,
+	initTheme,
+	ToolExecutionComponent,
+	type ExtensionAPI,
+	type ToolDefinition,
+	type Theme,
+} from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { obj } from "@earendil-works/pi-schema";
 import { createAgentToolCards, renderAgentPeerMessage, renderPeerNoticeCard } from "./tool-cards.ts";
@@ -13,40 +21,135 @@ import type { AgentConversationSummary } from "./dashboard-types.ts";
 import register from "./index.ts";
 
 initTheme("dark", false);
-const nativeTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
+const nativeTui = await import(
+	createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui")
+);
 function noticeKeys(t: { after(fn: () => void): void }): void {
 	const previous = nativeTui.getKeybindings();
-	nativeTui.setKeybindings(new nativeTui.KeybindingsManager({ ...nativeTui.TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" } }));
+	nativeTui.setKeybindings(
+		new nativeTui.KeybindingsManager({
+			...nativeTui.TUI_KEYBINDINGS,
+			"app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" },
+		}),
+	);
 	t.after(() => nativeTui.setKeybindings(previous));
 }
 const identity = "01a106df-0000-4000-8000-000000000001";
 const model = { provider: "provider", modelId: "model", thinkingLevel: "xhigh" };
-const row: AgentConversationSummary = { id: identity, storageId: identity, name: "Parser review", cwd: ".", modifiedAt: 0, owner: "unknown", state: "idle", cost: 0, partial: false, model };
-const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
-const clean = (component: { render(width: number): string[] }, width = 240) => component.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
+const row: AgentConversationSummary = {
+	id: identity,
+	storageId: identity,
+	name: "Parser review",
+	cwd: ".",
+	modifiedAt: 0,
+	owner: "unknown",
+	state: "idle",
+	cost: 0,
+	partial: false,
+	model,
+};
+const theme = {
+	fg: (_color: string, value: string) => value,
+	bg: (_color: string, value: string) => value,
+	getBgAnsi: () => "",
+	bold: (value: string) => value,
+} as unknown as Theme;
+const clean = (component: { render(width: number): string[] }, width = 240) =>
+	component.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
 const text = (component: { render(width: number): string[] }, width = 240) => clean(component, width).join("\n");
 async function registeredTools(): Promise<Map<string, ToolDefinition>> {
 	const tools = new Map<string, ToolDefinition>();
-	await register({ events: { emit() {}, on: () => () => {} }, on: () => () => {}, registerTool: (tool: ToolDefinition) => { assert.equal(tools.has(tool.name), false, tool.name); tools.set(tool.name, tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "xhigh" } as unknown as ExtensionAPI);
+	await register({
+		events: { emit() {}, on: () => () => {} },
+		on: () => () => {},
+		registerTool: (tool: ToolDefinition) => {
+			assert.equal(tools.has(tool.name), false, tool.name);
+			tools.set(tool.name, tool);
+		},
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
+		getThinkingLevel: () => "xhigh",
+	} as unknown as ExtensionAPI);
 	return tools;
 }
 
-function nativeTool(name: string, args: Record<string, unknown>, details: unknown, rows: AgentConversationSummary[] = [row], registered?: ToolDefinition) {
+function nativeTool(
+	name: string,
+	args: Record<string, unknown>,
+	details: unknown,
+	rows: AgentConversationSummary[] = [row],
+	registered?: ToolDefinition,
+) {
 	const card = createAgentToolCards(() => rows)[name];
-	const tool = registered ?? defineTool({ name, label: name, description: "Native layout fixture", parameters: obj({}, { open: true }), renderCall: card.renderCall, renderResult: card.renderResult, async execute() { throw Error("The fixture does not execute tools."); } });
-	const component = new ToolExecutionComponent(name, `call-${name}`, args, undefined, tool, { requestRender() {} } as unknown as TUI, ".");
-	component.setArgsComplete(); component.markExecutionStarted();
-	component.updateResult({ content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details, isError: false });
+	const tool =
+		registered ??
+		defineTool({
+			name,
+			label: name,
+			description: "Native layout fixture",
+			parameters: obj({}, { open: true }),
+			renderCall: card.renderCall,
+			renderResult: card.renderResult,
+			async execute() {
+				throw Error("The fixture does not execute tools.");
+			},
+		});
+	const component = new ToolExecutionComponent(
+		name,
+		`call-${name}`,
+		args,
+		undefined,
+		tool,
+		{ requestRender() {} } as unknown as TUI,
+		".",
+	);
+	component.setArgsComplete();
+	component.markExecutionStarted();
+	component.updateResult({
+		content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
+		details,
+		isError: false,
+	});
 	return component;
 }
 
 it("all native tool rows share two-tier known headers, native padding and one hint", () => {
-	const args = { results: [{ sessionId: identity, submissionId: 1 }], sessionId: identity, action: "read", name: "reload", message: "Task", summary: "Keep facts", view: "history" };
+	const args = {
+		results: [{ sessionId: identity, submissionId: 1 }],
+		sessionId: identity,
+		action: "read",
+		name: "reload",
+		message: "Task",
+		summary: "Keep facts",
+		view: "history",
+	};
 	const cards = createAgentToolCards(() => [row]);
 	for (const name of Object.keys(cards)) {
-		const component = name === "agent_intent" ? nativeTool(name, { action: "publish", purpose: "Review the parser" }, { arbitrary: true, published: { id: identity, name: row.name, model, thinkingLevel: model.thinkingLevel, intentClaim: { purpose: "Review the parser" } } })
-			: name === "agent_work" ? nativeTool(name, { action: "continue", request: "request-1", results: args.results, note: "Read the result" }, { arbitrary: true, sessionId: identity })
-			: nativeTool(name, args, { arbitrary: true, sessionId: identity });
+		const component =
+			name === "agent_intent"
+				? nativeTool(
+						name,
+						{ action: "publish", purpose: "Review the parser" },
+						{
+							arbitrary: true,
+							published: {
+								id: identity,
+								name: row.name,
+								model,
+								thinkingLevel: model.thinkingLevel,
+								intentClaim: { purpose: "Review the parser" },
+							},
+						},
+					)
+				: name === "agent_work"
+					? nativeTool(
+							name,
+							{ action: "continue", request: "request-1", results: args.results, note: "Read the result" },
+							{ arbitrary: true, sessionId: identity },
+						)
+					: nativeTool(name, args, { arbitrary: true, sessionId: identity });
 		const lines = clean(component);
 		assert.equal(lines[0]?.trim(), "", name);
 		assert.equal(lines[1]?.trim(), "", name);
@@ -62,8 +165,16 @@ it("all native tool rows share two-tier known headers, native padding and one hi
 			assert.match(lines[first + 1]?.trim() ?? "", /^provider\/model · xhigh(?: ·|$)/u, name);
 		}
 		assert.equal(lines.filter((line) => /to expand|expand for full/u.test(line)).length, 1, name);
-		assert.doesNotMatch(lines.join("\n"), /^\s*…\s*$|"arbitrary"|unknown provider|unknown model|unavailable thinking/mu, name);
-		for (const width of [20, 40, 80]) assert.ok(component.render(width).every((line) => visibleWidth(line) <= width), name);
+		assert.doesNotMatch(
+			lines.join("\n"),
+			/^\s*…\s*$|"arbitrary"|unknown provider|unknown model|unavailable thinking/mu,
+			name,
+		);
+		for (const width of [20, 40, 80])
+			assert.ok(
+				component.render(width).every((line) => visibleWidth(line) <= width),
+				name,
+			);
 		component.setExpanded(true);
 		assert.ok(text(component, 600).includes(identity), name);
 		assert.match(text(component), /"arbitrary": true/u, name);
@@ -80,7 +191,11 @@ it("every registered agent tool has shared factory coverage and both renderer re
 	const ordinary = new Set(Object.keys(cards));
 	ordinary.delete("agent_work");
 	ordinary.add("agent_yield");
-	assert.deepEqual([...tools.keys()].sort(), [...ordinary].sort(), "an ordinary session registers agent_yield, with its own state note card, in place of the native agent_work, whose card stays the native one");
+	assert.deepEqual(
+		[...tools.keys()].sort(),
+		[...ordinary].sort(),
+		"an ordinary session registers agent_yield, with its own state note card, in place of the native agent_work, whose card stays the native one",
+	);
 	for (const [name, tool] of tools) {
 		assert.equal(typeof tool.renderCall, "function", name);
 		assert.equal(typeof tool.renderResult, "function", name);
@@ -90,18 +205,48 @@ it("every registered agent tool has shared factory coverage and both renderer re
 it("registered intent cards show observed publish and clear outcomes and expanded raw details", async () => {
 	const tool = (await registeredTools()).get("agent_intent");
 	assert.ok(tool);
-	const claim = { purpose: "Review the parser", integration: "Return the checked change", authority: "Operator permits review", scope: { paths: ["src"], branches: ["work"], fullGate: true }, updatedAt: "2026-01-01T00:00:00.000Z" };
+	const claim = {
+		purpose: "Review the parser",
+		integration: "Return the checked change",
+		authority: "Operator permits review",
+		scope: { paths: ["src"], branches: ["work"], fullGate: true },
+		updatedAt: "2026-01-01T00:00:00.000Z",
+	};
 	for (const action of ["publish", "clear"]) {
-		const args = action === "publish" ? { action, purpose: claim.purpose, integration: claim.integration, authority: claim.authority, scope: claim.scope } : { action };
-		const published = { id: identity, name: "Parser review", model: { provider: model.provider, modelId: model.modelId }, thinkingLevel: model.thinkingLevel, ...(action === "publish" ? { intentClaim: claim } : {}) };
-		const details = { published, awareness: { self: { id: identity }, presence: { efforts: [], coverage: { complete: false, reasons: ["visit-limit"] } } } };
+		const args =
+			action === "publish"
+				? {
+						action,
+						purpose: claim.purpose,
+						integration: claim.integration,
+						authority: claim.authority,
+						scope: claim.scope,
+					}
+				: { action };
+		const published = {
+			id: identity,
+			name: "Parser review",
+			model: { provider: model.provider, modelId: model.modelId },
+			thinkingLevel: model.thinkingLevel,
+			...(action === "publish" ? { intentClaim: claim } : {}),
+		};
+		const details = {
+			published,
+			awareness: {
+				self: { id: identity },
+				presence: { efforts: [], coverage: { complete: false, reasons: ["visit-limit"] } },
+			},
+		};
 		const before = structuredClone(details);
 		const component = nativeTool("agent_intent", args, details, [], tool);
 		const lines = clean(component).filter((line) => line.trim());
 		assert.equal(lines[0]?.trim(), "agent_intent · Parser review");
 		assert.equal(lines[1]?.trim(), `provider/model · xhigh · action ${action}`);
 		assert.ok(text(component).includes(`Intent ${action === "publish" ? "published" : "cleared"} · ${identity}`));
-		assert.doesNotMatch(text(component), /"published"|"awareness"|"authority"|"fullGate"|verified|reservation|lock|unknown|unavailable|Model:|thinking|reasoning/u);
+		assert.doesNotMatch(
+			text(component),
+			/"published"|"awareness"|"authority"|"fullGate"|verified|reservation|lock|unknown|unavailable|Model:|thinking|reasoning/u,
+		);
 		assert.equal((text(component).match(/to expand|expand for full/gu) ?? []).length, 1);
 		component.setExpanded(true);
 		assert.ok(text(component).includes(`"id": "${identity}"`));
@@ -121,34 +266,76 @@ it("registered intent cards show observed publish and clear outcomes and expande
 
 it("intent cards omit absent endpoint facts and keep errors and pending outcomes truthful", () => {
 	const cards = createAgentToolCards();
-	const before = text(cards.agent_intent.renderCall({ action: "clear" }, theme, { ...cardKeys, expanded: false, argsComplete: true }));
+	const before = text(
+		cards.agent_intent.renderCall({ action: "clear" }, theme, { ...cardKeys, expanded: false, argsComplete: true }),
+	);
 	assert.match(before, /^agent_intent · this session\naction clear/u);
 	assert.doesNotMatch(before, /provider|model|unknown|unavailable/u);
 	const component = nativeTool("agent_intent", { action: "publish" }, { published: { id: identity } }, []);
 	assert.ok(text(component).includes(`agent_intent · ${identity}`));
-	assert.ok(text(component).includes(`Intent cleared · ${identity}`), "the returned claim state, not the requested action, selects the outcome");
+	assert.ok(
+		text(component).includes(`Intent cleared · ${identity}`),
+		"the returned claim state, not the requested action, selects the outcome",
+	);
 	assert.doesNotMatch(text(component), /provider|model|unknown|unavailable/u);
-	const error = { content: [{ type: "text" as const, text: "Intent publication requires this live ordinary primary session" }], details: {} };
-	const failed = text(cards.agent_intent.renderResult(error, { ...cardKeys, expanded: false, isPartial: false }, theme, { ...cardKeys, expanded: false, isError: true }));
+	const error = {
+		content: [{ type: "text" as const, text: "Intent publication requires this live ordinary primary session" }],
+		details: {},
+	};
+	const failed = text(
+		cards.agent_intent.renderResult(error, { ...cardKeys, expanded: false, isPartial: false }, theme, {
+			...cardKeys,
+			expanded: false,
+			isError: true,
+		}),
+	);
 	assert.match(failed, /Intent error\nIntent publication requires this live ordinary primary session/u);
 	assert.doesNotMatch(failed, /Intent published|Intent cleared/u);
-	const pending = text(cards.agent_intent.renderResult({ content: [{ type: "text", text: "Waiting for publication" }], details: { published: { id: identity } } }, { ...cardKeys, expanded: false, isPartial: true }, theme, { ...cardKeys, expanded: false }));
+	const pending = text(
+		cards.agent_intent.renderResult(
+			{ content: [{ type: "text", text: "Waiting for publication" }], details: { published: { id: identity } } },
+			{ ...cardKeys, expanded: false, isPartial: true },
+			theme,
+			{ ...cardKeys, expanded: false },
+		),
+	);
 	assert.match(pending, /Intent pending/u);
 	assert.doesNotMatch(pending, /Intent published|Intent cleared/u);
 });
 
 it("peer cards supply the same native inner top and bottom padding as tool rows", () => {
-	const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content: "Report text.", details: { kind: "report", senderKind: "session", senderIdentity: identity, ...model, saved: false, liveOwner: true } };
+	const message = {
+		role: "custom" as const,
+		customType: "agent.peer",
+		display: true,
+		timestamp: 0,
+		content: "Report text.",
+		details: {
+			kind: "report",
+			senderKind: "session",
+			senderIdentity: identity,
+			...model,
+			saved: false,
+			liveOwner: true,
+		},
+	};
 	const peer = new CustomMessageComponent(message, renderAgentPeerMessage);
 	const lines = clean(peer);
-	assert.equal(lines[0]?.trim(), ""); assert.equal(lines[1]?.trim(), ""); assert.equal(lines.at(-1)?.trim(), "");
+	assert.equal(lines[0]?.trim(), "");
+	assert.equal(lines[1]?.trim(), "");
+	assert.equal(lines.at(-1)?.trim(), "");
 	const first = lines.findIndex((line) => line.trim());
 	assert.ok(lines[first]?.includes(`[agent] report · ${identity}`));
 	assert.doesNotMatch(lines[first] ?? "", /provider\/model|xhigh/u);
 	assert.match(lines[first + 1] ?? "", /provider\/model.*xhigh/u);
 	assert.doesNotMatch(lines.join("\n"), /Result not saved|unknown|unavailable/u);
 	const tool = nativeTool("agent_status", { sessionId: identity }, { arbitrary: true });
-	assert.deepEqual(clean(tool).slice(0, 2).map((line) => line.trim()), lines.slice(0, 2).map((line) => line.trim()));
+	assert.deepEqual(
+		clean(tool)
+			.slice(0, 2)
+			.map((line) => line.trim()),
+		lines.slice(0, 2).map((line) => line.trim()),
+	);
 	assert.equal(clean(tool).at(-1)?.trim(), lines.at(-1)?.trim());
 });
 
@@ -156,49 +343,121 @@ it("peer reports and steer cards use identical known configuration subheadings",
 	for (const thinkingLevel of ["xhigh", "off", undefined]) {
 		const facts = { provider: "provider", modelId: "model", thinkingLevel: thinkingLevel ?? "" };
 		const cards = createAgentToolCards(() => [{ ...row, model: facts }]);
-		const steer = cards.agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, { ...cardKeys, expanded: false, argsComplete: true });
-		const peer = renderPeerNoticeCard({ content: "Report body", details: { kind: "report", senderIdentity: identity, ...facts } }, theme, false, cardKeys);
+		const steer = cards.agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, {
+			...cardKeys,
+			expanded: false,
+			argsComplete: true,
+		});
+		const peer = renderPeerNoticeCard(
+			{ content: "Report body", details: { kind: "report", senderIdentity: identity, ...facts } },
+			theme,
+			false,
+			cardKeys,
+		);
 		assert.ok(peer);
 		const expected = `provider/model${thinkingLevel ? ` · ${thinkingLevel}` : ""}`;
-		assert.equal(clean(steer).filter((line) => line.trim())[1]?.trim(), expected);
-		assert.equal(clean(peer).filter((line) => line.trim())[1]?.trim(), expected);
+		assert.equal(
+			clean(steer)
+				.filter((line) => line.trim())[1]
+				?.trim(),
+			expected,
+		);
+		assert.equal(
+			clean(peer)
+				.filter((line) => line.trim())[1]
+				?.trim(),
+			expected,
+		);
 		assert.doesNotMatch(text(peer), /Model:|Provider:|unknown|unavailable/u);
 	}
 	const cards = createAgentToolCards();
 	const ctx = { ...cardKeys, expanded: false, argsComplete: true, args: {} };
-	const snapshot = { identity, conversationId: 1, name: "Parser review", agent: { model: { provider: model.provider, modelId: model.modelId }, thinkingLevel: model.thinkingLevel }, busy: false };
+	const snapshot = {
+		identity,
+		conversationId: 1,
+		name: "Parser review",
+		agent: { model: { provider: model.provider, modelId: model.modelId }, thinkingLevel: model.thinkingLevel },
+		busy: false,
+	};
 	const outcomes = [
 		["agent_status", { conversation: snapshot }],
-		["agent_profile", { identity, name: "Parser review", model: { provider: model.provider, modelId: model.modelId }, thinkingLevel: model.thinkingLevel, role: "Review", revision: "a".repeat(64) }],
+		[
+			"agent_profile",
+			{
+				identity,
+				name: "Parser review",
+				model: { provider: model.provider, modelId: model.modelId },
+				thinkingLevel: model.thinkingLevel,
+				role: "Review",
+				revision: "a".repeat(64),
+			},
+		],
 		["agent_compact", { status: "completed", compaction: { identity, ...model } }],
 	] as const;
 	for (const [name, details] of outcomes) {
-		const result = cards[name].renderResult({ content: [{ type: "text", text: JSON.stringify(details) }], details }, { ...cardKeys, expanded: false, isPartial: false }, theme, ctx);
-		assert.ok(clean(result).some((line) => line.trim() === "provider/model · xhigh"), name);
+		const result = cards[name].renderResult(
+			{ content: [{ type: "text", text: JSON.stringify(details) }], details },
+			{ ...cardKeys, expanded: false, isPartial: false },
+			theme,
+			ctx,
+		);
+		assert.ok(
+			clean(result).some((line) => line.trim() === "provider/model · xhigh"),
+			name,
+		);
 		assert.doesNotMatch(text(result), /Model:|Provider:|reasoning/u, name);
 	}
 });
 
 it("primary report receipts show a full-width qualified queue outcome and raw JSON only expanded", () => {
-	const result = { sessionId: identity, admitted: true, sourceId: "delivery-source", boundary: "Delivery does not prove action or task acceptance" };
-	const component = nativeTool("agent_send", { sessionId: identity, mode: "report", message: "Review is complete." }, result, []);
+	const result = {
+		sessionId: identity,
+		admitted: true,
+		sourceId: "delivery-source",
+		boundary: "Delivery does not prove action or task acceptance",
+	};
+	const component = nativeTool(
+		"agent_send",
+		{ sessionId: identity, mode: "report", message: "Review is complete." },
+		result,
+		[],
+	);
 	assert.ok(text(component).includes(`Report queued for ${identity}`));
 	assert.doesNotMatch(text(component), /"sessionId"|"admitted"|01a106df…|^\s*…\s*$/mu);
 	assert.equal((text(component).match(/to expand|expand for full/gu) ?? []).length, 1);
 	component.setExpanded(true);
 	assert.ok(text(component).includes(`"sessionId": "${identity}"`));
 	assert.match(text(component), /"admitted": true/u);
-	assert.deepEqual(result, { sessionId: identity, admitted: true, sourceId: "delivery-source", boundary: "Delivery does not prove action or task acceptance" });
+	assert.deepEqual(result, {
+		sessionId: identity,
+		admitted: true,
+		sourceId: "delivery-source",
+		boundary: "Delivery does not prove action or task acceptance",
+	});
 });
 
 it("known metadata uses the muted subheading while absent metadata creates no placeholder", () => {
 	const colors: Array<{ color: string; value: string }> = [];
-	const spy = { fg: (color: string, value: string) => { colors.push({ color, value }); return value; }, bold: (value: string) => value } as unknown as Theme;
-	const card = createAgentToolCards(() => [row]).agent_steer.renderCall({ sessionId: identity, message: "Task" }, spy, { ...cardKeys, expanded: false, argsComplete: true });
+	const spy = {
+		fg: (color: string, value: string) => {
+			colors.push({ color, value });
+			return value;
+		},
+		bold: (value: string) => value,
+	} as unknown as Theme;
+	const card = createAgentToolCards(() => [row]).agent_steer.renderCall({ sessionId: identity, message: "Task" }, spy, {
+		...cardKeys,
+		expanded: false,
+		argsComplete: true,
+	});
 	assert.equal(text(card).split("\n")[0], "agent_steer · Parser review");
 	assert.equal(text(card).split("\n")[1], "provider/model · xhigh");
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "provider/model · xhigh"));
-	const absent = createAgentToolCards().agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, { ...cardKeys, expanded: false, argsComplete: true });
+	const absent = createAgentToolCards().agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, {
+		...cardKeys,
+		expanded: false,
+		argsComplete: true,
+	});
 	assert.equal(text(absent).split("\n")[0], `agent_steer · ${identity}`);
 	assert.equal(text(absent).split("\n")[1], "Task");
 	assert.doesNotMatch(text(absent), /unknown|unavailable|thinking/u);
@@ -206,17 +465,39 @@ it("known metadata uses the muted subheading while absent metadata creates no pl
 
 it("expected unsaved reports and direct messages omit warnings but genuine receipt failures remain", () => {
 	for (const kind of ["report", "message"]) {
-		const card = renderPeerNoticeCard({ content: "Direct body", details: { kind, senderIdentity: identity, saved: false, liveOwner: true } }, theme, false, cardKeys);
-		assert.ok(card); assert.doesNotMatch(text(card), /Result not saved|unavailable|unanswered/u);
+		const card = renderPeerNoticeCard(
+			{ content: "Direct body", details: { kind, senderIdentity: identity, saved: false, liveOwner: true } },
+			theme,
+			false,
+			cardKeys,
+		);
+		assert.ok(card);
+		assert.doesNotMatch(text(card), /Result not saved|unavailable|unanswered/u);
 	}
-	const failure = renderPeerNoticeCard({ content: "Failure body", details: { kind: "receipt", status: "unanswered", saved: false, liveOwner: false, reason: "aborted", identity } }, theme, false, cardKeys);
+	const failure = renderPeerNoticeCard(
+		{
+			content: "Failure body",
+			details: { kind: "receipt", status: "unanswered", saved: false, liveOwner: false, reason: "aborted", identity },
+		},
+		theme,
+		false,
+		cardKeys,
+	);
 	assert.ok(failure);
 	assert.match(text(failure), /Result unavailable or unanswered/u);
 	assert.match(text(failure), /No live owner; retained result only/u);
 	assert.match(text(failure), /Result not saved; retained only by the live owner/u);
 	assert.doesNotMatch(text(failure), /aborted|Failure body/u);
 	assert.equal((text(failure).match(/to expand|expand for full/gu) ?? []).length, 1);
-	const expanded = renderPeerNoticeCard({ content: "Failure body", details: { kind: "receipt", status: "unanswered", saved: false, liveOwner: false, reason: "aborted", identity } }, theme, true, cardKeys);
+	const expanded = renderPeerNoticeCard(
+		{
+			content: "Failure body",
+			details: { kind: "receipt", status: "unanswered", saved: false, liveOwner: false, reason: "aborted", identity },
+		},
+		theme,
+		true,
+		cardKeys,
+	);
 	assert.ok(expanded);
 	assert.match(text(expanded), /aborted/u);
 	assert.match(text(expanded), /Failure body/u);
@@ -234,7 +515,14 @@ it("native peer notices keep three visual body lines and one hint only when text
 		{ checkIn: {}, message: content },
 	];
 	for (const facts of kinds) {
-		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content, details: { senderIdentity: identity, ...model, ...facts } };
+		const message = {
+			role: "custom" as const,
+			customType: "agent.peer",
+			display: true,
+			timestamp: 0,
+			content,
+			details: { senderIdentity: identity, ...model, ...facts },
+		};
 		const before = structuredClone(message);
 		const component = new CustomMessageComponent(message, renderAgentPeerMessage);
 		for (const width of [24, 60, 160]) {
@@ -257,9 +545,20 @@ it("native peer notices keep three visual body lines and one hint only when text
 		assert.deepEqual(message, before);
 	}
 	for (const content of ["Only one body line", "First line\nSecond line\nThird line"]) {
-		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content, details: { kind: "report", senderIdentity: identity } };
+		const message = {
+			role: "custom" as const,
+			customType: "agent.peer",
+			display: true,
+			timestamp: 0,
+			content,
+			details: { kind: "report", senderIdentity: identity },
+		};
 		const component = new CustomMessageComponent(message, renderAgentPeerMessage);
-		assert.equal((text(component, 160).match(/\((?:\d+ more lines?, )?ctrl\+o to expand\)/gu) ?? []).length, 1, "hidden source details keep a disclosure hint even when the whole body is visible");
+		assert.equal(
+			(text(component, 160).match(/\((?:\d+ more lines?, )?ctrl\+o to expand\)/gu) ?? []).length,
+			1,
+			"hidden source details keep a disclosure hint even when the whole body is visible",
+		);
 		assert.match(text(component, 160), new RegExp(content.split("\n").at(-1) ?? ""));
 		component.setExpanded(true);
 		assert.doesNotMatch(text(component, 160), /to expand\)/u);
@@ -270,23 +569,57 @@ it("native peer notices keep three visual body lines and one hint only when text
 it("a left click anywhere on a peer card toggles it locally, as on Pi's cards, and global expansion resets it", (t) => {
 	noticeKeys(t);
 	const content = `Opening finding. ${"Useful detail follows. ".repeat(40)}FINAL_BODY`;
-	const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content, details: { kind: "report", senderIdentity: identity, ...model } };
+	const message = {
+		role: "custom" as const,
+		customType: "agent.peer",
+		display: true,
+		timestamp: 0,
+		content,
+		details: { kind: "report", senderIdentity: identity, ...model },
+	};
 	const component = new CustomMessageComponent(message, renderAgentPeerMessage);
 	const width = 80;
 	const lines = () => clean(component, width);
-	const click = (y: number, patch: Record<string, unknown> = {}) => component.handleMouse({ type: "click", button: "left", x: 2, y, screenX: 2, screenY: y, width, height: lines().length, shift: false, alt: false, ctrl: false, clickCount: 1, ...patch } as never);
+	const click = (y: number, patch: Record<string, unknown> = {}) =>
+		component.handleMouse({
+			type: "click",
+			button: "left",
+			x: 2,
+			y,
+			screenX: 2,
+			screenY: y,
+			width,
+			height: lines().length,
+			shift: false,
+			alt: false,
+			ctrl: false,
+			clickCount: 1,
+			...patch,
+		} as never);
 	const hintRow = () => lines().findIndex((line) => /\((?:\d+ more lines?, )?ctrl\+o to expand\)/u.test(line));
 	assert.ok(hintRow() > 0);
 	assert.doesNotMatch(lines().join("\n"), /FINAL_BODY|Source details/u);
 	const bodyRow = lines().findIndex((line) => /Opening finding/u.test(line));
 	assert.equal(click(1), undefined, "a click on the padding row passes through");
 	assert.equal(click(bodyRow, { button: "right" }), undefined, "a right click passes through");
-	assert.equal(click(bodyRow, { type: "press" }), undefined, "a press or a drag passes through, so text selection works");
+	assert.equal(
+		click(bodyRow, { type: "press" }),
+		undefined,
+		"a press or a drag passes through, so text selection works",
+	);
 	assert.equal(click(bodyRow)?.handled, true, "a click on the body toggles, as Pi's MouseRegion does");
 	assert.match(lines().join("\n"), /FINAL_BODY/u);
-	assert.equal(click(bodyRow, { shift: true })?.handled, true, "a modified click toggles too; Pi does not filter modifiers");
+	assert.equal(
+		click(bodyRow, { shift: true })?.handled,
+		true,
+		"a modified click toggles too; Pi does not filter modifiers",
+	);
 	assert.doesNotMatch(lines().join("\n"), /FINAL_BODY/u);
-	assert.equal(click(bodyRow, { clickCount: 2 })?.handled, true, "each click of a multi-click toggles; Pi does not filter the click count");
+	assert.equal(
+		click(bodyRow, { clickCount: 2 })?.handled,
+		true,
+		"each click of a multi-click toggles; Pi does not filter the click count",
+	);
 	assert.match(lines().join("\n"), /FINAL_BODY/u);
 	click(bodyRow);
 	assert.equal(click(hintRow())?.handled, true);
@@ -300,26 +633,56 @@ it("a left click anywhere on a peer card toggles it locally, as on Pi's cards, a
 	click(hintRow());
 	assert.match(lines().join("\n"), /FINAL_BODY/u);
 	component.invalidate();
-	assert.match(lines().join("\n"), /FINAL_BODY/u, "the disclosure survives Pi's rebuild of the renderer, as on a theme refresh");
+	assert.match(
+		lines().join("\n"),
+		/FINAL_BODY/u,
+		"the disclosure survives Pi's rebuild of the renderer, as on a theme refresh",
+	);
 	const again = new CustomMessageComponent(message, renderAgentPeerMessage);
-	assert.match(clean(again, width).join("\n"), /FINAL_BODY/u, "a new component over the same stored message keeps the choice");
+	assert.match(
+		clean(again, width).join("\n"),
+		/FINAL_BODY/u,
+		"a new component over the same stored message keeps the choice",
+	);
 	component.setExpanded(true);
 	component.setExpanded(false);
 	assert.doesNotMatch(lines().join("\n"), /FINAL_BODY/u, "global expansion owns the card again after a rebuild");
-	assert.doesNotMatch(clean(new CustomMessageComponent(message, renderAgentPeerMessage), width).join("\n"), /FINAL_BODY/u, "the global change clears the shared choice of that message");
-	assert.deepEqual(message.details, { kind: "report", senderIdentity: identity, ...model }, "disclosure changes no retained content");
+	assert.doesNotMatch(
+		clean(new CustomMessageComponent(message, renderAgentPeerMessage), width).join("\n"),
+		/FINAL_BODY/u,
+		"the global change clears the shared choice of that message",
+	);
+	assert.deepEqual(
+		message.details,
+		{ kind: "report", senderIdentity: identity, ...model },
+		"disclosure changes no retained content",
+	);
 });
 
 it("peer Markdown and wrapped reasons share the total visual preview bound", (t) => {
 	noticeKeys(t);
 	for (const source of [
 		{ content: "First paragraph\n\nSecond paragraph\n\nFINAL_BODY", details: { kind: "report" } },
-		{ content: "```text\nFirst code line\nSecond code line\nThird code line\nFINAL_BODY\n```", details: { kind: "report" } },
+		{
+			content: "```text\nFirst code line\nSecond code line\nThird code line\nFINAL_BODY\n```",
+			details: { kind: "report" },
+		},
 		{ content: "FINAL_BODY", details: { kind: "receipt", status: "done", reason: "Reason detail. ".repeat(20) } },
 	]) {
-		const component = renderPeerNoticeCard({ ...source, details: { senderIdentity: identity, ...source.details } }, theme, false, cardKeys);
-		const expanded = renderPeerNoticeCard({ ...source, details: { senderIdentity: identity, ...source.details } }, theme, true, cardKeys);
-		assert.ok(component); assert.ok(expanded);
+		const component = renderPeerNoticeCard(
+			{ ...source, details: { senderIdentity: identity, ...source.details } },
+			theme,
+			false,
+			cardKeys,
+		);
+		const expanded = renderPeerNoticeCard(
+			{ ...source, details: { senderIdentity: identity, ...source.details } },
+			theme,
+			true,
+			cardKeys,
+		);
+		assert.ok(component);
+		assert.ok(expanded);
 		for (const width of "reason" in source.details ? [24, 60] : [24, 160]) {
 			const lines = clean(component, width);
 			const first = lines.findIndex((line) => line.trim());
@@ -336,14 +699,40 @@ it("peer Markdown and wrapped reasons share the total visual preview bound", (t)
 
 it("thread notice headers show the subject before known sender and secondary facts without duplicate labels", () => {
 	const threadId = `${identity}/${"a".repeat(32)}`;
-	const facts = { kind: "report", senderIdentity: identity, name: "Parser review", threadId, threadTitle: "Parser contract", ...model, checkIn: undefined };
+	const facts = {
+		kind: "report",
+		senderIdentity: identity,
+		name: "Parser review",
+		threadId,
+		threadTitle: "Parser contract",
+		...model,
+		checkIn: undefined,
+	};
 	const cases = [
-		{ details: facts, header: ["[agent] thread notice · Parser contract", "from Parser review · provider/model · xhigh"] },
-		{ details: { ...facts, name: undefined, threadTitle: undefined }, header: [`[agent] thread notice · ${threadId}`, `from ${identity} · provider/model · xhigh`] },
+		{
+			details: facts,
+			header: ["[agent] thread notice · Parser contract", "from Parser review · provider/model · xhigh"],
+		},
+		{
+			details: { ...facts, name: undefined, threadTitle: undefined },
+			header: [`[agent] thread notice · ${threadId}`, `from ${identity} · provider/model · xhigh`],
+		},
 		{ details: { threadId, threadTitle: "Parser contract" }, header: ["[agent] thread notice · Parser contract"] },
-		{ details: { threadId, name: "Parser review" }, header: [`[agent] thread notice · ${threadId}`, "from Parser review"] },
-		{ details: { ...model, kind: "report", name: "Parser review" }, header: ["[agent] report · Parser review", "provider/model · xhigh"] },
-		{ details: { ...model, name: "Parser review", checkIn: { elapsedMs: 90_000, cost: 0 } }, header: ["[agent] still working · Parser review", "provider/model · xhigh · 1m elapsed · $0.000 conversation total"] },
+		{
+			details: { threadId, name: "Parser review" },
+			header: [`[agent] thread notice · ${threadId}`, "from Parser review"],
+		},
+		{
+			details: { ...model, kind: "report", name: "Parser review" },
+			header: ["[agent] report · Parser review", "provider/model · xhigh"],
+		},
+		{
+			details: { ...model, name: "Parser review", checkIn: { elapsedMs: 90_000, cost: 0 } },
+			header: [
+				"[agent] still working · Parser review",
+				"provider/model · xhigh · 1m elapsed · $0.000 conversation total",
+			],
+		},
 	];
 	for (const { details, header } of cases) {
 		const card = renderPeerNoticeCard({ content: "Body text", details }, theme, false, cardKeys);
@@ -362,21 +751,57 @@ it("peer label uses Pi's custom message label colour, kind, subject and body use
 	noticeKeys(t);
 	const colors: Array<{ color: string; value: string }> = [];
 	const bold: string[] = [];
-	const spy = { ...theme, fg: (color: string, value: string) => { colors.push({ color, value }); return value; }, bold: (value: string) => { bold.push(value); return value; } } as unknown as Theme;
-	const card = renderPeerNoticeCard({ content: "First body line\nSecond body line\nThird body line\nFinal body line", details: { threadId: "source/thread", threadTitle: "Parser contract", name: "Parser review", ...model } }, spy, false, cardKeys);
+	const spy = {
+		...theme,
+		fg: (color: string, value: string) => {
+			colors.push({ color, value });
+			return value;
+		},
+		bold: (value: string) => {
+			bold.push(value);
+			return value;
+		},
+	} as unknown as Theme;
+	const card = renderPeerNoticeCard(
+		{
+			content: "First body line\nSecond body line\nThird body line\nFinal body line",
+			details: { threadId: "source/thread", threadTitle: "Parser contract", name: "Parser review", ...model },
+		},
+		spy,
+		false,
+		cardKeys,
+	);
 	assert.ok(card);
 	card.render(160);
 	assert.deepEqual(bold, ["[agent]", "thread notice"]);
-	assert.deepEqual(colors.filter(({ color }) => color === "customMessageLabel").map(({ value }) => value), ["[agent]"]);
-	for (const value of ["thread notice", " · Parser contract"]) assert.ok(colors.some((entry) => entry.color === "text" && entry.value === value), value);
+	assert.deepEqual(
+		colors.filter(({ color }) => color === "customMessageLabel").map(({ value }) => value),
+		["[agent]"],
+	);
+	for (const value of ["thread notice", " · Parser contract"])
+		assert.ok(
+			colors.some((entry) => entry.color === "text" && entry.value === value),
+			value,
+		);
 	assert.ok(colors.some(({ color, value }) => color === "text" && value.includes("First body line")));
-	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "from Parser review · provider/model · xhigh"));
+	assert.ok(
+		colors.some(({ color, value }) => color === "muted" && value === "from Parser review · provider/model · xhigh"),
+	);
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "... (1 more line, "));
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === ")"));
-	assert.equal(colors.some(({ color }) => ["accent", "customMessageText"].includes(color)), false);
+	assert.equal(
+		colors.some(({ color }) => ["accent", "customMessageText"].includes(color)),
+		false,
+	);
 	colors.length = 0;
-	const failure = renderPeerNoticeCard({ content: "Failure body", details: { status: "failed", reason: "Diagnostic reason" } }, spy, false, cardKeys);
-	assert.ok(failure); failure.render(160);
+	const failure = renderPeerNoticeCard(
+		{ content: "Failure body", details: { status: "failed", reason: "Diagnostic reason" } },
+		spy,
+		false,
+		cardKeys,
+	);
+	assert.ok(failure);
+	failure.render(160);
 	assert.ok(colors.some(({ color, value }) => color === "warning" && value === "Result unavailable or unanswered"));
 	assert.ok(colors.some(({ color, value }) => color === "text" && value === "Diagnostic reason"));
 });
@@ -384,10 +809,18 @@ it("peer label uses Pi's custom message label colour, kind, subject and body use
 it("peer width clips use one ellipsis while wide headers and expanded details retain full identities", (t) => {
 	noticeKeys(t);
 	const threadId = `${identity}/${"a".repeat(32)}`;
-	const details = { kind: "report", senderIdentity: identity, threadId, provider: "provider", modelId: `model-${"m".repeat(160)}`, thinkingLevel: "xhigh" };
+	const details = {
+		kind: "report",
+		senderIdentity: identity,
+		threadId,
+		provider: "provider",
+		modelId: `model-${"m".repeat(160)}`,
+		thinkingLevel: "xhigh",
+	};
 	const card = renderPeerNoticeCard({ content: "Body line\n".repeat(8), details }, theme, false, cardKeys);
 	const expanded = renderPeerNoticeCard({ content: "Body line\n".repeat(8), details }, theme, true, cardKeys);
-	assert.ok(card); assert.ok(expanded);
+	assert.ok(card);
+	assert.ok(expanded);
 	const wide = text(card, 400);
 	assert.ok(wide.includes(threadId));
 	assert.ok(wide.includes(`from ${identity}`));
@@ -407,16 +840,28 @@ it("peer width clips use one ellipsis while wide headers and expanded details re
 it("wide headers preserve full model identities and narrow headers clip only to width", () => {
 	const modelId = `model-${"m".repeat(420)}`;
 	const cards = createAgentToolCards(() => [{ ...row, model: { ...model, modelId } }]);
-	const component = cards.agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, { ...cardKeys, expanded: false, argsComplete: true });
+	const component = cards.agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, {
+		...cardKeys,
+		expanded: false,
+		argsComplete: true,
+	});
 	assert.ok(text(component, 600).includes(`provider/${modelId}`));
 	assert.doesNotMatch(text(component, 600), /…/u);
 	assert.ok(component.render(40).every((line) => visibleWidth(line) <= 40));
-	const peer = renderPeerNoticeCard({ content: "Body", details: { kind: "report", senderIdentity: identity, provider: "provider", modelId } }, theme, false, cardKeys);
-	assert.ok(peer); assert.ok(text(peer, 600).includes(`provider/${modelId}`));
+	const peer = renderPeerNoticeCard(
+		{ content: "Body", details: { kind: "report", senderIdentity: identity, provider: "provider", modelId } },
+		theme,
+		false,
+		cardKeys,
+	);
+	assert.ok(peer);
+	assert.ok(text(peer, 600).includes(`provider/${modelId}`));
 });
 
 it("structured error previews remain plain and bounded without losing expanded source", () => {
-	const error = { error: { message: `First diagnostic\nSecond diagnostic\nThird diagnostic\n${"extra\n".repeat(100)}` } };
+	const error = {
+		error: { message: `First diagnostic\nSecond diagnostic\nThird diagnostic\n${"extra\n".repeat(100)}` },
+	};
 	const component = nativeTool("agent_status", { sessionId: identity }, error);
 	assert.match(text(component), /First diagnostic\n\s*Second diagnostic\n\s*Third diagnostic/u);
 	assert.doesNotMatch(text(component), /extra|"error"|^\s*…\s*$/mu);
@@ -426,14 +871,27 @@ it("structured error previews remain plain and bounded without losing expanded s
 });
 
 it("source observations update the native header without new discovery or repeated labels", () => {
-	const snapshot = { identity, conversationId: 1, name: "Actual name", busy: false, state: "idle", agent: { model: { provider: "actual-provider", modelId: "actual-model" }, thinkingLevel: "low" } };
-	const component = nativeTool("agent_configure", { sessionId: identity, model: "actual-provider/actual-model", thinkingLevel: "xhigh" }, { identity, conversationId: 1, status: snapshot }, []);
+	const snapshot = {
+		identity,
+		conversationId: 1,
+		name: "Actual name",
+		busy: false,
+		state: "idle",
+		agent: { model: { provider: "actual-provider", modelId: "actual-model" }, thinkingLevel: "low" },
+	};
+	const component = nativeTool(
+		"agent_configure",
+		{ sessionId: identity, model: "actual-provider/actual-model", thinkingLevel: "xhigh" },
+		{ identity, conversationId: 1, status: snapshot },
+		[],
+	);
 	const lines = clean(component).filter((line) => line.trim());
 	assert.equal(lines[0]?.trim(), "agent_configure · Actual name");
 	assert.match(lines[1] ?? "", /actual-provider\/actual-model · low/u);
 	assert.match(lines[1] ?? "", /Requested: xhigh/u);
 	assert.equal((text(component).match(/Actual name/gu) ?? []).length, 1);
 	assert.equal((text(component).match(/actual-provider\/actual-model/gu) ?? []).length, 1);
-	component.setExpanded(true); component.setExpanded(false);
+	component.setExpanded(true);
+	component.setExpanded(false);
 	assert.equal((text(component).match(/actual-provider\/actual-model/gu) ?? []).length, 1);
 });

@@ -14,7 +14,13 @@ import { plainLine, plainText } from "./view-text.ts";
 import type { TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { dashboardClock } from "./dashboard-time.ts";
 import { ResultOutputSchema } from "./observation-schema.ts";
-import { type FinalReportDelivery, type FinalReportRead, type OpenWorkDependencyView, type OpenWorkView, OpenWorkViewSchema } from "./open-work-schema.ts";
+import {
+	type FinalReportDelivery,
+	type FinalReportRead,
+	type OpenWorkDependencyView,
+	type OpenWorkView,
+	OpenWorkViewSchema,
+} from "./open-work-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 
 /** Selectors of one exact `agent_inspect` result call, without its tool name. */
@@ -43,7 +49,12 @@ type Close = NonNullable<OpenWorkView["close"]>;
 /** One row of the Work list: a request, one of its dependencies, or its final report. */
 export type WorkRow =
 	| { readonly kind: "request"; readonly key: string; readonly item: OpenWorkView }
-	| { readonly kind: "dependency"; readonly key: string; readonly item: OpenWorkView; readonly dependency: OpenWorkDependencyView }
+	| {
+			readonly kind: "dependency";
+			readonly key: string;
+			readonly item: OpenWorkView;
+			readonly dependency: OpenWorkDependencyView;
+	  }
 	| { readonly kind: "report"; readonly key: string; readonly item: OpenWorkView; readonly close: Close };
 
 /** Answer and report pages followed in one read; a longer text stops with its exact continuation. */
@@ -62,11 +73,22 @@ export function readWork(status: unknown): { items: OpenWorkView[]; unreadable: 
 /** Open items first, oldest declaration first; then closed items, newest close first. Each request precedes its dependencies and its final report. */
 export function workRows(items: readonly OpenWorkView[]): WorkRow[] {
 	const open = items.filter((item) => item.state === "open").sort((a, b) => a.declaredAt - b.declaredAt);
-	const closed = items.filter((item) => item.state === "closed").sort((a, b) => (b.close?.at ?? b.updatedAt) - (a.close?.at ?? a.updatedAt));
+	const closed = items
+		.filter((item) => item.state === "closed")
+		.sort((a, b) => (b.close?.at ?? b.updatedAt) - (a.close?.at ?? a.updatedAt));
 	return [...open, ...closed].flatMap((item): WorkRow[] => [
 		{ kind: "request", key: `request:${item.requestId}`, item },
-		...item.dependencies.map((dependency): WorkRow => ({ kind: "dependency", key: `dependency:${item.requestId}:${dependency.sessionId}:${dependency.submissionId}`, item, dependency })),
-		...(item.close === undefined ? [] : [{ kind: "report" as const, key: `report:${item.requestId}`, item, close: item.close }]),
+		...item.dependencies.map(
+			(dependency): WorkRow => ({
+				kind: "dependency",
+				key: `dependency:${item.requestId}:${dependency.sessionId}:${dependency.submissionId}`,
+				item,
+				dependency,
+			}),
+		),
+		...(item.close === undefined
+			? []
+			: [{ kind: "report" as const, key: `report:${item.requestId}`, item, close: item.close }]),
 	]);
 }
 
@@ -82,37 +104,77 @@ function exactCall(call: { readonly tool?: string } & ResultCall): ResultCall {
 }
 
 /** One dependency's state in plain words; an arrived result is never task acceptance. */
-export function dependencyWords(dependency: OpenWorkDependencyView): { label: string; meaning: string; color: "success" | "accent" | "warning" | "muted" } {
-	if (dependency.state === "arrived") return { label: "result arrived", meaning: "Its result arrived. An arrived result is not task acceptance.", color: "success" };
-	if (dependency.state === "state-note") return { label: "state note", meaning: "Its producer answered with a state note: the producer's own declared work is still open, so its result is still to come.", color: "accent" };
-	if (dependency.unavailable !== undefined) return { label: "not established", meaning: `No committed fact establishes its state: ${plainLine(dependency.unavailable)}.`, color: "warning" };
+export function dependencyWords(dependency: OpenWorkDependencyView): {
+	label: string;
+	meaning: string;
+	color: "success" | "accent" | "warning" | "muted";
+} {
+	if (dependency.state === "arrived")
+		return {
+			label: "result arrived",
+			meaning: "Its result arrived. An arrived result is not task acceptance.",
+			color: "success",
+		};
+	if (dependency.state === "state-note")
+		return {
+			label: "state note",
+			meaning:
+				"Its producer answered with a state note: the producer's own declared work is still open, so its result is still to come.",
+			color: "accent",
+		};
+	if (dependency.unavailable !== undefined)
+		return {
+			label: "not established",
+			meaning: `No committed fact establishes its state: ${plainLine(dependency.unavailable)}.`,
+			color: "warning",
+		};
 	return { label: "pending", meaning: "Its input has not settled, so no answer has arrived.", color: "muted" };
 }
 
 const DELIVERY_LABEL: Record<FinalReportDelivery, string> = {
-	retained: "kept for reading", delivered: "delivered", active: "delivering", parked: "delivery parked", fallback: "fallback copies", terminal: "delivery ended", absent: "no report row",
+	retained: "kept for reading",
+	delivered: "delivered",
+	active: "delivering",
+	parked: "delivery parked",
+	fallback: "fallback copies",
+	terminal: "delivery ended",
+	absent: "no report row",
 };
 
 /** Delivery of a final report in plain words; delivery is not task acceptance. */
 export function deliveryWords(delivery: FinalReportDelivery | undefined, ownerId: string): string {
 	switch (delivery) {
-		case "retained": return "Kept here for reading: the reply recipient is this conversation, so the report never enters it as an input.";
-		case "delivered": return `Delivered: ${ownerId} acknowledged the report. Delivery is not task acceptance.`;
-		case "active": return `Delivery to ${ownerId} is in progress.`;
-		case "parked": return `Delivery parked: ${ownerId} cannot be reached now. The report stays retained.`;
-		case "fallback": return `No live owning session: copies went to live sessions, and ${ownerId} has not acknowledged the report.`;
-		case "terminal": return `Delivery to ${ownerId} ended without admission. The report stays readable here.`;
-		case "absent": return `No retained report row for ${ownerId} was found.`;
-		default: return "The status names no delivery state.";
+		case "retained":
+			return "Kept here for reading: the reply recipient is this conversation, so the report never enters it as an input.";
+		case "delivered":
+			return `Delivered: ${ownerId} acknowledged the report. Delivery is not task acceptance.`;
+		case "active":
+			return `Delivery to ${ownerId} is in progress.`;
+		case "parked":
+			return `Delivery parked: ${ownerId} cannot be reached now. The report stays retained.`;
+		case "fallback":
+			return `No live owning session: copies went to live sessions, and ${ownerId} has not acknowledged the report.`;
+		case "terminal":
+			return `Delivery to ${ownerId} ended without admission. The report stays readable here.`;
+		case "absent":
+			return `No retained report row for ${ownerId} was found.`;
+		default:
+			return "The status names no delivery state.";
 	}
 }
 
 const CLOSE_GLYPH: Record<Close["status"], { glyph: string; color: "success" | "error" | "warning" }> = {
-	done: { glyph: "✓", color: "success" }, failed: { glyph: "✗", color: "error" }, stopped: { glyph: "■", color: "warning" }, reset: { glyph: "↺", color: "warning" },
+	done: { glyph: "✓", color: "success" },
+	failed: { glyph: "✗", color: "error" },
+	stopped: { glyph: "■", color: "warning" },
+	reset: { glyph: "↺", color: "warning" },
 };
 
 const CLOSE_MEANING: Record<Close["status"], string> = {
-	done: "the agent completed it", failed: "the agent completed it as failed", stopped: "a host stop closed it", reset: "a context reset closed it",
+	done: "the agent completed it",
+	failed: "the agent completed it as failed",
+	stopped: "a host stop closed it",
+	reset: "a context reset closed it",
 };
 
 function arrivedCount(item: OpenWorkView): string {
@@ -126,7 +188,13 @@ export function workLine(row: WorkRow, theme: Theme): string {
 	const dot = theme.fg("muted", " · ");
 	if (row.kind === "request") {
 		const { item } = row;
-		const state = item.close === undefined ? theme.fg("accent", "○ open") : theme.fg(CLOSE_GLYPH[item.close.status].color, `${CLOSE_GLYPH[item.close.status].glyph} ${item.close.status}`);
+		const state =
+			item.close === undefined
+				? theme.fg("accent", "○ open")
+				: theme.fg(
+						CLOSE_GLYPH[item.close.status].color,
+						`${CLOSE_GLYPH[item.close.status].glyph} ${item.close.status}`,
+					);
 		return `${state}${dot}${item.close === undefined ? `${arrivedCount(item)}${dot}` : ""}${plainLine(item.note)}`;
 	}
 	if (row.kind === "dependency") {
@@ -139,8 +207,14 @@ export function workLine(row: WorkRow, theme: Theme): string {
 
 function requestDetail(item: OpenWorkView, target: string): string[] {
 	const lines = [`Request ${item.requestId}`];
-	if (item.close === undefined) lines.push(`Work open: it owes a final report to ${item.replyTo}. The answer of its input is a state note, not the result.`);
-	else lines.push(`Work closed (${item.close.status}) at ${dashboardClock(item.close.at)}: ${CLOSE_MEANING[item.close.status]}. Its final report is the result of the request.`);
+	if (item.close === undefined)
+		lines.push(
+			`Work open: it owes a final report to ${item.replyTo}. The answer of its input is a state note, not the result.`,
+		);
+	else
+		lines.push(
+			`Work closed (${item.close.status}) at ${dashboardClock(item.close.at)}: ${CLOSE_MEANING[item.close.status]}. Its final report is the result of the request.`,
+		);
 	lines.push(
 		`Input: submission ${item.submissionId} of ${target}`,
 		`Requester: ${item.requester} (${item.origin === "operator" ? "operator request" : "model request"})`,
@@ -152,8 +226,12 @@ function requestDetail(item: OpenWorkView, target: string): string[] {
 		"",
 		"Dependencies",
 	);
-	if (item.dependencies.length === 0) lines.push(item.close === undefined ? "None: no result wakes this work. The agent completes it itself." : "None.");
-	for (const dependency of item.dependencies) lines.push(`${dependencyWords(dependency).label} · ${dependency.sessionId} submission ${dependency.submissionId}${dependency.requestId === undefined ? "" : ` · request ${dependency.requestId}`}`);
+	if (item.dependencies.length === 0)
+		lines.push(item.close === undefined ? "None: no result wakes this work. The agent completes it itself." : "None.");
+	for (const dependency of item.dependencies)
+		lines.push(
+			`${dependencyWords(dependency).label} · ${dependency.sessionId} submission ${dependency.submissionId}${dependency.requestId === undefined ? "" : ` · request ${dependency.requestId}`}`,
+		);
 	if (item.close !== undefined) lines.push("", "Final report", ...reportFacts(item, item.close));
 	return lines;
 }
@@ -187,7 +265,12 @@ export function workDetail(row: WorkRow, target: string): string {
 			"Enter reads its result. A read neither acknowledges nor withdraws its delivery.",
 		].join("\n");
 	}
-	return [`Final report of request ${row.item.requestId}`, ...reportFacts(row.item, row.close), "", "Enter reads the complete report."].join("\n");
+	return [
+		`Final report of request ${row.item.requestId}`,
+		...reportFacts(row.item, row.close),
+		"",
+		"Enter reads the complete report.",
+	].join("\n");
 }
 
 const errorText = (error: unknown) => plainLine(error instanceof Error ? error.message : String(error));
@@ -218,7 +301,12 @@ export class WorkView implements View {
 			detail: (row) => (row === undefined ? "" : workDetail(row, host.target.id)),
 			actions: (row) => this.rowActions(row),
 			status: () => this.statusText(),
-			empty: () => (this.mode === "unread" ? (this.error ? "" : "Reading the declared work…") : "No declared work is open or retained for this conversation."),
+			empty: () =>
+				this.mode === "unread"
+					? this.error
+						? ""
+						: "Reading the declared work…"
+					: "No declared work is open or retained for this conversation.",
 		});
 		if (!this.sync()) void this.read();
 	}
@@ -285,18 +373,58 @@ export class WorkView implements View {
 
 	private rowActions(row: WorkRow | undefined): Action[] {
 		const actions: Action[] = [];
-		if (row?.kind === "dependency") actions.push({ id: "read", label: "Read result", key: "enter", short: "read result", primary: true, description: "The dependency's result, read without acknowledging its delivery", run: () => this.openResult(row.dependency) });
-		if (row?.kind === "report") actions.push({ id: "read", label: "Read final report", key: "enter", short: "read report", primary: true, description: "The complete retained report, page by page", run: () => this.openReport(row.item, row.close) });
-		if (this.mode !== "live") actions.push({ id: "refresh", label: "Read again", key: "r", short: "read again", primary: true, disabled: this.reading ? "A read is in progress" : undefined, run: () => void this.read() });
+		if (row?.kind === "dependency")
+			actions.push({
+				id: "read",
+				label: "Read result",
+				key: "enter",
+				short: "read result",
+				primary: true,
+				description: "The dependency's result, read without acknowledging its delivery",
+				run: () => this.openResult(row.dependency),
+			});
+		if (row?.kind === "report")
+			actions.push({
+				id: "read",
+				label: "Read final report",
+				key: "enter",
+				short: "read report",
+				primary: true,
+				description: "The complete retained report, page by page",
+				run: () => this.openReport(row.item, row.close),
+			});
+		if (this.mode !== "live")
+			actions.push({
+				id: "refresh",
+				label: "Read again",
+				key: "r",
+				short: "read again",
+				primary: true,
+				disabled: this.reading ? "A read is in progress" : undefined,
+				run: () => void this.read(),
+			});
 		return actions;
 	}
 
 	private openResult(dependency: OpenWorkDependencyView): void {
-		this.browser.push((child) => pagedReader(child, this.source, { kind: "answer", title: `Result ${dependency.sessionId} #${dependency.submissionId}`, call: exactCall(dependency.inspect) }));
+		this.browser.push((child) =>
+			pagedReader(child, this.source, {
+				kind: "answer",
+				title: `Result ${dependency.sessionId} #${dependency.submissionId}`,
+				call: exactCall(dependency.inspect),
+			}),
+		);
 	}
 
 	private openReport(item: OpenWorkView, close: Close): void {
-		this.browser.push((child) => pagedReader(child, this.source, { kind: "report", title: `Final report ${item.requestId}`, call: exactCall(close.read), kept: close.message }));
+		this.browser.push((child) =>
+			pagedReader(child, this.source, {
+				kind: "report",
+				title: `Final report ${item.requestId}`,
+				call: exactCall(close.read),
+				kept: close.message,
+			}),
+		);
 	}
 
 	render(width: number, height: number): string[] {
@@ -333,7 +461,10 @@ export class WorkView implements View {
 	}
 }
 
-type Paging = { readonly title: string; readonly call: ResultCall } & ({ readonly kind: "answer" } | { readonly kind: "report"; readonly kept: string });
+type Paging = { readonly title: string; readonly call: ResultCall } & (
+	| { readonly kind: "answer" }
+	| { readonly kind: "report"; readonly kept: string }
+);
 
 const INPUT_WORDS: Record<ResultPage["status"], string> = {
 	queued: "queued: it waits for its turn",
@@ -343,7 +474,13 @@ const INPUT_WORDS: Record<ResultPage["status"], string> = {
 	unavailable: "no retained result",
 };
 
-type Chunk = { readonly text: string; readonly offset: number; readonly nextOffset: number | null; readonly length?: number; readonly next?: ResultCall };
+type Chunk = {
+	readonly text: string;
+	readonly offset: number;
+	readonly nextOffset: number | null;
+	readonly length?: number;
+	readonly next?: ResultCall;
+};
 
 /** The page text, its offset and the exact continuation, for the kind of text this reader follows. */
 function chunkOf(page: ResultPage, kind: Paging["kind"]): Chunk | undefined {
@@ -351,10 +488,21 @@ function chunkOf(page: ResultPage, kind: Paging["kind"]): Chunk | undefined {
 	if (kind === "report") {
 		const report = page.finalReport;
 		if (report === undefined) return undefined;
-		return { text: report.text, offset: report.offset, nextOffset: report.nextOffset, length: report.length, ...(page.finalReportContinuation === undefined ? {} : { next: exactCall(page.finalReportContinuation) }) };
+		return {
+			text: report.text,
+			offset: report.offset,
+			nextOffset: report.nextOffset,
+			length: report.length,
+			...(page.finalReportContinuation === undefined ? {} : { next: exactCall(page.finalReportContinuation) }),
+		};
 	}
 	if (page.answer === undefined) return undefined;
-	return { text: page.answer, offset: page.offset ?? 0, nextOffset: page.nextOffset ?? null, ...(page.answerContinuation === undefined ? {} : { next: exactCall(page.answerContinuation) }) };
+	return {
+		text: page.answer,
+		offset: page.offset ?? 0,
+		nextOffset: page.nextOffset ?? null,
+		...(page.answerContinuation === undefined ? {} : { next: exactCall(page.answerContinuation) }),
+	};
 }
 
 function answerHeading(page: ResultPage): string[] {
@@ -362,8 +510,14 @@ function answerHeading(page: ResultPage): string[] {
 	if (page.requestId !== undefined) lines.push(`Request: ${page.requestId}`);
 	if (page.status !== "unavailable" && page.work !== undefined) {
 		const report = page.work.finalReport;
-		if (page.work.state === "open") lines.push("Its request declared work that is still open: an answer is a state note, and the final report comes later.");
-		else lines.push(`Its request declared work that closed${report?.status === undefined ? "" : ` (${report.status})`}: an answer is a state note, and final report ${report?.requestId ?? ""} is the result. f reads it.`);
+		if (page.work.state === "open")
+			lines.push(
+				"Its request declared work that is still open: an answer is a state note, and the final report comes later.",
+			);
+		else
+			lines.push(
+				`Its request declared work that closed${report?.status === undefined ? "" : ` (${report.status})`}: an answer is a state note, and final report ${report?.requestId ?? ""} is the result. f reads it.`,
+			);
 	}
 	if (page.reason !== undefined) lines.push(plainLine(page.reason));
 	return lines;
@@ -372,10 +526,15 @@ function answerHeading(page: ResultPage): string[] {
 function reportHeading(page: ResultPage, kept: string): string[] {
 	if (page.status !== "unavailable" && page.finalReport !== undefined) {
 		const report = page.finalReport;
-		return [`Report request: ${report.requestId}`, ...(report.status === undefined ? [] : [`Status: ${report.status}`]), `Reply recipient: ${report.ownerId}`];
+		return [
+			`Report request: ${report.requestId}`,
+			...(report.status === undefined ? [] : [`Status: ${report.status}`]),
+			`Reply recipient: ${report.ownerId}`,
+		];
 	}
 	const lines = [page.reason === undefined ? "The host returned no report page." : plainLine(page.reason)];
-	if (kept) lines.push("", "The closed work item keeps this message, which is not the retained report:", "", plainText(kept));
+	if (kept)
+		lines.push("", "The closed work item keeps this message, which is not the retained report:", "", plainText(kept));
 	return lines;
 }
 
@@ -402,7 +561,12 @@ class PagedReader {
 
 	view(): View {
 		void this.read();
-		return new ReaderView(this.paging.title, this.host, () => this.content(), () => this.actions());
+		return new ReaderView(
+			this.paging.title,
+			this.host,
+			() => this.content(),
+			() => this.actions(),
+		);
 	}
 
 	private async read(): Promise<void> {
@@ -438,7 +602,8 @@ class PagedReader {
 			expected = this.append(chunk, expected);
 			call = this.continuation(chunk.next, pages);
 		}
-		if (this.rest !== undefined) this.progress = `Shown ${this.count()} characters; the text continues: ${callText(this.rest)}`;
+		if (this.rest !== undefined)
+			this.progress = `Shown ${this.count()} characters; the text continues: ${callText(this.rest)}`;
 		else this.progress = this.text ? `Complete: ${this.text.length} characters` : "";
 	}
 
@@ -476,17 +641,46 @@ class PagedReader {
 
 	private content(): string {
 		const first = this.first;
-		const heading = first === undefined ? [] : this.paging.kind === "report" ? reportHeading(first, this.paging.kept) : answerHeading(first);
-		return [this.paging.title, ...heading, ...(this.progress ? [this.progress] : []), ...(this.text ? ["", plainText(this.text)] : [])].join("\n");
+		const heading =
+			first === undefined
+				? []
+				: this.paging.kind === "report"
+					? reportHeading(first, this.paging.kept)
+					: answerHeading(first);
+		return [
+			this.paging.title,
+			...heading,
+			...(this.progress ? [this.progress] : []),
+			...(this.text ? ["", plainText(this.text)] : []),
+		].join("\n");
 	}
 
 	private actions(): Action[] {
-		const list: Action[] = [{ id: "refresh", label: "Read again", key: "r", short: "read again", primary: true, disabled: this.reading ? "A read is in progress" : undefined, run: () => void this.read() }];
+		const list: Action[] = [
+			{
+				id: "refresh",
+				label: "Read again",
+				key: "r",
+				short: "read again",
+				primary: true,
+				disabled: this.reading ? "A read is in progress" : undefined,
+				run: () => void this.read(),
+			},
+		];
 		const report = this.first?.status === "unavailable" ? undefined : this.first?.work?.finalReport;
 		if (this.paging.kind === "answer" && report !== undefined) {
 			const call = exactCall(report.read as FinalReportRead);
 			const title = `Final report ${report.requestId}`;
-			list.unshift({ id: "report", label: "Read its final report", key: "f", short: "final report", primary: true, description: title, run: () => this.host.push((child) => pagedReader(child, this.source, { kind: "report", title, call, kept: "" })) });
+			list.unshift({
+				id: "report",
+				label: "Read its final report",
+				key: "f",
+				short: "final report",
+				primary: true,
+				description: title,
+				run: () =>
+					this.host.push((child) => pagedReader(child, this.source, { kind: "report", title, call, kept: "" })),
+			});
 		}
 		return list;
 	}

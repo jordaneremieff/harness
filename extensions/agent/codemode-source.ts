@@ -59,5 +59,9 @@ export function prepareNativeCodemodeArguments(args: unknown): PreparedNativeCod
 	const code = (args as { readonly code?: unknown }).code;
 	if (typeof code !== "string") throw new Error("The codemode `code` argument must be a string.");
 	const parsed = parseCodemodeSource(code);
-	return { ...args, code: parsed.options.timeoutMs === undefined ? replaceCodemodeTimeout(code, DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS) : code };
+	return {
+		...args,
+		code:
+			parsed.options.timeoutMs === undefined ? replaceCodemodeTimeout(code, DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS) : code,
+	};
 }

@@ -22,11 +22,17 @@ it("selects a manager spawn before storage exists and attaches to its real host"
 	let connection: HostConnection | undefined;
 	let connects = 0;
 	const manager = new AgentManager({
-		root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
+		root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
 		validateModel() {},
 		acquire: async (metadata, options) => {
 			launched.resolve(metadata);
-			connection = await acquireHost(metadata, { ...options, runner: fileURLToPath(new URL("./live-observation-fixture.mts", import.meta.url)), env: { DURABLE_TEST_HOST_START_GATE: markers.notifyPath } });
+			connection = await acquireHost(metadata, {
+				...options,
+				runner: fileURLToPath(new URL("./live-observation-fixture.mts", import.meta.url)),
+				env: { DURABLE_TEST_HOST_START_GATE: markers.notifyPath },
+			});
 			return connection;
 		},
 		connect: async (metadata, options) => {
@@ -35,15 +41,20 @@ it("selects a manager spawn before storage exists and attaches to its real host"
 		},
 	});
 	const source = createAgentObservationSource({
-		list: () => manager.dashboardPage(), snapshot: (id, params) => manager.snapshot(id, params),
-		observeLive: (...args) => manager.observeLive(...args), subscribeRoster: (listener) => manager.subscribeRoster(listener),
+		list: () => manager.dashboardPage(),
+		snapshot: (id, params) => manager.snapshot(id, params),
+		observeLive: (...args) => manager.observeLive(...args),
+		subscribeRoster: (listener) => manager.subscribeRoster(listener),
 	});
 	const taskFrame = deferred();
 	const off = source.subscribe(() => {
 		const id = connection?.storageId;
 		if (id && JSON.stringify(source.frame(id)?.entries ?? []).includes("startup task")) taskFrame.resolve();
 	});
-	const spawning = manager.spawn({ model: `${fixtureProvider}/${fixtureModelId}`, prompt: "startup task", origin: "operator" }, { id: "owner", cwd: root, model: { provider: "fixture", modelId: "model-1" } });
+	const spawning = manager.spawn(
+		{ model: `${fixtureProvider}/${fixtureModelId}`, prompt: "startup task", origin: "operator" },
+		{ id: "owner", cwd: root, model: { provider: "fixture", modelId: "model-1" } },
+	);
 	cleanup = async () => {
 		releaseStart();
 		off();
@@ -61,7 +72,14 @@ it("selects a manager spawn before storage exists and attaches to its real host"
 	source.select(metadata.storageId);
 	const abandoned = new AbortController();
 	let abandonedFrames = 0;
-	const abandonedObservation = manager.observeLive(metadata.storageId, "conversation", () => { abandonedFrames++; }, abandoned.signal);
+	const abandonedObservation = manager.observeLive(
+		metadata.storageId,
+		"conversation",
+		() => {
+			abandonedFrames++;
+		},
+		abandoned.signal,
+	);
 	abandoned.abort();
 	const status = manager.status(metadata.storageId);
 	const starting = (await source.list()).rows.find((row) => row.id === metadata.storageId);
@@ -84,13 +102,27 @@ it("observes an absent catalog storage without acquiring a host", { timeout: 150
 	const root = mkdtempSync(join(tmpdir(), "agent-absent-"));
 	let acquires = 0;
 	const manager = new AgentManager({
-		root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
-		acquire: async () => { acquires++; throw new Error("observation must not launch"); },
+		root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
+		acquire: async () => {
+			acquires++;
+			throw new Error("observation must not launch");
+		},
 	});
-	const record = manager.catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: "fixture", modelId: "model-1" }, thinkingLevel: "off", ownerId: "owner" });
+	const record = manager.catalog.create({
+		cwd: root,
+		agentDir: join(root, "agent"),
+		packageDir: join(root, "package"),
+		model: { provider: "fixture", modelId: "model-1" },
+		thinkingLevel: "off",
+		ownerId: "owner",
+	});
 	const source = createAgentObservationSource({
-		list: () => manager.dashboardPage(), snapshot: (id, params) => manager.snapshot(id, params),
-		observeLive: (...args) => manager.observeLive(...args), subscribeRoster: (listener) => manager.subscribeRoster(listener),
+		list: () => manager.dashboardPage(),
+		snapshot: (id, params) => manager.snapshot(id, params),
+		observeLive: (...args) => manager.observeLive(...args),
+		subscribeRoster: (listener) => manager.subscribeRoster(listener),
 	});
 	const unavailable = deferred();
 	const off = source.subscribe(() => {
@@ -158,11 +190,19 @@ it("preserves unchanged history identity through live frames and snapshot reads"
 		await turn();
 		const publish = f.listeners.get("one:conversation");
 		assert.ok(publish);
-		const first = conversationFrame({ entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: "History", timestamp: 1 }] }] });
+		const first = conversationFrame({
+			entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: "History", timestamp: 1 }] }],
+		});
 		publish(first, true, "live");
 		assert.strictEqual(source.frame("one"), first);
 		assert.strictEqual((await source.snapshot("one")).entries, first.entries);
-		const next = { ...first, revision: 2, live: [{ id: "live:text", kind: "pi.user", model: [{ role: "user" as const, content: "Live text", timestamp: 2 }] }] };
+		const next = {
+			...first,
+			revision: 2,
+			live: [
+				{ id: "live:text", kind: "pi.user", model: [{ role: "user" as const, content: "Live text", timestamp: 2 }] },
+			],
+		};
 		publish(next, false, "live");
 		assert.strictEqual(source.frame("one"), next);
 		assert.strictEqual(source.frame("one")?.entries, first.entries);
@@ -173,7 +213,9 @@ it("preserves unchanged history identity through live frames and snapshot reads"
 		assert.strictEqual(source.frame("one"), reconnected);
 		assert.notStrictEqual(source.frame("one")?.entries, first.entries);
 		assert.deepEqual(source.frame("one"), next);
-	} finally { off(); }
+	} finally {
+		off();
+	}
 });
 
 it("only the selected conversation remains watched and cold reads keep continuation", async () => {
@@ -211,7 +253,10 @@ it("a delayed attach after close releases its handle", async () => {
 it("refresh leaves a pending attachment alone and retries a declined attachment", async () => {
 	const f = fixture();
 	let attaches = 0;
-	f.host.observeLive = async () => { attaches++; return undefined; };
+	f.host.observeLive = async () => {
+		attaches++;
+		return undefined;
+	};
 	const source = createAgentObservationSource(f.host);
 	const first = deferred();
 	const second = deferred();
@@ -228,13 +273,20 @@ it("refresh leaves a pending attachment alone and retries a declined attachment"
 		source.refresh("one");
 		await second.promise;
 		assert.equal(attaches, 2);
-	} finally { off(); }
+	} finally {
+		off();
+	}
 });
 
 function taskFrame(storageId: string, revision = 1): TasksFrame {
 	return {
-		scope: "tasks", storageId, revision, observedAt: new Date(revision).toISOString(),
-		tasks: [], labels: [], coverage: { complete: true, live: true },
+		scope: "tasks",
+		storageId,
+		revision,
+		observedAt: new Date(revision).toISOString(),
+		tasks: [],
+		labels: [],
+		coverage: { complete: true, live: true },
 	};
 }
 function attachmentFixture() {
@@ -248,9 +300,10 @@ function attachmentFixture() {
 		reject: (error: Error) => void;
 	};
 	const attaches: Attach[] = [];
-	f.host.observeLive = (id, scope, listener, signal) => new Promise((resolve, reject) => {
-		attaches.push({ id, scope, listener, signal, resolve, reject });
-	});
+	f.host.observeLive = (id, scope, listener, signal) =>
+		new Promise((resolve, reject) => {
+			attaches.push({ id, scope, listener, signal, resolve, reject });
+		});
 	return { ...f, attaches };
 }
 const taskStorage = "00000000-0000-4000-8000-000000000001";
@@ -260,7 +313,9 @@ for (const failure of ["decline", "reject", "disconnect"] as const) {
 		const f = attachmentFixture();
 		const source = createAgentObservationSource(f.host);
 		let reads: Promise<TasksFrame> | undefined;
-		const off = source.subscribe(() => { reads = source.tasks(`${taskStorage}:1`); });
+		const off = source.subscribe(() => {
+			reads = source.tasks(`${taskStorage}:1`);
+		});
 		let releases = 0;
 		try {
 			await source.tasks(`${taskStorage}:1`);
@@ -273,7 +328,9 @@ for (const failure of ["decline", "reject", "disconnect"] as const) {
 			else if (failure === "reject") first.reject(new Error("observer unavailable"));
 			else {
 				first.listener(taskFrame(taskStorage), true, "live");
-				first.resolve(() => { releases++; });
+				first.resolve(() => {
+					releases++;
+				});
 				await turn();
 				first.listener(undefined, false, "unavailable");
 			}
@@ -290,7 +347,9 @@ for (const failure of ["decline", "reject", "disconnect"] as const) {
 			assert.equal(releases, failure === "disconnect" ? 1 : 0);
 			const retry = f.attaches[1];
 			retry.listener(taskFrame(taskStorage, 2), true, "live");
-			retry.resolve(() => { releases++; });
+			retry.resolve(() => {
+				releases++;
+			});
 			await turn();
 			assert.equal((await source.tasks(taskStorage)).revision, 2);
 			source.refreshTasks(taskStorage);
@@ -300,7 +359,9 @@ for (const failure of ["decline", "reject", "disconnect"] as const) {
 			retry.listener(taskFrame(taskStorage, 2), true, "live");
 			assert.equal((await source.tasks(taskStorage)).coverage.live, true, "a recovered observer restores the graph");
 			assert.equal(f.attaches.length, 2);
-		} finally { off(); }
+		} finally {
+			off();
+		}
 		assert.equal(releases, failure === "disconnect" ? 2 : 1);
 	});
 }
@@ -319,7 +380,9 @@ it("Tasks keeps an unresolved attachment pending after an early unavailable noti
 		assert.equal(f.attaches.length, 2);
 		f.attaches[1].resolve(undefined);
 		await turn();
-	} finally { off(); }
+	} finally {
+		off();
+	}
 });
 for (const end of ["close", "switch"] as const) {
 	it(`late Tasks callbacks and handles do not revive a selection after ${end}`, async () => {
@@ -327,7 +390,9 @@ for (const end of ["close", "switch"] as const) {
 		const source = createAgentObservationSource(f.host);
 		const off = source.subscribe(() => {});
 		let notifications = 0;
-		const offNotifications = source.subscribe(() => { notifications++; });
+		const offNotifications = source.subscribe(() => {
+			notifications++;
+		});
 		let releases = 0;
 		await source.tasks(taskStorage);
 		const first = f.attaches[0];
@@ -335,12 +400,16 @@ for (const end of ["close", "switch"] as const) {
 		else {
 			await source.tasks(otherTaskStorage);
 			f.attaches[1].listener(taskFrame(otherTaskStorage, 2), true, "live");
-			f.attaches[1].resolve(() => { releases++; });
+			f.attaches[1].resolve(() => {
+				releases++;
+			});
 		}
 		assert.equal(first.signal?.aborted, true);
 		notifications = 0;
 		first.listener(taskFrame(taskStorage, 99), true, "live");
-		first.resolve(() => { releases++; });
+		first.resolve(() => {
+			releases++;
+		});
 		await turn();
 		assert.equal(releases, 1, "a late handle is disposed");
 		assert.equal(notifications, 0, "an aborted callback does not publish a frame");
@@ -397,7 +466,9 @@ it("a repeated revision notifies once and the source always holds the newest fra
 	const f = fixture();
 	const source = createAgentObservationSource(f.host);
 	let notifications = 0;
-	const off = source.subscribe(() => { notifications++; });
+	const off = source.subscribe(() => {
+		notifications++;
+	});
 	source.select("one");
 	await turn();
 	const listener = f.listeners.get("one:conversation");

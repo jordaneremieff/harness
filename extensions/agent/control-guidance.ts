@@ -68,35 +68,47 @@ export interface AgentToolGuidance {
 }
 
 /** Selection is a current task decision, not a fixed provider roster. */
-const EXECUTION_PRESET_GUIDANCE = "Use preset to select execution settings. Omit model and preset to use the machine defaultPreset on creation. Name model only when a direction or the task requires an override; receipts record explicit overrides. Explicit fields win over preset fields. Creation never inherits parent execution settings; absent thinking defaults to off. Configure retains the target's own values and never uses defaultPreset. Exclusions are advisory unless the operator sets enforceRoster true for creation. Preset role applies only to handle creation.";
-export const MODEL_SELECTION_GUIDANCE = "For an explicit model override, use an exact provider/model identity. Apply current task directions and the operator's route, budget, and role preferences before choosing the override. Verify its exact model and supported thinking level. The resolver owns preset and default identity selection. Configured access is not operator use; past use is not preference.";
+const EXECUTION_PRESET_GUIDANCE =
+	"Use preset to select execution settings. Omit model and preset to use the machine defaultPreset on creation. Name model only when a direction or the task requires an override; receipts record explicit overrides. Explicit fields win over preset fields. Creation never inherits parent execution settings; absent thinking defaults to off. Configure retains the target's own values and never uses defaultPreset. Exclusions are advisory unless the operator sets enforceRoster true for creation. Preset role applies only to handle creation.";
+export const MODEL_SELECTION_GUIDANCE =
+	"For an explicit model override, use an exact provider/model identity. Apply current task directions and the operator's route, budget, and role preferences before choosing the override. Verify its exact model and supported thinking level. The resolver owns preset and default identity selection. Configured access is not operator use; past use is not preference.";
 
 /** A follow-up places at a tool boundary of a running recipient, not at the run end. */
-export const FOLLOW_UP_DELIVERY_BOUNDARY = "A followUp to a running agent is placed at the recipient's next tool boundary, the end of its current round of tool calls, not at the end of its run. It does not interrupt a running tool. It joins the current work, so both inputs may share one answer.";
+export const FOLLOW_UP_DELIVERY_BOUNDARY =
+	"A followUp to a running agent is placed at the recipient's next tool boundary, the end of its current round of tool calls, not at the end of its run. It does not interrupt a running tool. It joins the current work, so both inputs may share one answer.";
 
 /** A report places at a tool boundary of a running recipient and starts no task. */
-export const REPORT_DELIVERY_BOUNDARY = "A report to a running agent is placed at the recipient's next tool boundary, not at the end of its run. It does not interrupt a running tool, and it starts no answer-bearing task. A report is an event for the recipient: it reads the report and continues. Use steer when the recipient must change its current work.";
+export const REPORT_DELIVERY_BOUNDARY =
+	"A report to a running agent is placed at the recipient's next tool boundary, not at the end of its run. It does not interrupt a running tool, and it starts no answer-bearing task. A report is an event for the recipient: it reads the report and continues. Use steer when the recipient must change its current work.";
 
 /** Each placed input carries its class; the class tells the recipient what to do with it. */
-export const INPUT_CLASS_GUIDANCE = "Read each placed input by its class. A steer corrects the current work: apply it now. A followUp and operator input are new work: finish the current step, then do them in this run. A report, result, check-in, and thread notice are events: read them and continue. Name in the answer each request that it covers.";
+export const INPUT_CLASS_GUIDANCE =
+	"Read each placed input by its class. A steer corrects the current work: apply it now. A followUp and operator input are new work: finish the current step, then do them in this run. A report, result, check-in, and thread notice are events: read them and continue. Name in the answer each request that it covers.";
 
 /** Open delegated work is declared, the run ends with a state note, and each arriving result starts the next run. */
-export const OPEN_WORK_GUIDANCE = "When no useful work remains for you and results are still due, declare the open work with agent_work continue (the request and its exact result references), then end the run with a short state note. A routed task that stays blocked or deferred gets its own record: agent_work continue with its request and an empty results list. Each result, report, or message starts your next run. Never hold a run open for agent output: no sleep, no repeated status or inspection call, no long foreground command. An input reaches you at the end of your current tool round, so do not chain long foreground calls. Creation records, reports, timers, names, and latest answers are not result references. Preserve known request IDs.";
+export const OPEN_WORK_GUIDANCE =
+	"When no useful work remains for you and results are still due, declare the open work with agent_work continue (the request and its exact result references), then end the run with a short state note. A routed task that stays blocked or deferred gets its own record: agent_work continue with its request and an empty results list. Each result, report, or message starts your next run. Never hold a run open for agent output: no sleep, no repeated status or inspection call, no long foreground command. An input reaches you at the end of your current tool round, so do not chain long foreground calls. Creation records, reports, timers, names, and latest answers are not result references. Preserve known request IDs.";
 
 /** While sent work is open, an ordinary session ends its turn in a tool call whose note is its transcript card, so the turn leaves no chat line. The note is operator text; the result references stay with the receipts and the host. */
-const ORDINARY_OPEN_WORK_GUIDANCE = "After you send work, do the useful independent work that remains for you. When work that you sent to agents is still open and no other work of yours is ready, call agent_yield with a short note for the operator: what still runs and what happens next. The turn ends only when every call in the last tool batch ends the turn: make the call in the last batch, alone or with other calls that also end the turn, and write no chat text. The note covers only work sent to agents: when other open work of this session has its own tool that ends the turn, call that tool in the same batch. agent_yield shows the note as one card in the transcript and ends the turn without a further model call. Write the note in plain words, describe each agent and each piece of work by what it does, and put no session, submission or request ID in it. The result references of your open requests stay in the receipts of your spawn and send calls, and after a compaction a continuity note lists the requests that have no delivered result, so the note carries none. A chat message is only for a decision or act of the operator, a blocker, or a result, and it stands alone. Results arrive as events; read them and continue the work. Never hold a turn open for agent output: no sleep, no repeated status or inspection call, no long foreground command. Creation records, reports, timers, names, and latest answers are not result references.";
-const NATIVE_SEND_GUIDANCE = "Send informational reports and blocking questions with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly; several requests can share a run. Reports start no answer-bearing task or check-in. A terminal answer settles the current request: give the substantive result or exact blocker. While declared work is open, end the run with a state note whose first words say that it is not the result; only agent_work complete sends the final report, to the original reply recipient. Use followUp for unrelated new work on a reused expert.";
-const ORDINARY_SEND_GUIDANCE = "Send informational reports and blocking questions with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly. Reports start no answer-bearing task or check-in. Give the substantive result or exact blocker when the work is complete. Use followUp for unrelated new work on a reused expert.";
-const CHECK_IN_GUIDANCE = "Results arrive without supervision turns. Set checkInMinutes only when a task needs a watchdog. Owner check-ins require a positive per-call or configured interval; the agent.checkInMinutes default is 0. Check-ins wake a model owner, not an operator owner; delivered reports and check-ins do not start another check-in task. A check-in is not a finished result. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. Steering waits for the tool boundary.";
+const ORDINARY_OPEN_WORK_GUIDANCE =
+	"After you send work, do the useful independent work that remains for you. When work that you sent to agents is still open and no other work of yours is ready, call agent_yield with a short note for the operator: what still runs and what happens next. The turn ends only when every call in the last tool batch ends the turn: make the call in the last batch, alone or with other calls that also end the turn, and write no chat text. The note covers only work sent to agents: when other open work of this session has its own tool that ends the turn, call that tool in the same batch. agent_yield shows the note as one card in the transcript and ends the turn without a further model call. Write the note in plain words, describe each agent and each piece of work by what it does, and put no session, submission or request ID in it. The result references of your open requests stay in the receipts of your spawn and send calls, and after a compaction a continuity note lists the requests that have no delivered result, so the note carries none. A chat message is only for a decision or act of the operator, a blocker, or a result, and it stands alone. Results arrive as events; read them and continue the work. Never hold a turn open for agent output: no sleep, no repeated status or inspection call, no long foreground command. Creation records, reports, timers, names, and latest answers are not result references.";
+const NATIVE_SEND_GUIDANCE =
+	"Send informational reports and blocking questions with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly; several requests can share a run. Reports start no answer-bearing task or check-in. A terminal answer settles the current request: give the substantive result or exact blocker. While declared work is open, end the run with a state note whose first words say that it is not the result; only agent_work complete sends the final report, to the original reply recipient. Use followUp for unrelated new work on a reused expert.";
+const ORDINARY_SEND_GUIDANCE =
+	"Send informational reports and blocking questions with agent_send mode: report to the current request's reply recipient. The creating owner is provenance, not every task's requester. Specify a recipient explicitly. Reports start no answer-bearing task or check-in. Give the substantive result or exact blocker when the work is complete. Use followUp for unrelated new work on a reused expert.";
+const CHECK_IN_GUIDANCE =
+	"Results arrive without supervision turns. Set checkInMinutes only when a task needs a watchdog. Owner check-ins require a positive per-call or configured interval; the agent.checkInMinutes default is 0. Check-ins wake a model owner, not an operator owner; delivered reports and check-ins do not start another check-in task. A check-in is not a finished result. Assess progress, let work continue, steer a wrap-up, or abort a hung tool. Steering waits for the tool boundary.";
 
 /**
  * What only the model can carry across a compaction or reset. The host keeps request routes and
  * delivers results itself, so the seed does not ask for them.
  */
-export const CONTINUITY_SEED = "Preserve the current purpose; consequential operator corrections and what they changed; qualified evidence; unresolved questions. Results of requests routed to this session keep arriving here.";
+export const CONTINUITY_SEED =
+	"Preserve the current purpose; consequential operator corrections and what they changed; qualified evidence; unresolved questions. Results of requests routed to this session keep arriving here.";
 /** The native host retains outgoing requests; the summary preserves the work that still owes a final report. */
 export const NATIVE_COMPACTION_SEED = `${CONTINUITY_SEED} Preserve each owed final report with its request, reply recipient, dependencies, and next action. After the summary, the Agent continuity note lists the requests that this session sent and that have no delivered result here.`;
-const RESET_HANDOFF_GUIDANCE = "A handoff states the current purpose; consequential operator corrections and what they changed; qualified evidence; unresolved questions; and the newest handover or checkpoint identifier.";
+const RESET_HANDOFF_GUIDANCE =
+	"A handoff states the current purpose; consequential operator corrections and what they changed; qualified evidence; unresolved questions; and the newest handover or checkpoint identifier.";
 
 /** Per-tool snippets and guidelines for the current controls. */
 export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, AgentToolGuidance>> = {
@@ -107,7 +119,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 			EXECUTION_PRESET_GUIDANCE,
 			"If you choose to delegate a recurring concern, look for a suitable existing @handle. Reuse it when its expertise and context serve the task. Spawn with handle resolves or creates one independent root and never reapplies creation defaults on reuse. Display names may repeat; targets accept @handle or canonical identity, not bare names.",
 			"An explicit creation role is saved on the new agent's profile with or without a handle. Inside a Durable agent, spawning without a handle in the same cwd creates a conversation in your storage; a different cwd creates a storage with its own host. The receipt states placement. Created conversations use the resolved machine preset or explicit execution values, not your model or thinking level; their selected controls permit further delegation. Created agents remain addressable to the operator and eligible for the bounded /agent roster.",
-			'Write each agent task as a contract: objective, output format, source guidance, and boundaries. Include purpose, acceptance, and an end condition. In assignments, corrections, and relayed decisions, carry each operator decision with its source, scope, and restrictions, and mark which choices are your own.',
+			"Write each agent task as a contract: objective, output format, source guidance, and boundaries. Include purpose, acceptance, and an end condition. In assignments, corrections, and relayed decisions, carry each operator decision with its source, scope, and restrictions, and mark which choices are your own.",
 			CHECK_IN_GUIDANCE,
 			"Agent work runs in the background. Each task's answer reports to its request's reply recipient automatically. Settlement is execution evidence, not task acceptance. Integrate the delegated results required by this request before claiming completion; a spawn or send receipt is not that result. Resolve live work for this request: continue useful work, redirect changed work, or abort superseded work. Do not stop unrelated, standing, or background agents merely to finish this request.",
 			OPEN_WORK_GUIDANCE,
@@ -127,7 +139,9 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 	},
 	agent_steer: {
 		snippet: "Redirect a running agent session",
-		guidelines: ["Say whether a correction comes from the operator or from you, and keep the scope of an operator correction."],
+		guidelines: [
+			"Say whether a correction comes from the operator or from you, and keep the scope of an operator correction.",
+		],
 	},
 	agent_abort: {
 		snippet: "Abort an agent session operation",
@@ -146,10 +160,26 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 			RESET_HANDOFF_GUIDANCE,
 		],
 	},
-	agent_configure: { snippet: "Configure a session without starting work", guidelines: [MODEL_SELECTION_GUIDANCE, EXECUTION_PRESET_GUIDANCE] },
-	agent_profile: { snippet: "Read or update a durable agent profile", guidelines: ["Read saved expertise after context loss and before relying on past findings. Update role or a bounded sourced synthesis with expectedRevision from a current read. Profile edits work at a busy tool boundary; model/name changes remain agent_configure. Current evidence and task restrictions outrank stale expertise."] },
-	agent_intent: { snippet: "Publish or clear your integration intent", guidelines: ["Intent is your claim, not verified authority or a machine lock. Independent work needs no claim. Before a shared act (an activation switch, a host-operation or stored-format change, removal of another session's worktrees or snapshots) or possible overlap with another effort, use bounded discovery; current context can already supply it. Publish your purpose, shared acts, scope and carried operator direction only where an actual dependency needs coordination. Declare a need for a quiet machine with scope.fullGate true, then clear or update the claim on release. Native conversations publish only their own claim. Current updated readers discover native claims through bounded catalogue projections; unchanged readers do not gain that support."] },
-	agent_compact: { snippet: "Compact an agent while preserving its continuity", guidelines: [`In a summary or in instructions: ${CONTINUITY_SEED}`] },
+	agent_configure: {
+		snippet: "Configure a session without starting work",
+		guidelines: [MODEL_SELECTION_GUIDANCE, EXECUTION_PRESET_GUIDANCE],
+	},
+	agent_profile: {
+		snippet: "Read or update a durable agent profile",
+		guidelines: [
+			"Read saved expertise after context loss and before relying on past findings. Update role or a bounded sourced synthesis with expectedRevision from a current read. Profile edits work at a busy tool boundary; model/name changes remain agent_configure. Current evidence and task restrictions outrank stale expertise.",
+		],
+	},
+	agent_intent: {
+		snippet: "Publish or clear your integration intent",
+		guidelines: [
+			"Intent is your claim, not verified authority or a machine lock. Independent work needs no claim. Before a shared act (an activation switch, a host-operation or stored-format change, removal of another session's worktrees or snapshots) or possible overlap with another effort, use bounded discovery; current context can already supply it. Publish your purpose, shared acts, scope and carried operator direction only where an actual dependency needs coordination. Declare a need for a quiet machine with scope.fullGate true, then clear or update the claim on release. Native conversations publish only their own claim. Current updated readers discover native claims through bounded catalogue projections; unchanged readers do not gain that support.",
+		],
+	},
+	agent_compact: {
+		snippet: "Compact an agent while preserving its continuity",
+		guidelines: [`In a summary or in instructions: ${CONTINUITY_SEED}`],
+	},
 	agent_command: { snippet: "Run a command through an agent's owner" },
 	agent_status: {
 		snippet: "Show agent session status",
@@ -164,15 +194,40 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 	agent_list: { snippet: "Find retained agent sessions" },
 	agent_inspect: { snippet: "Read an agent's retained entries, activity, or results" },
 	agent_attach: { snippet: "Attach to a stored agent session" },
-	agent_place: { snippet: "Work in the session bound to an area", guidelines: [MODEL_SELECTION_GUIDANCE, EXECUTION_PRESET_GUIDANCE, "A preset supplies creation defaults, not changes to a reused place owner. Configure an idle owner explicitly to change its model."] },
-	agent_collaborate: { snippet: "Find peers and exchange work in a shared purpose thread", guidelines: ["If a shared thread would help the task, look for relevant threads before asking the primary to relay identities. Read the governing frame before joining. A thread does not require fixed roles or an agreement vote.", "Use the shared frame for governing purpose and each member's contribution for its current hold, release or continuing condition. Rejoin to replace your contribution and cite the source exchange. Contributions are declarations, not consensus or permission.", "Keep participation within 256 characters and message within 8,000 characters. Write longer content to a file and post its path.", "A thread preserves purpose, carried authority and source, restrictions, acceptance, and integrator. Agent labels do not prove operator authority. Keep the original decision and its scope distinct from interpretations and proposals.", "Joining opts into bounded passive notices for new thread events at existing conversation boundaries. These notices start no model turn. Posts retain shared evidence without waking a model. Name notify recipients only when their attention matters. Notices do not request automatic replies or check-ins. Inspect the thread or peer evidence rather than poll while useful work continues."] },
+	agent_place: {
+		snippet: "Work in the session bound to an area",
+		guidelines: [
+			MODEL_SELECTION_GUIDANCE,
+			EXECUTION_PRESET_GUIDANCE,
+			"A preset supplies creation defaults, not changes to a reused place owner. Configure an idle owner explicitly to change its model.",
+		],
+	},
+	agent_collaborate: {
+		snippet: "Find peers and exchange work in a shared purpose thread",
+		guidelines: [
+			"If a shared thread would help the task, look for relevant threads before asking the primary to relay identities. Read the governing frame before joining. A thread does not require fixed roles or an agreement vote.",
+			"Use the shared frame for governing purpose and each member's contribution for its current hold, release or continuing condition. Rejoin to replace your contribution and cite the source exchange. Contributions are declarations, not consensus or permission.",
+			"Keep participation within 256 characters and message within 8,000 characters. Write longer content to a file and post its path.",
+			"A thread preserves purpose, carried authority and source, restrictions, acceptance, and integrator. Agent labels do not prove operator authority. Keep the original decision and its scope distinct from interpretations and proposals.",
+			"Joining opts into bounded passive notices for new thread events at existing conversation boundaries. These notices start no model turn. Posts retain shared evidence without waking a model. Name notify recipients only when their attention matters. Notices do not request automatic replies or check-ins. Inspect the thread or peer evidence rather than poll while useful work continues.",
+		],
+	},
 };
 
 /** Select instructions for the controls available on the recipient's execution surface. */
 export function agentControlGuidance(name: AgentControlToolName, surface: "ordinary" | "native"): AgentToolGuidance {
 	const guidance = AGENT_CONTROL_GUIDANCE[name];
 	if (surface === "native" || (name !== "agent_spawn" && name !== "agent_send")) return guidance;
-	return { ...guidance, guidelines: guidance.guidelines?.map((line) => line === OPEN_WORK_GUIDANCE ? ORDINARY_OPEN_WORK_GUIDANCE : line === NATIVE_SEND_GUIDANCE ? ORDINARY_SEND_GUIDANCE : line) };
+	return {
+		...guidance,
+		guidelines: guidance.guidelines?.map((line) =>
+			line === OPEN_WORK_GUIDANCE
+				? ORDINARY_OPEN_WORK_GUIDANCE
+				: line === NATIVE_SEND_GUIDANCE
+					? ORDINARY_SEND_GUIDANCE
+					: line,
+		),
+	};
 }
 
 /** Render the guidance lines for the selected controls, in control order. */

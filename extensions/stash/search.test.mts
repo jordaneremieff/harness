@@ -87,7 +87,10 @@ it("binds checkpoint continuations and identifiers to their collection", async (
 	assert.equal(next.matches[0].source, "source:2");
 	assert.equal(next.matches[0].workspace, "/workspace");
 	assert.equal(next.coverage.complete, true);
-	await assert.rejects(searchStashes(root, { query: "orchid", collection: "checkpoints", state: "open" }), /omit state/);
+	await assert.rejects(
+		searchStashes(root, { query: "orchid", collection: "checkpoints", state: "open" }),
+		/omit state/,
+	);
 	const abort = new AbortController();
 	abort.abort();
 	await assert.rejects(searchStashes(root, { query: "orchid", collection: "checkpoints" }, abort.signal), /cancelled/);

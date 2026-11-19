@@ -16,7 +16,10 @@ import { parseHostMetadata } from "./host-protocol.ts";
 import { runHost, type HostRuntime } from "./host-process.ts";
 import { publishFixtureMarker } from "./testdata/durable-runtime/signal.ts";
 
-async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>, retire: () => Promise<void>): Promise<HostRuntime> {
+async function createRuntime(
+	metadata: ReturnType<typeof parseHostMetadata>,
+	retire: () => Promise<void>,
+): Promise<HostRuntime> {
 	const durable = await DurableHost.open({
 		storagePath: metadata.storagePath,
 		storageId: metadata.storageId,
@@ -37,14 +40,19 @@ async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>, ret
 		if (!notifyPath) throw new Error("DURABLE_TEST_NOTIFY is required for a gated snapshot");
 		await publishFixtureMarker(notifyPath, "snapshot-gated");
 		if (process.env.DURABLE_TEST_RETIRE === "clean") {
-			const finished = new Promise<void>((resolve) => { finishSnapshot = resolve; });
-			setImmediate(() => { void retire(); });
+			const finished = new Promise<void>((resolve) => {
+				finishSnapshot = resolve;
+			});
+			setImmediate(() => {
+				void retire();
+			});
 			await finished;
 		} else await new Promise(() => {});
 	};
 	const openObservation = async (input: Record<string, unknown> | undefined) => {
 		if (rejectReopen) {
-			if (process.env.DURABLE_TEST_NOTIFY) await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "observation-reopen-refused");
+			if (process.env.DURABLE_TEST_NOTIFY)
+				await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "observation-reopen-refused");
 			throw new Error("observation reopen refused");
 		}
 		writeFileSync(openedMarker, "opened");

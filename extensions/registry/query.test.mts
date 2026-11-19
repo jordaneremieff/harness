@@ -90,18 +90,32 @@ describe("name matching", () => {
 
 describe("metadata search", () => {
 	it("searches tool guidance but not parameter schemas or source paths", () => {
-		const records = [record({ kind: "tool", name: "inspect", invocation: undefined,
-			description: "Inspect documents", promptGuidelines: ["Use inspect to verify a draft."],
-			parameters: { type: "object", description: "schema-only" },
-			sourceInfo: { ...info, path: "/fixtures/path-only.ts" } })];
+		const records = [
+			record({
+				kind: "tool",
+				name: "inspect",
+				invocation: undefined,
+				description: "Inspect documents",
+				promptGuidelines: ["Use inspect to verify a draft."],
+				parameters: { type: "object", description: "schema-only" },
+				sourceInfo: { ...info, path: "/fixtures/path-only.ts" },
+			}),
+		];
 		assert.equal(selectRecords(records, parseQuery({ search: "VERIFY" })).length, 1);
 		assert.equal(selectRecords(records, parseQuery({ search: "schema-only" })).length, 0);
 		assert.equal(selectRecords(records, parseQuery({ search: "path-only" })).length, 0);
 		assert.equal(selectRecords(records, parseQuery({ kind: "skill", search: "verify" })).length, 0);
 	});
 	it("requires every whitespace term in any field, in any order, without joining fields", () => {
-		const records = [record({ kind: "tool", name: "inspect", invocation: undefined,
-			description: "Session documents", promptGuidelines: ["first", "second"] })];
+		const records = [
+			record({
+				kind: "tool",
+				name: "inspect",
+				invocation: undefined,
+				description: "Session documents",
+				promptGuidelines: ["first", "second"],
+			}),
+		];
 		const count = (search: string) => selectRecords(records, parseQuery({ search })).length;
 		assert.equal(count("first"), 1);
 		assert.equal(count("session documents"), 1);
@@ -141,7 +155,12 @@ describe("cursor continuation", () => {
 	});
 
 	it("rejects foreign, malformed, and oversized cursors", () => {
-		for (const cursor of ["", "not-a-cursor", Buffer.from("{}").toString("base64url"), "x".repeat(CURSOR_MAX_BYTES + 1)]) {
+		for (const cursor of [
+			"",
+			"not-a-cursor",
+			Buffer.from("{}").toString("base64url"),
+			"x".repeat(CURSOR_MAX_BYTES + 1),
+		]) {
 			assert.throws(
 				() => decodeCursor(cursor),
 				(error: unknown) => error instanceof QueryError && error.reason === "invalid_arguments",
@@ -161,13 +180,19 @@ describe("fingerprint and paging", () => {
 	});
 
 	it("ignores explicit evidence times but retains attested values, evidence, and schema fields named at", () => {
-		const skill = record({ modelInvocable: { value: true, evidence: "observation", at: 1 },
-			baseDir: { value: "/skills/example", evidence: "observation", at: 1 } });
+		const skill = record({
+			modelInvocable: { value: true, evidence: "observation", at: 1 },
+			baseDir: { value: "/skills/example", evidence: "observation", at: 1 },
+		});
 		const { modelInvocable, baseDir } = skill;
 		assert.ok(modelInvocable && baseDir);
 		const start = fingerprintRecords([skill]);
-		assert.equal(fingerprintRecords([{ ...skill, at: 2, modelInvocable: { ...modelInvocable, at: 2 },
-			baseDir: { ...baseDir, at: 2 } }]), start);
+		assert.equal(
+			fingerprintRecords([
+				{ ...skill, at: 2, modelInvocable: { ...modelInvocable, at: 2 }, baseDir: { ...baseDir, at: 2 } },
+			]),
+			start,
+		);
 		for (const metadata of [
 			{ modelInvocable: { ...modelInvocable, value: false } },
 			{ modelInvocable: { ...modelInvocable, evidence: "file_content" as const } },
@@ -175,11 +200,13 @@ describe("fingerprint and paging", () => {
 			{ baseDir: { ...baseDir, evidence: "file_content" as const } },
 			{ modelInvocable: undefined },
 			{ baseDir: undefined },
-		]) assert.notEqual(fingerprintRecords([{ ...skill, ...metadata }]), start);
+		])
+			assert.notEqual(fingerprintRecords([{ ...skill, ...metadata }]), start);
 		const tool = record({ kind: "tool", parameters: { type: "object", properties: { at: { const: 1 } } } });
-		assert.notEqual(fingerprintRecords([tool]), fingerprintRecords([
-			{ ...tool, parameters: { type: "object", properties: { at: { const: 2 } } } },
-		]));
+		assert.notEqual(
+			fingerprintRecords([tool]),
+			fingerprintRecords([{ ...tool, parameters: { type: "object", properties: { at: { const: 2 } } } }]),
+		);
 	});
 
 	it("is order-independent for the same set", () => {

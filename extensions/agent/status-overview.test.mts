@@ -16,7 +16,12 @@ import {
 	UsageSchema,
 	UsageStateSchema,
 } from "./observation-schema.ts";
-import { buildStatusOverview, projectSelectedStatus, STATUS_OVERVIEW_BYTE_LIMIT, STATUS_OVERVIEW_DISCOVERY } from "./status-overview.ts";
+import {
+	buildStatusOverview,
+	projectSelectedStatus,
+	STATUS_OVERVIEW_BYTE_LIMIT,
+	STATUS_OVERVIEW_DISCOVERY,
+} from "./status-overview.ts";
 
 function summary(index: number, fields: Partial<AgentPrioritySummary> = {}): AgentPrioritySummary {
 	return {
@@ -78,14 +83,21 @@ it("retains idle open work beyond quiet samples and distinguishes absent counts 
 	const open = { ...summary(1), openWorkCount: 2, openWorkOldest: 300000 };
 	const empty = { ...summary(2, { state: "working" }), openWorkCount: 0 };
 	const unavailable = summary(3, { state: "working" });
-	const result = buildStatusOverview(page([...Array.from({ length: 7 }, (_, index) => summary(index + 10)), open, empty, unavailable]), [], []);
+	const result = buildStatusOverview(
+		page([...Array.from({ length: 7 }, (_, index) => summary(index + 10)), open, empty, unavailable]),
+		[],
+		[],
+	);
 	const retained = result.sessions.find((row) => row.id === open.id);
 	const { rosterOrder: _rank, ...published } = open;
 	assert.deepEqual(retained, published);
 	check(result);
 	for (const source of [open, empty, unavailable]) {
-		const row = result.sessions.find((item) => item.id === source.id); assert.ok(row);
-		const selected = projectSelectedStatus({ conversation: { ...source, identity: `${source.id}:1`, conversationId: 1, busy: false } });
+		const row = result.sessions.find((item) => item.id === source.id);
+		assert.ok(row);
+		const selected = projectSelectedStatus({
+			conversation: { ...source, identity: `${source.id}:1`, conversationId: 1, busy: false },
+		});
 		assert.equal(selected.format, "compact");
 		if (selected.format !== "compact") return;
 		for (const key of ["openWorkCount", "openWorkOldest"] as const) {
@@ -115,7 +127,15 @@ it("uses catalog recency and identity independently of working and attention sum
 		result.sessions.map((row) => row.id),
 		["agent-90", "agent-4", "agent-3", "agent-2", "agent-2-b", "agent-1"],
 	);
-	assert.deepEqual(result.summary.sessions, { observed: 6, working: 3, attention: 1, unavailable: 1, quiet: 1, summarizedUnavailable: 0, summarizedQuiet: 0 });
+	assert.deepEqual(result.summary.sessions, {
+		observed: 6,
+		working: 3,
+		attention: 1,
+		unavailable: 1,
+		quiet: 1,
+		summarizedUnavailable: 0,
+		summarizedQuiet: 0,
+	});
 	assert.deepEqual(
 		rows.map((row) => row.id),
 		["agent-90", "agent-3", "agent-2", "agent-1", "agent-4", "agent-2-b"],
@@ -124,18 +144,42 @@ it("uses catalog recency and identity independently of working and attention sum
 });
 
 it("keeps idle priority rows outside quiet sampling and counts priority byte omissions", () => {
-	const rows = Array.from({ length: 100 }, (_, index) => summary(index, { rosterOrder: { priority: true, modifiedAt: index }, name: "😀".repeat(1000), storageId: `storage-${Math.floor(index / 2)}` }));
+	const rows = Array.from({ length: 100 }, (_, index) =>
+		summary(index, {
+			rosterOrder: { priority: true, modifiedAt: index },
+			name: "😀".repeat(1000),
+			storageId: `storage-${Math.floor(index / 2)}`,
+		}),
+	);
 	const source = page(rows);
-	source.coverage.inventory = { candidates: 50, inspected: 50, unreadable: 0, unknownClaims: 0, returned: 50, remaining: 0, priorityRemaining: 0,
-		remainingRows: 0, priorityRemainingRows: 0, recordByteLimit: 32768, claimByteLimit: 16384, outputLimit: 320 };
+	source.coverage.inventory = {
+		candidates: 50,
+		inspected: 50,
+		unreadable: 0,
+		unknownClaims: 0,
+		returned: 50,
+		remaining: 0,
+		priorityRemaining: 0,
+		remainingRows: 0,
+		priorityRemainingRows: 0,
+		recordByteLimit: 32768,
+		claimByteLimit: 16384,
+		outputLimit: 320,
+	};
 	const result = buildStatusOverview(source, [], []);
 	assert.ok(result.sessions.length > 5, "priority quiet rows are not restricted to the quiet sample");
 	assert.ok(result.coverage.byteLimitReached);
 	assert.equal(result.coverage.omittedPriorityRows, rows.length - result.sessions.length);
 	const retained = new Set(result.sessions.map((row) => row.id));
-	assert.equal(result.coverage.omittedPriorityRecords, new Set(rows.filter((row) => !retained.has(row.id)).map((row) => row.storageId)).size);
+	assert.equal(
+		result.coverage.omittedPriorityRecords,
+		new Set(rows.filter((row) => !retained.has(row.id)).map((row) => row.storageId)).size,
+	);
 	assert.equal(result.sessions[0].id, "agent-99");
-	assert.equal(result.sessions.some((row) => "rosterOrder" in row), false);
+	assert.equal(
+		result.sessions.some((row) => "rosterOrder" in row),
+		false,
+	);
 	assert.ok(result.coverage.reasons.some((reason) => /live or caller-owned rows/u.test(reason)));
 	check(result);
 });
@@ -267,19 +311,31 @@ it("classifies independent faults before availability and activity without treat
 		summary(11, { state: "idle", owner: "unknown" }),
 	];
 	const result = buildStatusOverview(page(rows), [], []);
-	assert.deepEqual(result.summary.sessions, { observed: 11, working: 2, attention: 5, unavailable: 2, quiet: 2, summarizedUnavailable: 0, summarizedQuiet: 0 });
+	assert.deepEqual(result.summary.sessions, {
+		observed: 11,
+		working: 2,
+		attention: 5,
+		unavailable: 2,
+		quiet: 2,
+		summarizedUnavailable: 0,
+		summarizedQuiet: 0,
+	});
 	assert.equal(result.sessions.find((row) => row.id === "agent-3")?.error, "host metadata unavailable");
 	assert.equal(result.sessions.find((row) => row.id === "agent-11")?.owner, "unknown");
 	check(result);
 });
 
 it("samples unavailable rows separately while retaining priority, declared work and actual faults", () => {
-	const unavailable = Array.from({ length: 70 }, (_, index) => summary(index, { state: "unavailable", error: "host metadata unavailable" }));
+	const unavailable = Array.from({ length: 70 }, (_, index) =>
+		summary(index, { state: "unavailable", error: "host metadata unavailable" }),
+	);
 	const protectedRows = [
 		summary(-1, { state: "unavailable", rosterOrder: { priority: true, modifiedAt: 0 } }),
 		summary(-2, { state: "unavailable", openWorkCount: 2 }),
 	];
-	const faults = Array.from({ length: 8 }, (_, index) => summary(index + 200, { state: "unavailable", attention: "failed-turn" }));
+	const faults = Array.from({ length: 8 }, (_, index) =>
+		summary(index + 200, { state: "unavailable", attention: "failed-turn" }),
+	);
 	const quiet = Array.from({ length: 10 }, (_, index) => summary(index + 100));
 	const result = buildStatusOverview(page([...unavailable, ...protectedRows, ...faults, ...quiet]), [], []);
 	assert.equal(result.summary.sessions.unavailable, 72);
@@ -295,7 +351,9 @@ it("samples unavailable rows separately while retaining priority, declared work 
 
 it("removes newer unavailable samples before older work under byte pressure", () => {
 	const work = Array.from({ length: 10 }, (_, index) => summary(index, { state: "working", cwd: "x".repeat(800) }));
-	const unavailable = Array.from({ length: 70 }, (_, index) => summary(index + 100, { state: "unavailable", cwd: "x".repeat(2000) }));
+	const unavailable = Array.from({ length: 70 }, (_, index) =>
+		summary(index + 100, { state: "unavailable", cwd: "x".repeat(2000) }),
+	);
 	const result = buildStatusOverview(page([...unavailable, ...work]), [], []);
 	assert.equal(result.coverage.byteLimitReached, true);
 	for (const row of work) assert.ok(result.sessions.some((item) => item.id === row.id));
@@ -309,7 +367,9 @@ it("removes newer unavailable samples before older work under byte pressure", ()
 it("retains old priority and declared-work rows ahead of ordinary work at the byte bound", () => {
 	const priority = summary(-2, { state: "unavailable", rosterOrder: { priority: true, modifiedAt: 0 } });
 	const open = summary(-1, { openWorkCount: 3 });
-	const ordinary = Array.from({ length: 100 }, (_, index) => summary(index + 1, { state: "working", cwd: "x".repeat(600) }));
+	const ordinary = Array.from({ length: 100 }, (_, index) =>
+		summary(index + 1, { state: "working", cwd: "x".repeat(600) }),
+	);
 	const result = buildStatusOverview(page([priority, open, ...ordinary]), [], []);
 	assert.equal(result.coverage.byteLimitReached, true);
 	for (const row of [priority, open]) assert.ok(result.sessions.some((item) => item.id === row.id));
@@ -320,7 +380,12 @@ it("retains old priority and declared-work rows ahead of ordinary work at the by
 });
 
 it("reports an irreducible declared-work identity as omitted without truncating its target", () => {
-	const row = summary(1, { id: "x".repeat(100000), openWorkCount: 1, rosterOrder: { priority: true, modifiedAt: 1 }, state: "unavailable" });
+	const row = summary(1, {
+		id: "x".repeat(100000),
+		openWorkCount: 1,
+		rosterOrder: { priority: true, modifiedAt: 1 },
+		state: "unavailable",
+	});
 	const result = buildStatusOverview(page([row]), [], []);
 	assert.deepEqual(result.sessions, []);
 	assert.equal(result.summary.sessions.unavailable, 1);
@@ -369,7 +434,15 @@ it("keeps the stopped aborted unknown-owner reproduction quiet without dropping 
 		[],
 		[],
 	);
-	assert.deepEqual(result.summary.sessions, { observed: 5, working: 1, attention: 1, unavailable: 0, quiet: 3, summarizedUnavailable: 0, summarizedQuiet: 0 });
+	assert.deepEqual(result.summary.sessions, {
+		observed: 5,
+		working: 1,
+		attention: 1,
+		unavailable: 0,
+		quiet: 3,
+		summarizedUnavailable: 0,
+		summarizedQuiet: 0,
+	});
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
 		["agent-10", "agent-9", "agent-8", "agent-2", "agent-1"],
@@ -389,7 +462,12 @@ it("keeps the stopped aborted unknown-owner reproduction quiet without dropping 
 });
 
 it("preserves every recent dashboard health and ownership attention reason on stopped rows", () => {
-	const recent = (index: number, fields: Partial<AgentPrioritySummary>) => summary(index, { ...fields, modifiedAt: Date.parse("2026-10-02T23:00:00.000Z"), rosterOrder: { priority: false, modifiedAt: index } });
+	const recent = (index: number, fields: Partial<AgentPrioritySummary>) =>
+		summary(index, {
+			...fields,
+			modifiedAt: Date.parse("2026-10-02T23:00:00.000Z"),
+			rosterOrder: { priority: false, modifiedAt: index },
+		});
 	const result = buildStatusOverview(
 		page([
 			recent(20, {
@@ -416,7 +494,15 @@ it("preserves every recent dashboard health and ownership attention reason on st
 		[],
 		[],
 	);
-	assert.deepEqual(result.summary.sessions, { observed: 5, working: 0, attention: 4, unavailable: 0, quiet: 1, summarizedUnavailable: 0, summarizedQuiet: 0 });
+	assert.deepEqual(result.summary.sessions, {
+		observed: 5,
+		working: 0,
+		attention: 4,
+		unavailable: 0,
+		quiet: 1,
+		summarizedUnavailable: 0,
+		summarizedQuiet: 0,
+	});
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
 		["agent-20", "agent-19", "agent-18", "agent-17", "agent-16"],
@@ -439,7 +525,15 @@ it("keeps genuine health attention on working and starting rows without overridi
 		[],
 		[],
 	);
-	assert.deepEqual(result.summary.sessions, { observed: 5, working: 2, attention: 2, unavailable: 0, quiet: 1, summarizedUnavailable: 0, summarizedQuiet: 0 });
+	assert.deepEqual(result.summary.sessions, {
+		observed: 5,
+		working: 2,
+		attention: 2,
+		unavailable: 0,
+		quiet: 1,
+		summarizedUnavailable: 0,
+		summarizedQuiet: 0,
+	});
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
 		["agent-5", "agent-4", "agent-3", "agent-2", "agent-1"],
@@ -458,7 +552,15 @@ it("separates unavailable observations from terminal faults and retained error t
 		summary(2, { state: "stopped", error: "aborted", owner: "unknown" }),
 	];
 	const result = buildStatusOverview(page(rows), [], []);
-	assert.deepEqual(result.summary.sessions, { observed: 7, working: 0, attention: 1, unavailable: 1, quiet: 5, summarizedUnavailable: 0, summarizedQuiet: 0 });
+	assert.deepEqual(result.summary.sessions, {
+		observed: 7,
+		working: 0,
+		attention: 1,
+		unavailable: 1,
+		quiet: 5,
+		summarizedUnavailable: 0,
+		summarizedQuiet: 0,
+	});
 	assert.deepEqual(
 		result.sessions.map((row) => row.id),
 		rows.map((row) => row.id),
@@ -529,7 +631,13 @@ it("does not claim complete coverage when source counters or cursor contradict c
 it("retains live priority rows ahead of unowned quiet samples under byte pressure and counts excluded work", () => {
 	const rows = [
 		summary(10000),
-		...Array.from({ length: 200 }, (_, index) => summary(index, { state: "working", rosterOrder: { priority: true, modifiedAt: index }, cwd: `/${"p".repeat(400)}` })),
+		...Array.from({ length: 200 }, (_, index) =>
+			summary(index, {
+				state: "working",
+				rosterOrder: { priority: true, modifiedAt: index },
+				cwd: `/${"p".repeat(400)}`,
+			}),
+		),
 	];
 	const result = buildStatusOverview(page(rows, true, 3, "source-cursor"), [], []);
 	assert.equal(result.coverage.byteLimitReached, true);
@@ -669,7 +777,23 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 					entry: 9,
 				},
 			],
-			nestedTools: [{ callId: "call-1/child", parentCallId: "call-1", parentTaskId: 9, taskId: 10, name: "read", arguments: { path: "/work/file" }, status: "running", output: fullText, droppedBytes: 7, droppedLines: 8, details: { retained: fullText }, diagnostics: [{ severity: "warn", message: fullText, code: "test" }], summary: { isError: true, durationMs: 12, usage, error: fullText } }],
+			nestedTools: [
+				{
+					callId: "call-1/child",
+					parentCallId: "call-1",
+					parentTaskId: 9,
+					taskId: 10,
+					name: "read",
+					arguments: { path: "/work/file" },
+					status: "running",
+					output: fullText,
+					droppedBytes: 7,
+					droppedLines: 8,
+					details: { retained: fullText },
+					diagnostics: [{ severity: "warn", message: fullText, code: "test" }],
+					summary: { isError: true, durationMs: 12, usage, error: fullText },
+				},
+			],
 			compactions: [
 				{ taskId: 10, trigger: "threshold", blocking: true, attempt: 2, retry: { at: 11, error: fullText } },
 			],
@@ -718,15 +842,43 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 		openWorkCount: 1,
 		openWorkOldest: 300000,
 		ageObservedAt: 1700000000000,
-		openWork: [{ requestId: "request-open", submissionId: 17, requester: "owner:1", replyTo: "owner:1", origin: "model", note: "Read the result", state: "open", declaredAt: 24, updatedAt: 25,
-			dependencies: [{ sessionId: "producer:3", submissionId: 4, requestId: "exact-request", state: "open", unavailable: "Source connection closed",
-				inspect: { tool: "agent_inspect", view: "result", sessionId: "producer:3", submissionId: 4 } }] }],
+		openWork: [
+			{
+				requestId: "request-open",
+				submissionId: 17,
+				requester: "owner:1",
+				replyTo: "owner:1",
+				origin: "model",
+				note: "Read the result",
+				state: "open",
+				declaredAt: 24,
+				updatedAt: 25,
+				dependencies: [
+					{
+						sessionId: "producer:3",
+						submissionId: 4,
+						requestId: "exact-request",
+						state: "open",
+						unavailable: "Source connection closed",
+						inspect: { tool: "agent_inspect", view: "result", sessionId: "producer:3", submissionId: 4 },
+					},
+				],
+			},
+		],
 		ownerTaskId: 23,
 		providerBlock: {
-			blockId: "block-1", conversationId: 2, providerSessionId: "provider-session-2", epoch: 0,
-			model: { provider: "test", modelId: "model" }, error: fullText.slice(0, 4096),
-			errorRedacted: false, errorTruncated: true, source: "provider", timestamp: 2,
-			originalResults: [{ sessionId: "storage:2", submissionId: 17, requestId: "request-1" }], omittedOriginalResults: 0,
+			blockId: "block-1",
+			conversationId: 2,
+			providerSessionId: "provider-session-2",
+			epoch: 0,
+			model: { provider: "test", modelId: "model" },
+			error: fullText.slice(0, 4096),
+			errorRedacted: false,
+			errorTruncated: true,
+			source: "provider",
+			timestamp: 2,
+			originalResults: [{ sessionId: "storage:2", submissionId: 17, requestId: "request-1" }],
+			omittedOriginalResults: 0,
 		},
 	};
 	const inventory = {
@@ -754,7 +906,10 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 		assert.deepEqual(structuredObservation(schema, fixture), fixture);
 	}
 	for (const host of [{ pid: 4242, inventory }, { live: false }]) {
-		for (const selected of [{ conversation }, { conversations: [conversation], coverage: { complete: true, returned: 1, scanned: 1, next: null } }]) {
+		for (const selected of [
+			{ conversation },
+			{ conversations: [conversation], coverage: { complete: true, returned: 1, scanned: 1, next: null } },
+		]) {
 			const input = { ...selected, ...host, storageId: "storage", deliveryError: fullText };
 			assert.deepEqual(
 				structuredObservation(StatusOutputSchema, input),
@@ -780,14 +935,24 @@ it("ignores source cursor size and explains the fresh discovery route", () => {
 });
 
 it("keeps the intervention hint and drops catalog-local fields so the overview validates", () => {
-	const profile = { identity: "agent-1", handle: "reviewer", role: "Review parser changes", revision: "r1", hasExpertise: false, updatedAt: null };
+	const profile = {
+		identity: "agent-1",
+		handle: "reviewer",
+		role: "Review parser changes",
+		revision: "r1",
+		hasExpertise: false,
+		updatedAt: null,
+	};
 	const rows = [
 		summary(1, { state: "failed", attention: "failed-turn", profile, creatingOwnerId: "owner" }),
 		summary(2, { state: "working", attention: "provider-blocked", profile }),
 		summary(3, { state: "idle", attention: "task-blocked" }),
 	];
 	const result = buildStatusOverview(page(rows), [], []);
-	assert.deepEqual(new Set(result.sessions.map((row) => row.attention)), new Set(["failed-turn", "provider-blocked", "task-blocked"]));
+	assert.deepEqual(
+		new Set(result.sessions.map((row) => row.attention)),
+		new Set(["failed-turn", "provider-blocked", "task-blocked"]),
+	);
 	for (const row of result.sessions) {
 		for (const key of ["profile", "creatingOwnerId", "rosterOrder"]) assert.equal(Object.hasOwn(row, key), false, key);
 	}

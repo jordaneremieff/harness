@@ -30,5 +30,8 @@ export function matchesSchema<T extends object>(schema: T, value: unknown): valu
 
 /** The first `limit` mismatches as `<path> <message>`, with `/` for the root. */
 export function schemaErrors(schema: object, value: unknown, limit: number): string[] {
-	return validator(schema).errors(value).slice(0, limit).map((error) => `${error.path === "" ? "/" : error.path} ${error.message}`);
+	return validator(schema)
+		.errors(value)
+		.slice(0, limit)
+		.map((error) => `${error.path === "" ? "/" : error.path} ${error.message}`);
 }

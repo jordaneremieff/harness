@@ -36,7 +36,11 @@ export interface OwnershipState {
 /** The adapter serialises updates atomically for each owner, including concurrent calls. */
 export interface OwnershipStore {
 	read(ownerId: string): Promise<OwnershipState>;
-	update(ownerId: string, change: (current: OwnershipState) => OwnershipState, phase: "work" | "finalise"): Promise<OwnershipState>;
+	update(
+		ownerId: string,
+		change: (current: OwnershipState) => OwnershipState,
+		phase: "work" | "finalise",
+	): Promise<OwnershipState>;
 }
 
 export function initialOwnershipState(): OwnershipState {
@@ -66,7 +70,23 @@ export function validateOwnershipState(value: unknown, maxRecords = 128): Owners
 }
 
 function validateRecord(record: OwnershipRecord): void {
-	currentFields(record, ["callId", "requestDigest", "ownerId", "server", "operation", "phase", "resources", "createdAt", "updatedAt", "note", "pendingCleanupCallId"], "record");
+	currentFields(
+		record,
+		[
+			"callId",
+			"requestDigest",
+			"ownerId",
+			"server",
+			"operation",
+			"phase",
+			"resources",
+			"createdAt",
+			"updatedAt",
+			"note",
+			"pendingCleanupCallId",
+		],
+		"record",
+	);
 	if (
 		!record ||
 		typeof record !== "object" ||
@@ -77,7 +97,8 @@ function validateRecord(record: OwnershipRecord): void {
 		!["pending", "confirmed", "unknown", "closed", "released"].includes(record.phase)
 	)
 		throw new Error("Rex ownership record is invalid.");
-	if (record.pendingCleanupCallId !== undefined && !boundedText(record.pendingCleanupCallId, 1024)) throw new Error("Rex pending cleanup identity is invalid.");
+	if (record.pendingCleanupCallId !== undefined && !boundedText(record.pendingCleanupCallId, 1024))
+		throw new Error("Rex pending cleanup identity is invalid.");
 	validateServer(record.server);
 	if (
 		!Array.isArray(record.resources) ||
@@ -114,11 +135,14 @@ function validateResource(resource: ResourceRef): void {
 function currentFields(value: unknown, fields: readonly string[], name: string): void {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Rex ownership ${name} is invalid.`);
 	const prototype = Object.getPrototypeOf(value);
-	if (prototype !== Object.prototype && prototype !== null) throw new Error(`Rex ownership ${name} is not a current plain object.`);
+	if (prototype !== Object.prototype && prototype !== null)
+		throw new Error(`Rex ownership ${name} is not a current plain object.`);
 	for (const key of Reflect.ownKeys(value)) {
-		if (typeof key !== "string" || !fields.includes(key)) throw new Error(`Rex ownership ${name} has unsupported fields.`);
+		if (typeof key !== "string" || !fields.includes(key))
+			throw new Error(`Rex ownership ${name} has unsupported fields.`);
 		const descriptor = Object.getOwnPropertyDescriptor(value, key);
-		if (!descriptor?.enumerable || descriptor.get || descriptor.set) throw new Error(`Rex ownership ${name} is not a current data object.`);
+		if (!descriptor?.enumerable || descriptor.get || descriptor.set)
+			throw new Error(`Rex ownership ${name} is not a current data object.`);
 	}
 }
 

@@ -1,5 +1,12 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { renderBashCall, renderBashResult, renderJobsCall, renderJobsResult, renderYieldCall, renderYieldResult } from "./presentation.ts";
+import {
+	renderBashCall,
+	renderBashResult,
+	renderJobsCall,
+	renderJobsResult,
+	renderYieldCall,
+	renderYieldResult,
+} from "./presentation.ts";
 
 type ToolDisplayPublication = {
 	version: 1;

@@ -11,14 +11,27 @@ import { RegistryOutputSchema } from "./output.ts";
 import registerRegistry from "./index.ts";
 
 function snapshot(): SettingsSnapshot {
-	return { publications: [publication()], available: true,
-		collection: { status: "available", slices: ["example"], malformed: 0, omitted: 0 } };
+	return {
+		publications: [publication()],
+		available: true,
+		collection: { status: "available", slices: ["example"], malformed: 0, omitted: 0 },
+	};
 }
-const hostSnapshot = { tools: [], activeTools: [], commands: [], observation: null,
-	availability: { tools: false, activeTools: false, commands: false }, at: 1 };
+const hostSnapshot = {
+	tools: [],
+	activeTools: [],
+	commands: [],
+	observation: null,
+	availability: { tools: false, activeTools: false, commands: false },
+	at: 1,
+};
 function verify(result: Awaited<ReturnType<typeof lookup>>) {
 	assert.ok(compile(RegistryOutputSchema).check(result.structuredContent), JSON.stringify(result.structuredContent));
-	const envelope = JSON.stringify({ content: [{ type: "text", text: result.text }], details: result.details, structuredContent: result.structuredContent });
+	const envelope = JSON.stringify({
+		content: [{ type: "text", text: result.text }],
+		details: result.details,
+		structuredContent: result.structuredContent,
+	});
 	assert.ok(Buffer.byteLength(envelope) <= 50 * 1024);
 	assert.ok(envelope.replace(/\\n/g, "\n").split("\n").length <= 2000);
 	return result.details.records as Record<string, unknown>[];
@@ -31,13 +44,19 @@ test("setting queries inspect fresh public snapshots, origins and diagnostics wi
 	current.records[1] = { ...current.records[1], secretState: "set", status: "valid", origin: "env" };
 	current.source.status = "loaded";
 	current.diagnostics = [
-		{ field: "example.token", source: "file", code: "secret", message: "Secret settings are environment-only; document input was rejected." },
+		{
+			field: "example.token",
+			source: "file",
+			code: "secret",
+			message: "Secret settings are environment-only; document input was rejected.",
+		},
 		{ field: "example.unknown", source: "file", code: "unknown", message: "Unknown setting in this section." },
 	];
 	const dispose = fakePublisher(bus, () => current);
 	const reader = settingsReader(bus);
 	try {
-		const inspect = (params: Record<string, unknown>) => lookup({ params, snapshot: hostSnapshot, settings: reader.read(), session: {}, epoch: "fixture" });
+		const inspect = (params: Record<string, unknown>) =>
+			lookup({ params, snapshot: hostSnapshot, settings: reader.read(), session: {}, epoch: "fixture" });
 		const first = await inspect({ kind: "setting", limit: 1 });
 		const rows = verify(first);
 		assert.equal(first.outcome, "ok");
@@ -54,9 +73,18 @@ test("setting queries inspect fresh public snapshots, origins and diagnostics wi
 		const originalCursor = first.details.cursor;
 		current.source.observedAt = "2026-01-02T00:00:00.000Z";
 		current.source.digest = "a".repeat(64);
-		assert.equal((await inspect({ cursor: originalCursor })).outcome, "ok", "observation time and document digest do not enter fingerprints");
+		assert.equal(
+			(await inspect({ cursor: originalCursor })).outcome,
+			"ok",
+			"observation time and document digest do not enter fingerprints",
+		);
 		current.records[0] = { ...current.records[0], value: 2, status: "invalid", origin: "default" };
-		current.diagnostics.push({ field: "example.count", source: "env", code: "invalid", message: "Selected input is invalid; the safe default is in effect." });
+		current.diagnostics.push({
+			field: "example.count",
+			source: "env",
+			code: "invalid",
+			message: "Selected input is invalid; the safe default is in effect.",
+		});
 		const rejected = await inspect({ name: "example.count", kind: "setting" });
 		assert.equal(verify(rejected)[0].status, "invalid");
 		assert.equal(verify(rejected)[0].value, 2);
@@ -67,26 +95,44 @@ test("setting queries inspect fresh public snapshots, origins and diagnostics wi
 		const file = await inspect({ kind: "setting", search: "bounded" });
 		assert.equal(verify(file)[0].origin, "file");
 		assert.equal(verify(file)[0].value, 5);
-		assert.deepEqual(verify(await inspect({ kind: "setting", search: "count BOUNDED pi_example" })).map((record) => record.name), ["example.count"]);
+		assert.deepEqual(
+			verify(await inspect({ kind: "setting", search: "count BOUNDED pi_example" })).map((record) => record.name),
+			["example.count"],
+		);
 		assert.equal((await inspect({ kind: "setting", search: "bounded secret" })).outcome, "missing");
 		assert.equal(verify(await inspect({ kind: "setting", name: "example", match: "substring" })).length, 2);
 		current.source.status = "invalid";
 		current.records[0] = { ...current.records[0], value: 2, origin: "default" };
-		current.diagnostics = [{ field: "document", source: "file", code: "document", message: "Configuration document is invalid or unavailable." }];
+		current.diagnostics = [
+			{
+				field: "document",
+				source: "file",
+				code: "document",
+				message: "Configuration document is invalid or unavailable.",
+			},
+		];
 		const malformed = await inspect({ kind: "setting" });
 		assert.match(malformed.text, /example.document: file document/);
 		assert.equal(verify(malformed)[0].origin, "default");
 		assert.equal((await inspect({ kind: "setting", name: "absent" })).outcome, "missing");
-	} finally { reader.dispose(); dispose(); bus.clear(); }
+	} finally {
+		reader.dispose();
+		dispose();
+		bus.clear();
+	}
 });
 
 test("setting source absence and collection failure have explicit coverage", async () => {
 	const bus = createEventBus();
 	const reader = settingsReader(bus);
 	try {
-		const result = await lookup({ params: { kind: "setting" }, snapshot: hostSnapshot,
+		const result = await lookup({
+			params: { kind: "setting" },
+			snapshot: hostSnapshot,
 			settings: reader.read(),
-			session: {}, epoch: "fixture" });
+			session: {},
+			epoch: "fixture",
+		});
 		verify(result);
 		assert.equal(result.outcome, "unavailable");
 		assert.match(result.text, /No loaded publisher responded/);
@@ -95,22 +141,50 @@ test("setting source absence and collection failure have explicit coverage", asy
 		assert.equal(result.details.cursor, undefined);
 		assert.equal(result.details.pageTruncated, false);
 		assert.deepEqual((result.details.settingsCoverage as { respondingSlices: string[] }).respondingSlices, []);
-		const unavailable = await lookup({ params: { kind: "setting" }, snapshot: hostSnapshot, session: {}, epoch: "fixture" });
+		const unavailable = await lookup({
+			params: { kind: "setting" },
+			snapshot: hostSnapshot,
+			session: {},
+			epoch: "fixture",
+		});
 		verify(unavailable);
 		assert.equal(unavailable.outcome, "unavailable");
-		const failed = settingsReader({ on: () => { throw new Error("private error"); }, emit: () => {} }).read();
+		const failed = settingsReader({
+			on: () => {
+				throw new Error("private error");
+			},
+			emit: () => {},
+		}).read();
 		assert.equal(failed.available, false);
-	} finally { reader.dispose(); bus.clear(); }
+	} finally {
+		reader.dispose();
+		bus.clear();
+	}
 });
 
 test("setting output bounds drop whole rows or report a blocked page", async () => {
 	const bus = createEventBus();
 	const huge = publication();
-	huge.records = [{ ...huge.records[0], name: "example.value", key: "value", type: "string", env: "PI_EXAMPLE_VALUE", value: "x".repeat(20000) }];
+	huge.records = [
+		{
+			...huge.records[0],
+			name: "example.value",
+			key: "value",
+			type: "string",
+			env: "PI_EXAMPLE_VALUE",
+			value: "x".repeat(20000),
+		},
+	];
 	const dispose = fakePublisher(bus, () => huge);
 	const reader = settingsReader(bus);
 	try {
-		const result = await lookup({ params: { kind: "setting" }, snapshot: hostSnapshot, settings: reader.read(), session: {}, epoch: "fixture" });
+		const result = await lookup({
+			params: { kind: "setting" },
+			snapshot: hostSnapshot,
+			settings: reader.read(),
+			session: {},
+			epoch: "fixture",
+		});
 		verify(result);
 		assert.equal(result.details.pageBlocked, true);
 		assert.equal(result.details.pageTruncated, true);
@@ -118,12 +192,17 @@ test("setting output bounds drop whole rows or report a blocked page", async () 
 		assert.equal(typeof result.details.continuationReason, "string");
 		assert.equal(result.details.returnedRecords, 0);
 		assert.equal(result.details.cursor, undefined);
-	} finally { reader.dispose(); dispose(); bus.clear(); }
+	} finally {
+		reader.dispose();
+		dispose();
+		bus.clear();
+	}
 });
 
 test("partial publication coverage prevents absence and invalidates cursors without rejected bytes", async () => {
 	const configured = snapshot();
-	const run = (params: Record<string, unknown>, settings = configured) => lookup({ params, snapshot: hostSnapshot, settings, session: {}, epoch: "fixture" });
+	const run = (params: Record<string, unknown>, settings = configured) =>
+		lookup({ params, snapshot: hostSnapshot, settings, session: {}, epoch: "fixture" });
 	const first = await run({ kind: "setting", limit: 1 });
 	assert.equal(typeof first.details.cursor, "string");
 	const partial = { ...configured, collection: { ...configured.collection, malformed: 1, omitted: 2 } };
@@ -156,14 +235,25 @@ test("local collector rejects secret-bearing malformed publications with sanitiz
 		assert.equal(observed.collection.malformed, 1);
 		assert.equal(observed.available, true);
 		assert.doesNotMatch(JSON.stringify(observed), /private-rejected-value/);
-	} finally { reader.dispose(); bus.clear(); }
+	} finally {
+		reader.dispose();
+		bus.clear();
+	}
 });
 
 test("setting pages preserve owning relation diagnostics without altering scalar values", async () => {
 	const configured = snapshot();
 	configured.publications[0].records[0].status = "invalid";
-	configured.publications[0].diagnostics = JSON.parse('[{"field":"example.count","source":"default","code":"relation","message":"Configured settings violate an owning constraint."}]');
-	const result = await lookup({ params: { kind: "setting", name: "example.count" }, snapshot: hostSnapshot, settings: configured, session: {}, epoch: "fixture" });
+	configured.publications[0].diagnostics = JSON.parse(
+		'[{"field":"example.count","source":"default","code":"relation","message":"Configured settings violate an owning constraint."}]',
+	);
+	const result = await lookup({
+		params: { kind: "setting", name: "example.count" },
+		snapshot: hostSnapshot,
+		settings: configured,
+		session: {},
+		epoch: "fixture",
+	});
 	const rows = verify(result);
 	assert.equal(rows[0].value, 2);
 	assert.equal(rows[0].status, "invalid");
@@ -174,14 +264,26 @@ test("setting metadata keeps Unicode line separators off terminal rows", async (
 	const configured = snapshot();
 	configured.publications[0].records[0].description = "first\u2028second\u2029third";
 	configured.publications[0].source.path = "/fixtures/first\u2028second.json";
-	const result = await lookup({ params: { kind: "setting" }, snapshot: hostSnapshot, settings: configured, session: {}, epoch: "fixture" });
+	const result = await lookup({
+		params: { kind: "setting" },
+		snapshot: hostSnapshot,
+		settings: configured,
+		session: {},
+		epoch: "fixture",
+	});
 	verify(result);
 	assert.doesNotMatch(result.text, /[\u2028\u2029]/u);
 	assert.equal((result.details.records as { description: string }[])[0].description, "first\u2028second\u2029third");
 });
 
 test("setting selectors reject content scans and tool/model-only parameters", () => {
-	for (const params of [{ contains: "value" }, { detail: true, name: "example.count" }, { provider: "acme" }, { available: true }, { health: true }]) {
+	for (const params of [
+		{ contains: "value" },
+		{ detail: true, name: "example.count" },
+		{ provider: "acme" },
+		{ available: true },
+		{ health: true },
+	]) {
 		assert.throws(() => parseQuery({ kind: "setting", ...params }));
 	}
 });
@@ -190,33 +292,56 @@ test("ordinary registry collects at setup, refreshes valid live setting queries,
 	const agentDir = "/fixtures";
 	const bus = createEventBus();
 	let requests = 0;
-	bus.on("harness:settings:request", () => { requests++; });
+	bus.on("harness:settings:request", () => {
+		requests++;
+	});
 	const current = publication();
 	current.records[0] = { ...current.records[0], value: 9, origin: "env" };
 	const dispose = fakePublisher(bus, () => current);
 	let subscriptions = 0;
 	let releases = 0;
-	const observedBus = { ...bus, on(channel: string, handler: (data: unknown) => void) {
-		const unsubscribe = bus.on(channel, handler);
-		if (channel === SETTINGS_PUBLISH) subscriptions++;
-		return () => { if (channel === SETTINGS_PUBLISH) releases++; unsubscribe(); };
-	} };
+	const observedBus = {
+		...bus,
+		on(channel: string, handler: (data: unknown) => void) {
+			const unsubscribe = bus.on(channel, handler);
+			if (channel === SETTINGS_PUBLISH) subscriptions++;
+			return () => {
+				if (channel === SETTINGS_PUBLISH) releases++;
+				unsubscribe();
+			};
+		},
+	};
 	const handlers = new Map<string, () => Promise<void>>();
 	let tool: ToolDefinition | undefined;
-	registerRegistry({ events: observedBus, on: (event: string, callback: () => Promise<void>) => handlers.set(event, callback),
-		registerTool: (value: ToolDefinition) => { tool = value; }, getAllTools: () => [], getActiveTools: () => [], getCommands: () => [],
+	registerRegistry({
+		events: observedBus,
+		on: (event: string, callback: () => Promise<void>) => handlers.set(event, callback),
+		registerTool: (value: ToolDefinition) => {
+			tool = value;
+		},
+		getAllTools: () => [],
+		getActiveTools: () => [],
+		getCommands: () => [],
 	} as unknown as ExtensionAPI);
 	assert.ok(tool);
 	assert.equal(requests, 1);
 	const context = { tools: [], cwd: agentDir } as never;
 	try {
-		const result = await tool.execute("settings", { kind: "setting", name: "example.count" }, undefined, undefined, context);
+		const result = await tool.execute(
+			"settings",
+			{ kind: "setting", name: "example.count" },
+			undefined,
+			undefined,
+			context,
+		);
 		assert.equal((result.details as { records: { value: number }[] }).records[0].value, 9);
 		assert.equal(requests, 2);
 		current.records[0].value = 10;
 		const refreshed = await tool.execute("settings", { kind: "setting" }, undefined, undefined, context);
 		assert.equal((refreshed.details as { records: { value: number }[] }).records[0].value, 10);
-		assert.ok((refreshed.details as { records: { name: string }[] }).records.some((row) => row.name === "registry.notes"));
+		assert.ok(
+			(refreshed.details as { records: { name: string }[] }).records.some((row) => row.name === "registry.notes"),
+		);
 		await tool.execute("cancel", { kind: "setting" }, AbortSignal.abort(), undefined, context);
 		await tool.execute("invalid", { kind: "setting", contains: "value" }, undefined, undefined, context);
 		assert.equal(requests, 3);
@@ -231,5 +356,8 @@ test("ordinary registry collects at setup, refreshes valid live setting queries,
 		assert.equal(subscriptions, 1);
 		await handlers.get("session_shutdown")?.();
 		assert.equal(releases, 1);
-	} finally { dispose(); bus.clear(); }
+	} finally {
+		dispose();
+		bus.clear();
+	}
 });

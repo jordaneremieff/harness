@@ -38,9 +38,25 @@ const waitFor = async (condition: () => boolean, rounds = 2000): Promise<boolean
 
 async function storeWithTwoRecords(): Promise<{ dir: string; bodies: Map<string, string> }> {
 	const dir = await mkdtemp(join(tmpdir(), "stash-view-"));
-	const alpha = await writeStash(dir, { title: "Alpha effort", summary: "alpha summary text", project: "/work", sessionId: "session-1" });
-	const beta = await writeStash(dir, { title: "Beta effort", summary: "beta summary text", project: "/work", sessionId: "session-1" });
-	return { dir, bodies: new Map([[alpha.record.id, "alpha summary text"], [beta.record.id, "beta summary text"]]) };
+	const alpha = await writeStash(dir, {
+		title: "Alpha effort",
+		summary: "alpha summary text",
+		project: "/work",
+		sessionId: "session-1",
+	});
+	const beta = await writeStash(dir, {
+		title: "Beta effort",
+		summary: "beta summary text",
+		project: "/work",
+		sessionId: "session-1",
+	});
+	return {
+		dir,
+		bodies: new Map([
+			[alpha.record.id, "alpha summary text"],
+			[beta.record.id, "beta summary text"],
+		]),
+	};
 }
 
 /** A frame-like host that keeps the nested form layers a real frame would keep. */
@@ -67,7 +83,9 @@ function layeredHost() {
 		notices,
 		open: (ops: StashOperations) => {
 			const controller = new AbortController();
-			const view = stashView(make(controller), ops, createStashViewState()) as View & { readonly selected: StashEntry | undefined };
+			const view = stashView(make(controller), ops, createStashViewState()) as View & {
+				readonly selected: StashEntry | undefined;
+			};
 			layers.push({ view, controller });
 			return view;
 		},
@@ -113,7 +131,13 @@ const showsState = (view: View, state: string) => new RegExp(`${state} · stashe
 /** Run one labelled action of the current layer, as its footer control would. */
 function act(view: View, label: string): void {
 	const action = view.actions?.().find((candidate) => candidate.label === label);
-	assert.ok(action, `no ${label}: ${view.actions?.().map((candidate) => candidate.label).join(", ")}`);
+	assert.ok(
+		action,
+		`no ${label}: ${view
+			.actions?.()
+			.map((candidate) => candidate.label)
+			.join(", ")}`,
+	);
 	assert.equal(action.disabled, undefined, `${label} is unavailable: ${action.disabled}`);
 	action.run();
 }
@@ -137,16 +161,25 @@ test("close, reopen, and pick up follow the store, and release returns to open w
 	assert.equal(form.title, "Close with outcome");
 	typeInto(form, "shipped the feature");
 	act(form, "Close stash");
-	assert.ok(await waitFor(() => /closed · stashed/.test(screenOf(host.top()))), "the closed record is shown after its effect");
+	assert.ok(
+		await waitFor(() => /closed · stashed/.test(screenOf(host.top()))),
+		"the closed record is shown after its effect",
+	);
 	const closed = host.top();
 	assert.ok(screenOf(closed).includes("outcome: shipped the feature"), "the recorded outcome is shown");
-	assert.ok(closed.actions?.().some((action) => action.label === "Reopen…"), "a closed record offers Reopen");
+	assert.ok(
+		closed.actions?.().some((action) => action.label === "Reopen…"),
+		"a closed record offers Reopen",
+	);
 	assert.ok(!closed.actions?.().some((action) => action.label === "Pick up"), "a closed record offers no pickup");
 	act(closed, "Reopen…");
 	act(host.top(), "Reopen");
 	assert.ok(await waitFor(() => /open · stashed/.test(screenOf(host.top()))), "the reopened record is shown as open");
 	const reopened = host.top();
-	assert.ok(reopened.actions?.().some((action) => action.label === "Pick up"), "an open record offers Pick up again");
+	assert.ok(
+		reopened.actions?.().some((action) => action.label === "Pick up"),
+		"an open record offers Pick up again",
+	);
 	act(reopened, "Pick up");
 	assert.ok(await waitFor(() => showsState(host.top(), "active")), "the reopened record can be picked up");
 	const active = host.top();
@@ -154,8 +187,14 @@ test("close, reopen, and pick up follow the store, and release returns to open w
 	act(host.top(), "Release");
 	assert.ok(await waitFor(() => /open · stashed/.test(screenOf(host.top()))), "release returns the record to open");
 	const released = host.top();
-	assert.ok(released.actions?.().some((action) => action.label === "Pick up"), "a released record offers Pick up");
-	assert.ok(!released.actions?.().some((action) => action.label === "Close with outcome…"), "a released record offers no close");
+	assert.ok(
+		released.actions?.().some((action) => action.label === "Pick up"),
+		"a released record offers Pick up",
+	);
+	assert.ok(
+		!released.actions?.().some((action) => action.label === "Close with outcome…"),
+		"a released record offers no close",
+	);
 });
 
 test("an external change, then Refresh, rereads the selected preview even when its id is unchanged", async () => {
@@ -172,7 +211,10 @@ test("an external change, then Refresh, rereads the selected preview even when i
 	act(host.top(), "Refresh");
 	assert.ok(await waitFor(() => /closed · stashed/.test(screenOf(host.top()))), "Refresh rereads the selected record");
 	const refreshed = host.top();
-	assert.ok(refreshed.actions?.().some((action) => action.label === "Reopen…"), "the refreshed actions follow the store");
+	assert.ok(
+		refreshed.actions?.().some((action) => action.label === "Reopen…"),
+		"the refreshed actions follow the store",
+	);
 	assert.ok(!refreshed.actions?.().some((action) => action.label === "Close with outcome…"));
 });
 
@@ -184,19 +226,30 @@ test("a late older preview read never overwrites the newer selection and leaves 
 	});
 	const host = layeredHost();
 	const view = host.open(storeOperations(dir, held));
-	assert.ok(await waitFor(() => view.selected !== undefined && screenOf(view).includes("Reading the stash…")), "the first preview read is held");
+	assert.ok(
+		await waitFor(() => view.selected !== undefined && screenOf(view).includes("Reading the stash…")),
+		"the first preview read is held",
+	);
 	const first = view.selected;
 	assert.ok(first);
 	view.handleInput("\u001b[B");
 	const second = view.selected;
 	assert.ok(second && second.meta.id !== first.meta.id, "the selection moved to the other record");
-	assert.ok(await waitFor(() => screenOf(view).includes(bodies.get(second.meta.id) ?? "")), "the next record is read on selection");
+	assert.ok(
+		await waitFor(() => screenOf(view).includes(bodies.get(second.meta.id) ?? "")),
+		"the next record is read on selection",
+	);
 	release();
 	assert.ok(
-		await waitFor(() => !screenOf(view).includes("Reading the stash…") && screenOf(view).includes(bodies.get(second.meta.id) ?? "")),
+		await waitFor(
+			() => !screenOf(view).includes("Reading the stash…") && screenOf(view).includes(bodies.get(second.meta.id) ?? ""),
+		),
 		"the late older read settles without disturbing the newer selection",
 	);
-	assert.ok(!screenOf(view).includes(bodies.get(first.meta.id) ?? ""), "the superseded record stays unread until it is selected again");
+	assert.ok(
+		!screenOf(view).includes(bodies.get(first.meta.id) ?? ""),
+		"the superseded record stays unread until it is selected again",
+	);
 	view.handleInput("\u001b[A");
 	assert.ok(
 		await waitFor(() => screenOf(view).includes(bodies.get(first.meta.id) ?? "")),
@@ -241,5 +294,9 @@ test("at 80 columns the narrow detail opens the note form from itself and Cancel
 	assert.match(shown(), /id: \d{8}T\d{6}Z-beta-effort/);
 	assert.doesNotMatch(shown(), /The note goes ahead of the handover/);
 	const entries = await loadRecent(dir);
-	assert.equal(entries.entries.find((entry) => entry.meta.id.includes("beta"))?.meta.state, "open", "Cancel picked nothing up");
+	assert.equal(
+		entries.entries.find((entry) => entry.meta.id.includes("beta"))?.meta.state,
+		"open",
+		"Cancel picked nothing up",
+	);
 });

@@ -63,7 +63,8 @@ export function projectNamespace(namespace: NonNullable<ToolInfo["namespace"]>):
 	const projected: ToolNamespace = { name: namespace.name };
 	if (namespace.aliases !== undefined) projected.aliases = [...namespace.aliases];
 	if (namespace.description !== undefined) projected.description = namespace.description;
-	if (typeof namespace.instructions === "string" && namespace.instructions.length > 0) projected.instructionsOmitted = true;
+	if (typeof namespace.instructions === "string" && namespace.instructions.length > 0)
+		projected.instructionsOmitted = true;
 	return projected;
 }
 
@@ -127,8 +128,16 @@ export interface SurfaceAvailability {
 }
 
 export interface HostSnapshot {
-	tools: Array<{ name: string; description?: string; sourceInfo: SourceInfo; parameters?: ToolInfo["parameters"]; promptGuidelines?: string[];
-		exposure?: ToolInfo["exposure"]; namespace?: ToolNamespace; annotations?: ToolInfo["annotations"] }>;
+	tools: Array<{
+		name: string;
+		description?: string;
+		sourceInfo: SourceInfo;
+		parameters?: ToolInfo["parameters"];
+		promptGuidelines?: string[];
+		exposure?: ToolInfo["exposure"];
+		namespace?: ToolNamespace;
+		annotations?: ToolInfo["annotations"];
+	}>;
 	activeTools: string[];
 	callableTools?: string[];
 	callableEvidence?: ResourceRecord["callableEvidence"];
@@ -180,10 +189,20 @@ function buildToolRecords(snapshot: HostSnapshot, activeSet: Set<string>): Resou
 	return snapshot.tools.map((tool) => buildToolRecord(tool, snapshot, activeSet, callable));
 }
 
-function buildToolRecord(tool: HostSnapshot["tools"][number], snapshot: HostSnapshot, active: Set<string>, callable: Set<string>): ResourceRecord {
+function buildToolRecord(
+	tool: HostSnapshot["tools"][number],
+	snapshot: HostSnapshot,
+	active: Set<string>,
+	callable: Set<string>,
+): ResourceRecord {
 	const record: ResourceRecord = {
-		kind: "tool", name: tool.name, sourceInfo: tool.sourceInfo, evidence: "registration",
-		at: snapshot.at, configured: true, modelDeclared: null,
+		kind: "tool",
+		name: tool.name,
+		sourceInfo: tool.sourceInfo,
+		evidence: "registration",
+		at: snapshot.at,
+		configured: true,
+		modelDeclared: null,
 	};
 	if (tool.description !== undefined) record.description = tool.description;
 	if (tool.parameters !== undefined) record.parameters = tool.parameters;

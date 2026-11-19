@@ -13,12 +13,20 @@ function position(body: JsonObject): { lines: string[]; line: number; col: numbe
 }
 function item(value: unknown): AutocompleteItem {
 	const entry = object(value);
-	return { value: string(entry.value), label: string(entry.label), ...(entry.description === undefined ? {} : { description: string(entry.description) }) };
+	return {
+		value: string(entry.value),
+		label: string(entry.label),
+		...(entry.description === undefined ? {} : { description: string(entry.description) }),
+	};
 }
 
 export class ComposerCompletion {
 	private active?: AbortController;
-	async suggest(provider: AutocompleteProvider | undefined, body: JsonObject, signal: AbortSignal): Promise<JsonObject> {
+	async suggest(
+		provider: AutocompleteProvider | undefined,
+		body: JsonObject,
+		signal: AbortSignal,
+	): Promise<JsonObject> {
 		this.active?.abort();
 		const { lines, line, col } = position(body);
 		const force = body.force;
@@ -31,8 +39,12 @@ export class ComposerCompletion {
 			combined.throwIfAborted();
 			const result = await provider.getSuggestions(lines, line, col, { signal: combined, force });
 			combined.throwIfAborted();
-			return result ? { prefix: string(result.prefix), items: result.items.slice(0, 50).map(item) } : { prefix: "", items: [] };
-		} finally { if (this.active === current) this.active = undefined; }
+			return result
+				? { prefix: string(result.prefix), items: result.items.slice(0, 50).map(item) }
+				: { prefix: "", items: [] };
+		} finally {
+			if (this.active === current) this.active = undefined;
+		}
 	}
 	apply(provider: AutocompleteProvider | undefined, body: JsonObject): JsonObject {
 		const { lines, line, col } = position(body);
@@ -41,7 +53,8 @@ export class ComposerCompletion {
 		const text = draft(result.lines.join("\n"));
 		const row = integer(result.cursorLine);
 		const column = integer(result.cursorCol);
-		if (row >= result.lines.length || !cursorBoundary(result.lines[row], column)) throw new Error("Pi returned an invalid completion cursor.");
+		if (row >= result.lines.length || !cursorBoundary(result.lines[row], column))
+			throw new Error("Pi returned an invalid completion cursor.");
 		const cursor = result.lines.slice(0, row).reduce((offset, line) => offset + line.length + 1, column);
 		return { text, cursor };
 	}

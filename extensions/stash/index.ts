@@ -24,10 +24,24 @@ import {
 	capacityReset,
 	capacityStatus,
 	capacityTurnEnd,
-	band, capacityEpisode, continuityTools, gate, gateState, gateStatus, measureUsage, piAutoThreshold,
+	band,
+	capacityEpisode,
+	continuityTools,
+	gate,
+	gateState,
+	gateStatus,
+	measureUsage,
+	piAutoThreshold,
 	type GateState,
 } from "./capacity.ts";
-import { budgetAction, budgetContext, budgetNotice, budgetStatus, ORDINARY_COST, type SessionBudget } from "./budget.ts";
+import {
+	budgetAction,
+	budgetContext,
+	budgetNotice,
+	budgetStatus,
+	ORDINARY_COST,
+	type SessionBudget,
+} from "./budget.ts";
 import { prepareDistillSource } from "./distill.ts";
 import { stashDurableContribution } from "./durable.ts";
 import { resumeCommand, stateLabel } from "./format.ts";
@@ -65,7 +79,13 @@ import {
 	renderWriteResult,
 } from "./presentation.ts";
 import { readStashResult } from "./read-result.ts";
-import { renderBudgetMessage, renderBudgetStatusMessage, renderCapacityMessage, renderRedactionMessage, STASH_MESSAGES } from "./message-cards.ts";
+import {
+	renderBudgetMessage,
+	renderBudgetStatusMessage,
+	renderCapacityMessage,
+	renderRedactionMessage,
+	STASH_MESSAGES,
+} from "./message-cards.ts";
 import { mergeRedactionReports, type RedactionReport, redactionNotice, redactSecretsWithReport } from "./redact.ts";
 import { searchStashes } from "./search.ts";
 import {
@@ -264,7 +284,11 @@ const STASH_VERBS: ReadonlyArray<{ value: string; label: string; description: st
 		label: "capacity",
 		description: "[reset] · inspect capacity requests or explicitly start a new episode",
 	},
-	{ value: "budget", label: "budget", description: "[<context-tokens> <cost-usd>|off] · select per-conversation notice budgets" },
+	{
+		value: "budget",
+		label: "budget",
+		description: "[<context-tokens> <cost-usd>|off] · select per-conversation notice budgets",
+	},
 	{ value: "help", label: "help", description: "show /stash usage" },
 ];
 
@@ -435,7 +459,11 @@ function ordinaryOperations(
 }
 
 /** Without the interactive terminal a UI picks from the newest records; without any UI the browser refuses. */
-async function pickWithoutTerminal(pi: StashMessageApi, ctx: ExtensionContext, fail: (message: string) => void): Promise<void> {
+async function pickWithoutTerminal(
+	pi: StashMessageApi,
+	ctx: ExtensionContext,
+	fail: (message: string) => void,
+): Promise<void> {
 	if (!ctx.hasUI) {
 		throw new Error(
 			"The interactive stash browser requires TUI mode. Use stash_list to discover ids, /stash get <id> to pick up, /stash new <hint> to create, /stash complete <id> <outcome> to close, /stash reopen <id>, /stash rotate <id> to archive, or /stash help.",
@@ -449,22 +477,39 @@ async function pickWithoutTerminal(pi: StashMessageApi, ctx: ExtensionContext, f
 	}
 }
 
-function finishCapacityRound(state: GateState, event: TurnEndEvent, ctx: ExtensionContext, config: ReturnType<typeof capacityConfig>): void {
+function finishCapacityRound(
+	state: GateState,
+	event: TurnEndEvent,
+	ctx: ExtensionContext,
+	config: ReturnType<typeof capacityConfig>,
+): void {
 	if (event.outcome === "aborted" || ctx.signal?.aborted) state.blockedRounds = 0;
 	else {
-		state.blockedRounds = event.toolResults.length > 0 && event.toolResults.every((result) => state.blockedCalls.has(result.toolCallId)) ? state.blockedRounds + 1 : 0;
+		state.blockedRounds =
+			event.toolResults.length > 0 && event.toolResults.every((result) => state.blockedCalls.has(result.toolCallId))
+				? state.blockedRounds + 1
+				: 0;
 		if (band(state.measure ?? { kind: "unknown" }, config) === "decision") state.decisionRoundUsed = true;
 	}
 	state.blockedCalls.clear();
 	state.decisionRoundOpen = false;
 }
 
-function reportCapacityFailure(state: GateState, event: TurnEndEvent, ctx: ExtensionContext, config: ReturnType<typeof capacityConfig>, threshold?: number): void {
+function reportCapacityFailure(
+	state: GateState,
+	event: TurnEndEvent,
+	ctx: ExtensionContext,
+	config: ReturnType<typeof capacityConfig>,
+	threshold?: number,
+): void {
 	if (!config.enabled || event.outcome !== "error" || state.failureReported || !ctx.hasUI) return;
 	const measured = measureUsage(() => ctx.getContextUsage());
 	if (measured.kind !== "known" || band(measured, config) !== "stop") return;
 	state.failureReported = true;
-	ctx.ui.notify(`Stash capacity: this turn failed while context use was ${measured.percent.toFixed(1)}% of ${measured.contextWindow} tokens. Pi automatic compaction is ${threshold === undefined ? "disabled or unknown" : `enabled at ${threshold.toFixed(1)}%`}. Remedies: /compact, then continue; or start a fresh session with the latest handover or checkpoint (stash_list with collection checkpoints).`, "error");
+	ctx.ui.notify(
+		`Stash capacity: this turn failed while context use was ${measured.percent.toFixed(1)}% of ${measured.contextWindow} tokens. Pi automatic compaction is ${threshold === undefined ? "disabled or unknown" : `enabled at ${threshold.toFixed(1)}%`}. Remedies: /compact, then continue; or start a fresh session with the latest handover or checkpoint (stash_list with collection checkpoints).`,
+		"error",
+	);
 }
 
 export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: string) => Promise<void> }) {
@@ -495,7 +540,9 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	);
 	const stateFor = (ctx: ExtensionContext) => gateState(gates, ctx.sessionManager.getSessionId(), capacityEpisode(ctx));
 	let capacityErrorReported = false;
-	pi.on("agent_start", (_event, ctx) => { stateFor(ctx).blockedRounds = 0; });
+	pi.on("agent_start", (_event, ctx) => {
+		stateFor(ctx).blockedRounds = 0;
+	});
 	pi.on("turn_start", (_event, ctx) => {
 		const state = stateFor(ctx);
 		state.measure = undefined;
@@ -509,9 +556,16 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 			const state = stateFor(ctx);
 			state.measure ??= measureUsage(() => ctx.getContextUsage());
 			state.decisionRoundOpen ??= !state.decisionRoundUsed;
-			const decision = gate({ measure: state.measure, toolName: event.toolName, args: event.input, config,
+			const decision = gate({
+				measure: state.measure,
+				toolName: event.toolName,
+				args: event.input,
+				config,
 				declared: band(state.measure, config) === "normal" ? new Map() : continuityTools(pi.events),
-				released: state.released, decisionRoundOpen: state.decisionRoundOpen, blockedRounds: state.blockedRounds });
+				released: state.released,
+				decisionRoundOpen: state.decisionRoundOpen,
+				blockedRounds: state.blockedRounds,
+			});
 			if (decision.kind === "block") {
 				state.blockedCalls.add(event.toolCallId);
 				return { block: true, reason: decision.reason, terminate: decision.terminate };
@@ -539,10 +593,26 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	});
 	pi.on("turn_end", (event, ctx) => {
 		const budget = budgets.get(ctx.sessionManager.getSessionId());
-		if (!budget || event.entries.some((entry) => entry.type === "custom_message" && entry.customType === STASH_MESSAGES.budget)) return;
+		if (
+			!budget ||
+			event.entries.some((entry) => entry.type === "custom_message" && entry.customType === STASH_MESSAGES.budget)
+		)
+			return;
 		const observation = event.entries.some((entry) => entry.type === "compaction")
-			? { kind: "unavailable" as const } : budgetContext(() => ctx.getContextUsage());
-		return { entries: [...event.entries, { type: "custom_message", customType: STASH_MESSAGES.budget, content: budgetNotice(budget, observation, ORDINARY_COST), display: true, details: { turnEntryId: event.messageEntryId } }] };
+			? { kind: "unavailable" as const }
+			: budgetContext(() => ctx.getContextUsage());
+		return {
+			entries: [
+				...event.entries,
+				{
+					type: "custom_message",
+					customType: STASH_MESSAGES.budget,
+					content: budgetNotice(budget, observation, ORDINARY_COST),
+					display: true,
+					details: { turnEntryId: event.messageEntryId },
+				},
+			],
+		};
 	});
 	registerTool<typeof WriteParams, Record<string, unknown>>({
 		name: "stash_write",
@@ -609,7 +679,11 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		outputSchema: ListOutputSchema,
 		renderCall: renderListCall,
 		renderResult: renderListResult,
-		async execute(_toolCallId, params: Static<typeof ListParams>, signal): Promise<AgentToolResult<Record<string, unknown>>> {
+		async execute(
+			_toolCallId,
+			params: Static<typeof ListParams>,
+			signal,
+		): Promise<AgentToolResult<Record<string, unknown>>> {
 			const limit = params.limit ?? 10;
 			if (signal?.aborted) throw new Error("stash_list cancelled");
 			try {
@@ -625,11 +699,15 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 				}
 				if (params.cursor !== undefined)
 					throw new Error("cursor requires query; repeat the original query and filters");
-				const entries = await listStashes(directory, {
-					limit,
-					tag: params.tag,
-					state: params.state,
-				}, signal);
+				const entries = await listStashes(
+					directory,
+					{
+						limit,
+						tag: params.tag,
+						state: params.state,
+					},
+					signal,
+				);
 				return recentListResult(entries, limit, emptyListText(params.tag, params.state), params.collection);
 			} catch (error) {
 				if (signal?.aborted) throw error;
@@ -862,8 +940,12 @@ function budgetCommand(
 	budgets: Map<string, SessionBudget>,
 ): void {
 	let action: ReturnType<typeof budgetAction>;
-	try { action = budgetAction(parts.slice(1)); }
-	catch (error) { fail(error instanceof Error ? error.message : String(error)); return; }
+	try {
+		action = budgetAction(parts.slice(1));
+	} catch (error) {
+		fail(error instanceof Error ? error.message : String(error));
+		return;
+	}
 	const id = ctx.sessionManager.getSessionId();
 	if (action.kind === "set") budgets.set(id, action.budget);
 	else if (action.kind === "off") budgets.delete(id);
@@ -890,7 +972,15 @@ function capacityCommand(
 		const state = gateState(gates, ctx.sessionManager.getSessionId(), capacityEpisode(ctx));
 		if (parts[1] === "release") state.released = true;
 		state.measure = measureUsage(() => ctx.getContextUsage());
-		message = [parts[1] === "release" ? "Stash stop and decision round released until the next compaction in this session. Reload restores them." : "", capacityStatus(ctx, config), gateStatus(state, config, continuityTools(pi.events), piAutoThreshold(pi.getSettings().compaction, ctx.model))].filter(Boolean).join("\n");
+		message = [
+			parts[1] === "release"
+				? "Stash stop and decision round released until the next compaction in this session. Reload restores them."
+				: "",
+			capacityStatus(ctx, config),
+			gateStatus(state, config, continuityTools(pi.events), piAutoThreshold(pi.getSettings().compaction, ctx.model)),
+		]
+			.filter(Boolean)
+			.join("\n");
 	} catch (error) {
 		fail(error instanceof Error ? error.message : String(error));
 		return;

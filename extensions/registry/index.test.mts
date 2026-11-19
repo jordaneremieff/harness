@@ -1,14 +1,26 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ExtensionToolContext,
+	ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import registerRegistry, { RegistryParams, readSnapshot } from "./index.ts";
 
-const sourceInfo = { path: "/fixtures/SKILL.md", source: "fixture", scope: "temporary" as const, origin: "top-level" as const };
+const sourceInfo = {
+	path: "/fixtures/SKILL.md",
+	source: "fixture",
+	scope: "temporary" as const,
+	origin: "top-level" as const,
+};
 const context = {
 	...({ cwd: "/fixtures", mode: "rpc", hasUI: true, isProjectTrusted: () => true } as ExtensionContext),
 	tools: [],
-	executeTool: async () => { throw new Error("Unexpected nested tool call"); },
+	executeTool: async () => {
+		throw new Error("Unexpected nested tool call");
+	},
 } satisfies ExtensionToolContext;
 
 function handlerFor(
@@ -25,9 +37,19 @@ function fixture() {
 	const emissions: Array<{ channel: string; data: unknown }> = [];
 	let tool: ToolDefinition<typeof RegistryParams, Record<string, unknown>> | undefined;
 	const pi = {
-		on: (event: string, handler: (event: Record<string, unknown>) => Promise<void>) => { handlers.set(event, handler); },
-		events: { emit: (channel: string, data: unknown) => { emissions.push({ channel, data }); }, on: () => () => {} },
-		registerTool: (value: NonNullable<typeof tool>) => { registeredNames.push(value.name); tool = value; },
+		on: (event: string, handler: (event: Record<string, unknown>) => Promise<void>) => {
+			handlers.set(event, handler);
+		},
+		events: {
+			emit: (channel: string, data: unknown) => {
+				emissions.push({ channel, data });
+			},
+			on: () => () => {},
+		},
+		registerTool: (value: NonNullable<typeof tool>) => {
+			registeredNames.push(value.name);
+			tool = value;
+		},
 		getAllTools: () => ["one", "two"].map((name) => ({ name, sourceInfo })),
 		getActiveTools: () => ["one"],
 		getCommands: () => [{ name: "skill:example", source: "skill", sourceInfo }],
@@ -45,13 +67,23 @@ describe("Pi adapter", () => {
 		assert.equal(invalid.details?.outcome, "invalid_arguments");
 		assert.equal(invalid.isError, true);
 		assert.deepEqual(invalid.structuredContent, JSON.parse(JSON.stringify(invalid.details)));
-		for (const [params, outcome] of [[{ kind: "tool", name: "absent" }, "missing"], [{ kind: "setting" }, "unavailable"]] as const) {
+		for (const [params, outcome] of [
+			[{ kind: "tool", name: "absent" }, "missing"],
+			[{ kind: "setting" }, "unavailable"],
+		] as const) {
 			const result = await tool.execute("coverage", params, undefined, undefined, context);
 			assert.equal(result.details?.outcome, outcome);
 			assert.equal(result.isError, false);
 		}
-		const partialContext = { ...context, modelRegistry: { getAll: () => [], getAvailable: () => [], getError: () => "catalogue error",
-			getRegisteredProviderIds: () => [] } } as unknown as ExtensionToolContext;
+		const partialContext = {
+			...context,
+			modelRegistry: {
+				getAll: () => [],
+				getAvailable: () => [],
+				getError: () => "catalogue error",
+				getRegisteredProviderIds: () => [],
+			},
+		} as unknown as ExtensionToolContext;
 		const partial = await tool.execute("partial", { kind: "model" }, undefined, undefined, partialContext);
 		assert.equal(partial.details?.outcome, "partial");
 		assert.equal(partial.isError, false);
@@ -76,7 +108,10 @@ describe("Pi adapter", () => {
 		assert.ok(tool.promptGuidelines?.every((guideline) => guideline.includes("registry")));
 		assert.match(tool.description, /chat model catalog/);
 		assert.match(tool.promptSnippet, /chat models/);
-		assert.match(JSON.stringify(RegistryParams.properties.kind), /"description":"Resource kind\. model queries chat models only/);
+		assert.match(
+			JSON.stringify(RegistryParams.properties.kind),
+			/"description":"Resource kind\. model queries chat models only/,
+		);
 		const result = await tool.execute("lookup", {}, undefined, undefined, { ...context, hasUI: false });
 		assert.equal(result.details?.outcome, "host_summary");
 		assert.equal(result.content[0].type, "text");
@@ -87,8 +122,14 @@ describe("Pi adapter", () => {
 		const { tool } = fixture();
 		let calls = 0;
 		let tokens: number | null = 7500;
-		const ctx = { ...context, model: { provider: "fixture", id: "selected" } as NonNullable<ExtensionContext["model"]>, thinkingLevel: "high",
-			getContextUsage: () => { calls += 1; return { tokens, contextWindow: 10000, percent: tokens === null ? null : tokens / 100 }; },
+		const ctx = {
+			...context,
+			model: { provider: "fixture", id: "selected" } as NonNullable<ExtensionContext["model"]>,
+			thinkingLevel: "high",
+			getContextUsage: () => {
+				calls += 1;
+				return { tokens, contextWindow: 10000, percent: tokens === null ? null : tokens / 100 };
+			},
 		} satisfies ExtensionToolContext;
 		const first = await tool.execute("host", {}, undefined, undefined, ctx);
 		assert.ok(first.details);
@@ -107,9 +148,22 @@ describe("Pi adapter", () => {
 	it("copies selected observation metadata and clears it at both lifecycle boundaries", async () => {
 		const { tool, handlers } = fixture();
 		await handlerFor(handlers, "session_start")({});
-		const options = { cwd: "/fixtures", customPrompt: "private prompt", appendSystemPrompt: "private append",
-			contextFiles: [{ path: "/fixtures/AGENTS.md", content: "private context" }], selectedTools: ["one"],
-			skills: [{ name: "example", filePath: sourceInfo.path, baseDir: "/fixtures", disableModelInvocation: true, sourceInfo: { ...sourceInfo } }] };
+		const options = {
+			cwd: "/fixtures",
+			customPrompt: "private prompt",
+			appendSystemPrompt: "private append",
+			contextFiles: [{ path: "/fixtures/AGENTS.md", content: "private context" }],
+			selectedTools: ["one"],
+			skills: [
+				{
+					name: "example",
+					filePath: sourceInfo.path,
+					baseDir: "/fixtures",
+					disableModelInvocation: true,
+					sourceInfo: { ...sourceInfo },
+				},
+			],
+		};
 		await handlerFor(handlers, "before_agent_start")({ systemPromptOptions: options, prompt: "private event" });
 		options.skills[0].disableModelInvocation = false;
 		options.skills[0].sourceInfo.path = "/changed";
@@ -128,13 +182,18 @@ describe("Pi adapter", () => {
 		const { tool, handlers } = fixture();
 		let clock = 1000;
 		t.mock.method(Date, "now", () => clock);
-		const options = { cwd: "/fixtures", contextFiles: [{ path: "/fixtures/AGENTS.md", content: "private context" }],
-			skills: [{ name: "example", filePath: sourceInfo.path, baseDir: "/fixtures", sourceInfo }] };
+		const options = {
+			cwd: "/fixtures",
+			contextFiles: [{ path: "/fixtures/AGENTS.md", content: "private context" }],
+			skills: [{ name: "example", filePath: sourceInfo.path, baseDir: "/fixtures", sourceInfo }],
+		};
 		await handlerFor(handlers, "before_agent_start")({ systemPromptOptions: options });
 		clock = 2000;
 		const result = await tool.execute("skill", { kind: "skill" }, undefined, undefined, context);
 		assert.ok(result.details);
-		const skill = (result.details.records as { at: number; modelInvocable: { at: number }; baseDir: { at: number } }[])[0];
+		const skill = (
+			result.details.records as { at: number; modelInvocable: { at: number }; baseDir: { at: number } }[]
+		)[0];
 		assert.equal(skill.at, 2000);
 		assert.equal(skill.modelInvocable.at, 1000);
 		assert.equal(skill.baseDir.at, 1000);
@@ -161,10 +220,24 @@ describe("Pi adapter", () => {
 	it("does not probe host metadata after cancellation", async () => {
 		const { tool, pi, handlers } = fixture();
 		const probes: string[] = [];
-		pi.getAllTools = () => { probes.push("tools"); return []; };
-		pi.getActiveTools = () => { probes.push("active"); return []; };
-		pi.getCommands = () => { probes.push("commands"); return []; };
-		const ctx = new Proxy(context, { get(target, key, receiver) { probes.push(String(key)); return Reflect.get(target, key, receiver); } });
+		pi.getAllTools = () => {
+			probes.push("tools");
+			return [];
+		};
+		pi.getActiveTools = () => {
+			probes.push("active");
+			return [];
+		};
+		pi.getCommands = () => {
+			probes.push("commands");
+			return [];
+		};
+		const ctx = new Proxy(context, {
+			get(target, key, receiver) {
+				probes.push(String(key));
+				return Reflect.get(target, key, receiver);
+			},
+		});
 		const result = await tool.execute("cancelled", { kind: "model" }, AbortSignal.abort(), undefined, ctx);
 		assert.equal(result.details?.outcome, "cancelled");
 		assert.equal(result.isError, true);
@@ -178,11 +251,17 @@ describe("Pi adapter", () => {
 	});
 	it("reports each failed host accessor independently", () => {
 		const { pi } = fixture();
-		pi.getAllTools = () => { throw new Error("tool surface unavailable"); };
-		pi.getActiveTools = () => { throw new Error("active surface unavailable"); };
+		pi.getAllTools = () => {
+			throw new Error("tool surface unavailable");
+		};
+		pi.getActiveTools = () => {
+			throw new Error("active surface unavailable");
+		};
 		const snapshot = readSnapshot(pi, null, 1);
 		assert.deepEqual(snapshot.availability, { tools: false, activeTools: false, commands: true });
-		pi.getCommands = () => { throw new Error("commands unavailable"); };
+		pi.getCommands = () => {
+			throw new Error("commands unavailable");
+		};
 		assert.equal(readSnapshot(pi, null, 1).availability.commands, false);
 	});
 });

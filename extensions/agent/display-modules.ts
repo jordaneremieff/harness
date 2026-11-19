@@ -14,12 +14,20 @@ export interface DisplayModules {
 
 export const noDisplayModules: DisplayModules = Object.freeze({ lookup: () => undefined, diagnostics: [] });
 
-const bounded = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 160);
+const bounded = (text: string) =>
+	text
+		.replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim()
+		.slice(0, 160);
 
 type Importer = (url: string) => Promise<Record<string, unknown>>;
 type Contribution = { name: string; source: string; display?: { version: 1; entry: string; export: "toolDisplay" } };
 
-async function readModule(contribution: Contribution & { display: NonNullable<Contribution["display"]> }, importModule: Importer): Promise<ReadonlyMap<string, ToolRenderers>> {
+async function readModule(
+	contribution: Contribution & { display: NonNullable<Contribution["display"]> },
+	importModule: Importer,
+): Promise<ReadonlyMap<string, ToolRenderers>> {
 	const entry = resolveDisplayEntry(contribution.source, contribution.display);
 	const exported = (await importModule(pathToFileURL(entry).href))[contribution.display.export];
 	if (typeof exported !== "function") throw new Error(`export ${contribution.display.export} is not a function`);
@@ -33,21 +41,35 @@ async function readModule(contribution: Contribution & { display: NonNullable<Co
  * Each failure stays with its contribution: the other modules and the standard card remain usable.
  * The caller scopes the result to one attached source; nothing here is cached across sources.
  */
-export async function loadDisplayModules(inventory: unknown, importModule: Importer = (url) => import(url)): Promise<DisplayModules> {
-	if (!matchesSchema(DurableInventorySchema, inventory)) return { lookup: () => undefined, diagnostics: ["Host inventory is not readable; standard tool cards are used."] };
+export async function loadDisplayModules(
+	inventory: unknown,
+	importModule: Importer = (url) => import(url),
+): Promise<DisplayModules> {
+	if (!matchesSchema(DurableInventorySchema, inventory))
+		return { lookup: () => undefined, diagnostics: ["Host inventory is not readable; standard tool cards are used."] };
 	const renderers = new Map<string, ToolRenderers>();
 	const diagnostics: string[] = [];
 	for (const contribution of inventory.contributions) {
 		if (!contribution.display) continue;
 		try {
 			const duplicates: string[] = [];
-			for (const [name, presentation] of await readModule({ ...contribution, display: contribution.display }, importModule)) {
+			for (const [name, presentation] of await readModule(
+				{ ...contribution, display: contribution.display },
+				importModule,
+			)) {
 				if (renderers.has(name)) duplicates.push(name);
 				else renderers.set(name, presentation);
 			}
-			if (duplicates.length) diagnostics.push(bounded(`${contribution.name}: ${duplicates.join(", ")} already supplied by an earlier module`));
+			if (duplicates.length)
+				diagnostics.push(
+					bounded(`${contribution.name}: ${duplicates.join(", ")} already supplied by an earlier module`),
+				);
 		} catch (error) {
-			diagnostics.push(bounded(`${contribution.name}: display module unavailable (${error instanceof Error ? error.message : String(error)}); standard cards are used`));
+			diagnostics.push(
+				bounded(
+					`${contribution.name}: display module unavailable (${error instanceof Error ? error.message : String(error)}); standard cards are used`,
+				),
+			);
 		}
 	}
 	return { lookup: (name) => renderers.get(name), diagnostics };

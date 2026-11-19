@@ -28,7 +28,10 @@ export async function loadSelectedPreview(dir: string, entry: StashEntry, signal
 	if (!result.ok) throw new Error(result.error);
 	const parsed = parseFrontmatter(result.content);
 	const bytes = Buffer.byteLength(parsed.body, "utf8");
-	const body = bytes > PREVIEW_DISPLAY_BYTES ? Buffer.from(parsed.body, "utf8").subarray(0, PREVIEW_DISPLAY_BYTES).toString("utf8") : parsed.body;
+	const body =
+		bytes > PREVIEW_DISPLAY_BYTES
+			? Buffer.from(parsed.body, "utf8").subarray(0, PREVIEW_DISPLAY_BYTES).toString("utf8")
+			: parsed.body;
 	return {
 		meta: normalizeMeta(`${entry.meta.id}.md`, parsed.meta),
 		path: result.path,
@@ -57,20 +60,45 @@ function coverageText(page: SearchPage): string {
 	const c = page.coverage;
 	const more = page.nextCursor ? " \u00b7 more pages: Continue" : "";
 	const skipped = c.skippedTotal > 0 ? ` \u00b7 ${c.skippedTotal} skipped` : "";
-	const scope = page.matches.length === 0 ? "no matches on this page \u00b7 " : `${page.matches.length} matches \u00b7 `;
+	const scope =
+		page.matches.length === 0 ? "no matches on this page \u00b7 " : `${page.matches.length} matches \u00b7 `;
 	return `${scope}${c.visited} visited${skipped} \u00b7 coverage ${c.complete ? "complete" : "partial"}${more}`;
 }
 
 export async function loadRecent(dir: string, signal?: AbortSignal): Promise<BrowserView> {
 	const loaded = await listStashes(dir, { limit: RECENT_ROWS + 1 }, signal);
-	return { scope: "recent", query: "", cursor: undefined, nextCursor: null, entries: loaded.slice(0, RECENT_ROWS), hasMore: loaded.length > RECENT_ROWS, coverage: undefined, stale: false };
+	return {
+		scope: "recent",
+		query: "",
+		cursor: undefined,
+		nextCursor: null,
+		entries: loaded.slice(0, RECENT_ROWS),
+		hasMore: loaded.length > RECENT_ROWS,
+		coverage: undefined,
+		stale: false,
+	};
 }
 
 /** Run one archive page. A rejected cursor or store change keeps the prior view and marks it stale. */
-export async function loadArchive(dir: string, query: string, cursor: string | undefined, prior: BrowserView | undefined, signal?: AbortSignal): Promise<BrowserView> {
+export async function loadArchive(
+	dir: string,
+	query: string,
+	cursor: string | undefined,
+	prior: BrowserView | undefined,
+	signal?: AbortSignal,
+): Promise<BrowserView> {
 	try {
 		const page = await searchStashes(dir, { query, cursor }, signal);
-		return { scope: "archive", query, cursor, nextCursor: page.nextCursor, entries: page.matches.map((match) => matchEntry(dir, match)), hasMore: page.nextCursor !== null, coverage: coverageText(page), stale: false };
+		return {
+			scope: "archive",
+			query,
+			cursor,
+			nextCursor: page.nextCursor,
+			entries: page.matches.map((match) => matchEntry(dir, match)),
+			hasMore: page.nextCursor !== null,
+			coverage: coverageText(page),
+			stale: false,
+		};
 	} catch (error) {
 		if (prior?.scope !== "archive") throw error;
 		return { ...prior, stale: true, coverage: safeLine(error instanceof Error ? error.message : String(error)) };

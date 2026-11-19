@@ -164,7 +164,8 @@ test("docs_get reads a selected tab in exact continuation pages", async () => {
 			totalCodePoints: 10,
 			sourceId,
 		});
-		const rest = (await fake.tool("docs_get", { documentId: "d1", tabId: "t.1", offset: 5, sourceId })).data as DocsData;
+		const rest = (await fake.tool("docs_get", { documentId: "d1", tabId: "t.1", offset: 5, sourceId }))
+			.data as DocsData;
 		assert.equal(rest.externalData.content.text, " text");
 		assert.equal(rest.externalData.content.nextOffset, undefined);
 		assert.equal(rest.externalData.content.sourceId, sourceId);
@@ -180,8 +181,14 @@ function single(body: string, revisionId: string, other = "Other tab\n") {
 		title: "Notes",
 		revisionId,
 		tabs: [
-			{ tabProperties: { tabId: "t.0", title: "Main", index: 0 }, documentTab: { body: { content: [paragraph(body)] } } },
-			{ tabProperties: { tabId: "t.1", title: "Side", index: 1 }, documentTab: { body: { content: [paragraph(other)] } } },
+			{
+				tabProperties: { tabId: "t.0", title: "Main", index: 0 },
+				documentTab: { body: { content: [paragraph(body)] } },
+			},
+			{
+				tabProperties: { tabId: "t.1", title: "Side", index: 1 },
+				documentTab: { body: { content: [paragraph(other)] } },
+			},
 		],
 	};
 }
@@ -253,12 +260,14 @@ test("docs_get refuses a continuation that resolves another tab, even one with t
 			sourceId: main.externalData.content.sourceId,
 		});
 		assert.equal(errorCode(moved), "DOCUMENT_CHANGED", "an inserted first tab is not read as a continuation");
-		const kept = (await fake.tool("docs_get", {
-			documentId: "d1",
-			tabId: main.tabId,
-			offset: main.externalData.content.nextOffset,
-			sourceId: main.externalData.content.sourceId,
-		})).data as DocsData;
+		const kept = (
+			await fake.tool("docs_get", {
+				documentId: "d1",
+				tabId: main.tabId,
+				offset: main.externalData.content.nextOffset,
+				sourceId: main.externalData.content.sourceId,
+			})
+		).data as DocsData;
 		assert.equal(kept.tabId, "t.0");
 		assert.equal(kept.externalData.content.text, "text in two tabs.");
 	} finally {

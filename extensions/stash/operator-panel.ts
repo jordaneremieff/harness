@@ -12,10 +12,12 @@ import { readPanelAnswer, type StashPanelRequest } from "./panel-protocol.ts";
 
 /** Owner operations over the host route; effects answer the host's receipt text. */
 function routedOperations(host: PanelHost): StashOperations {
-	const ask = async (request: StashPanelRequest, signal?: AbortSignal) => readPanelAnswer(request, (await host.request(request as JsonValue, signal)).data);
+	const ask = async (request: StashPanelRequest, signal?: AbortSignal) =>
+		readPanelAnswer(request, (await host.request(request as JsonValue, signal)).data);
 	const viewOf = async (request: Extract<StashPanelRequest, { op: "recent" | "archive" }>, signal: AbortSignal) => {
 		const answer = await ask(request, signal);
-		if (answer.op !== "recent" && answer.op !== "archive") throw new Error("The host answered a different stash request");
+		if (answer.op !== "recent" && answer.op !== "archive")
+			throw new Error("The host answered a different stash request");
 		return answer.view;
 	};
 	const receipt = async (request: Exclude<StashPanelRequest, { op: "recent" | "archive" | "preview" }>) => {
@@ -61,5 +63,9 @@ function stateFor(target: string): StashViewState {
 }
 
 export function operatorPanel(): OperatorPanelModule {
-	return { version: 2, title: "Stashes", open: (host) => stashView(host, routedOperations(host), stateFor(host.target.id)) };
+	return {
+		version: 2,
+		title: "Stashes",
+		open: (host) => stashView(host, routedOperations(host), stateFor(host.target.id)),
+	};
 }

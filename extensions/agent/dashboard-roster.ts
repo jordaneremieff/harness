@@ -37,8 +37,16 @@ export function readableError(text: string): string {
 	if (start < 0 || !flat.endsWith("}")) return flat;
 	try {
 		const body = JSON.parse(flat.slice(start)) as Record<string, unknown>;
-		const nested = body.error && typeof body.error === "object" ? (body.error as Record<string, unknown>).message : undefined;
-		const message = typeof body.message === "string" ? body.message : typeof nested === "string" ? nested : typeof body.error === "string" ? body.error : undefined;
+		const nested =
+			body.error && typeof body.error === "object" ? (body.error as Record<string, unknown>).message : undefined;
+		const message =
+			typeof body.message === "string"
+				? body.message
+				: typeof nested === "string"
+					? nested
+					: typeof body.error === "string"
+						? body.error
+						: undefined;
 		if (!message) return flat;
 		const prefix = flat.slice(0, start).replace(/[:\s]+$/u, "");
 		return oneLine(prefix ? `${prefix} ${message}` : message);
@@ -48,7 +56,13 @@ export function readableError(text: string): string {
 }
 /** One label per agent: the display name, else the handle, else the quoted first input, else the folder. */
 export const titleOf = (row: AgentConversationSummary) =>
-	oneLine(row.name?.trim() || row.profile?.handle || (row.firstMessage?.trim() ? `“${oneLine(row.firstMessage)}”` : "") || basename(row.cwd) || row.id);
+	oneLine(
+		row.name?.trim() ||
+			row.profile?.handle ||
+			(row.firstMessage?.trim() ? `“${oneLine(row.firstMessage)}”` : "") ||
+			basename(row.cwd) ||
+			row.id,
+	);
 export function elapsed(ms: number): string {
 	const seconds = Math.max(0, Math.floor(ms / 1000));
 	return seconds < 60
@@ -93,8 +107,11 @@ function stateLabel(row: AgentConversationSummary): string {
 }
 /** Catalog rank orders observed rows; a just-created startup row uses its source time until the next catalog refresh. */
 export function compareRosterRows(left: AgentConversationSummary, right: AgentConversationSummary): number {
-	return Number(right.rosterOrder?.priority ?? false) - Number(left.rosterOrder?.priority ?? false) ||
-		(right.rosterOrder?.modifiedAt ?? right.modifiedAt) - (left.rosterOrder?.modifiedAt ?? left.modifiedAt) || left.id.localeCompare(right.id);
+	return (
+		Number(right.rosterOrder?.priority ?? false) - Number(left.rosterOrder?.priority ?? false) ||
+		(right.rosterOrder?.modifiedAt ?? right.modifiedAt) - (left.rosterOrder?.modifiedAt ?? left.modifiedAt) ||
+		left.id.localeCompare(right.id)
+	);
 }
 /** Attention means the operator must act; a terminal outcome alone is a record. */
 export function needsAttention(row: AgentConversationSummary): boolean {
@@ -119,7 +136,8 @@ export function recoveryHint(row: AgentConversationSummary): string | undefined 
 	if (row.state === "working") return undefined;
 	if (row.attention === "provider-blocked") return "Configure another model, then send a message";
 	if (row.attention === "task-blocked") return "The host must repair a blocked task; Reconnect starts it";
-	if (row.owner === "unavailable" || row.state === "unavailable") return "Reconnect starts the host when the storage is readable";
+	if (row.owner === "unavailable" || row.state === "unavailable")
+		return "Reconnect starts the host when the storage is readable";
 	if (currentFault(row)) return "Reconnect starts the host; unfinished work resumes";
 	if (row.state === "failed" && row.error) return "A new message runs the work again";
 	return undefined;
@@ -130,7 +148,8 @@ export function attentionReason(row: AgentConversationSummary): string | undefin
 		return `Unavailable: ${oneLine(row.error || row.ownerLabel || "Storage cannot be read")}`;
 	if (row.health?.lastError) return `Host error: ${readableError(row.health.lastError)}`;
 	const failure = row.health?.compactionFailure;
-	if (failure) return `Compaction failed (${failure.trigger}): ${readableError(failure.errorMessage || "No error text")}`;
+	if (failure)
+		return `Compaction failed (${failure.trigger}): ${readableError(failure.errorMessage || "No error text")}`;
 	const retry = row.health?.autoRetry;
 	if (retry && retry.attempt >= retry.maxAttempts) return `Retries exhausted: ${readableError(retry.errorMessage)}`;
 	if (row.state === "failed" && row.error) return readableError(row.error);
@@ -151,9 +170,14 @@ export function dashboardRecords(
 }
 function inventoryText(inventory: NonNullable<AgentDashboardCoverage["inventory"]>): string[] {
 	const parts = [`${inventory.inspected}/${inventory.candidates} catalog records inspected`];
-	if (inventory.unknownClaims) parts.push(`${inventory.unknownClaims} writer claims unknown; live priority not established`);
-	if (inventory.remaining) parts.push(`${inventory.remaining} records (${inventory.remainingRows} rows) outside this page`);
-	if (inventory.priorityRemaining) parts.push(`${inventory.priorityRemaining} live or caller-owned records (${inventory.priorityRemainingRows} rows) outside this page`);
+	if (inventory.unknownClaims)
+		parts.push(`${inventory.unknownClaims} writer claims unknown; live priority not established`);
+	if (inventory.remaining)
+		parts.push(`${inventory.remaining} records (${inventory.remainingRows} rows) outside this page`);
+	if (inventory.priorityRemaining)
+		parts.push(
+			`${inventory.priorityRemaining} live or caller-owned records (${inventory.priorityRemainingRows} rows) outside this page`,
+		);
 	return parts;
 }
 /** Coverage of the returned page; an empty or bounded page is not proof of absence. */
@@ -171,7 +195,9 @@ export function coverageText(coverage: AgentDashboardCoverage | undefined): stri
 export function rosterTotals(snapshot: AgentDashboardSnapshot | undefined): string {
 	const rows = snapshot?.sessions ?? [];
 	const attention = rows.filter(needsAttention).length;
-	const working = rows.filter((row) => !needsAttention(row) && (row.state === "working" || row.state === "starting")).length;
+	const working = rows.filter(
+		(row) => !needsAttention(row) && (row.state === "working" || row.state === "starting"),
+	).length;
 	const coverage = snapshot?.coverage;
 	const incomplete =
 		rows.some((row) => row.partial || !Number.isFinite(row.cost)) ||
@@ -218,11 +244,20 @@ export function argumentSummary(argument: string): string {
 	let value: unknown;
 	try {
 		const parsed = JSON.parse(argument);
-		value = typeof parsed === "string" ? parsed : parsed && typeof parsed === "object" ? Object.values(parsed).find((item) => typeof item === "string") : undefined;
+		value =
+			typeof parsed === "string"
+				? parsed
+				: parsed && typeof parsed === "object"
+					? Object.values(parsed).find((item) => typeof item === "string")
+					: undefined;
 	} catch {
 		const match = argument.match(/"(?:\\.|[^"\\])*"\s*:\s*"((?:\\.|[^"\\])*)/);
 		if (match) {
-			try { value = JSON.parse(`"${match[1].replace(/\\$/, "")}"`); } catch { value = undefined; }
+			try {
+				value = JSON.parse(`"${match[1].replace(/\\$/, "")}"`);
+			} catch {
+				value = undefined;
+			}
 		} else if (!argument.trim().startsWith("{") && !argument.trim().startsWith("[")) value = argument;
 	}
 	return typeof value === "string" ? truncateToWidth(oneLine(value), 60, "…") : "";
@@ -230,7 +265,10 @@ export function argumentSummary(argument: string): string {
 export function activityOf(row: AgentConversationSummary): string {
 	const reason = attentionReason(row);
 	if (reason) return reason;
-	if (row.state === "working") return row.currentTool ? oneLine(`${row.currentTool.name} ${argumentSummary(row.currentTool.argument)}`) : "Responding";
+	if (row.state === "working")
+		return row.currentTool
+			? oneLine(`${row.currentTool.name} ${argumentSummary(row.currentTool.argument)}`)
+			: "Responding";
 	return row.latestReply ? oneLine(row.latestReply) : row.state === "starting" ? "Starting agent" : "No reply yet";
 }
 /** An absent observation time leaves the published age unchanged. */
@@ -239,11 +277,16 @@ function ageAt(age: number, observedAt: number | undefined, now: number): number
 }
 
 /** Admitted inputs that the agent has not read yet, with the age of the oldest one; empty when none waits. */
-export function unplacedText(row: Pick<AgentConversationSummary, "unplaced" | "oldest" | "ageObservedAt">, now = Date.now()): string {
+export function unplacedText(
+	row: Pick<AgentConversationSummary, "unplaced" | "oldest" | "ageObservedAt">,
+	now = Date.now(),
+): string {
 	if (!row.unplaced) return "";
 	if (row.oldest === undefined) return `unplaced: ${row.unplaced}`;
-	const seconds = Math.floor(ageAt(row.oldest, row.ageObservedAt, now) / 1000), minutes = Math.floor(seconds / 60);
-	const age = minutes < 1 ? `${seconds}s` : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+	const seconds = Math.floor(ageAt(row.oldest, row.ageObservedAt, now) / 1000),
+		minutes = Math.floor(seconds / 60);
+	const age =
+		minutes < 1 ? `${seconds}s` : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 	return `unplaced: ${row.unplaced}, oldest: ${age}`;
 }
 /**
@@ -293,7 +336,10 @@ function rosterRow(
 	const chosen = row.id === selected;
 	const active = row.state === "working" || row.state === "starting";
 	const reason = listReason(row);
-	const mark = theme.fg(active ? "accent" : reason ? (currentFault(listedRow(row)) ? "error" : "warning") : "dim", appearance.glyph);
+	const mark = theme.fg(
+		active ? "accent" : reason ? (currentFault(listedRow(row)) ? "error" : "warning") : "dim",
+		appearance.glyph,
+	);
 	const name = truncateToWidth(uniqueName(row, rows), Math.max(1, width - 4), "…");
 	const label = chosen ? theme.bold(theme.fg("text", name)) : theme.fg(active || reason ? "text" : "muted", name);
 	const rail = chosen ? theme.fg("accent", "▌") : " ";
@@ -306,12 +352,21 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "ma
  * The model as the main session's status line writes it: `provider/model` in the accent colour, then
  * `[level]` in that level's colour for a model that reasons. A long identity shortens before the level.
  */
-export function modelLabel(row: Pick<AgentConversationSummary, "model">, theme: Pick<Theme, "fg">, width: number, reasons?: (row: Pick<AgentConversationSummary, "model">) => boolean | undefined): string {
+export function modelLabel(
+	row: Pick<AgentConversationSummary, "model">,
+	theme: Pick<Theme, "fg">,
+	width: number,
+	reasons?: (row: Pick<AgentConversationSummary, "model">) => boolean | undefined,
+): string {
 	const model = row.model;
 	if (!model) return theme.fg("dim", "model unknown");
 	const level = oneLine(model.thinkingLevel);
 	const bracket = level && THINKING_LEVELS.includes(level) && reasons?.(row) !== false ? ` [${level}]` : "";
-	const identity = truncateToWidth(oneLine(`${model.provider}/${model.modelId}`), Math.max(1, width - visibleWidth(bracket)), "…");
+	const identity = truncateToWidth(
+		oneLine(`${model.provider}/${model.modelId}`),
+		Math.max(1, width - visibleWidth(bracket)),
+		"…",
+	);
 	return `${theme.fg("accent", identity)}${bracket ? theme.fg(`thinking${level.charAt(0).toUpperCase()}${level.slice(1)}` as ThemeColor, bracket) : ""}`;
 }
 interface RosterViewport {
@@ -347,7 +402,12 @@ function groupHeading(group: RosterGroup, count: number, theme: Theme): string {
 }
 
 /** The lines from row `start` on: each section's heading before its first shown row. */
-function layoutFrom(rows: readonly AgentConversationSummary[], groups: readonly RosterGroup[], start: number, height: number): { headings: Array<{ index: number; line: number; first: boolean }>; last: number } {
+function layoutFrom(
+	rows: readonly AgentConversationSummary[],
+	groups: readonly RosterGroup[],
+	start: number,
+	height: number,
+): { headings: Array<{ index: number; line: number; first: boolean }>; last: number } {
 	let lines = 0;
 	const headings: Array<{ index: number; line: number; first: boolean }> = [];
 	let last = start - 1;
@@ -366,12 +426,21 @@ function layoutFrom(rows: readonly AgentConversationSummary[], groups: readonly 
 }
 
 /** Keep the selection in view unless the operator chose an explicit scroll position. */
-function rosterWindow(rows: readonly AgentConversationSummary[], groups: readonly RosterGroup[], selected: string | undefined, room: number, requested: number | undefined): { start: number; maxStart: number } {
+function rosterWindow(
+	rows: readonly AgentConversationSummary[],
+	groups: readonly RosterGroup[],
+	selected: string | undefined,
+	room: number,
+	requested: number | undefined,
+): { start: number; maxStart: number } {
 	// The last start that still fills the window from the end.
 	let maxStart = rows.length - 1;
 	while (maxStart > 0 && layoutFrom(rows, groups, maxStart - 1, room).last === rows.length - 1) maxStart--;
 	maxStart = Math.max(0, maxStart);
-	const index = Math.max(0, rows.findIndex((row) => row.id === selected));
+	const index = Math.max(
+		0,
+		rows.findIndex((row) => row.id === selected),
+	);
 	let start = Math.min(maxStart, Math.max(0, requested ?? 0));
 	if (requested === undefined) {
 		// Keep the selection in view: from the top when it fits, else with the selection near the window's end.
@@ -417,10 +486,17 @@ function deriveRoster(
 	return { lines: lines.slice(0, height), start, maxStart, hits };
 }
 /** How many rows sit above or below the window; nothing when every row shows. */
-function rosterFooter(rows: readonly AgentConversationSummary[], start: number, last: number): { text: string; color: ThemeColor } {
+function rosterFooter(
+	rows: readonly AgentConversationSummary[],
+	start: number,
+	last: number,
+): { text: string; color: ThemeColor } {
 	const below = rows.length - 1 - last;
 	if (!start && !below) return { text: "", color: "muted" };
-	return { text: !start ? `↓ ${below} more` : !below ? `↑ ${start} more` : `↑ ${start} · ↓ ${below} more`, color: "muted" };
+	return {
+		text: !start ? `↓ ${below} more` : !below ? `↑ ${start} more` : `↑ ${start} · ↓ ${below} more`,
+		color: "muted",
+	};
 }
 export function rosterLines(
 	rows: readonly AgentConversationSummary[],

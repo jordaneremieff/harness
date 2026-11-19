@@ -25,7 +25,12 @@ import { ContinuityMirror } from "./continuity-mirror.ts";
 import { recordContinuityDelivered } from "./continuity-native.ts";
 import { continuityRequestHooks } from "./continuity-request.ts";
 import { TaskHookReports } from "./task-hook-reports.ts";
-import { ChildCapacityReports, childContinuityFact, continuityLines, type PlanningBudgetLookup } from "./capacity-reports.ts";
+import {
+	ChildCapacityReports,
+	childContinuityFact,
+	continuityLines,
+	type PlanningBudgetLookup,
+} from "./capacity-reports.ts";
 import { THREAD_NOTICE_ENTRY_KIND, threadNoticeRequestHooks } from "./thread-notice-request.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
 import { readInputProviderBlock, initializeProviderControl, reconcileProviderControls } from "./provider-block.ts";
@@ -39,7 +44,16 @@ import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type 
 import { AwaitInputSuppressed, richSubmitConversation } from "./durable-controls.ts";
 import { modelFailureText } from "./provider-block-facts.ts";
 import { parseReportIntervention } from "./report-intervention.ts";
-import { receiptSourceIdentity, receiptDeliveryRequestId, receiptReferencePage, migrateDeliveryStore, retainedReportRequest, snapshotIntent, snapshotReceipt, storeDeliveryRow } from "./delivery-store.ts";
+import {
+	receiptSourceIdentity,
+	receiptDeliveryRequestId,
+	receiptReferencePage,
+	migrateDeliveryStore,
+	retainedReportRequest,
+	snapshotIntent,
+	snapshotReceipt,
+	storeDeliveryRow,
+} from "./delivery-store.ts";
 import { abortScopeConversations } from "./abort-scope.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./check-in-options.ts";
@@ -48,10 +62,74 @@ import type { Context } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
 import { isInputClass, isInputKind, type InputClass } from "./input-entry.ts";
-import { Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, type AgentChange, type Conversation, type ConversationId, type EntryId, type GenerationHooks, type HarnessInspection, type HarnessOptions, type ModelRef, type Submission, type SubmissionRecord, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
+import {
+	Harness,
+	SessionFailed,
+	ROOT_CONVERSATION_ID,
+	UsageDoc,
+	type AgentChange,
+	type Conversation,
+	type ConversationId,
+	type EntryId,
+	type GenerationHooks,
+	type HarnessInspection,
+	type HarnessOptions,
+	type ModelRef,
+	type Submission,
+	type SubmissionRecord,
+	type SubmissionId,
+	type TaskGraph,
+	type Storage,
+} from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { acknowledgeDeliveries, acknowledgeReports, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
-import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseInspectParams, readConversationList, readConversationSnapshotPage, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
+import {
+	acknowledgeDeliveries,
+	acknowledgeReports,
+	AgentForkDoc,
+	AgentMetaDoc,
+	abortConversation,
+	compactConversation,
+	configureConversation,
+	forkConversation,
+	pendingDeliveries,
+	readOutcome,
+	reconcileDeliveries,
+	recordReport,
+	rewindConversation,
+	submitConversation,
+	undeliveredForOwner,
+	type DeliveryOrigin,
+	type DeliveryReceipt,
+	type DurableConfigureParams,
+	type DurableRunOutcome,
+	type DurableSubmitParams,
+	type DurableSubmitResult,
+} from "./durable-controls.ts";
+import {
+	durableIdentity,
+	optionalParam,
+	parseConversationSnapshotParams,
+	parseInspectParams,
+	readConversationList,
+	readConversationSnapshotPage,
+	readConversationStatus,
+	readDashboard,
+	readInspection,
+	readReceipts,
+	readUsage,
+	requestBoolean,
+	requestInteger,
+	requestPositiveId,
+	requestRequiredId,
+	requestRequiredString,
+	requestString,
+	resolveSessionConversationId,
+	type ConversationStatus,
+	type DurableDashboardOptions,
+	type DurableListParams,
+	type DurableStatusOptions,
+	type RequestParams,
+} from "./durable-observation.ts";
 import { LiveObservationService, type ObservationScope } from "./live-observation.ts";
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
 import { resetConversation } from "./durable-reset.ts";
@@ -62,8 +140,25 @@ import { parseDeliverAt } from "./timer-input.ts";
 
 export type { AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
 export type { ConfigurationResult } from "./configuration.ts";
-export type { AgentDeliveryState, AgentMeta, DeliveryIntent, DeliveryReceipt, DeliveryReport, DurableConfigureParams, DurableRunOutcome, DurableSubmitParams, DurableSubmitResult } from "./durable-controls.ts";
-export type { ConversationStatus, ConversationSummary, DurableInspectParams, DurableListParams, DurableStatusOptions, RequestParams } from "./durable-observation.ts";
+export type {
+	AgentDeliveryState,
+	AgentMeta,
+	DeliveryIntent,
+	DeliveryReceipt,
+	DeliveryReport,
+	DurableConfigureParams,
+	DurableRunOutcome,
+	DurableSubmitParams,
+	DurableSubmitResult,
+} from "./durable-controls.ts";
+export type {
+	ConversationStatus,
+	ConversationSummary,
+	DurableInspectParams,
+	DurableListParams,
+	DurableStatusOptions,
+	RequestParams,
+} from "./durable-observation.ts";
 export type { DurableCommandCall, DurableCommand as DurableContributionCommand } from "./durable-services.ts";
 
 export { AgentForkDoc, AgentMetaDoc };
@@ -75,7 +170,11 @@ export type DurableCommandHost = DurableContributionHost;
 export type DurableHostCommand = DurableCommand;
 
 /** A selected result: a settled outcome, or the committed status of an input that has no answer yet. */
-type SelectedOutcome = Omit<DurableRunOutcome, "usage"> | (Pick<DurableRunOutcome, "submissionId" | "conversationId" | "requestId" | "entryId"> & { readonly status: "queued" | "placed" });
+type SelectedOutcome =
+	| Omit<DurableRunOutcome, "usage">
+	| (Pick<DurableRunOutcome, "submissionId" | "conversationId" | "requestId" | "entryId"> & {
+			readonly status: "queued" | "placed";
+	  });
 
 export interface DurableHostOptions {
 	/** SQLite file this host owns for its lifetime. The caller owns the writer claim. */
@@ -132,7 +231,8 @@ const OBSERVATION_TOKEN = /^[A-Za-z0-9._:-]{1,128}$/u;
 /** One observation token from request parameters. */
 function observationToken(params: RequestParams | undefined): string {
 	const token = requestRequiredString(params, "token");
-	if (!OBSERVATION_TOKEN.test(token)) throw new TypeError("token must be 1..128 letters, digits, dot, underscore, colon, or dash");
+	if (!OBSERVATION_TOKEN.test(token))
+		throw new TypeError("token must be 1..128 letters, digits, dot, underscore, colon, or dash");
 	return token;
 }
 
@@ -141,7 +241,11 @@ function observationScope(storageId: string, params: RequestParams | undefined):
 	const scope = requestRequiredString(params, "scope");
 	if (scope === "tasks") return { scope: "tasks" };
 	if (scope !== "conversation") throw new TypeError("scope must be conversation or tasks");
-	const conversationId = resolveSessionConversationId(storageId, requestString(params, "sessionId"), requestPositiveId(params?.conversationId, "conversationId"));
+	const conversationId = resolveSessionConversationId(
+		storageId,
+		requestString(params, "sessionId"),
+		requestPositiveId(params?.conversationId, "conversationId"),
+	);
 	return { scope: "conversation", conversationId };
 }
 
@@ -150,7 +254,12 @@ function modelRefFrom(value: unknown): ModelRef | null | undefined {
 	if (value === null) return null;
 	if (typeof value !== "object" || value === null) throw new TypeError("model must be an object or null");
 	const candidate = value as { provider?: unknown; modelId?: unknown };
-	if (typeof candidate.provider !== "string" || candidate.provider === "" || typeof candidate.modelId !== "string" || candidate.modelId === "") {
+	if (
+		typeof candidate.provider !== "string" ||
+		candidate.provider === "" ||
+		typeof candidate.modelId !== "string" ||
+		candidate.modelId === ""
+	) {
 		throw new TypeError("model requires non-empty provider and modelId strings");
 	}
 	return { provider: candidate.provider, modelId: candidate.modelId };
@@ -160,7 +269,8 @@ function messageFrom(value: unknown): DurableSubmitParams["message"] {
 	if (typeof value === "string") return value;
 	if (Array.isArray(value)) {
 		for (const part of value) {
-			if (part === null || typeof part !== "object" || typeof (part as { type?: unknown }).type !== "string") throw new TypeError("message parts require a type");
+			if (part === null || typeof part !== "object" || typeof (part as { type?: unknown }).type !== "string")
+				throw new TypeError("message parts require a type");
 		}
 		return value as DurableSubmitParams["message"];
 	}
@@ -168,8 +278,10 @@ function messageFrom(value: unknown): DurableSubmitParams["message"] {
 }
 
 function validateTranscriptBounds(limit: number, maxBytes: number): void {
-	if (!Number.isInteger(limit) || limit < 0) throw new RangeError(`transcript limit must be a non-negative integer, received ${String(limit)}`);
-	if (!Number.isInteger(maxBytes) || maxBytes < 0) throw new RangeError(`transcript maxBytes must be a non-negative integer, received ${String(maxBytes)}`);
+	if (!Number.isInteger(limit) || limit < 0)
+		throw new RangeError(`transcript limit must be a non-negative integer, received ${String(limit)}`);
+	if (!Number.isInteger(maxBytes) || maxBytes < 0)
+		throw new RangeError(`transcript maxBytes must be a non-negative integer, received ${String(maxBytes)}`);
 }
 
 /** Name the bound that omitted older entries, or the empty string when none did. */
@@ -196,12 +308,21 @@ function boundTranscript(lines: readonly string[], maxBytes: number, notice: str
 
 function messageText(messages: readonly { readonly content?: unknown }[] | undefined): string {
 	if (!messages) return "";
-	return messages.flatMap((message) => {
-		const content = message.content;
-		if (typeof content === "string") return [content];
-		if (!Array.isArray(content)) return [];
-		return content.flatMap((part) => (part !== null && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string" ? [(part as { text: string }).text] : []));
-	}).join("");
+	return messages
+		.flatMap((message) => {
+			const content = message.content;
+			if (typeof content === "string") return [content];
+			if (!Array.isArray(content)) return [];
+			return content.flatMap((part) =>
+				part !== null &&
+				typeof part === "object" &&
+				(part as { type?: unknown }).type === "text" &&
+				typeof (part as { text?: unknown }).text === "string"
+					? [(part as { text: string }).text]
+					: [],
+			);
+		})
+		.join("");
 }
 
 /**
@@ -261,7 +382,20 @@ export class DurableHost {
 	private recoveryError: ((error: unknown) => void) | undefined;
 	private requestRelease: DurableHostOptions["requestRelease"];
 
-	private constructor(harness: Harness, storage: Storage, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined, now: () => number) {
+	private constructor(
+		harness: Harness,
+		storage: Storage,
+		storageId: string,
+		root: Conversation,
+		commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>,
+		contributionHost: DurableContributionHost | undefined,
+		cwd: string | undefined,
+		models: Models,
+		storagePath: string,
+		registry: HarnessOptions["registry"],
+		retryMaxAttempts: number | undefined,
+		now: () => number,
+	) {
 		this.harness = harness;
 		this.storage = storage;
 		this.storageId = storageId;
@@ -272,8 +406,10 @@ export class DurableHost {
 		this.retryMaxAttempts = retryMaxAttempts;
 		this.now = now;
 		const commandMap = new Map<string, DurableHostCommand>();
-		if (Array.isArray(commands)) for (const command of commands as readonly DurableHostCommand[]) commandMap.set(command.name, command);
-		else for (const [name, command] of commands as ReadonlyMap<string, DurableHostCommand>) commandMap.set(name, command);
+		if (Array.isArray(commands))
+			for (const command of commands as readonly DurableHostCommand[]) commandMap.set(command.name, command);
+		else
+			for (const [name, command] of commands as ReadonlyMap<string, DurableHostCommand>) commandMap.set(name, command);
 		this.commands = commandMap;
 		this.contributionHost = contributionHost;
 		this.defaultCwd = cwd;
@@ -285,19 +421,30 @@ export class DurableHost {
 			this.lifecycle.abort(end.kind === "failed" ? new SessionFailed(end.error) : new DurableHostClosedError());
 		});
 		// A stored commit may add or remove work; the cached idle result is stale until the refresh settles.
-		harness.observeCommits({ end: () => {}, advance: (publication) => {
-			if (publication.changes.length > 0) liveObservations.get(harness)?.invalidate();
-			if (publication.changes.some((change) => change.type === "submission" || (change.type === "entry" && isInputKind(change.value.kind)))) queueMicrotask(() => {
-				if (!this.closed) void reconcileInputCommunications(harness, this.storageId, BACKGROUND_CONTEXT).catch(() => { this.communicationDiagnostic = "retention-unavailable"; });
-			});
-			this.commitGeneration += 1;
-			this.idleDirty = true;
-			queueMicrotask(() => {
-				void this.refreshIdle().catch(() => {
-					this.idleDirty = true;
+		harness.observeCommits({
+			end: () => {},
+			advance: (publication) => {
+				if (publication.changes.length > 0) liveObservations.get(harness)?.invalidate();
+				if (
+					publication.changes.some(
+						(change) => change.type === "submission" || (change.type === "entry" && isInputKind(change.value.kind)),
+					)
+				)
+					queueMicrotask(() => {
+						if (!this.closed)
+							void reconcileInputCommunications(harness, this.storageId, BACKGROUND_CONTEXT).catch(() => {
+								this.communicationDiagnostic = "retention-unavailable";
+							});
+					});
+				this.commitGeneration += 1;
+				this.idleDirty = true;
+				queueMicrotask(() => {
+					void this.refreshIdle().catch(() => {
+						this.idleDirty = true;
+					});
 				});
-			});
-		} });
+			},
+		});
 	}
 
 	/**
@@ -309,7 +456,9 @@ export class DurableHost {
 	}
 
 	/** Native Session closure seals host admission, including after a fatal storage error. */
-	get sessionEnded(): boolean { return this.sessionClosing; }
+	get sessionEnded(): boolean {
+		return this.sessionClosing;
+	}
 
 	private async requireOpen(): Promise<void> {
 		if (this.sessionClosing) {
@@ -352,7 +501,10 @@ export class DurableHost {
 		let opened: DurableHost | undefined;
 		// The sink's own failure goes to the caller's callback without a task, so retention never feeds itself.
 		const hookReports = new TaskHookReports((error) => {
-			const stopped = new Error("Task hook report retention stopped after a rejected write; reopen the host to resume it.", { cause: error });
+			const stopped = new Error(
+				"Task hook report retention stopped after a rejected write; reopen the host to resume it.",
+				{ cause: error },
+			);
 			opened?.reportDeliveryError(stopped);
 			report(stopped);
 		}, now);
@@ -405,7 +557,20 @@ export class DurableHost {
 			await reconcileProfiles(harness, options.storageId, context, report);
 			await reconcileProviderControls(harness, context);
 			providerModels.bind();
-			const host = new DurableHost(harness, storage, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, now);
+			const host = new DurableHost(
+				harness,
+				storage,
+				options.storageId,
+				root,
+				options.commands ?? [],
+				options.contributionHost,
+				options.cwd,
+				options.models,
+				options.storagePath,
+				options.registry,
+				options.retryMaxAttempts,
+				now,
+			);
 			host.requestRelease = options.requestRelease;
 			host.providerModels = providerModels;
 			host.continuity = continuity;
@@ -413,12 +578,30 @@ export class DurableHost {
 			opened = host;
 			host.hookReports = hookReports;
 			hookReports.bind(harness);
-			host.providerNotices = new ProviderRetryNotices(harness, options.storageId, options.settings, (error) => { host.deliveryError = `Provider retry notice failed: ${error instanceof Error ? error.message : String(error)}`; report(error); }, now);
+			host.providerNotices = new ProviderRetryNotices(
+				harness,
+				options.storageId,
+				options.settings,
+				(error) => {
+					host.deliveryError = `Provider retry notice failed: ${error instanceof Error ? error.message : String(error)}`;
+					report(error);
+				},
+				now,
+			);
 			await host.providerNotices.initialize();
-			host.capacityReports = new ChildCapacityReports(harness, options.storageId, () => options.models, options.planningBudget ?? (() => undefined), (error) => {
-				host.reportDeliveryError(new Error(`Child capacity report failed: ${error instanceof Error ? error.message : String(error)}`));
-				report(error);
-			}, now);
+			host.capacityReports = new ChildCapacityReports(
+				harness,
+				options.storageId,
+				() => options.models,
+				options.planningBudget ?? (() => undefined),
+				(error) => {
+					host.reportDeliveryError(
+						new Error(`Child capacity report failed: ${error instanceof Error ? error.message : String(error)}`),
+					);
+					report(error);
+				},
+				now,
+			);
 			host.unplacedWatchEnd = new UnplacedWatchEnd(harness, report);
 			host.recoveryError = (error) => {
 				host.deliveryError = `Queued-input recovery failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -443,11 +626,16 @@ export class DurableHost {
 	}
 
 	private foreignStop?: ForeignStop;
-	setForeignStop(stop: ForeignStop): void { this.foreignStop = stop; }
+	setForeignStop(stop: ForeignStop): void {
+		this.foreignStop = stop;
+	}
 
 	/** Observed context facts of one producing conversation, as lines for its result delivery. A failed read yields one line and never rejects. */
 	async childContinuityLines(conversationId: ConversationId, unusable: boolean): Promise<string[]> {
-		return continuityLines(await childContinuityFact(this.harness, conversationId, () => this.models, BACKGROUND_CONTEXT), unusable);
+		return continuityLines(
+			await childContinuityFact(this.harness, conversationId, () => this.models, BACKGROUND_CONTEXT),
+			unusable,
+		);
 	}
 
 	/**
@@ -456,11 +644,18 @@ export class DurableHost {
 	 * A head whose stored message differs from the request gets no note and one diagnostic.
 	 */
 	continuityHooks(): Partial<GenerationHooks> {
-		return continuityRequestHooks(() => this.continuity, (found) => {
-			if (this.continuityMismatches.get(found.conversationId) === found.headId) return;
-			this.continuityMismatches.set(found.conversationId, found.headId);
-			this.continuityDiagnostic?.(new Error(`Continuity note omitted for ${this.identity(found.conversationId)}: context head entry ${found.headId} does not match the request (${found.mismatch}).`));
-		});
+		return continuityRequestHooks(
+			() => this.continuity,
+			(found) => {
+				if (this.continuityMismatches.get(found.conversationId) === found.headId) return;
+				this.continuityMismatches.set(found.conversationId, found.headId);
+				this.continuityDiagnostic?.(
+					new Error(
+						`Continuity note omitted for ${this.identity(found.conversationId)}: context head entry ${found.headId} does not match the request (${found.mismatch}).`,
+					),
+				);
+			},
+		);
 	}
 
 	/**
@@ -469,7 +664,10 @@ export class DurableHost {
 	 * process live in that instance.
 	 */
 	threadNoticeHooks(): Partial<GenerationHooks> {
-		return threadNoticeRequestHooks({ storageId: this.storageId, identity: (conversationId) => this.identity(conversationId) });
+		return threadNoticeRequestHooks({
+			storageId: this.storageId,
+			identity: (conversationId) => this.identity(conversationId),
+		});
 	}
 
 	/** Resume only after the caller installs contributions and model-facing sections. */
@@ -477,11 +675,16 @@ export class DurableHost {
 		await this.requireOpen();
 		this.resumeWork ??= (async () => {
 			this.recovery = new StrandedInputRecovery(this.harness, (error) => this.recoveryError?.(error));
-			try { await reconcileInputCommunications(this.harness, this.storageId, context); }
-			catch { this.communicationDiagnostic = "retention-unavailable"; }
+			try {
+				await reconcileInputCommunications(this.harness, this.storageId, context);
+			} catch {
+				this.communicationDiagnostic = "retention-unavailable";
+			}
 			this.harness.resume();
 			await reconcileDeliveries(this.harness, context);
-			await repairQueuedInputs(this.harness, context, this.now, async (conversationId) => this.identity(conversationId));
+			await repairQueuedInputs(this.harness, context, this.now, async (conversationId) =>
+				this.identity(conversationId),
+			);
 			await this.recovery.open(context);
 		})();
 		return this.resumeWork;
@@ -500,14 +703,22 @@ export class DurableHost {
 
 	/** Resolve one conversation by external identity or native ID. */
 	async conversation(value: string | number | undefined, context: Context = BACKGROUND_CONTEXT): Promise<Conversation> {
-		const conversationId = resolveSessionConversationId(this.storageId, typeof value === "string" ? value : undefined, typeof value === "number" ? value : undefined);
+		const conversationId = resolveSessionConversationId(
+			this.storageId,
+			typeof value === "string" ? value : undefined,
+			typeof value === "number" ? value : undefined,
+		);
 		const conversation = await this.harness.conversation(conversationId, context);
 		if (!conversation) throw new Error(`conversation ${this.identity(conversationId)} does not exist`);
 		return conversation;
 	}
 
 	private target(params: RequestParams | undefined, context: Context = BACKGROUND_CONTEXT): Promise<Conversation> {
-		const conversationId = resolveSessionConversationId(this.storageId, requestString(params, "sessionId"), requestPositiveId(params?.conversationId, "conversationId"));
+		const conversationId = resolveSessionConversationId(
+			this.storageId,
+			requestString(params, "sessionId"),
+			requestPositiveId(params?.conversationId, "conversationId"),
+		);
 		return this.conversation(conversationId, context);
 	}
 
@@ -518,24 +729,41 @@ export class DurableHost {
 	 * `AbortSignal` cancels that request, including an abandoned `receipts` wait,
 	 * without closing the host.
 	 */
-	async request(method: string, params?: RequestParams, context: Context | AbortSignal = BACKGROUND_CONTEXT): Promise<unknown> {
+	async request(
+		method: string,
+		params?: RequestParams,
+		context: Context | AbortSignal = BACKGROUND_CONTEXT,
+	): Promise<unknown> {
 		await this.requireOpen();
 		const requestContext = context instanceof AbortSignal ? withAbortSignal(context, BACKGROUND_CONTEXT) : context;
 		switch (method) {
-			case "collaboration-list": return listCollaboration(this.harness, params ?? {}, requestContext);
-			case "collaboration-read": return readCollaboration(this.harness, params ?? {}, requestContext);
-			case "collaboration-mutate": return mutateCollaboration(this.harness, this.storageId, params ?? {}, requestContext);
-			case "passive-submit": return this.passiveSubmitRequest(params, requestContext);
+			case "collaboration-list":
+				return listCollaboration(this.harness, params ?? {}, requestContext);
+			case "collaboration-read":
+				return readCollaboration(this.harness, params ?? {}, requestContext);
+			case "collaboration-mutate":
+				return mutateCollaboration(this.harness, this.storageId, params ?? {}, requestContext);
+			case "passive-submit":
+				return this.passiveSubmitRequest(params, requestContext);
 			case "profile-read": {
 				const conversation = await this.target(params, requestContext);
 				return readProfile(this.harness, this.storageId, conversation.id, requestContext, true);
 			}
 			case "profile-update": {
 				const conversation = await this.target(params, requestContext);
-				return updateProfile(this.harness, this.storageId, conversation.id, {
-					expectedRevision: requestRequiredString(params, "expectedRevision"), requestId: requestRequiredString(params, "requestId"), senderIdentity: requestRequiredString(params, "senderIdentity"),
-					...optionalParam("role", requestString(params, "role")), ...optionalParam("expertise", requestString(params, "expertise")),
-				}, requestContext);
+				return updateProfile(
+					this.harness,
+					this.storageId,
+					conversation.id,
+					{
+						expectedRevision: requestRequiredString(params, "expectedRevision"),
+						requestId: requestRequiredString(params, "requestId"),
+						senderIdentity: requestRequiredString(params, "senderIdentity"),
+						...optionalParam("role", requestString(params, "role")),
+						...optionalParam("expertise", requestString(params, "expertise")),
+					},
+					requestContext,
+				);
 			}
 			case "run-scope": {
 				const conversation = await this.target(params, requestContext);
@@ -544,16 +772,31 @@ export class DurableHost {
 			case "run-stop": {
 				const conversation = await this.target(params, requestContext);
 				const inputs = params?.inputs;
-				if (inputs !== undefined && (!Array.isArray(inputs) || inputs.length > 200 || inputs.some(input => !matchesSchema(ResultReferenceSchema, input)))) throw new TypeError("Invalid guarded run inputs");
-				return stopRun(this.harness, this.storageId, conversation.id, requestRequiredId(params?.runId, "runId") as import("@earendil-works/pi-durable").SubmissionId, requestContext, { inputs: inputs as ResultReference[] | undefined, foreign: this.foreignStop });
+				if (
+					inputs !== undefined &&
+					(!Array.isArray(inputs) ||
+						inputs.length > 200 ||
+						inputs.some((input) => !matchesSchema(ResultReferenceSchema, input)))
+				)
+					throw new TypeError("Invalid guarded run inputs");
+				return stopRun(
+					this.harness,
+					this.storageId,
+					conversation.id,
+					requestRequiredId(params?.runId, "runId") as import("@earendil-works/pi-durable").SubmissionId,
+					requestContext,
+					{ inputs: inputs as ResultReference[] | undefined, foreign: this.foreignStop },
+				);
 			}
 			case "request-cancel": {
-				if (!matchesSchema(ResultReferenceSchema, params?.result)) throw new TypeError("An exact native result is required");
+				if (!matchesSchema(ResultReferenceSchema, params?.result))
+					throw new TypeError("An exact native result is required");
 				const result = params.result as ResultReference;
 				const conversation = await this.conversation(result.sessionId, requestContext);
 				return cancelRequest(this.harness, this.storageId, result, conversation.id, requestContext);
 			}
-			case "task-submit": return this.taskSubmitRequest(params, requestContext);
+			case "task-submit":
+				return this.taskSubmitRequest(params, requestContext);
 			case "submit":
 				return this.submitRequest(params, requestContext).catch((error) => {
 					if (error instanceof AwaitInputSuppressed) return { suppressed: true };
@@ -595,7 +838,13 @@ export class DurableHost {
 				return this.timerCancelRequest(params, requestContext);
 			case "dashboard": {
 				const conversationId = requestPositiveId(params?.conversationId, "conversationId");
-				return readDashboard(this.harness, this.storageId, conversationId === undefined ? {} : { conversationId: conversationId as ConversationId }, this.dashboardOptions(params), requestContext);
+				return readDashboard(
+					this.harness,
+					this.storageId,
+					conversationId === undefined ? {} : { conversationId: conversationId as ConversationId },
+					this.dashboardOptions(params),
+					requestContext,
+				);
 			}
 			case "snapshot":
 				return this.snapshotRequest(params, requestContext);
@@ -616,7 +865,13 @@ export class DurableHost {
 	/** Read publication rows and evidence together without changing the host wire contract. */
 	async catalogProjection(context: Context = BACKGROUND_CONTEXT) {
 		const evidence = new ModelEvidenceCollector(new Date().toISOString());
-		const rows = await readDashboard(this.harness, this.storageId, {}, { ...this.dashboardOptions(undefined), modelEvidence: evidence }, context);
+		const rows = await readDashboard(
+			this.harness,
+			this.storageId,
+			{},
+			{ ...this.dashboardOptions(undefined), modelEvidence: evidence },
+			context,
+		);
 		return { rows, modelEvidence: evidence.value, updatedAt: evidence.observedAt };
 	}
 
@@ -640,27 +895,60 @@ export class DurableHost {
 		await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), context);
 		const requester = requestRequiredString(params, "requester");
 		const checkedSender = taskInputSender(requester);
-		const senderConversation = requester === this.storageId ? ROOT_CONVERSATION_ID : checkedSender !== undefined && requester.startsWith(`${this.storageId}:`) ? Number(requester.slice(this.storageId.length + 1)) as ConversationId : undefined;
-		const senderName = senderConversation === undefined ? undefined : (await this.harness.snapshot(AgentMetaDoc, senderConversation, context).catch(() => undefined))?.name;
+		const senderConversation =
+			requester === this.storageId
+				? ROOT_CONVERSATION_ID
+				: checkedSender !== undefined && requester.startsWith(`${this.storageId}:`)
+					? (Number(requester.slice(this.storageId.length + 1)) as ConversationId)
+					: undefined;
+		const senderName =
+			senderConversation === undefined
+				? undefined
+				: (await this.harness.snapshot(AgentMetaDoc, senderConversation, context).catch(() => undefined))?.name;
 		const taskSender = taskInputSender(requester, senderName);
-		const submitted = await richSubmitConversation(conversation, {
-			message: messageFrom(params?.message), requestId: requestRequiredString(params, "requestId"), requester,
-			communication: { storageId: this.storageId, value: undefined, ...(taskSender === undefined ? {} : { taskSender }) },
-			origin, ...optionalParam("replyTo", requestString(params, "replyTo")), ...optionalParam("whenBusy", this.busyMode(params)), ...optionalParam("operationId", requestString(params, "operationId")),
-			...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }), senderIdentity: this.identity(conversation.id),
-			...optionalParam("inputClass", this.inputClassParam(params)),
-		}, context);
-		return { ...submitted, identity: this.identity(conversation.id), result: admittedResult(this.identity(conversation.id), submitted, requestRequiredString(params, "requestId")) };
+		const submitted = await richSubmitConversation(
+			conversation,
+			{
+				message: messageFrom(params?.message),
+				requestId: requestRequiredString(params, "requestId"),
+				requester,
+				communication: {
+					storageId: this.storageId,
+					value: undefined,
+					...(taskSender === undefined ? {} : { taskSender }),
+				},
+				origin,
+				...optionalParam("replyTo", requestString(params, "replyTo")),
+				...optionalParam("whenBusy", this.busyMode(params)),
+				...optionalParam("operationId", requestString(params, "operationId")),
+				...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }),
+				senderIdentity: this.identity(conversation.id),
+				...optionalParam("inputClass", this.inputClassParam(params)),
+			},
+			context,
+		);
+		return {
+			...submitted,
+			identity: this.identity(conversation.id),
+			result: admittedResult(this.identity(conversation.id), submitted, requestRequiredString(params, "requestId")),
+		};
 	}
 
 	private async submitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
-		const communication = params?.communication === undefined ? undefined : parseCommunication(params.communication) ?? null;
+		const communication =
+			params?.communication === undefined ? undefined : (parseCommunication(params.communication) ?? null);
 		if (communication === null) this.communicationDiagnostic = "invalid-envelope";
 		const conversation = await this.target(params, context);
 		await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), context);
-		const provenance = params?.provenance as Omit<InputProvenance, "conversationId" | "requestId" | "submissionId"> | undefined;
+		const provenance = params?.provenance as
+			| Omit<InputProvenance, "conversationId" | "requestId" | "submissionId">
+			| undefined;
 		const providerRetry = params?.providerRetry;
-		if (providerRetry !== undefined && (!matchesSchema(ProviderRetryNoticeSchema, providerRetry) || providerRetry.fact.execution === undefined)) throw new TypeError("Invalid provider retry notice evidence");
+		if (
+			providerRetry !== undefined &&
+			(!matchesSchema(ProviderRetryNoticeSchema, providerRetry) || providerRetry.fact.execution === undefined)
+		)
+			throw new TypeError("Invalid provider retry notice evidence");
 		const message = messageFrom(params?.message);
 		const requestId = requestRequiredString(params, "requestId");
 		const delivered = params?.deliveredResults;
@@ -669,8 +957,10 @@ export class DurableHost {
 		// A replayed body admission is deduplicated, and a provider retry notice that the current inputs already
 		// showed is suppressed; in both cases the result reached this conversation, so its delivered facts complete.
 		const complete = async (): Promise<void> => {
-			if (delivered !== undefined) await this.harness.commit((tx) => recordContinuityDelivered(tx, conversation.id, delivered), context);
-			if (marks.length > 0) await this.harness.commit((tx) => recordDependencyMarks(tx, conversation.id, marks), context);
+			if (delivered !== undefined)
+				await this.harness.commit((tx) => recordContinuityDelivered(tx, conversation.id, delivered), context);
+			if (marks.length > 0)
+				await this.harness.commit((tx) => recordDependencyMarks(tx, conversation.id, marks), context);
 		};
 		const submitted = await submitConversation(
 			conversation,
@@ -700,22 +990,47 @@ export class DurableHost {
 	}
 
 	private async passiveSubmitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
-		const communication = params?.communication === undefined ? undefined : parseCommunication(params.communication) ?? null;
+		const communication =
+			params?.communication === undefined ? undefined : (parseCommunication(params.communication) ?? null);
 		const conversation = await this.target(params, context);
 		const message = requestRequiredString(params, "message");
 		if (Buffer.byteLength(message) > 16 * 1024) throw new Error("Passive report exceeds its byte bound");
-		if (params?.provenance !== undefined && (params.provenance as { intervention?: unknown }).intervention !== undefined) throw new Error("An intervention report must remain active");
+		if (
+			params?.provenance !== undefined &&
+			(params.provenance as { intervention?: unknown }).intervention !== undefined
+		)
+			throw new Error("An intervention report must remain active");
 		const requestId = requestRequiredString(params, "requestId");
-		let data: ReturnType<typeof parseCommunicationPassive> | { format: "agent.communication-invalid/1"; reason: "invalid" };
+		let data:
+			| ReturnType<typeof parseCommunicationPassive>
+			| { format: "agent.communication-invalid/1"; reason: "invalid" };
 		if (communication !== undefined) {
-			try { data = parseCommunicationPassive({ format: "agent.communication-passive/1", requestId, value: communication === null ? null : { ...communication, recordedAt: this.now() } }); }
-			catch { data = undefined; }
+			try {
+				data = parseCommunicationPassive({
+					format: "agent.communication-passive/1",
+					requestId,
+					value: communication === null ? null : { ...communication, recordedAt: this.now() },
+				});
+			} catch {
+				data = undefined;
+			}
 			if (data === undefined) {
 				this.communicationDiagnostic = "invalid-envelope";
 				data = { format: "agent.communication-invalid/1", reason: "invalid" };
 			}
 		}
-		const submission = await conversation.submit({ type: "write", requestId, entry: { kind: communication?.kind === "report" ? "agent.passive-report" : THREAD_NOTICE_ENTRY_KIND, model: [{ role: "user", content: message, timestamp: Date.now() }], ...(data === undefined ? {} : { data }) } }, context);
+		const submission = await conversation.submit(
+			{
+				type: "write",
+				requestId,
+				entry: {
+					kind: communication?.kind === "report" ? "agent.passive-report" : THREAD_NOTICE_ENTRY_KIND,
+					model: [{ role: "user", content: message, timestamp: Date.now() }],
+					...(data === undefined ? {} : { data }),
+				},
+			},
+			context,
+		);
 		return { submissionId: submission.id, conversationId: conversation.id, passive: true };
 	}
 
@@ -745,20 +1060,42 @@ export class DurableHost {
 		if (!matchesSchema(ResultReferenceSchema, reference)) throw new Error("Invalid exact result reference");
 		const submission = await this.harness.submission(reference.submissionId as SubmissionId, context);
 		const status = await submission?.status(context);
-		if (submission === undefined || status?.type !== "input" || this.identity(status.conversationId) !== reference.sessionId || (reference.requestId !== undefined && status.requestId !== reference.requestId)) throw new Error("The exact receipt does not identify the selected native input");
+		if (
+			submission === undefined ||
+			status?.type !== "input" ||
+			this.identity(status.conversationId) !== reference.sessionId ||
+			(reference.requestId !== undefined && status.requestId !== reference.requestId)
+		)
+			throw new Error("The exact receipt does not identify the selected native input");
 		return { submission, status };
 	}
-	private async requireResultRecipient(status: Extract<SubmissionRecord, { type: "input" }>, ownerId: string, context: Context): Promise<void> {
+	private async requireResultRecipient(
+		status: Extract<SubmissionRecord, { type: "input" }>,
+		ownerId: string,
+		context: Context,
+	): Promise<void> {
 		const receipt = await snapshotReceipt(this.harness, status.id, context);
 		if (receipt?.ownerId === ownerId) return;
-		const intent = status.requestId === undefined ? undefined : await snapshotIntent(this.harness, status.conversationId, status.requestId, context);
+		const intent =
+			status.requestId === undefined
+				? undefined
+				: await snapshotIntent(this.harness, status.conversationId, status.requestId, context);
 		if (intent?.ownerId !== ownerId) throw new Error("The selected result is not addressed to this recipient");
 	}
 	/** The committed state of the selected input; a queued or placed input returns its status without an answer. */
-	private async resultOutcome(submission: Submission, metadataOnly: boolean, context: Context): Promise<SelectedOutcome> {
+	private async resultOutcome(
+		submission: Submission,
+		metadataOnly: boolean,
+		context: Context,
+	): Promise<SelectedOutcome> {
 		const status = await submission.status(context);
 		if (status.type !== "input") throw new Error("The selected result is not an input");
-		const common = { submissionId: status.id, conversationId: status.conversationId, ...(status.requestId === undefined ? {} : { requestId: status.requestId }), ...(status.entry === undefined ? {} : { entryId: status.entry }) };
+		const common = {
+			submissionId: status.id,
+			conversationId: status.conversationId,
+			...(status.requestId === undefined ? {} : { requestId: status.requestId }),
+			...(status.entry === undefined ? {} : { entryId: status.entry }),
+		};
 		if (status.status === "queued" || status.status === "placed") return { ...common, status: status.status };
 		if (!metadataOnly) {
 			const { usage: _storageUsage, ...outcome } = await readOutcome(this.harness, submission.id, context);
@@ -766,9 +1103,20 @@ export class DurableHost {
 		}
 		if (status.status === "done") return { ...common, status: "done", answerEntryId: status.answer };
 		const providerBlock = await this.harness.commit((tx) => readInputProviderBlock(tx, status.id), context);
-		return { ...common, status: "unanswered", reason: modelFailureText(status.reason, status.detail, providerBlock), ...(providerBlock === undefined ? {} : { providerBlock }) };
+		return {
+			...common,
+			status: "unanswered",
+			reason: modelFailureText(status.reason, status.detail, providerBlock),
+			...(providerBlock === undefined ? {} : { providerBlock }),
+		};
 	}
-	private async selectedReceipt(reference: ResultReference, ownerId: string, context: Context, receiptCursor?: string, metadataOnly = false): Promise<unknown> {
+	private async selectedReceipt(
+		reference: ResultReference,
+		ownerId: string,
+		context: Context,
+		receiptCursor?: string,
+		metadataOnly = false,
+	): Promise<unknown> {
 		const { submission, status } = await this.resultSubmission(reference, context);
 		await this.requireResultRecipient(status, ownerId, context);
 		const outcome = await this.resultOutcome(submission, metadataOnly, context);
@@ -776,22 +1124,48 @@ export class DurableHost {
 		await reconcileDeliveries(this.harness, context);
 		const selected = await snapshotReceipt(this.harness, status.id, context);
 		if (selected === undefined || selected.ownerId !== ownerId) return { outcome };
-		const receiptGroup = await this.harness.commit((tx) => receiptReferencePage(tx, this.storageId, selected, receiptCursor), context);
-		const delivery = { requestId: receiptDeliveryRequestId(this.storageId, selected), sourceId: receiptSourceIdentity(this.storageId, selected), producerStorageId: this.storageId, recipient: ownerId, ...(selected.answerEntryId === null ? {} : { answerEntryId: selected.answerEntryId }), results: receiptGroup.results, complete: receiptGroup.complete };
+		const receiptGroup = await this.harness.commit(
+			(tx) => receiptReferencePage(tx, this.storageId, selected, receiptCursor),
+			context,
+		);
+		const delivery = {
+			requestId: receiptDeliveryRequestId(this.storageId, selected),
+			sourceId: receiptSourceIdentity(this.storageId, selected),
+			producerStorageId: this.storageId,
+			recipient: ownerId,
+			...(selected.answerEntryId === null ? {} : { answerEntryId: selected.answerEntryId }),
+			results: receiptGroup.results,
+			complete: receiptGroup.complete,
+		};
 		return { outcome, delivery, receiptGroup };
 	}
 
 	/** Read the receipts and reports that the owner did not acknowledge yet; the read never waits for a new one. */
 	private async receiptsRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const ownerId = requestRequiredString(params, "ownerId");
-		if (params?.result !== undefined) return this.selectedReceipt(params.result as ResultReference, ownerId, context, requestString(params, "receiptCursor"), requestBoolean(params, "metadataOnly") ?? false);
+		if (params?.result !== undefined)
+			return this.selectedReceipt(
+				params.result as ResultReference,
+				ownerId,
+				context,
+				requestString(params, "receiptCursor"),
+				requestBoolean(params, "metadataOnly") ?? false,
+			);
 		const deliveries = await undeliveredForOwner(this.harness, ownerId, context);
 		const pending = await pendingDeliveries(this.harness, ownerId, context);
 		const usages = new Map<ConversationId, unknown>();
 		const receipts = [];
 		for (const receipt of deliveries.receipts) {
-			if (!usages.has(receipt.conversationId)) usages.set(receipt.conversationId, (await this.harness.snapshot(UsageDoc, receipt.conversationId, context)) ?? null);
-			receipts.push({ ...receipt, identity: this.identity(receipt.conversationId), usage: usages.get(receipt.conversationId) });
+			if (!usages.has(receipt.conversationId))
+				usages.set(
+					receipt.conversationId,
+					(await this.harness.snapshot(UsageDoc, receipt.conversationId, context)) ?? null,
+				);
+			receipts.push({
+				...receipt,
+				identity: this.identity(receipt.conversationId),
+				usage: usages.get(receipt.conversationId),
+			});
 		}
 		return { receipts, reports: deliveries.reports, pending };
 	}
@@ -805,11 +1179,25 @@ export class DurableHost {
 		const passive = requestBoolean(params, "passive");
 		const report = await recordReport(
 			this.harness,
-			{ ownerId, senderIdentity, requestId, message, ...(replyTo === undefined ? {} : { replyTo }), ...(passive === undefined ? {} : { passive }), ...(params?.intervention === undefined ? {} : { intervention: parseReportIntervention(params.intervention), storageId: this.storageId }) },
+			{
+				ownerId,
+				senderIdentity,
+				requestId,
+				message,
+				...(replyTo === undefined ? {} : { replyTo }),
+				...(passive === undefined ? {} : { passive }),
+				...(params?.intervention === undefined
+					? {}
+					: { intervention: parseReportIntervention(params.intervention), storageId: this.storageId }),
+			},
 			context,
 		);
 		// The recipient's host admits the row later; its placement there appears in the recipient's status.
-		return { ...report, delivery: report.acknowledged ? "admitted" : report.delivery?.state ?? "pending", ...(report.acknowledged ? {} : { placement: "unplaced" }) };
+		return {
+			...report,
+			delivery: report.acknowledged ? "admitted" : (report.delivery?.state ?? "pending"),
+			...(report.acknowledged ? {} : { placement: "unplaced" }),
+		};
 	}
 
 	private async acknowledgeRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
@@ -843,15 +1231,24 @@ export class DurableHost {
 	 */
 	reportDeliveryError(error: Error | undefined): void {
 		const message = error?.message;
-		this.deliveryError = message === undefined || message === "" ? undefined : message.length > 512 ? `${message.slice(0, 509)}...` : message;
+		this.deliveryError =
+			message === undefined || message === ""
+				? undefined
+				: message.length > 512
+					? `${message.slice(0, 509)}...`
+					: message;
 	}
 
 	private async statusRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const sessionId = requestString(params, "sessionId");
 		const conversationId = requestPositiveId(params?.conversationId, "conversationId");
-		const options: DurableStatusOptions = { now: this.now(), ...(this.defaultCwd === undefined ? {} : { cwd: this.defaultCwd }) };
+		const options: DurableStatusOptions = {
+			now: this.now(),
+			...(this.defaultCwd === undefined ? {} : { cwd: this.defaultCwd }),
+		};
 		const reported = this.deliveryError === undefined ? {} : { deliveryError: this.deliveryError };
-		if (params?.view === "storage-page" && (sessionId !== undefined || conversationId !== undefined)) throw new Error("Storage status does not accept a conversation selector");
+		if (params?.view === "storage-page" && (sessionId !== undefined || conversationId !== undefined))
+			throw new Error("Storage status does not accept a conversation selector");
 		if (sessionId === undefined && conversationId === undefined) {
 			const input = storageStatusScanInput(params, this.storageId);
 			const page = await this.harness.commit((tx) => tx.scanConversations({}, input.limit, input.cursor), context);
@@ -860,7 +1257,17 @@ export class DurableHost {
 				const status = await readConversationStatus(this.harness, this.storageId, record.id, options, context);
 				if (status) conversations.push(status);
 			}
-			return { conversations, coverage: storageStatusCoverage(this.storageId, input.limit, page.items.length, conversations.length, page.next), ...reported };
+			return {
+				conversations,
+				coverage: storageStatusCoverage(
+					this.storageId,
+					input.limit,
+					page.items.length,
+					conversations.length,
+					page.next,
+				),
+				...reported,
+			};
 		}
 		const conversation = await this.target(params, context);
 		const status = await readConversationStatus(this.harness, this.storageId, conversation.id, options, context);
@@ -872,7 +1279,10 @@ export class DurableHost {
 		const list: DurableListParams = {
 			...optionalParam("limit", requestInteger(params, "limit")),
 			...(params?.cursor === undefined ? {} : { cursor: params.cursor as DurableListParams["cursor"] }),
-			...optionalParam("ownerConversationId", requestPositiveId(params?.ownerConversationId, "ownerConversationId") as ConversationId | undefined),
+			...optionalParam(
+				"ownerConversationId",
+				requestPositiveId(params?.ownerConversationId, "ownerConversationId") as ConversationId | undefined,
+			),
 			...optionalParam("ownerTaskId", requestInteger(params, "ownerTaskId")),
 		};
 		return readConversationList(this.harness, this.storageId, list, context);
@@ -891,16 +1301,21 @@ export class DurableHost {
 			},
 			context,
 		);
-		return { conversationId: forked.conversation.id, identity: this.identity(forked.conversation.id), deduped: forked.deduped };
+		return {
+			conversationId: forked.conversation.id,
+			identity: this.identity(forked.conversation.id),
+			deduped: forked.deduped,
+		};
 	}
 
 	private async rewindRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
 		const entryId = requestPositiveId(params?.entryId, "entryId");
 		if (entryId === undefined) throw new TypeError("entryId is required");
-		const ownerId = requestBoolean(params, "selfOwned") === true
-			? (conversationId: ConversationId) => this.identity(conversationId)
-			: requestString(params, "ownerId");
+		const ownerId =
+			requestBoolean(params, "selfOwned") === true
+				? (conversationId: ConversationId) => this.identity(conversationId)
+				: requestString(params, "ownerId");
 		const result = await rewindConversation(
 			this.harness,
 			conversation,
@@ -944,21 +1359,30 @@ export class DurableHost {
 	private async closeStoppedWork(scope: readonly ConversationId[], context: Context): Promise<void> {
 		const stopped = new Set(scope);
 		const stoppedRecipient = (identity: string): boolean => {
-			try { return stopped.has(resolveSessionConversationId(this.storageId, identity, undefined)); }
-			catch { return false; }
-		};
-		for (const id of scope) await this.harness.commit(async (tx) => {
-			for (const item of await closeOpenWork(tx, this.storageId, id, "stopped", this.now())) {
-				const requestId = item.close?.reportRequestId;
-				if (requestId === undefined || !stoppedRecipient(item.replyTo)) continue;
-				const row = await retainedReportRequest(tx, item.replyTo, requestId);
-				if (row !== undefined && !row.acknowledged) await storeDeliveryRow(tx, "report", { ...row, delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" } });
+			try {
+				return stopped.has(resolveSessionConversationId(this.storageId, identity, undefined));
+			} catch {
+				return false;
 			}
-		}, context);
+		};
+		for (const id of scope)
+			await this.harness.commit(async (tx) => {
+				for (const item of await closeOpenWork(tx, this.storageId, id, "stopped", this.now())) {
+					const requestId = item.close?.reportRequestId;
+					if (requestId === undefined || !stoppedRecipient(item.replyTo)) continue;
+					const row = await retainedReportRequest(tx, item.replyTo, requestId);
+					if (row !== undefined && !row.acknowledged)
+						await storeDeliveryRow(tx, "report", {
+							...row,
+							delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" },
+						});
+				}
+			}, context);
 	}
 
 	private async releaseRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
-		if (requestBoolean(params, "background") === true) throw new Error("release cannot be combined with background; abort with background first, then release");
+		if (requestBoolean(params, "background") === true)
+			throw new Error("release cannot be combined with background; abort with background first, then release");
 		if (params?.timerId !== undefined) throw new Error("release cannot be combined with timerId");
 		const aborted = await this.abortRequest(params, context);
 		let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
@@ -971,7 +1395,9 @@ export class DurableHost {
 			}
 			cursor = page.next;
 		} while (cursor);
-		const outcome = this.requestRelease ? await this.requestRelease() : { retiring: false, blockers: ["Release is not available in this host."] };
+		const outcome = this.requestRelease
+			? await this.requestRelease()
+			: { retiring: false, blockers: ["Release is not available in this host."] };
 		return { aborted, writesPlaced, ...outcome };
 	}
 
@@ -980,23 +1406,52 @@ export class DurableHost {
 		const agent = await conversation.agent(context);
 		let name: string | undefined;
 		let metadataError: string | undefined;
-		try { name = (await this.harness.snapshot(AgentMetaDoc, conversation.id, context))?.name ?? undefined; }
-		catch (error) { metadataError = error instanceof Error ? error.message : String(error); }
-		const model = agent.model === undefined ? undefined : this.models.getModel(agent.model.provider, agent.model.modelId);
-		const compaction = { identity: this.identity(conversation.id), name, provider: agent.model?.provider, modelId: agent.model?.modelId, thinkingLevel: agent.thinkingLevel, ...(metadataError === undefined ? {} : { metadataError }), ...(model === undefined ? {} : { before: { contextWindow: model.contextWindow } }) };
-		const outcome = await compactConversation(this.harness, conversation, requestString(params, "instructions"), requestBoolean(params, "wait") ?? true, context);
-		return { ...outcome, compaction: { ...compaction, ...(outcome.summaryChars === undefined ? {} : { summaryChars: outcome.summaryChars }) } };
+		try {
+			name = (await this.harness.snapshot(AgentMetaDoc, conversation.id, context))?.name ?? undefined;
+		} catch (error) {
+			metadataError = error instanceof Error ? error.message : String(error);
+		}
+		const model =
+			agent.model === undefined ? undefined : this.models.getModel(agent.model.provider, agent.model.modelId);
+		const compaction = {
+			identity: this.identity(conversation.id),
+			name,
+			provider: agent.model?.provider,
+			modelId: agent.model?.modelId,
+			thinkingLevel: agent.thinkingLevel,
+			...(metadataError === undefined ? {} : { metadataError }),
+			...(model === undefined ? {} : { before: { contextWindow: model.contextWindow } }),
+		};
+		const outcome = await compactConversation(
+			this.harness,
+			conversation,
+			requestString(params, "instructions"),
+			requestBoolean(params, "wait") ?? true,
+			context,
+		);
+		return {
+			...outcome,
+			compaction: {
+				...compaction,
+				...(outcome.summaryChars === undefined ? {} : { summaryChars: outcome.summaryChars }),
+			},
+		};
 	}
 
 	private async configureRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
 		const model = modelRefFrom(params?.model);
 		const thinking = params?.thinkingLevel;
-		if (thinking !== undefined && thinking !== null && (typeof thinking !== "string" || !THINKING_LEVELS.includes(thinking))) {
+		if (
+			thinking !== undefined &&
+			thinking !== null &&
+			(typeof thinking !== "string" || !THINKING_LEVELS.includes(thinking))
+		) {
 			throw new TypeError(`thinkingLevel must be one of ${THINKING_LEVELS.join(", ")}`);
 		}
 		const name = params?.name;
-		if (name !== undefined && name !== null && typeof name !== "string") throw new TypeError("name must be a string or null");
+		if (name !== undefined && name !== null && typeof name !== "string")
+			throw new TypeError("name must be a string or null");
 		const change: DurableConfigureParams = {
 			...(model === undefined ? {} : { model }),
 			...(thinking === undefined ? {} : { thinkingLevel: thinking as DurableConfigureParams["thinkingLevel"] }),
@@ -1025,7 +1480,13 @@ export class DurableHost {
 		});
 		const result = typeof answer === "string" ? { text: answer } : answer;
 		if (typeof result?.text !== "string") throw new Error(`durable command ${name} returned no text`);
-		return { name, conversationId: conversation.id, identity: this.identity(conversation.id), text: result.text, ...(result.data === undefined ? {} : { data: result.data }) };
+		return {
+			name,
+			conversationId: conversation.id,
+			identity: this.identity(conversation.id),
+			text: result.text,
+			...(result.data === undefined ? {} : { data: result.data }),
+		};
 	}
 
 	/**
@@ -1037,7 +1498,11 @@ export class DurableHost {
 		const conversation = await this.target(params, context);
 		const handoff = requestString(params, "handoff");
 		const requestId = requestString(params, "requestId") ?? randomUUID();
-		const result = await resetConversation(conversation, { ...(handoff === undefined ? {} : { handoff }), requestId }, context);
+		const result = await resetConversation(
+			conversation,
+			{ ...(handoff === undefined ? {} : { handoff }), requestId },
+			context,
+		);
 		await this.harness.commit((tx) => closeOpenWork(tx, this.storageId, conversation.id, "reset", this.now()), context);
 		return { ...result, identity: this.identity(conversation.id) };
 	}
@@ -1056,7 +1521,8 @@ export class DurableHost {
 	 */
 	private async timerScheduleRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
-		if (this.registry.snapshot().task(TIMER_TASK_NAME) === undefined) throw new Error("Scheduled inputs require the agent contribution in this storage");
+		if (this.registry.snapshot().task(TIMER_TASK_NAME) === undefined)
+			throw new Error("Scheduled inputs require the agent contribution in this storage");
 		const message = requestRequiredString(params, "message");
 		const deadline = parseDeliverAt(params?.deliverAt);
 		const mode = this.timerMode(params);
@@ -1067,7 +1533,20 @@ export class DurableHost {
 		const requestId = requestString(params, "requestId") ?? `timer-delivery:${randomUUID()}`;
 		return await scheduleTimer(
 			this.harness,
-			{ scheduleId, deadline, conversationId: conversation.id, identity: this.identity(conversation.id), message, mode, origin, ownerId, requestId, requestContext: { requestId, requester, replyTo: ownerId, origin }, createdAt: Date.now(), ...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }) },
+			{
+				scheduleId,
+				deadline,
+				conversationId: conversation.id,
+				identity: this.identity(conversation.id),
+				message,
+				mode,
+				origin,
+				ownerId,
+				requestId,
+				requestContext: { requestId, requester, replyTo: ownerId, origin },
+				createdAt: Date.now(),
+				...(params?.checkInMinutes === undefined ? {} : { checkInMinutes: checkInMinutes(params.checkInMinutes) }),
+			},
 			context,
 		);
 	}
@@ -1081,12 +1560,21 @@ export class DurableHost {
 		if (timerId === undefined) throw new TypeError("timerId is required");
 		const conversation = await this.target(params, context);
 		// The receipt names the conversation that this host resolved, as the schedule receipt does.
-		return { ...await cancelTimer(this.harness, timerId, context, conversation.id), identity: this.identity(conversation.id) };
+		return {
+			...(await cancelTimer(this.harness, timerId, context, conversation.id)),
+			identity: this.identity(conversation.id),
+		};
 	}
 
 	private async snapshotRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
-		return readConversationSnapshotPage(this.harness, conversation.id, parseConversationSnapshotParams(params), context, this.storageId);
+		return readConversationSnapshotPage(
+			this.harness,
+			conversation.id,
+			parseConversationSnapshotParams(params),
+			context,
+			this.storageId,
+		);
 	}
 
 	// ----- live observation -----------------------------------------------------------------
@@ -1097,13 +1585,19 @@ export class DurableHost {
 	}
 
 	/** Live tokens cannot survive replacement of the Harness that owns their watches. */
-	get observationCount(): number { return liveObservations.get(this.harness)?.size ?? 0; }
+	get observationCount(): number {
+		return liveObservations.get(this.harness)?.size ?? 0;
+	}
 
 	/** Lazily created per open Harness; watches stop when the host lifecycle aborts. */
 	private liveObservation(): LiveObservationService {
 		let service = liveObservations.get(this.harness);
 		if (service === undefined) {
-			service = new LiveObservationService(this.harness, { storageId: this.storageId }, withAbortSignal(this.lifecycle.signal, BACKGROUND_CONTEXT));
+			service = new LiveObservationService(
+				this.harness,
+				{ storageId: this.storageId },
+				withAbortSignal(this.lifecycle.signal, BACKGROUND_CONTEXT),
+			);
 			liveObservations.set(this.harness, service);
 		}
 		return service;
@@ -1132,9 +1626,19 @@ export class DurableHost {
 	 * Admit the prompt with a stable request ID. A repeated request ID returns
 	 * the existing submission; a supplied owner also retains a delivery intent.
 	 */
-	async submit(params: DurableSubmitParams & { readonly conversationId?: ConversationId }, context: Context = BACKGROUND_CONTEXT): Promise<DurableSubmitResult & { readonly identity: string }> {
-		const conversation = params.conversationId === undefined ? this.rootConversation : await this.conversation(params.conversationId, context);
-		const submitted = await submitConversation(conversation, { ...params, communication: params.communication ?? { storageId: this.storageId, value: undefined } }, context);
+	async submit(
+		params: DurableSubmitParams & { readonly conversationId?: ConversationId },
+		context: Context = BACKGROUND_CONTEXT,
+	): Promise<DurableSubmitResult & { readonly identity: string }> {
+		const conversation =
+			params.conversationId === undefined
+				? this.rootConversation
+				: await this.conversation(params.conversationId, context);
+		const submitted = await submitConversation(
+			conversation,
+			{ ...params, communication: params.communication ?? { storageId: this.storageId, value: undefined } },
+			context,
+		);
 		return { ...submitted, identity: this.identity(conversation.id) };
 	}
 
@@ -1165,7 +1669,11 @@ export class DurableHost {
 	 * newest entries within an entry-count bound and a byte cap. A notice names
 	 * the bound that omitted older entries when it fits inside the cap.
 	 */
-	async transcript(limit = 200, maxBytes = TRANSCRIPT_MAX_BYTES, context: Context = BACKGROUND_CONTEXT): Promise<string> {
+	async transcript(
+		limit = 200,
+		maxBytes = TRANSCRIPT_MAX_BYTES,
+		context: Context = BACKGROUND_CONTEXT,
+	): Promise<string> {
 		validateTranscriptBounds(limit, maxBytes);
 		const page = await this.rootConversation.entries({}, limit, undefined, context);
 		const lines = page.items.map((entry) => `${entry.kind}: ${messageText(entry.model)}`);

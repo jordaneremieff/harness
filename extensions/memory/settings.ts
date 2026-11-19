@@ -16,7 +16,8 @@ export const settings = {
 			type: "boolean",
 			env: "PI_MEMORY_PROACTIVE",
 			default: true,
-			description: "Automatic recall candidates, storage cues, and the unavailable-state line for admitted input. false turns off only these notices; memory tools, guidance, and pointer indexes stay available.",
+			description:
+				"Automatic recall candidates, storage cues, and the unavailable-state line for admitted input. false turns off only these notices; memory tools, guidance, and pointer indexes stay available.",
 		},
 	},
 } as const;

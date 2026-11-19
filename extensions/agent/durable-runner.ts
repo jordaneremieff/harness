@@ -14,8 +14,10 @@ const EXTENSION_BUS_LISTENER_LIMIT = 64;
 
 /** Read the caller installation before any host module resolves a Pi package import. */
 function callerInstallation(input: unknown): string {
-	const packageDir = input !== null && typeof input === "object" ? (input as { packageDir?: unknown }).packageDir : undefined;
-	if (typeof packageDir !== "string" || !isAbsolute(packageDir)) throw new Error("host metadata packageDir must be an absolute path");
+	const packageDir =
+		input !== null && typeof input === "object" ? (input as { packageDir?: unknown }).packageDir : undefined;
+	if (typeof packageDir !== "string" || !isAbsolute(packageDir))
+		throw new Error("host metadata packageDir must be an absolute path");
 	return packageDir;
 }
 
@@ -25,7 +27,9 @@ function callerInstallation(input: unknown): string {
  * process, so host modules load by dynamic import after the binding.
  */
 async function runDurableAgentHost(metadataJson: string): Promise<void> {
-	const detachedOutput = (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") process.exitCode = 1; };
+	const detachedOutput = (error: NodeJS.ErrnoException) => {
+		if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") process.exitCode = 1;
+	};
 	process.stdout.on("error", detachedOutput);
 	process.stderr.on("error", detachedOutput);
 	// Pi enables Node's compile cache in its own process, and a child does not inherit it. Enabling it
@@ -40,16 +44,27 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 		import("./durable-runtime.ts"),
 	]);
 	const metadata = parseHostMetadata(input);
-	const host = await runHost(() => createDurableRuntime(metadata), { metadata, exit: () => process.exit(0) }).catch((error: unknown) => {
-		if (!(error instanceof HostClaimRefusedError) || error.observation !== "busy") throw error;
-		return undefined;
-	});
+	const host = await runHost(() => createDurableRuntime(metadata), { metadata, exit: () => process.exit(0) }).catch(
+		(error: unknown) => {
+			if (!(error instanceof HostClaimRefusedError) || error.observation !== "busy") throw error;
+			return undefined;
+		},
+	);
 	if (!host) return;
-	const stop = () => { void host.close().catch((error: unknown) => { process.stderr.write(`${String(error)}\n`); process.exitCode = 1; }); };
+	const stop = () => {
+		void host.close().catch((error: unknown) => {
+			process.stderr.write(`${String(error)}\n`);
+			process.exitCode = 1;
+		});
+	};
 	process.once("SIGTERM", stop);
 	process.once("SIGINT", stop);
-	try { await host.done; }
-	finally { process.off("SIGTERM", stop); process.off("SIGINT", stop); }
+	try {
+		await host.done;
+	} finally {
+		process.off("SIGTERM", stop);
+		process.off("SIGINT", stop);
+	}
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

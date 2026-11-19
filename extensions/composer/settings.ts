@@ -177,8 +177,7 @@ function readSection(options: ReadOptions) {
 			diagnostics.push(diagnostic("coverage", "file", "coverage"));
 	};
 	for (const key of Object.keys(section)) {
-		if (!Object.hasOwn(settings.fields, key))
-			add(diagnostic(unknownField(key), "file", "unknown"));
+		if (!Object.hasOwn(settings.fields, key)) add(diagnostic(unknownField(key), "file", "unknown"));
 	}
 	return { source, section, diagnostics, add };
 }

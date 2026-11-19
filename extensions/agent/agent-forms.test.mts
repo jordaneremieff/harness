@@ -42,7 +42,14 @@ function setup(options: Setup = {}) {
 	const state = createDashboardState();
 	const calls: FormCall[] = [];
 	const outcomes: Array<{ name: string; result: ActionResult }> = [];
-	const host = formsHost(target, state, source([target]), calls, { outcome: (result, name) => outcomes.push({ name, result }), ...options.patch }, options.answer);
+	const host = formsHost(
+		target,
+		state,
+		source([target]),
+		calls,
+		{ outcome: (result, name) => outcomes.push({ name, result }), ...options.patch },
+		options.answer,
+	);
 	return { target, state, calls, outcomes, host };
 }
 
@@ -81,14 +88,23 @@ it("configure sends only the changed fields on Apply and refuses an unchanged fo
 	act(frame, "Apply");
 	await until(frame, /./);
 	for (let attempt = 0; attempt < 20 && !closes(); attempt++) await turn();
-	assert.deepEqual(s.calls, [{ name: "configure", args: [JSON.stringify({ name: "Parser review v2", model: "test/other" })], target: "storage:1" }]);
+	assert.deepEqual(s.calls, [
+		{
+			name: "configure",
+			args: [JSON.stringify({ name: "Parser review v2", model: "test/other" })],
+			target: "storage:1",
+		},
+	]);
 	assert.deepEqual(s.outcomes, [{ name: "configure", result: "configure done" }]);
 	assert.equal(closes(), 1, "success closes the form");
 });
 
 it("a refused Apply keeps every staged field and Apply sends the same patch again", async () => {
 	let answers = 0;
-	const s = setup({ answer: async (call) => (++answers === 1 ? Promise.reject(new Error("Stop current work first")) : `${call.name} done`) });
+	const s = setup({
+		answer: async (call) =>
+			++answers === 1 ? Promise.reject(new Error("Stop current work first")) : `${call.name} done`,
+	});
 	const { frame, closes } = mount("configure", s.host);
 	await until(frame, /Configure Parser review/);
 	type(frame, " v2");
@@ -106,12 +122,20 @@ it("configure shows a model-list failure in place and never offers a typed model
 	const { frame } = mount("configure", s.host);
 	const shown = await until(frame, /Could not read what this view needs: host offline/);
 	assert.doesNotMatch(shown, /Apply/);
-	assert.deepEqual(frame.viewActions.map((action) => action.label), []);
+	assert.deepEqual(
+		frame.viewActions.map((action) => action.label),
+		[],
+	);
 	assert.deepEqual(s.calls, []);
 });
 
 it("a current model the host does not list stays choosable and an unnamed agent is named by its first task", async () => {
-	const target = row("storage:7", { name: undefined, firstMessage: "Check the parser edge cases", state: "idle", model: { provider: "old", modelId: "legacy", thinkingLevel: "high" } });
+	const target = row("storage:7", {
+		name: undefined,
+		firstMessage: "Check the parser edge cases",
+		state: "idle",
+		model: { provider: "old", modelId: "legacy", thinkingLevel: "high" },
+	});
 	const s = setup({ target });
 	const { frame } = mount("configure", s.host);
 	await until(frame, /Configure Check the parser edge cases/);
@@ -145,7 +169,11 @@ it("rewind needs a correction, sends it with the chosen entry, and refuses a con
 	act(frame, "Rewind");
 	for (let attempt = 0; attempt < 20 && !closes(); attempt++) await turn();
 	assert.deepEqual(s.calls, [{ name: "rewind", args: ["1", "Use the other parser"], target: "storage:1" }]);
-	const empty = setup({ patch: { source: { ...source(), snapshot: async () => ({ entries: [], partial: false, revision: "0", nextBefore: null }) } } });
+	const empty = setup({
+		patch: {
+			source: { ...source(), snapshot: async () => ({ entries: [], partial: false, revision: "0", nextBefore: null }) },
+		},
+	});
 	const refused = mount("rewind", empty.host);
 	await until(refused.frame, /No committed message is available to rewind before\./);
 });
@@ -157,10 +185,19 @@ it("compact and reset send their optional text, and Cancel sends nothing", async
 	act(first.frame, "Cancel");
 	assert.equal(first.closes(), 1);
 	assert.deepEqual(cancelled.calls, []);
-	for (const [name, typed, args] of [["compact", "Keep the API notes", ["Keep the API notes"]], ["reset", "", []]] as const) {
+	for (const [name, typed, args] of [
+		["compact", "Keep the API notes", ["Keep the API notes"]],
+		["reset", "", []],
+	] as const) {
 		const s = setup();
 		const { frame, closes } = mount(name, s.host);
-		await until(frame, name === "compact" ? /Compaction summarises the context at the next native boundary\. Active work and queued input continue\./ : /History, files, settings and timers stay/, 200);
+		await until(
+			frame,
+			name === "compact"
+				? /Compaction summarises the context at the next native boundary\. Active work and queued input continue\./
+				: /History, files, settings and timers stay/,
+			200,
+		);
 		type(frame, typed);
 		act(frame, name === "compact" ? "Compact" : "Reset context");
 		for (let attempt = 0; attempt < 20 && !closes(); attempt++) await turn();
@@ -193,7 +230,10 @@ it("schedule shows the exact instant, keeps its draft across close and refusal, 
 	const now = Date.parse("2026-10-03T10:00:00Z");
 	t.mock.method(Date, "now", () => now);
 	let answers = 0;
-	const s = setup({ answer: async (call) => (call.name === "schedule" && ++answers === 1 ? Promise.reject(new Error("host stopped")) : `${call.name} done`) });
+	const s = setup({
+		answer: async (call) =>
+			call.name === "schedule" && ++answers === 1 ? Promise.reject(new Error("host stopped")) : `${call.name} done`,
+	});
 	const first = mount("schedule", s.host);
 	await until(first.frame, /Schedule a message to Parser review/);
 	type(first.frame, "Check later");
@@ -205,7 +245,11 @@ it("schedule shows the exact instant, keeps its draft across close and refusal, 
 	assert.match(text(first.frame), /Delivers .*2026-10-03T10:30:00\.000Z/);
 	first.frame.handleInput(ESCAPE);
 	assert.equal(first.closes(), 1);
-	assert.deepEqual(agentState(s.state, "storage:1").schedule, { message: "Check later", time: "+30m", mode: "followUp" });
+	assert.deepEqual(agentState(s.state, "storage:1").schedule, {
+		message: "Check later",
+		time: "+30m",
+		mode: "followUp",
+	});
 	const second = mount("schedule", s.host);
 	await until(second.frame, /Check later/);
 	act(second.frame, "Schedule");
@@ -213,12 +257,21 @@ it("schedule shows the exact instant, keeps its draft across close and refusal, 
 	assert.ok(agentState(s.state, "storage:1").schedule, "a refusal keeps the draft");
 	act(second.frame, "Schedule");
 	for (let attempt = 0; attempt < 20 && !second.closes(); attempt++) await turn();
-	assert.deepEqual(s.calls.at(-1), { name: "schedule", args: ["Check later", "2026-10-03T10:30:00.000Z", "followUp"], target: "storage:1" });
+	assert.deepEqual(s.calls.at(-1), {
+		name: "schedule",
+		args: ["Check later", "2026-10-03T10:30:00.000Z", "followUp"],
+		target: "storage:1",
+	});
 	assert.equal(agentState(s.state, "storage:1").schedule, undefined);
 });
 
 it("scheduled messages cancel only the chosen message and an empty list says so", async () => {
-	const timer = { timerId: 7, deadline: Date.parse("2026-10-03T10:30:00Z"), status: "pending", messagePreview: "Check later" } as TimerListRow;
+	const timer = {
+		timerId: 7,
+		deadline: Date.parse("2026-10-03T10:30:00Z"),
+		status: "pending",
+		messagePreview: "Check later",
+	} as TimerListRow;
 	const s = setup({ patch: { timers: async () => [timer, { ...timer, timerId: 8, messagePreview: "Second" }] } });
 	const { frame, closes } = mount("timers", s.host);
 	await until(frame, /Scheduled messages for Parser review/);
@@ -230,8 +283,20 @@ it("scheduled messages cancel only the chosen message and an empty list says so"
 });
 
 const profile: AgentProfile = {
-	identity: "storage:1", handle: "@history", name: "History expert", role: "Study decisions", expertise: "Sourced fact",
-	revision: "a".repeat(64), updatedAt: 1, updatedBy: "editor", creator: "founder", model: { provider: "test", modelId: "model" }, thinkingLevel: "high", cwd: "/work", live: false, requests: [],
+	identity: "storage:1",
+	handle: "@history",
+	name: "History expert",
+	role: "Study decisions",
+	expertise: "Sourced fact",
+	revision: "a".repeat(64),
+	updatedAt: 1,
+	updatedBy: "editor",
+	creator: "founder",
+	model: { provider: "test", modelId: "model" },
+	thinkingLevel: "high",
+	cwd: "/work",
+	live: false,
+	requests: [],
 };
 
 it("a profile draft survives a revision conflict and close until the current revision is chosen", async () => {
@@ -246,7 +311,11 @@ it("a profile draft survives a revision conflict and close until the current rev
 					current = { ...profile, role: "Concurrent role", revision: "b".repeat(64) };
 					return { outcome: "conflict", deduped: false, profile: current };
 				}
-				return { outcome: "applied", deduped: false, profile: { ...current, role: String(input.role), revision: "c".repeat(64) } };
+				return {
+					outcome: "applied",
+					deduped: false,
+					profile: { ...current, role: String(input.role), revision: "c".repeat(64) },
+				};
 			},
 		},
 	});
@@ -283,7 +352,11 @@ it("details read the host status for the captured target", async () => {
 });
 
 it("stop, release and reconnect act only on their labelled action", async () => {
-	for (const [name, label, args] of [["abort", "Stop current work", []], ["release", "Stop and release host", []], ["attach", "Reconnect", []]] as const) {
+	for (const [name, label, args] of [
+		["abort", "Stop current work", []],
+		["release", "Stop and release host", []],
+		["attach", "Reconnect", []],
+	] as const) {
 		const cancelled = setup({ target: row("storage:1", { name: "Parser review" }) });
 		const first = mount(name, cancelled.host);
 		act(first.frame, "Cancel");
@@ -317,5 +390,9 @@ it("ambiguous and nonexistent local deadlines require a relative time", (t) => {
 	assert.throws(() => scheduleDeadline("01:30", Date.parse("2026-11-01T04:00:00Z")), /two offsets/);
 	assert.throws(() => scheduleDeadline("02:30", Date.parse("2026-03-08T05:00:00Z")), /does not exist/);
 	assert.equal(scheduleDeadline("+90m", Date.parse("2026-11-01T04:00:00Z")), "2026-11-01T05:30:00.000Z");
-	assert.equal(scheduleDeadline("09:15", Date.parse("2026-11-02T15:00:00Z")), "2026-11-03T14:15:00.000Z", "a past clock today means tomorrow");
+	assert.equal(
+		scheduleDeadline("09:15", Date.parse("2026-11-02T15:00:00Z")),
+		"2026-11-03T14:15:00.000Z",
+		"a past clock today means tomorrow",
+	);
 });

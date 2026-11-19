@@ -14,7 +14,10 @@ export interface TerminalActivity {
 
 /** Printable single-line text for a title or status message. Control characters would end the sequence. */
 function plainLine(value: string, limit: number): string {
-	const clean = value.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim();
+	const clean = value
+		.replace(/[\p{Cc}\p{Cf}]/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim();
 	return clean.length > limit ? `${clean.slice(0, limit - 1)}…` : clean;
 }
 
@@ -57,7 +60,11 @@ export class TerminalProgramStatus {
 		const name = activity.name ? plainLine(activity.name, 80) : "";
 		const folder = activity.cwd ? plainLine(basename(activity.cwd), 48) : "";
 		this.title(attached ? [name, folder].filter(Boolean).join(" · ") : "");
-		this.send(attached ? { state: activity.busy ? "working" : "idle", app: "pi-agent", ...(name ? { message: name } : {}) } : { state: "clear" });
+		this.send(
+			attached
+				? { state: activity.busy ? "working" : "idle", app: "pi-agent", ...(name ? { message: name } : {}) }
+				: { state: "clear" },
+		);
 	}
 	dispose(): void {
 		if (this.disposed) return;

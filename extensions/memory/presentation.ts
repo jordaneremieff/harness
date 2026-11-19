@@ -16,12 +16,7 @@
  * credential, so payload fields are summarized as withheld lengths.
  */
 
-import type {
-	AgentToolResult,
-	KeybindingHints,
-	Theme,
-	ToolRenderResultOptions,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { type Component, Text } from "@earendil-works/pi-tui";
 
 const DISPLAY_LIMIT = 32_000;

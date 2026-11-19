@@ -15,8 +15,10 @@ import { createRegistryDurableContribution, type RegistryDurableHost } from "./d
 
 async function fixture() {
 	const root = await mkdtemp(join(tmpdir(), "registry-notes-durable-"));
-	const cwd = join(root, "workspace"), agentDir = join(root, "agent");
-	await mkdir(cwd); await mkdir(agentDir);
+	const cwd = join(root, "workspace"),
+		agentDir = join(root, "agent");
+	await mkdir(cwd);
+	await mkdir(agentDir);
 	const path = join(agentDir, "harness.json");
 	await writeFile(path, '{"version":1,"registry":{"notes":true}}');
 	const sourceDir = join(root, "extensions/example");
@@ -25,50 +27,111 @@ async function fixture() {
 	await writeFile(source, "export const example = true;\n");
 	const piSettings = join(agentDir, "settings.json");
 	await writeFile(piSettings, '{"extensions":["/configured-only/entry.ts"]}');
-	const loaded = { path: source, resolvedPath: source, sourceInfo: { path: source, source: "local", scope: "temporary" as const, origin: "top-level" as const } };
+	const loaded = {
+		path: source,
+		resolvedPath: source,
+		sourceInfo: { path: source, source: "local", scope: "temporary" as const, origin: "top-level" as const },
+	};
 	const faux = fauxProvider({ models: [{ id: "notes", name: "Notes", contextWindow: 100000, maxTokens: 1000 }] });
-	const models = createModels(); models.setProvider(faux.provider);
+	const models = createModels();
+	models.setProvider(faux.provider);
 	const dispose: Array<() => void | Promise<void>> = [];
-	const host: RegistryDurableHost = { durable: Durable, cwd, agentDir, storageId: "notes-test", signal: new AbortController().signal,
-		onClose: (close) => { dispose.push(close); }, inventory: { contributions: [], ordinaryOnly: [] }, services: {
-			settingsManager: { isProjectTrusted: () => true }, modelRuntime: {} as RegistryDurableHost["services"]["modelRuntime"],
-			resourceLoader: { getSkills: () => ({ skills: [] }), getPrompts: () => ({ prompts: [] }), getExtensions: () => ({ extensions: [loaded] }), getAgentsFiles: () => ({ agentsFiles: [] }), getSystemPrompt: () => undefined, getAppendSystemPrompt: () => [] },
-		} };
-	const extension = await createRegistryDurableContribution("/fixture/registry/index.ts", createEventBus()).create(host);
-	const registry = Durable.createRegistry(); registry.install(extension);
-	registry.install(Durable.defineExtension({ name: "files", tools: [createReadTool(),
-		Durable.defineTool({ name: "middle", description: "Read through a nested call", parameters: obj({ path: str() }, { open: true }), replay: "safe",
-			execute: async (args, api, context) => {
-				const result = await api.executeTool("read", args, context);
-				assert.equal(JSON.stringify(result.structuredOutput).includes("[registry]"), false);
-				return { output: [{ type: "text", text: "middle result" }] };
-			} }),
-		Durable.defineTool({ name: "outer", description: "Read through two nested calls", parameters: obj({ path: str() }, { open: true }), replay: "safe",
-			execute: async (args, api, context) => {
-				const result = await api.executeTool("middle", args, context);
-				assert.equal(JSON.stringify(result.structuredOutput).includes("[registry]"), false);
-				return { output: [{ type: "text", text: "outer result" }], details: { marker: "preserved" } };
-			} }),
-	] }));
-	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry, env: () => new NodeExecutionEnv({ cwd }) }, BACKGROUND_CONTEXT);
-	const conversation = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "notes" } } });
+	const host: RegistryDurableHost = {
+		durable: Durable,
+		cwd,
+		agentDir,
+		storageId: "notes-test",
+		signal: new AbortController().signal,
+		onClose: (close) => {
+			dispose.push(close);
+		},
+		inventory: { contributions: [], ordinaryOnly: [] },
+		services: {
+			settingsManager: { isProjectTrusted: () => true },
+			modelRuntime: {} as RegistryDurableHost["services"]["modelRuntime"],
+			resourceLoader: {
+				getSkills: () => ({ skills: [] }),
+				getPrompts: () => ({ prompts: [] }),
+				getExtensions: () => ({ extensions: [loaded] }),
+				getAgentsFiles: () => ({ agentsFiles: [] }),
+				getSystemPrompt: () => undefined,
+				getAppendSystemPrompt: () => [],
+			},
+		},
+	};
+	const extension = await createRegistryDurableContribution("/fixture/registry/index.ts", createEventBus()).create(
+		host,
+	);
+	const registry = Durable.createRegistry();
+	registry.install(extension);
+	registry.install(
+		Durable.defineExtension({
+			name: "files",
+			tools: [
+				createReadTool(),
+				Durable.defineTool({
+					name: "middle",
+					description: "Read through a nested call",
+					parameters: obj({ path: str() }, { open: true }),
+					replay: "safe",
+					execute: async (args, api, context) => {
+						const result = await api.executeTool("read", args, context);
+						assert.equal(JSON.stringify(result.structuredOutput).includes("[registry]"), false);
+						return { output: [{ type: "text", text: "middle result" }] };
+					},
+				}),
+				Durable.defineTool({
+					name: "outer",
+					description: "Read through two nested calls",
+					parameters: obj({ path: str() }, { open: true }),
+					replay: "safe",
+					execute: async (args, api, context) => {
+						const result = await api.executeTool("middle", args, context);
+						assert.equal(JSON.stringify(result.structuredOutput).includes("[registry]"), false);
+						return { output: [{ type: "text", text: "outer result" }], details: { marker: "preserved" } };
+					},
+				}),
+			],
+		}),
+	);
+	const harness = await Durable.Harness.open(
+		new Durable.MemoryStorage(),
+		{ models, registry, env: () => new NodeExecutionEnv({ cwd }) },
+		BACKGROUND_CONTEXT,
+	);
+	const conversation = await harness.root(BACKGROUND_CONTEXT, {
+		agent: { model: { provider: "faux", modelId: "notes" } },
+	});
 	async function run(id: string, name = "read", target = conversation, file = path) {
-		faux.setResponses([fauxAssistantMessage([fauxToolCall(name, { path: file }, { id })], { stopReason: "toolUse" }), fauxAssistantMessage("Done.")]);
-		const result = await (await target.submit({ type: "input", content: "Inspect the file." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall(name, { path: file }, { id })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("Done."),
+		]);
+		const result = await (
+			await target.submit({ type: "input", content: "Inspect the file." }, BACKGROUND_CONTEXT)
+		).wait(BACKGROUND_CONTEXT);
 		assert.equal(result.status, "done");
 		const { messages } = await target.context(BACKGROUND_CONTEXT);
 		const message = messages.find((message) => message.role === "toolResult" && message.toolCallId === id);
 		assert.ok(message && message.role === "toolResult");
 		return message;
 	}
-	return { path, source, piSettings, harness, conversation, run, close: async () => {
-		await harness.close(BACKGROUND_CONTEXT);
-		for (const close of dispose) await close();
-		await rm(root, { recursive: true, force: true });
-	} };
+	return {
+		path,
+		source,
+		piSettings,
+		harness,
+		conversation,
+		run,
+		close: async () => {
+			await harness.close(BACKGROUND_CONTEXT);
+			for (const close of dispose) await close();
+			await rm(root, { recursive: true, force: true });
+		},
+	};
 }
 function text(result: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>["run"]>>): string {
-	return result.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+	return result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
 test("Durable built-in read appends a note once per conversation over real Harness tasks", async () => {
 	const sample = await fixture();
@@ -80,10 +143,14 @@ test("Durable built-in read appends a note once per conversation over real Harne
 		assert.equal(first.content.length, 2);
 		assert.equal(first.isError, false);
 		assert.doesNotMatch(text(await sample.run("second")), /\[registry\]/);
-		const other = await sample.harness.createConversation({ ownership: { kind: "ownerless" },
-			agent: { model: { provider: "faux", modelId: "notes" } } }, BACKGROUND_CONTEXT);
+		const other = await sample.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "notes" } } },
+			BACKGROUND_CONTEXT,
+		);
 		assert.match(text(await sample.run("other", "read", other)), /\[registry\]/);
-	} finally { await sample.close(); }
+	} finally {
+		await sample.close();
+	}
 });
 test("Durable source and Pi settings reads use loaded host provenance without ordinary tool calls", async () => {
 	const sample = await fixture();
@@ -95,7 +162,9 @@ test("Durable source and Pi settings reads use loaded host provenance without or
 		const settings = text(await sample.run("pi-settings", "read", sample.conversation, sample.piSettings));
 		assert.match(settings, /This session loaded 1 extensions; Pi settings list configured sources, not load results/);
 		assert.match(settings, /No harness setting is set by environment\./);
-	} finally { await sample.close(); }
+	} finally {
+		await sample.close();
+	}
 });
 test("Durable notes obey fresh file and environment off switches", async () => {
 	const sample = await fixture();
@@ -109,7 +178,8 @@ test("Durable notes obey fresh file and environment off switches", async () => {
 		delete process.env.PI_REGISTRY_NOTES;
 		assert.match(text(await sample.run("on")), /\[registry\]/);
 	} finally {
-		if (previous === undefined) delete process.env.PI_REGISTRY_NOTES; else process.env.PI_REGISTRY_NOTES = previous;
+		if (previous === undefined) delete process.env.PI_REGISTRY_NOTES;
+		else process.env.PI_REGISTRY_NOTES = previous;
 		await sample.close();
 	}
 });
@@ -121,5 +191,7 @@ test("Durable nested notes reach only the outermost model-issued result", async 
 		assert.match(text(result), /^outer result\n\[registry\]/);
 		assert.equal((result.details as { marker: string }).marker, "preserved");
 		assert.equal(result.isError, false);
-	} finally { await sample.close(); }
+	} finally {
+		await sample.close();
+	}
 });

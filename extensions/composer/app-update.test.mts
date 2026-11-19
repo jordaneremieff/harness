@@ -17,14 +17,29 @@ function fixture(t: TestContext) {
 	const resources = join(app, "Contents", "Resources");
 	const write = (options = {}) => {
 		mkdirSync(resources, { recursive: true });
-		writeFileSync(join(resources, "build.json"), JSON.stringify({ contract: 1, composer: 1, sourceDigest: digest, source: { commit, modified: false }, ...options }));
+		writeFileSync(
+			join(resources, "build.json"),
+			JSON.stringify({
+				contract: 1,
+				composer: 1,
+				sourceDigest: digest,
+				source: { commit, modified: false },
+				...options,
+			}),
+		);
 	};
 	type Outcome = "installed" | "busy" | "failed";
 	let settle!: (value: Outcome) => void;
-	const install = new Promise<Outcome>(resolve => { settle = resolve; });
+	const install = new Promise<Outcome>((resolve) => {
+		settle = resolve;
+	});
 	let starts = 0;
 	const runtime = {
-		load: async () => ({ sourceDigest: () => digest, sourceRecord: () => ({ commit, modified: false }), INSTALL_BUSY: 75 }),
+		load: async () => ({
+			sourceDigest: () => digest,
+			sourceRecord: () => ({ commit, modified: false }),
+			INSTALL_BUSY: 75,
+		}),
 		ancestor: (left: string, right: string) => left === older && right === commit,
 		async install(target: string, busyCode: number) {
 			assert.equal(target, app);
@@ -34,10 +49,21 @@ function fixture(t: TestContext) {
 		},
 	};
 	const notices: string[] = [];
-	return { app, write, settle, runtime, updater: new ComposerApp(runtime), starts: () => starts, notices, notify: (message: string) => { notices.push(message); } };
+	return {
+		app,
+		write,
+		settle,
+		runtime,
+		updater: new ComposerApp(runtime),
+		starts: () => starts,
+		notices,
+		notify: (message: string) => {
+			notices.push(message);
+		},
+	};
 }
 
-test("missing app starts one background install and opens after the manifest is ready", async t => {
+test("missing app starts one background install and opens after the manifest is ready", async (t) => {
 	const f = fixture(t);
 	const checks = await Promise.all([f.updater.check(f.app, f.notify), f.updater.check(f.app, f.notify)]);
 	assert.deepEqual(checks, Array(2).fill("The composer app is being installed."));
@@ -49,7 +75,7 @@ test("missing app starts one background install and opens after the manifest is 
 	assert.equal(await f.updater.check(f.app, f.notify), undefined);
 });
 
-test("older or incompatible builds update, but current or newer builds open", async t => {
+test("older or incompatible builds update, but current or newer builds open", async (t) => {
 	const f = fixture(t);
 	f.write();
 	assert.equal(await f.updater.check(f.app, f.notify), undefined);
@@ -57,34 +83,34 @@ test("older or incompatible builds update, but current or newer builds open", as
 	f.write({ sourceDigest: differing, source: { commit: newer, modified: false } });
 	assert.equal(await f.updater.check(f.app, f.notify), undefined);
 	f.write({ sourceDigest: differing, source: { commit: older, modified: false } });
-	assert.match(await f.updater.check(f.app, f.notify) ?? "", /being installed/u);
+	assert.match((await f.updater.check(f.app, f.notify)) ?? "", /being installed/u);
 	f.settle("busy");
 	await setImmediate();
 	assert.match(f.notices.at(-1) ?? "", /Another composer app install/u);
 	assert.equal(existsSync(`${f.app}.update-failure.json`), false);
 	f.write({ composer: undefined });
-	assert.match(await new ComposerApp(f.runtime).check(f.app, f.notify) ?? "", /being installed/u);
+	assert.match((await new ComposerApp(f.runtime).check(f.app, f.notify)) ?? "", /being installed/u);
 	await setImmediate();
 	assert.equal(f.starts(), 2);
 });
 
-test("failure survives a new loader and explicit update bypasses the failure record", async t => {
+test("failure survives a new loader and explicit update bypasses the failure record", async (t) => {
 	const f = fixture(t);
 	await f.updater.check(f.app, f.notify);
 	f.settle("failed");
 	await setImmediate();
 	const next = new ComposerApp(f.runtime);
-	assert.match(await next.check(f.app, f.notify) ?? "", /last composer app build failed/u);
+	assert.match((await next.check(f.app, f.notify)) ?? "", /last composer app build failed/u);
 	assert.equal(f.starts(), 1);
-	assert.match(await next.check(f.app, f.notify, true) ?? "", /being installed/u);
+	assert.match((await next.check(f.app, f.notify, true)) ?? "", /being installed/u);
 	await setImmediate();
 	assert.equal(f.starts(), 2);
 });
 
-test("an already current app stays usable during an explicit update", async t => {
+test("an already current app stays usable during an explicit update", async (t) => {
 	const f = fixture(t);
 	f.write();
-	assert.match(await f.updater.check(f.app, f.notify, true) ?? "", /being installed/u);
+	assert.match((await f.updater.check(f.app, f.notify, true)) ?? "", /being installed/u);
 	assert.equal(await f.updater.check(f.app, f.notify), undefined);
 	f.settle("installed");
 	await setImmediate();

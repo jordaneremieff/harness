@@ -24,14 +24,49 @@ import type { Action, Notice, View, ViewHost, ViewTarget } from "./view-model.ts
 import { ReaderView } from "./view-reader.ts";
 import { plainLine, wrap } from "./view-text.ts";
 import { DashboardResize } from "./dashboard-resize.ts";
-import { mergeAgentCoverage, type AgentConversationPage, type AgentConversationSummary, type AgentConversationSnapshot } from "./dashboard-types.ts";
+import {
+	mergeAgentCoverage,
+	type AgentConversationPage,
+	type AgentConversationSummary,
+	type AgentConversationSnapshot,
+} from "./dashboard-types.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
-import { clamp, MAX_ROSTER_COLUMNS, MIN_COMPOSER_ROWS, MIN_DETAIL_COLUMNS, MIN_ROSTER_COLUMNS, dashboardGeometry, dashboardRule, fitLine } from "./dashboard-layout.ts";
-import { currentFault, dashboardRecords, groupRows, invalidateRoster, listedRow, listReason, modelLabel, recoveryHint, rosterLines, sessionAppearance, titleOf, needsAttention, unplacedText } from "./dashboard-roster.ts";
+import {
+	clamp,
+	MAX_ROSTER_COLUMNS,
+	MIN_COMPOSER_ROWS,
+	MIN_DETAIL_COLUMNS,
+	MIN_ROSTER_COLUMNS,
+	dashboardGeometry,
+	dashboardRule,
+	fitLine,
+} from "./dashboard-layout.ts";
+import {
+	currentFault,
+	dashboardRecords,
+	groupRows,
+	invalidateRoster,
+	listedRow,
+	listReason,
+	modelLabel,
+	recoveryHint,
+	rosterLines,
+	sessionAppearance,
+	titleOf,
+	needsAttention,
+	unplacedText,
+} from "./dashboard-roster.ts";
 import type { AgentCardLookup } from "./tool-cards.ts";
-import { agentState, dashboardSessionState, updateDraft, notifyAgentState, type DashboardState, type DashboardLayout } from "./dashboard-state.ts";
+import {
+	agentState,
+	dashboardSessionState,
+	updateDraft,
+	notifyAgentState,
+	type DashboardState,
+	type DashboardLayout,
+} from "./dashboard-state.ts";
 import { agentDisplayName } from "./action-outcome.ts";
 import type { TaskLabel, ConversationFrame } from "./live-frames.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
@@ -172,11 +207,26 @@ function rosterMark(row: AgentConversationSummary): string {
 }
 
 /** Counts and oldest ages of unplaced inputs and open work; absent when the source supplies none. */
-function observedWorkFacts(status: object, observedAt: string): Pick<AgentConversationSummary, "unplaced" | "oldest" | "openWorkCount" | "openWorkOldest" | "ageObservedAt"> {
-	const { unplaced, oldest, openWorkCount, openWorkOldest } = status as { unplaced?: unknown; oldest?: unknown; openWorkCount?: unknown; openWorkOldest?: unknown };
-	const count = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
+function observedWorkFacts(
+	status: object,
+	observedAt: string,
+): Pick<AgentConversationSummary, "unplaced" | "oldest" | "openWorkCount" | "openWorkOldest" | "ageObservedAt"> {
+	const { unplaced, oldest, openWorkCount, openWorkOldest } = status as {
+		unplaced?: unknown;
+		oldest?: unknown;
+		openWorkCount?: unknown;
+		openWorkOldest?: unknown;
+	};
+	const count = (value: unknown) =>
+		typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 	const at = Date.parse(observedAt);
-	return { unplaced: count(unplaced), oldest: count(oldest), openWorkCount: count(openWorkCount), openWorkOldest: count(openWorkOldest), ageObservedAt: Number.isFinite(at) ? at : undefined };
+	return {
+		unplaced: count(unplaced),
+		oldest: count(oldest),
+		openWorkCount: count(openWorkCount),
+		openWorkOldest: count(openWorkOldest),
+		ageObservedAt: Number.isFinite(at) ? at : undefined,
+	};
 }
 
 const projectOf = (row: AgentConversationSummary) => row.cwd.split("/").filter(Boolean).at(-1) ?? row.cwd;
@@ -184,7 +234,9 @@ const projectOf = (row: AgentConversationSummary) => row.cwd.split("/").filter(B
 /** The receipt for an admitted input when the owner names none. */
 function admittedText(row: AgentConversationSummary, mode: "steer" | "followUp"): string {
 	if (row.state !== "working") return `Admitted for ${agentDisplayName(row)}`;
-	return mode === "steer" ? `Steer admitted for ${agentDisplayName(row)}` : `Follow-up admitted for ${agentDisplayName(row)}`;
+	return mode === "steer"
+		? `Steer admitted for ${agentDisplayName(row)}`
+		: `Follow-up admitted for ${agentDisplayName(row)}`;
 }
 
 /**
@@ -193,7 +245,11 @@ function admittedText(row: AgentConversationSummary, mode: "steer" | "followUp")
  * Choosing sends nothing; an unavailable view explains itself when opened.
  */
 function ownerViewChooser(views: readonly OwnerView[], row: AgentConversationSummary, host: ViewHost): View {
-	const choices: Choice[] = views.map((view) => ({ value: view.key, label: plainLine(view.label), ...(view.unavailable ? { description: `unavailable: ${plainLine(view.unavailable)}` } : {}) }));
+	const choices: Choice[] = views.map((view) => ({
+		value: view.key,
+		label: plainLine(view.label),
+		...(view.unavailable ? { description: `unavailable: ${plainLine(view.unavailable)}` } : {}),
+	}));
 	return new Form({
 		title: "Owner views",
 		heading: `Owner views of ${plainLine(agentDisplayName(row))}`,
@@ -286,7 +342,19 @@ export class AgentDashboard implements Component, Focusable {
 	private readonly threadTitles = new Map<string, string | undefined>();
 	/** Observed display facts for agent cards and notices: roster rows, thread titles and participant names. */
 	private readonly cardLookup: AgentCardLookup;
-	private geometry = { listX: 0, listWidth: 0, listY: 0, listHeight: 0, paneX: 0, paneWidth: 0, conversationY: 0, conversationHeight: 0, conversationWidth: 0, composerY: 0, composerHeight: 0 };
+	private geometry = {
+		listX: 0,
+		listWidth: 0,
+		listY: 0,
+		listHeight: 0,
+		paneX: 0,
+		paneWidth: 0,
+		conversationY: 0,
+		conversationHeight: 0,
+		conversationWidth: 0,
+		composerY: 0,
+		composerHeight: 0,
+	};
 	focused = true;
 	private readonly tui: TUI;
 	private readonly theme: Theme;
@@ -333,11 +401,15 @@ export class AgentDashboard implements Component, Focusable {
 			onError: (error) => this.show(`Live update failed: ${String(error)}`, "warning"),
 			clock: observationClock,
 		});
-		this.relations = new DashboardRelations(operations.collaborate, () => {
-			if (this.closed) return;
-			this.reconcile();
-			this.redraw();
-		}, operations.readLineage);
+		this.relations = new DashboardRelations(
+			operations.collaborate,
+			() => {
+				if (this.closed) return;
+				this.reconcile();
+				this.redraw();
+			},
+			operations.readLineage,
+		);
 		this.cardLookup = Object.assign(() => this.page?.rows ?? [], {
 			threadTitle: (id: string) => this.threadTitle(id),
 			nameFor: (identity: string) => this.knownName(identity),
@@ -386,7 +458,8 @@ export class AgentDashboard implements Component, Focusable {
 		try {
 			const view = await this.operations.efforts();
 			if (this.closed) return;
-			for (const effort of view.presence.efforts) if (effort.name?.trim()) this.primaryNames.set(effort.id, effort.name.trim());
+			for (const effort of view.presence.efforts)
+				if (effort.name?.trim()) this.primaryNames.set(effort.id, effort.name.trim());
 			this.console?.conversation.refreshCards();
 			this.redraw();
 		} catch {
@@ -407,7 +480,8 @@ export class AgentDashboard implements Component, Focusable {
 	 * list, a main session's from its own session file, read once and kept for the view.
 	 */
 	private knownModel(identity: string): string | undefined {
-		const reasons = (item: Pick<AgentConversationSummary, "model">) => (item.model ? this.operations.modelInfo?.(item.model.provider, item.model.modelId)?.reasoning : undefined);
+		const reasons = (item: Pick<AgentConversationSummary, "model">) =>
+			item.model ? this.operations.modelInfo?.(item.model.provider, item.model.modelId)?.reasoning : undefined;
 		const model = this.knownModelFacts(identity);
 		return model ? modelLabel({ model }, this.theme, 60, reasons) : undefined;
 	}
@@ -423,7 +497,9 @@ export class AgentDashboard implements Component, Focusable {
 			void this.readMainSessionModel(identity);
 			return undefined;
 		}
-		return recorded ? { provider: recorded.provider, modelId: recorded.modelId, thinkingLevel: recorded.thinkingLevel ?? "" } : undefined;
+		return recorded
+			? { provider: recorded.provider, modelId: recorded.modelId, thinkingLevel: recorded.thinkingLevel ?? "" }
+			: undefined;
 	}
 
 	private async readMainSessionModel(identity: string): Promise<void> {
@@ -437,7 +513,10 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** A thread title from the threads this view has read. */
 	private threadTitle(id: string): string | undefined {
-		const known = this.threads?.title(id) ?? this.threadTitles.get(id) ?? this.relations.view().threads.find((thread) => thread.id === id)?.title;
+		const known =
+			this.threads?.title(id) ??
+			this.threadTitles.get(id) ??
+			this.relations.view().threads.find((thread) => thread.id === id)?.title;
 		if (known === undefined) void this.readThreadTitle(id);
 		return known;
 	}
@@ -484,7 +563,12 @@ export class AgentDashboard implements Component, Focusable {
 			const previousRows = this.page?.rows;
 			this.page = this.reuseRoster(pages.reduce((previous, page) => this.mergeRoster(previous, page)));
 			const rows = this.page.rows;
-			if (!previousRows || rows.length !== previousRows.length || rows.some((row, index) => row !== previousRows[index])) this.console?.conversation.refreshCards();
+			if (
+				!previousRows ||
+				rows.length !== previousRows.length ||
+				rows.some((row, index) => row !== previousRows[index])
+			)
+				this.console?.conversation.refreshCards();
 			this.loadMore = false;
 			this.rosterFailures = 0;
 			this.rosterNotice = undefined;
@@ -526,7 +610,11 @@ export class AgentDashboard implements Component, Focusable {
 		const hasRows = Boolean(this.page?.rows.length);
 		const reason = error instanceof Error ? error.message : String(error);
 		// The state leads, so a narrow list still shows it; the reason follows.
-		this.rosterNotice = !hasRows ? `Agents unavailable: ${reason}` : this.rosterFailures >= 3 ? "List kept; refresh failed" : undefined;
+		this.rosterNotice = !hasRows
+			? `Agents unavailable: ${reason}`
+			: this.rosterFailures >= 3
+				? "List kept; refresh failed"
+				: undefined;
 	}
 
 	private reuseRoster(page: AgentConversationPage): AgentConversationPage {
@@ -585,7 +673,10 @@ export class AgentDashboard implements Component, Focusable {
 		const previousId = this.state.selected;
 		const frame = previousId ? this.source.frame(previousId) : undefined;
 		if (previousId && frame && this.source.availability(previousId)?.state === "live" && this.page)
-			this.page = { ...this.page, rows: this.page.rows.map((row) => (row.id === previousId ? this.observedRow(row, frame) : row)) };
+			this.page = {
+				...this.page,
+				rows: this.page.rows.map((row) => (row.id === previousId ? this.observedRow(row, frame) : row)),
+			};
 	}
 
 	/**
@@ -594,7 +685,10 @@ export class AgentDashboard implements Component, Focusable {
 	 */
 	private chooseSelection(): void {
 		if (this.pinned) this.state.selected = this.pinned;
-		else if (!this.state.selected || (!this.rows.some((row) => row.id === this.state.selected) && (!this.console || this.state.filter)))
+		else if (
+			!this.state.selected ||
+			(!this.rows.some((row) => row.id === this.state.selected) && (!this.console || this.state.filter))
+		)
 			this.state.selected = this.rows[0]?.id;
 	}
 
@@ -610,20 +704,32 @@ export class AgentDashboard implements Component, Focusable {
 	private reconcile(): void {
 		this.observeSelectedRow();
 		const filtered = dashboardRecords(
-			this.page ? { observedAt: Date.parse(this.page.observedAt), sessions: this.page.rows, coverage: this.page.coverage } : undefined,
+			this.page
+				? { observedAt: Date.parse(this.page.observedAt), sessions: this.page.rows, coverage: this.page.coverage }
+				: undefined,
 			this.state.filter,
 		);
 		const related = this.relations.view();
 		const identities = related.identities;
 		// Related work leads when there is some; with none, the list shows every agent instead of an empty pane.
-		if (!this.allAgents && !this.scopeChosen && this.page && !related.pending && !filtered.some((row) => identities.has(relationIdentity(row.id)))) this.allAgents = true;
+		if (
+			!this.allAgents &&
+			!this.scopeChosen &&
+			this.page &&
+			!related.pending &&
+			!filtered.some((row) => identities.has(relationIdentity(row.id)))
+		)
+			this.allAgents = true;
 		const scoped = this.allAgents ? filtered : filtered.filter((row) => identities.has(relationIdentity(row.id)));
 		this.reconcileOrder(this.errorsOnly ? scoped.filter(needsAttention) : scoped);
 		this.rows = groupRows(this.rows);
 		this.chooseSelection();
 		const id = this.state.selected;
 		const console = this.console;
-		const row = this.page?.rows.find((item) => item.id === id) ?? (id !== undefined && console?.row.id === id ? console.row : undefined) ?? this.pinnedRow(id);
+		const row =
+			this.page?.rows.find((item) => item.id === id) ??
+			(id !== undefined && console?.row.id === id ? console.row : undefined) ??
+			this.pinnedRow(id);
 		if (row && console?.row.id === row.id) {
 			if (console.row.cwd !== row.cwd) this.branches.refresh(row.cwd, `cwd:${++this.branchChanges}`);
 			console.row = row;
@@ -724,7 +830,16 @@ export class AgentDashboard implements Component, Focusable {
 	/** A pinned identity outside the loaded list stays addressable with what is known about it. */
 	private pinnedRow(id: string | undefined): AgentConversationSummary | undefined {
 		if (!id || id !== this.pinned || !this.page) return undefined;
-		return { id, storageId: id.split(":")[0] ?? id, cwd: "", modifiedAt: Date.now(), owner: "unknown", state: "unavailable", cost: Number.NaN, partial: true };
+		return {
+			id,
+			storageId: id.split(":")[0] ?? id,
+			cwd: "",
+			modifiedAt: Date.now(),
+			owner: "unknown",
+			state: "unavailable",
+			cost: Number.NaN,
+			partial: true,
+		};
 	}
 
 	/**
@@ -767,20 +882,35 @@ export class AgentDashboard implements Component, Focusable {
 	private async readSelected(row: AgentConversationSummary, generation: number): Promise<void> {
 		try {
 			const snapshot = await this.source.snapshot(row.id);
-			if (this.closed || generation !== this.sourceGeneration || this.source.availability(row.id)?.state === "live") return;
+			if (this.closed || generation !== this.sourceGeneration || this.source.availability(row.id)?.state === "live")
+				return;
 			this.history.tail(snapshot, this.console?.state.view.anchor?.id);
-			this.snapshot = { ...snapshot, entries: this.history.entries(this.console?.state.view.anchor?.id), nextBefore: this.history.earlier() };
+			this.snapshot = {
+				...snapshot,
+				entries: this.history.entries(this.console?.state.view.anchor?.id),
+				nextBefore: this.history.earlier(),
+			};
 			const console = this.console;
 			if (!console) return;
 			this.setConversation();
-			if (console.state.view.before && !this.snapshot.entries.some((entry) => entry.id === console.state.view.anchor?.id)) void this.readHistory(console.state.view.before);
+			if (
+				console.state.view.before &&
+				!this.snapshot.entries.some((entry) => entry.id === console.state.view.anchor?.id)
+			)
+				void this.readHistory(console.state.view.before);
 			console.status = snapshot.partial ? "Partial history" : "";
-			console.warning = this.source.availability(row.id)?.state === "unavailable" ? "Not connected; stored messages shown" : undefined;
+			console.warning =
+				this.source.availability(row.id)?.state === "unavailable" ? "Not connected; stored messages shown" : undefined;
 			console.observeUsage(snapshot.entries);
 			this.branches.refresh(console.row.cwd, `${console.row.id}:${snapshot.entries.at(-1)?.id ?? "empty"}`);
 			this.redraw();
 		} catch (error) {
-			if (generation === this.sourceGeneration && !this.closed && this.console && this.source.availability(row.id)?.state !== "live") {
+			if (
+				generation === this.sourceGeneration &&
+				!this.closed &&
+				this.console &&
+				this.source.availability(row.id)?.state !== "live"
+			) {
 				this.console.warning = `Conversation unavailable: ${String(error)}`;
 				if (this.console.row.state === "unavailable") this.console.row = { ...this.console.row, error: String(error) };
 				this.console.status = "";
@@ -802,14 +932,17 @@ export class AgentDashboard implements Component, Focusable {
 				: row.state === "starting" || row.state === "new" || row.state === "working" || row.state === "unavailable"
 					? "idle"
 					: row.state,
-			model: frame.status.agent.model ? { ...frame.status.agent.model, thinkingLevel: frame.status.agent.thinkingLevel } : row.model,
+			model: frame.status.agent.model
+				? { ...frame.status.agent.model, thinkingLevel: frame.status.agent.thinkingLevel }
+				: row.model,
 		};
 	}
 
 	private updateObservedRow(console: AgentConsole, frame: ConversationFrame): void {
 		if (this.source.availability(console.row.id)?.state !== "live") return;
 		console.row = this.observedRow(console.row, frame);
-		if (this.page) this.page = { ...this.page, rows: this.page.rows.map((row) => (row.id === console.row.id ? console.row : row)) };
+		if (this.page)
+			this.page = { ...this.page, rows: this.page.rows.map((row) => (row.id === console.row.id ? console.row : row)) };
 		this.rows = this.rows.map((row) => (row.id === console.row.id ? console.row : row));
 		this.operations.observed?.(console.row);
 	}
@@ -835,9 +968,26 @@ export class AgentDashboard implements Component, Focusable {
 
 	private applyHistory(console: AgentConsole, frame: ConversationFrame): void {
 		const previous = this.appliedHistory;
-		if (previous?.entries !== frame.entries || previous.complete !== frame.coverage.complete || previous.nextBefore !== frame.nextBefore) {
-			this.history.tail({ entries: frame.entries, partial: !frame.coverage.complete, revision: `r${frame.revision}`, nextBefore: frame.nextBefore }, console.state.view.anchor?.id);
-			this.snapshot = { entries: this.history.entries(console.state.view.anchor?.id), revision: `r${frame.revision}`, partial: !frame.coverage.complete, nextBefore: this.history.earlier() };
+		if (
+			previous?.entries !== frame.entries ||
+			previous.complete !== frame.coverage.complete ||
+			previous.nextBefore !== frame.nextBefore
+		) {
+			this.history.tail(
+				{
+					entries: frame.entries,
+					partial: !frame.coverage.complete,
+					revision: `r${frame.revision}`,
+					nextBefore: frame.nextBefore,
+				},
+				console.state.view.anchor?.id,
+			);
+			this.snapshot = {
+				entries: this.history.entries(console.state.view.anchor?.id),
+				revision: `r${frame.revision}`,
+				partial: !frame.coverage.complete,
+				nextBefore: this.history.earlier(),
+			};
 			this.appliedHistory = { entries: frame.entries, complete: frame.coverage.complete, nextBefore: frame.nextBefore };
 		}
 		if (this.usageEntries !== frame.entries) {
@@ -860,7 +1010,10 @@ export class AgentDashboard implements Component, Focusable {
 			this.updateObservedRow(console, frame);
 			this.setConversation(frame.live);
 			console.status = frame.coverage.complete ? "" : "Partial history";
-			console.warning = availability?.state === "unavailable" ? "Connection lost; last observed messages shown. Reconnect starts the host." : undefined;
+			console.warning =
+				availability?.state === "unavailable"
+					? "Connection lost; last observed messages shown. Reconnect starts the host."
+					: undefined;
 			console.usage = availability?.state === "live" ? frame.status.usage : undefined;
 			this.branches.refresh(console.row.cwd, `${console.row.id}:${frame.entries.at(-1)?.id ?? "empty"}`);
 		}
@@ -892,11 +1045,17 @@ export class AgentDashboard implements Component, Focusable {
 		console.status = before ? "Loading earlier messages…" : "Loading current messages…";
 		this.redraw();
 		try {
-			const page = before ? await this.source.earlier(console.row.id, before) : await this.source.snapshot(console.row.id);
+			const page = before
+				? await this.source.earlier(console.row.id, before)
+				: await this.source.snapshot(console.row.id);
 			if (this.closed || generation !== this.sourceGeneration) return;
 			this.resetAppliedHistory();
 			this.history.add(page, before, console.state.view.anchor?.id);
-			this.snapshot = { ...page, entries: this.history.entries(console.state.view.anchor?.id), nextBefore: this.history.earlier() };
+			this.snapshot = {
+				...page,
+				entries: this.history.entries(console.state.view.anchor?.id),
+				nextBefore: this.history.earlier(),
+			};
 			this.setConversation(this.source.frame(console.row.id)?.live);
 			console.conversation.reanchor();
 			console.status = page.partial ? "Partial history" : "";
@@ -1070,9 +1229,19 @@ export class AgentDashboard implements Component, Focusable {
 
 	private actionLabel(name: string): string {
 		const labels: Record<string, string> = {
-			configure: "Configure", fork: "Fork", rewind: "Rewind", reset: "Reset context", compact: "Compact", command: "Run command",
-			schedule: "Schedule message", timers: "Scheduled messages", profile: "Profile", status: "Details", abort: "Stop",
-			release: "Release", attach: "Reconnect",
+			configure: "Configure",
+			fork: "Fork",
+			rewind: "Rewind",
+			reset: "Reset context",
+			compact: "Compact",
+			command: "Run command",
+			schedule: "Schedule message",
+			timers: "Scheduled messages",
+			profile: "Profile",
+			status: "Details",
+			abort: "Stop",
+			release: "Release",
+			attach: "Reconnect",
 		};
 		return labels[name] ?? name;
 	}
@@ -1093,7 +1262,9 @@ export class AgentDashboard implements Component, Focusable {
 			live: () => {
 				if (this.source.availability(id)?.state !== "live") return undefined;
 				const frame = this.source.frame(id);
-				return frame === undefined ? undefined : { status: frame.status, observedAt: frame.observedAt, revision: frame.revision };
+				return frame === undefined
+					? undefined
+					: { status: frame.status, observedAt: frame.observedAt, revision: frame.revision };
 			},
 			status: async (signal) => {
 				const conversation = ((await forms.status(signal)) as { conversation?: unknown } | null)?.conversation;
@@ -1125,13 +1296,27 @@ export class AgentDashboard implements Component, Focusable {
 			title: "Tasks",
 			render: (width, height) => {
 				hits.begin(width, height);
-				hits.add({ x: 0, y: 0, width, height, click: (event) => (tasks.clickRow(event.y) ? undefined : false), wheel: (delta) => tasks.scroll(delta) });
+				hits.add({
+					x: 0,
+					y: 0,
+					width,
+					height,
+					click: (event) => (tasks.clickRow(event.y) ? undefined : false),
+					wheel: (delta) => tasks.scroll(delta),
+				});
 				return tasks.render(width, height);
 			},
 			handleInput: (data) => tasks.handleInput(data),
 			handleMouse: (event) => hits.handle(event),
 			actions: () => [
-				{ id: "open", label: "Open conversation", key: "enter", short: "open conversation", primary: true, run: () => tasks.open() },
+				{
+					id: "open",
+					label: "Open conversation",
+					key: "enter",
+					short: "open conversation",
+					primary: true,
+					run: () => tasks.open(),
+				},
 				{ id: "refresh", label: "Refresh", key: "r", short: "refresh", primary: true, run: () => void tasks.refresh() },
 			],
 			keys: () => [{ keys: ["up", "down"], label: "select" }],
@@ -1146,7 +1331,19 @@ export class AgentDashboard implements Component, Focusable {
 		return new Form({
 			title: "Conversations",
 			heading: "Choose the conversation to open",
-			fields: [{ kind: "choice", id: "id", label: "Conversation", rows: 8, choices: labels.map((label) => ({ value: label.identity, label: plainLine(label.name || label.firstMessage || "Conversation"), description: label.identity })) }],
+			fields: [
+				{
+					kind: "choice",
+					id: "id",
+					label: "Conversation",
+					rows: 8,
+					choices: labels.map((label) => ({
+						value: label.identity,
+						label: plainLine(label.name || label.firstMessage || "Conversation"),
+						description: label.identity,
+					})),
+				},
+			],
 			action: { label: "Open" },
 			host: view,
 			submit: async (values) => {
@@ -1162,7 +1359,20 @@ export class AgentDashboard implements Component, Focusable {
 		const parent = this.console?.row;
 		const row: AgentConversationSummary | undefined =
 			published ??
-			(parent ? { ...parent, id, name: label?.name, firstMessage: label?.firstMessage, model: undefined, cost: Number.NaN, partial: true, state: "unavailable", error: undefined, health: undefined } : undefined);
+			(parent
+				? {
+						...parent,
+						id,
+						name: label?.name,
+						firstMessage: label?.firstMessage,
+						model: undefined,
+						cost: Number.NaN,
+						partial: true,
+						state: "unavailable",
+						error: undefined,
+						health: undefined,
+					}
+				: undefined);
 		if (!row) return;
 		this.closeInspector();
 		this.selectIdentity(id, row);
@@ -1184,7 +1394,11 @@ export class AgentDashboard implements Component, Focusable {
 		try {
 			const views = await panels(row);
 			if (!this.ownerViewIsCurrent(intent, row, notice)) return;
-			if (!views.length) return this.show("This agent's host advertises no owner views. A stored or stopped host shows none.", "warning");
+			if (!views.length)
+				return this.show(
+					"This agent's host advertises no owner views. A stored or stopped host shows none.",
+					"warning",
+				);
 			const only = views.length === 1 ? views[0] : undefined;
 			if (only) this.openInspector(only.label, (host) => only.open(host));
 			else this.openInspector("Owner views", (host) => ownerViewChooser(views, row, host));
@@ -1212,7 +1426,10 @@ export class AgentDashboard implements Component, Focusable {
 		try {
 			return this.operations.newDefaults?.();
 		} catch (error) {
-			this.show(`New conversation defaults could not be read: ${error instanceof Error ? error.message : String(error)}`, "error");
+			this.show(
+				`New conversation defaults could not be read: ${error instanceof Error ? error.message : String(error)}`,
+				"error",
+			);
 			return undefined;
 		}
 	}
@@ -1232,8 +1449,26 @@ export class AgentDashboard implements Component, Focusable {
 				heading: "Start a new conversation",
 				intro: `${defaults.ownership} Closing this view later does not stop it.`,
 				fields: [
-					{ kind: "area", id: "prompt", label: "Purpose", value: this.state.newTask, rows: 5, hint: "The first message. Leave it empty to create an idle conversation." },
-					...(defaults.presets.length ? [{ kind: "choice" as const, id: "preset", label: "Preset", value: defaults.preset, choices: defaults.presets, rows: Math.min(7, defaults.presets.length) }] : []),
+					{
+						kind: "area",
+						id: "prompt",
+						label: "Purpose",
+						value: this.state.newTask,
+						rows: 5,
+						hint: "The first message. Leave it empty to create an idle conversation.",
+					},
+					...(defaults.presets.length
+						? [
+								{
+									kind: "choice" as const,
+									id: "preset",
+									label: "Preset",
+									value: defaults.preset,
+									choices: defaults.presets,
+									rows: Math.min(7, defaults.presets.length),
+								},
+							]
+						: []),
 					{ kind: "text", id: "cwd", label: "Directory", value: defaults.cwd },
 				],
 				action: { label: "Start" },
@@ -1246,7 +1481,10 @@ export class AgentDashboard implements Component, Focusable {
 		this.openInspector("New conversation", open, { id: "new", label: "New conversation" });
 	}
 
-	private async startAgent(newAgent: NonNullable<DashboardOperations["newAgent"]>, values: Readonly<Record<string, string>>) {
+	private async startAgent(
+		newAgent: NonNullable<DashboardOperations["newAgent"]>,
+		values: Readonly<Record<string, string>>,
+	) {
 		const prompt = (values.prompt ?? "").trim() ? values.prompt : undefined;
 		const submitted = values.prompt ?? "";
 		// The creation keeps the view only while this form and this intent still own it.
@@ -1262,7 +1500,8 @@ export class AgentDashboard implements Component, Focusable {
 				if (this.closed) return;
 				created = row.id;
 				// The created record stays addressable whether or not this creation still owns the view.
-				if (this.page) this.page = { ...this.page, rows: [...this.page.rows.filter((item) => item.id !== row.id), row] };
+				if (this.page)
+					this.page = { ...this.page, rows: [...this.page.rows.filter((item) => item.id !== row.id), row] };
 				if (!this.creationIsCurrent(intent, form)) return;
 				this.allAgents = true;
 				this.rows = [...this.rows.filter((item) => item.id !== row.id), row];
@@ -1290,7 +1529,13 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** A created conversation takes the selection only while its own form still owns the view. */
 	private creationIsCurrent(intent: number, form: Inspector | undefined): boolean {
-		return !this.closed && this.surface === "work" && this.intent === intent && form !== undefined && this.inspector?.frame === form;
+		return (
+			!this.closed &&
+			this.surface === "work" &&
+			this.intent === intent &&
+			form !== undefined &&
+			this.inspector?.frame === form
+		);
 	}
 
 	// --- full-surface views --------------------------------------------------
@@ -1354,7 +1599,15 @@ export class AgentDashboard implements Component, Focusable {
 
 	private openParticipant(id: string): void {
 		const row = this.page?.rows.find((item) => relationIdentity(item.id) === relationIdentity(id)) ?? {
-			id, storageId: id.split(":")[0], name: id, cwd: "", modifiedAt: 0, owner: "unknown" as const, state: "unavailable" as const, cost: Number.NaN, partial: true,
+			id,
+			storageId: id.split(":")[0],
+			name: id,
+			cwd: "",
+			modifiedAt: 0,
+			owner: "unknown" as const,
+			state: "unavailable" as const,
+			cost: Number.NaN,
+			partial: true,
 		};
 		this.returnSurface = "threads";
 		this.surface = "work";
@@ -1392,7 +1645,14 @@ export class AgentDashboard implements Component, Focusable {
 		const row = this.console?.row;
 		if (!row) return [];
 		const actions = this.primaryTargetActions(row);
-		if (this.operations.panels) actions.push({ id: "browsers", label: "Owner views", key: "o", description: "Stashes, clipboard, Markdown, policy and pillars bound to this agent", run: () => void this.openBrowsers() });
+		if (this.operations.panels)
+			actions.push({
+				id: "browsers",
+				label: "Owner views",
+				key: "o",
+				description: "Stashes, clipboard, Markdown, policy and pillars bound to this agent",
+				run: () => void this.openBrowsers(),
+			});
 		const secondary: Array<[string, string, string]> = [
 			["fork", "Fork", "An idle branch from a committed message"],
 			["rewind", "Rewind", "A corrected branch before a mistake; files stay current"],
@@ -1405,7 +1665,8 @@ export class AgentDashboard implements Component, Focusable {
 			["status", "Details", "Full identity, path, model and host state"],
 			["release", "Stop and release host", "Stop this conversation and retire its host"],
 		];
-		for (const [id, label, description] of secondary) actions.push({ id, label, description, run: () => this.openAction(id) });
+		for (const [id, label, description] of secondary)
+			actions.push({ id, label, description, run: () => this.openAction(id) });
 		return actions;
 	}
 
@@ -1413,19 +1674,68 @@ export class AgentDashboard implements Component, Focusable {
 	private primaryTargetActions(row: AgentConversationSummary): Action[] {
 		const working = row.state === "working";
 		const actions: Action[] = [];
-		if (working) actions.push({ id: "abort", label: "Stop", key: "s", short: "stop", primary: true, tone: "danger", description: "Stop current work; history stays", run: () => this.openAction("abort") });
+		if (working)
+			actions.push({
+				id: "abort",
+				label: "Stop",
+				key: "s",
+				short: "stop",
+				primary: true,
+				tone: "danger",
+				description: "Stop current work; history stays",
+				run: () => this.openAction("abort"),
+			});
 		if (working) {
 			const steer = this.console?.state.mode !== "followUp";
-			actions.push({ id: "mode", label: steer ? "Send as follow-up" : "Send as steer", key: "f", short: steer ? "follow-up" : "steer", description: steer ? "The next message is new work for this run, read at the next step" : "The next message corrects the current work, read at the next step", run: () => this.toggleMode() });
+			actions.push({
+				id: "mode",
+				label: steer ? "Send as follow-up" : "Send as steer",
+				key: "f",
+				short: steer ? "follow-up" : "steer",
+				description: steer
+					? "The next message is new work for this run, read at the next step"
+					: "The next message corrects the current work, read at the next step",
+				run: () => this.toggleMode(),
+			});
 		}
 		// Reconnect shows in the footer for an agent that needs attention, and stays in More while its observation is lost.
 		const attention = needsAttention(listedRow(row));
 		if (attention || this.source.availability(row.id)?.state === "unavailable")
-			actions.push({ id: "attach", label: "Reconnect", key: "r", short: "reconnect", primary: attention, description: "Start the host; unfinished work resumes", run: () => this.openAction("attach") });
+			actions.push({
+				id: "attach",
+				label: "Reconnect",
+				key: "r",
+				short: "reconnect",
+				primary: attention,
+				description: "Start the host; unfinished work resumes",
+				run: () => this.openAction("attach"),
+			});
 		actions.push(...(this.operations.extraActions?.(row) ?? []));
-		actions.push({ id: "work", label: "Work", key: "w", short: "work", description: "Requests this agent declared background work for, their dependencies and final reports", run: () => this.openWork() });
-		actions.push({ id: "configure", label: "Configure", key: "c", short: "configure", disabled: working ? "Stop current work first; the owner configures idle agents only" : undefined, description: "Name, model and reasoning", run: () => this.openAction("configure") });
-		actions.push({ id: "tasks", label: "Tasks", key: "k", short: "tasks", description: "The live tasks in this agent's storage", run: () => this.openTasks() });
+		actions.push({
+			id: "work",
+			label: "Work",
+			key: "w",
+			short: "work",
+			description: "Requests this agent declared background work for, their dependencies and final reports",
+			run: () => this.openWork(),
+		});
+		actions.push({
+			id: "configure",
+			label: "Configure",
+			key: "c",
+			short: "configure",
+			disabled: working ? "Stop current work first; the owner configures idle agents only" : undefined,
+			description: "Name, model and reasoning",
+			run: () => this.openAction("configure"),
+		});
+		actions.push({
+			id: "tasks",
+			label: "Tasks",
+			key: "k",
+			short: "tasks",
+			description: "The live tasks in this agent's storage",
+			run: () => this.openTasks(),
+		});
 		return actions;
 	}
 
@@ -1434,20 +1744,60 @@ export class AgentDashboard implements Component, Focusable {
 		const view = this.console?.state.view;
 		if (!view) return [];
 		return [
-			{ id: "expand", label: view.expanded ? "Collapse all" : "Expand all", key: this.keys.getKeys("app.tools.expand")[0] ?? "ctrl+o", description: "Every tool and notice", run: () => this.toggleExpanded() },
-			{ id: "thinking", label: view.showThinking ? "Hide thinking" : "Show thinking", key: this.keys.getKeys("app.thinking.toggle")[0] ?? "ctrl+t", short: "thinking", description: "The reasoning of every message", run: () => this.toggleThinking() },
+			{
+				id: "expand",
+				label: view.expanded ? "Collapse all" : "Expand all",
+				key: this.keys.getKeys("app.tools.expand")[0] ?? "ctrl+o",
+				description: "Every tool and notice",
+				run: () => this.toggleExpanded(),
+			},
+			{
+				id: "thinking",
+				label: view.showThinking ? "Hide thinking" : "Show thinking",
+				key: this.keys.getKeys("app.thinking.toggle")[0] ?? "ctrl+t",
+				short: "thinking",
+				description: "The reasoning of every message",
+				run: () => this.toggleThinking(),
+			},
 		];
 	}
 
 	/** Keys of the agents view that need no selection: new, scope, the other tabs, filters, layout and help. */
 	private viewActions(): Action[] {
 		const actions: Action[] = [
-			{ id: "new", label: "New conversation", key: "n", short: "new", disabled: this.operations.newAgent ? undefined : (this.operations.newUnavailable ?? "Unavailable here"), run: () => this.openNew() },
+			{
+				id: "new",
+				label: "New conversation",
+				key: "n",
+				short: "new",
+				disabled: this.operations.newAgent ? undefined : (this.operations.newUnavailable ?? "Unavailable here"),
+				run: () => this.openNew(),
+			},
 		];
 		actions.push(...this.surfaceActions());
-		if (this.errorsOnly || this.rows.some(needsAttention)) actions.push({ id: "errors", label: this.errorsOnly ? "Every agent" : "Agents with errors", key: "e", short: this.errorsOnly ? "all agents" : "errors", run: () => this.toggleErrors() });
-		if (this.console) actions.push({ id: "list", label: this.state.layout.listHidden ? "Show list" : "Hide list", key: "l", run: () => this.toggleList() });
-		actions.push({ id: "time", label: this.state.exactTime ? "Relative times" : "Exact times", key: "i", run: () => { this.state.exactTime = !this.state.exactTime; } });
+		if (this.errorsOnly || this.rows.some(needsAttention))
+			actions.push({
+				id: "errors",
+				label: this.errorsOnly ? "Every agent" : "Agents with errors",
+				key: "e",
+				short: this.errorsOnly ? "all agents" : "errors",
+				run: () => this.toggleErrors(),
+			});
+		if (this.console)
+			actions.push({
+				id: "list",
+				label: this.state.layout.listHidden ? "Show list" : "Hide list",
+				key: "l",
+				run: () => this.toggleList(),
+			});
+		actions.push({
+			id: "time",
+			label: this.state.exactTime ? "Relative times" : "Exact times",
+			key: "i",
+			run: () => {
+				this.state.exactTime = !this.state.exactTime;
+			},
+		});
 		actions.push({ id: "help", label: "Help", key: "?", short: "help", run: () => this.openHelp() });
 		// The reading switches come last, so a short footer row gives them up together.
 		actions.push(...this.readingActions());
@@ -1457,9 +1807,33 @@ export class AgentDashboard implements Component, Focusable {
 	/** Related or All, and the other tabs, when this host offers them. */
 	private surfaceActions(): Action[] {
 		const actions: Action[] = [];
-		if (this.primaryId) actions.push({ id: "scope", label: this.allAgents ? "Related agents" : "All agents", key: "v", short: this.allAgents ? "related" : "all", description: this.allAgents ? "This session's work only" : "Every loaded agent", run: () => this.setScope(!this.allAgents) });
-		if (this.operations.collaborate) actions.push({ id: "threads", label: "Threads", key: "t", short: "threads", primary: true, run: () => void this.openThreads() });
-		if (this.operations.efforts) actions.push({ id: "efforts", label: "Efforts", key: "b", short: "efforts", description: "Your other main sessions and what each says it is working on", run: () => this.openEfforts() });
+		if (this.primaryId)
+			actions.push({
+				id: "scope",
+				label: this.allAgents ? "Related agents" : "All agents",
+				key: "v",
+				short: this.allAgents ? "related" : "all",
+				description: this.allAgents ? "This session's work only" : "Every loaded agent",
+				run: () => this.setScope(!this.allAgents),
+			});
+		if (this.operations.collaborate)
+			actions.push({
+				id: "threads",
+				label: "Threads",
+				key: "t",
+				short: "threads",
+				primary: true,
+				run: () => void this.openThreads(),
+			});
+		if (this.operations.efforts)
+			actions.push({
+				id: "efforts",
+				label: "Efforts",
+				key: "b",
+				short: "efforts",
+				description: "Your other main sessions and what each says it is working on",
+				run: () => this.openEfforts(),
+			});
 		return actions;
 	}
 
@@ -1563,7 +1937,9 @@ export class AgentDashboard implements Component, Focusable {
 	 */
 	private commandKey(data: string): boolean {
 		if (this.claimedKey(data)) return false;
-		const action = this.allActions().find((candidate) => candidate.key !== undefined && keyMatches(data, candidate.key));
+		const action = this.allActions().find(
+			(candidate) => candidate.key !== undefined && keyMatches(data, candidate.key),
+		);
 		if (action) {
 			this.invokeAction(action.id);
 			return true;
@@ -1636,7 +2012,17 @@ export class AgentDashboard implements Component, Focusable {
 	private listKey(data: string): void {
 		if (matchesKey(data, "escape")) this.listEscape();
 		else if (matchesKey(data, "up") || matchesKey(data, "down")) this.move(matchesKey(data, "up") ? -1 : 1);
-		else if (matchesKey(data, "home") || matchesKey(data, "end")) this.move(matchesKey(data, "home") ? -this.rows.length : this.rows.length - 1 - Math.max(0, this.rows.findIndex((row) => row.id === this.state.selected)));
+		else if (matchesKey(data, "home") || matchesKey(data, "end"))
+			this.move(
+				matchesKey(data, "home")
+					? -this.rows.length
+					: this.rows.length -
+							1 -
+							Math.max(
+								0,
+								this.rows.findIndex((row) => row.id === this.state.selected),
+							),
+			);
 		else if (matchesKey(data, "enter")) this.listEnter();
 		else if (keyMatches(data, "/")) this.region = "find";
 	}
@@ -1721,7 +2107,8 @@ export class AgentDashboard implements Component, Focusable {
 		if (!matchesKey(data, "pageUp") && !matchesKey(data, "pageDown")) return false;
 		const up = matchesKey(data, "pageUp");
 		if (up && console.conversation.atTop()) this.earlier();
-		else if (!up && console.conversation.atBottom() && this.history.newer()) void this.readHistory(this.history.newer()?.upper);
+		else if (!up && console.conversation.atBottom() && this.history.newer())
+			void this.readHistory(this.history.newer()?.upper);
 		else console.conversation.page((up ? -1 : 1) * Math.max(1, this.bodyHeight - 1));
 		return true;
 	}
@@ -1775,7 +2162,8 @@ export class AgentDashboard implements Component, Focusable {
 		const conversation = this.console?.conversation;
 		if (!conversation) return;
 		if (delta < 0 && conversation.atTop()) this.earlier();
-		else if (delta > 0 && conversation.atBottom() && this.history.newer()) void this.readHistory(this.history.newer()?.upper);
+		else if (delta > 0 && conversation.atBottom() && this.history.newer())
+			void this.readHistory(this.history.newer()?.upper);
 		else conversation.page(delta);
 		this.redraw();
 	}
@@ -1797,7 +2185,8 @@ export class AgentDashboard implements Component, Focusable {
 	/** The work view's pointer route: a resize gesture, the regions of the last paint, then the pane. */
 	private workMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		// A pointer event drawn for another size acts on nothing and ends a resize at its committed layout.
-		if (event.width !== this.tui.terminal.columns || event.height !== this.tui.terminal.rows) return this.resize.cancel() ? { handled: true, render: true } : undefined;
+		if (event.width !== this.tui.terminal.columns || event.height !== this.tui.terminal.rows)
+			return this.resize.cancel() ? { handled: true, render: true } : undefined;
 		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeKey());
 		return this.resize.handle(event) ?? this.hits.handle(event) ?? this.paneMouse(event);
 	}
@@ -1810,7 +2199,8 @@ export class AgentDashboard implements Component, Focusable {
 			return result;
 		}
 		if (event.y === 0 || event.y >= event.height - 1) return undefined;
-		if (this.surface === "threads") return this.threads?.handleMouse({ ...event, y: event.y - 1, height: event.height - 2 });
+		if (this.surface === "threads")
+			return this.threads?.handleMouse({ ...event, y: event.y - 1, height: event.height - 2 });
 		return this.efforts?.handleMouse({ ...event, height: event.height - 1 });
 	}
 
@@ -1819,14 +2209,30 @@ export class AgentDashboard implements Component, Focusable {
 		const g = this.geometry;
 		const console = this.console;
 		if (!console || event.x < g.paneX || event.x >= g.paneX + g.paneWidth) return undefined;
-		if (event.y >= g.conversationY && event.y < g.conversationY + g.conversationHeight && event.x < g.paneX + g.conversationWidth) {
+		if (
+			event.y >= g.conversationY &&
+			event.y < g.conversationY + g.conversationHeight &&
+			event.x < g.paneX + g.conversationWidth
+		) {
 			if (event.type === "wheel") return undefined;
-			const result = console.conversation.handleMouse({ ...event, x: event.x - g.paneX, y: event.y - g.conversationY, width: Math.max(1, g.conversationWidth - 1), height: g.conversationHeight });
+			const result = console.conversation.handleMouse({
+				...event,
+				x: event.x - g.paneX,
+				y: event.y - g.conversationY,
+				width: Math.max(1, g.conversationWidth - 1),
+				height: g.conversationHeight,
+			});
 			if (result) this.region = "conversation";
 			return result;
 		}
 		if (event.y >= g.composerY && event.y < g.composerY + g.composerHeight) {
-			const result = console.composer.handleMouse({ ...event, x: event.x - g.paneX, y: event.y - g.composerY, width: g.paneWidth, height: g.composerHeight });
+			const result = console.composer.handleMouse({
+				...event,
+				x: event.x - g.paneX,
+				y: event.y - g.composerY,
+				width: g.paneWidth,
+				height: g.composerHeight,
+			});
 			if (result) this.region = "composer";
 			return result;
 		}
@@ -1843,7 +2249,10 @@ export class AgentDashboard implements Component, Focusable {
 		const height = this.tui.terminal.rows;
 		this.resize.begin(width, height, this.resizeKey());
 		this.hits.begin(width, height);
-		if (width < 60 || height < 16) return Array.from({ length: height }, (_, row) => fitLine(row === 0 ? "Make the window larger to use Agents (60×16). Esc leaves." : "", width));
+		if (width < 60 || height < 16)
+			return Array.from({ length: height }, (_, row) =>
+				fitLine(row === 0 ? "Make the window larger to use Agents (60×16). Esc leaves." : "", width),
+			);
 		// Threads and Efforts sit under the same tabs as the agents; each owns the rows between the tabs and the footer.
 		let lines: string[];
 		if (this.surface === "efforts" && this.efforts) {
@@ -1851,7 +2260,14 @@ export class AgentDashboard implements Component, Focusable {
 			lines = [this.renderHeading(width), ...this.efforts.render(width, height - 1, shape.rosterWidth).slice(1)];
 		} else if (this.surface === "threads" && this.threads) {
 			const shape = dashboardGeometry(width, height, 0, false, 0, 4, this.state.layout);
-			lines = [this.renderHeading(width), ...this.threads.render(width, height - 2, width >= 100 ? this.listColumns(width, shape.rosterWidth) : shape.rosterWidth)];
+			lines = [
+				this.renderHeading(width),
+				...this.threads.render(
+					width,
+					height - 2,
+					width >= 100 ? this.listColumns(width, shape.rosterWidth) : shape.rosterWidth,
+				),
+			];
 		} else {
 			lines = this.renderWork(width, height - 1);
 			this.resize.end();
@@ -1865,8 +2281,11 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** The key footer on the last row: the open form's keys while it has focus, else the focused surface's. */
 	private renderFooter(width: number, y: number): string {
-		if (this.surface === "work" && this.region === "inspector" && this.inspector) return this.inspector.frame.renderFooter(width, this.hits, y);
-		const { controls, menu } = this.footer.menuShown ? { controls: KeyRow.menuControls(this.footer, (key) => this.sendKey(key)), menu: [] } : this.footerControls();
+		if (this.surface === "work" && this.region === "inspector" && this.inspector)
+			return this.inspector.frame.renderFooter(width, this.hits, y);
+		const { controls, menu } = this.footer.menuShown
+			? { controls: KeyRow.menuControls(this.footer, (key) => this.sendKey(key)), menu: [] }
+			: this.footerControls();
 		return this.footer.render(controls, width, this.theme, this.hits, y, 0, menu, this.footerEditing());
 	}
 
@@ -1911,13 +2330,24 @@ export class AgentDashboard implements Component, Focusable {
 	}
 
 	/** Footer priorities of the view's actions; the selected agent's actions have 1. */
-	private static readonly PRIORITY: Readonly<Record<string, number>> = { new: 1, help: 1, scope: 2, threads: 2, efforts: 2, errors: 2, list: 3, expand: 3, thinking: 3 };
+	private static readonly PRIORITY: Readonly<Record<string, number>> = {
+		new: 1,
+		help: 1,
+		scope: 2,
+		threads: 2,
+		efforts: 2,
+		errors: 2,
+		list: 3,
+		expand: 3,
+		thinking: 3,
+	};
 
 	/** The agents view's footer for the focused region: navigation first, then actions, then the way out. */
 	private workFooter(): { controls: Control[]; menu: Control[] } {
 		const controls = this.workHints();
 		// Printable keys stay text; More invokes the actions through its chord.
-		if (this.textFocus()) return { controls, menu: this.allActions().map((action) => menuControl(action, (id) => this.invokeAction(id))) };
+		if (this.textFocus())
+			return { controls, menu: this.allActions().map((action) => menuControl(action, (id) => this.invokeAction(id))) };
 		const menu = this.actionControls(controls);
 		controls.push(...this.wayOut());
 		return { controls, menu };
@@ -1932,7 +2362,11 @@ export class AgentDashboard implements Component, Focusable {
 	private workHints(): Control[] {
 		const console = this.console;
 		if (this.region === "find")
-			return [this.hint(["up", "down"], "select", 0), this.hint(["enter"], "done", 1), this.hint(["escape"], this.find.value ? "clear" : "list", 0)];
+			return [
+				this.hint(["up", "down"], "select", 0),
+				this.hint(["enter"], "done", 1),
+				this.hint(["escape"], this.find.value ? "clear" : "list", 0),
+			];
 		if (this.region === "composer" && console) return this.composerControls(console);
 		return this.region === "conversation" && console
 			? [this.hint(["up", "down"], "scroll", 0), this.hint(["end"], "latest"), this.hint(["enter"], "message", 1)]
@@ -1948,9 +2382,15 @@ export class AgentDashboard implements Component, Focusable {
 		const invoke = (id: string) => this.invokeAction(id);
 		const claimed = new Set(controls.flatMap((control) => control.keys));
 		for (const action of this.allActions()) {
-			const control = action.primary && !claimed.has(action.key ?? "") ? actionControl(action, invoke, AgentDashboard.PRIORITY[action.id] ?? 1) : undefined;
+			const control =
+				action.primary && !claimed.has(action.key ?? "")
+					? actionControl(action, invoke, AgentDashboard.PRIORITY[action.id] ?? 1)
+					: undefined;
 			if (control) controls.push(control);
-			else menu.push(claimed.has(action.key ?? "") ? { ...menuControl(action, invoke), keys: [] } : menuControl(action, invoke));
+			else
+				menu.push(
+					claimed.has(action.key ?? "") ? { ...menuControl(action, invoke), keys: [] } : menuControl(action, invoke),
+				);
 		}
 		return menu;
 	}
@@ -1960,13 +2400,26 @@ export class AgentDashboard implements Component, Focusable {
 		const controls: Control[] = [];
 		const escapeLabel = this.region === "conversation" ? "list" : this.listEscapeLabel();
 		if (escapeLabel) controls.push(this.hint(["escape"], escapeLabel, 0));
-		if (this.attached) controls.push({ id: "\u0000detach", keys: [this.keys.getKeys("app.exit")[0] ?? "ctrl+d"], label: "detach", priority: 0, run: () => this.detach() });
+		if (this.attached)
+			controls.push({
+				id: "\u0000detach",
+				keys: [this.keys.getKeys("app.exit")[0] ?? "ctrl+d"],
+				label: "detach",
+				priority: 0,
+				run: () => this.detach(),
+			});
 		return controls;
 	}
 
 	private listControls(): Control[] {
 		const controls = [this.hint(["up", "down"], "select", 0)];
-		const enter = this.loadMore ? "load more" : this.console ? "message" : this.emptyStore() && this.operations.newAgent ? "new" : undefined;
+		const enter = this.loadMore
+			? "load more"
+			: this.console
+				? "message"
+				: this.emptyStore() && this.operations.newAgent
+					? "new"
+					: undefined;
 		if (enter) controls.push(this.hint(["enter"], enter, 1));
 		controls.push(this.hint(["/"], "find", 1));
 		return controls;
@@ -1980,15 +2433,22 @@ export class AgentDashboard implements Component, Focusable {
 		return [
 			this.hint(["enter"], send, 0),
 			...(newline.length ? [this.hint(newline, "newline")] : []),
-			this.hint(["escape"], this.inspector ? `close ${plainLine(this.inspector.frame.viewTitle ?? "form").toLocaleLowerCase()}` : "done", 0),
+			this.hint(
+				["escape"],
+				this.inspector ? `close ${plainLine(this.inspector.frame.viewTitle ?? "form").toLocaleLowerCase()}` : "done",
+				0,
+			),
 		];
 	}
 
 	/** Agents, Threads and Efforts as tabs; the agents' own scope and list controls follow on their tab. */
 	private renderTabs(): { line: string; x: number } {
 		const theme = this.theme;
-		const tabs: Array<{ surface: Surface; label: string; open(): void }> = [{ surface: "work", label: "Agents", open: () => this.backToWork() }];
-		if (this.operations.collaborate) tabs.push({ surface: "threads", label: "Threads", open: () => void this.openThreads() });
+		const tabs: Array<{ surface: Surface; label: string; open(): void }> = [
+			{ surface: "work", label: "Agents", open: () => this.backToWork() },
+		];
+		if (this.operations.collaborate)
+			tabs.push({ surface: "threads", label: "Threads", open: () => void this.openThreads() });
 		// Efforts stays under More: other main sessions and their published plans are not part of reading agents.
 		if (this.surface === "efforts") tabs.push({ surface: "efforts", label: "Efforts", open: () => this.openEfforts() });
 		let x = 0;
@@ -2006,7 +2466,10 @@ export class AgentDashboard implements Component, Focusable {
 	/** The tabs on the left and, on the agents tab, the session's agent figures at the right. Commands live in the footer. */
 	private renderHeading(width: number): string {
 		const tabs = this.renderTabs();
-		const figures = this.surface === "work" && width >= 100 && this.sessionFigures ? this.theme.fg("muted", ` ${plainLine(this.sessionFigures)} `) : "";
+		const figures =
+			this.surface === "work" && width >= 100 && this.sessionFigures
+				? this.theme.fg("muted", ` ${plainLine(this.sessionFigures)} `)
+				: "";
 		if (!figures) return fitLine(tabs.line, width);
 		return `${fitLine(tabs.line, Math.max(0, width - visibleWidth(figures)))}${figures}`;
 	}
@@ -2016,7 +2479,10 @@ export class AgentDashboard implements Component, Focusable {
 		const theme = this.theme;
 		const parts: Array<{ text: string; active?: boolean; run(): void }> = [];
 		if (this.primaryId)
-			for (const [all, label] of [[false, "Related"], [true, "All"]] as const)
+			for (const [all, label] of [
+				[false, "Related"],
+				[true, "All"],
+			] as const)
 				parts.push({ text: ` ${label} `, active: this.allAgents === all, run: () => this.setScope(all) });
 		const total = parts.reduce((sum, part) => sum + visibleWidth(part.text), 0);
 		if (total > room) return { text: "", width: 0 };
@@ -2066,7 +2532,14 @@ export class AgentDashboard implements Component, Focusable {
 	 */
 	private listColumns(width: number, chosen: number): number {
 		if (this.modelColumns?.rows !== this.rows) {
-			const longest = this.rows.reduce((most, row) => Math.max(most, row.model ? visibleWidth(`${row.model.provider}/${row.model.modelId} [${row.model.thinkingLevel}]`) : 0), 0);
+			const longest = this.rows.reduce(
+				(most, row) =>
+					Math.max(
+						most,
+						row.model ? visibleWidth(`${row.model.provider}/${row.model.modelId} [${row.model.thinkingLevel}]`) : 0,
+					),
+				0,
+			);
 			this.modelColumns = { rows: this.rows, columns: longest ? longest + 5 : 0 };
 		}
 		return Math.max(chosen, Math.min(this.modelColumns.columns, MAX_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS));
@@ -2076,11 +2549,22 @@ export class AgentDashboard implements Component, Focusable {
 	private renderSplit(width: number, bodyHeight: number, listWidth: number): string[] {
 		const list = this.renderList(listWidth - 1, bodyHeight, 0, 1);
 		const pane = this.renderPane(listWidth + 1, 1, width - listWidth - 1, bodyHeight);
-		this.resize.add({ kind: "roster", x: listWidth - 1, y: 1, width: 2, height: bodyHeight, value: listWidth, min: MIN_ROSTER_COLUMNS, max: Math.min(MAX_ROSTER_COLUMNS, width - 1 - 60) });
+		this.resize.add({
+			kind: "roster",
+			x: listWidth - 1,
+			y: 1,
+			width: 2,
+			height: bodyHeight,
+			value: listWidth,
+			min: MIN_ROSTER_COLUMNS,
+			max: Math.min(MAX_ROSTER_COLUMNS, width - 1 - 60),
+		});
 		const active = this.resize.active("roster");
 		const lit = active || this.resize.hover === "roster" || this.region === "list";
 		const divider = this.theme.fg(lit ? "accent" : "borderMuted", active ? "┃" : "│");
-		return pane.map((line, row) => fitLine(list[row] ?? "", listWidth) + divider + fitLine(line, width - listWidth - 1));
+		return pane.map(
+			(line, row) => fitLine(list[row] ?? "", listWidth) + divider + fitLine(line, width - listWidth - 1),
+		);
 	}
 
 	private renderList(width: number, height: number, x0: number, y0: number): string[] {
@@ -2091,25 +2575,61 @@ export class AgentDashboard implements Component, Focusable {
 		const scope = this.listScope(x0 + width, y0, Math.max(0, width - 12));
 		const findWidth = width - scope.width;
 		const findLine = fitLine(this.find.render(findWidth, theme, 0, "/ Find"), findWidth) + scope.text;
-		this.hits.add({ x: x0, y: y0, width: findWidth, height: 1, click: (event) => ({ ...this.find.handleMouse(event, 0), ...this.focusRegion("find") }) });
-		const rosterHeight = Math.max(1, height - 1);
-		const lines = rosterLines(this.rows, this.loadMore ? undefined : this.state.selected, width, rosterHeight, Date.now(), theme, {
-			start: this.rosterScroll,
-			reasons: (row) => (row.model ? this.operations.modelInfo?.(row.model.provider, row.model.modelId)?.reasoning : undefined),
-			footer: facts.text ? { text: facts.text, color: facts.tone } : undefined,
-			range: (start, maxStart) => {
-				this.rosterStart = start;
-				this.rosterMaxStart = maxStart;
-			},
-			row: (row, line, count) => this.hits.add({ x: x0, y: y0 + 1 + line, width, height: count, click: () => this.pick(row.id) }),
+		this.hits.add({
+			x: x0,
+			y: y0,
+			width: findWidth,
+			height: 1,
+			click: (event) => ({ ...this.find.handleMouse(event, 0), ...this.focusRegion("find") }),
 		});
-		this.hits.add({ x: x0, y: y0 + 1, width, height: rosterHeight, wheel: (delta) => { this.rosterScroll = Math.max(0, Math.min(this.rosterMaxStart, this.rosterStart + delta)); } });
+		const rosterHeight = Math.max(1, height - 1);
+		const lines = rosterLines(
+			this.rows,
+			this.loadMore ? undefined : this.state.selected,
+			width,
+			rosterHeight,
+			Date.now(),
+			theme,
+			{
+				start: this.rosterScroll,
+				reasons: (row) =>
+					row.model ? this.operations.modelInfo?.(row.model.provider, row.model.modelId)?.reasoning : undefined,
+				footer: facts.text ? { text: facts.text, color: facts.tone } : undefined,
+				range: (start, maxStart) => {
+					this.rosterStart = start;
+					this.rosterMaxStart = maxStart;
+				},
+				row: (row, line, count) =>
+					this.hits.add({ x: x0, y: y0 + 1 + line, width, height: count, click: () => this.pick(row.id) }),
+			},
+		);
+		this.hits.add({
+			x: x0,
+			y: y0 + 1,
+			width,
+			height: rosterHeight,
+			wheel: (delta) => {
+				this.rosterScroll = Math.max(0, Math.min(this.rosterMaxStart, this.rosterStart + delta));
+			},
+		});
 		const empty = this.listEmpty();
 		// An empty list explains itself in full, however narrow the list is.
-		if (empty) lines.splice(0, lines.length, ...wrap(empty, width).slice(0, rosterHeight).map((line) => theme.fg("muted", line)));
+		if (empty)
+			lines.splice(
+				0,
+				lines.length,
+				...wrap(empty, width)
+					.slice(0, rosterHeight)
+					.map((line) => theme.fg("muted", line)),
+			);
 		const body = Array.from({ length: rosterHeight }, (_, row) => lines[row] ?? "");
 		// Load more sits at the right of the list's last row.
-		if (facts.more) body[rosterHeight - 1] = this.listFooter(width, x0, y0 + rosterHeight, { text: plainLine(body[rosterHeight - 1] ?? ""), tone: facts.text ? facts.tone : "muted", more: facts.more });
+		if (facts.more)
+			body[rosterHeight - 1] = this.listFooter(width, x0, y0 + rosterHeight, {
+				text: plainLine(body[rosterHeight - 1] ?? ""),
+				tone: facts.text ? facts.tone : "muted",
+				more: facts.more,
+			});
 		return [findLine, ...body].map((line) => fitLine(line, width));
 	}
 
@@ -2133,13 +2653,19 @@ export class AgentDashboard implements Component, Focusable {
 		if (!this.page) return "Reading agents…";
 		if (this.errorsOnly) return "No agent in this view has an error. Esc shows every agent.";
 		if (this.state.filter) return `No agent matches “${plainLine(this.state.filter)}”.`;
-		if (!this.allAgents) return this.relations.view().pending ? "Reading related work…" : "No related agents yet. All shows every loaded agent.";
-		return this.page.coverage.complete ? "No agents yet. New conversation starts one." : "The agent list is incomplete.";
+		if (!this.allAgents)
+			return this.relations.view().pending
+				? "Reading related work…"
+				: "No related agents yet. All shows every loaded agent.";
+		return this.page.coverage.complete
+			? "No agents yet. New conversation starts one."
+			: "The agent list is incomplete.";
 	}
 
 	/** A warning about the list's facts, when one applies, and the Load more control when the store has more agents. */
 	private listFacts(): { readonly text: string; readonly tone: "warning" | "muted"; readonly more?: string } {
-		if (this.rosterNotice && (!this.rows.length || this.rosterNotice.startsWith("Loading"))) return { text: plainLine(this.rosterNotice), tone: "warning" };
+		if (this.rosterNotice && (!this.rows.length || this.rosterNotice.startsWith("Loading")))
+			return { text: plainLine(this.rosterNotice), tone: "warning" };
 		if (this.rosterFailures >= 3 && this.rosterNotice) return { text: plainLine(this.rosterNotice), tone: "warning" };
 		const related = this.relations.view();
 		const first = !this.allAgents && related.pending && !related.loaded;
@@ -2149,13 +2675,27 @@ export class AgentDashboard implements Component, Focusable {
 		return { text, tone: failed ? "warning" : "muted", ...(more ? { more } : {}) };
 	}
 
-	private listFooter(width: number, x0: number, y: number, facts: { readonly text: string; readonly tone: "warning" | "muted"; readonly more?: string }): string {
+	private listFooter(
+		width: number,
+		x0: number,
+		y: number,
+		facts: { readonly text: string; readonly tone: "warning" | "muted"; readonly more?: string },
+	): string {
 		const { text, tone, more } = facts;
 		if (!more) return this.theme.fg(tone, text);
 		const label = visibleWidth(more);
 		// The facts keep their space when both do not fit; the list end still offers Load more by key.
 		if (visibleWidth(text) + label + 1 > width) return this.theme.fg(tone, fitLine(text, width));
-		this.hits.add({ x: x0 + Math.max(0, width - label), y, width: label, height: 1, click: () => { this.loadMore = true; this.loadMoreAgents(); } });
+		this.hits.add({
+			x: x0 + Math.max(0, width - label),
+			y,
+			width: label,
+			height: 1,
+			click: () => {
+				this.loadMore = true;
+				this.loadMoreAgents();
+			},
+		});
 		return `${fitLine(this.theme.fg(tone, text), Math.max(0, width - label - 1))} ${this.theme.fg("accent", more)}`;
 	}
 
@@ -2191,7 +2731,15 @@ export class AgentDashboard implements Component, Focusable {
 			this.rows.length ? "Select an agent in the list to read its conversation." : "No agent is shown yet.",
 			this.operations.newAgent ? "n starts a new conversation." : (this.operations.newUnavailable ?? ""),
 		];
-		this.geometry = { ...this.geometry, paneX: x0, paneWidth: width, conversationY: y0, conversationHeight: 0, composerY: y0 + height, composerHeight: 0 };
+		this.geometry = {
+			...this.geometry,
+			paneX: x0,
+			paneWidth: width,
+			conversationY: y0,
+			conversationHeight: 0,
+			composerY: y0 + height,
+			composerHeight: 0,
+		};
 		if (this.inspector) return this.renderInspector(x0, y0, width, height);
 		return Array.from({ length: height }, (_, row) => fitLine(lines[row] ? ` ${lines[row]}` : "", width));
 	}
@@ -2208,7 +2756,16 @@ export class AgentDashboard implements Component, Focusable {
 		const age = active ? "" : ` · ${dashboardTime(row.modifiedAt, this.state.exactTime)}`;
 		const state = theme.fg(active ? "accent" : "muted", `${appearance.glyph} ${appearance.label}${age}`);
 		const stateWidth = visibleWidth(state);
-		if (!active) this.hits.add({ x: x + Math.max(0, width - visibleWidth(age) - 1), y, width: visibleWidth(age), height: 1, click: () => { this.state.exactTime = !this.state.exactTime; } });
+		if (!active)
+			this.hits.add({
+				x: x + Math.max(0, width - visibleWidth(age) - 1),
+				y,
+				width: visibleWidth(age),
+				height: 1,
+				click: () => {
+					this.state.exactTime = !this.state.exactTime;
+				},
+			});
 		const name = theme.bold(theme.fg("text", plainLine(titleOf(row))));
 		const first = `${fitLine(` ${name}`, Math.max(0, width - stateWidth - 1))}${state} `;
 		const note = this.headerNote(console, width);
@@ -2220,7 +2777,11 @@ export class AgentDashboard implements Component, Focusable {
 		const theme = this.theme;
 		const row = console.row;
 		const notice = plainLine([this.resizeFeedback(), this.notice?.text].find((text) => Boolean(text)) ?? "");
-		if (notice) return theme.fg(this.notice?.kind === "warning" || this.notice?.kind === "error" ? "warning" : "accent", ` ${notice}`);
+		if (notice)
+			return theme.fg(
+				this.notice?.kind === "warning" || this.notice?.kind === "error" ? "warning" : "accent",
+				` ${notice}`,
+			);
 		const reason = this.headerReason(row, width);
 		if (reason) return reason;
 		// A settled agent's stored messages are its whole conversation; a lost connection matters while it works.
@@ -2228,7 +2789,12 @@ export class AgentDashboard implements Component, Focusable {
 		if (console.warning && active) return theme.fg("warning", ` ${plainLine(console.warning)}`);
 		if (console.status.startsWith("Loading")) return theme.fg("muted", ` ${plainLine(console.status)}`);
 		const waiting = unplacedText(row);
-		return waiting ? theme.fg("muted", ` ${waiting.replace(/^unplaced: (\d+)/u, (_, count) => `${count} message${count === "1" ? "" : "s"} not read yet`)}`) : "";
+		return waiting
+			? theme.fg(
+					"muted",
+					` ${waiting.replace(/^unplaced: (\d+)/u, (_, count) => `${count} message${count === "1" ? "" : "s"} not read yet`)}`,
+				)
+			: "";
 	}
 
 	/** A list error and its recovery hint share one bounded header row. */
@@ -2238,7 +2804,10 @@ export class AgentDashboard implements Component, Focusable {
 		const listed = listedRow(row);
 		const recovery = recoveryHint(listed);
 		const text = `${plainLine(reason)}${recovery ? ` · ${recovery}` : ""}`;
-		return this.theme.fg(currentFault(listed) ? "error" : "warning", ` ${truncateToWidth(text, Math.max(1, width - 2), "…")}`);
+		return this.theme.fg(
+			currentFault(listed) ? "error" : "warning",
+			` ${truncateToWidth(text, Math.max(1, width - 2), "…")}`,
+		);
 	}
 
 	/** Conversation, or the inspector beside or instead of it. */
@@ -2254,7 +2823,9 @@ export class AgentDashboard implements Component, Focusable {
 		const inspectorWidth = width - conversationWidth - 1;
 		const inspector = this.renderInspector(x0 + conversationWidth + 1, y0, inspectorWidth, height);
 		const divider = this.theme.fg(this.region === "inspector" ? "accent" : "borderMuted", "│");
-		return conversation.map((line, row) => `${fitLine(line, conversationWidth)}${divider}${fitLine(inspector[row] ?? "", inspectorWidth)}`);
+		return conversation.map(
+			(line, row) => `${fitLine(line, conversationWidth)}${divider}${fitLine(inspector[row] ?? "", inspectorWidth)}`,
+		);
 	}
 
 	private renderInspector(x0: number, y0: number, width: number, height: number): string[] {
@@ -2274,7 +2845,20 @@ export class AgentDashboard implements Component, Focusable {
 				return result ?? { handled: true, focus: true };
 			},
 			wheel: (delta) => {
-				inspector.frame.handleMouse({ type: "wheel", button: "none", x: 0, y: Math.floor(height / 2), screenX: x0, screenY: y0, width, height, shift: false, alt: false, ctrl: false, wheelDelta: delta });
+				inspector.frame.handleMouse({
+					type: "wheel",
+					button: "none",
+					x: 0,
+					y: Math.floor(height / 2),
+					screenX: x0,
+					screenY: y0,
+					width,
+					height,
+					shift: false,
+					alt: false,
+					ctrl: false,
+					wheelDelta: delta,
+				});
 			},
 		});
 		return lines;
@@ -2284,7 +2868,12 @@ export class AgentDashboard implements Component, Focusable {
 		const boundary = this.conversationBoundary(console, width);
 		const boundaryRows = boundary ? 1 : 0;
 		if (height <= boundaryRows) {
-			this.geometry = { ...this.geometry, conversationY: y0 + boundaryRows, conversationHeight: 0, conversationWidth: width };
+			this.geometry = {
+				...this.geometry,
+				conversationY: y0 + boundaryRows,
+				conversationHeight: 0,
+				conversationWidth: width,
+			};
 			return boundary ? [boundary] : [];
 		}
 		const bodyHeight = Math.max(1, height - boundaryRows);
@@ -2292,16 +2881,41 @@ export class AgentDashboard implements Component, Focusable {
 		const lines = console.conversation.render(Math.max(1, width - 1), bodyHeight);
 		const position = console.conversation.position();
 		this.fillConversation(console, position.total, bodyHeight);
-		this.geometry = { ...this.geometry, conversationY: y0 + boundaryRows, conversationHeight: bodyHeight, conversationWidth: width };
-		this.hits.add({ x: x0, y: y0 + boundaryRows, width, height: bodyHeight, wheel: (delta) => this.wheelConversation(delta) });
-		if (boundaryRows) this.hits.add({ x: x0, y: y0, width, height: 1, click: () => { if (this.history.earlier()) this.earlier(); return undefined; } });
+		this.geometry = {
+			...this.geometry,
+			conversationY: y0 + boundaryRows,
+			conversationHeight: bodyHeight,
+			conversationWidth: width,
+		};
+		this.hits.add({
+			x: x0,
+			y: y0 + boundaryRows,
+			width,
+			height: bodyHeight,
+			wheel: (delta) => this.wheelConversation(delta),
+		});
+		if (boundaryRows)
+			this.hits.add({
+				x: x0,
+				y: y0,
+				width,
+				height: 1,
+				click: () => {
+					if (this.history.earlier()) this.earlier();
+					return undefined;
+				},
+			});
 		const scrolled = position && position.total > bodyHeight;
 		const thumb = scrolled ? Math.max(1, Math.round((bodyHeight * bodyHeight) / position.total)) : 0;
-		const thumbTop = scrolled ? Math.round(((bodyHeight - thumb) * (position.first - 1)) / Math.max(1, position.total - bodyHeight)) : 0;
+		const thumbTop = scrolled
+			? Math.round(((bodyHeight - thumb) * (position.first - 1)) / Math.max(1, position.total - bodyHeight))
+			: 0;
 		const body = lines.map((line, row) => {
 			if (!scrolled) return fitLine(line, width);
 			const inThumb = row >= thumbTop && row < thumbTop + thumb;
-			return fitLine(line, width - 1) + this.theme.fg(inThumb ? "scrollbarThumb" : "scrollbarTrack", inThumb ? "┃" : "│");
+			return (
+				fitLine(line, width - 1) + this.theme.fg(inThumb ? "scrollbarThumb" : "scrollbarTrack", inThumb ? "┃" : "│")
+			);
 		});
 		return boundary ? [boundary, ...body] : body;
 	}
@@ -2322,7 +2936,10 @@ export class AgentDashboard implements Component, Focusable {
 		const position = console.conversation.position();
 		let label = "";
 		if (position && !position.end) {
-			label = position.first <= 1 && (this.history.earlier() || console.status === "Partial history") ? "Earlier history · PageUp or click to read" : `↓ ${position.estimated ? "about " : ""}${position.total - position.last} lines below · End follows live output`;
+			label =
+				position.first <= 1 && (this.history.earlier() || console.status === "Partial history")
+					? "Earlier history · PageUp or click to read"
+					: `↓ ${position.estimated ? "about " : ""}${position.total - position.last} lines below · End follows live output`;
 		} else if (this.history.newer()) label = "Newer messages available · PageDown reads them";
 		return label ? dashboardRule(label, width, this.theme) : "";
 	}
@@ -2337,8 +2954,10 @@ export class AgentDashboard implements Component, Focusable {
 		const grow = room - (CONVERSATION_ROWS - 1);
 		const requested = this.state.layout.composerRows;
 		composer.limitRows(room);
-		if (this.expanded) composer.setViewportRows(clamp(Math.floor(grow * 0.7), MIN_COMPOSER_ROWS, Math.max(MIN_COMPOSER_ROWS, room)));
-		else if (requested !== undefined && grow >= MIN_COMPOSER_ROWS) composer.setViewportRows(clamp(requested, MIN_COMPOSER_ROWS, grow));
+		if (this.expanded)
+			composer.setViewportRows(clamp(Math.floor(grow * 0.7), MIN_COMPOSER_ROWS, Math.max(MIN_COMPOSER_ROWS, room)));
+		else if (requested !== undefined && grow >= MIN_COMPOSER_ROWS)
+			composer.setViewportRows(clamp(requested, MIN_COMPOSER_ROWS, grow));
 		else composer.setViewportRows();
 		const grip = this.resize.active("composer") ? "active" : this.resize.hover === "composer" ? "hover" : "normal";
 		composer.grip = grow >= MIN_COMPOSER_ROWS ? grip : undefined;
@@ -2361,18 +2980,36 @@ export class AgentDashboard implements Component, Focusable {
 	private composerHits(console: AgentConsole, x0: number, y0: number, width: number, rows: number): void {
 		if (!rows) return;
 		const spans = console.composer.spans;
-		if (spans.mode && console.row.state === "working") this.hits.add({ x: x0 + spans.mode.x, y: y0, width: spans.mode.width, height: 1, click: () => this.toggleMode() });
+		if (spans.mode && console.row.state === "working")
+			this.hits.add({
+				x: x0 + spans.mode.x,
+				y: y0,
+				width: spans.mode.width,
+				height: 1,
+				click: () => this.toggleMode(),
+			});
 		if (console.composer.grip === undefined) return;
 		const requested = this.state.layout.composerRows;
 		const value = requested ?? Math.max(MIN_COMPOSER_ROWS, rows - 2);
-		this.resize.add({ kind: "composer", x: x0 + width - 4, y: y0, width: 3, height: 1, value, min: MIN_COMPOSER_ROWS, max: Math.max(MIN_COMPOSER_ROWS, this.tui.terminal.rows - 12) });
+		this.resize.add({
+			kind: "composer",
+			x: x0 + width - 4,
+			y: y0,
+			width: 3,
+			height: 1,
+			value,
+			min: MIN_COMPOSER_ROWS,
+			max: Math.max(MIN_COMPOSER_ROWS, this.tui.terminal.rows - 12),
+		});
 	}
 
 	/** The sizes a resize drag sets, shown while it lasts. */
 	private resizeFeedback(): string | undefined {
 		const selected = this.resize.selected;
-		if (selected === "roster") return `List ${this.resizeColumns.list} · conversation ${this.resizeColumns.pane} columns · release to keep · esc restores`;
-		if (selected === "composer") return `Message field ${this.state.layout.composerRows ?? "auto"} rows · release to keep · esc restores`;
+		if (selected === "roster")
+			return `List ${this.resizeColumns.list} · conversation ${this.resizeColumns.pane} columns · release to keep · esc restores`;
+		if (selected === "composer")
+			return `Message field ${this.state.layout.composerRows ?? "auto"} rows · release to keep · esc restores`;
 		return undefined;
 	}
 
@@ -2426,7 +3063,16 @@ export async function showAgentDashboard(input: {
 	}
 	await ctx.ui.custom<void>(
 		(tui, theme, keys, done) => {
-			const view = new AgentDashboard(tui, theme, keys, done, input.state ?? dashboardSessionState(ctx.sessionManager.getSessionId()), input.source, input.operations, ctx.sessionManager.getSessionId());
+			const view = new AgentDashboard(
+				tui,
+				theme,
+				keys,
+				done,
+				input.state ?? dashboardSessionState(ctx.sessionManager.getSessionId()),
+				input.source,
+				input.operations,
+				ctx.sessionManager.getSessionId(),
+			);
 			if (input.select) view.selectIdentity(input.select);
 			if (input.action) view.openNamedAction(input.action);
 			return view;

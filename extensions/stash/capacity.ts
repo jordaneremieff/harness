@@ -24,7 +24,11 @@ export interface CapacityConfig {
 export type Measure = { kind: "unknown" } | { kind: "known"; tokens: number; contextWindow: number; percent: number };
 export type Band = "normal" | "decision" | "stop";
 export type GateDecision = { kind: "allow" } | { kind: "block"; reason: string; terminate: boolean };
-export type ContinuityTool = { name: string; act: "compaction" | "worker-resolution" | "work-completion"; accepts?: (input: unknown) => boolean };
+export type ContinuityTool = {
+	name: string;
+	act: "compaction" | "worker-resolution" | "work-completion";
+	accepts?: (input: unknown) => boolean;
+};
 export type Declared = ReadonlyMap<string, Omit<ContinuityTool, "name">>;
 export const STOP_ROUNDS_BEFORE_TERMINATE = 2;
 export const CONTINUITY_TOOLS = "harness:continuity-tools";
@@ -43,7 +47,9 @@ export function continuityTools(bus: { emit(channel: string, data: unknown): voi
 				declarations.set(tool.name, { act: tool.act, accepts: tool.accepts });
 			},
 		});
-	} finally { open = false; }
+	} finally {
+		open = false;
+	}
 	return declarations;
 }
 
@@ -54,7 +60,11 @@ export function measureUsage(read: () => ContextUsage | undefined): Measure {
 
 export function band(measure: Measure, config: CapacityConfig): Band {
 	if (measure.kind === "unknown") return "normal";
-	return measure.percent >= config.stopPercent ? "stop" : measure.percent >= config.decisionPercent ? "decision" : "normal";
+	return measure.percent >= config.stopPercent
+		? "stop"
+		: measure.percent >= config.decisionPercent
+			? "decision"
+			: "normal";
 }
 
 export function isContinuityCall(name: string, args: unknown, declared: Declared): boolean {
@@ -62,30 +72,70 @@ export function isContinuityCall(name: string, args: unknown, declared: Declared
 	const tool = declared.get(name);
 	if (!tool) return false;
 	if (tool.accepts === undefined) return tool.act === "compaction";
-	try { return tool.accepts(args) === true; } catch { return false; }
+	try {
+		return tool.accepts(args) === true;
+	} catch {
+		return false;
+	}
 }
 
 export function gate(input: {
-	measure: Measure; toolName: string; args: unknown; config: CapacityConfig; declared: Declared;
-	released: boolean; decisionRoundOpen: boolean; blockedRounds: number;
+	measure: Measure;
+	toolName: string;
+	args: unknown;
+	config: CapacityConfig;
+	declared: Declared;
+	released: boolean;
+	decisionRoundOpen: boolean;
+	blockedRounds: number;
 }): GateDecision {
 	const { measure, config, declared } = input;
 	const current = band(measure, config);
-	if (!config.enabled || input.released || current === "normal" || isContinuityCall(input.toolName, input.args, declared)) return { kind: "allow" };
+	if (
+		!config.enabled ||
+		input.released ||
+		current === "normal" ||
+		isContinuityCall(input.toolName, input.args, declared)
+	)
+		return { kind: "allow" };
 	if (current === "decision" && !input.decisionRoundOpen) return { kind: "allow" };
 	if (measure.kind === "unknown") return { kind: "allow" };
-	const tools = (act: ContinuityTool["act"]) => [...declared].filter(([, value]) => value.act === act).map(([name]) => name).join(", ") || "none declared";
-	const form = declared.has(input.toolName) ? ` ${input.toolName} is a declared continuity tool, but its producer does not accept this argument form.` : "";
+	const tools = (act: ContinuityTool["act"]) =>
+		[...declared]
+			.filter(([, value]) => value.act === act)
+			.map(([name]) => name)
+			.join(", ") || "none declared";
+	const form = declared.has(input.toolName)
+		? ` ${input.toolName} is a declared continuity tool, but its producer does not accept this argument form.`
+		: "";
 	const completion = tools("work-completion");
-	const closing = completion === "none declared" ? "" : ` If the result is ready and its work was declared, close that work before the answer with a declared work-completion tool (${completion}); it sends the final report.`;
+	const closing =
+		completion === "none declared"
+			? ""
+			: ` If the result is ready and its work was declared, close that work before the answer with a declared work-completion tool (${completion}); it sends the final report.`;
 	const observed = `${measure.percent.toFixed(1)}% (${Math.round(measure.tokens)} of ${measure.contextWindow} tokens)`;
-	if (current === "decision") return { kind: "block", terminate: false, reason: `Stash decision round: context use is at ${observed}, at or above the ${config.decisionPercent}% decision threshold. This call was not run.${form} In this response choose one continuity act: compaction for the same effort (a declared continuity tool such as ${tools("compaction")}), a handover with stash_write, or the final answer.${closing} Your next tool calls run normally until ${config.stopPercent}%.` };
-	return { kind: "block", terminate: input.blockedRounds >= STOP_ROUNDS_BEFORE_TERMINATE, reason: `Stash stop: context use is at ${observed}, at or above the ${config.stopPercent}% stop threshold. This call was not run.${form} Stop substantive work: compact with a declared continuity tool (${tools("compaction")}), write a handover with stash_write, or give the final answer.${closing} Settle live workers you own with a declared worker-resolution tool (${tools("worker-resolution")}), and name any that keep running in the handover or answer. The operator can lift this with /stash capacity release, compact with /compact, or start a fresh session.` };
+	if (current === "decision")
+		return {
+			kind: "block",
+			terminate: false,
+			reason: `Stash decision round: context use is at ${observed}, at or above the ${config.decisionPercent}% decision threshold. This call was not run.${form} In this response choose one continuity act: compaction for the same effort (a declared continuity tool such as ${tools("compaction")}), a handover with stash_write, or the final answer.${closing} Your next tool calls run normally until ${config.stopPercent}%.`,
+		};
+	return {
+		kind: "block",
+		terminate: input.blockedRounds >= STOP_ROUNDS_BEFORE_TERMINATE,
+		reason: `Stash stop: context use is at ${observed}, at or above the ${config.stopPercent}% stop threshold. This call was not run.${form} Stop substantive work: compact with a declared continuity tool (${tools("compaction")}), write a handover with stash_write, or give the final answer.${closing} Settle live workers you own with a declared worker-resolution tool (${tools("worker-resolution")}), and name any that keep running in the handover or answer. The operator can lift this with /stash capacity release, compact with /compact, or start a fresh session.`,
+	};
 }
 
 export type GateState = {
-	episode: string | null; decisionRoundUsed: boolean; released: boolean; blockedRounds: number;
-	blockedCalls: Set<string>; measure?: Measure; decisionRoundOpen?: boolean; failureReported?: boolean;
+	episode: string | null;
+	decisionRoundUsed: boolean;
+	released: boolean;
+	blockedRounds: number;
+	blockedCalls: Set<string>;
+	measure?: Measure;
+	decisionRoundOpen?: boolean;
+	failureReported?: boolean;
 };
 export function gateState(states: Map<string, GateState>, key: string, episode: string | null): GateState {
 	let state = states.get(key);
@@ -107,15 +157,25 @@ export function capacityEpisode(ctx: Pick<ExtensionContext, "sessionManager">): 
 	return null;
 }
 
-type PiCompaction = { enabled?: boolean; reserveTokens?: number; modelOverrides?: Record<string, { reserveTokens?: number }> };
+type PiCompaction = {
+	enabled?: boolean;
+	reserveTokens?: number;
+	modelOverrides?: Record<string, { reserveTokens?: number }>;
+};
 type CapacityModel = { provider: string; id: string; contextWindow: number };
-export function piAutoThreshold(compaction: PiCompaction | undefined, model: CapacityModel | undefined): number | undefined {
+export function piAutoThreshold(
+	compaction: PiCompaction | undefined,
+	model: CapacityModel | undefined,
+): number | undefined {
 	if (compaction?.enabled === false || !model || !(model.contextWindow > 0)) return;
-	const reserve = compaction?.modelOverrides?.[`${model.provider}/${model.id}`]?.reserveTokens ?? compaction?.reserveTokens ?? 16384;
-	return (model.contextWindow - reserve) / model.contextWindow * 100;
+	const reserve =
+		compaction?.modelOverrides?.[`${model.provider}/${model.id}`]?.reserveTokens ?? compaction?.reserveTokens ?? 16384;
+	return ((model.contextWindow - reserve) / model.contextWindow) * 100;
 }
 export function effectiveCheckpointPercent(config: CapacityConfig, piThreshold: number | undefined): number {
-	return piThreshold !== undefined && piThreshold > 5 ? Math.min(config.checkpointPercent, piThreshold - 5) : config.checkpointPercent;
+	return piThreshold !== undefined && piThreshold > 5
+		? Math.min(config.checkpointPercent, piThreshold - 5)
+		: config.checkpointPercent;
 }
 
 export function gateStatus(state: GateState, config: CapacityConfig, declared: Declared, piThreshold?: number): string {
@@ -295,23 +355,36 @@ function usageSnapshot(read: () => ContextUsage | undefined): Usage {
 	return { kind: "unknown" };
 }
 
-function requestText(state: CapacityState, checkpoint: boolean, decision: boolean, config: CapacityConfig, piThreshold?: number): string {
+function requestText(
+	state: CapacityState,
+	checkpoint: boolean,
+	decision: boolean,
+	config: CapacityConfig,
+	piThreshold?: number,
+): string {
 	const observation =
 		state.usage.kind === "host_estimate"
 			? `Pi estimates context use at ${state.usage.percent.toFixed(1)}% (${Math.round(state.usage.tokens)} tokens). This is not a safe remaining budget.`
 			: `Current context use is unknown. Estimated text intake reached the configured ${config.intakeTokenBudget}-token budget (text characters / 4, not a context percentage).`;
-	const lead = piThreshold !== undefined && effectiveCheckpointPercent(config, piThreshold) < config.checkpointPercent
-		? `Pi automatic compaction starts at ${piThreshold.toFixed(1)}%; the effective checkpoint threshold is ${effectiveCheckpointPercent(config, piThreshold).toFixed(1)}%.` : undefined;
-	return [CAPACITY_NOTICE_HEADER, observation, lead, ...capacityDirectiveLines(checkpoint, decision, config.stopPercent)].filter(Boolean).join("\n\n");
+	const lead =
+		piThreshold !== undefined && effectiveCheckpointPercent(config, piThreshold) < config.checkpointPercent
+			? `Pi automatic compaction starts at ${piThreshold.toFixed(1)}%; the effective checkpoint threshold is ${effectiveCheckpointPercent(config, piThreshold).toFixed(1)}%.`
+			: undefined;
+	return [
+		CAPACITY_NOTICE_HEADER,
+		observation,
+		lead,
+		...capacityDirectiveLines(checkpoint, decision, config.stopPercent),
+	]
+		.filter(Boolean)
+		.join("\n\n");
 }
 
 export const CAPACITY_NOTICE_HEADER = "Stash capacity notice from the local extension, not a new operator request.";
 
 /** Directive sentences after the observation; shared with the Durable capacity hook. */
 export function capacityDirectiveLines(checkpoint: boolean, decision: boolean, stopPercent = 95): string[] {
-	const instructions = [
-		"Follow the governing capacity instructions and preserve the operator's scope and authority.",
-	];
+	const instructions = ["Follow the governing capacity instructions and preserve the operator's scope and authority."];
 	if (checkpoint) {
 		instructions.push(
 			"If substantial work remains, call stash_write with checkpoint: true to preserve a concise working synthesis: decisions, checked sources and their limits, open questions, authority limits, and exact next actions. Do not copy the transcript. If no work remains, finish the answer instead. When you later compact, put this checkpoint's identifier in the compaction summary.",
@@ -320,7 +393,6 @@ export function capacityDirectiveLines(checkpoint: boolean, decision: boolean, s
 	if (decision) {
 		instructions.push(
 			`Before further broad intake, choose and execute the authorized continuity path: checked compaction for the same effort, or stash_write without checkpoint for a fresh-session handover. If the governing stop threshold is reached, stop substantive work and deliver the result or handover now. Resolve live worker ownership before exit; a saved artifact does not transfer workers. This notice grants no authority; the governing instructions decide which continuity act you may take. At ${stopPercent}% tools stop except stash_write and declared continuity tools.`,
-
 		);
 	}
 	instructions.push(
@@ -363,7 +435,11 @@ export function capacityTurnEnd(
 	else state.usage = usage;
 	state.turnEntryId = event.messageEntryId;
 	const actionable = event.outcome === "completed" && !ctx.signal?.aborted;
-	const { checkpoint, decision } = requestLevels(state, { ...config, checkpointPercent: effectiveCheckpointPercent(config, piThreshold) }, actionable);
+	const { checkpoint, decision } = requestLevels(
+		state,
+		{ ...config, checkpointPercent: effectiveCheckpointPercent(config, piThreshold) },
+		actionable,
+	);
 	state.checkpointRequested ||= checkpoint;
 	state.decisionRequested ||= decision;
 	const entries: SessionBoundaryDraft[] = [...event.entries];

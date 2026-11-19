@@ -85,7 +85,12 @@ async function userTexts(conversation: Durable.Conversation): Promise<string[]> 
 	return messages.flatMap((message) => {
 		if (message.role !== "user") return [];
 		if (typeof message.content === "string") return [message.content];
-		return [message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")];
+		return [
+			message.content
+				.filter((part) => part.type === "text")
+				.map((part) => part.text)
+				.join("\n"),
+		];
 	});
 }
 
@@ -99,10 +104,14 @@ function gitShow(revision: string): string {
 
 /** The declared Pi packages and their resolved versions, read independently from local main. */
 function mainCheckout() {
-	const commit = execFileSync("git", ["-C", HARNESS_ROOT, "rev-parse", "refs/heads/main^{commit}"], { encoding: "utf8" }).trim();
+	const commit = execFileSync("git", ["-C", HARNESS_ROOT, "rev-parse", "refs/heads/main^{commit}"], {
+		encoding: "utf8",
+	}).trim();
 	const manifest = JSON.parse(gitShow(`${commit}:package.json`));
 	const lockfile = JSON.parse(gitShow(`${commit}:package-lock.json`));
-	const marker = /<!-- pi-release-reviewed-through: (\S+) -->/.exec(gitShow(`${commit}:docs/pi-durable-harness.md`))?.[1];
+	const marker = /<!-- pi-release-reviewed-through: (\S+) -->/.exec(
+		gitShow(`${commit}:docs/pi-durable-harness.md`),
+	)?.[1];
 	const declared = [
 		...Object.entries(manifest.dependencies ?? {}).map(([name, range]) => ({ name, relation: "dependency", range })),
 		...Object.entries(manifest.peerDependencies ?? {}).map(([name, range]) => ({ name, relation: "peer", range })),
@@ -206,7 +215,12 @@ test("the invocation workspace comes from the host, not the conversation agent c
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
 		assert.deepEqual(await normalizedUserTexts(conversation), [
 			withoutObservedTimes(
-				buildEvoKickoff({ harnessRoot: HARNESS_ROOT, invocationCwd: "/workspace/host-project", origin: "operator", release }),
+				buildEvoKickoff({
+					harnessRoot: HARNESS_ROOT,
+					invocationCwd: "/workspace/host-project",
+					origin: "operator",
+					release,
+				}),
 			),
 		]);
 	} finally {
@@ -224,7 +238,14 @@ test("only a stated operator invocation admits the command's grant", async () =>
 		const direction = "Push the docs fix to main";
 		const base = { harnessRoot: HARNESS_ROOT, invocationCwd: "/workspace/current-project", direction, release };
 		const run = (invocationId: string, origin?: "operator" | "model") =>
-			command.run({ args: direction, ...(origin === undefined ? {} : { origin }), conversation, context: BACKGROUND_CONTEXT, host, invocationId });
+			command.run({
+				args: direction,
+				...(origin === undefined ? {} : { origin }),
+				conversation,
+				context: BACKGROUND_CONTEXT,
+				host,
+				invocationId,
+			});
 
 		const byModel = await run("task:41", "model");
 		const unstated = await run("evo-invocation-unstated");
@@ -247,8 +268,14 @@ test("only a stated operator invocation admits the command's grant", async () =>
 		assert.match(texts[0], /Invocation origin: an agent, through a tool call/);
 		assert.match(texts[1], /Invocation origin: not established/);
 		assert.match(texts[2], /This invocation also authorizes integration on main, required activation, and push/);
-		assert.match(String(byModel), /^Admitted the evo kickoff as submission \d+\. The kickoff records that an agent invoked it: it carries no operator grant of its own/);
-		assert.match(String(unstated), /^Admitted the evo kickoff as submission \d+\. The kickoff records that its origin is not established: it carries no operator grant of its own/);
+		assert.match(
+			String(byModel),
+			/^Admitted the evo kickoff as submission \d+\. The kickoff records that an agent invoked it: it carries no operator grant of its own/,
+		);
+		assert.match(
+			String(unstated),
+			/^Admitted the evo kickoff as submission \d+\. The kickoff records that its origin is not established: it carries no operator grant of its own/,
+		);
 		assert.match(String(byOperator), /^Admitted the evo kickoff as submission \d+\.$/);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
@@ -328,7 +355,9 @@ test("the native kickoff carries the four version facts from their own sources",
 	}
 });
 
-test("a silent registry delays the native kickoff by no more than the publication deadline", { timeout: 20_000 }, async (t) => {
+test("a silent registry delays the native kickoff by no more than the publication deadline", {
+	timeout: 20_000,
+}, async (t) => {
 	controlledRegistry(t, () => "hang");
 	const contribution = createEvoContribution({ source: ENTRYPOINT });
 	const command = contribution.commands?.[0];
@@ -345,10 +374,19 @@ test("a silent registry delays the native kickoff by no more than the publicatio
 			invocationId: "evo-invocation-silent-registry",
 		});
 		const elapsed = performance.now() - started;
-		assert.ok(elapsed >= PI_PUBLICATION_DEADLINE_MS - 20 && elapsed < PI_PUBLICATION_DEADLINE_MS + 2_000, `${elapsed} ms`);
+		assert.ok(
+			elapsed >= PI_PUBLICATION_DEADLINE_MS - 20 && elapsed < PI_PUBLICATION_DEADLINE_MS + 2_000,
+			`${elapsed} ms`,
+		);
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
 		const [text] = await userTexts(conversation);
-		assert.match(text, new RegExp(`^- Published versions: unavailable at \\S+: "No registry answer within ${PI_PUBLICATION_DEADLINE_MS} ms\\."$`, "m"));
+		assert.match(
+			text,
+			new RegExp(
+				`^- Published versions: unavailable at \\S+: "No registry answer within ${PI_PUBLICATION_DEADLINE_MS} ms\\."$`,
+				"m",
+			),
+		);
 		assert.match(text, /^- Checkout graph: "package-lock\.json" at [a-f0-9]{40}, the tip of local main/m);
 		assert.match(text, /A registry failure is not a gate\./);
 		assert.match(text, /<evo-direction-json>\n"Improve document explanations"/);

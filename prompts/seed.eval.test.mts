@@ -325,9 +325,9 @@ function originalContent(events: TranscriptEvent[]): string {
 function flipResult(ideal: IdealExecution, check: ParsedCheck): IdealExecution {
 	const events = ideal.events.map((event) => {
 		if (event.type !== "tool_result" || event.name !== "clipboard_copy") return event;
-		const content =
-			typeof event.content === "string" ? event.content : JSON.stringify(event.content ?? null) ?? "";
-		if (check.config.isError !== undefined) return { ...event, error: check.config.isError ? undefined : { message: content } };
+		const content = typeof event.content === "string" ? event.content : (JSON.stringify(event.content ?? null) ?? "");
+		if (check.config.isError !== undefined)
+			return { ...event, error: check.config.isError ? undefined : { message: content } };
 		const drop = check.config.contentContains?.[0];
 		if (drop) return { ...event, content: content.replace(drop, "") };
 		return event;
@@ -343,9 +343,11 @@ function sentenceSpans(content: string, token: string): Array<[number, number]> 
 	while (idx !== -1) {
 		const start =
 			Math.max(content.lastIndexOf(".", idx), content.lastIndexOf("{", idx), content.lastIndexOf("}", idx)) + 1;
-		const ends = [content.indexOf(".", idx + token.length), content.indexOf("{", idx + token.length), content.indexOf("}", idx + token.length)].filter(
-			(position) => position !== -1,
-		);
+		const ends = [
+			content.indexOf(".", idx + token.length),
+			content.indexOf("{", idx + token.length),
+			content.indexOf("}", idx + token.length),
+		].filter((position) => position !== -1);
 		spans.push([start, ends.length ? Math.min(...ends) : content.length]);
 		idx = content.indexOf(token, idx + 1);
 	}
@@ -371,7 +373,9 @@ it("every /seed suite satisfies the evaluation and adapter contracts", () => {
 });
 
 it("the reported code reference tolerates assignment spacing but requires the source path", () => {
-	const checks = caseById(suite, "memory-source-qualification").checks.filter((check) => check.id === "payload-claim-token");
+	const checks = caseById(suite, "memory-source-qualification").checks.filter(
+		(check) => check.id === "payload-claim-token",
+	);
 	assert.equal(checks.length, 1);
 	for (const assignment of ["MaxRetries=3", "MaxRetries = 3"]) {
 		const events = normalizePiTranscript([
@@ -404,7 +408,12 @@ it("every deterministic check in both suites is falsifiable: one violation flips
 			const ideal = buildIdeal(evaluationCase, evaluationCase.checks);
 			for (const candidate of evaluationCase.checks) {
 				const mutated = withMutation(ideal, candidate as ParsedCheck, evaluationCase.checks);
-				const results = runDeterministicChecks(mutated.output, evaluationCase.checks, mutated.events, evaluationCase.id);
+				const results = runDeterministicChecks(
+					mutated.output,
+					evaluationCase.checks,
+					mutated.events,
+					evaluationCase.id,
+				);
 				const failed = results.filter((result) => !result.passed);
 				assert.deepEqual(
 					failed.map((result) => result.checkId),
@@ -440,7 +449,11 @@ it("the deterministic gate flags a secret that reaches the clipboard arguments",
 	const clean = serializedClipboardArguments(ideal.events);
 	assert.ok(!clean.includes("sk-relay-demo-91f2c4e8a6d3"));
 
-	const leaked = eventsWithContent(ideal.events, "docs/examples/config.yaml sk-relay-demo-91f2c4e8a6d3", "seed: eval-topic");
+	const leaked = eventsWithContent(
+		ideal.events,
+		"docs/examples/config.yaml sk-relay-demo-91f2c4e8a6d3",
+		"seed: eval-topic",
+	);
 	const serialized = serializedClipboardArguments(leaked);
 	assert.ok(serialized.includes("sk-relay-demo-91f2c4e8a6d3"));
 	assert.ok(serialized.includes('"label":"seed:'));
@@ -541,7 +554,9 @@ it("qualified rejection text passes the frame-contamination structural floors", 
 });
 
 it("the mock clipboard fixture reports controlled outcomes without touching a real clipboard", async () => {
-	let registered: { execute: (callId: string, params: Record<string, unknown>, signal: unknown) => Promise<unknown> } | undefined;
+	let registered:
+		| { execute: (callId: string, params: Record<string, unknown>, signal: unknown) => Promise<unknown> }
+		| undefined;
 	const flagValues = new Map<string, unknown>();
 	const registeredFlags = new Set<string>();
 	registerMockClipboard({
@@ -568,7 +583,11 @@ it("the mock clipboard fixture reports controlled outcomes without touching a re
 	assert.ok(registeredFlags.has(MOCK_CLIPBOARD_OUTCOME_FLAG), "the fixture must register its outcome flag");
 
 	flagValues.set(MOCK_CLIPBOARD_OUTCOME_FLAG, "success");
-	const success = (await registered.execute("c1", { content: "first line\nsecond line", label: "seed: eval-topic" }, undefined)) as {
+	const success = (await registered.execute(
+		"c1",
+		{ content: "first line\nsecond line", label: "seed: eval-topic" },
+		undefined,
+	)) as {
 		content: Array<{ text: string }>;
 	};
 	assert.match(success.content[0].text, /^Copied to clipboard \| seed: eval-topic/);
@@ -588,7 +607,11 @@ it("the mock clipboard fixture reports controlled outcomes without touching a re
 	);
 
 	flagValues.set(MOCK_CLIPBOARD_OUTCOME_FLAG, undefined);
-	const fallback = (await registered.execute("c4", { content: "brief body", label: "seed: eval-topic" }, undefined)) as {
+	const fallback = (await registered.execute(
+		"c4",
+		{ content: "brief body", label: "seed: eval-topic" },
+		undefined,
+	)) as {
 		content: Array<{ text: string }>;
 	};
 	assert.match(fallback.content[0].text, /^Copied to clipboard/);

@@ -11,7 +11,14 @@
  * never cancels background timers.
  */
 import type { Context } from "@earendil-works/chord/context";
-import { ResetEntry, type Conversation, type ConversationId, type EntryId, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
+import {
+	ResetEntry,
+	type Conversation,
+	type ConversationId,
+	type EntryId,
+	type SubmissionId,
+	type SubmissionRecord,
+} from "@earendil-works/pi-durable";
 
 export interface ResetRequest {
 	/** Operator-authored handoff text; absent starts the new context without a message. */
@@ -42,7 +49,12 @@ function resetStatus(record: Extract<SubmissionRecord, { readonly type: "write" 
 	return "unanswered";
 }
 
-function resetResult(conversationId: ConversationId, requestId: string, record: Extract<SubmissionRecord, { readonly type: "write" }>, deduped: boolean): ResetResult {
+function resetResult(
+	conversationId: ConversationId,
+	requestId: string,
+	record: Extract<SubmissionRecord, { readonly type: "write" }>,
+	deduped: boolean,
+): ResetResult {
 	const status = resetStatus(record);
 	return {
 		conversationId,
@@ -61,11 +73,19 @@ function resetResult(conversationId: ConversationId, requestId: string, record: 
  * request ID is the deduplication key, so a crash-retried control reports the
  * same submission instead of writing a second reset.
  */
-export async function resetConversation(conversation: Conversation, params: ResetRequest, context: Context): Promise<ResetResult> {
+export async function resetConversation(
+	conversation: Conversation,
+	params: ResetRequest,
+	context: Context,
+): Promise<ResetResult> {
 	const handoff = params.handoff !== undefined && params.handoff.trim() !== "" ? params.handoff : undefined;
-	const existing = await conversation.commit((tx) => tx.submissionByRequest(conversation.id, params.requestId), context);
+	const existing = await conversation.commit(
+		(tx) => tx.submissionByRequest(conversation.id, params.requestId),
+		context,
+	);
 	if (existing !== undefined) {
-		if (existing.type !== "write") throw new Error(`request ${params.requestId} already identifies a non-write submission`);
+		if (existing.type !== "write")
+			throw new Error(`request ${params.requestId} already identifies a non-write submission`);
 		return resetResult(conversation.id, params.requestId, existing, true);
 	}
 	const entry = {
@@ -78,4 +98,3 @@ export async function resetConversation(conversation: Conversation, params: Rese
 	if (record.type !== "write") throw new Error(`request ${params.requestId} was admitted as a non-write submission`);
 	return resetResult(conversation.id, params.requestId, record, false);
 }
-

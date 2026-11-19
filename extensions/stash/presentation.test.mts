@@ -216,7 +216,10 @@ describe("stash_list cards", () => {
 		assert.match(shown, /tag continuity · limit 5/);
 		assert.match(shown, /Expand for arguments/);
 		const keyed = screen(
-			renderListCall({ query: "registry tool", cursor: "opaque" }, theme, { argsComplete: true, keyText: () => "ctrl+g" }),
+			renderListCall({ query: "registry tool", cursor: "opaque" }, theme, {
+				argsComplete: true,
+				keyText: () => "ctrl+g",
+			}),
 		);
 		assert.match(keyed, /ctrl\+g to expand arguments/, "the hint uses the host-injected binding");
 		assert.match(screen(renderListCall({}, theme, { argsComplete: true })), /stash_list · recent/);
@@ -450,7 +453,9 @@ describe("stash card safety", () => {
 describe("closed lifecycle cards", () => {
 	it("point a closed record at the guarded reopen route instead of pickup", () => {
 		const closed = screen(
-			renderCompleteResult({ ...text("closed"), details: {} }, { expanded: false, isPartial: false }, theme, { isError: false }),
+			renderCompleteResult({ ...text("closed"), details: {} }, { expanded: false, isPartial: false }, theme, {
+				isError: false,
+			}),
 		);
 		assert.match(closed, /closed · artifact retained/);
 		assert.match(closed, /pickup needs Reopen first/);
@@ -464,7 +469,12 @@ describe("closed lifecycle cards", () => {
 		);
 		assert.match(read, /pickup needs Reopen first/);
 		const open = screen(
-			renderReadResult(text('---\nstate: "open"\ntitle: "Live"\n---\nbody'), { expanded: false, isPartial: false }, theme, { isError: false }),
+			renderReadResult(
+				text('---\nstate: "open"\ntitle: "Live"\n---\nbody'),
+				{ expanded: false, isPartial: false },
+				theme,
+				{ isError: false },
+			),
 		);
 		assert.doesNotMatch(open, /Reopen/);
 	});

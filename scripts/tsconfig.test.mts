@@ -17,7 +17,10 @@ test("every tracked immediate prompt TypeScript source is a compiler root and pr
 		encoding: "utf8",
 		timeout: 10_000,
 		maxBuffer: 1024 * 1024,
-	}).split("\0").filter((path) => /^prompts\/[^/]+\.(?:ts|mts)$/.test(path)).map((path) => resolve(root, path));
+	})
+		.split("\0")
+		.filter((path) => /^prompts\/[^/]+\.(?:ts|mts)$/.test(path))
+		.map((path) => resolve(root, path));
 	assert.ok(expected.length > 0, "tracked prompt TypeScript sources exist");
 	const roots = new Set(parsed.fileNames.map((path) => resolve(path)));
 	const program = ts.createProgram({ rootNames: parsed.fileNames, options: parsed.options });

@@ -1,25 +1,45 @@
 import { createHash } from "node:crypto";
 
-const validTokens = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+const validTokens = (value: unknown): value is number =>
+	typeof value === "number" && Number.isFinite(value) && value >= 0;
 
 /** Compare observations from one run; an initial sample above the budget is not a crossing. */
-export function planningBudgetCrossed(previousTokens: number | undefined, tokens: number, budget: number | undefined, window: number | undefined): boolean {
-	return validTokens(previousTokens) && validTokens(tokens) && validTokens(budget) && budget > 0 && validTokens(window) && budget < window
-		&& previousTokens < budget && tokens >= budget;
+export function planningBudgetCrossed(
+	previousTokens: number | undefined,
+	tokens: number,
+	budget: number | undefined,
+	window: number | undefined,
+): boolean {
+	return (
+		validTokens(previousTokens) &&
+		validTokens(tokens) &&
+		validTokens(budget) &&
+		budget > 0 &&
+		validTokens(window) &&
+		budget < window &&
+		previousTokens < budget &&
+		tokens >= budget
+	);
 }
 export function planningBudgetSourceId(ownerId: string, producerIdentity: string, producerRunId: number): string {
-	return `child-budget:${createHash("sha256").update(JSON.stringify([ownerId, producerIdentity, producerRunId])).digest("hex")}`;
+	return `child-budget:${createHash("sha256")
+		.update(JSON.stringify([ownerId, producerIdentity, producerRunId]))
+		.digest("hex")}`;
 }
 export function planningBudgetBody(identity: string, tokens: number, budget: number, model: string): string {
 	return `Child ${identity} reported ${tokens} context tokens, at or above its planning budget of ${budget} for ${model}. The budget is a planning preference, not a limit.`;
 }
-export function planningBudgetSelfId(headId: number, runId: number): string { return `agent.budget:${headId}:${runId}`; }
+export function planningBudgetSelfId(headId: number, runId: number): string {
+	return `agent.budget:${headId}:${runId}`;
+}
 /** The caller retains this text once; it does not replace a per-request suffix. */
 export function planningBudgetSelfBody(tokens: number, budget: number, model: string, observedAt: number): string {
 	return `Context use reached ${tokens} tokens at ${new Date(observedAt).toISOString()}, at or above the planning budget of ${budget} for ${model}. The budget is a planning preference, not a limit.`;
 }
 /** The facts of a retained `planningBudgetSelfBody` text, or undefined for any other text. */
 export function planningBudgetSelfFacts(text: string): { tokens: number; budget: number; model: string } | undefined {
-	const match = /^Context use reached (\d+) tokens at \S+, at or above the planning budget of (\d+) for (\S+)\. /u.exec(text);
+	const match = /^Context use reached (\d+) tokens at \S+, at or above the planning budget of (\d+) for (\S+)\. /u.exec(
+		text,
+	);
 	return match ? { tokens: Number(match[1]), budget: Number(match[2]), model: match[3] ?? "" } : undefined;
 }

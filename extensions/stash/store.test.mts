@@ -6,7 +6,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it, mock } from "node:test";
 import { parseFrontmatter } from "./format.ts";
-import { editStash, planStashPublication, writeReplayableStash, listStashes, readStash, resolveStoreDir, rotateStash, transitionStash, writeStash } from "./store.ts";
+import {
+	editStash,
+	planStashPublication,
+	writeReplayableStash,
+	listStashes,
+	readStash,
+	resolveStoreDir,
+	rotateStash,
+	transitionStash,
+	writeStash,
+} from "./store.ts";
 
 let dir: string;
 
@@ -22,7 +32,9 @@ const at = (iso: string) => new Date(iso);
 
 function barrier() {
 	let resolve!: () => void;
-	const promise = new Promise<void>((ready) => { resolve = ready; });
+	const promise = new Promise<void>((ready) => {
+		resolve = ready;
+	});
 	return { promise, resolve };
 }
 
@@ -55,12 +67,18 @@ describe("unavailable lifecycle metadata", () => {
 			const read = await readStash(store, name);
 			assert.ok(read.ok);
 			await assert.rejects(transitionStash(store, name, { action: "activate" }), /invalid lifecycle state/);
-			await assert.rejects(transitionStash(store, name, { action: "close", outcome: "Done" }), /invalid lifecycle state/);
+			await assert.rejects(
+				transitionStash(store, name, { action: "close", outcome: "Done" }),
+				/invalid lifecycle state/,
+			);
 			await assert.rejects(rotateStash(store, name), /invalid lifecycle state/);
-			await assert.rejects(editStash(store, name, {
-				expectedDigest: read.digest,
-				edits: [{ oldText: "Original", newText: "Changed" }],
-			}), /invalid lifecycle state/);
+			await assert.rejects(
+				editStash(store, name, {
+					expectedDigest: read.digest,
+					edits: [{ oldText: "Original", newText: "Changed" }],
+				}),
+				/invalid lifecycle state/,
+			);
 			assert.equal(await readFile(path, "utf8"), content);
 			assert.deepEqual(await readdir(store), [`${name}.md`]);
 		});
@@ -88,8 +106,17 @@ describe("lifecycle cancellation publication boundary", () => {
 				});
 			}
 			syncBuiltinESMExports();
-			t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-			const result = transitionStash(store, record.id, { action: "close", outcome: "Done" }, undefined, controller.signal);
+			t.after(() => {
+				t.mock.restoreAll();
+				syncBuiltinESMExports();
+			});
+			const result = transitionStash(
+				store,
+				record.id,
+				{ action: "close", outcome: "Done" },
+				undefined,
+				controller.signal,
+			);
 			if (afterPublication) {
 				assert.equal((await result).meta.state, "closed");
 				assert.notEqual(await readFile(path, "utf8"), original);
@@ -115,7 +142,10 @@ describe("lifecycle cancellation publication boundary", () => {
 				if (links === (afterPublication ? 2 : 1)) controller.abort();
 			});
 			syncBuiltinESMExports();
-			t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+			t.after(() => {
+				t.mock.restoreAll();
+				syncBuiltinESMExports();
+			});
 			const result = rotateStash(store, record.id, controller.signal);
 			if (afterPublication) {
 				assert.equal((await result).archivePath, archivePath);
@@ -146,7 +176,10 @@ describe("publication identity", () => {
 		assert.notEqual(first.record.id, second.record.id);
 		const read = await readStash(directory, first.record.id);
 		assert.ok(read.ok);
-		await editStash(directory, first.record.id, { expectedDigest: read.digest, edits: [{ oldText: "Original body", newText: "Revised body" }] });
+		await editStash(directory, first.record.id, {
+			expectedDigest: read.digest,
+			edits: [{ oldText: "Original body", newText: "Revised body" }],
+		});
 		await transitionStash(directory, first.record.id, { action: "close", outcome: "Complete" });
 		const replay = await writeReplayableStash(plan);
 		assert.equal(replay.record.state, "closed");
@@ -162,7 +195,9 @@ describe("publication identity", () => {
 		assert.equal(expandedHeader.record.outcome?.length, 19499);
 	});
 	for (const archiveExists of [false, true]) {
-		it(`excludes rotation after replay observes archive absence (directory present: ${archiveExists})`, { timeout: 5000 }, async (t) => {
+		it(`excludes rotation after replay observes archive absence (directory present: ${archiveExists})`, {
+			timeout: 5000,
+		}, async (t) => {
 			const directory = join(dir, `replay-absence-${archiveExists}`);
 			const plan = planStashPublication(directory, { title: "Retained", summary: "Original" });
 			const first = await writeReplayableStash(plan);
@@ -178,8 +213,9 @@ describe("publication identity", () => {
 			const original = fs[method];
 			let paused = false;
 			t.mock.method(fs, method, async (...args: Parameters<typeof original>) => {
-				try { return await Reflect.apply(original, fs, args); }
-				catch (error) {
+				try {
+					return await Reflect.apply(original, fs, args);
+				} catch (error) {
 					if (args[0] === target && !paused) {
 						paused = true;
 						reached.resolve();
@@ -206,7 +242,10 @@ describe("publication identity", () => {
 			assert.equal(recovered.record.state, "closed");
 			assert.equal(await readFile(archivePath, "utf8"), retained);
 			assert.equal((await listStashes(directory)).length, 0);
-			assert.deepEqual((await readdir(archiveDir)).filter((name) => name.endsWith(".md")), [`${plan.id}.md`]);
+			assert.deepEqual(
+				(await readdir(archiveDir)).filter((name) => name.endsWith(".md")),
+				[`${plan.id}.md`],
+			);
 		});
 	}
 
@@ -246,7 +285,9 @@ describe("publication identity", () => {
 		assert.equal((await listStashes(directory)).length, 0);
 	});
 
-	it("refuses a contending first publication without replacing its lock or allocating another identity", { timeout: 5000 }, async (t) => {
+	it("refuses a contending first publication without replacing its lock or allocating another identity", {
+		timeout: 5000,
+	}, async (t) => {
 		const directory = join(dir, "contending-publication");
 		const plan = planStashPublication(directory, { title: "Retained", summary: "Original" });
 		const reached = barrier();
@@ -268,7 +309,10 @@ describe("publication identity", () => {
 			const lock = await stat(lockPath);
 			await assert.rejects(writeReplayableStash(plan), (error: Error) => {
 				assert.ok(error.message.includes(plan.id));
-				assert.match(error.message, /is busy.*This attempt made no new publication.*earlier attempt may have published/);
+				assert.match(
+					error.message,
+					/is busy.*This attempt made no new publication.*earlier attempt may have published/,
+				);
 				assert.ok(error.message.includes(path));
 				assert.ok(error.message.includes(join(directory, ".trash", `${plan.id}.md`)));
 				assert.match(error.message, /reuse it instead of creating a new write/);

@@ -9,7 +9,12 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import { getCurrentSystemPrompt, getCurrentTools, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
+import {
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxToolCall,
+	type FauxResponseStep,
+} from "@earendil-works/pi-ai/providers/faux";
 import { createEventBus, SettingsManager, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
@@ -25,7 +30,9 @@ import { editStash, rotateStash, transitionStash, listStashes, readStash, writeS
 
 const context = BACKGROUND_CONTEXT;
 const oldHarnessFile = process.env.PI_HARNESS_FILE;
-before(() => { delete process.env.PI_HARNESS_FILE; });
+before(() => {
+	delete process.env.PI_HARNESS_FILE;
+});
 after(() => {
 	if (oldHarnessFile === undefined) delete process.env.PI_HARNESS_FILE;
 	else process.env.PI_HARNESS_FILE = oldHarnessFile;
@@ -68,7 +75,10 @@ async function startHarness(
 	models.setProvider(faux.provider);
 	const host: StashDurableHost = {
 		durable: Durable,
-		services: { modelRuntime: models, settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }) } as unknown as AgentSessionServices,
+		services: {
+			modelRuntime: models,
+			settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
+		} as unknown as AgentSessionServices,
 		cwd: workdir,
 		agentDir: workdir,
 		storageId: "stash-durable-test",
@@ -87,34 +97,71 @@ async function startHarness(
 	const bus = createEventBus();
 	const contribution = stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), bus, () => {});
 	const native = contribution.create(host);
-	const extension = requestApi ? {
-		...native,
-		hooks: native.hooks?.map((hook) => {
-			if (hook.task !== Durable.GenerationTask.definition.name) return hook;
-			const hooks = hook.handlers as Durable.GenerationHooks;
-			return { ...hook, handlers: { ...hooks, beforeRequest: (request: Parameters<Durable.GenerationHooks["beforeRequest"]>[0], api: Durable.HookApi, context: typeof BACKGROUND_CONTEXT) => hooks.beforeRequest(request, requestApi(api), context) } };
-		}),
-	} : native;
+	const extension = requestApi
+		? {
+				...native,
+				hooks: native.hooks?.map((hook) => {
+					if (hook.task !== Durable.GenerationTask.definition.name) return hook;
+					const hooks = hook.handlers as Durable.GenerationHooks;
+					return {
+						...hook,
+						handlers: {
+							...hooks,
+							beforeRequest: (
+								request: Parameters<Durable.GenerationHooks["beforeRequest"]>[0],
+								api: Durable.HookApi,
+								context: typeof BACKGROUND_CONTEXT,
+							) => hooks.beforeRequest(request, requestApi(api), context),
+						},
+					};
+				}),
+			}
+		: native;
 	const registry = createRegistry();
 	registry.install(extension);
 	if (gateFixture) {
-		registry.install(Durable.defineExtension({ name: "continuity-fixture", tools: ["fake_compact", "fake_resolve", "fake_late", "fake_finish"].map((name) => Durable.defineTool({
-			name, description: "Synthetic continuity operation", parameters: obj({ mode: opt(str()) }), replay: "safe",
-			execute: async (_args, api, context) => {
-				if (nestedFixture && name === "fake_compact") {
-					const nested = await api.executeTool("stash_list", {}, context);
-					assert.equal(nested.isError, true);
-					assert.ok(nested.diagnostics?.some((item) => item.code === "blocked"));
-					return { output: [{ type: "text" as const, text: nested.diagnostics?.map((item) => item.message).join("\n") ?? "" }], details: {} };
-				}
-				return { output: [{ type: "text" as const, text: "resolved" }], details: {} };
-			},
-		})) }));
+		registry.install(
+			Durable.defineExtension({
+				name: "continuity-fixture",
+				tools: ["fake_compact", "fake_resolve", "fake_late", "fake_finish"].map((name) =>
+					Durable.defineTool({
+						name,
+						description: "Synthetic continuity operation",
+						parameters: obj({ mode: opt(str()) }),
+						replay: "safe",
+						execute: async (_args, api, context) => {
+							if (nestedFixture && name === "fake_compact") {
+								const nested = await api.executeTool("stash_list", {}, context);
+								assert.equal(nested.isError, true);
+								assert.ok(nested.diagnostics?.some((item) => item.code === "blocked"));
+								return {
+									output: [
+										{ type: "text" as const, text: nested.diagnostics?.map((item) => item.message).join("\n") ?? "" },
+									],
+									details: {},
+								};
+							}
+							return { output: [{ type: "text" as const, text: "resolved" }], details: {} };
+						},
+					}),
+				),
+			}),
+		);
 		bus.on("harness:continuity-tools", (value) => {
-			const request = value as { declare(tool: { name: string; act: string; accepts?: (input: unknown) => boolean }): void };
+			const request = value as {
+				declare(tool: { name: string; act: string; accepts?: (input: unknown) => boolean }): void;
+			};
 			request.declare({ name: "fake_compact", act: "compaction" });
-			request.declare({ name: "fake_resolve", act: "worker-resolution", accepts: (input) => (input as { mode?: string }).mode === "report" });
-			request.declare({ name: "fake_finish", act: "work-completion", accepts: (input) => (input as { mode?: string }).mode === "complete" });
+			request.declare({
+				name: "fake_resolve",
+				act: "worker-resolution",
+				accepts: (input) => (input as { mode?: string }).mode === "report",
+			});
+			request.declare({
+				name: "fake_finish",
+				act: "work-completion",
+				accepts: (input) => (input as { mode?: string }).mode === "complete",
+			});
 			void Promise.resolve().then(() => request.declare({ name: "fake_late", act: "compaction" }));
 		});
 	}
@@ -125,7 +172,11 @@ async function startHarness(
 	}
 	const storage = new MemoryStorage();
 	const reports: Durable.Report[] = [];
-	const harness = await Harness.open(storage, { models, registry, onReport: (report) => reports.push(report) }, context);
+	const harness = await Harness.open(
+		storage,
+		{ models, registry, onReport: (report) => reports.push(report) },
+		context,
+	);
 	const root = await harness.root(context, {
 		agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: workdir },
 	});
@@ -365,7 +416,10 @@ test("freezes publication metadata before effects and reads memo winners before 
 	const api = {
 		conversationId: Durable.ROOT_CONVERSATION_ID,
 		now: () => 1793682000100,
-		agent: async () => { liveReads++; return { cwd: h.workdir }; },
+		agent: async () => {
+			liveReads++;
+			return { cwd: h.workdir };
+		},
 		memo: async (name: string, ...args: unknown[]) => {
 			if (args.length === 2 && !memos.has(name)) memos.set(name, args[0] as JsonValue);
 			return memos.get(name);
@@ -378,7 +432,9 @@ test("freezes publication metadata before effects and reads memo winners before 
 	assert.equal(entry.meta.sessionId, h.host.storageId);
 	assert.equal(entry.meta.project, h.workdir);
 	process.env.PI_STASH_DIR = join(h.workdir, "changed-store");
-	api.agent = async () => { throw new Error("live metadata accessed on replay"); };
+	api.agent = async () => {
+		throw new Error("live metadata accessed on replay");
+	};
 	await tool.execute(params, api as never, context);
 	assert.equal((await listStashes(h.storeDir)).length, 1);
 	assert.equal((await listStashes(process.env.PI_STASH_DIR)).length, 0);
@@ -402,7 +458,9 @@ test("freezes publication metadata before effects and reads memo winners before 
 		await assert.rejects(tool.execute({ ...params, checkpoint: true }, api as never, context), /must differ/);
 		const refused = await list.execute({ collection: "checkpoints" }, {} as never, context);
 		assert.equal(refused.isError, true);
-	} finally { delete process.env.PI_STASH_CHECKPOINT_DIR; }
+	} finally {
+		delete process.env.PI_STASH_CHECKPOINT_DIR;
+	}
 });
 
 for (const prior of ["absent", "closed", "archived"] as const) {
@@ -417,26 +475,37 @@ for (const prior of ["absent", "closed", "archived"] as const) {
 		if (prior !== "absent") {
 			const written = await writeStash(originalStore, params, new Date(createdAtMs));
 			await transitionStash(originalStore, written.record.id, { action: "close", outcome: "Already finished" });
-			retainedPath = prior === "archived"
-				? (await rotateStash(originalStore, written.record.id)).archivePath
-				: written.path;
+			retainedPath =
+				prior === "archived" ? (await rotateStash(originalStore, written.record.id)).archivePath : written.path;
 		}
 		const original = retainedPath ? await readFile(retainedPath, "utf8") : undefined;
 		const pending = new Map<string, JsonValue>([["stash.write", { createdAtMs }]]);
-		await assert.rejects(tool.execute(params, {
-			memo: async (name: string) => pending.get(name),
-			agent: async () => { throw new Error("Ambiguous publication must not read new metadata"); },
-		} as never, context), (error: Error) => {
-			assert.match(error.message, /timestamp-only.*1793682000100/);
-			assert.match(error.message, /This resumed attempt made no new publication/);
-			assert.match(error.message, /earlier outcome, original destination and artifact identity are unknown/);
-			assert.match(error.message, /Inspect the retained result and original destination\/archive before creating a new write/);
-			assert.match(error.message, /Reuse an existing artifact when its identity is established/);
-			assert.match(error.message, /switching source does not resume it/);
-			assert.doesNotMatch(error.message, /no artifact was published|[Rr]un.*again|[Rr]esume with/);
-			assert.ok(!error.message.includes(h.storeDir));
-			return true;
-		});
+		await assert.rejects(
+			tool.execute(
+				params,
+				{
+					memo: async (name: string) => pending.get(name),
+					agent: async () => {
+						throw new Error("Ambiguous publication must not read new metadata");
+					},
+				} as never,
+				context,
+			),
+			(error: Error) => {
+				assert.match(error.message, /timestamp-only.*1793682000100/);
+				assert.match(error.message, /This resumed attempt made no new publication/);
+				assert.match(error.message, /earlier outcome, original destination and artifact identity are unknown/);
+				assert.match(
+					error.message,
+					/Inspect the retained result and original destination\/archive before creating a new write/,
+				);
+				assert.match(error.message, /Reuse an existing artifact when its identity is established/);
+				assert.match(error.message, /switching source does not resume it/);
+				assert.doesNotMatch(error.message, /no artifact was published|[Rr]un.*again|[Rr]esume with/);
+				assert.ok(!error.message.includes(h.storeDir));
+				return true;
+			},
+		);
 		assert.equal(pending.size, 1);
 		assert.equal((await listStashes(h.storeDir)).length, 0);
 		assert.equal((await listStashes(originalStore)).length, prior === "closed" ? 1 : 0);
@@ -449,20 +518,35 @@ test("records distinct root and child sources in native checkpoint artifacts", a
 	const h = await startHarness(t);
 	const directory = join(h.workdir, "checkpoints");
 	process.env.PI_STASH_CHECKPOINT_DIR = directory;
-	t.after(() => { delete process.env.PI_STASH_CHECKPOINT_DIR; });
-	for (const [storageId, conversationId, expected] of [["root-a", 1, "root-a"], ["root-b", 1, "root-b"], ["root-b", 2, "root-b:2"]] as const) {
+	t.after(() => {
+		delete process.env.PI_STASH_CHECKPOINT_DIR;
+	});
+	for (const [storageId, conversationId, expected] of [
+		["root-a", 1, "root-a"],
+		["root-b", 1, "root-b"],
+		["root-b", 2, "root-b:2"],
+	] as const) {
 		const extension = h.contribution.create({ ...h.host, storageId });
 		const tool = extension.tools?.find((tool) => tool.name === "stash_write");
 		assert.ok(tool);
 		const memos = new Map<string, unknown>();
-		await tool.execute({ title: expected, summary: "Source locator", checkpoint: true }, {
-			conversationId, now: () => 1793682000100, agent: async () => ({ cwd: h.workdir }),
-			memo: async (name: string, ...args: unknown[]) => {
-				if (args.length === 2 && !memos.has(name)) memos.set(name, args[0]);
-				return memos.get(name);
-			},
-		} as never, context);
-		assert.equal((await listStashes(directory)).find((entry) => entry.meta.title === expected)?.meta.sessionId, expected);
+		await tool.execute(
+			{ title: expected, summary: "Source locator", checkpoint: true },
+			{
+				conversationId,
+				now: () => 1793682000100,
+				agent: async () => ({ cwd: h.workdir }),
+				memo: async (name: string, ...args: unknown[]) => {
+					if (args.length === 2 && !memos.has(name)) memos.set(name, args[0]);
+					return memos.get(name);
+				},
+			} as never,
+			context,
+		);
+		assert.equal(
+			(await listStashes(directory)).find((entry) => entry.meta.title === expected)?.meta.sessionId,
+			expected,
+		);
 	}
 });
 
@@ -477,24 +561,34 @@ for (const prior of ["absent", "closed", "archived"] as const) {
 		if (prior !== "absent") {
 			const written = await writeStash(h.storeDir, payload, new Date(createdAtMs));
 			await transitionStash(h.storeDir, written.record.id, { action: "close", outcome: "Already finished" });
-			retainedPath = prior === "archived"
-				? (await rotateStash(h.storeDir, written.record.id)).archivePath
-				: written.path;
+			retainedPath =
+				prior === "archived" ? (await rotateStash(h.storeDir, written.record.id)).archivePath : written.path;
 		}
 		const original = retainedPath ? await readFile(retainedPath, "utf8") : undefined;
 		const receipts: Durable.JsonObject[] = [];
 		const states: { status: string; outcome: { status: string } }[] = [];
 		const write = task.definition.phases.write;
 		assert.ok(typeof write === "function");
-		await write({
-			input: { storeDir: h.storeDir },
-			state: { checkpoint: { phase: "write", payload, createdAtMs, redactions: redactSecretsWithReport("").report } },
-		} as never, {
-			signal: new AbortController().signal,
-			commit: async (change: (tx: unknown) => Promise<typeof states[number]>) => {
-				states.push(await change({ doc: async () => ({}), appendEntry: async (_id: unknown, entry: { data: Durable.JsonObject }) => { receipts.push(entry.data); } }));
-			},
-		} as never, context);
+		await write(
+			{
+				input: { storeDir: h.storeDir },
+				state: { checkpoint: { phase: "write", payload, createdAtMs, redactions: redactSecretsWithReport("").report } },
+			} as never,
+			{
+				signal: new AbortController().signal,
+				commit: async (change: (tx: unknown) => Promise<(typeof states)[number]>) => {
+					states.push(
+						await change({
+							doc: async () => ({}),
+							appendEntry: async (_id: unknown, entry: { data: Durable.JsonObject }) => {
+								receipts.push(entry.data);
+							},
+						}),
+					);
+				},
+			} as never,
+			context,
+		);
 		assert.equal(receipts.length, 1);
 		assert.equal(receipts[0].status, "failed");
 		const message = String(receipts[0].message);
@@ -517,15 +611,30 @@ test("discovers and reads native checkpoints by topic without lifecycle changes"
 	const h = await startHarness(t);
 	capacityOff(t);
 	process.env.PI_STASH_CHECKPOINT_DIR = join(h.workdir, "checkpoints");
-	t.after(() => { delete process.env.PI_STASH_CHECKPOINT_DIR; });
-	await answerWith(h.root, h.faux, [
-		fauxAssistantMessage(fauxToolCall("stash_write", { title: "Checkpoint", summary: "Orchid recovery evidence", checkpoint: true }), { stopReason: "toolUse" }),
-		fauxAssistantMessage(fauxToolCall("stash_list", { collection: "checkpoints", query: "Orchid" }), { stopReason: "toolUse" }),
-		fauxAssistantMessage("Found"),
-	], "Save and find the checkpoint.");
+	t.after(() => {
+		delete process.env.PI_STASH_CHECKPOINT_DIR;
+	});
+	await answerWith(
+		h.root,
+		h.faux,
+		[
+			fauxAssistantMessage(
+				fauxToolCall("stash_write", { title: "Checkpoint", summary: "Orchid recovery evidence", checkpoint: true }),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage(fauxToolCall("stash_list", { collection: "checkpoints", query: "Orchid" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("Found"),
+		],
+		"Save and find the checkpoint.",
+	);
 	const listed = (await toolResults(h.root)).find((result) => result.name === "stash_list");
 	assert.ok(listed && !listed.isError);
-	const page = JSON.parse(listed.text) as { matches: { id: string; state: string; source: string; workspace: string }[]; provisional: boolean };
+	const page = JSON.parse(listed.text) as {
+		matches: { id: string; state: string; source: string; workspace: string }[];
+		provisional: boolean;
+	};
 	assert.equal(page.provisional, true);
 	assert.equal(page.matches.length, 1);
 	assert.equal(page.matches[0].source, h.host.storageId);
@@ -533,10 +642,17 @@ test("discovers and reads native checkpoints by topic without lifecycle changes"
 	assert.equal(page.matches[0].state, "provisional");
 	const [entry] = await listStashes(process.env.PI_STASH_CHECKPOINT_DIR);
 	const original = await readFile(entry.path, "utf8");
-	await answerWith(h.root, h.faux, [
-		fauxAssistantMessage(fauxToolCall("stash_read", { collection: "checkpoints", id: page.matches[0].id }), { stopReason: "toolUse" }),
-		fauxAssistantMessage("Read"),
-	], "Read the checkpoint.");
+	await answerWith(
+		h.root,
+		h.faux,
+		[
+			fauxAssistantMessage(fauxToolCall("stash_read", { collection: "checkpoints", id: page.matches[0].id }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("Read"),
+		],
+		"Read the checkpoint.",
+	);
 	const read = (await toolResults(h.root)).find((result) => result.name === "stash_read");
 	assert.ok(read && !read.isError);
 	assert.match(read.text, /Provisional working material/);
@@ -570,10 +686,14 @@ test("capacity resets retain document deltas without automatic checkpoints", asy
 			harness: h.harness,
 		});
 	}
-	const record = await h.storage.findDocument({
-		kind: "stash.capacity",
-		scope: { kind: "conversation", conversationId: h.root.id },
-	}, "current", context);
+	const record = await h.storage.findDocument(
+		{
+			kind: "stash.capacity",
+			scope: { kind: "conversation", conversationId: h.root.id },
+		},
+		"current",
+		context,
+	);
 	assert.ok(record);
 	const stored = await h.storage.document(record.id, "current", context);
 	assert.ok(stored);
@@ -643,10 +763,12 @@ try { await tools.stash_read({id: "missing-artifact"}); }
 catch (e) { rejection = e.message; }
 text("NATIVE_RESULT=" + JSON.stringify({empty, written, recent, search, read, error, rejection}));
 `;
-	await answerWith(h.root, h.faux, [
-		fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
-		fauxAssistantMessage("done"),
-	], "Create, discover, and read a handover through code mode.");
+	await answerWith(
+		h.root,
+		h.faux,
+		[fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }), fauxAssistantMessage("done")],
+		"Create, discover, and read a handover through code mode.",
+	);
 	const results = await toolResults(h.root);
 	const result = results.findLast((item) => item.name === "codemode");
 	assert.ok(result && !result.isError, result?.text);
@@ -670,7 +792,11 @@ text("NATIVE_RESULT=" + JSON.stringify({empty, written, recent, search, read, er
 	assert.equal(parsed.error.coverage.complete, false);
 	assert.match(parsed.error.error, /cursor requires query/);
 	assert.match(parsed.rejection, /no stash matches "missing-artifact"/);
-	assert.deepEqual(results.map((item) => item.name), ["codemode"], "nested results stay out of model context");
+	assert.deepEqual(
+		results.map((item) => item.name),
+		["codemode"],
+		"nested results stay out of model context",
+	);
 	const view = await h.root.context(context);
 	const message = view.messages.findLast((item) => item.role === "toolResult");
 	const details = (message as unknown as { details: { calls: Array<{ name: string; status: string }> } }).details;
@@ -679,20 +805,37 @@ text("NATIVE_RESULT=" + JSON.stringify({empty, written, recent, search, read, er
 });
 
 function gateThresholds(t: { after(fn: () => void): void }, stop: string): void {
-	const values = { PI_STASH_CHECKPOINT_PERCENT: "0.01", PI_STASH_DECISION_PERCENT: "0.02", PI_STASH_STOP_PERCENT: stop };
+	const values = {
+		PI_STASH_CHECKPOINT_PERCENT: "0.01",
+		PI_STASH_DECISION_PERCENT: "0.02",
+		PI_STASH_STOP_PERCENT: stop,
+	};
 	const old = Object.keys(values).map((key) => [key, process.env[key]] as const);
 	Object.assign(process.env, values);
-	t.after(() => { for (const [key, value] of old) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+	t.after(() => {
+		for (const [key, value] of old) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	});
 }
 
 test("native decision rounds share declarations and then allow ordinary tool work", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t, 200000, false, true);
 	gateThresholds(t, "100");
-	await answerWith(h.root, h.faux, [
-		fauxAssistantMessage([fauxToolCall("stash_list", {}), fauxToolCall("fake_compact", {})], { stopReason: "toolUse" }),
-		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
-		fauxAssistantMessage("done"), fauxAssistantMessage("done"),
-	], "Retain the task.");
+	await answerWith(
+		h.root,
+		h.faux,
+		[
+			fauxAssistantMessage([fauxToolCall("stash_list", {}), fauxToolCall("fake_compact", {})], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+			fauxAssistantMessage("done"),
+		],
+		"Retain the task.",
+	);
 	const results = await toolResults(h.root);
 	assert.match(results[0].text, /Stash decision round/);
 	assert.equal(results[1].isError, false);
@@ -702,7 +845,8 @@ test("native decision rounds share declarations and then allow ordinary tool wor
 test("native stop rounds count actual unexecuted slots including invalid arguments", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t, 2000);
 	gateThresholds(t, "0.03");
-	const round = () => fauxAssistantMessage([fauxToolCall("stash_list", {}), fauxToolCall("stash_read", {})], { stopReason: "toolUse" });
+	const round = () =>
+		fauxAssistantMessage([fauxToolCall("stash_list", {}), fauxToolCall("stash_read", {})], { stopReason: "toolUse" });
 	await answerWith(h.root, h.faux, [round(), round(), round()], "Retain the task.");
 	assert.equal(h.faux.state.callCount, 3);
 	const results = await toolResults(h.root);
@@ -711,7 +855,9 @@ test("native stop rounds count actual unexecuted slots including invalid argumen
 	assert.match(results[0].text, /Stash stop/);
 });
 
-test("a refused native decision round counts toward termination on the third refused round", { timeout: 30000 }, async (t) => {
+test("a refused native decision round counts toward termination on the third refused round", {
+	timeout: 30000,
+}, async (t) => {
 	const h = await startHarness(t, 200000);
 	gateThresholds(t, "100");
 	const round = () => fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" });
@@ -733,7 +879,12 @@ test("native refusal counts start at zero after termination and an answer-only r
 	gateThresholds(t, "0.03");
 	const refuse = () => fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" });
 	await answerWith(h.root, h.faux, [refuse(), refuse(), refuse()], "Retain the task.");
-	await answerWith(h.root, h.faux, [fauxAssistantMessage("answer"), fauxAssistantMessage("answer")], "Answer without tools.");
+	await answerWith(
+		h.root,
+		h.faux,
+		[fauxAssistantMessage("answer"), fauxAssistantMessage("answer")],
+		"Answer without tools.",
+	);
 	const before = h.faux.state.callCount;
 	await answerWith(h.root, h.faux, [refuse(), refuse(), refuse()], "Try the next run.");
 	assert.equal(h.faux.state.callCount - before, 3);
@@ -741,28 +892,41 @@ test("native refusal counts start at zero after termination and an answer-only r
 });
 
 for (const unavailable of ["rejects", "times out", "is absent"] as const) {
-	test(`a native run does not inherit refused rounds when its first live snapshot ${unavailable}`, { timeout: 30000 }, async (t) => {
+	test(`a native run does not inherit refused rounds when its first live snapshot ${unavailable}`, {
+		timeout: 30000,
+	}, async (t) => {
 		let failNext = false;
 		let failures = 0;
 		let stalledSignal: AbortSignal | undefined;
-		const h = await startHarness(t, 2000, false, false, false, (api) => new Proxy(api, {
-			get(target, key) {
-				if (key === "snapshot") return (...args: unknown[]) => {
-					if (args[0] !== Durable.LiveDoc || !failNext) return Reflect.apply(api.snapshot, api, args);
-					failNext = false;
-					failures++;
-					switch (unavailable) {
-						case "rejects": return Promise.reject(new Error("Synthetic live snapshot unavailable"));
-						case "is absent": return Promise.resolve(undefined);
-						case "times out":
-							stalledSignal = (args[args.length - 1] as typeof context).abortSignal;
-							return new Promise<never>(() => {});
-					}
-				};
-				const value = Reflect.get(target, key, target);
-				return typeof value === "function" ? value.bind(target) : value;
-			},
-		}));
+		const h = await startHarness(
+			t,
+			2000,
+			false,
+			false,
+			false,
+			(api) =>
+				new Proxy(api, {
+					get(target, key) {
+						if (key === "snapshot")
+							return (...args: unknown[]) => {
+								if (args[0] !== Durable.LiveDoc || !failNext) return Reflect.apply(api.snapshot, api, args);
+								failNext = false;
+								failures++;
+								switch (unavailable) {
+									case "rejects":
+										return Promise.reject(new Error("Synthetic live snapshot unavailable"));
+									case "is absent":
+										return Promise.resolve(undefined);
+									case "times out":
+										stalledSignal = (args[args.length - 1] as typeof context).abortSignal;
+										return new Promise<never>(() => {});
+								}
+							};
+						const value = Reflect.get(target, key, target);
+						return typeof value === "function" ? value.bind(target) : value;
+					},
+				}),
+		);
 		gateThresholds(t, "0.03");
 		const refuse = () => fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" });
 		await answerWith(h.root, h.faux, [refuse(), refuse(), refuse()], "Retain the task.");
@@ -771,8 +935,14 @@ for (const unavailable of ["rejects", "times out", "is absent"] as const) {
 		const before = h.faux.state.callCount;
 		await answerWith(h.root, h.faux, [refuse(), refuse(), refuse()], "Start the next run.");
 		assert.equal(failures, 1, "only the next run's first LiveDoc read is unavailable");
-		assert.equal(h.faux.state.callCount - before, 3, "the first refusal does not inherit termination from the prior run");
-		assert.ok((await toolResults(h.root)).slice(-3).every((result) => result.isError && /Stash stop/.test(result.text)));
+		assert.equal(
+			h.faux.state.callCount - before,
+			3,
+			"the first refusal does not inherit termination from the prior run",
+		);
+		assert.ok(
+			(await toolResults(h.root)).slice(-3).every((result) => result.isError && /Stash stop/.test(result.text)),
+		);
 		if (unavailable === "times out") assert.equal(stalledSignal?.aborted, true);
 	});
 }
@@ -782,11 +952,19 @@ test("native refusal counts start at zero after an abort", { timeout: 30000 }, a
 	gateThresholds(t, "0.03");
 	const refuse = () => fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" });
 	let signalReady!: () => void;
-	const ready = new Promise<void>((resolve) => { signalReady = resolve; });
-	h.faux.setResponses([refuse(), refuse(), (_request, options) => {
-		signalReady();
-		return new Promise<never>((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }));
-	}]);
+	const ready = new Promise<void>((resolve) => {
+		signalReady = resolve;
+	});
+	h.faux.setResponses([
+		refuse(),
+		refuse(),
+		(_request, options) => {
+			signalReady();
+			return new Promise<never>((_resolve, reject) =>
+				options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }),
+			);
+		},
+	]);
 	const submission = await h.root.submit({ type: "input", content: "Retain the task." }, context);
 	await ready;
 	await h.root.abort(context);
@@ -801,7 +979,10 @@ test("native invalid capacity settings report once and leave tools available", {
 	gateThresholds(t, "96");
 	process.env.PI_STASH_CHECKPOINT_PERCENT = "95";
 	process.env.PI_STASH_DECISION_PERCENT = "90";
-	const responses = () => [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("answer")];
+	const responses = () => [
+		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+		fauxAssistantMessage("answer"),
+	];
 	await answerWith(h.root, h.faux, responses(), "Read available work.");
 	await answerWith(h.root, h.faux, responses(), "Read it again.");
 	assert.equal(h.reports.length, 1);
@@ -814,24 +995,48 @@ for (const name of ["stash_edit", "stash_complete", "stash_rotate"] as const) {
 	test(`native stop refuses ${name} before its store operation`, { timeout: 30000 }, async (t) => {
 		const h = await startHarness(t, 2000);
 		gateThresholds(t, "0.03");
-		const args: Durable.JsonObject = name === "stash_edit"
-			? { id: "missing", expectedDigest: "a".repeat(64), edits: [{ oldText: "before", newText: "after" }] }
-			: name === "stash_complete" ? { id: "missing", outcome: "done" } : { id: "missing" };
-		await answerWith(h.root, h.faux, [fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }), fauxAssistantMessage("answer"), fauxAssistantMessage("answer")], "Retain the task.");
+		const args: Durable.JsonObject =
+			name === "stash_edit"
+				? { id: "missing", expectedDigest: "a".repeat(64), edits: [{ oldText: "before", newText: "after" }] }
+				: name === "stash_complete"
+					? { id: "missing", outcome: "done" }
+					: { id: "missing" };
+		await answerWith(
+			h.root,
+			h.faux,
+			[
+				fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }),
+				fauxAssistantMessage("answer"),
+				fauxAssistantMessage("answer"),
+			],
+			"Retain the task.",
+		);
 		const result = (await toolResults(h.root)).find((result) => result.name === name);
 		assert.equal(result?.isError, true);
 		assert.match(result?.text ?? "", /Stash stop/);
 	});
 }
 
-test("nested refusals stay outside the model round and do not terminate their executed parent", { timeout: 30000 }, async (t) => {
+test("nested refusals stay outside the model round and do not terminate their executed parent", {
+	timeout: 30000,
+}, async (t) => {
 	const h = await startHarness(t, 2000, false, true, true);
 	gateThresholds(t, "0.03");
 	const refuse = () => fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" });
-	await answerWith(h.root, h.faux, [refuse(), refuse(),
-		fauxAssistantMessage(fauxToolCall("fake_compact", {}), { stopReason: "toolUse" }),
-		refuse(), refuse(), fauxAssistantMessage("answer"), fauxAssistantMessage("answer"),
-	], "Retain the task.");
+	await answerWith(
+		h.root,
+		h.faux,
+		[
+			refuse(),
+			refuse(),
+			fauxAssistantMessage(fauxToolCall("fake_compact", {}), { stopReason: "toolUse" }),
+			refuse(),
+			refuse(),
+			fauxAssistantMessage("answer"),
+			fauxAssistantMessage("answer"),
+		],
+		"Retain the task.",
+	);
 	const results = await toolResults(h.root);
 	assert.equal(results.length, 5);
 	assert.equal(results[2].name, "fake_compact");
@@ -842,15 +1047,27 @@ test("nested refusals stay outside the model round and do not terminate their ex
 test("native stop runs an accepted work-completion call and refuses its other forms", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t, 2000, false, true);
 	gateThresholds(t, "0.03");
-	await answerWith(h.root, h.faux, [
-		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
-		fauxAssistantMessage([fauxToolCall("fake_finish", { mode: "continue" }), fauxToolCall("fake_finish", { mode: "complete" })], { stopReason: "toolUse" }),
-		fauxAssistantMessage("answer"), fauxAssistantMessage("answer"),
-	], "Retain the task.");
+	await answerWith(
+		h.root,
+		h.faux,
+		[
+			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage(
+				[fauxToolCall("fake_finish", { mode: "continue" }), fauxToolCall("fake_finish", { mode: "complete" })],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("answer"),
+			fauxAssistantMessage("answer"),
+		],
+		"Retain the task.",
+	);
 	const results = (await toolResults(h.root)).filter((result) => result.name === "fake_finish");
 	assert.equal(results.length, 2);
 	assert.equal(results[0].isError, true);
-	assert.match(results[0].text, /Stash stop[\s\S]*fake_finish is a declared continuity tool, but its producer does not accept this argument form[\s\S]*declared work-completion tool \(fake_finish\)/);
+	assert.match(
+		results[0].text,
+		/Stash stop[\s\S]*fake_finish is a declared continuity tool, but its producer does not accept this argument form[\s\S]*declared work-completion tool \(fake_finish\)/,
+	);
 	assert.equal(results[1].isError, false);
 	assert.equal(results[1].text, "resolved");
 });
@@ -858,24 +1075,63 @@ test("native stop runs an accepted work-completion call and refuses its other fo
 test("native continuity execution resets refusal counts and release lifts the stop", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t, 2000, false, true);
 	gateThresholds(t, "0.03");
-	await answerWith(h.root, h.faux, [
-		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
-		fauxAssistantMessage([fauxToolCall("stash_list", {}), fauxToolCall("fake_resolve", { mode: "report" }), fauxToolCall("fake_late", {})], { stopReason: "toolUse" }),
-		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
-		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
-		fauxAssistantMessage("answer"), fauxAssistantMessage("answer"),
-	], "Retain the task.");
+	await answerWith(
+		h.root,
+		h.faux,
+		[
+			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage(
+				[
+					fauxToolCall("stash_list", {}),
+					fauxToolCall("fake_resolve", { mode: "report" }),
+					fauxToolCall("fake_late", {}),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("answer"),
+			fauxAssistantMessage("answer"),
+		],
+		"Retain the task.",
+	);
 	const results = await toolResults(h.root);
 	assert.equal(results.find((result) => result.name === "fake_resolve")?.isError, false);
 	assert.equal(results.find((result) => result.name === "fake_late")?.isError, true);
 	assert.ok(h.faux.state.callCount >= 5);
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
-	assert.match(String(await command.run({ args: "capacity release", conversation: h.root, context, host: h.host, invocationId: "release", harness: h.harness })), /released until the next compaction/);
-	await answerWith(h.root, h.faux, [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("released")], "Continue the task.");
+	assert.match(
+		String(
+			await command.run({
+				args: "capacity release",
+				conversation: h.root,
+				context,
+				host: h.host,
+				invocationId: "release",
+				harness: h.harness,
+			}),
+		),
+		/released until the next compaction/,
+	);
+	await answerWith(
+		h.root,
+		h.faux,
+		[fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("released")],
+		"Continue the task.",
+	);
 	assert.equal((await toolResults(h.root)).at(-1)?.isError, false);
 	await h.root.reset("Retained task.", context);
-	await answerWith(h.root, h.faux, [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("reset"), fauxAssistantMessage("reset")], "Continue the task.");
+	await answerWith(
+		h.root,
+		h.faux,
+		[
+			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("reset"),
+			fauxAssistantMessage("reset"),
+		],
+		"Continue the task.",
+	);
 	assert.equal((await toolResults(h.root)).at(-1)?.isError, true);
 });
 
@@ -885,8 +1141,19 @@ test("a native release after reset survives the first gate evaluation", { timeou
 	await h.root.reset("Retained task.", context);
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
-	await command.run({ args: "capacity release", conversation: h.root, context, host: h.host, invocationId: "release", harness: h.harness });
-	const responses = () => [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("answer"), fauxAssistantMessage("answer")];
+	await command.run({
+		args: "capacity release",
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId: "release",
+		harness: h.harness,
+	});
+	const responses = () => [
+		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+		fauxAssistantMessage("answer"),
+		fauxAssistantMessage("answer"),
+	];
 	await answerWith(h.root, h.faux, responses(), "Continue the task.");
 	assert.equal((await toolResults(h.root)).at(-1)?.isError, false);
 	await h.root.reset("Retained task.", context);
@@ -894,16 +1161,29 @@ test("a native release after reset survives the first gate evaluation", { timeou
 	assert.equal((await toolResults(h.root)).at(-1)?.isError, true);
 });
 
-test("a native release retains the latest boundary while older unseen boundaries are scanned", { timeout: 30000 }, async (t) => {
+test("a native release retains the latest boundary while older unseen boundaries are scanned", {
+	timeout: 30000,
+}, async (t) => {
 	const h = await startHarness(t, 2000);
 	gateThresholds(t, "0.03");
-	const responses = () => [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("answer"), fauxAssistantMessage("answer")];
+	const responses = () => [
+		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+		fauxAssistantMessage("answer"),
+		fauxAssistantMessage("answer"),
+	];
 	await answerWith(h.root, h.faux, responses(), "Retain the task.");
 	await h.root.reset("First retained task.", context);
 	await h.root.reset("Latest retained task.", context);
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
-	await command.run({ args: "capacity release", conversation: h.root, context, host: h.host, invocationId: "release", harness: h.harness });
+	await command.run({
+		args: "capacity release",
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId: "release",
+		harness: h.harness,
+	});
 	await answerWith(h.root, h.faux, responses(), "Continue the task.");
 	assert.equal((await toolResults(h.root)).at(-1)?.isError, false);
 });
@@ -912,10 +1192,26 @@ for (const boundary of ["reset", "compaction"] as const) {
 	test(`a ${boundary} clears a native release before a long passive tail`, { timeout: 30000 }, async (t) => {
 		const h = await startHarness(t, 2000);
 		gateThresholds(t, "0.03");
-		await answerWith(h.root, h.faux, [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("answer"), fauxAssistantMessage("answer")], "Retain the task.");
+		await answerWith(
+			h.root,
+			h.faux,
+			[
+				fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("answer"),
+				fauxAssistantMessage("answer"),
+			],
+			"Retain the task.",
+		);
 		const command = h.contribution.commands?.[0];
 		assert.ok(command);
-		await command.run({ args: "capacity release", conversation: h.root, context, host: h.host, invocationId: "release", harness: h.harness });
+		await command.run({
+			args: "capacity release",
+			conversation: h.root,
+			context,
+			host: h.host,
+			invocationId: "release",
+			harness: h.harness,
+		});
 		if (boundary === "reset") await h.root.reset("Retained task.", context);
 		else {
 			await h.root.configure({ compaction: { enabled: false, keepRecentTokens: 1 } }, context);
@@ -932,22 +1228,37 @@ for (const boundary of ["reset", "compaction"] as const) {
 		const tail = await h.root.entries({ order: "descending" }, 64, undefined, context);
 		assert.equal(tail.items.length, 64);
 		assert.ok(tail.items.every((entry) => entry.kind === "fixture.passive"));
-		await answerWith(h.root, h.faux, [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("answer"), fauxAssistantMessage("answer")], "Continue the task.");
+		await answerWith(
+			h.root,
+			h.faux,
+			[
+				fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+				fauxAssistantMessage("answer"),
+				fauxAssistantMessage("answer"),
+			],
+			"Continue the task.",
+		);
 		assert.equal((await toolResults(h.root)).at(-1)?.isError, true);
 	});
 }
 
 for (const boundary of ["reset", "compaction"] as const) {
-	test(`a ${boundary} starts a fresh native decision episode after a long passive tail without release`, { timeout: 30000 }, async (t) => {
+	test(`a ${boundary} starts a fresh native decision episode after a long passive tail without release`, {
+		timeout: 30000,
+	}, async (t) => {
 		const h = await startHarness(t, 200000);
 		gateThresholds(t, "100");
 		const responses = () => [
 			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
 			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
-			fauxAssistantMessage("answer"), fauxAssistantMessage("answer"),
+			fauxAssistantMessage("answer"),
+			fauxAssistantMessage("answer"),
 		];
 		await answerWith(h.root, h.faux, responses(), "Retain the task.");
-		assert.deepEqual((await toolResults(h.root)).map((result) => result.isError), [true, false]);
+		assert.deepEqual(
+			(await toolResults(h.root)).map((result) => result.isError),
+			[true, false],
+		);
 		if (boundary === "reset") await h.root.reset("Retained task.", context);
 		else {
 			await h.root.configure({ compaction: { enabled: false, keepRecentTokens: 1 } }, context);
@@ -955,24 +1266,39 @@ for (const boundary of ["reset", "compaction"] as const) {
 			const id = await h.root.compact(undefined, context);
 			assert.equal((await h.harness.waitForTask(id, context)).state.outcome.status, "completed");
 		}
-		for (let index = 0; index < 80; index++) await h.root.submit({ type: "write", entry: { kind: "fixture.passive", data: { index } } }, context);
+		for (let index = 0; index < 80; index++)
+			await h.root.submit({ type: "write", entry: { kind: "fixture.passive", data: { index } } }, context);
 		await answerWith(h.root, h.faux, responses(), "Continue the task.");
-		assert.deepEqual((await toolResults(h.root)).slice(-2).map((result) => result.isError), [true, false]);
+		assert.deepEqual(
+			(await toolResults(h.root)).slice(-2).map((result) => result.isError),
+			[true, false],
+		);
 	});
 }
 
 test("native gates skip ineffective reads and share each response snapshot", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t, 2000);
 	gateThresholds(t, "100");
-	const generation = h.extension.hooks?.find((hook) => hook.task === Durable.GenerationTask.definition.name)?.handlers as Durable.GenerationHooks;
-	const tool = h.extension.hooks?.find((hook) => hook.task === Durable.ToolTask.definition.name)?.handlers as Durable.ToolHooks;
+	const generation = h.extension.hooks?.find((hook) => hook.task === Durable.GenerationTask.definition.name)
+		?.handlers as Durable.GenerationHooks;
+	const tool = h.extension.hooks?.find((hook) => hook.task === Durable.ToolTask.definition.name)
+		?.handlers as Durable.ToolHooks;
 	const reads = { history: 0, results: 0, live: 0 };
 	const api = {
 		conversationId: h.root.id,
-		entries: async () => { reads.history++; return { items: [{ id: 1, kind: "fixture.passive" }] }; },
-		entry: async () => { reads.results++; return { data: { diagnostics: [{ code: "blocked" }] } }; },
+		entries: async () => {
+			reads.history++;
+			return { items: [{ id: 1, kind: "fixture.passive" }] };
+		},
+		entry: async () => {
+			reads.results++;
+			return { data: { diagnostics: [{ code: "blocked" }] } };
+		},
 		snapshot: async (token: unknown) => {
-			if (token === Durable.LiveDoc) { reads.live++; return { run: { turns: 1 } }; }
+			if (token === Durable.LiveDoc) {
+				reads.live++;
+				return { run: { turns: 1 } };
+			}
 			return token === Durable.AgentDoc ? { model: { provider: "faux", modelId: "faux-1" } } : { episode: 1 };
 		},
 		memo: async () => undefined,
@@ -997,30 +1323,58 @@ test("native gates skip ineffective reads and share each response snapshot", { t
 	await generation.afterTools(assistantId, resultIds, api, context);
 	assert.equal(await tool.beforeTool(call, api, context), undefined, "the refused decision round closes");
 	await generation.beforeRequest(request, api, context);
-	assert.deepEqual(reads, { history: 1, results: 1, live: 1 }, "the refused decision round needs result and live-round evidence");
+	assert.deepEqual(
+		reads,
+		{ history: 1, results: 1, live: 1 },
+		"the refused decision round needs result and live-round evidence",
+	);
 	await generation.afterTools(assistantId, resultIds, api, context);
 	await generation.beforeRequest(request, api, context);
-	assert.deepEqual(reads, { history: 1, results: 1, live: 1 }, "a closed-decision round clears the count without more reads");
+	assert.deepEqual(
+		reads,
+		{ history: 1, results: 1, live: 1 },
+		"a closed-decision round clears the count without more reads",
+	);
 	for (let index = 0; index < 10; index++) {
 		await tool.beforeTool(call, api, context);
-		await tool.afterTool(call, { output: [], diagnostics: [{ severity: "error", code: "blocked", message: "refused" }] }, api, context);
+		await tool.afterTool(
+			call,
+			{ output: [], diagnostics: [{ severity: "error", code: "blocked", message: "refused" }] },
+			api,
+			context,
+		);
 	}
 	assert.equal(reads.history, 1, "tool hooks reuse the response snapshot");
 	process.env.PI_STASH_STOP_PERCENT = "40";
 	await generation.afterTools(assistantId, resultIds, api, context);
 	await generation.beforeRequest(request, api, context);
-	assert.deepEqual(reads, { history: 1, results: 2, live: 2 }, "a stop refusal needs the result and live-round evidence");
+	assert.deepEqual(
+		reads,
+		{ history: 1, results: 2, live: 2 },
+		"a stop refusal needs the result and live-round evidence",
+	);
 	message.usage.input = 0.1;
 	await generation.afterResponse(message, api, context);
 	await generation.afterTools(assistantId, resultIds, api, context);
 	await generation.beforeRequest(request, api, context);
-	assert.deepEqual(reads, { history: 1, results: 2, live: 2 }, "a normal response clears the count without another live read");
+	assert.deepEqual(
+		reads,
+		{ history: 1, results: 2, live: 2 },
+		"a normal response clears the count without another live read",
+	);
 	message.usage.input = 1000;
 	await generation.afterResponse(message, api, context);
 	await generation.afterTools(assistantId, resultIds, api, context);
 	const command = h.contribution.commands?.find((item) => item.name === "stash");
 	assert.ok(command);
-	await command.run({ args: "capacity release", conversation: h.root, context, host: h.host, invocationId: "release", harness: h.harness });
+	await command.run({
+		args: "capacity release",
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId: "release",
+		harness: h.harness,
+	});
 	await generation.beforeRequest(request, api, context);
 	await generation.afterTools(assistantId, resultIds, api, context);
 	assert.equal(reads.live, 2, "a released gate does not restore the unused count");
@@ -1040,16 +1394,24 @@ test("native gates skip ineffective reads and share each response snapshot", { t
 	assert.equal(reads.results, 3, "a disabled round cannot leave a decision marker for the next normal round");
 });
 
-test("native boundary reads share a deadline and fail open without advancing past an unread entry", { timeout: 10000 }, async (t) => {
+test("native boundary reads share a deadline and fail open without advancing past an unread entry", {
+	timeout: 10000,
+}, async (t) => {
 	const h = await startHarness(t, 2000);
 	gateThresholds(t, "100");
-	const hooks = h.extension.hooks?.find((hook) => hook.task === Durable.GenerationTask.definition.name)?.handlers as Durable.GenerationHooks;
-	const tools = h.extension.hooks?.find((hook) => hook.task === Durable.ToolTask.definition.name)?.handlers as Durable.ToolHooks;
+	const hooks = h.extension.hooks?.find((hook) => hook.task === Durable.GenerationTask.definition.name)
+		?.handlers as Durable.GenerationHooks;
+	const tools = h.extension.hooks?.find((hook) => hook.task === Durable.ToolTask.definition.name)
+		?.handlers as Durable.ToolHooks;
 	const message = fauxAssistantMessage("answer");
 	message.provider = "faux";
 	message.model = "faux-1";
 	message.usage = { ...message.usage, input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 };
-	await hooks.afterResponse(message, { conversationId: h.root.id, entries: async () => ({ items: [{ id: 1 }] }) } as unknown as Durable.HookApi, context);
+	await hooks.afterResponse(
+		message,
+		{ conversationId: h.root.id, entries: async () => ({ items: [{ id: 1 }] }) } as unknown as Durable.HookApi,
+		context,
+	);
 	let signal: AbortSignal | undefined;
 	let calls = 0;
 	const api = {
@@ -1074,19 +1436,39 @@ test("native boundary reads share a deadline and fail open without advancing pas
 		},
 	} as unknown as Durable.HookApi;
 	await hooks.afterResponse(message, recovered, context);
-	assert.match((await tools.beforeTool(fauxToolCall("stash_list", {}), recovered, context))?.block ?? "", /Stash decision round/);
+	assert.match(
+		(await tools.beforeTool(fauxToolCall("stash_list", {}), recovered, context))?.block ?? "",
+		/Stash decision round/,
+	);
 });
 
-test("native budget snapshots use only conversation usage without request-time content", { timeout: 30000 }, async (t) => {
+test("native budget snapshots use only conversation usage without request-time content", {
+	timeout: 30000,
+}, async (t) => {
 	capacityOff(t);
 	const h = await startHarness(t, 10000);
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
-	const run = (args: string, conversation = h.root) => command.run({ args, conversation, context, host: h.host, invocationId: args, harness: h.harness });
-	const usage = (total: number) => ({ input: 10, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 11, cost: { input: total, output: 0, cacheRead: 0, cacheWrite: 0, total } });
-	await h.root.commit(async (tx) => { (await tx.doc(Durable.UsageDoc, h.root.id)).models["fixture/source"] = usage(1.25); }, context);
-	const other = await h.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: h.workdir } }, context);
-	await other.commit(async (tx) => { (await tx.doc(Durable.UsageDoc, other.id)).tools.source = usage(500); }, context);
+	const run = (args: string, conversation = h.root) =>
+		command.run({ args, conversation, context, host: h.host, invocationId: args, harness: h.harness });
+	const usage = (total: number) => ({
+		input: 10,
+		output: 1,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 11,
+		cost: { input: total, output: 0, cacheRead: 0, cacheWrite: 0, total },
+	});
+	await h.root.commit(async (tx) => {
+		(await tx.doc(Durable.UsageDoc, h.root.id)).models["fixture/source"] = usage(1.25);
+	}, context);
+	const other = await h.harness.createConversation(
+		{ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: h.workdir } },
+		context,
+	);
+	await other.commit(async (tx) => {
+		(await tx.doc(Durable.UsageDoc, other.id)).tools.source = usage(500);
+	}, context);
 	assert.match(String(await run("budget")), /disabled/);
 	const selected = String(await run("budget 120000 5"));
 	assert.match(selected, /Native automatic per-turn notices are unavailable/);
@@ -1101,7 +1483,10 @@ test("native budget snapshots use only conversation usage without request-time c
 	assert.doesNotMatch(requests[0], /\[stash-budget\]/);
 	assert.doesNotMatch(await modelText(h.root), /\[stash-budget\]/);
 	await h.root.reset("A new context, the same conversation.", context);
-	assert.equal((await h.harness.snapshot(Durable.UsageDoc, h.root.id, context))?.models["fixture/source"]?.cost.total, 1.25);
+	assert.equal(
+		(await h.harness.snapshot(Durable.UsageDoc, h.root.id, context))?.models["fixture/source"]?.cost.total,
+		1.25,
+	);
 	assert.match(String(await run("budget")), /cost: unavailable.*zero-cost usage bucket/);
 	await answerWith(h.root, h.faux, [capture], "Continue after reset.");
 	assert.doesNotMatch(requests[1], /\[stash-budget\]/);
@@ -1135,10 +1520,13 @@ test("native capacity notices preserve the complete post-hook request prefix", {
 	assert.equal(occurrences(await modelText(h.root), "[stash-capacity"), 1);
 });
 
-test("native capacity request reads share a deadline and cancel each stalled API wait", { timeout: 15000 }, async (t) => {
+test("native capacity request reads share a deadline and cancel each stalled API wait", {
+	timeout: 15000,
+}, async (t) => {
 	const h = await startHarness(t, 2000);
 	gateThresholds(t, "100");
-	const hooks = h.extension.hooks?.find((hook) => hook.task === Durable.GenerationTask.definition.name)?.handlers as Durable.GenerationHooks;
+	const hooks = h.extension.hooks?.find((hook) => hook.task === Durable.GenerationTask.definition.name)
+		?.handlers as Durable.GenerationHooks;
 	assert.ok(hooks);
 	for (const phase of ["request", "yield"] as const) {
 		const steps = phase === "request" ? 4 : 2;
@@ -1154,24 +1542,46 @@ test("native capacity request reads share a deadline and cancel each stalled API
 			const pending = { episode: 1, conversation: String(h.root.id), text: "Frozen notice." };
 			const api = {
 				conversationId: h.root.id,
-				snapshot: (token: unknown, _id: unknown, bounded: typeof context) => read(bounded, token === Durable.LiveDoc ? { run: { turns: 0 } } : token === Durable.AgentDoc ? { model: { provider: "faux", modelId: "faux-1" } } : { episode: 1 }),
-				memo: (_name: string, candidateOrContext: unknown, bounded?: typeof context) => read(bounded ?? candidateOrContext as typeof context, bounded ? candidateOrContext : phase === "yield" ? pending : undefined),
+				snapshot: (token: unknown, _id: unknown, bounded: typeof context) =>
+					read(
+						bounded,
+						token === Durable.LiveDoc
+							? { run: { turns: 0 } }
+							: token === Durable.AgentDoc
+								? { model: { provider: "faux", modelId: "faux-1" } }
+								: { episode: 1 },
+					),
+				memo: (_name: string, candidateOrContext: unknown, bounded?: typeof context) =>
+					read(
+						bounded ?? (candidateOrContext as typeof context),
+						bounded ? candidateOrContext : phase === "yield" ? pending : undefined,
+					),
 			} as unknown as Durable.HookApi;
-			const result = phase === "request"
-				? await hooks.beforeRequest({ messages: [{ role: "user", content: "Context ".repeat(300), timestamp: 0 }] }, api, context)
-				: await hooks.onYield(fauxAssistantMessage("answer"), api, context);
+			const result =
+				phase === "request"
+					? await hooks.beforeRequest(
+							{ messages: [{ role: "user", content: "Context ".repeat(300), timestamp: 0 }] },
+							api,
+							context,
+						)
+					: await hooks.onYield(fauxAssistantMessage("answer"), api, context);
 			assert.equal(result, undefined, `${phase} read ${stalled} does not hold the model`);
 			assert.equal(signal?.aborted, true, `${phase} read ${stalled} receives cancellation`);
 			assert.equal(calls, stalled);
 		}
 	}
 	let finish!: (value: { episode: number }) => void;
-	const delayed = new Promise<{ episode: number }>((resolve) => { finish = resolve; });
+	const delayed = new Promise<{ episode: number }>((resolve) => {
+		finish = resolve;
+	});
 	let laterReads = 0;
 	const delayedApi = {
 		conversationId: h.root.id,
 		snapshot: () => delayed,
-		memo: () => { laterReads++; return Promise.resolve(undefined); },
+		memo: () => {
+			laterReads++;
+			return Promise.resolve(undefined);
+		},
 	} as unknown as Durable.HookApi;
 	assert.equal(await hooks.beforeRequest({ messages: [] }, delayedApi, context), undefined);
 	finish({ episode: 1 });
@@ -1214,23 +1624,27 @@ test("issues one capacity notice per threshold crossing and re-arms through the 
 
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
-	const reset = String(await command.run({
-		args: "capacity reset",
-		conversation: h.root,
-		context,
-		host: h.host,
-		invocationId: "capacity-reset",
-		harness: h.harness,
-	}));
+	const reset = String(
+		await command.run({
+			args: "capacity reset",
+			conversation: h.root,
+			context,
+			host: h.host,
+			invocationId: "capacity-reset",
+			harness: h.harness,
+		}),
+	);
 	assert.match(reset, /episode reset to 2/u);
-	const status = String(await command.run({
-		args: "capacity",
-		conversation: h.root,
-		context,
-		host: h.host,
-		invocationId: "capacity-status",
-		harness: h.harness,
-	}));
+	const status = String(
+		await command.run({
+			args: "capacity",
+			conversation: h.root,
+			context,
+			host: h.host,
+			invocationId: "capacity-status",
+			harness: h.harness,
+		}),
+	);
 	assert.match(status, /Episode 2/u);
 
 	h.faux.setResponses([fauxAssistantMessage("fourth"), fauxAssistantMessage("fifth")]);
@@ -1299,15 +1713,17 @@ function creationInput(h: TestHarness): DistillInput {
 async function admitCreation(h: TestHarness, invocationId = "creation-1", data: JsonValue = { ...creationInput(h) }) {
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
-	const text = String(await command.run({
-		args: "new",
-		data,
-		conversation: h.root,
-		context,
-		host: h.host,
-		invocationId,
-		harness: h.harness,
-	}));
+	const text = String(
+		await command.run({
+			args: "new",
+			data,
+			conversation: h.root,
+			context,
+			host: h.host,
+			invocationId,
+			harness: h.harness,
+		}),
+	);
 	const taskId = Number(/task (\d+)/u.exec(text)?.[1]) as Durable.TaskId;
 	assert.ok(taskId, text);
 	return taskId;
@@ -1732,24 +2148,54 @@ test("serves the attached browser's structured requests beside the text verbs", 
 	capacityOff(t);
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
-	assert.deepEqual(h.contribution.panel, { version: 1, entry: "./operator-panel.ts", export: "operatorPanel", command: "stash" });
+	assert.deepEqual(h.contribution.panel, {
+		version: 1,
+		entry: "./operator-panel.ts",
+		export: "operatorPanel",
+		command: "stash",
+	});
 	const written = await writeStash(h.storeDir, { title: "Browser target", summary: "Body for the browser." });
-	const call = (data: unknown, invocationId = "browse") => ({ args: "", data: data as never, conversation: h.root, context, host: h.host, invocationId, harness: h.harness });
+	const call = (data: unknown, invocationId = "browse") => ({
+		args: "",
+		data: data as never,
+		conversation: h.root,
+		context,
+		host: h.host,
+		invocationId,
+		harness: h.harness,
+	});
 	const answer = async <T,>(input: ReturnType<typeof call>) => (await command.run(input)) as unknown as T;
-	const recent = await answer<{ text: string; data: { op: string; view: { entries: Array<{ meta: { id: string; state: string } }>; scope: string } } }>(call({ op: "recent" }));
+	const recent = await answer<{
+		text: string;
+		data: { op: string; view: { entries: Array<{ meta: { id: string; state: string } }>; scope: string } };
+	}>(call({ op: "recent" }));
 	assert.equal(recent.data.op, "recent");
-	assert.deepEqual(recent.data.view.entries.map((entry) => entry.meta.id), [written.record.id]);
+	assert.deepEqual(
+		recent.data.view.entries.map((entry) => entry.meta.id),
+		[written.record.id],
+	);
 	assert.match(recent.text, /1 recent stashes/);
-	const preview = await answer<{ data: { entry: { preview: string } } }>(call({ op: "preview", id: written.record.id }));
+	const preview = await answer<{ data: { entry: { preview: string } } }>(
+		call({ op: "preview", id: written.record.id }),
+	);
 	assert.match(preview.data.entry.preview, /Body for the browser/);
-	const archive = await answer<{ data: { view: { scope: string; entries: unknown[] } } }>(call({ op: "archive", query: "browser" }));
+	const archive = await answer<{ data: { view: { scope: string; entries: unknown[] } } }>(
+		call({ op: "archive", query: "browser" }),
+	);
 	assert.equal(archive.data.view.scope, "archive");
 	assert.equal(archive.data.view.entries.length, 1);
-	const closed = await answer<{ data: { text: string } }>(call({ op: "close", id: written.record.id, outcome: "Done." }));
+	const closed = await answer<{ data: { text: string } }>(
+		call({ op: "close", id: written.record.id, outcome: "Done." }),
+	);
 	assert.match(closed.data.text, /Closed stash/);
-	assert.match((await answer<{ data: { text: string } }>(call({ op: "reopen", id: written.record.id }))).data.text, /Reopened/);
+	assert.match(
+		(await answer<{ data: { text: string } }>(call({ op: "reopen", id: written.record.id }))).data.text,
+		/Reopened/,
+	);
 	h.faux.setResponses([fauxAssistantMessage("picked up")]);
-	const picked = await answer<{ data: { text: string } }>(call({ op: "pickup", id: written.record.id, note: "browser note" }, "pickup-browser"));
+	const picked = await answer<{ data: { text: string } }>(
+		call({ op: "pickup", id: written.record.id, note: "browser note" }, "pickup-browser"),
+	);
 	assert.match(picked.data.text, /queued for pickup \(submission \d+\)/);
 	await h.harness.waitForIdle(context);
 	assert.match(await modelText(h.root), /browser note/);
@@ -1834,7 +2280,10 @@ async function recover(
 	models.setProvider(faux.provider);
 	const host: StashDurableHost = {
 		durable: Durable,
-		services: { modelRuntime: models, settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }) } as unknown as AgentSessionServices,
+		services: {
+			modelRuntime: models,
+			settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
+		} as unknown as AgentSessionServices,
 		cwd: workdir,
 		agentDir: workdir,
 		storageId: "stash-replay",
@@ -1846,7 +2295,11 @@ async function recover(
 		inventory: { contributions: [], ordinaryOnly: [] },
 	};
 	const registry = createRegistry();
-	registry.install(stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), createEventBus(), () => {}).create(host));
+	registry.install(
+		stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), createEventBus(), () => {}).create(
+			host,
+		),
+	);
 	faux.setResponses([fauxAssistantMessage(answer)]);
 	const harness = await Harness.open(await openNodeSqliteStorage(storagePath), { models, registry }, context);
 	harness.resume();
@@ -1860,8 +2313,14 @@ async function mutatePublication(storeDir: string, id: string, mode: "write" | "
 	const read = await readStash(storeDir, id);
 	assert.ok(read.ok);
 	const oldText = mode === "write" ? "Written before the process died." : "Captured before restart.";
-	await editStash(storeDir, read.id, { expectedDigest: read.digest, edits: [{ oldText, newText: "Revised after publication." }] });
-	await transitionStash(storeDir, read.id, { action: mode === "write" ? "activate" : "close", outcome: "Retained result" });
+	await editStash(storeDir, read.id, {
+		expectedDigest: read.digest,
+		edits: [{ oldText, newText: "Revised after publication." }],
+	});
+	await transitionStash(storeDir, read.id, {
+		action: mode === "write" ? "activate" : "close",
+		outcome: "Retained result",
+	});
 	return mode === "distill" ? (await rotateStash(storeDir, read.id)).archivePath : read.path;
 }
 
@@ -1900,7 +2359,10 @@ async function replayCase(
 		const before = await listStashes(storeDir, {});
 		assert.equal(before.length, 1, "the killed attempt reached its external effect");
 
-		const retainedPath = mode === "complete" || mode === "distill-locked" ? before[0].path : await mutatePublication(storeDir, before[0].meta.id, mode);
+		const retainedPath =
+			mode === "complete" || mode === "distill-locked"
+				? before[0].path
+				: await mutatePublication(storeDir, before[0].meta.id, mode);
 		const original = await readFile(retainedPath, "utf8");
 		const { harness, root, faux } = await recover(storagePath, storeDir, workdir, "after recovery");
 		try {
@@ -1911,7 +2373,10 @@ async function replayCase(
 				if (mode === "distill-locked") {
 					assert.equal(settled.state.outcome.status, "failed");
 					const receipt = await creationReceipt(root);
-					assert.match(String(receipt.message), /is busy.*This attempt made no new publication.*earlier attempt may have published/);
+					assert.match(
+						String(receipt.message),
+						/is busy.*This attempt made no new publication.*earlier attempt may have published/,
+					);
 					assert.ok(String(receipt.message).includes(retainedPath));
 					assert.ok(String(receipt.message).includes(join(storeDir, ".trash", `${before[0].meta.id}.md`)));
 					assert.match(String(receipt.message), /reuse it instead of creating a new write/);
@@ -1970,7 +2435,9 @@ test("replays native creation after publication without a duplicate artifact or 
 	await replayCase(t, "distill");
 });
 
-test("refuses native publication recovery when a crashed writer retains the identity lock", { timeout: 60000 }, async (t) => {
+test("refuses native publication recovery when a crashed writer retains the identity lock", {
+	timeout: 60000,
+}, async (t) => {
 	await replayCase(t, "distill-locked");
 });
 

@@ -4,7 +4,13 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage, createRegistry } from "@earendil-works/pi-durable";
 import { compile } from "@earendil-works/pi-schema";
-import { AgentMetaDoc, recordAdmissionMeta, publishConversationIntent, projectConversationIntents, type NativeIntentMetadata } from "./durable-controls.ts";
+import {
+	AgentMetaDoc,
+	recordAdmissionMeta,
+	publishConversationIntent,
+	projectConversationIntents,
+	type NativeIntentMetadata,
+} from "./durable-controls.ts";
 import { AgentConversationSummarySchema } from "./observation-schema.ts";
 import type { CatalogAttentionHints } from "./catalog-attention.ts";
 import {
@@ -37,12 +43,35 @@ it("keeps catalogue row validation equal to the schema for malformed field value
 	const base = row("root");
 	const validator = compile(AgentConversationSummarySchema);
 	const fields = [...Object.keys(base), "name", "latestReply", "currentTool", "model", "toolCalls", "durationMs"];
-	const values = [undefined, null, false, true, -1, 0, Number.NaN, Number.POSITIVE_INFINITY, "", "text", [], {}, { name: "read", argument: "file" }];
-	for (const field of fields) for (const value of values) {
-		const candidate = { ...base, [field]: value };
-		const view = { updatedAt: "2026-01-01T00:00:00.000Z", rows: [candidate], coverage: { complete: true, omitted: 0 } };
-		assert.equal(isCatalogView(view), validator.check(candidate) && (typeof value !== "number" || Number.isFinite(value)), `${field}: ${String(value)}`);
-	}
+	const values = [
+		undefined,
+		null,
+		false,
+		true,
+		-1,
+		0,
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		"",
+		"text",
+		[],
+		{},
+		{ name: "read", argument: "file" },
+	];
+	for (const field of fields)
+		for (const value of values) {
+			const candidate = { ...base, [field]: value };
+			const view = {
+				updatedAt: "2026-01-01T00:00:00.000Z",
+				rows: [candidate],
+				coverage: { complete: true, omitted: 0 },
+			};
+			assert.equal(
+				isCatalogView(view),
+				validator.check(candidate) && (typeof value !== "number" || Number.isFinite(value)),
+				`${field}: ${String(value)}`,
+			);
+		}
 });
 
 it("bounds rows to the view budget with truthful coverage", () => {
@@ -109,7 +138,11 @@ it("preserves text at the exact limit, including a final surrogate pair", () => 
 });
 
 it("captures first-message metadata at valid surrogate boundaries before catalog publication", async (t) => {
-	const harness = await Harness.open(new MemoryStorage(), { models: createModels(), registry: createRegistry() }, context);
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{ models: createModels(), registry: createRegistry() },
+		context,
+	);
 	t.after(() => harness.close(context));
 	await harness.root(context);
 	for (const [text, expected] of [
@@ -122,7 +155,10 @@ it("captures first-message metadata at valid surrogate boundaries before catalog
 		await harness.commit((tx) => recordAdmissionMeta(tx, conversation.id, text), context);
 		const meta = await harness.snapshot(AgentMetaDoc, conversation.id, context);
 		assert.equal(meta?.firstMessage, expected);
-		const view = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", rows: [row("root", { firstMessage: meta?.firstMessage ?? undefined })] });
+		const view = boundCatalogView({
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			rows: [row("root", { firstMessage: meta?.firstMessage ?? undefined })],
+		});
 		assert.equal(view.rows[0]?.firstMessage, expected);
 		assert.ok((view.rows[0]?.firstMessage ?? "").length <= 1200);
 		assert.doesNotMatch(view.rows[0]?.firstMessage ?? "", /[\ud800-\udfff]/u);
@@ -164,7 +200,14 @@ it("reports an unavailable projection explicitly", () => {
 
 it("rejects malformed row fields and invalid publication times", () => {
 	const view = { updatedAt: "2026-01-01T00:00:00.000Z", rows: [row("a")], coverage: { complete: true, omitted: 0 } };
-	for (const bad of [{ state: "invented" }, { owner: "invented" }, { cost: Number.NaN }, { modifiedAt: Infinity }, { partial: "yes" }, { health: { autoRetry: { attempt: -1 } } }]) {
+	for (const bad of [
+		{ state: "invented" },
+		{ owner: "invented" },
+		{ cost: Number.NaN },
+		{ modifiedAt: Infinity },
+		{ partial: "yes" },
+		{ health: { autoRetry: { attempt: -1 } } },
+	]) {
 		assert.throws(() => parseCatalogView({ ...view, rows: [{ ...row("a"), ...bad }] }), /invalid row/u);
 	}
 	assert.throws(() => parseCatalogView({ ...view, updatedAt: "yesterday" }), /updatedAt/u);
@@ -173,9 +216,18 @@ it("rejects malformed row fields and invalid publication times", () => {
 
 it("bounds complete metadata and final omission counts", () => {
 	const updatedAt = "2026-01-01T00:00:00.000Z";
-	assert.throws(() => boundCatalogView({ updatedAt, rows: [], unavailable: "x".repeat(CATALOG_VIEW_BUDGET_BYTES) }), /budget/u);
-	assert.throws(() => boundCatalogView({ updatedAt, rows: [], storageId: "x".repeat(CATALOG_VIEW_BUDGET_BYTES) }), /budget/u);
-	const rows = [row("root", { name: "x".repeat(CATALOG_VIEW_BUDGET_BYTES - 300) }), ...Array.from({ length: 1000 }, (_, index) => row(String(index)))];
+	assert.throws(
+		() => boundCatalogView({ updatedAt, rows: [], unavailable: "x".repeat(CATALOG_VIEW_BUDGET_BYTES) }),
+		/budget/u,
+	);
+	assert.throws(
+		() => boundCatalogView({ updatedAt, rows: [], storageId: "x".repeat(CATALOG_VIEW_BUDGET_BYTES) }),
+		/budget/u,
+	);
+	const rows = [
+		row("root", { name: "x".repeat(CATALOG_VIEW_BUDGET_BYTES - 300) }),
+		...Array.from({ length: 1000 }, (_, index) => row(String(index))),
+	];
 	const result = boundCatalogView({ updatedAt, rows });
 	assert.ok(Buffer.byteLength(JSON.stringify(result)) <= CATALOG_VIEW_BUDGET_BYTES);
 	assert.equal(result.coverage.omitted, rows.length - result.rows.length);
@@ -183,13 +235,19 @@ it("bounds complete metadata and final omission counts", () => {
 
 it("publishes attention as top-level hints without changing native rows", () => {
 	const base = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", rows: [row("root")] });
-	const hints: CatalogAttentionHints = { rows: [{ identity: "root", kind: "provider-blocked", blockId: "block-a" }], coverage: { complete: true, omitted: 0 } };
+	const hints: CatalogAttentionHints = {
+		rows: [{ identity: "root", kind: "provider-blocked", blockId: "block-a" }],
+		coverage: { complete: true, omitted: 0 },
+	};
 	const view = withAttentionHints(base, hints);
 	assert.deepEqual(view.attention, hints);
 	assert.deepEqual(view.rows, base.rows);
 	assert.ok(view.rows.every(compile(AgentConversationSummarySchema).check));
 	assert.deepEqual(parseCatalogView(JSON.parse(JSON.stringify(view))), view);
-	assert.deepEqual(withAttentionHints(view, { rows: [], coverage: { complete: true, omitted: 0 } }).attention?.rows, []);
+	assert.deepEqual(
+		withAttentionHints(view, { rows: [], coverage: { complete: true, omitted: 0 } }).attention?.rows,
+		[],
+	);
 });
 
 it("omits attention hints before operational rows and reports the omitted hints", () => {
@@ -225,7 +283,10 @@ it("validates a closed attention schema and unique retained row identities", () 
 		[{ identity: "other", kind: "failed-turn" }],
 		[hint, hint],
 	]) {
-		assert.throws(() => parseCatalogView({ ...base, attention: { rows, coverage: { complete: true, omitted: 0 } } }), /attention/u);
+		assert.throws(
+			() => parseCatalogView({ ...base, attention: { rows, coverage: { complete: true, omitted: 0 } } }),
+			/attention/u,
+		);
 	}
 	assert.throws(() => parseCatalogView({ ...base, rows: [{ ...row("root"), attention: hint }] }), /invalid row/u);
 });
@@ -251,17 +312,49 @@ it("refuses malformed and oversized views", () => {
 });
 
 function nativeIntent(overrides: Partial<NativeIntentMetadata> = {}): NativeIntentMetadata {
-	return { cwd: "/work", repository: null, repositoryState: "outside-git", hostname: "fixture-host", startedAt: "2026-01-01T00:00:00.000Z", taskId: 2,
-		claim: { purpose: "Native plan", integration: "i".repeat(2048), authority: "a".repeat(2048), scope: { paths: ["extensions/agent"], branches: ["topic"], fullGate: true }, updatedAt: "2026-01-01T00:00:00.000Z" }, ...overrides };
+	return {
+		cwd: "/work",
+		repository: null,
+		repositoryState: "outside-git",
+		hostname: "fixture-host",
+		startedAt: "2026-01-01T00:00:00.000Z",
+		taskId: 2,
+		claim: {
+			purpose: "Native plan",
+			integration: "i".repeat(2048),
+			authority: "a".repeat(2048),
+			scope: { paths: ["extensions/agent"], branches: ["topic"], fullGate: true },
+			updatedAt: "2026-01-01T00:00:00.000Z",
+		},
+		...overrides,
+	};
 }
 
 it("keeps profiles, attention and operational rows before whole native claims under budget pressure", () => {
-	const rows = Array.from({ length: 18 }, (_, index) => row(index === 0 ? "storage" : `storage:${index + 1}`, { latestReply: "x".repeat(500) }));
+	const rows = Array.from({ length: 18 }, (_, index) =>
+		row(index === 0 ? "storage" : `storage:${index + 1}`, { latestReply: "x".repeat(500) }),
+	);
 	const base = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", storageId: "storage", rows });
-	const profiles = withProfileHints(base, { rows: rows.slice(0, 6).map(candidate => ({ identity: candidate.id, handle: null, role: "r".repeat(128), revision: "a".repeat(64), hasExpertise: false, updatedAt: null })), coverage: { complete: true, omitted: 0 } });
-	const attentive = withAttentionHints(profiles, { rows: [{ identity: "storage", kind: "failed-turn" }], coverage: { complete: true, omitted: 0 } });
+	const profiles = withProfileHints(base, {
+		rows: rows.slice(0, 6).map((candidate) => ({
+			identity: candidate.id,
+			handle: null,
+			role: "r".repeat(128),
+			revision: "a".repeat(64),
+			hasExpertise: false,
+			updatedAt: null,
+		})),
+		coverage: { complete: true, omitted: 0 },
+	});
+	const attentive = withAttentionHints(profiles, {
+		rows: [{ identity: "storage", kind: "failed-turn" }],
+		coverage: { complete: true, omitted: 0 },
+	});
 	const metadata = nativeIntent();
-	const view = withIntentClaims(attentive, { rows: Object.fromEntries(rows.map(candidate => [candidate.id, metadata])), coverage: { complete: true, omitted: 0 } });
+	const view = withIntentClaims(attentive, {
+		rows: Object.fromEntries(rows.map((candidate) => [candidate.id, metadata])),
+		coverage: { complete: true, omitted: 0 },
+	});
 	assert.deepEqual(view.rows, attentive.rows);
 	assert.deepEqual(view.profiles, attentive.profiles);
 	assert.deepEqual(view.attention, attentive.attention);
@@ -271,32 +364,75 @@ it("keeps profiles, attention and operational rows before whole native claims un
 	for (const item of kept) assert.deepEqual(item, metadata);
 	assert.deepEqual(view.intentClaims?.coverage, { complete: false, omitted: rows.length - kept.length });
 	assert.ok(Buffer.byteLength(JSON.stringify(view)) <= CATALOG_VIEW_BUDGET_BYTES);
-	assert.deepEqual(parseCatalogView(JSON.parse(JSON.stringify(view))).intentClaims, JSON.parse(JSON.stringify(view.intentClaims)));
+	assert.deepEqual(
+		parseCatalogView(JSON.parse(JSON.stringify(view))).intentClaims,
+		JSON.parse(JSON.stringify(view.intentClaims)),
+	);
 });
 
 it("rejects foreign identities, stale cwd, corrupt claims and contradictory native coverage", () => {
-	const base = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", storageId: "storage", rows: [row("storage")] });
+	const base = boundCatalogView({
+		updatedAt: "2026-01-01T00:00:00.000Z",
+		storageId: "storage",
+		rows: [row("storage")],
+	});
 	const hints = { rows: { storage: nativeIntent() }, coverage: { complete: true, omitted: 0 } };
-	assert.equal(parseCatalogView({ ...base, intentClaims: { ...hints, rows: { storage: null } } }).intentClaims?.rows.storage, null);
-	for (const rows of [{ foreign: nativeIntent() }, { storage: nativeIntent({ cwd: "/elsewhere" }) }, { storage: { ...nativeIntent(), taskId: "bad" } }]) assert.throws(() => parseCatalogView({ ...base, intentClaims: { ...hints, rows } }), /Native intent/u);
-	assert.throws(() => parseCatalogView({ ...base, rows: [row("foreign:2")], intentClaims: { ...hints, rows: { "foreign:2": nativeIntent() } } }), /different storage/u);
-	assert.throws(() => parseCatalogView({ ...base, intentClaims: { ...hints, coverage: { complete: true, omitted: 2 } } }), /coverage/u);
+	assert.equal(
+		parseCatalogView({ ...base, intentClaims: { ...hints, rows: { storage: null } } }).intentClaims?.rows.storage,
+		null,
+	);
+	for (const rows of [
+		{ foreign: nativeIntent() },
+		{ storage: nativeIntent({ cwd: "/elsewhere" }) },
+		{ storage: { ...nativeIntent(), taskId: "bad" } },
+	])
+		assert.throws(() => parseCatalogView({ ...base, intentClaims: { ...hints, rows } }), /Native intent/u);
+	assert.throws(
+		() =>
+			parseCatalogView({
+				...base,
+				rows: [row("foreign:2")],
+				intentClaims: { ...hints, rows: { "foreign:2": nativeIntent() } },
+			}),
+		/different storage/u,
+	);
+	assert.throws(
+		() => parseCatalogView({ ...base, intentClaims: { ...hints, coverage: { complete: true, omitted: 2 } } }),
+		/coverage/u,
+	);
 	const omitted = withIntentClaims(base, { ...hints, rows: { missing: nativeIntent() } });
 	assert.deepEqual(omitted.intentClaims?.coverage, { complete: false, omitted: 1 });
 });
 
-it("orders native writes by tool task, isolates documents and omits only known stale claims", async t => {
-	const harness = await Harness.open(new MemoryStorage(), { models: createModels(), registry: createRegistry() }, context);
+it("orders native writes by tool task, isolates documents and omits only known stale claims", async (t) => {
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{ models: createModels(), registry: createRegistry() },
+		context,
+	);
 	t.after(() => harness.close(context));
-	const root = await harness.root(context), child = await harness.createConversation({ ownership: { kind: "ownerless" } }, context);
-	await harness.commit(tx => publishConversationIntent(tx, root.id, nativeIntent({ taskId: 20 })), context);
-	await harness.commit(tx => publishConversationIntent(tx, root.id, nativeIntent({ claim: null, taskId: 21 })), context);
-	await harness.commit(tx => publishConversationIntent(tx, root.id, nativeIntent({ taskId: 20 })), context);
+	const root = await harness.root(context),
+		child = await harness.createConversation({ ownership: { kind: "ownerless" } }, context);
+	await harness.commit((tx) => publishConversationIntent(tx, root.id, nativeIntent({ taskId: 20 })), context);
+	await harness.commit(
+		(tx) => publishConversationIntent(tx, root.id, nativeIntent({ claim: null, taskId: 21 })),
+		context,
+	);
+	await harness.commit((tx) => publishConversationIntent(tx, root.id, nativeIntent({ taskId: 20 })), context);
 	assert.equal((await harness.snapshot(AgentMetaDoc, root.id, context))?.intent?.claim, null);
-	await harness.commit(async tx => { const doc = await tx.doc(AgentMetaDoc, child.id); delete doc.intent; }, context);
+	await harness.commit(async (tx) => {
+		const doc = await tx.doc(AgentMetaDoc, child.id);
+		delete doc.intent;
+	}, context);
 	const rows = [row("storage"), row(`storage:${child.id}`)];
-	assert.deepEqual(JSON.parse(JSON.stringify(await projectConversationIntents(harness, "storage", rows, context))), { rows: { storage: null }, coverage: { complete: true, omitted: 0 } });
-	await harness.commit(tx => publishConversationIntent(tx, child.id, nativeIntent({ taskId: 22, cwd: "/stale" })), context);
+	assert.deepEqual(JSON.parse(JSON.stringify(await projectConversationIntents(harness, "storage", rows, context))), {
+		rows: { storage: null },
+		coverage: { complete: true, omitted: 0 },
+	});
+	await harness.commit(
+		(tx) => publishConversationIntent(tx, child.id, nativeIntent({ taskId: 22, cwd: "/stale" })),
+		context,
+	);
 	const projection = await projectConversationIntents(harness, "storage", rows, context);
 	assert.equal(projection.rows.storage, null);
 	assert.deepEqual(projection.coverage, { complete: false, omitted: 1 });

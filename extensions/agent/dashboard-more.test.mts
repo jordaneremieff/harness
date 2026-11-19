@@ -7,7 +7,8 @@ import { fixture, keys, row, source, turn } from "./dashboard-test-fixture.mts";
 type Fixture = ReturnType<typeof fixture>;
 
 /** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
-const visible = (f: Fixture) => f.ui.render(f.tui.terminal.columns).map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+const visible = (f: Fixture) =>
+	f.ui.render(f.tui.terminal.columns).map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
 const shown = (f: Fixture) => visible(f).join("\n");
 const footer = (f: Fixture) => (visible(f).at(-1) ?? "").trimEnd();
 
@@ -16,17 +17,65 @@ async function settle(turns = 8): Promise<void> {
 }
 
 function click(f: Fixture, x: number, y: number): void {
-	const event: TuiMouseEvent = { type: "click", button: "left", x, y, screenX: x, screenY: y, width: f.tui.terminal.columns, height: f.tui.terminal.rows, shift: false, alt: false, ctrl: false, clickCount: 1 };
+	const event: TuiMouseEvent = {
+		type: "click",
+		button: "left",
+		x,
+		y,
+		screenX: x,
+		screenY: y,
+		width: f.tui.terminal.columns,
+		height: f.tui.terminal.rows,
+		shift: false,
+		alt: false,
+		ctrl: false,
+		clickCount: 1,
+	};
 	f.ui.handleMouse(event);
 }
 
-const thread = (id: string) => ({ id, title: `Thread ${id}`, purpose: `Purpose of ${id}`, updatedAt: 1000, closed: false, members: 2 });
-const event = (sequence: number) => ({ threadId: "t1", sequence, at: sequence * 1000, atUtc: new Date(sequence * 1000).toISOString(), sender: "one", origin: "model" as const, kind: "contribution", message: `Message ${sequence}`, source: "", replyTo: null, revision: 1, notify: [] });
+const thread = (id: string) => ({
+	id,
+	title: `Thread ${id}`,
+	purpose: `Purpose of ${id}`,
+	updatedAt: 1000,
+	closed: false,
+	members: 2,
+});
+const event = (sequence: number) => ({
+	threadId: "t1",
+	sequence,
+	at: sequence * 1000,
+	atUtc: new Date(sequence * 1000).toISOString(),
+	sender: "one",
+	origin: "model" as const,
+	kind: "contribution",
+	message: `Message ${sequence}`,
+	source: "",
+	replyTo: null,
+	revision: 1,
+	notify: [],
+});
 const threadPage = (id: string) => ({
 	thread: {
-		id, title: `Thread ${id}`, purpose: `Purpose of ${id}`, authority: "Operator direction", source: "Brief", restrictions: "None", acceptance: "Works",
-		integrator: "one", creator: "one", revision: 1, sequence: 1, closed: false, createdAt: 1, updatedAt: 2,
-		members: [{ identity: "one", contribution: "Design", joinedAt: 1 }, { identity: "two", contribution: "Review", joinedAt: 1 }],
+		id,
+		title: `Thread ${id}`,
+		purpose: `Purpose of ${id}`,
+		authority: "Operator direction",
+		source: "Brief",
+		restrictions: "None",
+		acceptance: "Works",
+		integrator: "one",
+		creator: "one",
+		revision: 1,
+		sequence: 1,
+		closed: false,
+		createdAt: 1,
+		updatedAt: 2,
+		members: [
+			{ identity: "one", contribution: "Design", joinedAt: 1 },
+			{ identity: "two", contribution: "Review", joinedAt: 1 },
+		],
 	},
 	events: [event(1)],
 	nextBefore: null,
@@ -64,7 +113,10 @@ it("the message field offers the More chord at 60x20 and keeps x as draft text",
 
 it("the Threads message field shows only its text controls and keeps x as draft text", async () => {
 	const f = fixture(60, 20, source([row("one")]), {
-		collaborate: async (input) => (input.action === "list" ? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } } : threadPage("t1")),
+		collaborate: async (input) =>
+			input.action === "list"
+				? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+				: threadPage("t1"),
 	});
 	try {
 		await settle();
@@ -107,9 +159,24 @@ it("a configured key with no clickable form states the limit and keeps the draft
 
 it("a hint keeps its key and an action with the same key lists in More without one", async () => {
 	let runs = 0;
-	const f = fixture(100, 30, source([row("one", { state: "idle", name: "Alpha" }), row("two", { state: "idle", name: "Bravo" })]), {
-		extraActions: () => [{ id: "restart", label: "Restart", key: "up", primary: true, run: () => { runs++; } }],
-	});
+	const f = fixture(
+		100,
+		30,
+		source([row("one", { state: "idle", name: "Alpha" }), row("two", { state: "idle", name: "Bravo" })]),
+		{
+			extraActions: () => [
+				{
+					id: "restart",
+					label: "Restart",
+					key: "up",
+					primary: true,
+					run: () => {
+						runs++;
+					},
+				},
+			],
+		},
+	);
 	try {
 		await settle();
 		assert.doesNotMatch(footer(f), /↑ restart|up restart/u, "the claimed key keeps the row's select hint");
@@ -119,7 +186,10 @@ it("a hint keeps its key and an action with the same key lists in More without o
 		assert.equal(runs, 0, "the action does not also run");
 		f.ui.handleInput("x");
 		const menu = visible(f);
-		assert.ok(menu.some((line) => line.trimEnd() === "More"), "More opens");
+		assert.ok(
+			menu.some((line) => line.trimEnd() === "More"),
+			"More opens",
+		);
 		const entry = menu.findIndex((line) => /Restart/u.test(line));
 		assert.ok(entry > 0, "the action stays reachable from More");
 		assert.doesNotMatch(menu[entry] ?? "", /\bup\b|↑/u, "its key column is empty");

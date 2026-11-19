@@ -17,12 +17,19 @@ export interface BrowserEntry {
 }
 
 /** Inventory rows quote the source index statements rather than generate summaries. */
-export async function browserEntries(catalog: Catalog, read: SourceReader, signal?: AbortSignal): Promise<BrowserEntry[]> {
+export async function browserEntries(
+	catalog: Catalog,
+	read: SourceReader,
+	signal?: AbortSignal,
+): Promise<BrowserEntry[]> {
 	let page = await read({ resource: "inventory" }, signal);
 	if (page.schema !== "pillars-source") throw new Error(page.code);
 	let text = page.text;
 	while (page.nextOffset !== undefined) {
-		page = await read({ resource: "inventory", offset: page.nextOffset, referenceBodyDigest: page.referenceBodyDigest }, signal);
+		page = await read(
+			{ resource: "inventory", offset: page.nextOffset, referenceBodyDigest: page.referenceBodyDigest },
+			signal,
+		);
 		if (page.schema !== "pillars-source") throw new Error(page.code);
 		text += page.text;
 	}

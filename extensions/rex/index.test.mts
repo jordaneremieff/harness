@@ -3,7 +3,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createEventBus, SessionManager, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+	createEventBus,
+	SessionManager,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type ExtensionToolContext,
+	type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import type { Schema } from "@earendil-works/pi-schema";
 import { registerRex } from "./index.ts";
 import { toolDisplay } from "./display.ts";
@@ -16,8 +23,12 @@ test("ordinary shutdown drains owned calls before reload replaces live-call stat
 	const handlers = new Map<string, () => unknown>();
 	const pi = {
 		events: createEventBus(),
-		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {},
+		on: (name: string, handler: () => unknown) => {
+			handlers.set(name, handler);
+			return () => handlers.delete(name);
+		},
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerCommand: () => {},
 		appendEntry: () => {},
 	} as unknown as ExtensionAPI;
 	let signal: AbortSignal | undefined;
@@ -25,32 +36,62 @@ test("ordinary shutdown drains owned calls before reload replaces live-call stat
 	let live: ((ownerId: string, callId: string) => boolean) | undefined;
 	let activeAtAbort = false;
 	let started!: () => void;
-	const active = new Promise<void>((resolve) => { started = resolve; });
+	const active = new Promise<void>((resolve) => {
+		started = resolve;
+	});
 	let releaseDrain!: () => void;
-	const drain = new Promise<void>((resolve) => { releaseDrain = resolve; });
-	registerRex(pi, { createCore: (options) => ({
-		dispose: () => { disposed++; },
-		execute: async (_request, context) => new Promise<RexResult>((resolve) => {
-			signal = context.signal;
-			live = options.isCallActive;
-			assert.equal(live?.(context.ownerId, context.callId), true);
-			context.signal?.addEventListener("abort", () => {
-				activeAtAbort = live?.(context.ownerId, context.callId) ?? false;
-				void drain.then(() => resolve({ ok: false, outcome: "cancelled", error: "Observer cancelled.", effects: { state: "none" }, coverage: { bounded: true, note: "The terminal remains available." } }));
-			}, { once: true });
-			started();
+	const drain = new Promise<void>((resolve) => {
+		releaseDrain = resolve;
+	});
+	registerRex(pi, {
+		createCore: (options) => ({
+			dispose: () => {
+				disposed++;
+			},
+			execute: async (_request, context) =>
+				new Promise<RexResult>((resolve) => {
+					signal = context.signal;
+					live = options.isCallActive;
+					assert.equal(live?.(context.ownerId, context.callId), true);
+					context.signal?.addEventListener(
+						"abort",
+						() => {
+							activeAtAbort = live?.(context.ownerId, context.callId) ?? false;
+							void drain.then(() =>
+								resolve({
+									ok: false,
+									outcome: "cancelled",
+									error: "Observer cancelled.",
+									effects: { state: "none" },
+									coverage: { bounded: true, note: "The terminal remains available." },
+								}),
+							);
+						},
+						{ once: true },
+					);
+					started();
+				}),
 		}),
-	}) });
-	assert.deepEqual([...tools.keys()], ["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status", "rex_ask"]);
+	});
+	assert.deepEqual(
+		[...tools.keys()],
+		["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status", "rex_ask"],
+	);
 	assert.ok([...tools.values()].every((tool) => tool.outputSchema));
-	const ctx = { cwd: "/test", isIdle: () => false, sessionManager: { getSessionId: () => "ordinary-session", getEntries: () => [], getSessionFile: () => undefined } } as unknown as ExtensionToolContext;
+	const ctx = {
+		cwd: "/test",
+		isIdle: () => false,
+		sessionManager: { getSessionId: () => "ordinary-session", getEntries: () => [], getSessionFile: () => undefined },
+	} as unknown as ExtensionToolContext;
 	const tool = tools.get("rex_environment");
 	assert.ok(tool);
 	const pending = tool.execute("call", { op: "environment" }, undefined, undefined, ctx);
 	await active;
 	assert.equal(signal?.aborted, false);
 	let shutdownSettled = false;
-	const shutdown = Promise.resolve(handlers.get("session_shutdown")?.()).then(() => { shutdownSettled = true; });
+	const shutdown = Promise.resolve(handlers.get("session_shutdown")?.()).then(() => {
+		shutdownSettled = true;
+	});
 	await Promise.resolve();
 	assert.equal(shutdownSettled, false, "the awaited host shutdown hook must not finish before the old call drains");
 	assert.equal(live?.("ordinary:ordinary-session", "call"), true);
@@ -72,25 +113,62 @@ test("the final ordinary adapter bounds status composition into one canonical re
 	const handlers = new Map<string, () => unknown>();
 	const pi = {
 		events: createEventBus(),
-		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {}, appendEntry: () => {},
+		on: (name: string, handler: () => unknown) => {
+			handlers.set(name, handler);
+			return () => handlers.delete(name);
+		},
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerCommand: () => {},
+		appendEntry: () => {},
 	} as unknown as ExtensionAPI;
 	const server = { endpoint: "unix:///test-rex", hostId: "host", instanceId: "instance", selection: "test" };
-	const resource = { kind: "block" as const, sessionId: "session:00000000-0000-0000-0000-000000000001", blockId: "block:00000000-0000-0000-0000-000000000002" };
+	const resource = {
+		kind: "block" as const,
+		sessionId: "session:00000000-0000-0000-0000-000000000001",
+		blockId: "block:00000000-0000-0000-0000-000000000002",
+	};
 	let budget = 0;
-	registerRex(pi, { createCore: (options) => ({ dispose: () => {}, execute: async () => {
-		budget = resultByteLimit(options.maxOutputBytes ?? 32768);
-		const result: RexResult = { ok: true, outcome: "snapshot", target: { server, source: "explicit", sessionId: resource.sessionId, blockId: resource.blockId }, data: { payload: "" }, records: [{ recordId: "record", server, resources: [resource] }], effects: { state: "none", note: "Reported status grants no permission." }, coverage: { bounded: true, note: "Source status qualification." } };
-		(result.data as { payload: string }).payload = "x".repeat(budget - Buffer.byteLength(JSON.stringify(result), "utf8") - 64);
-		assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") <= budget);
-		return result;
-	} }) });
-	const ctx = { cwd: "/test", isIdle: () => false, sessionManager: { getSessionId: () => "status-session", getEntries: () => [], getSessionFile: () => undefined } } as unknown as ExtensionToolContext;
+	registerRex(pi, {
+		createCore: (options) => ({
+			dispose: () => {},
+			execute: async () => {
+				budget = resultByteLimit(options.maxOutputBytes ?? 32768);
+				const result: RexResult = {
+					ok: true,
+					outcome: "snapshot",
+					target: { server, source: "explicit", sessionId: resource.sessionId, blockId: resource.blockId },
+					data: { payload: "" },
+					records: [{ recordId: "record", server, resources: [resource] }],
+					effects: { state: "none", note: "Reported status grants no permission." },
+					coverage: { bounded: true, note: "Source status qualification." },
+				};
+				(result.data as { payload: string }).payload = "x".repeat(
+					budget - Buffer.byteLength(JSON.stringify(result), "utf8") - 64,
+				);
+				assert.ok(Buffer.byteLength(JSON.stringify(result), "utf8") <= budget);
+				return result;
+			},
+		}),
+	});
+	const ctx = {
+		cwd: "/test",
+		isIdle: () => false,
+		sessionManager: { getSessionId: () => "status-session", getEntries: () => [], getSessionFile: () => undefined },
+	} as unknown as ExtensionToolContext;
 	try {
 		const tool = tools.get("rex_status");
 		assert.ok(tool);
-		const result = await tool.execute("status-call", { op: "snapshot", target: { server: server.endpoint, session: resource.sessionId, block: resource.blockId } }, undefined, undefined, ctx);
-		const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+		const result = await tool.execute(
+			"status-call",
+			{ op: "snapshot", target: { server: server.endpoint, session: resource.sessionId, block: resource.blockId } },
+			undefined,
+			undefined,
+			ctx,
+		);
+		const text = result.content
+			.filter((part) => part.type === "text")
+			.map((part) => part.text)
+			.join("");
 		const model = JSON.parse(text);
 		assert.equal(model.data.omitted, true, "host activity added after core execution reaches the final semantic bound");
 		assert.equal(model.coverage.dataOmitted, true);
@@ -100,7 +178,9 @@ test("the final ordinary adapter bounds status composition into one canonical re
 		assert.deepEqual(model.effects, { state: "none", note: "Reported status grants no permission." });
 		assert.deepEqual(model, result.structuredContent);
 		assert.ok(Buffer.byteLength(text, "utf8") <= budget);
-	} finally { await handlers.get("session_shutdown")?.(); }
+	} finally {
+		await handlers.get("session_shutdown")?.();
+	}
 });
 
 test("ordinary owned observation preserves the shared request and canonical read-only evidence", async () => {
@@ -109,19 +189,62 @@ test("ordinary owned observation preserves the shared request and canonical read
 	let writes = 0;
 	const pi = {
 		events: createEventBus(),
-		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {}, appendEntry: () => { writes++; },
+		on: (name: string, handler: () => unknown) => {
+			handlers.set(name, handler);
+			return () => handlers.delete(name);
+		},
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerCommand: () => {},
+		appendEntry: () => {
+			writes++;
+		},
 	} as unknown as ExtensionAPI;
 	const request = { op: "observe", recordId: "retained-call", maxBytes: 256 };
-	const expected: RexResult = { ok: true, outcome: "observed", effects: { state: "none" }, coverage: { bounded: true }, data: { reports: [{ recordId: "retained-call", phase: "unknown", complete: true, observedAt: "2026-01-01T00:00:00.000Z", observations: [{ presence: "present", childState: "exited", process: { last_exit: { exit_code: 7 } }, capture: { content: "final output", start: 0, end: 12, total: 12 } }] }] } };
-	registerRex(pi, { createCore: () => ({ dispose: () => {}, execute: async (received, call) => {
-		assert.equal(received, request);
-		assert.equal(call.ownerId, "ordinary:observation-session");
-		assert.ok(call.budget);
-		assert.equal(call.signal, call.budget.signal);
-		return expected;
-	} }) });
-	const ctx = { cwd: "/test", isIdle: () => true, sessionManager: { getSessionId: () => "observation-session", getEntries: () => [], getSessionFile: () => undefined } } as unknown as ExtensionToolContext;
+	const expected: RexResult = {
+		ok: true,
+		outcome: "observed",
+		effects: { state: "none" },
+		coverage: { bounded: true },
+		data: {
+			reports: [
+				{
+					recordId: "retained-call",
+					phase: "unknown",
+					complete: true,
+					observedAt: "2026-01-01T00:00:00.000Z",
+					observations: [
+						{
+							presence: "present",
+							childState: "exited",
+							process: { last_exit: { exit_code: 7 } },
+							capture: { content: "final output", start: 0, end: 12, total: 12 },
+						},
+					],
+				},
+			],
+		},
+	};
+	registerRex(pi, {
+		createCore: () => ({
+			dispose: () => {},
+			execute: async (received, call) => {
+				assert.equal(received, request);
+				assert.equal(call.ownerId, "ordinary:observation-session");
+				assert.ok(call.budget);
+				assert.equal(call.signal, call.budget.signal);
+				return expected;
+			},
+		}),
+	});
+	const ctx = {
+		cwd: "/test",
+		isIdle: () => true,
+		sessionManager: {
+			getSessionId: () => "observation-session",
+			getEntries: () => [],
+			getSessionFile: () => undefined,
+		},
+	} as unknown as ExtensionToolContext;
 	try {
 		const tool = tools.get("rex_owned");
 		assert.ok(tool);
@@ -130,9 +253,17 @@ test("ordinary owned observation preserves the shared request and canonical read
 		const received = response.structuredContent as unknown as RexResult;
 		assert.equal(received.coverage.deadline?.effectiveMs, 30000);
 		assert.deepEqual({ ...received, coverage: expected.coverage }, expected);
-		assert.equal(response.content.filter((part) => part.type === "text").map((part) => part.text).join(""), JSON.stringify(received));
+		assert.equal(
+			response.content
+				.filter((part) => part.type === "text")
+				.map((part) => part.text)
+				.join(""),
+			JSON.stringify(received),
+		);
 		assert.equal(writes, 0);
-	} finally { await handlers.get("session_shutdown")?.(); }
+	} finally {
+		await handlers.get("session_shutdown")?.();
+	}
 });
 
 test("ordinary native verified reads leave ownership storage untouched", async () => {
@@ -144,17 +275,37 @@ test("ordinary native verified reads leave ownership storage untouched", async (
 	sessionManager.getSessionFile = () => undefined;
 	const pi = {
 		events: createEventBus(),
-		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {}, appendEntry: (customType: string, data: unknown) => { writes++; sessionManager.appendCustomEntry(customType, data); },
+		on: (name: string, handler: () => unknown) => {
+			handlers.set(name, handler);
+			return () => handlers.delete(name);
+		},
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerCommand: () => {},
+		appendEntry: (customType: string, data: unknown) => {
+			writes++;
+			sessionManager.appendCustomEntry(customType, data);
+		},
 	} as unknown as ExtensionAPI;
-	const cliReply = (value: unknown): CliResult => ({ outcome: "exited", exitCode: 0, signal: null, stdout: JSON.stringify(value), stderr: "", bytes: 0, truncated: false, started: true });
+	const cliReply = (value: unknown): CliResult => ({
+		outcome: "exited",
+		exitCode: 0,
+		signal: null,
+		stdout: JSON.stringify(value),
+		stderr: "",
+		bytes: 0,
+		truncated: false,
+		started: true,
+	});
 	const padding = "x".repeat(40000);
 	const transport: RexTransport = {
 		dispose: () => {},
 		run: async (args) => {
-			if (args.includes("whoami")) return cliReply({ endpoint: "unix:///test-rex", host_id: "host", instance_id: "instance" });
+			if (args.includes("whoami"))
+				return cliReply({ endpoint: "unix:///test-rex", host_id: "host", instance_id: "instance" });
 			const index = args.indexOf("call");
-			return index >= 0 && args[index + 1] === "block_creator.list" ? cliReply({ creators: [], padding }) : cliReply({});
+			return index >= 0 && args[index + 1] === "block_creator.list"
+				? cliReply({ creators: [], padding })
+				: cliReply({});
 		},
 	};
 	registerRex(pi, { createCore: (options) => new RexCore({ ...options, transport }) });
@@ -162,33 +313,76 @@ test("ordinary native verified reads leave ownership storage untouched", async (
 	try {
 		const tool = tools.get("rex_native");
 		assert.ok(tool);
-		const read = await tool.execute("read-call", { op: "native", kind: "api", method: "block_creator.list", args: {} }, undefined, undefined, ctx);
+		const read = await tool.execute(
+			"read-call",
+			{ op: "native", kind: "api", method: "block_creator.list", args: {} },
+			undefined,
+			undefined,
+			ctx,
+		);
 		assert.equal(read.isError, false);
-		const readText = read.content.filter((part) => part.type === "text").map((part) => part.text).join("");
-		assert.ok(Buffer.byteLength(readText, "utf8") > 32768, "the ordinary channel keeps a verified read above the previous capture default");
+		const readText = read.content
+			.filter((part) => part.type === "text")
+			.map((part) => part.text)
+			.join("");
+		assert.ok(
+			Buffer.byteLength(readText, "utf8") > 32768,
+			"the ordinary channel keeps a verified read above the previous capture default",
+		);
 		const readModel = JSON.parse(readText) as RexResult;
 		assert.equal(readModel.effects.state, "none");
 		assert.equal((readModel.data as { value: { padding: string } }).value.padding.length, 40000);
 		assert.deepEqual(read.structuredContent, readModel);
 		assert.equal(writes, 0, "a verified read writes no ordinary ownership entry");
-		const mutation = await tool.execute("mutate-call", { op: "native", kind: "api", method: "new.capability", args: {} }, undefined, undefined, ctx);
+		const mutation = await tool.execute(
+			"mutate-call",
+			{ op: "native", kind: "api", method: "new.capability", args: {} },
+			undefined,
+			undefined,
+			ctx,
+		);
 		assert.equal((mutation.structuredContent as unknown as RexResult).effects.state, "confirmed");
 		assert.ok(writes > 0, "an unclassified native API call keeps effect admission");
-	} finally { await handlers.get("session_shutdown")?.(); }
+	} finally {
+		await handlers.get("session_shutdown")?.();
+	}
 });
 
 test("ordinary registration publishes only identical display references and cleans up requests on reload", async () => {
-	type Publication = { version: number; tools: Array<Pick<ToolDefinition<Schema>, "name" | "renderCall" | "renderResult" | "renderShell">> };
+	type Publication = {
+		version: number;
+		tools: Array<Pick<ToolDefinition<Schema>, "name" | "renderCall" | "renderResult" | "renderShell">>;
+	};
 	const tools = new Map<string, ToolDefinition<Schema>>();
 	const handlers = new Map<string, () => unknown>();
 	const events = createEventBus();
 	const publications: Publication[] = [];
-	events.on("harness:tool-display:publish", (value) => { publications.push(value as Publication); });
-	const pi = { events, on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); }, registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {}, appendEntry: () => {} } as unknown as ExtensionAPI;
+	events.on("harness:tool-display:publish", (value) => {
+		publications.push(value as Publication);
+	});
+	const pi = {
+		events,
+		on: (name: string, handler: () => unknown) => {
+			handlers.set(name, handler);
+			return () => handlers.delete(name);
+		},
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerCommand: () => {},
+		appendEntry: () => {},
+	} as unknown as ExtensionAPI;
 	let executions = 0;
 	const options = {
-		createCore: () => { executions++; throw new Error("Display requests must not execute tools."); },
-		createTabLabelProjector: () => ({ start: () => {}, refresh: () => {}, input: () => {}, idle: async () => {}, shutdown: async () => {} }),
+		createCore: () => {
+			executions++;
+			throw new Error("Display requests must not execute tools.");
+		},
+		createTabLabelProjector: () => ({
+			start: () => {},
+			refresh: () => {},
+			input: () => {},
+			idle: async () => {},
+			shutdown: async () => {},
+		}),
 		createSessionPaneRegistrar: () => ({ start: () => {}, shutdown: () => {} }),
 	};
 	registerRex(pi, options);
@@ -209,7 +403,8 @@ test("ordinary registration publishes only identical display references and clea
 			assert.equal(display.renderShell, registered.renderShell);
 			assert.equal(display.renderShell, "default");
 		}
-		for (const request of [undefined, null, [], {}, { version: 2 }, { version: "1" }]) events.emit("harness:tool-display:request", request);
+		for (const request of [undefined, null, [], {}, { version: 2 }, { version: "1" }])
+			events.emit("harness:tool-display:request", request);
 		assert.equal(publications.length, 1);
 		await handlers.get("session_start")?.();
 		events.emit("harness:tool-display:request", { version: 1 });
@@ -228,7 +423,9 @@ test("ordinary registration publishes only identical display references and clea
 		assert.equal(publications[3]?.tools[0]?.renderCall, toolDisplay().tools[0]?.renderCall);
 		assert.equal(publications[3]?.tools[0]?.renderCall, tools.values().next().value?.renderCall);
 		assert.equal(executions, 0);
-	} finally { await handlers.get("session_shutdown")?.(); }
+	} finally {
+		await handlers.get("session_shutdown")?.();
+	}
 });
 
 test("ordinary registration wires tab labels without changing the tool surface", async () => {
@@ -237,36 +434,87 @@ test("ordinary registration wires tab labels without changing the tool surface",
 	const handlers = new Map<string, Handler>();
 	const events: string[] = [];
 	const projector = {
-		start: () => { events.push("start"); },
-		refresh: () => { events.push("refresh"); },
-		input: () => { events.push("input"); },
+		start: () => {
+			events.push("start");
+		},
+		refresh: () => {
+			events.push("refresh");
+		},
+		input: () => {
+			events.push("input");
+		},
 		idle: async () => {},
-		shutdown: async () => { events.push("shutdown"); },
+		shutdown: async () => {
+			events.push("shutdown");
+		},
 	};
 	const pi = {
 		events: createEventBus(),
-		on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {},
+		on: (name: string, handler: Handler) => {
+			handlers.set(name, handler);
+			return () => handlers.delete(name);
+		},
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerCommand: () => {},
 		appendEntry: () => {},
 		getSessionName: () => undefined,
 	} as unknown as ExtensionAPI;
 	const keeper = {
-		start: () => { events.push("keeper start"); },
-		floated: (panes: readonly { blockId: string }[]) => { events.push(`floated ${panes.map((pane) => pane.blockId).join(",")}`); },
-		attention: () => { events.push("attention"); },
+		start: () => {
+			events.push("keeper start");
+		},
+		floated: (panes: readonly { blockId: string }[]) => {
+			events.push(`floated ${panes.map((pane) => pane.blockId).join(",")}`);
+		},
+		attention: () => {
+			events.push("attention");
+		},
 		idle: async () => {},
-		shutdown: async () => { events.push("keeper shutdown"); },
+		shutdown: async () => {
+			events.push("keeper shutdown");
+		},
 	};
 	const panes = {
-		start: (ctx: { mode?: string }) => { events.push(`panes start ${ctx.mode}`); },
-		shutdown: () => { events.push("panes shutdown"); },
+		start: (ctx: { mode?: string }) => {
+			events.push(`panes start ${ctx.mode}`);
+		},
+		shutdown: () => {
+			events.push("panes shutdown");
+		},
 	};
-	registerRex(pi, { createTabLabelProjector: () => projector, createConversationKeeper: () => keeper, createSessionPaneRegistrar: () => panes });
-	assert.deepEqual([...tools.keys()], ["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status", "rex_ask"]);
-	assert.deepEqual([...handlers.keys()].sort(), ["agent_settled", "input", "session_info_changed", "session_shutdown", "session_start", "ui_prompt_start"]);
-	const answer = { type: "message", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "The result." }] } };
-	const call = { type: "message", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "call", name: "note", arguments: {} }] } };
-	const quiet = { type: "message", message: { role: "toolResult", toolCallId: "call", content: [{ type: "text", text: "Noted." }] } };
+	registerRex(pi, {
+		createTabLabelProjector: () => projector,
+		createConversationKeeper: () => keeper,
+		createSessionPaneRegistrar: () => panes,
+	});
+	assert.deepEqual(
+		[...tools.keys()],
+		["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status", "rex_ask"],
+	);
+	assert.deepEqual([...handlers.keys()].sort(), [
+		"agent_settled",
+		"input",
+		"session_info_changed",
+		"session_shutdown",
+		"session_start",
+		"ui_prompt_start",
+	]);
+	const answer = {
+		type: "message",
+		message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "The result." }] },
+	};
+	const call = {
+		type: "message",
+		message: {
+			role: "assistant",
+			stopReason: "toolUse",
+			content: [{ type: "toolCall", id: "call", name: "note", arguments: {} }],
+		},
+	};
+	const quiet = {
+		type: "message",
+		message: { role: "toolResult", toolCallId: "call", content: [{ type: "text", text: "Noted." }] },
+	};
 	let branch: unknown[] = [answer];
 	const ctx = { mode: "tui", sessionManager: { getBranch: () => branch } };
 	await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
@@ -279,7 +527,22 @@ test("ordinary registration wires tab labels without changing the tool surface",
 	handlers.get("agent_settled")?.({ type: "agent_settled", aborted: false }, ctx);
 	handlers.get("ui_prompt_start")?.({ type: "ui_prompt_start" }, ctx);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
-	assert.deepEqual(events, ["start", "keeper start", "panes start tui", "refresh", "input", "attention", "attention", "panes shutdown", "shutdown", "keeper shutdown"], "an answer and a dialog need the operator; an aborted run and a run that ended in a tool call do not; the session's pane record follows the session");
+	assert.deepEqual(
+		events,
+		[
+			"start",
+			"keeper start",
+			"panes start tui",
+			"refresh",
+			"input",
+			"attention",
+			"attention",
+			"panes shutdown",
+			"shutdown",
+			"keeper shutdown",
+		],
+		"an answer and a dialog need the operator; an aborted run and a run that ended in a tool call do not; the session's pane record follows the session",
+	);
 });
 
 test("a confirmed floating pane that rex_terminal creates is handed to the conversation keeper", async () => {
@@ -287,27 +550,102 @@ test("a confirmed floating pane that rex_terminal creates is handed to the conve
 	const tools = new Map<string, ToolDefinition<Schema>>();
 	const handlers = new Map<string, Handler>();
 	const floated: unknown[][] = [];
-	const keeper = { start: () => {}, floated: (panes: readonly unknown[]) => { floated.push([...panes]); }, attention: () => {}, idle: async () => {}, shutdown: async () => {} };
-	const projector = { start: () => {}, refresh: () => {}, input: () => {}, idle: async () => {}, shutdown: async () => {} };
+	const keeper = {
+		start: () => {},
+		floated: (panes: readonly unknown[]) => {
+			floated.push([...panes]);
+		},
+		attention: () => {},
+		idle: async () => {},
+		shutdown: async () => {},
+	};
+	const projector = {
+		start: () => {},
+		refresh: () => {},
+		input: () => {},
+		idle: async () => {},
+		shutdown: async () => {},
+	};
 	const pi = {
 		events: createEventBus(),
-		on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {},
+		on: (name: string, handler: Handler) => {
+			handlers.set(name, handler);
+			return () => handlers.delete(name);
+		},
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerCommand: () => {},
 		appendEntry: () => {},
 		getSessionName: () => undefined,
 	} as unknown as ExtensionAPI;
-	const created = (blockId: string) => ({ ok: true, outcome: "created", data: {}, effects: { state: "confirmed", recordId: "call", resources: [{ kind: "block", sessionId: "session:test", windowId: "window:test", blockId }] }, coverage: { bounded: true } });
+	const created = (blockId: string) => ({
+		ok: true,
+		outcome: "created",
+		data: {},
+		effects: {
+			state: "confirmed",
+			recordId: "call",
+			resources: [{ kind: "block", sessionId: "session:test", windowId: "window:test", blockId }],
+		},
+		coverage: { bounded: true },
+	});
 	registerRex(pi, {
 		createTabLabelProjector: () => projector,
 		createConversationKeeper: () => keeper,
-		createCore: () => ({ dispose: () => {}, execute: async (request: { kind?: string }) => created(request.kind === "float" ? "block:float" : "block:split") }) as never,
+		createCore: () =>
+			({
+				dispose: () => {},
+				execute: async (request: { kind?: string }) =>
+					created(request.kind === "float" ? "block:float" : "block:split"),
+			}) as never,
 	});
-	const ctx = { mode: "tui", cwd: "/tmp", sessionManager: { getSessionId: () => "session", getEntries: () => [], getSessionFile: () => undefined } };
+	const ctx = {
+		mode: "tui",
+		cwd: "/tmp",
+		sessionManager: { getSessionId: () => "session", getEntries: () => [], getSessionFile: () => undefined },
+	};
 	const terminal = tools.get("rex_terminal");
-	await terminal?.execute("call-1", { op: "create", kind: "float", label: "reader", target: { session: "session:test", block: "block:anchor" } } as never, undefined, undefined, ctx as never);
-	await terminal?.execute("call-2", { op: "create", kind: "split", label: "split", target: { session: "session:test", block: "block:anchor" } } as never, undefined, undefined, ctx as never);
-	await terminal?.execute("call-3", { op: "create", kind: "float", label: "kept", keepFloating: true, target: { session: "session:test", block: "block:anchor" } } as never, undefined, undefined, ctx as never);
-	assert.deepEqual(floated, [[{ blockId: "block:float", bounds: [0.1, 0.06, 0.8, 0.88] }], [], []], "the default float bounds are the creation bounds, and a float created to stay floating is not handed over");
+	await terminal?.execute(
+		"call-1",
+		{
+			op: "create",
+			kind: "float",
+			label: "reader",
+			target: { session: "session:test", block: "block:anchor" },
+		} as never,
+		undefined,
+		undefined,
+		ctx as never,
+	);
+	await terminal?.execute(
+		"call-2",
+		{
+			op: "create",
+			kind: "split",
+			label: "split",
+			target: { session: "session:test", block: "block:anchor" },
+		} as never,
+		undefined,
+		undefined,
+		ctx as never,
+	);
+	await terminal?.execute(
+		"call-3",
+		{
+			op: "create",
+			kind: "float",
+			label: "kept",
+			keepFloating: true,
+			target: { session: "session:test", block: "block:anchor" },
+		} as never,
+		undefined,
+		undefined,
+		ctx as never,
+	);
+	assert.deepEqual(
+		floated,
+		[[{ blockId: "block:float", bounds: [0.1, 0.06, 0.8, 0.88] }], [], []],
+		"the default float bounds are the creation bounds, and a float created to stay floating is not handed over",
+	);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
 });
 
@@ -318,14 +656,24 @@ class LabelTransport implements RexTransport {
 	label = "Window 00000000";
 	private readonly pid: number;
 
-	constructor(pid: number) { this.pid = pid; }
+	constructor(pid: number) {
+		this.pid = pid;
+	}
 
 	async run(args: readonly string[], _call: CliCall): Promise<CliResult> {
-		const method = args.includes("whoami") ? "whoami" : args.at(-2) ?? "";
+		const method = args.includes("whoami") ? "whoami" : (args.at(-2) ?? "");
 		this.methods.push(method);
 		if (method === "whoami") return reply({ host_id: "host", instance_id: "instance" });
-		if (method === "com.superlogical.terminal.process") return reply({ foreground: { pid: this.pid }, last_exit: null });
-		if (method === "session.view") return reply({ revision: 1, session_id: "session:test", windows: [{ window_id: "window:00000000", label: this.label, layers: [{ blocks: [{ block_id: "block:test" }] }] }] });
+		if (method === "com.superlogical.terminal.process")
+			return reply({ foreground: { pid: this.pid }, last_exit: null });
+		if (method === "session.view")
+			return reply({
+				revision: 1,
+				session_id: "session:test",
+				windows: [
+					{ window_id: "window:00000000", label: this.label, layers: [{ blocks: [{ block_id: "block:test" }] }] },
+				],
+			});
 		if (method === "session.set_window_label") {
 			const input = JSON.parse(args.at(-1) ?? "{}") as { label: string };
 			this.label = input.label;
@@ -338,7 +686,16 @@ class LabelTransport implements RexTransport {
 }
 
 function reply(value: unknown): CliResult {
-	return { outcome: "exited", exitCode: 0, signal: null, stdout: JSON.stringify(value), stderr: "", bytes: 0, truncated: false, started: true };
+	return {
+		outcome: "exited",
+		exitCode: 0,
+		signal: null,
+		stdout: JSON.stringify(value),
+		stderr: "",
+		bytes: 0,
+		truncated: false,
+		started: true,
+	};
 }
 
 test("ordinary tab label wiring runs no process for an unchanged name event and one pass per input", async () => {
@@ -349,7 +706,10 @@ test("ordinary tab label wiring runs no process for an unchanged name event and 
 	let projector: TabLabelProjector | undefined;
 	const pi = {
 		events: createEventBus(),
-		on: (name: string, handler: (event?: unknown, ctx?: unknown) => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
+		on: (name: string, handler: (event?: unknown, ctx?: unknown) => unknown) => {
+			handlers.set(name, handler);
+			return () => handlers.delete(name);
+		},
 		registerTool: () => {},
 		registerCommand: () => {},
 		appendEntry: () => {},
@@ -357,7 +717,12 @@ test("ordinary tab label wiring runs no process for an unchanged name event and 
 	} as unknown as ExtensionAPI;
 	registerRex(pi, {
 		createTabLabelProjector: (options) => {
-			const created = createTabLabelProjector({ ...options, agentDir, env: { REX_SESSION: "session:test", REX_BLOCK: "block:test" }, createTransport: () => transport });
+			const created = createTabLabelProjector({
+				...options,
+				agentDir,
+				env: { REX_SESSION: "session:test", REX_BLOCK: "block:test" },
+				createTransport: () => transport,
+			});
 			projector = created;
 			return created;
 		},

@@ -33,7 +33,9 @@ export function fitLine(text: string, width: number): string {
 }
 export function dashboardHeading(title: string, position: string, width: number, theme: Paint, bottom = false): string {
 	const right = position ? ` ${position.replace(/\s+/g, " ").trim()} ` : "";
-	const label = title ? ` ${truncateToWidth(title.replace(/\s+/g, " ").trim(), Math.max(1, width - visibleWidth(right) - 6), "…")} ` : "";
+	const label = title
+		? ` ${truncateToWidth(title.replace(/\s+/g, " ").trim(), Math.max(1, width - visibleWidth(right) - 6), "…")} `
+		: "";
 	const fill = "─".repeat(Math.max(0, width - visibleWidth(label) - visibleWidth(right) - 3));
 	return fitLine(
 		theme.fg("borderMuted", bottom ? "╰─" : "╭─") +
@@ -98,7 +100,11 @@ export function listBlock(item: ListItem, width: number, theme: Paint): ListBloc
 	const onTitle = timeWidth > 0 && !item.timeOnDetail;
 	const onDetail = timeWidth > 0 && item.timeOnDetail === true;
 	const stamp = theme.fg("muted", truncateToWidth(time, timeWidth, ""));
-	const title = truncateToWidth(item.title.replace(/\s+/gu, " ").trim(), Math.max(1, width - 4 - (onTitle ? timeWidth + 1 : 0)), "…");
+	const title = truncateToWidth(
+		item.title.replace(/\s+/gu, " ").trim(),
+		Math.max(1, width - 4 - (onTitle ? timeWidth + 1 : 0)),
+		"…",
+	);
 	const paint = (text: string) => theme.bold(theme.fg(item.titleColor ?? "text", text));
 	const titleRow = `${rail}${theme.fg(item.glyphColor, `${item.glyph} `)}${paint(title)}`;
 	const lines = [onTitle ? `${fitLine(titleRow, width - timeWidth)}${stamp}` : titleRow];
@@ -106,7 +112,9 @@ export function listBlock(item: ListItem, width: number, theme: Paint): ListBloc
 	const timeLine = onDetail ? lines.length : 0;
 	lines.push(onDetail ? `${fitLine(detail, width - timeWidth)}${stamp}` : detail);
 	if (item.gap !== false) lines.push("");
-	const painted = lines.map((line) => (item.selected && line ? highlightRow(line, width, 4, theme) : fitLine(line, width)));
+	const painted = lines.map((line) =>
+		item.selected && line ? highlightRow(line, width, 4, theme) : fitLine(line, width),
+	);
 	return { lines: painted, timeLine, timeX: width - timeWidth, timeWidth };
 }
 
@@ -131,7 +139,11 @@ export function dashboardGeometry(
 	const rosterWidth = wide
 		? typeof ratio === "number" && Number.isFinite(ratio) && ratio > 0 && ratio < 1
 			? clamp(ratio * (width - 1), MIN_ROSTER_COLUMNS, Math.min(MAX_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS))
-			: clamp(Math.floor(width * ROSTER_SHARE), MIN_ROSTER_COLUMNS, Math.min(MAX_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS))
+			: clamp(
+					Math.floor(width * ROSTER_SHARE),
+					MIN_ROSTER_COLUMNS,
+					Math.min(MAX_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS),
+				)
 		: width;
 	const paneHeight = Math.max(0, height - 1 - rosterHeight - reservedRows);
 	return {

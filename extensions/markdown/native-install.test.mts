@@ -1,18 +1,54 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test, { type TestContext } from "node:test";
-import { buildCache, EDITOR_WRITER_HELPER, EDITOR_WRITER_SOURCES, editorWriterMetadata, installBundle, lockHolder, lockInstall, prepareBuildCache, removeAbandoned, sourceDigest, sourceRecord, stableNode, stageEditorWriter, stageWeb } from "./native/build.mts";
+import {
+	buildCache,
+	EDITOR_WRITER_HELPER,
+	EDITOR_WRITER_SOURCES,
+	editorWriterMetadata,
+	installBundle,
+	lockHolder,
+	lockInstall,
+	prepareBuildCache,
+	removeAbandoned,
+	sourceDigest,
+	sourceRecord,
+	stableNode,
+	stageEditorWriter,
+	stageWeb,
+} from "./native/build.mts";
 
 function fixture(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "markdown-install-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const put = (path: string, version: string) => { mkdirSync(path); writeFileSync(join(path, "version"), version); };
+	const put = (path: string, version: string) => {
+		mkdirSync(path);
+		writeFileSync(join(path, "version"), version);
+	};
 	const version = (path: string) => readFileSync(join(path, "version"), "utf8");
-	return { root, destination: join(root, "Reader.app"), bundle: join(root, "staged.app"), abandoned: join(root, ".old-012345abcdef"), put, version };
+	return {
+		root,
+		destination: join(root, "Reader.app"),
+		bundle: join(root, "staged.app"),
+		abandoned: join(root, ".old-012345abcdef"),
+		put,
+		version,
+	};
 }
 
 test("the native test command runs Swift suites without parallel scheduling", (t) => {
@@ -21,7 +57,12 @@ test("the native test command runs Swift suites without parallel scheduling", (t
 	writeFileSync(join(f.root, "xcode-select"), '#!/bin/sh\nprintf "%s\\n" "$DEVELOPER_DIR"\n', { mode: 0o755 });
 	writeFileSync(join(f.root, "swift"), '#!/bin/sh\nprintf "%s\\n" "$@" > "$SWIFT_ARGUMENTS"\n', { mode: 0o755 });
 	const result = spawnSync(process.execPath, [fileURLToPath(new URL("./native/build.mts", import.meta.url)), "test"], {
-		env: { ...process.env, PATH: `${f.root}:${process.env.PATH ?? ""}`, DEVELOPER_DIR: f.root, SWIFT_ARGUMENTS: argumentsPath },
+		env: {
+			...process.env,
+			PATH: `${f.root}:${process.env.PATH ?? ""}`,
+			DEVELOPER_DIR: f.root,
+			SWIFT_ARGUMENTS: argumentsPath,
+		},
 		encoding: "utf8",
 	});
 	assert.equal(result.status, 0, result.stderr);
@@ -30,7 +71,8 @@ test("the native test command runs Swift suites without parallel scheduling", (t
 
 test("an install replaces the app and removes the previous bundle", (t) => {
 	const f = fixture(t);
-	f.put(f.destination, "previous"); f.put(f.bundle, "new");
+	f.put(f.destination, "previous");
+	f.put(f.bundle, "new");
 	installBundle(f.bundle, f.destination);
 	assert.equal(f.version(f.destination), "new");
 	assert.deepEqual(readdirSync(f.root), ["Reader.app"]);
@@ -38,9 +80,13 @@ test("an install replaces the app and removes the previous bundle", (t) => {
 
 test("an install first restores the bundle that an interrupted install moved aside", (t) => {
 	const f = fixture(t);
-	f.put(f.abandoned, "previous"); f.put(f.bundle, "new");
+	f.put(f.abandoned, "previous");
+	f.put(f.bundle, "new");
 	const renames: [string, string][] = [];
-	installBundle(f.bundle, f.destination, (from, to) => { renames.push([from, to]); renameSync(from, to); });
+	installBundle(f.bundle, f.destination, (from, to) => {
+		renames.push([from, to]);
+		renameSync(from, to);
+	});
 	assert.deepEqual(renames[0], [f.abandoned, f.destination]);
 	assert.equal(f.version(f.destination), "new");
 	assert.deepEqual(readdirSync(f.root), ["Reader.app"]);
@@ -58,28 +104,37 @@ test("a failed final rename leaves the previous app at its destination", (t) => 
 
 test("a failed restoration keeps the previous bundle and reports both errors", (t) => {
 	const f = fixture(t);
-	f.put(f.destination, "previous"); f.put(f.bundle, "new");
+	f.put(f.destination, "previous");
+	f.put(f.bundle, "new");
 	const installError = new Error("final rename refused");
 	const restoreError = new Error("restore rename refused");
 	let backup = "";
-	assert.throws(() => installBundle(f.bundle, f.destination, (from, to) => {
-		if (from === f.destination) { backup = to; renameSync(from, to); }
-		else if (from === f.bundle) throw installError;
-		else throw restoreError;
-	}), (error: unknown) => {
-		assert.ok(error instanceof AggregateError);
-		assert.deepEqual(error.errors, [installError, restoreError]);
-		assert.match(error.message, /final rename refused.*restore rename refused/u);
-		assert.ok(error.message.includes(backup));
-		return true;
-	});
+	assert.throws(
+		() =>
+			installBundle(f.bundle, f.destination, (from, to) => {
+				if (from === f.destination) {
+					backup = to;
+					renameSync(from, to);
+				} else if (from === f.bundle) throw installError;
+				else throw restoreError;
+			}),
+		(error: unknown) => {
+			assert.ok(error instanceof AggregateError);
+			assert.deepEqual(error.errors, [installError, restoreError]);
+			assert.match(error.message, /final rename refused.*restore rename refused/u);
+			assert.ok(error.message.includes(backup));
+			return true;
+		},
+	);
 	assert.equal(f.version(backup), "previous");
 	assert.equal(existsSync(f.destination), false);
 });
 
 test("an existing app never gives way to a bundle that an earlier install moved aside", (t) => {
 	const f = fixture(t);
-	f.put(f.destination, "current"); f.put(f.abandoned, "abandoned"); f.put(f.bundle, "new");
+	f.put(f.destination, "current");
+	f.put(f.abandoned, "abandoned");
+	f.put(f.bundle, "new");
 	installBundle(f.bundle, f.destination);
 	assert.equal(f.version(f.destination), "new");
 	assert.equal(f.version(f.abandoned), "abandoned");
@@ -108,14 +163,26 @@ test("staging ships the writer as stripped modules with the resolved lockfile cl
 	assert.ok(!helper.includes(".ts"), "no local .ts import survives staging");
 	const nodeModules = join(f.resources, "editor-writer", "node_modules");
 	assert.deepEqual(readdirSync(nodeModules), ["graceful-fs", "proper-lockfile", "signal-exit"]);
-	assert.deepEqual(readdirSync(join(nodeModules, "proper-lockfile", "node_modules")), ["retry"], "proper-lockfile resolves its own retry version");
+	assert.deepEqual(
+		readdirSync(join(nodeModules, "proper-lockfile", "node_modules")),
+		["retry"],
+		"proper-lockfile resolves its own retry version",
+	);
 	const lockfile = manifest(join(nodeModules, "proper-lockfile", "package.json"));
 	assert.equal(lockfile.version, "4.1.2");
 	assert.equal(lockfile.license, "MIT");
-	assert.equal(manifest(join(nodeModules, "proper-lockfile", "node_modules", "retry", "package.json")).version, "0.12.0");
+	assert.equal(
+		manifest(join(nodeModules, "proper-lockfile", "node_modules", "retry", "package.json")).version,
+		"0.12.0",
+	);
 	assert.equal(manifest(join(nodeModules, "graceful-fs", "package.json")).license, "ISC");
 	assert.equal(manifest(join(nodeModules, "signal-exit", "package.json")).license, "ISC");
-	for (const licence of ["proper-lockfile/LICENSE", "proper-lockfile/node_modules/retry/License", "graceful-fs/LICENSE", "signal-exit/LICENSE.txt"]) {
+	for (const licence of [
+		"proper-lockfile/LICENSE",
+		"proper-lockfile/node_modules/retry/License",
+		"graceful-fs/LICENSE",
+		"signal-exit/LICENSE.txt",
+	]) {
 		assert.ok(existsSync(join(nodeModules, ...licence.split("/"))), `licence shipped: ${licence}`);
 	}
 });
@@ -144,19 +211,33 @@ test("the shipped writer saves and reconciles with a parser protocol fixture out
 	const bin = join(f.app, "Contents", "MacOS");
 	mkdirSync(bin);
 	writeFileSync(join(f.resources, "build.json"), JSON.stringify({ contract: 1 }));
-	writeFileSync(join(bin, "markdown-core"), `#!/bin/sh\nprintf '%s\\n' '{"version":1,"images":[],"links":[],"truncated":false}'\n`, { mode: 0o755 });
+	writeFileSync(
+		join(bin, "markdown-core"),
+		`#!/bin/sh\nprintf '%s\\n' '{"version":1,"images":[],"links":[],"truncated":false}'\n`,
+		{ mode: 0o755 },
+	);
 	const invoke = (request: unknown) => {
 		const result = spawnSync(process.execPath, [realpathSync(f.helper)], {
-			cwd: f.root, input: JSON.stringify(request), encoding: "utf8",
-			env: { PATH: "/usr/bin:/bin" }, timeout: 5000, maxBuffer: 1024 * 1024,
+			cwd: f.root,
+			input: JSON.stringify(request),
+			encoding: "utf8",
+			env: { PATH: "/usr/bin:/bin" },
+			timeout: 5000,
+			maxBuffer: 1024 * 1024,
 		});
 		assert.equal(result.status, 0, result.stderr);
 		return JSON.parse(result.stdout);
 	};
 	const identity = invoke({ version: 1, operation: "identity", storeRoot: f.store });
 	const request = {
-		version: 1, operation: "save", storeRoot: f.store, storeId: identity.storeId,
-		invocationId: "standalone-save", generation: 7, title: "Private draft", source: "# Exact draft\r\n",
+		version: 1,
+		operation: "save",
+		storeRoot: f.store,
+		storeId: identity.storeId,
+		invocationId: "standalone-save",
+		generation: 7,
+		title: "Private draft",
+		source: "# Exact draft\r\n",
 	};
 	const saved = invoke(request);
 	assert.equal(saved.status, "saved", JSON.stringify(saved));
@@ -173,7 +254,11 @@ test("the shipped writer saves and reconciles with a parser protocol fixture out
 });
 
 test("the writer helper has one fixed identity record naming the bundled helper and the installer's Node", () => {
-	assert.deepEqual(editorWriterMetadata("/opt/homebrew/bin/node"), { version: 1, node: "/opt/homebrew/bin/node", helper: "editor-writer/editor-helper.mjs" });
+	assert.deepEqual(editorWriterMetadata("/opt/homebrew/bin/node"), {
+		version: 1,
+		node: "/opt/homebrew/bin/node",
+		helper: "editor-writer/editor-helper.mjs",
+	});
 	const metadata = editorWriterMetadata();
 	assert.ok(isAbsolute(metadata.node), "the recorded Node executable is absolute");
 });
@@ -214,7 +299,7 @@ test("writer sources and build.mts are part of the build identity", (t) => {
 	f.write("pane-command.ts", "// changed contract");
 	assert.notEqual(sourceDigest(f.native), before, "the pane contract changes the build identity");
 	f.write("pane-command.ts", "// contract");
-	writeFileSync(join(f.root, "package-lock.json"), "{\"lockfileVersion\":3}");
+	writeFileSync(join(f.root, "package-lock.json"), '{"lockfileVersion":3}');
 	assert.notEqual(sourceDigest(f.native), before, "the runtime dependency lock changes the build identity");
 	const beforePane = sourceDigest(f.native);
 	writeFileSync(join(f.native, "../../../native-pane/Sources/Pane.swift"), "// new pane source");
@@ -251,7 +336,7 @@ test("staging ships the web page with stripped scripts and without test inputs",
 	mkdirSync(join(f.source, "assets"));
 	writeFileSync(join(f.source, "assets", "logo.svg"), "<svg></svg>");
 	mkdirSync(join(f.source, "scripts"));
-	writeFileSync(join(f.source, "scripts", "app.ts"), "const message: string = \"hello\";\nconsole.log(message);\n");
+	writeFileSync(join(f.source, "scripts", "app.ts"), 'const message: string = "hello";\nconsole.log(message);\n');
 	writeFileSync(join(f.source, "scripts", "app.test.ts"), "// test");
 	writeFileSync(join(f.source, "scripts", "app.test.mts"), "// node test");
 	writeFileSync(join(f.source, "scripts", "module.mts"), "// module");
@@ -273,7 +358,17 @@ test("staging ships the web page with stripped scripts and without test inputs",
 	assert.ok(script.includes("const message"), "the script is stripped and shipped as .js");
 	assert.ok(!script.includes(": string"), "the script keeps no type annotation");
 	assert.deepEqual(readdirSync(join(f.web, "scripts")), ["app.js"]);
-	for (const path of ["scripts/app.ts", "scripts/app.test.ts", "scripts/app.test.mts", "scripts/module.mts", "scripts/types.d.ts", ".hidden", "test", "__tests__", "nested/notes.spec.js"]) {
+	for (const path of [
+		"scripts/app.ts",
+		"scripts/app.test.ts",
+		"scripts/app.test.mts",
+		"scripts/module.mts",
+		"scripts/types.d.ts",
+		".hidden",
+		"test",
+		"__tests__",
+		"nested/notes.spec.js",
+	]) {
 		assert.equal(existsSync(join(f.web, ...path.split("/"))), false, `not staged: ${path}`);
 	}
 });
@@ -324,10 +419,12 @@ test("the build cache serves one checkout and starts again empty for another", (
 test("the source record names the commit and whether a build input differs from it", () => {
 	const commit = "0123456789abcdef0123456789abcdef01234567";
 	const calls: string[][] = [];
-	const git = (status: string | undefined, head: string | null = commit) => (_cwd: string, args: string[]) => {
-		calls.push(args);
-		return args[0] === "rev-parse" ? (head ?? undefined) : status;
-	};
+	const git =
+		(status: string | undefined, head: string | null = commit) =>
+		(_cwd: string, args: string[]) => {
+			calls.push(args);
+			return args[0] === "rev-parse" ? (head ?? undefined) : status;
+		};
 	assert.deepEqual(sourceRecord("/native", git("")), { commit, modified: false });
 	assert.deepEqual(sourceRecord("/native", git(" M web/page.css")), { commit, modified: true });
 	assert.equal(sourceRecord("/native", git("", null)), undefined, "outside a Git work tree");
@@ -335,7 +432,13 @@ test("the source record names the commit and whether a build input differs from 
 	assert.equal(sourceRecord("/native", git(undefined)), undefined);
 	const status = calls.find((args) => args[0] === "status");
 	assert.ok(status);
-	for (const input of [".", "../pane-command.ts", "../../../package-lock.json", "../../rex/terminal-origin.ts", ...EDITOR_WRITER_SOURCES.map((name) => `../${name}`)]) {
+	for (const input of [
+		".",
+		"../pane-command.ts",
+		"../../../package-lock.json",
+		"../../rex/terminal-origin.ts",
+		...EDITOR_WRITER_SOURCES.map((name) => `../${name}`),
+	]) {
 		assert.ok(status.includes(input), `${input} is a checked build input`);
 	}
 });
@@ -363,17 +466,31 @@ test("an install lock admits one install and passes from an ended or expired hol
 	t.after(() => rmSync(parent, { recursive: true, force: true }));
 	const release = lockInstall(parent, () => true);
 	assert.ok(release);
-	assert.equal(lockInstall(parent, () => true), undefined, "a live holder keeps the lock");
+	assert.equal(
+		lockInstall(parent, () => true),
+		undefined,
+		"a live holder keeps the lock",
+	);
 	assert.equal(lockHolder(parent, () => true)?.pid, process.pid);
 	release();
 	assert.equal(existsSync(join(parent, "install.lock")), false);
 	writeFileSync(join(parent, "install.lock"), JSON.stringify({ pid: 999_999, startedAt: new Date().toISOString() }));
-	assert.equal(lockHolder(parent, () => false), undefined);
+	assert.equal(
+		lockHolder(parent, () => false),
+		undefined,
+	);
 	const takeover = lockInstall(parent, () => false);
 	assert.ok(takeover, "the lock of an ended process passes");
 	takeover();
-	writeFileSync(join(parent, "install.lock"), JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() }));
-	assert.equal(lockHolder(parent, () => true), undefined, "an expired lock has no holder");
+	writeFileSync(
+		join(parent, "install.lock"),
+		JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString() }),
+	);
+	assert.equal(
+		lockHolder(parent, () => true),
+		undefined,
+		"an expired lock has no holder",
+	);
 	const expired = lockInstall(parent, () => true);
 	assert.ok(expired);
 	expired();

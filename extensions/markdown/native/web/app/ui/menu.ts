@@ -12,7 +12,12 @@
 			active = -1,
 			context: ReaderMenuContext | null = null;
 		const off: (() => void)[] = [];
-		function listen(target: EventTarget, type: string, handler: EventListener, options?: AddEventListenerOptions | boolean) {
+		function listen(
+			target: EventTarget,
+			type: string,
+			handler: EventListener,
+			options?: AddEventListenerOptions | boolean,
+		) {
 			target.addEventListener(type, handler, options);
 			off.push(() => target.removeEventListener(type, handler, options));
 		}
@@ -57,7 +62,8 @@
 			return menuTarget({
 				area: "document",
 				selection: !!selection,
-				selectionInOneBlock: !!selection && controller.blocks.some((b) => b.start <= selection.start && b.end >= selection.end),
+				selectionInOneBlock:
+					!!selection && controller.blocks.some((b) => b.start <= selection.start && b.end >= selection.end),
 				editor: inEditor && editor.hasCaret(),
 				block: !!block,
 				heading: type.startsWith("heading"),
@@ -137,7 +143,8 @@
 			const usable = entries.map((e, i) => (e.enabled && !e.separator ? i : -1)).filter((i) => i >= 0);
 			if (!usable.length) return;
 			const position = usable.indexOf(active);
-			const next = position < 0 ? (delta > 0 ? 0 : usable.length - 1) : (position + delta + usable.length) % usable.length;
+			const next =
+				position < 0 ? (delta > 0 ? 0 : usable.length - 1) : (position + delta + usable.length) % usable.length;
 			setActive(usable[next]);
 		}
 		function choose(index: number) {

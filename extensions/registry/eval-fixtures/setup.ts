@@ -58,7 +58,10 @@ function fileBoundary(event: ToolCallLike, ctx: FixtureCtxLike): Boundary | unde
 	}
 	return within(root, target) || within(ctx.cwd, target)
 		? undefined
-		: { block: true, reason: "Evaluation safety boundary: reads stay within synthetic fixtures and this execution's cwd." };
+		: {
+				block: true,
+				reason: "Evaluation safety boundary: reads stay within synthetic fixtures and this execution's cwd.",
+			};
 }
 
 function publishBoundary(event: ToolCallLike): Boundary | undefined {

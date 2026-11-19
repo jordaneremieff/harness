@@ -64,7 +64,15 @@ function metadata(entry: SessionEntry) {
 	if (entry.type === "compaction" || entry.type === "branch_summary") result.summaryKind = entry.type;
 	if (entry.type === "custom") result.contextParticipation = "plain custom entry: not context";
 	const message = own(entry, "message");
-	copyMetadataFields(result, entry, "", ["customType", "label", "targetId", "fromId", "firstKeptEntryId", "fromHook", "display"]);
+	copyMetadataFields(result, entry, "", [
+		"customType",
+		"label",
+		"targetId",
+		"fromId",
+		"firstKeptEntryId",
+		"fromHook",
+		"display",
+	]);
 	copyMetadataFields(result, message, "/message", [
 		"role",
 		"customType",
@@ -127,7 +135,8 @@ function argumentStart(args: RecordValue, mode: SearchMode, offset: number): { b
 		if (offset) throw new Error("A text offset in argument search requires a position.");
 		return { block: 0, path: [] };
 	}
-	if (!object(position) || own(position, "block") === undefined) throw new Error("position must contain a block index.");
+	if (!object(position) || own(position, "block") === undefined)
+		throw new Error("position must contain a block index.");
 	return {
 		block: integer(own(position, "block"), 0, 0, Number.MAX_SAFE_INTEGER, "position.block"),
 		path: argumentPath(own(position, "path")),
@@ -186,7 +195,13 @@ class HistorySearch {
 		this.#visitCap = integer(own(args, "maxVisits"), LIMITS.visits, 1, LIMITS.visits, "maxVisits");
 		this.#scanCap = integer(own(args, "maxScanBytes"), LIMITS.scanBytes, 2048, LIMITS.scanBytes, "maxScanBytes");
 		this.#matchCap = integer(own(args, "maxMatches"), LIMITS.matches, 1, LIMITS.matches, "maxMatches");
-		this.#outputCap = integer(own(args, "maxOutputBytes"), LIMITS.outputBytes, 4096, LIMITS.outputBytes, "maxOutputBytes");
+		this.#outputCap = integer(
+			own(args, "maxOutputBytes"),
+			LIMITS.outputBytes,
+			4096,
+			LIMITS.outputBytes,
+			"maxOutputBytes",
+		);
 	}
 
 	#cursor(offset = this.#offset) {
@@ -439,7 +454,12 @@ class HistorySearch {
 }
 
 /** `callId` names the executing tool call, which argument search leaves out. */
-export function searchHistory(source: HistorySource, value: unknown, signal?: AbortSignal, callId?: string): RecordValue {
+export function searchHistory(
+	source: HistorySource,
+	value: unknown,
+	signal?: AbortSignal,
+	callId?: string,
+): RecordValue {
 	return new HistorySearch(source, value, signal, callId).run();
 }
 
@@ -594,7 +614,13 @@ class HistoryRead {
 		this.#offset = integer(own(args, "offset"), 0, 0, Number.MAX_SAFE_INTEGER, "offset");
 		this.#maxBytes = integer(own(args, "maxBytes"), LIMITS.readBytes, 4, LIMITS.readBytes, "maxBytes");
 		this.#maxItems = integer(own(args, "maxItems"), LIMITS.items, 1, LIMITS.items, "maxItems");
-		this.#outputCap = integer(own(args, "maxOutputBytes"), LIMITS.outputBytes, 4096, LIMITS.outputBytes, "maxOutputBytes");
+		this.#outputCap = integer(
+			own(args, "maxOutputBytes"),
+			LIMITS.outputBytes,
+			4096,
+			LIMITS.outputBytes,
+			"maxOutputBytes",
+		);
 		this.#entryId = entryId;
 		this.#base = {
 			notice: NOTICE,
@@ -694,7 +720,9 @@ class HistoryRead {
 		if (this.#itemsFit(items, index)) return true;
 		items.pop();
 		if (items.length === 0)
-			throw new Error("Field descriptor exceeds the output limit. Increase maxOutputBytes or select a shorter pointer.");
+			throw new Error(
+				"Field descriptor exceeds the output limit. Increase maxOutputBytes or select a shorter pointer.",
+			);
 		return false;
 	}
 

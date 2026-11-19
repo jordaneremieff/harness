@@ -10,7 +10,12 @@ const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 async function within<T>(promise: Promise<T>, label: string, ms = 2000): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
-		return await Promise.race([promise, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), ms); })]);
+		return await Promise.race([
+			promise,
+			new Promise<never>((_resolve, reject) => {
+				timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), ms);
+			}),
+		]);
 	} finally {
 		if (timer !== undefined) clearTimeout(timer);
 	}
@@ -18,14 +23,23 @@ async function within<T>(promise: Promise<T>, label: string, ms = 2000): Promise
 
 function deferred() {
 	let resolve!: () => void;
-	const promise = new Promise<void>((done) => { resolve = done; });
+	const promise = new Promise<void>((done) => {
+		resolve = done;
+	});
 	return { promise, resolve };
 }
 
 it("a burst of marks admits one pass and waits the interval from its start", async () => {
 	const clock = manualClock();
 	let runs = 0;
-	const pump = createObservationPump({ intervalMs: 100, run: () => { runs++; }, onError: () => assert.fail("unexpected failure"), clock });
+	const pump = createObservationPump({
+		intervalMs: 100,
+		run: () => {
+			runs++;
+		},
+		onError: () => assert.fail("unexpected failure"),
+		clock,
+	});
 	pump.markDirty();
 	pump.markDirty();
 	pump.markDirty();
@@ -83,7 +97,9 @@ it("reports a failed pass and keeps accepting later work", async () => {
 			runs++;
 			if (runs === 1) throw new Error("pass failed");
 		},
-		onError: (error) => { errors.push(error); },
+		onError: (error) => {
+			errors.push(error);
+		},
 		clock,
 	});
 	pump.markDirty();
@@ -101,7 +117,14 @@ it("reports a failed pass and keeps accepting later work", async () => {
 it("cancelling a waiting pass drops its dirty state and later marks run again", async () => {
 	const clock = manualClock();
 	let runs = 0;
-	const pump = createObservationPump({ intervalMs: 100, run: () => { runs++; }, onError: () => assert.fail("unexpected failure"), clock });
+	const pump = createObservationPump({
+		intervalMs: 100,
+		run: () => {
+			runs++;
+		},
+		onError: () => assert.fail("unexpected failure"),
+		clock,
+	});
 	pump.markDirty();
 	assert.equal(clock.pending, 1);
 	pump.cancelPending();
@@ -119,7 +142,15 @@ it("disposal stops later marks and a pass in flight schedules nothing", async ()
 	const clock = manualClock();
 	const gate = deferred();
 	let runs = 0;
-	const pump = createObservationPump({ intervalMs: 100, run: async () => { runs++; await gate.promise; }, onError: () => assert.fail("unexpected failure"), clock });
+	const pump = createObservationPump({
+		intervalMs: 100,
+		run: async () => {
+			runs++;
+			await gate.promise;
+		},
+		onError: () => assert.fail("unexpected failure"),
+		clock,
+	});
 	pump.markDirty();
 	clock.advance(0);
 	pump.markDirty();
@@ -143,7 +174,10 @@ it("keeps cadence and the final state when the wall clock moves", async (t) => {
 	let resolvePass: (() => void) | undefined;
 	let state = 0;
 	let applied = -1;
-	const nextPass = () => new Promise<void>((resolve) => { resolvePass = resolve; });
+	const nextPass = () =>
+		new Promise<void>((resolve) => {
+			resolvePass = resolve;
+		});
 	const pump = createObservationPump({
 		intervalMs: 25,
 		run: () => {

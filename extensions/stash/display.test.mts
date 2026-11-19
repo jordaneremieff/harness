@@ -17,7 +17,10 @@ it("display.ts is a pure presentation module: one export, no operational imports
 it("toolDisplay() returns version 1 with function renderers for every stash tool", () => {
 	const publication = toolDisplay();
 	assert.equal(publication.version, 1);
-	assert.deepEqual(publication.tools.map((tool) => tool.name), NAMES);
+	assert.deepEqual(
+		publication.tools.map((tool) => tool.name),
+		NAMES,
+	);
 	for (const record of publication.tools) {
 		assert.equal(typeof record.renderCall, "function");
 		assert.equal(typeof record.renderResult, "function");
@@ -40,7 +43,10 @@ it("the ordinary publication carries the same renderer records", () => {
 	const { publish } = toolDisplayPublisher({ events, registerTool() {} } as never);
 	publish();
 	const pure = toolDisplay();
-	assert.deepEqual(published[0].tools.map((tool) => tool.name), NAMES);
+	assert.deepEqual(
+		published[0].tools.map((tool) => tool.name),
+		NAMES,
+	);
 	for (const [index, record] of published[0].tools.entries()) {
 		assert.equal(record.renderCall, pure.tools[index].renderCall);
 		assert.equal(record.renderResult, pure.tools[index].renderResult);
@@ -49,6 +55,10 @@ it("the ordinary publication carries the same renderer records", () => {
 
 it("the durable contribution carries the display descriptor", async () => {
 	const { stashDurableContribution } = await import("./durable.ts");
-	const contribution = stashDurableContribution("/x/index.ts", { on: () => () => {}, emit: () => {} } as never, () => {});
+	const contribution = stashDurableContribution(
+		"/x/index.ts",
+		{ on: () => () => {}, emit: () => {} } as never,
+		() => {},
+	);
 	assert.deepEqual(contribution.display, { version: 1, entry: "./display.ts", export: "toolDisplay" });
 });

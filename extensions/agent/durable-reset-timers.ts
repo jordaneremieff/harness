@@ -56,17 +56,40 @@ async function labelOf(deps: ResetTimerDeps, sessionId: string): Promise<string>
 	}
 }
 
-export async function resetAgentContext(deps: ResetTimerDeps, input: { readonly sessionId: string; readonly handoff?: string }): Promise<ResetTimerOutcome> {
+export async function resetAgentContext(
+	deps: ResetTimerDeps,
+	input: { readonly sessionId: string; readonly handoff?: string },
+): Promise<ResetTimerOutcome> {
 	const sessionId = requireSession(input.sessionId);
 	const handoff = input.handoff !== undefined && input.handoff.trim() !== "" ? input.handoff : undefined;
-	const result = (await deps.control("reset", { sessionId, ...(handoff === undefined ? {} : { handoff }) })) as ResetResult;
+	const result = (await deps.control("reset", {
+		sessionId,
+		...(handoff === undefined ? {} : { handoff }),
+	})) as ResetResult;
 	const label = await labelOf(deps, sessionId);
-	if (result.status === "placed") return { text: `Reset placed for “${label}”; the next input starts from the new context. History stays inspectable.`, sessionId };
-	if (result.status === "queued") return { text: `Reset queued for “${label}”; it places at the next native boundary and starts no model turn.`, sessionId };
+	if (result.status === "placed")
+		return {
+			text: `Reset placed for “${label}”; the next input starts from the new context. History stays inspectable.`,
+			sessionId,
+		};
+	if (result.status === "queued")
+		return {
+			text: `Reset queued for “${label}”; it places at the next native boundary and starts no model turn.`,
+			sessionId,
+		};
 	return { text: `Reset did not place for “${label}”: ${result.reason ?? "unknown reason"}.`, sessionId };
 }
 
-export async function scheduleAgentInput(deps: ResetTimerDeps, input: { readonly sessionId: string; readonly deliverAt: string | number; readonly message: string; readonly mode?: TimerMode; readonly selfOwned?: boolean }): Promise<ResetTimerOutcome> {
+export async function scheduleAgentInput(
+	deps: ResetTimerDeps,
+	input: {
+		readonly sessionId: string;
+		readonly deliverAt: string | number;
+		readonly message: string;
+		readonly mode?: TimerMode;
+		readonly selfOwned?: boolean;
+	},
+): Promise<ResetTimerOutcome> {
 	const sessionId = requireSession(input.sessionId);
 	const message = input.message.trim();
 	if (message === "") throw new Error("A scheduled input requires a message");
@@ -84,39 +107,50 @@ export async function scheduleAgentInput(deps: ResetTimerDeps, input: { readonly
 	})) as ScheduleTimerResult;
 	const label = await labelOf(deps, sessionId);
 	const kind = mode === "steer" ? "steering" : "follow-up";
-	if (result.disposition === "retained") return {
-		text: `Retained timer #${result.timerId} for “${label}” is ${result.outcome?.status ?? result.status}. No new timer was created.`,
-		sessionId,
-	};
+	if (result.disposition === "retained")
+		return {
+			text: `Retained timer #${result.timerId} for “${label}” is ${result.outcome?.status ?? result.status}. No new timer was created.`,
+			sessionId,
+		};
 	return {
 		text: `Scheduled timer #${result.timerId} for “${label}” at ${localTime(result.deadline)} (${kind}). The storage host must run at the deadline.`,
 		sessionId,
 	};
 }
 
-export async function cancelAgentTimer(deps: ResetTimerDeps, input: { readonly sessionId: string; readonly timerId: number }): Promise<ResetTimerOutcome> {
+export async function cancelAgentTimer(
+	deps: ResetTimerDeps,
+	input: { readonly sessionId: string; readonly timerId: number },
+): Promise<ResetTimerOutcome> {
 	const sessionId = requireSession(input.sessionId);
 	const result = (await deps.control("timer-cancel", { sessionId, timerId: input.timerId })) as CancelTimerResult;
 	const label = await labelOf(deps, sessionId);
 	if (result.status === "cancelled") return { text: `Cancelled timer #${result.timerId} for “${label}”.`, sessionId };
-	if (result.status === "fired") return { text: `Timer #${result.timerId} for “${label}” already fired; nothing was cancelled.`, sessionId };
+	if (result.status === "fired")
+		return { text: `Timer #${result.timerId} for “${label}” already fired; nothing was cancelled.`, sessionId };
 	return { text: `Timer #${result.timerId} for “${label}” is ${result.status}; nothing was cancelled.`, sessionId };
 }
 
 /** One line of a timer listing with its local deadline, state, target, and origin. */
 function timerLine(row: TimerListRow): string {
 	const state = row.live && row.status === "pending" ? "pending" : row.status;
-	const settled = row.status === "fired" && row.firedAt !== null ? `, fired ${localTime(row.firedAt)}${row.overdueMs !== null && row.overdueMs > 0 ? `, overdue ${Math.round(row.overdueMs / 1000)}s` : ""}` : "";
+	const settled =
+		row.status === "fired" && row.firedAt !== null
+			? `, fired ${localTime(row.firedAt)}${row.overdueMs !== null && row.overdueMs > 0 ? `, overdue ${Math.round(row.overdueMs / 1000)}s` : ""}`
+			: "";
 	return `#${row.timerId} ${state} ${localTime(row.deadline)} (${row.mode}, ${row.origin}) → ${row.identity}${settled}: ${row.messagePreview}`;
 }
 
 /** Structured rows for selected-message pickers; display strings are not a protocol. */
 export async function readAgentTimerRows(deps: ResetTimerDeps, sessionId: string): Promise<TimerListRow[]> {
- const result = await deps.control("timer-list", { sessionId }) as { timers: TimerListRow[] };
- return result.timers;
+	const result = (await deps.control("timer-list", { sessionId })) as { timers: TimerListRow[] };
+	return result.timers;
 }
 
-export async function listAgentTimers(deps: ResetTimerDeps, input: { readonly sessionId: string }): Promise<ResetTimerOutcome> {
+export async function listAgentTimers(
+	deps: ResetTimerDeps,
+	input: { readonly sessionId: string },
+): Promise<ResetTimerOutcome> {
 	const sessionId = requireSession(input.sessionId);
 	const result = (await deps.control("timer-list", { sessionId })) as { timers: TimerListRow[] };
 	const label = await labelOf(deps, sessionId);
@@ -149,7 +183,11 @@ export function createResetTimerActions(bind: (ctx: ExtensionContext) => ResetTi
 			help: "Use an ISO 8601 date-time with an offset, for example 2026-10-03T09:00:00+10:00, or epoch milliseconds. Follow-up is the busy mode. The input fires only while the storage host runs.",
 			args: [sessionArgument(), { name: "time" }, { name: "message", rest: true }],
 			run: async ([sessionId, when, ...words], ctx) => {
-				const outcome = await scheduleAgentInput(bind(ctx), { sessionId: sessionId ?? "", deliverAt: when ?? "", message: words.join(" ") });
+				const outcome = await scheduleAgentInput(bind(ctx), {
+					sessionId: sessionId ?? "",
+					deliverAt: when ?? "",
+					message: words.join(" "),
+				});
 				return { text: outcome.text, ...(outcome.sessionId === undefined ? {} : { sessionId: outcome.sessionId }) };
 			},
 		},
@@ -170,7 +208,8 @@ export function createResetTimerActions(bind: (ctx: ExtensionContext) => ResetTi
 			args: [sessionArgument(), { name: "timer" }],
 			run: async ([sessionId, timerId], ctx) => {
 				const parsed = Number(timerId);
-				if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error("A positive timer ID from /agent timers is required");
+				if (!Number.isSafeInteger(parsed) || parsed <= 0)
+					throw new Error("A positive timer ID from /agent timers is required");
 				const outcome = await cancelAgentTimer(bind(ctx), { sessionId: sessionId ?? "", timerId: parsed });
 				return { text: outcome.text, ...(outcome.sessionId === undefined ? {} : { sessionId: outcome.sessionId }) };
 			},
@@ -178,12 +217,19 @@ export function createResetTimerActions(bind: (ctx: ExtensionContext) => ResetTi
 	];
 }
 
-function toolResult(value: { readonly text: string }): { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> } {
+function toolResult(value: { readonly text: string }): {
+	content: Array<{ type: "text"; text: string }>;
+	details: Record<string, unknown>;
+} {
 	return { content: [{ type: "text", text: value.text }], details: { text: value.text } };
 }
 
 /** Model-facing primary control for reset. Timer listing lives in `agent_status`; timer cancellation uses `agent_abort` with a `timerId`. */
-export function registerResetTimerTools(pi: ExtensionAPI, bind: (ctx: ExtensionContext) => ResetTimerDeps, card: AgentToolCard = createAgentToolCards().agent_reset): void {
+export function registerResetTimerTools(
+	pi: ExtensionAPI,
+	bind: (ctx: ExtensionContext) => ResetTimerDeps,
+	card: AgentToolCard = createAgentToolCards().agent_reset,
+): void {
 	const guidance = AGENT_CONTROL_GUIDANCE.agent_reset;
 	const paramsSchema = obj({ sessionId: str({ minLength: 1, maxLength: 256 }), handoff: opt(str()) });
 	pi.registerTool({
@@ -192,12 +238,18 @@ export function registerResetTimerTools(pi: ExtensionAPI, bind: (ctx: ExtensionC
 		renderCall: card.renderCall,
 		renderResult: card.renderResult,
 		label: "Agent Reset",
-		description: "Reset one agent's active context with an optional handoff. History, identity, files, settings, and timers stay. The write places at the next native boundary while the agent is busy and starts no model turn.",
+		description:
+			"Reset one agent's active context with an optional handoff. History, identity, files, settings, and timers stay. The write places at the next native boundary while the agent is busy and starts no model turn.",
 		parameters: paramsSchema,
 		...(guidance.snippet === undefined ? {} : { promptSnippet: guidance.snippet }),
 		...(guidance.guidelines === undefined ? {} : { promptGuidelines: [...guidance.guidelines] }),
 		async execute(_callId, params: Static<typeof paramsSchema>, _signal, _update, ctx) {
-			return toolResult(await resetAgentContext(bind(ctx), { sessionId: params.sessionId, ...(params.handoff === undefined ? {} : { handoff: params.handoff }) }));
+			return toolResult(
+				await resetAgentContext(bind(ctx), {
+					sessionId: params.sessionId,
+					...(params.handoff === undefined ? {} : { handoff: params.handoff }),
+				}),
+			);
 		},
 	});
 }

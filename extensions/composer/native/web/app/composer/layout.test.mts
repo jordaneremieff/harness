@@ -7,10 +7,15 @@ import { runInNewContext } from "node:vm";
 const empty = { draft: 32, editorPadding: 8, line: 24, chrome: 104, queue: 0, images: 0, gap: 4 };
 const source = stripTypeScriptTypes(readFileSync(new URL("./layout.ts", import.meta.url), "utf8"));
 function load(globals: Record<string, unknown> = {}) {
-	const scope = globals as { composerLayout: {
-		stack(parts: typeof empty, viewport: number): { height: number; visibleRows: number; tight: boolean };
-		mount(input: { value: string }, report: (height: number) => Promise<Record<string, unknown>>): { (): void; viewport(pane: number, growth: number): void };
-	} };
+	const scope = globals as {
+		composerLayout: {
+			stack(parts: typeof empty, viewport: number): { height: number; visibleRows: number; tight: boolean };
+			mount(
+				input: { value: string },
+				report: (height: number) => Promise<Record<string, unknown>>,
+			): { (): void; viewport(pane: number, growth: number): void };
+		};
+	};
 	runInNewContext(source, scope);
 	return scope.composerLayout;
 }
@@ -35,7 +40,8 @@ test("fit includes draft images but not the queue, even in a clipped pane", () =
 });
 
 test("a manually enlarged editor gains whole visible rows without inflating fitted height", () => {
-	const tall = stack(empty, 400), shorter = stack(empty, 150);
+	const tall = stack(empty, 400),
+		shorter = stack(empty, 150);
 	assert.ok(tall.visibleRows > shorter.visibleRows);
 	assert.equal(tall.height, shorter.height);
 	assert.ok(tall.visibleRows * empty.line <= 400 - empty.chrome);
@@ -53,7 +59,15 @@ function page(reply: (height: number) => Promise<Record<string, unknown>> = () =
 	const box = (height: () => number) => ({ getBoundingClientRect: () => ({ height: height() }) });
 	const flags = new Map<string, boolean>();
 	const events = new Map<string, () => void>();
-	const input = { value: "", scrollTop: 0, scrollHeight: 32, clientHeight: 32, addEventListener(_event: string, fn: () => void) { events.set(_event, fn); } };
+	const input = {
+		value: "",
+		scrollTop: 0,
+		scrollHeight: 32,
+		clientHeight: 32,
+		addEventListener(_event: string, fn: () => void) {
+			events.set(_event, fn);
+		},
+	};
 	const measure = {
 		value: "",
 		getBoundingClientRect() {
@@ -64,8 +78,12 @@ function page(reply: (height: number) => Promise<Record<string, unknown>> = () =
 	const nodes = {
 		".composer": {
 			...box(() => geometry.viewport),
-			removeAttribute: () => { tight = false; },
-			toggleAttribute: (_: string, next: boolean) => { tight = next; },
+			removeAttribute: () => {
+				tight = false;
+			},
+			toggleAttribute: (_: string, next: boolean) => {
+				tight = next;
+			},
 			style: { setProperty: (key: string, value: string) => properties.set(key, value) },
 		},
 		"#measure": measure,
@@ -80,29 +98,74 @@ function page(reply: (height: number) => Promise<Record<string, unknown>> = () =
 	const observed: unknown[] = [];
 	let resized = () => {};
 	const { mount } = load({
-		setTimeout, clearTimeout, document: { querySelector: (key: keyof typeof nodes) => nodes[key] },
+		setTimeout,
+		clearTimeout,
+		document: { querySelector: (key: keyof typeof nodes) => nodes[key] },
 		getComputedStyle(node: unknown) {
-			const writer = node === nodes[".writer"], panel = node === nodes[".panel"];
+			const writer = node === nodes[".writer"],
+				panel = node === nodes[".panel"];
 			const pads = writer ? [12, 4] : panel ? [8, 4] : [4, 0];
-			const pad = `${pads[Number(tight)]}px`, border = writer ? "1px" : "0px";
-			return { paddingTop: pad, paddingBottom: pad, borderTopWidth: border, borderBottomWidth: border,
-				lineHeight: "24px", rowGap: writer ? "4px" : "normal" };
+			const pad = `${pads[Number(tight)]}px`,
+				border = writer ? "1px" : "0px";
+			return {
+				paddingTop: pad,
+				paddingBottom: pad,
+				borderTopWidth: border,
+				borderBottomWidth: border,
+				lineHeight: "24px",
+				rowGap: writer ? "4px" : "normal",
+			};
 		},
 		ResizeObserver: class {
-			constructor(callback: () => void) { resized = callback; }
-			observe(node: unknown) { observed.push(node); }
+			constructor(callback: () => void) {
+				resized = callback;
+			}
+			observe(node: unknown) {
+				observed.push(node);
+			}
 		},
 	});
 	const heights: number[] = [];
-	const sync = mount(input, height => { heights.push(height); return reply(height); });
+	const sync = mount(input, (height) => {
+		heights.push(height);
+		return reply(height);
+	});
 	return {
-		geometry, heights, sync() { sync(); sync.viewport(geometry.viewport, 0); resized(); }, input, flags, events, scroll() { events.get("scroll")?.(); }, resize() { sync.viewport(geometry.viewport, 0); resized(); },
-		type(value: string) { input.value = value; sync(); sync.viewport(geometry.viewport, 0); resized(); },
-		get tight() { return tight; },
-		get paper() { return properties.get("--paper-height"); },
+		geometry,
+		heights,
+		sync() {
+			sync();
+			sync.viewport(geometry.viewport, 0);
+			resized();
+		},
+		input,
+		flags,
+		events,
+		scroll() {
+			events.get("scroll")?.();
+		},
+		resize() {
+			sync.viewport(geometry.viewport, 0);
+			resized();
+		},
+		type(value: string) {
+			input.value = value;
+			sync();
+			sync.viewport(geometry.viewport, 0);
+			resized();
+		},
+		get tight() {
+			return tight;
+		},
+		get paper() {
+			return properties.get("--paper-height");
+		},
 		viewport: sync.viewport,
-		get rows() { return Number(properties.get("--visible-rows")); },
-		observed, nodes,
+		get rows() {
+			return Number(properties.get("--visible-rows"));
+		},
+		observed,
+		nodes,
 	};
 }
 
@@ -134,7 +197,15 @@ test("the draft stops posting growth after twelve rows", () => {
 test("manual height and transient UI affect visible rows without posting a new fit", () => {
 	const view = page();
 	view.sync();
-	assert.deepEqual(view.observed, [view.nodes[".composer"], view.nodes[".queued"], view.nodes[".images"], view.nodes["#measure"], view.nodes["footer.status"], view.nodes[".shelf"], view.input]);
+	assert.deepEqual(view.observed, [
+		view.nodes[".composer"],
+		view.nodes[".queued"],
+		view.nodes[".images"],
+		view.nodes["#measure"],
+		view.nodes["footer.status"],
+		view.nodes[".shelf"],
+		view.input,
+	]);
 	view.geometry.viewport = 400;
 	view.resize();
 	assert.equal(view.rows, 12);
@@ -172,21 +243,27 @@ test("the editor fades only edges that hide more draft text", () => {
 		assert.equal(view.flags.get("data-clipped-top"), top);
 		assert.equal(view.flags.get("data-clipped-bottom"), bottom);
 	};
-	view.sync(); check(false, false);
+	view.sync();
+	check(false, false);
 	view.input.scrollHeight = 320;
-	view.sync(); check(false, true);
+	view.sync();
+	check(false, true);
 	view.input.scrollTop = 48;
-	view.scroll(); check(true, true);
+	view.scroll();
+	check(true, true);
 	view.input.scrollTop = 288;
-	view.scroll(); check(true, false);
+	view.scroll();
+	check(true, false);
 	view.input.scrollTop = 0;
-	view.scroll(); check(false, true);
+	view.scroll();
+	check(false, true);
 });
-
 
 test("the page paints the requested row before the host reveals it", async () => {
 	let resolve!: (reply: Record<string, unknown>) => void;
-	const gate = new Promise<Record<string, unknown>>(done => { resolve = done; });
+	const gate = new Promise<Record<string, unknown>>((done) => {
+		resolve = done;
+	});
 	const view = page(() => gate);
 	view.sync();
 	view.type("first\nsecond");
@@ -213,7 +290,7 @@ test("a refused growth request restores the pane height without another request"
 
 test("a cleared draft collapses its box at once and keeps it until the pane follows", async () => {
 	let pane = 136;
-	const view = page(async height => ({ above: Math.max(0, height - pane) }));
+	const view = page(async (height) => ({ above: Math.max(0, height - pane) }));
 	view.type("one\ntwo\nthree");
 	await Promise.resolve();
 	pane = view.geometry.viewport = 184;

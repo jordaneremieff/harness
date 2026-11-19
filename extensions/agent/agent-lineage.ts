@@ -7,11 +7,14 @@ const MAX_NAME_LENGTH = 160;
 
 /** Creation provenance is separate from current work and authority. */
 export const CreatedAgentsSchema = obj({
-	agents: arr(obj({
-		identity: str(),
-		name: opt(str({ maxLength: MAX_NAME_LENGTH + 1 })),
-		kind: union([lit("conversation"), lit("storage")]),
-	}), { maxItems: MAX_CREATED_AGENTS }),
+	agents: arr(
+		obj({
+			identity: str(),
+			name: opt(str({ maxLength: MAX_NAME_LENGTH + 1 })),
+			kind: union([lit("conversation"), lit("storage")]),
+		}),
+		{ maxItems: MAX_CREATED_AGENTS },
+	),
 	omitted: int({ minimum: 0 }),
 });
 export type CreatedAgents = Static<typeof CreatedAgentsSchema>;
@@ -32,11 +35,16 @@ export async function readCreatedAgents<T extends JsonObject & { children: Linea
 	const state = await api.snapshot(childrenDoc, caller.conversationId, context);
 	const children = state?.children ?? [];
 	if (children.length === 0) return undefined;
-	const rows = children.slice(-MAX_CREATED_AGENTS).reverse().map((child) => ({
-		identity: child.foreignSessionId ?? `${caller.storageId}:${child.conversationId}`,
-		kind: child.foreignSessionId === undefined ? "conversation" as const : "storage" as const,
-		...(child.name === undefined ? {} : { name: child.name.length > MAX_NAME_LENGTH ? `${child.name.slice(0, MAX_NAME_LENGTH)}…` : child.name }),
-	}));
+	const rows = children
+		.slice(-MAX_CREATED_AGENTS)
+		.reverse()
+		.map((child) => ({
+			identity: child.foreignSessionId ?? `${caller.storageId}:${child.conversationId}`,
+			kind: child.foreignSessionId === undefined ? ("conversation" as const) : ("storage" as const),
+			...(child.name === undefined
+				? {}
+				: { name: child.name.length > MAX_NAME_LENGTH ? `${child.name.slice(0, MAX_NAME_LENGTH)}…` : child.name }),
+		}));
 	return { agents: rows, omitted: children.length - rows.length };
 }
 
@@ -45,6 +53,9 @@ export function renderCreatedAgents(created: CreatedAgents): string {
 		const kind = child.kind === "conversation" ? "conversation in this storage" : "storage with own host";
 		return `- ${child.identity}${child.name === undefined ? "" : ` ${JSON.stringify(child.name)}`}: ${kind}`;
 	});
-	return ["Created agents (newest first; retained creation labels):", ...rows,
-		...(created.omitted > 0 ? [`${created.omitted} more omitted.`] : [])].join("\n");
+	return [
+		"Created agents (newest first; retained creation labels):",
+		...rows,
+		...(created.omitted > 0 ? [`${created.omitted} more omitted.`] : []),
+	].join("\n");
 }

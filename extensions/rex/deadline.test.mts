@@ -8,24 +8,37 @@ function scheduler() {
 	let id = 0;
 	const clock: BudgetClock = {
 		now: () => now,
-		schedule(action, milliseconds) { const key = ++id; tasks.set(key, { at: now + milliseconds, action }); return () => { tasks.delete(key); }; },
+		schedule(action, milliseconds) {
+			const key = ++id;
+			tasks.set(key, { at: now + milliseconds, action });
+			return () => {
+				tasks.delete(key);
+			};
+		},
 	};
 	return {
 		clock,
-		get pending() { return tasks.size; },
+		get pending() {
+			return tasks.size;
+		},
 		advance(milliseconds: number) {
 			const end = now + milliseconds;
 			for (;;) {
 				const next = [...tasks.entries()].filter(([, task]) => task.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
 				if (!next) break;
-				now = next[1].at; tasks.delete(next[0]); next[1].action();
+				now = next[1].at;
+				tasks.delete(next[0]);
+				next[1].action();
 			}
 			now = end;
 		},
 	};
 }
 
-for (const [total, work] of [[1000, 900], [13500, 12500]] as const) {
+for (const [total, work] of [
+	[1000, 900],
+	[13500, 12500],
+] as const) {
 	test(`one ${total} ms allowance includes observation and teardown`, () => {
 		const time = scheduler();
 		const budget = createRexBudget(total, 300000, undefined, time.clock);
@@ -49,7 +62,8 @@ test("caller cancellation shortens only mandatory finalisation and preserves its
 	const time = scheduler();
 	const caller = new AbortController();
 	const budget = createRexBudget(1000, 300000, caller.signal, time.clock);
-	time.advance(200); caller.abort();
+	time.advance(200);
+	caller.abort();
 	assert.equal(budget.stopReason(), "cancelled");
 	assert.equal(budget.endsAt, 300);
 	assert.throws(() => budget.check("effect"), RexStopped);
@@ -76,7 +90,8 @@ test("delayed resolution spends the same allowance as later calls", () => {
 
 test("immediate cancellation admits no work and disposal removes all timers", () => {
 	const time = scheduler();
-	const caller = new AbortController(); caller.abort();
+	const caller = new AbortController();
+	caller.abort();
 	const budget = createRexBudget(1000, 300000, caller.signal, time.clock);
 	assert.throws(() => budget.check("resolve"), RexStopped);
 	assert.equal(budget.stopReason(), "cancelled");

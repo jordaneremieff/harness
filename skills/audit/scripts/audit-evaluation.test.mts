@@ -77,7 +77,10 @@ test("trigger suite keeps positive and near-miss populations separate", () => {
 	for (const item of triggerSuite.cases) {
 		const input = caseInput(item);
 		assert.equal(input.prompt.startsWith("/skill:"), false, item.id);
-		assert.ok(!JSON.stringify({ seed: input.seed, prompt: input.prompt }).includes("semanticLedger"), `${item.id} hides review ledger from subject input`);
+		assert.ok(
+			!JSON.stringify({ seed: input.seed, prompt: input.prompt }).includes("semanticLedger"),
+			`${item.id} hides review ledger from subject input`,
+		);
 		assert.equal(input.fixture, undefined, `${item.id} keeps review metadata out of subject input`);
 	}
 });
@@ -120,7 +123,10 @@ test("deterministic floors check reachable tool evidence only", () => {
 		[call("read", "skill", { path: "/work/skills/audit/SKILL.md" }), result("read", "skill", "name: audit\n# Audit")],
 		trigger.id,
 	);
-	assert.equal(triggerPass.every(({ passed }) => passed), true);
+	assert.equal(
+		triggerPass.every(({ passed }) => passed),
+		true,
+	);
 	const triggerMiss = runDeterministicChecks("No skill read.", trigger.checks, [], trigger.id);
 	assert.equal(triggerMiss.find(({ checkId }) => checkId === "skill-file-read")?.passed, false);
 
@@ -136,9 +142,12 @@ test("deterministic floors check reachable tool evidence only", () => {
 		true,
 	);
 	assert.equal(
-		runDeterministicChecks("Candidate load.", nearMiss.checks, [call("read", "audit-skill", { path: "/work/skills/audit/SKILL.md" })], nearMiss.id).find(
-			({ checkId }) => checkId === "skill-file-read",
-		)?.passed,
+		runDeterministicChecks(
+			"Candidate load.",
+			nearMiss.checks,
+			[call("read", "audit-skill", { path: "/work/skills/audit/SKILL.md" })],
+			nearMiss.id,
+		).find(({ checkId }) => checkId === "skill-file-read")?.passed,
 		false,
 	);
 
@@ -150,8 +159,14 @@ test("deterministic floors check reachable tool evidence only", () => {
 		[call("read", "reader", { path: "audit-reader-a.md" }), result("read", "reader", "accepted observations: 6")],
 		sourceCase.id,
 	);
-	assert.equal(sourceChecks.every(({ passed }) => passed), true);
-	assert.equal(sourceCase.checks.some(({ id }) => id.startsWith("no-")), false);
+	assert.equal(
+		sourceChecks.every(({ passed }) => passed),
+		true,
+	);
+	assert.equal(
+		sourceCase.checks.some(({ id }) => id.startsWith("no-")),
+		false,
+	);
 
 	const recurrence = outputSuite.cases.find((item) => item.id === "o12-registry-omission");
 	assert.ok(recurrence);

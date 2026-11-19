@@ -1,27 +1,70 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { CollaborationEvent } from "./collaboration-contract.ts";
-import { associateThreadNotices, projectThreadNotices, threadExcerpt, threadNoticeText, threadReadCall, threadRecoveryText, utcTime, type ThreadNoticeSource, type ThreadRangeSnapshot } from "./thread-notice-projection.ts";
+import {
+	associateThreadNotices,
+	projectThreadNotices,
+	threadExcerpt,
+	threadNoticeText,
+	threadReadCall,
+	threadRecoveryText,
+	utcTime,
+	type ThreadNoticeSource,
+	type ThreadRangeSnapshot,
+} from "./thread-notice-projection.ts";
 
 const actor = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const recipient = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const threadId = `${actor}/${"c".repeat(32)}`;
-const event = (sequence = 1, message = "Retained event text"): CollaborationEvent => ({ threadId, sequence, at: 1_700_000_000_000 + sequence, sender: actor, origin: "model", kind: "contribution", message, source: "", replyTo: null, revision: 1, notify: [] });
+const event = (sequence = 1, message = "Retained event text"): CollaborationEvent => ({
+	threadId,
+	sequence,
+	at: 1_700_000_000_000 + sequence,
+	sender: actor,
+	origin: "model",
+	kind: "contribution",
+	message,
+	source: "",
+	replyTo: null,
+	revision: 1,
+	notify: [],
+});
 type Message = { role: "user" | "assistant"; content: string; timestamp: number };
 function source(sequence: number, patch: Partial<ThreadNoticeSource<Message>> = {}): ThreadNoticeSource<Message> {
 	const e = event(sequence);
 	return {
-		sourceId: `entry:${sequence}`, recipient, epoch: "initial",
+		sourceId: `entry:${sequence}`,
+		recipient,
+		epoch: "initial",
 		message: { role: "user", content: threadNoticeText(e, true), timestamp: e.at },
-		passive: { format: "agent.communication-passive/1", requestId: `thread:${sequence}`, value: {
-			format: "agent.communication/1", kind: "notice", sender: { identity: actor }, body: { text: "", complete: true, redacted: false }, recordedAt: e.at,
-			metadata: { threadId, event: sequence, frameRevision: 1, eventKind: e.kind, passive: true },
-		} }, ...patch,
+		passive: {
+			format: "agent.communication-passive/1",
+			requestId: `thread:${sequence}`,
+			value: {
+				format: "agent.communication/1",
+				kind: "notice",
+				sender: { identity: actor },
+				body: { text: "", complete: true, redacted: false },
+				recordedAt: e.at,
+				metadata: { threadId, event: sequence, frameRevision: 1, eventKind: e.kind, passive: true },
+			},
+		},
+		...patch,
 	};
 }
-function project(sources: ThreadNoticeSource<Message>[], snapshots: ThreadRangeSnapshot[] = [], scope = "storage:conversation:fork") {
+function project(
+	sources: ThreadNoticeSource<Message>[],
+	snapshots: ThreadRangeSnapshot[] = [],
+	scope = "storage:conversation:fork",
+) {
 	const messages = sources.map((source) => source.message);
-	return projectThreadNotices({ scope, messages, associations: associateThreadNotices(messages, sources), snapshots, marker: (original, text) => ({ ...original, content: text }) });
+	return projectThreadNotices({
+		scope,
+		messages,
+		associations: associateThreadNotices(messages, sources),
+		snapshots,
+		marker: (original, text) => ({ ...original, content: text }),
+	});
 }
 
 it("derives readable UTC without changing the original epoch or notice source text", () => {
@@ -65,16 +108,32 @@ it("names a bounded thread read rather than an invented exact event when sequenc
 });
 it("projects three verified passive messages into one range at the earliest position without changing raw input", () => {
 	const sources = [source(2), source(4), source(6)];
-	const messages: Message[] = [{ role: "user", content: "Keep the instruction", timestamp: 0 }, ...sources.map((source) => source.message), { role: "assistant", content: "Answer", timestamp: 10 }];
+	const messages: Message[] = [
+		{ role: "user", content: "Keep the instruction", timestamp: 0 },
+		...sources.map((source) => source.message),
+		{ role: "assistant", content: "Answer", timestamp: 10 },
+	];
 	const original = structuredClone(messages);
-	const result = projectThreadNotices({ scope: "one", messages, associations: associateThreadNotices(messages, sources), snapshots: [], marker: (original, text) => ({ ...original, content: text }) });
+	const result = projectThreadNotices({
+		scope: "one",
+		messages,
+		associations: associateThreadNotices(messages, sources),
+		snapshots: [],
+		marker: (original, text) => ({ ...original, content: text }),
+	});
 	assert.equal(result.messages.length, 3);
 	assert.equal(result.coverage, "complete");
 	assert.deepEqual(result.messages[0], messages[0]);
 	assert.deepEqual(result.messages[2], messages[4]);
 	assert.ok(result.messages[1].content.includes("passive event range 2..6"));
 	assert.ok(result.messages[1].content.includes("not a claim that every sequence was passive"));
-	assert.deepEqual(result.snapshots[0].read, { tool: "agent_collaborate", action: "read", threadId, before: 7, limit: 1 });
+	assert.deepEqual(result.snapshots[0].read, {
+		tool: "agent_collaborate",
+		action: "read",
+		threadId,
+		before: 7,
+		limit: 1,
+	});
 	assert.deepEqual(result.snapshots[0].sources, ["entry:2", "entry:4", "entry:6"]);
 	assert.deepEqual(messages, original);
 });
@@ -103,7 +162,7 @@ it("does not merge recipients, assistant epochs, threads, or lifecycle scopes", 
 it("preserves transformed, duplicate, ambiguous, active, and unrelated message tuples", () => {
 	const one = source(1);
 	const transformed = { ...one.message, content: `${one.message.content} transformed` };
-	const active = { ...source(2), passive: { ...source(2).passive as object, format: "not-passive" } };
+	const active = { ...source(2), passive: { ...(source(2).passive as object), format: "not-passive" } };
 	for (const [messages, sources] of [
 		[[transformed], [one]],
 		[[one.message, one.message], [one]],
@@ -113,7 +172,13 @@ it("preserves transformed, duplicate, ambiguous, active, and unrelated message t
 		const association = associateThreadNotices(messages, sources);
 		assert.equal(association.coverage, "partial");
 		assert.equal(association.items.length, 0);
-		const result = projectThreadNotices({ scope: "one", messages, associations: association, snapshots: [], marker: (original, text) => ({ ...original, content: text }) });
+		const result = projectThreadNotices({
+			scope: "one",
+			messages,
+			associations: association,
+			snapshots: [],
+			marker: (original, text) => ({ ...original, content: text }),
+		});
 		assert.deepEqual(result.messages, messages);
 	}
 });

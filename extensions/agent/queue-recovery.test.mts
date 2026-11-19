@@ -22,8 +22,14 @@ it("recovers every retained native input without inventing absent request routes
 	const root = offline.root;
 	const initial = offline.generation();
 	const metadata: HostMetadata = {
-		storageId: randomUUID(), storagePath: join(root, "storage.sqlite"), cwd: root, agentDir: join(root, "agent"), packageDir: checkout,
-		model: { provider: "agent-test", modelId: "model" }, thinkingLevel: "off", ownerId: "base-owner",
+		storageId: randomUUID(),
+		storagePath: join(root, "storage.sqlite"),
+		cwd: root,
+		agentDir: join(root, "agent"),
+		packageDir: checkout,
+		model: { provider: "agent-test", modelId: "model" },
+		thinkingLevel: "off",
+		ownerId: "base-owner",
 	};
 	mkdirSync(metadata.agentDir);
 	offline.allow(metadata);
@@ -39,38 +45,89 @@ it("recovers every retained native input without inventing absent request routes
 		await current.close();
 	};
 	t.after(async () => {
-		try { await offline.teardown(); }
-		finally { if (keepAlive.listening) await new Promise<void>((resolve) => keepAlive.close(() => resolve())); }
+		try {
+			await offline.teardown();
+		} finally {
+			if (keepAlive.listening) await new Promise<void>((resolve) => keepAlive.close(() => resolve()));
+		}
 		rmSync(root, { recursive: true, force: true });
 	});
-	await new Promise<void>((resolve, reject) => { keepAlive.once("error", reject); keepAlive.listen(0, "127.0.0.1", resolve); });
-	const messages = Array.from({ length: 129 }, (_, index) => `Retained base task ${index}`);
-	const requestIds = messages.map((_, index) => index === messages.length - 1 ? "r".repeat(1025) : `queued-${index}`);
-	const launch = (generation: OfflineGeneration, source: string, seed?: { messages: string[]; requestIds: string[] }) => generation.acquire(metadata, {
-		runner: fileURLToPath(new URL("./queue-recovery-runner.mts", import.meta.url)), runnerArgs: [source, JSON.stringify(seed ?? null)],
-		env: { ...process.env, NODE_PATH: join(checkout, "node_modules"), PI_AGENT_DIR: metadata.agentDir, PI_AGENT_SESSIONS_DIR: join(root, "sessions"), PI_AGENT_IDLE_MINUTES: "0" },
+	await new Promise<void>((resolve, reject) => {
+		keepAlive.once("error", reject);
+		keepAlive.listen(0, "127.0.0.1", resolve);
 	});
+	const messages = Array.from({ length: 129 }, (_, index) => `Retained base task ${index}`);
+	const requestIds = messages.map((_, index) => (index === messages.length - 1 ? "r".repeat(1025) : `queued-${index}`));
+	const launch = (generation: OfflineGeneration, source: string, seed?: { messages: string[]; requestIds: string[] }) =>
+		generation.acquire(metadata, {
+			runner: fileURLToPath(new URL("./queue-recovery-runner.mts", import.meta.url)),
+			runnerArgs: [source, JSON.stringify(seed ?? null)],
+			env: {
+				...process.env,
+				NODE_PATH: join(checkout, "node_modules"),
+				PI_AGENT_DIR: metadata.agentDir,
+				PI_AGENT_SESSIONS_DIR: join(root, "sessions"),
+				PI_AGENT_IDLE_MINUTES: "0",
+			},
+		});
 	client = await launch(initial, fileURLToPath(new URL("./", import.meta.url)), { messages, requestIds });
 	assert.equal(client.runtimeContract.operations["profile-read"].request, "profile-read/1.0.0");
-	await assert.rejects(client.request("task-submit", { sessionId: metadata.storageId, requestId: "x".repeat(1025), requester: metadata.ownerId, origin: "operator", message: "Oversized explicit route", whenBusy: "followUp" }), /requestId/u);
+	await assert.rejects(
+		client.request("task-submit", {
+			sessionId: metadata.storageId,
+			requestId: "x".repeat(1025),
+			requester: metadata.ownerId,
+			origin: "operator",
+			message: "Oversized explicit route",
+			whenBusy: "followUp",
+		}),
+		/requestId/u,
+	);
 	const seeded = JSON.parse(readFileSync(`${metadata.storagePath}.seed.json`, "utf8")) as Receipts;
-	assert.equal(seeded.pending, messages.length, "native admission retains every input without an explicit profile route");
+	assert.equal(
+		seeded.pending,
+		messages.length,
+		"native admission retains every input without an explicit profile route",
+	);
 	await stop();
 	const resumed = await offline.recover();
 	client = await launch(resumed, fileURLToPath(new URL("./", import.meta.url)));
-	assert.equal((await client.request("receipts", { ownerId: metadata.ownerId, wait: false }) as Receipts).pending, messages.length);
-	const profile = await client.request("profile-read", { sessionId: metadata.storageId }) as AgentProfile;
-	assert.deepEqual(profile.requests, [], "retained native inputs without routes do not acquire a requester from the receipt owner");
+	assert.equal(
+		((await client.request("receipts", { ownerId: metadata.ownerId, wait: false })) as Receipts).pending,
+		messages.length,
+	);
+	const profile = (await client.request("profile-read", { sessionId: metadata.storageId })) as AgentProfile;
+	assert.deepEqual(
+		profile.requests,
+		[],
+		"retained native inputs without routes do not acquire a requester from the receipt owner",
+	);
 	assert.equal(profile.requestsOmitted ?? 0, 0);
-	const changed = await client.request("profile-update", { sessionId: metadata.storageId, expectedRevision: profile.revision, requestId: "update-while-queued", senderIdentity: metadata.ownerId, role: "Retained queue worker" }) as { outcome: string };
-	assert.equal(changed.outcome, "applied", "live mutation remains available while retained work exceeds the projection");
-	const drained = await client.request("command", { sessionId: metadata.storageId, name: "drain" }) as { delivery: Receipts; seen: string[] };
+	const changed = (await client.request("profile-update", {
+		sessionId: metadata.storageId,
+		expectedRevision: profile.revision,
+		requestId: "update-while-queued",
+		senderIdentity: metadata.ownerId,
+		role: "Retained queue worker",
+	})) as { outcome: string };
+	assert.equal(
+		changed.outcome,
+		"applied",
+		"live mutation remains available while retained work exceeds the projection",
+	);
+	const drained = (await client.request("command", { sessionId: metadata.storageId, name: "drain" })) as {
+		delivery: Receipts;
+		seen: string[];
+	};
 	assert.equal(drained.delivery.pending, 0);
 	assert.equal(drained.delivery.receipts.length, messages.length);
 	assert.deepEqual(new Set(drained.delivery.receipts.map((receipt) => receipt.requestId)), new Set(requestIds));
-	assert.ok(drained.delivery.receipts.every((receipt) => receipt.status === "done" && receipt.answer === "Recovered answer"));
-	for (const message of messages) assert.ok(drained.seen.includes(message), `The resumed model did not receive ${message}`);
-	const settled = await client.request("profile-read", { sessionId: metadata.storageId }) as AgentProfile;
+	assert.ok(
+		drained.delivery.receipts.every((receipt) => receipt.status === "done" && receipt.answer === "Recovered answer"),
+	);
+	for (const message of messages)
+		assert.ok(drained.seen.includes(message), `The resumed model did not receive ${message}`);
+	const settled = (await client.request("profile-read", { sessionId: metadata.storageId })) as AgentProfile;
 	assert.deepEqual(settled.requests, []);
 	assert.equal(settled.requestsOmitted ?? 0, 0);
 });

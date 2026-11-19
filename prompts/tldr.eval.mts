@@ -47,7 +47,11 @@ const suite: EvaluationSuite = {
 			title: "A delivery report becomes a practical explanation rather than a testing receipt",
 			input: {
 				seed: [
-					{ role: "user", content: "Make a short-summary command so I can understand long discussions without reading a wall of text. Call it /brief and let me add a hint. Replace the old /rewrite command, which keeps too much detail." },
+					{
+						role: "user",
+						content:
+							"Make a short-summary command so I can understand long discussions without reading a wall of text. Call it /brief and let me add a hint. Replace the old /rewrite command, which keeps too much detail.",
+					},
 					{
 						role: "assistant",
 						content: [
@@ -61,7 +65,18 @@ const suite: EvaluationSuite = {
 				prompt: "/tldr",
 			},
 			checks: [
-				...floors(450, ["DemoText-4", "unrated", "38", "67", "244", "369", "theme", "The previous reply reports", "The assistant reported", "I reported"]),
+				...floors(450, [
+					"DemoText-4",
+					"unrated",
+					"38",
+					"67",
+					"244",
+					"369",
+					"theme",
+					"The previous reply reports",
+					"The assistant reported",
+					"I reported",
+				]),
 				{ id: "usable-command", type: "contains-exact", config: { values: ["/brief"] } },
 			],
 			reviewMetadata: {
@@ -101,7 +116,10 @@ const suite: EvaluationSuite = {
 			title: "A bare request reduces a long assessment to its recommendation and decisive limit",
 			input: {
 				seed: [
-					{ role: "user", content: "Assess whether the restart change solves the lost draft problem. Tell me what decision remains." },
+					{
+						role: "user",
+						content: "Assess whether the restart change solves the lost draft problem. Tell me what decision remains.",
+					},
 					{
 						role: "assistant",
 						content: [
@@ -131,15 +149,21 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "How will the review agents learn about my correction?" },
-					{ role: "assistant", content: "The correction entered the shared delivery surface. CANARY_DELIVERY_HANDLE. Specifically, each assigned review agent receives the correction as a message in its own conversation before its next model turn. Agents in the middle of a tool call finish that call first. This receipt says the message was queued, not that an agent read or applied it." },
+					{
+						role: "assistant",
+						content:
+							"The correction entered the shared delivery surface. CANARY_DELIVERY_HANDLE. Specifically, each assigned review agent receives the correction as a message in its own conversation before its next model turn. Agents in the middle of a tool call finish that call first. This receipt says the message was queued, not that an agent read or applied it.",
+					},
 				],
 				prompt: "/tldr",
 			},
 			checks: floors(450, ["shared delivery surface"]),
-			reviewMetadata: { criteria: [
-				"Say that each assigned review agent receives a message in its own conversation before its next model turn, after any current tool call finishes.",
-				"Explain queued delivery without claiming the agents read or applied the correction. Do not hide who, timing, or destination behind coded labels.",
-			] },
+			reviewMetadata: {
+				criteria: [
+					"Say that each assigned review agent receives a message in its own conversation before its next model turn, after any current tool call finishes.",
+					"Explain queued delivery without claiming the agents read or applied the correction. Do not hide who, timing, or destination behind coded labels.",
+				],
+			},
 		},
 		{
 			id: "list-changes",
@@ -147,22 +171,31 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "Fix the settings screen issues." },
-					{ role: "assistant", content: "The Save button now stays visible on small screens. Keyboard focus returns to the name field after a validation error. Cancel now discards unsaved edits. All three changes passed local checks, but they are not released. CANARY_SETTINGS_FILES." },
+					{
+						role: "assistant",
+						content:
+							"The Save button now stays visible on small screens. Keyboard focus returns to the name field after a validation error. Cancel now discards unsaved edits. All three changes passed local checks, but they are not released. CANARY_SETTINGS_FILES.",
+					},
 				],
 				prompt: "/tldr list the changes in simple bullet points",
 			},
 			checks: floors(450, ["**"]),
-			reviewMetadata: { criteria: [
-				"Use simple bullets for the visible Save button, restored keyboard focus, and Cancel discarding unsaved edits. No bold-label headings.",
-				"Keep the not-released state so the operator does not mistake the changes for available behavior. Omit routine check details and invent no release step.",
-			] },
+			reviewMetadata: {
+				criteria: [
+					"Use simple bullets for the visible Save button, restored keyboard focus, and Cancel discarding unsaved edits. No bold-label headings.",
+					"Keep the not-released state so the operator does not mistake the changes for available behavior. Omit routine check details and invent no release step.",
+				],
+			},
 		},
 		{
 			id: "shipped-with-optional-cleanup",
 			title: "A shipped result takes priority over optional cleanup bookkeeping",
 			input: {
 				seed: [
-					{ role: "user", content: "Release the search improvement. Leave removal of old local material for my decision later." },
+					{
+						role: "user",
+						content: "Release the search improvement. Leave removal of old local material for my decision later.",
+					},
 					{
 						role: "assistant",
 						content:
@@ -186,7 +219,10 @@ const suite: EvaluationSuite = {
 			title: "Optional history cleanup can be omitted but cannot lose its risk if mentioned",
 			input: {
 				seed: [
-					{ role: "user", content: "Finish the report fix and tell me what decisions remain. Do not rewrite published history." },
+					{
+						role: "user",
+						content: "Finish the report fix and tell me what decisions remain. Do not rewrite published history.",
+					},
 					{
 						role: "assistant",
 						content:
@@ -210,12 +246,31 @@ const suite: EvaluationSuite = {
 			title: "Agent actions stay attributed to the agents while the operator owns the decision",
 			input: {
 				seed: [
-					{ role: "user", content: "Audit the export documentation and fix false claims. Leave publication for my review." },
-					{ role: "assistant", content: "My audit found that the guide promised unlimited file size, but exports reject files larger than 20 MB. I corrected the guide. A review agent checked my edit against the implementation and confirmed the limit. I committed the correction locally. It is not published. CANARY_DOC_REVIEW. Your decision is whether to publish the corrected guide." },
+					{
+						role: "user",
+						content: "Audit the export documentation and fix false claims. Leave publication for my review.",
+					},
+					{
+						role: "assistant",
+						content:
+							"My audit found that the guide promised unlimited file size, but exports reject files larger than 20 MB. I corrected the guide. A review agent checked my edit against the implementation and confirmed the limit. I committed the correction locally. It is not published. CANARY_DOC_REVIEW. Your decision is whether to publish the corrected guide.",
+					},
 				],
 				prompt: "/tldr",
 			},
-			checks: floors(450, ["Your audit", "your audit", "Your repair", "your repair", "You corrected", "you corrected", "You committed", "you committed", ";", ":", " - "]),
+			checks: floors(450, [
+				"Your audit",
+				"your audit",
+				"Your repair",
+				"your repair",
+				"You corrected",
+				"you corrected",
+				"You committed",
+				"you committed",
+				";",
+				":",
+				" - ",
+			]),
 			reviewMetadata: {
 				criteria: [
 					"Credit the assistant with correcting the guide, never the operator. Audit steps, the local commit, and the review round may be omitted. If any action is mentioned, preserve its actual actor.",
@@ -230,8 +285,16 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "Stop the catalog from silently mixing pages from different versions of the list." },
-					{ role: "assistant", content: "I call the proposed check a page-order seal. It compares the list order when a page was requested with the current list order." },
-					{ role: "assistant", content: "The page-order seal is implemented and active. If the list changes between page requests, the catalog refuses the old next-page request and asks you to start from the first page. Local checks passed. CANARY_PAGE_HELPER. The reviewer found the seal aligned with the paging intent. No decision remains." },
+					{
+						role: "assistant",
+						content:
+							"I call the proposed check a page-order seal. It compares the list order when a page was requested with the current list order.",
+					},
+					{
+						role: "assistant",
+						content:
+							"The page-order seal is implemented and active. If the list changes between page requests, the catalog refuses the old next-page request and asks you to start from the first page. Local checks passed. CANARY_PAGE_HELPER. The reviewer found the seal aligned with the paging intent. No decision remains.",
+					},
 				],
 				prompt: "/tldr",
 			},
@@ -297,14 +360,17 @@ const suite: EvaluationSuite = {
 					{ role: "user", content: "Is the upload fix ready?" },
 					{
 						role: "assistant",
-						content: "The upload fix passed local tests. The live upload service has not been tested. Release is blocked on that check. CANARY_UPLOAD_TESTS.",
+						content:
+							"The upload fix passed local tests. The live upload service has not been tested. Release is blocked on that check. CANARY_UPLOAD_TESTS.",
 					},
 				],
 				prompt: "/tldr one line",
 			},
 			checks: floors(180, ["\n"]),
 			reviewMetadata: {
-				criteria: ["Return one readable sentence explaining that release is blocked on an untested live service, without invented failure. The local pass need not be repeated."],
+				criteria: [
+					"Return one readable sentence explaining that release is blocked on an untested live service, without invented failure. The local pass need not be repeated.",
+				],
 			},
 		},
 		{
@@ -313,9 +379,16 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "Fix the broken password reset link." },
-					{ role: "assistant", content: "The reset link is fixed and its tests passed. It is not deployed. CANARY_RESET_HELPER." },
+					{
+						role: "assistant",
+						content: "The reset link is fixed and its tests passed. It is not deployed. CANARY_RESET_HELPER.",
+					},
 					{ role: "user", content: "Leave deployment for later. New topic: why did the daily report stop?" },
-					{ role: "assistant", content: "The report stopped because its access token expired. No replacement token is configured. You need to renew report access." },
+					{
+						role: "assistant",
+						content:
+							"The report stopped because its access token expired. No replacement token is configured. You need to renew report access.",
+					},
 				],
 				prompt: "/tldr whole session",
 			},
@@ -333,8 +406,16 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "Tell me what happened to the backup." },
-					{ role: "assistant", content: "The local backup completed. The remote copy failed because storage is full. Your local copy is available, but there is no remote backup. You need to free remote space before another copy." },
-					{ role: "assistant", content: "Done, see the report above. Correction: the remote account is read-only, so space cleanup also needs account-owner approval. CANARY_RECEIPT." },
+					{
+						role: "assistant",
+						content:
+							"The local backup completed. The remote copy failed because storage is full. Your local copy is available, but there is no remote backup. You need to free remote space before another copy.",
+					},
+					{
+						role: "assistant",
+						content:
+							"Done, see the report above. Correction: the remote account is read-only, so space cleanup also needs account-owner approval. CANARY_RECEIPT.",
+					},
 				],
 				prompt: "/tldr",
 			},
@@ -352,9 +433,21 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "While I am away, fix the CSV export and check it locally. Do not publish it." },
-					{ role: "assistant", content: "I found that quoted commas split one field into two. I asked an agent to review the parser. CANARY_DISPATCH." },
-					{ role: "assistant", content: "I changed the parser to keep quoted commas inside their field. The reviewer reported that blank rows still need coverage. CANARY_REVIEW." },
-					{ role: "assistant", content: "I added blank-row checks. Local CSV tests passed. The change is committed locally, not published. Exports from the live service remain unchecked." },
+					{
+						role: "assistant",
+						content:
+							"I found that quoted commas split one field into two. I asked an agent to review the parser. CANARY_DISPATCH.",
+					},
+					{
+						role: "assistant",
+						content:
+							"I changed the parser to keep quoted commas inside their field. The reviewer reported that blank rows still need coverage. CANARY_REVIEW.",
+					},
+					{
+						role: "assistant",
+						content:
+							"I added blank-row checks. Local CSV tests passed. The change is committed locally, not published. Exports from the live service remain unchecked.",
+					},
 				],
 				prompt: "/tldr since I left",
 			},
@@ -379,7 +472,11 @@ const suite: EvaluationSuite = {
 				prompt: "/tldr",
 			},
 			checks: floors(100, ["deployment", "staging"]),
-			reviewMetadata: { criteria: ["Keep the checksum answer in one short sentence, unchanged or equally clear. Add no tutorial, recap, or next step."] },
+			reviewMetadata: {
+				criteria: [
+					"Keep the checksum answer in one short sentence, unchanged or equally clear. Add no tutorial, recap, or next step.",
+				],
+			},
 		},
 		{
 			id: "action-in-hint",
@@ -387,7 +484,11 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "Fix the broken link, but keep the change local until I review it." },
-					{ role: "assistant", content: "The link now points to the current help page. The local check passed. The change is committed but not pushed. Your review is still pending. CANARY_LINK_HELPER." },
+					{
+						role: "assistant",
+						content:
+							"The link now points to the current help page. The local check passed. The change is committed but not pushed. Your review is still pending. CANARY_LINK_HELPER.",
+					},
 				],
 				prompt: "/tldr the link fix, then push it",
 			},
@@ -405,13 +506,21 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "Tell me how to retry the failed local index check." },
-					{ role: "assistant", content: "The check failed because two entries use the same name. First rename the duplicate entry in config/index.json. Then run `npm run verify:index -- --local --limit=25`. This checks at most 25 local entries without publishing. CANARY_INDEX_DIAGNOSTIC. The live index was not checked." },
+					{
+						role: "assistant",
+						content:
+							"The check failed because two entries use the same name. First rename the duplicate entry in config/index.json. Then run `npm run verify:index -- --local --limit=25`. This checks at most 25 local entries without publishing. CANARY_INDEX_DIAGNOSTIC. The live index was not checked.",
+					},
 				],
 				prompt: "/tldr",
 			},
 			checks: [
 				...floors(),
-				{ id: "copyable-command", type: "contains-exact", config: { values: ["npm run verify:index -- --local --limit=25", "config/index.json"] } },
+				{
+					id: "copyable-command",
+					type: "contains-exact",
+					config: { values: ["npm run verify:index -- --local --limit=25", "config/index.json"] },
+				},
 			],
 			reviewMetadata: {
 				criteria: [
@@ -425,7 +534,11 @@ const suite: EvaluationSuite = {
 			title: "An empty conversation does not acquire an invented task",
 			input: { seed: [], prompt: "/tldr" },
 			checks: floors(150),
-			reviewMetadata: { criteria: ["Say in one sentence that no substantive discussion is visible. Add no question, menu, task, or offer."] },
+			reviewMetadata: {
+				criteria: [
+					"Say in one sentence that no substantive discussion is visible. Add no question, menu, task, or offer.",
+				],
+			},
 		},
 		{
 			id: "slop-source",
@@ -433,7 +546,11 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "Did the connection change work?" },
-					{ role: "assistant", content: "Bottom line: honestly, this is not a patch, but a robust spine. The load-bearing seam is now aligned\u2014the retry layer is clean; the transport path is canonical (the surface is stable). Underneath all of it is one mistake. What actually happened is that the client now reconnects after a dropped connection. The local reconnect test passed. We have not tested a long outage. CANARY_SLOP. Simple. Solid. Ready. That distinction matters. Would you like a deeper dive or a rollout plan?" },
+					{
+						role: "assistant",
+						content:
+							"Bottom line: honestly, this is not a patch, but a robust spine. The load-bearing seam is now aligned\u2014the retry layer is clean; the transport path is canonical (the surface is stable). Underneath all of it is one mistake. What actually happened is that the client now reconnects after a dropped connection. The local reconnect test passed. We have not tested a long outage. CANARY_SLOP. Simple. Solid. Ready. That distinction matters. Would you like a deeper dive or a rollout plan?",
+					},
 				],
 				prompt: "/tldr",
 			},
@@ -452,14 +569,26 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "Check whether the backup is safe." },
-					{ role: "assistant", content: "The backup file exists locally and its checksum matches. A restore has not been tested. CANARY_BACKUP_HASH." },
+					{
+						role: "assistant",
+						content:
+							"The backup file exists locally and its checksum matches. A restore has not been tested. CANARY_BACKUP_HASH.",
+					},
 					{ role: "user", content: "/tldr" },
-					{ role: "assistant", content: "The local backup matches the original file. A restore has not been tested, so recovery is still unverified." },
+					{
+						role: "assistant",
+						content:
+							"The local backup matches the original file. A restore has not been tested, so recovery is still unverified.",
+					},
 				],
 				prompt: "/tldr",
 			},
 			checks: floors(103),
-			reviewMetadata: { criteria: ["Shorten the previous summary while preserving the matching local backup and untested restore. Add no restore instruction."] },
+			reviewMetadata: {
+				criteria: [
+					"Shorten the previous summary while preserving the matching local backup and untested restore. Add no restore instruction.",
+				],
+			},
 		},
 		{
 			id: "more-detail",
@@ -467,7 +596,11 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "Why does the search cache miss new edits?" },
-					{ role: "assistant", content: "The cache stores each query's results for five minutes. A repeat query reads that saved result without asking the database. Editing a record does not clear the saved result. Once the five minutes expire, the next query asks the database and saves fresh results. This is the designed behavior. No fix is proposed or implemented. CANARY_CACHE_TRACE." },
+					{
+						role: "assistant",
+						content:
+							"The cache stores each query's results for five minutes. A repeat query reads that saved result without asking the database. Editing a record does not clear the saved result. Once the five minutes expire, the next query asks the database and saves fresh results. This is the designed behavior. No fix is proposed or implemented. CANARY_CACHE_TRACE.",
+					},
 				],
 				prompt: "/tldr more detail on why edits are missing, in five short sentences",
 			},
@@ -485,22 +618,40 @@ const suite: EvaluationSuite = {
 			input: {
 				seed: [
 					{ role: "user", content: "Ask the review agent whether the export fix works." },
-					{ role: "assistant", content: "The review agent reports that the fix handles empty rows and its tests passed. I have not checked that report or the code. The report does not cover large files. CANARY_REVIEW_HANDLE." },
+					{
+						role: "assistant",
+						content:
+							"The review agent reports that the fix handles empty rows and its tests passed. I have not checked that report or the code. The report does not cover large files. CANARY_REVIEW_HANDLE.",
+					},
 				],
 				prompt: "/tldr",
 			},
 			checks: floors(400),
-			reviewMetadata: { criteria: ["Attribute the reported success to the review agent. Keep it unchecked and large files outside the report's coverage. Do not invent a required next step."] },
+			reviewMetadata: {
+				criteria: [
+					"Attribute the reported success to the review agent. Keep it unchecked and large files outside the report's coverage. Do not invent a required next step.",
+				],
+			},
 		},
 		{
 			id: "missing-selected-context",
 			title: "An unavailable earlier discussion remains unknown",
 			input: {
-				seed: [{ role: "assistant", content: "The earlier pricing discussion is not visible here. The only visible result is that the local import passed." }],
+				seed: [
+					{
+						role: "assistant",
+						content:
+							"The earlier pricing discussion is not visible here. The only visible result is that the local import passed.",
+					},
+				],
 				prompt: "/tldr the earlier pricing decision",
 			},
 			checks: floors(180, ["import"]),
-			reviewMetadata: { criteria: ["State that the selected pricing decision is not visible in one sentence and stop. Do not append or substitute the visible import result, retrieve history, or invent a decision."] },
+			reviewMetadata: {
+				criteria: [
+					"State that the selected pricing decision is not visible in one sentence and stop. Do not append or substitute the visible import result, retrieve history, or invent a decision.",
+				],
+			},
 		},
 	],
 	limits: {

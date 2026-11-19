@@ -2,7 +2,13 @@
 import type { AgentPriorityPage, AgentConversationSummary } from "./dashboard-types.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { CatalogPriorityCoverage } from "./catalog.ts";
-import { type CompactConversationSchema, type CompactSelectedStatusSchema, type CompactStorageStatusSchema, StorageStatusCoverageSchema, type ToolOverviewRow } from "./observation-schema.ts";
+import {
+	type CompactConversationSchema,
+	type CompactSelectedStatusSchema,
+	type CompactStorageStatusSchema,
+	StorageStatusCoverageSchema,
+	type ToolOverviewRow,
+} from "./observation-schema.ts";
 import type { Static } from "@earendil-works/pi-schema";
 import { matchesSchema } from "./schema-check.ts";
 import { safeFactText } from "./primary-observation.ts";
@@ -135,9 +141,14 @@ type OverviewGroup = "working" | "attention" | "unavailable" | "quiet";
 
 /** Independent fault evidence takes precedence over unavailable observation and activity. */
 function group(row: AgentConversationSummary): OverviewGroup {
-	if (row.attention || row.health?.lastError || row.health?.compactionFailure ||
+	if (
+		row.attention ||
+		row.health?.lastError ||
+		row.health?.compactionFailure ||
 		(row.health?.autoRetry && row.health.autoRetry.attempt >= row.health.autoRetry.maxAttempts) ||
-		(row.state === "failed" && Boolean(row.error))) return "attention";
+		(row.state === "failed" && Boolean(row.error))
+	)
+		return "attention";
 	if (row.owner === "unavailable" || row.state === "unavailable") return "unavailable";
 	if (row.state === "working" || row.state === "starting") return "working";
 	return "quiet";
@@ -149,13 +160,23 @@ function hasOpenWork(row: AgentConversationSummary): boolean {
 
 /** Coordination state survives sampling even when fault evidence changes the summary group. */
 function protectedFromSampling(row: AgentConversationSummary): boolean {
-	return Boolean(row.rosterOrder?.priority) || hasOpenWork(row) || (row.unplaced ?? 0) > 0 ||
-		row.state === "starting" || row.state === "working";
+	return (
+		Boolean(row.rosterOrder?.priority) ||
+		hasOpenWork(row) ||
+		(row.unplaced ?? 0) > 0 ||
+		row.state === "starting" ||
+		row.state === "working"
+	);
 }
 
 function oldTerminalAttention(row: AgentConversationSummary, observedAt: number): boolean {
-	return group(row) === "attention" && ["failed", "stopped", "done", "interrupted"].includes(row.state) &&
-		Number.isFinite(observedAt) && Number.isFinite(row.modifiedAt) && row.modifiedAt < observedAt - RECENT_ATTENTION_MS;
+	return (
+		group(row) === "attention" &&
+		["failed", "stopped", "done", "interrupted"].includes(row.state) &&
+		Number.isFinite(observedAt) &&
+		Number.isFinite(row.modifiedAt) &&
+		row.modifiedAt < observedAt - RECENT_ATTENTION_MS
+	);
 }
 
 function byIdentity(a: string, b: string): number {
@@ -169,8 +190,10 @@ function initialOverview(
 	awareness?: EffortAwareness,
 ) {
 	const ordered = [...page.rows].sort(
-		(a, b) => Number(b.rosterOrder.priority) - Number(a.rosterOrder.priority) ||
-			b.rosterOrder.modifiedAt - a.rosterOrder.modifiedAt || byIdentity(a.id, b.id),
+		(a, b) =>
+			Number(b.rosterOrder.priority) - Number(a.rosterOrder.priority) ||
+			b.rosterOrder.modifiedAt - a.rosterOrder.modifiedAt ||
+			byIdentity(a.id, b.id),
 	);
 	const totals = { working: 0, attention: 0, unavailable: 0, quiet: 0 };
 	const sampled = { attention: 0, unavailable: 0, quiet: 0 };
@@ -179,7 +202,8 @@ function initialOverview(
 		const category = group(row);
 		totals[category]++;
 		if (protectedFromSampling(row) || category === "working") return true;
-		if (category === "attention") return !oldTerminalAttention(row, observedAt) || sampled.attention++ < OLD_ATTENTION_SAMPLE;
+		if (category === "attention")
+			return !oldTerminalAttention(row, observedAt) || sampled.attention++ < OLD_ATTENTION_SAMPLE;
 		return sampled[category]++ < (category === "quiet" ? QUIET_SAMPLE : UNAVAILABLE_SAMPLE);
 	});
 	const sessions = selected.map(compact);
@@ -207,7 +231,10 @@ function initialOverview(
 		coverage: {
 			complete: false,
 			storagesVisited: page.coverage.storagesVisited,
-			inventory: page.coverage.inventory, omittedPriorityRows: 0, omittedPriorityRecords: 0, omittedOpenWorkRows: 0,
+			inventory: page.coverage.inventory,
+			omittedPriorityRows: 0,
+			omittedPriorityRecords: 0,
+			omittedOpenWorkRows: 0,
 			skipped: page.coverage.skipped,
 			omitted: page.coverage.omitted,
 			omittedPrimaries: 0,
@@ -229,8 +256,14 @@ type ByteOmissions = Record<OverviewGroup, number> & { rows: number; priority: n
 function sourceReasons(page: AgentPriorityPage): string[] {
 	const reasons: string[] = [];
 	const inventory = page.coverage.inventory;
-	if (inventory.unknownClaims) reasons.push(`${inventory.unknownClaims} writer claims have unknown owners; live-host priority is not established for those records.`);
-	if (inventory.remaining) reasons.push(`${inventory.remaining} catalog records (${inventory.remainingRows} published rows) fall outside the source output limit; ${inventory.priorityRemaining} records (${inventory.priorityRemainingRows} rows) are live or caller-owned.`);
+	if (inventory.unknownClaims)
+		reasons.push(
+			`${inventory.unknownClaims} writer claims have unknown owners; live-host priority is not established for those records.`,
+		);
+	if (inventory.remaining)
+		reasons.push(
+			`${inventory.remaining} catalog records (${inventory.remainingRows} published rows) fall outside the source output limit; ${inventory.priorityRemaining} records (${inventory.priorityRemainingRows} rows) are live or caller-owned.`,
+		);
 	if (
 		!page.coverage.complete ||
 		page.coverage.nextCursor !== null ||
@@ -261,12 +294,14 @@ function excludeAwareness(awareness: EffortAwareness | undefined): boolean {
 		awareness.presence.efforts.pop();
 		awareness.presence.coverage.omitted++;
 		awareness.presence.coverage.complete = false;
-		if (!awareness.presence.coverage.reasons.includes("status-byte-limit")) awareness.presence.coverage.reasons.push("status-byte-limit");
+		if (!awareness.presence.coverage.reasons.includes("status-byte-limit"))
+			awareness.presence.coverage.reasons.push("status-byte-limit");
 	} else if (awareness.threads.items.length > 0) {
 		awareness.threads.items.pop();
 		awareness.threads.coverage.omittedResults++;
 		awareness.threads.coverage.complete = false;
-		if (!awareness.threads.coverage.reasons.includes("status-byte-limit")) awareness.threads.coverage.reasons.push("status-byte-limit");
+		if (!awareness.threads.coverage.reasons.includes("status-byte-limit"))
+			awareness.threads.coverage.reasons.push("status-byte-limit");
 	} else if (awareness.self.intentClaim || awareness.self.observedPurpose) {
 		const { id, cwd, repository } = awareness.self;
 		awareness.self = { id, cwd, ...(repository === undefined ? {} : { repository }), omitted: true };
@@ -274,7 +309,12 @@ function excludeAwareness(awareness: EffortAwareness | undefined): boolean {
 	return true;
 }
 
-function excludeSession(value: MutableOverview, index: number, dropped: ByteOmissions, priorityIds: ReadonlySet<string>): void {
+function excludeSession(
+	value: MutableOverview,
+	index: number,
+	dropped: ByteOmissions,
+	priorityIds: ReadonlySet<string>,
+): void {
 	const [row] = value.sessions.splice(index, 1);
 	const category = group(row);
 	dropped[category]++;
@@ -285,11 +325,19 @@ function excludeSession(value: MutableOverview, index: number, dropped: ByteOmis
 	value.coverage.omitted++;
 }
 
-function excludeRow(value: MutableOverview, dropped: ByteOmissions, priorityIds: ReadonlySet<string>, protectedIds: ReadonlySet<string>, historicalIds: ReadonlySet<string>): void {
-	const rowBudget = STATUS_OVERVIEW_BYTE_LIMIT - measure({ ...value, sessions: [], primaries: [], failures: [], awareness: undefined });
+function excludeRow(
+	value: MutableOverview,
+	dropped: ByteOmissions,
+	priorityIds: ReadonlySet<string>,
+	protectedIds: ReadonlySet<string>,
+	historicalIds: ReadonlySet<string>,
+): void {
+	const rowBudget =
+		STATUS_OVERVIEW_BYTE_LIMIT - measure({ ...value, sessions: [], primaries: [], failures: [], awareness: undefined });
 	const oversized = value.sessions.findIndex((row) => measure(row) > rowBudget);
-	const sample = value.sessions.findLastIndex((row) => !protectedIds.has(row.id) &&
-		(["quiet", "unavailable"].includes(group(row)) || historicalIds.has(row.id)));
+	const sample = value.sessions.findLastIndex(
+		(row) => !protectedIds.has(row.id) && (["quiet", "unavailable"].includes(group(row)) || historicalIds.has(row.id)),
+	);
 	if (oversized >= 0 || sample >= 0) {
 		excludeSession(value, oversized >= 0 ? oversized : sample, dropped, priorityIds);
 	} else if (value.primaries.length > 0) {
@@ -306,7 +354,12 @@ function excludeRow(value: MutableOverview, dropped: ByteOmissions, priorityIds:
 	} else if (value.sessions.length > 0) {
 		const ordinary = value.sessions.findLastIndex((row) => !priorityIds.has(row.id) && !hasOpenWork(row));
 		const open = value.sessions.findLastIndex((row) => !priorityIds.has(row.id));
-		excludeSession(value, ordinary >= 0 ? ordinary : open >= 0 ? open : value.sessions.length - 1, dropped, priorityIds);
+		excludeSession(
+			value,
+			ordinary >= 0 ? ordinary : open >= 0 ? open : value.sessions.length - 1,
+			dropped,
+			priorityIds,
+		);
 	} else {
 		throw new Error("Status overview metadata exceeds the byte limit after every row was summarized or omitted.");
 	}
@@ -322,25 +375,57 @@ export function buildStatusOverview(
 ): StatusOverview {
 	const value = initialOverview(page, primaries, failures, awareness);
 	const reasons = sourceReasons(page);
-	const dropped: ByteOmissions = { working: 0, attention: 0, unavailable: 0, quiet: 0, rows: 0, priority: 0, openWork: 0 };
+	const dropped: ByteOmissions = {
+		working: 0,
+		attention: 0,
+		unavailable: 0,
+		quiet: 0,
+		rows: 0,
+		priority: 0,
+		openWork: 0,
+	};
 	const priorityIds = new Set(page.rows.filter((row) => row.rosterOrder.priority).map((row) => row.id));
 	const protectedIds = new Set(page.rows.filter(protectedFromSampling).map((row) => row.id));
-	const historicalIds = new Set(page.rows.filter((row) => oldTerminalAttention(row, Date.parse(page.observedAt))).map((row) => row.id));
-	const summarizedAttention = value.summary.sessions.attention - value.sessions.filter((row) => group(row) === "attention").length;
-	const samplingReasons = summarizedAttention > 0 ? [`${summarizedAttention} older terminal attention rows were intentionally summarised; the recent attention window is 24 hours. Discover their identities with agent_list({}), then repeat coverage.next; use agent_status({sessionId:<identity>,detail:true}) for full status.`] : [];
+	const historicalIds = new Set(
+		page.rows.filter((row) => oldTerminalAttention(row, Date.parse(page.observedAt))).map((row) => row.id),
+	);
+	const summarizedAttention =
+		value.summary.sessions.attention - value.sessions.filter((row) => group(row) === "attention").length;
+	const samplingReasons =
+		summarizedAttention > 0
+			? [
+					`${summarizedAttention} older terminal attention rows were intentionally summarised; the recent attention window is 24 hours. Discover their identities with agent_list({}), then repeat coverage.next; use agent_status({sessionId:<identity>,detail:true}) for full status.`,
+				]
+			: [];
 	for (;;) {
 		value.coverage.reasons = [...reasons];
 		value.coverage.omittedPriorityRows = dropped.priority;
 		value.coverage.omittedOpenWorkRows = dropped.openWork;
 		const retained = new Set(value.sessions.map((row) => row.id));
-		value.coverage.omittedPriorityRecords = new Set(page.rows.filter((row) => priorityIds.has(row.id) && !retained.has(row.id)).map((row) => row.storageId)).size;
-		if (dropped.priority) value.coverage.reasons.push(`Status byte limit excluded ${dropped.priority} live or caller-owned rows from ${value.coverage.omittedPriorityRecords} records; a record counts once when any of its priority rows was excluded.`);
-		if (dropped.openWork) value.coverage.reasons.push(`Status byte limit excluded ${dropped.openWork} declared-open-work rows; use targeted agent_status or fresh agent_list discovery.`);
+		value.coverage.omittedPriorityRecords = new Set(
+			page.rows.filter((row) => priorityIds.has(row.id) && !retained.has(row.id)).map((row) => row.storageId),
+		).size;
+		if (dropped.priority)
+			value.coverage.reasons.push(
+				`Status byte limit excluded ${dropped.priority} live or caller-owned rows from ${value.coverage.omittedPriorityRecords} records; a record counts once when any of its priority rows was excluded.`,
+			);
+		if (dropped.openWork)
+			value.coverage.reasons.push(
+				`Status byte limit excluded ${dropped.openWork} declared-open-work rows; use targeted agent_status or fresh agent_list discovery.`,
+			);
 		if (dropped.rows > 0)
 			value.coverage.reasons.push(
 				`Status byte limit excluded ${dropped.working} working rows, ${dropped.attention} attention rows, ${dropped.unavailable} unavailable rows, ${dropped.quiet} quiet rows, ${value.coverage.omittedPrimaries} primary sample rows, and ${value.coverage.omittedFailures} failure sample rows; use fresh agent_list discovery or targeted agent_status. agent_status has no continuation parameter; call agent_list without a cursor to rediscover these rows.`,
 			);
-		if (value.awareness && (!value.awareness.presence.coverage.complete || !value.awareness.threads.coverage.complete || value.awareness.self.omitted)) value.coverage.reasons.push("Effort awareness is partial; its presence, thread, and self coverage identifies omitted observations.");
+		if (
+			value.awareness &&
+			(!value.awareness.presence.coverage.complete ||
+				!value.awareness.threads.coverage.complete ||
+				value.awareness.self.omitted)
+		)
+			value.coverage.reasons.push(
+				"Effort awareness is partial; its presence, thread, and self coverage identifies omitted observations.",
+			);
 		value.coverage.complete = value.coverage.reasons.length === 0 && dropped.rows === 0;
 		value.coverage.reasons.push(...samplingReasons);
 		if (fixedPointBytes(value) <= STATUS_OVERVIEW_BYTE_LIMIT) return value;
@@ -353,19 +438,44 @@ const SELECTED_STATUS_BYTE_LIMIT = 8 * 1024;
 type CompactConversation = Static<typeof CompactConversationSchema>;
 type CompactSelected = Static<typeof CompactSelectedStatusSchema>;
 type CompactStorage = Static<typeof CompactStorageStatusSchema>;
-export interface PresentationRefusal { format: "refused"; cause: "byte-limit" | "source"; reason: string; byteLimit: number }
-function refusal(cause: PresentationRefusal["cause"], byteLimit: number, reason: string): PresentationRefusal { return { format: "refused", cause, reason, byteLimit }; }
-function record(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+export interface PresentationRefusal {
+	format: "refused";
+	cause: "byte-limit" | "source";
+	reason: string;
+	byteLimit: number;
 }
-function count(value: unknown): number | undefined { return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : undefined; }
+function refusal(cause: PresentationRefusal["cause"], byteLimit: number, reason: string): PresentationRefusal {
+	return { format: "refused", cause, reason, byteLimit };
+}
+function record(value: unknown): Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+function count(value: unknown): number | undefined {
+	return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : undefined;
+}
 
 /** Detail belongs to one explicit target, not to a page or a fleet selection. */
-export function validateStatusDetail(input: { sessionId?: unknown; detail?: unknown; view?: unknown; storageId?: unknown; cursor?: unknown; limit?: unknown }): void {
+export function validateStatusDetail(input: {
+	sessionId?: unknown;
+	detail?: unknown;
+	view?: unknown;
+	storageId?: unknown;
+	cursor?: unknown;
+	limit?: unknown;
+}): void {
 	if (input.detail === undefined || input.detail === false) return;
-	if (typeof input.detail !== "boolean" || typeof input.sessionId !== "string" || !input.sessionId ||
-		input.view !== undefined || input.storageId !== undefined || input.cursor !== undefined || input.limit !== undefined)
-		throw new Error("detail requires one explicit sessionId and cannot be combined with fleet or storage-page selectors.");
+	if (
+		typeof input.detail !== "boolean" ||
+		typeof input.sessionId !== "string" ||
+		!input.sessionId ||
+		input.view !== undefined ||
+		input.storageId !== undefined ||
+		input.cursor !== undefined ||
+		input.limit !== undefined
+	)
+		throw new Error(
+			"detail requires one explicit sessionId and cannot be combined with fleet or storage-page selectors.",
+		);
 }
 
 function addCompactName(row: CompactConversation, name: unknown): void {
@@ -374,27 +484,52 @@ function addCompactName(row: CompactConversation, name: unknown): void {
 	if (row.name !== name) row.omitted.push("name shortened");
 }
 
-function compactConversation(source: unknown, availability: CompactConversation["availability"]): CompactConversation | undefined {
+function compactConversation(
+	source: unknown,
+	availability: CompactConversation["availability"],
+): CompactConversation | undefined {
 	const row = record(source);
 	if (typeof row.identity !== "string" || !row.identity || !(count(row.conversationId) ?? 0)) return undefined;
-	const agent = record(row.agent), model = record(agent.model), live = record(row.live), run = record(live.run);
+	const agent = record(row.agent),
+		model = record(agent.model),
+		live = record(row.live),
+		run = record(live.run);
 	const result: CompactConversation = {
-		identity: row.identity, conversationId: Number(row.conversationId), busy: typeof row.busy === "boolean" ? row.busy : null, availability,
-		queue: { inbox: Array.isArray(record(row.inbox).items) ? (record(row.inbox).items as unknown[]).length : null,
-			submissions: Array.isArray(row.submissions) ? row.submissions.filter(value => ["queued", "placed"].includes(String(record(value).status))).length : null },
-		timers: Array.isArray(row.timers) ? row.timers.length : null, context: "unknown",
-		omitted: ["instructions", "tools", "extensions", "historical tasks and submissions", "usage", "context fact unavailable"],
+		identity: row.identity,
+		conversationId: Number(row.conversationId),
+		busy: typeof row.busy === "boolean" ? row.busy : null,
+		availability,
+		queue: {
+			inbox: Array.isArray(record(row.inbox).items) ? (record(row.inbox).items as unknown[]).length : null,
+			submissions: Array.isArray(row.submissions)
+				? row.submissions.filter((value) => ["queued", "placed"].includes(String(record(value).status))).length
+				: null,
+		},
+		timers: Array.isArray(row.timers) ? row.timers.length : null,
+		context: "unknown",
+		omitted: [
+			"instructions",
+			"tools",
+			"extensions",
+			"historical tasks and submissions",
+			"usage",
+			"context fact unavailable",
+		],
 		detail: { tool: "agent_status", sessionId: row.identity, detail: true },
 	};
 	addCompactName(result, row.name);
-	if (typeof model.provider === "string" && typeof model.modelId === "string") result.model = { provider: model.provider, modelId: model.modelId };
+	if (typeof model.provider === "string" && typeof model.modelId === "string")
+		result.model = { provider: model.provider, modelId: model.modelId };
 	if (typeof agent.thinkingLevel === "string") result.thinkingLevel = agent.thinkingLevel;
 	if ((count(run.taskId) ?? 0) > 0) result.runId = Number(run.taskId);
 	addCompactUnplaced(result, row);
 	addCompactOpenWork(result, row);
 	const block = record(row.providerBlock);
 	if (typeof block.blockId === "string") {
-		result.providerBlock = { blockId: block.blockId, recovery: `agent_configure({sessionId:${JSON.stringify(row.identity)},model:<explicit provider/model>}), then a new agent_send follow-up` };
+		result.providerBlock = {
+			blockId: block.blockId,
+			recovery: `agent_configure({sessionId:${JSON.stringify(row.identity)},model:<explicit provider/model>}), then a new agent_send follow-up`,
+		};
 		result.omitted.push("provider evidence; use detail or result view");
 	}
 	return result;
@@ -428,12 +563,12 @@ export function reduceCompactStatus<T extends CompactSelected | CompactStorage>(
 			delete row.name;
 			delete row.model;
 			delete row.thinkingLevel;
-			row.omitted = row.omitted.filter(note => note !== "name shortened");
+			row.omitted = row.omitted.filter((note) => note !== "name shortened");
 		}
 		if (omitted) reduced.omitted.push("row names, models and thinking levels omitted for byte limit");
 	} else if (reduced.conversation.name !== undefined) {
 		delete reduced.conversation.name;
-		reduced.conversation.omitted = reduced.conversation.omitted.filter(note => note !== "name shortened");
+		reduced.conversation.omitted = reduced.conversation.omitted.filter((note) => note !== "name shortened");
 		reduced.omitted.push("name omitted for byte limit");
 	}
 	return measure(reduced) <= measure(value) ? reduced : value;
@@ -441,11 +576,21 @@ export function reduceCompactStatus<T extends CompactSelected | CompactStorage>(
 
 function compactPrimary(source: Record<string, unknown>): CompactConversation | undefined {
 	if (typeof source.sessionId !== "string") return undefined;
-	const presence = record(source.presence), model = record(presence.model);
-	const conversation: CompactConversation = { identity: source.sessionId, busy: null, availability: "unknown", queue: { inbox: null, submissions: null }, timers: null, context: "unknown",
-		omitted: ["retained ancestry", "live session progress unavailable", "context fact unavailable"], detail: { tool: "agent_status", sessionId: source.sessionId, detail: true } };
+	const presence = record(source.presence),
+		model = record(presence.model);
+	const conversation: CompactConversation = {
+		identity: source.sessionId,
+		busy: null,
+		availability: "unknown",
+		queue: { inbox: null, submissions: null },
+		timers: null,
+		context: "unknown",
+		omitted: ["retained ancestry", "live session progress unavailable", "context fact unavailable"],
+		detail: { tool: "agent_status", sessionId: source.sessionId, detail: true },
+	};
 	addCompactName(conversation, presence.name);
-	if (typeof model.provider === "string" && typeof model.modelId === "string") conversation.model = { provider: model.provider, modelId: model.modelId };
+	if (typeof model.provider === "string" && typeof model.modelId === "string")
+		conversation.model = { provider: model.provider, modelId: model.modelId };
 	return conversation;
 }
 function sourceAvailability(source: Record<string, unknown>): CompactConversation["availability"] {
@@ -490,7 +635,7 @@ function reduceSelectedRecovery(value: CompactSelected): CompactSelected {
 	const reduced = structuredClone(value);
 	if (reduced.conversation.name !== undefined) {
 		delete reduced.conversation.name;
-		reduced.conversation.omitted = reduced.conversation.omitted.filter(note => note !== "name shortened");
+		reduced.conversation.omitted = reduced.conversation.omitted.filter((note) => note !== "name shortened");
 		reduced.omitted.push("name omitted for byte limit");
 	}
 	const omitted: string[] = [];
@@ -500,7 +645,11 @@ function reduceSelectedRecovery(value: CompactSelected): CompactSelected {
 	for (const key of ["deliveryError", "runFailure"] as const) {
 		if (measure(reduced) <= SELECTED_STATUS_BYTE_LIMIT) break;
 		if (omitSelectedRecoveryFact(reduced, key)) omitted.push(key);
-		if (omitted.length) reduced.omitted = [...baseOmissions, `Recovery facts omitted for byte limit: ${omitted.join(", ")}; full detail: ${call}`];
+		if (omitted.length)
+			reduced.omitted = [
+				...baseOmissions,
+				`Recovery facts omitted for byte limit: ${omitted.join(", ")}; full detail: ${call}`,
+			];
 	}
 	return measure(reduced) <= measure(value) ? reduced : value;
 }
@@ -508,8 +657,12 @@ function reduceSelectedRecovery(value: CompactSelected): CompactSelected {
 /** Public selected status is separate from the complete host record. */
 export function projectSelectedStatus(value: unknown): CompactSelected | PresentationRefusal {
 	const source = record(value);
-	const conversation = source.kind === "ordinary-primary" ? compactPrimary(source) : compactConversation(source.conversation, sourceAvailability(source));
-	if (!conversation) return refusal("source", SELECTED_STATUS_BYTE_LIMIT, "Selected status source identity is unavailable.");
+	const conversation =
+		source.kind === "ordinary-primary"
+			? compactPrimary(source)
+			: compactConversation(source.conversation, sourceAvailability(source));
+	if (!conversation)
+		return refusal("source", SELECTED_STATUS_BYTE_LIMIT, "Selected status source identity is unavailable.");
 	let result: CompactSelected = { format: "compact", conversation, omitted: ["host inventory", "effort awareness"] };
 	if (typeof source.storageId === "string") result.storageId = source.storageId;
 	if (typeof source.live === "boolean") result.live = source.live;
@@ -517,25 +670,45 @@ export function projectSelectedStatus(value: unknown): CompactSelected | Present
 	if (measure(result) > SELECTED_STATUS_BYTE_LIMIT) result = reduceCompactStatus(result);
 	if (measure(result) > SELECTED_STATUS_BYTE_LIMIT) result = reduceSelectedRecovery(result);
 	if (measure(result) > SELECTED_STATUS_BYTE_LIMIT)
-		return refusal("byte-limit", SELECTED_STATUS_BYTE_LIMIT, "Mandatory selected identity, state, or recovery metadata exceeds the output byte limit; request detail:true.");
+		return refusal(
+			"byte-limit",
+			SELECTED_STATUS_BYTE_LIMIT,
+			"Mandatory selected identity, state, or recovery metadata exceeds the output byte limit; request detail:true.",
+		);
 	return result;
 }
 
 /** Preserve every source-page identity and the backend continuation without another discovery pass. */
 export function projectStorageStatus(value: unknown): CompactStorage | PresentationRefusal {
 	const source = record(value);
-	if (typeof source.storageId !== "string" || !Array.isArray(source.conversations) || !matchesSchema(StorageStatusCoverageSchema, source.coverage))
+	if (
+		typeof source.storageId !== "string" ||
+		!Array.isArray(source.conversations) ||
+		!matchesSchema(StorageStatusCoverageSchema, source.coverage)
+	)
 		return refusal("source", STATUS_OVERVIEW_BYTE_LIMIT, "Storage status source identity or coverage is unavailable.");
 	const availability = sourceAvailability(source);
 	const conversations: CompactConversation[] = [];
 	for (const row of source.conversations) {
 		const compact = compactConversation(row, availability);
-		if (!compact) return refusal("source", STATUS_OVERVIEW_BYTE_LIMIT, "A storage status row has no complete source identity.");
+		if (!compact)
+			return refusal("source", STATUS_OVERVIEW_BYTE_LIMIT, "A storage status row has no complete source identity.");
 		conversations.push(compact);
 	}
-	let result: CompactStorage = { format: "compact", storageId: source.storageId, conversations, coverage: structuredClone(source.coverage),
-		omitted: ["host inventory", "effort awareness", "created-agent detail"] };
+	let result: CompactStorage = {
+		format: "compact",
+		storageId: source.storageId,
+		conversations,
+		coverage: structuredClone(source.coverage),
+		omitted: ["host inventory", "effort awareness", "created-agent detail"],
+	};
 	if (typeof source.live === "boolean") result.live = source.live;
 	if (measure(result) > STATUS_OVERVIEW_BYTE_LIMIT) result = reduceCompactStatus(result);
-	return measure(result) <= STATUS_OVERVIEW_BYTE_LIMIT ? result : refusal("byte-limit", STATUS_OVERVIEW_BYTE_LIMIT, "Mandatory storage identities, state, or coverage exceed the output byte limit; no identities were cut and no continuation was invented.");
+	return measure(result) <= STATUS_OVERVIEW_BYTE_LIMIT
+		? result
+		: refusal(
+				"byte-limit",
+				STATUS_OVERVIEW_BYTE_LIMIT,
+				"Mandatory storage identities, state, or coverage exceed the output byte limit; no identities were cut and no continuation was invented.",
+			);
 }

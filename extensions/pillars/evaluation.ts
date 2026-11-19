@@ -59,47 +59,49 @@ export default async function evaluationExtension(pi: ExtensionAPI): Promise<voi
 	function validateCommand(args: string): void {
 		if (pi.getFlag(flag) !== source.digest)
 			throw new Error("Pillars evaluation source differs from the approved plan.");
-		if (!parseJudgmentRequest(args))
-			throw new Error("The evaluation admits only check, derive, and review commands.");
+		if (!parseJudgmentRequest(args)) throw new Error("The evaluation admits only check, derive, and review commands.");
 		if (settled) throw new Error("A Pillars evaluation command is already active.");
 	}
 	try {
 		pi.on("agent_settled", (event) => {
 			settled?.(event.aborted);
 		});
-		pillarsExtension({
-			...pi,
-			registerCommand(name, command) {
-				pi.registerCommand(name, {
-					...command,
-					handler: async (args, ctx) => {
-						validateCommand(args);
-						let aborted = false;
-						const completion = new Promise<void>((resolve) => {
-							settled = (cancelled) => {
-								aborted = cancelled;
-								resolve();
-							};
-						});
-						try {
-							await command.handler(args, ctx);
-							// This SDK adapter does not bind command-context waitForIdle actions.
-							if (!ctx.isIdle()) await completion;
-							if (aborted) throw new Error("Pillars evaluation command was aborted.");
-						} finally {
-							settled = undefined;
-						}
-					},
-				});
+		pillarsExtension(
+			{
+				...pi,
+				registerCommand(name, command) {
+					pi.registerCommand(name, {
+						...command,
+						handler: async (args, ctx) => {
+							validateCommand(args);
+							let aborted = false;
+							const completion = new Promise<void>((resolve) => {
+								settled = (cancelled) => {
+									aborted = cancelled;
+									resolve();
+								};
+							});
+							try {
+								await command.handler(args, ctx);
+								// This SDK adapter does not bind command-context waitForIdle actions.
+								if (!ctx.isIdle()) await completion;
+								if (aborted) throw new Error("Pillars evaluation command was aborted.");
+							} finally {
+								settled = undefined;
+							}
+						},
+					});
+				},
 			},
-		}, {
-			agentDir: directory,
-			env: {
-				PI_PILLARS_CORPUS: defaultCorpusRoot(),
-				PI_PILLARS_COLLECT: "0",
-				PI_PILLARS_DIR: directory,
+			{
+				agentDir: directory,
+				env: {
+					PI_PILLARS_CORPUS: defaultCorpusRoot(),
+					PI_PILLARS_COLLECT: "0",
+					PI_PILLARS_DIR: directory,
+				},
 			},
-		});
+		);
 		pi.on("tool_call", (event) => {
 			if (event.toolName === "pillars") return;
 			return {

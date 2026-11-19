@@ -2,7 +2,17 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
-import { Harness, LiveDoc, MemoryStorage, ProviderDoc, UserEntry, createRegistry, defineTask, type CompactionResult, type TaskId } from "@earendil-works/pi-durable";
+import {
+	Harness,
+	LiveDoc,
+	MemoryStorage,
+	ProviderDoc,
+	UserEntry,
+	createRegistry,
+	defineTask,
+	type CompactionResult,
+	type TaskId,
+} from "@earendil-works/pi-durable";
 import { isCatalogAttentionHints, projectCatalogAttention } from "./catalog-attention.ts";
 import { readDashboard } from "./durable-observation.ts";
 import { ProviderControlDoc } from "./provider-block.ts";
@@ -22,7 +32,8 @@ function task(version: number) {
 		version,
 		initial: () => ({ phase: "hold" }),
 		phases: { hold: async () => {} },
-		abort: (_task, runtime, current) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), current),
+		abort: (_task, runtime, current) =>
+			runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), current),
 	});
 }
 
@@ -41,31 +52,47 @@ it("projects only current provider blocks and clears the hint after recovery rem
 	await f.harness.commit(async (tx) => {
 		const provider = await tx.doc(ProviderDoc, f.root.id);
 		const state = await tx.doc(ProviderControlDoc, provider.sessionId, null);
-		state.block = { blockId: "provider-block", conversationId: f.root.id, providerSessionId: provider.sessionId, epoch: 0,
-			model: { provider: "fixture", modelId: "fixture" }, error: "synthetic quota exhaustion", errorRedacted: false,
-			errorTruncated: false, source: "provider", timestamp: 1, originalResults: [], omittedOriginalResults: 0 };
+		state.block = {
+			blockId: "provider-block",
+			conversationId: f.root.id,
+			providerSessionId: provider.sessionId,
+			epoch: 0,
+			model: { provider: "fixture", modelId: "fixture" },
+			error: "synthetic quota exhaustion",
+			errorRedacted: false,
+			errorTruncated: false,
+			source: "provider",
+			timestamp: 1,
+			originalResults: [],
+			omittedOriginalResults: 0,
+		};
 	}, context);
 	const failed = { ...f.source, state: "failed" };
-	assert.deepEqual((await projectCatalogAttention(f.harness, [failed], context)).rows,
-		[{ identity: f.source.identity, kind: "provider-blocked", blockId: "provider-block" }]);
+	assert.deepEqual((await projectCatalogAttention(f.harness, [failed], context)).rows, [
+		{ identity: f.source.identity, kind: "provider-blocked", blockId: "provider-block" },
+	]);
 	await f.harness.commit(async (tx) => {
 		const provider = await tx.doc(ProviderDoc, f.root.id);
 		delete (await tx.doc(ProviderControlDoc, provider.sessionId, null)).block;
 	}, context);
-	assert.deepEqual((await projectCatalogAttention(f.harness, [failed], context)).rows,
-		[{ identity: f.source.identity, kind: "failed-turn" }]);
+	assert.deepEqual((await projectCatalogAttention(f.harness, [failed], context)).rows, [
+		{ identity: f.source.identity, kind: "failed-turn" },
+	]);
 	assert.deepEqual((await projectCatalogAttention(f.harness, [f.source], context)).rows, []);
 });
 
 it("uses exact native blocked-task reasons and clears host-repair hints when a definition becomes usable", async (t) => {
 	const f = await fixture(t);
 	const definition = task(2);
-	const taskId = await f.harness.commit((tx) => tx.createTask(definition, null,
-		{ ownership: { kind: "conversation" }, conversationId: f.root.id }), context);
+	const taskId = await f.harness.commit(
+		(tx) => tx.createTask(definition, null, { ownership: { kind: "conversation" }, conversationId: f.root.id }),
+		context,
+	);
 	const failed = { ...f.source, state: "failed" };
 	const expectReason = async (reason: string) => {
-		assert.deepEqual((await projectCatalogAttention(f.harness, [failed], context)).rows,
-			[{ identity: f.source.identity, kind: "task-blocked", taskId, reason }]);
+		assert.deepEqual((await projectCatalogAttention(f.harness, [failed], context)).rows, [
+			{ identity: f.source.identity, kind: "task-blocked", taskId, reason },
+		]);
 	};
 	await expectReason("missing_task");
 	f.registry.install({ name: "fixture.catalog-attention", tasks: [task(1)] });
@@ -73,8 +100,9 @@ it("uses exact native blocked-task reasons and clears host-repair hints when a d
 	f.registry.install({ name: "fixture.catalog-attention", tasks: [task(3)] });
 	await expectReason("migration_failed");
 	f.registry.install({ name: "fixture.catalog-attention", tasks: [definition] });
-	assert.deepEqual((await projectCatalogAttention(f.harness, [failed], context)).rows,
-		[{ identity: f.source.identity, kind: "failed-turn" }]);
+	assert.deepEqual((await projectCatalogAttention(f.harness, [failed], context)).rows, [
+		{ identity: f.source.identity, kind: "failed-turn" },
+	]);
 	assert.deepEqual((await projectCatalogAttention(f.harness, [f.source], context)).rows, []);
 });
 
@@ -83,36 +111,72 @@ it("does not treat automatic retries, compaction diagnostics or reply prose as i
 	await f.harness.commit(async (tx) => {
 		const live = await tx.doc(LiveDoc, f.root.id);
 		live.generation = { attempt: 2, retry: { at: 5000, error: "synthetic throttle" } };
-		live.compactions = [{ taskId: 10 as TaskId<CompactionResult>, trigger: "manual", blocking: true, attempt: 1, retry: { at: 5000, error: "synthetic retry" } }];
-		live.compactionFailure = { taskId: 11 as TaskId<CompactionResult>, trigger: "manual", error: "synthetic compaction failure" };
+		live.compactions = [
+			{
+				taskId: 10 as TaskId<CompactionResult>,
+				trigger: "manual",
+				blocking: true,
+				attempt: 1,
+				retry: { at: 5000, error: "synthetic retry" },
+			},
+		];
+		live.compactionFailure = {
+			taskId: 11 as TaskId<CompactionResult>,
+			trigger: "manual",
+			error: "synthetic compaction failure",
+		};
 	}, context);
-	const source = { ...f.source, state: "working", latestReply: "I need your answer. Please approve this request.", error: "Needs input" };
+	const source = {
+		...f.source,
+		state: "working",
+		latestReply: "I need your answer. Please approve this request.",
+		error: "Needs input",
+	};
 	const hints = await projectCatalogAttention(f.harness, [source], context);
 	assert.deepEqual(hints, { rows: [], coverage: { complete: true, omitted: 0 } });
 });
 
 it("rejects the restart limit as a blocked reason and projects a run ended at the limit as a failed turn", async (t) => {
-	assert.equal(isCatalogAttentionHints({ rows: [{ identity: "storage", kind: "task-blocked", taskId: 1, reason: "restart_limit" }], coverage: { complete: true, omitted: 0 } }), false);
+	assert.equal(
+		isCatalogAttentionHints({
+			rows: [{ identity: "storage", kind: "task-blocked", taskId: 1, reason: "restart_limit" }],
+			coverage: { complete: true, omitted: 0 },
+		}),
+		false,
+	);
 	const f = await fixture(t);
 	await f.harness.commit(async (tx) => {
 		await tx.appendEntry(UserEntry, f.root.id, { model: [{ role: "user", content: "Do the work", timestamp: 1 }] });
-		(await tx.doc(LiveDoc, f.root.id)).runFailure = { taskId: 7 as TaskId, inputs: [], reason: "restart_limit", detail: "cut off 5 times in a row" };
+		(await tx.doc(LiveDoc, f.root.id)).runFailure = {
+			taskId: 7 as TaskId,
+			inputs: [],
+			reason: "restart_limit",
+			detail: "cut off 5 times in a row",
+		};
 	}, context);
 	const [row] = await readDashboard(f.harness, "storage", {}, {}, context);
 	assert.equal(row?.state, "failed");
 	assert.equal(row?.error, "restart_limit: cut off 5 times in a row");
-	assert.deepEqual((await projectCatalogAttention(f.harness, [{ ...f.source, state: row?.state ?? "" }], context)).rows,
-		[{ identity: f.source.identity, kind: "failed-turn" }]);
+	assert.deepEqual(
+		(await projectCatalogAttention(f.harness, [{ ...f.source, state: row?.state ?? "" }], context)).rows,
+		[{ identity: f.source.identity, kind: "failed-turn" }],
+	);
 	assert.deepEqual((await f.harness.inspect(context)).tasks, [], "the terminal outcome leaves no parked task to retry");
 });
 
 it("keeps blocked-task hints within their own conversation", async (t) => {
 	const f = await fixture(t);
 	const child = await f.harness.createConversation({ ownership: { kind: "ownerless" } }, context);
-	await f.harness.commit((tx) => tx.createTask(task(1), null,
-		{ ownership: { kind: "conversation" }, conversationId: child.id }), context);
+	await f.harness.commit(
+		(tx) => tx.createTask(task(1), null, { ownership: { kind: "conversation" }, conversationId: child.id }),
+		context,
+	);
 	assert.deepEqual((await projectCatalogAttention(f.harness, [f.source], context)).rows, []);
-	const hints = await projectCatalogAttention(f.harness, [{ identity: "storage:2", conversationId: child.id, state: "idle" }], context);
+	const hints = await projectCatalogAttention(
+		f.harness,
+		[{ identity: "storage:2", conversationId: child.id, state: "idle" }],
+		context,
+	);
 	assert.equal(hints.rows[0]?.identity, "storage:2");
 	assert.equal(hints.rows[0]?.kind, "task-blocked");
 });

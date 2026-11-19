@@ -3,9 +3,30 @@ import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import type { AssistantMessage, Models } from "@earendil-works/pi-ai";
 import { calculateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
-import { AssistantEntry, InboxDoc, LiveDoc, type CommitPublication, type Conversation, type ConversationId, type Cursor, type EntryId, type EntryRecord, type Harness, type LiveState, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import {
+	AssistantEntry,
+	InboxDoc,
+	LiveDoc,
+	type CommitPublication,
+	type Conversation,
+	type ConversationId,
+	type Cursor,
+	type EntryId,
+	type EntryRecord,
+	type Harness,
+	type LiveState,
+	type SubmissionId,
+	type TaskId,
+	type Tx,
+} from "@earendil-works/pi-durable";
 import { onStoredCommit } from "./commit-observation.ts";
-import { planningBudgetBody, planningBudgetCrossed, planningBudgetSelfBody, planningBudgetSelfId, planningBudgetSourceId } from "./continuity-budget.ts";
+import {
+	planningBudgetBody,
+	planningBudgetCrossed,
+	planningBudgetSelfBody,
+	planningBudgetSelfId,
+	planningBudgetSourceId,
+} from "./continuity-budget.ts";
 import { retainedIntent, retainedReportRequest } from "./delivery-store.ts";
 import { recordReportInTransaction } from "./durable-controls.ts";
 import { canonicalIdentity } from "./native-identity.ts";
@@ -20,7 +41,9 @@ const PREDECESSOR_SCAN_ENTRIES = 64;
 
 /** `producerRunId` is `runIdentity()` of the producer's run, so one run has one identity for all its tool rounds. */
 export function childCapacityRequestId(ownerId: string, producerIdentity: string, producerRunId: number): string {
-	return `child-capacity:${createHash("sha256").update(JSON.stringify([ownerId, producerIdentity, producerRunId])).digest("hex")}`;
+	return `child-capacity:${createHash("sha256")
+		.update(JSON.stringify([ownerId, producerIdentity, producerRunId]))
+		.digest("hex")}`;
 }
 
 /**
@@ -36,11 +59,22 @@ export function runIdentity(run: { readonly inputs: readonly number[] }): number
 /** Exact-model planning budget in tokens; undefined when the operator configured none. */
 export type PlanningBudgetLookup = (provider: string, modelId: string) => number | undefined;
 
-export type ChildContinuityFact = { tokens?: number; window?: number; compactionFailure?: { trigger: string; error: string }; unavailable?: string };
+export type ChildContinuityFact = {
+	tokens?: number;
+	window?: number;
+	compactionFailure?: { trigger: string; error: string };
+	unavailable?: string;
+};
 
 /** Context tokens of a completed provider response; an unfinished or failed response measures nothing. */
 function completedUsage(message: AssistantMessage): number | undefined {
-	if (message.stopReason === "pending" || message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "deferred") return undefined;
+	if (
+		message.stopReason === "pending" ||
+		message.stopReason === "error" ||
+		message.stopReason === "aborted" ||
+		message.stopReason === "deferred"
+	)
+		return undefined;
 	const tokens = calculateContextTokens(message.usage);
 	return Number.isFinite(tokens) && tokens > 0 ? tokens : undefined;
 }
@@ -50,42 +84,61 @@ function positive(value: number | undefined): number | undefined {
 }
 
 function modelWindow(models: () => Models, provider: string, modelId: string): number | undefined {
-	try { return positive(models().getModel(provider, modelId)?.contextWindow); }
-	catch { return undefined; }
+	try {
+		return positive(models().getModel(provider, modelId)?.contextWindow);
+	} catch {
+		return undefined;
+	}
 }
 
 function usedPercent(tokens: number, window: number): number {
-	return Math.floor(tokens / window * 100);
+	return Math.floor((tokens / window) * 100);
 }
 
 /** The active context supplies the newest usage; a context without a completed response has none. */
-export async function childContinuityFact(harness: Harness, conversationId: ConversationId, models: () => Models, context: Context): Promise<ChildContinuityFact> {
+export async function childContinuityFact(
+	harness: Harness,
+	conversationId: ConversationId,
+	models: () => Models,
+	context: Context,
+): Promise<ChildContinuityFact> {
 	try {
 		const conversation = await harness.conversation(conversationId, context);
 		if (conversation === undefined) return { unavailable: "the native conversation is not retained" };
 		const view = await conversation.context(context);
-		const message = view.messages.findLast((item): item is AssistantMessage => item.role === "assistant" && completedUsage(item) !== undefined);
+		const message = view.messages.findLast(
+			(item): item is AssistantMessage => item.role === "assistant" && completedUsage(item) !== undefined,
+		);
 		const tokens = message === undefined ? undefined : completedUsage(message);
 		const window = message === undefined ? undefined : modelWindow(models, message.provider, message.model);
 		const failure = (await harness.snapshot(LiveDoc, conversationId, context))?.compactionFailure;
 		return {
 			...(tokens === undefined ? {} : { tokens }),
 			...(window === undefined ? {} : { window }),
-			...(failure === undefined ? {} : { compactionFailure: { trigger: failure.trigger, error: safeProviderError(failure.error, 512).text } }),
+			...(failure === undefined
+				? {}
+				: { compactionFailure: { trigger: failure.trigger, error: safeProviderError(failure.error, 512).text } }),
 		};
-	} catch { return { unavailable: "the native continuity fact read failed" }; }
+	} catch {
+		return { unavailable: "the native continuity fact read failed" };
+	}
 }
 
-const UNUSABLE_ANSWER = "The child returned no usable answer. The facts above are its last observed state; they do not predict the next attempt. Inspect the child (agent_inspect) before another send. If its context is near the window or a compaction failed, agent_compact with instructions or agent_reset with a handoff that names its latest handover or checkpoint can restore room.";
+const UNUSABLE_ANSWER =
+	"The child returned no usable answer. The facts above are its last observed state; they do not predict the next attempt. Inspect the child (agent_inspect) before another send. If its context is near the window or a compaction failed, agent_compact with instructions or agent_reset with a handoff that names its latest handover or checkpoint can restore room.";
 
 /** Lines for a delivered child result; `unusable` marks an unanswered result or an empty answer. */
 export function continuityLines(fact: ChildContinuityFact, unusable = false): string[] {
 	const lines: string[] = [];
 	if (fact.unavailable !== undefined) lines.push(`Child continuity facts are unavailable: ${fact.unavailable}.`);
-	if (fact.tokens !== undefined) lines.push(fact.window === undefined
-		? `Child context use: ${fact.tokens} tokens; context window unavailable.`
-		: `Child context use: ${fact.tokens} of ${fact.window} tokens (${usedPercent(fact.tokens, fact.window)}%, newest assistant usage).`);
-	if (fact.compactionFailure !== undefined) lines.push(`Last child compaction failure (${fact.compactionFailure.trigger}): ${fact.compactionFailure.error}`);
+	if (fact.tokens !== undefined)
+		lines.push(
+			fact.window === undefined
+				? `Child context use: ${fact.tokens} tokens; context window unavailable.`
+				: `Child context use: ${fact.tokens} of ${fact.window} tokens (${usedPercent(fact.tokens, fact.window)}%, newest assistant usage).`,
+		);
+	if (fact.compactionFailure !== undefined)
+		lines.push(`Last child compaction failure (${fact.compactionFailure.trigger}): ${fact.compactionFailure.error}`);
 	if (unusable) lines.push(UNUSABLE_ANSWER);
 	return lines;
 }
@@ -94,10 +147,25 @@ type RunRef = { taskId: TaskId; id?: number };
 type Usage = { tokens: number; runId?: number };
 /** `seeded` means the predecessor of the next sample is known in memory, also when there is none. */
 type Track = { run?: RunRef; headId?: EntryId; last?: Usage; seeded: boolean; noticed: boolean };
-type Sample = { entryId: EntryId; generationId?: TaskId; tokens: number; model: string; window?: number; budget?: number; runId?: number };
+type Sample = {
+	entryId: EntryId;
+	generationId?: TaskId;
+	tokens: number;
+	model: string;
+	window?: number;
+	budget?: number;
+	runId?: number;
+};
 type CapacityReport = { runId: number; tokens: number; window: number };
 type BudgetReport = { runId: number; tokens: number; budget: number; model: string };
-type SelfNotice = { headId?: EntryId; runId: number; tokens: number; budget: number; model: string; observedAt: number };
+type SelfNotice = {
+	headId?: EntryId;
+	runId: number;
+	tokens: number;
+	budget: number;
+	model: string;
+	observedAt: number;
+};
 /** The first sample after host open; its predecessor is read from the retained transcript. */
 type Seed = Sample & { budget: number; headId?: EntryId; observedAt: number };
 /** One slot per report kind: a newer run replaces an ended one, whose report can no longer name a live run. */
@@ -159,12 +227,20 @@ function entryUsage(entry: EntryRecord): { message: AssistantMessage; tokens: nu
 }
 
 /** Newest completed usage before `before` in the same context episode, within a bounded scan. */
-async function previousUsage(tx: Tx, conversationId: ConversationId, before: EntryId): Promise<{ entryId: EntryId; tokens: number } | undefined> {
+async function previousUsage(
+	tx: Tx,
+	conversationId: ConversationId,
+	before: EntryId,
+): Promise<{ entryId: EntryId; tokens: number } | undefined> {
 	if (before <= 1) return undefined;
 	let cursor: Cursor | undefined;
 	let visited = 0;
 	do {
-		const page = await tx.scanEntries({ conversationId, maxEntryId: (before - 1) as EntryId, order: "descending" }, 32, cursor);
+		const page = await tx.scanEntries(
+			{ conversationId, maxEntryId: (before - 1) as EntryId, order: "descending" },
+			32,
+			cursor,
+		);
 		for (const entry of page.items) {
 			if (entry.head !== undefined) return undefined;
 			const usage = entryUsage(entry);
@@ -177,7 +253,12 @@ async function previousUsage(tx: Tx, conversationId: ConversationId, before: Ent
 }
 
 /** Model-origin reply recipients of a run's inputs, each with every exact input it owns in that run. */
-async function runRecipients(tx: Tx, conversationId: ConversationId, sender: string, inputs: readonly SubmissionId[]): Promise<Map<string, ResultReference[]>> {
+async function runRecipients(
+	tx: Tx,
+	conversationId: ConversationId,
+	sender: string,
+	inputs: readonly SubmissionId[],
+): Promise<Map<string, ResultReference[]>> {
 	const routes = (await tx.doc(RequestContextDoc, conversationId)).requests;
 	const owners = new Map<string, ResultReference[]>();
 	for (const id of inputs) {
@@ -197,15 +278,17 @@ async function runRecipients(tx: Tx, conversationId: ConversationId, sender: str
 function reportDrafts(sender: string, runId: number, pending: Pending): ReportDraft[] {
 	const drafts: ReportDraft[] = [];
 	const capacity = pending.capacity;
-	if (capacity?.runId === runId) drafts.push({
-		requestId: (ownerId) => childCapacityRequestId(ownerId, sender, runId),
-		message: `Child ${sender} reported context use of ${usedPercent(capacity.tokens, capacity.window)}% (${capacity.tokens} of ${capacity.window} tokens, newest assistant usage) in its current run. This report does not stop or change the child. If it needs room, agent_compact with instructions or agent_reset with a handoff can provide it.`,
-	});
+	if (capacity?.runId === runId)
+		drafts.push({
+			requestId: (ownerId) => childCapacityRequestId(ownerId, sender, runId),
+			message: `Child ${sender} reported context use of ${usedPercent(capacity.tokens, capacity.window)}% (${capacity.tokens} of ${capacity.window} tokens, newest assistant usage) in its current run. This report does not stop or change the child. If it needs room, agent_compact with instructions or agent_reset with a handoff can provide it.`,
+		});
 	const budget = pending.budget;
-	if (budget?.runId === runId) drafts.push({
-		requestId: (ownerId) => planningBudgetSourceId(ownerId, sender, runId),
-		message: planningBudgetBody(sender, budget.tokens, budget.budget, budget.model),
-	});
+	if (budget?.runId === runId)
+		drafts.push({
+			requestId: (ownerId) => planningBudgetSourceId(ownerId, sender, runId),
+			message: planningBudgetBody(sender, budget.tokens, budget.budget, budget.model),
+		});
 	return drafts;
 }
 
@@ -231,15 +314,28 @@ export class ChildCapacityReports {
 	private closing = false;
 	private failed = false;
 
-	constructor(harness: Harness, storageId: string, models: () => Models, planningBudget: PlanningBudgetLookup, report: (error: unknown) => void, now: () => number = Date.now) {
-		this.harness = harness; this.storageId = storageId; this.models = models; this.budgetOf = planningBudget; this.report = report; this.now = now;
+	constructor(
+		harness: Harness,
+		storageId: string,
+		models: () => Models,
+		planningBudget: PlanningBudgetLookup,
+		report: (error: unknown) => void,
+		now: () => number = Date.now,
+	) {
+		this.harness = harness;
+		this.storageId = storageId;
+		this.models = models;
+		this.budgetOf = planningBudget;
+		this.report = report;
+		this.now = now;
 		this.unsubscribe = onStoredCommit(harness, (publication) => this.observe(publication));
 	}
 
 	private observe(publication: CommitPublication): void {
 		if (this.closing || this.failed) return;
 		try {
-			for (const [conversationId, changes] of groupChanges(publication)) this.observeConversation(conversationId, changes);
+			for (const [conversationId, changes] of groupChanges(publication))
+				this.observeConversation(conversationId, changes);
 		} catch (error) {
 			this.fail(error);
 			return;
@@ -265,7 +361,10 @@ export class ChildCapacityReports {
 
 	/** A compaction or reset starts a context episode: no usage is known, and the own-budget notice can fire again. */
 	private startEpisode(conversationId: ConversationId, track: Track, headId: EntryId): void {
-		track.headId = headId; track.last = undefined; track.seeded = true; track.noticed = false;
+		track.headId = headId;
+		track.last = undefined;
+		track.seeded = true;
+		track.noticed = false;
 		const pending = this.pending.get(conversationId);
 		if (pending === undefined) return;
 		delete pending.self;
@@ -280,7 +379,9 @@ export class ChildCapacityReports {
 		const window = modelWindow(this.models, provider, model);
 		const budget = this.planningBudget(provider, model);
 		return {
-			entryId: entry.id, tokens: usage.tokens, model: `${provider}/${model}`,
+			entryId: entry.id,
+			tokens: usage.tokens,
+			model: `${provider}/${model}`,
 			...(entry.byTaskId === undefined ? {} : { generationId: entry.byTaskId }),
 			...(window === undefined ? {} : { window }),
 			...(budget === undefined ? {} : { budget }),
@@ -289,11 +390,19 @@ export class ChildCapacityReports {
 	}
 
 	private planningBudget(provider: string, modelId: string): number | undefined {
-		try { return positive(this.budgetOf(provider, modelId)); }
-		catch { return undefined; }
+		try {
+			return positive(this.budgetOf(provider, modelId));
+		} catch {
+			return undefined;
+		}
 	}
 
-	private observeEntry(conversationId: ConversationId, track: Track, entry: EntryRecord, run: RunRef | undefined): void {
+	private observeEntry(
+		conversationId: ConversationId,
+		track: Track,
+		entry: EntryRecord,
+		run: RunRef | undefined,
+	): void {
 		const sample = this.sample(entry, run);
 		if (sample === undefined) return;
 		const previous = track.last;
@@ -312,21 +421,42 @@ export class ChildCapacityReports {
 	}
 
 	private queueCapacity(conversationId: ConversationId, sample: Sample): void {
-		if (sample.runId === undefined || sample.window === undefined || sample.tokens / sample.window * 100 < CHILD_CAPACITY_REPORT_PERCENT) return;
+		if (
+			sample.runId === undefined ||
+			sample.window === undefined ||
+			(sample.tokens / sample.window) * 100 < CHILD_CAPACITY_REPORT_PERCENT
+		)
+			return;
 		this.slot(conversationId).capacity = { runId: sample.runId, tokens: sample.tokens, window: sample.window };
 	}
 
 	/** Only a sample at or above a budget below its window can end a crossing that began before host open. */
 	private queueSeed(conversationId: ConversationId, track: Track, sample: Sample): void {
-		if (sample.budget === undefined || sample.window === undefined || sample.budget >= sample.window || sample.tokens < sample.budget) return;
-		this.slot(conversationId).seed = { ...sample, budget: sample.budget, ...(track.headId === undefined ? {} : { headId: track.headId }), observedAt: this.now() };
+		if (
+			sample.budget === undefined ||
+			sample.window === undefined ||
+			sample.budget >= sample.window ||
+			sample.tokens < sample.budget
+		)
+			return;
+		this.slot(conversationId).seed = {
+			...sample,
+			budget: sample.budget,
+			...(track.headId === undefined ? {} : { headId: track.headId }),
+			observedAt: this.now(),
+		};
 	}
 
 	private queueCrossing(conversationId: ConversationId, track: Track, sample: Sample, previous: Usage): void {
-		if (sample.budget === undefined || !planningBudgetCrossed(previous.tokens, sample.tokens, sample.budget, sample.window)) return;
+		if (
+			sample.budget === undefined ||
+			!planningBudgetCrossed(previous.tokens, sample.tokens, sample.budget, sample.window)
+		)
+			return;
 		const pending = this.slot(conversationId);
 		// The first crossing of a run keeps its measurement; a later sample of that run does not replace it.
-		if (sample.runId !== undefined && previous.runId === sample.runId && pending.budget?.runId !== sample.runId) pending.budget = { runId: sample.runId, tokens: sample.tokens, budget: sample.budget, model: sample.model };
+		if (sample.runId !== undefined && previous.runId === sample.runId && pending.budget?.runId !== sample.runId)
+			pending.budget = { runId: sample.runId, tokens: sample.tokens, budget: sample.budget, model: sample.model };
 		if (track.noticed) return;
 		track.noticed = true;
 		pending.self = selfNotice(sample, sample.budget, track.headId, this.now());
@@ -334,10 +464,12 @@ export class ChildCapacityReports {
 
 	private schedule(): void {
 		if (this.running !== undefined || this.closing || this.failed || this.pending.size === 0) return;
-		this.running = this.drain().catch((error) => this.fail(error)).finally(() => {
-			this.running = undefined;
-			this.schedule();
-		});
+		this.running = this.drain()
+			.catch((error) => this.fail(error))
+			.finally(() => {
+				this.running = undefined;
+				this.schedule();
+			});
 	}
 
 	private fail(error: unknown): void {
@@ -346,8 +478,16 @@ export class ChildCapacityReports {
 		this.unsubscribe();
 		this.pending.clear();
 		// The callback is the only route for this failure; a throw from it must not reach the storage publication.
-		try { this.report(new Error("Child capacity and planning-budget observation stopped after a failure; reopen the host to resume these reports. Result continuity facts remain separate.", { cause: error })); }
-		catch { /* no further route */ }
+		try {
+			this.report(
+				new Error(
+					"Child capacity and planning-budget observation stopped after a failure; reopen the host to resume these reports. Result continuity facts remain separate.",
+					{ cause: error },
+				),
+			);
+		} catch {
+			/* no further route */
+		}
 	}
 
 	private async drain(): Promise<void> {
@@ -364,15 +504,19 @@ export class ChildCapacityReports {
 		const conversation = await this.harness.conversation(conversationId, BACKGROUND_CONTEXT);
 		if (conversation === undefined) return;
 		const seed = pending.seed;
-		if (seed !== undefined) await this.harness.commit((tx) => this.resolveSeed(tx, conversationId, pending, seed), BACKGROUND_CONTEXT);
-		if (pending.capacity !== undefined || pending.budget !== undefined) await this.harness.commit((tx) => this.retainChildReports(tx, conversationId, pending), BACKGROUND_CONTEXT);
+		if (seed !== undefined)
+			await this.harness.commit((tx) => this.resolveSeed(tx, conversationId, pending, seed), BACKGROUND_CONTEXT);
+		if (pending.capacity !== undefined || pending.budget !== undefined)
+			await this.harness.commit((tx) => this.retainChildReports(tx, conversationId, pending), BACKGROUND_CONTEXT);
 		if (pending.self !== undefined) await this.retainSelfNotice(conversation, pending.self);
 	}
 
 	private async resolveSeed(tx: Tx, conversationId: ConversationId, pending: Pending, seed: Seed): Promise<void> {
 		const previous = await previousUsage(tx, conversationId, seed.entryId);
-		if (previous === undefined || !planningBudgetCrossed(previous.tokens, seed.tokens, seed.budget, seed.window)) return;
-		if (seed.runId !== undefined && await inRun(tx, seed.runId, previous.entryId)) pending.budget ??= { runId: seed.runId, tokens: seed.tokens, budget: seed.budget, model: seed.model };
+		if (previous === undefined || !planningBudgetCrossed(previous.tokens, seed.tokens, seed.budget, seed.window))
+			return;
+		if (seed.runId !== undefined && (await inRun(tx, seed.runId, previous.entryId)))
+			pending.budget ??= { runId: seed.runId, tokens: seed.tokens, budget: seed.budget, model: seed.model };
 		const track = this.tracks.get(conversationId);
 		if (track === undefined || track.noticed || track.headId !== seed.headId) return;
 		track.noticed = true;
@@ -391,8 +535,16 @@ export class ChildCapacityReports {
 			for (const draft of drafts) {
 				const requestId = draft.requestId(ownerId);
 				// One row per recipient and run: a later round of the run names another current task.
-				if (await retainedReportRequest(tx, ownerId, requestId) !== undefined) continue;
-				await recordReportInTransaction(tx, { storageId: this.storageId, ownerId, senderIdentity: sender, requestId, replyTo: ownerId, intervention: { producerRunId: run.taskId, producerResults }, message: draft.message });
+				if ((await retainedReportRequest(tx, ownerId, requestId)) !== undefined) continue;
+				await recordReportInTransaction(tx, {
+					storageId: this.storageId,
+					ownerId,
+					senderIdentity: sender,
+					requestId,
+					replyTo: ownerId,
+					intervention: { producerRunId: run.taskId, producerResults },
+					message: draft.message,
+				});
 			}
 		}
 	}
@@ -410,7 +562,14 @@ export class ChildCapacityReports {
 			if (live.run === undefined && (await tx.doc(InboxDoc, conversationId)).items.length > 0) return;
 			const head = await tx.latestHeadMarker(conversationId);
 			const text = planningBudgetSelfBody(notice.tokens, notice.budget, notice.model, notice.observedAt);
-			await conversation.submit(tx, { type: "write", requestId: planningBudgetSelfId(head?.id ?? 0, notice.runId), entry: { kind: PLANNING_BUDGET_NOTICE_KIND, model: [{ role: "user", content: text, timestamp: notice.observedAt }] } });
+			await conversation.submit(tx, {
+				type: "write",
+				requestId: planningBudgetSelfId(head?.id ?? 0, notice.runId),
+				entry: {
+					kind: PLANNING_BUDGET_NOTICE_KIND,
+					model: [{ role: "user", content: text, timestamp: notice.observedAt }],
+				},
+			});
 		}, BACKGROUND_CONTEXT);
 	}
 
@@ -425,11 +584,21 @@ export class ChildCapacityReports {
 		this.unsubscribe();
 		await this.flush();
 		if (this.failed || this.pending.size === 0) return;
-		try { await this.drain(); }
-		catch (error) { this.fail(error); }
+		try {
+			await this.drain();
+		} catch (error) {
+			this.fail(error);
+		}
 	}
 }
 
 function selfNotice(sample: Sample, budget: number, headId: EntryId | undefined, observedAt: number): SelfNotice {
-	return { ...(headId === undefined ? {} : { headId }), runId: sample.runId ?? sample.generationId ?? 0, tokens: sample.tokens, budget, model: sample.model, observedAt };
+	return {
+		...(headId === undefined ? {} : { headId }),
+		runId: sample.runId ?? sample.generationId ?? 0,
+		tokens: sample.tokens,
+		budget,
+		model: sample.model,
+		observedAt,
+	};
 }

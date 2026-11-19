@@ -23,8 +23,10 @@ export interface ShellRule extends PredicateRule {
 const READ_TOOL_NOTE = "Use the read tool for file contents, one call per file: read path=README.md.";
 const READ_SLICE_NOTE =
 	"Use the read tool for a file slice, one call per file: read path=src/index.ts offset=40 limit=20.";
-const OUTPUT_BOUND_NOTE = "No recognised producer stop is present. Bound the selected input or traversal. Use a stopping streaming cap only when it preserves the task; a cap after global sorting or aggregation limits display, not upstream work.";
-const FD_BOUND_NOTE = "fd has no recognised producer cap. For plain discovery, use --max-results N. This option conflicts with --list-details, --exec and --exec-batch. For those forms, bound the selected input or traversal. Use a streaming cap only when it preserves the requested result. A complete sorted result needs all selected input; head after sort limits display, not discovery.";
+const OUTPUT_BOUND_NOTE =
+	"No recognised producer stop is present. Bound the selected input or traversal. Use a stopping streaming cap only when it preserves the task; a cap after global sorting or aggregation limits display, not upstream work.";
+const FD_BOUND_NOTE =
+	"fd has no recognised producer cap. For plain discovery, use --max-results N. This option conflicts with --list-details, --exec and --exec-batch. For those forms, bound the selected input or traversal. Use a streaming cap only when it preserves the requested result. A complete sorted result needs all selected input; head after sort limits display, not discovery.";
 const RG_FILES_BOUND_NOTE = "Bound rg --files with | head -n 50; --max-count does not bound a file listing.";
 const SEARCH_SCOPE_NOTE = "Scope the search to a path, or cap the results: rg -n pattern src/, or rg -m 20 -n pattern.";
 
@@ -227,8 +229,10 @@ function isSedSlice(stage: Stage): boolean {
 	if (stage.command !== "sed" || !hasFlag(stage, "n") || stage.fromPipe || stage.fromRedirect || stage.toRedirect)
 		return false;
 	const script = stage.args.find((arg) => /^\d+\s*,\s*\d+\s*p$/.test(arg) || /^\d+p$/.test(arg));
-	return (script !== undefined && operands(stage, new Set(["e", "f", "expression", "file"])).length > 1)
-		|| sedSuggestion(stage) !== undefined;
+	return (
+		(script !== undefined && operands(stage, new Set(["e", "f", "expression", "file"])).length > 1) ||
+		sedSuggestion(stage) !== undefined
+	);
 }
 
 function isFileSlice(stage: Stage, command: "head" | "tail"): boolean {
@@ -561,13 +565,15 @@ function sliceSuggestion(stage: Stage, tail: boolean): ReadSuggestion | undefine
 	const literalPaths = args[index] === "--";
 	if (literalPaths) index++;
 	const paths = args.slice(index);
-	if (!paths.length || (!literalPaths && paths.some((path) => path.startsWith("-") || /^\+\d+$/.test(path)))) return undefined;
+	if (!paths.length || (!literalPaths && paths.some((path) => path.startsWith("-") || /^\+\d+$/.test(path))))
+		return undefined;
 	return tail ? { paths, offset: value } : { paths, limit: value };
 }
 
 /** Read parameters come only from the already matched stage. */
 function readSuggestion(key: string, stage: Stage): ReadSuggestion | undefined {
-	if (stage.commandLiteral === false || stage.shellReasons?.length || stage.argLiterals?.some((literal) => !literal)) return undefined;
+	if (stage.commandLiteral === false || stage.shellReasons?.length || stage.argLiterals?.some((literal) => !literal))
+		return undefined;
 	switch (key) {
 		case "routing.cat-read":
 			return { paths: operands(stage) };
@@ -590,8 +596,16 @@ export function predicateSuggestions(key: string, stage: Stage): string[] {
 	if (!suggestion) return [];
 	const { paths, offset, limit } = suggestion;
 	// Pi expands a leading tilde and strips a leading @, unlike literal shell operands.
-	if (paths.some((path) => !path || path === "-" || /^(?:[~@]|file:\/\/)/.test(path)
-		|| /[\\*?{}[\]\p{Cc}\p{Cf}\u00a0\u2000-\u200a\u202f\u205f\u3000]/u.test(path))) return [];
+	if (
+		paths.some(
+			(path) =>
+				!path ||
+				path === "-" ||
+				/^(?:[~@]|file:\/\/)/.test(path) ||
+				/[\\*?{}[\]\p{Cc}\p{Cf}\u00a0\u2000-\u200a\u202f\u205f\u3000]/u.test(path),
+		)
+	)
+		return [];
 	return paths.flatMap((path) => {
 		const value = /^[A-Za-z0-9_./+-]+$/.test(path) ? path : JSON.stringify(path);
 		const suggestion = `read path=${value}${offset === undefined ? "" : ` offset=${offset}`}${limit === undefined ? "" : ` limit=${limit}`}`;

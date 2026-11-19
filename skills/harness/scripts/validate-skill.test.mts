@@ -117,7 +117,10 @@ test("does not add the component warning to a name that already fails the edge r
 	);
 	const { status, report } = runJson(directory);
 	assert.equal(status, 1);
-	assert.ok(report.fail.some((finding) => finding.code === "name.edges"), JSON.stringify(report));
+	assert.ok(
+		report.fail.some((finding) => finding.code === "name.edges"),
+		JSON.stringify(report),
+	);
 	assert.ok(!report.warn.some((finding) => finding.code === "name.components"), JSON.stringify(report));
 });
 

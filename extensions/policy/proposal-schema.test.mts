@@ -166,10 +166,14 @@ describe("command-aware proposal admission", () => {
 							arguments: input,
 						},
 					);
-				assertHostCliAdmission(validate, {
-					...input,
-					match: { ...input.match, cli: { profile: "git", subcommand: ["push"] } },
-				}, accepted || subcommand === "push");
+				assertHostCliAdmission(
+					validate,
+					{
+						...input,
+						match: { ...input.match, cli: { profile: "git", subcommand: ["push"] } },
+					},
+					accepted || subcommand === "push",
+				);
 				assertPolicyCliAdmission(input, accepted);
 			}
 		}

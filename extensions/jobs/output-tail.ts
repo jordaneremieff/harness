@@ -10,7 +10,9 @@ export class OutputTail {
 		this.capacity = capacity;
 	}
 
-	get length(): number { return this.used; }
+	get length(): number {
+		return this.used;
+	}
 
 	append(input: Buffer): void {
 		if (input.length === 0) return;

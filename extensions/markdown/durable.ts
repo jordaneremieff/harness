@@ -32,23 +32,39 @@ export interface MarkdownCommandCall {
 const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
 const line = (value: string) => value.replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 180);
 function nativeSource(call: MarkdownCommandCall): NativeSource {
-	return { durable: call.host.durable, conversation: call.conversation, storageId: call.host.storageId, cwd: call.host.cwd };
+	return {
+		durable: call.host.durable,
+		conversation: call.conversation,
+		storageId: call.host.storageId,
+		cwd: call.host.cwd,
+	};
 }
 async function published(store: MarkdownStore): Promise<Extract<MarkdownAnswer, { op: "published" }>> {
 	const identity = await store.identity();
 	if (!identity) return { op: "published", rows: [], root: store.root, limited: false, unreadable: 0 };
 	const result = await store.list({ kind: "published" });
-	return { op: "published", rows: result.documents, root: store.root, storeId: identity.storeId, limited: result.bounded, unreadable: result.unreadable };
+	return {
+		op: "published",
+		rows: result.documents,
+		root: store.root,
+		storeId: identity.storeId,
+		limited: result.bounded,
+		unreadable: result.unreadable,
+	};
 }
 /** Source requests only read. A local operator separately acquires an exact-conversation live capability. */
-export async function runMarkdownCommand(call: MarkdownCommandCall): Promise<string | { text: string; data: JsonValue }> {
+export async function runMarkdownCommand(
+	call: MarkdownCommandCall,
+): Promise<string | { text: string; data: JsonValue }> {
 	const source = nativeSource(call);
 	const store = new MarkdownStore(readSettings({ agentDir: call.host.agentDir }).values.dir);
 	if (call.data === undefined) {
 		const [recent, documents] = await Promise.all([recentNative(source, call.context), published(store)]);
 		return [
 			`Markdown: ${recent.rows.length} recent responses (stop: ${recent.stop}, ${recent.visited} entries visited). Previews only.`,
-			...recent.rows.slice(0, 10).map((row) => `${row.entryId} · ${row.bytes} bytes · ${row.completeness.state} · ${line(row.preview)}`),
+			...recent.rows
+				.slice(0, 10)
+				.map((row) => `${row.entryId} · ${row.bytes} bytes · ${row.completeness.state} · ${line(row.preview)}`),
 			`${documents.rows.length} published documents${documents.limited ? " (scan limit reached)" : ""}${documents.unreadable ? ` (${documents.unreadable} unreadable, not listed)` : ""}:`,
 			...documents.rows.slice(0, 10).map((row) => `${row.id} · revision ${row.revision} · ${line(row.title)}`),
 			"Use the Markdown owner view to read a complete response or document. No model turn or window was started.",
@@ -57,19 +73,34 @@ export async function runMarkdownCommand(call: MarkdownCommandCall): Promise<str
 	const request = readPanelRequest(call.data);
 	let answer: MarkdownAnswer;
 	switch (request.op) {
-		case "recent": answer = { op: "recent", ...await recentNative(source, call.context) }; break;
-		case "response": answer = responsePage(await readNative(source, request.entryId, call.context), request.offset); break;
-		case "published": answer = await published(store); break;
-		case "live": answer = { op: "live", connection: await nativeConnection(call) }; break;
+		case "recent":
+			answer = { op: "recent", ...(await recentNative(source, call.context)) };
+			break;
+		case "response":
+			answer = responsePage(await readNative(source, request.entryId, call.context), request.offset);
+			break;
+		case "published":
+			answer = await published(store);
+			break;
+		case "live":
+			answer = { op: "live", connection: await nativeConnection(call) };
+			break;
 	}
 	return { text: `Markdown ${answer.op}: bounded source data; no window or model turn started.`, data: json(answer) };
 }
 export function markdownContribution(source: string, bus: SettingsBus, stopFactoryPublisher: () => void) {
 	return {
-		name: "markdown", source,
+		name: "markdown",
+		source,
 		display: { version: 1 as const, entry: "./display.ts", export: "toolDisplay" as const },
 		panel: { version: 1 as const, entry: "./operator-panel.ts", export: "operatorPanel" as const, command: "markdown" },
-		commands: [{ name: "markdown", description: "Read retained assistant responses and list published Markdown documents without a model turn", run: runMarkdownCommand }],
+		commands: [
+			{
+				name: "markdown",
+				description: "Read retained assistant responses and list published Markdown documents without a model turn",
+				run: runMarkdownCommand,
+			},
+		],
 		create(host: MarkdownHost): Durable.Extension {
 			stopFactoryPublisher();
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));
@@ -85,7 +116,21 @@ export function markdownContribution(source: string, bus: SettingsBus, stopFacto
 			};
 			return host.durable.defineExtension({
 				name: "markdown",
-				tools: [createNativeBriefTool(host, writing), createNativePublishTool({ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness }, { store, app: settings.app, writing, connection, panes: async (conversation) => (await live.bridges.find(String(conversation)))?.list().length ?? 0 }), createNativeReadTool(host.durable, { store, app: settings.app, connection }), createNativeLiveTool(host.durable, (conversation) => live.bridges.find(conversation))],
+				tools: [
+					createNativeBriefTool(host, writing),
+					createNativePublishTool(
+						{ durable: host.durable, cwd: host.cwd, storageId: host.storageId, harness: host.harness },
+						{
+							store,
+							app: settings.app,
+							writing,
+							connection,
+							panes: async (conversation) => (await live.bridges.find(String(conversation)))?.list().length ?? 0,
+						},
+					),
+					createNativeReadTool(host.durable, { store, app: settings.app, connection }),
+					createNativeLiveTool(host.durable, (conversation) => live.bridges.find(conversation)),
+				],
 				sections: [host.durable.section("markdown", () => NATIVE_PUBLISH_GUIDANCE)],
 			});
 		},

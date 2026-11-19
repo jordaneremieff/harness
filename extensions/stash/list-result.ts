@@ -145,7 +145,9 @@ export function recentListResult(
 			provisional: collection === "checkpoints",
 			ids: entries.map((entry) => collectionId(entry.meta.id, collection)),
 			states: entries.map((entry) =>
-				collection === "checkpoints" ? "provisional" : sanitizeTerminalText(stateLabel(entry.meta, entry.previewError !== undefined)).text.replace(/\n/g, "↵"),
+				collection === "checkpoints"
+					? "provisional"
+					: sanitizeTerminalText(stateLabel(entry.meta, entry.previewError !== undefined)).text.replace(/\n/g, "↵"),
 			),
 			truncated: bounded.truncated,
 		},
@@ -164,10 +166,12 @@ function recentListRow(entry: StashEntry, collection: StashCollection) {
 			id,
 			...provenance,
 			title,
-			state: collection === "checkpoints" ? ("provisional" as const) :
-				entry.previewError !== undefined || entry.meta.invalidState !== undefined
-					? ("unknown" as const)
-					: entry.meta.state,
+			state:
+				collection === "checkpoints"
+					? ("provisional" as const)
+					: entry.previewError !== undefined || entry.meta.invalidState !== undefined
+						? ("unknown" as const)
+						: entry.meta.state,
 		},
 	};
 }

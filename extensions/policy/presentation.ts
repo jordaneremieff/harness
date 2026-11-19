@@ -24,9 +24,7 @@ interface CardContext {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function stringField(value: unknown, key: string): string {
@@ -138,9 +136,7 @@ function stringIds(value: unknown): string[] {
 }
 
 function correctionIds(value: unknown): string[] {
-	return Array.isArray(value)
-		? value.map((entry) => stringField(entry, "id")).filter((id) => id.length > 0)
-		: [];
+	return Array.isArray(value) ? value.map((entry) => stringField(entry, "id")).filter((id) => id.length > 0) : [];
 }
 
 function previewDecisionPhrase(
@@ -315,7 +311,10 @@ function rulesOutcome(
 	}
 	const json = jsonLead(output);
 	if (json) return { lead: json, color: "success" };
-	return { lead: displayPreview(firstMeaningfulLine(output) || `${view} view returned`, PREVIEW_LIMIT), color: "success" };
+	return {
+		lead: displayPreview(firstMeaningfulLine(output) || `${view} view returned`, PREVIEW_LIMIT),
+		color: "success",
+	};
 }
 
 /** The result card leads with the view outcome: admission, decision, or store counts. */
@@ -373,7 +372,11 @@ export function renderProposeResult(
 	const revision = stringField(details, "proposalRevision");
 	const state = stringField(details, "state") || "pending";
 	const lead = proposalId
-		? [`proposal ${displayPreview(proposalId, 60)}`, displayPreview(state, 12), revision ? `revision ${displayPreview(revision, 16)}` : ""]
+		? [
+				`proposal ${displayPreview(proposalId, 60)}`,
+				displayPreview(state, 12),
+				revision ? `revision ${displayPreview(revision, 16)}` : "",
+			]
 				.filter(Boolean)
 				.join(" · ")
 		: displayPreview(firstMeaningfulLine(output) || "proposal submitted", PREVIEW_LIMIT);
@@ -395,7 +398,13 @@ export function renderApproveCall(value: unknown, theme: Theme, context: CardCon
 	const revision = stringField(args, "proposalRevision");
 	const lines = [heading];
 	if (context.expanded) lines.push(expandedArguments(args, theme));
-	else lines.push(theme.fg("dim", `${revision ? `revision ${displayPreview(revision, 16)} · ` : ""}${expansionHint("authorization", context)}`));
+	else
+		lines.push(
+			theme.fg(
+				"dim",
+				`${revision ? `revision ${displayPreview(revision, 16)} · ` : ""}${expansionHint("authorization", context)}`,
+			),
+		);
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
@@ -406,7 +415,8 @@ export function renderApproveResult(
 	theme: Theme,
 	context: CardContext,
 ): Component {
-	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Applying approval...")}`, context.lastComponent);
+	if (options.isPartial)
+		return textComponent(`\n${theme.fg("warning", "Applying approval...")}`, context.lastComponent);
 	const output = textContent(result);
 	if (context.isError) return errorCard("policy_approve", "approval refused", output, options.expanded, theme, context);
 	const details = asRecord(result.details);
@@ -415,10 +425,18 @@ export function renderApproveResult(
 	const effect = stringField(details, "effect");
 	const mode = stringField(details, "mode");
 	const lead = ruleId
-		? [`rule ${displayPreview(ruleId, 60)}`, state && displayPreview(state, 12), effect && `effect ${displayPreview(effect, 12)}`].filter(Boolean).join(" · ")
+		? [
+				`rule ${displayPreview(ruleId, 60)}`,
+				state && displayPreview(state, 12),
+				effect && `effect ${displayPreview(effect, 12)}`,
+			]
+				.filter(Boolean)
+				.join(" · ")
 		: displayPreview(firstMeaningfulLine(output) || "approval recorded", PREVIEW_LIMIT);
 	let text = `\n${theme.fg("success", lead)}`;
-	const qualifier = mode ? `session mode ${displayPreview(mode, 16)}; approval is not enforcement` : "approval is not enforcement";
+	const qualifier = mode
+		? `session mode ${displayPreview(mode, 16)}; approval is not enforcement`
+		: "approval is not enforcement";
 	if (options.expanded) text += `\n${theme.fg("dim", qualifier)}\n${theme.fg("toolOutput", boundedDisplay(output))}`;
 	else text += `\n${theme.fg("dim", `${qualifier} · ${expansionHint("readback", context)}`)}`;
 	return textComponent(text, context.lastComponent);
@@ -428,7 +446,12 @@ export function renderApproveResult(
 export function renderControlCall(value: unknown, theme: Theme, context: CardContext): Component {
 	const args = asRecord(value);
 	const operation = stringField(args, "operation");
-	const target = stringField(args, "id") || stringField(args, "actionId") || stringField(args, "proposalId") || stringField(args, "selection") || stringField(args, "name");
+	const target =
+		stringField(args, "id") ||
+		stringField(args, "actionId") ||
+		stringField(args, "proposalId") ||
+		stringField(args, "selection") ||
+		stringField(args, "name");
 	let heading = theme.fg("toolTitle", theme.bold("policy_control"));
 	if (operation) heading += theme.fg("accent", ` · ${displayPreview(operation, 20)}`);
 	if (target) heading += theme.fg("accent", ` ${displayPreview(target, 60)}`);
@@ -437,7 +460,12 @@ export function renderControlCall(value: unknown, theme: Theme, context: CardCon
 	const lines = [heading];
 	if (context.expanded) lines.push(expandedArguments(args, theme));
 	else {
-		const facts = [effect && `effect ${displayPreview(effect, 12)}`, revision && `revision ${displayPreview(revision, 16)}`].filter(Boolean).join(" · ");
+		const facts = [
+			effect && `effect ${displayPreview(effect, 12)}`,
+			revision && `revision ${displayPreview(revision, 16)}`,
+		]
+			.filter(Boolean)
+			.join(" · ");
 		lines.push(theme.fg("dim", `${facts ? `${facts} · ` : ""}${expansionHint("control arguments", context)}`));
 	}
 	return textComponent(lines.join("\n"), context.lastComponent);
@@ -457,8 +485,14 @@ export function renderControlResult(
 	const operation = stringField(asRecord(context.args), "operation");
 	const mode = stringField(details, "mode");
 	const state = stringField(details, "state") || stringField(details, "outcome");
-	const lead = [operation && displayPreview(operation, 20), state && displayPreview(state, 40), mode && `mode ${displayPreview(mode, 16)}`].filter(Boolean).join(" · ")
-		|| displayPreview(firstMeaningfulLine(output) || "control applied", PREVIEW_LIMIT);
+	const lead =
+		[
+			operation && displayPreview(operation, 20),
+			state && displayPreview(state, 40),
+			mode && `mode ${displayPreview(mode, 16)}`,
+		]
+			.filter(Boolean)
+			.join(" · ") || displayPreview(firstMeaningfulLine(output) || "control applied", PREVIEW_LIMIT);
 	let text = `\n${theme.fg("success", lead)}`;
 	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
 	else text += `\n${theme.fg("dim", expansionHint("readback", context))}`;

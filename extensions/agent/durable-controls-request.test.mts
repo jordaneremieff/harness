@@ -7,94 +7,200 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { AgentDoc, LiveDoc, Harness, MemoryStorage, createRegistry, defineExtension, defineTool, type CommitPublication, type ConversationId, type SubmissionId, type TaskId } from "@earendil-works/pi-durable";
+import {
+	AgentDoc,
+	LiveDoc,
+	Harness,
+	MemoryStorage,
+	createRegistry,
+	defineExtension,
+	defineTool,
+	type CommitPublication,
+	type ConversationId,
+	type SubmissionId,
+	type TaskId,
+} from "@earendil-works/pi-durable";
 import { obj } from "@earendil-works/pi-schema";
 import { AwaitDoc, AWAIT_PROVENANCE_LIMIT } from "./awaited-results.ts";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { AgentMetaDoc, forkConversation, rewindConversation, readOutcome, recordDeliveryIntent, recordReport, reconcileDeliveries, richSubmitConversation, settleDeliveries, submitConversation, writeConversationName } from "./durable-controls.ts";
+import {
+	AgentMetaDoc,
+	forkConversation,
+	rewindConversation,
+	readOutcome,
+	recordDeliveryIntent,
+	recordReport,
+	reconcileDeliveries,
+	richSubmitConversation,
+	settleDeliveries,
+	submitConversation,
+	writeConversationName,
+} from "./durable-controls.ts";
 import { completed, fixtureRegistry, fixtureRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import { DurableHost } from "./durable-host.ts";
 import { initializeProfile, ProfileDoc } from "./profile.ts";
-import { readRequestContexts, recordRequestContext, RequestContextDoc, REQUEST_CONTEXT_LIMIT } from "./request-context.ts";
+import {
+	readRequestContexts,
+	recordRequestContext,
+	RequestContextDoc,
+	REQUEST_CONTEXT_LIMIT,
+} from "./request-context.ts";
 import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
 import { AgentTimerDoc, scheduleTimer, TimerTask, type TimerResult } from "./durable-timers.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
 async function fixture(t: TestContext, timers = false) {
 	const registry = timers ? createRegistry() : fixtureRegistry();
-	if (timers) registry.install(defineExtension({ name: "request-timers", tasks: [TimerTask, CheckInTask, CheckInDeadlineTask] }));
+	if (timers)
+		registry.install(defineExtension({ name: "request-timers", tasks: [TimerTask, CheckInTask, CheckInDeadlineTask] }));
 	const storageId = randomUUID();
-	const harness = await Harness.open(new MemoryStorage(), { models: await fixtureRuntime("answer"), registry, now: () => 1000, conversationCreated: (tx, record) => initializeProfile(tx, record.id, storageId) }, context);
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{
+			models: await fixtureRuntime("answer"),
+			registry,
+			now: () => 1000,
+			conversationCreated: (tx, record) => initializeProfile(tx, record.id, storageId),
+		},
+		context,
+	);
 	t.after(() => harness.close(context));
-	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } }, init: async (tx, id) => {
-		const meta = await tx.doc(AgentMetaDoc, id);
-		meta.owner = "creator-a";
-		meta.name = "Initial name";
-		await initializeProfile(tx, id, storageId);
-	} });
+	const conversation = await harness.root(context, {
+		agent: { model: { provider: testModel.provider, modelId: testModel.id } },
+		init: async (tx, id) => {
+			const meta = await tx.doc(AgentMetaDoc, id);
+			meta.owner = "creator-a";
+			meta.name = "Initial name";
+			await initializeProfile(tx, id, storageId);
+		},
+	});
 	return { harness, conversation };
 }
 
-it("admits dispatch and steer after long native runs place more inputs than the storage provenance bound", { timeout: 30_000 }, async (t) => {
+it("admits dispatch and steer after long native runs place more inputs than the storage provenance bound", {
+	timeout: 30_000,
+}, async (t) => {
 	type Gate = { release: () => void };
-	const gates = new Map<ConversationId, Gate>(), arrivals = new Map<ConversationId, (gate: Gate) => void>();
-	const checkpoint = defineTool({ name: "checkpoint", description: "Hold one native tool boundary.", parameters: obj({}, { open: true }), execute: async (_args, api, ctx) => {
-		let release!: () => void;
-		const held = new Promise<void>((resolve) => { release = resolve; });
-		const gate = { release };
-		gates.set(api.conversationId, gate);
-		arrivals.get(api.conversationId)?.(gate);
-		arrivals.delete(api.conversationId);
-		if (ctx.abortSignal?.aborted) release();
-		else ctx.abortSignal?.addEventListener("abort", release, { once: true });
-		try { await held; } finally { ctx.abortSignal?.removeEventListener("abort", release); }
-		return {};
-	} });
+	const gates = new Map<ConversationId, Gate>(),
+		arrivals = new Map<ConversationId, (gate: Gate) => void>();
+	const checkpoint = defineTool({
+		name: "checkpoint",
+		description: "Hold one native tool boundary.",
+		parameters: obj({}, { open: true }),
+		execute: async (_args, api, ctx) => {
+			let release!: () => void;
+			const held = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const gate = { release };
+			gates.set(api.conversationId, gate);
+			arrivals.get(api.conversationId)?.(gate);
+			arrivals.delete(api.conversationId);
+			if (ctx.abortSignal?.aborted) release();
+			else ctx.abortSignal?.addEventListener("abort", release, { once: true });
+			try {
+				await held;
+			} finally {
+				ctx.abortSignal?.removeEventListener("abort", release);
+			}
+			return {};
+		},
+	});
 	const parked = (id: ConversationId, previous?: Gate): Promise<Gate> => {
 		const gate = gates.get(id);
 		if (gate !== undefined && gate !== previous) return Promise.resolve(gate);
-		return new Promise((resolve) => { arrivals.set(id, resolve); });
+		return new Promise((resolve) => {
+			arrivals.set(id, resolve);
+		});
 	};
 	const models = await createTestRuntime();
 	const stream = () => completed(toolCallMessage("checkpoint"));
-	models.registerNativeProvider({ id: testModel.provider, name: "Placed input fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
+	models.registerNativeProvider({
+		id: testModel.provider,
+		name: "Placed input fixture",
+		getModels: () => [testModel],
+		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		stream,
+		streamSimple: stream,
+	});
 	const harness = await Harness.open(new MemoryStorage(), { models, registry: fixtureRegistry([checkpoint]) }, context);
 	t.after(() => harness.close(context));
 	const agent = { model: { provider: testModel.provider, modelId: testModel.id } };
 	const root = await harness.root(context, { agent });
 	const worker = await harness.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
-	const targets = [root, worker], admitted: SubmissionId[] = [];
+	const targets = [root, worker],
+		admitted: SubmissionId[] = [];
 	for (const target of targets) {
-		admitted.push((await submitConversation(target, { requestId: `start-${target.id}`, message: "Start long run" }, context)).submissionId);
+		admitted.push(
+			(await submitConversation(target, { requestId: `start-${target.id}`, message: "Start long run" }, context))
+				.submissionId,
+		);
 		await parked(target.id);
 	}
 	for (let index = 0; index < AWAIT_PROVENANCE_LIMIT + 4; index++) {
-		const target = targets[index % targets.length], gate = await parked(target.id);
-		const input = await submitConversation(target, { requestId: `steer-${index}`, message: `Continue ${index}`, whenBusy: "steer" }, context);
+		const target = targets[index % targets.length],
+			gate = await parked(target.id);
+		const input = await submitConversation(
+			target,
+			{ requestId: `steer-${index}`, message: `Continue ${index}`, whenBusy: "steer" },
+			context,
+		);
 		admitted.push(input.submissionId);
 		gate.release();
 		await parked(target.id, gate);
 		assert.equal((await (await harness.submission(input.submissionId, context))?.status(context))?.status, "placed");
 	}
-	for (const target of targets) assert.ok(((await harness.snapshot(LiveDoc, target.id, context))?.run?.inputs.length ?? 0) > AWAIT_PROVENANCE_LIMIT / 2);
+	for (const target of targets)
+		assert.ok(
+			((await harness.snapshot(LiveDoc, target.id, context))?.run?.inputs.length ?? 0) > AWAIT_PROVENANCE_LIMIT / 2,
+		);
 	const dispatched = await harness.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
-	admitted.push((await richSubmitConversation(dispatched, { requestId: "new-dispatch", message: "New task", requester: "requester", origin: "model" }, context)).submissionId);
+	admitted.push(
+		(
+			await richSubmitConversation(
+				dispatched,
+				{ requestId: "new-dispatch", message: "New task", requester: "requester", origin: "model" },
+				context,
+			)
+		).submissionId,
+	);
 	await parked(dispatched.id);
 	const gate = await parked(root.id);
-	const steer = await submitConversation(root, { requestId: "new-steer", message: "New control", whenBusy: "steer" }, context);
+	const steer = await submitConversation(
+		root,
+		{ requestId: "new-steer", message: "New control", whenBusy: "steer" },
+		context,
+	);
 	admitted.push(steer.submissionId);
 	gate.release();
 	await parked(root.id, gate);
 	assert.ok(admitted.length > AWAIT_PROVENANCE_LIMIT);
-	for (const id of admitted) assert.equal((await (await harness.submission(id, context))?.status(context))?.status, "placed");
+	for (const id of admitted)
+		assert.equal((await (await harness.submission(id, context))?.status(context))?.status, "placed");
 	assert.ok(((await harness.snapshot(AwaitDoc, context))?.provenance.length ?? 0) <= AWAIT_PROVENANCE_LIMIT);
 });
 
-it("routes later rich requests to their requester or explicit reply recipient without changing the creator", { timeout: 10000 }, async (t) => {
+it("routes later rich requests to their requester or explicit reply recipient without changing the creator", {
+	timeout: 10000,
+}, async (t) => {
 	const { harness, conversation } = await fixture(t);
-	const first = await richSubmitConversation(conversation, { message: "First task", requestId: "first", requester: "requester-a", origin: "model" }, context);
+	const first = await richSubmitConversation(
+		conversation,
+		{ message: "First task", requestId: "first", requester: "requester-a", origin: "model" },
+		context,
+	);
 	await readOutcome(harness, first.submissionId, context);
-	const second = await richSubmitConversation(conversation, { message: "Second task", requestId: "second", requester: "requester-b", replyTo: "recipient-c", origin: "operator" }, context);
+	const second = await richSubmitConversation(
+		conversation,
+		{
+			message: "Second task",
+			requestId: "second",
+			requester: "requester-b",
+			replyTo: "recipient-c",
+			origin: "operator",
+		},
+		context,
+	);
 	await readOutcome(harness, second.submissionId, context);
 	await settleDeliveries(harness, context);
 	const state = await readRetainedDelivery(harness, context, true);
@@ -104,7 +210,17 @@ it("routes later rich requests to their requester or explicit reply recipient wi
 	assert.equal((await harness.snapshot(AgentMetaDoc, conversation.id, context))?.owner, "creator-a");
 	assert.equal((await harness.snapshot(AgentMetaDoc, conversation.id, context))?.firstMessage, "First task");
 	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), []);
-	const retry = await richSubmitConversation(conversation, { message: "Second task", requestId: "second", requester: "requester-b", replyTo: "recipient-c", origin: "operator" }, context);
+	const retry = await richSubmitConversation(
+		conversation,
+		{
+			message: "Second task",
+			requestId: "second",
+			requester: "requester-b",
+			replyTo: "recipient-c",
+			origin: "operator",
+		},
+		context,
+	);
 	assert.equal(retry.submissionId, second.submissionId);
 	assert.equal(retry.deduped, true);
 	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), []);
@@ -113,12 +229,38 @@ it("routes later rich requests to their requester or explicit reply recipient wi
 it("requires a rich host admission origin and preserves the caller operation ID", { timeout: 10000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "rich-host-request-"));
 	let host: DurableHost | undefined;
-	t.after(async () => { await host?.close(); rmSync(root, { recursive: true, force: true }); });
-	host = await DurableHost.open({ storagePath: join(root, "agent.sqlite"), storageId: randomUUID(), cwd: root, models: await fixtureRuntime("answer"), registry: fixtureRegistry(), agent: { model: { provider: testModel.provider, modelId: testModel.id } } }, context);
-	const params = { sessionId: host.storageId, message: "Task", requestId: "rich-host", requester: "requester-b", replyTo: "recipient-c", operationId: "caller-operation" };
+	t.after(async () => {
+		await host?.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	host = await DurableHost.open(
+		{
+			storagePath: join(root, "agent.sqlite"),
+			storageId: randomUUID(),
+			cwd: root,
+			models: await fixtureRuntime("answer"),
+			registry: fixtureRegistry(),
+			agent: { model: { provider: testModel.provider, modelId: testModel.id } },
+		},
+		context,
+	);
+	const params = {
+		sessionId: host.storageId,
+		message: "Task",
+		requestId: "rich-host",
+		requester: "requester-b",
+		replyTo: "recipient-c",
+		operationId: "caller-operation",
+	};
 	await assert.rejects(host.request("task-submit", params, context), /origin/iu);
-	assert.equal((await host.harness.inspect(context)).submissions.length, 0, "missing origin refuses before native admission");
-	const admitted = await host.request("task-submit", { ...params, origin: "operator" }, context) as { submissionId: SubmissionId };
+	assert.equal(
+		(await host.harness.inspect(context)).submissions.length,
+		0,
+		"missing origin refuses before native admission",
+	);
+	const admitted = (await host.request("task-submit", { ...params, origin: "operator" }, context)) as {
+		submissionId: SubmissionId;
+	};
 	await readOutcome(host.harness, admitted.submissionId, context);
 	await settleDeliveries(host.harness, context);
 	const receipt = (await readRetainedDelivery(host.harness, context, true))?.receipts[String(admitted.submissionId)];
@@ -135,10 +277,28 @@ it("keeps plain native submissions usable without invented requester evidence", 
 	assert.equal((await readRetainedDelivery(harness, context, true))?.intents.length ?? 0, 0);
 });
 
-it("replays a rich delivery intent after an admission gap with its original requester and recipient", { timeout: 10000 }, async (t) => {
+it("replays a rich delivery intent after an admission gap with its original requester and recipient", {
+	timeout: 10000,
+}, async (t) => {
 	const { harness, conversation } = await fixture(t);
-	await harness.commit((tx) => recordDeliveryIntent(tx, conversation.id, { message: "Recovered task", requestId: "recover", ownerId: "recipient-c", origin: "model", requestContext: { requestId: "recover", requester: "requester-b", replyTo: "recipient-c", origin: "model" } }), context);
-	assert.deepEqual((await readRequestContexts(harness, conversation.id, context))[0], { requestId: "recover", requester: "requester-b", replyTo: "recipient-c", origin: "model", status: "admitting" });
+	await harness.commit(
+		(tx) =>
+			recordDeliveryIntent(tx, conversation.id, {
+				message: "Recovered task",
+				requestId: "recover",
+				ownerId: "recipient-c",
+				origin: "model",
+				requestContext: { requestId: "recover", requester: "requester-b", replyTo: "recipient-c", origin: "model" },
+			}),
+		context,
+	);
+	assert.deepEqual((await readRequestContexts(harness, conversation.id, context))[0], {
+		requestId: "recover",
+		requester: "requester-b",
+		replyTo: "recipient-c",
+		origin: "model",
+		status: "admitting",
+	});
 	await reconcileDeliveries(harness, context);
 	const submission = await harness.commit((tx) => tx.submissionByRequest(conversation.id, "recover"), context);
 	assert.ok(submission);
@@ -152,8 +312,19 @@ it("replays a rich delivery intent after an admission gap with its original requ
 it("records explicit reports without an input, answer owner, or check-in task", async (t) => {
 	const { harness } = await fixture(t, true);
 	const before = await harness.inspect(context);
-	const report = await recordReport(harness, { ownerId: "requester-b", senderIdentity: "worker", message: "Progress", requestId: "progress" }, context);
-	assert.deepEqual(await recordReport(harness, { ownerId: "requester-b", senderIdentity: "worker", message: "Progress", requestId: "progress" }, context), report);
+	const report = await recordReport(
+		harness,
+		{ ownerId: "requester-b", senderIdentity: "worker", message: "Progress", requestId: "progress" },
+		context,
+	);
+	assert.deepEqual(
+		await recordReport(
+			harness,
+			{ ownerId: "requester-b", senderIdentity: "worker", message: "Progress", requestId: "progress" },
+			context,
+		),
+		report,
+	);
 	const after = await harness.inspect(context);
 	assert.equal(after.submissions.length, before.submissions.length);
 	assert.equal(after.tasks.length, before.tasks.length);
@@ -166,9 +337,15 @@ it("commits a display name and its managed instructions together", async (t) => 
 	const unsubscribe = onStoredCommit(harness, (publication) => publications.push(publication));
 	t.after(unsubscribe);
 	await writeConversationName(conversation, "New name", context);
-	const changes = publications.filter((publication) => publication.changes.some((change) => change.type === "document" && change.record.kind === AgentMetaDoc.definition.kind));
+	const changes = publications.filter((publication) =>
+		publication.changes.some(
+			(change) => change.type === "document" && change.record.kind === AgentMetaDoc.definition.kind,
+		),
+	);
 	assert.equal(changes.length, 1);
-	assert.ok(changes[0].changes.some((change) => change.type === "document" && change.record.kind === AgentDoc.definition.kind));
+	assert.ok(
+		changes[0].changes.some((change) => change.type === "document" && change.record.kind === AgentDoc.definition.kind),
+	);
 	assert.equal((await harness.snapshot(AgentMetaDoc, conversation.id, context))?.name, "New name");
 	assert.match((await conversation.agent(context)).instructions ?? "", /New name/u);
 	await writeConversationName(conversation, "", context);
@@ -176,17 +353,30 @@ it("commits a display name and its managed instructions together", async (t) => 
 	assert.notEqual((await harness.snapshot(ProfileDoc, conversation.id, context))?.identity, null);
 });
 
-it("refreshes fork and rewind instructions after their final name and owner metadata", { timeout: 10000 }, async (t) => {
+it("refreshes fork and rewind instructions after their final name and owner metadata", {
+	timeout: 10000,
+}, async (t) => {
 	const { harness, conversation } = await fixture(t);
 	const submitted = await submitConversation(conversation, { message: "Source task", requestId: "source" }, context);
 	const outcome = await readOutcome(harness, submitted.submissionId, context);
 	assert.ok(outcome.answerEntryId);
-	const fork = await forkConversation(harness, conversation, outcome.answerEntryId, { name: "Fork name", owner: "fork-owner" }, context);
+	const fork = await forkConversation(
+		harness,
+		conversation,
+		outcome.answerEntryId,
+		{ name: "Fork name", owner: "fork-owner" },
+		context,
+	);
 	const forkAgent = await fork.conversation.agent(context);
 	assert.match(forkAgent.instructions ?? "", /Fork name/u);
 	assert.match(forkAgent.instructions ?? "", /fork-owner/u);
 	assert.doesNotMatch(forkAgent.instructions ?? "", /Initial name/u);
-	const rewind = await rewindConversation(harness, conversation, { entryId: outcome.answerEntryId, correction: "Corrected task", name: "Rewind name", owner: "rewind-owner" }, context);
+	const rewind = await rewindConversation(
+		harness,
+		conversation,
+		{ entryId: outcome.answerEntryId, correction: "Corrected task", name: "Rewind name", owner: "rewind-owner" },
+		context,
+	);
 	await readOutcome(harness, rewind.submissionId, context);
 	const rewindAgent = await rewind.conversation.agent(context);
 	assert.match(rewindAgent.instructions ?? "", /Rewind name/u);
@@ -202,19 +392,62 @@ it("resumes an accepted native timer beyond the new explicit-route admission lim
 	registry.install(defineExtension({ name: "retained-timer", tasks: [TimerTask, CheckInTask, CheckInDeadlineTask] }));
 	const models = await fixtureRuntime("answer");
 	const storageId = randomUUID();
-	const first = await Harness.open(await openNodeSqliteStorage(storagePath), { models, registry, now: () => 800 }, context);
-	t.after(async () => { await resumed?.close(context); await first.close(context); rmSync(directory, { recursive: true, force: true }); });
-	const conversation = await first.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } }, init: (tx, id) => initializeProfile(tx, id, storageId) });
-	const request = { requestId: "retained-scheduled", requester: "requester-b", replyTo: "recipient-c", origin: "model" as const };
-	const timer = await scheduleTimer(first, { conversationId: conversation.id, identity: storageId, message: "Retained scheduled task", scheduleId: "accepted-schedule", deadline: 900, createdAt: 800, mode: "followUp", ownerId: request.replyTo, origin: request.origin, requestId: request.requestId, requestContext: request, checkInMinutes: 0 }, context);
+	const first = await Harness.open(
+		await openNodeSqliteStorage(storagePath),
+		{ models, registry, now: () => 800 },
+		context,
+	);
+	t.after(async () => {
+		await resumed?.close(context);
+		await first.close(context);
+		rmSync(directory, { recursive: true, force: true });
+	});
+	const conversation = await first.root(context, {
+		agent: { model: { provider: testModel.provider, modelId: testModel.id } },
+		init: (tx, id) => initializeProfile(tx, id, storageId),
+	});
+	const request = {
+		requestId: "retained-scheduled",
+		requester: "requester-b",
+		replyTo: "recipient-c",
+		origin: "model" as const,
+	};
+	const timer = await scheduleTimer(
+		first,
+		{
+			conversationId: conversation.id,
+			identity: storageId,
+			message: "Retained scheduled task",
+			scheduleId: "accepted-schedule",
+			deadline: 900,
+			createdAt: 800,
+			mode: "followUp",
+			ownerId: request.replyTo,
+			origin: request.origin,
+			requestId: request.requestId,
+			requestContext: request,
+			checkInMinutes: 0,
+		},
+		context,
+	);
 	await first.commit(async (tx) => {
-		for (let index = 0; index < REQUEST_CONTEXT_LIMIT; index++) await recordRequestContext(tx, conversation.id, { requestId: `occupied-${index}`, requester: "queued-requester", replyTo: "queued-recipient", origin: "model" });
+		for (let index = 0; index < REQUEST_CONTEXT_LIMIT; index++)
+			await recordRequestContext(tx, conversation.id, {
+				requestId: `occupied-${index}`,
+				requester: "queued-requester",
+				replyTo: "queued-recipient",
+				origin: "model",
+			});
 	}, context);
 	assert.equal((await readRequestContexts(first, conversation.id, context)).length, REQUEST_CONTEXT_LIMIT);
 	assert.equal((await first.snapshot(AgentTimerDoc, context))?.timers[0]?.status, "pending");
 	await first.close(context);
 
-	resumed = await Harness.open(await openNodeSqliteStorage(storagePath), { models, registry, now: () => 1000 }, context);
+	resumed = await Harness.open(
+		await openNodeSqliteStorage(storagePath),
+		{ models, registry, now: () => 1000 },
+		context,
+	);
 	const taskId = timer.timerId as TaskId<TimerResult>;
 	const settled = await resumed.waitForTask(taskId, context);
 	assert.equal(settled.state.outcome.status, "completed");
@@ -223,7 +456,11 @@ it("resumes an accepted native timer beyond the new explicit-route admission lim
 	assert.equal(settled.state.outcome.result.overdueMs, 100);
 	const retainedRoutes = await resumed.snapshot(RequestContextDoc, conversation.id, context);
 	assert.equal(retainedRoutes?.requests.length, REQUEST_CONTEXT_LIMIT + 1);
-	assert.deepEqual(retainedRoutes?.requests.find((route) => route.requestId === request.requestId), request, "the retained timer keeps its explicit requester and distinct reply recipient");
+	assert.deepEqual(
+		retainedRoutes?.requests.find((route) => route.requestId === request.requestId),
+		request,
+		"the retained timer keeps its explicit requester and distinct reply recipient",
+	);
 	const submitted = await resumed.commit((tx) => tx.submissionByRequest(conversation.id, request.requestId), context);
 	assert.ok(submitted);
 	assert.equal(Number(submitted.id), settled.state.outcome.result.submissionId);
@@ -235,13 +472,46 @@ it("resumes an accepted native timer beyond the new explicit-route admission lim
 	assert.equal(delivery?.receipts[String(submitted.id)]?.origin, request.origin);
 	assert.equal((await resumed.snapshot(AgentTimerDoc, context))?.timers[0]?.status, "fired");
 	assert.equal((await readRequestContexts(resumed, conversation.id, context)).length, REQUEST_CONTEXT_LIMIT);
-	await assert.rejects(resumed.commit((tx) => recordRequestContext(tx, conversation.id, { requestId: "new-over-capacity", requester: "new-requester", replyTo: "new-recipient", origin: "model" }), context), /unfinished request routes/u);
+	await assert.rejects(
+		resumed.commit(
+			(tx) =>
+				recordRequestContext(tx, conversation.id, {
+					requestId: "new-over-capacity",
+					requester: "new-requester",
+					replyTo: "new-recipient",
+					origin: "model",
+				}),
+			context,
+		),
+		/unfinished request routes/u,
+	);
 });
 
 it("preserves scheduled requester metadata until native deadline admission", { timeout: 10000 }, async (t) => {
 	const { harness, conversation } = await fixture(t, true);
-	const request = { requestId: "scheduled", requester: "requester-b", replyTo: "recipient-c", origin: "model" as const };
-	const timer = await scheduleTimer(harness, { conversationId: conversation.id, identity: "worker", message: "Later task", scheduleId: "schedule", deadline: 900, createdAt: 800, mode: "followUp", ownerId: request.replyTo, origin: request.origin, requestId: request.requestId, requestContext: request }, context);
+	const request = {
+		requestId: "scheduled",
+		requester: "requester-b",
+		replyTo: "recipient-c",
+		origin: "model" as const,
+	};
+	const timer = await scheduleTimer(
+		harness,
+		{
+			conversationId: conversation.id,
+			identity: "worker",
+			message: "Later task",
+			scheduleId: "schedule",
+			deadline: 900,
+			createdAt: 800,
+			mode: "followUp",
+			ownerId: request.replyTo,
+			origin: request.origin,
+			requestId: request.requestId,
+			requestContext: request,
+		},
+		context,
+	);
 	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), []);
 	const task = (await harness.inspect(context)).tasks.find((task) => Number(task.record.id) === timer.timerId);
 	assert.ok(task);

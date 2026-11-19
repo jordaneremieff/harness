@@ -114,7 +114,10 @@ function partialCommitted(message: AssistantMessage, committed: readonly AgentCo
  * commits. A committed message or a terminal tool slot is omitted so the tail
  * never duplicates the committed transcript.
  */
-export function buildLiveEntries(live: unknown, committed: readonly AgentConversationEntry[]): AgentConversationEntry[] {
+export function buildLiveEntries(
+	live: unknown,
+	committed: readonly AgentConversationEntry[],
+): AgentConversationEntry[] {
 	if (live === null || typeof live !== "object") return [];
 	const state = live as LiveState;
 	const out: AgentConversationEntry[] = [];
@@ -139,7 +142,13 @@ export function buildLiveEntries(live: unknown, committed: readonly AgentConvers
 			id: `${LIVE_TOOL_PREFIX}${slot.callId}`,
 			kind: "pi.tool-result",
 			model: [message],
-			data: { live: true, status: slot.status, droppedBytes: slot.droppedBytes, droppedLines: slot.droppedLines, details: slot.details },
+			data: {
+				live: true,
+				status: slot.status,
+				droppedBytes: slot.droppedBytes,
+				droppedLines: slot.droppedLines,
+				details: slot.details,
+			},
 		});
 	}
 	out.push(...nestedEntries(state.nestedTools));
@@ -169,20 +178,20 @@ export function taskGraphRows(graph: TaskGraph): TaskGraphRow[] {
 function taskGraphRow(node: TaskGraphNode): TaskGraphRow {
 	const state = node.state;
 	return {
-			id: node.id,
-			kind: node.kind,
-			conversationId: node.conversationId,
-			...(node.owner === undefined ? {} : { owner: node.owner }),
-			background: node.background,
-			abortRequested: node.abortRequested,
-			status: state.status,
-			...(state.status === "sleeping" ? { until: state.until } : {}),
-			...(node.blocked === undefined ? {} : { blocked: node.blocked }),
-			phase: state.status === "completing" ? "completing" : state.phase,
-			waitsOn: state.status === "waiting" ? [...state.on] : [],
-			...(state.status === "waiting" ? { policy: state.policy } : {}),
-			...(state.status === "completing" ? { outcome: state.outcome } : {}),
-			conversations: [...node.conversations],
+		id: node.id,
+		kind: node.kind,
+		conversationId: node.conversationId,
+		...(node.owner === undefined ? {} : { owner: node.owner }),
+		background: node.background,
+		abortRequested: node.abortRequested,
+		status: state.status,
+		...(state.status === "sleeping" ? { until: state.until } : {}),
+		...(node.blocked === undefined ? {} : { blocked: node.blocked }),
+		phase: state.status === "completing" ? "completing" : state.phase,
+		waitsOn: state.status === "waiting" ? [...state.on] : [],
+		...(state.status === "waiting" ? { policy: state.policy } : {}),
+		...(state.status === "completing" ? { outcome: state.outcome } : {}),
+		conversations: [...node.conversations],
 	};
 }
 
@@ -190,10 +199,21 @@ function taskGraphRow(node: TaskGraphNode): TaskGraphRow {
 export function isObservationFrame(value: unknown): value is ObservationFrame {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
 	const candidate = value as { scope?: unknown; revision?: unknown; storageId?: unknown };
-	if (typeof candidate.storageId !== "string" || typeof candidate.revision !== "number" || !Number.isFinite(candidate.revision)) return false;
+	if (
+		typeof candidate.storageId !== "string" ||
+		typeof candidate.revision !== "number" ||
+		!Number.isFinite(candidate.revision)
+	)
+		return false;
 	if (candidate.scope === "conversation") {
 		const frame = value as { conversationId?: unknown; entries?: unknown; live?: unknown; status?: unknown };
-		return typeof frame.conversationId === "number" && Array.isArray(frame.entries) && Array.isArray(frame.live) && frame.status !== null && typeof frame.status === "object";
+		return (
+			typeof frame.conversationId === "number" &&
+			Array.isArray(frame.entries) &&
+			Array.isArray(frame.live) &&
+			frame.status !== null &&
+			typeof frame.status === "object"
+		);
 	}
 	if (candidate.scope === "tasks") return Array.isArray((value as { tasks?: unknown }).tasks);
 	return false;

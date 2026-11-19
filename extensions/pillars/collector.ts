@@ -204,7 +204,9 @@ export class Collector {
 			this.busyAttempts = Math.min(4, this.busyAttempts + 1);
 			if (this.shuttingDown) {
 				this.incident("writeFailures");
-				this.diagnostic("Pillars shutdown publication is busy. The unpublished delta is lost when this collector closes.");
+				this.diagnostic(
+					"Pillars shutdown publication is busy. The unpublished delta is lost when this collector closes.",
+				);
 			} else if (this.busyAttempts === 3) {
 				this.incident("writeFailures");
 				this.diagnostic(error.message);

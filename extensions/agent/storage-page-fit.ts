@@ -33,5 +33,10 @@ export function fitStorageStatusPage<Page>(
 	limit: number,
 	scan: (limit: number) => Promise<Page>,
 ): Promise<FittedStoragePage<Page, ReturnType<typeof projectStorageStatus>>> {
-	return fitStoragePage(limit, scan, projectStorageStatus, (projected) => projected.format === "refused" && projected.cause === "byte-limit");
+	return fitStoragePage(
+		limit,
+		scan,
+		projectStorageStatus,
+		(projected) => projected.format === "refused" && projected.cause === "byte-limit",
+	);
 }

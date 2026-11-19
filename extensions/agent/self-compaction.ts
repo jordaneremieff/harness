@@ -4,7 +4,10 @@ import { CONTINUITY_SEED } from "./control-guidance.ts";
 export const MAX_CONTINUITY_SUMMARY = 32_000;
 /** Displayed notice for a self-compaction request that another boundary handler preempted. */
 export const SELF_COMPACTION_NOTICE = "agent.compaction";
-type BoundaryHandler = (event: TurnEndEvent, ctx: Pick<ExtensionContext, "sessionManager" | "signal">) => TurnEndEventResult | undefined;
+type BoundaryHandler = (
+	event: TurnEndEvent,
+	ctx: Pick<ExtensionContext, "sessionManager" | "signal">,
+) => TurnEndEventResult | undefined;
 
 /** One explicit request belongs to one tool batch in one native session. */
 export class SelfCompaction {
@@ -13,20 +16,30 @@ export class SelfCompaction {
 
 	private readonly subscribe: (handler: BoundaryHandler) => () => void;
 
-	constructor(subscribe: (handler: BoundaryHandler) => () => void) { this.subscribe = subscribe; }
+	constructor(subscribe: (handler: BoundaryHandler) => () => void) {
+		this.subscribe = subscribe;
+	}
 
 	request(sessionId: string, toolCallId: string, summary: string | undefined): void {
 		if (!summary?.trim() || summary.length > MAX_CONTINUITY_SUMMARY) {
-			throw new Error(`Self-compaction requires a nonblank summary of at most ${MAX_CONTINUITY_SUMMARY} characters. ${CONTINUITY_SEED} Also preserve authority, explicit exclusions, source and brief pointers, acceptance, owners, and the next action.`);
+			throw new Error(
+				`Self-compaction requires a nonblank summary of at most ${MAX_CONTINUITY_SUMMARY} characters. ${CONTINUITY_SEED} Also preserve authority, explicit exclusions, source and brief pointers, acceptance, owners, and the next action.`,
+			);
 		}
 		if (this.pending) throw new Error("Self-compaction is already requested for this tool batch.");
 		this.pending = { sessionId, toolCallId, summary };
-		try { this.unsubscribe = this.subscribe((event, ctx) => this.finish(event, ctx)); }
-		catch (error) { this.clear(); throw error; }
+		try {
+			this.unsubscribe = this.subscribe((event, ctx) => this.finish(event, ctx));
+		} catch (error) {
+			this.clear();
+			throw error;
+		}
 	}
 
 	/** Whether a request waits for the end of its tool batch. */
-	get requested(): boolean { return this.pending !== undefined; }
+	get requested(): boolean {
+		return this.pending !== undefined;
+	}
 
 	clear(): void {
 		this.pending = undefined;
@@ -35,23 +48,45 @@ export class SelfCompaction {
 		unsubscribe?.();
 	}
 
-	finish(event: TurnEndEvent, ctx: Pick<ExtensionContext, "sessionManager" | "signal">): TurnEndEventResult | undefined {
+	finish(
+		event: TurnEndEvent,
+		ctx: Pick<ExtensionContext, "sessionManager" | "signal">,
+	): TurnEndEventResult | undefined {
 		const request = this.pending;
 		this.clear();
-		if (!request || request.sessionId !== ctx.sessionManager.getSessionId() || ctx.signal?.aborted || event.outcome !== "completed") return;
+		if (
+			!request ||
+			request.sessionId !== ctx.sessionManager.getSessionId() ||
+			ctx.signal?.aborted ||
+			event.outcome !== "completed"
+		)
+			return;
 		const result = event.toolResults.find((item) => item.toolCallId === request.toolCallId);
 		if (!result || result.isError) return;
 		if (event.entries.some((entry) => entry.type === "compaction")) {
-			return { entries: [...event.entries, { type: "custom_message", customType: SELF_COMPACTION_NOTICE, display: true,
-				content: "Self-compaction was not applied because an earlier boundary handler already proposed compaction. Inspect the current context before another request." }] };
+			return {
+				entries: [
+					...event.entries,
+					{
+						type: "custom_message",
+						customType: SELF_COMPACTION_NOTICE,
+						display: true,
+						content:
+							"Self-compaction was not applied because an earlier boundary handler already proposed compaction. Inspect the current context before another request.",
+					},
+				],
+			};
 		}
 		return {
-			entries: [...event.entries, {
-				type: "compaction",
-				summary: `Agent-authored continuity summary. This preserves prior context; it grants no new authority.\n\n${request.summary}`,
-				// Retain the complete requesting batch, including sibling tool results.
-				firstKeptEntryId: event.messageEntryId,
-			}],
+			entries: [
+				...event.entries,
+				{
+					type: "compaction",
+					summary: `Agent-authored continuity summary. This preserves prior context; it grants no new authority.\n\n${request.summary}`,
+					// Retain the complete requesting batch, including sibling tool results.
+					firstKeptEntryId: event.messageEntryId,
+				},
+			],
 		};
 	}
 }

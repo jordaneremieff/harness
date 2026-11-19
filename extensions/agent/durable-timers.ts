@@ -22,8 +22,27 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import { inputEntry } from "./input-entry.ts";
-import { defineDoc, defineDocFamily, defineTask, type ConversationId, type Cursor, type Harness, type SubmissionRecord, type TaskId, type TaskRecord, type TaskState, type TaskOutcome, type Tx } from "@earendil-works/pi-durable";
-import { linkDeliveryIntent, placementMode, recordDeliveryIntent, type DeliveryIntentState, type DeliveryOrigin } from "./durable-controls.ts";
+import {
+	defineDoc,
+	defineDocFamily,
+	defineTask,
+	type ConversationId,
+	type Cursor,
+	type Harness,
+	type SubmissionRecord,
+	type TaskId,
+	type TaskRecord,
+	type TaskState,
+	type TaskOutcome,
+	type Tx,
+} from "@earendil-works/pi-durable";
+import {
+	linkDeliveryIntent,
+	placementMode,
+	recordDeliveryIntent,
+	type DeliveryIntentState,
+	type DeliveryOrigin,
+} from "./durable-controls.ts";
 import { reconcileProfile } from "./profile.ts";
 import { recordUnplacedInput } from "./unplaced-inputs.ts";
 import { validateRequestContext, type RequestContext } from "./request-context.ts";
@@ -162,10 +181,14 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 	initial: () => ({ phase: "wait" }),
 	phases: {
 		wait: async (task, runtime, context) => {
-			if (task.input.deadline > runtime.now()) return runtime.sleepUntil(task.input.deadline, task.state.checkpoint, context);
+			if (task.input.deadline > runtime.now())
+				return runtime.sleepUntil(task.input.deadline, task.state.checkpoint, context);
 			// Record that the deadline was reached before any admission work, so
 			// an abort in the fire window settles the input instead of cancelling it.
-			await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait", firing: true } as TimerState }), context);
+			await runtime.commit(
+				() => ({ status: "running", checkpoint: { phase: "wait", firing: true } as TimerState }),
+				context,
+			);
 			const conversationId = task.input.conversationId as ConversationId;
 			const conversation = await runtime.conversation(conversationId, context);
 			if (conversation === undefined) throw new Error(`scheduled input target ${task.input.identity} is not retained`);
@@ -178,25 +201,47 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 			const mode = task.input.mode;
 			let intent: DeliveryIntentState | undefined;
 			await runtime.commit(async (tx) => {
-				intent = await recordDeliveryIntent(tx, conversationId, {
-					requestId: task.input.requestId,
-					ownerId: task.input.ownerId,
-					message: task.input.message,
-					whenBusy: mode,
-					origin: task.input.origin,
-					checkInMinutes: task.input.checkInMinutes ?? 0,
-					senderIdentity: task.input.identity,
-					...(task.input.requestContext === undefined ? {} : { requestContext: task.input.requestContext }),
-				}, runtime.now(), "retained");
+				intent = await recordDeliveryIntent(
+					tx,
+					conversationId,
+					{
+						requestId: task.input.requestId,
+						ownerId: task.input.ownerId,
+						message: task.input.message,
+						whenBusy: mode,
+						origin: task.input.origin,
+						checkInMinutes: task.input.checkInMinutes ?? 0,
+						senderIdentity: task.input.identity,
+						...(task.input.requestContext === undefined ? {} : { requestContext: task.input.requestContext }),
+					},
+					runtime.now(),
+					"retained",
+				);
 				return undefined;
 			}, context);
 			const submission = await conversation.submit(
-				{ type: "input", content: task.input.message, requestId: task.input.requestId, whenBusy: placementMode(mode), entry: inputEntry(task.input.origin, task.input.requestContext?.requester, { class: "timer", sender: task.input.requestContext?.requester ?? task.input.ownerId, requestId: task.input.requestId }) },
+				{
+					type: "input",
+					content: task.input.message,
+					requestId: task.input.requestId,
+					whenBusy: placementMode(mode),
+					entry: inputEntry(task.input.origin, task.input.requestContext?.requester, {
+						class: "timer",
+						sender: task.input.requestContext?.requester ?? task.input.ownerId,
+						requestId: task.input.requestId,
+					}),
+				},
 				context,
 			);
 			const firedAt = runtime.now();
 			await runtime.commit(async (tx) => {
-				await recordUnplacedInput(tx, conversationId, { submissionId: submission.id, class: "timer", sender: task.input.requestContext?.requester ?? "", admittedAt: firedAt, recipient: task.input.identity });
+				await recordUnplacedInput(tx, conversationId, {
+					submissionId: submission.id,
+					class: "timer",
+					sender: task.input.requestContext?.requester ?? "",
+					admittedAt: firedAt,
+					recipient: task.input.identity,
+				});
 				return undefined;
 			}, context);
 			const result: TimerResult = {
@@ -210,20 +255,17 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				origin: task.input.origin,
 				deduped: retained !== undefined || intent?.kind === "linked",
 			};
-			await runtime.commit(
-				async (tx) => {
-					await linkDeliveryIntent(tx, conversationId, task.input.requestId, submission.id);
-					await markTimerSettled(tx, Number(task.id), {
-						status: "fired",
-						firedAt,
-						overdueMs: result.overdueMs,
-						submissionId: submission.id,
-						settledAt: firedAt,
-					});
-					return { status: "terminal", outcome: { status: "completed", result } };
-				},
-				context,
-			);
+			await runtime.commit(async (tx) => {
+				await linkDeliveryIntent(tx, conversationId, task.input.requestId, submission.id);
+				await markTimerSettled(tx, Number(task.id), {
+					status: "fired",
+					firedAt,
+					overdueMs: result.overdueMs,
+					submissionId: submission.id,
+					settledAt: firedAt,
+				});
+				return { status: "terminal", outcome: { status: "completed", result } };
+			}, context);
 		},
 	},
 	abort: async (task, runtime, context) => {
@@ -244,15 +286,46 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				}, context);
 				const mode = input.mode;
 				await runtime.commit(async (tx) => {
-					await recordDeliveryIntent(tx, conversationId, { requestId: input.requestId, ownerId: input.ownerId, message: input.message, whenBusy: mode, origin: input.origin, checkInMinutes: input.checkInMinutes ?? 0, senderIdentity: input.identity, ...(input.requestContext === undefined ? {} : { requestContext: input.requestContext }) }, runtime.now(), "retained");
+					await recordDeliveryIntent(
+						tx,
+						conversationId,
+						{
+							requestId: input.requestId,
+							ownerId: input.ownerId,
+							message: input.message,
+							whenBusy: mode,
+							origin: input.origin,
+							checkInMinutes: input.checkInMinutes ?? 0,
+							senderIdentity: input.identity,
+							...(input.requestContext === undefined ? {} : { requestContext: input.requestContext }),
+						},
+						runtime.now(),
+						"retained",
+					);
 					return undefined;
 				}, context);
 				const submission = await conversation.submit(
-					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: placementMode(mode), entry: inputEntry(input.origin, input.requestContext?.requester, { class: "timer", sender: input.requestContext?.requester ?? input.ownerId, requestId: input.requestId }) },
+					{
+						type: "input",
+						content: input.message,
+						requestId: input.requestId,
+						whenBusy: placementMode(mode),
+						entry: inputEntry(input.origin, input.requestContext?.requester, {
+							class: "timer",
+							sender: input.requestContext?.requester ?? input.ownerId,
+							requestId: input.requestId,
+						}),
+					},
 					context,
 				);
 				await runtime.commit(async (tx) => {
-					await recordUnplacedInput(tx, conversationId, { submissionId: submission.id, class: "timer", sender: input.requestContext?.requester ?? "", admittedAt: settledAt, recipient: input.identity });
+					await recordUnplacedInput(tx, conversationId, {
+						submissionId: submission.id,
+						class: "timer",
+						sender: input.requestContext?.requester ?? "",
+						admittedAt: settledAt,
+						recipient: input.identity,
+					});
 					return undefined;
 				}, context);
 				const result: TimerResult = {
@@ -266,24 +339,30 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					origin: input.origin,
 					deduped: retained !== undefined,
 				};
-				await runtime.commit(
-					async (tx) => {
-						await linkDeliveryIntent(tx, conversationId, input.requestId, submission.id);
-						await markTimerSettled(tx, Number(task.id), { status: "fired", firedAt: settledAt, overdueMs: result.overdueMs, submissionId: submission.id, settledAt });
-						return { status: "terminal", outcome: { status: "completed", result } };
-					},
-					context,
-				);
+				await runtime.commit(async (tx) => {
+					await linkDeliveryIntent(tx, conversationId, input.requestId, submission.id);
+					await markTimerSettled(tx, Number(task.id), {
+						status: "fired",
+						firedAt: settledAt,
+						overdueMs: result.overdueMs,
+						submissionId: submission.id,
+						settledAt,
+					});
+					return { status: "terminal", outcome: { status: "completed", result } };
+				}, context);
 				return;
 			}
 		}
-		await runtime.commit(
-			async (tx) => {
-				await markTimerSettled(tx, Number(task.id), { status: "cancelled", firedAt: null, overdueMs: null, submissionId: null, settledAt });
-				return { status: "terminal", outcome: { status: "aborted" } };
-			},
-			context,
-		);
+		await runtime.commit(async (tx) => {
+			await markTimerSettled(tx, Number(task.id), {
+				status: "cancelled",
+				firedAt: null,
+				overdueMs: null,
+				submissionId: null,
+				settledAt,
+			});
+			return { status: "terminal", outcome: { status: "aborted" } };
+		}, context);
 	},
 });
 
@@ -308,19 +387,34 @@ type NativeTimer = TaskRecord<TimerInput, TimerState, TimerResult>;
 
 /** Keyed identity only; native task input and outcome remain authoritative. */
 export const TimerScheduleDoc = defineDocFamily<{ timerId: number | null; fingerprint: string | null }, null>({
-	kind: "agent.timer-schedule", version: 1, scope: "session", family: true,
-	initial: () => ({ timerId: null, fingerprint: null }), checkpointWhen: () => true,
+	kind: "agent.timer-schedule",
+	version: 1,
+	scope: "session",
+	family: true,
+	initial: () => ({ timerId: null, fingerprint: null }),
+	checkpointWhen: () => true,
 });
 export const TIMER_LOOKUP_PAGE_SIZE = 128;
 export const TIMER_LOOKUP_PAGE_LIMIT = 16;
 
 function timerFingerprint(input: TimerInput | ScheduleTimerParams): string {
 	const route = input.requestContext;
-	return createHash("sha256").update(JSON.stringify([
-		input.conversationId, input.identity, input.message, input.deadline, input.mode,
-		input.origin, input.ownerId, input.requestId, input.checkInMinutes ?? 0,
-		route ? [route.requestId, route.requester, route.replyTo, route.origin] : null,
-	])).digest("hex");
+	return createHash("sha256")
+		.update(
+			JSON.stringify([
+				input.conversationId,
+				input.identity,
+				input.message,
+				input.deadline,
+				input.mode,
+				input.origin,
+				input.ownerId,
+				input.requestId,
+				input.checkInMinutes ?? 0,
+				route ? [route.requestId, route.requester, route.replyTo, route.origin] : null,
+			]),
+		)
+		.digest("hex");
 }
 
 async function findRetainedTimer(tx: Tx, scheduleId: string): Promise<NativeTimer | undefined> {
@@ -329,7 +423,13 @@ async function findRetainedTimer(tx: Tx, scheduleId: string): Promise<NativeTime
 	for (let index = 0; index < TIMER_LOOKUP_PAGE_LIMIT; index++) {
 		const page = await tx.scanTasks({ kind: TIMER_TASK_NAME }, TIMER_LOOKUP_PAGE_SIZE, cursor);
 		for (const task of page.items) {
-			if (task.input === null || typeof task.input !== "object" || Array.isArray(task.input) || task.input.scheduleId !== scheduleId) continue;
+			if (
+				task.input === null ||
+				typeof task.input !== "object" ||
+				Array.isArray(task.input) ||
+				task.input.scheduleId !== scheduleId
+			)
+				continue;
 			if (found) throw new Error(`Ambiguous timer schedule key ${scheduleId}: several retained tasks match`);
 			found = task as unknown as NativeTimer;
 		}
@@ -342,9 +442,16 @@ async function findRetainedTimer(tx: Tx, scheduleId: string): Promise<NativeTime
 function retainedTimerResult(task: NativeTimer): ScheduleTimerResult {
 	const input = task.input;
 	return {
-		timerId: Number(task.id), conversationId: input.conversationId, identity: input.identity,
-		deadline: input.deadline, mode: input.mode, origin: input.origin, scheduleId: input.scheduleId,
-		deduped: true, disposition: "retained", status: task.state.status,
+		timerId: Number(task.id),
+		conversationId: input.conversationId,
+		identity: input.identity,
+		deadline: input.deadline,
+		mode: input.mode,
+		origin: input.origin,
+		scheduleId: input.scheduleId,
+		deduped: true,
+		disposition: "retained",
+		status: task.state.status,
 		...(task.state.outcome === undefined ? {} : { outcome: task.state.outcome }),
 	};
 }
@@ -366,13 +473,20 @@ export interface ScheduleTimerResult {
 async function resolveTimerSchedule(tx: Tx, params: ScheduleTimerParams) {
 	const index = await tx.doc(TimerScheduleDoc, params.scheduleId, null);
 	const fingerprint = timerFingerprint(params);
-	const existing = index.timerId === null
-		? await findRetainedTimer(tx, params.scheduleId)
-		: await tx.task(index.timerId as TaskId) as NativeTimer | undefined;
-	if (index.timerId !== null && (!existing || existing.kind !== TIMER_TASK_NAME || existing.input.scheduleId !== params.scheduleId))
+	const existing =
+		index.timerId === null
+			? await findRetainedTimer(tx, params.scheduleId)
+			: ((await tx.task(index.timerId as TaskId)) as NativeTimer | undefined);
+	if (
+		index.timerId !== null &&
+		(!existing || existing.kind !== TIMER_TASK_NAME || existing.input.scheduleId !== params.scheduleId)
+	)
 		throw new Error(`Timer schedule index for ${params.scheduleId} has no matching native task`);
 	if (existing !== undefined) {
-		if (timerFingerprint(existing.input) !== fingerprint || index.fingerprint !== null && index.fingerprint !== fingerprint)
+		if (
+			timerFingerprint(existing.input) !== fingerprint ||
+			(index.fingerprint !== null && index.fingerprint !== fingerprint)
+		)
 			throw new Error(`Conflicting timer schedule key ${params.scheduleId}`);
 		index.timerId = Number(existing.id);
 		index.fingerprint = fingerprint;
@@ -381,10 +495,18 @@ async function resolveTimerSchedule(tx: Tx, params: ScheduleTimerParams) {
 }
 
 /** Claim the schedule key and create its task atomically, or return native retained state. */
-export async function scheduleTimer(harness: Harness, params: ScheduleTimerParams, context: Context): Promise<ScheduleTimerResult> {
+export async function scheduleTimer(
+	harness: Harness,
+	params: ScheduleTimerParams,
+	context: Context,
+): Promise<ScheduleTimerResult> {
 	parseDeliverAt(params.deadline);
 	if (params.requestContext !== undefined) {
-		if (params.requestContext.requestId !== params.requestId || params.requestContext.replyTo !== params.ownerId || params.requestContext.origin !== params.origin)
+		if (
+			params.requestContext.requestId !== params.requestId ||
+			params.requestContext.replyTo !== params.ownerId ||
+			params.requestContext.origin !== params.origin
+		)
 			throw new Error("The request context does not match its scheduled delivery");
 		validateRequestContext(params.requestContext);
 	}
@@ -476,7 +598,12 @@ export type TimerStatusRow = {
  * first. `liveTaskIds` lets a caller that already read `harness.inspect()`
  * skip a second inspection; absent, this function reads it.
  */
-export async function timerStatusRows(harness: Harness, conversationId: ConversationId, context: Context, liveTaskIds?: ReadonlySet<number>): Promise<TimerStatusRow[]> {
+export async function timerStatusRows(
+	harness: Harness,
+	conversationId: ConversationId,
+	context: Context,
+	liveTaskIds?: ReadonlySet<number>,
+): Promise<TimerStatusRow[]> {
 	const state = await harness.snapshot(AgentTimerDoc, context);
 	if (state === undefined) return [];
 	let live = liveTaskIds;
@@ -542,13 +669,31 @@ export interface CancelTimerResult {
  * the timer, so a wrong session ID refuses instead of cancelling another
  * conversation's scheduled input.
  */
-export async function cancelTimer(harness: Harness, timerId: number, context: Context, conversationId?: ConversationId): Promise<CancelTimerResult> {
+export async function cancelTimer(
+	harness: Harness,
+	timerId: number,
+	context: Context,
+	conversationId?: ConversationId,
+): Promise<CancelTimerResult> {
 	const record = await harness.getTask(timerId as TaskId, context);
-	if (record === undefined || record.kind !== TIMER_TASK_NAME) throw new Error(`timer ${timerId} is not retained in this storage`);
-	if (conversationId !== undefined && record.conversationId !== conversationId) throw new Error(`timer ${timerId} targets another conversation`);
+	if (record === undefined || record.kind !== TIMER_TASK_NAME)
+		throw new Error(`timer ${timerId} is not retained in this storage`);
+	if (conversationId !== undefined && record.conversationId !== conversationId)
+		throw new Error(`timer ${timerId} targets another conversation`);
 	const id = timerId as TaskId<never>;
 	const outcome = await harness.abortTask(id, context);
 	const settled = await harness.waitForTask(id, context);
 	const state = settled.state.outcome.status;
-	return { timerId, outcome, status: state === "completed" ? "fired" : state === "aborted" ? "cancelled" : state === "failed" || state === "faulted" ? "faulted" : "orphaned" };
+	return {
+		timerId,
+		outcome,
+		status:
+			state === "completed"
+				? "fired"
+				: state === "aborted"
+					? "cancelled"
+					: state === "failed" || state === "faulted"
+						? "faulted"
+						: "orphaned",
+	};
 }

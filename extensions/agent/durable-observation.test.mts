@@ -5,7 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createSession, Harness, LiveDoc, SystemEntry, UserEntry, type EntryRecord, type EntryId, type ConversationId, type LiveState, type SubmissionId } from "@earendil-works/pi-durable";
+import {
+	createSession,
+	Harness,
+	LiveDoc,
+	SystemEntry,
+	UserEntry,
+	type EntryRecord,
+	type EntryId,
+	type ConversationId,
+	type LiveState,
+	type SubmissionId,
+} from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DurableHost } from "./durable-host.ts";
@@ -15,8 +26,34 @@ import { completed } from "./durable-host-fixture.mts";
 import { settleDeliveries } from "./durable-controls.ts";
 import { modelFailureText, PROVIDER_BLOCK_ERROR } from "./provider-block-facts.ts";
 import { InspectOutputSchema, structuredObservation } from "./observation-schema.ts";
-import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, entryRow, fragment, projectEntry, dashboardHealth, readConversationStatus, readDashboard, reduceActivityMetadata, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
-import { answerMessage, failingTool, fixtureRegistry, fixtureRuntime, fixtureStorageId, fixtureProvider, fixtureModelId, gateTool, hostOptions, redactedAnswerMessage, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
+import {
+	ACTIVITY_DIGEST_BYTES,
+	ACTIVITY_SCAN_BYTES,
+	DurableObservation,
+	entryRow,
+	fragment,
+	projectEntry,
+	dashboardHealth,
+	readConversationStatus,
+	readDashboard,
+	reduceActivityMetadata,
+	SNAPSHOT_BYTE_LIMIT,
+	SNAPSHOT_MAX_SOURCE_BYTES,
+} from "./durable-observation.ts";
+import {
+	answerMessage,
+	failingTool,
+	fixtureRegistry,
+	fixtureRuntime,
+	fixtureStorageId,
+	fixtureProvider,
+	fixtureModelId,
+	gateTool,
+	hostOptions,
+	redactedAnswerMessage,
+	scriptedRuntime,
+	toolCallMessage,
+} from "./durable-host-fixture.mts";
 
 function fixtureRoot(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "durable-observation-"));
@@ -25,7 +62,10 @@ function fixtureRoot(t: { after(fn: () => void): void }): string {
 }
 
 async function observationFor(storagePath: string, registry = fixtureRegistry()): Promise<DurableObservation> {
-	return DurableObservation.open({ backupFrom: storagePath, storageId: fixtureStorageId, models: await fixtureRuntime("answer"), registry }, BACKGROUND_CONTEXT);
+	return DurableObservation.open(
+		{ backupFrom: storagePath, storageId: fixtureStorageId, models: await fixtureRuntime("answer"), registry },
+		BACKGROUND_CONTEXT,
+	);
 }
 
 function defer(): { promise: Promise<void>; resolve: () => void } {
@@ -38,24 +78,56 @@ function defer(): { promise: Promise<void>; resolve: () => void } {
 
 it("reports retained compaction failure and nested calls after the parent model call starts", async (t) => {
 	const storagePath = join(fixtureRoot(t), "nested-activity.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	t.after(() => host.close());
 	await host.harness.commit(async (tx) => {
 		const live = await tx.doc(LiveDoc, 1 as ConversationId);
-		live.compactionFailure = { taskId: 40 as import("@earendil-works/pi-durable").TaskId<import("@earendil-works/pi-durable").CompactionResult>, trigger: "manual", error: "summarization failed" };
+		live.compactionFailure = {
+			taskId: 40 as import("@earendil-works/pi-durable").TaskId<import("@earendil-works/pi-durable").CompactionResult>,
+			trigger: "manual",
+			error: "summarization failed",
+		};
 		live.nestedTools = [
-			{ taskId: 42 as import("@earendil-works/pi-durable").TaskId, parentTaskId: 41 as import("@earendil-works/pi-durable").TaskId, parentCallId: "parent", callId: "parent/read", name: "read", arguments: { path: "fixture.txt" }, status: "running", output: "partial" },
-			{ taskId: 43 as import("@earendil-works/pi-durable").TaskId, parentTaskId: 41 as import("@earendil-works/pi-durable").TaskId, parentCallId: "parent", callId: "parent/done", name: "read", arguments: {}, status: "done", summary: { isError: false } },
+			{
+				taskId: 42 as import("@earendil-works/pi-durable").TaskId,
+				parentTaskId: 41 as import("@earendil-works/pi-durable").TaskId,
+				parentCallId: "parent",
+				callId: "parent/read",
+				name: "read",
+				arguments: { path: "fixture.txt" },
+				status: "running",
+				output: "partial",
+			},
+			{
+				taskId: 43 as import("@earendil-works/pi-durable").TaskId,
+				parentTaskId: 41 as import("@earendil-works/pi-durable").TaskId,
+				parentCallId: "parent",
+				callId: "parent/done",
+				name: "read",
+				arguments: {},
+				status: "done",
+				summary: { isError: false },
+			},
 		];
 	}, BACKGROUND_CONTEXT);
-	const activity = await host.request("inspect", { view: "activity" }) as { metadata: import("./durable-observation.ts").DurableActivityMetadata };
-	const retainedFailure: import("./dashboard-types.ts").DashboardCompactionFailure = { trigger: "manual", errorMessage: "summarization failed" };
+	const activity = (await host.request("inspect", { view: "activity" })) as {
+		metadata: import("./durable-observation.ts").DurableActivityMetadata;
+	};
+	const retainedFailure: import("./dashboard-types.ts").DashboardCompactionFailure = {
+		trigger: "manual",
+		errorMessage: "summarization failed",
+	};
 	assert.deepEqual(activity.metadata.compactionFailure, retainedFailure);
-	assert.deepEqual(activity.metadata.runningTools, [{ toolCallId: "parent/read", name: "read", taskId: 42, parentToolCallId: "parent", parentTaskId: 41 }]);
+	assert.deepEqual(activity.metadata.runningTools, [
+		{ toolCallId: "parent/read", name: "read", taskId: 42, parentToolCallId: "parent", parentTaskId: 41 },
+	]);
 	structuredObservation(InspectOutputSchema, activity);
 });
 
-it("returns the documented missing-request result and enforces native selector agreement", async t => {
+it("returns the documented missing-request result and enforces native selector agreement", async (t) => {
 	const docs = readFileSync(new URL("../../docs/agent-host-contract.md", import.meta.url), "utf8");
 	assert.ok(Buffer.byteLength(docs) <= 512 * 1024, "Documented contract byte bound");
 	const heading = "### Fixture: unavailable-result\n";
@@ -64,15 +136,30 @@ it("returns the documented missing-request result and enforces native selector a
 	assert.ok(fixture);
 	const expected = JSON.parse(fixture[1]) as { sessionId: string; requestId: string; [key: string]: unknown };
 	structuredObservation(InspectOutputSchema, expected);
-	const host = await DurableHost.open({ ...hostOptions(join(fixtureRoot(t), "result.sqlite"), await scriptedRuntime([answerMessage("first"), answerMessage("second")]), fixtureRegistry()), storageId: expected.sessionId }, BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		{
+			...hostOptions(
+				join(fixtureRoot(t), "result.sqlite"),
+				await scriptedRuntime([answerMessage("first"), answerMessage("second")]),
+				fixtureRegistry(),
+			),
+			storageId: expected.sessionId,
+		},
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const params = { sessionId: expected.sessionId, view: "result", requestId: expected.requestId };
-		const native = await host.request("inspect", params) as Record<string, unknown>;
+		const native = (await host.request("inspect", params)) as Record<string, unknown>;
 		assert.deepEqual(native, expected);
 		assert.equal(native.status, "unavailable");
 		assert.equal(Object.hasOwn(native, "submissionId"), false);
 		structuredObservation(InspectOutputSchema, native);
-		for (const changed of [{ ...native, submissionId: 0 }, { ...native, status: "done" }, { ...native, answer: "fabricated" }]) assert.throws(() => structuredObservation(InspectOutputSchema, changed));
+		for (const changed of [
+			{ ...native, submissionId: 0 },
+			{ ...native, status: "done" },
+			{ ...native, answer: "fabricated" },
+		])
+			assert.throws(() => structuredObservation(InspectOutputSchema, changed));
 		const { reason: _reason, ...withoutReason } = native;
 		assert.throws(() => structuredObservation(InspectOutputSchema, withoutReason));
 		const first = await host.submit({ message: "first input", requestId: "first-exact-request" });
@@ -80,26 +167,47 @@ it("returns the documented missing-request result and enforces native selector a
 		const second = await host.submit({ message: "second input", requestId: "second-exact-request" });
 		await host.wait(second.submissionId, BACKGROUND_CONTEXT);
 		const matching = { ...params, requestId: "first-exact-request", submissionId: first.submissionId };
-		const retained = await host.request("inspect", matching) as Record<string, unknown>;
+		const retained = (await host.request("inspect", matching)) as Record<string, unknown>;
 		assert.equal(retained.submissionId, first.submissionId);
 		assert.equal(retained.requestId, matching.requestId);
 		structuredObservation(InspectOutputSchema, retained);
-		await assert.rejects(host.request("inspect", { ...matching, submissionId: second.submissionId }), /select different native submissions/u);
+		await assert.rejects(
+			host.request("inspect", { ...matching, submissionId: second.submissionId }),
+			/select different native submissions/u,
+		);
 	} finally {
 		await host.close();
 	}
 });
 
 it("preserves native message durations without deriving them from message timestamps", () => {
-	const timed = { role: "toolResult" as const, toolCallId: "call", toolName: "gate", content: [{ type: "text" as const, text: "done" }], isError: false, timestamp: 900_000, durationMs: 7 };
-	const entry: EntryRecord = { id: 1 as EntryId, conversationId: 1 as ConversationId, kind: "pi.tool-result", model: [timed] };
+	const timed = {
+		role: "toolResult" as const,
+		toolCallId: "call",
+		toolName: "gate",
+		content: [{ type: "text" as const, text: "done" }],
+		isError: false,
+		timestamp: 900_000,
+		durationMs: 7,
+	};
+	const entry: EntryRecord = {
+		id: 1 as EntryId,
+		conversationId: 1 as ConversationId,
+		kind: "pi.tool-result",
+		model: [timed],
+	};
 	assert.equal(entryRow(entry).toolResults?.[0]?.durationMs, 7);
 	assert.equal(entryRow({ ...entry, model: [{ ...timed, timestamp: 9_000_000 }] }).toolResults?.[0]?.durationMs, 7);
 	assert.equal(entryRow({ ...entry, model: [{ ...timed, durationMs: 0 }] }).toolResults?.[0]?.durationMs, 0);
 	const { durationMs: _duration, ...untimed } = timed;
 	assert.equal(Object.hasOwn(entryRow({ ...entry, model: [untimed] }).toolResults?.[0] ?? {}, "durationMs"), false);
 	const assistant = { ...redactedAnswerMessage("answer"), timestamp: 12, durationMs: 23 };
-	const projected = projectEntry({ id: 2 as EntryId, conversationId: 1 as ConversationId, kind: "pi.assistant", model: [assistant] });
+	const projected = projectEntry({
+		id: 2 as EntryId,
+		conversationId: 1 as ConversationId,
+		kind: "pi.assistant",
+		model: [assistant],
+	});
 	assert.equal((projected.value.model as Message[])[0]?.role, "assistant");
 	assert.equal((projected.value.model as Array<{ durationMs?: number }>)[0]?.durationMs, 23);
 	assert.ok(projected.omissions);
@@ -107,7 +215,14 @@ it("preserves native message durations without deriving them from message timest
 
 it("preserves upstream absence for tools that never execute", async (t) => {
 	const storagePath = join(fixtureRoot(t), "unexecuted.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("missing"), answerMessage("done")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([toolCallMessage("missing"), answerMessage("done")]),
+			fixtureRegistry(),
+		),
+		BACKGROUND_CONTEXT,
+	);
 	t.after(() => host.close());
 	const submitted = await host.submit({ message: "unavailable tool", requestId: "unexecuted" });
 	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
@@ -124,8 +239,18 @@ it("preserves upstream absence for an interrupted tool execution", async (t) => 
 	const storagePath = join(fixtureRoot(t), "interrupted.sqlite");
 	const started = defer();
 	const release = defer();
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate")]), fixtureRegistry([gateTool(release.promise, started.resolve)])), BACKGROUND_CONTEXT);
-	t.after(async () => { release.resolve(); await host.close(); });
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([toolCallMessage("gate")]),
+			fixtureRegistry([gateTool(release.promise, started.resolve)]),
+		),
+		BACKGROUND_CONTEXT,
+	);
+	t.after(async () => {
+		release.resolve();
+		await host.close();
+	});
 	const submitted = await host.submit({ message: "interrupt tool", requestId: "interrupted" });
 	await started.promise;
 	await host.request("abort", {});
@@ -144,81 +269,150 @@ function retainedFingerprint(path: string) {
 		const file = `${path}${suffix}`;
 		if (!existsSync(file)) return { suffix, absent: true };
 		const stat = lstatSync(file, { bigint: true });
-		return { suffix, hash: createHash("sha256").update(readFileSync(file)).digest("hex"), dev: stat.dev, ino: stat.ino, size: stat.size, mtime: stat.mtimeNs, ctime: stat.ctimeNs };
+		return {
+			suffix,
+			hash: createHash("sha256").update(readFileSync(file)).digest("hex"),
+			dev: stat.dev,
+			ino: stat.ino,
+			size: stat.size,
+			mtime: stat.mtimeNs,
+			ctime: stat.ctimeNs,
+		};
 	});
 }
 
 it("preserves committed running tasks without scheduler, model, tool, or source activity", async (t) => {
 	const storagePath = join(fixtureRoot(t), "running.sqlite");
-	const started = defer(), release = defer();
-	let modelCalls = 0, toolCalls = 0;
+	const started = defer(),
+		release = defer();
+	let modelCalls = 0,
+		toolCalls = 0;
 	const models = await createTestRuntime();
-	const stream = () => { modelCalls++; return completed(modelCalls === 1 ? toolCallMessage("gate") : answerMessage()); };
-	models.registerNativeProvider({ id: testModel.provider, name: "Fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
-	const registry = fixtureRegistry([gateTool(release.promise, () => { toolCalls++; started.resolve(); })]);
+	const stream = () => {
+		modelCalls++;
+		return completed(modelCalls === 1 ? toolCallMessage("gate") : answerMessage());
+	};
+	models.registerNativeProvider({
+		id: testModel.provider,
+		name: "Fixture",
+		getModels: () => [testModel],
+		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		stream,
+		streamSimple: stream,
+	});
+	const registry = fixtureRegistry([
+		gateTool(release.promise, () => {
+			toolCalls++;
+			started.resolve();
+		}),
+	]);
 	const host = await DurableHost.open(hostOptions(storagePath, models, registry), BACKGROUND_CONTEXT);
-	t.after(async () => { release.resolve(); await host.close(); });
+	t.after(async () => {
+		release.resolve();
+		await host.close();
+	});
 	await host.submit({ message: "hold tool", requestId: "running-copy", ownerId: "reader", origin: "operator" });
 	await started.promise;
 	const source = await host.harness.commit((tx) => tx.scanTasks({}, 100), BACKGROUND_CONTEXT);
 	assert.ok(source.items.some((task) => task.state.status === "running"));
 	const before = retainedFingerprint(storagePath);
-	const observation = await DurableObservation.open({ backupFrom: storagePath, storageId: fixtureStorageId, models, registry }, BACKGROUND_CONTEXT);
+	const observation = await DurableObservation.open(
+		{ backupFrom: storagePath, storageId: fixtureStorageId, models, registry },
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const copied = await observation.harness.commit((tx) => tx.scanTasks({}, 100), BACKGROUND_CONTEXT);
 		assert.deepEqual(copied, source, "status, restarts, checkpoint, owner and abort fields stay committed");
 		assert.deepEqual(observation.harness.wake(), { active: false });
 		assert.throws(() => observation.harness.resume(), /[Rr]ead.only/);
-		await assert.rejects(observation.harness.commit((tx) => tx.appendEntry(1 as ConversationId, { kind: "fixture.write", data: {} }), BACKGROUND_CONTEXT), /[Rr]ead.only/);
+		await assert.rejects(
+			observation.harness.commit(
+				(tx) => tx.appendEntry(1 as ConversationId, { kind: "fixture.write", data: {} }),
+				BACKGROUND_CONTEXT,
+			),
+			/[Rr]ead.only/,
+		);
 		for (const method of ["status", "list", "snapshot", "dashboard", "receipts", "inspect"]) {
 			await observation.request(method, { sessionId: fixtureStorageId, ownerId: "reader", view: "activity" });
 		}
 		const status = await observation.status(1 as ConversationId);
-		for (const task of source.items) assert.equal(status?.tasks.find((row) => row.id === task.id)?.status, task.state.status);
+		for (const task of source.items)
+			assert.equal(status?.tasks.find((row) => row.id === task.id)?.status, task.state.status);
 		assert.equal(modelCalls, 1);
 		assert.equal(toolCalls, 1);
 		assert.deepEqual(await observation.harness.commit((tx) => tx.scanTasks({}, 100), BACKGROUND_CONTEXT), source);
-	} finally { await observation.close(); }
+	} finally {
+		await observation.close();
+	}
 	assert.deepEqual(retainedFingerprint(storagePath), before);
 });
 
 it("reads a cold snapshot with the live request surface and no writer", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	const submitted = await host.submit({ message: "first prompt", requestId: "obs-1" });
 	const outcome = await host.wait(submitted.submissionId, BACKGROUND_CONTEXT);
 	assert.equal(outcome.status, "done");
 
 	const observation = await observationFor(storagePath);
 	try {
-		const list = (await observation.request("list")) as { items: readonly { identity: string; name?: string; busy: boolean }[]; next: null };
+		const list = (await observation.request("list")) as {
+			items: readonly { identity: string; name?: string; busy: boolean }[];
+			next: null;
+		};
 		assert.equal(list.items.length, 1);
 		const listed = list.items[0];
 		assert.ok(listed);
 		assert.equal(listed.identity, fixtureStorageId);
 		assert.equal(list.next, null, "the list continuation is null at the end");
 
-		const status = (await observation.request("status", {})) as { conversations: readonly { identity: string; lastText: string | null }[] };
+		const status = (await observation.request("status", {})) as {
+			conversations: readonly { identity: string; lastText: string | null }[];
+		};
 		assert.equal(status.conversations.length, 1);
 		const statusRow = status.conversations[0];
 		assert.ok(statusRow);
 		assert.match(statusRow.lastText ?? "", /durable answer/u);
 
-		const history = (await observation.request("inspect", { view: "history", limit: 100 })) as { entries: readonly { id: number; kind: string }[]; order: string };
+		const history = (await observation.request("inspect", { view: "history", limit: 100 })) as {
+			entries: readonly { id: number; kind: string }[];
+			order: string;
+		};
 		assert.equal(history.order, "newestFirst");
 		const assistant = history.entries.find((entry) => entry.kind === "pi.assistant");
 		assert.ok(assistant, "the history retains the answer");
 
-		const exact = (await observation.request("inspect", { view: "exact", entryId: assistant.id })) as { entryId: number; text: string; truncated: boolean };
+		const exact = (await observation.request("inspect", { view: "exact", entryId: assistant.id })) as {
+			entryId: number;
+			text: string;
+			truncated: boolean;
+		};
 		assert.equal(exact.entryId, assistant.id);
 		assert.match(exact.text, /durable answer/u);
 
-		const result = (await observation.request("inspect", { view: "result", submissionId: submitted.submissionId })) as { submissionId: SubmissionId; status: string; answerEntryId: number | null; answer?: string };
+		const result = (await observation.request("inspect", { view: "result", submissionId: submitted.submissionId })) as {
+			submissionId: SubmissionId;
+			status: string;
+			answerEntryId: number | null;
+			answer?: string;
+		};
 		assert.equal(result.status, "done");
 		assert.equal(result.answerEntryId, outcome.answerEntryId ?? null);
 		assert.equal(result.answer, "durable answer");
 
-		const dashboard = (await observation.request("dashboard")) as readonly { id: string; storageId: string; cwd: string; state: string; latestReply?: string; firstMessage?: string; modifiedAt: number; owner: string }[];
+		const dashboard = (await observation.request("dashboard")) as readonly {
+			id: string;
+			storageId: string;
+			cwd: string;
+			state: string;
+			latestReply?: string;
+			firstMessage?: string;
+			modifiedAt: number;
+			owner: string;
+		}[];
 		assert.equal(dashboard.length, 1);
 		const summary = dashboard[0];
 		assert.ok(summary);
@@ -231,13 +425,21 @@ it("reads a cold snapshot with the live request surface and no writer", async (t
 		assert.ok(summary.modifiedAt > 0);
 		assert.equal(typeof summary.cwd, "string");
 
-		const snapshot = (await observation.request("snapshot")) as { entries: readonly { id: string; kind: string; model?: readonly unknown[] }[]; partial: boolean; revision: string };
+		const snapshot = (await observation.request("snapshot")) as {
+			entries: readonly { id: string; kind: string; model?: readonly unknown[] }[];
+			partial: boolean;
+			revision: string;
+		};
 		assert.ok(snapshot.entries.some((entry) => entry.kind === "pi.assistant" && (entry.model?.length ?? 0) > 0));
 		assert.equal(snapshot.partial, false);
 		assert.notEqual(snapshot.revision, "empty");
 
 		await assert.rejects(observation.request("submit", { message: "no", requestId: "no" }), /does not support/u);
-		assert.deepEqual(await observation.request("receipts", { ownerId: "x", wait: true }), { receipts: [], reports: [], pending: 0 }, "a receipts read returns at once and ignores a wait member");
+		assert.deepEqual(
+			await observation.request("receipts", { ownerId: "x", wait: true }),
+			{ receipts: [], reports: [], pending: 0 },
+			"a receipts read returns at once and ignores a wait member",
+		);
 	} finally {
 		await observation.close();
 	}
@@ -250,34 +452,59 @@ it("reads a cold snapshot with the live request surface and no writer", async (t
 for (const archive of [false, true]) {
 	it(`reads optional-document absence${archive ? " and prepares retained delivery only on the copy" : " without creating source documents"}`, async (t) => {
 		const storagePath = join(fixtureRoot(t), "optional.sqlite");
-		const models = await fixtureRuntime("answer"), registry = fixtureRegistry();
-		const source = await Harness.open(await openNodeSqliteStorage(storagePath), { models, registry }, BACKGROUND_CONTEXT);
+		const models = await fixtureRuntime("answer"),
+			registry = fixtureRegistry();
+		const source = await Harness.open(
+			await openNodeSqliteStorage(storagePath),
+			{ models, registry },
+			BACKGROUND_CONTEXT,
+		);
 		await source.root(BACKGROUND_CONTEXT);
-		if (archive) await source.commit(async (tx) => {
-			(await tx.doc(DeliveryArchiveDoc)).reports.push({ sourceId: "report:retained", requestId: "retained", ownerId: "reader", senderIdentity: fixtureStorageId, message: "retained report", replyTo: null, acknowledged: false, createdAt: 1 });
-		}, BACKGROUND_CONTEXT);
+		if (archive)
+			await source.commit(async (tx) => {
+				(await tx.doc(DeliveryArchiveDoc)).reports.push({
+					sourceId: "report:retained",
+					requestId: "retained",
+					ownerId: "reader",
+					senderIdentity: fixtureStorageId,
+					message: "retained report",
+					replyTo: null,
+					acknowledged: false,
+					createdAt: 1,
+				});
+			}, BACKGROUND_CONTEXT);
 		assert.equal(await source.snapshot(DeliveryStoreDoc, BACKGROUND_CONTEXT), undefined);
 		await source.close(BACKGROUND_CONTEXT);
 		const before = retainedFingerprint(storagePath);
 		const observation = await observationFor(storagePath);
 		try {
 			await observation.request("status");
-			for (const method of ["list", "snapshot", "dashboard", "inspect"]) await observation.request(method, { ownerId: "reader", view: "history" });
-			const result = await observation.request("receipts", { ownerId: "reader" }) as { receipts: unknown[]; reports: unknown[]; pending: number };
+			for (const method of ["list", "snapshot", "dashboard", "inspect"])
+				await observation.request(method, { ownerId: "reader", view: "history" });
+			const result = (await observation.request("receipts", { ownerId: "reader" })) as {
+				receipts: unknown[];
+				reports: unknown[];
+				pending: number;
+			};
 			assert.equal(result.reports.length, archive ? 1 : 0);
 			assert.deepEqual(result.receipts, []);
 			assert.equal(result.pending, 0);
 			assert.equal((await observation.harness.snapshot(DeliveryStoreDoc, BACKGROUND_CONTEXT))?.ready, true);
 			assert.equal(await observation.harness.snapshot(DeliveryArchiveDoc, BACKGROUND_CONTEXT), undefined);
-		} finally { await observation.close(); }
+		} finally {
+			await observation.close();
+		}
 		assert.deepEqual(retainedFingerprint(storagePath), before);
 	});
 }
 
 for (const stage of ["preparation", "close", "final-open"] as const) {
 	it(`releases private storage and directory after ${stage} failure without replacing the error`, async (t) => {
-		const root = fixtureRoot(t), sourceRoot = join(root, "source"), scratch = join(root, "scratch");
-		mkdirSync(sourceRoot); mkdirSync(scratch);
+		const root = fixtureRoot(t),
+			sourceRoot = join(root, "source"),
+			scratch = join(root, "scratch");
+		mkdirSync(sourceRoot);
+		mkdirSync(scratch);
 		const storagePath = join(sourceRoot, "source.sqlite");
 		const source = await openNodeSqliteStorage(storagePath);
 		const kernel = createSession(source);
@@ -289,10 +516,17 @@ for (const stage of ["preparation", "close", "final-open"] as const) {
 		const closed = new Set<unknown>();
 		const originalClose = storagePrototype.close;
 		const close = t.mock.method(storagePrototype, "close", async function (this: unknown, ...args: unknown[]) {
-			await originalClose.apply(this, args); closed.add(this);
+			await originalClose.apply(this, args);
+			closed.add(this);
 		});
-		const injected = stage === "final-open" ? t.mock.method(Harness, "open", async () => { throw failure; })
-			: t.mock.method(sessionPrototype, stage === "preparation" ? "commit" : "close", async () => { throw failure; });
+		const injected =
+			stage === "final-open"
+				? t.mock.method(Harness, "open", async () => {
+						throw failure;
+					})
+				: t.mock.method(sessionPrototype, stage === "preparation" ? "commit" : "close", async () => {
+						throw failure;
+					});
 		const previous = process.env.TMPDIR;
 		process.env.TMPDIR = scratch;
 		try {
@@ -301,8 +535,10 @@ for (const stage of ["preparation", "close", "final-open"] as const) {
 			assert.equal(closed.size, stage === "final-open" ? 2 : 1);
 			assert.deepEqual(retainedFingerprint(storagePath), before);
 		} finally {
-			if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous;
-			injected.mock.restore(); close.mock.restore();
+			if (previous === undefined) delete process.env.TMPDIR;
+			else process.env.TMPDIR = previous;
+			injected.mock.restore();
+			close.mock.restore();
 		}
 	});
 }
@@ -322,7 +558,10 @@ it("does not create state when a snapshot opens an empty storage", async (t) => 
 		await observation.close();
 	}
 
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const list = (await host.request("list")) as { items: readonly unknown[] };
 		assert.equal(list.items.length, 1, "the live host creates the root when it opens");
@@ -337,8 +576,18 @@ it("reads absent storage as an empty conversation without creating source files"
 	try {
 		const snapshot = await observation.request("snapshot", { sessionId: fixtureStorageId });
 		assert.deepEqual(snapshot, {
-			entries: [], partial: false, revision: "empty", nextBefore: null,
-			coverage: { complete: true, entries: 0, bytes: 0, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false },
+			entries: [],
+			partial: false,
+			revision: "empty",
+			nextBefore: null,
+			coverage: {
+				complete: true,
+				entries: 0,
+				bytes: 0,
+				hiddenExcluded: 0,
+				entryLimitReached: false,
+				byteLimitReached: false,
+			},
 		});
 		assert.deepEqual(await observation.request("list"), { items: [], next: null });
 		await assert.rejects(observation.request("snapshot", { sessionId: "other-storage" }), /does not belong/);
@@ -346,15 +595,29 @@ it("reads absent storage as an empty conversation without creating source files"
 		assert.equal(existsSync(storagePath), false);
 		assert.equal(existsSync(`${storagePath}-wal`), false);
 		assert.equal(existsSync(`${storagePath}-shm`), false);
-	} finally { await observation.close(); }
+	} finally {
+		await observation.close();
+	}
 });
 
 it("bounds the snapshot source before copying", async (t) => {
 	const storagePath = join(fixtureRoot(t), "bounded.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	await host.close();
 	await assert.rejects(
-		DurableObservation.open({ backupFrom: storagePath, storageId: fixtureStorageId, models: await fixtureRuntime("answer"), registry: fixtureRegistry(), maxSourceBytes: 1 }, BACKGROUND_CONTEXT),
+		DurableObservation.open(
+			{
+				backupFrom: storagePath,
+				storageId: fixtureStorageId,
+				models: await fixtureRuntime("answer"),
+				registry: fixtureRegistry(),
+				maxSourceBytes: 1,
+			},
+			BACKGROUND_CONTEXT,
+		),
 		(error: unknown) => error instanceof Error && "code" in error && error.code === "limit_exceeded",
 	);
 
@@ -364,7 +627,14 @@ it("bounds the snapshot source before copying", async (t) => {
 it("continues history, search, and exact reads from a cold snapshot", async (t) => {
 	const storagePath = join(fixtureRoot(t), "continue.sqlite");
 	const registry = fixtureRegistry();
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("first needle answer"), answerMessage("second needle answer")]), registry), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([answerMessage("first needle answer"), answerMessage("second needle answer")]),
+			registry,
+		),
+		BACKGROUND_CONTEXT,
+	);
 	const first = await host.submit({ message: "needle one", requestId: "s-1" });
 	const second = await host.submit({ message: "needle two", requestId: "s-2" });
 	assert.equal((await host.wait(first.submissionId, BACKGROUND_CONTEXT)).status, "done");
@@ -373,41 +643,90 @@ it("continues history, search, and exact reads from a cold snapshot", async (t) 
 
 	const observation = await observationFor(storagePath, registry);
 	try {
-		const page = (await observation.request("inspect", { view: "history", limit: 1 })) as { entries: readonly { id: number }[]; nextCursor: unknown };
+		const page = (await observation.request("inspect", { view: "history", limit: 1 })) as {
+			entries: readonly { id: number }[];
+			nextCursor: unknown;
+		};
 		assert.equal(page.entries.length, 1);
 		assert.ok(page.nextCursor !== null, "a bounded history read returns a continuation");
 		const firstEntry = page.entries[0];
 		assert.ok(firstEntry);
-		const continued = (await observation.request("inspect", { view: "history", limit: 20, cursor: page.nextCursor })) as { entries: readonly { id: number }[] };
-		assert.ok(!continued.entries.some((entry) => entry.id === firstEntry.id), "the continuation does not repeat the first page");
+		const continued = (await observation.request("inspect", {
+			view: "history",
+			limit: 20,
+			cursor: page.nextCursor,
+		})) as { entries: readonly { id: number }[] };
+		assert.ok(
+			!continued.entries.some((entry) => entry.id === firstEntry.id),
+			"the continuation does not repeat the first page",
+		);
 
-		const search = (await observation.request("inspect", { view: "search", query: "needle", limit: 1 })) as { matches: readonly { entryId: number; excerpt: string }[]; nextCursor: unknown };
+		const search = (await observation.request("inspect", { view: "search", query: "needle", limit: 1 })) as {
+			matches: readonly { entryId: number; excerpt: string }[];
+			nextCursor: unknown;
+		};
 		assert.equal(search.matches.length, 1);
 		const firstMatch = search.matches[0];
 		assert.ok(firstMatch);
 		assert.match(firstMatch.excerpt, /needle/u);
 		assert.ok(search.nextCursor !== null, "a bounded search returns a continuation");
-		const cursorError = { message: "Invalid search cursor; pass the complete nextCursor object unchanged as cursor, including cursor, skip, and scannedBytes" };
-		for (const cursor of [null, [], 1, "cursor", {}, { after: 1 }, { cursor: null }, { cursor: null, skip: 0 },
+		const cursorError = {
+			message:
+				"Invalid search cursor; pass the complete nextCursor object unchanged as cursor, including cursor, skip, and scannedBytes",
+		};
+		for (const cursor of [
+			null,
+			[],
+			1,
+			"cursor",
+			{},
+			{ after: 1 },
+			{ cursor: null },
+			{ cursor: null, skip: 0 },
 			{ cursor: null, skip: 33, scannedBytes: 0 },
-			{ cursor: null, skip: -1, scannedBytes: 0 }, { cursor: null, skip: 0.5, scannedBytes: 0 },
-			{ cursor: null, skip: "0", scannedBytes: 0 }, { cursor: null, skip: 0, scannedBytes: -1 },
-			{ cursor: null, skip: 0, scannedBytes: "0" }, { cursor: {}, skip: 0, scannedBytes: 0 },
-			{ cursor: { after: "1" }, skip: 0, scannedBytes: 0 }, { cursor: { after: 1, order: "bad" }, skip: 0, scannedBytes: 0 },
-			{ ...(search.nextCursor as object), extra: true }]) {
-			await assert.rejects(observation.request("inspect", { view: "search", query: "needle", limit: 1, cursor }), cursorError);
+			{ cursor: null, skip: -1, scannedBytes: 0 },
+			{ cursor: null, skip: 0.5, scannedBytes: 0 },
+			{ cursor: null, skip: "0", scannedBytes: 0 },
+			{ cursor: null, skip: 0, scannedBytes: -1 },
+			{ cursor: null, skip: 0, scannedBytes: "0" },
+			{ cursor: {}, skip: 0, scannedBytes: 0 },
+			{ cursor: { after: "1" }, skip: 0, scannedBytes: 0 },
+			{ cursor: { after: 1, order: "bad" }, skip: 0, scannedBytes: 0 },
+			{ ...(search.nextCursor as object), extra: true },
+		]) {
+			await assert.rejects(
+				observation.request("inspect", { view: "search", query: "needle", limit: 1, cursor }),
+				cursorError,
+			);
 		}
-		const more = (await observation.request("inspect", { view: "search", query: "needle", limit: 5, cursor: search.nextCursor })) as { matches: readonly { entryId: number }[] };
-		assert.ok(!more.matches.some((match) => match.entryId === firstMatch.entryId), "the search continuation does not repeat matches");
+		const more = (await observation.request("inspect", {
+			view: "search",
+			query: "needle",
+			limit: 5,
+			cursor: search.nextCursor,
+		})) as { matches: readonly { entryId: number }[] };
+		assert.ok(
+			!more.matches.some((match) => match.entryId === firstMatch.entryId),
+			"the search continuation does not repeat matches",
+		);
 
-		const exact = (await observation.request("inspect", { view: "exact", entryId: firstMatch.entryId, offset: 0 })) as { text: string; nextOffset: number | null };
+		const exact = (await observation.request("inspect", { view: "exact", entryId: firstMatch.entryId, offset: 0 })) as {
+			text: string;
+			nextOffset: number | null;
+		};
 		if (exact.nextOffset !== null) {
-			const tail = (await observation.request("inspect", { view: "exact", entryId: firstMatch.entryId, offset: exact.nextOffset })) as { offset: number; text: string };
+			const tail = (await observation.request("inspect", {
+				view: "exact",
+				entryId: firstMatch.entryId,
+				offset: exact.nextOffset,
+			})) as { offset: number; text: string };
 			assert.equal(tail.offset, exact.nextOffset);
 			assert.notEqual(tail.text, exact.text);
 		}
 
-		const activity = (await observation.request("inspect", { view: "activity", limit: 2 })) as { turns: readonly { entries: readonly { kind: string }[] }[] };
+		const activity = (await observation.request("inspect", { view: "activity", limit: 2 })) as {
+			turns: readonly { entries: readonly { kind: string }[] }[];
+		};
 		assert.ok(activity.turns.length >= 1);
 		assert.ok(activity.turns.some((turn) => turn.entries.some((entry) => entry.kind === "agent.input")));
 		assert.ok(JSON.stringify(activity.turns[0]).includes("needle two"), "turns are newest first");
@@ -418,36 +737,75 @@ it("continues history, search, and exact reads from a cold snapshot", async (t) 
 
 it("does not settle an unfinished delivery receipt while observing a completed native input", async (t) => {
 	const storagePath = join(fixtureRoot(t), "unsettled-delivery.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
-	const submitted = await host.submit({ message: "native answer", requestId: "unsettled-delivery", ownerId: "reader", origin: "operator" });
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
+	const submitted = await host.submit({
+		message: "native answer",
+		requestId: "unsettled-delivery",
+		ownerId: "reader",
+		origin: "operator",
+	});
 	await host.wait(submitted.submissionId, BACKGROUND_CONTEXT);
 	await host.close();
 	const before = retainedFingerprint(storagePath);
 	const observation = await observationFor(storagePath);
 	try {
-		const deliveries = await observation.request("receipts", { ownerId: "reader" }) as { receipts: unknown[]; pending: number };
+		const deliveries = (await observation.request("receipts", { ownerId: "reader" })) as {
+			receipts: unknown[];
+			pending: number;
+		};
 		assert.deepEqual(deliveries.receipts, []);
 		assert.equal(deliveries.pending, 1);
-		const result = await observation.request("inspect", { view: "result", submissionId: submitted.submissionId }) as { status: string; answer: string };
+		const result = (await observation.request("inspect", { view: "result", submissionId: submitted.submissionId })) as {
+			status: string;
+			answer: string;
+		};
 		assert.equal(result.status, "done");
 		assert.equal(result.answer, "durable answer");
-	} finally { await observation.close(); }
+	} finally {
+		await observation.close();
+	}
 	assert.deepEqual(retainedFingerprint(storagePath), before);
 });
 
 it("includes receipts and reports in a cold snapshot and omits opaque provider fields", async (t) => {
 	const storagePath = join(fixtureRoot(t), "delivery.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([redactedAnswerMessage("redacted answer"), answerMessage("owner answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
-	const submitted = await host.submit({ message: "deliver to owner", requestId: "deliver-1", ownerId: "owner-cold", origin: "operator" });
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([redactedAnswerMessage("redacted answer"), answerMessage("owner answer")]),
+			fixtureRegistry(),
+		),
+		BACKGROUND_CONTEXT,
+	);
+	const submitted = await host.submit({
+		message: "deliver to owner",
+		requestId: "deliver-1",
+		ownerId: "owner-cold",
+		origin: "operator",
+	});
 	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
-	const report = (await host.request("report", { ownerId: "owner-cold", senderIdentity: "agent-cold", requestId: "rep-cold", message: "cold report" })) as { sourceId: string };
+	const report = (await host.request("report", {
+		ownerId: "owner-cold",
+		senderIdentity: "agent-cold",
+		requestId: "rep-cold",
+		message: "cold report",
+	})) as { sourceId: string };
 	await host.request("receipts", { ownerId: "owner-cold" });
 	await host.close();
 
 	const observation = await observationFor(storagePath);
 	try {
 		const deliveries = (await observation.request("receipts", { ownerId: "owner-cold" })) as {
-			receipts: readonly { submissionId: SubmissionId; status: string; answer: string | null; answerEntryId: number | null; usage: unknown }[];
+			receipts: readonly {
+				submissionId: SubmissionId;
+				status: string;
+				answer: string | null;
+				answerEntryId: number | null;
+				usage: unknown;
+			}[];
 			reports: readonly { sourceId: string; message: string }[];
 			pending: number;
 		};
@@ -464,10 +822,19 @@ it("includes receipts and reports in a cold snapshot and omits opaque provider f
 		assert.equal(reportRow.message, "cold report");
 		assert.equal(deliveries.pending, 0);
 
-		const entries = (await observation.request("inspect", { view: "history", limit: 50 })) as { entries: readonly { id: number; kind: string; omissions?: { providerSignatures: number; redactedThinking: number } }[] };
+		const entries = (await observation.request("inspect", { view: "history", limit: 50 })) as {
+			entries: readonly {
+				id: number;
+				kind: string;
+				omissions?: { providerSignatures: number; redactedThinking: number };
+			}[];
+		};
 		const assistant = entries.entries.find((entry) => entry.kind === "pi.assistant");
 		assert.ok(assistant);
-		const exact = (await observation.request("inspect", { view: "exact", entryId: assistant.id })) as { text: string; omissions?: { providerSignatures: number; redactedThinking: number } };
+		const exact = (await observation.request("inspect", { view: "exact", entryId: assistant.id })) as {
+			text: string;
+			omissions?: { providerSignatures: number; redactedThinking: number };
+		};
 		assert.doesNotMatch(exact.text, /opaque-thinking-signature|opaque-text-signature|opaque-tool-signature/u);
 		assert.match(exact.text, /\[omitted: provider signature\]/u);
 		assert.equal(exact.omissions?.redactedThinking, 1);
@@ -478,17 +845,34 @@ it("includes receipts and reports in a cold snapshot and omits opaque provider f
 
 it("finds a retained result by operation ID in a cold snapshot", async (t) => {
 	const storagePath = join(fixtureRoot(t), "operation.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
-	const submitted = await host.submit({ message: "operation prompt", requestId: "operation-1", ownerId: "owner-op", operationId: "op-cold-7", origin: "operator" });
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
+	const submitted = await host.submit({
+		message: "operation prompt",
+		requestId: "operation-1",
+		ownerId: "owner-op",
+		operationId: "op-cold-7",
+		origin: "operator",
+	});
 	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
 	await host.request("receipts", { ownerId: "owner-op" });
 	await host.close();
 	const observation = await observationFor(storagePath);
 	try {
-		const result = (await observation.request("inspect", { view: "result", operationId: "op-cold-7" })) as { submissionId: SubmissionId; operationId?: string; answer?: string };
+		const result = (await observation.request("inspect", { view: "result", operationId: "op-cold-7" })) as {
+			submissionId: SubmissionId;
+			operationId?: string;
+			answer?: string;
+		};
 		assert.equal(result.submissionId, submitted.submissionId);
 		assert.equal(result.answer, "durable answer");
-		const missing = await observation.request("inspect", { view: "result", operationId: "missing-op" }) as { status: string; operationId: string; submissionId?: number };
+		const missing = (await observation.request("inspect", { view: "result", operationId: "missing-op" })) as {
+			status: string;
+			operationId: string;
+			submissionId?: number;
+		};
 		assert.equal(missing.status, "unavailable");
 		assert.equal(missing.operationId, "missing-op");
 		assert.equal(missing.submissionId, undefined);
@@ -499,17 +883,31 @@ it("finds a retained result by operation ID in a cold snapshot", async (t) => {
 
 it("reads a status target by external identity and a fork by its identity", async (t) => {
 	const storagePath = join(fixtureRoot(t), "identity.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("first answer"), answerMessage("fork answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([answerMessage("first answer"), answerMessage("fork answer")]),
+			fixtureRegistry(),
+		),
+		BACKGROUND_CONTEXT,
+	);
 	const submitted = await host.submit({ message: "fork me", requestId: "identity-1" });
 	await host.wait(submitted.submissionId, BACKGROUND_CONTEXT);
-	const assistant = (await host.root().entries({}, 20, undefined, BACKGROUND_CONTEXT)).items.find((entry) => entry.kind === "pi.assistant");
+	const assistant = (await host.root().entries({}, 20, undefined, BACKGROUND_CONTEXT)).items.find(
+		(entry) => entry.kind === "pi.assistant",
+	);
 	assert.ok(assistant);
-	const fork = (await host.request("fork", { entryId: assistant.id })) as { conversationId: ConversationId; identity: string };
+	const fork = (await host.request("fork", { entryId: assistant.id })) as {
+		conversationId: ConversationId;
+		identity: string;
+	};
 	await host.close();
 
 	const observation = await observationFor(storagePath);
 	try {
-		const one = (await observation.request("status", { sessionId: fork.identity })) as { conversation: { identity: string; conversationId: number } };
+		const one = (await observation.request("status", { sessionId: fork.identity })) as {
+			conversation: { identity: string; conversationId: number };
+		};
 		assert.equal(one.conversation.identity, fork.identity);
 		assert.equal(one.conversation.conversationId, fork.conversationId);
 		await assert.rejects(observation.request("status", { sessionId: `${fixtureStorageId}:999999` }), /does not exist/u);
@@ -524,7 +922,10 @@ it("reports live activity metadata, current tool, and turn duration", async (t) 
 	const started = defer();
 	const release = defer();
 	const registry = fixtureRegistry([gateTool(release.promise, started.resolve)]);
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("done")]), registry), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("done")]), registry),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await host.submit({ message: "live metadata", requestId: "live-1" });
 		await started.promise;
@@ -543,7 +944,13 @@ it("reports live activity metadata, current tool, and turn duration", async (t) 
 				owner: string;
 				live: boolean;
 				operation: number | null;
-				runningTools: readonly { toolCallId: string; name: string; issuedAt?: string; elapsedMs?: number; elapsedFrom?: string }[];
+				runningTools: readonly {
+					toolCallId: string;
+					name: string;
+					issuedAt?: string;
+					elapsedMs?: number;
+					elapsedFrom?: string;
+				}[];
 				pending: number | null;
 				streamedText?: string;
 			};
@@ -561,7 +968,11 @@ it("reports live activity metadata, current tool, and turn duration", async (t) 
 		}
 		assert.ok(activity.coverage.scannedBytes > 0);
 
-		const dashboard = (await host.request("dashboard")) as readonly { currentTool?: { name: string; argument: string }; durationMs?: number; health?: unknown }[];
+		const dashboard = (await host.request("dashboard")) as readonly {
+			currentTool?: { name: string; argument: string };
+			durationMs?: number;
+			health?: unknown;
+		}[];
 		const row = dashboard[0];
 		assert.ok(row);
 		assert.equal(row.currentTool?.name, "gate");
@@ -585,17 +996,38 @@ it("reports live activity metadata, current tool, and turn duration", async (t) 
 
 it("classifies the cold owner through the caller's claim observation", async (t) => {
 	const storagePath = join(fixtureRoot(t), "owner.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	await host.close();
 	const models = await fixtureRuntime("answer");
-	const readable = await DurableObservation.open({ backupFrom: storagePath, storageId: fixtureStorageId, models, registry: fixtureRegistry(), classifyOwner: () => ({ owner: "unknown" }) }, BACKGROUND_CONTEXT);
+	const readable = await DurableObservation.open(
+		{
+			backupFrom: storagePath,
+			storageId: fixtureStorageId,
+			models,
+			registry: fixtureRegistry(),
+			classifyOwner: () => ({ owner: "unknown" }),
+		},
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const rows = (await readable.request("dashboard")) as readonly { owner: string; ownerLabel?: string }[];
 		assert.equal(rows[0]?.owner, "unknown", "a readable, claimable storage is not unavailable");
 	} finally {
 		await readable.close();
 	}
-	const claimed = await DurableObservation.open({ backupFrom: storagePath, storageId: fixtureStorageId, models, registry: fixtureRegistry(), classifyOwner: () => ({ owner: "unavailable", label: "PID 42" }) }, BACKGROUND_CONTEXT);
+	const claimed = await DurableObservation.open(
+		{
+			backupFrom: storagePath,
+			storageId: fixtureStorageId,
+			models,
+			registry: fixtureRegistry(),
+			classifyOwner: () => ({ owner: "unavailable", label: "PID 42" }),
+		},
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const rows = (await claimed.request("dashboard")) as readonly { owner: string; ownerLabel?: string }[];
 		assert.equal(rows[0]?.owner, "unavailable");
@@ -607,16 +1039,29 @@ it("classifies the cold owner through the caller's claim observation", async (t)
 
 it("bounds the activity scan by bytes and reports entry and byte flags", async (t) => {
 	const storagePath = join(fixtureRoot(t), "bytes.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
-		const submitted = await host.submit({ message: `huge ${ "x".repeat(70_000) }`, requestId: "bytes-1" });
+		const submitted = await host.submit({ message: `huge ${"x".repeat(70_000)}`, requestId: "bytes-1" });
 		assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
 	} finally {
 		await host.close();
 	}
 	const observation = await observationFor(storagePath);
 	try {
-		const activity = (await observation.request("inspect", { view: "activity" })) as { coverage: { scannedBytes: number; complete: boolean; entryLimitReached: boolean; scanByteLimitReached: boolean; byteLimitReached: boolean; bytes: number; omittedEntries: number } };
+		const activity = (await observation.request("inspect", { view: "activity" })) as {
+			coverage: {
+				scannedBytes: number;
+				complete: boolean;
+				entryLimitReached: boolean;
+				scanByteLimitReached: boolean;
+				byteLimitReached: boolean;
+				bytes: number;
+				omittedEntries: number;
+			};
+		};
 		assert.ok(activity.coverage.scannedBytes >= ACTIVITY_SCAN_BYTES, "the scan measured at least the byte bound");
 		assert.equal(activity.coverage.scanByteLimitReached, true);
 		assert.equal(activity.coverage.entryLimitReached, false);
@@ -630,7 +1075,9 @@ it("bounds the activity scan by bytes and reports entry and byte flags", async (
 it("derives dashboard health only from live recovery state", () => {
 	const live = {
 		generation: { attempt: 3, retry: { at: 2000, error: "provider down" } },
-		compactions: [{ taskId: 1, trigger: "threshold", blocking: true, attempt: 2, retry: { at: 3000, error: "summary failed" } }],
+		compactions: [
+			{ taskId: 1, trigger: "threshold", blocking: true, attempt: 2, retry: { at: 3000, error: "summary failed" } },
+		],
 	} as unknown as LiveState;
 	const health = dashboardHealth(live, [{ reason: "missing_task", error: "definition missing" }], 1000, 4);
 	assert.deepEqual(health, {
@@ -639,16 +1086,26 @@ it("derives dashboard health only from live recovery state", () => {
 		autoRetry: { attempt: 3, maxAttempts: 4, delayMs: 1000, errorMessage: "provider down" },
 	});
 	assert.equal(dashboardHealth(undefined, [], 0, 4), undefined, "a cold snapshot has no health");
-	assert.equal(dashboardHealth(live, [], 1000, undefined)?.autoRetry, undefined, "without a resolved retry ceiling there is no retry row");
+	assert.equal(
+		dashboardHealth(live, [], 1000, undefined)?.autoRetry,
+		undefined,
+		"without a resolved retry ceiling there is no retry row",
+	);
 });
 
 it("bounds the serialized activity digest for many large UTF-8 turns", async (t) => {
 	const storagePath = join(fixtureRoot(t), "digest.sqlite");
 	const answers = Array.from({ length: 13 }, (_, index) => answerMessage(`answer ${index} ${"世界".repeat(400)}`));
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime(answers), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime(answers), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		for (let index = 0; index < answers.length; index++) {
-			const submitted = await host.submit({ message: `user ${index} ${"世界".repeat(400)}`, requestId: `digest-${index}` });
+			const submitted = await host.submit({
+				message: `user ${index} ${"世界".repeat(400)}`,
+				requestId: `digest-${index}`,
+			});
 			assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
 		}
 	} finally {
@@ -656,7 +1113,10 @@ it("bounds the serialized activity digest for many large UTF-8 turns", async (t)
 	}
 	const observation = await observationFor(storagePath);
 	try {
-		const activity = (await observation.request("inspect", { view: "activity", limit: 12 })) as { coverage: { bytes: number; byteLimitReached: boolean; omittedEntries: number; complete: boolean }; detail: string };
+		const activity = (await observation.request("inspect", { view: "activity", limit: 12 })) as {
+			coverage: { bytes: number; byteLimitReached: boolean; omittedEntries: number; complete: boolean };
+			detail: string;
+		};
 		const bytes = Buffer.byteLength(JSON.stringify(activity), "utf8");
 		assert.ok(bytes <= ACTIVITY_DIGEST_BYTES, `digest is ${bytes} bytes`);
 		assert.ok(bytes <= 8_000, "the compact coordinator digest stays within its byte ceiling");
@@ -664,7 +1124,11 @@ it("bounds the serialized activity digest for many large UTF-8 turns", async (t)
 		assert.equal(activity.coverage.byteLimitReached, true);
 		assert.ok(activity.coverage.omittedEntries > 0);
 		assert.equal(activity.coverage.complete, false, "a truncated digest does not claim completeness");
-		assert.match(activity.detail, /nextCursor resumes older turns and unfinished scans only/u, "the detail states the pagination boundary");
+		assert.match(
+			activity.detail,
+			/nextCursor resumes older turns and unfinished scans only/u,
+			"the detail states the pagination boundary",
+		);
 	} finally {
 		await observation.close();
 	}
@@ -672,14 +1136,24 @@ it("bounds the serialized activity digest for many large UTF-8 turns", async (t)
 
 it("keeps an older failure row when the activity digest is truncated", async (t) => {
 	const storagePath = join(fixtureRoot(t), "digest-failure.sqlite");
-	const scripts = [toolCallMessage("failing-tool"), answerMessage("recovered"), ...Array.from({ length: 11 }, (_, index) => answerMessage(`answer ${index} ${"世界".repeat(400)}`))];
+	const scripts = [
+		toolCallMessage("failing-tool"),
+		answerMessage("recovered"),
+		...Array.from({ length: 11 }, (_, index) => answerMessage(`answer ${index} ${"世界".repeat(400)}`)),
+	];
 	const registry = fixtureRegistry([failingTool()]);
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime(scripts), registry), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime(scripts), registry),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const first = await host.submit({ message: "run the failing tool", requestId: "failure-1" });
 		assert.equal((await host.wait(first.submissionId, BACKGROUND_CONTEXT)).status, "done");
 		for (let index = 0; index < 11; index++) {
-			const submitted = await host.submit({ message: `later ${index} ${"世界".repeat(400)}`, requestId: `failure-later-${index}` });
+			const submitted = await host.submit({
+				message: `later ${index} ${"世界".repeat(400)}`,
+				requestId: `failure-later-${index}`,
+			});
 			assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
 		}
 	} finally {
@@ -687,13 +1161,18 @@ it("keeps an older failure row when the activity digest is truncated", async (t)
 	}
 	const observation = await observationFor(storagePath, registry);
 	try {
-		const activity = (await observation.request("inspect", { view: "activity", limit: 12 })) as { coverage: { byteLimitReached: boolean; omittedEntries: number; bytes: number } };
+		const activity = (await observation.request("inspect", { view: "activity", limit: 12 })) as {
+			coverage: { byteLimitReached: boolean; omittedEntries: number; bytes: number };
+		};
 		const bytes = Buffer.byteLength(JSON.stringify(activity), "utf8");
 		assert.ok(bytes <= ACTIVITY_DIGEST_BYTES, `digest is ${bytes} bytes`);
 		assert.equal(activity.coverage.bytes, bytes);
 		assert.equal(activity.coverage.byteLimitReached, true);
 		assert.ok(activity.coverage.omittedEntries > 0);
-		assert.ok(JSON.stringify(activity).includes("intentional failure"), "the older error tool result survives truncation");
+		assert.ok(
+			JSON.stringify(activity).includes("intentional failure"),
+			"the older error tool result survives truncation",
+		);
 	} finally {
 		await observation.close();
 	}
@@ -702,7 +1181,10 @@ it("keeps an older failure row when the activity digest is truncated", async (t)
 it("pages activity without overlapping retained turns", async (t) => {
 	const storagePath = join(fixtureRoot(t), "turns.sqlite");
 	const answers = Array.from({ length: 4 }, (_, index) => answerMessage(`answer ${index}`));
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime(answers), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime(answers), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		for (let index = 0; index < 4; index++) {
 			const submitted = await host.submit({ message: `turn ${index}`, requestId: `turns-${index}` });
@@ -713,15 +1195,24 @@ it("pages activity without overlapping retained turns", async (t) => {
 	}
 	const observation = await observationFor(storagePath);
 	try {
-		const first = (await observation.request("inspect", { view: "activity", limit: 2 })) as { turns: readonly { entries: readonly { id: number }[] }[]; nextCursor: unknown; detail: string };
+		const first = (await observation.request("inspect", { view: "activity", limit: 2 })) as {
+			turns: readonly { entries: readonly { id: number }[] }[];
+			nextCursor: unknown;
+			detail: string;
+		};
 		assert.equal(first.turns.length, 2, "the limit keeps two turns");
 		assert.ok(first.nextCursor !== null, "older turns return a continuation");
 		assert.ok(JSON.stringify(first.turns[0]).includes("turn 3"), "turns are newest first");
 		const firstIds = new Set(first.turns.flatMap((turn) => turn.entries.map((entry) => entry.id)));
-		const second = (await observation.request("inspect", { view: "activity", limit: 2, cursor: first.nextCursor })) as { turns: readonly { entries: readonly { id: number }[] }[] };
+		const second = (await observation.request("inspect", { view: "activity", limit: 2, cursor: first.nextCursor })) as {
+			turns: readonly { entries: readonly { id: number }[] }[];
+		};
 		assert.ok(second.turns.length > 0, "the continuation returns older turns");
 		const secondIds = second.turns.flatMap((turn) => turn.entries.map((entry) => entry.id));
-		assert.ok(secondIds.every((id) => !firstIds.has(id)), "the continuation does not repeat retained entries");
+		assert.ok(
+			secondIds.every((id) => !firstIds.has(id)),
+			"the continuation does not repeat retained entries",
+		);
 		assert.ok(JSON.stringify(second.turns[0]).includes("turn 1"), "the continuation starts at the next older turn");
 	} finally {
 		await observation.close();
@@ -734,7 +1225,13 @@ it("reduces oversized activity metadata while keeping the error fields", () => {
 		owner: "here" as const,
 		live: true,
 		operation: 1,
-		runningTools: Array.from({ length: 40 }, (_, index) => ({ toolCallId: `call-${index}`, name: "n".repeat(300), issuedAt: "2026-10-02T00:00:00.000Z", elapsedMs: 1, elapsedFrom: "tool-call-entry" as const })),
+		runningTools: Array.from({ length: 40 }, (_, index) => ({
+			toolCallId: `call-${index}`,
+			name: "n".repeat(300),
+			issuedAt: "2026-10-02T00:00:00.000Z",
+			elapsedMs: 1,
+			elapsedFrom: "tool-call-entry" as const,
+		})),
 		pending: 0,
 		streamedText: big,
 		lastError: big,
@@ -742,7 +1239,10 @@ it("reduces oversized activity metadata while keeping the error fields", () => {
 		autoRetry: { attempt: 1, maxAttempts: 4, delayMs: 1000, errorMessage: big },
 	};
 	const limit = 4096;
-	const reduced = reduceActivityMetadata(metadata, (candidate) => Buffer.byteLength(JSON.stringify(candidate), "utf8") <= limit);
+	const reduced = reduceActivityMetadata(
+		metadata,
+		(candidate) => Buffer.byteLength(JSON.stringify(candidate), "utf8") <= limit,
+	);
 	assert.equal(reduced.truncated, true);
 	assert.ok(Buffer.byteLength(JSON.stringify(reduced.metadata), "utf8") <= limit);
 	assert.equal(reduced.metadata.streamedText, undefined, "streaming text drops before errors");
@@ -753,14 +1253,23 @@ it("reduces oversized activity metadata while keeping the error fields", () => {
 	const small = { owner: "here" as const, live: true, operation: null, runningTools: [], pending: null };
 	assert.equal(reduceActivityMetadata(small, () => true).truncated, false, "fitting metadata is untouched");
 	const streamOnly = { ...small, streamedText: big };
-	const streamReduced = reduceActivityMetadata(streamOnly, (candidate) => Buffer.byteLength(JSON.stringify(candidate), "utf8") <= limit);
+	const streamReduced = reduceActivityMetadata(
+		streamOnly,
+		(candidate) => Buffer.byteLength(JSON.stringify(candidate), "utf8") <= limit,
+	);
 	assert.equal(streamReduced.truncated, true, "a stream-only overflow reports truncation");
-	assert.ok((streamReduced.metadata.streamedText?.length ?? 0) < big.length, "the stream is shortened before anything is dropped");
+	assert.ok(
+		(streamReduced.metadata.streamedText?.length ?? 0) < big.length,
+		"the stream is shortened before anything is dropped",
+	);
 });
 
 it("bounds the activity digest when live metadata alone is oversized and no rows exist", async (t) => {
 	const storagePath = join(fixtureRoot(t), "metadata.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const big = "世".repeat(9000);
 		await host.harness.commit(async (tx) => {
@@ -773,18 +1282,41 @@ it("bounds the activity digest when live metadata alone is oversized and no rows
 					api: "test",
 					provider: "test",
 					model: "model",
-					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
 					stopReason: "pending",
 					timestamp: Date.now(),
 				},
 			};
-			(live as { compactions?: unknown }).compactions = [{ taskId: 1, trigger: "manual", blocking: true, attempt: 1, retry: { at: Date.now() + 1000, error: big } }];
-			(live as { tools?: unknown }).tools = Array.from({ length: 40 }, (_, index) => ({ callId: `call-${index}`, name: "n".repeat(300), status: "running" }));
+			(live as { compactions?: unknown }).compactions = [
+				{ taskId: 1, trigger: "manual", blocking: true, attempt: 1, retry: { at: Date.now() + 1000, error: big } },
+			];
+			(live as { tools?: unknown }).tools = Array.from({ length: 40 }, (_, index) => ({
+				callId: `call-${index}`,
+				name: "n".repeat(300),
+				status: "running",
+			}));
 			(live as { run?: unknown }).run = { taskId: 1, inputs: [] };
 		}, BACKGROUND_CONTEXT);
 		const activity = (await host.request("inspect", { view: "activity" })) as {
-			coverage: { bytes: number; metadataTruncated: boolean; byteLimitReached: boolean; omittedEntries: number; complete: boolean };
-			metadata: { runningTools: readonly unknown[]; streamedText?: string; compactionFailure?: { errorMessage?: string } };
+			coverage: {
+				bytes: number;
+				metadataTruncated: boolean;
+				byteLimitReached: boolean;
+				omittedEntries: number;
+				complete: boolean;
+			};
+			metadata: {
+				runningTools: readonly unknown[];
+				streamedText?: string;
+				compactionFailure?: { errorMessage?: string };
+			};
 		};
 		const bytes = Buffer.byteLength(JSON.stringify(activity), "utf8");
 		assert.ok(bytes <= ACTIVITY_DIGEST_BYTES, `digest is ${bytes} bytes`);
@@ -803,7 +1335,10 @@ it("bounds the activity digest when live metadata alone is oversized and no rows
 
 it("bounds stream-only oversized metadata with no rows and flags the byte limit", async (t) => {
 	const storagePath = join(fixtureRoot(t), "metadata-stream.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const big = "世".repeat(9000);
 		await host.harness.commit(async (tx) => {
@@ -816,14 +1351,27 @@ it("bounds stream-only oversized metadata with no rows and flags the byte limit"
 					api: "test",
 					provider: "test",
 					model: "model",
-					usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
 					stopReason: "pending",
 					timestamp: Date.now(),
 				},
 			};
 		}, BACKGROUND_CONTEXT);
 		const activity = (await host.request("inspect", { view: "activity" })) as {
-			coverage: { bytes: number; metadataTruncated: boolean; byteLimitReached: boolean; omittedEntries: number; complete: boolean };
+			coverage: {
+				bytes: number;
+				metadataTruncated: boolean;
+				byteLimitReached: boolean;
+				omittedEntries: number;
+				complete: boolean;
+			};
 			metadata: { streamedText?: string };
 		};
 		const bytes = Buffer.byteLength(JSON.stringify(activity), "utf8");
@@ -844,12 +1392,24 @@ interface SnapshotPageShape {
 	partial: boolean;
 	revision: string;
 	nextBefore: number | null;
-	coverage: { complete: boolean; entries: number; bytes: number; hiddenExcluded: number; entryLimitReached: boolean; byteLimitReached: boolean };
+	coverage: {
+		complete: boolean;
+		entries: number;
+		bytes: number;
+		hiddenExcluded: number;
+		entryLimitReached: boolean;
+		byteLimitReached: boolean;
+	};
 }
 
-it("keeps the first Agent input when a hidden system entry exceeds the transcript byte bound", { timeout: 30000 }, async (t) => {
+it("keeps the first Agent input when a hidden system entry exceeds the transcript byte bound", {
+	timeout: 30000,
+}, async (t) => {
 	const storagePath = join(fixtureRoot(t), "hidden.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("first answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime([answerMessage("first answer")]), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await host.submit({ message: "first prompt", requestId: "hidden-1" });
 		assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
@@ -857,13 +1417,25 @@ it("keeps the first Agent input when a hidden system entry exceeds the transcrip
 		// larger than the transcript byte bound used to end the newest-first scan.
 		const huge = "x".repeat(SNAPSHOT_BYTE_LIMIT + 4096);
 		await host.harness.commit(
-			(tx) => tx.appendEntry(SystemEntry, 1 as ConversationId, { model: [{ role: "system", content: "", sections: { huge }, timestamp: Date.now() } as unknown as Message] }),
+			(tx) =>
+				tx.appendEntry(SystemEntry, 1 as ConversationId, {
+					model: [{ role: "system", content: "", sections: { huge }, timestamp: Date.now() } as unknown as Message],
+				}),
 			BACKGROUND_CONTEXT,
 		);
 		const snapshot = (await host.request("snapshot")) as SnapshotPageShape;
-		assert.ok(snapshot.entries.some((entry) => entry.kind === "agent.input"), "the first Agent input survives");
-		assert.ok(snapshot.entries.some((entry) => entry.kind === "pi.assistant"), "the answer survives");
-		assert.ok(!snapshot.entries.some((entry) => entry.kind === "pi.system"), "hidden kinds stay out of the transcript payload");
+		assert.ok(
+			snapshot.entries.some((entry) => entry.kind === "agent.input"),
+			"the first Agent input survives",
+		);
+		assert.ok(
+			snapshot.entries.some((entry) => entry.kind === "pi.assistant"),
+			"the answer survives",
+		);
+		assert.ok(
+			!snapshot.entries.some((entry) => entry.kind === "pi.system"),
+			"hidden kinds stay out of the transcript payload",
+		);
 		assert.equal(snapshot.partial, false, "hidden exclusion alone never marks the page partial");
 		assert.ok(snapshot.coverage.hiddenExcluded >= 1, "the scan reports the hidden record it skipped");
 		assert.ok(snapshot.coverage.bytes < SNAPSHOT_BYTE_LIMIT, "the visible payload stays inside the byte bound");
@@ -874,7 +1446,14 @@ it("keeps the first Agent input when a hidden system entry exceeds the transcrip
 
 it("continues the transcript backwards from the page anchor to the first input", { timeout: 30000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "pages.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("a0"), answerMessage("a1"), answerMessage("a2"), answerMessage("a3")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(
+			storagePath,
+			await scriptedRuntime([answerMessage("a0"), answerMessage("a1"), answerMessage("a2"), answerMessage("a3")]),
+			fixtureRegistry(),
+		),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		for (let index = 0; index < 4; index++) {
 			const submitted = await host.submit({ message: `prompt ${index}`, requestId: `pages-${index}` });
@@ -887,8 +1466,14 @@ it("continues the transcript backwards from the page anchor to the first input",
 		const second = (await host.request("snapshot", { limit: 3, before: first.nextBefore })) as SnapshotPageShape;
 		assert.ok(second.entries.length > 0);
 		const firstIds = new Set(first.entries.map((entry) => entry.id));
-		assert.ok(second.entries.every((entry) => !firstIds.has(entry.id)), "pages do not overlap");
-		assert.ok(Number(second.entries[second.entries.length - 1]?.id) < Number(first.entries[0]?.id), "the second page is strictly older");
+		assert.ok(
+			second.entries.every((entry) => !firstIds.has(entry.id)),
+			"pages do not overlap",
+		);
+		assert.ok(
+			Number(second.entries[second.entries.length - 1]?.id) < Number(first.entries[0]?.id),
+			"the second page is strictly older",
+		);
 		let collected = [...second.entries];
 		let before = second.nextBefore;
 		let guard = 0;
@@ -898,8 +1483,16 @@ it("continues the transcript backwards from the page anchor to the first input",
 			before = page.nextBefore;
 		}
 		assert.equal(before, null, "the oldest page carries no anchor");
-		assert.ok(collected.some((entry) => entry.kind === "agent.input" && JSON.stringify(entry.model ?? []).includes("prompt 0")), "paging reaches the first input");
-		assert.ok([...first.entries, ...collected].some((entry) => entry.kind === "pi.assistant" && JSON.stringify(entry.model ?? []).includes("a3")), "the newest page joins the older pages");
+		assert.ok(
+			collected.some((entry) => entry.kind === "agent.input" && JSON.stringify(entry.model ?? []).includes("prompt 0")),
+			"paging reaches the first input",
+		);
+		assert.ok(
+			[...first.entries, ...collected].some(
+				(entry) => entry.kind === "pi.assistant" && JSON.stringify(entry.model ?? []).includes("a3"),
+			),
+			"the newest page joins the older pages",
+		);
 	} finally {
 		await host.close();
 	}
@@ -907,17 +1500,30 @@ it("continues the transcript backwards from the page anchor to the first input",
 
 it("carries the author role of the retained tail text", { timeout: 30000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "roles.sqlite");
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("tail answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime([answerMessage("tail answer")]), fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await host.submit({ message: "tail question", requestId: "roles-1" });
 		assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
-		const answered = (await host.request("status")) as { conversations: readonly { lastText: string | null; lastTextRole?: string }[] };
+		const answered = (await host.request("status")) as {
+			conversations: readonly { lastText: string | null; lastTextRole?: string }[];
+		};
 		const answerRow = answered.conversations[0];
 		assert.ok(answerRow);
 		assert.match(answerRow.lastText ?? "", /tail answer/u);
 		assert.equal(answerRow.lastTextRole, "assistant", "the answer is labeled as the assistant's");
-		await host.harness.commit((tx) => tx.appendEntry(UserEntry, 1 as ConversationId, { model: [{ role: "user", content: "operator tail", timestamp: Date.now() }] }), BACKGROUND_CONTEXT);
-		const asked = (await host.request("status")) as { conversations: readonly { lastText: string | null; lastTextRole?: string }[] };
+		await host.harness.commit(
+			(tx) =>
+				tx.appendEntry(UserEntry, 1 as ConversationId, {
+					model: [{ role: "user", content: "operator tail", timestamp: Date.now() }],
+				}),
+			BACKGROUND_CONTEXT,
+		);
+		const asked = (await host.request("status")) as {
+			conversations: readonly { lastText: string | null; lastTextRole?: string }[];
+		};
 		const userRow = asked.conversations[0];
 		assert.ok(userRow);
 		assert.equal(userRow.lastText, "operator tail");
@@ -928,13 +1534,30 @@ it("carries the author role of the retained tail text", { timeout: 30000 }, asyn
 });
 
 it("keeps exhausted text and argument markers within the shared excerpt budget", () => {
-	const entry = { id: 1, kind: "pi.assistant", model: [{ ...answerMessage(""), content: [
-		{ type: "text", text: "answer ".repeat(300) },
-		...Array.from({ length: 8 }, (_, index) => ({ type: "toolCall", id: String(index), name: `tool-${index}`, arguments: { payload: "x".repeat(2000) } })),
-	] }] } as unknown as EntryRecord;
+	const entry = {
+		id: 1,
+		kind: "pi.assistant",
+		model: [
+			{
+				...answerMessage(""),
+				content: [
+					{ type: "text", text: "answer ".repeat(300) },
+					...Array.from({ length: 8 }, (_, index) => ({
+						type: "toolCall",
+						id: String(index),
+						name: `tool-${index}`,
+						arguments: { payload: "x".repeat(2000) },
+					})),
+				],
+			},
+		],
+	} as unknown as EntryRecord;
 	for (const units of [80, 1200]) {
 		const row = entryRow(entry, units);
-		const used = row.text.length + (row.toolCalls ?? []).reduce((total, call) => total + call.arguments.length, 0) + (row.toolResults ?? []).reduce((total, result) => total + result.text.length, 0);
+		const used =
+			row.text.length +
+			(row.toolCalls ?? []).reduce((total, call) => total + call.arguments.length, 0) +
+			(row.toolResults ?? []).reduce((total, result) => total + result.text.length, 0);
 		assert.ok(used <= units, `${used} excerpt units exceed ${units}`);
 		assert.equal(row.truncated, true);
 		assert.ok(row.toolCalls?.some((call) => call.truncated));
@@ -1051,7 +1674,11 @@ it("keeps full retained entry evidence across exact pages after compact history 
 		);
 		const emojiOffset = expected.indexOf("😀");
 		assert.ok(emojiOffset >= 0);
-		const normalized = await observation.request("inspect", { view: "exact", entryId: retained.id, offset: emojiOffset + 1 }) as { offset: number; text: string };
+		const normalized = (await observation.request("inspect", {
+			view: "exact",
+			entryId: retained.id,
+			offset: emojiOffset + 1,
+		})) as { offset: number; text: string };
 		structuredObservation(InspectOutputSchema, normalized);
 		assert.equal(normalized.offset, emojiOffset);
 		assert.ok(normalized.text.startsWith("😀"));
@@ -1116,160 +1743,354 @@ it("continues compact history without losing an entry at each page boundary", as
 });
 
 it("prioritizes failure rows within the digest bound and exposes excluded failures through history", async (t) => {
- const storagePath=join(fixtureRoot(t),"failure-priority.sqlite");
- const tool={...failingTool(),execute:async()=>{throw new Error(`large intentional failure ${"x".repeat(4000)}`);}};
- const scripts=Array.from({length:8},()=>[toolCallMessage("failing-tool"),answerMessage("recovered")]).flat();
- const host=await DurableHost.open(hostOptions(storagePath,await scriptedRuntime(scripts),fixtureRegistry([tool])),BACKGROUND_CONTEXT);
- for(let n=0;n<8;n++){const s=await host.submit({message:"task",requestId:String(n)});await host.wait(s.submissionId,BACKGROUND_CONTEXT);}
- const failures=(await host.root().entries({},100,undefined,BACKGROUND_CONTEXT)).items.filter(e=>e.kind==="pi.tool-result"&&e.model?.[0]?.role==="toolResult"&&e.model[0].isError);
- await host.close();
- const obs=await observationFor(storagePath);
- try {
-  const activity=await obs.request("inspect",{view:"activity",limit:12}) as {turns:{entries:{id:number}[]}[];detail:string;coverage:{omittedEntries:number;byteLimitReached:boolean}};
-  const kept=new Set(activity.turns.flatMap(t=>t.entries.map(e=>e.id)));
-  const excluded=failures.filter(e=>!kept.has(e.id));
-  assert.ok(excluded.length>0);assert.equal(activity.coverage.byteLimitReached,true);assert.ok(activity.coverage.omittedEntries>=excluded.length);
-  assert.match(activity.detail,/Failure rows take priority within the digest bound/u);assert.doesNotMatch(activity.detail,/Failure rows survive/u);
-  const history=await obs.request("inspect",{view:"history",limit:50}) as {entries:{id:number}[]};
-  for(const failure of excluded){assert.ok(history.entries.some(e=>e.id===failure.id));const exact=await obs.request("inspect",{view:"exact",entryId:failure.id}) as {text:string};assert.match(exact.text,/large intentional failure/u);}
- } finally {await obs.close();}
+	const storagePath = join(fixtureRoot(t), "failure-priority.sqlite");
+	const tool = {
+		...failingTool(),
+		execute: async () => {
+			throw new Error(`large intentional failure ${"x".repeat(4000)}`);
+		},
+	};
+	const scripts = Array.from({ length: 8 }, () => [toolCallMessage("failing-tool"), answerMessage("recovered")]).flat();
+	const host = await DurableHost.open(
+		hostOptions(storagePath, await scriptedRuntime(scripts), fixtureRegistry([tool])),
+		BACKGROUND_CONTEXT,
+	);
+	for (let n = 0; n < 8; n++) {
+		const s = await host.submit({ message: "task", requestId: String(n) });
+		await host.wait(s.submissionId, BACKGROUND_CONTEXT);
+	}
+	const failures = (await host.root().entries({}, 100, undefined, BACKGROUND_CONTEXT)).items.filter(
+		(e) => e.kind === "pi.tool-result" && e.model?.[0]?.role === "toolResult" && e.model[0].isError,
+	);
+	await host.close();
+	const obs = await observationFor(storagePath);
+	try {
+		const activity = (await obs.request("inspect", { view: "activity", limit: 12 })) as {
+			turns: { entries: { id: number }[] }[];
+			detail: string;
+			coverage: { omittedEntries: number; byteLimitReached: boolean };
+		};
+		const kept = new Set(activity.turns.flatMap((t) => t.entries.map((e) => e.id)));
+		const excluded = failures.filter((e) => !kept.has(e.id));
+		assert.ok(excluded.length > 0);
+		assert.equal(activity.coverage.byteLimitReached, true);
+		assert.ok(activity.coverage.omittedEntries >= excluded.length);
+		assert.match(activity.detail, /Failure rows take priority within the digest bound/u);
+		assert.doesNotMatch(activity.detail, /Failure rows survive/u);
+		const history = (await obs.request("inspect", { view: "history", limit: 50 })) as { entries: { id: number }[] };
+		for (const failure of excluded) {
+			assert.ok(history.entries.some((e) => e.id === failure.id));
+			const exact = (await obs.request("inspect", { view: "exact", entryId: failure.id })) as { text: string };
+			assert.match(exact.text, /large intentional failure/u);
+		}
+	} finally {
+		await obs.close();
+	}
 });
 
-for (const contentRefusal of [true, false]) it(`inspects redacted ${contentRefusal ? "content refusal" : "unclassified failure"} evidence in live and cold result reads`, async (t) => {
-	const storagePath = join(fixtureRoot(t), "provider-content.sqlite");
-	const raw = `${contentRefusal ? "This content was flagged for possible cybersecurity risk" : "Unknown request rejection"}; api_key=sk-abcdefghijklmnopqrstuv; ${"😀".repeat(1500)}`;
-	const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([{ ...answerMessage(), stopReason: "error", errorMessage: raw }]), fixtureRegistry()), settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
-	const admitted = await host.submit({ message: "task", requestId: "provider-content" });
-	const expected = modelFailureText("model_error", raw);
-	const check = (value: unknown): void => {
-		const result = value as { status: string; reason: string };
-		assert.equal(result.status, "unanswered"); assert.equal(result.reason, expected);
-		assert.ok(Buffer.byteLength(result.reason) <= 1024); assert.doesNotMatch(result.reason, /abcdefghijkl/u);
-	};
-	try {
-		await host.wait(admitted.submissionId, BACKGROUND_CONTEXT);
-		check(await host.request("inspect", { view: "result", submissionId: admitted.submissionId }));
-		const native = await (await host.harness.submission(admitted.submissionId, BACKGROUND_CONTEXT))?.status(BACKGROUND_CONTEXT);
-		assert.equal(native?.status, "unanswered");
-		if (native?.status === "unanswered") { assert.equal(native.reason, "model_error"); assert.equal(native.detail, raw); }
-	} finally { await host.close(); }
-	const observation = await observationFor(storagePath);
-	try { check(await observation.request("inspect", { view: "result", submissionId: admitted.submissionId })); }
-	finally { await observation.close(); }
-});
+for (const contentRefusal of [true, false])
+	it(`inspects redacted ${contentRefusal ? "content refusal" : "unclassified failure"} evidence in live and cold result reads`, async (t) => {
+		const storagePath = join(fixtureRoot(t), "provider-content.sqlite");
+		const raw = `${contentRefusal ? "This content was flagged for possible cybersecurity risk" : "Unknown request rejection"}; api_key=sk-abcdefghijklmnopqrstuv; ${"😀".repeat(1500)}`;
+		const host = await DurableHost.open(
+			{
+				...hostOptions(
+					storagePath,
+					await scriptedRuntime([{ ...answerMessage(), stopReason: "error", errorMessage: raw }]),
+					fixtureRegistry(),
+				),
+				settings: { retry: { enabled: false } },
+			},
+			BACKGROUND_CONTEXT,
+		);
+		const admitted = await host.submit({ message: "task", requestId: "provider-content" });
+		const expected = modelFailureText("model_error", raw);
+		const check = (value: unknown): void => {
+			const result = value as { status: string; reason: string };
+			assert.equal(result.status, "unanswered");
+			assert.equal(result.reason, expected);
+			assert.ok(Buffer.byteLength(result.reason) <= 1024);
+			assert.doesNotMatch(result.reason, /abcdefghijkl/u);
+		};
+		try {
+			await host.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+			check(await host.request("inspect", { view: "result", submissionId: admitted.submissionId }));
+			const native = await (await host.harness.submission(admitted.submissionId, BACKGROUND_CONTEXT))?.status(
+				BACKGROUND_CONTEXT,
+			);
+			assert.equal(native?.status, "unanswered");
+			if (native?.status === "unanswered") {
+				assert.equal(native.reason, "model_error");
+				assert.equal(native.detail, raw);
+			}
+		} finally {
+			await host.close();
+		}
+		const observation = await observationFor(storagePath);
+		try {
+			check(await observation.request("inspect", { view: "result", submissionId: admitted.submissionId }));
+		} finally {
+			await observation.close();
+		}
+	});
 
 it("dashboard failure causes use retained model error text in live and cold reads", async (t) => {
 	const storagePath = join(fixtureRoot(t), "failure.sqlite");
-	const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([{ ...answerMessage(), content: [], stopReason: "error", errorMessage: "Insufficient credits for this request" }]), fixtureRegistry()), settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		{
+			...hostOptions(
+				storagePath,
+				await scriptedRuntime([
+					{
+						...answerMessage(),
+						content: [],
+						stopReason: "error",
+						errorMessage: "Insufficient credits for this request",
+					},
+				]),
+				fixtureRegistry(),
+			),
+			settings: { retry: { enabled: false } },
+		},
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		const submitted = await host.submit({ message: "task", requestId: "failure-cause" });
 		const outcome = await host.wait(submitted.submissionId, BACKGROUND_CONTEXT);
 		assert.equal(outcome.status, "unanswered");
 		assert.equal(outcome.reason, "model_error");
-		const live = await host.request("dashboard") as Array<{ state: string; error?: string }>;
+		const live = (await host.request("dashboard")) as Array<{ state: string; error?: string }>;
 		assert.equal(live[0]?.state, "failed");
 		assert.equal(live[0]?.error, "Insufficient credits for this request");
-	} finally { await host.close(); }
+	} finally {
+		await host.close();
+	}
 	const observation = await observationFor(storagePath);
 	try {
-		const rows = await observation.request("dashboard") as Array<{ state: string; error?: string }>;
+		const rows = (await observation.request("dashboard")) as Array<{ state: string; error?: string }>;
 		assert.equal(rows[0]?.state, "failed");
 		assert.equal(rows[0]?.error, "Insufficient credits for this request");
-	} finally { await observation.close(); }
+	} finally {
+		await observation.close();
+	}
 });
 
-for (const owned of [true, false]) for (const bounded of [true, false]) {
-	it(`dashboard preserves the exact ${owned ? "owned" : "unowned"} quota cause${bounded ? " with omission markers" : ""} after recovery and supersedes it with newer outcomes`, async (t) => {
-		const storagePath = join(fixtureRoot(t), "quota-cause.sqlite");
-		const credential = "sk-abcdefghijklmnopqrstuv";
-		const cause = `Insufficient credits for this request${bounded ? `; api_key=${credential}; ${"x".repeat(5000)}` : ""}`;
-		const failure = (errorMessage: string) => ({ ...answerMessage(), content: [], stopReason: "error" as const, errorMessage });
-		const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([failure(cause), failure("New connection failure"), answerMessage("Recovered successfully")]), fixtureRegistry()), settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
-		const check = async (state: string, error?: string) => {
-			const live = await host.request("dashboard") as Array<{ state: string; error?: string }>;
-			assert.equal(live[0]?.state, state); assert.equal(live[0]?.error, error);
-			const observation = await observationFor(storagePath);
+for (const owned of [true, false])
+	for (const bounded of [true, false]) {
+		it(`dashboard preserves the exact ${owned ? "owned" : "unowned"} quota cause${bounded ? " with omission markers" : ""} after recovery and supersedes it with newer outcomes`, async (t) => {
+			const storagePath = join(fixtureRoot(t), "quota-cause.sqlite");
+			const credential = "sk-abcdefghijklmnopqrstuv";
+			const cause = `Insufficient credits for this request${bounded ? `; api_key=${credential}; ${"x".repeat(5000)}` : ""}`;
+			const failure = (errorMessage: string) => ({
+				...answerMessage(),
+				content: [],
+				stopReason: "error" as const,
+				errorMessage,
+			});
+			const host = await DurableHost.open(
+				{
+					...hostOptions(
+						storagePath,
+						await scriptedRuntime([
+							failure(cause),
+							failure("New connection failure"),
+							answerMessage("Recovered successfully"),
+						]),
+						fixtureRegistry(),
+					),
+					settings: { retry: { enabled: false } },
+				},
+				BACKGROUND_CONTEXT,
+			);
+			const check = async (state: string, error?: string) => {
+				const live = (await host.request("dashboard")) as Array<{ state: string; error?: string }>;
+				assert.equal(live[0]?.state, state);
+				assert.equal(live[0]?.error, error);
+				const observation = await observationFor(storagePath);
+				try {
+					const cold = (await observation.request("dashboard")) as Array<{ state: string; error?: string }>;
+					assert.equal(cold[0]?.state, state);
+					assert.equal(cold[0]?.error, error);
+				} finally {
+					await observation.close();
+				}
+			};
 			try {
-				const cold = await observation.request("dashboard") as Array<{ state: string; error?: string }>;
-				assert.equal(cold[0]?.state, state); assert.equal(cold[0]?.error, error);
-			} finally { await observation.close(); }
-		};
-		try {
-			const admitted = await host.submit({ message: "quota task", requestId: "quota", ...(owned ? { ownerId: "owner", origin: "operator" as const } : {}) });
-			const original = await host.wait(admitted.submissionId);
-			assert.equal(original.status, "unanswered"); assert.equal(original.reason, "model_error");
-			assert.ok(original.providerBlock); assert.equal(original.providerBlock.errorRedacted, bounded); assert.equal(original.providerBlock.errorTruncated, bounded);
-			const expected = `${original.providerBlock.error}${bounded ? "\n[provider error redacted]\n[provider error truncated]" : ""}`;
-			assert.ok(expected.length <= 4200); assert.ok(!expected.includes(credential));
-			const tail = await host.root().entries({}, 1, undefined, BACKGROUND_CONTEXT);
-			assert.equal(tail.items[0]?.model?.[0]?.role === "assistant" ? tail.items[0].model[0].errorMessage : undefined, PROVIDER_BLOCK_ERROR, "native error stays classification-safe");
-			await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
-			await check("failed", expected);
-			await host.request("configure", { model: { provider: fixtureProvider, modelId: fixtureModelId } });
-			assert.equal((await host.request("status", { conversationId: 1 }) as { providerBlock?: unknown }).providerBlock, undefined);
-			await check("failed", expected);
-			assert.deepEqual(await host.wait(admitted.submissionId), original, "recovery does not relabel the original result");
-			const newer = await host.submit({ message: "new failure", requestId: "new-failure" }); await host.wait(newer.submissionId);
-			await settleDeliveries(host.harness, BACKGROUND_CONTEXT); await check("failed", "New connection failure");
-			const success = await host.submit({ message: "new success", requestId: "new-success" }); await host.wait(success.submissionId);
-			await settleDeliveries(host.harness, BACKGROUND_CONTEXT); await check("done");
-		} finally { await host.close(); }
-	});
-}
+				const admitted = await host.submit({
+					message: "quota task",
+					requestId: "quota",
+					...(owned ? { ownerId: "owner", origin: "operator" as const } : {}),
+				});
+				const original = await host.wait(admitted.submissionId);
+				assert.equal(original.status, "unanswered");
+				assert.equal(original.reason, "model_error");
+				assert.ok(original.providerBlock);
+				assert.equal(original.providerBlock.errorRedacted, bounded);
+				assert.equal(original.providerBlock.errorTruncated, bounded);
+				const expected = `${original.providerBlock.error}${bounded ? "\n[provider error redacted]\n[provider error truncated]" : ""}`;
+				assert.ok(expected.length <= 4200);
+				assert.ok(!expected.includes(credential));
+				const tail = await host.root().entries({}, 1, undefined, BACKGROUND_CONTEXT);
+				assert.equal(
+					tail.items[0]?.model?.[0]?.role === "assistant" ? tail.items[0].model[0].errorMessage : undefined,
+					PROVIDER_BLOCK_ERROR,
+					"native error stays classification-safe",
+				);
+				await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
+				await check("failed", expected);
+				await host.request("configure", { model: { provider: fixtureProvider, modelId: fixtureModelId } });
+				assert.equal(
+					((await host.request("status", { conversationId: 1 })) as { providerBlock?: unknown }).providerBlock,
+					undefined,
+				);
+				await check("failed", expected);
+				assert.deepEqual(
+					await host.wait(admitted.submissionId),
+					original,
+					"recovery does not relabel the original result",
+				);
+				const newer = await host.submit({ message: "new failure", requestId: "new-failure" });
+				await host.wait(newer.submissionId);
+				await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
+				await check("failed", "New connection failure");
+				const success = await host.submit({ message: "new success", requestId: "new-success" });
+				await host.wait(success.submissionId);
+				await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
+				await check("done");
+			} finally {
+				await host.close();
+			}
+		});
+	}
 
 it("dashboard exact input lookup continues pages and marks limited or absent evidence without using the active block", async (t) => {
 	const storagePath = join(fixtureRoot(t), "cause-scan.sqlite");
 	const cause = "Insufficient credits for this request";
-	const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([{ ...answerMessage(), content: [], stopReason: "error", errorMessage: cause }]), fixtureRegistry()), settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(
+		{
+			...hostOptions(
+				storagePath,
+				await scriptedRuntime([{ ...answerMessage(), content: [], stopReason: "error", errorMessage: cause }]),
+				fixtureRegistry(),
+			),
+			settings: { retry: { enabled: false } },
+		},
+		BACKGROUND_CONTEXT,
+	);
 	try {
-		const submitted = await host.submit({ message: "task", requestId: "cause-scan" }); await host.wait(submitted.submissionId);
-		const native = await host.harness.submission(submitted.submissionId, BACKGROUND_CONTEXT); assert.ok(native); const record = await native.status(BACKGROUND_CONTEXT);
+		const submitted = await host.submit({ message: "task", requestId: "cause-scan" });
+		await host.wait(submitted.submissionId);
+		const native = await host.harness.submission(submitted.submissionId, BACKGROUND_CONTEXT);
+		assert.ok(native);
+		const record = await native.status(BACKGROUND_CONTEXT);
 		let pages = 0;
-		const continued = await readDashboard(host.harness, fixtureStorageId, {}, { storage: { scanSubmissions: async (query, limit, cursor) => {
-			assert.equal(query.conversationId, 1); assert.equal(query.status, "unanswered"); assert.equal(limit, 64); pages++;
-			return cursor === undefined ? { items: [], next: { page: 1 } } : { items: [record] };
-		} } }, BACKGROUND_CONTEXT);
-		assert.equal(pages, 2); assert.equal(continued[0]?.error, cause);
+		const continued = await readDashboard(
+			host.harness,
+			fixtureStorageId,
+			{},
+			{
+				storage: {
+					scanSubmissions: async (query, limit, cursor) => {
+						assert.equal(query.conversationId, 1);
+						assert.equal(query.status, "unanswered");
+						assert.equal(limit, 64);
+						pages++;
+						return cursor === undefined ? { items: [], next: { page: 1 } } : { items: [record] };
+					},
+				},
+			},
+			BACKGROUND_CONTEXT,
+		);
+		assert.equal(pages, 2);
+		assert.equal(continued[0]?.error, cause);
 		pages = 0;
-		const limited = await readDashboard(host.harness, fixtureStorageId, {}, { storage: { scanSubmissions: async () => ({ items: [], next: { page: ++pages } }) } }, BACKGROUND_CONTEXT);
-		assert.equal(pages, 64); assert.equal(limited[0]?.error, `${PROVIDER_BLOCK_ERROR}\n[provider evidence lookup limited]`);
-		const missing = await readDashboard(host.harness, fixtureStorageId, {}, { storage: { scanSubmissions: async () => ({ items: [] }) } }, BACKGROUND_CONTEXT);
+		const limited = await readDashboard(
+			host.harness,
+			fixtureStorageId,
+			{},
+			{ storage: { scanSubmissions: async () => ({ items: [], next: { page: ++pages } }) } },
+			BACKGROUND_CONTEXT,
+		);
+		assert.equal(pages, 64);
+		assert.equal(limited[0]?.error, `${PROVIDER_BLOCK_ERROR}\n[provider evidence lookup limited]`);
+		const missing = await readDashboard(
+			host.harness,
+			fixtureStorageId,
+			{},
+			{ storage: { scanSubmissions: async () => ({ items: [] }) } },
+			BACKGROUND_CONTEXT,
+		);
 		assert.equal(missing[0]?.error, `${PROVIDER_BLOCK_ERROR}\n[provider evidence unavailable]`);
-	} finally { await host.close(); }
+	} finally {
+		await host.close();
+	}
 });
 
 for (const ownedFails of [true, false]) {
 	it(`live and cold outcomes supersede an owned ${ownedFails ? "failure" : "success"} after unowned reports`, async (t) => {
 		const storagePath = join(fixtureRoot(t), "report-outcomes.sqlite");
-		const failure = (text: string) => ({ ...answerMessage(), content: [], stopReason: "error" as const, errorMessage: text });
-		const models = await scriptedRuntime([ownedFails ? failure("Old quota failure") : answerMessage("Old successful answer"), failure("New connection failure"), answerMessage("Recovered successfully")]);
-		const host = await DurableHost.open({ ...hostOptions(storagePath, models, fixtureRegistry()), settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
+		const failure = (text: string) => ({
+			...answerMessage(),
+			content: [],
+			stopReason: "error" as const,
+			errorMessage: text,
+		});
+		const models = await scriptedRuntime([
+			ownedFails ? failure("Old quota failure") : answerMessage("Old successful answer"),
+			failure("New connection failure"),
+			answerMessage("Recovered successfully"),
+		]);
+		const host = await DurableHost.open(
+			{ ...hostOptions(storagePath, models, fixtureRegistry()), settings: { retry: { enabled: false } } },
+			BACKGROUND_CONTEXT,
+		);
 		const check = async (state: string, error?: string, reply?: string) => {
-			const live = await host.request("dashboard") as Array<{ state: string; error?: string; latestReply?: string }>;
+			const live = (await host.request("dashboard")) as Array<{ state: string; error?: string; latestReply?: string }>;
 			assert.equal(live[0]?.state, state);
 			assert.equal(live[0]?.error, error);
 			if (reply) assert.equal(live[0]?.latestReply, reply);
 			const observation = await observationFor(storagePath);
 			try {
-				const cold = await observation.request("dashboard") as Array<{ state: string; error?: string; latestReply?: string }>;
+				const cold = (await observation.request("dashboard")) as Array<{
+					state: string;
+					error?: string;
+					latestReply?: string;
+				}>;
 				assert.equal(cold[0]?.state, state);
 				assert.equal(cold[0]?.error, error);
 				if (reply) assert.equal(cold[0]?.latestReply, reply);
-			} finally { await observation.close(); }
+			} finally {
+				await observation.close();
+			}
 		};
 		try {
-			const first = await host.submit({ message: "owned task", requestId: "owned", ownerId: "owner", origin: "operator" });
+			const first = await host.submit({
+				message: "owned task",
+				requestId: "owned",
+				ownerId: "owner",
+				origin: "operator",
+			});
 			await host.wait(first.submissionId, BACKGROUND_CONTEXT);
 			await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
 			await check(ownedFails ? "failed" : "done", ownedFails ? "Old quota failure" : undefined);
-			const second = await host.submit({ message: "unowned failure report", requestId: "unowned-failure", origin: "model" });
+			const second = await host.submit({
+				message: "unowned failure report",
+				requestId: "unowned-failure",
+				origin: "model",
+			});
 			await host.wait(second.submissionId, BACKGROUND_CONTEXT);
 			await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
 			await check("failed", "New connection failure");
-			const third = await host.submit({ message: "unowned success report", requestId: "unowned-success", origin: "model" });
+			const third = await host.submit({
+				message: "unowned success report",
+				requestId: "unowned-success",
+				origin: "model",
+			});
 			await host.wait(third.submissionId, BACKGROUND_CONTEXT);
 			await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
 			await check("done", undefined, "Recovered successfully");
-		} finally { await host.close(); }
+		} finally {
+			await host.close();
+		}
 	});
 }

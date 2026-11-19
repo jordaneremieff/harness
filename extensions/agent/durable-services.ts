@@ -59,7 +59,14 @@ import { UnplacedWatchTask } from "./unplaced-inputs.ts";
 import { AGENT_ENTRY_CHANNEL, type AgentEntryRequest } from "./entry-binding.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { createNativeAgentEntry } from "./native-entry.ts";
-import { readDisplayDescriptor, readPanelDescriptor, resolveDisplayEntry, resolvePanelEntry, type DisplayDescriptor, type PanelDescriptor } from "./display-descriptor.ts";
+import {
+	readDisplayDescriptor,
+	readPanelDescriptor,
+	resolveDisplayEntry,
+	resolvePanelEntry,
+	type DisplayDescriptor,
+	type PanelDescriptor,
+} from "./display-descriptor.ts";
 
 /** One command invocation as the host dispatches it. */
 export interface DurableCommandCall {
@@ -206,7 +213,13 @@ export interface CreateDurableServicesOptions {
 	 * plain extensions or a bundle whose `close` releases their resources when
 	 * `DurableServices.close()` runs.
 	 */
-	readonly buildBuiltin?: (host: DurableContributionHost) => Durable.Extension | readonly Durable.Extension[] | DurableBuiltinExecution | Promise<Durable.Extension | readonly Durable.Extension[] | DurableBuiltinExecution>;
+	readonly buildBuiltin?: (
+		host: DurableContributionHost,
+	) =>
+		| Durable.Extension
+		| readonly Durable.Extension[]
+		| DurableBuiltinExecution
+		| Promise<Durable.Extension | readonly Durable.Extension[] | DurableBuiltinExecution>;
 	/** Explicit project-trust decision. Absent: project handlers, saved decisions, then the default setting. */
 	readonly trusted?: boolean;
 	/** Saved project-trust decisions consulted when `trusted` is absent. */
@@ -313,10 +326,16 @@ function rootExportTarget(exports: unknown): string | undefined {
 /** Resolve the public root export of a Pi package directory from its own manifest. */
 function resolvePackageEntry(packageDir: string): string {
 	const manifestPath = join(packageDir, "package.json");
-	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { name?: string; main?: string; exports?: unknown };
-	if (manifest.name !== "@earendil-works/pi-coding-agent") throw new Error(`packageDir ${packageDir} is not @earendil-works/pi-coding-agent`);
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+		name?: string;
+		main?: string;
+		exports?: unknown;
+	};
+	if (manifest.name !== "@earendil-works/pi-coding-agent")
+		throw new Error(`packageDir ${packageDir} is not @earendil-works/pi-coding-agent`);
 	const target = rootExportTarget(manifest.exports) ?? manifest.main;
-	if (typeof target !== "string") throw new Error(`packageDir ${packageDir} declares no importable package root export`);
+	if (typeof target !== "string")
+		throw new Error(`packageDir ${packageDir} declares no importable package root export`);
 	return resolve(packageDir, target);
 }
 
@@ -324,11 +343,25 @@ function resolvePackageEntry(packageDir: string): string {
 async function loadPiRuntime(packageDir: string | undefined): Promise<PiRuntime> {
 	if (packageDir === undefined) return localRuntime;
 	const entry = resolvePackageEntry(packageDir);
-	const loaded = await import(pathToFileURL(entry).href) as Record<string, unknown>;
-	for (const name of ["createAgentSessionServices", "createAgentSessionFromServices", "resolveModelScopeWithDiagnostics", "SessionManager", "createEventBus", "createReadTool", "createReadToolDefinition", "formatSkillsForPrompt", "getAgentDir", "hasTrustRequiringProjectResources", "ProjectTrustStore", "SettingsManager"] as const) {
+	const loaded = (await import(pathToFileURL(entry).href)) as Record<string, unknown>;
+	for (const name of [
+		"createAgentSessionServices",
+		"createAgentSessionFromServices",
+		"resolveModelScopeWithDiagnostics",
+		"SessionManager",
+		"createEventBus",
+		"createReadTool",
+		"createReadToolDefinition",
+		"formatSkillsForPrompt",
+		"getAgentDir",
+		"hasTrustRequiringProjectResources",
+		"ProjectTrustStore",
+		"SettingsManager",
+	] as const) {
 		if (typeof loaded[name] !== "function") throw new Error(`packageDir ${packageDir} does not export ${name}`);
 	}
-	if (typeof loaded.CONFIG_DIR_NAME !== "string") throw new Error(`packageDir ${packageDir} does not export CONFIG_DIR_NAME`);
+	if (typeof loaded.CONFIG_DIR_NAME !== "string")
+		throw new Error(`packageDir ${packageDir} does not export CONFIG_DIR_NAME`);
 	return loaded as unknown as PiRuntime;
 }
 
@@ -337,17 +370,33 @@ async function loadPiRuntime(packageDir: string | undefined): Promise<PiRuntime>
  * contracts. The resolution selects this process's Agent and package copy, as
  * the host that the caller starts next does.
  */
-export async function resolveConfiguredAgent(options: Pick<CreateDurableServicesOptions, "cwd" | "agentDir" | "packageDir" | "modelRuntime" | "extensionPaths" | "askPrimary" | "onReport"> & { readonly command?: string }): Promise<{ model: { provider: string; modelId: string }; thinkingLevel: string; projectTrusted: boolean }> {
+export async function resolveConfiguredAgent(
+	options: Pick<
+		CreateDurableServicesOptions,
+		"cwd" | "agentDir" | "packageDir" | "modelRuntime" | "extensionPaths" | "askPrimary" | "onReport"
+	> & { readonly command?: string },
+): Promise<{ model: { provider: string; modelId: string }; thinkingLevel: string; projectTrusted: boolean }> {
 	const pi = await loadPiRuntime(options.packageDir);
 	const agentDir = options.agentDir ?? pi.getAgentDir();
-	const prepared = await createDurableServices({ ...options, agentDir, agentExtensionPath: defaultAgentEntrypoint, storageId: "independent-selection" });
+	const prepared = await createDurableServices({
+		...options,
+		agentDir,
+		agentExtensionPath: defaultAgentEntrypoint,
+		storageId: "independent-selection",
+	});
 	try {
 		const settingsManager = prepared.services.settingsManager;
 		const errors = settingsManager.drainErrors();
-		if (errors.length) throw new Error(errors.map(({ scope, error }) => `Could not read ${scope} settings: ${error.message}`).join("; "));
-		if (options.command !== undefined && !prepared.commands.has(options.command)) throw new Error(`durable command ${options.command} is not registered`);
+		if (errors.length)
+			throw new Error(
+				errors.map(({ scope, error }) => `Could not read ${scope} settings: ${error.message}`).join("; "),
+			);
+		if (options.command !== undefined && !prepared.commands.has(options.command))
+			throw new Error(`durable command ${options.command} is not registered`);
 		const patterns = settingsManager.getEnabledModels();
-		const scope = patterns?.length ? (await pi.resolveModelScopeWithDiagnostics(patterns, prepared.services.modelRuntime)).scopedModels : [];
+		const scope = patterns?.length
+			? (await pi.resolveModelScopeWithDiagnostics(patterns, prepared.services.modelRuntime)).scopedModels
+			: [];
 		const savedProvider = settingsManager.getDefaultProvider();
 		const savedModel = settingsManager.getDefaultModel();
 		const scoped = scope.find(({ model }) => model.provider === savedProvider && model.id === savedModel) ?? scope[0];
@@ -359,10 +408,19 @@ export async function resolveConfiguredAgent(options: Pick<CreateDurableServices
 		});
 		try {
 			// Agent core has a fallback model even when SDK startup found no available model.
-			if (!session.model || !prepared.services.modelRuntime.hasConfiguredAuth(session.model.provider)) throw new Error("No configured model is available for independent work");
-			return { model: { provider: session.model.provider, modelId: session.model.id }, thinkingLevel: session.thinkingLevel, projectTrusted: settingsManager.isProjectTrusted() };
-		} finally { session.dispose(); }
-	} finally { await prepared.close(); }
+			if (!session.model || !prepared.services.modelRuntime.hasConfiguredAuth(session.model.provider))
+				throw new Error("No configured model is available for independent work");
+			return {
+				model: { provider: session.model.provider, modelId: session.model.id },
+				thinkingLevel: session.thinkingLevel,
+				projectTrusted: settingsManager.isProjectTrusted(),
+			};
+		} finally {
+			session.dispose();
+		}
+	} finally {
+		await prepared.close();
+	}
 }
 
 /** Read a required non-empty string field of a contribution record. */
@@ -377,7 +435,8 @@ function readCommandList(contribution: string, raw: unknown): DurableCommand[] |
 	if (raw === undefined) return undefined;
 	if (!Array.isArray(raw)) throw new Error(`durable contribution "${contribution}" commands must be an array`);
 	return raw.map((input) => {
-		if (typeof input !== "object" || input === null) throw new Error(`durable contribution "${contribution}" has a malformed command`);
+		if (typeof input !== "object" || input === null)
+			throw new Error(`durable contribution "${contribution}" has a malformed command`);
 		const command = input as Record<string, unknown>;
 		const name = requiredString(command, "name", `durable contribution "${contribution}" has a command without a name`);
 		if (typeof command.description !== "string") throw new Error(`durable command "${name}" requires a description`);
@@ -387,42 +446,103 @@ function readCommandList(contribution: string, raw: unknown): DurableCommand[] |
 }
 
 /** Parse one emitted contribution, rejecting contract violations at the emitting factory. */
-function readContribution(data: unknown, existing: readonly DurableContribution[], issues: Error[]): DurableContribution {
+function readContribution(
+	data: unknown,
+	existing: readonly DurableContribution[],
+	issues: Error[],
+): DurableContribution {
 	if (typeof data !== "object" || data === null) throw new Error("durable:contribution payload must be an object");
 	const record = data as Record<string, unknown>;
 	const name = requiredString(record, "name", "durable:contribution requires a non-empty name");
 	const source = requiredString(record, "source", `durable contribution "${name}" requires an absolute source path`);
 	if (!isAbsolute(source)) throw new Error(`durable contribution "${name}" requires an absolute source path`);
 	if (typeof record.create !== "function") throw new Error(`durable contribution "${name}" requires a create function`);
-	if (existing.some((contribution) => contribution.name === name)) throw new Error(`durable contribution name "${name}" is already emitted`);
-	if (existing.some((contribution) => contribution.source === source)) throw new Error(`extension ${source} emitted more than one durable contribution`);
+	if (existing.some((contribution) => contribution.name === name))
+		throw new Error(`durable contribution name "${name}" is already emitted`);
+	if (existing.some((contribution) => contribution.source === source))
+		throw new Error(`extension ${source} emitted more than one durable contribution`);
 	const commands = readCommandList(name, record.commands);
-	const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+	const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 	// A presentation fault never removes the operational contribution; cards and browsers fall back to their standard forms.
-	const display = record.display === undefined ? undefined : attempt(() => readDisplayDescriptor(record.display), (error) => issues.push(new Error(`durable contribution "${name}" display descriptor refused: ${message(error)}`)));
-	const panel = record.panel === undefined ? undefined : attempt(() => {
-		const descriptor = readPanelDescriptor(record.panel);
-		if (!(commands ?? []).some((command) => command.name === descriptor.command)) throw new Error(`command ${descriptor.command} is not a command of this contribution`);
-		return descriptor;
-	}, (error) => issues.push(new Error(`durable contribution "${name}" panel descriptor refused: ${message(error)}`)));
-	return { name, source, create: record.create as DurableContribution["create"], ...(commands === undefined ? {} : { commands }), ...(display === undefined ? {} : { display }), ...(panel === undefined ? {} : { panel }) };
+	const display =
+		record.display === undefined
+			? undefined
+			: attempt(
+					() => readDisplayDescriptor(record.display),
+					(error) =>
+						issues.push(new Error(`durable contribution "${name}" display descriptor refused: ${message(error)}`)),
+				);
+	const panel =
+		record.panel === undefined
+			? undefined
+			: attempt(
+					() => {
+						const descriptor = readPanelDescriptor(record.panel);
+						if (!(commands ?? []).some((command) => command.name === descriptor.command))
+							throw new Error(`command ${descriptor.command} is not a command of this contribution`);
+						return descriptor;
+					},
+					(error) =>
+						issues.push(new Error(`durable contribution "${name}" panel descriptor refused: ${message(error)}`)),
+				);
+	return {
+		name,
+		source,
+		create: record.create as DurableContribution["create"],
+		...(commands === undefined ? {} : { commands }),
+		...(display === undefined ? {} : { display }),
+		...(panel === undefined ? {} : { panel }),
+	};
 }
 
 /** Run a parser; a refusal reaches `refused` and yields undefined. */
 function attempt<T>(parse: () => T, refused: (error: unknown) => void): T | undefined {
-	try { return parse(); }
-	catch (error) { refused(error); return undefined; }
+	try {
+		return parse();
+	} catch (error) {
+		refused(error);
+		return undefined;
+	}
 }
 
 /** Advertise a descriptor only when its entry resolves to a file inside the admitted owner's directory. */
-function admitDisplays(contributions: readonly DurableContribution[], report: (error: unknown) => void): DurableContribution[] {
+function admitDisplays(
+	contributions: readonly DurableContribution[],
+	report: (error: unknown) => void,
+): DurableContribution[] {
 	const refusal = (contribution: DurableContribution, kind: string, error: unknown) =>
-		report(new Error(`durable contribution "${contribution.name}" ${kind} entry refused: ${error instanceof Error ? error.message : String(error)}`));
+		report(
+			new Error(
+				`durable contribution "${contribution.name}" ${kind} entry refused: ${error instanceof Error ? error.message : String(error)}`,
+			),
+		);
 	return contributions.map((contribution) => {
 		const { display, panel, ...rest } = contribution;
-		const admittedDisplay = display === undefined ? undefined : attempt(() => { resolveDisplayEntry(contribution.source, display); return display; }, (error) => refusal(contribution, "display", error));
-		const admittedPanel = panel === undefined ? undefined : attempt(() => { resolvePanelEntry(contribution.source, panel); return panel; }, (error) => refusal(contribution, "panel", error));
-		return { ...rest, ...(admittedDisplay === undefined ? {} : { display: admittedDisplay }), ...(admittedPanel === undefined ? {} : { panel: admittedPanel }) };
+		const admittedDisplay =
+			display === undefined
+				? undefined
+				: attempt(
+						() => {
+							resolveDisplayEntry(contribution.source, display);
+							return display;
+						},
+						(error) => refusal(contribution, "display", error),
+					);
+		const admittedPanel =
+			panel === undefined
+				? undefined
+				: attempt(
+						() => {
+							resolvePanelEntry(contribution.source, panel);
+							return panel;
+						},
+						(error) => refusal(contribution, "panel", error),
+					);
+		return {
+			...rest,
+			...(admittedDisplay === undefined ? {} : { display: admittedDisplay }),
+			...(admittedPanel === undefined ? {} : { panel: admittedPanel }),
+		};
 	});
 }
 
@@ -442,7 +562,8 @@ function durableReadTool(pi: PiRuntime, cwd: string, hostSignal: AbortSignal) {
 		structuredOutputSchema: piRead.outputSchema,
 		replay: "safe",
 		async execute(args, api, context) {
-			const signal = context.abortSignal === undefined ? hostSignal : AbortSignal.any([hostSignal, context.abortSignal]);
+			const signal =
+				context.abortSignal === undefined ? hostSignal : AbortSignal.any([hostSignal, context.abortSignal]);
 			const result = await piRead.execute(api.callId, args, signal);
 			const truncation = (result.details as { truncation?: object } | undefined)?.truncation;
 			const details: Record<string, JsonValue> = {
@@ -460,7 +581,13 @@ function durableReadTool(pi: PiRuntime, cwd: string, hostSignal: AbortSignal) {
 }
 
 /** The host built-in extension: coding tools and resource-derived prompt sections. */
-function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: DurableInventory, packageSources: readonly PackageSource[], signal: AbortSignal): Durable.Extension {
+function buildBuiltin(
+	pi: PiRuntime,
+	services: AgentSessionServices,
+	inventory: DurableInventory,
+	packageSources: readonly PackageSource[],
+	signal: AbortSignal,
+): Durable.Extension {
 	return Durable.defineExtension({
 		name: "pi.host",
 		tasks: [CheckInTask, CheckInDeadlineTask, UnplacedWatchTask],
@@ -471,14 +598,22 @@ function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: 
 			{ ...createBashTool(), replay: "unsafe" },
 		],
 		sections: [
-			Durable.section("preamble", () => [
-				"You are an expert coding assistant operating inside the Pi agent harness.",
-				"Read files before you change them, keep changes focused on the task, and state what you changed.",
-				`Today's date is ${localDate()}.`,
-				"The host's request context names each task's requester and reply recipient. Use that route for reports; terminal answers route automatically. Creating ownership is provenance, not a substitute when request routing is unavailable.",
-			].join("\n"), { tag: false }),
+			Durable.section(
+				"preamble",
+				() =>
+					[
+						"You are an expert coding assistant operating inside the Pi agent harness.",
+						"Read files before you change them, keep changes focused on the task, and state what you changed.",
+						`Today's date is ${localDate()}.`,
+						"The host's request context names each task's requester and reply recipient. Use that route for reports; terminal answers route automatically. Creating ownership is provenance, not a substitute when request routing is unavailable.",
+					].join("\n"),
+				{ tag: false },
+			),
 			Durable.section("addendum", () => {
-				const text = services.resourceLoader.getAppendSystemPrompt().filter((prompt) => prompt.trim() !== "").join("\n\n");
+				const text = services.resourceLoader
+					.getAppendSystemPrompt()
+					.filter((prompt) => prompt.trim() !== "")
+					.join("\n\n");
 				return text === "" ? undefined : text;
 			}),
 			Durable.section("project_context", () => {
@@ -486,13 +621,19 @@ function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: 
 				if (files.length === 0) return undefined;
 				return [
 					"Project-specific instructions and guidelines:",
-					...files.map(({ path, content }) => `<project_instructions path="${path}">\n${content}\n</project_instructions>`),
+					...files.map(
+						({ path, content }) => `<project_instructions path="${path}">\n${content}\n</project_instructions>`,
+					),
 				].join("\n\n");
 			}),
 			Durable.section("skills", (input) => {
 				const { skills } = services.resourceLoader.getSkills();
 				if (skills.length === 0) return undefined;
-				const read = services.settingsManager.getSettings().codemode?.mode !== "only" && input.agent.tools.some((tool) => tool.name === "read") ? "read" : "indirect";
+				const read =
+					services.settingsManager.getSettings().codemode?.mode !== "only" &&
+					input.agent.tools.some((tool) => tool.name === "read")
+						? "read"
+						: "indirect";
 				const text = pi.formatSkillsForPrompt(skills, read).trim();
 				return text === "" ? undefined : text;
 			}),
@@ -513,16 +654,23 @@ function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: 
 				}
 				return lines.length === 0 ? undefined : lines.join("\n");
 			}),
-			Durable.section("package_source", () => packageSources.length === 0 ? undefined : [
-				"Pi settings configure a package directory that this conversation's host did not load. The host loaded the copy of that package that its starting process runs:",
-				...packageSources.map((item) => `- configured ${item.configured}; loaded ${item.loaded}`),
-			].join("\n")),
+			Durable.section("package_source", () =>
+				packageSources.length === 0
+					? undefined
+					: [
+							"Pi settings configure a package directory that this conversation's host did not load. The host loaded the copy of that package that its starting process runs:",
+							...packageSources.map((item) => `- configured ${item.configured}; loaded ${item.loaded}`),
+						].join("\n"),
+			),
 		],
 	});
 }
 
 /** Keep only the contributions whose source is a configured extension entrypoint. */
-function matchContributions(contributions: readonly DurableContribution[], loadedPaths: readonly string[]): DurableContribution[] {
+function matchContributions(
+	contributions: readonly DurableContribution[],
+	loadedPaths: readonly string[],
+): DurableContribution[] {
 	// The loader imports the canonical entry path, while a configured resolved path keeps its given form;
 	// both sides resolve through the filesystem before identity is compared.
 	const loaded = new Set(loadedPaths.map(realpathOrExact));
@@ -534,19 +682,29 @@ export const LOAD_FAILURE_MAX_CHARS = 240;
 
 /** Collapse one loader failure into a single bounded line for inventory and prompt use. */
 export function boundedLoadFailure(text: string): string {
-	const collapsed = text.replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ").replace(/\s+/gu, " ").trim();
+	const collapsed = text
+		.replace(/[\u0000-\u001f\u007f-\u009f]+/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim();
 	return collapsed.length > LOAD_FAILURE_MAX_CHARS ? `${collapsed.slice(0, LOAD_FAILURE_MAX_CHARS - 3)}...` : collapsed;
 }
 
 /** Build the inventory from emitted contributions, loaded extension paths, and loader failures. */
-function buildInventory(contributions: readonly DurableContribution[], loadedPaths: readonly string[], loadErrors: LoadExtensionsResult["errors"]): DurableInventory {
+function buildInventory(
+	contributions: readonly DurableContribution[],
+	loadedPaths: readonly string[],
+	loadErrors: LoadExtensionsResult["errors"],
+): DurableInventory {
 	const emitted = new Set(contributions.map((contribution) => realpathOrExact(contribution.source)));
 	const failed = loadErrors.map((item) => ({ path: item.path, error: boundedLoadFailure(item.error) }));
 	return {
 		contributions: contributions.map((contribution) => ({
 			name: contribution.name,
 			source: contribution.source,
-			commands: (contribution.commands ?? []).map((command) => ({ name: command.name, description: command.description })),
+			commands: (contribution.commands ?? []).map((command) => ({
+				name: command.name,
+				description: command.description,
+			})),
 			...(contribution.display === undefined ? {} : { display: contribution.display }),
 			...(contribution.panel === undefined ? {} : { panel: contribution.panel }),
 		})),
@@ -569,14 +727,21 @@ function buildCommands(contributions: readonly DurableContribution[]): Map<strin
 }
 
 /** Install each contribution's native extension after the built-ins, in load order. */
-async function installContributions(registry: Durable.Registry, contributions: readonly DurableContribution[], host: DurableContributionHost, installed: Set<string>): Promise<void> {
+async function installContributions(
+	registry: Durable.Registry,
+	contributions: readonly DurableContribution[],
+	host: DurableContributionHost,
+	installed: Set<string>,
+): Promise<void> {
 	for (const contribution of contributions) {
 		let extension: Durable.Extension;
 		try {
 			extension = await contribution.create(host);
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
-			throw new Error(`durable contribution "${contribution.name}" failed to create its extension: ${detail}`, { cause: error });
+			throw new Error(`durable contribution "${contribution.name}" failed to create its extension: ${detail}`, {
+				cause: error,
+			});
 		}
 		validateExtension(extension, installed, `durable contribution "${contribution.name}"`);
 		installed.add(extension.name);
@@ -585,7 +750,11 @@ async function installContributions(registry: Durable.Registry, contributions: r
 }
 
 /** Install the extensions a native built-in hook returned, before every contribution. */
-function installBuiltins(registry: Durable.Registry, built: Durable.Extension | readonly Durable.Extension[], installed: Set<string>): void {
+function installBuiltins(
+	registry: Durable.Registry,
+	built: Durable.Extension | readonly Durable.Extension[],
+	installed: Set<string>,
+): void {
 	for (const extension of Array.isArray(built) ? built : [built]) {
 		validateExtension(extension, installed, "durable built-in");
 		installed.add(extension.name);
@@ -594,12 +763,19 @@ function installBuiltins(registry: Durable.Registry, built: Durable.Extension | 
 }
 
 /** A built-in bundle carries a named extension collection instead of one extension. */
-function isBuiltinExecution(built: Durable.Extension | readonly Durable.Extension[] | DurableBuiltinExecution): built is DurableBuiltinExecution {
+function isBuiltinExecution(
+	built: Durable.Extension | readonly Durable.Extension[] | DurableBuiltinExecution,
+): built is DurableBuiltinExecution {
 	return typeof built === "object" && built !== null && !Array.isArray(built) && "extensions" in built;
 }
 
 /** Install a native built-in hook result and register its release on the host, when it carries one. */
-async function installBuiltinHook(registry: Durable.Registry, hook: NonNullable<CreateDurableServicesOptions["buildBuiltin"]>, host: DurableContributionHost, installed: Set<string>): Promise<void> {
+async function installBuiltinHook(
+	registry: Durable.Registry,
+	hook: NonNullable<CreateDurableServicesOptions["buildBuiltin"]>,
+	host: DurableContributionHost,
+	installed: Set<string>,
+): Promise<void> {
 	const built = await hook(host);
 	if (!isBuiltinExecution(built)) {
 		installBuiltins(registry, built, installed);
@@ -611,7 +787,10 @@ async function installBuiltinHook(registry: Durable.Registry, hook: NonNullable<
 }
 
 /** Await every registered close callback in reverse order; report and collect every failure. */
-async function drainClosers(closers: Array<() => void | Promise<void>>, report: (error: unknown) => void): Promise<unknown[]> {
+async function drainClosers(
+	closers: Array<() => void | Promise<void>>,
+	report: (error: unknown) => void,
+): Promise<unknown[]> {
 	const failures: unknown[] = [];
 	while (closers.length > 0) {
 		const dispose = closers.pop();
@@ -627,35 +806,65 @@ async function drainClosers(closers: Array<() => void | Promise<void>>, report: 
 }
 
 /** Release every registered close callback and execution environment, reporting every failure. */
-async function releaseServices(closers: Array<() => void | Promise<void>>, envs: Map<string, NodeExecutionEnv>, report: (error: unknown) => void): Promise<void> {
+async function releaseServices(
+	closers: Array<() => void | Promise<void>>,
+	envs: Map<string, NodeExecutionEnv>,
+	report: (error: unknown) => void,
+): Promise<void> {
 	const failures = await drainClosers(closers, report);
-	const cleanup = await Promise.allSettled([...envs.values()].map((environment) => environment.cleanup(BACKGROUND_CONTEXT)));
+	const cleanup = await Promise.allSettled(
+		[...envs.values()].map((environment) => environment.cleanup(BACKGROUND_CONTEXT)),
+	);
 	envs.clear();
-	for (const result of cleanup) if (result.status === "rejected") { failures.push(result.reason); report(result.reason); }
-	failures.push(...await drainClosers(closers, report));
+	for (const result of cleanup)
+		if (result.status === "rejected") {
+			failures.push(result.reason);
+			report(result.reason);
+		}
+	failures.push(...(await drainClosers(closers, report)));
 	if (failures.length === 1) throw failures[0];
 	if (failures.length > 1) throw new AggregateError(failures, "durable services cleanup failed");
 }
 
 /** Reject a malformed or duplicate-name extension before it enters the registry. */
 function validateExtension(extension: Durable.Extension, installed: ReadonlySet<string>, owner: string): void {
-	if (extension === null || typeof extension !== "object" || typeof extension.name !== "string") throw new Error(`${owner} did not return an extension`);
-	if (installed.has(extension.name)) throw new Error(`${owner} installs the duplicate extension name "${extension.name}"`);
+	if (extension === null || typeof extension !== "object" || typeof extension.name !== "string")
+		throw new Error(`${owner} did not return an extension`);
+	if (installed.has(extension.name))
+		throw new Error(`${owner} installs the duplicate extension name "${extension.name}"`);
 }
 
 /** Report the non-fatal bootstrap failures named by the contract. */
-function reportIssues(report: (error: unknown) => void, collection: readonly Error[], services: AgentSessionServices, loaded: LoadExtensionsResult, contributions: readonly DurableContribution[]): void {
+function reportIssues(
+	report: (error: unknown) => void,
+	collection: readonly Error[],
+	services: AgentSessionServices,
+	loaded: LoadExtensionsResult,
+	contributions: readonly DurableContribution[],
+): void {
 	for (const error of collection) report(error);
 	for (const item of services.diagnostics) if (item.type === "error") report(new Error(item.message));
 	for (const item of loaded.errors) report(new Error(`${item.path}: ${item.error}`));
 	const matched = new Set(loaded.extensions.map((extension) => realpathOrExact(extension.resolvedPath)));
 	for (const contribution of contributions) {
-		if (!matched.has(realpathOrExact(contribution.source))) report(new Error(`durable contribution "${contribution.name}" from ${contribution.source} matches no loaded extension entrypoint`));
+		if (!matched.has(realpathOrExact(contribution.source)))
+			report(
+				new Error(
+					`durable contribution "${contribution.name}" from ${contribution.source} matches no loaded extension entrypoint`,
+				),
+			);
 	}
 }
 
 /** Build the public trust resolver for one cwd and saved store. */
-function projectTrustResolver(pi: PiRuntime, options: CreateDurableServicesOptions, cwd: string, settingsManager: SettingsManager, agentDir: string, report: (error: unknown) => void): (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean> {
+function projectTrustResolver(
+	pi: PiRuntime,
+	options: CreateDurableServicesOptions,
+	cwd: string,
+	settingsManager: SettingsManager,
+	agentDir: string,
+	report: (error: unknown) => void,
+): (input: { extensionsResult: LoadExtensionsResult }) => Promise<boolean> {
 	if (options.resolveProjectTrust !== undefined) return options.resolveProjectTrust;
 	const trustStore = options.trustStore ?? new pi.ProjectTrustStore(agentDir);
 	return createProjectTrustResolver({
@@ -700,7 +909,9 @@ function manifestName(directory: string): string | undefined {
 	try {
 		const name = (JSON.parse(readFileSync(join(directory, "package.json"), "utf8")) as { name?: unknown }).name;
 		return typeof name === "string" && name !== "" ? name : undefined;
-	} catch { return undefined; }
+	} catch {
+		return undefined;
+	}
 }
 
 function agentPackage(selected: string): AgentPackage | undefined {
@@ -713,18 +924,28 @@ function agentPackage(selected: string): AgentPackage | undefined {
 /** Resolve a local package source against its settings scope, as Pi does; undefined unless it is an existing directory. */
 function localPackageDirectory(source: string, baseDir: string): string | undefined {
 	const trimmed = source.trim();
-	const path = trimmed === "~" ? homedir() : trimmed.startsWith("~/") ? join(homedir(), trimmed.slice(2)) : resolve(baseDir, trimmed);
+	const path =
+		trimmed === "~"
+			? homedir()
+			: trimmed.startsWith("~/")
+				? join(homedir(), trimmed.slice(2))
+				: resolve(baseDir, trimmed);
 	try {
 		const directory = realpathSync(path);
 		return statSync(directory).isDirectory() ? directory : undefined;
-	} catch { return undefined; }
+	} catch {
+		return undefined;
+	}
 }
 
 /** Another directory of the runner's package: the same manifest name and an Agent entrypoint at the same place. */
 function otherPackageCopy(directory: string, own: AgentPackage): boolean {
 	if (directory === own.root || manifestName(directory) !== own.name) return false;
-	try { return statSync(join(directory, AGENT_ENTRY)).isFile(); }
-	catch { return false; }
+	try {
+		return statSync(join(directory, AGENT_ENTRY)).isFile();
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -739,30 +960,54 @@ function selectPackageSource(source: string, baseDir: string, selection: AgentSe
 	const configured = localPackageDirectory(source, baseDir);
 	if (configured === undefined || !otherPackageCopy(configured, selection.package)) return source;
 	const loaded = selection.package.root;
-	if (!selection.replaced.some(item => item.configured === configured)) {
+	if (!selection.replaced.some((item) => item.configured === configured)) {
 		selection.replaced.push({ configured, loaded });
-		selection.report(`Pi settings configure the package directory ${configured}. The selected Agent belongs to another copy of the same package (${selection.package.name}), so ${loaded} was loaded in its place.`);
+		selection.report(
+			`Pi settings configure the package directory ${configured}. The selected Agent belongs to another copy of the same package (${selection.package.name}), so ${loaded} was loaded in its place.`,
+		);
 	}
 	return loaded;
 }
 
-function selectAgentSettings(settings: ReturnType<SettingsManager["getGlobalSettings"]>, baseDir: string, selection: AgentSelection): ReturnType<SettingsManager["getGlobalSettings"]> {
+function selectAgentSettings(
+	settings: ReturnType<SettingsManager["getGlobalSettings"]>,
+	baseDir: string,
+	selection: AgentSelection,
+): ReturnType<SettingsManager["getGlobalSettings"]> {
 	return {
 		...settings,
-		...(settings.packages === undefined ? {} : { packages: settings.packages.map(entry => typeof entry === "string" ? selectPackageSource(entry, baseDir, selection) : { ...entry, source: selectPackageSource(entry.source, baseDir, selection) }) }),
-		...(settings.extensions === undefined ? {} : { extensions: settings.extensions.map(path => selectAgentEntry(path, selection.agent)) }),
+		...(settings.packages === undefined
+			? {}
+			: {
+					packages: settings.packages.map((entry) =>
+						typeof entry === "string"
+							? selectPackageSource(entry, baseDir, selection)
+							: { ...entry, source: selectPackageSource(entry.source, baseDir, selection) },
+					),
+				}),
+		...(settings.extensions === undefined
+			? {}
+			: { extensions: settings.extensions.map((path) => selectAgentEntry(path, selection.agent)) }),
 	};
 }
 
 /** Keep SDK saves local, and defer project reads until Pi grants project trust. */
-function selectedAgentSettingsManager(pi: PiRuntime, source: SettingsManager, selection: AgentSelection, baseDirs: Readonly<Record<"global" | "project", string>>): SettingsManager {
+function selectedAgentSettingsManager(
+	pi: PiRuntime,
+	source: SettingsManager,
+	selection: AgentSelection,
+	baseDirs: Readonly<Record<"global" | "project", string>>,
+): SettingsManager {
 	const report = selection.report;
 	const writes = new Map<"global" | "project", string>();
 	const errors = new Map<"global" | "project", Error>();
 	const read = (scope: "global" | "project") => {
 		if (scope === "project") source.setProjectTrusted(true);
 		for (const item of source.drainErrors()) {
-			const error = new Error(`${item.scope} settings${item.path === undefined ? "" : ` ${item.path}`}: ${item.error.message}`, { cause: item.error });
+			const error = new Error(
+				`${item.scope} settings${item.path === undefined ? "" : ` ${item.path}`}: ${item.error.message}`,
+				{ cause: item.error },
+			);
 			errors.set(item.scope, error);
 			report(error);
 		}
@@ -770,26 +1015,61 @@ function selectedAgentSettingsManager(pi: PiRuntime, source: SettingsManager, se
 		if (error !== undefined) throw error;
 		return scope === "global" ? source.getGlobalSettings() : source.getProjectSettings();
 	};
-	return pi.SettingsManager.fromStorage({
-		withLock(scope, update) {
-			const current = writes.get(scope);
-			const settings = current === undefined ? read(scope) : JSON.parse(current) as ReturnType<SettingsManager["getGlobalSettings"]>;
-			const next = update(JSON.stringify(selectAgentSettings(settings, baseDirs[scope], selection)));
-			if (next !== undefined) writes.set(scope, next);
+	return pi.SettingsManager.fromStorage(
+		{
+			withLock(scope, update) {
+				const current = writes.get(scope);
+				const settings =
+					current === undefined
+						? read(scope)
+						: (JSON.parse(current) as ReturnType<SettingsManager["getGlobalSettings"]>);
+				const next = update(JSON.stringify(selectAgentSettings(settings, baseDirs[scope], selection)));
+				if (next !== undefined) writes.set(scope, next);
+			},
 		},
-	}, { projectTrusted: source.isProjectTrusted() });
+		{ projectTrusted: source.isProjectTrusted() },
+	);
 }
 
-function selectedAgentResources(pi: PiRuntime, options: CreateDurableServicesOptions, cwd: string, agentDir: string, report: (error: unknown) => void) {
+function selectedAgentResources(
+	pi: PiRuntime,
+	options: CreateDurableServicesOptions,
+	cwd: string,
+	agentDir: string,
+	report: (error: unknown) => void,
+) {
 	// The selected host loads project settings only after the resource loader grants trust.
-	const sourceSettings = options.settingsManager ?? pi.SettingsManager.create(cwd, agentDir, options.agentExtensionPath === undefined ? undefined : { projectTrusted: false });
-	if (options.agentExtensionPath === undefined) return { settingsManager: sourceSettings, extensionPaths: options.extensionPaths, selectedAgent: undefined, packageSources: [] };
-	if (!isAbsolute(options.agentExtensionPath)) throw new Error("The selected Agent entrypoint must be an absolute file path");
+	const sourceSettings =
+		options.settingsManager ??
+		pi.SettingsManager.create(
+			cwd,
+			agentDir,
+			options.agentExtensionPath === undefined ? undefined : { projectTrusted: false },
+		);
+	if (options.agentExtensionPath === undefined)
+		return {
+			settingsManager: sourceSettings,
+			extensionPaths: options.extensionPaths,
+			selectedAgent: undefined,
+			packageSources: [],
+		};
+	if (!isAbsolute(options.agentExtensionPath))
+		throw new Error("The selected Agent entrypoint must be an absolute file path");
 	const selectedAgent = realpathSync(options.agentExtensionPath);
 	if (!statSync(selectedAgent).isFile()) throw new Error("The selected Agent entrypoint must be a file");
-	const selection: AgentSelection = { agent: selectedAgent, package: agentPackage(selectedAgent), replaced: [], report };
-	const settingsManager = selectedAgentSettingsManager(pi, sourceSettings, selection, { global: agentDir, project: join(cwd, pi.CONFIG_DIR_NAME) });
-	const extensionPaths = [...new Set([selectedAgent, ...(options.extensionPaths ?? []).map(path => selectAgentEntry(path, selectedAgent))])];
+	const selection: AgentSelection = {
+		agent: selectedAgent,
+		package: agentPackage(selectedAgent),
+		replaced: [],
+		report,
+	};
+	const settingsManager = selectedAgentSettingsManager(pi, sourceSettings, selection, {
+		global: agentDir,
+		project: join(cwd, pi.CONFIG_DIR_NAME),
+	});
+	const extensionPaths = [
+		...new Set([selectedAgent, ...(options.extensionPaths ?? []).map((path) => selectAgentEntry(path, selectedAgent))]),
+	];
 	return { settingsManager, extensionPaths, selectedAgent, packageSources: selection.replaced };
 }
 
@@ -801,9 +1081,14 @@ function unselectedAgentContribution(data: unknown, selected: string | undefined
 	return new Error(`An unselected Agent contribution was emitted from ${source}`);
 }
 
-function requireSelectedAgent(selected: string | undefined, contributions: readonly DurableContribution[], selectionError: Error | undefined): void {
+function requireSelectedAgent(
+	selected: string | undefined,
+	contributions: readonly DurableContribution[],
+	selectionError: Error | undefined,
+): void {
 	if (selectionError !== undefined) throw selectionError;
-	if (selected !== undefined && !contributions.some(item => item.name === "agent" && item.source === selected)) throw new Error("The selected Agent entrypoint did not supply its native contribution");
+	if (selected !== undefined && !contributions.some((item) => item.name === "agent" && item.source === selected))
+		throw new Error("The selected Agent entrypoint did not supply its native contribution");
 }
 
 function providerStreamSettings(settings: SettingsManager): NonNullable<Durable.HarnessSettings["stream"]> {
@@ -822,8 +1107,11 @@ function providerStreamSettings(settings: SettingsManager): NonNullable<Durable.
 const defaultAgentEntrypoint = realpathSync(fileURLToPath(new URL("./index.ts", import.meta.url)));
 
 function realpathOrExact(path: string): string {
-	try { return realpathSync(path); }
-	catch { return path; }
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
 }
 
 /**
@@ -835,7 +1123,13 @@ export async function createDurableServices(options: CreateDurableServicesOption
 	const cwd = resolve(options.cwd);
 	const agentDir = options.agentDir === undefined ? pi.getAgentDir() : resolve(options.agentDir);
 	const report = options.onReport ?? (() => {});
-	const { settingsManager, extensionPaths, selectedAgent, packageSources } = selectedAgentResources(pi, options, cwd, agentDir, report);
+	const { settingsManager, extensionPaths, selectedAgent, packageSources } = selectedAgentResources(
+		pi,
+		options,
+		cwd,
+		agentDir,
+		report,
+	);
 	const canonicalAgent = selectedAgent ?? defaultAgentEntrypoint;
 
 	const bus = pi.createEventBus();
@@ -843,22 +1137,24 @@ export async function createDurableServices(options: CreateDurableServicesOption
 	const collectionErrors: Error[] = [];
 	let selectionError: Error | undefined;
 	/** Answer every Agent entry request with the native entry for the canonical source, or a rejection. */
-	const bindAgentEntry = (): (() => void) => bus.on(AGENT_ENTRY_CHANNEL, (data) => {
-		if (typeof data !== "object" || data === null) return;
-		const request = data as AgentEntryRequest;
-		if (request.version !== 1 || typeof request.source !== "string" || request.source === "") return;
-		const resolvedSource = realpathOrExact(request.source);
-		const accepted = selectedAgent === undefined
-			? resolvedSource === canonicalAgent
-			: request.source === selectedAgent || resolvedSource === selectedAgent;
-		if (!accepted) {
-			const reason = `An unselected Agent contribution was emitted from ${request.source}`;
-			selectionError ??= new Error(reason);
-			request.result = { kind: "rejected", reason };
-			return;
-		}
-		request.result = { kind: "native", register: createNativeAgentEntry(request.source) };
-	});
+	const bindAgentEntry = (): (() => void) =>
+		bus.on(AGENT_ENTRY_CHANNEL, (data) => {
+			if (typeof data !== "object" || data === null) return;
+			const request = data as AgentEntryRequest;
+			if (request.version !== 1 || typeof request.source !== "string" || request.source === "") return;
+			const resolvedSource = realpathOrExact(request.source);
+			const accepted =
+				selectedAgent === undefined
+					? resolvedSource === canonicalAgent
+					: request.source === selectedAgent || resolvedSource === selectedAgent;
+			if (!accepted) {
+				const reason = `An unselected Agent contribution was emitted from ${request.source}`;
+				selectionError ??= new Error(reason);
+				request.result = { kind: "rejected", reason };
+				return;
+			}
+			request.result = { kind: "native", register: createNativeAgentEntry(request.source) };
+		});
 	const unsubscribeEntry = bindAgentEntry();
 	const unsubscribe = bus.on("durable:contribution", (data) => {
 		try {
@@ -975,7 +1271,11 @@ export async function createDurableServices(options: CreateDurableServicesOption
 				return harnessValue;
 			},
 			signal: controller.signal,
-			launchIndependent: options.launchIndependent ?? (async () => { throw new Error("This host has no independent launch capability"); }),
+			launchIndependent:
+				options.launchIndependent ??
+				(async () => {
+					throw new Error("This host has no independent launch capability");
+				}),
 			ordinarySession: () => options.ordinarySession?.(),
 			onClose,
 			inventory,
@@ -988,7 +1288,8 @@ export async function createDurableServices(options: CreateDurableServicesOption
 			harnessValue = harness;
 			try {
 				const installedNames = new Set([builtin.name]);
-				if (options.buildBuiltin !== undefined) await installBuiltinHook(registry, options.buildBuiltin, host, installedNames);
+				if (options.buildBuiltin !== undefined)
+					await installBuiltinHook(registry, options.buildBuiltin, host, installedNames);
 				await installContributions(registry, matched, host, installedNames);
 			} catch (error) {
 				try {
@@ -1002,12 +1303,20 @@ export async function createDurableServices(options: CreateDurableServicesOption
 
 		const settings: Durable.HarnessSettings = {
 			/** Match ordinary request options; each provider owns its timeout and retry semantics. */
-			get stream() { return providerStreamSettings(services.settingsManager); },
-			get retry() { return services.settingsManager.getRetrySettings(); },
-			get compaction() { return services.settingsManager.getCompactionSettings(); },
+			get stream() {
+				return providerStreamSettings(services.settingsManager);
+			},
+			get retry() {
+				return services.settingsManager.getRetrySettings();
+			},
+			get compaction() {
+				return services.settingsManager.getCompactionSettings();
+			},
 			/** One tool boundary places every queued steer input; the Pi setting does not select this. */
 			steeringMode: "all",
-			get followUpMode() { return services.settingsManager.getFollowUpMode(); },
+			get followUpMode() {
+				return services.settingsManager.getFollowUpMode();
+			},
 		};
 
 		return {

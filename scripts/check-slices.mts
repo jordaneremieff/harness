@@ -603,11 +603,16 @@ export async function auditSettings(
 	return violations;
 }
 if (main) {
-	const violations = await auditSettings(root, sourceFiles, (path, projection) => {
-		console.log(
-			`check-slices: paste-ready replacement for ${path}\n--- BEGIN ${path} configuration ---\n${projection}\n--- END ${path} configuration ---`,
-		);
-	}, inventory);
+	const violations = await auditSettings(
+		root,
+		sourceFiles,
+		(path, projection) => {
+			console.log(
+				`check-slices: paste-ready replacement for ${path}\n--- BEGIN ${path} configuration ---\n${projection}\n--- END ${path} configuration ---`,
+			);
+		},
+		inventory,
+	);
 	for (const violation of violations) fail(violation);
 }
 
@@ -622,14 +627,13 @@ const tracked = main
 // --- rule 6: owned schemas use the native package ----------------------
 
 function typeboxPackage(specifier: string): boolean {
-	return ["typebox", "@sinclair/typebox"].some(
-		(name) => specifier === name || specifier.startsWith(`${name}/`),
-	);
+	return ["typebox", "@sinclair/typebox"].some((name) => specifier === name || specifier.startsWith(`${name}/`));
 }
 
 export function auditSchemaImports(root: string, file: string, analysis: SourceAnalysis): string[] {
 	const label = relative(root, file);
-	if (analysis.syntaxErrors.length) return [`${label}: TypeScript syntax errors prevent a complete schema import check`];
+	if (analysis.syntaxErrors.length)
+		return [`${label}: TypeScript syntax errors prevent a complete schema import check`];
 	return analysis.specifiers
 		.filter(typeboxPackage)
 		.map((specifier) => `${label}: import "${specifier}" uses TypeBox; use @earendil-works/pi-schema`);

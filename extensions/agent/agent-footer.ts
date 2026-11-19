@@ -13,16 +13,29 @@ export interface AgentModelInfo {
 	reasoning: boolean;
 	contextWindow: number;
 }
-const clean = (text: string) => stripVTControlCharacters(text.slice(0, 512)).replace(/[\x00-\x1f\x7f-\x9f]/g, " ").replace(/\s+/g, " ").trim();
+const clean = (text: string) =>
+	stripVTControlCharacters(text.slice(0, 512))
+		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
 export function agentCacheShare(usage?: UsageState): { percent: number; read: boolean } | undefined {
 	if (!usage) return undefined;
-	let input = 0, read = 0, write = 0;
+	let input = 0,
+		read = 0,
+		write = 0;
 	for (const value of Object.values(usage.models)) {
-		input += value.input; read += value.cacheRead; write += value.cacheWrite;
+		input += value.input;
+		read += value.cacheRead;
+		write += value.cacheWrite;
 	}
 	const total = input + read + write;
-	if (![input, read, write, total].every((value) => Number.isFinite(value) && value >= 0) || total <= 0 || read + write === 0) return undefined;
-	return { percent: Math.round(read / total * 100), read: read > 0 };
+	if (
+		![input, read, write, total].every((value) => Number.isFinite(value) && value >= 0) ||
+		total <= 0 ||
+		read + write === 0
+	)
+		return undefined;
+	return { percent: Math.round((read / total) * 100), read: read > 0 };
 }
 export function agentContextBar(percent: number, theme: Pick<Theme, "fg">): string {
 	const value = Math.max(0, Math.round(percent));
@@ -30,12 +43,20 @@ export function agentContextBar(percent: number, theme: Pick<Theme, "fg">): stri
 	const tone = value > 80 ? "error" : value > 60 ? "warning" : "success";
 	return `${theme.fg(tone, "█".repeat(cells))}${theme.fg("dim", "░".repeat(10 - cells))} ${theme.fg(tone, `${value}%`)}`;
 }
-function projectLabel(cwd: string, branch: string | undefined, width: number, home: string, theme: Pick<Theme, "fg">): string {
+function projectLabel(
+	cwd: string,
+	branch: string | undefined,
+	width: number,
+	home: string,
+	theme: Pick<Theme, "fg">,
+): string {
 	let folder = clean(cwd === home ? "~" : cwd.startsWith(`${home}/`) ? `~/${cwd.slice(home.length + 1)}` : cwd);
 	let name = branch ? clean(branch) : "";
 	const suffix = (text: string, columns: number) => {
 		const size = visibleWidth(text);
-		return size <= columns ? text : `…${sliceByColumn(text, size - Math.max(0, columns - 1), Math.max(0, columns - 1), true)}`;
+		return size <= columns
+			? text
+			: `…${sliceByColumn(text, size - Math.max(0, columns - 1), Math.max(0, columns - 1), true)}`;
 	};
 	const leaf = Math.min(visibleWidth(folder), visibleWidth(folder.slice(folder.lastIndexOf("/") + 1)) + 1);
 	folder = suffix(folder, Math.max(1, leaf, width - (name ? visibleWidth(name) + 3 : 0)));
@@ -53,28 +74,62 @@ function modelLabel(row: AgentConversationSummary, info: AgentModelInfo | undefi
 	const label = theme.fg("accent", clean(`${model.provider}/${model.modelId}`));
 	const level = clean(model.thinkingLevel);
 	const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-	return info?.reasoning && levels.includes(level) ? label + theme.fg(`thinking${level.charAt(0).toUpperCase()}${level.slice(1)}` as ThemeColor, ` [${level}]`) : label;
+	return info?.reasoning && levels.includes(level)
+		? label + theme.fg(`thinking${level.charAt(0).toUpperCase()}${level.slice(1)}` as ThemeColor, ` [${level}]`)
+		: label;
 }
-function contextCells(context: number | undefined, capacity: number | undefined, theme: Pick<Theme, "fg">): [string, string] {
+function contextCells(
+	context: number | undefined,
+	capacity: number | undefined,
+	theme: Pick<Theme, "fg">,
+): [string, string] {
 	if (context === undefined || !Number.isFinite(context) || context < 0) return ["", ""];
-	if (capacity === undefined || !Number.isFinite(capacity) || capacity <= 0) return ["", theme.fg("dim", compactTokens(context))];
-	return [agentContextBar(context / capacity * 100, theme), theme.fg("dim", `${compactTokens(context)}/${compactTokens(capacity)}`)];
+	if (capacity === undefined || !Number.isFinite(capacity) || capacity <= 0)
+		return ["", theme.fg("dim", compactTokens(context))];
+	return [
+		agentContextBar((context / capacity) * 100, theme),
+		theme.fg("dim", `${compactTokens(context)}/${compactTokens(capacity)}`),
+	];
 }
-function metricsLine(row: AgentConversationSummary, width: number, theme: Pick<Theme, "fg">, context: number | undefined, info: AgentModelInfo | undefined, usage: UsageState | undefined): string {
+function metricsLine(
+	row: AgentConversationSummary,
+	width: number,
+	theme: Pick<Theme, "fg">,
+	context: number | undefined,
+	info: AgentModelInfo | undefined,
+	usage: UsageState | undefined,
+): string {
 	const [bar, tokens] = contextCells(context, info?.contextWindow, theme);
 	const cache = agentCacheShare(usage);
-	const parts = { model: modelLabel(row, info, theme), bar, tokens,
-		cost: Number.isFinite(row.cost) && row.cost >= 0.005 ? theme.fg("dim", `~${formatCost(row.cost, row.partial)}`) : "",
+	const parts = {
+		model: modelLabel(row, info, theme),
+		bar,
+		tokens,
+		cost:
+			Number.isFinite(row.cost) && row.cost >= 0.005 ? theme.fg("dim", `~${formatCost(row.cost, row.partial)}`) : "",
 		dot: cache ? theme.fg(cache.read ? "success" : "error", "●") : "",
-		rate: cache ? theme.fg("dim", `${cache.percent}% hit`) : "" };
-	const compose = () => [parts.model, parts.bar, parts.tokens, parts.cost, [parts.dot, parts.rate].filter(Boolean).join(" ")].filter(Boolean).join(theme.fg("dim", " │ "));
+		rate: cache ? theme.fg("dim", `${cache.percent}% hit`) : "",
+	};
+	const compose = () =>
+		[parts.model, parts.bar, parts.tokens, parts.cost, [parts.dot, parts.rate].filter(Boolean).join(" ")]
+			.filter(Boolean)
+			.join(theme.fg("dim", " │ "));
 	for (const field of ["rate", "dot", "tokens", "cost"] as const) {
 		if (visibleWidth(compose()) <= width) break;
 		parts[field] = "";
 	}
 	return truncateToWidth(compose(), width, "…");
 }
-export function agentStatusLines(row: AgentConversationSummary, width: number, theme: Pick<Theme, "fg">, context?: number, info?: AgentModelInfo, usage?: UsageState, branch?: string, home = homedir()): string[] {
+export function agentStatusLines(
+	row: AgentConversationSummary,
+	width: number,
+	theme: Pick<Theme, "fg">,
+	context?: number,
+	info?: AgentModelInfo,
+	usage?: UsageState,
+	branch?: string,
+	home = homedir(),
+): string[] {
 	const project = projectLabel(row.cwd, branch, width, home, theme);
 	return [metricsLine(row, width, theme, context, info, usage), truncateToWidth(project, width, "…")];
 }

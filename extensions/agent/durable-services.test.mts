@@ -5,9 +5,21 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext, type SimpleStreamOptions, type StreamOptions } from "@earendil-works/pi-ai";
+import {
+	createAssistantMessageEventStream,
+	type AssistantMessage,
+	type TranscriptContext,
+	type SimpleStreamOptions,
+	type StreamOptions,
+} from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { ProjectTrustStore, createReadToolDefinition, getPackageDir, hasTrustRequiringProjectResources, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+	ProjectTrustStore,
+	createReadToolDefinition,
+	getPackageDir,
+	hasTrustRequiringProjectResources,
+	type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import { createDurableServices, LOAD_FAILURE_MAX_CHARS } from "./durable-services.ts";
 import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { promptProjectTrust } from "./trust-support.ts";
@@ -84,7 +96,14 @@ const LOAD_THROW_EXTENSION = `throw new Error(${JSON.stringify("configured exten
 /** A 1x1 transparent PNG. */
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
-const USAGE = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const USAGE = {
+	input: 1,
+	output: 1,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 2,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
 
 interface Fixture {
 	root: string;
@@ -119,29 +138,75 @@ function localDate(now = new Date()): string {
 }
 
 /** Open a MemoryStorage Harness for prepared services, install every contribution, and return both. */
-async function installedHarness(services: Awaited<ReturnType<typeof createDurableServices>>): Promise<{ harness: Harness; close(): Promise<void> }> {
-	const harness = await Harness.open(new MemoryStorage(), { models: services.services.modelRuntime, registry: services.registry, settings: services.settings, env: services.env }, BACKGROUND_CONTEXT);
+async function installedHarness(
+	services: Awaited<ReturnType<typeof createDurableServices>>,
+): Promise<{ harness: Harness; close(): Promise<void> }> {
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{
+			models: services.services.modelRuntime,
+			registry: services.registry,
+			settings: services.settings,
+			env: services.env,
+		},
+		BACKGROUND_CONTEXT,
+	);
 	await services.install(harness);
-	return { harness, close: async () => { await services.close(); await harness.close(BACKGROUND_CONTEXT); } };
+	return {
+		harness,
+		close: async () => {
+			await services.close();
+			await harness.close(BACKGROUND_CONTEXT);
+		},
+	};
 }
 
-it("advertises registered Agent continuity tools on the public native service-load bus", { timeout: 20000 }, async (t) => {
+it("advertises registered Agent continuity tools on the public native service-load bus", {
+	timeout: 20000,
+}, async (t) => {
 	const f = fixture(t);
 	const runtime = await createTestRuntime();
 	const stream = () => {
-		const message: AssistantMessage = { role: "assistant", content: [{ type: "text", text: "native continuity fixture" }], api: testModel.api, provider: testModel.provider, model: testModel.id, usage: USAGE, stopReason: "stop", timestamp: Date.now() };
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "native continuity fixture" }],
+			api: testModel.api,
+			provider: testModel.provider,
+			model: testModel.id,
+			usage: USAGE,
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
 		const events = createAssistantMessageEventStream();
 		events.push({ type: "done", reason: "stop", message });
 		events.end(message);
 		return events;
 	};
-	runtime.registerNativeProvider({ id: testModel.provider, name: "Continuity fixture", getModels: () => [testModel], auth: { apiKey: { name: "Synthetic", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
+	runtime.registerNativeProvider({
+		id: testModel.provider,
+		name: "Continuity fixture",
+		getModels: () => [testModel],
+		auth: {
+			apiKey: { name: "Synthetic", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) },
+		},
+		stream,
+		streamSimple: stream,
+	});
 	let events: ExtensionAPI["events"] | undefined;
 	const agentSource = fileURLToPath(new URL("./index.ts", import.meta.url));
 	const services = await createDurableServices({
-		cwd: f.cwd, agentDir: f.agentDir, storageId: "continuity-fixture", trusted: true,
-		packageDir: getPackageDir(), modelRuntime: runtime, extensionPaths: [agentSource],
-		extensionFactories: [(pi) => { events = pi.events; }],
+		cwd: f.cwd,
+		agentDir: f.agentDir,
+		storageId: "continuity-fixture",
+		trusted: true,
+		packageDir: getPackageDir(),
+		modelRuntime: runtime,
+		extensionPaths: [agentSource],
+		extensionFactories: [
+			(pi) => {
+				events = pi.events;
+			},
+		],
 	});
 	const installed = await installedHarness(services);
 	try {
@@ -150,28 +215,61 @@ it("advertises registered Agent continuity tools on the public native service-lo
 		assert.ok(services.inventory.contributions.some((item) => item.source === realpathSync(agentSource)));
 		assert.equal(services.inventory.ordinaryOnly.includes(agentSource), false);
 		const declarations: Array<{ name: string; act: string; accepts?: (input: unknown) => boolean }> = [];
-		events.emit("harness:continuity-tools", { version: 1, declare: (tool: typeof declarations[number]) => declarations.push(tool) });
-		assert.deepEqual(declarations.map(({ name, act }) => ({ name, act })), [
-			{ name: "agent_compact", act: "compaction" }, { name: "agent_abort", act: "worker-resolution" },
-			{ name: "agent_steer", act: "worker-resolution" }, { name: "agent_send", act: "worker-resolution" },
-			{ name: "agent_work", act: "work-completion" },
-		]);
-		const registered = services.registry.snapshot().tools().map(({ tool }) => tool.name);
+		events.emit("harness:continuity-tools", {
+			version: 1,
+			declare: (tool: (typeof declarations)[number]) => declarations.push(tool),
+		});
+		assert.deepEqual(
+			declarations.map(({ name, act }) => ({ name, act })),
+			[
+				{ name: "agent_compact", act: "compaction" },
+				{ name: "agent_abort", act: "worker-resolution" },
+				{ name: "agent_steer", act: "worker-resolution" },
+				{ name: "agent_send", act: "worker-resolution" },
+				{ name: "agent_work", act: "work-completion" },
+			],
+		);
+		const registered = services.registry
+			.snapshot()
+			.tools()
+			.map(({ tool }) => tool.name);
 		for (const declaration of declarations) assert.ok(registered.includes(declaration.name), declaration.name);
 		assert.equal(declarations[0].accepts, undefined);
 		const recipient = "00000000-0000-4000-8000-000000000099";
 		assert.equal(declarations[3].accepts?.({ sessionId: recipient, message: "done", mode: "report" }), true);
-		assert.equal(declarations[3].accepts?.({ sessionId: recipient, message: "done", mode: "report", passive: true }), true);
+		assert.equal(
+			declarations[3].accepts?.({ sessionId: recipient, message: "done", mode: "report", passive: true }),
+			true,
+		);
 		assert.equal(declarations[3].accepts?.({ sessionId: "existing", message: "done", mode: "report" }), false);
-		assert.equal(declarations[3].accepts?.({ sessionId: recipient, message: "done", mode: "report", passive: "true" }), false);
-		assert.equal(declarations[4].accepts?.({ action: "complete", request: "spawn:owner:call/1", status: "done", message: "result" }), true);
+		assert.equal(
+			declarations[3].accepts?.({ sessionId: recipient, message: "done", mode: "report", passive: "true" }),
+			false,
+		);
+		assert.equal(
+			declarations[4].accepts?.({
+				action: "complete",
+				request: "spawn:owner:call/1",
+				status: "done",
+				message: "result",
+			}),
+			true,
+		);
 		assert.equal(declarations[4].accepts?.({ action: "complete" }), false);
 		assert.equal(declarations[4].accepts?.({ action: "continue", results: [], note: "waiting" }), false);
-		const conversation = await installed.harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
-		const result = await (await conversation.submit({ type: "input", content: "Check native registration" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const conversation = await installed.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: { provider: testModel.provider, modelId: testModel.id } },
+		});
+		const result = await (
+			await conversation.submit({ type: "input", content: "Check native registration" }, BACKGROUND_CONTEXT)
+		).wait(BACKGROUND_CONTEXT);
 		assert.equal(result.status, "done");
-		t.diagnostic(`Private native services: cwd=${f.cwd}; agentDir=${f.agentDir}; MemoryStorage; no host socket or writer claim`);
-	} finally { await installed.close(); }
+		t.diagnostic(
+			`Private native services: cwd=${f.cwd}; agentDir=${f.agentDir}; MemoryStorage; no host socket or writer claim`,
+		);
+	} finally {
+		await installed.close();
+	}
 });
 
 it("collects contributions, matches sources, and installs the built-in registry", async (t) => {
@@ -186,22 +284,43 @@ it("collects contributions, matches sources, and installs the built-in registry"
 	});
 	const installed = await installedHarness(services);
 	try {
-		assert.deepEqual(services.inventory.contributions, [{
-			name: "fixture.emit",
-			source: realpathSync(f.emitPath),
-			commands: [{ name: "fixture-command", description: "Fixture command" }],
-		}]);
+		assert.deepEqual(services.inventory.contributions, [
+			{
+				name: "fixture.emit",
+				source: realpathSync(f.emitPath),
+				commands: [{ name: "fixture-command", description: "Fixture command" }],
+			},
+		]);
 		assert.deepEqual(services.inventory.ordinaryOnly, [f.silentPath]);
 		const command = services.commands.get("fixture-command");
 		assert.ok(command);
-		assert.equal(await command.run({ args: "x", conversation: {} as never, harness: installed.harness, context: BACKGROUND_CONTEXT, host: services.contributionHost, invocationId: "fixture-invocation" }), "ran x");
+		assert.equal(
+			await command.run({
+				args: "x",
+				conversation: {} as never,
+				harness: installed.harness,
+				context: BACKGROUND_CONTEXT,
+				host: services.contributionHost,
+				invocationId: "fixture-invocation",
+			}),
+			"ran x",
+		);
 		const snapshot = services.registry.snapshot();
-		assert.deepEqual(snapshot.installed().map((extension) => extension.name), ["pi.host", "fixture.emit"]);
+		assert.deepEqual(
+			snapshot.installed().map((extension) => extension.name),
+			["pi.host", "fixture.emit"],
+		);
 		const builtinTools = snapshot.tools().filter(({ extension }) => extension.name === "pi.host");
-		assert.deepEqual(builtinTools.map(({ tool }) => tool.name), ["read", "write", "edit", "bash"]);
+		assert.deepEqual(
+			builtinTools.map(({ tool }) => tool.name),
+			["read", "write", "edit", "bash"],
+		);
 		const reader = builtinTools.find(({ tool }) => tool.name === "read")?.tool;
 		const readDefinition = createReadToolDefinition(f.cwd);
-		assert.equal(reader?.description, [readDefinition.description, ...(readDefinition.promptGuidelines ?? [])].join("\n"));
+		assert.equal(
+			reader?.description,
+			[readDefinition.description, ...(readDefinition.promptGuidelines ?? [])].join("\n"),
+		);
 		assert.deepEqual(reader?.structuredOutputSchema, readDefinition.outputSchema);
 		assert.deepEqual(Object.fromEntries(builtinTools.map(({ tool }) => [tool.name, tool.replay])), {
 			read: "safe",
@@ -217,7 +336,10 @@ it("collects contributions, matches sources, and installs the built-in registry"
 		assert.ok(ordinaryOnly?.includes(f.silentPath));
 		const preamble = await sections.get("preamble")?.render({} as never, BACKGROUND_CONTEXT);
 		assert.ok(preamble?.includes("expert coding assistant"));
-		assert.match(preamble ?? "", /Creating ownership is provenance, not a substitute when request routing is unavailable/u);
+		assert.match(
+			preamble ?? "",
+			/Creating ownership is provenance, not a substitute when request routing is unavailable/u,
+		);
 		assert.doesNotMatch(preamble ?? "", /owning session is the default requester/u);
 		assert.ok(preamble?.includes(localDate()));
 		assert.equal(sections.has("cwd"), true);
@@ -229,38 +351,154 @@ it("collects contributions, matches sources, and installs the built-in registry"
 });
 
 for (const sample of [
-	{ name: "websocket timeout and thinking budgets", settings: { websocketConnectTimeoutMs: 12345, thinkingBudgets: { medium: 4096 } }, expected: { transport: "auto", timeoutMs: 300000, maxRetries: undefined, maxRetryDelayMs: 60000, websocketConnectTimeoutMs: 12345, thinkingBudgets: { medium: 4096 } } },
-	{ name: "provider overrides", settings: { transport: "sse", httpIdleTimeoutMs: 45000, retry: { provider: { timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 5678 } } }, expected: { transport: "sse", timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 5678, websocketConnectTimeoutMs: undefined, thinkingBudgets: undefined } },
-	{ name: "HTTP idle fallback", settings: { httpIdleTimeoutMs: 45000 }, expected: { transport: "auto", timeoutMs: 45000, maxRetries: undefined, maxRetryDelayMs: 60000, websocketConnectTimeoutMs: undefined, thinkingBudgets: undefined } },
-	{ name: "default timeout", settings: {}, expected: { transport: "auto", timeoutMs: 300000, maxRetries: undefined, maxRetryDelayMs: 60000, websocketConnectTimeoutMs: undefined, thinkingBudgets: undefined } },
-	{ name: "disabled HTTP idle timeout", settings: { httpIdleTimeoutMs: 0 }, expected: { transport: "auto", timeoutMs: 2147483647, maxRetries: undefined, maxRetryDelayMs: 60000, websocketConnectTimeoutMs: undefined, thinkingBudgets: undefined } },
-	{ name: "explicit zero provider timeout", settings: { retry: { provider: { timeoutMs: 0, maxRetries: 0, maxRetryDelayMs: 0 } } }, expected: { transport: "auto", timeoutMs: 0, maxRetries: 0, maxRetryDelayMs: 0, websocketConnectTimeoutMs: undefined, thinkingBudgets: undefined } },
-]) it(`forwards ${sample.name} to the native Durable model stream`, async (t) => {
-	const f = fixture(t);
-	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ ...sample.settings, cacheWarming: "off" }));
-	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-options", extensionPaths: [f.silentPath], trusted: true });
-	const runtime = await createTestRuntime();
-	const received: (StreamOptions & Pick<SimpleStreamOptions, "thinkingBudgets">)[] = [];
-	const stream = (_model: unknown, _transcript: TranscriptContext, options?: StreamOptions) => {
-		received.push(options ?? {});
-		const message: AssistantMessage = { role: "assistant", content: [{ type: "text", text: "done" }], api: testModel.api, provider: testModel.provider, model: testModel.id, usage: USAGE, stopReason: "stop", timestamp: Date.now() };
-		const events = createAssistantMessageEventStream();
-		events.push({ type: "done", reason: "stop", message });
-		events.end(message);
-		return events;
-	};
-	runtime.registerNativeProvider({ id: testModel.provider, name: "Stream option fixture", getModels: () => [testModel], auth: { apiKey: { name: "Synthetic", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
-	const harness = await Harness.open(new MemoryStorage(), { models: runtime, registry: services.registry, settings: services.settings, env: services.env }, BACKGROUND_CONTEXT);
-	try {
-		await services.install(harness);
-		const conversation = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
-		const result = await (await conversation.submit({ type: "input", content: "check options" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
-		assert.equal(result.status, "done");
-		assert.equal(received.length, 1);
-		const options = received[0];
-		assert.deepEqual({ transport: options?.transport, timeoutMs: options?.timeoutMs, maxRetries: options?.maxRetries, maxRetryDelayMs: options?.maxRetryDelayMs, websocketConnectTimeoutMs: options?.websocketConnectTimeoutMs, thinkingBudgets: options?.thinkingBudgets }, sample.expected);
-	} finally { await services.close(); await harness.close(BACKGROUND_CONTEXT); }
-});
+	{
+		name: "websocket timeout and thinking budgets",
+		settings: { websocketConnectTimeoutMs: 12345, thinkingBudgets: { medium: 4096 } },
+		expected: {
+			transport: "auto",
+			timeoutMs: 300000,
+			maxRetries: undefined,
+			maxRetryDelayMs: 60000,
+			websocketConnectTimeoutMs: 12345,
+			thinkingBudgets: { medium: 4096 },
+		},
+	},
+	{
+		name: "provider overrides",
+		settings: {
+			transport: "sse",
+			httpIdleTimeoutMs: 45000,
+			retry: { provider: { timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 5678 } },
+		},
+		expected: {
+			transport: "sse",
+			timeoutMs: 1234,
+			maxRetries: 2,
+			maxRetryDelayMs: 5678,
+			websocketConnectTimeoutMs: undefined,
+			thinkingBudgets: undefined,
+		},
+	},
+	{
+		name: "HTTP idle fallback",
+		settings: { httpIdleTimeoutMs: 45000 },
+		expected: {
+			transport: "auto",
+			timeoutMs: 45000,
+			maxRetries: undefined,
+			maxRetryDelayMs: 60000,
+			websocketConnectTimeoutMs: undefined,
+			thinkingBudgets: undefined,
+		},
+	},
+	{
+		name: "default timeout",
+		settings: {},
+		expected: {
+			transport: "auto",
+			timeoutMs: 300000,
+			maxRetries: undefined,
+			maxRetryDelayMs: 60000,
+			websocketConnectTimeoutMs: undefined,
+			thinkingBudgets: undefined,
+		},
+	},
+	{
+		name: "disabled HTTP idle timeout",
+		settings: { httpIdleTimeoutMs: 0 },
+		expected: {
+			transport: "auto",
+			timeoutMs: 2147483647,
+			maxRetries: undefined,
+			maxRetryDelayMs: 60000,
+			websocketConnectTimeoutMs: undefined,
+			thinkingBudgets: undefined,
+		},
+	},
+	{
+		name: "explicit zero provider timeout",
+		settings: { retry: { provider: { timeoutMs: 0, maxRetries: 0, maxRetryDelayMs: 0 } } },
+		expected: {
+			transport: "auto",
+			timeoutMs: 0,
+			maxRetries: 0,
+			maxRetryDelayMs: 0,
+			websocketConnectTimeoutMs: undefined,
+			thinkingBudgets: undefined,
+		},
+	},
+])
+	it(`forwards ${sample.name} to the native Durable model stream`, async (t) => {
+		const f = fixture(t);
+		writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ ...sample.settings, cacheWarming: "off" }));
+		const services = await createDurableServices({
+			cwd: f.cwd,
+			agentDir: f.agentDir,
+			storageId: "fixture-options",
+			extensionPaths: [f.silentPath],
+			trusted: true,
+		});
+		const runtime = await createTestRuntime();
+		const received: (StreamOptions & Pick<SimpleStreamOptions, "thinkingBudgets">)[] = [];
+		const stream = (_model: unknown, _transcript: TranscriptContext, options?: StreamOptions) => {
+			received.push(options ?? {});
+			const message: AssistantMessage = {
+				role: "assistant",
+				content: [{ type: "text", text: "done" }],
+				api: testModel.api,
+				provider: testModel.provider,
+				model: testModel.id,
+				usage: USAGE,
+				stopReason: "stop",
+				timestamp: Date.now(),
+			};
+			const events = createAssistantMessageEventStream();
+			events.push({ type: "done", reason: "stop", message });
+			events.end(message);
+			return events;
+		};
+		runtime.registerNativeProvider({
+			id: testModel.provider,
+			name: "Stream option fixture",
+			getModels: () => [testModel],
+			auth: {
+				apiKey: { name: "Synthetic", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) },
+			},
+			stream,
+			streamSimple: stream,
+		});
+		const harness = await Harness.open(
+			new MemoryStorage(),
+			{ models: runtime, registry: services.registry, settings: services.settings, env: services.env },
+			BACKGROUND_CONTEXT,
+		);
+		try {
+			await services.install(harness);
+			const conversation = await harness.root(BACKGROUND_CONTEXT, {
+				agent: { model: { provider: testModel.provider, modelId: testModel.id } },
+			});
+			const result = await (
+				await conversation.submit({ type: "input", content: "check options" }, BACKGROUND_CONTEXT)
+			).wait(BACKGROUND_CONTEXT);
+			assert.equal(result.status, "done");
+			assert.equal(received.length, 1);
+			const options = received[0];
+			assert.deepEqual(
+				{
+					transport: options?.transport,
+					timeoutMs: options?.timeoutMs,
+					maxRetries: options?.maxRetries,
+					maxRetryDelayMs: options?.maxRetryDelayMs,
+					websocketConnectTimeoutMs: options?.websocketConnectTimeoutMs,
+					thinkingBudgets: options?.thinkingBudgets,
+				},
+				sample.expected,
+			);
+		} finally {
+			await services.close();
+			await harness.close(BACKGROUND_CONTEXT);
+		}
+	});
 
 it("installs native built-in extras from buildBuiltin before contributions", async (t) => {
 	const f = fixture(t);
@@ -282,7 +520,9 @@ it("installs native built-in extras from buildBuiltin before contributions", asy
 					host.durable.defineExtension({ name: "fixture.builtin-a" }),
 					host.durable.defineExtension({ name: "fixture.builtin-b" }),
 				],
-				close: () => { extrasClosed = true; },
+				close: () => {
+					extrasClosed = true;
+				},
 			};
 		},
 	});
@@ -290,9 +530,19 @@ it("installs native built-in extras from buildBuiltin before contributions", asy
 	try {
 		assert.equal(observedHost, services.contributionHost);
 		assert.equal(typeof (observedHost as { onClose?: unknown }).onClose, "function");
-		assert.equal(services.contributionHost.ordinarySession(), "ordinary-session", "contributions read the storage's ordinary session through the host");
+		assert.equal(
+			services.contributionHost.ordinarySession(),
+			"ordinary-session",
+			"contributions read the storage's ordinary session through the host",
+		);
 		assert.deepEqual(observedInventory, services.inventory);
-		assert.deepEqual(services.registry.snapshot().installed().map((extension) => extension.name), ["pi.host", "fixture.builtin-a", "fixture.builtin-b", "fixture.emit"]);
+		assert.deepEqual(
+			services.registry
+				.snapshot()
+				.installed()
+				.map((extension) => extension.name),
+			["pi.host", "fixture.builtin-a", "fixture.builtin-b", "fixture.emit"],
+		);
 		assert.equal(extrasClosed, false);
 	} finally {
 		await installed.close();
@@ -307,8 +557,18 @@ it("installs native built-in extras from buildBuiltin before contributions", asy
 	});
 	const plainInstalled = await installedHarness(plain);
 	try {
-		assert.equal(plain.contributionHost.ordinarySession(), undefined, "a host without a chain of creating owners names no ordinary session");
-		assert.deepEqual(plain.registry.snapshot().installed().map((extension) => extension.name), ["pi.host", "fixture.builtin-plain"]);
+		assert.equal(
+			plain.contributionHost.ordinarySession(),
+			undefined,
+			"a host without a chain of creating owners names no ordinary session",
+		);
+		assert.deepEqual(
+			plain.registry
+				.snapshot()
+				.installed()
+				.map((extension) => extension.name),
+			["pi.host", "fixture.builtin-plain"],
+		);
 	} finally {
 		await plainInstalled.close();
 	}
@@ -327,11 +587,27 @@ it("releases the built-in bundle when a contribution create fails", async (t) =>
 		extensionPaths: [throwPath],
 		trusted: true,
 		buildBuiltin: (host) => {
-			host.onClose(() => { registeredClosed = true; });
-			return { extensions: [], close: () => { builtinClosed = true; } };
+			host.onClose(() => {
+				registeredClosed = true;
+			});
+			return {
+				extensions: [],
+				close: () => {
+					builtinClosed = true;
+				},
+			};
 		},
 	});
-	const harness = await Harness.open(new MemoryStorage(), { models: services.services.modelRuntime, registry: services.registry, settings: services.settings, env: services.env }, BACKGROUND_CONTEXT);
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{
+			models: services.services.modelRuntime,
+			registry: services.registry,
+			settings: services.settings,
+			env: services.env,
+		},
+		BACKGROUND_CONTEXT,
+	);
 	await assert.rejects(services.install(harness), /failed to create its extension: create failed/u);
 	assert.equal(builtinClosed, true, "a failed install still closes the built-in bundle");
 	assert.equal(registeredClosed, true, "a failed install also drains registered close work");
@@ -348,13 +624,29 @@ it("runs onClose callbacks in reverse order, continues past failures, and closes
 		storageId: "fixture-close",
 		trusted: true,
 		buildBuiltin: (host) => {
-			host.onClose(() => { order.push("first"); });
-			host.onClose(async () => { order.push("second"); throw new Error("second close failed"); });
-			host.onClose(() => { order.push("third"); });
+			host.onClose(() => {
+				order.push("first");
+			});
+			host.onClose(async () => {
+				order.push("second");
+				throw new Error("second close failed");
+			});
+			host.onClose(() => {
+				order.push("third");
+			});
 			return { extensions: [] };
 		},
 	});
-	const harness = await Harness.open(new MemoryStorage(), { models: services.services.modelRuntime, registry: services.registry, settings: services.settings, env: services.env }, BACKGROUND_CONTEXT);
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{
+			models: services.services.modelRuntime,
+			registry: services.registry,
+			settings: services.settings,
+			env: services.env,
+		},
+		BACKGROUND_CONTEXT,
+	);
 	await services.install(harness);
 	await assert.rejects(services.close(), /second close failed/u);
 	assert.deepEqual(order, ["third", "second", "first"]);
@@ -379,7 +671,13 @@ it("never installs a contribution whose source matches no loaded extension", asy
 	try {
 		assert.deepEqual(services.inventory.contributions, []);
 		assert.equal(services.commands.size, 0);
-		assert.deepEqual(services.registry.snapshot().installed().map((extension) => extension.name), ["pi.host"]);
+		assert.deepEqual(
+			services.registry
+				.snapshot()
+				.installed()
+				.map((extension) => extension.name),
+			["pi.host"],
+		);
 		assert.ok(errors.some((error) => String(error).includes("matches no loaded extension entrypoint")));
 	} finally {
 		await services.close();
@@ -401,8 +699,17 @@ it("keeps one contribution per source and reports a duplicate emission", async (
 	});
 	const installed = await installedHarness(services);
 	try {
-		assert.deepEqual(services.inventory.contributions.map((contribution) => contribution.name), ["fixture.duplicate-a"]);
-		assert.deepEqual(services.registry.snapshot().installed().map((extension) => extension.name), ["pi.host", "fixture.duplicate-a"]);
+		assert.deepEqual(
+			services.inventory.contributions.map((contribution) => contribution.name),
+			["fixture.duplicate-a"],
+		);
+		assert.deepEqual(
+			services.registry
+				.snapshot()
+				.installed()
+				.map((extension) => extension.name),
+			["pi.host", "fixture.duplicate-a"],
+		);
 		assert.ok(errors.some((error) => String(error).includes("emitted more than one durable contribution")));
 	} finally {
 		await installed.close();
@@ -426,8 +733,26 @@ it("runs the built-in read tool through a real Harness and returns images", { ti
 		requests.push(structuredClone(context));
 		const answered = context.messages.some((message) => message.role === "toolResult");
 		const message: AssistantMessage = answered
-			? { role: "assistant", content: [{ type: "text", text: "done" }], api: testModel.api, provider: testModel.provider, model: testModel.id, usage: USAGE, stopReason: "stop", timestamp: Date.now() }
-			: { role: "assistant", content: [{ type: "toolCall", id: "read-image", name: "read", arguments: { path: imagePath } }], api: testModel.api, provider: testModel.provider, model: testModel.id, usage: USAGE, stopReason: "toolUse", timestamp: Date.now() };
+			? {
+					role: "assistant",
+					content: [{ type: "text", text: "done" }],
+					api: testModel.api,
+					provider: testModel.provider,
+					model: testModel.id,
+					usage: USAGE,
+					stopReason: "stop",
+					timestamp: Date.now(),
+				}
+			: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: "read-image", name: "read", arguments: { path: imagePath } }],
+					api: testModel.api,
+					provider: testModel.provider,
+					model: testModel.id,
+					usage: USAGE,
+					stopReason: "toolUse",
+					timestamp: Date.now(),
+				};
 		const events = createAssistantMessageEventStream();
 		events.push({ type: "start", partial: message });
 		events.push({ type: "done", reason: answered ? "stop" : "toolUse", message });
@@ -442,12 +767,20 @@ it("runs the built-in read tool through a real Harness and returns images", { ti
 		stream,
 		streamSimple: stream,
 	});
-	const harness = await Harness.open(new MemoryStorage(), { models: runtime, registry: services.registry, settings: services.settings, env: services.env }, BACKGROUND_CONTEXT);
+	const harness = await Harness.open(
+		new MemoryStorage(),
+		{ models: runtime, registry: services.registry, settings: services.settings, env: services.env },
+		BACKGROUND_CONTEXT,
+	);
 	try {
 		await services.install(harness);
 		harness.resume();
-		const conversation = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
-		const settled = await (await conversation.submit({ type: "input", content: "read the image" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const conversation = await harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: { provider: testModel.provider, modelId: testModel.id } },
+		});
+		const settled = await (
+			await conversation.submit({ type: "input", content: "read the image" }, BACKGROUND_CONTEXT)
+		).wait(BACKGROUND_CONTEXT);
 		assert.equal(settled.status, "done");
 		const view = await conversation.context(BACKGROUND_CONTEXT);
 		const result = view.messages.findLast((message) => message.role === "toolResult");
@@ -491,34 +824,48 @@ it("resolves project trust from saved decisions and the default setting", async 
 	await fallback.close();
 });
 
-for (const requiresTrust of [false, true]) it(`preserves saved trust and explicit decisions with project resources=${requiresTrust}`, async (t) => {
-	const f = fixture(t, requiresTrust ? { projectSettings: { followUpMode: "all" } } : {});
-	writeFileSync(join(f.cwd, "AGENTS.md"), "Project instructions\n");
-	assert.equal(hasTrustRequiringProjectResources(f.cwd), requiresTrust);
-	const store = new ProjectTrustStore(f.agentDir);
-	const asked: string[] = [];
-	for (const saved of [null, false, true]) for (const trusted of [undefined, false, true]) {
-		store.set(f.cwd, saved);
-		const services = await createDurableServices({
-			cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-decisions", extensionPaths: [f.silentPath], trustStore: store,
-			...(trusted === undefined ? {} : { trusted }),
-			askPrimary: async (cwd) => { asked.push(cwd); return { trusted: false }; },
-		});
-		try {
-			assert.equal(services.services.settingsManager.isProjectTrusted(), trusted ?? saved ?? !requiresTrust);
-			assert.equal(store.get(f.cwd), trusted ?? saved);
-		} finally {
-			await services.close();
-		}
-	}
-	assert.deepEqual(asked, requiresTrust ? [f.cwd] : []);
-});
+for (const requiresTrust of [false, true])
+	it(`preserves saved trust and explicit decisions with project resources=${requiresTrust}`, async (t) => {
+		const f = fixture(t, requiresTrust ? { projectSettings: { followUpMode: "all" } } : {});
+		writeFileSync(join(f.cwd, "AGENTS.md"), "Project instructions\n");
+		assert.equal(hasTrustRequiringProjectResources(f.cwd), requiresTrust);
+		const store = new ProjectTrustStore(f.agentDir);
+		const asked: string[] = [];
+		for (const saved of [null, false, true])
+			for (const trusted of [undefined, false, true]) {
+				store.set(f.cwd, saved);
+				const services = await createDurableServices({
+					cwd: f.cwd,
+					agentDir: f.agentDir,
+					storageId: "fixture-trust-decisions",
+					extensionPaths: [f.silentPath],
+					trustStore: store,
+					...(trusted === undefined ? {} : { trusted }),
+					askPrimary: async (cwd) => {
+						asked.push(cwd);
+						return { trusted: false };
+					},
+				});
+				try {
+					assert.equal(services.services.settingsManager.isProjectTrusted(), trusted ?? saved ?? !requiresTrust);
+					assert.equal(store.get(f.cwd), trusted ?? saved);
+				} finally {
+					await services.close();
+				}
+			}
+		assert.deepEqual(asked, requiresTrust ? [f.cwd] : []);
+	});
 
 it("persists a project_trust handler decision through the public store", async (t) => {
 	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
 	const trustPath = join(f.root, "trust-yes.ts");
 	writeFileSync(trustPath, TRUST_YES_EXTENSION);
-	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-handler", extensionPaths: [trustPath] });
+	const services = await createDurableServices({
+		cwd: f.cwd,
+		agentDir: f.agentDir,
+		storageId: "fixture-trust-handler",
+		extensionPaths: [trustPath],
+	});
 	try {
 		assert.equal(services.settings.followUpMode, "all");
 		assert.equal(new ProjectTrustStore(f.agentDir).get(f.cwd), true);
@@ -532,7 +879,12 @@ it("falls through an undecided handler to the default setting", async (t) => {
 	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
 	const trustPath = join(f.root, "trust-undecided.ts");
 	writeFileSync(trustPath, TRUST_UNDECIDED_EXTENSION);
-	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-undecided", extensionPaths: [trustPath] });
+	const services = await createDurableServices({
+		cwd: f.cwd,
+		agentDir: f.agentDir,
+		storageId: "fixture-trust-undecided",
+		extensionPaths: [trustPath],
+	});
 	try {
 		assert.equal(services.settings.followUpMode, "all");
 		assert.equal(new ProjectTrustStore(f.agentDir).get(f.cwd), null);
@@ -547,7 +899,13 @@ it("reports a failing trust handler and continues resolution", async (t) => {
 	const trustPath = join(f.root, "trust-throw.ts");
 	writeFileSync(trustPath, TRUST_THROW_EXTENSION);
 	const errors: unknown[] = [];
-	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-throw", extensionPaths: [trustPath], onReport: (error) => errors.push(error) });
+	const services = await createDurableServices({
+		cwd: f.cwd,
+		agentDir: f.agentDir,
+		storageId: "fixture-trust-throw",
+		extensionPaths: [trustPath],
+		onReport: (error) => errors.push(error),
+	});
 	try {
 		assert.equal(services.settings.followUpMode, "all");
 		assert.ok(errors.some((error) => String(error).includes("trust handler failed")));
@@ -563,7 +921,10 @@ it("routes an unresolved trust ask to the primary and persists the answer", asyn
 		cwd: f.cwd,
 		agentDir: f.agentDir,
 		storageId: "fixture-trust-ask",
-		askPrimary: async (cwd) => { asked.push(cwd); return { trusted: true, remember: true }; },
+		askPrimary: async (cwd) => {
+			asked.push(cwd);
+			return { trusted: true, remember: true };
+		},
 	});
 	try {
 		assert.deepEqual(asked, [f.cwd]);
@@ -581,7 +942,10 @@ it("refuses an ask the primary does not answer without saving it", async (t) => 
 		cwd: f.cwd,
 		agentDir: f.agentDir,
 		storageId: "fixture-trust-refuse",
-		askPrimary: async (cwd) => { asked.push(cwd); return undefined; },
+		askPrimary: async (cwd) => {
+			asked.push(cwd);
+			return undefined;
+		},
 	});
 	try {
 		assert.deepEqual(asked, [f.cwd]);
@@ -600,7 +964,10 @@ it("never asks when a saved decision or an explicit decision resolves trust", as
 		cwd: f.cwd,
 		agentDir: f.agentDir,
 		storageId: "fixture-trust-saved",
-		askPrimary: async () => { asked.push("saved"); return { trusted: false }; },
+		askPrimary: async () => {
+			asked.push("saved");
+			return { trusted: false };
+		},
 	});
 	await saved.close();
 	assert.equal(saved.settings.followUpMode, "all");
@@ -613,7 +980,10 @@ it("never asks when a saved decision or an explicit decision resolves trust", as
 		storageId: "fixture-trust-explicit",
 		extensionPaths: [trustPath],
 		trusted: true,
-		askPrimary: async () => { asked.push("explicit"); return { trusted: false }; },
+		askPrimary: async () => {
+			asked.push("explicit");
+			return { trusted: false };
+		},
 		onReport: (error) => errors.push(error),
 	});
 	await explicit.close();
@@ -623,10 +993,22 @@ it("never asks when a saved decision or an explicit decision resolves trust", as
 });
 
 it("maps primary UI selections to trust decisions", async () => {
-	const labels = ["Trust this folder", "Trust this folder for this session", "Do not trust", "Do not trust for this session"];
+	const labels = [
+		"Trust this folder",
+		"Trust this folder for this session",
+		"Do not trust",
+		"Do not trust for this session",
+	];
 	const decisions = [];
 	for (const label of labels) {
-		decisions.push(await promptProjectTrust("/work/topic", { select: async (prompt, options) => { assert.match(prompt, /\/work\/topic/u); return options.includes(label) ? label : undefined; } }));
+		decisions.push(
+			await promptProjectTrust("/work/topic", {
+				select: async (prompt, options) => {
+					assert.match(prompt, /\/work\/topic/u);
+					return options.includes(label) ? label : undefined;
+				},
+			}),
+		);
 	}
 	assert.deepEqual(decisions, [
 		{ trusted: true, remember: true },
@@ -639,7 +1021,12 @@ it("maps primary UI selections to trust decisions", async () => {
 
 it("persists an explicit trust decision and reuses it without asking", async (t) => {
 	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
-	const explicit = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-explicit-true", trusted: true });
+	const explicit = await createDurableServices({
+		cwd: f.cwd,
+		agentDir: f.agentDir,
+		storageId: "fixture-trust-explicit-true",
+		trusted: true,
+	});
 	await explicit.close();
 	assert.equal(explicit.settings.followUpMode, "all");
 	assert.equal(new ProjectTrustStore(f.agentDir).get(f.cwd), true);
@@ -648,7 +1035,10 @@ it("persists an explicit trust decision and reuses it without asking", async (t)
 		cwd: f.cwd,
 		agentDir: f.agentDir,
 		storageId: "fixture-trust-reuse-true",
-		askPrimary: async (cwd) => { asked.push(cwd); return { trusted: false }; },
+		askPrimary: async (cwd) => {
+			asked.push(cwd);
+			return { trusted: false };
+		},
 	});
 	await reused.close();
 	assert.equal(reused.settings.followUpMode, "all");
@@ -657,7 +1047,12 @@ it("persists an explicit trust decision and reuses it without asking", async (t)
 
 it("persists an explicit refusal and reuses it without asking", async (t) => {
 	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
-	const explicit = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-explicit-false", trusted: false });
+	const explicit = await createDurableServices({
+		cwd: f.cwd,
+		agentDir: f.agentDir,
+		storageId: "fixture-trust-explicit-false",
+		trusted: false,
+	});
 	await explicit.close();
 	assert.equal(explicit.settings.followUpMode, "one-at-a-time");
 	assert.equal(new ProjectTrustStore(f.agentDir).get(f.cwd), false);
@@ -666,7 +1061,10 @@ it("persists an explicit refusal and reuses it without asking", async (t) => {
 		cwd: f.cwd,
 		agentDir: f.agentDir,
 		storageId: "fixture-trust-reuse-false",
-		askPrimary: async (cwd) => { asked.push(cwd); return { trusted: true }; },
+		askPrimary: async (cwd) => {
+			asked.push(cwd);
+			return { trusted: true };
+		},
 	});
 	await reused.close();
 	assert.equal(reused.settings.followUpMode, "one-at-a-time");
@@ -692,10 +1090,13 @@ it("does not persist a session-only trust prompt answer", async (t) => {
 it("reports an extension whose contribution breaks the contract", async (t) => {
 	const f = fixture(t);
 	const badPath = join(f.root, "bad.ts");
-	writeFileSync(badPath, `export default function (pi) {
+	writeFileSync(
+		badPath,
+		`export default function (pi) {
 	pi.events.emit("durable:contribution", { name: "bad", source: "relative/path", create() { return {}; } });
 }
-`);
+`,
+	);
 	const errors: unknown[] = [];
 	const services = await createDurableServices({
 		cwd: f.cwd,
@@ -716,13 +1117,16 @@ it("reports an extension whose contribution breaks the contract", async (t) => {
 it("rejects a packageDir that is not the coding agent package", async (t) => {
 	const f = fixture(t);
 	writeFileSync(join(f.root, "package.json"), JSON.stringify({ name: "not-pi" }));
-	await assert.rejects(createDurableServices({
-		cwd: f.cwd,
-		agentDir: f.agentDir,
-		storageId: "fixture-bad-package",
-		packageDir: f.root,
-		trusted: true,
-	}), /is not @earendil-works\/pi-coding-agent/u);
+	await assert.rejects(
+		createDurableServices({
+			cwd: f.cwd,
+			agentDir: f.agentDir,
+			storageId: "fixture-bad-package",
+			packageDir: f.root,
+			trusted: true,
+		}),
+		/is not @earendil-works\/pi-coding-agent/u,
+	);
 });
 
 it("names configured extensions that failed to load in the inventory, status, and prompt limits", async (t) => {
@@ -739,35 +1143,68 @@ it("names configured extensions that failed to load in the inventory, status, an
 	});
 	const installed = await installedHarness(services);
 	try {
-		assert.deepEqual((services.inventory.failed ?? []).map((item) => item.path), [brokenPath], "the failed extension is named");
+		assert.deepEqual(
+			(services.inventory.failed ?? []).map((item) => item.path),
+			[brokenPath],
+			"the failed extension is named",
+		);
 		const failure = services.inventory.failed?.[0];
 		assert.ok(failure);
 		assert.match(failure.error, /configured extension import failure detail/u);
 		assert.ok(failure.error.length <= LOAD_FAILURE_MAX_CHARS, "the error line is bounded");
 		assert.ok(!failure.error.includes("\n"), "the error line stays one line");
 		assert.deepEqual(services.inventory.ordinaryOnly, [f.silentPath], "a failed extension is not ordinary-only");
-		const sections = new Map(services.registry.snapshot().sections().map(({ section }) => [section.key, section]));
+		const sections = new Map(
+			services.registry
+				.snapshot()
+				.sections()
+				.map(({ section }) => [section.key, section]),
+		);
 		const limits = await sections.get("ordinary_only")?.render({} as never, BACKGROUND_CONTEXT);
 		assert.ok(limits?.includes(brokenPath), "the prompt limits name the failed extension");
 		assert.match(limits ?? "", /failed to load/u);
-		structuredObservation(StatusOutputSchema, { conversations: [], inventory: services.inventory, pid: 123, storageId: "fixture-load-failure", coverage: { complete: true, returned: 0, scanned: 0, next: null } });
+		structuredObservation(StatusOutputSchema, {
+			conversations: [],
+			inventory: services.inventory,
+			pid: 123,
+			storageId: "fixture-load-failure",
+			coverage: { complete: true, returned: 0, scanned: 0, next: null },
+		});
 	} finally {
 		await installed.close();
 	}
 });
 
-for (const modelTools of [[], [{ name: "read" }]]) it(
-	modelTools.length === 0 ? "omits the reader name from skill guidance when its declaration is hidden" : "names the visible reader in skill guidance", async (t) => {
-	const f = fixture(t);
-	const skillDir = join(f.root, "sample-skill");
-	mkdirSync(skillDir);
-	writeFileSync(join(skillDir, "SKILL.md"), "---\nname: sample-skill\ndescription: Inspect a sample file.\n---\n# Sample\nRead the sample.\n");
-	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-skills", skillPaths: [skillDir], extensionPaths: [f.silentPath], trusted: true });
-	t.after(() => services.close());
-	const section = services.registry.snapshot().sections().find(({ section }) => section.key === "skills")?.section;
-	assert.ok(section);
-	const text = await section.render({ agent: { tools: modelTools } } as never, BACKGROUND_CONTEXT);
-	assert.match(text ?? "", /sample-skill/u);
-	if (modelTools.length === 0) assert.doesNotMatch(text ?? "", /Use the read tool/u);
-	else assert.match(text ?? "", /Use the read tool/u);
-});
+for (const modelTools of [[], [{ name: "read" }]])
+	it(
+		modelTools.length === 0
+			? "omits the reader name from skill guidance when its declaration is hidden"
+			: "names the visible reader in skill guidance",
+		async (t) => {
+			const f = fixture(t);
+			const skillDir = join(f.root, "sample-skill");
+			mkdirSync(skillDir);
+			writeFileSync(
+				join(skillDir, "SKILL.md"),
+				"---\nname: sample-skill\ndescription: Inspect a sample file.\n---\n# Sample\nRead the sample.\n",
+			);
+			const services = await createDurableServices({
+				cwd: f.cwd,
+				agentDir: f.agentDir,
+				storageId: "fixture-skills",
+				skillPaths: [skillDir],
+				extensionPaths: [f.silentPath],
+				trusted: true,
+			});
+			t.after(() => services.close());
+			const section = services.registry
+				.snapshot()
+				.sections()
+				.find(({ section }) => section.key === "skills")?.section;
+			assert.ok(section);
+			const text = await section.render({ agent: { tools: modelTools } } as never, BACKGROUND_CONTEXT);
+			assert.match(text ?? "", /sample-skill/u);
+			if (modelTools.length === 0) assert.doesNotMatch(text ?? "", /Use the read tool/u);
+			else assert.match(text ?? "", /Use the read tool/u);
+		},
+	);

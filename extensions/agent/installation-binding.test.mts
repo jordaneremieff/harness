@@ -21,30 +21,40 @@ function isolatedRoot(t: TestContext): string {
 	return root;
 }
 
-async function runNode(args: readonly string[], cwd: string): Promise<{ code: number | null; stdout: string; stderr: string }> {
+async function runNode(
+	args: readonly string[],
+	cwd: string,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	const child = spawn(process.execPath, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
 	let stdout = "";
 	let stderr = "";
-	child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
-	child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
-	const [code] = await once(child, "close") as [number | null];
+	child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+		stdout += chunk;
+	});
+	child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+		stderr += chunk;
+	});
+	const [code] = (await once(child, "close")) as [number | null];
 	return { code, stdout, stderr };
 }
 
 /** Write a probe module that binds peer imports from `sourceRoot` and then imports each specifier. */
 function writeProbe(path: string, sourceRoot: string): void {
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, [
-		`import { bindInstallationPackages } from ${JSON.stringify(bindingUrl)};`,
-		`bindInstallationPackages(process.argv[2], new URL(${JSON.stringify(`${pathToFileURL(sourceRoot).href}/`)}));`,
-		"const resolved = {};",
-		"for (const specifier of process.argv.slice(3)) {",
-		"\tresolved[specifier] = import.meta.resolve(specifier);",
-		"\tawait import(specifier);",
-		"}",
-		"const pi = await import(\"@earendil-works/pi-coding-agent\");",
-		"process.stdout.write(JSON.stringify({ version: pi.VERSION, resolved }));",
-	].join("\n"));
+	writeFileSync(
+		path,
+		[
+			`import { bindInstallationPackages } from ${JSON.stringify(bindingUrl)};`,
+			`bindInstallationPackages(process.argv[2], new URL(${JSON.stringify(`${pathToFileURL(sourceRoot).href}/`)}));`,
+			"const resolved = {};",
+			"for (const specifier of process.argv.slice(3)) {",
+			"\tresolved[specifier] = import.meta.resolve(specifier);",
+			"\tawait import(specifier);",
+			"}",
+			'const pi = await import("@earendil-works/pi-coding-agent");',
+			"process.stdout.write(JSON.stringify({ version: pi.VERSION, resolved }));",
+		].join("\n"),
+	);
 }
 
 it("selects the declared peer packages and their subpaths only", () => {
@@ -52,7 +62,19 @@ it("selects the declared peer packages and their subpaths only", () => {
 		assert.equal(isInstallationImport(name), true);
 		assert.equal(isInstallationImport(`${name}/value`), true);
 	}
-	for (const specifier of ["@earendil-works/pi-durable", "@earendil-works/pi-schema", "@earendil-works/pi-schema/formats", "@earendil-works/pi-ai-extra", "typebox", "typebox/value", "@sinclair/typebox", "typebox-extra", "./typebox", "node:fs"]) assert.equal(isInstallationImport(specifier), false, specifier);
+	for (const specifier of [
+		"@earendil-works/pi-durable",
+		"@earendil-works/pi-schema",
+		"@earendil-works/pi-schema/formats",
+		"@earendil-works/pi-ai-extra",
+		"typebox",
+		"typebox/value",
+		"@sinclair/typebox",
+		"typebox-extra",
+		"./typebox",
+		"node:fs",
+	])
+		assert.equal(isInstallationImport(specifier), false, specifier);
 });
 
 it("resolves every peer import of bound source from the caller installation", async (t) => {
@@ -68,9 +90,15 @@ it("resolves every peer import of bound source from the caller installation", as
 	const output = JSON.parse(result.stdout) as { version: string; resolved: Record<string, string> };
 	assert.equal(output.version, JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8")).version);
 	assert.deepEqual(Object.keys(output.resolved), specifiers);
-	assert.ok(output.resolved["@earendil-works/pi-coding-agent"].startsWith(`${pathToFileURL(packageDir).href}/`), "the coding agent is the installation package itself");
+	assert.ok(
+		output.resolved["@earendil-works/pi-coding-agent"].startsWith(`${pathToFileURL(packageDir).href}/`),
+		"the coding agent is the installation package itself",
+	);
 	for (const [specifier, url] of Object.entries(output.resolved)) {
-		assert.ok(url.startsWith(`${pathToFileURL(installationModules).href}/`), `${specifier} resolves inside the installation: ${url}`);
+		assert.ok(
+			url.startsWith(`${pathToFileURL(installationModules).href}/`),
+			`${specifier} resolves inside the installation: ${url}`,
+		);
 	}
 });
 
@@ -83,7 +111,14 @@ it("keeps schema packages owned by the checkout inside the bound source", async 
 	for (const name of ["typebox", "@earendil-works/pi-schema"]) {
 		const directory = join(source, "node_modules", name);
 		mkdirSync(directory, { recursive: true });
-		writeFileSync(join(directory, "package.json"), JSON.stringify({ name, type: "module", exports: { ".": "./index.js", "./value": "./index.js", "./formats": "./index.js" } }));
+		writeFileSync(
+			join(directory, "package.json"),
+			JSON.stringify({
+				name,
+				type: "module",
+				exports: { ".": "./index.js", "./value": "./index.js", "./formats": "./index.js" },
+			}),
+		);
 		writeFileSync(join(directory, "index.js"), "export const checkout = true;\n");
 		for (const specifier of specifiers.filter((value) => value === name || value.startsWith(`${name}/`)))
 			expected[specifier] = pathToFileURL(join(directory, "index.js")).href;
@@ -99,26 +134,44 @@ it("leaves peer imports from modules outside the bound source unchanged", async 
 	const outside = join(root, "outside");
 	const packageDir = join(outside, "node_modules", "@earendil-works", "pi-coding-agent");
 	mkdirSync(packageDir, { recursive: true });
-	writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", type: "module", exports: "./index.js" }));
+	writeFileSync(
+		join(packageDir, "package.json"),
+		JSON.stringify({ name: "@earendil-works/pi-coding-agent", type: "module", exports: "./index.js" }),
+	);
 	writeFileSync(join(packageDir, "index.js"), 'export const VERSION = "outside-fixture";\n');
 	const probe = join(outside, "probe.mjs");
 	writeProbe(probe, join(root, "source"));
 	const result = await runNode([probe, getPackageDir(), "@earendil-works/pi-coding-agent"], root);
 	assert.equal(result.code, 0, result.stderr);
-	assert.deepEqual(JSON.parse(result.stdout), { version: "outside-fixture", resolved: { "@earendil-works/pi-coding-agent": pathToFileURL(join(packageDir, "index.js")).href } });
+	assert.deepEqual(JSON.parse(result.stdout), {
+		version: "outside-fixture",
+		resolved: { "@earendil-works/pi-coding-agent": pathToFileURL(join(packageDir, "index.js")).href },
+	});
 });
 
 it("loads host modules against metadata.packageDir before it takes the writer claim", async (t) => {
 	const root = isolatedRoot(t);
 	const installation = join(root, "installation");
 	mkdirSync(installation);
-	writeFileSync(join(installation, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.0.0", type: "module", exports: { ".": "./index.js" } }));
-	writeFileSync(join(installation, "index.js"), "export const VERSION = \"1.0.0\";\n");
+	writeFileSync(
+		join(installation, "package.json"),
+		JSON.stringify({
+			name: "@earendil-works/pi-coding-agent",
+			version: "1.0.0",
+			type: "module",
+			exports: { ".": "./index.js" },
+		}),
+	);
+	writeFileSync(join(installation, "index.js"), 'export const VERSION = "1.0.0";\n');
 	const metadata = { ...fixtureMetadata(root), packageDir: installation };
 	const result = await runNode([runnerPath, JSON.stringify(metadata)], root);
 	assert.equal(result.code, 1, result.stderr);
 	assert.equal(result.stdout.includes(HOST_READY_PREFIX), false);
 	assert.match(result.stderr, /^Durable host failed: .*ERR_MODULE_NOT_FOUND/mu);
 	assert.ok(result.stderr.includes(`imported from ${join(installation, "package.json")}`), result.stderr);
-	assert.equal(existsSync(hostPaths(metadata).claim), false, "a host whose installation lacks its packages never takes the claim");
+	assert.equal(
+		existsSync(hostPaths(metadata).claim),
+		false,
+		"a host whose installation lacks its packages never takes the claim",
+	);
 });

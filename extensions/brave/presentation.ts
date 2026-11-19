@@ -15,9 +15,7 @@ interface CardContext extends Partial<KeybindingHints> {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: {};
+	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function stringField(value: unknown, key: string): string {
@@ -65,7 +63,12 @@ function textContent(result: AgentToolResult<unknown>): string {
 }
 
 function firstLine(output: string): string {
-	return output.split("\n").find((line) => line.trim().length > 0)?.trim() ?? "";
+	return (
+		output
+			.split("\n")
+			.find((line) => line.trim().length > 0)
+			?.trim() ?? ""
+	);
 }
 
 function textComponent(text: string, previous?: Component): Text {
@@ -148,7 +151,9 @@ function textLead(details: Record<string, unknown>): string {
 	} else if (count > 0) {
 		const first = `E${offset + 1}`;
 		parts.push(
-			count === 1 ? `${countLabel(count, "excerpt")} (${first})` : `${countLabel(count, "excerpt")} (${first}..E${offset + count})`,
+			count === 1
+				? `${countLabel(count, "excerpt")} (${first})`
+				: `${countLabel(count, "excerpt")} (${first}..E${offset + count})`,
 		);
 	} else parts.push("0 excerpts");
 	if (numberField(details, "nextOffset") !== undefined) parts.push("continuation");
@@ -171,14 +176,26 @@ function linksLead(details: Record<string, unknown>): string {
 	return parts.join(" · ");
 }
 
-function errorResult(name: string, output: string, options: ToolRenderResultOptions, theme: Theme, context: CardContext): Component {
+function errorResult(
+	name: string,
+	output: string,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: CardContext,
+): Component {
 	const summary = `${name}: ${displayValue(firstLine(output) || "request failed", 200)}`;
-	return textComponent(`\n${theme.fg("error", summary)}${options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : ""}`, context.lastComponent);
+	return textComponent(
+		`\n${theme.fg("error", summary)}${options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : ""}`,
+		context.lastComponent,
+	);
 }
 
 /** Identity labels drop control and format characters instead of showing their escaped forms. */
 function identityValue(value: string, limit: number): string {
-	const clean = value.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim();
+	const clean = value
+		.replace(/[\p{Cc}\p{Cf}]/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim();
 	const end = Math.min(clean.length, limit);
 	return clean.slice(0, /[\uD800-\uDBFF]/u.test(clean[end - 1] ?? "") ? end - 1 : end);
 }
@@ -187,7 +204,11 @@ function readIdentity(details: Record<string, unknown>): string {
 	const title = stringField(details, "title");
 	const url = stringField(details, "finalUrl") || stringField(details, "requestedUrl");
 	let domain = "";
-	try { domain = new URL(url).hostname; } catch { /* A missing URL supplies no domain. */ }
+	try {
+		domain = new URL(url).hostname;
+	} catch {
+		/* A missing URL supplies no domain. */
+	}
 	return [title ? identityValue(title, 120) : "", domain ? identityValue(domain, 80) : ""].filter(Boolean).join(" · ");
 }
 
@@ -203,9 +224,12 @@ export function renderReadResult(
 	const details = asRecord(result.details);
 	const lead = stringField(details, "view") === "links" ? linksLead(details) : textLead(details);
 	const identity = readIdentity(details);
-	let text = identity ? `\n${theme.fg("accent", identity)}\n${theme.fg("success", lead)}` : `\n${theme.fg("success", lead)}`;
+	let text = identity
+		? `\n${theme.fg("accent", identity)}\n${theme.fg("success", lead)}`
+		: `\n${theme.fg("success", lead)}`;
 	const finalUrl = stringField(details, "finalUrl");
-	if (finalUrl && finalUrl !== stringField(details, "requestedUrl")) text += theme.fg("dim", ` → ${displayValue(finalUrl, URL_LIMIT)}`);
+	if (finalUrl && finalUrl !== stringField(details, "requestedUrl"))
+		text += theme.fg("dim", ` → ${displayValue(finalUrl, URL_LIMIT)}`);
 	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
 	else text += `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
@@ -251,7 +275,8 @@ export function renderSearchResult(
 	theme: Theme,
 	context: CardContext,
 ): Component {
-	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Searching the web...")}`, context.lastComponent);
+	if (options.isPartial)
+		return textComponent(`\n${theme.fg("warning", "Searching the web...")}`, context.lastComponent);
 	const output = textContent(result);
 	if (context.isError) return errorResult("web_search", output, options, theme, context);
 	const details = asRecord(result.details);
@@ -261,11 +286,19 @@ export function renderSearchResult(
 	if (altered) parts.push(`altered query ${displayValue(altered, 80)}`);
 	if (booleanField(details, "outputTruncated") === true) parts.push("output truncated");
 	const sources = Array.isArray(details.sources) ? details.sources.slice(0, 3) : [];
-	const identities = sources.map((source) => {
-		const value = asRecord(source);
-		return [numberField(value, "rank") !== undefined ? `#${numberField(value, "rank")}` : "", stringField(value, "title"), stringField(value, "domain")]
-			.filter(Boolean).map((part) => displayValue(part, 120)).join(" · ");
-	}).filter(Boolean);
+	const identities = sources
+		.map((source) => {
+			const value = asRecord(source);
+			return [
+				numberField(value, "rank") !== undefined ? `#${numberField(value, "rank")}` : "",
+				stringField(value, "title"),
+				stringField(value, "domain"),
+			]
+				.filter(Boolean)
+				.map((part) => displayValue(part, 120))
+				.join(" · ");
+		})
+		.filter(Boolean);
 	const omitted = Math.max(0, (numberField(details, "resultCount") ?? 0) - identities.length);
 	if (omitted > 0 && identities.length > 0) parts.push(`${omitted} more sources in detail`);
 	const offset = numberField(details, "offset");

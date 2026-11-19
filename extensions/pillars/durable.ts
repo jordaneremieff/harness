@@ -31,7 +31,10 @@ import { accessEvidence, type DeliveryExtent, extract, readEvidence, type Result
 import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./readback.ts";
 import { PillarsStore } from "./store.ts";
 
-const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({
+	type: "string",
+	enum: [...values],
+});
 
 export interface DurableContribution {
 	readonly name: string;
@@ -39,7 +42,12 @@ export interface DurableContribution {
 	/** Presentation-only module the standalone Agent terminal imports locally; see docs/conventions/tool-display.md. */
 	readonly display?: { readonly version: 1; readonly entry: string; readonly export: string };
 	/** The read-only reader module for the attached terminal and the command that serves it; see docs/conventions/operator-panels.md. */
-	readonly panel?: { readonly version: 1; readonly entry: string; readonly export: "operatorPanel"; readonly command: string };
+	readonly panel?: {
+		readonly version: 1;
+		readonly entry: string;
+		readonly export: "operatorPanel";
+		readonly command: string;
+	};
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 	readonly commands?: readonly DurableCommand[];
 }
@@ -84,7 +92,13 @@ export interface DurableCommandCall {
 
 /** Host settlements do not establish a completed corpus read or an admitted draft. */
 const HOST_RESULT_CODES = new Set([
-	"tool_unavailable", "invalid_arguments", "blocked", "interrupted", "restart_limit", "aborted", "abandoned",
+	"tool_unavailable",
+	"invalid_arguments",
+	"blocked",
+	"interrupted",
+	"restart_limit",
+	"aborted",
+	"abandoned",
 ]);
 
 /** Pi Durable details are JSON values; the corpus page and usage response are plain JSON objects. */
@@ -128,9 +142,20 @@ async function readerAnswer(call: DurableCommandCall): Promise<{ text: string; d
 	const read = (input: Parameters<typeof access>[1], readSignal?: AbortSignal) => access(catalog, input, readSignal);
 	let answer: PillarsPanelAnswer;
 	if (request.op === "inventory") answer = { op: "inventory", entries: await browserEntries(catalog, read, signal) };
-	else answer = { op: "read", page: await read({ resource: request.resource, offset: request.offset, referenceBodyDigest: request.referenceBodyDigest }, signal) };
-	const text = answer.op === "inventory" ? `${answer.entries.length} Pillars sources`
-		: answer.page.schema === "pillars-source" ? `${answer.page.resource} bytes ${answer.page.offset}-${answer.page.endOffset} of ${answer.page.bodyBytes}` : `source read refused: ${answer.page.code}`;
+	else
+		answer = {
+			op: "read",
+			page: await read(
+				{ resource: request.resource, offset: request.offset, referenceBodyDigest: request.referenceBodyDigest },
+				signal,
+			),
+		};
+	const text =
+		answer.op === "inventory"
+			? `${answer.entries.length} Pillars sources`
+			: answer.page.schema === "pillars-source"
+				? `${answer.page.resource} bytes ${answer.page.offset}-${answer.page.endOffset} of ${answer.page.bodyBytes}`
+				: `source read refused: ${answer.page.code}`;
 	return { text, data: JSON.parse(JSON.stringify(answer)) as JsonValue };
 }
 
@@ -339,11 +364,17 @@ export function pillarsDurableContribution(
 					resource: opt(
 						str({
 							maxLength: 64,
-							description: "Canonical identifier from the inventory, not a filename or path. For governance use {\"resource\":\"governance\"}; omit for inventory.",
+							description:
+								'Canonical identifier from the inventory, not a filename or path. For governance use {"resource":"governance"}; omit for inventory.',
 						}),
 					),
 					offset: opt(
-						int({ minimum: 0, maximum: 1048576, description: "Copy nextOffset with referenceBodyDigest from the same page; omit both fields for a fresh read." }),
+						int({
+							minimum: 0,
+							maximum: 1048576,
+							description:
+								"Copy nextOffset with referenceBodyDigest from the same page; omit both fields for a fresh read.",
+						}),
 					),
 					referenceBodyDigest: opt(
 						str({
@@ -407,7 +438,14 @@ export function pillarsDurableContribution(
 								{
 									view: opt(StringEnum(["overview", "revisions"])),
 									windowDays: opt(int({ minimum: 1, maximum: 30 })),
-									cursor: opt(str({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$", description: "Copy nextCursor unchanged and send cursor alone, without view or windowDays." })),
+									cursor: opt(
+										str({
+											minLength: 4,
+											maxLength: 256,
+											pattern: "^[-_A-Za-z0-9]+$",
+											description: "Copy nextCursor unchanged and send cursor alone, without view or windowDays.",
+										}),
+									),
 								},
 								{ open: false },
 							),
@@ -448,7 +486,11 @@ export function pillarsDurableContribution(
 							return undefined;
 						},
 						afterTool: async (call, result, api, context) => {
-							if (result.diagnostics?.some((diagnostic) => diagnostic.code !== undefined && HOST_RESULT_CODES.has(diagnostic.code)))
+							if (
+								result.diagnostics?.some(
+									(diagnostic) => diagnostic.code !== undefined && HOST_RESULT_CODES.has(diagnostic.code),
+								)
+							)
 								return undefined;
 							await observeResult(call, result, api, context);
 							await assessNested(call, result, api, context);

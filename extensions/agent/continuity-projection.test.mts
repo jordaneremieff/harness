@@ -7,7 +7,10 @@ import { projectNativeContinuity, projectOrdinaryContinuity } from "./continuity
 
 const user = (content: string): Message => ({ role: "user", content, timestamp: 1 });
 const system: Message = { role: "system", content: "baseline", timestamp: 0 };
-const head = (id: number, model: readonly Message[] = [user("summary")]): Pick<EntryRecord, "id" | "model"> => ({ id: id as EntryId, model });
+const head = (id: number, model: readonly Message[] = [user("summary")]): Pick<EntryRecord, "id" | "model"> => ({
+	id: id as EntryId,
+	model,
+});
 function afterAnchor(messages: readonly Message[], anchor: Message, text: string): Message[] {
 	const index = messages.indexOf(anchor);
 	assert.ok(index >= 0);
@@ -15,13 +18,14 @@ function afterAnchor(messages: readonly Message[], anchor: Message, text: string
 }
 
 it("projects at s+k for a summary and for an empty reset with or without a system baseline", () => {
-	for (const baseline of [[], [system]]) for (const model of [[], [user("summary")]]) {
-		const messages = [...baseline, ...model, user("tail")];
-		const projected = projectNativeContinuity(messages, head(2, model), "facts");
-		assert.equal(projected.mismatch, undefined);
-		assert.equal(projected.messages[baseline.length + model.length].content, "facts");
-		assert.deepEqual(messages, [...baseline, ...model, user("tail")]);
-	}
+	for (const baseline of [[], [system]])
+		for (const model of [[], [user("summary")]]) {
+			const messages = [...baseline, ...model, user("tail")];
+			const projected = projectNativeContinuity(messages, head(2, model), "facts");
+			assert.equal(projected.mismatch, undefined);
+			assert.equal(projected.messages[baseline.length + model.length].content, "facts");
+			assert.deepEqual(messages, [...baseline, ...model, user("tail")]);
+		}
 });
 
 it("uses supplied entry identity even when two reset heads have identical text", () => {
@@ -40,7 +44,9 @@ it("reports a consistency mismatch at messages[s], without a fake dispatch-stop 
 });
 
 it("keeps exact prefixes after independent hooks at the same anchor in either order", () => {
-	const summary = user("summary"), next = user("next"), earlier = user("earlier");
+	const summary = user("summary"),
+		next = user("next"),
+		earlier = user("earlier");
 	const project = (messages: readonly Message[], continuityFirst: boolean) => {
 		let value = [...messages];
 		if (continuityFirst) value = projectNativeContinuity(value, head(7, [summary]), "frozen facts").messages;
@@ -66,9 +72,20 @@ it("keeps the first empty-reset final-answer request and its next request prefix
 it("projects ordinary summaries without deriving head identity from duplicate summary text", () => {
 	const summary: AgentMessage = { role: "compactionSummary", summary: "same", tokensBefore: 5, timestamp: 1 };
 	const first = projectOrdinaryContinuity([summary, user("input")], { id: "a", summary: "same" }, "head a");
-	const second = projectOrdinaryContinuity([summary, user("input"), user("later")], { id: "a", summary: "same" }, "head a");
+	const second = projectOrdinaryContinuity(
+		[summary, user("input"), user("later")],
+		{ id: "a", summary: "same" },
+		"head a",
+	);
 	assert.deepEqual(second.messages.slice(0, first.messages.length), first.messages);
-	assert.deepEqual(projectOrdinaryContinuity([summary], { id: "b", summary: "same" }, "head b").messages[1], { role: "user", content: "head b", timestamp: 0 });
-	assert.equal(projectOrdinaryContinuity([summary], { id: "c", summary: "different" }, "facts").mismatch, "head-message");
+	assert.deepEqual(projectOrdinaryContinuity([summary], { id: "b", summary: "same" }, "head b").messages[1], {
+		role: "user",
+		content: "head b",
+		timestamp: 0,
+	});
+	assert.equal(
+		projectOrdinaryContinuity([summary], { id: "c", summary: "different" }, "facts").mismatch,
+		"head-message",
+	);
 	assert.equal(projectOrdinaryContinuity([], { id: "c", summary: "same" }, "facts").mismatch, "missing-summary");
 });

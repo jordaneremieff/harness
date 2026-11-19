@@ -247,7 +247,13 @@ export const docsTools: ToolSpec[] = [
 		replay: "unsafe",
 		execute: async (value, runtime, signal) =>
 			runtime.run({ scopes: GRANTS.docsRead }, signal, async (operation) => {
-				const args = value as { documentId: string; tabId?: string; offset?: number; sourceId?: string; limit?: number };
+				const args = value as {
+					documentId: string;
+					tabId?: string;
+					offset?: number;
+					sourceId?: string;
+					limit?: number;
+				};
 				const offset = args.offset ?? 0;
 				requireSourceId(offset, args.sourceId);
 				const response = await operation.call<Json>("docs", ["documents", "get"], {

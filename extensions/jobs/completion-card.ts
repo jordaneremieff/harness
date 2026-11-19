@@ -1,4 +1,9 @@
-import { getMarkdownTheme, type MessageRenderer, type MessageRenderOptions, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+	getMarkdownTheme,
+	type MessageRenderer,
+	type MessageRenderOptions,
+	type Theme,
+} from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, MouseRegion, truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { displayText } from "./completion.ts";
@@ -26,12 +31,18 @@ function oneLine(value: unknown): string | undefined {
 
 function outcome(status: unknown): string {
 	switch (status) {
-		case "succeeded": return "Job succeeded";
-		case "failed": return "Job failed";
-		case "timed_out": return "Job timed out";
-		case "lost": return "Job lost";
-		case "cancelled": return "Job cancelled";
-		default: return "Job settled";
+		case "succeeded":
+			return "Job succeeded";
+		case "failed":
+			return "Job failed";
+		case "timed_out":
+			return "Job timed out";
+		case "lost":
+			return "Job lost";
+		case "cancelled":
+			return "Job cancelled";
+		default:
+			return "Job settled";
 	}
 }
 
@@ -41,7 +52,8 @@ export function completionHeader(details: unknown): { label: string; facts: stri
 	const job = record(data.job) as CompletionFacts;
 	const facts: string[] = [];
 	if (typeof job.exitCode === "number") facts.push(`exit ${job.exitCode}`);
-	if (typeof job.startedAt === "number" && typeof job.endedAt === "number") facts.push(seconds(job.startedAt, job.endedAt));
+	if (typeof job.startedAt === "number" && typeof job.endedAt === "number")
+		facts.push(seconds(job.startedAt, job.endedAt));
 	const command = oneLine(data.command);
 	if (command) facts.push(command);
 	return { label: outcome(job.status), facts };
@@ -64,12 +76,19 @@ export function completionPreview(details: unknown): { prose: string[]; output: 
 function contentText(content: unknown): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
-	return content.flatMap((part) => (record(part).type === "text" && typeof record(part).text === "string" ? [record(part).text as string] : [])).join("\n");
+	return content
+		.flatMap((part) =>
+			record(part).type === "text" && typeof record(part).text === "string" ? [record(part).text as string] : [],
+		)
+		.join("\n");
 }
 
 /** One row at most `width` wide; a clipped row ends in `…` in the colour of the text it cuts and keeps the row background. */
 function clipRow(line: string, width: number): string {
-	return truncateToWidth(line, Math.max(0, width), "…").replace(/\x1b\[0m…\x1b\[0m$/u, "…\x1b[22;23;24;25;27;28;29;39m");
+	return truncateToWidth(line, Math.max(0, width), "…").replace(
+		/\x1b\[0m…\x1b\[0m$/u,
+		"…\x1b[22;23;24;25;27;28;29;39m",
+	);
 }
 
 /** Pi's tool-card hint, `... (2 more lines, ctrl+o to expand)`, with the key from Pi's `keyHint` and the rest muted. */
@@ -77,7 +96,9 @@ function expansionHint(theme: Theme, options: MessageRenderOptions, hidden: numb
 	const key = typeof options.keyText === "function" ? options.keyText("app.tools.expand") : "";
 	const action = !key
 		? theme.fg("muted", "click to expand")
-		: typeof options.keyHint === "function" ? options.keyHint("app.tools.expand", "to expand") : theme.fg("dim", key) + theme.fg("muted", " to expand");
+		: typeof options.keyHint === "function"
+			? options.keyHint("app.tools.expand", "to expand")
+			: theme.fg("dim", key) + theme.fg("muted", " to expand");
 	return theme.fg("muted", `... (${hidden} more line${hidden === 1 ? "" : "s"}, `) + action + theme.fg("muted", ")");
 }
 
@@ -132,12 +153,17 @@ class CompletionBody implements Component {
 		this.theme = theme;
 		this.options = options;
 		this.expanded = disclosedExpansion(message, options.expanded);
-		this.markdown = new Markdown(displayText(content).trim() || "(no text)", 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("text", value) });
+		this.markdown = new Markdown(displayText(content).trim() || "(no text)", 0, 0, getMarkdownTheme(), {
+			color: (value) => theme.fg("text", value),
+		});
 	}
 	private header(width: number): string[] {
 		const theme = this.theme;
 		const { label, facts } = completionHeader(this.details);
-		const title = clipRow(`${theme.fg("customMessageLabel", theme.bold("[jobs]"))} ${theme.fg("text", theme.bold(label))}`, width);
+		const title = clipRow(
+			`${theme.fg("customMessageLabel", theme.bold("[jobs]"))} ${theme.fg("text", theme.bold(label))}`,
+			width,
+		);
 		return facts.length ? [title, clipRow(theme.fg("muted", facts.join(" · ")), width)] : [title];
 	}
 	private preview(width: number): string[] {
@@ -146,7 +172,8 @@ class CompletionBody implements Component {
 		const lines = prose.flatMap((paragraph) => wrapTextWithAnsi(paragraph, width)).map(text);
 		const room = Math.max(0, COMPLETION_PREVIEW_LINES - lines.length);
 		// A tab draws as three spaces, as Pi's Text and Markdown components draw it.
-		const tail = room > 0 ? trimBlank(output.slice(-room)).map((line) => clipRow(text(line.replace(/\t/gu, "   ")), width)) : [];
+		const tail =
+			room > 0 ? trimBlank(output.slice(-room)).map((line) => clipRow(text(line.replace(/\t/gu, "   ")), width)) : [];
 		return [...lines, ...tail].slice(0, COMPLETION_PREVIEW_LINES);
 	}
 	/** Shows the other form of this card and keeps the choice under the current global expansion. */
@@ -164,7 +191,11 @@ class CompletionBody implements Component {
 		else {
 			const preview = this.preview(width);
 			const hidden = Math.max(0, full.length - preview.length);
-			lines = [...head, ...preview, ...(hidden > 0 ? [clipRow(expansionHint(this.theme, this.options, hidden), width)] : [])];
+			lines = [
+				...head,
+				...preview,
+				...(hidden > 0 ? [clipRow(expansionHint(this.theme, this.options, hidden), width)] : []),
+			];
 		}
 		this.cache = { width, lines };
 		return lines;
@@ -178,7 +209,12 @@ class CompletionBody implements Component {
 /** The `jobs.completion` card: `[jobs] Job succeeded`, then `exit 0 · 10s · npm test`, then the last output lines. */
 export const renderJobCompletionMessage: MessageRenderer = (message, options, theme) => {
 	const background = theme.getBgAnsi("customMessageBg");
-	const box = new Box(options.outputPad, 1, (line) => theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background)));
+	const box = new Box(options.outputPad, 1, (line) =>
+		theme.bg(
+			"customMessageBg",
+			line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background),
+		),
+	);
 	box.addChild(clickToggle(new CompletionBody(message, message.details, contentText(message.content), theme, options)));
 	return box;
 };

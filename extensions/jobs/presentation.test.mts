@@ -56,7 +56,10 @@ test("list cards distinguish complete pages from partial pages in both forms", (
 			assert.doesNotMatch(fullText, /partial page|nextTaskCursor/);
 			assert.match(partialText, /More jobs: partial page/);
 			if (expanded) assert.ok(partialText.includes(`nextTaskCursor: ${JSON.stringify(cursor)}`));
-			else { assert.doesNotMatch(partialText, /nextTaskCursor/); assert.match(partialText, /expand/); }
+			else {
+				assert.doesNotMatch(partialText, /nextTaskCursor/);
+				assert.match(partialText, /expand/);
+			}
 			if (jobs.length === 0) assert.equal(fullText.trim(), "No jobs");
 		}
 	}
@@ -64,7 +67,11 @@ test("list cards distinguish complete pages from partial pages in both forms", (
 
 test("error cards retain non-abort diagnostics under the known outcome label", () => {
 	for (const expanded of [false, true]) {
-		for (const [status, label] of [["cancelled", "Backend error after cancellation"], ["timed_out", "Backend error after timeout"], ["failed", "Execution error"]]) {
+		for (const [status, label] of [
+			["cancelled", "Backend error after cancellation"],
+			["timed_out", "Backend error after timeout"],
+			["failed", "Execution error"],
+		]) {
 			const text = jobResult({ id: "1", commandPreview: "fixture", status, error: "non-abort diagnostic" }, expanded);
 			assert.ok(text.includes(`${label}: non-abort diagnostic`));
 		}
@@ -83,28 +90,37 @@ test("ordinary snapshots carry bounded command identity and omit a missing owner
 
 test("a durable record without command identity stays unknown rather than blank", () => {
 	const input = { conversationId: 9, createdAt: 100, requestId: "r" } as JobInput;
-	const missing = jobFromRecord({
-		id: 4,
-		conversationId: 9,
-		kind: "jobs.run",
-		input,
-		abortRequested: false,
-		state: { status: "running", checkpoint: { phase: "run", startedAt: 100 } },
-	} as never, 150);
+	const missing = jobFromRecord(
+		{
+			id: 4,
+			conversationId: 9,
+			kind: "jobs.run",
+			input,
+			abortRequested: false,
+			state: { status: "running", checkpoint: { phase: "run", startedAt: 100 } },
+		} as never,
+		150,
+	);
 	assert.equal(missing.commandPreview, undefined);
 	assert.equal(missing.cwd, undefined);
 	assert.equal(missing.owner, "conversation:9");
 	assert.equal(missing.status, "running");
-	const present = jobFromRecord({
-		id: 5,
-		conversationId: 9,
-		kind: "jobs.run",
-		input: { ...input, command: "printf lost", cwd: "/work", owner: "storage:9" },
-		abortRequested: false,
-		startedAt: 110,
-		endedAt: 140,
-		state: { status: "terminal", outcome: { status: "completed", result: { status: "lost", startedAt: 110, endedAt: 140, outputBytes: 0 } } },
-	} as never, 160);
+	const present = jobFromRecord(
+		{
+			id: 5,
+			conversationId: 9,
+			kind: "jobs.run",
+			input: { ...input, command: "printf lost", cwd: "/work", owner: "storage:9" },
+			abortRequested: false,
+			startedAt: 110,
+			endedAt: 140,
+			state: {
+				status: "terminal",
+				outcome: { status: "completed", result: { status: "lost", startedAt: 110, endedAt: 140, outputBytes: 0 } },
+			},
+		} as never,
+		160,
+	);
 	assert.equal(present.commandPreview, "printf lost");
 	assert.equal(present.cwd, "/work");
 	assert.equal(present.owner, "storage:9");
@@ -115,7 +131,9 @@ test("a durable record without command identity stays unknown rather than blank"
 test("a retained delivery result uses the read clock rather than the completion clock", () => {
 	const result = { status: "succeeded", startedAt: 100, endedAt: 140, outputBytes: 0 };
 	const record = {
-		id: 5, conversationId: 9, kind: "jobs.run",
+		id: 5,
+		conversationId: 9,
+		kind: "jobs.run",
 		input: { conversationId: 9, command: "fixture", createdAt: 100, requestId: "r" },
 		abortRequested: false,
 		state: { status: "running", checkpoint: { phase: "deliver", result } },
@@ -126,19 +144,49 @@ test("a retained delivery result uses the read clock rather than the completion 
 });
 
 test("cards keep accepted, requested, settled, timeout, loss, and unavailable output distinct", () => {
-	const running = jobResult({ id: "1", commandPreview: "npm test", cwd: "/work", owner: "session", status: "running", startedAt: 0, observedAt: 1500, cancellationRequested: false });
+	const running = jobResult({
+		id: "1",
+		commandPreview: "npm test",
+		cwd: "/work",
+		owner: "session",
+		status: "running",
+		startedAt: 0,
+		observedAt: 1500,
+		cancellationRequested: false,
+	});
 	assert.match(running, /^npm test/u);
 	assert.match(running, /accepted, running/u);
 	assert.match(running, /elapsed 1\.5s at observation/u);
-	assert.match(running, /^job 1 \u00b7 in work \u00b7 session\s*$/mu, "a short identity and folder tell repeated commands apart");
+	assert.match(
+		running,
+		/^job 1 \u00b7 in work \u00b7 session\s*$/mu,
+		"a short identity and folder tell repeated commands apart",
+	);
 	assert.doesNotMatch(running, /no cancel request|settled cancellation/u, "a routine absence says nothing");
 	assert.match(running, /\.\.\. \(expand for full details\)\s*$/u);
 
-	const requested = jobResult({ id: "2", commandPreview: "sleep 30", status: "running", startedAt: 0, observedAt: 2000, cancellationRequested: true });
+	const requested = jobResult({
+		id: "2",
+		commandPreview: "sleep 30",
+		status: "running",
+		startedAt: 0,
+		observedAt: 2000,
+		cancellationRequested: true,
+	});
 	assert.match(requested, /cancellation requested/u);
 	assert.doesNotMatch(requested, /settled cancellation/u);
 
-	const settled = jobResult({ id: "3", commandPreview: "sleep 30", status: "cancelled", startedAt: 0, endedAt: 4000, cancellationRequested: true }, true);
+	const settled = jobResult(
+		{
+			id: "3",
+			commandPreview: "sleep 30",
+			status: "cancelled",
+			startedAt: 0,
+			endedAt: 4000,
+			cancellationRequested: true,
+		},
+		true,
+	);
 	assert.match(settled, /settled cancellation/u);
 	assert.match(settled, /final 4(?:\.0)?s/u);
 	assert.match(settled, /id: 3/u);
@@ -146,38 +194,120 @@ test("cards keep accepted, requested, settled, timeout, loss, and unavailable ou
 	assert.match(settled, /working directory: unknown/u);
 	assert.match(settled, /cancel request: yes/u);
 	assert.doesNotMatch(settled, /to expand|expand for full/u, "expanded cards show no hint");
-	const failed = jobResult({ id: "7", commandPreview: "npm test", cwd: "/work", status: "failed", startedAt: 0, endedAt: 4000, exitCode: 1, cancellationRequested: false, error: "Exit 1\x1b[2J\x1b]52;c;Zm9v\x07 with\nrest" });
-	assert.match(failed, /^failed \u00b7 exit 1 \u00b7 final 4(?:\.0)?s\s*$/mu, "the exceptional state leads the facts line");
+	const failed = jobResult({
+		id: "7",
+		commandPreview: "npm test",
+		cwd: "/work",
+		status: "failed",
+		startedAt: 0,
+		endedAt: 4000,
+		exitCode: 1,
+		cancellationRequested: false,
+		error: "Exit 1\x1b[2J\x1b]52;c;Zm9v\x07 with\nrest",
+	});
+	assert.match(
+		failed,
+		/^failed \u00b7 exit 1 \u00b7 final 4(?:\.0)?s\s*$/mu,
+		"the exceptional state leads the facts line",
+	);
 	assert.match(failed, /^Execution error: Exit 1 with rest\s*$/mu);
 	assert.doesNotMatch(failed, /\x1b|Zm9v/u, "terminal sequences never reach the card");
 
-	const timed = jobResult({ id: "4", commandPreview: "sleep 30", status: "timed_out", startedAt: 0, endedAt: 50, cancellationRequested: true, timeoutSeconds: 0.05 }, true);
+	const timed = jobResult(
+		{
+			id: "4",
+			commandPreview: "sleep 30",
+			status: "timed_out",
+			startedAt: 0,
+			endedAt: 50,
+			cancellationRequested: true,
+			timeoutSeconds: 0.05,
+		},
+		true,
+	);
 	assert.match(timed, /timed out/u);
 	assert.match(timed, /timeout: 0\.05s/u);
 	assert.doesNotMatch(timed, /accepted, running/u);
 
-	const lost = jobResult({ id: "5", commandPreview: "printf lost", status: "lost", startedAt: 0, endedAt: 10, cancellationRequested: false }, true);
+	const lost = jobResult(
+		{ id: "5", commandPreview: "printf lost", status: "lost", startedAt: 0, endedAt: 10, cancellationRequested: false },
+		true,
+	);
 	assert.match(lost, /host lost/u);
 	assert.match(lost, /Output is unavailable/u);
 	assert.match(lost, /does not mean the command produced no output/u);
 
-	const gap = render({
-		content: [{ type: "text", text: "" }],
-		details: { id: "6", text: "tail", earliest: 100, next: 104, end: 104, gap: true, more: false, pendingBytes: 2, job: { id: "6", commandPreview: "yes", status: "succeeded", exitCode: 0, cancellationRequested: false } },
-	}, true);
+	const gap = render(
+		{
+			content: [{ type: "text", text: "" }],
+			details: {
+				id: "6",
+				text: "tail",
+				earliest: 100,
+				next: 104,
+				end: 104,
+				gap: true,
+				more: false,
+				pendingBytes: 2,
+				job: { id: "6", commandPreview: "yes", status: "succeeded", exitCode: 0, cancellationRequested: false },
+			},
+		},
+		true,
+	);
 	assert.match(gap, /gap: yes, earlier output was discarded/u);
 	assert.match(gap, /earlier output was discarded/u);
 	assert.match(gap, /pending bytes: 2/u);
 	assert.match(gap, /incomplete UTF-8 suffix/u);
-	const hostile = render({
-		content: [{ type: "text", text: "" }],
-		details: { id: "8", text: "line\x1b[31m red\x1b[0m\n\x1b]52;c;Zm9v\x07tab\tend", earliest: 0, next: 10, end: 10, gap: false, more: true, pendingBytes: 0, job: { id: "8", commandPreview: "printf\x1b[2J hostile", cwd: "/work/deep", owner: "storage:8", status: "succeeded", exitCode: 0, cancellationRequested: false } },
-	}, true);
+	const hostile = render(
+		{
+			content: [{ type: "text", text: "" }],
+			details: {
+				id: "8",
+				text: "line\x1b[31m red\x1b[0m\n\x1b]52;c;Zm9v\x07tab\tend",
+				earliest: 0,
+				next: 10,
+				end: 10,
+				gap: false,
+				more: true,
+				pendingBytes: 0,
+				job: {
+					id: "8",
+					commandPreview: "printf\x1b[2J hostile",
+					cwd: "/work/deep",
+					owner: "storage:8",
+					status: "succeeded",
+					exitCode: 0,
+					cancellationRequested: false,
+				},
+			},
+		},
+		true,
+	);
 	assert.match(hostile, /^printf hostile\s*$/mu);
 	assert.match(hostile, /line red\s*\ntab\s+end/u, "log text keeps newlines and tabs without controls");
 	assert.doesNotMatch(hostile, /\x1b|Zm9v/u);
 	assert.match(hostile, /more: yes/u);
-	const compactLogs = render({ content: [{ type: "text", text: "" }], details: { id: "8", text: "x", earliest: 0, next: 1, end: 1, gap: true, more: true, pendingBytes: 1, job: { id: "8", commandPreview: "printf hostile", status: "succeeded", exitCode: 0, cancellationRequested: false, error: "stderr noise" } } });
+	const compactLogs = render({
+		content: [{ type: "text", text: "" }],
+		details: {
+			id: "8",
+			text: "x",
+			earliest: 0,
+			next: 1,
+			end: 1,
+			gap: true,
+			more: true,
+			pendingBytes: 1,
+			job: {
+				id: "8",
+				commandPreview: "printf hostile",
+				status: "succeeded",
+				exitCode: 0,
+				cancellationRequested: false,
+				error: "stderr noise",
+			},
+		},
+	});
 	assert.match(compactLogs, /output gap \u00b7 more output \u00b7 output pending/u);
 	assert.doesNotMatch(compactLogs, /stderr noise/u, "a log page card shows the page marks, not the job error");
 	assert.match(compactLogs, /expand for full details/u);
@@ -190,7 +320,19 @@ test("cards keep accepted, requested, settled, timeout, loss, and unavailable ou
 test("a job list identifies jobs by command", () => {
 	const listed = render({
 		content: [{ type: "text", text: "" }],
-		details: { jobs: [{ id: "abc", commandPreview: "npm test", status: "running", startedAt: 0, observedAt: 1000, cancellationRequested: false }, { id: "def", status: "failed", cancellationRequested: false }] },
+		details: {
+			jobs: [
+				{
+					id: "abc",
+					commandPreview: "npm test",
+					status: "running",
+					startedAt: 0,
+					observedAt: 1000,
+					cancellationRequested: false,
+				},
+				{ id: "def", status: "failed", cancellationRequested: false },
+			],
+		},
 	});
 	assert.match(listed, /npm test/u);
 	assert.match(listed, /command unknown/u);
@@ -212,10 +354,31 @@ test("completion wording names the directory, keeps the error, and does not trea
 });
 
 test("background bash results use the job card and foreground results stay on the native renderer", () => {
-	const background = renderBashResult({ content: [{ type: "text", text: "" }], details: { job: { commandPreview: "npm test", status: "running", startedAt: 0, observedAt: 1000, cancellationRequested: false } } }, { expanded: false, isPartial: false }, theme, context());
+	const background = renderBashResult(
+		{
+			content: [{ type: "text", text: "" }],
+			details: {
+				job: {
+					commandPreview: "npm test",
+					status: "running",
+					startedAt: 0,
+					observedAt: 1000,
+					cancellationRequested: false,
+				},
+			},
+		},
+		{ expanded: false, isPartial: false },
+		theme,
+		context(),
+	);
 	assert.match(background.render(40).join("\n"), /npm test/u);
 	const call = renderJobsCall({ action: "logs", id: "job-1" }, theme, context());
 	assert.match(call.render(40).join("\n"), /jobs logs job-1/u);
-	const foreground = renderBashResult({ content: [{ type: "text", text: "ready" }], details: { output: "ready" } }, { expanded: true, isPartial: false }, theme, context());
+	const foreground = renderBashResult(
+		{ content: [{ type: "text", text: "ready" }], details: { output: "ready" } },
+		{ expanded: true, isPartial: false },
+		theme,
+		context(),
+	);
 	assert.doesNotMatch(foreground.render(40).join("\n"), /command unknown/u);
 });

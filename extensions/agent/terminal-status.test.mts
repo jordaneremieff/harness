@@ -7,17 +7,35 @@ it("terminal activity deduplicates live facts and clears on target change, loss 
 	const output: ProgramStatus[] = [];
 	const projection = new TerminalProgramStatus((status) => output.push(status));
 	let activity: TerminalActivity = { target: "a", revision: 1, live: true, busy: true };
-	projection.update(activity); projection.update(activity);
-	assert.deepEqual(output.map((item) => item.state), ["clear", "working"]);
-	activity = { ...activity, busy: false }; projection.update(activity);
+	projection.update(activity);
+	projection.update(activity);
+	assert.deepEqual(
+		output.map((item) => item.state),
+		["clear", "working"],
+	);
+	activity = { ...activity, busy: false };
+	projection.update(activity);
 	assert.equal(output.at(-1)?.state, "idle");
-	activity = { ...activity, target: "b", revision: 2, busy: true }; projection.update(activity);
-	assert.deepEqual(output.slice(-2).map((item) => item.state), ["clear", "working"]);
+	activity = { ...activity, target: "b", revision: 2, busy: true };
+	projection.update(activity);
+	assert.deepEqual(
+		output.slice(-2).map((item) => item.state),
+		["clear", "working"],
+	);
 	projection.update({ ...activity, live: false });
 	assert.equal(output.at(-1)?.state, "clear");
-	projection.update(activity); projection.dispose(); projection.dispose(); projection.update(activity);
-	assert.deepEqual(output.slice(-2).map((item) => item.state), ["working", "clear"]);
-	assert.equal(output.some((item) => item.state === "done" || item.state === "error"), false);
+	projection.update(activity);
+	projection.dispose();
+	projection.dispose();
+	projection.update(activity);
+	assert.deepEqual(
+		output.slice(-2).map((item) => item.state),
+		["working", "clear"],
+	);
+	assert.equal(
+		output.some((item) => item.state === "done" || item.state === "error"),
+		false,
+	);
 });
 
 it("the program status never discloses the target, and reports neither a question nor a block", () => {
@@ -25,7 +43,11 @@ it("the program status never discloses the target, and reports neither a questio
 	const projection = new TerminalProgramStatus((status) => output.push(status));
 	const activity: TerminalActivity = { target: "private-target", revision: 1, live: true, busy: true };
 	projection.update(activity);
-	assert.deepEqual(output.at(-1), { state: "working", app: "pi-agent" }, "without an observed name the status carries no message");
+	assert.deepEqual(
+		output.at(-1),
+		{ state: "working", app: "pi-agent" },
+		"without an observed name the status carries no message",
+	);
 	projection.update({ ...activity, busy: undefined });
 	assert.equal(output.at(-1)?.state, "clear", "an unobserved busy state is not an attachment");
 	assert.doesNotMatch(JSON.stringify(output), /private-target|blocked|question/);
@@ -35,9 +57,20 @@ it("the program status never discloses the target, and reports neither a questio
 it("the window title names the attached conversation and its folder, and clears on loss, detach and disposal", () => {
 	const output: ProgramStatus[] = [];
 	const titles: string[] = [];
-	const projection = new TerminalProgramStatus((status) => output.push(status), (title) => titles.push(title));
-	const activity: TerminalActivity = { target: "a", revision: 1, live: true, busy: false, name: "Parser\nreview\x07", cwd: "/work/projects/harness" };
-	projection.update(activity); projection.update(activity);
+	const projection = new TerminalProgramStatus(
+		(status) => output.push(status),
+		(title) => titles.push(title),
+	);
+	const activity: TerminalActivity = {
+		target: "a",
+		revision: 1,
+		live: true,
+		busy: false,
+		name: "Parser\nreview\x07",
+		cwd: "/work/projects/harness",
+	};
+	projection.update(activity);
+	projection.update(activity);
 	assert.deepEqual(titles, ["Parser review · harness"], "one title per change, control characters removed");
 	assert.deepEqual(output.at(-1), { state: "idle", app: "pi-agent", message: "Parser review" });
 	projection.update({ ...activity, busy: true });

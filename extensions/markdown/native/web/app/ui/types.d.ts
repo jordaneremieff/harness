@@ -20,7 +20,16 @@ declare global {
 		name: string;
 		args?: Record<string, unknown>;
 	}
-	type ReaderAskState = "draft" | "sending" | "sent" | "admitted" | "working" | "answered" | "unanswered" | "failed" | "unknown";
+	type ReaderAskState =
+		| "draft"
+		| "sending"
+		| "sent"
+		| "admitted"
+		| "working"
+		| "answered"
+		| "unanswered"
+		| "failed"
+		| "unknown";
 	interface ReaderAskMessage {
 		requestId: string;
 		text: string;
@@ -109,7 +118,11 @@ declare global {
 		promptLabel(state: ReaderAskState): string;
 		reanchorPassage(source: string, anchor?: string, range?: ReaderRange): ReaderRange | undefined;
 		diffWords(oldText: string, newText: string): ReaderDiffPart[] | null;
-		changeContext(source: string, span: ReaderRange, edit: ReaderRange & { oldText: string; newText: string }): { prefix: string; suffix: string } | null;
+		changeContext(
+			source: string,
+			span: ReaderRange,
+			edit: ReaderRange & { oldText: string; newText: string },
+		): { prefix: string; suffix: string } | null;
 	}
 	interface ReaderUIHelpers {
 		element<K extends keyof HTMLElementTagNameMap>(
@@ -200,7 +213,10 @@ declare global {
 		createNavigation(context: ReaderUIContext): ReaderNavigation;
 		createAskUI(context: ReaderUIContext, navigation: ReaderNavigation): ReaderAskUI;
 		createViewsUI(context: ReaderUIContext, navigation: ReaderNavigation): ReaderViewsUI;
-		createContextMenu(context: ReaderUIContext, run: (id: string, context: ReaderMenuContext) => void | Promise<void>): ReaderContextMenu;
+		createContextMenu(
+			context: ReaderUIContext,
+			run: (id: string, context: ReaderMenuContext) => void | Promise<void>,
+		): ReaderContextMenu;
 		createCodeViews(context: ReaderUIContext, options?: { onChange?(): void }): ReaderCodeViews;
 		createUI(host: ReaderCoreHost, controller: ReaderController, editor: ReaderEditor): ReaderUI;
 		boot(host?: ReaderCoreHost): {

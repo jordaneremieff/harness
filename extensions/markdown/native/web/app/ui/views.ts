@@ -502,7 +502,9 @@
 		}
 		function revisionFact(shown: unknown, revisions: Revision[]) {
 			if (typeof shown !== "number") return "";
-			return revisions.length > 1 ? `Revision ${shown} of ${Math.max(...revisions.map((r) => r.n))}` : `Revision ${shown}`;
+			return revisions.length > 1
+				? `Revision ${shown} of ${Math.max(...revisions.map((r) => r.n))}`
+				: `Revision ${shown}`;
 		}
 		function wordFact() {
 			const words = (controller.doc?.source.match(/\S+/gu) ?? []).length;
@@ -523,7 +525,9 @@
 		}
 		function hasPassage() {
 			const selection = getSelection();
-			return !!selection && !selection.isCollapsed && !!selection.anchorNode && get("#doc").contains(selection.anchorNode);
+			return (
+				!!selection && !selection.isCollapsed && !!selection.anchorNode && get("#doc").contains(selection.anchorNode)
+			);
 		}
 		const unavailable = (available: boolean): Record<string, string> => (available ? {} : { disabled: "" });
 		function exportItem(label: string, image: string, format: string, available: boolean) {
@@ -556,7 +560,11 @@
 					),
 				);
 				if (revisions.length > 1)
-					menu.append(el("div", { class: "sep" }), el("div", { class: "sec" }, "Revisions"), ...revisionItems(revisions));
+					menu.append(
+						el("div", { class: "sep" }),
+						el("div", { class: "sec" }, "Revisions"),
+						...revisionItems(revisions),
+					);
 				menu.append(
 					el("div", { class: "sep" }),
 					item("Copy Markdown", "copy", () => ctx.command("copyMarkdown"), "⇧⌘C"),

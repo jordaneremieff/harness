@@ -18,9 +18,13 @@ if (!agentDir || !name) {
 }
 
 let paused: () => void = () => {};
-const reached = new Promise<void>((resolve) => { paused = resolve; });
+const reached = new Promise<void>((resolve) => {
+	paused = resolve;
+});
 let releaseUnlink: () => void = () => {};
-const release = new Promise<void>((resolve) => { releaseUnlink = resolve; });
+const release = new Promise<void>((resolve) => {
+	releaseUnlink = resolve;
+});
 
 const mutable = fs.promises as unknown as { unlink: typeof import("node:fs/promises").unlink };
 const originalUnlink = mutable.unlink;
@@ -34,12 +38,21 @@ mutable.unlink = async (path) => {
 syncBuiltinESMExports();
 
 function response(value: unknown): CliResult {
-	return { outcome: "exited", exitCode: 0, signal: null, stdout: JSON.stringify(value), stderr: "", bytes: 0, truncated: false, started: true };
+	return {
+		outcome: "exited",
+		exitCode: 0,
+		signal: null,
+		stdout: JSON.stringify(value),
+		stderr: "",
+		bytes: 0,
+		truncated: false,
+		started: true,
+	};
 }
 
 class FixtureTransport implements RexTransport {
 	async run(args: readonly string[], call: CliCall): Promise<CliResult> {
-		const method = args.includes("whoami") ? "whoami" : args.at(-2) ?? "";
+		const method = args.includes("whoami") ? "whoami" : (args.at(-2) ?? "");
 		if (call.signal?.aborted) return { ...response({}), outcome: "cancelled", exitCode: null };
 		if (method === "whoami") return response({ host_id: "host", instance_id: "instance" });
 		if (method === "com.superlogical.terminal.process") return response({ foreground: { pid: 4242 }, last_exit: null });
@@ -47,11 +60,20 @@ class FixtureTransport implements RexTransport {
 			return response({
 				revision: 1,
 				session_id: process.env.REX_SESSION,
-				windows: [{ window_id: WINDOW_ID, label: DEFAULT_LABEL, layers: [{ blocks: [{ block_id: process.env.REX_BLOCK }] }] }],
+				windows: [
+					{ window_id: WINDOW_ID, label: DEFAULT_LABEL, layers: [{ blocks: [{ block_id: process.env.REX_BLOCK }] }] },
+				],
 			});
 		}
 		if (method === "session.set_window_label") {
-			return { ...response({}), outcome: "spawn_error", exitCode: null, stdout: "", stderr: "setter did not start", started: false };
+			return {
+				...response({}),
+				outcome: "spawn_error",
+				exitCode: null,
+				stdout: "",
+				stderr: "setter did not start",
+				started: false,
+			};
 		}
 		throw new Error(`Unexpected Rex method: ${method}`);
 	}

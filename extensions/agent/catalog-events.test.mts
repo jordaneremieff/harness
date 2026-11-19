@@ -79,7 +79,9 @@ async function publisher(t: { after(fn: () => void | Promise<void>): void }, roo
 	// Capture bounded publisher stderr for cross-process wait failures.
 	const stderrChunks: Buffer[] = [];
 	let stderrBytes = 0;
-	const child = spawn(process.execPath, ["--input-type=module", "-e", source, root], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+	const child = spawn(process.execPath, ["--input-type=module", "-e", source, root], {
+		stdio: ["ignore", "ignore", "pipe", "ipc"],
+	});
 	child.stderr?.on("data", (chunk: Buffer) => {
 		if (stderrBytes >= PUBLISHER_STDERR_BYTES) return;
 		const bounded = chunk.subarray(0, PUBLISHER_STDERR_BYTES - stderrBytes);
@@ -87,14 +89,22 @@ async function publisher(t: { after(fn: () => void | Promise<void>): void }, roo
 		stderrChunks.push(bounded);
 	});
 	const publisherEvidence = (): string => {
-		const state = child.exitCode !== null ? `exit ${child.exitCode}` : child.signalCode !== null ? `signal ${child.signalCode}` : "still running";
+		const state =
+			child.exitCode !== null
+				? `exit ${child.exitCode}`
+				: child.signalCode !== null
+					? `signal ${child.signalCode}`
+					: "still running";
 		const text = Buffer.concat(stderrChunks).toString("utf8").trim();
 		return `\npublisher ${state}${text === "" ? "" : `; stderr (${stderrBytes} bytes, bounded): ${text}`}`;
 	};
 	child.on("message", (value) => messages.push(value as { type: string; id?: string; submissions?: number }));
 	const exited = waitForProcessExit(child, 30000);
 	void exited.catch(() => undefined);
-	t.after(async () => { child.kill("SIGTERM"); await exited; });
+	t.after(async () => {
+		child.kill("SIGTERM");
+		await exited;
+	});
 	await messages.waitForCount(1).catch(failedWait("publisher ready wait", publisherEvidence));
 	assert.equal(messages[0]?.type, "ready");
 	return { child, messages, evidence: publisherEvidence };
@@ -103,19 +113,38 @@ async function publisher(t: { after(fn: () => void | Promise<void>): void }, roo
 function fixture(t: { after(fn: () => void | Promise<void>): void }) {
 	const root = mkdtempSync(join(tmpdir(), "catalog-events-"));
 	let acquisitions = 0;
-	const manager = new AgentManager({ root, agentDir: root, packageDir: root, acquire: async () => { acquisitions++; throw new Error("Observation must not acquire a host"); } });
-	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
+	const manager = new AgentManager({
+		root,
+		agentDir: root,
+		packageDir: root,
+		acquire: async () => {
+			acquisitions++;
+			throw new Error("Observation must not acquire a host");
+		},
+	});
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
 	return { root, manager, acquisitions: () => acquisitions };
 }
 
 it("accumulates concurrent identity notices and makes unknown or overflowing changes namespace-wide", async (t) => {
 	const f = fixture(t);
 	const notices = eventLog<CatalogChange>();
-	const off = subscribeCatalogChanges(f.manager.catalog.root, (change) => notices.push(change), (error) => { throw error; });
+	const off = subscribeCatalogChanges(
+		f.manager.catalog.root,
+		(change) => notices.push(change),
+		(error) => {
+			throw error;
+		},
+	);
 	t.after(off);
 	const identities = Array.from({ length: 12 }, () => randomUUID());
 	for (const id of identities) publishCatalogChange(f.manager.catalog.root, id);
-	await notices.waitFor((events) => events.some((event) => !event) || identities.every((id) => events.some((event) => event?.includes(id))));
+	await notices.waitFor(
+		(events) => events.some((event) => !event) || identities.every((id) => events.some((event) => event?.includes(id))),
+	);
 	assert.ok(notices.some((event) => !event) || identities.every((id) => notices.some((event) => event?.includes(id))));
 	assert.equal(catalogChange(["unknown"]), undefined);
 	assert.equal(catalogChange([]), undefined);
@@ -132,29 +161,82 @@ it("shares footer and roster reads and rereads only the published storage", asyn
 	const f = fixture(t);
 	const ownerId = randomUUID();
 	const statuses = eventLog<string>();
-	const records = Array.from({ length: 8 }, () => f.manager.catalog.create({ cwd: f.root, agentDir: f.root, packageDir: f.root, model: { provider: "test", modelId: "test" }, thinkingLevel: "off", ownerId }));
-	const publish = (id: string, name: string) => f.manager.catalog.updateView(id, { updatedAt: new Date().toISOString(), rows: [{ id, storageId: id, name, cwd: f.root, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } });
+	const records = Array.from({ length: 8 }, () =>
+		f.manager.catalog.create({
+			cwd: f.root,
+			agentDir: f.root,
+			packageDir: f.root,
+			model: { provider: "test", modelId: "test" },
+			thinkingLevel: "off",
+			ownerId,
+		}),
+	);
+	const publish = (id: string, name: string) =>
+		f.manager.catalog.updateView(id, {
+			updatedAt: new Date().toISOString(),
+			rows: [
+				{
+					id,
+					storageId: id,
+					name,
+					cwd: f.root,
+					modifiedAt: 1,
+					owner: "unknown",
+					state: "idle",
+					cost: 0,
+					partial: false,
+				},
+			],
+			coverage: { complete: true, omitted: 0 },
+		});
 	for (const record of records) publish(record.storageId, "Initial");
 	const notices = eventLog<CatalogChange>();
-	const off = subscribeCatalogChanges(f.manager.catalog.root, (change) => notices.push(change), (error) => { throw error; });
+	const off = subscribeCatalogChanges(
+		f.manager.catalog.root,
+		(change) => notices.push(change),
+		(error) => {
+			throw error;
+		},
+	);
 	t.after(off);
 	publishCatalogChange(f.manager.catalog.root);
 	await notices.waitFor((events) => events.some((event) => event === undefined));
 	const primary = new AbortController();
-	await f.manager.registerPrimary(ownerId, { cwd: f.root, signal: primary.signal, send: () => {}, status: () => { statuses.push(f.manager.observedToolCardRows().map((row) => row.name).join(",")); } });
+	await f.manager.registerPrimary(ownerId, {
+		cwd: f.root,
+		signal: primary.signal,
+		send: () => {},
+		status: () => {
+			statuses.push(
+				f.manager
+					.observedToolCardRows()
+					.map((row) => row.name)
+					.join(","),
+			);
+		},
+	});
 	const reads = t.mock.method(f.manager.catalog, "observeRecord");
-	await Promise.all([f.manager.dashboardPage({ ownerId }), f.manager.dashboardPage({ ownerId: "another" }), f.manager.sessionFigures(ownerId)]);
+	await Promise.all([
+		f.manager.dashboardPage({ ownerId }),
+		f.manager.dashboardPage({ ownerId: "another" }),
+		f.manager.sessionFigures(ownerId),
+	]);
 	assert.equal(reads.mock.callCount(), 0, "footer facts also serve both caller-specific roster views");
 	publish(records[0].storageId, "Updated");
 	await statuses.waitFor((events) => events.some((value) => value.includes("Updated")));
 	const page = await f.manager.dashboardPage({ ownerId });
 	assert.equal(page.rows.find((row) => row.storageId === records[0].storageId)?.name, "Updated");
 	assert.ok(reads.mock.callCount() > 0);
-	assert.ok(reads.mock.calls.every((call) => call.arguments[0] === records[0].storageId), "known publication opens no unchanged record or claim");
+	assert.ok(
+		reads.mock.calls.every((call) => call.arguments[0] === records[0].storageId),
+		"known publication opens no unchanged record or claim",
+	);
 	assert.equal(f.acquisitions(), 0);
 });
 
-it("receives immediate external creates after subscription without a watcher warm-up", { timeout: 30000 }, async (t) => {
+it("receives immediate external creates after subscription without a watcher warm-up", {
+	timeout: 30000,
+}, async (t) => {
 	const f = fixture(t);
 	const { child, messages, evidence: publisherEvidence } = await publisher(t, f.root);
 	for (let trial = 0; trial < 12; trial++) {
@@ -169,13 +251,17 @@ it("receives immediate external creates after subscription without a watcher war
 			const id = messages[trial + 1]?.id;
 			assert.ok(id);
 			assert.equal(f.manager.catalog.read(id).storageId, id);
-		} finally { off(); }
+		} finally {
+			off();
+		}
 	}
 	assert.deepEqual(readdirSync(join(f.manager.catalog.root, ".observers")), []);
 	assert.equal(f.acquisitions(), 0);
 });
 
-it("notifies every manager for external rewrite and discard, then releases its registration", { timeout: 30000 }, async (t) => {
+it("notifies every manager for external rewrite and discard, then releases its registration", {
+	timeout: 30000,
+}, async (t) => {
 	const f = fixture(t);
 	const second = new AgentManager({ root: f.root, agentDir: f.root, packageDir: f.root });
 	t.after(() => second.close());
@@ -212,7 +298,9 @@ it("notifies every manager for external rewrite and discard, then releases its r
 	assert.equal(records.length, 1);
 	const recordName = records[0];
 	assert.ok(recordName);
-	const registration = JSON.parse(readFileSync(join(f.manager.catalog.root, ".observers", recordName), "utf8")) as { socketPath: string };
+	const registration = JSON.parse(readFileSync(join(f.manager.catalog.root, ".observers", recordName), "utf8")) as {
+		socketPath: string;
+	};
 	await second.close();
 	assert.deepEqual(readdirSync(join(f.manager.catalog.root, ".observers")), []);
 	offSecond();
@@ -221,19 +309,55 @@ it("notifies every manager for external rewrite and discard, then releases its r
 	assert.equal(existsSync(registration.socketPath), false, "close removes the private socket synchronously");
 });
 
-it("refreshes a real cold thread after external publication without acquiring a host or scheduling input", { timeout: 30000 }, async (t) => {
+it("refreshes a real cold thread after external publication without acquiring a host or scheduling input", {
+	timeout: 30000,
+}, async (t) => {
 	const f = fixture(t);
-	const record = f.manager.catalog.create({ cwd: f.root, agentDir: f.root, packageDir: f.root, model: { provider: "test", modelId: "test" }, thinkingLevel: "off" });
-	const host = await DurableHost.open({ ...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry()), storageId: record.storageId }, BACKGROUND_CONTEXT);
+	const record = f.manager.catalog.create({
+		cwd: f.root,
+		agentDir: f.root,
+		packageDir: f.root,
+		model: { provider: "test", modelId: "test" },
+		thinkingLevel: "off",
+	});
+	const host = await DurableHost.open(
+		{
+			...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry()),
+			storageId: record.storageId,
+		},
+		BACKGROUND_CONTEXT,
+	);
 	let threadId: string;
 	try {
-		const created = await mutateCollaboration(host.harness, record.storageId, { action: "create", requestId: "create", senderIdentity: record.storageId, origin: "model", title: "Cold source", purpose: "Observe external publication", authority: "Isolated test", source: "Current native storage", restrictions: "No observation host or model", acceptance: "Catalog event causes a cold read" }, BACKGROUND_CONTEXT);
+		const created = await mutateCollaboration(
+			host.harness,
+			record.storageId,
+			{
+				action: "create",
+				requestId: "create",
+				senderIdentity: record.storageId,
+				origin: "model",
+				title: "Cold source",
+				purpose: "Observe external publication",
+				authority: "Isolated test",
+				source: "Current native storage",
+				restrictions: "No observation host or model",
+				acceptance: "Catalog event causes a cold read",
+			},
+			BACKGROUND_CONTEXT,
+		);
 		threadId = created.threadId;
-		f.manager.catalog.updateView(record.storageId, { updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } }, await projectCollaboration(host.harness, BACKGROUND_CONTEXT));
+		f.manager.catalog.updateView(
+			record.storageId,
+			{ updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } },
+			await projectCollaboration(host.harness, BACKGROUND_CONTEXT),
+		);
 		assert.equal((await host.harness.inspect(BACKGROUND_CONTEXT)).submissions.length, 0);
-	} finally { await host.close(); }
+	} finally {
+		await host.close();
+	}
 	const caller = { id: randomUUID(), cwd: f.root };
-	const before = await f.manager.collaborate({ action: "read", threadId }, caller) as CollaborationPage;
+	const before = (await f.manager.collaborate({ action: "read", threadId }, caller)) as CollaborationPage;
 	assert.equal(before.thread.sequence, 1);
 	const { child, messages, evidence: publisherEvidence } = await publisher(t, f.root);
 	const refreshed = eventLog<CollaborationPage>();
@@ -243,32 +367,51 @@ it("refreshes a real cold thread after external publication without acquiring a 
 	let active = true;
 	const off = f.manager.subscribeRoster(() => {
 		trace.push("roster notice");
-		if (active) void f.manager.collaborate({ action: "read", threadId }, caller).then((page) => {
-			trace.push(`refresh sequence ${(page as CollaborationPage).thread.sequence}`);
-			refreshed.push(page as CollaborationPage);
-		}, (error) => {
-			trace.push("refresh failed");
-			errors.push(error);
-		});
+		if (active)
+			void f.manager.collaborate({ action: "read", threadId }, caller).then(
+				(page) => {
+					trace.push(`refresh sequence ${(page as CollaborationPage).thread.sequence}`);
+					refreshed.push(page as CollaborationPage);
+				},
+				(error) => {
+					trace.push("refresh failed");
+					errors.push(error);
+				},
+			);
 	});
-	child.send({ type: "post", id: record.storageId, threadId, requestId: "external-post", message: "External cold publication" });
+	child.send({
+		type: "post",
+		id: record.storageId,
+		threadId,
+		requestId: "external-post",
+		message: "External cold publication",
+	});
 	try {
 		await Promise.all([
-			messages.waitForCount(2).catch(failedWait("publisher posted-message wait", () => `${publisherEvidence()}${trace.text()}`)),
-			refreshed.waitFor((pages) => pages.some((page) => page.thread.sequence === 2)).catch(failedWait("cold refresh wait", () => `${publisherEvidence()}${trace.text()}`)),
+			messages
+				.waitForCount(2)
+				.catch(failedWait("publisher posted-message wait", () => `${publisherEvidence()}${trace.text()}`)),
+			refreshed
+				.waitFor((pages) => pages.some((page) => page.thread.sequence === 2))
+				.catch(failedWait("cold refresh wait", () => `${publisherEvidence()}${trace.text()}`)),
 		]);
 		assert.ok(refreshed.some((page) => page.events.some((event) => event.message === "External cold publication")));
 		assert.equal(messages[1]?.submissions, 0);
 		assert.deepEqual(errors, []);
 		assert.equal(f.acquisitions(), 0);
 		assert.deepEqual(f.manager.connectedStorageIds(), []);
-	} finally { active = false; off(); }
+	} finally {
+		active = false;
+		off();
+	}
 });
 
 it("refuses excess subscriptions and reclaims only proven-dead local slots", async (t) => {
 	const f = fixture(t);
 	const managers: AgentManager[] = [];
-	t.after(async () => { await Promise.all(managers.map((manager) => manager.close())); });
+	t.after(async () => {
+		await Promise.all(managers.map((manager) => manager.close()));
+	});
 	for (let index = 0; index < 32; index++) {
 		const manager = new AgentManager({ root: f.root, agentDir: f.root, packageDir: f.root });
 		managers.push(manager);
@@ -280,7 +423,10 @@ it("refuses excess subscriptions and reclaims only proven-dead local slots", asy
 	await managers[0]?.close();
 	const dead = spawnSync(process.execPath, ["-e", ""], { stdio: "ignore" });
 	assert.ok(dead.pid);
-	writeFileSync(slot, JSON.stringify({ ...JSON.parse(previous), id: randomUUID(), pid: dead.pid, hostname: hostname() }));
+	writeFileSync(
+		slot,
+		JSON.stringify({ ...JSON.parse(previous), id: randomUUID(), pid: dead.pid, hostname: hostname() }),
+	);
 	const off = f.manager.subscribeRoster(() => {});
 	const current = JSON.parse(readFileSync(slot, "utf8"));
 	assert.equal(current.pid, process.pid);

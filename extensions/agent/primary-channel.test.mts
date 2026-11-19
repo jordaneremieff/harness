@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
@@ -8,7 +19,20 @@ import { createServer, type Socket } from "node:net";
 import { spawnSync } from "node:child_process";
 import { eventLog } from "./host-fixture.mts";
 import { createTransportServer, unixSocketPath } from "../../transport/index.ts";
-import { connectPrimaryChannel, createPrimaryChannel, PRIMARY_ENDPOINT_VERSION, primaryEndpointOwnerState, primaryEndpointPath, primaryEndpointStatus, readPrimaryEndpointDescriptor, PrimaryChannelConflictError, PrimaryChannelUnavailableError, probePrimaryChannel, type PrimaryChannelOptions, type PrimaryDelivery } from "./primary-channel.ts";
+import {
+	connectPrimaryChannel,
+	createPrimaryChannel,
+	PRIMARY_ENDPOINT_VERSION,
+	primaryEndpointOwnerState,
+	primaryEndpointPath,
+	primaryEndpointStatus,
+	readPrimaryEndpointDescriptor,
+	PrimaryChannelConflictError,
+	PrimaryChannelUnavailableError,
+	probePrimaryChannel,
+	type PrimaryChannelOptions,
+	type PrimaryDelivery,
+} from "./primary-channel.ts";
 
 interface Fixture {
 	readonly root: string;
@@ -33,7 +57,11 @@ function uuidV7(value = randomUUID()): string {
 }
 
 /** Build options for one primary id under a test root. */
-function channelOptions(root: string, id: string, overrides: Partial<PrimaryChannelOptions> = {}): PrimaryChannelOptions {
+function channelOptions(
+	root: string,
+	id: string,
+	overrides: Partial<PrimaryChannelOptions> = {},
+): PrimaryChannelOptions {
 	return {
 		id,
 		cwd: "/work/topic",
@@ -54,8 +82,13 @@ async function fixture(t: { after(fn: () => void): void }): Promise<Fixture> {
 	const delivered: PrimaryDelivery[] = [];
 	const prompted: string[] = [];
 	const options = channelOptions(root, id, {
-		deliver: (message) => { delivered.push(message); },
-		promptTrust: async (cwd) => { prompted.push(cwd); return cwd === "/work/deny" ? undefined : { trusted: true, remember: true }; },
+		deliver: (message) => {
+			delivered.push(message);
+		},
+		promptTrust: async (cwd) => {
+			prompted.push(cwd);
+			return cwd === "/work/deny" ? undefined : { trusted: true, remember: true };
+		},
 	});
 	const channel = await createPrimaryChannel(options);
 	t.after(() => void channel.close().catch(() => undefined));
@@ -90,9 +123,15 @@ it("bounds a connection to a silent endpoint", async (t) => {
 	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
 	const socketPath = join(root, "silent.sock");
 	const accepted = new Set<Socket>();
-	const silent = createServer((socket) => { accepted.add(socket); socket.on("close", () => accepted.delete(socket)); });
+	const silent = createServer((socket) => {
+		accepted.add(socket);
+		socket.on("close", () => accepted.delete(socket));
+	});
 	await new Promise<void>((resolve) => silent.listen(socketPath, resolve));
-	t.after(() => { for (const socket of accepted) socket.destroy(); silent.close(); });
+	t.after(() => {
+		for (const socket of accepted) socket.destroy();
+		silent.close();
+	});
 	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { socketPath }));
 	const started = Date.now();
 	await assert.rejects(connectPrimaryChannel({ id, sessionsRoot: root, timeoutMs: 250 }), /within 250 ms|unreachable/u);
@@ -123,11 +162,27 @@ it("delivers a message with source, text, details, and retained replyTo", async 
 	const f = await fixture(t);
 	const client = await connectPrimaryChannel({ id: f.id, sessionsRoot: f.root });
 	try {
-		await client.deliver({ sourceId: "source-1", text: "hello primary", details: { kind: "report" }, replyTo: "entry-9" });
-		assert.deepEqual(f.delivered, [{ sourceId: "source-1", text: "hello primary", details: { kind: "report" }, replyTo: "entry-9", requireRetained: true }]);
+		await client.deliver({
+			sourceId: "source-1",
+			text: "hello primary",
+			details: { kind: "report" },
+			replyTo: "entry-9",
+		});
+		assert.deepEqual(f.delivered, [
+			{
+				sourceId: "source-1",
+				text: "hello primary",
+				details: { kind: "report" },
+				replyTo: "entry-9",
+				requireRetained: true,
+			},
+		]);
 		await client.deliver({ sourceId: "source-2", text: "queued primary", requireRetained: false });
 		assert.deepEqual(f.delivered[1], { sourceId: "source-2", text: "queued primary", requireRetained: false });
-		await assert.rejects(client.deliver({ sourceId: "invalid", text: "invalid", requireRetained: "false" as never }), /requireRetained must be a boolean/u);
+		await assert.rejects(
+			client.deliver({ sourceId: "invalid", text: "invalid", requireRetained: "false" as never }),
+			/requireRetained must be a boolean/u,
+		);
 	} finally {
 		await client.close();
 	}
@@ -149,23 +204,41 @@ it("uses the human-decision deadline for trustPrompt, not the handshake deadline
 	const root = testRoot(t);
 	const id = uuidV7();
 	let release = () => {};
-	const decision = new Promise<void>((resolve) => { release = resolve; });
+	const decision = new Promise<void>((resolve) => {
+		release = resolve;
+	});
 	const prompted = eventLog<string>();
-	const channel = await createPrimaryChannel(channelOptions(root, id, {
-		promptTrust: async (cwd) => { prompted.push(cwd); await decision; return { trusted: true, remember: false }; },
-	}));
+	const channel = await createPrimaryChannel(
+		channelOptions(root, id, {
+			promptTrust: async (cwd) => {
+				prompted.push(cwd);
+				await decision;
+				return { trusted: true, remember: false };
+			},
+		}),
+	);
 	t.after(release);
 	t.after(() => void channel.close().catch(() => undefined));
 	const client = await connectPrimaryChannel({ id, sessionsRoot: root, timeoutMs: 150 });
 	try {
 		const deadlines: number[] = [];
 		const timeout = AbortSignal.timeout.bind(AbortSignal);
-		t.mock.method(AbortSignal, "timeout", (ms: number) => { deadlines.push(ms); return timeout(ms); });
+		t.mock.method(AbortSignal, "timeout", (ms: number) => {
+			deadlines.push(ms);
+			return timeout(ms);
+		});
 		let completed = false;
-		const pending = client.trustPrompt("/work/slow").then((value) => { completed = true; return value; });
+		const pending = client.trustPrompt("/work/slow").then((value) => {
+			completed = true;
+			return value;
+		});
 		await prompted.waitForCount(1);
 		assert.equal(completed, false, "the decision producer still holds the consumer");
-		assert.deepEqual(deadlines, [300000], "the request uses the human-decision deadline, not the 150ms handshake deadline");
+		assert.deepEqual(
+			deadlines,
+			[300000],
+			"the request uses the human-decision deadline, not the 150ms handshake deadline",
+		);
 		release();
 		assert.deepEqual(await pending, { trusted: true, remember: false });
 	} finally {
@@ -176,14 +249,19 @@ it("uses the human-decision deadline for trustPrompt, not the handshake deadline
 it("cancels a trust prompt through the caller signal", async (t) => {
 	const root = testRoot(t);
 	const id = uuidV7();
-	const channel = await createPrimaryChannel(channelOptions(root, id, { promptTrust: async () => new Promise(() => {}) }));
+	const channel = await createPrimaryChannel(
+		channelOptions(root, id, { promptTrust: async () => new Promise(() => {}) }),
+	);
 	t.after(() => void channel.close().catch(() => undefined));
 	const client = await connectPrimaryChannel({ id, sessionsRoot: root, timeoutMs: 1000 });
 	try {
 		const controller = new AbortController();
 		const pending = client.trustPrompt("/work/cancel", controller.signal);
 		controller.abort();
-		await assert.rejects(pending, (error: unknown) => error instanceof Error && /abort/iu.test(`${error.name} ${error.message}`));
+		await assert.rejects(
+			pending,
+			(error: unknown) => error instanceof Error && /abort/iu.test(`${error.name} ${error.message}`),
+		);
 	} finally {
 		await client.close();
 	}
@@ -202,9 +280,15 @@ it("publishes exactly one of two simultaneous same-id registrations", async (t) 
 	const id = uuidV7();
 	const options = channelOptions(root, id);
 	const endpointDirectory = join(root, ".primaries");
-	assert.ok(Buffer.byteLength(join(endpointDirectory, `${randomUUID()}.sock`)) <= 100, "the leak assertion observes only the private fixture directory");
+	assert.ok(
+		Buffer.byteLength(join(endpointDirectory, `${randomUUID()}.sock`)) <= 100,
+		"the leak assertion observes only the private fixture directory",
+	);
 	const results = await Promise.allSettled([createPrimaryChannel(options), createPrimaryChannel(options)]);
-	const fulfilled = results.filter((result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof createPrimaryChannel>>> => result.status === "fulfilled");
+	const fulfilled = results.filter(
+		(result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof createPrimaryChannel>>> =>
+			result.status === "fulfilled",
+	);
 	const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
 	channels.push(...fulfilled.map((result) => result.value));
 	assert.equal(fulfilled.length, 1, JSON.stringify(results.map((result) => result.status)));
@@ -217,7 +301,11 @@ it("publishes exactly one of two simultaneous same-id registrations", async (t) 
 	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { socketPath: string; pid: number };
 	assert.equal(record.socketPath, winner.socketPath, "the published record points at the winner");
 	assert.equal(record.pid, process.pid);
-	assert.deepEqual(readdirSync(join(root, ".primaries")).filter((name) => name.endsWith(".json")), [`${id}.json`], "the loser published no endpoint");
+	assert.deepEqual(
+		readdirSync(join(root, ".primaries")).filter((name) => name.endsWith(".json")),
+		[`${id}.json`],
+		"the loser published no endpoint",
+	);
 	const winnerSocket = winner.socketPath.split("/").at(-1);
 	const sockets = readdirSync(endpointDirectory).filter((name) => name.endsWith(".sock"));
 	assert.deepEqual(sockets, [winnerSocket], "only the winner's socket remains after the race");
@@ -232,9 +320,16 @@ it("keeps a long primary root address bounded and records its selected socket", 
 	t.after(() => channel.close());
 	try {
 		assert.equal(dirname(channel.socketPath), socketDirectory);
-		assert.notEqual(dirname(channel.socketPath), endpointDirectory, "the long endpoint root selects a short fallback address");
+		assert.notEqual(
+			dirname(channel.socketPath),
+			endpointDirectory,
+			"the long endpoint root selects a short fallback address",
+		);
 		assert.ok(Buffer.byteLength(channel.socketPath, "utf8") <= 100, "the address fits the Unix socket limit");
-		const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { socketPath: string; pid: number };
+		const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as {
+			socketPath: string;
+			pid: number;
+		};
 		assert.equal(record.socketPath, channel.socketPath);
 		assert.equal(record.pid, process.pid);
 	} finally {
@@ -265,7 +360,9 @@ it("replaces an endpoint whose recorded local process is dead", async (t) => {
 	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
 	const dead = spawnSync(process.execPath, ["-e", ""]);
 	assert.ok(dead.pid);
-	const previous = JSON.parse(endpointRecord(root, id, { pid: dead.pid, socketPath: join(root, "stale.sock") })) as { serverId: string };
+	const previous = JSON.parse(endpointRecord(root, id, { pid: dead.pid, socketPath: join(root, "stale.sock") })) as {
+		serverId: string;
+	};
 	writeFileSync(primaryEndpointPath(root, id), JSON.stringify(previous));
 	const channel = await createPrimaryChannel(channelOptions(root, id));
 	t.after(() => void channel.close().catch(() => undefined));
@@ -281,7 +378,14 @@ it("reports supported ids for an unknown lookup from a bounded page", async (t) 
 	const second = uuidV7();
 	writeFileSync(primaryEndpointPath(root, first), endpointRecord(root, first));
 	writeFileSync(primaryEndpointPath(root, second), endpointRecord(root, second));
-	await assert.rejects(connectPrimaryChannel({ id: uuidV7(), sessionsRoot: root }), (error: unknown) => error instanceof PrimaryChannelUnavailableError && String(error).includes(first) && String(error).includes(second) && String(error).includes("coverage"));
+	await assert.rejects(
+		connectPrimaryChannel({ id: uuidV7(), sessionsRoot: root }),
+		(error: unknown) =>
+			error instanceof PrimaryChannelUnavailableError &&
+			String(error).includes(first) &&
+			String(error).includes(second) &&
+			String(error).includes("coverage"),
+	);
 });
 
 it("refuses a channel whose handshake serverId does not match", async (t) => {
@@ -289,7 +393,13 @@ it("refuses a channel whose handshake serverId does not match", async (t) => {
 	const id = uuidV7();
 	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
 	const socketPath = join(root, "foreign.sock");
-	const server = createTransportServer({ serverId: randomUUID(), path: socketPath, request: async () => { throw new Error("no operation"); } });
+	const server = createTransportServer({
+		serverId: randomUUID(),
+		path: socketPath,
+		request: async () => {
+			throw new Error("no operation");
+		},
+	});
 	await server.start();
 	t.after(() => void server.close().catch(() => undefined));
 	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { socketPath }));
@@ -301,7 +411,10 @@ it("rejects malformed and traversal primary ids at the path boundary", async (t)
 	for (const id of ["../escape", "..", "not-a-uuid", ""]) {
 		assert.throws(() => primaryEndpointPath(root, id), TypeError);
 		assert.equal(primaryEndpointOwnerState(root, id), "unknown");
-		await assert.rejects(connectPrimaryChannel({ id, sessionsRoot: root }), (error: unknown) => error instanceof PrimaryChannelUnavailableError && String(error).includes("canonical"));
+		await assert.rejects(
+			connectPrimaryChannel({ id, sessionsRoot: root }),
+			(error: unknown) => error instanceof PrimaryChannelUnavailableError && String(error).includes("canonical"),
+		);
 		await assert.rejects(createPrimaryChannel(channelOptions(root, id)), TypeError);
 	}
 	assert.equal(existsSync(join(root, "escape.json")), false);
@@ -391,11 +504,20 @@ it("rewrites the endpoint identity when a registered primary changes", async (t)
 	const id = uuidV7();
 	const channel = await createPrimaryChannel(channelOptions(root, id));
 	t.after(() => void channel.close().catch(() => undefined));
-	channel.update({ name: "Renamed primary", model: { provider: "anthropic", modelId: "claude-opus-5-5" }, thinkingLevel: "xhigh" });
+	channel.update({
+		name: "Renamed primary",
+		model: { provider: "anthropic", modelId: "claude-opus-5-5" },
+		thinkingLevel: "xhigh",
+	});
 	assert.equal(channel.info().name, "Renamed primary");
 	assert.deepEqual(channel.info().model, { provider: "anthropic", modelId: "claude-opus-5-5" });
 	assert.equal(channel.info().thinkingLevel, "xhigh");
-	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { id: string; name?: string; model?: unknown; thinkingLevel?: string };
+	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as {
+		id: string;
+		name?: string;
+		model?: unknown;
+		thinkingLevel?: string;
+	};
 	assert.equal(record.id, id);
 	assert.equal(record.name, "Renamed primary");
 	assert.deepEqual(record.model, { provider: "anthropic", modelId: "claude-opus-5-5" });
@@ -444,7 +566,11 @@ it("classifies local endpoint ownership before delivery compatibility", async (t
 	writeFileSync(path, endpointRecord(root, id, { version: "primary-delivery/0.0.1" }));
 	assert.deepEqual(primaryEndpointStatus(root, id), { state: "incompatible", version: "primary-delivery/0.0.1" });
 	writeFileSync(path, endpointRecord(root, id, { version: "primary-delivery/0.0.1", pid: deadProcessId() }));
-	assert.deepEqual(primaryEndpointStatus(root, id), { state: "dead", version: "primary-delivery/0.0.1" }, "a dead owner stays dead regardless of its delivery contract");
+	assert.deepEqual(
+		primaryEndpointStatus(root, id),
+		{ state: "dead", version: "primary-delivery/0.0.1" },
+		"a dead owner stays dead regardless of its delivery contract",
+	);
 	writeFileSync(path, endpointRecord(root, id, { version: 2 }));
 	assert.deepEqual(primaryEndpointStatus(root, id), { state: "incompatible", version: "2" });
 	writeFileSync(path, endpointRecord(root, id, { version: undefined }));
@@ -493,9 +619,14 @@ it("replaces a dead local endpoint independently of its opaque contract tag", as
 			assert.equal(current.version, PRIMARY_ENDPOINT_VERSION);
 			assert.equal(current.pid, process.pid);
 			const client = await connectPrimaryChannel({ id, sessionsRoot: root });
-			try { assert.equal((await client.info()).id, id); }
-			finally { await client.close(); }
-		} finally { await channel.close(); }
+			try {
+				assert.equal((await client.info()).id, id);
+			} finally {
+				await client.close();
+			}
+		} finally {
+			await channel.close();
+		}
 		assert.equal(existsSync(path), false);
 	}
 });
@@ -520,7 +651,10 @@ it("replaces an older endpoint record with a dead owner at registration", async 
 	const id = uuidV7();
 	const dead = spawnSync(process.execPath, ["-e", ""]);
 	assert.ok(dead.pid);
-	writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id, { version: "primary-delivery/0.0.1", pid: dead.pid }));
+	writeFileSync(
+		primaryEndpointPath(root, id),
+		endpointRecord(root, id, { version: "primary-delivery/0.0.1", pid: dead.pid }),
+	);
 	const channel = await createPrimaryChannel(channelOptions(root, id));
 	t.after(() => void channel.close().catch(() => undefined));
 	const record = JSON.parse(readFileSync(primaryEndpointPath(root, id), "utf8")) as { version: string; pid: number };
@@ -528,13 +662,22 @@ it("replaces an older endpoint record with a dead owner at registration", async 
 	assert.equal(record.pid, process.pid);
 });
 
-
 it("preserves host presence fields through identity updates, intent publication, and touch", async (t) => {
 	const root = testRoot(t);
 	const id = randomUUID();
-	const channel = await createPrimaryChannel(channelOptions(root, id, { repository: "/work/repository/.git", lastActivityAt: "2026-10-04T09:00:00Z" }));
-	t.after(async () => { await channel.close(); });
-	const claim = { purpose: "Presence", integration: "Compose the change", authority: "Operator request", scope: { paths: ["extensions/agent"], branches: [] }, updatedAt: "2026-10-04T10:00:00Z" };
+	const channel = await createPrimaryChannel(
+		channelOptions(root, id, { repository: "/work/repository/.git", lastActivityAt: "2026-10-04T09:00:00Z" }),
+	);
+	t.after(async () => {
+		await channel.close();
+	});
+	const claim = {
+		purpose: "Presence",
+		integration: "Compose the change",
+		authority: "Operator request",
+		scope: { paths: ["extensions/agent"], branches: [] },
+		updatedAt: "2026-10-04T10:00:00Z",
+	};
 	channel.publishIntent(claim);
 	channel.touch("2026-10-04T10:01:00Z");
 	channel.update({ name: "Updated", model: undefined, thinkingLevel: undefined });
@@ -544,7 +687,9 @@ it("preserves host presence fields through identity updates, intent publication,
 	const connection = await connectPrimaryChannel({ id, sessionsRoot: root });
 	try {
 		assert.deepEqual((await connection.info()).intentClaim, claim);
-	} finally { await connection.close(); }
+	} finally {
+		await connection.close();
+	}
 	const path = primaryEndpointPath(root, id);
 	const record = JSON.parse(readFileSync(path, "utf8"));
 	assert.equal(record.repository, "/work/repository/.git");
@@ -561,31 +706,54 @@ it("contains malformed optional intent without refusing core delivery or ownersh
 	writeFileSync(path, JSON.stringify({ ...record, intentClaim: { purpose: 12 } }));
 	assert.equal(primaryEndpointStatus(f.root, f.id).state, "live");
 	const connection = await connectPrimaryChannel({ id: f.id, sessionsRoot: f.root });
-	try { await connection.deliver({ sourceId: "sender", text: "core delivery" }); }
-	finally { await connection.close(); }
+	try {
+		await connection.deliver({ sourceId: "sender", text: "core delivery" });
+	} finally {
+		await connection.close();
+	}
 	assert.equal(f.delivered[0]?.text, "core delivery");
 });
 
 it("refuses oversized publication atomically and copies caller intent arrays", async (t) => {
 	const f = await fixture(t);
-	const claim = { purpose: "Presence", integration: "Compose", authority: "Operator request", scope: { paths: ["extensions/agent"], branches: [] as string[] }, updatedAt: "2026-10-04T10:00:00Z" };
+	const claim = {
+		purpose: "Presence",
+		integration: "Compose",
+		authority: "Operator request",
+		scope: { paths: ["extensions/agent"], branches: [] as string[] },
+		updatedAt: "2026-10-04T10:00:00Z",
+	};
 	f.channel.publishIntent(claim);
 	claim.scope.paths.push("unpublished");
 	assert.deepEqual(f.channel.info().intentClaim?.scope.paths, ["extensions/agent"]);
 	const path = primaryEndpointPath(f.root, f.id);
 	const before = readFileSync(path, "utf8");
-	assert.throws(() => f.channel.publishIntent({ ...claim, scope: { paths: Array.from({ length: 32 }, () => "界".repeat(512)), branches: [] } }), /16 KiB/u);
+	assert.throws(
+		() =>
+			f.channel.publishIntent({
+				...claim,
+				scope: { paths: Array.from({ length: 32 }, () => "界".repeat(512)), branches: [] },
+			}),
+		/16 KiB/u,
+	);
 	assert.equal(readFileSync(path, "utf8"), before);
 	assert.equal(f.channel.info().intentClaim?.purpose, "Presence");
 	assert.throws(() => f.channel.publishIntent({ ...claim, purpose: "x".repeat(1025) }), /purpose/u);
 	assert.throws(() => f.channel.touch(""), /lastActivityAt/u);
 });
 
-
 it("publishes and clears observed purpose without erasing host facts or intent", async (t) => {
 	const root = testRoot(t);
-	const channel = await createPrimaryChannel(channelOptions(root, randomUUID(), { repository: "/work/common", repositoryState: "git", observedPurpose: { source: "session-name", text: "Effort awareness" } }));
-	t.after(async () => { await channel.close(); });
+	const channel = await createPrimaryChannel(
+		channelOptions(root, randomUUID(), {
+			repository: "/work/common",
+			repositoryState: "git",
+			observedPurpose: { source: "session-name", text: "Effort awareness" },
+		}),
+	);
+	t.after(async () => {
+		await channel.close();
+	});
 	channel.setObservedPurpose({ source: "interactive-input", text: "Build presence" });
 	channel.update({ name: undefined, model: undefined, thinkingLevel: undefined });
 	channel.touch("2026-10-04T12:00:00Z");
@@ -599,7 +767,10 @@ it("publishes and clears observed purpose without erasing host facts or intent",
 	assert.equal(channel.info().repository, "/work/common");
 });
 
-function countEndpointParses(t: { mock: { method: typeof import("node:test").mock.method } }, text: string): { readonly count: () => number } {
+function countEndpointParses(
+	t: { mock: { method: typeof import("node:test").mock.method } },
+	text: string,
+): { readonly count: () => number } {
 	const parse = JSON.parse;
 	let parses = 0;
 	t.mock.method(JSON, "parse", (...args: Parameters<typeof JSON.parse>) => {
@@ -622,7 +793,9 @@ it("reuses the strict descriptor parse for an unchanged file while ownership sta
 	const second = readPrimaryEndpointDescriptor(root, id);
 	assert.equal(second.info?.cwd, "/work/topic", "a caller edit never reaches a later read");
 	assert.equal(parses.count(), 1);
-	const kill = t.mock.method(process, "kill", () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
+	const kill = t.mock.method(process, "kill", () => {
+		throw Object.assign(new Error("gone"), { code: "ESRCH" });
+	});
 	assert.equal(readPrimaryEndpointDescriptor(root, id).state, "dead", "process state is classified on every read");
 	assert.equal(kill.mock.callCount(), 1);
 	assert.equal(parses.count(), 1);
@@ -639,7 +812,11 @@ it("reads a changed or removed descriptor on the next observation and never cach
 	writeFileSync(path, readFileSync(path, "utf8").replace("aaaa", "bbbb"));
 	utimesSync(path, before.atime, before.mtime);
 	assert.equal(statSync(path).size, before.size);
-	assert.equal(readPrimaryEndpointDescriptor(root, id).info?.name, "bbbb", "an in-place edit with the same size and mtime is seen");
+	assert.equal(
+		readPrimaryEndpointDescriptor(root, id).info?.name,
+		"bbbb",
+		"an in-place edit with the same size and mtime is seen",
+	);
 	const corrupt = endpointRecord(root, id, { repositoryState: "invalid" });
 	writeFileSync(path, corrupt);
 	const parses = countEndpointParses(t, corrupt);

@@ -18,15 +18,42 @@ import { randomUUID } from "node:crypto";
 import { parseReportIntervention, type ReportIntervention } from "./report-intervention.ts";
 import { NATIVE_COMPACTION_SEED } from "./control-guidance.ts";
 import { validateReportIntervention } from "./native-report-intervention.ts";
-import { DeliveryRowDoc, automaticDeliveryPage, deliveryState, migrateDeliveryStore, readDeliveryDraft, receiptKey, reportKey, retainedIntent, retainedReceipt, retainedReport, retainedReportRequest, storeDeliveryRow, writeDeliveryDraft } from "./delivery-store.ts";
+import {
+	DeliveryRowDoc,
+	automaticDeliveryPage,
+	deliveryState,
+	migrateDeliveryStore,
+	readDeliveryDraft,
+	receiptKey,
+	reportKey,
+	retainedIntent,
+	retainedReceipt,
+	retainedReport,
+	retainedReportRequest,
+	storeDeliveryRow,
+	writeDeliveryDraft,
+} from "./delivery-store.ts";
 import { inputEntry, isInputClass, sentInputClass, type InputClass, type InputLabel } from "./input-entry.ts";
-import { configureProviderRecovery, captureProviderRecovery, linkProviderRecovery, readInputRecovery, readInputProviderBlock, readProviderBlock, type ProviderRetryNotice } from "./provider-block.ts";
+import {
+	configureProviderRecovery,
+	captureProviderRecovery,
+	linkProviderRecovery,
+	readInputRecovery,
+	readInputProviderBlock,
+	readProviderBlock,
+	type ProviderRetryNotice,
+} from "./provider-block.ts";
 import { modelFailureText, type ProviderBlockFact } from "./provider-block-facts.ts";
 import { AwaitDoc, acknowledgeProviderRetry, forgetFailedAdmission, recordInputProvenance } from "./awaited-results.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
 import { placementOf, prepareQueuedInputs, type Placement } from "./unplaced-inputs.ts";
 import { createCheckIn } from "./durable-checkins.ts";
-import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, type RequestContext } from "./request-context.ts";
+import {
+	cleanupRequestContexts,
+	recordRequestContext,
+	RequestContextDoc,
+	type RequestContext,
+} from "./request-context.ts";
 import { requestHasOpenWork } from "./open-work.ts";
 import { ProfileDoc, refreshManagedInstructions } from "./profile.ts";
 import { existsSync } from "node:fs";
@@ -58,7 +85,15 @@ import {
 	type UsageState,
 	type UserInput,
 } from "@earendil-works/pi-durable";
-import { boundedConfigurationResult, configurationModel, configurationThinkingLevel, validateConfigurationPatch, type ConfigurationPatch, type ConfigurationResult, type ConfigurationState } from "./configuration.ts";
+import {
+	boundedConfigurationResult,
+	configurationModel,
+	configurationThinkingLevel,
+	validateConfigurationPatch,
+	type ConfigurationPatch,
+	type ConfigurationResult,
+	type ConfigurationState,
+} from "./configuration.ts";
 
 export type NativeIntentMetadata = {
 	claim: PrimaryIntentClaim | null;
@@ -100,24 +135,41 @@ export const AgentMetaDoc = defineDoc<AgentMeta>({
 });
 
 /** Publish only at the invoking native conversation; an older replay never replaces a newer native write. */
-export async function publishConversationIntent(tx: Tx, conversationId: ConversationId, input: NativeIntentMetadata): Promise<NativeIntentMetadata> {
+export async function publishConversationIntent(
+	tx: Tx,
+	conversationId: ConversationId,
+	input: NativeIntentMetadata,
+): Promise<NativeIntentMetadata> {
 	const meta = await tx.doc(AgentMetaDoc, conversationId);
-	if (!meta.intent || meta.intent.taskId < input.taskId) meta.intent = { ...input, startedAt: meta.intent?.startedAt ?? input.startedAt };
+	if (!meta.intent || meta.intent.taskId < input.taskId)
+		meta.intent = { ...input, startedAt: meta.intent?.startedAt ?? input.startedAt };
 	return JSON.parse(JSON.stringify(meta.intent)) as NativeIntentMetadata;
 }
 
-function selectConversationIntent(metadata: NativeIntentMetadata | null | undefined, cwd: string | undefined): { value?: NativeIntentMetadata | null; omitted: boolean } {
+function selectConversationIntent(
+	metadata: NativeIntentMetadata | null | undefined,
+	cwd: string | undefined,
+): { value?: NativeIntentMetadata | null; omitted: boolean } {
 	if (metadata === undefined) return { omitted: false };
 	if (cwd === undefined) return { omitted: metadata?.claim != null };
-	if (metadata !== null && (!matchesSchema(NativeIntentMetadataSchema, metadata) || metadata.cwd !== cwd)) return { omitted: true };
-	return { value: metadata?.claim ? JSON.parse(JSON.stringify(metadata)) as NativeIntentMetadata : null, omitted: false };
+	if (metadata !== null && (!matchesSchema(NativeIntentMetadataSchema, metadata) || metadata.cwd !== cwd))
+		return { omitted: true };
+	return {
+		value: metadata?.claim ? (JSON.parse(JSON.stringify(metadata)) as NativeIntentMetadata) : null,
+		omitted: false,
+	};
 }
 
 /** Project only this writer's public conversation metadata; unavailable metadata stays explicit. */
-export async function projectConversationIntents(harness: Harness, storageId: string, publishedRows: readonly CatalogViewRow[], context: Context): Promise<CatalogIntentClaims> {
-	return harness.commit(async tx => {
+export async function projectConversationIntents(
+	harness: Harness,
+	storageId: string,
+	publishedRows: readonly CatalogViewRow[],
+	context: Context,
+): Promise<CatalogIntentClaims> {
+	return harness.commit(async (tx) => {
 		const page = await tx.scanConversations({}, 200);
-		const visible = new Map(publishedRows.map(row => [row.id, row.cwd]));
+		const visible = new Map(publishedRows.map((row) => [row.id, row.cwd]));
 		const rows: Record<string, NativeIntentMetadata | null> = Object.create(null);
 		let omitted = 0;
 		for (const conversation of page.items) {
@@ -223,7 +275,14 @@ export type DeliveryReport = {
 	readonly createdAt: number;
 	readonly providerRetry?: ProviderRetryNotice;
 	readonly intervention?: ReportIntervention;
-	readonly checkIn?: { readonly origin: DeliveryOrigin; readonly elapsedMs: number; readonly cost: number | null; readonly conversationId: number; readonly requestId: string; readonly fallbackBroadcast?: boolean };
+	readonly checkIn?: {
+		readonly origin: DeliveryOrigin;
+		readonly elapsedMs: number;
+		readonly cost: number | null;
+		readonly conversationId: number;
+		readonly requestId: string;
+		readonly fallbackBroadcast?: boolean;
+	};
 };
 
 export type AgentDeliveryState = {
@@ -233,7 +292,14 @@ export type AgentDeliveryState = {
 };
 
 /** One bounded pending-notice count avoids reading the whole report ledger during observation. */
-export const ThreadDeliveryDoc = defineDocFamily<{ pending: number }, null>({ kind: "agent.thread-delivery", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({ pending: 0 }) });
+export const ThreadDeliveryDoc = defineDocFamily<{ pending: number }, null>({
+	kind: "agent.thread-delivery",
+	version: 1,
+	scope: "session",
+	family: true,
+	checkpointWhen: () => false,
+	initial: () => ({ pending: 0 }),
+});
 
 /** Session-scoped fork markers: request key to the conversation it created. */
 export type AgentForkState = {
@@ -253,7 +319,9 @@ export const AgentForkDoc = defineDoc<AgentForkState>({
 export class DurableConversationBusyError extends Error {
 	readonly conversationId: ConversationId;
 	constructor(conversationId: ConversationId, sessionId: string) {
-		super(`conversation ${sessionId} is busy; configuration requires an idle conversation. After its current work ends, repeat agent_configure with sessionId: ${sessionId}`);
+		super(
+			`conversation ${sessionId} is busy; configuration requires an idle conversation. After its current work ends, repeat agent_configure with sessionId: ${sessionId}`,
+		);
 		this.name = "DurableConversationBusyError";
 		this.conversationId = conversationId;
 	}
@@ -261,11 +329,16 @@ export class DurableConversationBusyError extends Error {
 
 /** A provider retry notice that the recipient's current inputs already showed is not admitted again. */
 export class AwaitInputSuppressed extends Error {
-	constructor() { super("The recipient already received this provider retry notice"); }
+	constructor() {
+		super("The recipient already received this provider retry notice");
+	}
 }
 
 export interface DurableSubmitParams {
-	readonly provenance?: Omit<import("./awaited-results.ts").InputProvenance, "conversationId" | "requestId" | "submissionId">;
+	readonly provenance?: Omit<
+		import("./awaited-results.ts").InputProvenance,
+		"conversationId" | "requestId" | "submissionId"
+	>;
 	readonly message: UserInput;
 	readonly requestId: string;
 	/** When absent, the submission runs but retains no external receipt. */
@@ -283,7 +356,11 @@ export interface DurableSubmitParams {
 	readonly requestContext?: RequestContext;
 	readonly providerRetry?: ProviderRetryNotice;
 	/** Trusted owner value, captured inside the existing post-admission bookkeeping commit. */
-	readonly communication?: { readonly storageId: string; readonly value: unknown; readonly taskSender?: import("./task-senders.ts").TaskInputSender };
+	readonly communication?: {
+		readonly storageId: string;
+		readonly value: unknown;
+		readonly taskSender?: import("./task-senders.ts").TaskInputSender;
+	};
 }
 
 export interface RichSubmitParams {
@@ -302,9 +379,24 @@ export interface RichSubmitParams {
 }
 
 /** Enriched admission is independent of the unchanged base submit operation. */
-export async function richSubmitConversation(conversation: Conversation, params: RichSubmitParams, context: Context, now: () => number = Date.now): Promise<DurableSubmitResult> {
-	const request: RequestContext = { requestId: params.requestId, requester: params.requester, replyTo: params.replyTo ?? params.requester, origin: params.origin };
-	return submitConversation(conversation, { ...params, ownerId: request.replyTo, requestContext: request }, context, now);
+export async function richSubmitConversation(
+	conversation: Conversation,
+	params: RichSubmitParams,
+	context: Context,
+	now: () => number = Date.now,
+): Promise<DurableSubmitResult> {
+	const request: RequestContext = {
+		requestId: params.requestId,
+		requester: params.requester,
+		replyTo: params.replyTo ?? params.requester,
+		origin: params.origin,
+	};
+	return submitConversation(
+		conversation,
+		{ ...params, ownerId: request.replyTo, requestContext: request },
+		context,
+		now,
+	);
 }
 
 export interface DurableSubmitResult {
@@ -342,7 +434,11 @@ export type DeliveryIntentState =
 	| { readonly kind: "linked"; readonly submissionId: SubmissionId };
 
 /** Write the conversation's display metadata for one admitted input on the caller's session transaction. */
-export async function recordAdmissionMeta(tx: Tx, conversationId: ConversationId, message: UserInput | DeliveryMessage): Promise<void> {
+export async function recordAdmissionMeta(
+	tx: Tx,
+	conversationId: ConversationId,
+	message: UserInput | DeliveryMessage,
+): Promise<void> {
 	const meta = await tx.doc(AgentMetaDoc, conversationId);
 	writeFirstMessage(meta, message);
 	(meta as { updatedAt: number | null }).updatedAt = Date.now();
@@ -359,11 +455,24 @@ export async function recordAdmissionMeta(tx: Tx, conversationId: ConversationId
  * intent is stored linked to its submission. A refusal from `admit` throws, so
  * the commit stores neither the intent, its request route nor its check-in.
  */
-export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt = Date.now(), admissionKind: "new" | "retained" = "new", admit?: () => Promise<SubmissionId>): Promise<DeliveryIntentState> {
+export async function recordDeliveryIntent(
+	tx: Tx,
+	conversationId: ConversationId,
+	admission: DeliveryAdmission,
+	admittedAt = Date.now(),
+	admissionKind: "new" | "retained" = "new",
+	admit?: () => Promise<SubmissionId>,
+): Promise<DeliveryIntentState> {
 	const prior = await retainedIntent(tx, conversationId, admission.requestId);
-	if (prior !== undefined && (prior.ownerId !== admission.ownerId || prior.origin !== admission.origin)) throw new Error("The request ID already identifies another delivery recipient or origin");
+	if (prior !== undefined && (prior.ownerId !== admission.ownerId || prior.origin !== admission.origin))
+		throw new Error("The request ID already identifies another delivery recipient or origin");
 	if (admission.requestContext !== undefined) {
-		if (admissionKind === "new" && (admission.requestContext.requestId !== admission.requestId || admission.requestContext.replyTo !== admission.ownerId || admission.requestContext.origin !== admission.origin))
+		if (
+			admissionKind === "new" &&
+			(admission.requestContext.requestId !== admission.requestId ||
+				admission.requestContext.replyTo !== admission.ownerId ||
+				admission.requestContext.origin !== admission.origin)
+		)
 			throw new Error("The request context does not match its delivery admission");
 		await recordRequestContext(tx, conversationId, admission.requestContext, admissionKind);
 	}
@@ -372,38 +481,67 @@ export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationI
 	await recordAdmissionMeta(tx, conversationId, admission.message);
 	const message = admission.message;
 	await createDeliveryCheckIn(tx, conversationId, admission, admittedAt);
-	await storeDeliveryRow(tx, "intent", {
-		requestId: admission.requestId,
-		ownerId: admission.ownerId,
-		conversationId,
-		message: storedMessage(message),
-		whenBusy: admission.whenBusy ?? null,
-		operationId: admission.operationId ?? null,
-		submissionId,
-		origin: admission.origin,
-	}, true);
+	await storeDeliveryRow(
+		tx,
+		"intent",
+		{
+			requestId: admission.requestId,
+			ownerId: admission.ownerId,
+			conversationId,
+			message: storedMessage(message),
+			whenBusy: admission.whenBusy ?? null,
+			operationId: admission.operationId ?? null,
+			submissionId,
+			origin: admission.origin,
+		},
+		true,
+	);
 	return { kind: "new" };
 }
 
-async function retainedIntentState(tx: Tx, prior: DeliveryIntent, submissionId: SubmissionId | null): Promise<DeliveryIntentState> {
-	if (prior.submissionId !== null && submissionId !== null && prior.submissionId !== submissionId) throw new Error("The retained delivery intent identifies another native submission");
+async function retainedIntentState(
+	tx: Tx,
+	prior: DeliveryIntent,
+	submissionId: SubmissionId | null,
+): Promise<DeliveryIntentState> {
+	if (prior.submissionId !== null && submissionId !== null && prior.submissionId !== submissionId)
+		throw new Error("The retained delivery intent identifies another native submission");
 	if (prior.submissionId !== null) return { kind: "linked", submissionId: prior.submissionId };
 	if (submissionId === null) return { kind: "unlinked" };
 	await storeDeliveryRow(tx, "intent", { ...prior, submissionId });
 	return { kind: "linked", submissionId };
 }
 
-async function createDeliveryCheckIn(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt: number): Promise<void> {
-	await createCheckIn(tx, {
-		conversationId, requestId: admission.requestId, ownerId: admission.ownerId,
-		senderIdentity: admission.senderIdentity ?? String(conversationId), message: storedMessage(admission.message),
-		whenBusy: admission.whenBusy ?? "steer", origin: admission.origin, admittedAt,
-		...(admission.requestContext === undefined ? {} : { requester: admission.requestContext.requester }),
-	}, admission.checkInMinutes ?? 0);
+async function createDeliveryCheckIn(
+	tx: Tx,
+	conversationId: ConversationId,
+	admission: DeliveryAdmission,
+	admittedAt: number,
+): Promise<void> {
+	await createCheckIn(
+		tx,
+		{
+			conversationId,
+			requestId: admission.requestId,
+			ownerId: admission.ownerId,
+			senderIdentity: admission.senderIdentity ?? String(conversationId),
+			message: storedMessage(admission.message),
+			whenBusy: admission.whenBusy ?? "steer",
+			origin: admission.origin,
+			admittedAt,
+			...(admission.requestContext === undefined ? {} : { requester: admission.requestContext.requester }),
+		},
+		admission.checkInMinutes ?? 0,
+	);
 }
 
 /** Link one retained intent to its submission; true when a different submission was already linked. */
-export async function linkDeliveryIntent(tx: Tx, conversationId: ConversationId, requestId: string, submissionId: SubmissionId): Promise<boolean> {
+export async function linkDeliveryIntent(
+	tx: Tx,
+	conversationId: ConversationId,
+	requestId: string,
+	submissionId: SubmissionId,
+): Promise<boolean> {
 	const intent = await retainedIntent(tx, conversationId, requestId);
 	if (intent === undefined) return false;
 	if (intent.submissionId === null) {
@@ -424,7 +562,11 @@ function storedMessage(message: UserInput): DeliveryMessage {
 
 function deliveredMessage(message: DeliveryMessage): UserInput {
 	if (typeof message === "string") return message;
-	return message.map((part) => (part.type === "image" ? { type: "image" as const, data: part.data, mimeType: part.mimeType } : { type: "text" as const, text: part.text }));
+	return message.map((part) =>
+		part.type === "image"
+			? { type: "image" as const, data: part.data, mimeType: part.mimeType }
+			: { type: "text" as const, text: part.text },
+	);
 }
 
 /** Plain text of one stored input, for display-only metadata. */
@@ -444,12 +586,26 @@ function writeFirstMessage(meta: AgentMeta, message: UserInput | DeliveryMessage
 	(meta as { firstMessage: string | null }).firstMessage = text.slice(0, end);
 }
 
-function admissionProvenance(conversationId: ConversationId, params: DurableSubmitParams): import("./awaited-results.ts").InputProvenance {
-	const provenance: import("./awaited-results.ts").InputProvenance = { conversationId, requestId: params.requestId, ...(params.provenance ?? { classification: "explicit", ...(params.requestContext === undefined ? {} : { sender: params.requestContext.requester }) }) };
+function admissionProvenance(
+	conversationId: ConversationId,
+	params: DurableSubmitParams,
+): import("./awaited-results.ts").InputProvenance {
+	const provenance: import("./awaited-results.ts").InputProvenance = {
+		conversationId,
+		requestId: params.requestId,
+		...(params.provenance ?? {
+			classification: "explicit",
+			...(params.requestContext === undefined ? {} : { sender: params.requestContext.requester }),
+		}),
+	};
 	delete provenance.communicationIntent;
 	if (provenance.intervention !== undefined) {
 		provenance.intervention = parseReportIntervention(provenance.intervention);
-		if (provenance.classification !== "report" || !provenance.intervention.producerResults.every((result) => result.sessionId === provenance.sender)) throw new Error("Intervention provenance must be an active report from its exact producer");
+		if (
+			provenance.classification !== "report" ||
+			!provenance.intervention.producerResults.every((result) => result.sessionId === provenance.sender)
+		)
+			throw new Error("Intervention provenance must be an active report from its exact producer");
 	}
 	return provenance;
 }
@@ -463,13 +619,36 @@ export function placementMode(mode: "steer" | "followUp" | "reject" | null | und
 	return mode === "reject" ? "reject" : "steer";
 }
 /** Link the admitted submission to its provenance and retain its communication record in one commit. */
-async function recordAdmittedInput(conversation: Conversation, submissionId: SubmissionId, provenance: import("./awaited-results.ts").InputProvenance, context: Context, communication: DurableSubmitParams["communication"], now: () => number, deduped: boolean): Promise<void> {
+async function recordAdmittedInput(
+	conversation: Conversation,
+	submissionId: SubmissionId,
+	provenance: import("./awaited-results.ts").InputProvenance,
+	context: Context,
+	communication: DurableSubmitParams["communication"],
+	now: () => number,
+	deduped: boolean,
+): Promise<void> {
 	await conversation.commit(async (tx) => {
-		const capture = communication === undefined ? undefined : await prepareAdmittedCapture(tx, communication.storageId, conversation.id, provenance.requestId, submissionId, communication.value, now, deduped, communication.taskSender);
+		const capture =
+			communication === undefined
+				? undefined
+				: await prepareAdmittedCapture(
+						tx,
+						communication.storageId,
+						conversation.id,
+						provenance.requestId,
+						submissionId,
+						communication.value,
+						now,
+						deduped,
+						communication.taskSender,
+					);
 		await recordInputProvenance(tx, provenance);
 		if (capture !== undefined) await capture();
 		else {
-			const row = (await tx.doc(AwaitDoc)).provenance.find((item) => item.conversationId === conversation.id && item.requestId === provenance.requestId);
+			const row = (await tx.doc(AwaitDoc)).provenance.find(
+				(item) => item.conversationId === conversation.id && item.requestId === provenance.requestId,
+			);
 			if (row !== undefined) row.submissionId = submissionId;
 		}
 	}, context);
@@ -486,18 +665,39 @@ export async function submitConversation(
 	context: Context,
 	now: () => number = Date.now,
 ): Promise<DurableSubmitResult> {
-	try { return await admitConversation(conversation, params, context, now); }
-	catch (error) {
-		try { await conversation.commit((tx) => forgetFailedAdmission(tx, conversation.id, params.requestId), BACKGROUND_CONTEXT); }
-		catch (cleanup) { throw new AggregateError([error, cleanup], "Input admission failed and its provenance cleanup was unavailable"); }
+	try {
+		return await admitConversation(conversation, params, context, now);
+	} catch (error) {
+		try {
+			await conversation.commit(
+				(tx) => forgetFailedAdmission(tx, conversation.id, params.requestId),
+				BACKGROUND_CONTEXT,
+			);
+		} catch (cleanup) {
+			throw new AggregateError([error, cleanup], "Input admission failed and its provenance cleanup was unavailable");
+		}
 		throw error;
 	}
 }
 
-const ProviderNoticeAdmissionDoc = defineDocFamily<{ authorized: boolean }, null>({ kind: "agent.provider-notice-admission", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({ authorized: false }) });
+const ProviderNoticeAdmissionDoc = defineDocFamily<{ authorized: boolean }, null>({
+	kind: "agent.provider-notice-admission",
+	family: true,
+	version: 1,
+	scope: "conversation",
+	history: "latest",
+	fork: "initial",
+	checkpointWhen: () => false,
+	initial: () => ({ authorized: false }),
+});
 
 /** Authorization and visibility claims share a commit; replay completes an authorized native admission. */
-async function authorizeProviderNotice(tx: Tx, conversationId: ConversationId, requestId: string, notice: ProviderRetryNotice): Promise<{ suppressed: boolean; existing?: SubmissionId }> {
+async function authorizeProviderNotice(
+	tx: Tx,
+	conversationId: ConversationId,
+	requestId: string,
+	notice: ProviderRetryNotice,
+): Promise<{ suppressed: boolean; existing?: SubmissionId }> {
 	const existing = await tx.submissionByRequest(conversationId, requestId);
 	if (existing?.type === "input") return { suppressed: false, existing: existing.id };
 	const intent = await tx.doc(ProviderNoticeAdmissionDoc, conversationId, requestId, null);
@@ -512,58 +712,153 @@ function inputAuthor(params: DurableSubmitParams): string | undefined {
 	return params.requestContext?.requester ?? params.communication?.taskSender?.identity ?? params.provenance?.sender;
 }
 
-const ENVELOPE_CLASSES: Readonly<Record<string, InputClass>> = { notice: "thread-notice", report: "report", result: "result", "check-in": "check-in" };
+const ENVELOPE_CLASSES: Readonly<Record<string, InputClass>> = {
+	notice: "thread-notice",
+	report: "report",
+	result: "result",
+	"check-in": "check-in",
+};
 
 /** Class, sender and request identity of one admission, for its entry data and route note. */
 function admissionLabel(params: DurableSubmitParams): InputLabel {
-	const envelope = params.communication?.value as { kind?: unknown; sender?: { identity?: unknown } } | null | undefined;
+	const envelope = params.communication?.value as
+		| { kind?: unknown; sender?: { identity?: unknown } }
+		| null
+		| undefined;
 	const provenance = params.provenance;
 	const enveloped = typeof envelope?.kind === "string" ? ENVELOPE_CLASSES[envelope.kind] : undefined;
-	const automatic = provenance?.classification !== "automatic" ? undefined : provenance.automaticKind === "checkIn" ? "check-in" : provenance.automaticKind === "timer" ? "timer" : "result";
-	const inputClass = (isInputClass(params.inputClass) ? params.inputClass : undefined) ?? enveloped ?? automatic ?? (provenance?.classification === "report" ? "report" : sentInputClass(params.origin, params.whenBusy));
-	const sender = params.inputSender ?? inputAuthor(params) ?? (typeof envelope?.sender?.identity === "string" ? envelope.sender.identity : undefined);
+	const automatic =
+		provenance?.classification !== "automatic"
+			? undefined
+			: provenance.automaticKind === "checkIn"
+				? "check-in"
+				: provenance.automaticKind === "timer"
+					? "timer"
+					: "result";
+	const inputClass =
+		(isInputClass(params.inputClass) ? params.inputClass : undefined) ??
+		enveloped ??
+		automatic ??
+		(provenance?.classification === "report" ? "report" : sentInputClass(params.origin, params.whenBusy));
+	const sender =
+		params.inputSender ??
+		inputAuthor(params) ??
+		(typeof envelope?.sender?.identity === "string" ? envelope.sender.identity : undefined);
 	return { class: inputClass, ...(sender === undefined ? {} : { sender }), requestId: params.requestId };
 }
 
-function validateReplayRequest(request: RequestContext | undefined, requestId: string, intent: DeliveryIntent, route: RequestContext | undefined): void {
+function validateReplayRequest(
+	request: RequestContext | undefined,
+	requestId: string,
+	intent: DeliveryIntent,
+	route: RequestContext | undefined,
+): void {
 	if (request === undefined) return;
-	if (request.requestId !== requestId || request.replyTo !== intent.ownerId || request.origin !== intent.origin || (route !== undefined && route.requester !== request.requester))
+	if (
+		request.requestId !== requestId ||
+		request.replyTo !== intent.ownerId ||
+		request.origin !== intent.origin ||
+		(route !== undefined && route.requester !== request.requester)
+	)
 		throw new Error("The request ID already identifies a different request route");
 }
 
-async function originalAdmission(tx: Tx, conversationId: ConversationId, params: DurableSubmitParams, ownerId: string): Promise<DurableSubmitResult | undefined> {
+async function originalAdmission(
+	tx: Tx,
+	conversationId: ConversationId,
+	params: DurableSubmitParams,
+	ownerId: string,
+): Promise<DurableSubmitResult | undefined> {
 	const input = await tx.submissionByRequest(conversationId, params.requestId);
 	if (input === undefined) return undefined;
 	const intent = await retainedIntent(tx, conversationId, params.requestId);
-	if (input.type !== "input" || intent === undefined) throw new Error("The existing request has no retained answer route");
-	if (intent.ownerId !== ownerId || intent.origin !== params.origin) throw new Error("The request ID already identifies another delivery recipient or origin");
-	const route = (await tx.doc(RequestContextDoc, conversationId)).requests.find((item) => item.requestId === params.requestId);
+	if (input.type !== "input" || intent === undefined)
+		throw new Error("The existing request has no retained answer route");
+	if (intent.ownerId !== ownerId || intent.origin !== params.origin)
+		throw new Error("The request ID already identifies another delivery recipient or origin");
+	const route = (await tx.doc(RequestContextDoc, conversationId)).requests.find(
+		(item) => item.requestId === params.requestId,
+	);
 	validateReplayRequest(params.requestContext, params.requestId, intent, route);
-	return { submissionId: input.id, conversationId, deduped: true, recipient: intent.ownerId, placement: placementOf(input) };
+	return {
+		submissionId: input.id,
+		conversationId,
+		deduped: true,
+		recipient: intent.ownerId,
+		placement: placementOf(input),
+	};
 }
 
-async function ownedAdmissionIntent(tx: Tx, conversationId: ConversationId, params: DurableSubmitParams, ownerId: string, now: () => number, admit: () => Promise<SubmissionId>): Promise<DeliveryIntentState> {
+async function ownedAdmissionIntent(
+	tx: Tx,
+	conversationId: ConversationId,
+	params: DurableSubmitParams,
+	ownerId: string,
+	now: () => number,
+	admit: () => Promise<SubmissionId>,
+): Promise<DeliveryIntentState> {
 	const { message, requestId, whenBusy, operationId, origin } = params;
-	if (origin === undefined) throw new Error("This request carries no admission origin, so the calling Pi runs older agent code. Restart that Pi window, then retry.");
-	return recordDeliveryIntent(tx, conversationId, { requestId, ownerId, message, ...(whenBusy === undefined ? {} : { whenBusy }), ...(operationId === undefined ? {} : { operationId }), origin, ...(params.checkInMinutes === undefined ? {} : { checkInMinutes: params.checkInMinutes }), ...(params.senderIdentity === undefined ? {} : { senderIdentity: params.senderIdentity }), ...(params.requestContext === undefined ? {} : { requestContext: params.requestContext }) }, now(), "new", admit);
+	if (origin === undefined)
+		throw new Error(
+			"This request carries no admission origin, so the calling Pi runs older agent code. Restart that Pi window, then retry.",
+		);
+	return recordDeliveryIntent(
+		tx,
+		conversationId,
+		{
+			requestId,
+			ownerId,
+			message,
+			...(whenBusy === undefined ? {} : { whenBusy }),
+			...(operationId === undefined ? {} : { operationId }),
+			origin,
+			...(params.checkInMinutes === undefined ? {} : { checkInMinutes: params.checkInMinutes }),
+			...(params.senderIdentity === undefined ? {} : { senderIdentity: params.senderIdentity }),
+			...(params.requestContext === undefined ? {} : { requestContext: params.requestContext }),
+		},
+		now(),
+		"new",
+		admit,
+	);
 }
 
-async function providerNoticeReplay(conversation: Conversation, params: DurableSubmitParams, context: Context): Promise<DurableSubmitResult | undefined> {
+async function providerNoticeReplay(
+	conversation: Conversation,
+	params: DurableSubmitParams,
+	context: Context,
+): Promise<DurableSubmitResult | undefined> {
 	const notice = params.providerRetry;
 	if (notice === undefined) return undefined;
-	const decision = await conversation.commit((tx) => authorizeProviderNotice(tx, conversation.id, params.requestId, notice), context);
+	const decision = await conversation.commit(
+		(tx) => authorizeProviderNotice(tx, conversation.id, params.requestId, notice),
+		context,
+	);
 	if (decision.suppressed) throw new AwaitInputSuppressed();
 	const existing = decision.existing;
-	if (existing !== undefined) return { submissionId: existing, conversationId: conversation.id, deduped: true, placement: await conversation.commit((tx) => inputPlacement(tx, existing), context) };
+	if (existing !== undefined)
+		return {
+			submissionId: existing,
+			conversationId: conversation.id,
+			deduped: true,
+			placement: await conversation.commit((tx) => inputPlacement(tx, existing), context),
+		};
 	return undefined;
 }
 
-async function admitConversation(conversation: Conversation, params: DurableSubmitParams, context: Context, now: () => number): Promise<DurableSubmitResult> {
+async function admitConversation(
+	conversation: Conversation,
+	params: DurableSubmitParams,
+	context: Context,
+	now: () => number,
+): Promise<DurableSubmitResult> {
 	const { message, requestId, ownerId, whenBusy, origin } = params;
 	if (ownerId !== undefined) {
 		const original = await conversation.commit(async (tx) => {
 			const found = await originalAdmission(tx, conversation.id, params, ownerId);
-			if (found?.placement === "unplaced") await (await prepareQueuedInputs(tx, conversation.id, params.senderIdentity))([{ submissionId: found.submissionId, requestId, admittedAt: now() }]);
+			if (found?.placement === "unplaced")
+				await (await prepareQueuedInputs(tx, conversation.id, params.senderIdentity))([
+					{ submissionId: found.submissionId, requestId, admittedAt: now() },
+				]);
 			return found;
 		}, context);
 		if (original !== undefined) return original;
@@ -573,9 +868,18 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 	await conversation.commit((tx) => refreshManagedInstructions(tx, conversation.id), context);
 	const provenance = admissionProvenance(conversation.id, params);
 	await conversation.commit((tx) => recordInputProvenance(tx, provenance), context);
-	const recoveryOf = await conversation.commit((tx) => captureProviderRecovery(tx, conversation.id, requestId), context);
+	const recoveryOf = await conversation.commit(
+		(tx) => captureProviderRecovery(tx, conversation.id, requestId),
+		context,
+	);
 	const label = admissionLabel(params);
-	const draft = { type: "input" as const, content: message, requestId, whenBusy: placementMode(whenBusy), entry: inputEntry(origin, inputAuthor(params), label) };
+	const draft = {
+		type: "input" as const,
+		content: message,
+		requestId,
+		whenBusy: placementMode(whenBusy),
+		entry: inputEntry(origin, inputAuthor(params), label),
+	};
 	let deduped = false;
 	// One commit admits the input with its delivery intent, request route, check-in and unplaced row; a refusal stores none of them.
 	const submissionId = await conversation.commit(async (tx) => {
@@ -596,8 +900,17 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 		return admitted;
 	}, context);
 	await recordAdmittedInput(conversation, submissionId, provenance, context, params.communication, now, deduped);
-	const placement = await conversation.commit(async (tx) => placementOf(await tx.submission(submissionId), conversation.id), context);
-	return { submissionId, conversationId: conversation.id, deduped, ...(ownerId === undefined ? {} : { recipient: ownerId }), placement };
+	const placement = await conversation.commit(
+		async (tx) => placementOf(await tx.submission(submissionId), conversation.id),
+		context,
+	);
+	return {
+		submissionId,
+		conversationId: conversation.id,
+		deduped,
+		...(ownerId === undefined ? {} : { recipient: ownerId }),
+		placement,
+	};
 }
 
 function assistantTextOf(messages: readonly Message[] | undefined): string {
@@ -607,7 +920,14 @@ function assistantTextOf(messages: readonly Message[] | undefined): string {
 			const content = (message as { readonly content?: unknown }).content;
 			if (typeof content === "string") return [content];
 			if (!Array.isArray(content)) return [];
-			return content.flatMap((part) => (part !== null && typeof part === "object" && (part as { type?: unknown }).type === "text" && typeof (part as { text?: unknown }).text === "string" ? [(part as { text: string }).text] : []));
+			return content.flatMap((part) =>
+				part !== null &&
+				typeof part === "object" &&
+				(part as { type?: unknown }).type === "text" &&
+				typeof (part as { text?: unknown }).text === "string"
+					? [(part as { text: string }).text]
+					: [],
+			);
 		})
 		.join("");
 }
@@ -631,17 +951,33 @@ export interface DurableRunOutcome {
  * Wait for settlement and read the retained answer, source IDs, and usage. A
  * settled submission whose answer entry is absent reports `unanswered`.
  */
-export async function readOutcome(harness: Harness, submissionId: SubmissionId, context: Context): Promise<DurableRunOutcome> {
+export async function readOutcome(
+	harness: Harness,
+	submissionId: SubmissionId,
+	context: Context,
+): Promise<DurableRunOutcome> {
 	const outcome = await readNativeOutcome(harness, submissionId, context);
 	const recoveryOf = await harness.commit((tx) => readInputRecovery(tx, submissionId), context);
 	return { ...outcome, ...(recoveryOf === undefined ? {} : { recoveryOf }) };
 }
-async function readNativeOutcome(harness: Harness, submissionId: SubmissionId, context: Context): Promise<DurableRunOutcome> {
+async function readNativeOutcome(
+	harness: Harness,
+	submissionId: SubmissionId,
+	context: Context,
+): Promise<DurableRunOutcome> {
 	const submission = await harness.submission(submissionId, context);
 	if (!submission) throw new Error(`durable submission ${submissionId} is not retained`);
 	const settled = await submission.wait(context);
 	const usage = await harness.usage(context);
-	if (settled.type !== "input") return { submissionId: settled.id, conversationId: settled.conversationId, status: "unanswered", ...(settled.requestId === undefined ? {} : { requestId: settled.requestId }), reason: "durable submit retained a write submission", usage };
+	if (settled.type !== "input")
+		return {
+			submissionId: settled.id,
+			conversationId: settled.conversationId,
+			status: "unanswered",
+			...(settled.requestId === undefined ? {} : { requestId: settled.requestId }),
+			reason: "durable submit retained a write submission",
+			usage,
+		};
 	if (settled.status === "unanswered") {
 		const providerBlock = await harness.commit((tx) => readInputProviderBlock(tx, settled.id), context);
 		return {
@@ -680,24 +1016,39 @@ async function readNativeOutcome(harness: Harness, submissionId: SubmissionId, c
 }
 
 /** Withdraw queued inputs and wait until the conversation's ownership scope is idle. */
-export async function abortConversation(conversation: Conversation, background: boolean, context: Context): Promise<void> {
+export async function abortConversation(
+	conversation: Conversation,
+	background: boolean,
+	context: Context,
+): Promise<void> {
 	await conversation.abort(context, background ? { background: true } : undefined);
 }
 
 /** True when the conversation has no live ordinary task and no admitted input waiting to run. */
 export function conversationIsIdle(inspection: HarnessInspection, conversationId: ConversationId): boolean {
 	const liveTask = inspection.tasks.some(
-		(task) => task.record.conversationId === conversationId && !task.record.background && task.record.state.status !== "terminal",
+		(task) =>
+			task.record.conversationId === conversationId &&
+			!task.record.background &&
+			task.record.state.status !== "terminal",
 	);
 	const waiting = inspection.submissions.some(
-		(submission) => submission.conversationId === conversationId && (submission.status === "queued" || submission.status === "placed"),
+		(submission) =>
+			submission.conversationId === conversationId &&
+			(submission.status === "queued" || submission.status === "placed"),
 	);
 	return !liveTask && !waiting;
 }
 
-export async function assertConversationIdle(harness: Harness, conversationId: ConversationId, context: Context, sessionId: string): Promise<void> {
+export async function assertConversationIdle(
+	harness: Harness,
+	conversationId: ConversationId,
+	context: Context,
+	sessionId: string,
+): Promise<void> {
 	const inspection = await harness.inspect(context);
-	if (!conversationIsIdle(inspection, conversationId)) throw new DurableConversationBusyError(conversationId, sessionId);
+	if (!conversationIsIdle(inspection, conversationId))
+		throw new DurableConversationBusyError(conversationId, sessionId);
 }
 
 export interface DurableForkOptions {
@@ -843,11 +1194,20 @@ export async function rewindConversation(
 		},
 		context,
 	);
-	return { conversation: forked.conversation, predecessorEntryId: predecessor.id, submissionId: submitted.submissionId, deduped: forked.deduped };
+	return {
+		conversation: forked.conversation,
+		predecessorEntryId: predecessor.id,
+		submissionId: submitted.submissionId,
+		deduped: forked.deduped,
+	};
 }
 
 /** Retained text includes the native wrapper; queued writes have no observed size. */
-async function compactionSummarySize(harness: Harness, result: { entryId?: EntryId; submissionId?: SubmissionId }, context: Context): Promise<number | undefined> {
+async function compactionSummarySize(
+	harness: Harness,
+	result: { entryId?: EntryId; submissionId?: SubmissionId },
+	context: Context,
+): Promise<number | undefined> {
 	let entryId = result.entryId;
 	if (entryId === undefined && result.submissionId !== undefined) {
 		const submission = await harness.submission(result.submissionId, context);
@@ -856,14 +1216,27 @@ async function compactionSummarySize(harness: Harness, result: { entryId?: Entry
 	}
 	if (entryId === undefined) return undefined;
 	const summary = await harness.commit((tx) => tx.entry(CompactionEntry, entryId), context);
-	return summary?.model?.reduce((size, message) => size + (typeof message.content === "string" ? message.content.length : message.content.reduce((chars, part) => chars + (part.type === "text" ? part.text.length : 0), 0)), 0);
+	return summary?.model?.reduce(
+		(size, message) =>
+			size +
+			(typeof message.content === "string"
+				? message.content.length
+				: message.content.reduce((chars, part) => chars + (part.type === "text" ? part.text.length : 0), 0)),
+		0,
+	);
 }
 
-async function compactionSummaryFacts(harness: Harness, result: { entryId?: EntryId; submissionId?: SubmissionId }, context: Context): Promise<{ summaryChars?: number; summarySizeError?: string }> {
+async function compactionSummaryFacts(
+	harness: Harness,
+	result: { entryId?: EntryId; submissionId?: SubmissionId },
+	context: Context,
+): Promise<{ summaryChars?: number; summarySizeError?: string }> {
 	try {
 		const summaryChars = await compactionSummarySize(harness, result, context);
 		return summaryChars === undefined ? {} : { summaryChars };
-	} catch (error) { return { summarySizeError: error instanceof Error ? error.message : String(error) }; }
+	} catch (error) {
+		return { summarySizeError: error instanceof Error ? error.message : String(error) };
+	}
 }
 
 /** The summarizer receives the continuity seed first; the caller's instructions follow byte for byte. */
@@ -895,7 +1268,7 @@ export async function compactConversation(
 		return {
 			taskId,
 			status: "completed",
-			...await compactionSummaryFacts(harness, outcome.result, context),
+			...(await compactionSummaryFacts(harness, outcome.result, context)),
 			...(outcome.result.entryId === undefined ? {} : { entryId: outcome.result.entryId }),
 			...(outcome.result.submissionId === undefined ? {} : { submissionId: outcome.result.submissionId }),
 		};
@@ -922,7 +1295,8 @@ export interface DurableConfigureOptions {
 	readonly storagePath?: string;
 }
 
-const CONFIGURATION_PERSISTENCE_NOTE = "Durable commits are atomic per transaction; storage contents are not independently verified. No rollback or replay.";
+const CONFIGURATION_PERSISTENCE_NOTE =
+	"Durable commits are atomic per transaction; storage contents are not independently verified. No rollback or replay.";
 
 /** No native configuration hook exists; extension failures reach the host report channel instead. */
 function configurationHookErrors(): ConfigurationResult["hookErrors"] {
@@ -930,12 +1304,17 @@ function configurationHookErrors(): ConfigurationResult["hookErrors"] {
 		count: 0,
 		events: [],
 		omitted: 0,
-		observation: "Durable configuration runs no model-selection or tool hooks; extension failures reach the host report channel instead.",
+		observation:
+			"Durable configuration runs no model-selection or tool hooks; extension failures reach the host report channel instead.",
 	};
 }
 
 /** Committed configuration state: display name, exact model identity, and reasoning level. */
-async function readConfigurationState(harness: Harness, conversation: Conversation, context: Context): Promise<ConfigurationState> {
+async function readConfigurationState(
+	harness: Harness,
+	conversation: Conversation,
+	context: Context,
+): Promise<ConfigurationState> {
 	const agent = await conversation.agent(context);
 	const meta = await harness.snapshot(AgentMetaDoc, conversation.id, context);
 	return {
@@ -967,7 +1346,11 @@ interface ResolvedConfiguration {
 }
 
 /** Resolve the reasoning request against the target model's supported levels. */
-function resolveConfiguration(patch: ConfigurationPatch, before: ConfigurationState, models: Models): ResolvedConfiguration {
+function resolveConfiguration(
+	patch: ConfigurationPatch,
+	before: ConfigurationState,
+	models: Models,
+): ResolvedConfiguration {
 	const requestedLevel = configurationThinkingLevel(patch, before.thinkingLevel);
 	if (requestedLevel === undefined) return {};
 	const target = patch.model ?? before.model;
@@ -984,7 +1367,13 @@ interface AppliedConfiguration {
 }
 
 /** Commit the selected agent change and then the name; each commit is atomic on its own. */
-async function applyConfiguration(conversation: Conversation, patch: ConfigurationPatch, effectiveLevel: ModelThinkingLevel | undefined, expectedBlockId: string | undefined, context: Context): Promise<AppliedConfiguration> {
+async function applyConfiguration(
+	conversation: Conversation,
+	patch: ConfigurationPatch,
+	effectiveLevel: ModelThinkingLevel | undefined,
+	expectedBlockId: string | undefined,
+	context: Context,
+): Promise<AppliedConfiguration> {
 	const change: { model?: ModelRef; thinkingLevel?: ModelThinkingLevel } = {};
 	if (patch.model !== undefined) change.model = configurationModel(patch.model);
 	if (effectiveLevel !== undefined) change.thinkingLevel = effectiveLevel;
@@ -992,9 +1381,16 @@ async function applyConfiguration(conversation: Conversation, patch: Configurati
 	if (Object.keys(change).length > 0) {
 		writes = true;
 		try {
-			await conversation.commit((tx) => configureProviderRecovery(tx, conversation.id, change as AgentChange, expectedBlockId), context);
+			await conversation.commit(
+				(tx) => configureProviderRecovery(tx, conversation.id, change as AgentChange, expectedBlockId),
+				context,
+			);
 		} catch {
-			return { writes, error: patch.model === undefined ? "The reasoning update was not retained." : "The model update was not retained." };
+			return {
+				writes,
+				error:
+					patch.model === undefined ? "The reasoning update was not retained." : "The model update was not retained.",
+			};
 		}
 	}
 	if (patch.name === undefined) return { writes };
@@ -1026,10 +1422,15 @@ function configurationResult(
 		requested: patch,
 		after,
 		afterSource: "live",
-		...(resolved.requestedLevel === undefined ? {} : { reasoning: { requested: resolved.requestedLevel, effective, clamped: resolved.requestedLevel !== effective } }),
+		...(resolved.requestedLevel === undefined
+			? {}
+			: {
+					reasoning: { requested: resolved.requestedLevel, effective, clamped: resolved.requestedLevel !== effective },
+				}),
 		hookErrors: configurationHookErrors(),
 		persistence: {
-			nativeWrites: applied === undefined || !applied.writes ? "not-attempted" : outcome === "applied" ? "completed" : "uncertain",
+			nativeWrites:
+				applied === undefined || !applied.writes ? "not-attempted" : outcome === "applied" ? "completed" : "uncertain",
 			fileExists,
 			note: CONFIGURATION_PERSISTENCE_NOTE,
 		},
@@ -1054,14 +1455,25 @@ export async function configureConversation(
 	const before = await readConfigurationState(harness, conversation, context);
 	const fileExists = options.storagePath !== undefined && existsSync(options.storagePath);
 	const resolved = resolveConfiguration(patch, before, options.models);
-	if (resolved.error !== undefined) return configurationResult(options.sessionId, before, patch, before, resolved, undefined, fileExists);
+	if (resolved.error !== undefined)
+		return configurationResult(options.sessionId, before, patch, before, resolved, undefined, fileExists);
 	const expectedBlock = await conversation.commit((tx) => readProviderBlock(tx, conversation.id), context);
-	const applied = await applyConfiguration(conversation, patch, resolved.effectiveLevel, expectedBlock?.blockId, context);
+	const applied = await applyConfiguration(
+		conversation,
+		patch,
+		resolved.effectiveLevel,
+		expectedBlock?.blockId,
+		context,
+	);
 	const after = await readConfigurationState(harness, conversation, context);
 	return configurationResult(options.sessionId, before, patch, after, resolved, applied, fileExists);
 }
 
-export async function writeConversationName(conversation: Conversation, name: string | null, context: Context): Promise<void> {
+export async function writeConversationName(
+	conversation: Conversation,
+	name: string | null,
+	context: Context,
+): Promise<void> {
 	await conversation.commit(async (tx) => {
 		const meta = await tx.doc(AgentMetaDoc, conversation.id);
 		(meta as { name: string | null }).name = name;
@@ -1070,7 +1482,11 @@ export async function writeConversationName(conversation: Conversation, name: st
 }
 
 /** Delivery rows the owner has not acknowledged, after settling every known receipt. */
-export async function undeliveredReceipts(harness: Harness, ownerId: string, context: Context): Promise<DeliveryReceipt[]> {
+export async function undeliveredReceipts(
+	harness: Harness,
+	ownerId: string,
+	context: Context,
+): Promise<DeliveryReceipt[]> {
 	await settleDeliveries(harness, context);
 	const state = await deliveryState(harness, context);
 	if (!state) return [];
@@ -1078,7 +1494,11 @@ export async function undeliveredReceipts(harness: Harness, ownerId: string, con
 }
 
 /** Recorded outbound reports the owner has not acknowledged. */
-export async function undeliveredReports(harness: Harness, ownerId: string, context: Context): Promise<DeliveryReport[]> {
+export async function undeliveredReports(
+	harness: Harness,
+	ownerId: string,
+	context: Context,
+): Promise<DeliveryReport[]> {
 	const state = await deliveryState(harness, context);
 	const candidates = state.reports.filter((report) => report.ownerId === ownerId && !report.acknowledged);
 	return harness.commit(async (tx) => {
@@ -1099,8 +1519,15 @@ export interface OwnerDeliveries {
 }
 
 /** Both delivery kinds awaiting one owner in a single committed read. */
-export async function undeliveredForOwner(harness: Harness, ownerId: string, context: Context): Promise<OwnerDeliveries> {
-	return { receipts: await undeliveredReceipts(harness, ownerId, context), reports: await undeliveredReports(harness, ownerId, context) };
+export async function undeliveredForOwner(
+	harness: Harness,
+	ownerId: string,
+	context: Context,
+): Promise<OwnerDeliveries> {
+	return {
+		receipts: await undeliveredReceipts(harness, ownerId, context),
+		reports: await undeliveredReports(harness, ownerId, context),
+	};
 }
 
 /**
@@ -1108,8 +1535,21 @@ export async function undeliveredForOwner(harness: Harness, ownerId: string, con
  * repeated request ID returns the retained report unchanged, including its
  * acknowledgement, so a retry never reopens a delivered report.
  */
-export type RecordReportParams = { readonly ownerId: string; readonly senderIdentity: string; readonly message: string; readonly requestId: string; readonly replyTo?: string; readonly passive?: boolean; readonly intervention?: ReportIntervention; readonly storageId?: string };
-export async function recordReport(harness: Harness, params: RecordReportParams, context: Context): Promise<DeliveryReport> {
+export type RecordReportParams = {
+	readonly ownerId: string;
+	readonly senderIdentity: string;
+	readonly message: string;
+	readonly requestId: string;
+	readonly replyTo?: string;
+	readonly passive?: boolean;
+	readonly intervention?: ReportIntervention;
+	readonly storageId?: string;
+};
+export async function recordReport(
+	harness: Harness,
+	params: RecordReportParams,
+	context: Context,
+): Promise<DeliveryReport> {
 	await migrateDeliveryStore(harness, context);
 	return harness.commit((tx) => recordReportInTransaction(tx, params), context);
 }
@@ -1119,28 +1559,34 @@ export async function recordReportInTransaction(tx: Tx, params: RecordReportPara
 	const { ownerId, senderIdentity, message, requestId, replyTo, passive } = params;
 	const intervention = params.intervention === undefined ? undefined : parseReportIntervention(params.intervention);
 	if (intervention !== undefined && passive === true) throw new Error("An intervention report must remain active");
-		const found = await retainedReportRequest(tx, ownerId, requestId);
-		if (found !== undefined) {
-			if ((intervention !== undefined || found.intervention !== undefined) && (found.senderIdentity !== senderIdentity || JSON.stringify(found.intervention) !== JSON.stringify(intervention) || found.passive === true)) throw new Error("Report requestId already has another intervention association");
-			return found;
-		}
-		if (intervention !== undefined) {
-			if (params.storageId === undefined) throw new Error("A fresh intervention requires its source storage identity");
-			await validateReportIntervention(tx, params.storageId, senderIdentity, ownerId, intervention);
-		}
-		const report: DeliveryReport = {
-			sourceId: `report:${requestId}`,
-			requestId,
-			ownerId,
-			senderIdentity,
-			message,
-			replyTo: replyTo ?? null,
-			...(passive === undefined ? {} : { passive }),
-			...(intervention === undefined ? {} : { intervention }),
-			acknowledged: false,
-			createdAt: Date.now(),
-		};
-		return storeDeliveryRow(tx, "report", report, true);
+	const found = await retainedReportRequest(tx, ownerId, requestId);
+	if (found !== undefined) {
+		if (
+			(intervention !== undefined || found.intervention !== undefined) &&
+			(found.senderIdentity !== senderIdentity ||
+				JSON.stringify(found.intervention) !== JSON.stringify(intervention) ||
+				found.passive === true)
+		)
+			throw new Error("Report requestId already has another intervention association");
+		return found;
+	}
+	if (intervention !== undefined) {
+		if (params.storageId === undefined) throw new Error("A fresh intervention requires its source storage identity");
+		await validateReportIntervention(tx, params.storageId, senderIdentity, ownerId, intervention);
+	}
+	const report: DeliveryReport = {
+		sourceId: `report:${requestId}`,
+		requestId,
+		ownerId,
+		senderIdentity,
+		message,
+		replyTo: replyTo ?? null,
+		...(passive === undefined ? {} : { passive }),
+		...(intervention === undefined ? {} : { intervention }),
+		acknowledged: false,
+		createdAt: Date.now(),
+	};
+	return storeDeliveryRow(tx, "report", report, true);
 }
 
 /** Number of known delivery intents that have no settled receipt yet. */
@@ -1148,10 +1594,15 @@ export async function pendingDeliveries(harness: Harness, ownerId: string, conte
 	const state = await deliveryState(harness, context);
 	if (!state) return 0;
 	const settled = new Set(Object.keys(state.receipts));
-	return state.intents.filter((intent) => intent.ownerId === ownerId && (intent.submissionId === null || !settled.has(String(intent.submissionId)))).length;
+	return state.intents.filter(
+		(intent) =>
+			intent.ownerId === ownerId && (intent.submissionId === null || !settled.has(String(intent.submissionId))),
+	).length;
 }
 
-type SettledInputRecord = Extract<SubmissionRecord, { readonly type: "input" }> & { readonly status: "done" | "unanswered" };
+type SettledInputRecord = Extract<SubmissionRecord, { readonly type: "input" }> & {
+	readonly status: "done" | "unanswered";
+};
 
 function receiptRow(intent: DeliveryIntent, record: SettledInputRecord, answer: string | null): DeliveryReceipt {
 	return {
@@ -1171,7 +1622,10 @@ function receiptRow(intent: DeliveryIntent, record: SettledInputRecord, answer: 
 }
 
 function receiptIsRetainedOrTerminal(state: AgentDeliveryState, intent: DeliveryIntent): boolean {
-	return intent.delivery?.state === "terminal" || (intent.submissionId !== null && state.receipts[String(intent.submissionId)] !== undefined);
+	return (
+		intent.delivery?.state === "terminal" ||
+		(intent.submissionId !== null && state.receipts[String(intent.submissionId)] !== undefined)
+	);
 }
 
 async function receiptAnswer(tx: Tx, record: SettledInputRecord): Promise<string | null> {
@@ -1181,7 +1635,12 @@ async function receiptAnswer(tx: Tx, record: SettledInputRecord): Promise<string
 	return text === "" ? null : text.slice(0, 1200);
 }
 
-async function finalizeReceipt(tx: Tx, state: AgentDeliveryState, intent: DeliveryIntent, index: number): Promise<void> {
+async function finalizeReceipt(
+	tx: Tx,
+	state: AgentDeliveryState,
+	intent: DeliveryIntent,
+	index: number,
+): Promise<void> {
 	if (receiptIsRetainedOrTerminal(state, intent)) return;
 	const record = await tx.submissionByRequest(intent.conversationId, intent.requestId);
 	if (record === undefined || record.type !== "input") return;
@@ -1190,23 +1649,40 @@ async function finalizeReceipt(tx: Tx, state: AgentDeliveryState, intent: Delive
 	if (record.status !== "done" && record.status !== "unanswered") return;
 	if (state.receipts[String(record.id)] !== undefined) return;
 	const retained = await retainedReceipt(tx, record.id);
-	if (retained) { state.receipts[String(record.id)] = retained; return; }
+	if (retained) {
+		state.receipts[String(record.id)] = retained;
+		return;
+	}
 	const answer = await receiptAnswer(tx, record);
 	const providerBlock = record.status === "unanswered" ? await readInputProviderBlock(tx, record.id) : undefined;
 	const recoveryOf = await readInputRecovery(tx, record.id);
-	state.receipts[String(record.id)] = { ...receiptRow(intent, record, answer), ...(providerBlock === undefined ? {} : { providerBlock }), ...(recoveryOf === undefined ? {} : { recoveryOf }) };
+	state.receipts[String(record.id)] = {
+		...receiptRow(intent, record, answer),
+		...(providerBlock === undefined ? {} : { providerBlock }),
+		...(recoveryOf === undefined ? {} : { recoveryOf }),
+	};
 }
 
 /** Absence is not terminal evidence; every native result and request ID must still match. */
 export async function providerRetryReportSettled(tx: Tx, report: DeliveryReport): Promise<boolean> {
 	const execution = report.providerRetry?.fact.execution;
-	if (execution === undefined || execution.results.length === 0 || report.providerRetry?.fact.sessionId !== report.senderIdentity) return false;
+	if (
+		execution === undefined ||
+		execution.results.length === 0 ||
+		report.providerRetry?.fact.sessionId !== report.senderIdentity
+	)
+		return false;
 	const run = await tx.task(execution.runId as TaskId);
 	if (run === undefined) return false;
 	for (const result of execution.results) {
 		if (result.sessionId !== report.senderIdentity || result.requestId === undefined) return false;
 		const input = await tx.submissionByRequest(run.conversationId, result.requestId);
-		if (input?.type !== "input" || input.id !== result.submissionId || (input.status !== "done" && input.status !== "unanswered")) return false;
+		if (
+			input?.type !== "input" ||
+			input.id !== result.submissionId ||
+			(input.status !== "done" && input.status !== "unanswered")
+		)
+			return false;
 	}
 	return true;
 }
@@ -1214,24 +1690,40 @@ async function retireAutomaticReports(tx: Tx, reports: readonly DeliveryReport[]
 	for (const candidate of reports) {
 		const report = await retainedReport(tx, candidate.ownerId, candidate.sourceId);
 		if (!report || report.acknowledged) continue;
-		if (report.providerRetry !== undefined && await providerRetryReportSettled(tx, report)) {
+		if (report.providerRetry !== undefined && (await providerRetryReportSettled(tx, report))) {
 			await storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
 			continue;
 		}
 		if (report.checkIn === undefined) continue;
-		const watched = await tx.submissionByRequest(report.checkIn.conversationId as ConversationId, report.checkIn.requestId);
-		if ((watched?.status === "done" || watched?.status === "unanswered") && !await requestHasOpenWork(tx, report.checkIn.conversationId as ConversationId, report.checkIn.requestId)) await storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
+		const watched = await tx.submissionByRequest(
+			report.checkIn.conversationId as ConversationId,
+			report.checkIn.requestId,
+		);
+		if (
+			(watched?.status === "done" || watched?.status === "unanswered") &&
+			!(await requestHasOpenWork(tx, report.checkIn.conversationId as ConversationId, report.checkIn.requestId))
+		)
+			await storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
 	}
 }
 /** Settle answer groups atomically. A null cursor skips a completed automatic traversal. */
-export async function settleDeliveries(harness: Harness, context: Context, automaticCursor?: string | null): Promise<string | null> {
+export async function settleDeliveries(
+	harness: Harness,
+	context: Context,
+	automaticCursor?: string | null,
+): Promise<string | null> {
 	await migrateDeliveryStore(harness, context);
-	const reports = automaticCursor === null ? { reports: [], next: null } : await automaticDeliveryPage(harness, context, automaticCursor);
+	const reports =
+		automaticCursor === null
+			? { reports: [], next: null }
+			: await automaticDeliveryPage(harness, context, automaticCursor);
 	await harness.commit(async (tx) => {
 		const state = await readDeliveryDraft(tx, false, "intent");
 		for (const [index, intent] of state.intents.entries()) await finalizeReceipt(tx, state, intent, index);
-		for (const conversationId of new Set(state.intents.filter((intent) => intent.delivery?.state !== "terminal").map((intent) => intent.conversationId))) {
-			if (await tx.conversation(conversationId) !== undefined) await cleanupRequestContexts(tx, conversationId);
+		for (const conversationId of new Set(
+			state.intents.filter((intent) => intent.delivery?.state !== "terminal").map((intent) => intent.conversationId),
+		)) {
+			if ((await tx.conversation(conversationId)) !== undefined) await cleanupRequestContexts(tx, conversationId);
 		}
 		await retireAutomaticReports(tx, reports.reports);
 		await writeDeliveryDraft(tx, state);
@@ -1240,11 +1732,17 @@ export async function settleDeliveries(harness: Harness, context: Context, autom
 }
 
 /** Mark receipts delivered by their owner. Only the owning caller can acknowledge its rows. */
-export async function acknowledgeDeliveries(harness: Harness, ownerId: string, submissionIds: readonly SubmissionId[], context: Context): Promise<SubmissionId[]> {
+export async function acknowledgeDeliveries(
+	harness: Harness,
+	ownerId: string,
+	submissionIds: readonly SubmissionId[],
+	context: Context,
+): Promise<SubmissionId[]> {
 	await settleDeliveries(harness, context);
 	const acknowledged: SubmissionId[] = [];
 	const existing: SubmissionId[] = [];
-	for (const id of new Set(submissionIds)) if ((await harness.snapshot(DeliveryRowDoc, receiptKey(id), context))?.value != null) existing.push(id);
+	for (const id of new Set(submissionIds))
+		if ((await harness.snapshot(DeliveryRowDoc, receiptKey(id), context))?.value != null) existing.push(id);
 	await harness.commit(async (tx) => {
 		for (const id of existing) {
 			const receipt = await retainedReceipt(tx, id);
@@ -1257,11 +1755,18 @@ export async function acknowledgeDeliveries(harness: Harness, ownerId: string, s
 }
 
 /** Report acknowledgement and the thread projection change in the same native commit. */
-export async function acknowledgeReports(harness: Harness, ownerId: string, sourceIds: readonly string[], context: Context): Promise<string[]> {
+export async function acknowledgeReports(
+	harness: Harness,
+	ownerId: string,
+	sourceIds: readonly string[],
+	context: Context,
+): Promise<string[]> {
 	await migrateDeliveryStore(harness, context);
 	const acknowledged: string[] = [];
 	const existing: string[] = [];
-	for (const sourceId of new Set(sourceIds)) if ((await harness.snapshot(DeliveryRowDoc, reportKey(ownerId, sourceId), context))?.value != null) existing.push(sourceId);
+	for (const sourceId of new Set(sourceIds))
+		if ((await harness.snapshot(DeliveryRowDoc, reportKey(ownerId, sourceId), context))?.value != null)
+			existing.push(sourceId);
 	await harness.commit(async (tx) => {
 		for (const sourceId of existing) {
 			const report = await retainedReport(tx, ownerId, sourceId);
@@ -1279,21 +1784,37 @@ export async function acknowledgeReports(harness: Harness, ownerId: string, sour
 }
 
 /** A busy-reject admission holds only for the moment it was refused or admitted; a later replay would change its meaning. */
-async function endUnreplayableIntent(harness: Harness, intent: DeliveryIntent, absent: boolean, context: Context): Promise<void> {
-	const reason = absent ? "replay target conversation does not exist" : "a busy-reject admission without a native submission is never replayed";
+async function endUnreplayableIntent(
+	harness: Harness,
+	intent: DeliveryIntent,
+	absent: boolean,
+	context: Context,
+): Promise<void> {
+	const reason = absent
+		? "replay target conversation does not exist"
+		: "a busy-reject admission without a native submission is never replayed";
 	await harness.commit(async (tx) => {
 		const current = await retainedIntent(tx, intent.conversationId, intent.requestId);
-		if (current && current.submissionId === null) await storeDeliveryRow(tx, "intent", { ...current, delivery: { state: "terminal", reason } });
+		if (current && current.submissionId === null)
+			await storeDeliveryRow(tx, "intent", { ...current, delivery: { state: "terminal", reason } });
 	}, context);
 }
 
 /** Reacquire unlinked admissions through Durable's request dedupe before any replay. */
-export async function reconcileDeliveries(harness: Harness, context: Context, now: () => number = Date.now): Promise<void> {
+export async function reconcileDeliveries(
+	harness: Harness,
+	context: Context,
+	now: () => number = Date.now,
+): Promise<void> {
 	const state = await deliveryState(harness, context, false, false);
 	for (const intent of state.intents) {
 		if (intent.submissionId !== null || intent.delivery?.state === "terminal") continue;
-		let submissionId = (await harness.commit((tx) => tx.submissionByRequest(intent.conversationId, intent.requestId), context))?.id;
-		const request = (await harness.snapshot(RequestContextDoc, intent.conversationId, context))?.requests.find((item) => item.requestId === intent.requestId);
+		let submissionId = (
+			await harness.commit((tx) => tx.submissionByRequest(intent.conversationId, intent.requestId), context)
+		)?.id;
+		const request = (await harness.snapshot(RequestContextDoc, intent.conversationId, context))?.requests.find(
+			(item) => item.requestId === intent.requestId,
+		);
 		const inputClass = sentInputClass(intent.origin, intent.whenBusy);
 		if (submissionId === undefined) {
 			const conversation = await harness.conversation(intent.conversationId, context);
@@ -1301,13 +1822,27 @@ export async function reconcileDeliveries(harness: Harness, context: Context, no
 				await endUnreplayableIntent(harness, intent, conversation === undefined, context);
 				continue;
 			}
-			const admitted = await conversation.submit({ type: "input", content: deliveredMessage(intent.message), entry: inputEntry(intent.origin, request?.requester, { class: inputClass, ...(request === undefined ? {} : { sender: request.requester }), requestId: intent.requestId }), requestId: intent.requestId, whenBusy: placementMode(intent.whenBusy) }, context);
+			const admitted = await conversation.submit(
+				{
+					type: "input",
+					content: deliveredMessage(intent.message),
+					entry: inputEntry(intent.origin, request?.requester, {
+						class: inputClass,
+						...(request === undefined ? {} : { sender: request.requester }),
+						requestId: intent.requestId,
+					}),
+					requestId: intent.requestId,
+					whenBusy: placementMode(intent.whenBusy),
+				},
+				context,
+			);
 			submissionId = admitted.id;
 		}
 		const resolved = submissionId;
 		await harness.commit(async (tx) => {
 			const found = await retainedIntent(tx, intent.conversationId, intent.requestId);
-			if (found !== undefined && found.submissionId === null) await storeDeliveryRow(tx, "intent", { ...found, submissionId: resolved });
+			if (found !== undefined && found.submissionId === null)
+				await storeDeliveryRow(tx, "intent", { ...found, submissionId: resolved });
 		}, context);
 		// The admission that this replay completes ended before its unplaced record; a queued input still counts and is still watched.
 		// The retained intent keeps no admission time, so the wait is counted from the replay. The profile holds the recipient's external identity.
@@ -1315,7 +1850,14 @@ export async function reconcileDeliveries(harness: Harness, context: Context, no
 		const recipient = (await harness.snapshot(ProfileDoc, intent.conversationId, context))?.identity ?? undefined;
 		await harness.commit(async (tx) => {
 			const retain = await prepareQueuedInputs(tx, intent.conversationId, recipient);
-			await retain([{ submissionId: resolved, requestId: intent.requestId, admittedAt: now(), fallback: { class: inputClass, sender: request?.requester ?? "" } }]);
+			await retain([
+				{
+					submissionId: resolved,
+					requestId: intent.requestId,
+					admittedAt: now(),
+					fallback: { class: inputClass, sender: request?.requester ?? "" },
+				},
+			]);
 		}, context);
 	}
 	await settleDeliveries(harness, context);

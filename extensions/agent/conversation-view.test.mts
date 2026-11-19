@@ -21,11 +21,27 @@ it("cwd replacement and repeat disposal release native parent and nested rendere
 	const state = agentState(createDashboardState(), "one").view;
 	state.toolExpanded.set("parent/key", true);
 	const view = new ConversationView({ requestRender() {} } as TUI, state);
-	const call = assistantEntry("call", 1, [{ type: "toolCall", id: "parent", name: "bash", arguments: { command: "echo synthetic parent" } }]);
-	const live = buildLiveEntries({
-		tools: [{ callId: "parent", name: "bash", status: "running", output: "parent progress" }],
-		nestedTools: [{ callId: "parent/key", parentCallId: "parent", parentTaskId: 1, taskId: 2, name: "bash", arguments: { command: "echo synthetic child" }, status: "running", output: "child progress" }],
-	}, []);
+	const call = assistantEntry("call", 1, [
+		{ type: "toolCall", id: "parent", name: "bash", arguments: { command: "echo synthetic parent" } },
+	]);
+	const live = buildLiveEntries(
+		{
+			tools: [{ callId: "parent", name: "bash", status: "running", output: "parent progress" }],
+			nestedTools: [
+				{
+					callId: "parent/key",
+					parentCallId: "parent",
+					parentTaskId: 1,
+					taskId: 2,
+					name: "bash",
+					arguments: { command: "echo synthetic child" },
+					status: "running",
+					output: "child progress",
+				},
+			],
+		},
+		[],
+	);
 	try {
 		view.setContent([call], live, "/one");
 		view.render(80, 30);
@@ -36,9 +52,13 @@ it("cwd replacement and repeat disposal release native parent and nested rendere
 		view.setContent([call], live, "/two");
 		view.render(80, 30);
 		assert.equal(intervals.mock.calls.length, 4);
-		view.dispose(); view.dispose();
+		view.dispose();
+		view.dispose();
 		assert.equal(clears.mock.calls.length, 4);
-		assert.deepEqual(new Set(clears.mock.calls.map((call) => call.arguments[0])), new Set(intervals.mock.calls.map((call) => call.result)));
+		assert.deepEqual(
+			new Set(clears.mock.calls.map((call) => call.arguments[0])),
+			new Set(intervals.mock.calls.map((call) => call.result)),
+		);
 		assert.equal(state.toolExpanded.get("parent/key"), true);
 		assert.deepEqual(view.render(80, 3), ["", "", ""]);
 	} finally {
@@ -221,16 +241,66 @@ it("the display bound returns the cursor immediately before its retained range",
 });
 
 function assistantEntry(id: string, timestamp: number, content: AssistantMessage["content"]): AgentConversationEntry {
-	return { id, kind: "pi.assistant", model: [{ role: "assistant", content, api: "openai-responses", provider: "test", model: "test", timestamp, stopReason: "toolUse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] };
+	return {
+		id,
+		kind: "pi.assistant",
+		model: [
+			{
+				role: "assistant",
+				content,
+				api: "openai-responses",
+				provider: "test",
+				model: "test",
+				timestamp,
+				stopReason: "toolUse",
+				usage: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+			},
+		],
+	};
 }
-const itemClick = (y: number, width = 80, height = 8): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 2, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
+const itemClick = (y: number, width = 80, height = 8): TuiMouseEvent => ({
+	type: "click",
+	button: "left",
+	x: 2,
+	y,
+	screenX: 2,
+	screenY: y,
+	width,
+	height,
+	shift: false,
+	alt: false,
+	ctrl: false,
+	clickCount: 1,
+});
 const readText = (view: ConversationView, height = 8) => view.render(80, height).map(stripVTControlCharacters);
 
 it("a failed tool in the transcript shows its failure text and error colour", () => {
 	const state = agentState(createDashboardState(), "one").view;
 	const view = new ConversationView({ requestRender() {} } as TUI, state);
-	const call = assistantEntry("call", 1, [{ type: "toolCall", id: "tool-id", name: "example_tool", arguments: { topic: "first" } }]);
-	const failed: AgentConversationEntry = { id: "result", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tool-id", toolName: "example_tool", content: [{ type: "text", text: '{"message":"Owner unavailable","code":"E_OFFLINE"}' }], isError: true, timestamp: 2 }] };
+	const call = assistantEntry("call", 1, [
+		{ type: "toolCall", id: "tool-id", name: "example_tool", arguments: { topic: "first" } },
+	]);
+	const failed: AgentConversationEntry = {
+		id: "result",
+		kind: "pi.tool-result",
+		model: [
+			{
+				role: "toolResult",
+				toolCallId: "tool-id",
+				toolName: "example_tool",
+				content: [{ type: "text", text: '{"message":"Owner unavailable","code":"E_OFFLINE"}' }],
+				isError: true,
+				timestamp: 2,
+			},
+		],
+	};
 	view.setContent([call, failed], [], "/work");
 	const raw = view.render(80, 8).filter((line) => line.trim());
 	assert.match(stripVTControlCharacters(raw.join("\n")), /example_tool topic="first"/u);
@@ -243,15 +313,40 @@ it("a failed tool in the transcript shows its failure text and error colour", ()
 it("a renderer lookup change rebuilds the cards and keeps each tool's disclosure", () => {
 	const state = agentState(createDashboardState(), "one").view;
 	const view = new ConversationView({ requestRender() {} } as TUI, state);
-	const call = assistantEntry("call", 1, [{ type: "toolCall", id: "tool-id", name: "example_tool", arguments: { topic: "first" } }]);
-	const done: AgentConversationEntry = { id: "result", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tool-id", toolName: "example_tool", content: [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `output ${i}`).join("\n") }], isError: false, timestamp: 2 }] };
+	const call = assistantEntry("call", 1, [
+		{ type: "toolCall", id: "tool-id", name: "example_tool", arguments: { topic: "first" } },
+	]);
+	const done: AgentConversationEntry = {
+		id: "result",
+		kind: "pi.tool-result",
+		model: [
+			{
+				role: "toolResult",
+				toolCallId: "tool-id",
+				toolName: "example_tool",
+				content: [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `output ${i}`).join("\n") }],
+				isError: false,
+				timestamp: 2,
+			},
+		],
+	};
 	view.setContent([call, done], [], "/work");
 	const lines = readText(view, 14);
-	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("example_tool")), 80, 14)));
+	assert.ok(
+		view.handleMouse(
+			itemClick(
+				lines.findIndex((line) => line.includes("example_tool")),
+				80,
+				14,
+			),
+		),
+	);
 	assert.equal(state.toolExpanded.get("tool-id"), true);
 	assert.match(readText(view, 40).join("\n"), /output 29/u);
 	view.setToolDisplay((name) =>
-		name === "example_tool" ? { renderShell: "self", renderCall: () => ({ render: () => ["OWNER CARD"], invalidate() {} }) } : undefined,
+		name === "example_tool"
+			? { renderShell: "self", renderCall: () => ({ render: () => ["OWNER CARD"], invalidate() {} }) }
+			: undefined,
 	);
 	const rebuilt = readText(view, 40).join("\n");
 	assert.match(rebuilt, /OWNER CARD/u, "the new lookup reaches the rebuilt cards");
@@ -263,7 +358,11 @@ it("a renderer lookup change rebuilds the cards and keeps each tool's disclosure
 it("a renderer lookup change keeps the visible lines and the saved reading anchor", () => {
 	const state = agentState(createDashboardState(), "one").view;
 	const view = new ConversationView({ requestRender() {} } as TUI, state);
-	view.setContent(Array.from({ length: 40 }, (_, index) => user(index)), [], "/work");
+	view.setContent(
+		Array.from({ length: 40 }, (_, index) => user(index)),
+		[],
+		"/work",
+	);
 	view.render(80, 8);
 	view.page(-10);
 	const before = readText(view);
@@ -279,24 +378,42 @@ it("individual tool choices survive live updates, eviction, rebuild and view reo
 	const state = agentState(createDashboardState(), "one").view;
 	const tui = { requestRender() {} } as TUI;
 	let view = new ConversationView(tui, state);
-	const call = assistantEntry("call", 1, [{ type: "toolCall", id: "tool-id", name: "example_tool", arguments: { topic: "first" } }]);
-	const done: AgentConversationEntry = { id: "result", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tool-id", toolName: "example_tool", content: [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `output ${i}`).join("\n") }], isError: false, timestamp: 2 }] };
+	const call = assistantEntry("call", 1, [
+		{ type: "toolCall", id: "tool-id", name: "example_tool", arguments: { topic: "first" } },
+	]);
+	const done: AgentConversationEntry = {
+		id: "result",
+		kind: "pi.tool-result",
+		model: [
+			{
+				role: "toolResult",
+				toolCallId: "tool-id",
+				toolName: "example_tool",
+				content: [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `output ${i}`).join("\n") }],
+				isError: false,
+				timestamp: 2,
+			},
+		],
+	};
 	view.setContent([call], [], "/work");
 	let lines = readText(view);
 	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("example_tool")))));
 	assert.equal(state.toolExpanded.get("tool-id"), true);
 	assert.equal(state.follow, false);
-	view.save(); assert.ok(state.anchor, "save before repaint keeps the click anchor");
+	view.save();
+	assert.ok(state.anchor, "save before repaint keeps the click anchor");
 	view.setContent([call], [done], "/work");
 	lines = readText(view, 40);
 	assert.match(lines.join("\n"), /output 29/u);
-	view.setContent([], [], "/work"); readText(view);
+	view.setContent([], [], "/work");
+	readText(view);
 	view.setContent([call, done], [], "/work");
 	assert.match(readText(view, 40).join("\n"), /output 29/u);
 	state.showThinking = !state.showThinking;
 	view.setContent([call, done], [], "/work");
 	assert.match(readText(view, 40).join("\n"), /output 29/u);
-	view.save(); view = new ConversationView(tui, state);
+	view.save();
+	view = new ConversationView(tui, state);
 	view.setContent([call, done], [], "/work");
 	assert.match(readText(view, 40).join("\n"), /output 29/u);
 });
@@ -324,28 +441,36 @@ it("live thinking retains its native instance through commit but resets after ev
 	view.setContent([committed], [next], "/work");
 	assert.notEqual(updates.mock.calls.at(-1)?.this, instance);
 	assert.doesNotMatch(readText(view, 20).join("\n"), /next turn sentinel/u);
-	view.setContent([], [], "/work"); readText(view);
+	view.setContent([], [], "/work");
+	readText(view);
 	view.setContent([committed], [], "/work");
 	assert.doesNotMatch(readText(view).join("\n"), /updated reasoning sentinel/u);
 	lines = readText(view);
 	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("▸ Thinking")))));
-	view.save(); view = new ConversationView(tui, state);
+	view.save();
+	view = new ConversationView(tui, state);
 	view.setContent([committed], [], "/work");
 	assert.doesNotMatch(readText(view).join("\n"), /updated reasoning sentinel/u);
 });
 
 it("a thinking run at the tail stays visible through expand, collapse and updates", () => {
-	const state = agentState(createDashboardState(), "one").view; state.showThinking = false;
+	const state = agentState(createDashboardState(), "one").view;
+	state.showThinking = false;
 	const view = new ConversationView({ requestRender() {} } as TUI, state);
-	const earlier = assistantEntry("long", 1, [{ type: "text", text: Array.from({ length: 70 }, (_, i) => `earlier text ${i}`).join("\n") }]);
-	const reasoning = assistantEntry("reason", 2, [{ type: "thinking", thinking: `clicked reasoning\n${"detail\n".repeat(30)}` }]);
+	const earlier = assistantEntry("long", 1, [
+		{ type: "text", text: Array.from({ length: 70 }, (_, i) => `earlier text ${i}`).join("\n") },
+	]);
+	const reasoning = assistantEntry("reason", 2, [
+		{ type: "thinking", thinking: `clicked reasoning\n${"detail\n".repeat(30)}` },
+	]);
 	view.setContent([earlier, reasoning], [], "/work");
 	let lines = readText(view);
 	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("▸ Thinking")))));
 	assert.ok(state.anchor);
 	const anchor = { ...state.anchor };
 	assert.equal(anchor.id, "reason");
-	view.save(); assert.deepEqual(state.anchor, anchor);
+	view.save();
+	assert.deepEqual(state.anchor, anchor);
 	lines = readText(view);
 	assert.match(lines.join("\n"), /clicked reasoning/u);
 	assert.equal(state.follow, false);
@@ -357,11 +482,26 @@ it("a thinking run at the tail stays visible through expand, collapse and update
 });
 
 it("tool collapse clamps an anchor from the middle of a long card and disables follow", () => {
-	const state = agentState(createDashboardState(), "one").view; state.expanded = true;
+	const state = agentState(createDashboardState(), "one").view;
+	state.expanded = true;
 	const view = new ConversationView({ requestRender() {} } as TUI, state);
 	const call = assistantEntry("call", 1, [{ type: "toolCall", id: "long-tool", name: "example_tool", arguments: {} }]);
-	const done: AgentConversationEntry = { id: "result", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "long-tool", toolName: "example_tool", content: [{ type: "text", text: Array.from({ length: 100 }, (_, i) => `output ${i}`).join("\n") }], isError: false, timestamp: 2 }] };
-	view.setContent([call, done], [], "/work"); readText(view);
+	const done: AgentConversationEntry = {
+		id: "result",
+		kind: "pi.tool-result",
+		model: [
+			{
+				role: "toolResult",
+				toolCallId: "long-tool",
+				toolName: "example_tool",
+				content: [{ type: "text", text: Array.from({ length: 100 }, (_, i) => `output ${i}`).join("\n") }],
+				isError: false,
+				timestamp: 2,
+			},
+		],
+	};
+	view.setContent([call, done], [], "/work");
+	readText(view);
 	assert.ok(view.handleMouse(itemClick(2)));
 	const lines = readText(view);
 	assert.equal(state.follow, false);
@@ -380,9 +520,22 @@ it("transcript clicks leave selection gestures, outside blocks and stale viewpor
 	readText(view);
 	assert.equal(view.handleMouse(itemClick(1)), undefined);
 	view.setContent([assistantEntry("thinking", 1, [{ type: "thinking", thinking: "reason" }])], [], "/work");
-	const lines = readText(view); const label = lines.findIndex((line) => line.includes("▸ Thinking"));
+	const lines = readText(view);
+	const label = lines.findIndex((line) => line.includes("▸ Thinking"));
 	assert.ok(label >= 0);
-	for (const patch of [{ type: "press" }, { type: "drag" }, { type: "release" }, { shift: true }, { alt: true }, { ctrl: true }, { clickCount: 2 }, { button: "right" }, { width: 79 }, { height: 7 }]) assert.equal(view.handleMouse({ ...itemClick(label), ...patch } as TuiMouseEvent), undefined);
+	for (const patch of [
+		{ type: "press" },
+		{ type: "drag" },
+		{ type: "release" },
+		{ shift: true },
+		{ alt: true },
+		{ ctrl: true },
+		{ clickCount: 2 },
+		{ button: "right" },
+		{ width: 79 },
+		{ height: 7 },
+	])
+		assert.equal(view.handleMouse({ ...itemClick(label), ...patch } as TuiMouseEvent), undefined);
 	assert.doesNotMatch(readText(view).join("\n"), /reason/u);
 	assert.ok(view.handleMouse(itemClick(label)));
 	assert.match(readText(view).join("\n"), /reason/u);
@@ -390,13 +543,18 @@ it("transcript clicks leave selection gestures, outside blocks and stale viewpor
 	assert.doesNotMatch(readText(view).join("\n"), /reason/u);
 });
 
-
 it("collapse from the middle of thinking keeps its label visible before trailing text", () => {
 	const state = agentState(createDashboardState(), "one").view;
-	state.follow = false; state.scroll = 25; state.showThinking = true;
+	state.follow = false;
+	state.scroll = 25;
+	state.showThinking = true;
 	const view = new ConversationView({ requestRender() {} } as TUI, state);
-	const deep = assistantEntry("deep", 1, [{ type: "thinking", thinking: Array.from({ length: 60 }, (_, i) => `thought ${i}`).join("\n") }]);
-	const after = assistantEntry("after", 2, [{ type: "text", text: Array.from({ length: 100 }, (_, i) => `after ${i}`).join("\n") }]);
+	const deep = assistantEntry("deep", 1, [
+		{ type: "thinking", thinking: Array.from({ length: 60 }, (_, i) => `thought ${i}`).join("\n") },
+	]);
+	const after = assistantEntry("after", 2, [
+		{ type: "text", text: Array.from({ length: 100 }, (_, i) => `after ${i}`).join("\n") },
+	]);
 	view.setContent([deep, after], [], "/work");
 	assert.match(readText(view).join("\n"), /thought 26/);
 	assert.ok(view.handleMouse(itemClick(2)));
@@ -406,21 +564,31 @@ it("collapse from the middle of thinking keeps its label visible before trailing
 	assert.match(readText(view).join("\n"), /▸ Thinking/);
 });
 
-
-for (const header of [0, 12]) it(`a second thinking run stays visible after collapse with screen header ${header}`, () => {
-	const state = agentState(createDashboardState(), "one").view;
-	state.follow = false; state.scroll = 60; state.showThinking = true;
-	const view = new ConversationView({ requestRender() {} } as TUI, state);
-	const earlier = assistantEntry("first-run", 1, [{ type: "thinking", thinking: Array.from({ length: 30 }, (_, i) => `earlier ${i}`).join("\n") }]);
-	const before = assistantEntry("before", 2, [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `before ${i}`).join("\n") }]);
-	const second = assistantEntry("second-run", 3, [{ type: "thinking", thinking: Array.from({ length: 60 }, (_, i) => `thought ${i}`).join("\n") }]);
-	const after = assistantEntry("after", 4, [{ type: "text", text: Array.from({ length: 100 }, (_, i) => `after ${i}`).join("\n") }]);
-	view.setContent([earlier, before, second, after], [], "/work");
-	assert.match(readText(view).join("\n"), /thought/);
-	assert.ok(view.handleMouse({ ...itemClick(2), screenY: header + 2 }));
-	const collapsed = readText(view);
-	const label = collapsed.findIndex((line) => line.includes("▸ Thinking"));
-	assert.ok(label >= 0);
-	assert.ok(view.handleMouse({ ...itemClick(label), screenY: header + label }));
-	assert.match(readText(view).join("\n"), /thought 0/);
-});
+for (const header of [0, 12])
+	it(`a second thinking run stays visible after collapse with screen header ${header}`, () => {
+		const state = agentState(createDashboardState(), "one").view;
+		state.follow = false;
+		state.scroll = 60;
+		state.showThinking = true;
+		const view = new ConversationView({ requestRender() {} } as TUI, state);
+		const earlier = assistantEntry("first-run", 1, [
+			{ type: "thinking", thinking: Array.from({ length: 30 }, (_, i) => `earlier ${i}`).join("\n") },
+		]);
+		const before = assistantEntry("before", 2, [
+			{ type: "text", text: Array.from({ length: 30 }, (_, i) => `before ${i}`).join("\n") },
+		]);
+		const second = assistantEntry("second-run", 3, [
+			{ type: "thinking", thinking: Array.from({ length: 60 }, (_, i) => `thought ${i}`).join("\n") },
+		]);
+		const after = assistantEntry("after", 4, [
+			{ type: "text", text: Array.from({ length: 100 }, (_, i) => `after ${i}`).join("\n") },
+		]);
+		view.setContent([earlier, before, second, after], [], "/work");
+		assert.match(readText(view).join("\n"), /thought/);
+		assert.ok(view.handleMouse({ ...itemClick(2), screenY: header + 2 }));
+		const collapsed = readText(view);
+		const label = collapsed.findIndex((line) => line.includes("▸ Thinking"));
+		assert.ok(label >= 0);
+		assert.ok(view.handleMouse({ ...itemClick(label), screenY: header + label }));
+		assert.match(readText(view).join("\n"), /thought 0/);
+	});

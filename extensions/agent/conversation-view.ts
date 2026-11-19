@@ -162,8 +162,13 @@ export class ConversationHistory {
 		return this.pages.reduce((count, page) => count + (page.entries?.length ?? 0), 0);
 	}
 }
-function committedAssistant(entries: readonly AgentConversationEntry[], timestamp: number): AgentConversationEntry | undefined {
-	return entries.find((entry) => entry.model?.some((message) => message.role === "assistant" && message.timestamp === timestamp));
+function committedAssistant(
+	entries: readonly AgentConversationEntry[],
+	timestamp: number,
+): AgentConversationEntry | undefined {
+	return entries.find((entry) =>
+		entry.model?.some((message) => message.role === "assistant" && message.timestamp === timestamp),
+	);
 }
 export class ConversationView {
 	private transcript?: AgentConversation;
@@ -213,7 +218,17 @@ export class ConversationView {
 		this.cwd = retained.cwd;
 		this.expanded = this.state.expanded;
 		this.showThinking = this.state.showThinking;
-		this.transcript = new AgentConversation(retained.entries, retained.cwd, this.tui, this.state.expanded, this.state.showThinking, undefined, this.state, this.toolDisplay, this.rows);
+		this.transcript = new AgentConversation(
+			retained.entries,
+			retained.cwd,
+			this.tui,
+			this.state.expanded,
+			this.state.showThinking,
+			undefined,
+			this.state,
+			this.toolDisplay,
+			this.rows,
+		);
 		this.viewport = undefined;
 		this.restored = false;
 	}
@@ -224,17 +239,23 @@ export class ConversationView {
 		if (!target) return;
 		this.transcript?.renameEntry(previous.id, target.id);
 		const anchor = this.state.anchor;
-		if (anchor && (anchor.id === previous.id || anchor.id.startsWith(`${previous.id}:`))) anchor.id = target.id + anchor.id.slice(previous.id.length);
+		if (anchor && (anchor.id === previous.id || anchor.id.startsWith(`${previous.id}:`)))
+			anchor.id = target.id + anchor.id.slice(previous.id.length);
 		this.liveIdentity = undefined;
 	}
-	private liveEntries(committed: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[], ids: Set<string>): AgentConversationEntry[] {
+	private liveEntries(
+		committed: readonly AgentConversationEntry[],
+		live: readonly AgentConversationEntry[],
+		ids: Set<string>,
+	): AgentConversationEntry[] {
 		const generation = live.find((entry) => entry.id === "live:generation");
 		const timestamp = generation?.model?.find((message) => message.role === "assistant")?.timestamp;
 		const identity = timestamp === undefined ? undefined : { id: `live:generation:${timestamp}`, timestamp };
 		const duplicate = timestamp !== undefined && committedAssistant(committed, timestamp) !== undefined;
 		if (identity && !duplicate) this.liveIdentity = identity;
-		return live.filter((entry) => !ids.has(entry.id) && !(entry === generation && duplicate))
-			.map((entry) => entry === generation && identity ? { ...entry, id: identity.id } : entry);
+		return live
+			.filter((entry) => !ids.has(entry.id) && !(entry === generation && duplicate))
+			.map((entry) => (entry === generation && identity ? { ...entry, id: identity.id } : entry));
 	}
 	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[], cwd: string): void {
 		this.viewport = undefined;
@@ -245,7 +266,17 @@ export class ConversationView {
 		this.retained = { entries: merged, cwd };
 		if (!this.transcript || this.cwd !== cwd) {
 			this.transcript?.dispose();
-			this.transcript = new AgentConversation(merged, cwd, this.tui, this.state.expanded, this.state.showThinking, undefined, this.state, this.toolDisplay, this.rows);
+			this.transcript = new AgentConversation(
+				merged,
+				cwd,
+				this.tui,
+				this.state.expanded,
+				this.state.showThinking,
+				undefined,
+				this.state,
+				this.toolDisplay,
+				this.rows,
+			);
 			this.cwd = cwd;
 			this.expanded = this.state.expanded;
 			this.showThinking = this.state.showThinking;
@@ -279,13 +310,25 @@ export class ConversationView {
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const viewport = this.viewport;
-		if (!viewport || event.width !== viewport.width || event.height !== viewport.height || event.x < 0 || event.x >= viewport.width || event.y < 0 || event.y >= viewport.height) return;
+		if (
+			!viewport ||
+			event.width !== viewport.width ||
+			event.height !== viewport.height ||
+			event.x < 0 ||
+			event.x >= viewport.width ||
+			event.y < 0 ||
+			event.y >= viewport.height
+		)
+			return;
 		const item = this.transcript?.handleMouse({ ...event, y: viewport.top + event.y });
 		if (!item) return;
 		this.state.follow = false;
 		this.scroll.scrollTo(viewport.top, { disableFollow: true });
 		this.state.scroll = viewport.top;
-		this.state.anchor = { id: item.id, offset: Math.max(0, Math.min(viewport.top - item.line, item.targetOffset ?? Infinity)) };
+		this.state.anchor = {
+			id: item.id,
+			offset: Math.max(0, Math.min(viewport.top - item.line, item.targetOffset ?? Infinity)),
+		};
 		this.restored = false;
 		this.viewport = undefined;
 		return { handled: true, render: true };
@@ -294,7 +337,8 @@ export class ConversationView {
 		this.scroll.scrollBy(delta);
 		// The scroll-status rule shows only away from the end and takes one row, so a page down that starts
 		// under the rule stops up to two rows short of the end. Those rows are on screen at the end anyway.
-		if (delta > 0 && this.scroll.scrollTop >= this.contentHeight - this.scroll.viewportHeight - 2) this.scroll.scrollToEnd();
+		if (delta > 0 && this.scroll.scrollTop >= this.contentHeight - this.scroll.viewportHeight - 2)
+			this.scroll.scrollToEnd();
 		this.save();
 	}
 	position(): { first: number; last: number; total: number; end: boolean; estimated: boolean } {

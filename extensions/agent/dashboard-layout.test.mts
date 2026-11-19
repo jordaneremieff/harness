@@ -3,12 +3,22 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, truncateToWidth, CURSOR_MARKER } from "@earendil-works/pi-tui";
-import { dashboardGeometry, dashboardHeading, fitLine, LIST_BLOCK_ROWS, listBlock, readingGeometry, MAX_ROSTER_COLUMNS, MIN_DETAIL_COLUMNS } from "./dashboard-layout.ts";
+import {
+	dashboardGeometry,
+	dashboardHeading,
+	fitLine,
+	LIST_BLOCK_ROWS,
+	listBlock,
+	readingGeometry,
+	MAX_ROSTER_COLUMNS,
+	MIN_DETAIL_COLUMNS,
+} from "./dashboard-layout.ts";
 import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
 import { agentState, updateDraft } from "./dashboard-state.ts";
 
 /** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
-const visible = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+const visible = (lines: string[]) =>
+	lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
 
 it("line fitting preserves truncation and padding for styled and Unicode text", () => {
 	const hyperlink = "\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\";
@@ -19,14 +29,24 @@ it("line fitting preserves truncation and padding for styled and Unicode text", 
 		["a\tb", [0, 1, 4, 5, 8]],
 		["x".repeat(4097), [0, 1, 80]],
 	];
-	for (const [text, widths] of cases) for (const width of widths) {
-		const value = truncateToWidth(text, Math.max(1, width), "…");
-		assert.equal(fitLine(text, width), value + " ".repeat(Math.max(0, width - visibleWidth(value))), `width ${width}, length ${text.length}`);
-	}
+	for (const [text, widths] of cases)
+		for (const width of widths) {
+			const value = truncateToWidth(text, Math.max(1, width), "…");
+			assert.equal(
+				fitLine(text, width),
+				value + " ".repeat(Math.max(0, width - visibleWidth(value))),
+				`width ${width}, length ${text.length}`,
+			);
+		}
 });
 
 it("the roster keeps its share of the window and the conversation keeps the body", () => {
-	for (const [width, expected] of [[100, 32], [120, 36], [164, 49], [240, 60]]) {
+	for (const [width, expected] of [
+		[100, 32],
+		[120, 36],
+		[164, 49],
+		[240, 60],
+	]) {
 		const geometry = dashboardGeometry(width, 44, 3);
 		assert.equal(geometry.rosterWidth, expected);
 		assert.equal(geometry.wide, true);
@@ -40,22 +60,25 @@ it("the roster keeps its share of the window and the conversation keeps the body
 });
 
 it("the list widens for the longest model while it preserves the pane minimum", async () => {
-	for (const width of [100, 164, 240]) for (const modelId of ["small", "long-model-identity-with-provider", "model".repeat(30)]) {
-		const model = { provider: "test", modelId, thinkingLevel: "high" };
-		const f = fixture(width, 40, source([row("short"), row("long", { model })]));
-		try {
-			await turn();
-			const lines = visible(f.ui.render(width));
-			const longest = visibleWidth(`test/${modelId} [high]`) + 5;
-			const base = dashboardGeometry(width, 40, 0).rosterWidth;
-			const expected = Math.max(base, Math.min(longest, MAX_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS));
-			const divider = lines[1]?.indexOf("│") ?? -1;
-			assert.equal(divider, expected);
-			assert.ok(divider <= MAX_ROSTER_COLUMNS);
-			assert.ok(width - divider - 1 >= MIN_DETAIL_COLUMNS);
-			assert.ok(lines.every((line) => visibleWidth(line) === width));
-		} finally { f.ui.dispose(); }
-	}
+	for (const width of [100, 164, 240])
+		for (const modelId of ["small", "long-model-identity-with-provider", "model".repeat(30)]) {
+			const model = { provider: "test", modelId, thinkingLevel: "high" };
+			const f = fixture(width, 40, source([row("short"), row("long", { model })]));
+			try {
+				await turn();
+				const lines = visible(f.ui.render(width));
+				const longest = visibleWidth(`test/${modelId} [high]`) + 5;
+				const base = dashboardGeometry(width, 40, 0).rosterWidth;
+				const expected = Math.max(base, Math.min(longest, MAX_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS));
+				const divider = lines[1]?.indexOf("│") ?? -1;
+				assert.equal(divider, expected);
+				assert.ok(divider <= MAX_ROSTER_COLUMNS);
+				assert.ok(width - divider - 1 >= MIN_DETAIL_COLUMNS);
+				assert.ok(lines.every((line) => visibleWidth(line) === width));
+			} finally {
+				f.ui.dispose();
+			}
+		}
 });
 
 it("the header places the name left and the state right with an age only for settled agents", async () => {
@@ -71,12 +94,19 @@ it("the header places the name left and the state right with an age only for set
 			if (state === "working" || state === "starting") assert.doesNotMatch(header, /ago|just now/u);
 			else assert.match(header, / · \d+d ago $/u);
 			assert.doesNotMatch(header, /work|test\/model|\$/u);
-		} finally { f.ui.dispose(); }
+		} finally {
+			f.ui.dispose();
+		}
 	}
 });
 
 it("reading geometry keeps a two-column margin and a 100-column text maximum", () => {
-	for (const [paneWidth, textWidth] of [[159, 100], [89, 86], [80, 77], [60, 57]]) {
+	for (const [paneWidth, textWidth] of [
+		[159, 100],
+		[89, 86],
+		[80, 77],
+		[60, 57],
+	]) {
 		assert.deepEqual(readingGeometry(paneWidth), { margin: 2, textWidth });
 	}
 	assert.deepEqual(readingGeometry(2), { margin: 2, textWidth: 1 });
@@ -86,7 +116,13 @@ it("reading geometry keeps a two-column margin and a 100-column text maximum", (
 const STATE_LINE = /[◌●○✓!■↯·?] (Starting|Working|Idle|Done|Failed|Stopped|Interrupted|New|Unavailable)\b/u;
 
 it("the target header keeps identity and state without activity", async () => {
-	const observed = source([row("one", { name: "Selected recipient", state: "working", currentTool: { name: "read", argument: JSON.stringify({ path: `/${"long-path/".repeat(40)}` }) } })]);
+	const observed = source([
+		row("one", {
+			name: "Selected recipient",
+			state: "working",
+			currentTool: { name: "read", argument: JSON.stringify({ path: `/${"long-path/".repeat(40)}` }) },
+		}),
+	]);
 	const f = fixture(60, 20, observed);
 	try {
 		await turn();
@@ -99,7 +135,9 @@ it("the target header keeps identity and state without activity", async () => {
 		assert.match(lines[title] ?? "", /Selected recipient/);
 		assert.doesNotMatch(lines.slice(title, title + 2).join("\n"), /read|long-path/);
 		assert.equal(visibleWidth(lines[title] ?? ""), 60);
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 it("every view occupies the exact terminal rectangle and keeps the way out in the footer", async () => {
@@ -118,84 +156,157 @@ it("every view occupies the exact terminal rectangle and keeps the way out in th
 		try {
 			await turn();
 			await turn();
-			const steps: Array<string | (() => void)> = ["", "\t", "\x1b", "\r", "\x1b", () => f.ui.openNamedAction("configure"), "\x1b", () => f.ui.openNamedAction("help"), "\x1b", "x", "\x1b", () => f.ui.openNamedAction("new")];
+			const steps: Array<string | (() => void)> = [
+				"",
+				"\t",
+				"\x1b",
+				"\r",
+				"\x1b",
+				() => f.ui.openNamedAction("configure"),
+				"\x1b",
+				() => f.ui.openNamedAction("help"),
+				"\x1b",
+				"x",
+				"\x1b",
+				() => f.ui.openNamedAction("new"),
+			];
 			for (const [index, step] of steps.entries()) {
 				if (typeof step === "function") step();
 				else if (step) f.ui.handleInput(step);
 				await turn();
 				const lines = f.ui.render(width);
 				assert.equal(lines.length, height, `step ${index}`);
-				assert.ok(lines.every((line) => visibleWidth(line) <= width), `step ${index}`);
-				assert.doesNotMatch(stripVTControlCharacters(lines[0] ?? ""), /Close/u, `step ${index}: the header holds no commands`);
-				assert.match(stripVTControlCharacters(lines.at(-1) ?? "").trimEnd(), /(^|· )esc [^·]+$/u, `step ${index}: the way out is the last footer control`);
+				assert.ok(
+					lines.every((line) => visibleWidth(line) <= width),
+					`step ${index}`,
+				);
+				assert.doesNotMatch(
+					stripVTControlCharacters(lines[0] ?? ""),
+					/Close/u,
+					`step ${index}: the header holds no commands`,
+				);
+				assert.match(
+					stripVTControlCharacters(lines.at(-1) ?? "").trimEnd(),
+					/(^|· )esc [^·]+$/u,
+					`step ${index}: the way out is the last footer control`,
+				);
 			}
 			f.ui.handleInput("first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh\neighth");
 			const lines = f.ui.render(width);
 			assert.equal(lines.length, height);
-			assert.ok(lines.some((line) => line.includes(CURSOR_MARKER)), "the New conversation purpose holds the cursor");
+			assert.ok(
+				lines.some((line) => line.includes(CURSOR_MARKER)),
+				"the New conversation purpose holds the cursor",
+			);
 		} finally {
 			f.ui.dispose();
 		}
 	}
 });
-for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of ["list", "composer", "conversation"] as const) for (const notice of [false, true]) {
-	it(`compact failed conversations keep warnings, draft, status and targets at ${width}x${height} from the ${focus}, notice ${notice}`, async () => {
-		const observed = source([row("one", { state: "failed", error: "quota limit" })]);
-		observed.availability = () => ({ state: "unavailable", at: new Date(0).toISOString() });
-		const f = fixture(width, height, observed);
-		try {
-			await turn();
-			await turn();
-			const state = agentState(f.state, "one");
-			const draft = Array.from({ length: 10 }, (_, index) => `draft ${index}`).join("\n");
-			updateDraft(state, draft);
-			if (focus === "composer") f.ui.handleInput("\r");
-			if (focus === "conversation") f.ui.handleInput("\t");
-			assert.equal(f.ui.focus.region, focus);
-			if (notice) f.ui.notify("Layout could not be saved", "warning");
-			f.ui.focused = true;
-			const lines = f.ui.render(width);
-			const plain = visible(lines);
-			assert.equal(lines.length, height, `${width}x${height} ${focus}`);
-			assert.ok(plain.every((line) => visibleWidth(line) === width));
-			const text = plain.join("\n");
-			assert.match((plain.at(-1) ?? "").trimEnd(), /esc (list|close|cancel|done)$/u, "the way out is the last footer control");
-			if (notice) {
-				assert.match(text, /Layout could not be saved/);
-				assert.doesNotMatch(plain[1] ?? "", /quota limit/, "the notice takes the header line");
-			} else {
-				assert.match(text, /quota limit · A new message runs the work again/, "the header states the reason and the way forward");
-				assert.doesNotMatch(text, /Not connected/, "the reason takes the line the connection warning would use");
+for (const width of [60, 80])
+	for (const height of [20, 21])
+		for (const focus of ["list", "composer", "conversation"] as const)
+			for (const notice of [false, true]) {
+				it(`compact failed conversations keep warnings, draft, status and targets at ${width}x${height} from the ${focus}, notice ${notice}`, async () => {
+					const observed = source([row("one", { state: "failed", error: "quota limit" })]);
+					observed.availability = () => ({ state: "unavailable", at: new Date(0).toISOString() });
+					const f = fixture(width, height, observed);
+					try {
+						await turn();
+						await turn();
+						const state = agentState(f.state, "one");
+						const draft = Array.from({ length: 10 }, (_, index) => `draft ${index}`).join("\n");
+						updateDraft(state, draft);
+						if (focus === "composer") f.ui.handleInput("\r");
+						if (focus === "conversation") f.ui.handleInput("\t");
+						assert.equal(f.ui.focus.region, focus);
+						if (notice) f.ui.notify("Layout could not be saved", "warning");
+						f.ui.focused = true;
+						const lines = f.ui.render(width);
+						const plain = visible(lines);
+						assert.equal(lines.length, height, `${width}x${height} ${focus}`);
+						assert.ok(plain.every((line) => visibleWidth(line) === width));
+						const text = plain.join("\n");
+						assert.match(
+							(plain.at(-1) ?? "").trimEnd(),
+							/esc (list|close|cancel|done)$/u,
+							"the way out is the last footer control",
+						);
+						if (notice) {
+							assert.match(text, /Layout could not be saved/);
+							assert.doesNotMatch(plain[1] ?? "", /quota limit/, "the notice takes the header line");
+						} else {
+							assert.match(
+								text,
+								/quota limit · A new message runs the work again/,
+								"the header states the reason and the way forward",
+							);
+							assert.doesNotMatch(text, /Not connected/, "the reason takes the line the connection warning would use");
+						}
+						const statusY = plain.findIndex((line) => /model │ ~\$0\.42/.test(line));
+						assert.ok(statusY > 0, "the model and cost line stays visible");
+						assert.match(plain[statusY + 1] ?? "", /\/work/);
+						assert.doesNotMatch(plain[0] ?? "", /Close/u, "the header holds no commands");
+						const click = (y: number, x = 2) =>
+							f.ui.handleMouse({
+								type: "click",
+								button: "left",
+								x,
+								y,
+								screenX: x,
+								screenY: y,
+								width,
+								height,
+								shift: false,
+								alt: false,
+								ctrl: false,
+								clickCount: 1,
+							});
+						for (const y of [statusY, statusY + 1])
+							assert.equal(click(y), undefined, "status rows are not editor targets");
+						const top = plain.findIndex((line, index) => index > 0 && line.startsWith("╭─"));
+						assert.ok(top >= 0, focus);
+						assert.ok(
+							plain.some((line, index) => index > top && line.startsWith("╰─")),
+							"the message field keeps its bottom border and controls",
+						);
+						assert.equal(click(top + 1)?.focus, true, "visible draft rows target the native editor");
+						assert.equal(f.ui.focus.region, "composer");
+						const updated = f.ui.render(width);
+						assert.equal(updated.length, height);
+						assert.ok(updated.some((line) => line.includes(CURSOR_MARKER)));
+						assert.equal(state.draft, draft);
+						const heading = visible(updated)[0] ?? "";
+						assert.doesNotMatch(heading, /Close/u, "the header holds no commands");
+						const composerFooter = visible(updated).at(-1) ?? "";
+						assert.equal(
+							click(height - 1, composerFooter.lastIndexOf("esc") + 1)?.handled,
+							true,
+							"the way out stays clickable",
+						);
+						assert.equal(f.ui.focus.region, "list", "the composer's Escape returns to the list");
+						const listFooter = visible(f.ui.render(width)).at(-1) ?? "";
+						assert.equal(
+							click(height - 1, listFooter.lastIndexOf("esc") + 1)?.handled,
+							true,
+							"the list's way out stays clickable",
+						);
+						assert.equal(f.counts().closes, 1);
+					} finally {
+						f.ui.dispose();
+					}
+				});
 			}
-			const statusY = plain.findIndex((line) => /model │ ~\$0\.42/.test(line));
-			assert.ok(statusY > 0, "the model and cost line stays visible");
-			assert.match(plain[statusY + 1] ?? "", /\/work/);
-			assert.doesNotMatch(plain[0] ?? "", /Close/u, "the header holds no commands");
-			const click = (y: number, x = 2) => f.ui.handleMouse({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
-			for (const y of [statusY, statusY + 1]) assert.equal(click(y), undefined, "status rows are not editor targets");
-			const top = plain.findIndex((line, index) => index > 0 && line.startsWith("╭─"));
-			assert.ok(top >= 0, focus);
-			assert.ok(plain.some((line, index) => index > top && line.startsWith("╰─")), "the message field keeps its bottom border and controls");
-			assert.equal(click(top + 1)?.focus, true, "visible draft rows target the native editor");
-			assert.equal(f.ui.focus.region, "composer");
-			const updated = f.ui.render(width);
-			assert.equal(updated.length, height);
-			assert.ok(updated.some((line) => line.includes(CURSOR_MARKER)));
-			assert.equal(state.draft, draft);
-			const heading = visible(updated)[0] ?? "";
-			assert.doesNotMatch(heading, /Close/u, "the header holds no commands");
-			const composerFooter = visible(updated).at(-1) ?? "";
-			assert.equal(click(height - 1, composerFooter.lastIndexOf("esc") + 1)?.handled, true, "the way out stays clickable");
-			assert.equal(f.ui.focus.region, "list", "the composer's Escape returns to the list");
-			const listFooter = visible(f.ui.render(width)).at(-1) ?? "";
-			assert.equal(click(height - 1, listFooter.lastIndexOf("esc") + 1)?.handled, true, "the list's way out stays clickable");
-			assert.equal(f.counts().closes, 1);
-		} finally { f.ui.dispose(); }
-	});
-}
 it("narrow strips preserve the composer, two status lines and two conversation rows above the key footer", async () => {
-	for (const [width, height, stripRows, visibleAgents] of [[80, 25, 8, 2], [60, 21, 5, 1]] as const) {
-		const f = fixture(width, height, source([row("one", { modifiedAt: 3 }), row("two", { modifiedAt: 2 }), row("three", { modifiedAt: 1 })]));
+	for (const [width, height, stripRows, visibleAgents] of [
+		[80, 25, 8, 2],
+		[60, 21, 5, 1],
+	] as const) {
+		const f = fixture(
+			width,
+			height,
+			source([row("one", { modifiedAt: 3 }), row("two", { modifiedAt: 2 }), row("three", { modifiedAt: 1 })]),
+		);
 		try {
 			await turn();
 			await turn();
@@ -215,7 +326,9 @@ it("narrow strips preserve the composer, two status lines and two conversation r
 			assert.ok(composerBottom > composerTop);
 			assert.match(plain[composerBottom + 1] ?? "", /model │/);
 			assert.match(plain[composerBottom + 2] ?? "", /\/work/);
-		} finally { f.ui.dispose(); }
+		} finally {
+			f.ui.dispose();
+		}
 	}
 });
 
@@ -269,7 +382,18 @@ it("the list labels incomplete loaded coverage rather than a global total", asyn
 });
 
 it("a list block keeps a short title on one row, then its detail, then a gap", () => {
-	const block = listBlock({ title: "Recipient", glyph: "●", glyphColor: "accent", detail: "model high · $0.42", time: "5m ago", selected: false }, 40, painted);
+	const block = listBlock(
+		{
+			title: "Recipient",
+			glyph: "●",
+			glyphColor: "accent",
+			detail: "model high · $0.42",
+			time: "5m ago",
+			selected: false,
+		},
+		40,
+		painted,
+	);
 	assert.equal(block.lines.length, LIST_BLOCK_ROWS);
 	const plain = visible(block.lines);
 	assert.match(plain[0] ?? "", /^ {2}● Recipient +5m ago$/u);
@@ -282,7 +406,11 @@ it("a list block keeps a short title on one row, then its detail, then a gap", (
 
 it("a long list title truncates before the time and leaves the detail on its own row", () => {
 	const title = "A very long agent name that does not fit in one list row";
-	const block = listBlock({ title, glyph: "○", glyphColor: "muted", detail: "model high", time: "5m ago", selected: false }, 32, painted);
+	const block = listBlock(
+		{ title, glyph: "○", glyphColor: "muted", detail: "model high", time: "5m ago", selected: false },
+		32,
+		painted,
+	);
 	assert.equal(block.lines.length, LIST_BLOCK_ROWS);
 	const plain = visible(block.lines);
 	assert.match(plain[0] ?? "", /^ {2}○ A very long agent na… 5m ago$/u);
@@ -295,7 +423,19 @@ it("a long list title truncates before the time and leaves the detail on its own
 
 it("timeOnDetail moves the time to the right of the detail row", () => {
 	const stamp = "Oct 3, 2026, 1:24 PM";
-	const block = listBlock({ title: "Recipient", glyph: "✓", glyphColor: "success", detail: "model high", time: stamp, timeOnDetail: true, selected: false }, 44, painted);
+	const block = listBlock(
+		{
+			title: "Recipient",
+			glyph: "✓",
+			glyphColor: "success",
+			detail: "model high",
+			time: stamp,
+			timeOnDetail: true,
+			selected: false,
+		},
+		44,
+		painted,
+	);
 	assert.equal(block.lines.length, LIST_BLOCK_ROWS);
 	const plain = visible(block.lines);
 	assert.doesNotMatch(plain[0] ?? "", /Oct 3/u);
@@ -306,7 +446,11 @@ it("timeOnDetail moves the time to the right of the detail row", () => {
 });
 
 it("the selection background covers content rows and leaves the blank row plain", () => {
-	const block = listBlock({ title: "Recipient", glyph: "●", glyphColor: "accent", detail: "model high", selected: true }, 30, painted);
+	const block = listBlock(
+		{ title: "Recipient", glyph: "●", glyphColor: "accent", detail: "model high", selected: true },
+		30,
+		painted,
+	);
 	assert.equal(block.lines.length, LIST_BLOCK_ROWS);
 	for (const line of block.lines.slice(0, 2)) {
 		assert.ok(line.includes("\x1b[44m"), "a content row carries the selection background");

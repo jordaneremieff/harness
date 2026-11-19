@@ -11,19 +11,31 @@ import { hostPaths, parseHostMetadata } from "./host-protocol.ts";
 import { parseOperationContract, type OperationContract, type RuntimeContract } from "./version-contract.ts";
 
 const require = createRequire(import.meta.url);
-const DURABLE_VERSION: string = JSON.parse(readFileSync(require.resolve("@earendil-works/pi-durable/package.json"), "utf8")).version;
+const DURABLE_VERSION: string = JSON.parse(
+	readFileSync(require.resolve("@earendil-works/pi-durable/package.json"), "utf8"),
+).version;
 
 /** Fixed operation identities isolate feature additions from upstream release changes. */
 export const BASE_OPERATIONS: Readonly<Record<string, OperationContract>> = {
-	status: { request: "status/1.0.0", response: "5df139e808900bee9bf561760b4f7da690df743f336609ec26ab0a7a11957dc1", durable: DURABLE_VERSION },
+	status: {
+		request: "status/1.0.0",
+		response: "5df139e808900bee9bf561760b4f7da690df743f336609ec26ab0a7a11957dc1",
+		durable: DURABLE_VERSION,
+	},
 	submit: { request: "submit/1.1.0", response: "submit/1.1.0" },
 	reset: { request: "reset/1.0.0", response: "reset/1.0.0" },
 	list: { request: "list/1.0.0", response: "1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6" },
-	dashboard: { request: "dashboard/1.0.0", response: "46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241" },
+	dashboard: {
+		request: "dashboard/1.0.0",
+		response: "46dd1bdd919bd3093ad6a3c0a316b35fa05d491490a37c9879ef9a9cffc4f241",
+	},
 };
 const baseContract: RuntimeContract = {
-	format: "pi.agent.contract/1", release: "1.0.0", upstream: { codingAgent: CODING_AGENT_VERSION, durable: DURABLE_VERSION },
-	requires: { codingAgent: "1.0.0", durable: "1.0.0" }, operations: BASE_OPERATIONS,
+	format: "pi.agent.contract/1",
+	release: "1.0.0",
+	upstream: { codingAgent: CODING_AGENT_VERSION, durable: DURABLE_VERSION },
+	requires: { codingAgent: "1.0.0", durable: "1.0.0" },
+	operations: BASE_OPERATIONS,
 };
 
 /** A base-only process forwards unchanged operations to real storage, with no profile capability. */
@@ -34,25 +46,51 @@ async function main(): Promise<void> {
 	const paths = hostPaths(metadata);
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
-	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: metadata.storageId, cwd: metadata.cwd, createdAt: new Date().toISOString() }), { mode: 0o600 });
+	writeFileSync(
+		paths.claim,
+		JSON.stringify({
+			token: randomUUID(),
+			pid: process.pid,
+			host: hostname(),
+			sessionId: metadata.storageId,
+			cwd: metadata.cwd,
+			createdAt: new Date().toISOString(),
+		}),
+		{ mode: 0o600 },
+	);
 	const writerId = randomUUID();
 	const server = createTransportServer({
-		serverId: paths.serverId, path: paths.socket,
+		serverId: paths.serverId,
+		path: paths.socket,
 		request: async (request) => {
-			if (request.method === "runtime-contract") return { format: "pi.agent.host-hello/1", writerId, contract: baseContract };
+			if (request.method === "runtime-contract")
+				return { format: "pi.agent.host-hello/1", writerId, contract: baseContract };
 			const expected = BASE_OPERATIONS[request.method];
 			const supplied = parseOperationContract(request.contract);
-			if (!expected || supplied.request !== expected.request || supplied.response !== expected.response || supplied.durable !== expected.durable) throw new Error(`Unavailable base operation: ${request.method}`);
+			if (
+				!expected ||
+				supplied.request !== expected.request ||
+				supplied.response !== expected.response ||
+				supplied.durable !== expected.durable
+			)
+				throw new Error(`Unavailable base operation: ${request.method}`);
 			process.send?.({ event: "forwarded", method: request.method });
 			return connection.request(request.method, request.params);
 		},
 	});
 	await server.start();
 	process.once("disconnect", () => {
-		void server.close().finally(async () => { await connection.close(); rmSync(paths.claim, { force: true }); process.exit(0); });
+		void server.close().finally(async () => {
+			await connection.close();
+			rmSync(paths.claim, { force: true });
+			process.exit(0);
+		});
 	});
 	process.send?.({ event: "ready" });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-	main().catch((error: unknown) => { process.stderr.write(`${String(error)}\n`); process.exit(1); });
+	main().catch((error: unknown) => {
+		process.stderr.write(`${String(error)}\n`);
+		process.exit(1);
+	});
 }
