@@ -72,7 +72,9 @@ of a push.
   from the cache makes V8 coverage less precise.
 - `npm run check` also verifies slice isolation, settings declarations, and the
   pillar inventory.
-- `npm run typecheck`, `npm run lint`.
+- `npm run typecheck`, `npm run lint`. The lint script also fails on a file
+  that differs from the configured formatter; `npm run format` rewrites the
+  TypeScript sources in that format.
 - `node scripts/select-tests.mts <repository-relative-path> [...]` or
   `node scripts/select-tests.mts --range <revision-range>` prints sorted test
   paths from current tracked and non-ignored source: same-directory tests and

@@ -226,7 +226,8 @@ Verify what the change can break, then stop:
   `node --test scripts/extension-load-check.test.mts`.
 - Run `npm run check` (slice isolation, settings declarations, pillar inventory,
   test inventory) after structural edits; `npm run typecheck` and `npm run lint`
-  after TypeScript edits.
+  after TypeScript edits. Lint also reports unformatted files; `npm run format`
+  rewrites them.
 - Run `node scripts/extension-load-check.mts extensions/<name>/index.ts` after
   changing an extension's registration or startup path, and
   `node skills/harness/scripts/validate-skill.mts skills/<name>` after changing a
