@@ -242,6 +242,7 @@ export class MarkdownStore {
 	async list(options: { kind?: DocumentKind; limit?: number; match?: (record: DocumentRecord) => boolean } = {}): Promise<{ documents: DocumentRecord[]; bounded: boolean; scanned: number; matched: number; unreadable: number }> {
 		const limit = listLimit(options.limit);
 		const kind = options.kind ?? "published";
+		const matches = (record: DocumentRecord) => record.kind === kind && (options.match?.(record) ?? true);
 		const documents: DocumentRecord[] = [];
 		let scanned = 0; let bounded = false; let unreadable = 0;
 		let entries: Awaited<ReturnType<typeof opendir>>;
@@ -252,7 +253,7 @@ export class MarkdownStore {
 			if (!entry.isDirectory() || !validId(entry.name)) continue;
 			const record = await this.listingPointer(entry.name, kind);
 			if (!record) unreadable++;
-			else if (record.kind === kind && (!options.match || options.match(record))) documents.push(record);
+			else if (matches(record)) documents.push(record);
 		}
 		documents.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 		return { documents: documents.slice(0, limit), bounded, scanned, matched: documents.length, unreadable };

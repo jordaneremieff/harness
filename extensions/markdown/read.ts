@@ -164,7 +164,16 @@ function findLimits(outcome: Found): string {
 	];
 	return parts.join("");
 }
-function readHeader(outcome: Extract<ReadOutcome, { op: "read" }>): string {
+type ReadPage = Extract<ReadOutcome, { op: "read" }>;
+function showGuidance(outcome: ReadPage): string[] {
+	if (!outcome.show) return [];
+	const run = `run ${JSON.stringify(outcome.show)} as the program of a new pane.`;
+	if (hasPaneRevision(outcome.show)) return [`To show revision ${outcome.revision}, ${run}`];
+	const input = outcome.paneInput ? `type ${JSON.stringify(outcome.paneInput.trimEnd())} and Enter into a reader pane that you opened, or ` : "";
+	if (outcome.revision !== outcome.currentRevision) return [`Current revision only: this reader build cannot pin revision ${outcome.revision}. To show the current revision, ${input}${run}`];
+	return [`To show it, ${input}${run} This opens the revision that is current when used.`];
+}
+function readHeader(outcome: ReadPage): string {
 	const end = outcome.offset + outcome.text.length;
 	const position = outcome.nextOffset === null && outcome.offset === 0 ? "Complete source follows." : `Characters ${outcome.offset}\u2013${end} of ${outcome.chars} follow.${outcome.nextOffset === null ? "" : ` Continue with ${JSON.stringify({ document: outcome.documentId, revision: outcome.revision, offset: outcome.nextOffset })}.`}`;
 	const coverage = coverageText(outcome.references, outcome.provenance.kind);
@@ -173,15 +182,7 @@ function readHeader(outcome: Extract<ReadOutcome, { op: "read" }>): string {
 	const update = outcome.kind !== "published" ? "" : outcome.revision === outcome.currentRevision
 		? ` To correct it, publish with document ${outcome.documentId} and expectedRevision ${outcome.revision}.`
 		: ` Before a correction, read the current revision with markdown_read ${JSON.stringify({ document: outcome.documentId, revision: outcome.currentRevision })}. This historical text is not the update base.`;
-	const show: string[] = [];
-	if (outcome.show) {
-		const input = outcome.paneInput ? `type ${JSON.stringify(outcome.paneInput.trimEnd())} and Enter into a reader pane that you opened, or ` : "";
-		const run = `run ${JSON.stringify(outcome.show)} as the program of a new pane.`;
-		if (hasPaneRevision(outcome.show)) show.push(`To show revision ${outcome.revision}, ${run}`);
-		else if (outcome.revision !== outcome.currentRevision) show.push(`Current revision only: this reader build cannot pin revision ${outcome.revision}. To show the current revision, ${input}${run}`);
-		else show.push(`To show it, ${input}${run} This opens the revision that is current when used.`);
-	}
-	return [`${outcome.documentId} revision ${outcome.revision} of ${outcome.currentRevision} · ${outcome.kind} · ${JSON.stringify(line(outcome.revisionTitle))} · ${outcome.bytes} bytes · ${outcome.digest}.${newer}${partial}${update}`, ...(coverage ? [coverage] : []), ...show, position].join("\n");
+	return [`${outcome.documentId} revision ${outcome.revision} of ${outcome.currentRevision} · ${outcome.kind} · ${JSON.stringify(line(outcome.revisionTitle))} · ${outcome.bytes} bytes · ${outcome.digest}.${newer}${partial}${update}`, ...(coverage ? [coverage] : []), ...showGuidance(outcome), position].join("\n");
 }
 export function readText(outcome: ReadOutcome): { header: string; source?: string } {
 	if (!outcome.ok) return { header: `Markdown read failed (${outcome.error.code}): ${outcome.error.message}` };
