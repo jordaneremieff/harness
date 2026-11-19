@@ -53,13 +53,17 @@ struct CheckRunner {
     }
 
     /// WebKit needs an ordered window for layout, but a check must not activate the app.
-    /// A panel that can become key, as the pane's window does, for checks that send real key events.
-    final class KeyPanel: NSPanel {
-        override var canBecomeKey: Bool { true }
+    /// A panel that WebKit treats as the key window, as the pane's window is after a person clicks
+    /// it, for checks that send real key and mouse events. It never becomes the key window of the
+    /// system, so the person's keyboard and focus stay in their own windows while a check runs:
+    /// their typing never reaches a check, and a check never takes their typing.
+    final class FocusedPanel: NSPanel {
+        override var isKeyWindow: Bool { true }
+        override var canBecomeKey: Bool { false }
     }
 
-    static func offscreenWindow(page: ReaderWebPage, width: Double, height: Double = 1000, key: Bool = false) -> NSWindow {
-        let window = (key ? KeyPanel.self : NSPanel.self).init(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+    static func offscreenWindow(page: ReaderWebPage, width: Double, height: Double = 1000, focused: Bool = false) -> NSWindow {
+        let window = (focused ? FocusedPanel.self : NSPanel.self).init(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.hidesOnDeactivate = false
         window.isExcludedFromWindowsMenu = true

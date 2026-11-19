@@ -213,7 +213,10 @@ MarkdownReader --return-check <open request>
 ```
 
 `--verify` exercises the real page offscreen under its CSP, asset refusal, bridge-driven
-find, code copy, lock, edits and page recovery. Missing bundled page assets are a failure,
+find, code copy, lock, edits and page recovery. Checks that send real key and mouse events use a
+panel that WebKit treats as the key window but that never becomes the system's key window, and
+they deliver the events to it directly. A check run never activates the app or takes a person's
+typing, and typing elsewhere never reaches a check. Missing bundled page assets are a failure,
 not a substituted interface. `--export-image` snapshots the same page. `--measure` reports
 read, render, display, find and process observations with their evidence limits.
 `--return-check` performs the explicit terminal-return operation with the request's origin.

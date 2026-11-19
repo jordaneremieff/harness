@@ -1290,21 +1290,28 @@ struct Context {
             editor.add(DraftRecord(source: source))
             let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
             defer { withExtendedLifetime(surface) {} }
-            let window = CheckRunner.offscreenWindow(page: model.page, width: 700, height: 760, key: true)
+            let window = CheckRunner.offscreenWindow(page: model.page, width: 700, height: 760, focused: true)
             keep.append(window)
+            // Any activation of the reader or a key window of its own would take a person's typing.
+            let focusTaken = LoopbackListener.Counter()
+            let observers = [NSApplication.didBecomeActiveNotification, NSWindow.didBecomeKeyNotification].map { notification in
+                NotificationCenter.default.addObserver(forName: notification, object: nil, queue: .main) { _ in focusTaken.increment() }
+            }
+            defer { observers.forEach(NotificationCenter.default.removeObserver) }
             await model.open(origin: nil)
             try await CheckRunner.preparePageForCheck(model)
             _ = await wait(seconds: 5) { editor.webReady && model.source == source }
             await model.sendCommand("toggleLock", args: ["lock": "reading"])
             window.makeFirstResponder(model.page.webView)
             let view = model.page.webView
-            window.makeKey()
             func key(_ code: UInt16, _ characters: String, flags: NSEvent.ModifierFlags = []) async {
-                // Through NSApplication's dispatch, as the system delivers a key press: key
-                // equivalents first, then the key window's first responder.
+                // As NSApplication delivers a key press to its key window: the window's key
+                // equivalents, then the menu's, then the window's first responder. The panel is never
+                // the system's key window, so NSApplication itself would not route the press to it.
                 for type in [NSEvent.EventType.keyDown, .keyUp] {
                     guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code) else { continue }
-                    NSApp.sendEvent(event)
+                    if type == .keyDown, window.performKeyEquivalent(with: event) || NSApp.mainMenu?.performKeyEquivalent(with: event) == true { continue }
+                    window.sendEvent(event)
                 }
                 _ = await js(model, "await new Promise(r => setTimeout(r, 120)); return true;")
             }
@@ -1378,12 +1385,15 @@ struct Context {
             await escape()
             let blockItems = blockMenu.count == 3 ? blockMenu[2].split(separator: " ").map(String.init) : []
             let controlItems = controlMenu.count == 3 ? controlMenu[2].split(separator: " ").map(String.init) : []
-            let blockOK = blockOpen && blockMenu.first == "open" && ["cut", "copy", "paste", "bold"].allSatisfy(blockItems.contains) && blockMenuClosed.first == "hidden" && stillOpen
+            let blockOK = blockOpen && selectedWord == "select" && blockMenu.first == "open" && ["cut", "copy", "paste", "bold"].allSatisfy(blockItems.contains) && blockMenuClosed.first == "hidden" && stillOpen
             let controlOK = controlMenu.first == "open" && controlItems.contains("paste") && controlItems.contains("bold")
             await editor.closeViews()
             await model.close()
-            let pass = findWasOpen && findClosed && readingOK && blockOK && controlOK
-            return .init(name: name, pass: pass, detail: "find open \(findWasOpen), closed by Escape \(findClosed); reading menu \(opened), Down \(first), Down \(second), Up \(back), Escape \(closed); block open \(blockOpen), double-click selected '\(selectedWord)', right-click in block \(blockMenu), Escape \(blockMenuClosed), block still open \(stillOpen); Control-click in block \(controlMenu)")
+            // Real events reach the page, yet the reader never became the active app or the system's
+            // key window, so a person's typing elsewhere neither reached the check nor was taken by it.
+            let focusKept = focusTaken.count == 0 && !NSApp.isActive && NSApp.keyWindow == nil
+            let pass = findWasOpen && findClosed && readingOK && blockOK && controlOK && focusKept
+            return .init(name: name, pass: pass, detail: "person's focus kept \(focusKept) (activations and key windows: \(focusTaken.count)); find open \(findWasOpen), closed by Escape \(findClosed); reading menu \(opened), Down \(first), Down \(second), Up \(back), Escape \(closed); block open \(blockOpen), double-click selected '\(selectedWord)', right-click in block \(blockMenu), Escape \(blockMenuClosed), block still open \(stillOpen); Control-click in block \(controlMenu)")
         } catch { return .init(name: name, pass: false, detail: "\(error)") }
     }
 
@@ -1407,12 +1417,11 @@ struct Context {
                 editor.add(DraftRecord(source: source))
                 let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
                 defer { withExtendedLifetime(surface) {} }
-                let window = CheckRunner.offscreenWindow(page: model.page, width: width, height: 760, key: true)
+                let window = CheckRunner.offscreenWindow(page: model.page, width: width, height: 760, focused: true)
                 keep.append(window)
                 await model.open(origin: nil)
                 try await CheckRunner.preparePageForCheck(model)
                 _ = await wait(seconds: 5) { editor.webReady && model.source == source }
-                window.makeKey()
                 window.makeFirstResponder(model.page.webView)
                 let view = model.page.webView
                 func click(_ x: Double, _ y: Double, down: NSEvent.EventType, up: NSEvent.EventType, count: Int = 1) async {
@@ -1496,13 +1505,12 @@ struct Context {
             editor.add(DraftRecord(source: source))
             let surface = ReaderSurface(model: model, state: state, chrome: "pane", workspace: editor)
             defer { withExtendedLifetime(surface) {} }
-            let window = CheckRunner.offscreenWindow(page: model.page, width: 775, height: 880, key: true)
+            let window = CheckRunner.offscreenWindow(page: model.page, width: 775, height: 880, focused: true)
             keep.append(window)
             await model.open(origin: nil)
             try await CheckRunner.preparePageForCheck(model)
             _ = await wait(seconds: 5) { editor.webReady && model.source == source }
             await model.sendCommand("toggleLock", args: ["lock": "reading"])
-            window.makeKey()
             window.makeFirstResponder(model.page.webView)
             let view = model.page.webView
             func click(_ x: Double, _ y: Double, down: NSEvent.EventType, up: NSEvent.EventType, count: Int = 1) async {
