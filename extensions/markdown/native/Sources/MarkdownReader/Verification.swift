@@ -73,6 +73,7 @@ struct Verification {
                 await run("reading-lock-blocks-edit") { await context.readingLock(keep: &keep) }
                 await run("reading-edits-restore-lock") { await context.readingEdits(keep: &keep) }
                 await run("document-shortcuts-copy-and-refresh") { await context.documentShortcuts(keep: &keep) }
+                await run("palette-and-menu-keys") { await context.paletteAndMenuKeys(keep: &keep) }
                 await run("bridge-typing-exact-line-endings") { await context.typing(keep: &keep) }
                 await run("published-writing-undo-matches-source") { await context.publishedWritingUndo(keep: &keep) }
                 await run("escape-layers-notices-and-focus") { await context.escapeLayers(keep: &keep) }
@@ -501,6 +502,42 @@ struct Context {
             await model.close()
             return .init(name: name, pass: copyKey && copied && acknowledged && refreshKey && refreshed,
                          detail: "copy key handled: \(copyKey); copied exact Markdown: \(copied); success notice: \(acknowledged); refresh key handled: \(refreshKey); opened latest revision: \(refreshed)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    func paletteAndMenuKeys(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "palette-and-menu-keys"
+        do {
+            let model = try await openFile("palette-keys.md", "# A heading\n\n## Another heading\n", keep: &keep)
+            await model.sendCommand("open")
+            let result = await js(model, """
+            const palette = document.querySelector('#palette'), field = document.querySelector('#pal-q');
+            if (!palette?.open || !field) return null;
+            const key = (target, key) => target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+            const search = value => { field.value = value; field.dispatchEvent(new Event('input', { bubbles: true })); };
+            search('#');
+            key(field, 'ArrowDown');
+            const hadOption = !!field.getAttribute('aria-activedescendant');
+            let errors = 0;
+            const record = () => { errors++; };
+            window.addEventListener('error', record);
+            search('a different query');
+            key(field, 'ArrowDown'); key(field, 'Enter');
+            window.removeEventListener('error', record);
+            const stillOpen = palette.open, noActiveOption = !field.hasAttribute('aria-activedescendant');
+            if (palette.open) palette.close();
+            const title = document.querySelector('#b-title');
+            title.click(); title.focus();
+            const menu = document.querySelector('#docmenu'), buttons = [...menu.querySelectorAll('button:not(:disabled)')];
+            const noFocus = !buttons.includes(document.activeElement);
+            key(menu, 'ArrowUp');
+            const lastFocused = buttons.length > 1 && document.activeElement === buttons.at(-1);
+            return { hadOption, stillOpen, noActiveOption, errors, noFocus, lastFocused };
+            """) as? [String: Any] ?? [:]
+            let pass = ["hadOption", "stillOpen", "noActiveOption", "noFocus", "lastFocused"].allSatisfy { result[$0] as? Bool == true }
+                && result["errors"] as? Int == 0
+            await model.close()
+            return .init(name: name, pass: pass, detail: String(describing: result))
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 

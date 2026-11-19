@@ -63,7 +63,8 @@
 		function menuIndex(key: string, index: number, length: number) {
 			if (key === "Home") return 0;
 			if (key === "End") return length - 1;
-			return (index + (key === "ArrowDown" ? 1 : -1) + length) % length;
+			if (key === "ArrowDown") return (index + 1) % length;
+			return (Math.max(index, 0) + length - 1) % length;
 		}
 		function menuKeys(event: KeyboardEvent) {
 			if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -114,7 +115,9 @@
 		async function fillOpen(query: string) {
 			const token = ++openSequence,
 				list = get("#pal-list");
+			items = [];
 			openIndex = 0;
+			get("#pal-q").removeAttribute("aria-activedescendant");
 			if (query.startsWith("#")) {
 				fillHeadings(query);
 				return;
