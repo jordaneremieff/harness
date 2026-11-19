@@ -204,7 +204,7 @@
 
 	function regexPosition(line: string, index: number) {
 		const left = line.slice(0, index).trimEnd();
-		return !left || /(?:[=(:,;!?&|~<>\[{}]|=>|\b(?:return|case|throw|yield|typeof|void|delete))$/.test(left);
+		return !left || /(?:[=(:,;!?&|~<>[{}]|=>|\b(?:return|case|throw|yield|typeof|void|delete))$/.test(left);
 	}
 
 	function templateStep(line: string, index: number, frame: Template): { index: number; frame?: Template } {

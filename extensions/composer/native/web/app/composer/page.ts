@@ -496,8 +496,8 @@
 
 	for (let i = 0; i < 10; i++) contextMeter.append(document.createElement("i"));
 	function tokenCount(value: number) {
-		if (value >= 1_000_000) return String((value / 1_000_000).toFixed(1)) + "M";
-		return value >= 1000 ? String(Number((value / 1000).toFixed(1))) + "k" : String(value);
+		if (value >= 1_000_000) return `${String((value / 1_000_000).toFixed(1))}M`;
+		return value >= 1000 ? `${String(Number((value / 1000).toFixed(1)))}k` : String(value);
 	}
 	function number(value: unknown): number | undefined {
 		return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
@@ -542,7 +542,7 @@
 		const parts = path.split("/").filter(Boolean);
 		while (parts.length > 1 && measureFolder.measureText(suffix).width > folder.clientWidth) {
 			parts.shift();
-			suffix = "…/" + parts.join("/");
+			suffix = `…/${parts.join("/")}`;
 		}
 		folder.textContent = measureFolder.measureText(suffix).width <= folder.clientWidth ? suffix : "…";
 	}

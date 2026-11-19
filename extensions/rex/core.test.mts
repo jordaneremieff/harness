@@ -675,7 +675,7 @@ test("text readiness matches a marker printed after more output than one bounded
 
 test("escaped and astral tails preserve fitting markers, encoded bounds and raw offsets across consumers", async () => {
 	for (const prefix of ["\\".repeat(5000), '\\"'.repeat(2500), "😀".repeat(1250), "\u0001".repeat(5000)]) {
-		const f = longOutputFixture([prefix + "READY"], 1024);
+		const f = longOutputFixture([`${prefix}READY`], 1024);
 		const handler = f.transport.handler;
 		f.transport.handler = (method, data, call) => method === "com.superlogical.terminal.process"
 			? reply({ last_exit: { exit_code: 0 } }) : handler?.(method, data, call);
@@ -751,7 +751,7 @@ test("escaped suffix search retains a complete fitting readiness marker", async 
 });
 
 test("tail line alignment preserves a fitting final marker before blank terminal rows", async () => {
-	const f = longOutputFixture(["\\".repeat(5000) + "READY", "", ""], 1024);
+	const f = longOutputFixture([`${"\\".repeat(5000)}READY`, "", ""], 1024);
 	const response = await f.core.execute({ op: "wait", condition: "text", text: "READY", target }, context);
 	assert.equal(response.outcome, "condition_observed");
 });
