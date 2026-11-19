@@ -362,7 +362,7 @@
 	}
 	const hostCommandValidators: Record<string, (a: Fields) => void> = {
 		openLink: (a) => ensure(string(a.href, META)),
-		copy: (a) => ensure(string(a.text, META, true) && optional(a.markdown, (v) => string(v, META, true))),
+		copy: (a) => ensure(string(a.text, META, true) && Object.keys(a).length === 1),
 		export: (a) => ensure(one(a.format, ["archive", "sharing", "pdf"])),
 		open: (a) => ensure(optional(a.ref, (v) => string(v, 8192))),
 		showRevision: (a) => ensure(integer(a.n)),

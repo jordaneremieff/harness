@@ -372,9 +372,8 @@ public enum ReaderBridgeCodec {
             try BridgeField.keys(args, allowed: ["href"])
             _ = try BridgeField.string(args, "href", limit: 8192)
         case "copy":
-            try BridgeField.keys(args, allowed: ["text", "markdown"])
+            try BridgeField.keys(args, allowed: ["text"])
             _ = try BridgeField.string(args, "text", limit: messageLimit, empty: true)
-            _ = try BridgeField.optionalString(args, "markdown", limit: messageLimit, empty: true)
         case "export":
             try BridgeField.keys(args, allowed: ["format"])
             try BridgeField.choice(args, "format", values: ["archive", "sharing", "pdf"])

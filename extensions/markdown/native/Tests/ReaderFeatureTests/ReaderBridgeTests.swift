@@ -189,6 +189,14 @@ import Testing
         }
     }
 
+    @Test func copyCommandAcceptsOnlyText() throws {
+        let copy = try ReaderBridgeCodec.decode(body: envelope("command", ["name": "copy", "args": ["text": ""]]))
+        #expect(copy.type == .command)
+        #expect(throws: ReaderBridgeError.self) {
+            try ReaderBridgeCodec.decode(body: envelope("command", ["name": "copy", "args": ["text": "exact", "markdown": "unused"]]))
+        }
+    }
+
     @Test func jumpHistoryStateRequiresBooleansAndNativeCommandsRemainValid() throws {
         let state: [String: Any] = ["lock": "reading", "canUndo": false, "canRedo": false,
             "canBack": false, "canForward": false, "hasSelection": false, "findOpen": false,

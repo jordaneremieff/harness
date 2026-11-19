@@ -59,6 +59,12 @@ test("a long Ask reply reaches its thread with its final paragraph intact", () =
 	assert.equal(received, detail);
 	host.dispose();
 });
+test("the copy command accepts text as its only argument", () => {
+	const api = bridge();
+	const copy = { v: 1, type: "command", name: "copy", args: { text: "" } };
+	assert.equal(api.bridge.page(copy).type, "command");
+	assert.throws(() => api.bridge.page({ ...copy, args: { text: "exact", markdown: "unused" } }));
+});
 test("ordinary messages enforce their exact byte bound", () => {
 	const api = bridge(),
 		base = { v: 1, type: "command", name: "copy", args: { text: "" } };
