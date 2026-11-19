@@ -229,7 +229,8 @@
 				};
 				// Check mode runs in windows that receive no animation frames.
 				animationFrame =
-					typeof requestAnimationFrame === "function" && !globalThis.document?.documentElement?.hasAttribute("data-check-mode");
+					typeof requestAnimationFrame === "function" &&
+					!globalThis.document?.documentElement?.hasAttribute("data-check-mode");
 				frame = animationFrame ? requestAnimationFrame(run) : setTimeout(run, 0);
 			},
 			dispose() {
@@ -264,10 +265,22 @@
 			return Object.fromEntries(keys.map((key) => [key, value[key]]));
 		}
 		function wireState(state: Record<string, unknown>) {
-			const wire = pick(state, wireFlags.filter((key) => state[key] !== undefined));
+			const wire = pick(
+				state,
+				wireFlags.filter((key) => state[key] !== undefined),
+			);
 			for (const [key, fields] of Object.entries(wireObjects)) {
 				const value = state[key];
-				if (value) wire[key] = pick(value as Record<string, unknown>, fields);
+				if (!value) continue;
+				const record = pick(value as Record<string, unknown>, fields);
+				// Keep full text in the page. The wire prefix fits even with JSON escaping and
+				// remains above the native annotation quote limit when truncated.
+				const units = 16_384;
+				if (key === "selection" && typeof record.text === "string" && record.text.length > units) {
+					const splitsScalar = (record.text.codePointAt(units - 1) ?? 0) > 0xffff;
+					record.text = record.text.slice(0, units + Number(splitsScalar));
+				}
+				wire[key] = record;
 			}
 			return wire;
 		}

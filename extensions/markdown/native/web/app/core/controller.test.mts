@@ -317,9 +317,48 @@ test("state publication sends only the bridge contract's fields", () => {
 	assert.deepEqual(sent.scroll, { blockStart: 0, offsetY: 4 });
 	for (const key of Object.keys(sent).filter((name) => !["v", "type", "id"].includes(name)))
 		assert.ok(
-			["lock", "overlay", "canUndo", "canRedo", "canBack", "canForward", "hasSelection", "findOpen", "held", "activeBlock", "scroll", "find", "selection"].includes(key),
+			[
+				"lock",
+				"overlay",
+				"canUndo",
+				"canRedo",
+				"canBack",
+				"canForward",
+				"hasSelection",
+				"findOpen",
+				"held",
+				"activeBlock",
+				"scroll",
+				"find",
+				"selection",
+			].includes(key),
 			key,
 		);
+	dispose();
+});
+
+test("a large selection preserves its range and leaves state publication live", () => {
+	const { api, host, clock, controller: c, dispose } = setup();
+	const prefix = '"'.repeat(16_383);
+	const text = `${prefix}😀${"\u0001".repeat(256 * 1024)}`;
+	const selection = { start: 0, end: text.length, text };
+	const state = () => {
+		const message = host.sent.findLast((message) => message.type === "state");
+		assert.ok(message);
+		return message;
+	};
+	c.state({ hasSelection: true, selection });
+	clock.advance(100);
+	assert.doesNotThrow(() => api.bridge.page(state()));
+	const wire = state().selection as typeof selection;
+	assert.equal(wire.start, 0);
+	assert.equal(wire.end, text.length);
+	assert.equal(wire.text, `${prefix}😀`);
+	assert.ok(Buffer.byteLength(wire.text) > 8192, "native annotation must still refuse an oversized quote");
+	assert.equal(selection.text, text);
+	c.state({ scroll: { blockStart: 0, offsetY: 20 } });
+	clock.advance(100);
+	assert.equal((state().scroll as { offsetY: number }).offsetY, 20);
 	dispose();
 });
 
