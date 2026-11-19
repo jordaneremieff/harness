@@ -292,6 +292,8 @@
     .foot { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 11px; }
     .foot .hint { flex: 1; font-size: 11px; color: var(--ink-3); white-space: nowrap; }
   }
+  .composer:has(.batch-remove) .foot { flex-wrap: wrap; }
+  .composer:has(.batch-remove) .foot .hint { flex-basis: 100%; order: -1; }
   :is(.batch-primary, .batch-secondary, .batch-tray-open) {
     display: inline-flex; align-items: center; justify-content: center; gap: 5px;
     min-height: 30px; padding: 4px 9px; border-radius: 8px;
