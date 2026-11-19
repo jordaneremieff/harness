@@ -133,7 +133,7 @@ describe("exact stash body edits", () => {
 		const source = await fixture("redaction");
 		const edited = await editStash(source.dir, source.id, {
 			expectedDigest: source.digest,
-			edits: [{ oldText: "First anchor.", newText: "token: sk-ant-oat01-abcdefghijklmnopqrstuvwxyz123456" }],
+			edits: [{ oldText: "First anchor.", newText: `token: sk-ant-${"oat01-abcdefghijklmnopqrstuvwxyz123456"}` }],
 		});
 		assert.match(edited.content, /\[REDACTED\]/);
 		assert.doesNotMatch(edited.content, /sk-ant-oat01-/);

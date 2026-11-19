@@ -26,7 +26,7 @@ function knowledge(): NoteKnowledge {
 				version: 1,
 				slice: "example",
 				source: {
-					path: "/home/test/.pi/agent/harness.json",
+					path: "/test-home/.pi/agent/harness.json",
 					status: "loaded",
 					digest: null,
 					observedAt: "2026-10-29T00:00:00.000Z",
@@ -38,8 +38,8 @@ function knowledge(): NoteKnowledge {
 	};
 	return {
 		cwd: "/work/project",
-		home: "/home/test",
-		agentDir: "/home/test/.pi/agent",
+		home: "/test-home",
+		agentDir: "/test-home/.pi/agent",
 		version: "1.4.0",
 		packageDir: "/packages/pi",
 		docsPath: "/packages/pi/docs",
@@ -109,7 +109,7 @@ test("shell redirections preserve discovery arguments and exclude output targets
 	])
 		assert.equal(
 			keys(bash(`ls -la ~/.pi/agent/extensions/ ${redirect}`)),
-			"root:/home/test/.pi/agent/extensions",
+			"root:/test-home/.pi/agent/extensions",
 			redirect,
 		);
 	assert.equal(keys(bash(">/dev/null ls /loaded/extensions")), "root:/loaded/extensions");
@@ -136,13 +136,13 @@ test("simple cd changes resolution without changing the session development boun
 	for (const separator of ["&&", ";", "||"])
 		assert.equal(
 			keys(bash(`cd ~/.pi/agent ${separator} jq . harness.json`)),
-			"document:/home/test/.pi/agent/harness.json",
+			"document:/test-home/.pi/agent/harness.json",
 		);
 	assert.equal(
-		keys(bash("cd /home/test; cd .pi/agent; cat harness.json")),
-		"document:/home/test/.pi/agent/harness.json",
+		keys(bash("cd /test-home; cd .pi/agent; cat harness.json")),
+		"document:/test-home/.pi/agent/harness.json",
 	);
-	assert.equal(keys(bash('"cd" /home/test/.pi/agent; cat harness.json')), "document:/home/test/.pi/agent/harness.json");
+	assert.equal(keys(bash('"cd" /test-home/.pi/agent; cat harness.json')), "document:/test-home/.pi/agent/harness.json");
 	assert.equal(keys(bash("cd /loaded && ls extensions")), "root:/loaded/extensions");
 	const data = knowledge();
 	data.cwd = "/loaded";
@@ -155,11 +155,11 @@ test("unresolved cd suppresses later relative targets but retains absolute and h
 		'cd "$UNKNOWN"; ls extensions',
 		"cd; cat harness.json",
 		"cd /loaded/*; ls extensions",
-		"cd $UNKNOWN; cd /home/test/.pi/agent; cat harness.json",
+		"cd $UNKNOWN; cd /test-home/.pi/agent; cat harness.json",
 	])
 		assert.equal(keys(bash(command)), "", command);
-	assert.equal(keys(bash("cd $UNKNOWN; cat ~/.pi/agent/harness.json")), "document:/home/test/.pi/agent/harness.json");
-	assert.equal(keys(bash("cd; cat /home/test/.pi/agent/harness.json")), "document:/home/test/.pi/agent/harness.json");
+	assert.equal(keys(bash("cd $UNKNOWN; cat ~/.pi/agent/harness.json")), "document:/test-home/.pi/agent/harness.json");
+	assert.equal(keys(bash("cd; cat /test-home/.pi/agent/harness.json")), "document:/test-home/.pi/agent/harness.json");
 });
 test("search and fd options consume separate values before path detection", () => {
 	const searchOptions = [
@@ -214,9 +214,9 @@ test("settings document paths match exact loaded documents and reader arguments"
 		"~/.pi/agent/harness.json",
 		"$HOME/.pi/agent/harness.json",
 		`\${HOME}/.pi/agent/harness.json`,
-		"../../home/test/.pi/agent/harness.json",
+		"../../test-home/.pi/agent/harness.json",
 	])
-		assert.equal(keys(read(path)), "document:/home/test/.pi/agent/harness.json", path);
+		assert.equal(keys(read(path)), "document:/test-home/.pi/agent/harness.json", path);
 	for (const command of [
 		'cat "$HOME/.pi/agent/harness.json"',
 		"head -n 10 ~/.pi/agent/harness.json",
@@ -242,8 +242,8 @@ test("settings document paths match exact loaded documents and reader arguments"
 	])
 		assert.equal(keys(bash(command)), "", command);
 	assert.equal(keys(read("/other-copy/harness.json")), "");
-	assert.equal(keys(bash("jq --arg example '/home/test/.pi/agent/harness.json' '.example'")), "");
-	assert.equal(keys(bash("awk -v example='/home/test/.pi/agent/harness.json' 'BEGIN {print example}'")), "");
+	assert.equal(keys(bash("jq --arg example '/test-home/.pi/agent/harness.json' '.example'")), "");
+	assert.equal(keys(bash("awk -v example='/test-home/.pi/agent/harness.json' 'BEGIN {print example}'")), "");
 	assert.equal(keys(bash('cat "~/.pi/agent/harness.json"')), "");
 });
 test("published names match whole tokens with exact environment operations", () => {
@@ -291,9 +291,9 @@ test("loaded extension files, resource roots and host files match exact provenan
 		"/loaded/extensions",
 		"/loaded/skills",
 		"/loaded/prompts",
-		"/home/test/.pi/agent/extensions",
-		"/home/test/.pi/agent/skills",
-		"/home/test/.pi/agent/prompts",
+		"/test-home/.pi/agent/extensions",
+		"/test-home/.pi/agent/skills",
+		"/test-home/.pi/agent/prompts",
 	]) {
 		for (const call of [
 			{ name: "ls", input: { path: root } },
@@ -310,7 +310,7 @@ test("loaded extension files, resource roots and host files match exact provenan
 	assert.equal(keys(bash("fd . -E /loaded/extensions")), "");
 	assert.equal(keys(bash("find /elsewhere -name /loaded/extensions")), "");
 	assert.equal(keys(bash("ls /other/extensions")), "");
-	assert.equal(keys(read("/home/test/.pi/agent/install/current-version")), "host:pi");
+	assert.equal(keys(read("/test-home/.pi/agent/install/current-version")), "host:pi");
 	assert.equal(keys(read("/packages/pi/package.json")), "host:pi");
 	assert.equal(keys(read("/other/pi/package.json")), "");
 	assert.equal(keys(bash("cat /packages/pi/package.json")), "");
@@ -383,12 +383,12 @@ test("Pi settings document matches only exact read paths and reader paths with t
 		bash("jq '{extensions, packages}' ~/.pi/agent/settings.json"),
 		bash("cat ~/.pi/agent/settings.json"),
 	])
-		assert.equal(keys(call), "pi-settings:/home/test/.pi/agent/settings.json");
+		assert.equal(keys(call), "pi-settings:/test-home/.pi/agent/settings.json");
 	assert.equal(keys(read("/other/.pi/agent/settings.json")), "");
-	assert.equal(keys({ name: "grep", input: { pattern: "sources", path: "/home/test/.pi/agent/settings.json" } }), "");
-	assert.equal(keys({ name: "write", input: { path: "/home/test/.pi/agent/settings.json" } }), "");
+	assert.equal(keys({ name: "grep", input: { pattern: "sources", path: "/test-home/.pi/agent/settings.json" } }), "");
+	assert.equal(keys({ name: "write", input: { path: "/test-home/.pi/agent/settings.json" } }), "");
 	const data = knowledge();
-	data.cwd = "/home/test/.pi";
+	data.cwd = "/test-home/.pi";
 	assert.match(keys(read("agent/settings.json"), data), /pi-settings:/);
 	data.cwd = data.agentDir;
 	assert.equal(keys(read("settings.json"), data), "");
@@ -437,14 +437,14 @@ test("inside-cwd paths and unrelated tools never trigger", () => {
 	data.cwd = "/loaded";
 	assert.equal(keys(read("extensions/example/settings.ts"), data), "");
 	assert.equal(keys(bash("ls /loaded/extensions"), data), "");
-	data.cwd = "/home/test/.pi/agent";
+	data.cwd = "/test-home/.pi/agent";
 	assert.equal(keys(read("harness.json"), data), "");
 	assert.equal(keys({ name: "registry", input: { kind: "setting" } }), "");
-	assert.equal(keys({ name: "write", input: { path: "/home/test/.pi/agent/harness.json" } }), "");
+	assert.equal(keys({ name: "write", input: { path: "/test-home/.pi/agent/harness.json" } }), "");
 });
 test("agent-directory targets are exempt except when cwd is inside the agent directory", () => {
 	const data = knowledge();
-	data.cwd = "/home/test/.pi";
+	data.cwd = "/test-home/.pi";
 	assert.match(keys(read("agent/harness.json"), data), /document:/);
 	assert.match(keys(read("agent/install/current-version"), data), /host:/);
 	assert.match(keys(bash("ls agent/skills"), data), /root:/);
@@ -457,12 +457,12 @@ test("agent-directory targets are exempt except when cwd is inside the agent dir
 test("home-directory sessions retain discovery notes for their descendants", () => {
 	const data = knowledge();
 	data.cwd = data.home;
-	data.resources = [{ kind: "extension", name: "example", path: "/home/test/loaded/example" }];
+	data.resources = [{ kind: "extension", name: "example", path: "/test-home/loaded/example" }];
 	assert.match(keys(read(".pi/agent/harness.json"), data), /document:/);
 	assert.match(keys(read("loaded/example/settings.ts"), data), /extension:/);
 	assert.match(keys(bash("ls loaded"), data), /root:/);
 	assert.match(keys(bash("grep PI_EXAMPLE_LIMIT loaded"), data), /setting:/);
-	data.cwd = "/home/test/loaded";
+	data.cwd = "/test-home/loaded";
 	assert.equal(keys(read("example/settings.ts"), data), "");
 });
 test("resource notes include other loaded directories and source/scope inspection", () => {

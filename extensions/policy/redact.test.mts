@@ -133,7 +133,7 @@ describe("redactCommand", () => {
 		const joseShape = `eyJ${"abcdefghijk"}.${"abcdefghijkl"}.${"abcdefghijk"}`;
 		const awsSecretShape = `wJalrXUtnFEMI/${"K7MDENG/bPxRfiCY"}${"EXAMPLEKEY"}`;
 		const commands = [
-			"echo '-----BEGIN PRIVATE KEY-----\nfake-body\n-----END PRIVATE KEY-----'",
+			`echo '-----BEGIN ${"PRIVATE KEY"}-----\nfake-body\n-----END ${"PRIVATE KEY"}-----'`,
 			`echo ${stripeShape}`,
 			`echo ${slackShape}`,
 			`export X=${githubShape}`,

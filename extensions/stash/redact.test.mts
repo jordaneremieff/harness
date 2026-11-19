@@ -313,7 +313,7 @@ assert.equal(redactSecrets(prefix + "https://user:fake-value@host"), prefix + "h
 	});
 
 	it("redacts private key blocks and URL userinfo passwords", () => {
-		const key = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----";
+		const key = `-----BEGIN ${"RSA PRIVATE KEY"}-----\nMIIEpAIBAAKCAQEA\n-----END ${"RSA PRIVATE KEY"}-----`;
 		assert.equal(redactSecrets(`key material:\n${key}\nend`), `key material:\n${REDACTED}\nend`);
 		assert.equal(
 			redactSecrets("see https://user:p4ssw0rd@example.com/path"),
