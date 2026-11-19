@@ -19,6 +19,7 @@ import { ordinaryLive } from "./live-host.ts";
 import { createLiveTool } from "./live-tool.ts";
 import type { LiveConfig } from "./live-protocol.ts";
 import { checkReader, updateNow, type UpdateReporter } from "./reader-update.ts";
+import type { PalettePublication, PaletteRequestEvent } from "./palette-command.ts";
 type Connection = () => Promise<LiveConfig | undefined>;
 export { markdownCompletions } from "./commands.ts";
 
@@ -385,22 +386,25 @@ export default function markdown(pi: ExtensionAPI): void {
 		description: "Read the latest assistant response in Markdown",
 		handler: (ctx) => action("", ctx),
 	});
-	const writing = writingOptions(getAgentDir(), readSettings({ agentDir: getAgentDir() }));
+	const agentDir = getAgentDir();
+	const snapshot = readSettings({ agentDir });
+	const { dir, app, agentPane } = snapshot.values;
+	const writing = writingOptions(agentDir, snapshot);
 	pi.registerTool(createBriefTool(writing));
 	pi.registerTool(
 		createPublishTool({
 			writing,
-			store: new MarkdownStore(localSettings().dir),
-			app: localSettings().app,
+			store: new MarkdownStore(dir),
+			app,
 			connection: live.connection,
 			panes: async (ctx) => (await live.find(ctx))?.list().length ?? 0,
-			pane: localSettings().agentPane,
+			pane: agentPane,
 		}),
 	);
 	pi.registerTool(
 		createReadTool({
-			store: new MarkdownStore(localSettings().dir),
-			app: localSettings().app,
+			store: new MarkdownStore(dir),
+			app,
 			connection: live.connection,
 		}),
 	);
@@ -411,4 +415,20 @@ export default function markdown(pi: ExtensionAPI): void {
 			publishDisplay();
 	});
 	publishDisplay();
+	const publishPalette = () => pi.events.emit("harness:palette:publish", {
+		version: 1,
+		source: "markdown",
+		commands: [{
+			id: "markdown.read",
+			title: "Read a Document…",
+			description: "Open a stored Markdown document in a reader pane",
+			argv: [process.execPath, fileURLToPath(new URL("./palette-command.ts", import.meta.url)), dir, app],
+		}],
+	} satisfies PalettePublication);
+	const stopPalette = pi.events.on("harness:palette:request", (request) => {
+		if (typeof request === "object" && request !== null && (request as Partial<PaletteRequestEvent>).version === 1)
+			publishPalette();
+	});
+	pi.on("session_shutdown", () => stopPalette());
+	publishPalette();
 }

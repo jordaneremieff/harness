@@ -178,6 +178,12 @@ Limits: source 2 MiB UTF-8; title 200 Unicode code points on one line (joined em
 
 Stored snapshots remain openable by ID after the producer exits; the reader app owns snapshot browsing through its library and recents. Argument completion uses Pi's description field for each option. File and ID forms show usage without inserting a fabricated path or document ID; help topics complete individually. The shortcut appears in Pi's shortcut inventory. Print, JSON and RPC read calls save but never launch the GUI. Editor actions require the local interactive surface and refuse in those headless modes. The outcome uses the host's notification channel when the host has one. The command writes no session message or stdout output.
 
+## Rex command palette
+
+**Pi: Read a Document…** lists up to 200 published documents and saved responses, newest change first, from the configured Markdown store. Each choice shows the document kind and age; published documents also show the revision. The list uses the store's bounded scan and reports an empty list as an error.
+
+Select a document to open its current revision in a reader split to the right of the invoking pane. The command pins that revision and digest directly, without an open request or a live Pi session. If the selected document is no longer available, the palette reports an error. If the app is missing or lacks direct revision support, run `/markdown update` in Pi.
+
 ## Keeping the reader app current
 
 The reader app is a separately built program, so a harness update leaves it as it was. In an interactive Pi session on macOS, each start and each `/reload` compares the installed app's `build.json` with the reader sources that this harness loaded. The check does not delay startup.
