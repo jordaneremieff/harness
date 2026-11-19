@@ -43,6 +43,7 @@ import {
 	type AgentControlToolName,
 } from "./control-guidance.ts";
 import { dashboardPreferences } from "./dashboard-preferences.ts";
+import { publishAgentPalette } from "./palette-publication.ts";
 import { readableControlText, projectReportReceipt } from "./control-result.ts";
 import { projectSelectedStatus, validateStatusDetail } from "./status-overview.ts";
 import { fitStorageStatusPage } from "./storage-page-fit.ts";
@@ -1052,7 +1053,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
 	pi.on("agent_settled", (_event, ctx) => { primaryRetentions.get(ctx.sessionManager.getSessionId())?.settled(); });
+	const disposePalette = publishAgentPalette(pi.events, getAgentDir());
 	pi.on("session_shutdown", async (_event, ctx) => {
+		disposePalette();
 		resetThreadNotices();
 		disposeFactorySettings();
 		selfCompaction.clear();

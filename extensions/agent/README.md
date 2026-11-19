@@ -574,6 +574,23 @@ It does not prove that continuity succeeded or prevent an idle target from
 starting work after a steer. Normal permissions, request routes and tool controls
 remain in force.
 
+## Rex command palette
+
+**Pi: Open an Agent…** asks you to choose a standing agent or a recent
+Durable conversation, most recently active first. It opens the selected
+conversation in the agent work view in a pane to the right.
+
+**Pi: Message an Agent…** offers the same list, then asks for text addressed to
+the selected conversation. It sends nonblank text as operator input, just like
+Enter in the attached terminal. A working agent receives it as a correction at
+its next step. The palette reports admission, not an answer to the message.
+If delivery is uncertain, check the conversation before you send again. The
+palette does not retry.
+
+Listing and selection use retained roster metadata. They send no input, start
+no host, and change no model. Both commands use the paths of the Pi session
+that published them, even if the Rex server starts without those shell settings.
+
 ## Standalone terminal attachment
 
 From this checkout, start an interactive terminal with an existing identity or
