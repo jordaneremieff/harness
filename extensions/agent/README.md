@@ -3300,8 +3300,10 @@ a token request after close.
   all pending calls, and notifies its close listeners once. This does not add
   a replay attempt or grant permission to replace another writer.
 
-`durable-runner.ts` starts the process, `installation-binding.ts` binds its Pi
-package imports, `durable-runtime.ts` assembles its
+`durable-runner.ts` starts the process and enables Node's compile cache before
+it imports the host modules, so a later host start reuses their compiled code;
+`NODE_DISABLE_COMPILE_CACHE=1` turns the cache off. `installation-binding.ts`
+binds its Pi package imports, `durable-runtime.ts` assembles its
 capabilities, and `durable-host.ts` uses public Durable operations. Pi Durable
 owns generation, task checkpoints, submissions, replay decisions, native
 entries, documents, compaction, and outcomes. The extension owns process

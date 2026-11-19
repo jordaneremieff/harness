@@ -1,3 +1,4 @@
+import { enableCompileCache } from "node:module";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { bindInstallationPackages } from "./installation-binding.ts";
@@ -18,6 +19,9 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 	const detachedOutput = (error: NodeJS.ErrnoException) => { if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") process.exitCode = 1; };
 	process.stdout.on("error", detachedOutput);
 	process.stderr.on("error", detachedOutput);
+	// Pi enables Node's compile cache in its own process, and a child does not inherit it. Enabling it
+	// before the dynamic imports lets each host start reuse the compiled host and Pi modules.
+	enableCompileCache();
 	const input: unknown = JSON.parse(metadataJson);
 	bindInstallationPackages(callerInstallation(input), new URL("./", import.meta.url));
 	const [{ parseHostMetadata }, { runHost, HostClaimRefusedError }, { createDurableRuntime }] = await Promise.all([
