@@ -185,7 +185,11 @@ final class ReaderSurface: NSView {
                   let generation = Self.generation(message["generation"]) else { throw BridgeFailure.invalid }
             await waitForPendingChanges()
             let expected = workspace?.active?.text.generation ?? 0
-            guard generation == expected, let client = workspace?.collaboration else { return ["accepted": false, "detail": "The conversation connection is not available for this document version."] }
+            // An exact retry reconciles an existing request, not a new request against stale text.
+            guard let client = workspace?.collaboration,
+                  generation == expected || client.knowsPrompt(requestId: request, threadId: thread) else {
+                return ["accepted": false, "detail": "The conversation connection is not available for this document version."]
+            }
             let result: CollaborationClient.PromptSubmission
             if let records = message["annotations"] as? [[String: Any]] {
                 let annotations = try records.map { record in
@@ -199,7 +203,7 @@ final class ReaderSurface: NSView {
             }
             switch result {
             case .submitted: return ["accepted": true]
-            case .unknown: return ["accepted": false, "uncertain": true]
+            case .unknown(let retryable): return ["accepted": false, "uncertain": true, "retryable": retryable]
             case .refused(let detail): return ["accepted": false, "detail": detail]
             }
         case "query":

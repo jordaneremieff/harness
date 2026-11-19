@@ -233,6 +233,26 @@ import ReaderFeature
         #expect(states.last?.detail?.hasSuffix("[Reply shortened. The full reply is in chat.]") == true)
     }
 
+    @Test func failedBatchPostOffersAnExactRetryWithoutAnotherSubmission() async throws {
+        let server = try LiveTestBridge(mode: "lost-receipt"); defer { server.stop() }
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }
+        defer { client.stop() }
+        client.start()
+        try await eventually { client.status == "Agent connected" }
+        let id = UUID().uuidString
+        let items: [CollaborationClient.Annotation] = [.init(text: "Explain.", quote: "A passage")]
+        let send = Task { await client.submitBatch(requestId: id, threadId: id, annotations: items) }
+        try await eventually { try await server.request(["op": "state"])["submissions"] as? Int == 1 }
+        _ = try await server.request(["op": "release"])
+        #expect(await send.value == .unknown(retryable: true))
+        #expect(client.knowsPrompt(requestId: id, threadId: id))
+        #expect(await client.submitBatch(requestId: id, threadId: id, annotations: items) == .submitted)
+        let state = try await server.request(["op": "state"])
+        let posts = try #require(state["prompts"] as? [[String: String]])
+        #expect(posts.count == 2 && posts.first == posts.last)
+        #expect(state["submissions"] as? Int == 1)
+    }
+
     @Test func anAnswerBeforeALostReceiptConfirmsTheQuestionWithoutResubmission() async throws {
         let server = try LiveTestBridge(mode: "lost-receipt"); defer { server.stop() }
         let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }

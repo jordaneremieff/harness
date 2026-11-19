@@ -26,10 +26,12 @@ declare global {
 		text: string;
 		state: ReaderAskState;
 		detail?: string;
+		retryable?: boolean;
 	}
 	interface ReaderComment {
 		text: string;
 		quote?: string;
+		sourceAnchor?: string;
 		range?: ReaderRange;
 	}
 	interface ReaderThread {
@@ -105,7 +107,7 @@ declare global {
 		currentHeading(rows: { start: number; top: number }[], threshold: number): number;
 		promptTransition(old: ReaderAskState, next: ReaderAskState): ReaderAskState;
 		promptLabel(state: ReaderAskState): string;
-		reanchorQuote(source: string, quote?: string, range?: ReaderRange): ReaderRange | undefined;
+		reanchorPassage(source: string, anchor?: string, range?: ReaderRange): ReaderRange | undefined;
 		diffWords(oldText: string, newText: string): ReaderDiffPart[] | null;
 		changeContext(source: string, span: ReaderRange, edit: ReaderRange & { oldText: string; newText: string }): { prefix: string; suffix: string } | null;
 	}

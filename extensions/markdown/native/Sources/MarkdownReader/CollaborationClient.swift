@@ -123,7 +123,11 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     }
 
     enum PromptSubmission: Equatable {
-        case submitted, unknown, refused(String)
+        case submitted, unknown(retryable: Bool), refused(String)
+    }
+
+    func knowsPrompt(requestId: String, threadId: String) -> Bool {
+        requestThreads[threadKey(requestId)] == threadId
     }
 
     func submitPrompt(requestId: String, threadId: String, text: String, quote: String? = nil) async -> Bool {
@@ -165,7 +169,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         if let previous = bridgePromptInputs[key], !previous.utf8.elementsEqual(message.utf8) {
             return .refused("The request ID names different comment text.")
         }
-        if bridgePromptResults[key] != nil { return promptSubmission(key) }
+        if bridgePromptResults[key] != nil { return promptSubmission(key, requestId: requestId) }
         guard !sending, pendingPrompt == nil || pendingPrompt?.operation == requestId else {
             return .refused("Another request still awaits confirmation.")
         }
@@ -180,13 +184,13 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         registerThread(request: requestId, thread: threadId, quote: quote, batch: batch)
         activePromptID = requestId
         await sendPrompt()
-        return promptSubmission(key)
+        return promptSubmission(key, requestId: requestId)
     }
 
-    private func promptSubmission(_ key: String) -> PromptSubmission {
+    private func promptSubmission(_ key: String, requestId: String) -> PromptSubmission {
         if bridgePromptResults[key] == true { return .submitted }
         if bridgePromptResults[key] == false { return .refused(promptStates[key]?.detail ?? "The conversation did not accept the request.") }
-        return .unknown
+        return .unknown(retryable: key == threadKey(requestId) && pendingPrompt?.operation == requestId && canRetryPrompt)
     }
 
     private func receiveActivity(_ state: AgentState, document: UUID) {

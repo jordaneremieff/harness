@@ -340,7 +340,9 @@
 				ctx.notice("The batch is full. Send it before adding another comment.", "warn");
 				return false;
 			}
-			comments.push({ text: thread.draft, quote: thread.quote, range: thread.range });
+			const range = thread.range;
+			const sourceAnchor = range && controller.doc?.source.slice(range.start, range.end);
+			comments.push({ text: thread.draft, quote: thread.quote, range, sourceAnchor });
 			threads.splice(threads.indexOf(thread), 1);
 			ctx.clearSelection?.();
 			ask.close();
@@ -348,7 +350,7 @@
 			return true;
 		}
 		function reanchor(items: ReaderComment[], source: string) {
-			for (const comment of items) comment.range = api.uiLogic.reanchorQuote(source, comment.quote, comment.range);
+			for (const comment of items) comment.range = api.uiLogic.reanchorPassage(source, comment.sourceAnchor, comment.range);
 		}
 		function batchPacket(id: string, items: ReaderComment[]) {
 			return {
@@ -370,6 +372,7 @@
 			if (batch === comments) ctx.notice(`Batch not sent. ${detail} Your comments are kept.`, "warn");
 		}
 		const sendingBatches = new Set<ReaderComment[]>();
+		const retryBatch = new WeakMap<ReaderAskMessage, () => Promise<void>>();
 		function batchReady() {
 			if (current?.pendingComment && !current.pendingComment.text.trim()) ask.close();
 			if (!comments.length) return false;
@@ -399,17 +402,24 @@
 			}
 			const message: ReaderAskMessage = { requestId: id, text: `Batch of ${commentCount(additions.length)}`, state: "sending" };
 			const thread: ReaderThread = { threadId: id, comments: additions, draft: "", messages: [message] };
-			sendingBatches.add(batch);
 			batch.length = 0;
-			if (controller.doc?.active) editor.close();
 			threads.unshift(thread);
 			payloads.set(id, payload);
 			openThread(thread, false);
-			ask.refresh();
-			await deliverMessage(message);
-			payloads.delete(id);
+			const attempt = () => deliverBatch(batch, thread, message, additions, documentAtSend);
+			retryBatch.set(message, attempt);
+			await attempt();
+		}
+		async function deliverBatch(batch: ReaderComment[], thread: ReaderThread, message: ReaderAskMessage,
+			items: ReaderComment[], sourceAtSend: ReaderExactDocument | null) {
+			sendingBatches.add(batch);
+			await sendAttempt(message);
 			sendingBatches.delete(batch);
-			if (message.state === "failed") restoreBatch(batch, thread, additions, documentAtSend);
+			if (!(message.state === "unknown" && message.retryable)) {
+				payloads.delete(message.requestId);
+				retryBatch.delete(message);
+			}
+			if (message.state === "failed") restoreBatch(batch, thread, items, sourceAtSend);
 			ask.refresh();
 		}
 		function drawStatus(message: ReaderAskMessage, changeCount: number) {
@@ -444,7 +454,8 @@
 			return log;
 		}
 		function deliveryMessage(message: ReaderAskMessage) {
-			if (message.state === "failed")
+			const batch = retryBatch.get(message);
+			if (message.state === "failed" && !batch)
 				card.append(
 					el(
 						"p",
@@ -453,14 +464,11 @@
 					),
 					action("Retry", () => void sendMessage(message)),
 				);
-			if (message.state === "unknown")
-				card.append(
-					el(
-						"p",
-						{ class: "send-failure" },
-						"Delivery is not confirmed. Your text is kept. The reader will not send it twice.",
-					),
-				);
+			if (message.state !== "unknown") return;
+			card.append(el("p", { class: "send-failure" }, message.retryable
+				? "Delivery is not confirmed. Retry checks the same request."
+				: "Delivery is not confirmed. Your text is kept. The reader will not send it twice."));
+			if (message.retryable) card.append(action("Retry", () => void (batch ? batch() : sendMessage(message))));
 		}
 		function drawConversation(thread: ReaderThread) {
 			const message = activeMessage(thread);
@@ -560,15 +568,18 @@
 			const thread = current;
 			if (!thread) return;
 			if (!retry && (!thread.draft.trim() || pending(thread) || !quoteFits(thread.quote))) return;
-			const message = retry ?? newMessage(thread);
+			await sendAttempt(retry ?? newMessage(thread));
+			ask.refresh();
+		}
+		async function sendAttempt(message: ReaderAskMessage) {
 			message.state = "sending";
+			message.retryable = false;
 			// Sending a request is the person's consent to the agent's change: the open block, which
 			// holds its passage against agent edits, closes before the request leaves.
 			if (controller.doc?.active) editor.close();
 			draw();
 			ask.refresh();
 			await deliverMessage(message);
-			ask.refresh();
 		}
 		// The thread whose request was working when the agent was held back by the open block.
 		let heldThread: ReaderThread | null = null;
@@ -595,9 +606,10 @@
 			void sendMessage();
 		}
 		function receiveReceipt(message: ReaderAskMessage, value: unknown) {
-			const receipt = value as { accepted: boolean; uncertain?: true; detail?: string };
+			const receipt = value as { accepted: boolean; uncertain?: true; retryable?: boolean; detail?: string };
 			const state = receipt.uncertain ? "unknown" : receipt.accepted ? "sent" : "failed";
 			message.state = api.uiLogic.promptTransition(message.state, state);
+			message.retryable = message.state === "unknown" && receipt.retryable === true;
 			if (message.state === "failed" && state === "failed") message.detail = receipt.detail;
 		}
 		async function deliverMessage(message: ReaderAskMessage) {

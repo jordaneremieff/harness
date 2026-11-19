@@ -542,8 +542,11 @@
 			ensure(integer(m.generation));
 			blocks(m.blocks);
 		}
-		if (kind === "prompt") ensure(typeof m.accepted === "boolean" &&
-			(m.uncertain === undefined || (m.uncertain === true && !m.accepted)) && optional(m.detail, (v) => string(v, 8192, true)));
+		if (kind === "prompt") {
+			ensure(typeof m.accepted === "boolean" && optional(m.detail, (v) => string(v, 8192, true)));
+			if (m.uncertain === undefined) ensure(m.retryable === undefined);
+			else ensure(m.uncertain === true && !m.accepted && typeof m.retryable === "boolean");
+		}
 		if (kind === "query") queryReply(m, fields);
 		if (kind === "command") commandReply(m, fields);
 		return m;

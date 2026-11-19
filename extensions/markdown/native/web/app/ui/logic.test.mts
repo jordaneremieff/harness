@@ -12,14 +12,25 @@ const key = (key: string, writing = false, extra: Partial<ReaderKey> = {}, input
 
 test("pending comments preserve an exact range or recover a single occurrence", () => {
 	const exact = { start: 4, end: 7 };
-	assert.equal(logic.reanchorQuote("one one", "one", exact), exact);
-	const recovered = logic.reanchorQuote("😀 then one", "one", exact);
+	assert.equal(logic.reanchorPassage("one one", "one", exact), exact);
+	const recovered = logic.reanchorPassage("😀 then one", "one", exact);
 	assert.equal(recovered?.start, 8);
 	assert.equal(recovered?.end, 11);
-	assert.equal(logic.reanchorQuote("one one", "one", { start: 2, end: 5 }), undefined);
-	assert.equal(logic.reanchorQuote("aaa", "aa"), undefined);
-	assert.equal(logic.reanchorQuote("changed", "one", exact), undefined);
-	assert.equal(logic.reanchorQuote("whole document", undefined, exact), undefined);
+	assert.equal(logic.reanchorPassage("one one", "one", { start: 2, end: 5 }), undefined);
+	assert.equal(logic.reanchorPassage("aaa", "aa"), undefined);
+	assert.equal(logic.reanchorPassage("changed", "one", exact), undefined);
+	assert.equal(logic.reanchorPassage("whole document", undefined, exact), undefined);
+});
+
+test("a formatted passage re-anchors with its source rather than its rendered quote", () => {
+	const source = "Start **bold** and `code`.\n\nNext block.";
+	const old = { start: 0, end: source.length };
+	const anchor = source.slice(old.start, old.end);
+	const prefix = "# Heading\n\n";
+	assert.equal(logic.reanchorPassage(source, anchor, old), old);
+	const moved = logic.reanchorPassage(prefix + source, anchor, old);
+	assert.equal(moved?.start, prefix.length);
+	assert.equal(moved?.end, prefix.length + source.length);
 });
 
 test("the mirrored Mac keys select one command for each context", () => {

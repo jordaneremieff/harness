@@ -843,6 +843,8 @@ struct Context {
             model.page.onMessage = { message in
                 guard message["type"] as? String == "prompt" else { return [:] }
                 prompts.append(message)
+                if prompts.count == 2 { return ["accepted": false, "uncertain": true, "retryable": true] }
+                if prompts.count == 3 { return ["accepted": false, "detail": "The conversation refused the request."] }
                 return ["accepted": true]
             }
             keep.append(CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700))
@@ -909,10 +911,41 @@ struct Context {
             const card = document.querySelector('.ask-card[data-open]');
             return !!card?.querySelector('.batch-sent') && card.querySelector('.reply')?.textContent.endsWith(reply);
             """, ["reply": reply]) as? Bool == true
+            let sentOnce = prompts.count == 1
+            let restored = await retryBatchCheck(model)
+            let retriesExact = prompts.count == 3 && NSDictionary(dictionary: prompts[1].filter { $0.key != "id" }).isEqual(to: prompts[2].filter { $0.key != "id" })
             await model.close()
-            return .init(name: name, pass: added.allSatisfy { $0 } && highlights.sorted() == quotes.sorted() && reopenedWithFocus && deferred && sent && prompts.count == 1 && exact && answered,
-                         detail: "added \(added); comment highlights \(highlights); reopened with focus \(reopenedWithFocus); deferred \(deferred); tray Send \(sent); prompts \(prompts.count); exact annotations \(exact); batch reply \(answered)")
+            return .init(name: name, pass: added.allSatisfy { $0 } && highlights.sorted() == quotes.sorted() && reopenedWithFocus && deferred && sent && sentOnce && exact && answered && restored && retriesExact,
+                         detail: "added \(added); comment highlights \(highlights); reopened with focus \(reopenedWithFocus); deferred \(deferred); tray Send \(sent); one initial prompt \(sentOnce); exact annotations \(exact); batch reply \(answered); exact retry \(retriesExact); refusal restored batch \(restored)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    private func retryBatchCheck(_ model: ReaderModel) async -> Bool {
+        await js(model, """
+        document.getElementById('b-ask').click();
+        document.querySelector('#activity:popover-open .item')?.click();
+        const card = document.querySelector('.ask-card[data-open]');
+        const field = card?.querySelector('textarea');
+        if (!field) return false;
+        field.value = 'Retry this comment.';
+        field.dispatchEvent(new InputEvent('input', { bubbles: true }));
+        card.querySelector('.ask-secondary')?.click();
+        document.getElementById('ask-batch-send').click();
+        const until = async (find) => {
+          for (let step = 0; step < 60; step++) {
+            const result = find();
+            if (result) return result;
+            await new Promise(resolve => setTimeout(resolve, 20));
+          }
+        };
+        const retry = await until(() => [...card.querySelectorAll('button')].find(b => b.textContent === 'Retry'));
+        if (!retry) return false;
+        retry.click();
+        const tray = document.getElementById('ask-batch-tray');
+        if (!(await until(() => !tray.hidden && !card.hasAttribute('data-open')))) return false;
+        document.getElementById('ask-batch-open').click();
+        return document.querySelector('#ask-batch-list .batch-text')?.textContent === 'Retry this comment.';
+        """) as? Bool == true
     }
 
     /// The person's own request from the ask card never waits on his open block, and Let it after

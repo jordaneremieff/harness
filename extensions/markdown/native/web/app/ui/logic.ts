@@ -310,11 +310,11 @@
 			}
 			return index;
 		},
-		reanchorQuote(source, quote, range) {
-			if (!quote) return undefined;
-			if (range && source.slice(range.start, range.end) === quote) return range;
-			const start = source.indexOf(quote);
-			return start < 0 || source.indexOf(quote, start + 1) >= 0 ? undefined : { start, end: start + quote.length };
+		reanchorPassage(source, anchor, range) {
+			if (!anchor) return undefined;
+			if (range && source.slice(range.start, range.end) === anchor) return range;
+			const start = source.indexOf(anchor);
+			return start < 0 || source.indexOf(anchor, start + 1) >= 0 ? undefined : { start, end: start + anchor.length };
 		},
 		promptLabel: (state) =>
 			({

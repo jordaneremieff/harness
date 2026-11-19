@@ -136,11 +136,14 @@ a single comment or follow-up and 128 KiB for a batch. The live bridge accepts u
 batch limit. A bridge with a smaller limit refuses a larger request without submitting it.
 
 The page holds pending comments by document in memory until the pane closes. It maintains
-ranges through edits, and on refresh it matches the saved quote at its previous range or at
-its only occurrence. Without a match, the quote stays in the batch without a highlight.
-A definite refusal restores the batch. Unknown delivery keeps the sent card and never
-causes a second submission from the page. A single-message retry uses the original request,
-text and quote. A batch follow-up uses the single shape and identifies the batch as context.
+ranges through edits. On refresh it matches the saved Markdown source slice at its previous
+range or at its only occurrence. The prompt still includes the rendered quote. Without a
+match, the quote stays in the batch without a highlight.
+A definite refusal restores the batch. For an unconfirmed request, native returns
+`accepted: false`, `uncertain: true` and a `retryable` boolean. The page shows Retry only
+when `retryable` is true. Retry sends the original request ID and contents so the bridge
+can reconcile the receipt without repeating an accepted submission. A batch follow-up uses
+the single shape and identifies the batch as context.
 Each thread keeps its first request identity, while follow-ups receive new request identities.
 Native emits `promptState` with the question and thread identities and the route-reported answer text. A late send receipt cannot hide an answer already in the card. If a running host cannot identify the question, the card does not quote unscoped chat activity as an answer. An agent edit
 names a thread only when one document thread is admitted or active. The page draws the comment
