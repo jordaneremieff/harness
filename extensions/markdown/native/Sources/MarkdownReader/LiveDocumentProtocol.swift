@@ -148,10 +148,9 @@ extension EditorWorkspace {
         return WebPageAck(generation: change.generation, digest: digest, copied: copied, recoveryRetained: retained)
     }
 
-    func applyThroughPage(_ edits: [MarkdownSourceEdit], generation: UInt64) async -> Bool {
-        guard !closing, webReady, !pageBusy, !pageChangeInProgress, !liveApplyInProgress, let webAgentApply,
-              !overlapsHold(edits.map(\.range)), let document = active,
-              document.text.generation == generation else { return false }
+    func applyThroughPage(_ edits: [MarkdownSourceEdit], generation: UInt64, document: WorkingDocument) async -> Bool {
+        guard isDisplayed(document), !closing, webReady, !pageBusy, !pageChangeInProgress, !liveApplyInProgress, let webAgentApply,
+              !overlapsHold(edits.map(\.range)), document.text.generation == generation else { return false }
         liveApplyInProgress = true
         defer { liveApplyInProgress = false }
         let operation = UUID().uuidString, identity = liveDocumentID

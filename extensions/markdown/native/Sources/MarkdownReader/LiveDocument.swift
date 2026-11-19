@@ -34,11 +34,11 @@ private enum LiveMergeFailure: Error { case assetConflict }
 
 extension EditorWorkspace {
     func receiveExternalChange(_ document: WorkingDocument) async {
-        guard !closing, !document.closed, !document.text.hasMarkedText, !document.stagingImages,
+        guard isDisplayed(document), !closing, !document.closed, !document.text.hasMarkedText, !document.stagingImages,
               !document.session.saving, document.session.record.pendingPublication == nil else { return }
         let record = document.session.record, generation = document.text.generation
         func stillCurrent() -> Bool {
-            !closing && !document.closed && !document.text.hasMarkedText && !document.stagingImages
+            isDisplayed(document) && !closing && !document.closed && !document.text.hasMarkedText && !document.stagingImages
                 && !document.session.saving && document.session.record.pendingPublication == nil
                 && generation == document.text.generation && record.destination == document.session.record.destination
                 && record.assetRoot == document.session.record.assetRoot
@@ -108,9 +108,19 @@ extension EditorWorkspace {
         }
     }
 
+    func needsAutomaticSave(_ document: WorkingDocument) -> Bool {
+        guard automaticallySaves else { return false }
+        // A private draft has no destination until someone explicitly saves it.
+        if document.session.record.pendingPublication != nil { return true }
+        switch document.session.record.destination {
+        case .file, .published: return document.session.isDirty
+        case .scratchpad, .copy: return false
+        }
+    }
+
     /// Coalesces source changes while retaining the exact in-flight publication separately.
     func schedulePersistence(_ document: WorkingDocument) {
-        guard automaticallySaves, !document.closed else { return }
+        guard !closing, !document.closed, needsAutomaticSave(document) else { return }
         document.persistenceRequested = true
         guard document.persistenceTask == nil else { return }
         document.persistenceTask = Task { @MainActor [weak self, weak document] in
@@ -121,16 +131,11 @@ extension EditorWorkspace {
                 document.persistenceRequested = false
                 guard !self.closing, !document.text.hasMarkedText, !document.stagingImages else { return }
                 guard document.session.record.conflict == nil else { return }
-                guard document.session.isDirty || document.session.record.pendingPublication != nil else { return }
+                guard self.needsAutomaticSave(document) else { return }
                 guard !document.session.saving else { document.persistenceRequested = true; continue }
-                switch document.session.record.destination {
-                case .file: await self.saveFile(document)
-                default:
-                    guard self.selectedStore != nil else { return }
-                    await self.savePublished(document)
-                }
+                await self.saveDestination(document)
                 if document.session.error != nil || document.session.record.conflict != nil { return }
-                if document.session.isDirty { document.persistenceRequested = true }
+                if self.needsAutomaticSave(document) { document.persistenceRequested = true }
             }
         }
     }

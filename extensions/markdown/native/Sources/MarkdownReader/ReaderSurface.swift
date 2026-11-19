@@ -45,7 +45,11 @@ final class ReaderSurface: NSView {
         let view = model.page.webView
         view.frame = bounds; view.autoresizingMask = [.width, .height]
         addSubview(view)
-        model.page.onDocumentReady = { [weak self] ready in self?.workspace?.webReady = ready }
+        model.page.onDocumentReady = { [weak self] ready in
+            guard let workspace = self?.workspace else { return }
+            workspace.webReady = ready
+            if ready, let document = workspace.active, workspace.isDisplayed(document) { document.checkForUpdates() }
+        }
         model.page.onMessage = { [weak self] message in
             guard let self else { return [:] }
             return try await self.receive(message)

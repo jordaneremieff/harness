@@ -205,6 +205,9 @@ final class EditorWorkspace {
     @ObservationIgnored var onEditorFocus: (() -> Void)?
     let automaticallySaves: Bool
     var active: WorkingDocument? { documents.first { $0.id == selected } }
+    func isDisplayed(_ document: WorkingDocument) -> Bool {
+        active === document && reading == nil && !libraryVisible && publishedLibrary == nil
+    }
     var selectedStore: String?
 
     init(directory: URL, store: String?, automaticallySaves: Bool = false) {
@@ -252,13 +255,14 @@ final class EditorWorkspace {
                 await self.receiveExternalChange(document)
             }
         }
-        document.onApply = { [weak self] edits, generation in
-            guard let self else { return false }
-            return await self.applyThroughPage(edits, generation: generation)
+        document.onApply = { [weak self, weak document] edits, generation in
+            guard let self, let document else { return false }
+            return await self.applyThroughPage(edits, generation: generation, document: document)
         }
         let closedReading = reading != nil && liveIdentity != liveDocumentID ? liveDocumentID : nil
         leaveReading()
         active?.setVisible(false)
+        if webHostModel != nil, !pagePromotion { webReady = false }
         documents.append(document); selected = document.id; liveDocumentID = document.id; libraryVisible = false
         collaboration?.bind(document: liveDocumentID, closing: closedReading)
         document.setVisible(true)
@@ -347,9 +351,11 @@ final class EditorWorkspace {
         let closedReading = reading == nil ? nil : liveDocumentID
         leaveReading()
         active?.setVisible(false)
+        if webHostModel != nil, selected != document.id || closedReading != nil || !document.visible { webReady = false }
         selected = document.id; liveDocumentID = document.id; libraryVisible = false
         collaboration?.bind(document: liveDocumentID, closing: closedReading)
         document.setVisible(true)
+        if webReady { document.checkForUpdates() }
         focusWhenActive(document)
     }
 
@@ -415,18 +421,17 @@ final class EditorWorkspace {
             do {
                 let snapshot = try await Task.detached { try DocumentLoader.load(reference, revision: revision, pinnedDigest: digest) }.value
                 guard navigation == navigationGeneration, allowNavigation("opening another document") else { return }
+                try await host.showSnapshot(snapshot, origin: origin ?? launchOrigin)
+                guard navigation == navigationGeneration, reading === previous else { return }
                 host.followsLatest = followsLatest
                 publishedLibrary = nil; libraryVisible = false; active?.setVisible(false); reading = host
-                try await host.showSnapshot(snapshot, origin: origin ?? launchOrigin)
-                guard navigation == navigationGeneration, reading === host else { return }
                 let closedReading = previous == nil ? nil : liveDocumentID
                 liveDocumentID = UUID(); collaboration?.bind(document: liveDocumentID, closing: closedReading)
                 if let previous, previous !== host { await previous.close() }
                 await host.checkForUpdate()
             } catch {
                 guard navigation == navigationGeneration else { return }
-                reading = previous; notice = "Document not opened: \(error)"
-                if previous == nil { active?.setVisible(true) }
+                notice = "Document not opened: \(error)"
             }
             return
         }
@@ -470,7 +475,6 @@ final class EditorWorkspace {
             if case .stored(let root, _, _) = model.reference { selectedStore = root }
             add(record, liveIdentity: liveDocumentID, pagePromotion: pagePromotion)
             active?.setResolver(snapshot.resolver)
-            if let document = active, case .copy = record.destination { schedulePersistence(document) }
             return true
         } catch { notice = "Edit not opened: \(error). The document remains readable."; return false }
     }
@@ -522,7 +526,8 @@ final class EditorWorkspace {
         if documents.isEmpty { await library() }
     }
 
-    func prepareToClose() async -> Bool {
+    func prepareToClose(saveDeadline: DispatchTime = .now() + PaneHost.saveAllowance) async -> Bool {
+        guard !closing else { return false }
         guard !documents.contains(where: \.stagingImages) else {
             notice = "Wait for the image to reach private storage before closing."
             return false
@@ -533,9 +538,40 @@ final class EditorWorkspace {
         }
         closing = true
 
-        let retained = await retainAll()
-        if !retained { resumeEdits() }
-        return retained
+        guard await retainAll(), closing, !Task.isCancelled else {
+            if closing { refuseClose("Draft recovery failed. This window remains open. Retry Close after recovery succeeds.") }
+            return false
+        }
+        let dirty = documents.filter(needsAutomaticSave)
+        guard !dirty.isEmpty else { return true }
+        let saved = Flag(), proceed = Flag(true)
+        let finished = await PaneHost.run(until: saveDeadline) {
+            for document in dirty {
+                guard proceed.value, self.closing, DispatchTime.now() < saveDeadline else { return }
+                if document.session.saving { await document.persistenceTask?.value }
+                guard proceed.value, self.closing, DispatchTime.now() < saveDeadline else { return }
+                if self.needsAutomaticSave(document), !document.session.saving,
+                   document.session.record.conflict == nil {
+                    await self.saveDestination(document, duringClose: true)
+                }
+            }
+            guard proceed.value, self.closing else { return }
+            saved.value = await self.retainAll() && !self.documents.contains(where: self.needsAutomaticSave)
+        }
+        proceed.value = false
+        guard finished, saved.value else {
+            refuseClose("The destination save did not finish. Your edits are in Drafts. This window remains open.")
+            return false
+        }
+        return true
+    }
+
+    private func refuseClose(_ message: String) {
+        notice = message
+        resumeEdits()
+        if let model = webHostModel {
+            Task { _ = try? await model.sendEnvelope(["v": 1, "type": "notice", "tone": "warning", "text": message, "actions": []]) }
+        }
     }
 
     func resumeEdits() {
@@ -579,8 +615,16 @@ final class EditorWorkspace {
         }
     }
 
-    func saveFile(_ document: WorkingDocument, to url: URL? = nil, replacing existing: FileEditBase? = nil) async {
-        guard allowAction("saving", document: document) else { return }
+    func saveDestination(_ document: WorkingDocument, duringClose: Bool = false) async {
+        if document.session.record.pendingPublication == nil, case .file = document.session.record.destination {
+            await saveFile(document, duringClose: duringClose)
+        } else {
+            await savePublished(document, duringClose: duringClose)
+        }
+    }
+
+    func saveFile(_ document: WorkingDocument, to url: URL? = nil, replacing existing: FileEditBase? = nil, duringClose: Bool = false) async {
+        guard duringClose ? closing : allowAction("saving", document: document) else { return }
         guard let snapshot = document.session.beginSave() else { return }
         do {
             let (base, images) = try await Task.detached {
@@ -615,8 +659,8 @@ final class EditorWorkspace {
         Task { await savePublished(document) }
     }
 
-    func savePublished(_ document: WorkingDocument) async {
-        guard allowAction("saving", document: document) else { return }
+    func savePublished(_ document: WorkingDocument, duringClose: Bool = false) async {
+        guard duringClose ? closing : allowAction("saving", document: document) else { return }
         guard let writer = PublicationClient.fromBundle() else { document.session.setError("The bundled library writer is unavailable. Rebuild the app or use Save As."); return }
         do {
             var request: PublicationRequest

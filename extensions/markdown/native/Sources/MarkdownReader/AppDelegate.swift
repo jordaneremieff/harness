@@ -105,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             sender.reply(toApplicationShouldTerminate: true)
         }
         let deadline = DispatchTime.now() + PaneHost.saveAllowance
-        let retention = Task { await windows.retainEditors() }
+        let retention = Task { await windows.retainEditors(saveDeadline: deadline - .milliseconds(100)) }
         Task { @MainActor in
             let retained = await retention.value
             guard !answered.value else { windows.resumeEditors(); return }

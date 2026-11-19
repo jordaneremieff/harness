@@ -321,11 +321,14 @@ final class PaneHost {
         retaining = true
         Task { @MainActor in
             let saved = Flag()
-            let completed = await Self.run(until: .now() + Self.saveAllowance) { saved.value = await workspace.prepareToClose() }
+            let deadline = DispatchTime.now() + Self.saveAllowance
+            let completed = await Self.run(until: deadline) {
+                saved.value = await workspace.prepareToClose(saveDeadline: deadline - .milliseconds(100))
+            }
             retaining = false
             guard completed, saved.value else {
                 workspace.resumeEdits()
-                if !completed || !workspace.documents.contains(where: { $0.text.hasMarkedText }) {
+                if !completed {
                     workspace.notice = "Draft recovery failed or timed out. The workspace remains open; retry Close after recovery succeeds."
                 }
                 if lostTerminal { finishEnd(status: max(status, 1), terminalGone: true) }

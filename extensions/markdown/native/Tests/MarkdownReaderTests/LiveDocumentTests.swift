@@ -353,6 +353,85 @@ import ReaderFeature
         await workspace.closeViews()
     }
 
+    @Test func automaticSaveDoesNotPublishPrivateDrafts() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = root.appendingPathComponent("store")
+        let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: store.path, automaticallySaves: true)
+        let base = StoredEditBase(root: store.path, storeId: String(repeating: "1", count: 32), document: "md-" + String(repeating: "2", count: 20), revision: 1, digest: Digest.sha256(Data("before".utf8)))
+        for destination in [EditDestination.scratchpad, .copy(base)] {
+            workspace.add(DraftRecord(source: "before", destination: destination))
+            let draft = try #require(workspace.active)
+            #expect(draft.text.apply(range: NSRange(location: 0, length: 6), replacement: "after", selection: nil, actionName: "Edit"))
+            #expect(draft.persistenceTask == nil)
+            await draft.persistenceTask?.value
+            #expect(await draft.session.persist())
+            #expect(draft.session.record.destination == destination)
+            #expect(draft.session.record.pendingPublication == nil)
+            let retained = try await workspace.drafts.load(id: draft.session.record.id, branch: draft.session.record.branch)
+            #expect(retained.source == "after")
+        }
+        #expect(!FileManager.default.fileExists(atPath: store.path))
+        await workspace.closeViews()
+    }
+
+    @Test func quickCloseSavesAnEditedFileBeforeTheDebounce() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("close.md")
+        try Data("before".utf8).write(to: file)
+        let opened = try LocalFileSave.open(file)
+        let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil, automaticallySaves: true)
+        workspace.add(DraftRecord(source: opened.source, destination: .file(opened.base), savedSource: opened.source))
+        let document = try #require(workspace.active)
+        #expect(document.text.apply(range: NSRange(location: 0, length: 6), replacement: "after", selection: nil, actionName: "Edit"))
+        #expect(await workspace.prepareToClose())
+        #expect(try Data(contentsOf: file) == Data("after".utf8))
+        #expect(!document.session.isDirty)
+        await workspace.closeViews()
+    }
+
+    @Test func closeWithNoTimeForADestinationSaveKeepsARecoverableDraft() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("close.md")
+        try Data("before".utf8).write(to: file)
+        let opened = try LocalFileSave.open(file)
+        let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil, automaticallySaves: true)
+        workspace.add(DraftRecord(source: opened.source, destination: .file(opened.base), savedSource: opened.source))
+        let document = try #require(workspace.active)
+        #expect(document.text.apply(range: NSRange(location: 0, length: 6), replacement: "after", selection: nil, actionName: "Edit"))
+        #expect(!(await workspace.prepareToClose(saveDeadline: .now())))
+        #expect(!workspace.closing)
+        #expect(workspace.notice?.contains("Your edits are in Drafts.") == true)
+        #expect(try Data(contentsOf: file) == Data("before".utf8))
+        let retained = try await workspace.drafts.load(id: document.session.record.id, branch: document.session.record.branch)
+        #expect(retained.source == "after")
+        await workspace.closeViews()
+    }
+
+    @Test func externalChangeWaitsForItsOwnDocument() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let firstFile = root.appendingPathComponent("first.md"), secondFile = root.appendingPathComponent("second.md")
+        try Data("start\n".utf8).write(to: firstFile)
+        try Data("start\n".utf8).write(to: secondFile)
+        let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil)
+        let firstOpened = try LocalFileSave.open(firstFile)
+        workspace.add(DraftRecord(source: firstOpened.source, destination: .file(firstOpened.base), savedSource: firstOpened.source))
+        let first = try #require(workspace.active)
+        first.updates.stop()
+        let secondOpened = try LocalFileSave.open(secondFile)
+        workspace.add(DraftRecord(source: secondOpened.source, destination: .file(secondOpened.base), savedSource: secondOpened.source))
+        let second = try #require(workspace.active)
+        connectPage(workspace)
+        try Data("start\nexternal\n".utf8).write(to: firstFile)
+        await workspace.receiveExternalChange(first)
+        #expect(first.session.record.destination == .file(firstOpened.base))
+        #expect(second.text.source == "start\n")
+        workspace.select(first)
+        await workspace.receiveExternalChange(first)
+        #expect(first.text.source == "start\nexternal\n")
+        #expect(second.text.source == "start\n")
+        await workspace.closeViews()
+    }
+
     @Test func compatibleExternalTextJoinsTheLocalDraft() async throws {
         _ = NSApplication.shared
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }

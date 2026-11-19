@@ -143,8 +143,11 @@ supports a read-only comparison against that exact base. The comparison never re
 draft. Undo and the page history own edit reversal. Closing requires a current recovery
 snapshot; failed recovery leaves the document open.
 
-Edits coalesce into automatic file or library saves. A save acknowledges only its submitted
-source, not later typing. Local-file saves check the original file identity and content.
+Edits to a local file or a published document coalesce into automatic saves to that destination.
+Scratchpads and copies remain private until an explicit Save. Closing first retains the draft
+and tries to finish a pending destination save within the close deadline. If the destination save
+is not confirmed, the reader keeps the window open and says that the edits are in Drafts.
+A save acknowledges only its submitted source, not later typing. Local-file saves check the original file identity and content.
 Outside replacements retain the buffer and report a conflict. A no-op file save preserves
 bytes and inode, including a UTF-8 BOM and mixed endings. Library publication retains an
 unconfirmed invocation for reconciliation before another publication starts.

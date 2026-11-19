@@ -125,9 +125,12 @@ final class WindowManager: NSObject, NSWindowDelegate {
         guard !retained, !workspaces.isEmpty else { return false }
         resumeEditors(); return true
     }
-    func retainEditors() async -> Bool {
+    func retainEditors(saveDeadline: DispatchTime) async -> Bool {
         var result = true
-        for workspace in workspaces { if !(await workspace.prepareToClose()) { result = false } }
+        for workspace in workspaces {
+            if Task.isCancelled { result = false; break }
+            if !(await workspace.prepareToClose(saveDeadline: saveDeadline)) { result = false }
+        }
         if !result { resumeEditors() }
         return result
     }
