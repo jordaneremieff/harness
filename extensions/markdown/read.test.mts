@@ -40,6 +40,29 @@ test("finding lists the newest matching documents with honest coverage", () => f
 	failed(await readStored(store, { document: notes.documentId, query: "x" }), "invalid");
 }));
 
+test("snapshot listings skip healthy snapshots of the other kind", () => fixture(async (_root, store) => {
+	const input = { title: "Snapshot", source: "Exact source", contentOrigin: { kind: "tool" as const, capturedAt: new Date().toISOString() } };
+	const response = await store.snapshot("response", "response", input);
+	const file = await store.snapshot("file", "file", input);
+	await mkdir(join(store.root, "snapshots", "md-ffffffffffffffffffff"));
+	for (const snapshot of [response, file]) {
+		const listing = found(await readStored(store, { kind: snapshot.document.kind }));
+		assert.deepEqual(listing.rows.map((row) => row.id), [snapshot.document.id]);
+		assert.equal(listing.unreadable, 1, "only the missing pointer is unreadable");
+		assert.equal(listing.scanned, 3);
+	}
+}));
+
+test("literal title and source search preserve significant spaces and source line numbers", () => fixture(async (_root, store) => {
+	const input = { title: "A CAT publication", source: "first\ronly catfish here\r\nnow a CAT sleeps", contentOrigin: { kind: "tool" as const, capturedAt: new Date().toISOString() } };
+	const yes = await store.create(input);
+	await store.create({ ...input, title: "A catfish publication", source: "only catfish here" });
+	assert.deepEqual(found(await readStored(store, { query: " Cat " })).rows.map((row) => row.id), [yes.document.id]);
+	const matches = found(await readStored(store, { contains: " cAt " }));
+	assert.deepEqual(matches.rows.map((row) => [row.id, row.excerpt]), [[yes.document.id, { line: 3, text: "now a CAT sleeps" }]]);
+	assert.deepEqual(found(await readStored(store, { contains: "catfish" })).rows.find((row) => row.id === yes.document.id)?.excerpt, { line: 2, text: "only catfish here" });
+}));
+
 test("a source search finds text in current revisions within stated bounds", () => fixture(async (root, store) => {
 	const options = { cwd: root, store };
 	const alpha = saved(await publish({ title: "Alpha", text: "# Alpha\n\nThe migration plan uses ÄRGER as a code word.\n" }, options));

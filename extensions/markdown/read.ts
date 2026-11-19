@@ -58,7 +58,7 @@ function row(record: DocumentRecord): FoundDocument {
 }
 async function find(store: MarkdownStore, params: ReadInput): Promise<ReadOutcome> {
 	const kind = params.kind ?? "published";
-	const needle = params.query?.trim().toLowerCase();
+	const needle = params.query?.toLowerCase();
 	const match = needle ? (record: DocumentRecord) => record.title.toLowerCase().includes(needle) || record.id.includes(needle) : undefined;
 	const listing = await store.list({ kind, limit: params.contains === undefined ? FIND_ROWS : undefined, match });
 	const base = { ok: true as const, op: "find" as const, kind, ...(params.query === undefined ? {} : { query: params.query }), scanned: listing.scanned, unreadable: listing.unreadable, bounded: listing.bounded };
@@ -72,7 +72,7 @@ async function find(store: MarkdownStore, params: ReadInput): Promise<ReadOutcom
  * so the excerpt is the original line at the line number found in the folded text.
  */
 async function searchSources(store: MarkdownStore, candidates: DocumentRecord[], contains: string): Promise<{ rows: FoundDocument[]; search: SourceSearch }> {
-	const needle = contains.trim().toLowerCase();
+	const needle = contains.toLowerCase();
 	const rows: FoundDocument[] = [];
 	let searched = 0; let bytes = 0; let unreadable = 0;
 	for (const candidate of candidates) {
@@ -80,10 +80,12 @@ async function searchSources(store: MarkdownStore, candidates: DocumentRecord[],
 		searched++; bytes += candidate.bytes;
 		let source: string;
 		try { source = (await store.get(candidate.id, candidate.revision)).source; } catch { unreadable++; continue; }
-		const at = source.toLowerCase().indexOf(needle);
+		const folded = source.toLowerCase();
+		const at = folded.indexOf(needle);
 		if (at < 0) continue;
-		const line = source.toLowerCase().slice(0, at).split("\n").length;
-		const text = [...(source.split("\n")[line - 1] ?? "").trim()].slice(0, EXCERPT_CHARS).join("");
+		const lineBreak = /\r\n|[\r\n]/u;
+		const line = folded.slice(0, at).split(lineBreak).length;
+		const text = [...(source.split(lineBreak)[line - 1] ?? "").trim()].slice(0, EXCERPT_CHARS).join("");
 		rows.push({ ...row(candidate), excerpt: { line, text } });
 	}
 	return { rows, search: { contains, candidates: candidates.length, searched, bytes, complete: searched === candidates.length, unreadable } };

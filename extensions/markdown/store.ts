@@ -97,7 +97,6 @@ async function readBytes(path: string, limit: number): Promise<Buffer> {
 async function readJson<T>(path: string, limit = LIMITS.recordBytes): Promise<T> { return JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await readBytes(path, limit))) as T; }
 export type StoreIdentity = { version: 1; storeId: string };
 function validIdentity(value: StoreIdentity): boolean { return value?.version === 1 && typeof value.storeId === "string" && /^[0-9a-f]{32}$/.test(value.storeId); }
-function listingRecord(record: DocumentRecord, name: string, kind: DocumentKind): boolean { return validPointer(record, name) && record.kind === kind; }
 function collection(kind: DocumentKind): "documents" | "snapshots" { return kind === "published" ? "documents" : "snapshots"; }
 function validTimestamp(value: unknown): boolean {
 	return typeof value === "string" && value.length === 24 && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
@@ -253,7 +252,7 @@ export class MarkdownStore {
 			if (!entry.isDirectory() || !validId(entry.name)) continue;
 			const record = await this.listingPointer(entry.name, kind);
 			if (!record) unreadable++;
-			else if (!options.match || options.match(record)) documents.push(record);
+			else if (record.kind === kind && (!options.match || options.match(record))) documents.push(record);
 		}
 		documents.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 		return { documents: documents.slice(0, limit), bounded, scanned, matched: documents.length, unreadable };
@@ -262,7 +261,7 @@ export class MarkdownStore {
 	private async listingPointer(name: string, kind: DocumentKind): Promise<DocumentRecord | undefined> {
 		try {
 			const record = await readJson<DocumentRecord>(join(this.path(name, kind), "document.json"));
-			return listingRecord(record, name, kind) ? record : undefined;
+			return validPointer(record, name) && collection(record.kind) === collection(kind) ? record : undefined;
 		} catch { return undefined; }
 	}
 	async resolve(prefix: string): Promise<string> {
