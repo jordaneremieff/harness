@@ -131,6 +131,62 @@ private final class LifecycleGate {
         #expect(transitions == [true, false, true, false])
     }
 
+    @Test func oversizedSnapshotSwitchKeepsTheSharedReaderOnItsAcceptedDocument() async throws {
+        _ = NSApplication.shared
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1, source: "# Kept\n\nThe current document.\n")
+        let accepted = try DocumentLoader.load(store.reference)
+        let rejectedURL = store.root.appendingPathComponent("oversized-render.md")
+        // Repeated paragraphs stay under the source limit but their escaped HTML, keys and
+        // source maps exceed the separate rendered block budget.
+        let paragraph = String(repeating: "&", count: 31) + "\n\n"
+        let largeSource = String(repeating: paragraph, count: 60_000)
+        try Data(largeSource.utf8).write(to: rejectedURL)
+        let rejected = try DocumentLoader.load(.file(path: rejectedURL.path))
+        try #require(rejected.bytes < Limits.sourceBytes)
+
+        let state = ReadingStateStore(directory: nil)
+        let reader = model(reference: accepted.reference, state: state)
+        reader.live = true
+        state.setPosition(ReadingPosition(blockStart: 0, offsetY: 14, revision: 1), for: accepted.reference)
+        try await reader.showSnapshot(accepted)
+        try #require(reader.page.documentReady)
+        let oldPageState = try #require(reader.pageState)
+        let oldBlocks = try #require(reader.rendered?.blocks)
+        _ = try await reader.page.callJavaScript("window.deliveries = 0; const receive = reader.receive; reader.receive = m => { if (m.type === 'document') window.deliveries++; return receive(m); };")
+
+        do {
+            try await reader.showSnapshot(rejected)
+            Issue.record("The bridge accepted an oversized rendering")
+        } catch let error as ReaderBridgeError {
+            #expect(error == .oversized)
+        }
+        #expect(reader.reference == accepted.reference)
+        #expect(reader.snapshot?.digest == accepted.digest)
+        #expect(reader.source == accepted.source)
+        #expect(reader.rendered?.blocks == oldBlocks)
+        #expect(reader.pageState == oldPageState)
+        #expect(reader.lastRestore == .block)
+        #expect(reader.page.documentReady)
+        #expect(try await reader.page.callJavaScript("return window.deliveries;") as? Int == 0)
+        #expect(state.recents.map(\.reference) == [accepted.reference])
+        #expect(state.position(for: rejected.reference) == nil)
+
+        try store.publish(2)
+        #expect(await wait { reader.update == .revision(2) })
+        let nextURL = store.root.appendingPathComponent("next.md")
+        try Data("# Next\n".utf8).write(to: nextURL)
+        let next = try DocumentLoader.load(.file(path: nextURL.path))
+        try await reader.showSnapshot(next)
+        #expect(reader.reference == next.reference)
+        #expect(reader.source == next.source)
+        #expect(reader.page.documentReady)
+        #expect(try await reader.page.callJavaScript("return window.deliveries;") as? Int == 1)
+        #expect(state.position(for: accepted.reference)?.offsetY == 14)
+        await reader.close()
+    }
+
     @Test func draftMirrorUpdatesKeepExactBytesWithoutAReplacementDocument() async throws {
         _ = NSApplication.shared
         let state = ReadingStateStore(directory: nil)
