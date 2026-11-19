@@ -257,7 +257,7 @@
 					batchList.hidePopover();
 					const target = comment.range && blockAt(comment.range.start);
 					if (target) navigation.jumpElement(target);
-					openThread({ threadId: "", quote: comment.quote, pendingComment: comment, draft: "", messages: [] }, false);
+					openThread({ threadId: "", quote: comment.quote, pendingComment: comment, draft: "", messages: [] });
 				}, { className: "batch-row-open" });
 				open.setAttribute("aria-label", `Edit comment ${index + 1}: ${comment.text}`);
 				open.replaceChildren(commentPreview(comment));

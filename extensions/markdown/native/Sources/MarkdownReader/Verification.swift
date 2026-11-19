@@ -877,6 +877,17 @@ struct Context {
             let highlights = await js(model, """
             return Array.from(CSS.highlights.get('comment') ?? [], range => range.toString());
             """) as? [String] ?? []
+            let reopenedWithFocus = await js(model, """
+            document.getElementById('ask-batch-open')?.click();
+            const row = document.querySelector('#ask-batch-list:popover-open .batch-row-open');
+            if (!row) return false;
+            row.click();
+            const card = document.querySelector('.ask-card[data-open]');
+            const field = card?.querySelector('textarea');
+            const focused = !!field && document.activeElement === field && field.value === comment;
+            card?.querySelector('.ask-primary')?.click();
+            return focused && !card.hasAttribute('data-open');
+            """, ["comment": comments[0]]) as? Bool == true
             let deferred = !(await wait(seconds: 0.2) { !prompts.isEmpty })
             let sent = await js(model, """
             const send = document.getElementById('ask-batch-send');
@@ -899,8 +910,8 @@ struct Context {
             return !!card?.querySelector('.batch-sent') && card.querySelector('.reply')?.textContent.endsWith(reply);
             """, ["reply": reply]) as? Bool == true
             await model.close()
-            return .init(name: name, pass: added.allSatisfy { $0 } && highlights.sorted() == quotes.sorted() && deferred && sent && prompts.count == 1 && exact && answered,
-                         detail: "added \(added); comment highlights \(highlights); deferred \(deferred); tray Send \(sent); prompts \(prompts.count); exact annotations \(exact); batch reply \(answered)")
+            return .init(name: name, pass: added.allSatisfy { $0 } && highlights.sorted() == quotes.sorted() && reopenedWithFocus && deferred && sent && prompts.count == 1 && exact && answered,
+                         detail: "added \(added); comment highlights \(highlights); reopened with focus \(reopenedWithFocus); deferred \(deferred); tray Send \(sent); prompts \(prompts.count); exact annotations \(exact); batch reply \(answered)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
