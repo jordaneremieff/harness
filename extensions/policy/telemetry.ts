@@ -1154,9 +1154,7 @@ function recordingLine(recording: TelemetryRecording): string {
 			? ""
 			: `; records whose batch failed after bytes may have reached storage ${health.uncertainRecords} (${health.uncertainBytes ?? 0} bytes; each may be absent, torn, or present)`;
 	const recovery =
-		health.recovery === undefined
-			? ""
-			: `; stops ${health.recovery.stops}, resumes ${health.recovery.resumes}, stale locks taken over ${health.recovery.staleLocks}`;
+		health.recovery === undefined ? "" : `; stops ${health.recovery.stops}, resumes ${health.recovery.resumes}`;
 	return `Recording: ${recording.status}. This process's writer since its start: ${health.state}; lost records ${health.lostRecords}; lost bytes ${health.lostBytes}${uncertain}${recovery}. Losses of other writers and earlier processes are unknown; complete parsing of retained files does not prove complete recording.`;
 }
 function continuationLine(summary: TelemetrySummary): string {

@@ -1752,31 +1752,11 @@ the policy directory.
   future admission stays open. Directory preparation consumes that same budget.
   Expiry before the first lock creation produces `TelemetryAcquisitionExpiredError`,
   not held-lock contention or a failed append; no retention or append occurs.
-- **Writers of earlier releases.** A process that started before an upgrade keeps
-  the writer it loaded. Those writers create `.telemetry-lock` exclusively, remove
-  it after each batch, and know no other lock. While a writer appends, it also
-  holds a hard link to its lock file under that name. An earlier writer then
-  finds the name taken and waits, and a writer that finds an earlier writer's
-  file there waits in turn. The link exists only between acquisition and release.
-  A writer that stops in between leaves the link behind. Earlier writers only ever
-  create a new file under that name, so an entry there with the device and inode
-  of `.telemetry-writer.lock` was linked by a writer of this protocol, and such a
-  writer keeps the link only while it holds the descriptor lock. The writer that
-  holds the descriptor lock next therefore knows that the entry has no owner. It
-  takes the entry over, counts it in `recovery.staleLocks`, appends, and removes
-  the name on release. No person and no notice is involved.
-  A file with any other identity under `.telemetry-lock` can belong to a running
-  earlier writer. Policy never removes it: not because of its age, not because of
-  its note, and not because a process check finds no such process. Batches drop
-  until that file is gone, and the health view and one notice show the evidence. A
-  person decides that case. Earlier writers note their process ID and host name
-  in the file, and some leave it empty; a waiting writer reads at most 256 bytes
-  of it as evidence only.
   Before each segment removal, before each segment open, and on release, the
-  writer compares its descriptor with both names. A missing or changed name fails
-  the append, and the writer then removes nothing. The comparison and the
-  following operation are not atomic: this is cooperative exclusion, and a person
-  who removes a held `.telemetry-lock` defeats it.
+  writer compares the held descriptor with the lock name. A missing or changed
+  name fails the append and prevents further segment operations. The comparison
+  and the following operation are not atomic: this is cooperative exclusion, and
+  removing or replacing the lock file defeats it.
 - **Queue.** The writer holds at most 512 accepted records and 4 MiB of serialised
   records, including an in-flight or retry batch. Each record is serialised once
   at admission; later changes to the caller's object do not alter those bytes.
@@ -1870,30 +1850,18 @@ The ordinary and native `health` inspection views read the writer's current
   again. Absent once that record is admitted.
 - `lock`: evidence about the held lock, while contention keeps the writer in
   pressure. `path` is relative to the policy directory. `ownership` is `live`
-  for a held descriptor lock, which has a running owner by construction, and
-  `uncertain` for a `.telemetry-lock` file of an earlier release. An uncertain
-  lock adds `ageMs` since the file last changed and the noted `pid`; when the
-  note names this host, `running` tells whether that process exists. The check
-  assumes that one host name means one process table: a policy directory shared
-  by hosts or containers with the same host name can show a false
-  `running: false`. All three are evidence and decide nothing.
-- `recovery`: cumulative `stops` (times a failed append stopped admission),
-  `resumes` (times a completed append ended a stop), and `staleLocks` (links of
-  stopped writers that this writer took over). Absent until the first stop or
-  takeover.
+  because the kernel reports a held descriptor lock.
+- `recovery`: cumulative `stops` (times a failed append stopped admission) and
+  `resumes` (times a completed append ended a stop). Absent until the first stop.
 
 A completed append clears pressure and a stop but preserves the cumulative
 counts.
 
-Lock contention that recovers without loss is routine and produces no output,
-and so does a lock taken over from a stopped writer; the `health` view shows
-both. The writer signals health on state changes, and once more at its first
+Lock contention that recovers without loss is routine and produces no output.
+The writer signals health on state changes, and once more at its first
 loss under an unchanged state, not once per refused record. Each writer reports
 that first loss once. The loss notice carries the lock evidence when a held lock
-caused the loss. For an uncertain lock it says that Policy never removes the
-file, and that a person removes it only when no Pi process from an earlier
-release still runs; for a lock whose noted process runs, it says only that
-recording continues when that process releases the lock. A stop is reported as
+caused the loss. A stop is reported as
 an error when it starts, at most once per 10 minutes for one writer, and a
 reported stop is followed by one notice when a completed append ends it. Failed
 attempts in between, later stops inside the interval, and all later counts stay

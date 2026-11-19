@@ -857,7 +857,7 @@ describe("policy telemetry recording evidence", () => {
 				lostBytes: 0,
 				uncertainRecords: 3,
 				uncertainBytes: 400,
-				recovery: { stops: 1, resumes: 1, staleLocks: 1 },
+				recovery: { stops: 1, resumes: 1 },
 			},
 		});
 		assert.equal(
@@ -867,7 +867,7 @@ describe("policy telemetry recording evidence", () => {
 		);
 		assert.match(
 			formatTelemetry(resumed),
-			/records whose batch failed after bytes may have reached storage 3 \(400 bytes; each may be absent, torn, or present\); stops 1, resumes 1, stale locks taken over 1\./,
+			/records whose batch failed after bytes may have reached storage 3 \(400 bytes; each may be absent, torn, or present\); stops 1, resumes 1\./,
 		);
 	});
 });

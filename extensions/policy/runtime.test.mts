@@ -1,6 +1,7 @@
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readdir, rm, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, mkdir, mkdtemp, open, readdir, rm, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,7 +29,7 @@ import type { RuleRecord } from "./rule.ts";
 import { PolicyRuntime, refusalText } from "./runtime.ts";
 import type { ObservationClock } from "./observation-clock.ts";
 import { PolicyWriter } from "./store.ts";
-import { TELEMETRY_QUEUE_RECORDS, type TelemetryHealth } from "./telemetry-files.ts";
+import { TELEMETRY_LOCK_FILE, TELEMETRY_QUEUE_RECORDS, type TelemetryHealth } from "./telemetry-files.ts";
 
 const yes = { op: "exists" as const, path: ["input"] };
 const success = { op: "eq" as const, path: ["outcome", "kind"], value: "success" };
@@ -2821,6 +2822,18 @@ describe("telemetry writer lifecycle", () => {
 });
 
 describe("telemetry health reporting", () => {
+	async function holdTelemetryLock(t: TestContext, dir: string) {
+		const telemetry = join(dir, "telemetry");
+		await mkdir(telemetry, { mode: 0o700 });
+		const held = await open(
+			join(telemetry, TELEMETRY_LOCK_FILE),
+			constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | 0x20, // macOS O_EXLOCK
+			0o600,
+		);
+		t.after(() => held.close());
+		return held;
+	}
+
 	async function reporting(t: TestContext, setup: (dir: string) => Promise<void>, hasUI = true) {
 		const dir = await mkdtemp(join(tmpdir(), "policy-health-"));
 		t.after(() => rm(dir, { recursive: true, force: true }));
@@ -2882,13 +2895,10 @@ describe("telemetry health reporting", () => {
 	}
 
 	it("writes nothing when another writer's lock delays an append that then succeeds", async (t) => {
-		const lock = (dir: string) => join(dir, "telemetry", ".telemetry-lock");
-		const f = await reporting(t, async (dir) => {
-			await mkdir(join(dir, "telemetry"), { mode: 0o700 });
-			await writeFile(lock(dir), "", { mode: 0o600 });
-		});
+		const f = await reporting(t, async () => {});
+		const held = await holdTelemetryLock(t, f.dir);
 		const started = performance.now();
-		const released = delay(700).then(() => unlink(lock(f.dir)));
+		const released = delay(700).then(() => held.close());
 		await f.run("contended");
 		await released;
 		await f.close();
@@ -2901,8 +2911,7 @@ describe("telemetry health reporting", () => {
 
 	it("warns once with the lock path when a held lock makes every batch drop", async (t) => {
 		const f = await reporting(t, async (dir) => {
-			await mkdir(join(dir, "telemetry"), { mode: 0o700 });
-			await writeFile(join(dir, "telemetry", ".telemetry-lock"), "", { mode: 0o600 });
+			await holdTelemetryLock(t, dir);
 		});
 		await f.run("first");
 		await f.run("second");
@@ -2914,7 +2923,7 @@ describe("telemetry health reporting", () => {
 		assert.equal(f.notifications[0].level, "warning");
 		assert.match(
 			f.notifications[0].text,
-			/^\[policy\] Telemetry dropped \d record\(s\).*telemetry\/\.telemetry-lock in the policy directory/,
+			/^\[policy\] Telemetry dropped \d record\(s\).*telemetry\/\.telemetry-writer\.lock in the policy directory/,
 		);
 		assert.deepEqual(f.terminal, []);
 	});

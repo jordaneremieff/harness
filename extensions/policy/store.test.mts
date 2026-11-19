@@ -1,22 +1,10 @@
 import assert from "node:assert/strict";
-import {
-	chmod,
-	lstat,
-	mkdir,
-	mkdtemp,
-	readdir,
-	readFile,
-	rename,
-	rm,
-	stat,
-	symlink,
-	unlink,
-	writeFile,
-} from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, mkdir, mkdtemp, open, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { hostname, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { PolicyRecord } from "./record.ts";
@@ -32,8 +20,8 @@ import {
 	appendSerializedTelemetryRecords,
 	localDate,
 	serializeTelemetryRecord,
-	type TelemetryHealth,
 	TelemetryLockBusyError,
+	TELEMETRY_LOCK_FILE,
 	TELEMETRY_BATCH_BYTES,
 	TELEMETRY_BATCH_RECORDS,
 	TELEMETRY_QUEUE_BYTES,
@@ -67,6 +55,18 @@ async function policyDir(t: TestContext): Promise<string> {
 	const base = await mkdtemp(join(tmpdir(), "policy-store-"));
 	t.after(() => rm(base, { recursive: true, force: true }));
 	return join(base, "policy");
+}
+
+async function holdTelemetryLock(t: TestContext, dir: string) {
+	const telemetry = join(dir, "telemetry");
+	await mkdir(telemetry, { recursive: true, mode: 0o700 });
+	const held = await open(
+		join(telemetry, TELEMETRY_LOCK_FILE),
+		constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | 0x20, // macOS O_EXLOCK
+		0o600,
+	);
+	t.after(() => held.close());
+	return held;
 }
 
 async function segmentLines(dir: string, day: string): Promise<string[]> {
@@ -450,9 +450,7 @@ describe("PolicyWriter", () => {
 
 	it("retries exact admitted bytes when a lock clears after the first acquisition wait", async (t) => {
 		const dir = await policyDir(t);
-		await mkdir(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
-		const lock = join(dir, "telemetry", ".telemetry-lock");
-		await writeFile(lock, "", { mode: 0o600 });
+		const held = await holdTelemetryLock(t, dir);
 		const states: string[] = [];
 		const seen: unknown[] = [];
 		let written = () => {};
@@ -475,7 +473,7 @@ describe("PolicyWriter", () => {
 		row.captured = "mutated after admission";
 		const started = performance.now();
 		await delay(700);
-		await unlink(lock);
+		await held.close();
 		await persisted;
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.deepEqual(await segmentLines(dir, localDate(new Date(row.at))), [snapshot]);
@@ -550,9 +548,7 @@ describe("PolicyWriter", () => {
 
 	it("drops only an expired batch and writes later batches after lock release", async (t) => {
 		const dir = await policyDir(t);
-		await mkdir(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
-		const lock = join(dir, "telemetry", ".telemetry-lock");
-		await writeFile(lock, "", { mode: 0o600 });
+		const held = await holdTelemetryLock(t, dir);
 		const writer = new PolicyWriter(dir, () => {});
 		const row = entry();
 		assert.equal(writer.enqueue(row), true);
@@ -562,12 +558,8 @@ describe("PolicyWriter", () => {
 		await delay(2150);
 		const { lock: heldLock, ...health } = writer.health();
 		assert.deepEqual(health, { state: "pressure", lostRecords: 1, lostBytes: serializeTelemetryRecord(row).bytes });
-		assert.equal(
-			heldLock?.path,
-			"telemetry/.telemetry-lock",
-			"an empty lock from an older writer still reports its path and age",
-		);
-		await unlink(lock);
+		assert.deepEqual(heldLock, { path: `telemetry/${TELEMETRY_LOCK_FILE}`, ownership: "live" });
+		await held.close();
 		const later = { ...entry(), callId: "later" };
 		assert.equal(writer.enqueue(later), true);
 		await writer.close();
@@ -580,9 +572,7 @@ describe("PolicyWriter", () => {
 
 	it("charges an in-flight retry batch to the record cap and recovers from queue pressure", async (t) => {
 		const dir = await policyDir(t);
-		await mkdir(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
-		const lock = join(dir, "telemetry", ".telemetry-lock");
-		await writeFile(lock, "", { mode: 0o600 });
+		const held = await holdTelemetryLock(t, dir);
 		const states: string[] = [];
 		let written = () => {};
 		const persisted = new Promise<void>((resolve) => {
@@ -607,7 +597,7 @@ describe("PolicyWriter", () => {
 			["pressure", "pressure"],
 			"the first refused record signals once under unchanged pressure",
 		);
-		await unlink(lock);
+		await held.close();
 		await persisted;
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.equal(writer.enqueue(row), true);
@@ -684,7 +674,7 @@ describe("PolicyWriter", () => {
 			lostBytes: 0,
 			uncertainRecords: 1,
 			uncertainBytes: serializeTelemetryRecord(torn).bytes,
-			recovery: { stops: 1, resumes: 1, staleLocks: 0 },
+			recovery: { stops: 1, resumes: 1 },
 		});
 	});
 
@@ -700,7 +690,7 @@ describe("PolicyWriter", () => {
 					...options,
 					hooks: {
 						afterInventory: async () => {
-							const lock = join(dir, "telemetry", ".telemetry-lock");
+							const lock = join(dir, "telemetry", TELEMETRY_LOCK_FILE);
 							await rename(lock, join(dir, "telemetry", "retained-lock"));
 							await writeFile(lock, "replacement", { mode: 0o600 });
 						},
@@ -718,7 +708,7 @@ describe("PolicyWriter", () => {
 		assert.equal(health.lostRecords, 1);
 		assert.equal(health.uncertainRecords, undefined);
 		assert.deepEqual(await segmentLines(dir, localDate(new Date(row.at))), []);
-		assert.equal(await readFile(join(dir, "telemetry", ".telemetry-lock"), "utf8"), "replacement");
+		assert.equal(await readFile(join(dir, "telemetry", TELEMETRY_LOCK_FILE), "utf8"), "replacement");
 	});
 
 	it("counts a batch as uncertain when the lock name changed after its bytes were written", async (t) => {
@@ -733,7 +723,7 @@ describe("PolicyWriter", () => {
 					...options,
 					hooks: {
 						writeChunk: async (handle, bytes) => {
-							const lock = join(dir, "telemetry", ".telemetry-lock");
+							const lock = join(dir, "telemetry", TELEMETRY_LOCK_FILE);
 							await rename(lock, join(dir, "telemetry", "retained-lock"));
 							await writeFile(lock, "replacement", { mode: 0o600 });
 							return (await handle.write(bytes)).bytesWritten;
@@ -862,9 +852,7 @@ describe("PolicyWriter", () => {
 
 	it("bounds all shutdown acquisitions by one deadline and leaves no retry after close", async (t) => {
 		const dir = await policyDir(t);
-		await mkdir(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
-		const lock = join(dir, "telemetry", ".telemetry-lock");
-		await writeFile(lock, "", { mode: 0o600 });
+		const held = await holdTelemetryLock(t, dir);
 		let calls = 0;
 		const states: string[] = [];
 		const writer = new PolicyWriter(
@@ -888,14 +876,10 @@ describe("PolicyWriter", () => {
 			lostRecords: 100,
 			lostBytes: serializeTelemetryRecord(row).bytes * 100,
 		});
-		assert.equal(
-			heldLock?.path,
-			"telemetry/.telemetry-lock",
-			"an empty lock from an older writer still reports its path and age",
-		);
+		assert.deepEqual(heldLock, { path: `telemetry/${TELEMETRY_LOCK_FILE}`, ownership: "live" });
 		assert.deepEqual(states, ["pressure", "pressure"], "the first dropped batch signals once under unchanged pressure");
 		const stopped = calls;
-		await unlink(lock);
+		await held.close();
 		await delay(120);
 		assert.equal(calls, stopped, "no retry timer survives close");
 		assert.equal(writer.enqueue(row), false);
@@ -960,12 +944,8 @@ describe("TelemetryNotices", () => {
 		assert.equal(notices.next(written)?.level, "info");
 	});
 
-	it("names the records that may be partly stored, and stays silent about a lock taken over without loss", () => {
+	it("names the records that may be partly stored", () => {
 		const notices = new TelemetryNotices();
-		assert.equal(
-			notices.next({ state: "ok", lostRecords: 0, lostBytes: 0, recovery: { stops: 0, resumes: 0, staleLocks: 1 } }),
-			undefined,
-		);
 		const failure = notices.next({
 			state: "failed",
 			lostRecords: 0,
@@ -1010,7 +990,7 @@ describe("PolicyWriter recovery", () => {
 			lostRecords: 1,
 			lostBytes: bytes,
 			reason: "disk unavailable",
-			recovery: { stops: 1, resumes: 0, staleLocks: 0 },
+			recovery: { stops: 1, resumes: 0 },
 		});
 		const wait = Date.parse(retryAt ?? "") - Date.now();
 		assert.ok(wait > 0 && wait <= TELEMETRY_RESUME_BASE_MS, `the next attempt is ${wait} ms away`);
@@ -1028,7 +1008,7 @@ describe("PolicyWriter recovery", () => {
 			state: "ok",
 			lostRecords: 2,
 			lostBytes: bytes * 2,
-			recovery: { stops: 1, resumes: 1, staleLocks: 0 },
+			recovery: { stops: 1, resumes: 1 },
 		});
 		assert.deepEqual(states, ["failed", "ok"]);
 		await writer.close();
@@ -1062,7 +1042,7 @@ describe("PolicyWriter recovery", () => {
 		for (const wait of [...waits, TELEMETRY_RESUME_MAX_MS, TELEMETRY_RESUME_MAX_MS]) await attempt(wait);
 		assert.equal(calls, 12, "one attempt per elapsed wait");
 		assert.deepEqual(states, ["failed"], "failed attempts signal no new state");
-		assert.deepEqual(writer.health().recovery, { stops: 1, resumes: 0, staleLocks: 0 });
+		assert.deepEqual(writer.health().recovery, { stops: 1, resumes: 0 });
 		failing = false;
 		await attempt(TELEMETRY_RESUME_MAX_MS);
 		assert.equal(writer.health().state, "ok");
@@ -1070,7 +1050,7 @@ describe("PolicyWriter recovery", () => {
 		assert.equal(writer.enqueue(entry()), true);
 		await settled();
 		await attempt(TELEMETRY_RESUME_BASE_MS);
-		assert.deepEqual(writer.health().recovery, { stops: 2, resumes: 1, staleLocks: 0 });
+		assert.deepEqual(writer.health().recovery, { stops: 2, resumes: 1 });
 		await writer.close();
 	});
 
@@ -1170,8 +1150,6 @@ describe("PolicyWriter recovery", () => {
 		]);
 		child.kill("SIGKILL");
 		await exited;
-		const legacy = join(dir, "telemetry", ".telemetry-lock");
-		assert.equal((await lstat(legacy)).ino, (await lstat(join(dir, "telemetry", ".telemetry-writer.lock"))).ino);
 		const notices = new TelemetryNotices();
 		const reported: unknown[] = [];
 		const writer = new PolicyWriter(dir, (health) => reported.push(notices.next(health)));
@@ -1182,14 +1160,12 @@ describe("PolicyWriter recovery", () => {
 			state: "ok",
 			lostRecords: 0,
 			lostBytes: 0,
-			recovery: { stops: 0, resumes: 0, staleLocks: 1 },
 		});
-		assert.deepEqual(reported.filter(Boolean), [], "a proven stale lock needs no operator attention");
+		assert.deepEqual(reported.filter(Boolean), []);
 		assert.deepEqual(
 			await segmentLines(dir, "2026-09-03"),
 			rows.map((row) => JSON.stringify(row)),
 		);
-		await assert.rejects(lstat(legacy), { code: "ENOENT" });
 	});
 
 	it("keeps two live writers on one store quiet and complete", { timeout: 60_000 }, async (t) => {
@@ -1209,73 +1185,5 @@ describe("PolicyWriter recovery", () => {
 		const ids = (await segmentLines(dir, "2026-09-03")).map((line) => JSON.parse(line).callId as string);
 		assert.equal(ids.length, 240);
 		assert.equal(new Set(ids).size, 240);
-	});
-});
-
-describe("telemetry lock owner evidence", () => {
-	async function heldLock(t: TestContext, note: string): Promise<string> {
-		const dir = await policyDir(t);
-		await mkdir(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
-		await writeFile(join(dir, "telemetry", ".telemetry-lock"), note, { mode: 0o600 });
-		return dir;
-	}
-
-	async function dropUnderHeldLock(dir: string) {
-		const changes: TelemetryHealth[] = [];
-		const writer = new PolicyWriter(dir, (health) => changes.push(health));
-		assert.equal(writer.enqueue(record("2026-09-03T10:00:00.000Z")), true);
-		await writer.close();
-		return { health: writer.health(), notice: new TelemetryNotices(), changes };
-	}
-
-	it("names a stopped owner as evidence and never removes its lock", async (t) => {
-		const stopped = spawnSync(process.execPath, ["-e", ""]).pid;
-		const dir = await heldLock(
-			t,
-			`${JSON.stringify({ pid: stopped, host: hostname(), acquiredAt: "2026-09-03T09:00:00.000Z" })}\n`,
-		);
-		const { health, notice, changes } = await dropUnderHeldLock(dir);
-		assert.equal(health.state, "pressure");
-		assert.equal(health.lostRecords, 1);
-		assert.deepEqual(
-			{ ...health.lock, ageMs: 0 },
-			{ path: "telemetry/.telemetry-lock", ownership: "uncertain", ageMs: 0, pid: stopped, running: false },
-		);
-		const warning = changes.map((change) => notice.next(change)).find(Boolean);
-		assert.match(
-			warning?.text ?? "",
-			new RegExp(
-				`names process ${stopped}, which is not running on this host\\. A writer from an earlier release can still own that file, so Policy never removes it\\.`,
-			),
-		);
-		assert.match(warning?.text ?? "", /Remove it only when no Pi process from an earlier release still runs\./);
-		assert.match(await readFile(join(dir, "telemetry", ".telemetry-lock"), "utf8"), new RegExp(`"pid":${stopped}`));
-	});
-
-	it("reports a running owner without advising removal", async (t) => {
-		const dir = await heldLock(t, `${JSON.stringify({ pid: process.pid, host: hostname() })}\n`);
-		const { health, notice, changes } = await dropUnderHeldLock(dir);
-		assert.equal(health.lock?.running, true);
-		const warning = changes.map((change) => notice.next(change)).find(Boolean);
-		assert.match(
-			warning?.text ?? "",
-			new RegExp(
-				`has existed for \\d+ s and names process ${process.pid}, which is running on this host\\. Recording continues when that process releases the lock\\.`,
-			),
-		);
-		assert.doesNotMatch(warning?.text ?? "", /[Rr]emove/);
-	});
-
-	it("keeps an older writer's empty lock as an owner it cannot name", async (t) => {
-		const dir = await heldLock(t, "");
-		const { health, notice, changes } = await dropUnderHeldLock(dir);
-		assert.equal(health.lock?.path, "telemetry/.telemetry-lock");
-		assert.equal(health.lock?.pid, undefined);
-		assert.equal(health.lock?.running, undefined);
-		const warning = changes.map((change) => notice.next(change)).find(Boolean);
-		assert.match(
-			warning?.text ?? "",
-			/The lock file telemetry\/\.telemetry-lock in the policy directory has existed for \d+ s and names no process\./,
-		);
 	});
 });

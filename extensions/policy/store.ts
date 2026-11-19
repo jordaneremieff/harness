@@ -92,7 +92,6 @@ export class PolicyWriter implements TelemetryWriter {
 	private uncertainBytes = 0;
 	private stops = 0;
 	private resumes = 0;
-	private staleLocks = 0;
 	/** Failed appends since the latest completed one; selects the next wait. */
 	private failures = 0;
 	/** Monotonic time before which a stopped writer refuses records. */
@@ -132,9 +131,7 @@ export class PolicyWriter implements TelemetryWriter {
 			...(this.reason === undefined ? {} : { reason: this.reason }),
 			...(this.lock === undefined ? {} : { lock: this.lock }),
 			...(this.retryAt === undefined ? {} : { retryAt: this.retryAt }),
-			...(this.stops + this.staleLocks > 0
-				? { recovery: { stops: this.stops, resumes: this.resumes, staleLocks: this.staleLocks } }
-				: {}),
+			...(this.stops > 0 ? { recovery: { stops: this.stops, resumes: this.resumes } } : {}),
 		};
 	}
 
@@ -253,12 +250,7 @@ export class PolicyWriter implements TelemetryWriter {
 			const deadline = this.acquisitionDeadline(started);
 			if (deadline <= performance.now()) return "dropped";
 			try {
-				await this.append(this.dir, batch, this.retention, {
-					acquireUntil: deadline,
-					onStaleLock: () => {
-						this.staleLocks++;
-					},
-				});
+				await this.append(this.dir, batch, this.retention, { acquireUntil: deadline });
 				return "written";
 			} catch (error) {
 				if (error instanceof TelemetryAcquisitionExpiredError) return "dropped";
@@ -311,19 +303,9 @@ export class PolicyWriter implements TelemetryWriter {
 }
 
 function lockAdvice(lock: TelemetryLockHolder | undefined): string {
-	if (!lock) return "";
-	if (lock.ownership === "live")
-		return ` A running writer holds ${lock.path} in the policy directory; recording continues when it releases the lock.`;
-	const age = lock.ageMs === undefined ? "" : ` for ${Math.round(lock.ageMs / 1000)} s`;
-	const owner =
-		lock.pid === undefined
-			? "names no process"
-			: lock.running === undefined
-				? `names process ${lock.pid} on another host`
-				: `names process ${lock.pid}, which is ${lock.running ? "" : "not "}running on this host`;
-	const evidence = ` The lock file ${lock.path} in the policy directory has existed${age} and ${owner}.`;
-	if (lock.running) return `${evidence} Recording continues when that process releases the lock.`;
-	return `${evidence} A writer from an earlier release can still own that file, so Policy never removes it. Recording continues when the file is gone. Remove it only when no Pi process from an earlier release still runs.`;
+	return lock
+		? ` A running writer holds ${lock.path} in the policy directory; recording continues when it releases the lock.`
+		: "";
 }
 
 export interface TelemetryNotice {
@@ -337,8 +319,8 @@ export const TELEMETRY_STOP_NOTICE_INTERVAL_MS = 600_000;
 /**
  * Selects the writer health changes that need operator attention. Lock contention
  * that recovers without loss is routine and stays visible only through health
- * inspection, and so does a lock taken over from a stopped writer. The first loss
- * is reported once per writer, also while pressure persists. A stop is reported
+ * inspection. The first loss is reported once per writer, also while pressure
+ * persists. A stop is reported
  * when it starts, at most once per interval, and a reported stop is followed by one
  * notice when a completed append ends it. Later attempts and cumulative counts stay
  * in the health view.
