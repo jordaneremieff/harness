@@ -227,17 +227,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         let label: String
         switch target {
-        case .document(_, let document): label = document
+        case .document(_, let document, _): label = document
         case .request(let path): label = URL(fileURLWithPath: path).lastPathComponent
         }
         Task {
             let outcome = await Task.detached { () -> Result<(DocumentReference, Int?, String?, LaunchOrigin?), OpenIntakeError> in
                 do {
                     switch target {
-                    case .document(let root, let document):
+                    case .document(let root, let document, let pin):
                         let store = try DirectoryStore(root: URL(fileURLWithPath: root))
-                        _ = try store.document(document)
-                        return .success((.stored(root: FileAccess.canonicalPath(root), storeId: store.storeId, document: document), nil, nil, nil))
+                        if let pin {
+                            let loaded = try store.loadRevision(document, revision: pin.revision)
+                            guard loaded.record.digest == pin.digest else {
+                                throw OpenIntakeError.invalidRequest("revision \(pin.revision) does not match the supplied digest")
+                            }
+                        } else {
+                            _ = try store.document(document)
+                        }
+                        return .success((.stored(root: FileAccess.canonicalPath(root), storeId: store.storeId, document: document), pin?.revision, pin?.digest, nil))
                     case .request(let path):
                         let target = try OpenIntake.classify(URL(fileURLWithPath: path))
                         guard case .stored(let store, let request, let file) = target else { throw OpenIntakeError.notAnOpenRequest }

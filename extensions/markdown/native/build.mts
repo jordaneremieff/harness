@@ -36,7 +36,7 @@ import { homedir } from "node:os";
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EDITOR_OPEN, PANE_MODE, PANE_OPEN } from "../pane-command.ts";
+import { EDITOR_OPEN, PANE_MODE, PANE_OPEN, PANE_REVISION } from "../pane-command.ts";
 import { readSettings } from "../settings.ts";
 
 /** Version of the contract between openers and the app: open requests, store format, tool output. */
@@ -613,6 +613,7 @@ function install(destination: string, store: string, webSourceDir: string): void
 			contract: BUILD_CONTRACT,
 			pane: PANE_MODE,
 			paneOpen: PANE_OPEN,
+			paneRevision: PANE_REVISION,
 			paneOpenRequest: PANE_OPEN_REQUEST,
 			editorOpen: EDITOR_OPEN,
 			live: 2,

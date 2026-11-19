@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -95,6 +95,35 @@ test("historical read guidance requires the current source before a correction",
 	saved(await publish({ title: "Plan", text: `${current.text}Correction.\n`, document: first.documentId, expectedRevision: current.revision }, options));
 	assert.equal((await store.get(first.documentId)).source, `${newer}Correction.\n`);
 	assert.equal((await store.get(first.documentId, 1)).source, historical.text);
+}));
+
+test("an exact read offers a pinned show command without writing an open request", () => fixture(async (root, store) => {
+	const app = join(root, "Reader.app");
+	const resources = join(app, "Contents", "Resources");
+	await mkdir(resources, { recursive: true });
+	const manifest = join(resources, "build.json");
+	const build = { contract: 1, pane: PANE_MODE, paneOpen: PANE_OPEN };
+	await writeFile(manifest, JSON.stringify({ ...build, paneRevision: 1 }));
+	const options = { cwd: root, store };
+	const first = saved(await publish({ title: "Plan", text: "# First\n" }, options));
+	saved(await publish({ title: "Plan", text: "# Second\n", document: first.documentId, expectedRevision: 1 }, options));
+	const opens = join(store.root, "opens");
+	await mkdir(opens, { recursive: true });
+	const command = [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", store.root, first.documentId];
+	const exact = read(await readStored(store, { document: first.documentId.slice(0, 9), revision: 1 }, app));
+	assert.deepEqual(exact.show, [...command, "--revision", "1", "--digest", first.digest]);
+	assert.equal(exact.paneInput, undefined);
+	assert.match(readText(exact).header, /To show revision 1, run /u);
+	assert.doesNotMatch(readText(exact).header, /:open/u);
+	const thenCurrent = read(await readStored(store, { document: first.documentId, revision: 2 }, app));
+	assert.deepEqual(thenCurrent.show, [...command, "--revision", "2", "--digest", thenCurrent.digest]);
+	assert.deepEqual(await readdir(opens), []);
+	await writeFile(manifest, JSON.stringify(build));
+	const fallback = read(await readStored(store, { document: first.documentId, revision: 1 }, app));
+	assert.deepEqual(fallback.show, command);
+	assert.equal(fallback.paneInput, `:open ${first.documentId}\r`);
+	assert.match(readText(fallback).header, /Current revision only/u);
+	assert.doesNotMatch(readText(fallback).header, /To show it/u);
 }));
 
 test("reading returns exact pages of a named revision and the steps to correct it", () => fixture(async (root, store) => {

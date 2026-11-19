@@ -28,9 +28,16 @@ enum LaunchMode {
     case pane(PaneTarget)
 
     enum PaneTarget: Sendable {
-        case document(store: String, document: String)
+        struct Pin: Sendable {
+            let revision: Int
+            let digest: String
+        }
+
+        case document(store: String, document: String, pin: Pin?)
         case request(String)
     }
+
+    private static let paneUsage = "--pane <open request.json> | --pane --store <store directory> [--revision <positive integer> --digest <sha256:digest>] <document ID>"
     /// Renders one document into a PNG image of the page. `review` names the revision to compare
     /// the document's revision with (`previous` for the one before it); the image then shows the
     /// comparison.
@@ -83,7 +90,9 @@ enum LaunchMode {
         while index < arguments.count {
             let argument = arguments[index]
             if argument.hasPrefix("--"), index + 1 < arguments.count {
-                options[String(argument.dropFirst(2))] = arguments[index + 1]
+                let key = String(argument.dropFirst(2))
+                if first == "--pane", options[key] != nil { return .usage(paneUsage) }
+                options[key] = arguments[index + 1]
                 index += 2
             } else {
                 positional.append(argument)
@@ -92,13 +101,15 @@ enum LaunchMode {
         }
         switch first {
         case "--pane":
-            if options.count == 1, let store = options["store"], positional.count == 1, let document = positional.first {
-                return .pane(.document(store: store, document: document))
+            guard positional.count == 1, let document = positional.first, !document.hasPrefix("--") else { return .usage(paneUsage) }
+            if options.isEmpty { return .pane(.request(document)) }
+            guard let store = options["store"] else { return .usage(paneUsage) }
+            if options.count == 1 { return .pane(.document(store: store, document: document, pin: nil)) }
+            if options.count == 3, let number = options["revision"], let revision = Int(number), revision > 0,
+               let digest = options["digest"], digest.wholeMatch(of: /sha256:[a-f0-9]{64}/) != nil {
+                return .pane(.document(store: store, document: document, pin: .init(revision: revision, digest: digest)))
             }
-            if options.isEmpty, positional.count == 1, let request = positional.first, !request.hasPrefix("--") {
-                return .pane(.request(request))
-            }
-            return .usage("--pane <open request.json> | --pane --store <store directory> <document ID>")
+            return .usage(paneUsage)
         case "--export-image":
             guard let output = options["out"], let input = positional.first else {
                 return .usage("--export-image --out <image.png> [--width 900] [--max-height 6000] [--appearance light|dark] [--text-size n] [--review previous|n] <file.md | open request>")

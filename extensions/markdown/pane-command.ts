@@ -11,6 +11,8 @@ export const PANE_OPEN = 1;
 
 /** Version of pinned open-request intake in pane mode. */
 export const PANE_OPEN_REQUEST = 1;
+/** Version of the native pane's direct `--revision` and `--digest` inputs. */
+export const PANE_REVISION = 1;
 /** Version of the explicit native editor launch input. */
 export const EDITOR_OPEN = 1;
 export type EditorOpenIntent = "scratchpad" | "file" | "edit" | "copy";
@@ -27,8 +29,9 @@ export type PaneCommand = { show: string[]; paneInput?: string } | { showUnavail
  * The command that shows a stored document in the native reader over the terminal pane that
  * runs it. The installed app must declare contract 1 and pane mode 1 in its `build.json`;
  * otherwise the result names the reason and the build command instead of a command.
+ * If the build lacks direct revision selection, the returned command opens current only.
  */
-export function paneCommand(app: string | undefined, root: string, documentId: string): PaneCommand {
+export function paneCommand(app: string | undefined, root: string, documentId: string, pin?: { revision: number; digest: string }): PaneCommand {
 	if (!app) return { showUnavailable: `No reader app is configured. ${BUILD_REMEDY}` };
 	let build: unknown;
 	try {
@@ -41,10 +44,16 @@ export function paneCommand(app: string | undefined, root: string, documentId: s
 		return { showUnavailable: `The installed reader app cannot show documents in a pane. ${BUILD_REMEDY}` };
 	}
 	const show = [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", root, documentId];
+	if (pin && manifest.paneRevision === PANE_REVISION) return { show: [...show, "--revision", String(pin.revision), "--digest", pin.digest] };
 	return manifest.paneOpen === PANE_OPEN ? { show, paneInput: `:open ${documentId}\r` } : { show };
 }
 
-/** A selected revision uses only the native app's validated, pinned request intake. */
+/** Recognises direct revision selection even after live arguments are appended. */
+export function hasPaneRevision(show: string[]): boolean {
+	return show[5] === "--revision" && show[7] === "--digest";
+}
+
+/** Opens a revision selected in an existing pinned request file. */
 export function paneRequestCommand(app: string, request: string): PaneCommand {
 	let build: unknown;
 	try { build = JSON.parse(readFileSync(join(app, "Contents", "Resources", "build.json"), "utf8")); }

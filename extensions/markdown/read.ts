@@ -5,7 +5,7 @@ import type { LiveConfig } from "./live-protocol.ts";
 import { withLiveShow } from "./live-launch.ts";
 import { arr, bool, int, lit, obj, opt, str, union, type Static } from "@earendil-works/pi-schema";
 import { toolDisplay } from "./display.ts";
-import { paneCommand } from "./pane-command.ts";
+import { hasPaneRevision, paneCommand } from "./pane-command.ts";
 import { coverageText, referenceSummary, ReferenceSummarySchema, type ReferenceSummary } from "./publish.ts";
 import { type AssetRecord, type Completeness, type ContentOrigin, type DocumentKind, type DocumentRecord, type MarkdownStore, StoreError } from "./store.ts";
 
@@ -119,7 +119,7 @@ async function readDocument(store: MarkdownStore, params: ReadInput & { document
 		completeness: revision.completeness, ...(revision.selfContained === undefined ? {} : { selfContained: revision.selfContained }),
 		references: referenceSummary(revision.references), ...(offset === 0 ? listedImages(revision.references.items) : {}),
 		provenance: revision.contentOrigin, offset, nextOffset: page.nextOffset, chars: stored.source.length, text: page.text,
-		...(offset === 0 ? paneCommand(app, store.root, document.id) : {}),
+		...(offset === 0 ? paneCommand(app, store.root, document.id, params.revision === undefined ? undefined : revision) : {}),
 	};
 }
 /** Reads only: no window, reveal, publication or model work. `app` names the installed reader for the pane command. */
@@ -171,7 +171,14 @@ function readHeader(outcome: Extract<ReadOutcome, { op: "read" }>): string {
 	const update = outcome.kind !== "published" ? "" : outcome.revision === outcome.currentRevision
 		? ` To correct it, publish with document ${outcome.documentId} and expectedRevision ${outcome.revision}.`
 		: ` Before a correction, read the current revision with markdown_read ${JSON.stringify({ document: outcome.documentId, revision: outcome.currentRevision })}. This historical text is not the update base.`;
-	const show = outcome.show ? [`To show it, type ${JSON.stringify(`:open ${outcome.documentId}`)} and Enter into a reader pane that you opened${outcome.paneInput ? "" : " (this reader build cannot)"}, or run ${JSON.stringify(outcome.show)} as the program of a new pane.`] : [];
+	const show: string[] = [];
+	if (outcome.show) {
+		const input = outcome.paneInput ? `type ${JSON.stringify(outcome.paneInput.trimEnd())} and Enter into a reader pane that you opened, or ` : "";
+		const run = `run ${JSON.stringify(outcome.show)} as the program of a new pane.`;
+		if (hasPaneRevision(outcome.show)) show.push(`To show revision ${outcome.revision}, ${run}`);
+		else if (outcome.revision !== outcome.currentRevision) show.push(`Current revision only: this reader build cannot pin revision ${outcome.revision}. To show the current revision, ${input}${run}`);
+		else show.push(`To show it, ${input}${run} This opens the revision that is current when used.`);
+	}
 	return [`${outcome.documentId} revision ${outcome.revision} of ${outcome.currentRevision} · ${outcome.kind} · ${JSON.stringify(line(outcome.revisionTitle))} · ${outcome.bytes} bytes · ${outcome.digest}.${newer}${partial}${update}`, ...(coverage ? [coverage] : []), ...show, position].join("\n");
 }
 export function readText(outcome: ReadOutcome): { header: string; source?: string } {

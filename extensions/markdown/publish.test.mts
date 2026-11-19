@@ -403,6 +403,33 @@ test("the show command runs the installed reader's pane mode only when the build
 	assert.match(again.content[0]?.type === "text" ? again.content[0].text : "", /^Returned the earlier publication md-[a-f0-9]{20} revision 1 \(7 bytes, sha256:[a-f0-9]{64}\): this request was already saved, so later changes to its text, file or images are not in it\. No window opened\.\n/u);
 }));
 
+test("publication replay shows its saved revision, or labels current-only routes", () => fixture(async (root, store) => {
+	const { app, runner } = await inspection(root);
+	const manifest = join(app, "Contents", "Resources", "build.json");
+	const build = { contract: 1, pane: PANE_MODE, paneOpen: PANE_OPEN };
+	await writeFile(manifest, JSON.stringify({ ...build, paneRevision: 1 }));
+	const options = { cwd: root, store, app, runner };
+	const input = { title: "Keyed", text: "# first", reuseKey: "shown" };
+	const first = success(await publish(input, options));
+	const current = success(await publish({ title: "Keyed", text: "# changed", document: first.documentId, expectedRevision: 1 }, options));
+	assert.equal(current.revision, 2);
+	const command = [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", store.root, first.documentId];
+	const pinned = success(await publish(input, options));
+	assert.equal(pinned.replayed, true);
+	assert.equal(pinned.revision, 1);
+	assert.equal(pinned.digest, first.digest);
+	assert.deepEqual(pinned.show, [...command, "--revision", "1", "--digest", first.digest]);
+	assert.equal(pinned.paneInput, undefined, "existing-pane navigation would show revision 2");
+	assert.match(publicationText(pinned), /To show revision 1, run /u);
+	assert.doesNotMatch(publicationText(pinned), /:open/u);
+	await writeFile(manifest, JSON.stringify(build));
+	const fallback = success(await publish(input, options));
+	assert.deepEqual(fallback.show, command);
+	assert.equal(fallback.paneInput, `:open ${first.documentId}\r`);
+	assert.match(publicationText(fallback), /Current revision only/u);
+	assert.doesNotMatch(publicationText(fallback), /To show it now/u);
+}));
+
 test("a response snapshot saves the earlier answer exactly, once per response", () => fixture(async (root, store) => {
 	const assistant = (id: string, parentId: string | null, text: string) => ({ type: "message", id, parentId, timestamp: "2026-01-01", message: { role: "assistant", content: [{ type: "text", text }], provider: "faux", model: "faux-1", api: "faux", usage: {}, stopReason: "stop", timestamp: 1760000000000 } });
 	const entries = new Map<string, unknown>([["a", assistant("a", null, "## The long answer\n\nExact *text*.")], ["u", { type: "message", id: "u", parentId: "a", timestamp: "2026-01-01", message: { role: "user", content: "show it", timestamp: 1 } }], ["b", assistant("b", "u", "Opening it")]]);

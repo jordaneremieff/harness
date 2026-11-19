@@ -5,7 +5,7 @@ import CryptoKit
 
 struct PaneLaunchInput {
     @Test func acceptsTheExistingDocumentAndPinnedRequestInputs() {
-        guard case .pane(.document(let store, let document)) = LaunchMode.parse(["--pane", "--store", "/store", "md-0123456789abcdef0123"]) else {
+        guard case .pane(.document(let store, let document, nil)) = LaunchMode.parse(["--pane", "--store", "/store", "md-0123456789abcdef0123"]) else {
             Issue.record("The store/document input was not parsed")
             return
         }
@@ -20,6 +20,26 @@ struct PaneLaunchInput {
         for words in [["--pane"], ["--pane", "--store"], ["--pane", "a.json", "b.json"], ["--pane", "--unknown", "a.json"]] {
             guard case .usage = LaunchMode.parse(words) else {
                 Issue.record("Ambiguous pane input was accepted: \(words)")
+                continue
+            }
+        }
+    }
+
+    @Test func acceptsDirectRevisionAndLiveConfigurationTogether() {
+        let digest = "sha256:" + String(repeating: "a", count: 64)
+        let words = ["--pane", "--store", "/store", "md-0123456789abcdef0123"]
+        let launch = NativeLaunch.parse(words + ["--revision", "2", "--digest", digest, "--live", "/private/live.json"])
+        guard case .pane(.document(let store, let document, let pin?)) = launch.mode else {
+            Issue.record("The direct revision input was not parsed")
+            return
+        }
+        #expect(store == "/store" && document == "md-0123456789abcdef0123")
+        #expect(pin.revision == 2 && pin.digest == digest)
+        #expect(launch.livePath == "/private/live.json")
+        for extra in [["--revision", "2"], ["--digest", digest], ["--revision", "0", "--digest", digest],
+                      ["--revision", "2", "--digest", "wrong"], ["--revision", "2", "--revision", "1", "--digest", digest]] {
+            guard case .usage = LaunchMode.parse(words + extra) else {
+                Issue.record("Incomplete or invalid revision selection was accepted: \(extra)")
                 continue
             }
         }
@@ -65,16 +85,25 @@ struct PaneLaunchInput {
         _ = text.withCString { Darwin.write(process.primary, $0, strlen($0)) }
     }
 
-    @Test func aPinnedRequestShowsTheOlderRevisionUntilAnExplicitOpenSelectsLatest() throws {
+    @Test(arguments: [false, true])
+    func aPinnedLaunchShowsTheOlderRevisionUntilAnExplicitOpenSelectsLatest(_ direct: Bool) throws {
         let run = try PaneRun()
         defer { run.remove() }
         try newerPointer(run)
-        let file = try request(run)
-        #expect(FileManager.default.fileExists(atPath: file.path))
-        let process = try run.start(arguments: ["--pane", file.path])
+        let file = direct ? nil : try request(run)
+        let arguments: [String]
+        if let file {
+            #expect(FileManager.default.fileExists(atPath: file.path))
+            arguments = ["--pane", file.path]
+        } else {
+            let store = try DirectoryStore(root: URL(fileURLWithPath: run.store))
+            let digest = try store.loadRevision(run.document, revision: 1).record.digest
+            arguments = ["--pane", "--store", run.store, run.document, "--revision", "1", "--digest", digest]
+        }
+        let process = try run.start(arguments: arguments)
         defer { close(process.primary) }
         #expect(process.read(until: "\(run.document) · revision 1; revision 2 is available", seconds: 15), "placeholder: \(process.text)")
-        #expect(!FileManager.default.fileExists(atPath: file.path), "only a validated request is consumed")
+        if let file { #expect(!FileManager.default.fileExists(atPath: file.path), "only a validated request is consumed") }
         #expect(!process.read(until: "revision 2 of 2", seconds: 0.5), "a pinned open does not follow the newer pointer")
         type(":open \(run.document)\r", into: process)
         #expect(process.read(until: "\(run.document) · revision 2 of 2", seconds: 10))
@@ -103,6 +132,17 @@ struct PaneLaunchInput {
         #expect(process.read(until: "\(target) · revision \(selected + 1) of \(selected + 1)", seconds: 15), "placeholder: \(process.text)")
         type("q", into: process)
         #expect(process.exit(within: 5).status == 0)
+    }
+
+    @Test func aDirectLaunchWithTheWrongDigestFailsBeforeItChangesTheTerminal() throws {
+        let run = try PaneRun()
+        defer { run.remove() }
+        let digest = "sha256:" + String(repeating: "0", count: 64)
+        let process = try run.start(arguments: ["--pane", "--store", run.store, run.document, "--revision", "1", "--digest", digest])
+        defer { close(process.primary) }
+        #expect(process.exit(within: 10).status == 1)
+        #expect(process.text.contains("does not match the supplied digest"))
+        #expect(!process.text.contains("\u{1B}[?1049h"))
     }
 
     @Test(arguments: ["digest", "store", "revision"])
