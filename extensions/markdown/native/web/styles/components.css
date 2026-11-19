@@ -317,25 +317,28 @@
     background: var(--raised); color: var(--ink); box-shadow: var(--shadow-l), 0 0 0 1px var(--line);
     h2 { margin: 2px 6px 8px; font: 650 14px/1.4 var(--font); }
   }
-  .batch-list-body, .batch-sent { margin: 0; display: grid; gap: 4px; }
-  .batch-list-body { padding: 0; list-style: none; }
+  .batch-list-body, .batch-sent { margin: 0; padding: 0; min-width: 0; list-style: none; display: grid; gap: 4px; }
   .batch-list-body li { display: flex; align-items: center; gap: 5px; }
-  .batch-row-open { min-width: 0; flex: 1; text-align: start; padding: 6px; border-radius: 8px; background: var(--sunk); }
+  .batch-entry {
+    min-width: 0; display: grid; grid-template-columns: 2ch minmax(0, 1fr); align-items: start; gap: 6px;
+    padding: 6px; border-radius: 8px; background: var(--sunk);
+  }
+  .batch-number { color: var(--ink-3); font: 600 12px/1.45 var(--font); font-variant-numeric: tabular-nums; text-align: end; }
+  .batch-row-open { flex: 1; text-align: start; }
   .batch-row-open:hover { background: var(--hover); }
+  .batch-row-remove { flex: none; background: var(--sunk); }
+  .batch-remove { margin-inline-end: auto; }
   .batch-preview { display: block; min-width: 0; font: 13px/1.35 var(--font); }
   .batch-quote { display: block; color: var(--ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .batch-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
   .batch-list-foot { display: flex; justify-content: space-between; gap: 6px; margin-top: 8px; }
-  .batch-sent { padding: 0 0 0 20px; min-width: 0; }
-  .batch-sent li { padding: 4px 6px; border-radius: 7px; background: var(--sunk); }
-  .batch-sent li::marker { color: var(--ink-3); font-size: 12px; }
   @container app (width < 560px) {
     .batch-tray:not([hidden]) { inset-inline-end: 8px; bottom: 8px; }
     .batch-list { inset-inline-end: 8px; bottom: 54px; width: min(350px, calc(100vw - 16px)); }
   }
   @container app (width < 345px) {
     .composer:has(.ask-secondary) .foot { flex-wrap: wrap; justify-content: end; }
-    .composer:has(.ask-secondary) .foot .hint { flex-basis: 100%; }
+    .composer:has(.ask-secondary) .foot .hint { flex-basis: 100%; order: -1; }
   }
   .send {
     width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;

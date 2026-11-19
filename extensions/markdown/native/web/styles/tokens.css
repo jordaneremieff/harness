@@ -50,6 +50,7 @@
     --caret: light-dark(#dc8a78, #f2d5cf);             /* rosewater */
     --mark: light-dark(#b9d9de, #486069);              /* teal over base: find matches */
     --mark-ink: var(--heading);
+    --comment-mark: light-dark(#f0ddab, #665537);      /* yellow tint: pending comments, legible with --ink */
     --mark-current: light-dark(#d20f39, #e78284);      /* red: the current match */
     --mark-current-ink: light-dark(#eff1f5, #232634);
 

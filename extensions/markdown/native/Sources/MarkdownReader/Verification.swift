@@ -881,14 +881,18 @@ struct Context {
             """) as? [String] ?? []
             let reopenedWithFocus = await js(model, """
             document.getElementById('ask-batch-open')?.click();
-            const row = document.querySelector('#ask-batch-list:popover-open .batch-row-open');
-            if (!row) return false;
+            const list = document.querySelector('#ask-batch-list:popover-open');
+            const row = list?.querySelector('.batch-row-open');
+            const numbers = Array.from(list?.querySelectorAll('.batch-number') ?? [], item => item.textContent);
+            if (!row || numbers.join(',') !== '1,2' || !list.querySelector('button[data-tip="Remove comment 1"]')) return false;
             row.click();
             const card = document.querySelector('.ask-card[data-open]');
             const field = card?.querySelector('textarea');
             const focused = !!field && document.activeElement === field && field.value === comment;
+            const removeInFoot = card?.querySelector('.composer .foot button.batch-remove')?.textContent === 'Remove';
+            const headButtons = card?.querySelectorAll('.ask-head button').length;
             card?.querySelector('.ask-primary')?.click();
-            return focused && !card.hasAttribute('data-open');
+            return focused && removeInFoot && headButtons === 1 && !card.hasAttribute('data-open');
             """, ["comment": comments[0]]) as? Bool == true
             let deferred = !(await wait(seconds: 0.2) { !prompts.isEmpty })
             let sent = await js(model, """
@@ -909,7 +913,8 @@ struct Context {
             }
             let answered = await js(model, """
             const card = document.querySelector('.ask-card[data-open]');
-            return !!card?.querySelector('.batch-sent') && card.querySelector('.reply')?.textContent.endsWith(reply);
+            const numbers = Array.from(card?.querySelectorAll('.batch-sent .batch-number') ?? [], item => item.textContent);
+            return numbers.join(',') === '1,2' && card?.querySelector('.reply')?.textContent.endsWith(reply);
             """, ["reply": reply]) as? Bool == true
             let sentOnce = prompts.count == 1
             let restored = await retryBatchCheck(model)

@@ -133,5 +133,5 @@
 [data-repaint] { filter: opacity(0.999); }
 ::highlight(find-current) { background-color:var(--mark-current);color:var(--mark-current-ink); }
 ::highlight(agent-claim) { background-color:var(--agent-soft); }
-::highlight(comment) { background-color:color-mix(in oklch,var(--accent) 29%,transparent); }
+::highlight(comment) { background-color:var(--comment-mark);color:var(--ink); }
 ::highlight(passage) { background-color:var(--agent-soft);text-decoration:underline;text-decoration-color:color-mix(in oklch,var(--agent) 55%,transparent);text-decoration-thickness:1.5px;text-underline-offset:.2em; }

@@ -202,6 +202,7 @@
 				? button(label, "send", run, { iconOnly: true, key: "⌘↩", className: "ask-primary send" })
 				: button(label, "", run, { className: "ask-primary batch-primary" });
 			const secondary = alternative && runSecondary ? button(alternative, "", runSecondary, { className: "ask-secondary batch-secondary" }) : null;
+			const remove = comment ? button("Remove", "", () => removeComment(comment), { className: "batch-secondary batch-remove" }) : null;
 			function updateButtons() {
 				primary.disabled = !comment && (!field.value.trim() || pending(thread));
 				if (secondary) secondary.disabled = !field.value.trim();
@@ -223,7 +224,7 @@
 				"div",
 				{ class: `composer${followUp ? " follow-up" : ""}` },
 				field,
-				el("div", { class: "foot" }, el("span", { class: "hint" }, hint), secondary, primary),
+				el("div", { class: "foot" }, remove, el("span", { class: "hint" }, hint), secondary, primary),
 			);
 		}
 		function threadTitle(thread: ReaderThread) {
@@ -238,12 +239,14 @@
 				{ class: "ask-head" },
 				el("span", { class: "kind" }, icon("spark")),
 				el("span", { class: "who" }, threadTitle(thread)),
-				comment ? button("Remove comment", "minus", () => removeComment(comment), { iconOnly: true }) : null,
 				button(comment ? "Close comment" : "Close question", "x", () => ask.close(), { iconOnly: true, key: "esc" }),
 			);
 		}
 		function commentCount(count: number) {
 			return `${count} ${count === 1 ? "comment" : "comments"}`;
+		}
+		function commentNumber(index: number) {
+			return el("span", { class: "batch-number" }, String(index + 1));
 		}
 		function commentPreview(comment: ReaderComment) {
 			return el("span", { class: "batch-preview" },
@@ -251,17 +254,17 @@
 				el("span", { class: "batch-text" }, comment.text));
 		}
 		function drawBatchList() {
-			const body = el("ol", { class: "batch-list-body" });
+			const body = el("ol", { class: "batch-list-body", role: "list" });
 			for (const [index, comment] of comments.entries()) {
 				const open = button("", "", () => {
 					batchList.hidePopover();
 					const target = comment.range && blockAt(comment.range.start);
 					if (target) navigation.jumpElement(target);
 					openThread({ threadId: "", quote: comment.quote, pendingComment: comment, draft: "", messages: [] });
-				}, { className: "batch-row-open" });
+				}, { className: "batch-row-open batch-entry" });
 				open.setAttribute("aria-label", `Edit comment ${index + 1}: ${comment.text}`);
-				open.replaceChildren(commentPreview(comment));
-				body.append(el("li", {}, open, button(`Remove comment ${index + 1}`, "minus", () => removeComment(comment), { iconOnly: true })));
+				open.replaceChildren(commentNumber(index), commentPreview(comment));
+				body.append(el("li", {}, open, button(`Remove comment ${index + 1}`, "x", () => removeComment(comment), { iconOnly: true, className: "btn-i batch-row-remove" })));
 			}
 			batchList.replaceChildren(el("h2", {}, "Pending batch"), body,
 				el("div", { class: "batch-list-foot" },
@@ -434,7 +437,8 @@
 			);
 		}
 		function sentComments(items: ReaderComment[]) {
-			return el("ol", { class: "batch-sent" }, ...items.map((item) => el("li", {}, commentPreview(item))));
+			return el("ol", { class: "batch-sent", role: "list" }, ...items.map((item, index) =>
+				el("li", { class: "batch-entry" }, commentNumber(index), commentPreview(item))));
 		}
 		function promptAnswer(message: ReaderAskMessage) {
 			if (!message.detail) return null;
