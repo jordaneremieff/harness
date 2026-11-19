@@ -12,8 +12,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=4 --test-timeout=120000 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"extensions/*/native/web/app/*/*.test.mts\" \"extensions/markdown/native/web/test/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"skills/*/scripts/*.test.mts\" \"transport/*.test.mts\"",
-    "test:coverage": "npm test -- --experimental-test-coverage",
+    "test": "NODE_COMPILE_CACHE=\"${NODE_COMPILE_CACHE:-$PWD/node_modules/.cache/node-compile-cache}\" node --test --test-concurrency=4 --test-timeout=120000 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"extensions/*/native/web/app/*/*.test.mts\" \"extensions/markdown/native/web/test/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"skills/*/scripts/*.test.mts\" \"transport/*.test.mts\"",
+    "test:coverage": "NODE_DISABLE_COMPILE_CACHE=1 npm test -- --experimental-test-coverage",
     "evals": "node evals/cli.mts",
     "lint": "biome lint --error-on-warnings .",
     "format": "biome format --error-on-warnings .",

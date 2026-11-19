@@ -66,7 +66,10 @@ of a push.
 - `npm test` runs every `*.test.mts` file matched by the inventory in
   `package.json` with bounded concurrency; `npm run check` fails when a tracked
   test file is outside that inventory. `npm run test:coverage` adds Node's
-  coverage report for diagnosis.
+  coverage report for diagnosis. `npm test` keeps Node's compile cache in
+  `node_modules/.cache/node-compile-cache` unless `NODE_COMPILE_CACHE` names
+  another directory; `test:coverage` turns the cache off, because code read
+  from the cache makes V8 coverage less precise.
 - `npm run check` also verifies slice isolation, settings declarations, and the
   pillar inventory.
 - `npm run typecheck`, `npm run lint`.
