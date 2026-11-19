@@ -542,11 +542,11 @@ final class EditorWorkspace {
             if closing { refuseClose("Draft recovery failed. This window remains open. Retry Close after recovery succeeds.") }
             return false
         }
-        let dirty = documents.filter(needsAutomaticSave)
-        guard !dirty.isEmpty else { return true }
+        let pending = documents.filter(needsDestinationSaveBeforeClose)
+        guard !pending.isEmpty else { return true }
         let saved = Flag(), proceed = Flag(true)
         let finished = await PaneHost.run(until: saveDeadline) {
-            for document in dirty {
+            for document in pending {
                 guard proceed.value, self.closing, DispatchTime.now() < saveDeadline else { return }
                 if document.session.saving { await document.persistenceTask?.value }
                 guard proceed.value, self.closing, DispatchTime.now() < saveDeadline else { return }
@@ -556,7 +556,7 @@ final class EditorWorkspace {
                 }
             }
             guard proceed.value, self.closing else { return }
-            saved.value = await self.retainAll() && !self.documents.contains(where: self.needsAutomaticSave)
+            saved.value = await self.retainAll() && !self.documents.contains(where: self.needsDestinationSaveBeforeClose)
         }
         proceed.value = false
         guard finished, saved.value else {
@@ -564,6 +564,10 @@ final class EditorWorkspace {
             return false
         }
         return true
+    }
+
+    private func needsDestinationSaveBeforeClose(_ document: WorkingDocument) -> Bool {
+        document.session.saving || (document.session.record.conflict == nil && needsAutomaticSave(document))
     }
 
     private func refuseClose(_ message: String) {

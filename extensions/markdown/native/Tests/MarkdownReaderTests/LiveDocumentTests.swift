@@ -389,6 +389,34 @@ import ReaderFeature
         await workspace.closeViews()
     }
 
+    @Test func closeRetainsTheConflictAndSavesTheOtherFile() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root.appendingPathComponent("drafts"), store: nil, automaticallySaves: true)
+        func editFile(_ name: String) throws -> (URL, WorkingDocument) {
+            let file = root.appendingPathComponent(name)
+            try Data("before".utf8).write(to: file)
+            let opened = try LocalFileSave.open(file)
+            workspace.add(DraftRecord(source: opened.source, destination: .file(opened.base), savedSource: opened.source))
+            let document = try #require(workspace.active)
+            #expect(document.text.apply(range: NSRange(location: 0, length: 6), replacement: "after", selection: nil, actionName: "Edit"))
+            return (file, document)
+        }
+        let (conflictedFile, conflicted) = try editFile("conflicted.md")
+        try Data("outside".utf8).write(to: conflictedFile)
+        await workspace.receiveExternalChange(conflicted)
+        let conflict = try #require(conflicted.session.record.conflict)
+        let (saveableFile, saveable) = try editFile("saveable.md")
+
+        #expect(await workspace.prepareToClose())
+        #expect(try Data(contentsOf: conflictedFile) == Data("outside".utf8))
+        let retained = try await workspace.drafts.load(id: conflicted.session.record.id, branch: conflicted.session.record.branch)
+        #expect(retained.source == "after")
+        #expect(retained.conflict == conflict)
+        #expect(try Data(contentsOf: saveableFile) == Data("after".utf8))
+        #expect(!saveable.session.isDirty)
+        await workspace.closeViews()
+    }
+
     @Test func closeWithNoTimeForADestinationSaveKeepsARecoverableDraft() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent("close.md")
