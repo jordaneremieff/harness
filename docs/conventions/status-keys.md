@@ -22,6 +22,7 @@ key, and a consumer must not parse a sibling's status text.
 | Key | Publisher and presentation contract | Meaning | Cleared by |
 |---|---|---|---|
 | `agent` | [Agent roster and coverage](../../extensions/agent/README.md#roster-and-coverage) | Working and total agents created by the current primary session, including agents they create, with observed native cost. Each primary receives its own figures. | No agents in that session scope, primary lifecycle cleanup, or manager close. Retained idle agents remain in scope. |
+| `explorer` | [Explorer app update](../../extensions/explorer/README.md#open-explorer) | The Explorer native app update is active. | Update completion or session shutdown. |
 
 ## Rules
 
