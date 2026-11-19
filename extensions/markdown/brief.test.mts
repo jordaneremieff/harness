@@ -8,7 +8,7 @@ const assistant = (text: string) => ({ role: "assistant" as const, text });
 const tool = (text: string) => ({ role: "toolResult" as const, text });
 
 test("three typed requests use the current branch order and skip likely injected user content", () => {
-	const latest = "I need the result. " + "🍎".repeat(700);
+	const latest = `I need the result. ${"🍎".repeat(700)}`;
 	const brief = buildBrief({ title: "Roof", checks: ["Check text."], messages: [
 		user(""), user("<header>Context</header>"), user("# Kickoff"), user("Read docs/example.md first"), user("A".repeat(3001)),
 		user(latest), user("What did it cost?"), user("Does the roof hold?"), user("Too old."),
@@ -40,7 +40,7 @@ test("only names in assistant prose count, ranked by use and filtered against re
 
 test("term collection bounds the scan by UTF-8 bytes and limits the returned names", () => {
 	const suffix = Array.from({ length: 30 }, (_, i) => `term_${i}`).join(" ");
-	const output = buildBrief({ checks: [], messages: [assistant("tooOld " + "界".repeat(BRIEF_SCAN_BYTES / 3) + suffix), user("What happened?")] });
+	const output = buildBrief({ checks: [], messages: [assistant(`tooOld ${"界".repeat(BRIEF_SCAN_BYTES / 3)}${suffix}`), user("What happened?")] });
 	assert.equal(output.limited, true);
 	assert.equal(output.terms?.length, 15);
 	assert.ok(!output.terms?.includes("tooOld"));

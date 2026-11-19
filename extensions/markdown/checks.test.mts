@@ -48,7 +48,7 @@ test("label lines count list and inline-code labels, not tables or headings", ()
 	const [finding] = checkWriting(prefix + labels, { rules: { labelLines: { limit: 3 } } });
 	assert.equal(finding.rule, "labelLines");
 	assert.equal(finding.count, 5);
-	assert.deepEqual(rules(prefix + "Three labels:\n- **Roof**: Dry.\n- `paint`: Green."), []);
+	assert.deepEqual(rules(`${prefix}Three labels:\n- **Roof**: Dry.\n- \`paint\`: Green.`), []);
 	assert.deepEqual(rules("| Name | Value |\n| --- | --- |\n| Honestly — yes | Value |"), ["dashes", "phrases"]);
 });
 test("coinages count distinct alphabetic compounds and honour all allow lists", () => {
