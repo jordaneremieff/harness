@@ -454,7 +454,7 @@ struct Context {
             const edit = document.querySelector('[data-open] .selection-edit');
             if (!edit) return false;
             edit.click();
-            return !document.querySelector('[data-role="block-editor"]') && document.querySelector('#b-edit').getAttribute('aria-label') === 'Edit';
+            return !document.querySelector('[data-role="block-editor"]') && document.querySelector('#b-edit')?.getAttribute('aria-pressed') === 'false';
             """) as? Bool == true
             let replaced = await jsAfterFind(model)
             await surface.waitForPendingChanges()
