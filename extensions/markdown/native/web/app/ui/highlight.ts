@@ -509,7 +509,8 @@
 		node.replaceWith(fragment);
 	}
 	function automatic(figure: HTMLElement, block: HTMLElement) {
-		return canonical(figure.querySelector(":scope > figcaption .lang")?.textContent ?? "") || detect(block.textContent ?? "");
+		const label = figure.querySelector<HTMLElement>(":scope > figcaption")?.dataset.label ?? "";
+		return canonical(label) || detect(block.textContent ?? "");
 	}
 	function uncolour(block: HTMLElement) {
 		for (const span of block.querySelectorAll("span[class^='syn-']")) span.replaceWith(span.textContent ?? "");

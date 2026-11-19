@@ -38,10 +38,10 @@ import Testing
         let body = MarkdownRenderer.render(source, resolver: DirectoryAssetResolver(directory: folder), nonce: "n1").body
         #expect(body.contains("<a class=\"img-open\" href=\"reader-action:inspect-image/n1/0\"><img data-asset=\"a0\" data-image-rendering=\"n1\" data-reference=\"local.png\" src=\"reader-asset://doc/a0\" alt=\"Local\" decoding=\"async\" data-image=\"0\"></a>"))
         #expect(body.contains("<a class=\"img-open\" href=\"reader-action:inspect-image/n1/1\" aria-label=\"Inspect image\"><img data-asset=\"a1\""))
-        #expect(body.contains("data-image=\"2\"><span class=\"ph-kind\">Image unavailable (file missing)</span>"))
-        #expect(body.contains("<code>missing.png</code><a class=\"img-inspect\" href=\"reader-action:inspect-image/n1/2\">Details</a></span>"))
+        #expect(body.contains("data-image=\"2\"><span class=\"ph-kind\" data-label=\"Image unavailable (file missing)\"></span>"))
+        #expect(body.contains("<code>missing.png</code><a class=\"img-inspect\" href=\"reader-action:inspect-image/n1/2\" data-label=\"Details\"></a></span>"))
         #expect(body.contains("<a class=\"ext\" href=\"https://example.com/\" title=\"https://example.com/\"><img data-asset=\"a2\" data-image-rendering=\"n1\" data-reference=\"local.png\" src=\"reader-asset://doc/a2\" alt=\"Linked\" decoding=\"async\" data-image=\"3\"></a>"))
         #expect(!body.contains("inspect-image/n1/3"))
-        #expect(body.contains("<a class=\"img-inspect\" href=\"reader-action:inspect-image/n1/4\">Details</a></span>"))
+        #expect(body.contains("<a class=\"img-inspect\" href=\"reader-action:inspect-image/n1/4\" data-label=\"Details\"></a></span>"))
     }
 }

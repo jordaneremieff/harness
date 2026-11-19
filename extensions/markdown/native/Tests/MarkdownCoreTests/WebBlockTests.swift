@@ -136,6 +136,18 @@ import Testing
         }
     }
 
+    @Test func readerLabelsAreAttributesAndNeverDocumentText() throws {
+        let source = "```ts\nlet x = 1\n```\n\n<div>raw</div>\n\n![gone](missing.png)\n"
+        let blocks = render(source).blocks
+        let text = blocks.map { $0.html.replacingOccurrences(of: "<[^>]*>", with: "", options: .regularExpression) }
+        #expect(blocks.map(\.type) == ["code", "html", "paragraph"])
+        #expect(blocks[0].html.contains("<figcaption data-label=\"ts\"></figcaption>"))
+        #expect(text[0].trimmingCharacters(in: .newlines) == "let x = 1")
+        #expect(mappedPairs(blocks[0], source: source, rendered: text[0]) == [["let x = 1", "let x = 1"]])
+        #expect(blocks[1].html.contains("data-label=\"HTML shown as text\"") && !text[1].contains("shown as text"))
+        #expect(blocks[2].html.contains("data-label=\"Details\"") && !text[2].contains("Details") && !text[2].contains("unavailable"))
+    }
+
     @Test func plainAndNestedTextMapsExcludeMarkdownMarks() throws {
         let source = "\n\nplain 😀 e\u{301}\n"
         let block = try #require(render(source).blocks.first)
@@ -185,7 +197,7 @@ import Testing
     @Test func placeholderMapsOnlyAltTextAndNotGeneratedControls() throws {
         let source = "![alt *em* &amp; 😀](https://example.org/i.png)"
         let block = try #require(render(source).blocks.first)
-        let pairs = mappedPairs(block, source: source, rendered: "\nRemote image not loadedexample.orgalt em & 😀Details\n")
+        let pairs = mappedPairs(block, source: source, rendered: "\nexample.orgalt em & 😀\n")
         #expect(pairs == [["alt ", "alt "], ["em", "em"], [" ", " "], ["&", "&amp;"], [" 😀", " 😀"]])
     }
 
@@ -202,7 +214,7 @@ import Testing
     @Test func codeBlocksMapLiteralButNotFenceLanguage() throws {
         let source = "```swift\r\na😀\r\nb\r\n```\r\n"
         let block = try #require(render(source).blocks.first)
-        #expect(mappedPairs(block, source: source, rendered: "\nswifta😀\nb\n") == [
+        #expect(mappedPairs(block, source: source, rendered: "\na😀\nb\n") == [
             ["a😀", "a😀"], ["\n", "\r\n"], ["b", "b"]
         ])
     }

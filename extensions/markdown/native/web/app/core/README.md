@@ -128,7 +128,8 @@ Span classes are `plain`, `mark`, `prefix`, `bold`, `italic`, `code`, `link` and
 font size. The editor owns hanging-prefix geometry. Mark/prefix CSS uses 0.86em
 and accessible contrast. Do not use `content-visibility:auto` on document blocks.
 Mark UI controls inside document blocks with `data-reader-control` so they do not
-enter the text index. A control that shows content, such as the rendered view of a
+enter the text index. Labels in rendered HTML are `data-label` attributes that the
+stylesheet draws, so they add no text to the index either. A control that shows content, such as the rendered view of a
 code block, also carries `data-reader-view`; the context menu treats it as its block. Controls that preserve the document caret prevent focus
 on pointer down.
 

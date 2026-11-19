@@ -49,6 +49,9 @@ without assets, actions or indexes. The page removes ids from the view, and its 
 nothing. The controls and the view carry `data-reader-control`, so the text index, find and source
 offsets cover the source alone; a find match in a rendered block shows the source again. The view
 has no source positions, so editing it opens the block at the first character of its code.
+A label that the reader adds to the document, such as a code block's language or an image
+placeholder's state, is a `data-label` attribute that `web/styles/document.css` draws. It is not
+document text, so find, selection, copy and the native text map skip it.
 Prose keeps a reading measure. A code block or table whose unwrapped width exceeds that measure
 takes the whole width beside the prose, up to about 120 columns of code, so its lines scroll or
 wrap only where the page runs out. In a window narrower than 1100 points the outline opens as a

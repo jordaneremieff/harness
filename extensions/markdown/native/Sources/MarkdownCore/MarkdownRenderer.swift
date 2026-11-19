@@ -57,8 +57,12 @@ public struct RenderedDocument: Sendable {
 /// Renders Markdown through cmark-gfm (CommonMark plus tables, strikethrough, autolinks and task
 /// lists) with its safe HTML output, after substituting the nodes the reader presents itself:
 /// raw HTML becomes escaped literal text, links outside the web become inert text, images resolve
-/// through an `AssetResolving` or become a visible placeholder, code blocks gain a label and a copy
-/// action, headings gain unique anchors and every top-level block gains a position key.
+/// through an `AssetResolving` or become a visible placeholder, code blocks gain a label, headings
+/// gain unique anchors and every top-level block gains a position key.
+///
+/// A label that the reader adds, such as a code block's language or an image placeholder's state,
+/// is a `data-label` attribute that the page's stylesheet draws. It is not text of the document, so
+/// find, selection, copy and the rendered text map cover only the document's own text.
 public enum MarkdownRenderer {
     typealias Node = UnsafeMutablePointer<cmark_node>
 
@@ -91,7 +95,7 @@ public enum MarkdownRenderer {
             let rows = WebSourceLines(prefix).rows
             let interior = NSRange(location: rows[1].range.location, length: NSMaxRange(rows[rows.count - 2].range) - rows[1].range.location)
             let mapping = WebTextMap(source: source)
-            let mapped = mapping.finish(codeFigure(index: 0, label: "Front matter", literal: frontMatter, nonce: nonce, mappedLiteral: mapping.sourceLiteralHTML(interior, text: frontMatter)))
+            let mapped = mapping.finish(codeFigure(index: 0, label: "Front matter", literal: frontMatter, mappedLiteral: mapping.sourceLiteralHTML(interior, text: frontMatter)))
             frontHTML = mapped.html
             frontMap = mapped.map
             html += "<div class=\"blk\" data-key=\"front-matter\">" + frontHTML + "</div>\n"
@@ -327,13 +331,13 @@ public enum MarkdownRenderer {
         case .code(let node, let index):
             let block = context.codeBlocks[index]
             let label = block.info.split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init) ?? ""
-            replace(node, block: true, enter: codeFigure(index: index, label: label.isEmpty ? "code" : label, literal: block.literal, nonce: context.nonce, mappedLiteral: context.webMapping?.literalHTML(node, text: block.literal)), exit: "", keepChildren: false)
+            replace(node, block: true, enter: codeFigure(index: index, label: label.isEmpty ? "code" : label, literal: block.literal, mappedLiteral: context.webMapping?.literalHTML(node, text: block.literal)), exit: "", keepChildren: false)
         case .htmlBlock(let node):
             context.rawHTML += 1
             var literal = string(cmark_node_get_literal(node))
             while literal.hasSuffix("\n") { literal.removeLast() }
             let mapped = context.webMapping?.literalHTML(node, text: literal) ?? escape(literal)
-            let html = "<div class=\"raw-html\" role=\"note\"><div class=\"raw-label\">HTML shown as text</div><pre><code>\(mapped)</code></pre></div>"
+            let html = "<div class=\"raw-html\" role=\"note\">\(label("div", "raw-label", "HTML shown as text"))<pre><code>\(mapped)</code></pre></div>"
             replace(node, block: true, enter: html, exit: "", keepChildren: false)
         case .htmlInline(let node):
             context.rawHTML += 1
@@ -394,7 +398,7 @@ public enum MarkdownRenderer {
         func opening(_ image: String) -> String {
             linked ? image : "<a class=\"img-open\" href=\"\(action)\"\(alt.isEmpty ? " aria-label=\"Inspect image\"" : "")>\(image)</a>"
         }
-        let details = linked ? "" : "<a class=\"img-inspect\" href=\"\(action)\">Details</a>"
+        let details = linked ? "" : "<a class=\"img-inspect\" href=\"\(action)\" data-label=\"Details\"></a>"
         switch context.resolver.resolve(reference) {
         case .local(let asset):
             let token = "a\(context.assets.count)"
@@ -410,14 +414,14 @@ public enum MarkdownRenderer {
             record(.external(url))
             let host = url.host ?? url.absoluteString
             return "<span class=\"img-ph remote\" role=\"img\" aria-label=\"Remote image not loaded: \(escape(alt.isEmpty ? host : alt))\" data-image=\"\(index)\">"
-                + "<span class=\"ph-kind\">Remote image not loaded</span>"
+                + label("span", "ph-kind", "Remote image not loaded")
                 + "<a class=\"ext\" href=\"\(escape(url.absoluteString))\" title=\"\(escape(url.absoluteString))\">\(escape(host))</a>"
                 + shownAlt + details + "</span>"
         case .unavailable(let reason):
             context.unavailableImages.append((reference, reason))
             record(.unavailable(reason: reason))
             return "<span class=\"img-ph unavailable\" role=\"img\" aria-label=\"Image unavailable: \(escape(alt.isEmpty ? reference : alt))\" data-image=\"\(index)\">"
-                + "<span class=\"ph-kind\">Image unavailable (\(escape(reasonLabel(reason))))</span>"
+                + label("span", "ph-kind", "Image unavailable (\(reasonLabel(reason)))")
                 + shownAlt + "<code>\(escape(reference))</code>" + details + "</span>"
         }
     }
@@ -431,7 +435,7 @@ public enum MarkdownRenderer {
         case .external(let url):
             let host = url.host ?? url.absoluteString
             return "<span class=\"img-ph remote\" role=\"img\" aria-label=\"Remote image not loaded: \(escape(alt.isEmpty ? host : alt))\">"
-                + "<span class=\"ph-kind\">Remote image not loaded</span>"
+                + label("span", "ph-kind", "Remote image not loaded")
                 + "<a class=\"ext\" href=\"\(escape(url.absoluteString))\" title=\"\(escape(url.absoluteString))\">\(escape(host))</a>"
                 + shownAlt + "</span>"
         case .embedded:
@@ -443,7 +447,7 @@ public enum MarkdownRenderer {
             kind = "Image unavailable (\(reasonLabel(reason)))"
         }
         return "<span class=\"img-ph unavailable\" role=\"img\" aria-label=\"\(escape(kind)): \(escape(alt.isEmpty ? "image" : alt))\">"
-            + "<span class=\"ph-kind\">\(escape(kind))</span>" + shownAlt + shownReference + "</span>"
+            + label("span", "ph-kind", kind) + shownAlt + shownReference + "</span>"
     }
 
     /// Whether a Markdown link holds the node. A link inside a link is not valid HTML, so such an
@@ -473,9 +477,14 @@ public enum MarkdownRenderer {
         }
     }
 
-    static func codeFigure(index: Int, label: String, literal: String, nonce: String, mappedLiteral: String? = nil) -> String {
-        "<figure class=\"code\" data-code=\"\(index)\"><figcaption><span class=\"lang\">\(escape(label))</span>"
-            + "</figcaption><pre><code>\(mappedLiteral ?? escape(literal))</code></pre></figure>"
+    static func codeFigure(index: Int, label: String, literal: String, mappedLiteral: String? = nil) -> String {
+        "<figure class=\"code\" data-code=\"\(index)\">\(Self.label("figcaption", nil, label))"
+            + "<pre><code>\(mappedLiteral ?? escape(literal))</code></pre></figure>"
+    }
+
+    /// An empty element whose `data-label` the stylesheet draws; see the type's documentation.
+    public static func label(_ tag: String, _ className: String?, _ text: String) -> String {
+        "<\(tag)\(className.map { " class=\"\($0)\"" } ?? "") data-label=\"\(escape(text))\"></\(tag)>"
     }
 
     /// Replaces a node with custom HTML. With `keepChildren`, the node's children move into the

@@ -23,7 +23,6 @@ public struct WebBlock: Codable, Sendable, Equatable {
     static func make(source: String, range: NSRange, type: String, html: String, nonce: String, occurrence: Int, map: [[Int]] = []) -> WebBlock {
         // A fresh action secret changes transport HTML, not the document's rendered context.
         let stableHTML = html
-            .replacingOccurrences(of: "href=\"reader-action:copy-code/\(nonce)/", with: "href=\"reader-action:copy-code/{nonce}/")
             .replacingOccurrences(of: "href=\"reader-action:inspect-image/\(nonce)/", with: "href=\"reader-action:inspect-image/{nonce}/")
             .replacingOccurrences(of: "data-image-rendering=\"\(nonce)\"", with: "data-image-rendering=\"{nonce}\"")
         var identity = Data((source as NSString).substring(with: range).utf8)

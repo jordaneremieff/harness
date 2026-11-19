@@ -117,7 +117,7 @@ private func render(_ source: String, resolver: AssetResolving = NoAssetResolver
         #expect(html.contains("<strong>one</strong>"))
         #expect(html.contains("<a class=\"ext\" href=\"https://example.org/g\""))
         #expect(html.contains("<span class=\"inert-link\" title=\"Not opened by the reader: notes.md\">"))
-        #expect(html.contains("<figure class=\"code\"") && html.contains("<span class=\"lang\">ts</span>"))
+        #expect(html.contains("<figure class=\"code\" data-code=\"1\"><figcaption data-label=\"ts\"></figcaption><pre>"))
         #expect(html.contains("&lt;b&gt;") && !html.contains("<b>"))
         #expect(html.contains("Image unavailable (no folder to resolve it against)"))
         #expect(html.contains("Remote image not loaded") && html.contains("href=\"https://example.org/i.png\""))
@@ -180,11 +180,11 @@ private func render(_ source: String, resolver: AssetResolving = NoAssetResolver
         #expect(rendered.codeBlocks.count == 2)
         #expect(rendered.codeBlocks[0].literal == String(code.dropLast()))
         #expect(rendered.codeBlocks[0].info == "swift title=x")
-        #expect(rendered.body.contains("<span class=\"lang\">swift</span>"))
+        #expect(rendered.body.contains("<figcaption data-label=\"swift\"></figcaption>"))
         #expect(rendered.body.contains("&lt;b&gt;&amp;amp;&lt;/b&gt;"))
         #expect(!rendered.body.contains("copy-code"))
         #expect(rendered.codeBlocks[1].literal == "indented")
-        #expect(rendered.body.contains("<span class=\"lang\">code</span>"))
+        #expect(rendered.body.contains("<figcaption data-label=\"code\"></figcaption>"))
     }
 
     @Test func pureCRLFCodeCopyKeepsInternalLineEndings() {

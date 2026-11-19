@@ -242,7 +242,7 @@ enum ReviewPage {
         }
         let passive = fragments.map { fragment in
             fragment
-                .replacingOccurrences(of: #"<a class="(?:copy|img-inspect)"[^>]*>[\s\S]*?</a>"#, with: "", options: [.regularExpression])
+                .replacingOccurrences(of: #"<a class="img-inspect"[^>]*>[\s\S]*?</a>"#, with: "", options: [.regularExpression])
                 .replacingOccurrences(of: #"<a\b[^>]*href="(?:reader-action:|#)[^"]*"[^>]*>([\s\S]*?)</a>"#, with: "$1", options: [.regularExpression])
         }
         return Fragments(
@@ -395,7 +395,7 @@ enum ReviewPage {
                 assets[token] = asset
                 html += "<img src=\"\(MarkdownRenderer.assetScheme)://doc/\(token)\" alt=\"\(escape(shorten(item.reference))) in revision \(revision)\" decoding=\"async\">\n"
             case .unavailable(let reason):
-                html += "<span class=\"img-ph unavailable\"><span class=\"ph-kind\">Image not shown (\(escape(MarkdownRenderer.reasonLabel(reason))))</span></span>\n"
+                html += "<span class=\"img-ph unavailable\">\(MarkdownRenderer.label("span", "ph-kind", "Image not shown (\(MarkdownRenderer.reasonLabel(reason)))"))</span>\n"
             case .external, .embedded:
                 break
             }

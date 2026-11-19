@@ -53,7 +53,11 @@
   .doc figure.code > pre { background:none;box-shadow:none;padding:6px 16px 14px; }
   .doc .code-copy:hover { background:var(--hover); }.doc .code-copy .i { width:14px;height:14px; }
   /* With its controls, a block's syntax button shows the label; the caption keeps it as document text. */
-  .doc figure.code[data-controls] > figcaption .lang { visibility:hidden; }
+  /* A label that the reader adds to the document, such as a code block's language or an image
+     placeholder's state, is a data-label attribute drawn here. It is not document text, so find,
+     selection and copy pass over it. With its controls, a code block's syntax button shows the label. */
+  .doc [data-label]::before { content:attr(data-label); }
+  .doc figure.code[data-controls] > figcaption::before { content:none; }
   /* A block's Markdown shown rendered: a small page inside the frame, in the document's own styles. */
   .doc figure.code[data-rendered] > pre { display:none; }
   .doc .code-rendered { margin:2px 6px 6px;padding:14px 16px 16px;border-radius:8px;background:var(--paper);box-shadow:inset 0 0 0 1px var(--line);overflow-x:auto;font-size:.95em; }

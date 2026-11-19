@@ -41,7 +41,8 @@
 			figure.querySelector(":scope > pre > code")?.textContent ??
 			figure.querySelector(":scope > pre")?.textContent ??
 			"";
-		const labelOf = (figure: HTMLElement) => figure.querySelector(":scope > figcaption .lang")?.textContent ?? "";
+		const labelOf = (figure: HTMLElement) =>
+			figure.querySelector<HTMLElement>(":scope > figcaption")?.dataset.label ?? "";
 		const choiceName = (key: string) => api.syntax.choices.find((choice) => choice.id === key)?.label ?? "";
 		function viewOf(figure: HTMLElement): View {
 			return views.get(figure.dataset.codeView ?? "") ?? {};
@@ -83,8 +84,8 @@
 			});
 			return b;
 		}
-		// The bar sits over the caption row. The caption keeps the label as document text, hidden
-		// while the bar shows it in the syntax button.
+		// The bar sits over the caption row, and its syntax button shows the label in place of the
+		// caption's drawn label.
 		function build(figure: HTMLElement) {
 			const label = labelOf(figure);
 			const chooser = el(

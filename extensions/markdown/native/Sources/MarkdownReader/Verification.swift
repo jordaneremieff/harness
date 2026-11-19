@@ -564,7 +564,7 @@ struct Context {
             try await CheckRunner.preparePageForCheck(model)
             _ = await wait(seconds: 5) { editor.webReady && model.source == source }
             guard let document = editor.active else { return .init(name: name, pass: false, detail: "the draft did not open") }
-            let code = await js(model, "const f = document.querySelector('figure.code'); return f ? [f.querySelectorAll('[data-role=\"code-copy\"]').length, f.querySelectorAll('a.copy').length, f.querySelector('figcaption').textContent.trim()] : [];") as? [Any] ?? []
+            let code = await js(model, "const f = document.querySelector('figure.code'); return f ? [f.querySelectorAll('[data-role=\"code-copy\"]').length, f.querySelectorAll('a.copy').length, f.querySelector('figcaption').dataset.label] : [];") as? [Any] ?? []
             let closedLayersInert = await js(model, "return [...document.querySelectorAll('[popover]:not(:popover-open)')].every(p => getComputedStyle(p).display === 'none');") as? Bool == true
             let oneCopy = code.count == 3 && code[0] as? Int == 1 && code[1] as? Int == 0 && code[2] as? String == "swift"
             func apply(_ old: String, _ new: String) async -> LiveResult {
@@ -2302,12 +2302,12 @@ struct Context {
                 const menu = document.getElementById('codemenu'), opened = menu.matches(':popover-open'), items = [...menu.querySelectorAll('button.item')];
                 items.find((item) => item.textContent.includes('TypeScript')).click();
                 return [opened, items.length, menu.matches(':popover-open'), code.querySelector('.syn-k')?.textContent ?? '', code.textContent === before,
-                    figure.querySelector('[data-role="code-syntax"] .name').textContent, getComputedStyle(figure.querySelector('figcaption .lang')).visibility,
-                    figure.querySelector('figcaption').textContent.trim()];
+                    figure.querySelector('[data-role="code-syntax"] .name').textContent, getComputedStyle(figure.querySelector('figcaption'), '::before').content,
+                    figure.querySelector('figcaption').dataset.label, figure.querySelector('figcaption').textContent];
                 """) as? [Any] ?? []
-            let syntax = chosen.count == 8 && chosen[0] as? Bool == true && (chosen[1] as? Int ?? 0) > 10 && chosen[2] as? Bool == false
+            let syntax = chosen.count == 9 && chosen[0] as? Bool == true && (chosen[1] as? Int ?? 0) > 10 && chosen[2] as? Bool == false
                 && chosen[3] as? String == "const" && chosen[4] as? Bool == true && chosen[5] as? String == "TypeScript / JavaScript"
-                && chosen[6] as? String == "hidden" && chosen[7] as? String == "text"
+                && chosen[6] as? String == "none" && chosen[7] as? String == "text" && chosen[8] as? String == ""
             let plain = await js(model, """
                 const figure = document.querySelectorAll('figure.code')[0];
                 figure.querySelector('[data-role="code-syntax"]').click();
@@ -2331,6 +2331,7 @@ struct Context {
             CheckRunner.checkPasteboard.clearContents()
             _ = await js(model, "document.querySelectorAll('figure.code')[1].querySelector('[data-role=\"code-copy\"]').click(); return true;")
             let copied = await wait(seconds: 3) { CheckRunner.checkPasteboard.string(forType: .string) == literal }
+            let label = await findState(model, query: "text")
             let found = await findState(model, query: "Install")
             await model.sendCommand("findNext")
             let revealed = await wait(seconds: 3) { (await js(model, "return !document.querySelectorAll('figure.code')[1].hasAttribute('data-rendered');") as? Bool) == true }
@@ -2378,9 +2379,9 @@ struct Context {
             await model.sendCommand("escape")
             let backToReading = await wait(seconds: 3) { (await js(model, "return document.getElementById('app').dataset.mode;") as? String) == "reading" }
             let edits = [clickedOpen, menuOpen].allSatisfy { $0.count == 2 && $0[0] as? String == "```markdown" && $0[1] as? Int == 12 } && backToReading
-            let pass = syntax && plain == 0 && switcher == [true, false] && rendered && asked && copied && found?.count == 1 && revealed
-                && keyed && edits && model.snapshot?.source == source
-            return .init(name: name, pass: pass, detail: "chosen syntax: \(chosen); plain spans: \(plain ?? -1); view switch hidden: \(switcher); rendered: \(view); link asked: \(asked); copy exact: \(copied); find count: \(found?.count ?? -1); source revealed: \(revealed); menu keys: \(keys); click edit: \(clickedOpen); Edit Here: \(menuOpen); back to Reading: \(backToReading)")
+            let pass = syntax && plain == 0 && switcher == [true, false] && rendered && asked && copied && label?.count == 0 && found?.count == 1
+                && revealed && keyed && edits && model.snapshot?.source == source
+            return .init(name: name, pass: pass, detail: "chosen syntax: \(chosen); plain spans: \(plain ?? -1); view switch hidden: \(switcher); rendered: \(view); link asked: \(asked); copy exact: \(copied); find of a label: \(label?.count ?? -1); find count: \(found?.count ?? -1); source revealed: \(revealed); menu keys: \(keys); click edit: \(clickedOpen); Edit Here: \(menuOpen); back to Reading: \(backToReading)")
         } catch {
             return .init(name: name, pass: false, detail: String(describing: error))
         }
