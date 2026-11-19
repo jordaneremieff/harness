@@ -540,6 +540,22 @@ private final class LifecycleGate {
         await model.close()
     }
 
+    @Test func showLatestFromAPageThatTheModelHostsOpensTheNewestRevision() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1)
+        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
+        let window = window(model)
+        defer { window.close() }
+        await model.open(origin: nil)
+        #expect(model.snapshot?.revision == 1)
+        try store.publish(2)
+        let message = try ReaderBridgeCodec.decode(body: ["v": 1, "type": "command", "id": "latest", "name": "showLatest"])
+        _ = try await model.receive(message)
+        #expect(await wait { model.snapshot?.revision == 2 })
+        await model.close()
+    }
+
     @Test(arguments: [false, true])
     func manualRefreshReconcilesAPublicationDuringPreparation(followsLatest: Bool) async throws {
         let store = try LifecycleStore()

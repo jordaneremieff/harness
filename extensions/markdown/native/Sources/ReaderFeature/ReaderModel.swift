@@ -553,6 +553,7 @@ public final class ReaderModel {
         case "confirmExternal": confirmExternal()
         case "returnFocus": await returnToTerminal()
         case "showRevision": if let n = args["n"] as? Int { await showRevision(n) }
+        case "showLatest": await refresh()
         case "reviewChanges": await reviewChanges(base: args["against"] as? Int)
         case "inspectImage": if let index = args["index"] as? Int { await inspectImage(index) }
         case "showOriginal": await toggleSource()
