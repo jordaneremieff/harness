@@ -1,9 +1,10 @@
+import { basename } from "node:path";
 import { withAbortSignal, withoutAbortSignal, type Context } from "@earendil-works/chord/context";
-import { createRexBudget, type RexBudget } from "./deadline.ts";
+import type { RexBudget } from "./deadline.ts";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type * as Durable from "@earendil-works/pi-durable";
 import { boundResult, deadlineResult, resultByteLimit, RexCore, type RexCallContext, type RexRequest, type RexResult } from "./core.ts";
-import { liveCalls, resultChannels, type RexAdapterOptions } from "./config.ts";
+import { liveCalls, resultChannels, toolBudget, type RexAdapterOptions } from "./config.ts";
 import { initialOwnershipState, validateOwnershipState, type OwnershipState, type OwnershipStore } from "./ownership.ts";
 import { REX_GUIDANCE, ResultSchema, toolSpecs, validateRequest, type StatusRequest } from "./schema.ts";
 import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
@@ -138,7 +139,8 @@ async function callContext(host: DurableContributionHost, api: Durable.ToolExecu
 	budget.check("resolve");
 	const cwd = api.env?.cwd ?? (await api.agent(context)).cwd ?? host.cwd;
 	budget.check("resolve");
-	return { ownerId, callId: api.callId, cwd, signal: budget.signal, budget };
+	// A native conversation has no name that this extension can read; its working directory names the work.
+	return { ownerId, callId: api.callId, cwd, signal: budget.signal, budget, asker: basename(cwd) };
 }
 
 async function nativeOperation(request: RexRequest | StatusRequest, isStatus: boolean, host: DurableContributionHost, api: Durable.ToolExecutionApi, context: Context, ownerId: string, budget: RexBudget, core: RexExecutor, binding: Durable.ConversationDocToken<StatusDocument>): Promise<RexResult> {
@@ -184,7 +186,7 @@ export function rexContribution(source: string, bus: SettingsBus, stopFactoryPub
 						const maxBytes = resultByteLimit(settings.maxOutputBytes);
 						const validated = validateRequest(spec.name, args);
 						if (!validated.ok) return nativeResult(validated, maxBytes);
-						const budget = createRexBudget(validated.request.timeoutMs, settings.maxWaitMs, AbortSignal.any([host.signal, ...(context.abortSignal ? [context.abortSignal] : [])]));
+						const budget = toolBudget(spec.name, validated.request.timeoutMs, settings.maxWaitMs, AbortSignal.any([host.signal, ...(context.abortSignal ? [context.abortSignal] : [])]));
 						try {
 						context = withAbortSignal(budget.signal, context);
 						const ownerId = `${host.storageId}:${api.conversationId}`;

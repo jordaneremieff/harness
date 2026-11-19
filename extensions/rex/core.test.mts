@@ -2252,3 +2252,19 @@ test("catalogue command and output-limit errors never become empty successful ma
 		assert.equal(f.store.state.records.length, 0);
 	}
 });
+
+test("native Lua and action calls may run until their own allowance; other CLI requests keep the connection limit", async () => {
+	for (const request of [
+		{ op: "native" as const, kind: "lua" as const, code: "return rex.ui ~= nil", timeoutMs: 90000 },
+		{ op: "native" as const, kind: "action" as const, action: "dev_layout", timeoutMs: 90000 },
+	]) {
+		const f = fixture({ maxWaitMs: 300000 });
+		const result = await f.core.execute(request, { ...context, callId: `native-${request.kind}` });
+		assert.equal(result.ok, true, JSON.stringify(result));
+		const run = f.transport.calls.find((call) => call.args.includes("do"));
+		assert.ok(run);
+		const seconds = Number(/^--timeout=(\d+)s$/.exec(run.args.find((arg) => arg.startsWith("--timeout=")) ?? "")?.[1]);
+		assert.ok(seconds >= 85 && seconds <= 90, `rex do waits for the call's allowance, not the 10 s connection limit: ${seconds}`);
+		assert.ok(f.transport.calls.filter((call) => !call.args.includes("do")).every((call) => call.args.includes("--timeout=10s")));
+	}
+});

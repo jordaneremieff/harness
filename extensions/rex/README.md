@@ -1,10 +1,12 @@
 # Rex
 
 Operate interactive applications and persistent terminal work through the installed
-Rex CLI. Ordinary Pi and native Durable expose the same tools and domain results.
+Rex CLI, and ask the operator questions in the Rex apps. Ordinary Pi and native Durable
+expose the same tools and domain results.
 Rex owns terminals and their programs. This extension owns exact target resolution,
 bounded observations, caller-specific ownership claims and uncertain-effect records.
-It does not replace Bash, Jobs, Agent, Policy, Rex configuration or Rex's skill.
+It does not replace Bash, Jobs, Agent, Policy or Rex's skill, and it changes the Rex
+configuration only through [`/rex setup`](#set-up-questions-in-rex).
 
 ## Tools
 
@@ -16,6 +18,7 @@ It does not replace Bash, Jobs, Agent, Policy, Rex configuration or Rex's skill.
 | `rex_native` | `native` | Retrieve the installed method catalogue or one method's schema; call an API, execute Lua or invoke an existing action. |
 | `rex_owned` | `owned`, `observe`, `reconcile`, `cleanup` | Read stored claims or current child evidence and output for selected claims; reconcile uncertainty, close only recorded owned blocks, or forget closed records. |
 | `rex_status` | `snapshot`, `bind`, `unbind` | Inspect cooperating programs' reports beside actual current host activity. Optionally retain one verified inspection target per caller. |
+| `rex_ask` | `ask` | Put one short question to the operator in the command palette of every connected Rex app and return the first answer. See [Ask the operator](#ask-the-operator). |
 
 Each request includes a visible `op`. Native execution also exposes `kind`,
 `method`, `args`, `code` and `action` in the tool arguments. These are the real
@@ -30,7 +33,7 @@ or `condition`) field enumerates the accepted values and whose other fields are
 the union of every operation's fields. Google's validated function-calling mode,
 which Pi selects for the whole request whenever one strict built-in tool such as
 `read` is present on a Gemini 3+ model, rejects a declaration whose root is a
-schema union; a flat root keeps all six Rex tools loadable beside Pi's built-ins.
+schema union; a flat root keeps every Rex tool loadable beside Pi's built-ins.
 The per-operation shapes in `schema.ts` remain the request contract. Both hosts
 validate the received arguments against the selected shape before any Rex,
 ownership or status access: a wrong `op` for the tool, a missing `kind`, `label`,
@@ -104,6 +107,10 @@ The expansion hint uses your configured Pi key, read through the `keyText`
 function that the host passes in the tool render context. An unbound key, or a
 render context without keybinding hints, produces no hint and no invented mouse
 instruction.
+
+A question card shows the question and its choices, and says that it waits for the operator
+while the call runs. Its result leads with the outcome, then the answer by the titles that the
+operator saw and where the operator answered: in Rex or in the session's own dialog.
 
 Child-exit wait cards show the direct child's exit code and the last two non-trailing-blank
 output lines. Capture cards also preview the end of their bounded output, not its beginning.
@@ -343,6 +350,105 @@ error names the explicit remedy: select a resource, or request `source: "focus"`
 operator's current focus. Inheritance never falls back to focus by itself. A standing agent keeps
 the ordinary session that created it, even when another session sends it work.
 
+## Ask the operator
+
+`rex_ask` puts one short question to the operator through Rex's prompt API (`rex.ui.input` and
+`rex.ui.pick`). Rex opens the question in the command palette of every connected Rex app, on the
+Mac and on other devices, and the first answer ends it in all of them. The call waits for that
+answer, so an agent that needs a decision continues in the same run instead of ending its turn.
+
+An agent asks only for a decision that only the operator can make, after it shows the complete
+matter in chat or a pane. A worker asks its requester first. The question names what it is about,
+and Rex shows it after the name of the asking session: the ordinary session's name, or the last
+part of its working directory when it has none; a native conversation shows the last part of its
+working directory. Rex shows the choices in the given order, so the choice that changes nothing
+comes first.
+
+| Field | Meaning |
+|---|---|
+| `question` | The question. Required. |
+| `choices` | Answers to choose from, each with an `id` and optional `title`, `subtitle`, `detail` and `selected`. Without choices the operator types an answer. |
+| `multiple` | Choose any number of choices. `selected` starts a choice ticked. |
+| `allowOther` | Type an answer instead of choosing. Not with `multiple`. |
+| `placeholder`, `value`, `confirm` | The hint of the empty field, the text the field starts with, and the label of the row that submits. |
+| `timeoutMs` | How long to wait for an answer: 10 seconds to one hour, five minutes by default. |
+
+A request that fails validation, including a question without visible text, returns
+`invalid_request` and asks nobody. Otherwise an answer returns `outcome: "answered"` and `ok: true`
+with `data.answer`: `{ "text" }` for a typed answer, `{ "choice" }` with the chosen ID, or
+`{ "choices" }` with the chosen IDs in the order of the choices, possibly none. `data.channel`
+names where the operator answered. Every other outcome means that no answer arrived, and the agent
+does not act on what it asked:
+
+| Outcome | Meaning |
+|---|---|
+| `declined` | The person closed the question without answering. |
+| `timeout` | Nobody answered within the wait. |
+| `no_client` | No Rex app is connected to the server. |
+| `unsupported` | No connected app can show questions, or the server's API revision is below 17. |
+| `busy` | Every app already shows another question. |
+| `not_configured` | The server has not loaded the `pi_ask` action. |
+| `unavailable` | Rex could not be reached before the question was asked: no server, or the CLI failed. |
+| `superseded` | The operator typed into the session while the question waited. |
+| `cancelled` | The call ended before an answer. |
+| `failed` | Rex reported another failure; `error` carries its text. |
+
+The answer comes from a person who uses a connected Rex app, and it answers this question only.
+It grants no other permission and does not satisfy a policy approval. A question creates no Rex resource, so
+the call keeps no ownership record. Its allowance is its own wait plus 30 seconds for the calls
+around it, not `rex.maxWaitMs`, because a person answers it. When the call ends without an answer,
+for any reason, the extension stops the Rex action, and Rex closes the question in every app. An
+answer that Rex had already returned when the call was stopped still counts as the answer.
+
+In ordinary Pi, a message that the operator types or sends to the session while a question waits
+ends the question as `superseded`; when Pi admits the message, it follows the result. A slash
+command does not end the question. Escape in the editor stops the agent's run and with it the
+question (`cancelled`).
+
+When Rex cannot put the question to anybody (`not_configured`, `unsupported`, `no_client`, `busy`
+or `unavailable`), an interactive session asks it in its own dialog for the rest of the wait, if
+at least a second remains, and the result keeps Rex's outcome in `data.rex`. The dialog offers the
+same answers in Pi's own controls. It has no multiple choice, so each pick ticks or unticks a
+choice until Done. It has no prefilled field, so it offers a proposed `value` as a choice beside
+typing another answer, and a typed answer instead of a choice starts empty. It shows no `confirm`
+label, and labels that repeat get the choice ID added. Escape in the dialog closes the question as
+`declined`. A native conversation has no dialog and receives Rex's outcome. Input that reaches it
+while it waits, such as a steer, is placed after the question ends; the operator can close the
+question in any app to end the wait sooner.
+
+### Set up questions in Rex
+
+Rex lets only an action that the server configuration defines show a question; a Lua script that
+`rex do` runs, including a `rex_native` Lua call, receives `unsupported`. The question therefore
+travels through a small action, `pi_ask`, that forwards it to `rex.ui` unchanged and returns the
+answer or Rex's reason for none. Run by hand from the palette, it does nothing.
+
+- `/rex setup` shows the action and asks for confirmation. It then adds the action, between two
+  marker lines, at the end of the configuration file that `rex config check` names (`REX_CONFIG`,
+  or `rex/init.lua` in the configuration directory). Every other byte stays as it was, except
+  that a last line without a line break gets one. When that path links to a file elsewhere, such
+  as a dotfiles checkout, Pi changes the linked file and keeps the link.
+- The new text waits in a file of the command's own beside the configuration, and replaces the
+  configuration in one rename only after `rex config check` accepts it. Just before the rename,
+  Pi reads the configuration again and leaves it alone when it no longer holds the text that the
+  confirmation was based on, so an edit made meanwhile stays. The replacement keeps the file's
+  permission bits; other file attributes, such as access control lists, are not carried over, and
+  a file with several hard links or a file of another kind is refused. Pi keeps the previous file
+  beside the configured path, with `.before-pi-setup` added to its name, and runs
+  `rex config reload`.
+- Setup and remove recognise only the exact block that Pi writes. A block with other text between
+  its markers, a partial block or a repeated block is refused and stays for the operator to
+  correct, so marker lines around other text, such as inside a Lua string, are never taken for it.
+- When the file already holds the block but the server has not loaded it, setup offers to run
+  `rex config reload`, which reads the whole file again, and runs it only after confirmation.
+- `/rex status` reports whether the file holds the block, the server's version and API revision,
+  whether the server has loaded the action, and the connected Rex apps.
+- `/rex remove` deletes the block the same way, with confirmation.
+
+Questions need API revision 17 or later on the server (Rex 0.1.0-preview.21 has revision 18) and
+Rex apps as new as the server; an older app reports `unsupported`. After a Rex update, the server
+runs the new version only once it restarts.
+
 ## Pane stacking feed
 
 A pane created with a `command`, and the program of a
@@ -511,6 +617,17 @@ environment and fails when it names no session; it never falls back to focus.
 Explicit IDs stay authoritative, and no arbitrary block is selected. A focused
 block resolves the same way as other focus requests. The extension does not freeze
 Rex's full API into handwritten wrappers.
+
+A Lua script or action can run until the call's deadline: the CLI's `--timeout`,
+which for `rex do` also bounds how long the action runs, is set from the remaining
+allowance, in whole seconds and at least ten, instead of the ten-second limit of
+other requests; the call's own deadline still ends the CLI process first. Rex also
+applies its own time limit to an action; the time that a person takes to answer a
+question does not count toward it. A configured action that asks the operator a
+question therefore waits for the answer within the call's deadline, and when the
+deadline ends Rex stops the action and closes its question. A Lua script cannot
+ask: `rex.ui` answers it with `unsupported`. Use `rex_ask` for a question of your
+own.
 
 ### Verified read-only methods
 
@@ -865,7 +982,8 @@ The helper is separate from tool configuration and caller ownership records.
 ## Configuration and loading
 
 Load `extensions/rex/index.ts` through Pi's normal extension configuration.
-The factory registers ordinary tools and synchronously emits its native
+The factory registers ordinary tools and the `/rex` command of
+[Set up questions in Rex](#set-up-questions-in-rex), and synchronously emits its native
 `durable:contribution`. Native hosts install that contribution without an ordinary
 shadow session. Active worktree routing belongs to the normal
 [worktree procedure](../../docs/conventions/worktrees.md).

@@ -203,3 +203,24 @@ test("cards use the host-injected expansion key and invent no mouse fallback whe
 	const withoutHints = createRexToolDisplay("rex_terminal").renderResult(resultChannels(fixture()), { expanded: false, isPartial: false }, theme, { args: { op: "input" }, isError: false }).render(120).join("\n");
 	assert.doesNotMatch(withoutHints, /to expand/);
 });
+
+test("question cards show the question, its choices, the wait and the answer by the titles the operator saw", () => {
+	const args = { op: "ask", question: "Publish the Rex change?", choices: [{ id: "hold", title: "Hold" }, { id: "publish", title: "Publish" }] };
+	const display = createRexToolDisplay("rex_ask");
+	const waiting = display.renderCall(args, theme, { expanded: false, isPartial: true }).render(120).join("\n");
+	assert.match(waiting, /rex_ask · ask/);
+	assert.match(waiting, /Publish the Rex change\?/);
+	assert.match(waiting, /choose Hold · Publish/);
+	assert.match(waiting, /Waiting for the operator's answer\./);
+	assert.doesNotMatch(display.renderCall(args, theme, { expanded: false, isPartial: false }).render(120).join("\n"), /Waiting/, "a settled question no longer waits");
+	const answered = render("rex_ask", fixture({ outcome: "answered", target: { server, source: "server" }, effects: { state: "none" }, data: { question: "harness: Publish the Rex change?", channel: "rex", answer: { choice: "publish" } } }), args).join("\n");
+	assert.match(answered, /question · answered/);
+	assert.match(answered, /Answer in Rex: Publish/);
+	assert.match(answered, /covers this question only/);
+	const typed = render("rex_ask", fixture({ outcome: "answered", effects: { state: "none" }, data: { channel: "dialog", answer: { text: "later" } } }), { op: "ask", question: "When?" }).join("\n");
+	assert.match(typed, /Answer in this session's dialog: "later"/);
+	const declined = render("rex_ask", fixture({ ok: false, outcome: "declined", effects: { state: "none" }, error: "The person closed the question without answering.", data: { channel: "rex" } }), args).join("\n");
+	assert.match(declined, /question · declined/);
+	assert.match(declined, /closed the question/);
+	assert.doesNotMatch(declined, /covers this question only/);
+});

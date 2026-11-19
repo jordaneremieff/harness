@@ -379,3 +379,40 @@ test("each native tool call builds its core from the current ordinary pane", { t
 		await rm(agentDir, { recursive: true, force: true });
 	}
 });
+
+test("a native question waits on its own allowance and names its working directory", { timeout: 30000 }, async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "rex-native-ask-"));
+	const models = createModels();
+	const faux = fauxProvider();
+	models.setProvider(faux.provider);
+	const registry = Durable.createRegistry();
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+	const controller = new AbortController();
+	const closers: Array<() => void | Promise<void>> = [];
+	const seen: Array<{ effectiveMs?: number; asker?: string }> = [];
+	const contribution = rexContribution("/test/rex/index.ts", createEventBus(), () => {}, {
+		createCore: () => ({
+			dispose: () => {},
+			execute: async (request, context) => {
+				seen.push({ effectiveMs: context.budget?.effectiveMs, asker: context.asker });
+				return { ok: true, outcome: "answered", data: { question: request.op === "ask" ? request.question : "", channel: "rex", answer: { choice: "hold" } }, effects: { state: "none" }, coverage: { bounded: true } };
+			},
+		}),
+	});
+	try {
+		const extension = await contribution.create({ durable: Durable, cwd: agentDir, agentDir, storageId: "test-storage", harness, signal: controller.signal, onClose: (close) => closers.push(close), ordinarySession: () => undefined });
+		assert.ok(extension.tools?.some((tool) => tool.name === "rex_ask"));
+		registry.install(extension);
+		const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: agentDir } });
+		faux.setResponses([fauxAssistantMessage(fauxToolCall("rex_ask", { op: "ask", question: "Publish?", choices: [{ id: "hold" }, { id: "publish" }], timeoutMs: 1800000 }), { stopReason: "toolUse" }), fauxAssistantMessage("Asked.")]);
+		await (await root.submit({ type: "input", content: "Ask before you publish." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		const values = resultValues((await root.entries({ order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT)).items);
+		assert.equal(values.at(-1)?.outcome, "answered", JSON.stringify(values));
+		assert.deepEqual(seen, [{ effectiveMs: 1830000, asker: agentDir.split("/").at(-1) }], "the wait is the question's own, not the terminal cap");
+	} finally {
+		controller.abort();
+		for (const close of closers.reverse()) await close();
+		await harness.close(BACKGROUND_CONTEXT);
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});

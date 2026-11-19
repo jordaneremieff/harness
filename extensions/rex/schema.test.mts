@@ -177,7 +177,7 @@ test("ordinary tools reject invalid requests before any core, ownership or statu
 	const pi = {
 		events: createEventBus(),
 		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {},
 		appendEntry: (type: string, data: unknown) => appended.push({ type, data }),
 	} as unknown as ExtensionAPI;
 	let cores = 0;

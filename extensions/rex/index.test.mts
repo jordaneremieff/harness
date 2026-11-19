@@ -17,7 +17,7 @@ test("ordinary shutdown drains owned calls before reload replaces live-call stat
 	const pi = {
 		events: createEventBus(),
 		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {},
 		appendEntry: () => {},
 	} as unknown as ExtensionAPI;
 	let signal: AbortSignal | undefined;
@@ -41,7 +41,7 @@ test("ordinary shutdown drains owned calls before reload replaces live-call stat
 			started();
 		}),
 	}) });
-	assert.deepEqual([...tools.keys()], ["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status"]);
+	assert.deepEqual([...tools.keys()], ["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status", "rex_ask"]);
 	assert.ok([...tools.values()].every((tool) => tool.outputSchema));
 	const ctx = { cwd: "/test", isIdle: () => false, sessionManager: { getSessionId: () => "ordinary-session", getEntries: () => [], getSessionFile: () => undefined } } as unknown as ExtensionToolContext;
 	const tool = tools.get("rex_environment");
@@ -73,7 +73,7 @@ test("the final ordinary adapter bounds status composition into one canonical re
 	const pi = {
 		events: createEventBus(),
 		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), appendEntry: () => {},
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {}, appendEntry: () => {},
 	} as unknown as ExtensionAPI;
 	const server = { endpoint: "unix:///test-rex", hostId: "host", instanceId: "instance", selection: "test" };
 	const resource = { kind: "block" as const, sessionId: "session:00000000-0000-0000-0000-000000000001", blockId: "block:00000000-0000-0000-0000-000000000002" };
@@ -110,7 +110,7 @@ test("ordinary owned observation preserves the shared request and canonical read
 	const pi = {
 		events: createEventBus(),
 		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), appendEntry: () => { writes++; },
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {}, appendEntry: () => { writes++; },
 	} as unknown as ExtensionAPI;
 	const request = { op: "observe", recordId: "retained-call", maxBytes: 256 };
 	const expected: RexResult = { ok: true, outcome: "observed", effects: { state: "none" }, coverage: { bounded: true }, data: { reports: [{ recordId: "retained-call", phase: "unknown", complete: true, observedAt: "2026-01-01T00:00:00.000Z", observations: [{ presence: "present", childState: "exited", process: { last_exit: { exit_code: 7 } }, capture: { content: "final output", start: 0, end: 12, total: 12 } }] }] } };
@@ -145,7 +145,7 @@ test("ordinary native verified reads leave ownership storage untouched", async (
 	const pi = {
 		events: createEventBus(),
 		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), appendEntry: (customType: string, data: unknown) => { writes++; sessionManager.appendCustomEntry(customType, data); },
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {}, appendEntry: (customType: string, data: unknown) => { writes++; sessionManager.appendCustomEntry(customType, data); },
 	} as unknown as ExtensionAPI;
 	const cliReply = (value: unknown): CliResult => ({ outcome: "exited", exitCode: 0, signal: null, stdout: JSON.stringify(value), stderr: "", bytes: 0, truncated: false, started: true });
 	const padding = "x".repeat(40000);
@@ -184,7 +184,7 @@ test("ordinary registration publishes only identical display references and clea
 	const events = createEventBus();
 	const publications: Publication[] = [];
 	events.on("harness:tool-display:publish", (value) => { publications.push(value as Publication); });
-	const pi = { events, on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); }, registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), appendEntry: () => {} } as unknown as ExtensionAPI;
+	const pi = { events, on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); }, registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {}, appendEntry: () => {} } as unknown as ExtensionAPI;
 	let executions = 0;
 	const options = {
 		createCore: () => { executions++; throw new Error("Display requests must not execute tools."); },
@@ -246,7 +246,7 @@ test("ordinary registration wires tab labels without changing the tool surface",
 	const pi = {
 		events: createEventBus(),
 		on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {},
 		appendEntry: () => {},
 		getSessionName: () => undefined,
 	} as unknown as ExtensionAPI;
@@ -262,7 +262,7 @@ test("ordinary registration wires tab labels without changing the tool surface",
 		shutdown: () => { events.push("panes shutdown"); },
 	};
 	registerRex(pi, { createTabLabelProjector: () => projector, createConversationKeeper: () => keeper, createSessionPaneRegistrar: () => panes });
-	assert.deepEqual([...tools.keys()], ["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status"]);
+	assert.deepEqual([...tools.keys()], ["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status", "rex_ask"]);
 	assert.deepEqual([...handlers.keys()].sort(), ["agent_settled", "input", "session_info_changed", "session_shutdown", "session_start", "ui_prompt_start"]);
 	const answer = { type: "message", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "The result." }] } };
 	const call = { type: "message", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "call", name: "note", arguments: {} }] } };
@@ -292,7 +292,7 @@ test("a confirmed floating pane that rex_terminal creates is handed to the conve
 	const pi = {
 		events: createEventBus(),
 		on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {},
 		appendEntry: () => {},
 		getSessionName: () => undefined,
 	} as unknown as ExtensionAPI;
@@ -351,6 +351,7 @@ test("ordinary tab label wiring runs no process for an unchanged name event and 
 		events: createEventBus(),
 		on: (name: string, handler: (event?: unknown, ctx?: unknown) => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
 		registerTool: () => {},
+		registerCommand: () => {},
 		appendEntry: () => {},
 		getSessionName: () => state.name,
 	} as unknown as ExtensionAPI;

@@ -40,7 +40,7 @@ test("the factory publishes the display module's records and the contribution ca
 	const pi = {
 		events: bus,
 		on: () => () => {},
-		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), registerCommand: () => {},
 	} as unknown as ExtensionAPI;
 	registerRex(pi, { createCore: () => { throw new Error("Rendering fixtures must not execute tools."); } });
 	const records = toolDisplay().tools;
