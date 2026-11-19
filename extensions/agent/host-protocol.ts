@@ -51,9 +51,6 @@ export interface HostMetadata {
 	readonly independent?: { readonly inputDigest: string; readonly projectTrusted: boolean };
 }
 
-/** Application failure codes carried inside a host error message. */
-export type HostErrorCode = "invalid" | "unavailable" | "claim" | "internal";
-
 /** An error from a runtime or a remote host. The public protocol carries its message and a generic code. */
 export class HostError extends Error {
 	readonly code: string;

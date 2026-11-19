@@ -1626,13 +1626,6 @@ export function renderCommunicationCard(value: Communication, theme: Theme, opti
 	);
 }
 
-/** Custom-message renderer for a retained communication carried in `details`. */
-export const renderAgentCommunicationMessage: MessageRenderer = (message, options, theme) => {
-	const value = message.details as Communication | undefined;
-	if (!value || typeof value !== "object" || value.format !== "agent.communication/1") return undefined;
-	return renderCommunicationCard(value, theme, { expanded: options.expanded, outputPad: options.outputPad, keyText: options.keyText, keyHint: options.keyHint, message });
-};
-
 /** Body rows a collapsed compact communication shows under its header. */
 export const COMPACT_PREVIEW_LINES = 2;
 

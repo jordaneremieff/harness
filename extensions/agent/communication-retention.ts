@@ -123,9 +123,6 @@ export async function reconcileInputCommunications(session: Session, storageId: 
 		await session.commit((tx) => reconcileOne(tx, storageId, provenance.conversationId as ConversationId, provenance.requestId), context);
 	}
 }
-export async function reconcilePlacedCommunication(tx: Tx, storageId: string, conversationId: ConversationId, requestId: string): Promise<void> {
-	await reconcileOne(tx, storageId, conversationId, requestId);
-}
 /** Typed conversion is kept at the immutable record boundary, not in native admission. */
 export function communicationNativeEntryId(value: string): EntryId | undefined {
 	const id = Number(value);

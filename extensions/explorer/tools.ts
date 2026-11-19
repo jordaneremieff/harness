@@ -1,4 +1,3 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { arr, bool, int, lit, obj, opt, type Static, str, union } from "@earendil-works/pi-schema";
 import type { LiveBridge } from "./live-bridge.ts";
 import { liveArguments } from "./live-launch.ts";
@@ -371,7 +370,3 @@ export async function runNotes(input: NotesInput, context: Context): Promise<Out
 export function outcomeContent(value: Outcome) {
 	return [{ type: "text" as const, text: JSON.stringify(value) }];
 }
-export type OrdinaryShow = Pick<ShowContext, "app" | "dir" | "agentDir"> & {
-	find: (ctx: ExtensionContext) => Promise<LiveBridge | undefined>;
-	connect: (ctx: ExtensionContext) => Promise<LiveConfig>;
-};

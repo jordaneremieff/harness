@@ -446,15 +446,6 @@ export async function requestWork(reader: SnapshotReader, storageId: string, con
 	return undefined;
 }
 
-/** References of open items whose producer is in another storage; their facts come from that storage's host. */
-export async function remoteDependencies(reader: OpenWorkReader, storageId: string, conversationId: ConversationId): Promise<ResultReference[]> {
-	const remote = new Map<string, ResultReference>();
-	for (const item of await openWorkItems(reader, conversationId)) {
-		for (const reference of item.results) if (localConversation(storageId, reference.sessionId) === undefined) remote.set(dependencyKey(reference), copyReference(reference));
-	}
-	return [...remote.values()];
-}
-
 /**
  * Status read: every retained item with its route, note, state, final-report delivery state and
  * dependency states. Committed facts only; it never waits. A dependency of another storage reads the

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readFile } from "node:fs/promises";
+import { lstat, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import lockfile from "proper-lockfile";
@@ -565,14 +565,4 @@ export async function recordedAccount(stateDir: string): Promise<string | undefi
 
 function credentialProfileKey(auth: Auth): string {
 	return `${auth.account}:${auth.scopes.slice().sort().join(",")}`;
-}
-
-export async function readJsonObject(path: string): Promise<Record<string, unknown>> {
-	const value: unknown = JSON.parse(await readFile(path, "utf8"));
-	if (!object(value)) throw new GoogleError("BACKEND_SCHEMA_ERROR", "Expected a JSON object.");
-	return value;
-}
-
-export async function ensureDirectory(path: string): Promise<void> {
-	await mkdir(path, { recursive: true, mode: 0o700 });
 }

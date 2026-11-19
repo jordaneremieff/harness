@@ -51,9 +51,6 @@ export function dashboardRule(label: string, width: number, theme: Paint): strin
 		width,
 	);
 }
-export function dashboardSelection(text: string, width: number, selected: boolean, theme: Paint): string {
-	return selected ? theme.bg("selectedBg", fitLine(theme.fg("text", theme.bold(text)), width)) : text;
-}
 
 /** The selection background from `prefix` to the right edge; the rail and glyph columns keep the pane colour. */
 export function highlightRow(line: string, width: number, prefix: number, theme: Paint): string {

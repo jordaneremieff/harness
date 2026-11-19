@@ -174,17 +174,6 @@ function partialCard(line: string, theme: Theme, context: ResultContext): Text {
 	return textComponent(`\n${theme.fg("warning", line)}`, context.lastComponent);
 }
 
-export interface WriteDisplayArgs {
-	checkpoint?: boolean;
-	title?: string;
-	summary?: string;
-	decisions?: string[];
-	openLoops?: string[];
-	nextActions?: string[];
-	files?: string[];
-	tags?: string[];
-}
-
 function listLength(value: unknown): number {
 	return Array.isArray(value) ? value.length : 0;
 }
@@ -264,15 +253,6 @@ export function renderWriteResult(
 		theme,
 		context,
 	);
-}
-
-export interface ListDisplayArgs {
-	collection?: string;
-	limit?: number;
-	tag?: string;
-	state?: string;
-	query?: string;
-	cursor?: string;
 }
 
 /** The subject is the remembered phrase when searching, otherwise the recent list. */
@@ -440,13 +420,6 @@ export function renderReadResult(
 	);
 }
 
-export interface EditDisplayArgs {
-	id: string;
-	expectedDigest: string;
-	edits: { oldText: string; newText: string }[];
-	allowActive?: boolean;
-}
-
 export function renderEditCall(
 	input: unknown,
 	theme: Theme,
@@ -482,11 +455,6 @@ export function renderEditResult(
 		theme,
 		context,
 	);
-}
-
-export interface CompleteDisplayArgs {
-	id: string;
-	outcome: string;
 }
 
 export function renderCompleteCall(
@@ -525,10 +493,6 @@ export function renderCompleteResult(
 		theme,
 		context,
 	);
-}
-
-export interface RotateDisplayArgs {
-	id: string;
 }
 
 export function renderRotateCall(

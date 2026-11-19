@@ -169,8 +169,6 @@ function stateShape<C extends Schema>(condition: C) {
 		closed,
 	);
 }
-const nativeStateSchema = stateShape(conditionReference);
-export const StateSpecSchema: Schema<StateSpec> = { ...nativeStateSchema, ...conditionDefinitions };
 function programShape<C extends Schema>(condition: C) {
 	return obj(
 		{

@@ -199,15 +199,6 @@ export function isObservationFrame(value: unknown): value is ObservationFrame {
 	return false;
 }
 
-/** Parse one frame out of replicated-state ops; the host publishes a root replacement. */
-export function frameFromOps(ops: readonly unknown[]): ObservationFrame | undefined {
-	for (let index = ops.length - 1; index >= 0; index--) {
-		const op = ops[index];
-		if (Array.isArray(op) && op[0] === "r" && isObservationFrame(op[1])) return op[1];
-	}
-	return undefined;
-}
-
 /**
  * Strict-JSON copy of one frame. The transport validator rejects own keys with
  * an undefined value, which optional status fields can produce; serializing the

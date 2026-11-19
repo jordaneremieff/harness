@@ -246,14 +246,6 @@ export function unplacedText(row: Pick<AgentConversationSummary, "unplaced" | "o
 	const age = minutes < 1 ? `${seconds}s` : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 	return `unplaced: ${row.unplaced}, oldest: ${age}`;
 }
-/** Declared work stays visible after its input settles and before its final report. */
-export function openWorkText(row: Pick<AgentConversationSummary, "openWorkCount" | "openWorkOldest" | "ageObservedAt">, now = Date.now()): string {
-	if (!row.openWorkCount) return "";
-	if (row.openWorkOldest === undefined) return `work open: ${row.openWorkCount}`;
-	const seconds = Math.floor(ageAt(row.openWorkOldest, row.ageObservedAt, now) / 1000), minutes = Math.floor(seconds / 60);
-	const age = minutes < 1 ? `${seconds}s` : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-	return `work open: ${row.openWorkCount}, oldest: ${age}`;
-}
 /**
  * The reason the list shows. An unreadable host of an agent that is not at work matters only when
  * the operator writes to it, so the list keeps that agent's own outcome; the header still names it.

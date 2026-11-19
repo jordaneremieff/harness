@@ -205,5 +205,3 @@ export interface AgentObservationSources {
 	snapshot(id: string): Promise<AgentConversationSnapshot>;
 }
 
-/** The board selection an action dialog receives. */
-export type DashboardTarget = AgentConversationSummary;

@@ -228,4 +228,3 @@ export function createJobActivity(output: ActivityOutput = processOutput) {
 		},
 	};
 }
-export type JobActivity = ReturnType<typeof createJobActivity>;

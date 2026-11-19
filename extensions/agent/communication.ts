@@ -33,7 +33,6 @@ export const CommunicationInputLinkSchema = obj({ mode: lit("input"), storageId,
 export const CommunicationPassiveLinkSchema = obj({ mode: lit("passive"), storageId, conversationId: positive, entryId, requestId: sourceId });
 export const CommunicationLinkSchema = union([CommunicationInputLinkSchema, CommunicationPassiveLinkSchema]);
 export type CommunicationInputLink = Static<typeof CommunicationInputLinkSchema>;
-export type CommunicationPassiveLink = Static<typeof CommunicationPassiveLinkSchema>;
 export type CommunicationLink = Static<typeof CommunicationLinkSchema>;
 export const CommunicationViewSchema = union([
 	obj({ state: lit("ready"), recordEntryId: entryId, target: CommunicationLinkSchema, value: CommunicationSchema }),

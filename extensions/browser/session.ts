@@ -284,10 +284,6 @@ export function decodeRect(value: unknown): Rect | null {
 	return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
-export function isTransportError(error: unknown): error is TransportError {
-	return error instanceof TransportError;
-}
-
 export function normalOrigin(value: string): string {
 	let url: URL;
 	try {

@@ -818,11 +818,6 @@ export const SNAPSHOT_BYTE_LIMIT = 64 * 1024;
 /** Largest byte bound one caller may request for a transcript page. */
 export const SNAPSHOT_BYTE_LIMIT_MAX = 1024 * 1024;
 
-/** One bounded newest transcript page, oldest first; the page variant adds continuation. */
-export async function readConversationSnapshot(harness: Harness, conversationId: ConversationId, context: Context): Promise<AgentConversationSnapshot> {
-	return readConversationSnapshotPage(harness, conversationId, {}, context);
-}
-
 /** The committed active transcript the model sees: the newest head marker, then the entries after its head. */
 async function activeEntries(conversation: Conversation, context: Context): Promise<readonly EntryRecord[]> {
 	return (await conversation.context(context)).entries;
@@ -2538,21 +2533,4 @@ export class DurableObservation {
 		this.closing ??= this.release();
 		await this.closing;
 	}
-}
-
-/** Read-only inspection over a live Harness that the caller already owns. */
-export function inspectionReader(harness: Harness, storageId: string): {
-	list(params: DurableListParams, context: Context): Promise<{ readonly items: readonly ConversationSummary[]; readonly next: Cursor | null }>;
-	status(conversationId: ConversationId, options: DurableStatusOptions, context: Context): Promise<ConversationStatus | undefined>;
-	inspect(conversation: Conversation, params: DurableInspectParams, context: Context): Promise<unknown>;
-	receipts(ownerId: string | undefined, context: Context): Promise<readonly DeliveryReceipt[]>;
-	usage(context: Context): Promise<UsageState>;
-} {
-	return {
-		list: (params, context) => readConversationList(harness, storageId, params, context),
-		status: (conversationId, options, context) => readConversationStatus(harness, storageId, conversationId, options, context),
-		inspect: (conversation, params, context) => readInspection(harness, storageId, conversation, params, context),
-		receipts: (ownerId, context) => readReceipts(harness, ownerId, context),
-		usage: (context) => readUsage(harness, context),
-	};
 }

@@ -101,20 +101,6 @@ export function gateTool(release: Promise<void>, onStarted?: () => void): ToolRe
 	});
 }
 
-/** A tool that never returns; the run stays busy until aborted. */
-export function hangingTool(onStarted?: () => void): ToolRegistration {
-	return defineTool({
-		name: "hang",
-		description: "Block until aborted.",
-		parameters: obj({}, { open: true }),
-		execute: async () => {
-			onStarted?.();
-			await new Promise<void>(() => {});
-			return {};
-		},
-	});
-}
-
 export function fixtureRegistry(tools: ToolRegistration[] = [], name = "durable-host-fixture"): Registry {
 	const registry = createRegistry();
 	registry.install(defineExtension({ name, tools, tasks: [UnplacedWatchTask] }));

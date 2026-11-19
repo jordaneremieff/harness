@@ -231,21 +231,6 @@ function continuationWord(value: Record<string, unknown>): string {
 	return next !== null && next !== undefined ? "continuation available" : "";
 }
 
-export interface SearchDisplayArgs {
-	query?: string;
-	mode?: string;
-	filter?: unknown;
-	sessionId?: string;
-	fromId?: string;
-	slot?: number;
-	position?: unknown;
-	offset?: number;
-	maxVisits?: number;
-	maxScanBytes?: number;
-	maxMatches?: number;
-	maxOutputBytes?: number;
-}
-
 /** The subject is the literal query, or the bounded listing when the query is omitted. */
 export function renderSearchCall(input: unknown, theme: Theme, context: CallContext): Component {
 	const args = asRecord(input);

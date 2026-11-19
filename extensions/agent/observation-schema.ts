@@ -356,7 +356,6 @@ export const ListOutputProperties = {
 	authority: string,
 };
 export const ListOutputSchema = obj(ListOutputProperties);
-export type ListOutput = Static<typeof ListOutputSchema>;
 
 const catalogPriorityCoverage = obj({ candidates: count, inspected: count, unreadable: count, unknownClaims: count, returned: count, remaining: count, priorityRemaining: count,
 	remainingRows: count, priorityRemainingRows: count, recordByteLimit: count, claimByteLimit: count, outputLimit: count });
@@ -411,7 +410,6 @@ export const StatusOutputSchema = union([
 	obj({ ...pluralPayload, ...coldEnvelope }),
 	obj(singlePayload),
 ]);
-export type StatusOutput = Static<typeof StatusOutputSchema>;
 
 /**
  * Tool-only local observations extend status without changing the host response contract. The tool status
@@ -474,12 +472,6 @@ export const CompactConversationSchema = obj({
 	context: lit("unknown"), omitted: arr(string), detail: StatusDetailCallSchema,
 });
 export const PresentationRefusalSchema = obj({ format: lit("refused"), cause: union([lit("byte-limit"), lit("source")]), reason: string, byteLimit: count });
-export const RetainedReportReceiptSchema = obj({
-	sourceId: string, requestId: string, ownerId: string, senderIdentity: string, createdAt: number, acknowledged: boolean,
-	replyTo: nullableText, passive: opt(boolean), boundary: string,
-	/** `pending`, `parked` or `terminal` until the recipient admits the row; an unadmitted row is unplaced. */
-	delivery: opt(union([lit("pending"), lit("parked"), lit("terminal"), lit("admitted")])), placement: opt(union([lit("placed"), lit("unplaced"), lit("withdrawn")])),
-});
 const compactEnvelope = {
 	format: lit("compact"), storageId: opt(string), live: opt(boolean), omitted: arr(string),
 };
@@ -657,7 +649,6 @@ export const ResultToolOutputSchema = ResultOutputSchema;
 
 /** `agent_inspect` output: one shape per view, selected by the `view` property. */
 export const InspectOutputSchema = union([HistoryOutputSchema, SearchOutputSchema, ExactOutputSchema, ActivityOutputSchema, ResultOutputSchema]);
-export type InspectOutput = Static<typeof InspectOutputSchema>;
 /** Tool routing also accepts ordinary retained evidence; the native host contract stays separate. */
 export const InspectToolOutputSchema = union([InspectOutputSchema, OrdinaryPrimaryObservationSchema]);
 

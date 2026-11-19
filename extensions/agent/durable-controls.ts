@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { parseReportIntervention, type ReportIntervention } from "./report-intervention.ts";
 import { NATIVE_COMPACTION_SEED } from "./control-guidance.ts";
 import { validateReportIntervention } from "./native-report-intervention.ts";
-import { DeliveryRowDoc, automaticDeliveryPage, deliveryState, migrateDeliveryStore, operationReceipts, readDeliveryDraft, receiptKey, reportKey, retainedIntent, retainedReceipt, retainedReport, retainedReportRequest, storeDeliveryRow, writeDeliveryDraft } from "./delivery-store.ts";
+import { DeliveryRowDoc, automaticDeliveryPage, deliveryState, migrateDeliveryStore, readDeliveryDraft, receiptKey, reportKey, retainedIntent, retainedReceipt, retainedReport, retainedReportRequest, storeDeliveryRow, writeDeliveryDraft } from "./delivery-store.ts";
 import { inputEntry, isInputClass, sentInputClass, type InputClass, type InputLabel } from "./input-entry.ts";
 import { configureProviderRecovery, captureProviderRecovery, linkProviderRecovery, readInputRecovery, readInputProviderBlock, readProviderBlock, type ProviderRetryNotice } from "./provider-block.ts";
 import { modelFailureText, type ProviderBlockFact } from "./provider-block-facts.ts";
@@ -1276,12 +1276,6 @@ export async function acknowledgeReports(harness: Harness, ownerId: string, sour
 		}
 	}, context);
 	return acknowledged;
-}
-
-/** Resolve retained receipts by the caller's operation ID, across owners. */
-export async function receiptsByOperation(harness: Harness, operationId: string, context: Context): Promise<DeliveryReceipt[]> {
-	await settleDeliveries(harness, context);
-	return operationReceipts(harness, operationId, context);
 }
 
 /** A busy-reject admission holds only for the moment it was refused or admitted; a later replay would change its meaning. */

@@ -68,7 +68,7 @@ import { TimerTask, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
 import { CheckInTask, createCheckIn } from "./durable-checkins.ts";
 import { checkInMinutes } from "./check-in-options.ts";
-import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
+import type { DurableCommand } from "./durable-services.ts";
 import {
 	InspectToolOutputSchema,
 	StatusToolOutputSchema,
@@ -167,9 +167,6 @@ export function resolveAgentControlDispatch(): AgentControlDispatch {
 	if (typeof dispatch !== "function") throw new Error("The native Durable host control binding is malformed. Restart the agent host.");
 	return dispatch as AgentControlDispatch;
 }
-
-/** One command invocation, as the host control passes it to a registered command. */
-export type AgentCommandCall = DurableCommandCall;
 
 /** Command the host invokes by name through its command control. */
 export type AgentCommand = DurableCommand;

@@ -5,7 +5,6 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { GoogleError } from "./result.ts";
 
 export const ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
-export const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 
 export function sha256(bytes: Buffer | string): string {
 	return createHash("sha256").update(bytes).digest("hex");
@@ -94,10 +93,6 @@ export function decodeBase64Url(input: string, maxBytes: number): Buffer {
 	if (bytes.toString("base64url") !== data)
 		throw new GoogleError("BACKEND_SCHEMA_ERROR", "Gmail returned non-canonical base64url data.");
 	return bytes;
-}
-
-export function encodeBase64Url(bytes: Buffer): string {
-	return bytes.toString("base64url");
 }
 
 /** Publish with an atomic hard-link creation so a concurrent destination is never overwritten. */

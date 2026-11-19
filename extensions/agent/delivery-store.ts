@@ -492,15 +492,6 @@ export async function receiptReferencePage(tx: Tx, storageId: string, selected: 
 	return { recipient: selected.ownerId, results, complete: next === null, next };
 }
 
-export async function answerReceipts(tx: Tx, receipt: DeliveryReceipt): Promise<DeliveryReceipt[]> {
-	if (receipt.answerEntryId === null) return [receipt];
-	const rows: DeliveryReceipt[] = [];
-	for (const key of await listReferences(tx, `answer:${receipt.answerEntryId}`)) {
-		const row = await tx.doc(DeliveryRowDoc, key, "receipt");
-		if (row.value !== null) rows.push(copy(row.value as DeliveryReceipt));
-	}
-	return rows;
-}
 export async function operationReceipts(harness: Harness, operationId: string, context: Context): Promise<DeliveryReceipt[]> {
 	if (await harness.snapshot(DeliveryListDoc, `operation:${operationId}`, context) === undefined) return [];
 	return harness.commit(async (tx) => {

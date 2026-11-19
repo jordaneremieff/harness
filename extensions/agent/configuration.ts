@@ -43,8 +43,6 @@ export function boundedConfigurationResult(result: ConfigurationResult): Configu
 	return { ...result, before, after, ...(truncated.length ? { truncated } : {}) };
 }
 
-export function formatConfiguration(result: ConfigurationResult): string { return JSON.stringify(result, null, 2); }
-
 const fields = ["name", "model", "thinkingLevel"] as const;
 const invalidText = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ud800-\udfff]/u;
 

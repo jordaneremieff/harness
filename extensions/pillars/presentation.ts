@@ -8,12 +8,6 @@ import { Text } from "@earendil-works/pi-tui";
 import type { AccessError, AccessPage } from "./access.ts";
 import type { Response } from "./readback.ts";
 
-export interface UsageRequest {
-	view?: "overview" | "revisions";
-	windowDays?: number;
-	cursor?: string;
-}
-
 interface RenderContext {
 	isError: boolean;
 }

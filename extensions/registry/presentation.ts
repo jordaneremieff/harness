@@ -317,20 +317,6 @@ function simpleSummary(details: Record<string, unknown>): Summary {
 	};
 }
 
-export interface RegistryDisplayArgs {
-	name?: string;
-	match?: string;
-	kind?: string;
-	search?: string;
-	detail?: boolean;
-	provider?: string;
-	available?: boolean;
-	health?: boolean;
-	contains?: string;
-	limit?: number;
-	cursor?: string;
-}
-
 /** The subject names the primary lookup argument. */
 function subjectOf(args: Record<string, unknown>): { subject: string; hint: boolean } {
 	if (typeof args?.name === "string" && args.name) {
