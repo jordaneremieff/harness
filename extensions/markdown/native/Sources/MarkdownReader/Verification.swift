@@ -71,6 +71,7 @@ struct Verification {
                 await run("layout-fits-every-pane-size") { await context.layoutAcrossPaneSizes(keep: &keep) }
                 await run("document-script-inert-under-csp") { await context.contentScript(keep: &keep) }
                 await run("reading-lock-blocks-edit") { await context.readingLock(keep: &keep) }
+                await run("reading-edits-restore-lock") { await context.readingEdits(keep: &keep) }
                 await run("document-shortcuts-copy-and-refresh") { await context.documentShortcuts(keep: &keep) }
                 await run("bridge-typing-exact-line-endings") { await context.typing(keep: &keep) }
                 await run("published-writing-undo-matches-source") { await context.publishedWritingUndo(keep: &keep) }
@@ -429,6 +430,51 @@ struct Context {
 
     /// Writing on a published document in a pane surface: rapid edits, then the bar's Undo.
     /// The rendered block must show the source the mirror and store hold, with no failure notice.
+    func readingEdits(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "reading-edits-restore-lock"
+        do {
+            let original = "# Reading edits\n\nİx x first paragraph.\n\nA second paragraph.\n"
+            let file = workspace.appendingPathComponent("reading-edits.md")
+            try Data(original.utf8).write(to: file)
+            let state = ReadingStateStore(directory: nil)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: state)
+            let surface = ReaderSurface(model: model, state: state, chrome: "pane", draftDirectory: workspace.appendingPathComponent("reading-edit-drafts"))
+            defer { withExtendedLifetime(surface) {} }
+            keep.append(readerWindow(model))
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            let selected = await js(model, """
+            const [first, second] = document.querySelectorAll('[data-role="document"] p');
+            if (!first || !second) return false;
+            const range = document.createRange();
+            range.setStart(first.firstChild, 1); range.setEnd(second.firstChild, 4);
+            getSelection().removeAllRanges(); getSelection().addRange(range);
+            document.dispatchEvent(new Event('selectionchange'));
+            const edit = document.querySelector('[data-open] .selection-edit');
+            if (!edit) return false;
+            edit.click();
+            return !document.querySelector('[data-role="block-editor"]') && document.querySelector('#b-edit').getAttribute('aria-label') === 'Edit';
+            """) as? Bool == true
+            let replaced = await jsAfterFind(model)
+            await surface.waitForPendingChanges()
+            let mirrored = await wait(seconds: 4) { model.source == "# Reading edits\n\nİY Y first paragraph.\n\nA second paragraph.\n" }
+            let reading = await wait(seconds: 3) { surface.pageState["lock"] as? String == "reading" }
+            await model.close()
+            return .init(name: name, pass: selected && replaced && mirrored && reading,
+                         detail: "cross-block Edit stayed in Reading: \(selected); Replace all clicked: \(replaced); exact replacement: \(mirrored); final lock Reading: \(reading)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    private func jsAfterFind(_ model: ReaderModel) async -> Bool {
+        await model.sendCommand("find", args: ["query": "x", "replace": true])
+        return await js(model, """
+        const field = document.querySelector('input[aria-label="Replace with"]');
+        const replace = [...document.querySelectorAll('.find button')].find(b => b.textContent.trim() === 'Replace all');
+        if (!field || !replace) return false;
+        field.value = 'Y'; replace.click(); return true;
+        """) as? Bool == true
+    }
+
     func documentShortcuts(keep: inout [NSWindow]) async -> Verification.Check {
         let name = "document-shortcuts-copy-and-refresh"
         do {

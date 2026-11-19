@@ -280,6 +280,18 @@
 			}
 			return edits;
 		}
+		function applyReplacement(doc: ReaderExactDocument, edits: ReaderEdit[]) {
+			if (!editor.close()) return null;
+			const returnToReading = controller.lock === "reading";
+			controller.setLock("writing");
+			doc.seal();
+			try {
+				return controller.change(edits);
+			} finally {
+				doc.seal();
+				if (returnToReading) controller.setLock("reading");
+			}
+		}
 		function outlineSettings(patch: Record<string, unknown>) {
 			if (typeof patch.outlineWidth === "number") setWidth(patch.outlineWidth, false);
 			if (typeof patch.outlineOpen === "boolean") app.dataset.outline = patch.outlineOpen ? "open" : "closed";
@@ -367,15 +379,11 @@
 				paintFind();
 			},
 			replace() {
-				if (!matches.length || !controller.doc || app.dataset.overlay) return;
+				if (!controller.doc || app.dataset.overlay) return;
 				const edits = replacementEdits(controller.doc.source);
 				if (!edits?.length) return;
-				editor.close();
-				controller.setLock("writing");
-				controller.doc.seal();
-				const result = controller.change(edits);
-				controller.doc.seal();
-				if (result.status === "ok") ctx.toast(`Replaced ${edits.length} ${edits.length === 1 ? "match" : "matches"}`);
+				if (applyReplacement(controller.doc, edits)?.status === "ok")
+					ctx.toast(`Replaced ${edits.length} ${edits.length === 1 ? "match" : "matches"}`);
 			},
 			jump(start) {
 				const target = block(start);

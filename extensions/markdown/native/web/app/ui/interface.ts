@@ -282,15 +282,19 @@
 		function editSelection(format?: string) {
 			const selected = editor.selection() ?? selection;
 			if (!selected) return false;
-			const block = controller.blocks.find((b) => b.start <= selected.start && b.end >= selected.start);
-			if (!block) return false;
+			const block = controller.blocks.find((b) => b.start <= selected.start && b.end >= selected.end);
+			if (!block) {
+				toast("Select text within one block to edit it here.");
+				return false;
+			}
 			const oneOff = controller.lock === "reading";
-			controller.setLock("writing");
 			const map = new api.exact.LineMap(controller.doc?.source.slice(block.start, block.end) ?? "");
 			const at = api.sourceModel.sourceToDisplay(map, selected.start - block.start);
 			const opened = editor.open(block.key, at, { oneOff, selection: { start: selected.start, end: selected.end } });
-			if (format && opened) editor.format(format);
-			hideSelection();
+			if (opened) {
+				if (format) editor.format(format);
+				hideSelection();
+			}
 			return opened;
 		}
 		function selectionButtons(selected: ReaderSelection) {
@@ -481,7 +485,6 @@
 			const key = c.block?.dataset.block;
 			if (!key) return;
 			const oneOff = controller.lock === "reading";
-			controller.setLock("writing");
 			const hit = document.elementFromPoint(c.point.x, c.point.y);
 			if (hit && codeViews.edit(hit, { oneOff })) return;
 			editor.open(key, { x: c.point.x, y: c.point.y }, { oneOff });
