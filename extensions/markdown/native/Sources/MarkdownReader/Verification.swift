@@ -2339,6 +2339,14 @@ struct Context {
             CheckRunner.checkPasteboard.clearContents()
             _ = await js(model, "document.querySelectorAll('figure.code')[1].querySelector('[data-role=\"code-copy\"]').click(); return true;")
             let copied = await wait(seconds: 3) { CheckRunner.checkPasteboard.string(forType: .string) == literal }
+            // Copied text is document text: a selection across the blocks carries no control or label.
+            let selected = await js(model, """
+                const range = document.createRange(); range.selectNodeContents(document.querySelector('[data-role="document"]'));
+                getSelection().removeAllRanges(); getSelection().addRange(range);
+                const text = getSelection().toString(); getSelection().removeAllRanges();
+                return text;
+                """) as? String ?? ""
+            let cleanCopy = ["Copy code", "Source", "Rendered", "TypeScript", "text"].allSatisfy { !selected.contains($0) } && selected.contains("const answer")
             let label = await findState(model, query: "text")
             let found = await findState(model, query: "Install")
             await model.sendCommand("findNext")
@@ -2387,9 +2395,9 @@ struct Context {
             await model.sendCommand("escape")
             let backToReading = await wait(seconds: 3) { (await js(model, "return document.getElementById('app').dataset.mode;") as? String) == "reading" }
             let edits = [clickedOpen, menuOpen].allSatisfy { $0.count == 2 && $0[0] as? String == "```markdown" && $0[1] as? Int == 12 } && backToReading
-            let pass = syntax && plain == 0 && switcher == [true, false] && rendered && asked && copied && label?.count == 0 && found?.count == 1
+            let pass = syntax && plain == 0 && switcher == [true, false] && rendered && asked && copied && cleanCopy && label?.count == 0 && found?.count == 1
                 && revealed && keyed && edits && model.snapshot?.source == source
-            return .init(name: name, pass: pass, detail: "chosen syntax: \(chosen); plain spans: \(plain ?? -1); view switch hidden: \(switcher); rendered: \(view); link asked: \(asked); copy exact: \(copied); find of a label: \(label?.count ?? -1); find count: \(found?.count ?? -1); source revealed: \(revealed); menu keys: \(keys); click edit: \(clickedOpen); Edit Here: \(menuOpen); back to Reading: \(backToReading)")
+            return .init(name: name, pass: pass, detail: "chosen syntax: \(chosen); plain spans: \(plain ?? -1); view switch hidden: \(switcher); rendered: \(view); link asked: \(asked); copy exact: \(copied); selected text \(selected.debugDescription); find of a label: \(label?.count ?? -1); find count: \(found?.count ?? -1); source revealed: \(revealed); menu keys: \(keys); click edit: \(clickedOpen); Edit Here: \(menuOpen); back to Reading: \(backToReading)")
         } catch {
             return .init(name: name, pass: false, detail: String(describing: error))
         }

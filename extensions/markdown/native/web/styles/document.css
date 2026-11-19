@@ -57,6 +57,9 @@
      placeholder's state, is a data-label attribute drawn here. It is not document text, so find,
      selection and copy pass over it. With its controls, a code block's syntax button shows the label. */
   .doc [data-label]::before { content:attr(data-label); }
+  /* Controls inside the document are not document text either: a selection across them, its copy
+     and its quote carry none of their words. The rendered view of a code block stays selectable. */
+  .doc [data-reader-control]:not([data-reader-view]) { -webkit-user-select:none;user-select:none; }
   .doc figure.code[data-controls] > figcaption::before { content:none; }
   /* A block's Markdown shown rendered: a small page inside the frame, in the document's own styles. */
   .doc figure.code[data-rendered] > pre { display:none; }
