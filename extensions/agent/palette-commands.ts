@@ -24,9 +24,9 @@ type PaletteReply =
 
 const terminalFile = fileURLToPath(new URL("./terminal.ts", import.meta.url));
 const packageRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-type PaletteManager = Pick<AgentManager, "control"> & {
-	dashboardPage(): Promise<Pick<Awaited<ReturnType<AgentManager["dashboardPage"]>>, "rows">>;
-};
+type Roster = Pick<Awaited<ReturnType<AgentManager["dashboardPage"]>>, "rows">;
+type RosterRow = Roster["rows"][number];
+type PaletteManager = Pick<AgentManager, "control"> & { dashboardPage(): Promise<Roster> };
 const replyBudgetMs = 18_000;
 
 function shortLine(text: string, limit: number): string {
@@ -50,6 +50,41 @@ function pauseAtDeadline<T>(operation: Promise<T>, signal: AbortSignal): Promise
 	});
 }
 
+function baseTitle(row: RosterRow): string {
+	return shortLine(row.name ?? "", 100) || row.profile?.handle || row.id;
+}
+
+function shortTarget(row: RosterRow): string {
+	return row.storageId.slice(0, 8) + row.id.slice(row.storageId.length);
+}
+
+function rosterItems(rows: readonly RosterRow[]) {
+	const visible = [...rows].sort((a, b) => b.modifiedAt - a.modifiedAt || a.id.localeCompare(b.id)).slice(0, 200);
+	const counts = new Map<string, number>();
+	for (const row of visible) {
+		const title = baseTitle(row);
+		counts.set(title, (counts.get(title) ?? 0) + 1);
+	}
+	const usedTitles = new Set(counts.keys());
+	return visible.map((row) => {
+		const base = baseTitle(row);
+		let title = base;
+		if (counts.get(base) !== 1) {
+			const suffix = row.profile?.handle || shortTarget(row);
+			title = `${base} (${suffix})`;
+			if (usedTitles.has(title)) title = `${base} (${row.id})`;
+			for (let n = 2; usedTitles.has(title); n++) title = `${base} (${row.id}, ${n})`;
+			usedTitles.add(title);
+		}
+		return { id: row.id, title, subtitle: shortLine(`${row.state} · ${basename(row.cwd) || row.cwd}`, 100), detail: row.state, icon: "person" };
+	});
+}
+
+function readRoster(manager: PaletteManager, signal?: AbortSignal): Promise<Roster> {
+	const roster = manager.dashboardPage();
+	return signal ? pauseAtDeadline(roster, signal) : roster;
+}
+
 export async function runAgentPaletteStep(request: PaletteRequest, paths: PalettePaths, manager: PaletteManager, signal?: AbortSignal): Promise<PaletteReply> {
 	const command = agentPaletteCommands.find(({ id }) => id === request.command);
 	if (!command) return { error: "Unknown Agent palette command." };
@@ -60,18 +95,12 @@ export async function runAgentPaletteStep(request: PaletteRequest, paths: Palett
 	if (answers.length && (typeof identity !== "string" || !identity.trim())) return { error: "Choose an agent from the list." };
 	if (answers.length === 2 && (typeof message !== "string" || !message.trim())) return { error: "Enter a message before sending." };
 
-	const roster = manager.dashboardPage();
-	const { rows } = await (signal ? pauseAtDeadline(roster, signal) : roster);
-	const titleFor = (row: typeof rows[number]) => shortLine(row.name ?? "", 100) || row.profile?.handle || row.id;
-	if (!answers.length) {
-		const items = [...rows].sort((a, b) => b.modifiedAt - a.modifiedAt || a.id.localeCompare(b.id)).slice(0, 200).map((row) => ({
-			id: row.id, title: titleFor(row), subtitle: shortLine(`${row.state} · ${basename(row.cwd) || row.cwd}`, 100), detail: row.state, icon: "person",
-		}));
-		return { ask: { kind: "pick", prompt: { title: command.title, items } } };
-	}
+	const { rows } = await readRoster(manager, signal);
+	const items = rosterItems(rows);
+	if (!answers.length) return { ask: { kind: "pick", prompt: { title: command.title, items } } };
 	const target = rows.find((row) => row.id === identity);
 	if (!target) return { error: "The selected agent is not in the retained roster." };
-	const name = titleFor(target);
+	const name = items.find((item) => item.id === target.id)?.title ?? baseTitle(target);
 	if (opening) return { show: {
 		argv: ["/usr/bin/env", ...paletteEnvironmentKeys.map((key) => `${key}=${paths[key]}`), process.execPath, terminalFile, "--session", target.id],
 		label: shortLine(`agent ${name}`, 32), cwd: packageRoot, placement: "right",

@@ -61,6 +61,34 @@ test("both commands pick the same bounded roster in activity order without sendi
 	}
 });
 
+test("repeated titles identify each target in the pick, prompt and admission notice", async (t) => {
+	const { paths } = fixture(t);
+	const standing = row(undefined, 3);
+	const child = row("abcdef01-1111-4111-8111-111111111111:4", 2);
+	const sibling = row(`${child.storageId}:5`);
+	const rows = [{ ...standing, profile: profile(standing.id) }, child, sibling].map((entry) => ({ ...entry, name: "Review" }));
+	const control = t.mock.fn<AgentManager["control"]>(async (_, params) => ({ submissionId: 42, identity: params.sessionId }));
+	const manager = { dashboardPage: fakeRoster(rows), control };
+	const items = [
+		{ id: standing.id, title: "Review (@review)" },
+		{ id: child.id, title: "Review (abcdef01:4)" },
+		{ id: sibling.id, title: "Review (abcdef01:5)" },
+	];
+	for (const command of ["agent.open", "agent.message"]) {
+		const reply = await runAgentPaletteStep(request(command), paths, manager);
+		assert.ok("ask" in reply);
+		const picked = reply.ask.prompt.items as typeof items;
+		assert.deepEqual(picked.map(({ id, title }) => ({ id, title })), items);
+	}
+	for (const { id, title } of items) {
+		const prompt = await runAgentPaletteStep(request("agent.message", id), paths, manager);
+		assert.ok("ask" in prompt);
+		assert.equal(prompt.ask.prompt.title, `Message ${title}`);
+		assert.deepEqual(await runAgentPaletteStep(request("agent.message", id, "Please review."), paths, manager), { done: { notice: `Sent to ${title}.` } });
+	}
+	assert.deepEqual(control.mock.calls.map(({ arguments: [, params] }) => params.sessionId), items.map(({ id }) => id));
+});
+
 test("open and message prompts use the exact selected conversation", async (t) => {
 	const { paths } = fixture(t);
 	const target = { ...row(`${randomUUID()}:4`), name: "A".repeat(40) };
@@ -103,23 +131,42 @@ test("admission uses terminal operator semantics and never resends an uncertain 
 	}
 });
 
-test("the ordinary factory publishes at setup and on request, then unsubscribes at shutdown", async (t) => {
+function fixtureInstall(install: string) {
+	const release = join(install, "releases", "fixture");
+	mkdirSync(release, { recursive: true });
+	writeFileSync(join(install, "current-version"), "fixture\n");
+	symlinkSync(resolve(getPackageDir(), "../.."), join(release, "node_modules"), "dir");
+}
+
+test("the ordinary factory captures the launcher install outside the coding directory", async (t) => {
 	const { root, paths } = fixture(t);
-	const old = new Map(Object.keys(paths).map((key) => [key, process.env[key]]));
+	const launcherHome = join(root, "launcher home");
+	const bin = join(launcherHome, "bin");
+	paths.PI_MANAGED_INSTALL_ROOT = join(launcherHome, "install");
+	fixtureInstall(paths.PI_MANAGED_INSTALL_ROOT);
+	mkdirSync(bin);
+	writeFileSync(join(bin, "pi"), "#!/bin/sh\nexit 1\n", { mode: 0o700 });
+	const old = new Map([...Object.keys(paths), "PATH"].map((key) => [key, process.env[key]]));
 	t.after(() => { for (const [key, value] of old) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
-	Object.assign(process.env, paths);
+	Object.assign(process.env, paths, { PATH: bin });
+	delete process.env.PI_MANAGED_INSTALL_ROOT;
 	const events = createEventBus();
 	const publications: unknown[] = [];
 	events.on("harness:palette:publish", (publication) => publications.push(publication));
 	let shutdown: ((event: unknown, ctx: ExtensionContext) => Promise<void>) | undefined;
 	await register({ events, on: (name: string, handler: typeof shutdown) => { if (name === "session_shutdown") shutdown = handler; }, registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "off", appendEntry() {} } as unknown as ExtensionAPI);
-	assert.deepEqual(readdirSync(root), [], "publication opens no store and creates no files");
+	assert.deepEqual(readdirSync(root), ["launcher home"], "publication creates no store files");
 	assert.equal(publications.length, 1);
 	const published = publications[0] as { version: number; source: string; commands: { id: string; title: string; argv: string[] }[] };
 	assert.equal(published.version, 1);
 	assert.equal(published.source, "agent");
 	assert.deepEqual(published.commands.map(({ id, title }) => [id, title]), [["agent.open", "Open an Agent…"], ["agent.message", "Message an Agent…"]]);
 	for (const { argv } of published.commands) assert.deepEqual(argv, [process.execPath, resolve("extensions/agent/palette-commands.ts"), ...Object.values(paths)]);
+	const [program, ...args] = published.commands[0].argv;
+	const reply = execFileSync(program, [...args, JSON.stringify(request("agent.open"))], { env: { HOME: root }, encoding: "utf8", timeout: 20_000 });
+	assert.deepEqual(JSON.parse(reply), { ask: { kind: "pick", prompt: { title: "Open an Agent…", items: [] } } });
+	// A later request republishes the same resolved paths without another launcher search.
+	delete process.env.PATH;
 	events.emit("harness:palette:request", { version: 2 });
 	assert.equal(publications.length, 1);
 	events.emit("harness:palette:request", { version: 1 });
@@ -132,10 +179,7 @@ test("the ordinary factory publishes at setup and on request, then unsubscribes 
 
 test("the standalone process uses the supplied paths for passive catalogue reads", async (t) => {
 	const { root, paths } = fixture(t);
-	const release = join(paths.PI_MANAGED_INSTALL_ROOT, "releases", "fixture");
-	mkdirSync(release, { recursive: true });
-	writeFileSync(join(paths.PI_MANAGED_INSTALL_ROOT, "current-version"), "fixture\n");
-	symlinkSync(resolve(getPackageDir(), "../.."), join(release, "node_modules"), "dir");
+	fixtureInstall(paths.PI_MANAGED_INSTALL_ROOT);
 	const run = (value: ReturnType<typeof request>) => JSON.parse(execFileSync(process.execPath, [resolve("extensions/agent/palette-commands.ts"), ...Object.values(paths), JSON.stringify(value)], {
 		env: { HOME: root }, encoding: "utf8", timeout: 20_000,
 	}));
