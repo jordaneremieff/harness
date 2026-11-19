@@ -735,7 +735,8 @@ test("cancellation settles quietly, another conversation cannot reach the job, a
 		const conversation = await one.harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } });
 		conversationId = conversation.id;
 		await say(conversation, "CANCEL fixture");
-		await until(async () => existsSync(pidFile), "the job spawned");
+		// The shell redirect creates the file before printf writes the PID, so wait for the PID itself.
+		await until(async () => existsSync(pidFile) && /^[1-9]\d*$/u.test(readFileSync(pidFile, "utf8")), "the job wrote its PID");
 		const pid = Number(readFileSync(pidFile, "utf8"));
 		const other = await one.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } }, context);
 		await say(other, "PEEK at a foreign job");

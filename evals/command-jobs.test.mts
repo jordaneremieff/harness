@@ -98,6 +98,15 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 			await delay(20);
 		}
 	}
+	/** The shell redirect creates the file before printf writes the PID, so an existing file can still be empty. */
+	async function writtenPid(name: string): Promise<number> {
+		let pid = 0;
+		await until(async () => {
+			pid = existsSync(join(cwd, name)) ? Number(readFileSync(join(cwd, name), "utf8")) : 0;
+			return Number.isSafeInteger(pid) && pid > 0;
+		});
+		return pid;
+	}
 	const completions = () =>
 		session?.messages.flatMap((message) =>
 			message.role === "custom" && message.customType === JOB_COMPLETION_MESSAGE ? [message.details as JobCompletionDetails] : [],
@@ -208,16 +217,14 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 			part.type === "text" && part.text === "[policy] Use the read tool for file contents, one call per file: read path=README.md.",
 		));
 		const cancel = JSON.parse(JSON.stringify(cancelReceipt.details)).job;
-		await until(async () => existsSync(join(cwd, "cancel-pid")));
-		const cancelPid = Number(readFileSync(join(cwd, "cancel-pid"), "utf8"));
+		const cancelPid = await writtenPid("cancel-pid");
 		assert.equal((await data("jobs", { action: "cancel", id: cancel.id })).job.cancellationRequested, true);
 		await until(async () => (await data("jobs", { action: "status", id: cancel.id })).job.status === "cancelled");
 		assert.throws(() => process.kill(cancelPid, 0), { code: "ESRCH" });
 
 		const owned = (await data("bash", { command: "printf '%s' $$ > shutdown-pid; exec sleep 30", background: true }))
 			.job;
-		await until(async () => existsSync(join(cwd, "shutdown-pid")));
-		const shutdownPid = Number(readFileSync(join(cwd, "shutdown-pid"), "utf8"));
+		const shutdownPid = await writtenPid("shutdown-pid");
 		assert.equal((await data("jobs", { action: "status", id: owned.id })).job.status, "running");
 		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		assert.throws(() => process.kill(shutdownPid, 0), { code: "ESRCH" });
