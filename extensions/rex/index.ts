@@ -16,6 +16,8 @@ import { createTabLabelProjector, type TabLabelProjectorOptions } from "./tab-la
 import { createConversationKeeper, runAnswered, type ConversationKeeperOptions, type FloatedPane } from "./keep-visible.ts";
 import { createSessionPaneRegistrar, type SessionPaneRegistrarOptions } from "./session-pane.ts";
 import { registerRexCommand } from "./setup.ts";
+import { createPaletteCollector, paletteRegistryPath } from "./palette.ts";
+import { paneStackingCommand } from "./pane-stacking.ts";
 
 type RegistrationOptions = RexAdapterOptions & {
 	createTabLabelProjector?: (options: TabLabelProjectorOptions) => ReturnType<typeof createTabLabelProjector>;
@@ -77,6 +79,8 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 	const keeper = (options.createConversationKeeper ?? createConversationKeeper)({ settings });
 	// The agents of this session open their panes on its tab: their inherited launch context is this record.
 	const panes = (options.createSessionPaneRegistrar ?? createSessionPaneRegistrar)({ agentDir });
+	// Commands that extensions offer in the Rex palette, recorded for the runtime that /rex setup installs.
+	const palette = createPaletteCollector({ events: pi.events, agentDir, paneStacking: () => paneStackingCommand(process.env.REX_SERVER ?? "unix:///", process.env) });
 	const serialise = serialiseOwners();
 	const active = new Set<RexExecutor>();
 	const invocations = liveCalls();
@@ -144,8 +148,8 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 		pi.registerTool(tool);
 	}
 	const stopDisplay = publishRexToolDisplay(pi.events, tools);
-	registerRexCommand(pi, { executable: settings.executable });
-	pi.on("session_start", async (_event, ctx) => { await stopCalls(); lifetime = new AbortController(); tabLabels.start(ctx); keeper.start(ctx); panes.start(ctx); });
+	registerRexCommand(pi, { executable: settings.executable, registryPath: paletteRegistryPath(agentDir) });
+	pi.on("session_start", async (_event, ctx) => { await stopCalls(); lifetime = new AbortController(); tabLabels.start(ctx); keeper.start(ctx); panes.start(ctx); palette.start(ctx); });
 	// The conversation needs the operator when its run ends with an answer or an error, or a dialog waits.
 	// A run that ends quietly in a tool call leaves the arrangement alone: its work can still be running.
 	pi.on("agent_settled", (event, ctx) => { if (runAnswered(ctx.sessionManager.getBranch(), event.aborted)) keeper.attention(ctx); });
@@ -158,6 +162,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 	});
 	pi.on("session_shutdown", async () => {
 		panes.shutdown();
+		palette.shutdown();
 		const labelsStopped = tabLabels.shutdown();
 		const keeperStopped = keeper.shutdown();
 		try { await stopCalls(); }

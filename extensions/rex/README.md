@@ -383,18 +383,24 @@ does not act on what it asked:
 | Outcome | Meaning |
 |---|---|
 | `declined` | The person closed the question without answering. |
-| `timeout` | Nobody answered within the wait. |
+| `timeout` | Nobody answered within the wait, or other questions kept every app busy for all of it. |
 | `no_client` | No Rex app is connected to the server. |
 | `unsupported` | No connected app can show questions, or the server's API revision is below 17. |
-| `busy` | Every app already shows another question. |
 | `not_configured` | The server has not loaded the `pi_ask` action. |
 | `unavailable` | Rex could not be reached before the question was asked: no server, or the CLI failed. |
 | `superseded` | The operator typed into the session while the question waited. |
 | `cancelled` | The call ended before an answer. |
 | `failed` | Rex reported another failure; `error` carries its text. |
 
+When every app already shows another question, this one waits its turn: the extension asks again
+every two seconds, for the rest of the wait, so questions from several agents queue instead of
+failing.
+
 The answer comes from a person who uses a connected Rex app, and it answers this question only.
-It grants no other permission and does not satisfy a policy approval. A question creates no Rex resource, so
+It approves an act only when the question asked about that act and the complete act was shown
+first, as for a policy approval of one exact action; it grants nothing beyond that act. Rex sends
+the question to every app connected to the server, so anyone with access to the server can answer
+it. A question creates no Rex resource, so
 the call keeps no ownership record. Its allowance is its own wait plus 30 seconds for the calls
 around it, not `rex.maxWaitMs`, because a person answers it. When the call ends without an answer,
 for any reason, the extension stops the Rex action, and Rex closes the question in every app. An
@@ -405,8 +411,8 @@ ends the question as `superseded`; when Pi admits the message, it follows the re
 command does not end the question. Escape in the editor stops the agent's run and with it the
 question (`cancelled`).
 
-When Rex cannot put the question to anybody (`not_configured`, `unsupported`, `no_client`, `busy`
-or `unavailable`), an interactive session asks it in its own dialog for the rest of the wait, if
+When Rex cannot put the question to anybody (`not_configured`, `unsupported`, `no_client` or
+`unavailable`), an interactive session asks it in its own dialog for the rest of the wait, if
 at least a second remains, and the result keeps Rex's outcome in `data.rex`. The dialog offers the
 same answers in Pi's own controls. It has no multiple choice, so each pick ticks or unticks a
 choice until Done. It has no prefilled field, so it offers a proposed `value` as a choice beside
@@ -421,9 +427,10 @@ question in any app to end the wait sooner.
 Rex lets only an action that the server configuration defines show a question; a Lua script that
 `rex do` runs, including a `rex_native` Lua call, receives `unsupported`. The question therefore
 travels through a small action, `pi_ask`, that forwards it to `rex.ui` unchanged and returns the
-answer or Rex's reason for none. Run by hand from the palette, it does nothing.
+answer or Rex's reason for none. Run by hand from the palette, it does nothing. The same
+configuration block holds the runtime of [palette commands](#palette-commands).
 
-- `/rex setup` shows the action and asks for confirmation. It then adds the action, between two
+- `/rex setup` shows the block and asks for confirmation. It then adds the block, between two
   marker lines, at the end of the configuration file that `rex config check` names (`REX_CONFIG`,
   or `rex/init.lua` in the configuration directory). Every other byte stays as it was, except
   that a last line without a line break gets one. When that path links to a file elsewhere, such
@@ -436,18 +443,54 @@ answer or Rex's reason for none. Run by hand from the palette, it does nothing.
   a file with several hard links or a file of another kind is refused. Pi keeps the previous file
   beside the configured path, with `.before-pi-setup` added to its name, and runs
   `rex config reload`.
-- Setup and remove recognise only the exact block that Pi writes. A block with other text between
-  its markers, a partial block or a repeated block is refused and stays for the operator to
-  correct, so marker lines around other text, such as inside a Lua string, are never taken for it.
-- When the file already holds the block but the server has not loaded it, setup offers to run
+- Setup and remove recognise only the exact block that Pi writes, which names the palette
+  registry of this agent directory. A block with other text between its markers, a partial block
+  or a repeated block is refused and stays for the operator to correct, so marker lines around
+  other text, such as inside a Lua string, are never taken for it.
+- When the file already holds the block but the server has not loaded one of its actions, such as
+  the action of a palette command recorded since the last reload, setup offers to run
   `rex config reload`, which reads the whole file again, and runs it only after confirmation.
 - `/rex status` reports whether the file holds the block, the server's version and API revision,
-  whether the server has loaded the action, and the connected Rex apps.
+  the recorded palette commands, the actions that the server has not loaded, and the connected
+  Rex apps.
 - `/rex remove` deletes the block the same way, with confirmation.
 
-Questions need API revision 17 or later on the server (Rex 0.1.0-preview.21 has revision 18) and
-Rex apps as new as the server; an older app reports `unsupported`. After a Rex update, the server
-runs the new version only once it restarts.
+Questions and palette commands need API revision 17 or later on the server (Rex
+0.1.0-preview.21 has revision 18) and Rex apps as new as the server; an older app reports
+`unsupported`. After a Rex update, the server runs the new version only once it restarts.
+
+## Palette commands
+
+Extensions offer the operator commands in the Rex command palette under `Pi:`, following the
+[palette commands contract](../../docs/conventions/palette-commands.md). Each command is a program
+of its extension that answers one step at a time: it asks a question, opens a pane, or ends. The
+runtime that `/rex setup` installs asks the questions with `rex.ui` in every connected Rex app,
+runs each step with `rex.exec` on the server's machine, and opens the panes. This extension
+publishes no command of its own; the agent and markdown extensions publish theirs.
+
+- Ordinary interactive Pi sessions that heard a publication record the published commands in
+  `<agentDir>/rex/palette.json` when they start and when a publication arrives later. A record
+  replaces the commands of each extension that the session heard and keeps the commands of other
+  extensions while their program exists, so a trial that loads only some extensions removes
+  nothing. The file is written in one rename and only when it changes. RPC, JSON and print
+  sessions and native hosts record nothing. One warning per extension runtime reports a failed
+  record.
+- `Pi: Commands…` (the `pi` action) lists every recorded command and runs the chosen one. Each
+  command also appears under its own name, `Pi: <title>` (the action `pi_<extension>_<name>`),
+  once Rex has reloaded its configuration after the command was first recorded. `Pi: Run Command`
+  (`pi_command`) runs one command by its ID for a key binding, for example
+  `rex.bind("cmd+shift+o", "pi_command", { id = "markdown.read" })`.
+- The runtime reads the record each time a command runs, so a newly activated harness snapshot
+  takes effect without a reload. It runs at most eight steps of 20 seconds each; the time that a
+  person takes to answer does not count. A question without an answer ends the run quietly. A
+  failed step, an error reply or a notice shows as a one-row message in the palette.
+- A pane that a command opens splits the focused pane evenly to the right or below, or floats over
+  the middle of its window, without moving focus. It receives the
+  [pane stacking feed](#pane-stacking-feed) offer that the record names, closes when its program
+  exits with status 0 and stays open after a failure.
+- Steps run under the operator's account with the Rex server's environment, not the shell's, so
+  each published command carries the values it needs in its arguments. Pi and the Rex server must
+  run on the same machine, because the runtime reads the record from Pi's agent directory.
 
 ## Pane stacking feed
 
@@ -643,7 +686,10 @@ server, session, client or terminal state:
 - terminal readback: `com.superlogical.terminal.process`,
   `com.superlogical.terminal.program_status`, `com.superlogical.terminal.modes`,
   `com.superlogical.terminal.input_mode`, `com.superlogical.terminal.size`,
-  `com.superlogical.terminal.title`, `com.superlogical.terminal.pwd`;
+  `com.superlogical.terminal.title`, `com.superlogical.terminal.pwd`,
+  `com.superlogical.terminal.ports` (the TCP ports that programs in the
+  terminal listen on, such as a development server's);
+- tunnel state: `com.superlogical.tunnel.info`;
 - filesystem and onboarding state: `com.superlogical.terminal.list_dir`,
   `com.superlogical.onboarding.state`.
 

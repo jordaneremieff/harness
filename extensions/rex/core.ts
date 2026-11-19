@@ -9,7 +9,8 @@ import {
 } from "./ownership.ts";
 import type { OwnershipRecord, OwnershipState, OwnershipStore, ResourceRef, ServerRef } from "./ownership.ts";
 import { createRexBudget, deadlineCoverage, RexStopped, type RexBudget, type BudgetPhase } from "./deadline.ts";
-import { ASK_ACTION, ASK_API_REVISION, ASK_BUDGET_LIMIT_MS, askBudget, askCliSettlement, askMeaning, askPrompt, askTrouble, type AskRequest, type AskSettlement } from "./ask.ts";
+import { setTimeout as delay } from "node:timers/promises";
+import { ASK_ACTION, ASK_API_REVISION, ASK_BUDGET_LIMIT_MS, askBudget, askCliSettlement, askMeaning, askPrompt, askTrouble, askWaitMs, type AskRequest, type AskSettlement } from "./ask.ts";
 import { paneStackingCommand, withPaneStacking } from "./pane-stacking.ts";
 import { CliTransport } from "./transport.ts";
 import type { CliResult, RexTransport } from "./transport.ts";
@@ -141,6 +142,8 @@ export interface RexCoreOptions {
 	 * target when it names nothing. Absent: the process's own launch environment.
 	 */
 	launch?: { readonly description: string; readonly unavailable?: string };
+	/** Time between two attempts of a question while every Rex app shows another question. */
+	askRetryMs?: number;
 }
 
 /** Aggregate envelope budget shared by domain results and host model-output limits. */
@@ -413,30 +416,50 @@ export class RexCore {
 	 */
 	private async ask(request: AskRequest, context: RexCallContext): Promise<RexResult> {
 		const question = askPrompt(request, context.asker);
-		const stopped = (): AskSettlement | { outcome: "cancelled" | "timeout" } => ({ outcome: context.budget?.stopReason() ?? "cancelled" });
-		let target: ResolvedTarget | undefined;
+		const stopped = (target?: ResolvedTarget) => askResult(question.title, target, { outcome: context.budget?.stopReason() ?? "cancelled" });
+		let target: ResolvedTarget;
 		try {
-			const { server, data: identity } = await this.identify(this.options.server ?? this.env.REX_SERVER, context);
-			target = { server, source: "server" };
-			const tooOld = askServerTooOld(identity);
-			if (tooOld) return askResult(question.title, target, tooOld);
-			const listed = object(await this.json(["actions", "--json"], server.endpoint, context));
-			const actions = Array.isArray(listed.actions) ? listed.actions : [];
-			if (!actions.some((action) => object(action).name === ASK_ACTION && object(action).kind === "lua")) return askResult(question.title, target, { outcome: "not_configured" });
-			context.budget?.check("observe");
+			const ready = await this.askReady(question.title, context);
+			if ("outcome" in ready) return ready;
+			target = ready;
 		} catch (error) {
-			if (error instanceof RexStopped || context.signal?.aborted) return askResult(question.title, target, stopped());
+			if (error instanceof RexStopped || context.signal?.aborted) return stopped();
 			// Nothing has asked anybody yet: the server or the CLI was not available.
-			return askResult(question.title, target, { outcome: "unavailable", detail: `Rex could not be reached before the question was asked: ${error instanceof NativeFailure ? error.result.error ?? error.result.outcome : errorText(error)}` });
+			return askResult(question.title, undefined, { outcome: "unavailable", detail: `Rex could not be reached before the question was asked: ${error instanceof NativeFailure ? error.result.error ?? error.result.outcome : errorText(error)}` });
 		}
-		try {
-			// An answer that arrived as the call was stopped stands; askCliSettlement reads it from the output.
-			const raw = await this.cli(["do", ASK_ACTION, "--args", JSON.stringify({ kind: question.kind, prompt: question.prompt }), "--json"], target.server.endpoint, context, ASK_BUDGET_LIMIT_MS, { action: true, keepResult: true });
-			return askResult(question.title, target, askCliSettlement(request, raw, context.budget?.stopReason()));
-		} catch (error) {
+		try { return await this.askInTurn(request, question, target, context); }
+		catch (error) {
 			// A call stopped before it started asked nobody; a stopped action closed its question in every app.
-			if (error instanceof RexStopped || context.signal?.aborted) return askResult(question.title, target, stopped());
+			if (error instanceof RexStopped || context.signal?.aborted) return stopped(target);
 			throw error;
+		}
+	}
+
+	/** The server's target once it can ask: new enough, with the `pi_ask` action loaded. Otherwise the reason it cannot. */
+	private async askReady(title: string, context: RexCallContext): Promise<ResolvedTarget | RexResult> {
+		const { server, data: identity } = await this.identify(this.options.server ?? this.env.REX_SERVER, context);
+		const target: ResolvedTarget = { server, source: "server" };
+		const tooOld = askServerTooOld(identity);
+		if (tooOld) return askResult(title, target, tooOld);
+		const listed = object(await this.json(["actions", "--json"], server.endpoint, context));
+		const actions = Array.isArray(listed.actions) ? listed.actions : [];
+		if (!actions.some((action) => object(action).name === ASK_ACTION && object(action).kind === "lua")) return askResult(title, target, { outcome: "not_configured" });
+		context.budget?.check("observe");
+		return target;
+	}
+
+	/** Ask, and while every app shows another question, ask again for the rest of the wait, so questions queue. */
+	private async askInTurn(request: AskRequest, question: ReturnType<typeof askPrompt>, target: ResolvedTarget, context: RexCallContext): Promise<RexResult> {
+		const waitMs = askWaitMs(request.timeoutMs);
+		for (;;) {
+			const left = waitMs - (context.budget?.elapsed() ?? 0);
+			if (left < 1000) return askResult(question.title, target, { outcome: "timeout", detail: "Other questions kept every Rex app busy for the whole wait." });
+			const prompt = { ...question.prompt, timeout: Math.max(1, Math.floor(left / 1000)) };
+			// An answer that arrived as the call was stopped stands; askCliSettlement reads it from the output.
+			const raw = await this.cli(["do", ASK_ACTION, "--args", JSON.stringify({ kind: question.kind, prompt }), "--json"], target.server.endpoint, context, ASK_BUDGET_LIMIT_MS, { action: true, keepResult: true });
+			const settled = askCliSettlement(request, raw, context.budget?.stopReason());
+			if (settled.outcome !== "busy") return askResult(question.title, target, settled);
+			await delay(this.options.askRetryMs ?? 2000, undefined, { signal: context.signal });
 		}
 	}
 
@@ -1828,7 +1851,9 @@ const VERIFIED_READ_METHODS: ReadonlySet<string> = new Set([
 	"com.superlogical.terminal.size",
 	"com.superlogical.terminal.title",
 	"com.superlogical.terminal.pwd",
+	"com.superlogical.terminal.ports",
 	"com.superlogical.terminal.list_dir",
+	"com.superlogical.tunnel.info",
 	"com.superlogical.onboarding.state",
 ]);
 function validateNativeTarget(request: NativeRequest, target: ResolvedTarget): void {

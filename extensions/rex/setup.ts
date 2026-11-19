@@ -3,86 +3,17 @@ import { chmod, copyFile, lstat, mkdir, readFile, realpath, rename, rm, stat, wr
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { ASK_ACTION, ASK_API_REVISION } from "./ask.ts";
+import { BLOCK_VERSION, configBlock, findConfigBlock, withConfigBlock, withoutConfigBlock } from "./config-block.ts";
+import { readPaletteRegistry } from "./palette.ts";
 import { CliTransport, type RexTransport } from "./transport.ts";
-
-/** The version of the configuration block below. Setup recognises only the exact block of this version. */
-export const ASK_BLOCK_VERSION = 1;
-const BEGIN = /^-- pi-harness: pi_ask v(\d+) begin\r?$/gm;
-const END = /^-- pi-harness: pi_ask end\r?$/gm;
-
-/**
- * The Rex configuration block that lets Pi agents ask the operator questions. Rex lets only an action of the server
- * configuration show a prompt, so `rex_ask` runs this action. It forwards the question to `rex.ui` unchanged and
- * returns the answer or Rex's reason for none.
- */
-export function askActionBlock(): string {
-	return `-- pi-harness: pi_ask v${ASK_BLOCK_VERSION} begin
--- Lets Pi agents ask you a question in the command palette of every connected
--- Rex app. Pi's rex_ask tool runs this action; run by hand, it does nothing.
--- Pi's /rex setup wrote this block and /rex remove deletes it.
-rex.action{
-  name = "${ASK_ACTION}",
-  title = "Pi: Agent Question",
-  description = "Shows a question from a Pi agent. Pi runs this action; running it by hand does nothing.",
-  category = "Pi",
-  args = { kind = "string?", prompt = "object?" },
-  run = function(ctx, args)
-    if args.prompt == nil then return nil end
-    if rex.ui == nil then
-      return { why = "unsupported", detail = "This Rex server has no rex.ui.", version = ${ASK_BLOCK_VERSION} }
-    end
-    local ask = rex.ui.input
-    if args.kind == "pick" then ask = rex.ui.pick end
-    local answer, why, detail = ask(args.prompt)
-    return { answer = answer, why = why, detail = detail, version = ${ASK_BLOCK_VERSION} }
-  end,
-}
--- pi-harness: pi_ask end`;
-}
-
-interface Block { start: number; end: number }
-
-/**
- * The block that setup wrote, if the configuration holds one. Only the exact text of the current block counts, so
- * marker lines around other text, such as inside a Lua string, are never taken for it. A partial, repeated or changed
- * block is refused and stays for the operator to correct.
- */
-export function findAskBlock(source: string): Block | undefined {
-	const begins = [...source.matchAll(BEGIN)];
-	const ends = [...source.matchAll(END)];
-	if (begins.length === 0 && ends.length === 0) return undefined;
-	const begin = begins[0];
-	const end = ends[0];
-	if (begins.length !== 1 || ends.length !== 1 || !begin || !end || end.index < begin.index)
-		throw new Error("The Rex configuration has a partial or repeated pi_ask block. Correct it by hand, then run /rex setup again.");
-	const stop = end.index + end[0].length;
-	const region = { start: begin.index, end: source[stop] === "\n" ? stop + 1 : stop };
-	const text = source.slice(region.start, region.end).replaceAll("\r\n", "\n");
-	if (text !== `${askActionBlock()}\n` && text !== askActionBlock())
-		throw new Error(`The pi_ask block in the Rex configuration differs from the version ${ASK_BLOCK_VERSION} block that Pi writes. Remove the block by hand, then run /rex setup again.`);
-	return region;
-}
-
-/**
- * The configuration with the block added at the end, after a line break when the last line has none. A configuration
- * that already holds the block stays as it is.
- */
-export function withAskAction(source: string): string {
-	if (findAskBlock(source)) return source;
-	return `${source}${source.length > 0 && !source.endsWith("\n") ? "\n" : ""}${askActionBlock()}\n`;
-}
-
-/** The configuration without the block. Every other byte stays as it is. */
-export function withoutAskAction(source: string): string {
-	const found = findAskBlock(source);
-	return found ? source.slice(0, found.start) + source.slice(found.end) : source;
-}
 
 export interface SetupDeps {
 	transport: RexTransport;
 	/** The server that the launch environment selects; absent means Rex's home server. */
 	server?: string;
 	cwd: string;
+	/** The palette registry that the block's runtime reads. */
+	registryPath: string;
 	confirm(title: string, message: string): Promise<boolean>;
 	report(line: string, level?: "info" | "warning" | "error"): void;
 }
@@ -129,7 +60,7 @@ async function readConfig(path: string): Promise<Config> {
 	}
 }
 
-interface ServerFacts { version: string; revision: number; loaded: boolean; apps: string[] }
+interface ServerFacts { version: string; revision: number; actions: Set<string>; apps: string[] }
 async function serverFacts(deps: SetupDeps): Promise<ServerFacts | undefined> {
 	const identity = await rexJson(deps, ["whoami", "--json"]);
 	if (!identity) return undefined;
@@ -143,17 +74,30 @@ async function serverFacts(deps: SetupDeps): Promise<ServerFacts | undefined> {
 	return {
 		version: typeof identity.rex_version === "string" ? identity.rex_version : "unknown version",
 		revision: typeof identity.api_revision === "number" ? identity.api_revision : 0,
-		loaded: listed.some((action) => action.name === ASK_ACTION && action.kind === "lua"),
+		actions: new Set(listed.filter((action) => action.kind === "lua" && typeof action.name === "string").map((action) => action.name as string)),
 		apps,
 	};
 }
 
-function serverLines(facts: ServerFacts | undefined): Array<[string, "info" | "warning"]> {
+/** The Rex action of each recorded palette command, as the block's runtime names it. */
+function commandActions(deps: SetupDeps): Array<{ action: string; title: string }> {
+	return (readPaletteRegistry(deps.registryPath)?.commands ?? []).map((command) => ({ action: `pi_${command.id.replaceAll(".", "_")}`, title: command.title }));
+}
+
+/** Actions of the block that the server has not loaded: the question action, the palette entries, and each recorded command. */
+function missingActions(deps: SetupDeps, facts: ServerFacts): string[] {
+	return [ASK_ACTION, "pi", "pi_command", ...commandActions(deps).map((command) => command.action)].filter((action) => !facts.actions.has(action));
+}
+
+function serverLines(deps: SetupDeps, facts: ServerFacts | undefined): Array<[string, "info" | "warning"]> {
 	if (!facts) return [["The Rex server did not answer. Start Rex, then run /rex status again.", "warning"]];
 	const ready = facts.revision >= ASK_API_REVISION;
+	const commands = commandActions(deps);
+	const missing = missingActions(deps, facts);
 	return [
-		[`Rex server ${facts.version}, API revision ${facts.revision}: ${ready ? "it can ask questions" : `questions need API revision ${ASK_API_REVISION} or later; update Rex and restart its server`}.`, ready ? "info" : "warning"],
-		[facts.loaded ? `The server has loaded the ${ASK_ACTION} action.` : `The server has not loaded the ${ASK_ACTION} action.`, facts.loaded ? "info" : "warning"],
+		[`Rex server ${facts.version}, API revision ${facts.revision}: ${ready ? "it can ask questions and run Pi commands" : `questions and Pi commands need API revision ${ASK_API_REVISION} or later; update Rex and restart its server`}.`, ready ? "info" : "warning"],
+		[commands.length ? `Pi commands for the palette: ${commands.map((command) => command.title).join(", ")}.` : "No Pi command is recorded for the palette yet; Pi records them when an interactive session starts.", commands.length ? "info" : "warning"],
+		[missing.length ? `The server has not loaded these actions: ${missing.join(", ")}. /rex setup reloads the configuration after you confirm.` : "The server has loaded every Pi action.", missing.length ? "warning" : "info"],
 		[facts.apps.length ? `Connected Rex apps: ${facts.apps.join("; ")}. Each app must be as new as the server to show questions.` : "No Rex app is connected.", facts.apps.length ? "info" : "warning"],
 	];
 }
@@ -205,24 +149,24 @@ export async function rexCommand(args: string, deps: SetupDeps): Promise<void> {
 	const path = await configPath(deps);
 	const current = await readConfig(path);
 	if (verb === "status") {
-		const found = findAskBlock(current.text);
-		deps.report(found ? `${path} holds the version ${ASK_BLOCK_VERSION} ${ASK_ACTION} block.` : `${path} has no ${ASK_ACTION} block. /rex setup adds it.`, found ? "info" : "warning");
+		const found = findConfigBlock(current.text, deps.registryPath);
+		deps.report(found ? `${path} holds the version ${BLOCK_VERSION} Pi block.` : `${path} has no Pi block. /rex setup adds it.`, found ? "info" : "warning");
 	} else if (!(await change(verb, deps, path, current))) return;
-	for (const [line, level] of serverLines(await serverFacts(deps))) deps.report(line, level);
+	for (const [line, level] of serverLines(deps, await serverFacts(deps))) deps.report(line, level);
 }
 
 const CHANGES = {
 	setup: {
-		title: "Add the Rex action for agent questions?",
-		message: (path: string) => `Agents then ask you questions in the command palette of every connected Rex app. Pi writes this block to ${path}, keeps the previous file beside it, and reloads the Rex configuration:\n\n${askActionBlock()}`,
-		done: (path: string) => `Added the ${ASK_ACTION} action to ${path}.`,
-		unchanged: (path: string) => `${path} already holds the current ${ASK_ACTION} block.`,
+		title: "Add Pi's actions to Rex?",
+		message: (path: string, registryPath: string) => `Agents then ask you questions in the command palette of every connected Rex app, and the palette offers the commands of your Pi extensions under "Pi:". Pi writes this block to ${path}, keeps the previous file beside it, and reloads the Rex configuration:\n\n${configBlock(registryPath)}`,
+		done: (path: string) => `Added Pi's actions to ${path}.`,
+		unchanged: (path: string) => `${path} already holds the current Pi block.`,
 	},
 	remove: {
-		title: "Remove the Rex action for agent questions?",
-		message: (path: string) => `Pi removes the ${ASK_ACTION} block from ${path}, keeps the previous file beside it, and reloads the Rex configuration. Agents then ask in their own sessions only.`,
-		done: (path: string) => `Removed the ${ASK_ACTION} action from ${path}.`,
-		unchanged: (path: string) => `${path} has no ${ASK_ACTION} block.`,
+		title: "Remove Pi's actions from Rex?",
+		message: (path: string) => `Pi removes its block from ${path}, keeps the previous file beside it, and reloads the Rex configuration. Agents then ask in their own sessions only, and the palette no longer offers Pi commands.`,
+		done: (path: string) => `Removed Pi's actions from ${path}.`,
+		unchanged: (path: string) => `${path} has no Pi block.`,
 	},
 };
 
@@ -232,8 +176,10 @@ const CHANGES = {
  */
 async function reloadWhenMissing(deps: SetupDeps, path: string): Promise<void> {
 	const facts = await serverFacts(deps);
-	if (!facts || facts.loaded || facts.revision < ASK_API_REVISION) return;
-	const reload = await deps.confirm("Reload the Rex configuration?", `${path} holds the ${ASK_ACTION} action, but the Rex server has not loaded it. Pi runs "rex config reload", which makes the server read the whole file again, including any other change in it.`);
+	if (!facts || facts.revision < ASK_API_REVISION) return;
+	const missing = missingActions(deps, facts);
+	if (missing.length === 0) return;
+	const reload = await deps.confirm("Reload the Rex configuration?", `${path} holds Pi's actions, but the Rex server has not loaded ${missing.join(", ")}. Pi runs "rex config reload", which makes the server read the whole file again, including any other change in it.`);
 	if (!reload) return;
 	const reloaded = await rex(deps, ["config", "reload"]);
 	if (!reloaded.ok) deps.report(`The server did not reload the configuration: ${reloaded.stderr || reloaded.stdout.trim()}.`, "warning");
@@ -242,13 +188,13 @@ async function reloadWhenMissing(deps: SetupDeps, path: string): Promise<void> {
 /** Add or remove the block after the operator confirms it. Returns false when the command ends here. */
 async function change(verb: "setup" | "remove", deps: SetupDeps, path: string, current: Config): Promise<boolean> {
 	const words = CHANGES[verb];
-	const next = verb === "setup" ? withAskAction(current.text) : withoutAskAction(current.text);
+	const next = verb === "setup" ? withConfigBlock(current.text, deps.registryPath) : withoutConfigBlock(current.text, deps.registryPath);
 	if (next === current.text) {
 		deps.report(words.unchanged(path));
 		if (verb === "setup") await reloadWhenMissing(deps, path);
 		return true;
 	}
-	if (!(await deps.confirm(words.title, words.message(path)))) {
+	if (!(await deps.confirm(words.title, words.message(path, deps.registryPath)))) {
 		deps.report("Nothing changed.");
 		return false;
 	}
@@ -257,9 +203,9 @@ async function change(verb: "setup" | "remove", deps: SetupDeps, path: string, c
 	return true;
 }
 
-export function registerRexCommand(pi: Pick<ExtensionAPI, "registerCommand">, options: { executable: string; transport?: RexTransport }): void {
+export function registerRexCommand(pi: Pick<ExtensionAPI, "registerCommand">, options: { executable: string; registryPath: string; transport?: RexTransport }): void {
 	pi.registerCommand("rex", {
-		description: "Set up, check or remove the Rex action that lets agents ask you questions in Rex: /rex setup | status | remove",
+		description: "Set up, check or remove Pi's actions in Rex (agent questions and palette commands): /rex setup | status | remove",
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			const transport = options.transport ?? new CliTransport(options.executable, process.env);
 			try {
@@ -267,6 +213,7 @@ export function registerRexCommand(pi: Pick<ExtensionAPI, "registerCommand">, op
 					transport,
 					server: process.env.REX_SERVER,
 					cwd: ctx.cwd,
+					registryPath: options.registryPath,
 					confirm: (title, message) => ctx.hasUI ? ctx.ui.confirm(title, message) : Promise.resolve(false),
 					report: (line, level) => ctx.ui.notify(line, level ?? "info"),
 				});

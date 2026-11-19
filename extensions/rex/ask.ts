@@ -50,7 +50,7 @@ export interface AskSettlement {
 const REASONS: Record<string, AskOutcome> = { cancelled: "declined", timeout: "timeout", no_client: "no_client", unsupported: "unsupported", busy: "busy", failed: "failed" };
 
 /** Outcomes where Rex could not put the question to anybody, so the asking session can still ask in its own dialog. */
-export const ASK_UNREACHED: ReadonlySet<string> = new Set(["not_configured", "unsupported", "no_client", "busy", "unavailable"]);
+export const ASK_UNREACHED: ReadonlySet<string> = new Set(["not_configured", "unsupported", "no_client", "unavailable"]);
 
 /** Text as one line without control or format characters, as the palette and the dialogs show it. */
 const plain = (text: string) => text.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, " ").replace(/\s+/gu, " ").trim();
@@ -178,7 +178,6 @@ export function askTrouble(outcome: string, detail?: string): string {
 		timeout: "Nobody answered within the wait.",
 		no_client: "No Rex app is connected to the server.",
 		unsupported: "No connected Rex app can show questions; the apps can be older than the server.",
-		busy: "Every Rex app already shows another question.",
 		not_configured: `The Rex server has no ${ASK_ACTION} action. The operator adds it with /rex setup in an ordinary Pi session.`,
 		unavailable: "Rex could not be reached before the question was asked.",
 		cancelled: "The call ended before an answer; Rex closed the question.",

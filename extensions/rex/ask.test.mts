@@ -33,7 +33,7 @@ class AskTransport implements RexTransport {
 	dispose() {}
 }
 function core(transport = new AskTransport()) {
-	return { transport, core: new RexCore({ store: noRecords, transport, env: { REX_SERVER: "unix:///rex" }, isCallActive: () => false }) };
+	return { transport, core: new RexCore({ store: noRecords, transport, env: { REX_SERVER: "unix:///rex" }, isCallActive: () => false, askRetryMs: 5 }) };
 }
 const context = { ownerId: "owner", callId: "ask", cwd: "/work", asker: "harness" };
 const doArgs = (transport: AskTransport) => {
@@ -96,7 +96,9 @@ test("the core asks through pi_ask without an ownership record, and an action ca
 	assert.deepEqual(result.data, { question: "harness: Publish the change?", channel: "rex", answer: { choice: "hold" }, meaning: "A person using a connected Rex app answered. The answer covers this question only." });
 	assert.deepEqual(result.effects.state, "none");
 	const sent = doArgs(transport);
-	assert.deepEqual(sent.json, { kind: "pick", prompt: { title: "harness: Publish the change?", timeout: 600, items: choices } });
+	const { timeout: promptSeconds, ...prompt } = sent.json.prompt;
+	assert.deepEqual({ kind: sent.json.kind, prompt }, { kind: "pick", prompt: { title: "harness: Publish the change?", items: choices } });
+	assert.ok(promptSeconds === 600 || promptSeconds === 599, `the prompt asks for the rest of the wait: ${promptSeconds}`);
 	const timeout = Number(/^--timeout=(\d+)s$/.exec(sent.args.find((arg) => arg.startsWith("--timeout=")) ?? "")?.[1]);
 	assert.ok(timeout > 600 && timeout <= 630, `the CLI waits beyond the question's own timeout: ${timeout}`);
 	assert.ok(sent.call.timeoutMs > 600000, "the transport outlives the question's own timeout");
@@ -132,7 +134,6 @@ test("a question that could not reach Rex says so, so a session can still ask in
 
 test("the core reports Rex's reasons and CLI failures without claiming an answer", async () => {
 	for (const [answer, outcome, error] of [
-		[reply({ why: "busy", version: 1 }), "busy", /another question/],
 		[reply({ why: "cancelled" }), "declined", /closed the question/],
 		[reply({}, 1, 'Error: action "pi_ask" did not finish within --timeout 40s.'), "timeout", /wait ended/],
 		[reply({}, 1, "Error: init.lua:9: rex.ui.input: title is required"), "failed", /title is required/],
@@ -146,6 +147,24 @@ test("the core reports Rex's reasons and CLI failures without claiming an answer
 		assert.match(result.error ?? "", error);
 		assert.match(String((result.data as { meaning?: string }).meaning), /No answer arrived/);
 	}
+});
+
+test("a question waits its turn while every Rex app shows another question", async () => {
+	const { core: rex, transport } = core();
+	const replies = [reply({ why: "busy", version: 1 }), reply({ why: "busy", version: 1 }), reply({ answer: "publish", version: 1 })];
+	transport.answer = () => replies.shift() ?? reply({ why: "failed" });
+	const result = await rex.execute(ask({ choices, timeoutMs: 60000 }), context);
+	assert.equal(result.outcome, "answered");
+	assert.deepEqual((result.data as { answer?: unknown }).answer, { choice: "publish" });
+	const asked = transport.calls.filter((entry) => entry.args.includes("do")).map((entry) => JSON.parse(entry.args[entry.args.indexOf("--args") + 1] ?? "{}") as { prompt: { timeout: number } });
+	assert.equal(asked.length, 3, "each turn asks again");
+	assert.ok(asked.every((attempt) => attempt.prompt.timeout <= 60 && attempt.prompt.timeout >= 59), "each attempt asks for the rest of the wait");
+	const always = core();
+	always.transport.answer = () => reply({ why: "busy" });
+	const stop = new AbortController();
+	const pending = always.core.execute(ask(), { ...context, signal: stop.signal });
+	setTimeout(() => stop.abort(), 30);
+	assert.equal((await pending).outcome, "cancelled", "a cancelled call stops waiting for its turn");
 });
 
 test("an answer that the CLI printed as the call was stopped stands", async () => {
