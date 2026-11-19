@@ -74,6 +74,19 @@ test("the prose projection skips quoted and executable material, preserves link 
 	assert.deepEqual(rules(source), []);
 	assert.deepEqual(rules(`${source}\nRead the [honestly useful plan](/tmp/project).`), ["phrases"]);
 });
+test("indented code inside a list item is not prose", () => {
+	assert.deepEqual(rules('-     echo "Hello — world"'), []);
+	assert.deepEqual(rules('1.     echo "Hello — world"'), []);
+	assert.deepEqual(rules('-\t\techo "Hello — world"'), []);
+	assert.deepEqual(rules('-     echo "Hello — world"\n      echo "Goodbye — world"'), []);
+	assert.deepEqual(rules('-    echo "Hello — world"'), ["dashes"]);
+	assert.deepEqual(rules('-\techo "Hello — world"'), ["dashes"]);
+	const findings = checkWriting("-     ```\n      Only code — here.\n\n  Check the prose — here.");
+	assert.deepEqual(
+		findings.map(({ rule, examples }) => [rule, examples[0].line]),
+		[["dashes", 4]],
+	);
+});
 test("label lines count list and inline-code labels, not tables or headings", () => {
 	const prefix = "# Heading: not a label\n\n| Name | Value |\n| --- | --- |\n| Name: | Value |\n\nThe roof holds.\n\n";
 	const labels = "**Water:** None.\n- **Roof**: Dry.\n- *Walls:* Dry.\n- `paint`: Green.\nPlain label: Present.";
@@ -142,6 +155,12 @@ test("past-tense bullets and verification lines count once per line", () => {
 		[3, 4, 5],
 	);
 	assert.deepEqual(rules("The date is 13/12/2026. Read the checks. Read the results."), []);
+});
+test("ordinary past-tense verbs are not verification records", () => {
+	assert.deepEqual(rules("The bill passed in June.\nThe delegation passed through Kyoto."), []);
+	assert.deepEqual(rules("The tests passed.\nThe checks passed."), ["processNarration", "opening"]);
+	assert.deepEqual(rules("The build passed.\nThe first probe passed."), ["processNarration", "opening"]);
+	assert.deepEqual(rules("The lint passed.\nThe typecheck passed."), ["processNarration", "opening"]);
 });
 test("only the first prose paragraph triggers opening, including a verification record", () => {
 	assert.deepEqual(rules("# Roof\n\n> The house is dry.\n\n**This report** describes the roof."), ["opening"]);

@@ -4,7 +4,18 @@ export type ProseBlock = {
 	kind: "paragraph" | "heading" | "list" | "table";
 	codeSpans: { line: number; text: string }[];
 };
-const listItem = /^ {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+/u;
+const listItem = /^( {0,3}(?:[-+*]|\d{1,9}[.)]))([ \t]+)/u;
+
+function listLead(line: string, container: number): { prefix: number; indent: number; code: boolean } | undefined {
+	const item = listItem.exec(line);
+	if (!item) return;
+	const markerEnd = container + item[1].length;
+	let end = markerEnd;
+	for (const char of item[2]) end += char === "\t" ? 4 - (end % 4) : 1;
+	const code = end - markerEnd > 4;
+	// An item that starts with indented code takes one column of padding, leaving four for code.
+	return { prefix: item[0].length, indent: code ? markerEnd + 1 : end, code };
+}
 const heading = /^ {0,3}#{1,6}(?:[ \t]+|$)/u;
 const fenceStart = /^ {0,3}(`{3,}(?!`)(?=[^`]*$)|~{3,})/u;
 const fenceEnd = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u;
@@ -178,9 +189,9 @@ export function* proseBlocks(source: string): Iterable<ProseBlock> {
 			quote = true;
 			continue;
 		}
-		const item = listItem.exec(view)?.[0];
+		const item = listLead(view, container);
 		const mark = heading.exec(view)?.[0];
-		const opener = fenceStart.exec(item ? view.slice(item.length) : view)?.[1];
+		const opener = item?.code ? undefined : fenceStart.exec(view.slice(item?.prefix ?? 0))?.[1];
 		if (quote && !item && !mark && !opener && !thematicBreak.test(view)) continue;
 		quote = false;
 		if (opener) {
@@ -208,9 +219,8 @@ export function* proseBlocks(source: string): Iterable<ProseBlock> {
 		if (item) {
 			yield* flush();
 			kind = "list";
-			listIndent = Math.min(container + item.length, 12);
-			const prefix = container + item.length;
-			if (!/^ {4}/u.test(view.slice(prefix - container))) segments.push({ line: i + 1, raw, prefix });
+			listIndent = Math.min(item.indent, 12);
+			if (!item.code) segments.push({ line: i + 1, raw, prefix: container + item.prefix });
 			continue;
 		}
 		if (!container && kind !== "list") listIndent = 0;

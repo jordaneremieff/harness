@@ -28,7 +28,7 @@ const work = new RegExp(`^(?:I|we)\\s+(?:${workVerbs})\\b`, "iu");
 // A bare “read” is also an instruction, unlike the other verb forms.
 const bareWork = new RegExp(`^(?:${workVerbs.replace("|read|", "|")})\\b`, "iu");
 const record =
-	/(?<![\d/])\b\d+\/\d+\b(?!\/\d)|\b(?:\d+\s+tests?|0\s+failures|(?:lint|typecheck)\s+clean|(?:all\s+tests|checks)\s+pass(?:ed)?|all\s+green|passed)\b/iu;
+	/(?<![\d/])\b\d+\/\d+\b(?!\/\d)|\b(?:\d+\s+tests?|0\s+failures|(?:lint|typecheck)\s+clean|all\s+green|(?:[\p{L}\p{N}_'-]+\s+){0,3}(?:tests?|checks?|builds?|suites?|probes?|lint|typecheck)\s+pass(?:ed)?)\b/iu;
 const openingRecord = new RegExp(`^(?:${record.source})`, "iu");
 const signpost =
 	/^(?:(?:this|in this)\s+(?:document|report|note|page)|(?:here|below)\s+(?:is|are)|the\s+following)\b/iu;
