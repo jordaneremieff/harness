@@ -8,6 +8,7 @@
 // that every requested entrypoint resolved and that Pi reported no errors.
 
 import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -66,6 +67,11 @@ async function main() {
 	if (entrypoints.length === 0) {
 		throw new Error("Usage: extension-load-check.mts <entrypoint> [entrypoint...]");
 	}
+	// Pi's extension event bus is one EventEmitter without its own listener limit. Each loaded
+	// extension can subscribe once to a shared request channel, so Node's default of ten reports
+	// those intended subscriptions as a leak. The limit adds one listener per requested extension
+	// to Node's default, so a channel that grows beyond that still warns.
+	EventEmitter.defaultMaxListeners += entrypoints.length;
 	const outcome = await checkExtensionLoad(entrypoints.map((path) => resolve(path)));
 	for (const failure of outcome.failures) {
 		console.error(`${failure.path}: ${failure.message}`);

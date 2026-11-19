@@ -1,7 +1,16 @@
+import { EventEmitter } from "node:events";
 import { enableCompileCache } from "node:module";
 import { isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { bindInstallationPackages } from "./installation-binding.ts";
+
+/**
+ * The host loads every configured extension on one Pi event bus, an EventEmitter without its own
+ * listener limit. Each extension can subscribe once to a shared request channel, so Node's default
+ * of ten reports those intended subscriptions as a leak in the host's error output. This limit is
+ * well above one listener per extension, so a channel that keeps growing still warns.
+ */
+const EXTENSION_BUS_LISTENER_LIMIT = 64;
 
 /** Read the caller installation before any host module resolves a Pi package import. */
 function callerInstallation(input: unknown): string {
@@ -22,6 +31,7 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 	// Pi enables Node's compile cache in its own process, and a child does not inherit it. Enabling it
 	// before the dynamic imports lets each host start reuse the compiled host and Pi modules.
 	enableCompileCache();
+	EventEmitter.defaultMaxListeners = Math.max(EventEmitter.defaultMaxListeners, EXTENSION_BUS_LISTENER_LIMIT);
 	const input: unknown = JSON.parse(metadataJson);
 	bindInstallationPackages(callerInstallation(input), new URL("./", import.meta.url));
 	const [{ parseHostMetadata }, { runHost, HostClaimRefusedError }, { createDurableRuntime }] = await Promise.all([

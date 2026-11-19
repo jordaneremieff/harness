@@ -105,6 +105,21 @@ test("the load CLI ignores ambient local and global extensions", async (t) => {
 	assert.match(stdout, /Loaded 1 extension/);
 });
 
+test("the load CLI accepts one shared-channel listener per extension without a leak warning", async (t) => {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-load-listeners-")));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const extensions: string[] = [];
+	for (let index = 0; index < 12; index++) {
+		const extension = join(root, `listener-${index}.ts`);
+		await writeFile(extension, "export default function (pi) { pi.events.on('shared:request', () => {}); }\n");
+		extensions.push(extension);
+	}
+	const script = fileURLToPath(new URL("./extension-load-check.mts", import.meta.url));
+	const { stdout, stderr } = await promisify(execFile)(process.execPath, [script, ...extensions], { cwd: root, timeout: 20_000 });
+	assert.match(stdout, /Loaded 12 extensions/);
+	assert.doesNotMatch(stderr, /MaxListenersExceededWarning/);
+});
+
 test("the load CLI fails when a requested entrypoint is absent", async (t) => {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-load-missing-")));
 	t.after(() => rm(root, { recursive: true, force: true }));
