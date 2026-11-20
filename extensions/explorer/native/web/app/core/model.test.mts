@@ -92,3 +92,58 @@ test("requests use the reply-capable bridge and ignore wrong-version events", as
 	connected.receive({ v: 1, type: "open" });
 	assert.deepEqual(events, ["open"]);
 });
+
+const detected: [string, string][] = [
+	["toml", "x.toml Cargo.lock"],
+	[
+		"ini",
+		"x.ini x.cfg x.conf x.properties x.env x.service x.socket x.timer .editorconfig .gitconfig .npmrc .env .env.local .env.production.ts",
+	],
+	["c", "x.c x.h"],
+	["ruby", "x.rb x.gemspec x.rake Gemfile Rakefile"],
+	["php", "x.php"],
+	["lua", "x.lua"],
+	["dockerfile", "Dockerfile Containerfile x.dockerfile"],
+	["makefile", "Makefile GNUmakefile makefile x.mk"],
+	["ignore", ".gitignore .gitattributes .dockerignore .npmignore .prettierignore"],
+	["python", "x.py-tpl Tiltfile"],
+	["json", "x.JSON5 Package.resolved"],
+	["yaml", "x.neon"],
+	["markdown", "x.apib"],
+	["bash", ".zshrc .zprofile .bashrc .bash_profile"],
+	["gomod", "go.mod go.work"],
+	["hcl", "x.tf x.tfvars x.hcl"],
+	["graphql", "x.graphql x.gql"],
+	["protobuf", "x.proto"],
+	["dbml", "x.dbml"],
+	["gettext", "x.po x.pot"],
+	["plantuml", "x.puml x.plantuml"],
+	["rst", "x.rst"],
+	["csv", "x.csv"],
+	["tsv", "x.tsv"],
+	["erb", "x.erb"],
+	["handlebars", "x.hbs x.handlebars"],
+	["gotemplate", "x.tpl x.tmpl x.gotmpl"],
+	["svelte", "x.svelte"],
+	["astro", "x.astro"],
+	["text", "go.sum unknown x.wasm x.cpp x.mm x.java x.kt x.cs dockerfile README.gitignore"],
+];
+
+for (const [id, paths] of detected) {
+	test(`detects ${id} from the leaf name or extension`, () => {
+		for (const path of paths.split(" ")) assert.equal(app.model.language(`nested/${path}`).id, id, path);
+	});
+}
+
+test("uses the interpreter only when the name and extension are unknown", () => {
+	const { language } = app.model;
+	assert.equal(language("bin/check", "#!/bin/sh -e").id, "bash");
+	assert.equal(language("bin/tool.unknown", "#! /usr/local/bin/python3.12 -u").id, "python");
+	assert.equal(language("bin/tool", "#!/usr/bin/env ruby").id, "ruby");
+	assert.equal(language("bin/tool", "#!/usr/bin/env -S ts-node --quiet").id, "typescript");
+	assert.equal(language("bin/tool", "#!/usr/bin/env -S lua5.4 -i").id, "lua");
+	assert.equal(language("bin/tool", "#!/usr/bin/env make").id, "text");
+	assert.equal(language("bin/tool", " #!/usr/bin/env ruby").id, "text");
+	assert.equal(language("x.ts", "#!/usr/bin/env node").id, "typescript");
+	assert.equal(language("Dockerfile", "#!/usr/bin/env ruby").id, "dockerfile");
+});

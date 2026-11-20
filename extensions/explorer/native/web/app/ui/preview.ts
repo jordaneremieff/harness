@@ -63,7 +63,26 @@
 		const fence = [...node.classList].find((name) => name.startsWith("language-"))?.slice(9);
 		if (!fence) return;
 		const extension =
-			{ typescript: "ts", javascript: "js", python: "py", rust: "rs", shell: "sh" }[fence.toLowerCase()] ?? fence;
+			{
+				typescript: "ts",
+				javascript: "js",
+				python: "py",
+				rust: "rs",
+				shell: "sh",
+				ruby: "rb",
+				make: "mk",
+				makefile: "mk",
+				docker: "dockerfile",
+				terraform: "tf",
+				protobuf: "proto",
+				handlebars: "hbs",
+				plantuml: "puml",
+				gettext: "po",
+				restructuredtext: "rst",
+				gotemplate: "tmpl",
+				"go-template": "tmpl",
+				dotenv: "env",
+			}[fence.toLowerCase()] ?? fence;
 		const language = app.model.language(`fence.${extension}`);
 		if (language.id === "text") return;
 		const lines = (node.textContent ?? "").split("\n");

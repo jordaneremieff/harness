@@ -14,7 +14,7 @@
 		input.setAttribute("autocorrect", "off");
 		input.value = value;
 		frame.append(mirror, input);
-		const language = app.model.language(path).id;
+		const language = app.model.language(path, value.slice(0, 8192).split("\n", 1)[0]).id;
 		let lines: string[] = [],
 			rows: HTMLElement[] = [],
 			painted = new WeakMap<HTMLElement, number>(),

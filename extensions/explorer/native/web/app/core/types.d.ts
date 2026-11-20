@@ -241,7 +241,7 @@ type ExplorerCodeView = {
 };
 interface ExplorerModel {
 	lines(text: string | null | undefined): string[];
-	language(path: string): ExplorerLanguage;
+	language(path: string, firstLine?: string): ExplorerLanguage;
 	fuzzy(paths: string[], query: string, limit?: number): ExplorerHit[];
 	find(lines: string[], query: string, side: ExplorerSide, limit?: number): ExplorerMatch[];
 	project(base: string[], head: string[], hunks: ExplorerHunk[], split: boolean): ExplorerCodeRow[];

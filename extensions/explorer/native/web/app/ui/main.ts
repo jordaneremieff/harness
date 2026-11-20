@@ -821,7 +821,7 @@
 				`${(view === "file" ? headLines : model.lines(file.text)).length.toLocaleString()}${file.truncated ? "+" : ""} lines`,
 			);
 		if (file.kind !== "directory" && file.kind !== "missing") pieces.push(model.size(file.size));
-		if (file.kind === "text") pieces.push(model.language(path).label);
+		if (file.kind === "text") pieces.push(model.language(path, file.text?.slice(0, 8192).split("\n", 1)[0]).label);
 		else if (file.mediaType) pieces.push(file.mediaType);
 		return pieces;
 	}

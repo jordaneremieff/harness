@@ -34,26 +34,121 @@
 		["typescript", "TypeScript", "TS", "ts tsx mts cts"],
 		["javascript", "JavaScript", "JS", "js jsx mjs cjs"],
 		["swift", "Swift", "SW", "swift"],
-		["json", "JSON", "{}", "json jsonc jsonl"],
-		["markdown", "Markdown", "M↓", "md mdx markdown"],
+		["json", "JSON", "{}", "json jsonc jsonl json5"],
+		["markdown", "Markdown", "M↓", "md mdx markdown apib"],
 		["css", "CSS", "#", "css scss less"],
 		["html", "HTML", "<>", "html htm xml svg"],
 		["bash", "Shell", ">_", "sh bash zsh fish"],
-		["yaml", "YAML", "Y", "yaml yml"],
-		["python", "Python", "PY", "py pyw"],
+		["yaml", "YAML", "Y", "yaml yml neon"],
+		["python", "Python", "PY", "py pyw py-tpl"],
 		["rust", "Rust", "RS", "rs"],
 		["go", "Go", "GO", "go"],
 		["sql", "SQL", "SQ", "sql"],
 		["diff", "Diff", "±", "diff patch"],
+		["toml", "TOML", "TM", "toml"],
+		["ini", "INI", "IN", "ini cfg conf properties env service socket timer"],
+		["c", "C", "CC", "c h"],
+		["ruby", "Ruby", "RB", "rb gemspec rake"],
+		["php", "PHP", "PH", "php"],
+		["lua", "Lua", "LU", "lua"],
+		["dockerfile", "Dockerfile", "DK", "dockerfile"],
+		["makefile", "Makefile", "MK", "mk"],
+		["ignore", "Ignore file", "##", ""],
+		["gomod", "Go module", "GM", ""],
+		["hcl", "HCL", "HC", "tf tfvars hcl"],
+		["graphql", "GraphQL", "GQ", "graphql gql"],
+		["protobuf", "Protocol Buffers", "PB", "proto"],
+		["dbml", "DBML", "DB", "dbml"],
+		["gettext", "Gettext", "PO", "po pot"],
+		["plantuml", "PlantUML", "PU", "puml plantuml"],
+		["rst", "reStructuredText", "RT", "rst"],
+		["csv", "CSV", "CV", "csv"],
+		["tsv", "TSV", "TV", "tsv"],
+		["erb", "ERB", "ER", "erb"],
+		["handlebars", "Handlebars", "HB", "hbs handlebars"],
+		["gotemplate", "Go template", "GT", "tpl tmpl gotmpl"],
+		["svelte", "Svelte", "SV", "svelte"],
+		["astro", "Astro", "AS", "astro"],
 	];
 	const byExtension = new Map(
 		languages.flatMap(([id, label, mark, extensions]) =>
-			extensions.split(" ").map((extension) => [extension, { id, label, mark }] as const),
+			extensions
+				.split(" ")
+				.filter(Boolean)
+				.map((extension) => [extension, { id, label, mark }] as const),
 		),
 	);
-	function language(path: string): ExplorerLanguage {
-		const name = path.toLowerCase().split("/").at(-1) ?? "";
-		return byExtension.get(name.split(".").at(-1) ?? "") ?? { id: "text", label: "Plain text", mark: "" };
+	const languageEntries = new Map(languages.map(([id, label, mark]) => [id, { id, label, mark }] as const));
+	const named: [string, string][] = [
+		["Cargo.lock", "toml"],
+		["Package.resolved", "json"],
+		["Tiltfile", "python"],
+		["go.mod", "gomod"],
+		["go.work", "gomod"],
+		[".zshrc", "bash"],
+		[".zprofile", "bash"],
+		[".bashrc", "bash"],
+		[".bash_profile", "bash"],
+		["Dockerfile", "dockerfile"],
+		["Containerfile", "dockerfile"],
+		["Makefile", "makefile"],
+		["GNUmakefile", "makefile"],
+		["makefile", "makefile"],
+		["Gemfile", "ruby"],
+		["Rakefile", "ruby"],
+		[".editorconfig", "ini"],
+		[".gitconfig", "ini"],
+		[".npmrc", "ini"],
+		[".env", "ini"],
+		[".gitignore", "ignore"],
+		[".gitattributes", "ignore"],
+		[".dockerignore", "ignore"],
+		[".npmignore", "ignore"],
+		[".prettierignore", "ignore"],
+	];
+	const byName = new Map(
+		named.flatMap(([name, id]) => {
+			const entry = languageEntries.get(id);
+			return entry ? ([[name, entry]] as const) : [];
+		}),
+	);
+	const interpreters: Record<string, string> = {
+		node: "javascript",
+		deno: "javascript",
+		bun: "javascript",
+		"ts-node": "typescript",
+		tsx: "typescript",
+		python: "python",
+		bash: "bash",
+		sh: "bash",
+		zsh: "bash",
+		dash: "bash",
+		ksh: "bash",
+		fish: "bash",
+		ruby: "ruby",
+		swift: "swift",
+		php: "php",
+		lua: "lua",
+	};
+	const plainText: ExplorerLanguage = { id: "text", label: "Plain text", mark: "" };
+
+	// Reads the interpreter from a #! line, through env and its flags, past version suffixes.
+	function shebang(firstLine: string | undefined): ExplorerLanguage | undefined {
+		if (!firstLine?.startsWith("#!")) return undefined;
+		const words = firstLine.slice(2, 8192).trim().split(/\s+/);
+		const env = (words[0] ?? "").split("/").at(-1) === "env";
+		const index = env ? words.findIndex((word, at) => at > 0 && !word.startsWith("-")) : 0;
+		const name = ((index > 0 ? words[index] : words[0]) ?? "").split("/").at(-1) ?? "";
+		return languageEntries.get(interpreters[name.replace(/[\d.]+$/, "")] ?? "");
+	}
+
+	// Exact file names win over extensions; an unknown extension falls back to the shebang line.
+	function language(path: string, firstLine?: string): ExplorerLanguage {
+		const name = path.split("/").at(-1) ?? "";
+		const exact = byName.get(name) ?? (/^\.env\./.test(name) ? languageEntries.get("ini") : undefined);
+		const dot = name.lastIndexOf(".");
+		const extension = dot < 0 ? "" : name.slice(dot + 1).toLowerCase();
+		return exact ?? byExtension.get(extension) ?? shebang(firstLine) ?? plainText;
 	}
 
 	// Scores one path against the query: substring hits outrank subsequence hits.

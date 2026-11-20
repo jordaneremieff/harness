@@ -226,7 +226,8 @@
 
 		function decorated(target: HTMLElement, line: number, side: ExplorerSide, word?: [number, number]) {
 			const value = codeText(line, side);
-			const syntax = syntaxAt(sourceLines(side), model.language(fileFor(side, opts) ?? "").id, line);
+			const source = sourceLines(side);
+			const syntax = syntaxAt(source, model.language(fileFor(side, opts) ?? "", source[0]).id, line);
 			const matches = marked.get(`${side}:${line}`) ?? [];
 			if (plainRow(syntax, matches, word)) {
 				target.textContent = value || "\u200b";
