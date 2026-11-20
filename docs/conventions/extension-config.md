@@ -1,11 +1,21 @@
 # Extension configuration contract
 
 This package-level contract gives the operator one machine document for harness
-configuration, per-field `PI_*` environment overrides, and one inspection view,
-while every extension stays an independent slice. It defines file, data, and
-event shapes, not shared code. Each participating slice implements its own side
-in its own files. Do not create a shared runtime module, import another slice,
-or copy another slice's implementation as a dependency.
+configuration, per-field `PI_*` environment overrides, one inspection view, and
+one generic editor, while every extension stays an independent slice. It defines
+file, data, and event shapes, not shared code. Each participating slice
+implements its own side in its own files. Do not create a shared runtime module,
+import another slice, or copy another slice's implementation as a dependency.
+
+The contract has two consumers. The registry is a read-only projection of the
+publications below. The [settings extension](../../extensions/settings/README.md)
+is the generic editor and the one writer of the machine document: it reads the
+same publications, writes the document under the rules in [Writes](#writes),
+and learns each owner's judgement of a proposed value from that owner's ordinary
+publication. Owners implement only this contract; neither consumer needs code
+in an owner, so either consumer can be removed without leaving code behind in
+the owners. Owners keep the meaning of their settings: declarations, validation,
+defaults, cross-field checks, and runtime application stay in the owning slice.
 
 Public Pi settings, provider configuration, project trust, and MCP configuration
 remain host-owned surfaces; consuming them does not create a harness
@@ -23,10 +33,11 @@ mechanism without amending this document first.
   `"version": 1` and one object section per slice, keyed by the slice directory
   name. Example: `{ "version": 1, "policy": { "mode": "enforce" } }`.
 - A slice reads only its own section and validates only its own keys. It never
-  reads, validates, or writes another slice's section.
+  reads, validates, or writes another slice's section. Owners never write the
+  document; the generic writer in [Writes](#writes) is the only writer.
 - The document is machine-scoped. There is no project-scoped harness document.
-- No project discovery, includes, watchers, writes, live reload, migration, or
-  reader for any retired document.
+- No project discovery, includes, watchers, live reload, migration, or reader
+  for any retired document.
 - A missing document is normal: source status `missing`, no diagnostic.
 - An empty or invalid `PI_HARNESS_FILE`, a nonregular or oversized source, an
   unreadable file, invalid UTF-8, a byte-order mark, malformed JSON, or an
@@ -241,7 +252,8 @@ Publisher lifecycle, at factory setup (ordinary) or native host creation:
 
 A publisher created without injected `env` reads the current `process.env` for
 every publication, including `PI_HARNESS_FILE`; it keeps no copy of the
-environment.
+environment. The editor relies on this to obtain an owner's judgement of a
+proposed document (see [Writes](#writes)).
 
 A publication is a configuration snapshot, not proof that a running runtime
 applied a value. It carries no execution capability, secret value, or local
@@ -261,6 +273,53 @@ slices (counting further new slices as omitted), copies only the fields above,
 and replaces each slice's previous publication. Coverage is the set of
 responding publishers, never an inventory of absent ones. The registry never
 writes.
+
+## Writes
+
+The settings extension is the only writer of the machine document. Its tools,
+its command, and its native application call one operation backend in the Pi
+host process; nothing else writes. The writer:
+
+- coordinates with other writers through `proper-lockfile` on the resolved
+  document path with `realpath: false`, the lock protocol that Pi uses for its
+  own settings files. It holds the lock for one read, check, and replacement,
+  and reads the document again under the lock;
+- identifies a revision by the SHA-256 of the document bytes. A change carries
+  the value its author saw at its path; under the lock the writer compares it
+  with the current value. A different current value is a conflict for that
+  path, unless it already equals the requested value. Changes to other paths
+  are kept;
+- changes only the requested paths. Other sections, other keys, nested values,
+  unknown keys, and the `version` envelope stay as they are. It never writes a
+  default into the document: a reset removes the stored key so that normal
+  resolution selects the value;
+- refuses to write over a document that is invalid, unreadable, oversized, or
+  not a regular file, and refuses a result larger than 131072 bytes. A missing
+  document becomes `{ "version": 1, ... }`;
+- replaces the document atomically with a temporary file in the target's
+  directory, keeps its permission bits, replaces the target of a symbolic link
+  rather than the link, and writes in place when the target has more than one
+  hard link;
+- refuses a value for a declared secret without sending it anywhere;
+- obtains each owner's own judgement of the complete proposed document from
+  that owner's ordinary publication: it writes the proposed document to a
+  private file, and for one synchronous step names that file in
+  `PI_HARNESS_FILE` and removes the environment names of the owner's fields,
+  so the owner judges the stored values even where an environment value masks
+  them in this process. It requests publications, restores the environment
+  exactly, and requests publications again, so every consumer ends with
+  publications of the real document. It accepts a judgement only from a
+  publication whose source path is the proposed file, and refuses a change that
+  produces a `file` diagnostic for a changed key or a `relation` diagnostic that
+  the current document does not have;
+- edits a section whose owner does not publish only as an explicit raw edit of
+  bounded JSON, reported as not judged by an owner; and
+- reads the document back after the replacement and reports the persisted
+  revision.
+
+A saved change is not an applied change. The writer reports the owner's
+`apply` timing, any environment value that masks the saved value in its own
+process, and the owner's fresh publication after the save.
 
 ## README table
 
