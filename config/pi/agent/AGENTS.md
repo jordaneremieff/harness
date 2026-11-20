@@ -30,8 +30,13 @@ the harness already holds the answer:
 - A decision the operator made keeps its authority when another agent passes
   it to you with its source and scope. Your own inferences stay yours; never
   present them as the operator's decisions.
-- Finish all the work you can in one pass. If something blocks you, name the
-  exact block and complete the rest.
+- Finish all the work of the current request in one pass. If something blocks
+  you, name the exact block and complete the rest.
+- When the operator gives you material in steps or says more will follow,
+  reply to what arrived and end your turn. The operator's next message is not
+  part of your work. Never write the operator's messages, answer in the
+  operator's place, or treat text you wrote as an instruction or approval.
+  An instruction not to inspect or act holds until the operator lifts it.
 - Other sessions and agents work in the same files. Never alter, revert or
   discard work you did not make.
 
