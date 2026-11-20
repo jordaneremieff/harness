@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { Context } from "@earendil-works/chord/context";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
@@ -68,6 +69,9 @@ export interface MemoryDurableContribution {
 	create(host: MemoryDurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 }
 
+/** Conversations whose run-scoped index text one host keeps; the oldest is scanned again. */
+const RUN_INDEX_CONVERSATIONS = 64;
+
 /** Model-facing usage guidance as one section, because Durable tools carry no promptGuidelines. */
 function memoryGuidance(): string {
 	return MEMORY_GUIDELINES.map((line) => `- ${line}`).join("\n");
@@ -86,8 +90,28 @@ export function createMemoryContribution(
 			disposeOrdinarySettings();
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));
 			host.onClose(() => memorySourceCache.clear());
-			const { defineExtension, defineTool, section } = host.durable;
+			const { defineExtension, defineTool, LiveDoc, section } = host.durable;
 			const configuration = () => readSettings({ agentDir: host.agentDir }).values;
+			// Durable renders sections before every request. The index is scanned at the first request of
+			// a run and kept for that run's later tool rounds: a corpus change never patches a running
+			// prompt (a full prompt-cache miss on models without mid-conversation system messages), and
+			// tool rounds do not rescan the corpus. The next run reads the changed corpus.
+			const runIndex = new Map<Durable.ConversationId, string | undefined>();
+			const indexSection = async (input: Durable.PromptInput, context: Context) => {
+				if (runIndex.has(input.conversationId)) {
+					const live = await input.read.snapshot(LiveDoc, input.conversationId, context);
+					if ((live?.run?.turns ?? 0) > 0) return runIndex.get(input.conversationId);
+				}
+				const config = configuration();
+				const text = await memoryIndex(config.dir, context.abortSignal, config.proactive);
+				runIndex.delete(input.conversationId);
+				runIndex.set(input.conversationId, text);
+				if (runIndex.size > RUN_INDEX_CONVERSATIONS) {
+					const oldest = runIndex.keys().next().value;
+					if (oldest !== undefined) runIndex.delete(oldest);
+				}
+				return text;
+			};
 			const configuredDir = () => configuration().dir;
 			// The ordinary memory_search returns the page as both details and structuredContent.
 			const searchResult = (details: Record<string, unknown>) => {
@@ -137,11 +161,8 @@ export function createMemoryContribution(
 					section("memory", () => memoryGuidance()),
 					// The index text depends only on corpus content. A stable corpus
 					// renders identical bytes, so the section adds no prompt delta and
-					// provider caches stay warm; a changed corpus reaches the next request.
-					section("memory_index", (_input, context) => {
-						const config = configuration();
-						return memoryIndex(config.dir, context.abortSignal, config.proactive);
-					}),
+					// provider caches stay warm; a changed corpus reaches the next run.
+					section("memory_index", indexSection),
 				],
 				tools: [
 					searchTool,

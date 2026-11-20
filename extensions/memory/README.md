@@ -717,10 +717,12 @@ forms.
 Two prompt sections carry the ordinary model-facing surface. `memory` holds the
 usage guidelines that the ordinary tools declare as `promptGuidelines`.
 `memory_index` renders the same bounded pointer index as the ordinary
-`before_agent_start` hook. Durable renders sections before every request, but
-the index text depends only on corpus content, so an unchanged corpus produces
-identical bytes and adds no system-prompt delta; a changed corpus reaches the
-next request. Native results use `output` for model-visible text and `details`
+`before_agent_start` hook. Durable renders sections before every request, so
+the native form scans the corpus at the first request of a run and keeps that
+index text for the run's later tool rounds. The index text depends only on
+corpus content, so an unchanged corpus produces identical bytes and adds no
+system-prompt delta; a changed corpus reaches the next run, as it does in the
+ordinary form, and never patches a running prompt. Native results use `output` for model-visible text and `details`
 for the ordinary tool details. `memory_search` declares `structuredOutputSchema`
 and returns its bounded page as `structuredOutput` for nested callers. Other
 memory tools have no structured schema; nested callers receive their bounded text.

@@ -357,6 +357,66 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 	}
 });
 
+test("keeps the native index for the rest of a run and reads a changed corpus at the next run", async () => {
+	const root = mkdtempSync(join(tmpdir(), "memory-durable-run-"));
+	const corpus = join(root, "corpus");
+	mkdirSync(corpus);
+	writeFileSync(join(corpus, "README.md"), "# Memory corpus\n");
+	writeFileSync(join(corpus, "editor-choice.md"), note("Editor choice"));
+	const previous = process.env.PI_MEMORY_DIR;
+	process.env.PI_MEMORY_DIR = corpus;
+	const faux = fauxProvider();
+	const models = createModels();
+	models.setProvider(faux.provider);
+	const registry = Durable.createRegistry();
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+	try {
+		const contribution = emitContribution();
+		registry.install(await contribution.create(hostFor(contribution, corpus, harness)));
+		const conversation = await harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: { provider: "faux", modelId: "faux-1" } },
+		});
+		const requests: TranscriptContext[] = [];
+		faux.setResponses([
+			(context) => {
+				requests.push(context);
+				// Another session adds a note while this run still has a tool round to go.
+				writeFileSync(join(corpus, "later-note.md"), note("Later note"));
+				return fauxAssistantMessage(fauxToolCall("memory_search", {}), { stopReason: "toolUse" });
+			},
+			(context) => {
+				requests.push(context);
+				return fauxAssistantMessage("done");
+			},
+			(context) => {
+				requests.push(context);
+				return fauxAssistantMessage("done");
+			},
+		]);
+		const run = async () =>
+			(await conversation.submit({ type: "input", content: "check memory" }, BACKGROUND_CONTEXT)).wait(
+				BACKGROUND_CONTEXT,
+			);
+		assert.equal((await run()).status, "done");
+		assert.equal(requests.length, 2);
+		const indexPatches = (context: TranscriptContext | undefined) =>
+			(context?.messages ?? []).filter(
+				(message) => message.role === "system" && message.sections?.memory_index !== undefined,
+			).length;
+		const laterRound = sectionsOf(requests[1].messages).memory_index ?? "";
+		assert.match(laterRound, /editor-choice: Editor choice/);
+		assert.doesNotMatch(laterRound, /later-note/, "a running prompt keeps its run's index");
+		assert.equal(indexPatches(requests[1]), indexPatches(requests[0]), "no index patch lands mid-run");
+		assert.equal((await run()).status, "done");
+		assert.match(sectionsOf(requests[2].messages).memory_index ?? "", /later-note: Later note/);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+		if (previous === undefined) delete process.env.PI_MEMORY_DIR;
+		else process.env.PI_MEMORY_DIR = previous;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("native codemode receives memory pages and errors through nested tool tasks and hooks", async () => {
 	const root = mkdtempSync(join(tmpdir(), "memory-native-codemode-"));
 	const corpus = join(root, "corpus");
