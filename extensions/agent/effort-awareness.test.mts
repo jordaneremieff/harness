@@ -1,5 +1,6 @@
 import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -91,7 +92,12 @@ function publish(
 		}),
 	);
 }
-function publishThread(catalog: AgentCatalog, root: string): string {
+function publishThread(
+	catalog: AgentCatalog,
+	root: string,
+	title = "Active shared work",
+	purpose = "Coordinate integration",
+): string {
 	const record = catalog.create({
 		cwd: root,
 		agentDir: root,
@@ -114,8 +120,8 @@ function publishThread(catalog: AgentCatalog, root: string): string {
 			items: [
 				{
 					id,
-					title: "Active shared work",
-					purpose: "Coordinate integration",
+					title,
+					purpose,
 					updatedAt: 100,
 					closed: false,
 					members: 2,
@@ -127,6 +133,43 @@ function publishThread(catalog: AgentCatalog, root: string): string {
 	);
 	return id;
 }
+
+it("names only project efforts and threads and keeps unrelated arrivals out of the prompt bytes", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const project = join(root, "project");
+	const nested = join(project, "src");
+	const other = join(root, "project-other");
+	mkdirSync(nested, { recursive: true });
+	mkdirSync(other);
+	for (const cwd of [project, other]) execFileSync("git", ["init", "--quiet", cwd], { timeout: 3000 });
+	const shared = resources(root, catalog);
+	const current = { ...self, cwd: project };
+	const prompt = async () =>
+		formatEffortAwareness(await readEffortAwareness(shared, current, "canonical", "prompt"), "prompt");
+	const peer = randomUUID();
+	publish(root, peer, claim("In-project intent"), nested);
+	const threadId = publishThread(catalog, nested);
+	const before = await prompt();
+	assert.match(before, /In-project intent/u);
+	assert.match(before, /Active shared work/u);
+	assert.ok(before.includes(threadId));
+	const remote = randomUUID();
+	publish(root, remote, claim("Other-repository intent"), other);
+	publishThread(catalog, other, "Other-repository title", "Other-repository topic");
+	const after = await prompt();
+	assert.equal(after, before);
+	assert.doesNotMatch(after, /Other-repository|outOfScope/u);
+	const observation = await readEffortAwareness(shared, current);
+	assert.equal(observation.presence.coverage.outOfScope, 1);
+	assert.equal(observation.threads.coverage.outOfScope, 1);
+	assert.match(after, /Read agent_status/u);
+	publish(root, peer, claim("Revised in-project intent"), nested);
+	assert.match(await prompt(), /Revised in-project intent/u);
+	rmSync(primaryEndpointPath(root, peer));
+	const threadOnly = await prompt();
+	assert.doesNotMatch(threadOnly, /Revised in-project intent/u);
+	assert.match(threadOnly, /Active shared work/u);
+});
 
 it("unifies self-published purpose, related presence and active thread hints without schema drift", async (t) => {
 	const { root, catalog, self } = fixture(t);
@@ -462,7 +505,7 @@ it("refreshes native root and child sections at run starts while stable state em
 	const { root: sessionsRoot, catalog } = fixture(t);
 	const peer = randomUUID();
 	publish(sessionsRoot, peer, claim("BEFORE-PURPOSE"));
-	publishThread(catalog, sessionsRoot);
+	const threadId = publishThread(catalog, sessionsRoot);
 	const requests: Message[][] = [];
 	const faux = fauxProvider();
 	const models = createModels();
@@ -530,15 +573,28 @@ it("refreshes native root and child sections at run starts while stable state em
 	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("Active shared work"));
 	rmSync(primaryEndpointPath(sessionsRoot, peer));
 	await say(child);
+	const threadOnly = getCurrentSystemPrompt(requests.at(-1) ?? []);
+	assert.equal(threadOnly.includes("AFTER-PURPOSE"), false);
+	assert.ok(threadOnly.includes("Active shared work"));
+	const record = catalog.read(threadId.split("/")[0]);
+	assert.ok(record.view && record.threads);
+	catalog.updateView(record.storageId, record.view, {
+		...record.threads,
+		items: record.threads.items.map((thread) => ({ ...thread, closed: true })),
+	});
+	await say(child);
 	const emptyPrompt = getCurrentSystemPrompt(requests.at(-1) ?? []);
-	assert.equal(emptyPrompt.includes("AFTER-PURPOSE"), false);
 	const body = emptyPrompt.match(/<agent-efforts>\n([\s\S]*?)\n<\/agent-efforts>/u)?.[1];
 	assert.ok(body);
 	assert.equal(body.split("\n").length, 1);
-	assert.ok(body.includes("Read agent_status for current coverage and active thread hints"));
+	assert.ok(body.includes("Read agent_status for current coverage, out-of-scope counts"));
 	rmSync(join(sessionsRoot, "durable"), { recursive: true, force: true });
 	await say(root);
-	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("No other live effort is shown."));
+	assert.ok(
+		getCurrentSystemPrompt(requests.at(-1) ?? []).includes(
+			"No other live effort is shown and no active thread hint is shown",
+		),
+	);
 });
 
 it("keeps native awareness for the rest of a run and refreshes it at the next run", async (t) => {

@@ -13,6 +13,7 @@ export interface RecentCollaborationPage {
 		records: number;
 		unreadable: number;
 		missingHints: number;
+		outOfScope?: number;
 		omittedHints: number;
 		omittedResults: number;
 		unvisited: boolean;
@@ -24,11 +25,17 @@ export interface RecentCollaborationPage {
 export const RECENT_COLLABORATION_LIMITS = { visits: 256, results: 12, bytes: 8192, hintsPerRecord: 8 } as const;
 const CATALOG_RECORD_NAME = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u;
 
+type ThreadProjectScope = { prompt: boolean; matches(record: CatalogRecord): Promise<boolean> };
+
 function recentPartial(page: RecentCollaborationPage, reason: string): void {
 	page.coverage.complete = false;
 	if (!page.coverage.reasons.includes(reason)) page.coverage.reasons.push(reason);
 }
-function collectRecentHints(page: RecentCollaborationPage, record: CatalogRecord): void {
+async function collectRecentHints(
+	page: RecentCollaborationPage,
+	record: CatalogRecord,
+	scope?: ThreadProjectScope,
+): Promise<void> {
 	if (record.threads === undefined) {
 		page.coverage.missingHints += 1;
 		recentPartial(page, "missing-thread-hints");
@@ -36,10 +43,14 @@ function collectRecentHints(page: RecentCollaborationPage, record: CatalogRecord
 	}
 	page.coverage.omittedHints += record.threads.omitted;
 	if (record.threads.omitted > 0) recentPartial(page, "omitted-thread-hints");
-	for (const thread of record.threads.items.slice(0, page.limits.hintsPerRecord)) {
-		if (thread.closed) continue;
+	const active = record.threads.items.slice(0, page.limits.hintsPerRecord).filter((thread) => !thread.closed);
+	if (active.length > 0 && scope !== undefined && !(await scope.matches(record))) {
+		page.coverage.outOfScope = (page.coverage.outOfScope ?? 0) + active.length;
+		if (scope.prompt) return;
+	}
+	for (const thread of active) {
 		page.items.push(thread);
-		page.items.sort((a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+		page.items.sort((a, b) => (scope?.prompt ? 0 : b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id));
 		if (page.items.length > page.limits.results) {
 			page.items.pop();
 			page.coverage.omittedResults += 1;
@@ -47,11 +58,16 @@ function collectRecentHints(page: RecentCollaborationPage, record: CatalogRecord
 		}
 	}
 }
-function collectPriorityRecord(page: RecentCollaborationPage, catalog: AgentCatalog, name: string): void {
+async function collectPriorityRecord(
+	page: RecentCollaborationPage,
+	catalog: AgentCatalog,
+	name: string,
+	scope?: ThreadProjectScope,
+): Promise<void> {
 	try {
 		const record = catalog.read(name.slice(0, -5));
 		page.coverage.records += 1;
-		collectRecentHints(page, record);
+		await collectRecentHints(page, record, scope);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
 			page.coverage.records += 1;
@@ -60,18 +76,19 @@ function collectPriorityRecord(page: RecentCollaborationPage, catalog: AgentCata
 		}
 	}
 }
-function collectRecentRecord(
+async function collectRecentRecord(
 	page: RecentCollaborationPage,
 	catalog: AgentCatalog,
 	entry: import("node:fs").Dirent,
 	seen: Set<string>,
-): void {
+	scope?: ThreadProjectScope,
+): Promise<void> {
 	if (!CATALOG_RECORD_NAME.test(entry.name) || seen.has(entry.name)) return;
 	seen.add(entry.name);
 	page.coverage.records += 1;
 	try {
 		if (!entry.isFile()) throw new Error("Not a catalog file");
-		collectRecentHints(page, catalog.read(entry.name.slice(0, -5)));
+		await collectRecentHints(page, catalog.read(entry.name.slice(0, -5)), scope);
 	} catch {
 		page.coverage.unreadable += 1;
 		recentPartial(page, "unreadable-records");
@@ -82,6 +99,7 @@ function collectRecentRecord(
 export async function readRecentCollaboration(
 	catalog: AgentCatalog,
 	priorityIdentities: readonly string[] = [],
+	scope?: ThreadProjectScope,
 ): Promise<RecentCollaborationPage> {
 	const page: RecentCollaborationPage = {
 		items: [],
@@ -104,7 +122,7 @@ export async function readRecentCollaboration(
 		if (!CATALOG_RECORD_NAME.test(name) || seen.has(name)) continue;
 		seen.add(name);
 		page.coverage.visited += 1;
-		collectPriorityRecord(page, catalog, name);
+		await collectPriorityRecord(page, catalog, name, scope);
 	}
 	let directory: Awaited<ReturnType<typeof opendir>>;
 	try {
@@ -122,7 +140,7 @@ export async function readRecentCollaboration(
 			const entry = await directory.read();
 			if (entry === null) break;
 			page.coverage.visited += 1;
-			collectRecentRecord(page, catalog, entry, seen);
+			await collectRecentRecord(page, catalog, entry, seen, scope);
 		}
 		if (page.coverage.visited === page.limits.visits) {
 			page.coverage.unvisited = true;
@@ -134,7 +152,7 @@ export async function readRecentCollaboration(
 	} finally {
 		await directory.close().catch(() => {});
 	}
-	while (Buffer.byteLength(JSON.stringify(page)) > page.limits.bytes && page.items.length > 0) {
+	while (!scope?.prompt && Buffer.byteLength(JSON.stringify(page)) > page.limits.bytes && page.items.length > 0) {
 		page.items.pop();
 		page.coverage.omittedResults += 1;
 		recentPartial(page, "byte-limit");

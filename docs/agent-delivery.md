@@ -159,8 +159,11 @@ or terminal. The tool accepts no target identity. Read the related efforts in it
 `agent_status`. Update or clear intent when integration completes; a completed
 plan must not remain the declared next action. Host facts and session intent
 claims are different evidence; unknown liveness and incomplete coverage do not
-prove absence. Awareness appears in per-run context, explicit tool reads, and
-`/agent`'s Related efforts view only. Registration and intent changes do not
+prove absence. Per-run context names only live efforts and active thread hints
+in the same repository, or the same working directory outside Git. Read
+`agent_status` for the bounded observation and its counts outside that scope.
+Awareness appears in per-run context, explicit tool reads, and `/agent`'s
+Related efforts view only. Registration and intent changes do not
 create unsolicited transcript messages. Endpoint records and local roster
 refresh still expose the current view. This excludes automatic effort notices,
 not direct messages, check-ins, or peer-thread notices.

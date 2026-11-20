@@ -59,6 +59,7 @@ export interface RelatedEffort {
 export interface EffortPresenceCoverage {
 	/** Producers or document rows without native intent support are not omitted claims. */
 	unsupported?: number;
+	outOfScope?: number;
 	visited: number;
 	unreadable: number;
 	dead: number;
@@ -73,6 +74,11 @@ export interface EffortPresencePage {
 	readonly limits: { readonly visits: number; readonly results: number; readonly bytes: number };
 }
 export const EFFORT_PRESENCE_LIMITS = { visits: 256, results: 20, bytes: 16 * 1024 } as const;
+
+export interface EffortProjectScope {
+	readonly prompt: boolean;
+	matches(other: Pick<EffortPresenceSelf, "cwd" | "repository" | "repositoryState">): Promise<boolean>;
+}
 
 /** Resources one manager or native contribution owns for its effort reads. */
 export interface EffortReadResources {
@@ -177,7 +183,14 @@ function effortRow(
 	};
 }
 
-function appendEffort(page: EffortPresencePage, row: RelatedEffort): void {
+function appendEffort(page: EffortPresencePage, row: RelatedEffort, prompt: boolean): void {
+	// Prompt bytes are bounded after removing observed fields, not by their current sizes.
+	if (prompt) {
+		page.efforts.push(row);
+		page.efforts.sort((a, b) => a.id.localeCompare(b.id));
+		if (page.efforts.length > page.limits.results) page.efforts.pop();
+		return;
+	}
 	const reason =
 		page.efforts.length >= page.limits.results
 			? "result-limit"
@@ -190,7 +203,32 @@ function appendEffort(page: EffortPresencePage, row: RelatedEffort): void {
 	} else page.efforts.push(row);
 }
 
-function visitEntry(sessionsRoot: string, self: EffortPresenceSelf, page: EffortPresencePage, entry: Dirent): void {
+async function collectEffort(
+	page: EffortPresencePage,
+	self: EffortPresenceSelf,
+	info: EffortFacts,
+	liveness: RelatedEffort["liveness"],
+	scope?: EffortProjectScope,
+): Promise<void> {
+	if (scope?.prompt && liveness !== "live") return;
+	const matches = scope === undefined || (await scope.matches(info));
+	if (!matches && liveness === "live") page.coverage.outOfScope = (page.coverage.outOfScope ?? 0) + 1;
+	if (!matches && scope?.prompt) return;
+	const relationship = scope?.prompt ? (self.repository === undefined ? "cwd" : "repository") : relation(self, info);
+	if (!relationship) {
+		page.coverage.unrelated++;
+		return;
+	}
+	appendEffort(page, effortRow(info, self, liveness, relationship), scope?.prompt ?? false);
+}
+
+async function visitEntry(
+	sessionsRoot: string,
+	self: EffortPresenceSelf,
+	page: EffortPresencePage,
+	entry: Dirent,
+	scope?: EffortProjectScope,
+): Promise<void> {
 	const id = entry.name.endsWith(".json") ? entry.name.slice(0, -5) : undefined;
 	if (!entry.isFile() || id === undefined || id === self.id) {
 		page.coverage.unrelated += 1;
@@ -207,12 +245,7 @@ function visitEntry(sessionsRoot: string, self: EffortPresenceSelf, page: Effort
 		return;
 	}
 	if (descriptor.info.repositoryState === "unknown") markPartial(page, "repository-unknown");
-	const relationship = relation(self, descriptor.info);
-	if (!relationship) {
-		page.coverage.unrelated += 1;
-		return;
-	}
-	appendEffort(page, effortRow(descriptor.info, self, descriptor.state, relationship));
+	await collectEffort(page, self, descriptor.info, descriptor.state, scope);
 }
 
 async function visitDirectory(
@@ -244,14 +277,15 @@ async function visitDirectory(
 		markPartial(page, "directory-unreadable");
 	}
 }
-function nativeRow(
+async function nativeRow(
 	record: CatalogRecord,
 	id: string,
 	metadata: NativeIntentMetadata,
 	self: EffortPresenceSelf,
 	page: EffortPresencePage,
 	claims: Map<string, ClaimObservation>,
-): void {
+	scope?: EffortProjectScope,
+): Promise<void> {
 	if (!metadata.claim || id === self.id) {
 		page.coverage.unrelated++;
 		return;
@@ -269,11 +303,6 @@ function nativeRow(
 			: { name: record.view.rows.find((row) => row.id === id)?.name }),
 	};
 	if (info.repositoryState === "unknown") markPartial(page, "repository-unknown");
-	const relationship = relation(self, info);
-	if (!relationship) {
-		page.coverage.unrelated++;
-		return;
-	}
 	let ownership = claims.get(record.storageId);
 	if (ownership === undefined) {
 		const paths = hostPaths(record);
@@ -284,15 +313,16 @@ function nativeRow(
 		page.coverage.dead++;
 		return;
 	}
-	appendEffort(page, effortRow(info, self, ownership.kind === "live" ? "live" : "unknown", relationship));
+	await collectEffort(page, self, info, ownership.kind === "live" ? "live" : "unknown", scope);
 }
-function visitNativeRecord(
+async function visitNativeRecord(
 	catalog: AgentCatalog,
 	entry: Dirent,
 	self: EffortPresenceSelf,
 	page: EffortPresencePage,
 	claims: Map<string, ClaimObservation>,
-): void {
+	scope?: EffortProjectScope,
+): Promise<void> {
 	if (!entry.isFile() || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u.test(entry.name)) {
 		page.coverage.unrelated++;
 		return;
@@ -320,33 +350,46 @@ function visitNativeRecord(
 		}
 		page.coverage.visited++;
 		if (metadata === null) page.coverage.unrelated++;
-		else nativeRow(record, id, metadata, self, page, claims);
+		else await nativeRow(record, id, metadata, self, page, claims, scope);
 	}
 }
 async function visitNativeRoot(
 	catalog: AgentCatalog,
 	self: EffortPresenceSelf,
 	page: EffortPresencePage,
+	scope?: EffortProjectScope,
 ): Promise<void> {
 	// One writer claim observation serves every claim row in this record during one pass.
 	const claims = new Map<string, ClaimObservation>();
-	await visitDirectory(catalog.root, page, (entry) => visitNativeRecord(catalog, entry, self, page, claims));
+	await visitDirectory(catalog.root, page, (entry) => visitNativeRecord(catalog, entry, self, page, claims, scope));
 }
 
 /** Read-only presence page; ordinary records and native projections share all visit, result and byte caps. */
 export async function readRelatedEfforts(
 	resources: EffortReadResources,
 	self: EffortPresenceSelf,
+	scope?: EffortProjectScope,
 ): Promise<EffortPresencePage> {
 	const sessionsRoot = dirname(resources.catalog.root);
 	const page: EffortPresencePage = {
 		efforts: [],
-		coverage: { visited: 0, unreadable: 0, dead: 0, unrelated: 0, omitted: 0, complete: true, reasons: [] },
+		coverage: {
+			visited: 0,
+			unreadable: 0,
+			dead: 0,
+			unrelated: 0,
+			omitted: 0,
+			complete: true,
+			reasons: [],
+			...(scope === undefined ? {} : { outOfScope: 0 }),
+		},
 		limits: EFFORT_PRESENCE_LIMITS,
 	};
 	if (self.repositoryState === "unknown") markPartial(page, "repository-unknown");
-	await visitDirectory(join(sessionsRoot, ".primaries"), page, (entry) => visitEntry(sessionsRoot, self, page, entry));
-	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(resources.catalog, self, page);
+	await visitDirectory(join(sessionsRoot, ".primaries"), page, (entry) =>
+		visitEntry(sessionsRoot, self, page, entry, scope),
+	);
+	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(resources.catalog, self, page, scope);
 	page.efforts.sort((a, b) => a.id.localeCompare(b.id));
 	return page;
 }

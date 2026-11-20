@@ -2766,12 +2766,15 @@ current-effort section in their model context at natural run boundaries. Durable
 renders sections before every model request, so a native conversation reads
 awareness at the first request of a run and keeps those bytes for that run's
 later tool rounds; peers that start or stop mid-run appear at the next run.
-Prompt rows use identity order and omit activity,
-start, and update timestamps. Traversal counters stay in `agent_status`, not
-the system prefix. Clock and counter changes alone leave section bytes unchanged;
-material purpose, scope, presence, and thread changes still update the section.
-If no other live effort appears, one line points to `agent_status` for current
-coverage and thread hints. Awareness is available only
+The `agent-efforts` section names only live efforts and active thread hints
+in the same Git repository (including linked worktrees), or the same working
+directory outside Git. A thread uses its owning storage's working directory;
+a contact link alone does not establish a match. Relative scope paths describe
+work within their declared location and cannot match across repositories.
+Prompt rows use identity order and omit activity, timestamps, member counts,
+and scan coverage. Out-of-scope counts belong to the explicit observation, not
+the system section. The section points to `agent_status` for current coverage
+and omitted sources. Awareness is available only
 through this per-run context, explicit tool reads, and the Related efforts view.
 Registration, intent publication, and intent clearing do not append unsolicited
 transcript entries or send automatic effort notices. Endpoint publication and

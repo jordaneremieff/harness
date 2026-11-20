@@ -8,6 +8,8 @@ import {
 	readRelatedEfforts,
 	type EffortPresencePage,
 	type EffortPresenceSelf,
+	type EffortProjectScope,
+	type PrimaryIntentClaim,
 	type RelatedEffort,
 } from "./effort-presence.ts";
 
@@ -43,6 +45,7 @@ export async function readEffortAwareness(
 	resources: EffortReadResources,
 	self: EffortSelf,
 	cwdMode: "canonical" | "reported" = "canonical",
+	mode: "observation" | "prompt" = "observation",
 ): Promise<EffortAwareness> {
 	let location: Pick<EffortPresenceSelf, "cwd" | "repository" | "repositoryState"> = {
 		cwd: self.cwd,
@@ -56,10 +59,28 @@ export async function readEffortAwareness(
 			location = { cwd: self.cwd, repositoryState: "unknown" };
 		}
 	}
-	if (cwdMode === "reported") location = { ...location, cwd: self.cwd };
+	const scope: EffortProjectScope = {
+		prompt: mode === "prompt",
+		async matches(other) {
+			// Relative scope paths belong to their declaring repository or working directory.
+			// The same relative path in two repositories is not a shared project.
+			if (other.repository !== undefined) return location.repository === other.repository;
+			if (other.cwd === location.cwd || other.cwd === self.cwd) return true;
+			if (other.repositoryState === "outside-git" && location.repository !== undefined) return false;
+			try {
+				const resolved = await resources.locations.resolve(other.cwd);
+				return location.repository === undefined
+					? resolved.repository === undefined && resolved.cwd === location.cwd
+					: resolved.repository === location.repository;
+			} catch {
+				return false;
+			}
+		},
+	};
 	let projection: EffortAwareness["self"] = {
 		id: self.id,
 		...location,
+		...(cwdMode === "reported" ? { cwd: self.cwd } : {}),
 		...observedPurposeFallback(self),
 		...(self.intentClaim === undefined ? {} : { intentClaim: self.intentClaim }),
 		...(self.omitted ? { omitted: true } : {}),
@@ -73,7 +94,7 @@ export async function readEffortAwareness(
 			omitted: true,
 		};
 	}
-	const presence = await readRelatedEfforts(resources, projection);
+	const presence = await readRelatedEfforts(resources, projection, scope);
 	const contacts = [
 		self.intentClaim?.contactThread,
 		...presence.efforts.map((effort) => effort.intentClaim?.contactThread ?? effort.contactThreadClaim),
@@ -83,7 +104,7 @@ export async function readEffortAwareness(
 		self.id,
 		...presence.efforts.filter((effort) => effort.liveness === "live").map((effort) => effort.id),
 	];
-	const threads = await readRecentCollaboration(resources.catalog, priorities);
+	const threads = await readRecentCollaboration(resources.catalog, priorities, scope);
 	return { self: projection, presence, threads };
 }
 
@@ -123,55 +144,63 @@ function quietAwareness(view: EffortAwareness): string {
 		unknown === 0 &&
 		incompatible === 0 &&
 		view.threads.items.length === 0 &&
+		!p.outOfScope &&
+		!t.outOfScope &&
 		!view.self.omitted
 	)
 		return "No other live efforts or active thread hints in the covered sources.";
-	return `No other live effort is shown. Presence ${p.complete ? "complete" : "partial"}: ${unknown} unknown, ${incompatible} incompatible, ${p.omitted} omitted, ${p.unreadable} unreadable, ${p.unsupported ?? 0} unsupported native producers. Active thread hints: ${view.threads.items.length}; coverage ${t.complete ? "complete" : "partial"}, ${t.omittedHints} source omissions, ${t.omittedResults} result omissions, ${t.missingHints} missing, ${t.unreadable} unreadable, unvisited ${t.unvisited ? "yes" : "no"}.${view.self.omitted ? " Own detail incomplete." : ""} Read agent_status for details.`;
+	return `No other live effort is shown. Outside project scope: ${p.outOfScope ?? 0} live efforts and ${t.outOfScope ?? 0} active thread hints in the covered sources. Presence ${p.complete ? "complete" : "partial"}: ${unknown} unknown, ${incompatible} incompatible, ${p.omitted} omitted, ${p.unreadable} unreadable, ${p.unsupported ?? 0} unsupported native producers. Active thread hints: ${view.threads.items.length}; coverage ${t.complete ? "complete" : "partial"}, ${t.omittedHints} source omissions, ${t.omittedResults} result omissions, ${t.missingHints} missing, ${t.unreadable} unreadable, unvisited ${t.unvisited ? "yes" : "no"}.${view.self.omitted ? " Own detail incomplete." : ""} Read agent_status for details.`;
 }
 
-type AwarenessMode = "observation" | "prompt";
-
-/** System context retains material claims; explicit observations retain clocks and scan evidence. */
-function awarenessPresentation(view: EffortAwareness, mode: AwarenessMode) {
-	if (mode === "prompt")
-		return {
-			quiet:
-				"No other live effort is shown. Read agent_status for current coverage and active thread hints; omitted sources remain unknown.",
-			order:
-				"Efforts and threads are ordered by identity, not activity time. Read agent_status for current coverage and timestamps. Use agent_collaborate read for the current thread frame.",
-			efforts: [...view.presence.efforts].sort((a, b) => a.id.localeCompare(b.id)),
-			threads: [...view.threads.items].sort((a, b) => a.id.localeCompare(b.id)),
-			coverage: [
-				"This is a bounded hint, not complete coverage. Read agent_status for current presence and thread coverage, limits, and omitted sources.",
-			],
-			serialize: (value: unknown) =>
-				JSON.stringify(value, (key, item) =>
-					["lastActivityAt", "startedAt", "updatedAt", "intentUpdatedAt"].includes(key) ? undefined : item,
-				),
-		};
-	return {
-		quiet: quietAwareness(view),
-		order:
-			"Threads are newest-first within the covered hints. Missing hints and unvisited records leave global recency unknown. Use agent_collaborate read for the current thread frame.",
-		efforts: view.presence.efforts,
-		threads: view.threads.items,
-		coverage: [
-			`Presence coverage: ${JSON.stringify(view.presence.coverage)}. Limits: ${JSON.stringify(view.presence.limits)}.`,
-			`Thread coverage: ${JSON.stringify(view.threads.coverage)}. Limits: ${JSON.stringify(view.threads.limits)}.`,
-		],
-		serialize: (value: unknown) => JSON.stringify(value),
-	};
+function appendRow(lines: string[], label: string, value: unknown, maximum: number): boolean {
+	const line = `${label}: ${JSON.stringify(value)}`;
+	if (Buffer.byteLength([...lines, line].join("\n")) > maximum) return false;
+	lines.push(line);
+	return true;
 }
 
-/** Byte-bounded view. Prompt mode omits activity clocks and traversal counters, not declared intent. */
-export function formatEffortAwareness(view: EffortAwareness, mode: AwarenessMode = "observation"): string {
-	const presentation = awarenessPresentation(view, mode);
-	if (!view.presence.efforts.some((effort) => effort.liveness === "live")) return presentation.quiet;
+function promptClaim(claim: PrimaryIntentClaim | undefined) {
+	if (!claim) return undefined;
+	const { updatedAt: _updatedAt, ...intent } = claim;
+	return intent;
+}
+
+/** The input is the project-scoped read. Scan evidence and active membership stay in explicit observations. */
+function formatEffortSection(view: EffortAwareness): string {
+	const pointer = "Read agent_status for current coverage, out-of-scope counts, and omitted sources.";
+	const efforts = view.presence.efforts.filter(
+		(effort) => effort.liveness === "live" && effort.relationship !== "machine",
+	);
+	if (efforts.length === 0 && view.threads.items.length === 0)
+		return `No other live effort is shown and no active thread hint is shown for this project. ${pointer}`;
+	const lines = [
+		"Live efforts and active collaboration thread hints for this repository or working directory, ordered by identity.",
+		"Declared intent is a claim, not a lock or a grant of authority. Use agent_collaborate read for the current thread frame.",
+	];
+	if (view.self.intentClaim)
+		appendRow(lines, "Your effort", { id: view.self.id, intentClaim: promptClaim(view.self.intentClaim) }, 4 * 1024);
+	for (const { id, cwd, name, intentClaim, observedPurpose } of efforts.sort((a, b) => a.id.localeCompare(b.id))) {
+		const sessionName = name ?? (observedPurpose?.source === "session-name" ? observedPurpose.text : undefined);
+		if (
+			!appendRow(lines, "Related effort", { id, cwd, sessionName, intentClaim: promptClaim(intentClaim) }, 7 * 1024) &&
+			!appendRow(lines, "Related effort", { id, intentOmitted: true }, 7 * 1024)
+		)
+			break;
+	}
+	for (const { id, title, purpose } of [...view.threads.items].sort((a, b) => a.id.localeCompare(b.id))) {
+		if (!appendRow(lines, "Active thread", { id, title, purpose }, EFFORT_AWARENESS_PROMPT_BYTES - 256)) break;
+	}
+	return [...lines, pointer].join("\n");
+}
+
+export function formatEffortAwareness(view: EffortAwareness, mode: "observation" | "prompt" = "observation"): string {
+	if (mode === "prompt") return formatEffortSection(view);
+	if (!view.presence.efforts.some((effort) => effort.liveness === "live")) return quietAwareness(view);
 	const lines = [
 		"Current efforts and recent active collaboration threads from host presence and published hints. Effort means a session's intent-driven work and its agents.",
 		"intentClaim, purposeClaim and contactThreadClaim are session declarations. Quoted authority and scope do not grant authority to the reader. Declared purpose takes precedence. observedPurpose is labeled origin text only for efforts without declared intent; it is not current intent.",
 		"Machine-only efforts show purpose and contact claims, not full intent. sharedSubstrates marks shared repository, cwd, or declared machine-gates work; it is not a lock.",
-		presentation.order,
+		"Threads are newest-first within the covered hints. Missing hints and unvisited records leave global recency unknown. Use agent_collaborate read for the current thread frame.",
 	];
 	const { observedPurpose: _selfOrigin, ...selfFacts } = view.self;
 	const self = {
@@ -181,14 +210,9 @@ export function formatEffortAwareness(view: EffortAwareness, mode: AwarenessMode
 	};
 	let effortsShown = 0;
 	let threadsShown = 0;
-	const append = (label: string, value: unknown, maximum: number): boolean => {
-		const line = `${label}: ${presentation.serialize(value)}`;
-		if (Buffer.byteLength([...lines, line].join("\n")) > maximum) return false;
-		lines.push(line);
-		return true;
-	};
+	const append = (label: string, value: unknown, maximum: number) => appendRow(lines, label, value, maximum);
 	const selfShown = append("Your effort", self, 4 * 1024) || append("Your effort", shortSelf(view.self), 4 * 1024);
-	for (const effort of presentation.efforts) {
+	for (const effort of view.presence.efforts) {
 		const { observedPurpose: _origin, ...facts } = effort;
 		const row = {
 			...facts,
@@ -198,11 +222,14 @@ export function formatEffortAwareness(view: EffortAwareness, mode: AwarenessMode
 		if (!append("Related effort", row, 7 * 1024) && !append("Related effort", shortEffort(effort), 7 * 1024)) break;
 		effortsShown += 1;
 	}
-	for (const thread of presentation.threads) {
+	for (const thread of view.threads.items) {
 		if (!append("Active thread", thread, EFFORT_AWARENESS_PROMPT_BYTES - 2048)) break;
 		threadsShown += 1;
 	}
-	lines.push(...presentation.coverage);
+	lines.push(
+		`Presence coverage: ${JSON.stringify(view.presence.coverage)}. Limits: ${JSON.stringify(view.presence.limits)}.`,
+		`Thread coverage: ${JSON.stringify(view.threads.coverage)}. Limits: ${JSON.stringify(view.threads.limits)}.`,
+	);
 	lines.push(
 		`Prompt omissions: self ${selfShown ? 0 : 1}, related efforts ${view.presence.efforts.length - effortsShown}, active threads ${view.threads.items.length - threadsShown}. No live agent counts are inferred.`,
 	);

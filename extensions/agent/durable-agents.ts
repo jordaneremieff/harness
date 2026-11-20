@@ -2618,7 +2618,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				input.agent.cwd ?? host.cwd,
 				meta === undefined ? null : meta.intent,
 			);
-			return formatEffortAwareness(await readEffortAwareness(resources, self, "reported"), "prompt");
+			return formatEffortAwareness(await readEffortAwareness(resources, self, "reported", "prompt"), "prompt");
 		} catch {
 			return "Current effort and active thread awareness is unavailable. Read agent_status for a new bounded observation. Earlier notices describe changes, not current state.";
 		}

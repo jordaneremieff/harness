@@ -1275,7 +1275,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	pi.on("before_agent_start", async (event, ctx) => {
 		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
 		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(
-			await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd),
+			await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd, "prompt"),
 			"prompt",
 		);
 		const blocks = renderProviderBlockSection(providerBlocks, Date.now());

@@ -2010,9 +2010,13 @@ export class AgentManager {
 	}
 
 	/** Current bounded view for model runs, status, and the dashboard. */
-	async awareness(ownerId: string, cwd?: string): Promise<EffortAwareness> {
+	async awareness(
+		ownerId: string,
+		cwd?: string,
+		mode: "observation" | "prompt" = "observation",
+	): Promise<EffortAwareness> {
 		const self = this.primaryChannels.get(ownerId)?.info() ?? { id: ownerId, cwd: cwd ?? this.options.root };
-		const awareness = await readEffortAwareness(this.effortResources(), self);
+		const awareness = await readEffortAwareness(this.effortResources(), self, "canonical", mode);
 		if (
 			(this.primaries.get(ownerId)?.observedInputComplete === false ||
 				this.primaries.get(ownerId)?.observedInputCanCapture === false) &&

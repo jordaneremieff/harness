@@ -579,7 +579,7 @@ it("keeps ordinary effort context to one line after the last live peer closes", 
 	const body = prompt.match(/<agent-efforts>\n([\s\S]*?)\n<\/agent-efforts>/u)?.[1];
 	assert.equal(
 		body,
-		"No other live effort is shown. Read agent_status for current coverage and active thread hints; omitted sources remain unknown.",
+		"No other live effort is shown and no active thread hint is shown for this project. Read agent_status for current coverage, out-of-scope counts, and omitted sources.",
 	);
 });
 

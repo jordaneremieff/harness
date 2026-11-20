@@ -147,7 +147,10 @@ it("keeps the section bytes unchanged across turns until a note arrives or ages 
 	const notes = new ProviderBlockNotes();
 	notes.observe({ providerBlock: block("alpha", "a-1", NOW - 60_000) });
 	const first = renderProviderBlockSection(notes, NOW);
-	assert.equal(renderProviderBlockSection(notes, NOW + 6 * 60 * 60_000), first, "a later turn renders identical bytes");
+	const later = NOW + 6 * 60 * 60_000;
+	assert.ok(first);
+	assert.equal(renderProviderBlockSection(notes, later), first, "a later turn renders identical bytes");
+	assert.notEqual(providerBlockReceiptText(notes, "alpha", later), providerBlockReceiptText(notes, "alpha", NOW));
 	notes.observe({ providerBlock: block("alpha", "a-1", NOW - 60_000) });
 	assert.equal(renderProviderBlockSection(notes, NOW + 60_000), first, "a repeated block changes nothing");
 	notes.observe({ providerBlock: block("beta", "b-1", NOW) });

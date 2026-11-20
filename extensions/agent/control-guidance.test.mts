@@ -57,7 +57,7 @@ it("ordinary delegation guidance names only registered controls and native guida
 		assert.match(ordinary, /in the last (tool )?batch[^.]*write no chat text\./u);
 		assert.match(
 			ordinary,
-			/A chat message is only for a decision or act of the operator, a blocker, or a result, and it stands alone/u,
+			/While work you sent to agents is open, a chat message is only for a decision or act of the operator, a blocker, or a result, and it stands alone/u,
 		);
 		assert.doesNotMatch(ordinary, /short state note/u);
 		assert.match(ordinary, /Results arrive as events/u);
