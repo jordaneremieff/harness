@@ -16,7 +16,7 @@ import Foundation
     }
     guard mode == "--pane" else { throw ExplorerError("arguments", "Unknown Explorer mode: \(mode.debugDescription)") }
     var args = Array(argv.dropFirst())
-    let keys: Set<String> = ["store", "live"]
+    let keys: Set<String> = ["store", "live", "ignored"]
     guard args.count.isMultiple(of: 2) else { throw ExplorerError("arguments", "Each option needs a value.") }
     let extraArgs = stride(from: 0, to: args.count, by: 2).flatMap { i in
         args[i].hasPrefix("--") && keys.contains(String(args[i].dropFirst(2))) ? [args[i], args[i + 1]] : []
@@ -28,13 +28,14 @@ import Foundation
     guard let store = extra["store"], store.hasPrefix("/"), !store.utf8.contains(0) else {
         throw ExplorerError("arguments", "An absolute --store is required.")
     }
+    let showIgnored = try ignoredOption(extra["ignored"])
     let target = try Launch(arguments: args)
     let workspace = try prepareWorkspace(target)
     guard let terminal = ExplorerPane.PaneTerminal() else { throw ExplorerError("terminal", "Pane mode requires a terminal.") }
     let live = try extra["live"].map(LiveConfiguration.consume)
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
-    let host = ExplorerHost(target, workspace: workspace, store: URL(fileURLWithPath: store), resources: resources, terminal: terminal)
+    let host = ExplorerHost(target, workspace: workspace, store: URL(fileURLWithPath: store), resources: resources, terminal: terminal, showIgnored: showIgnored)
     withExtendedLifetime(host) {
         host.start(live: live)
         app.run()

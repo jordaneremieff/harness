@@ -22,8 +22,10 @@ final class ExplorerHost {
     private var watcher: ExplorerWatch?
     private var watchJob: Task<Void, Never>?
     private let state: ExplorerState
+    private let showIgnored: Bool
 
-    init(_ launch: Launch, workspace: Workspace, store: URL, resources: URL, terminal: PaneTerminal? = nil) {
+    init(_ launch: Launch, workspace: Workspace, store: URL, resources: URL, terminal: PaneTerminal? = nil, showIgnored: Bool = true) {
+        self.showIgnored = showIgnored
         self.launch = launch; self.workspace = workspace; self.store = store; self.resources = resources; self.terminal = terminal
         shownPath = launch.path
         let manifest = buildRecord(resources)
@@ -212,7 +214,7 @@ final class ExplorerHost {
             guard let live else { throw ExplorerError("unavailable", "No live Pi conversation is attached.") }
             return try await live.submit(fields)
         default:
-            let service = ExplorerServices(workspace: workspace, store: store, resources: resources)
+            let service = ExplorerServices(workspace: workspace, store: store, resources: resources, showIgnored: showIgnored)
             return try await Task.detached(priority: .userInitiated) { try service.handle(type, fields) }.value
         }
         return [:]

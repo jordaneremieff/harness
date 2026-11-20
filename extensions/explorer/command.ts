@@ -146,7 +146,7 @@ export async function openExplorer(
 	if (!isRecord(origin) || origin.version !== 1 || origin.terminal !== "Rex" || !isRecord(origin.exact))
 		throw new Error("No exact Rex pane is available for this conversation.");
 	const target = await commandTarget(input, cwd, dir);
-	const launch = await paneLaunch(app, dir, target);
+	const launch = await paneLaunch(app, dir, target, agentDir);
 	if ("showUnavailable" in launch) throw new Error(launch.showUnavailable);
 	if (!launch.live) throw new Error("The installed app does not support live panes. Run /explorer update.");
 	signal.throwIfAborted();

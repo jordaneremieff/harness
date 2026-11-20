@@ -331,6 +331,7 @@ async function install(app: string): Promise<number> {
 				contract: 1,
 				pane: 1,
 				paneOpen: 1,
+				ignoredOption: 1,
 				live: 1,
 				notes: 1,
 				node: stableNode(),

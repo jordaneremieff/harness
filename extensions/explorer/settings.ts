@@ -28,6 +28,14 @@ export const settings = {
 			description:
 				"Pane in which an ordinary session shows an Explorer location. split names a split on the right of the session's own pane; float names a floating pane over its window. Agents without a pane of their own, such as Durable workers, always use a floating pane on the tab of the ordinary session that started them. An operator's request for another pane still applies, and /explorer always opens a split. A new or reloaded session applies a change.",
 		},
+		showIgnored: {
+			apply: "use",
+			type: "boolean",
+			env: "PI_EXPLORER_SHOW_IGNORED",
+			default: true,
+			description:
+				"Show Git-ignored files and folders in the Files list of a newly opened pane. Direct file access, Quick Open and content search are unchanged. Open panes keep their launch value.",
+		},
 	},
 } as const;
 
@@ -41,7 +49,7 @@ type Key = keyof typeof settings.fields;
 type EnumKey = "agentPane";
 type Choice<K extends EnumKey> = (typeof settings.fields)[K]["choices"][number];
 export type AgentPane = Choice<"agentPane">;
-type Values = { app: string; dir: string; agentPane: AgentPane };
+type Values = { app: string; dir: string; agentPane: AgentPane; showIgnored: boolean };
 export type Diagnostic = {
 	field: string;
 	source: Origin;
@@ -57,7 +65,7 @@ export type Source = {
 export type SettingRecord = {
 	name: string;
 	key: string;
-	type: "path" | "enum" | "json";
+	type: "path" | "enum" | "boolean";
 	description: string;
 	env: string;
 	secret: boolean;
@@ -160,20 +168,26 @@ function checked(value: unknown, agentDir: string): string {
 	if (path.length > 4096) throw new Error("Resolved path exceeds length bound");
 	return path;
 }
-function defaultPath(agentDir: string, key: Exclude<Key, EnumKey>): string {
+function defaultPath(agentDir: string, key: "app" | "dir"): string {
 	try {
 		return checked(resolve(agentDir, { dir: "explorer", app: "explorer-app/Explorer.app" }[key]), agentDir);
 	} catch {
 		throw new Error(`Invalid default for explorer.${key}`);
 	}
 }
-const isEnum = (key: Key): key is EnumKey => settings.fields[key].type === "enum";
 function choice<K extends EnumKey>(key: K, value: unknown): Choice<K> {
 	if (typeof value !== "string" || !(settings.fields[key].choices as readonly string[]).includes(value))
 		throw new Error(`Invalid explorer.${key} choice`);
 	return value as Choice<K>;
 }
-type Selection = { value: string; origin: Origin; invalid: boolean };
+function boolean(input: unknown, origin: Origin): boolean {
+	if (origin === "env") {
+		if (input === "true" || input === "1") return true;
+		if (input === "false" || input === "0") return false;
+	} else if (typeof input === "boolean") return input;
+	throw new Error("Invalid boolean");
+}
+type Selection<T> = { value: T; origin: Origin; invalid: boolean };
 function readSection(options: ReadOptions) {
 	const { source, document, diagnostics } = readDocument(options);
 	const sectionValue = document && Object.hasOwn(document, settings.slice) ? document[settings.slice] : undefined;
@@ -192,13 +206,14 @@ function readSection(options: ReadOptions) {
 	}
 	return { source, section, diagnostics, add };
 }
-function selectField(
+function selectField<T>(
 	key: Key,
-	fallback: Selection["value"],
+	fallback: T,
+	decode: (input: unknown, origin: Origin) => T,
 	section: Record<string, unknown>,
 	options: ReadOptions,
 	add: (fact: Diagnostic) => void,
-): Selection {
+): Selection<T> {
 	const field = settings.fields[key];
 	const name = `${settings.slice}.${key}`;
 	const env = options.env ?? process.env;
@@ -208,14 +223,14 @@ function selectField(
 	if (origin === undefined) return { value: fallback, origin: "default", invalid };
 	try {
 		const input = origin === "env" ? env[field.env] : section[key];
-		const value = isEnum(key) ? choice(key, input) : checked(input, options.agentDir);
+		const value = decode(input, origin);
 		return { value, origin, invalid };
 	} catch {
 		add(diagnostic(name, origin, "invalid"));
 		return { value: fallback, origin: "default", invalid: true };
 	}
 }
-function settingRecord(key: Key, selected: Omit<Selection, "value"> & { value: unknown }): SettingRecord {
+function settingRecord(key: Key, selected: Selection<unknown>): SettingRecord {
 	const field = settings.fields[key];
 	const record: SettingRecord = {
 		name: `${settings.slice}.${key}`,
@@ -232,18 +247,18 @@ function settingRecord(key: Key, selected: Omit<Selection, "value"> & { value: u
 }
 export function readSettings(options: ReadOptions): Snapshot {
 	const { source, section, diagnostics, add } = readSection(options);
-	const selectedValues = Object.create(null) as Record<Key, string>;
 	const records: SettingRecord[] = [];
-	for (const key of Object.keys(settings.fields) as Key[]) {
-		const fallback = isEnum(key) ? settings.fields[key].default : defaultPath(options.agentDir, key);
-		const selected = selectField(key, fallback, section, options, add);
-		selectedValues[key] = selected.value;
+	function select<K extends Key>(key: K, fallback: Values[K], decode: (input: unknown, origin: Origin) => Values[K]) {
+		const selected = selectField(key, fallback, decode, section, options, add);
 		records.push(settingRecord(key, selected));
+		return selected.value;
 	}
+	const path = (input: unknown) => checked(input, options.agentDir);
 	const values: Values = {
-		app: selectedValues.app,
-		dir: selectedValues.dir,
-		agentPane: choice("agentPane", selectedValues.agentPane),
+		app: select("app", defaultPath(options.agentDir, "app"), path),
+		dir: select("dir", defaultPath(options.agentDir, "dir"), path),
+		agentPane: select("agentPane", settings.fields.agentPane.default, (input) => choice("agentPane", input)),
+		showIgnored: select("showIgnored", settings.fields.showIgnored.default, boolean),
 	};
 	return { version: 2, slice: settings.slice, source, values, records, diagnostics };
 }

@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	type Dir,
+	lstatSync,
+	mkdirSync,
+	opendirSync,
+	readFileSync,
+	realpathSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join, sep } from "node:path";
 
 export const defaultPath = "src/router.ts";
@@ -18,6 +27,18 @@ const validPath = (path: unknown): path is string =>
 	!path.includes("\\") &&
 	!path.includes("\0") &&
 	path.split("/").every((part) => part && part !== "." && part !== ".." && part.toLowerCase() !== ".git");
+
+function readFolderEntries(scan: Dir) {
+	const entries: ExplorerRequests["files.folder"][1]["entries"] = [];
+	for (let i = 0; i < 20_002; i++) {
+		const row = scan.readSync();
+		if (!row) return { entries, truncated: false };
+		if (!validPath(row.name) || !(row.isDirectory() || row.isFile())) continue;
+		if (entries.length >= 5000) break;
+		entries.push({ name: row.name, kind: row.isDirectory() ? "folder" : "file" });
+	}
+	return { entries, truncated: true };
+}
 
 function router(delay: number, fallback: string) {
 	return `import { Queue } from './queue.js';
@@ -101,6 +122,10 @@ export function createFixture(directory: string) {
 		git(["add", "--all"]);
 		git(["commit", "-qm", subject]);
 	};
+	write(".gitignore", "dist/\n*.local\n");
+	write("dist/assets/routes.txt", "/health\n");
+	write("dist/worker.js", "export const worker = true;\n");
+	write("routes.local", "/dev\n");
 	write(defaultPath, router(100, "/home"));
 	write("README.md", "# Waypoint\n\nWaypoint routes jobs to local workers.\n");
 	write("src/queue.ts", "export interface Queue {\n  add(path: string, delayMs: number): void;\n}\n");
@@ -140,6 +165,24 @@ export function createFixture(directory: string) {
 				output(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).split("\0").filter(validPath),
 			),
 		].sort();
+	function ignoredPaths() {
+		const paths = output(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"])
+			.split("\0")
+			.filter((path) => validPath(path.endsWith("/") ? path.slice(0, -1) : path))
+			.sort();
+		const actual = paths.filter((path, index) => !path.endsWith("/") || !paths[index + 1]?.startsWith(path));
+		return { paths: actual.slice(0, 200_000), truncated: actual.length > 200_000 };
+	}
+	function folder(path: string) {
+		const target = join(root, path);
+		if (!validPath(path) || realpathSync(target) !== target) throw new Error("Invalid folder path.");
+		const scan = opendirSync(target);
+		try {
+			return readFolderEntries(scan);
+		} finally {
+			scan.closeSync();
+		}
+	}
 	const absent = (path: string, kind: FixtureFile["kind"]): FixtureFile => ({ path, kind, size: 0 });
 	function committed(path: string, at: string) {
 		const oid = rev(at);
@@ -196,7 +239,7 @@ export function createFixture(directory: string) {
 				return { commit, short, subject, author, date };
 			});
 	}
-	return { root, head, branch, rev, parent, empty, paths, read, log, output };
+	return { root, head, branch, rev, parent, empty, paths, ignoredPaths, folder, read, log, output };
 }
 
 export type Fixture = ReturnType<typeof createFixture>;

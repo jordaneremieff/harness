@@ -309,7 +309,10 @@ export function createBridge(
 					break;
 				}
 				case "files.list":
-					result = { paths: repo.paths(), truncated: false, source: "git" };
+					result = { paths: repo.paths(), truncated: false, ignored: repo.ignoredPaths(), source: "git" };
+					break;
+				case "files.folder":
+					result = repo.folder(message.path);
 					break;
 				case "file.read":
 					result = file(message.path, message.at);

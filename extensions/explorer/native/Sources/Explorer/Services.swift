@@ -35,6 +35,7 @@ struct ExplorerServices {
     let workspace: Workspace
     let store: URL
     let resources: URL
+    let showIgnored: Bool
     var helper: NotesHelper { NotesHelper(workspace: workspace, store: store, resources: resources) }
 
     private func marker(_ scope: [String: Any]? = nil) -> String? {
@@ -51,7 +52,20 @@ struct ExplorerServices {
         switch type {
         case "files.list":
             let found = try workspace.files()
-            return ["paths": found.paths, "truncated": found.truncated, "source": workspace.isGit ? "git" : "scan"]
+            var ignored: [String: Any] = ["paths": [String](), "truncated": false]
+            if showIgnored {
+                do {
+                    let matches = try workspace.ignoredFiles()
+                    ignored = ["paths": matches.paths, "truncated": matches.truncated]
+                } catch {
+                    ignored["error"] = "Git could not list ignored paths."
+                }
+            }
+            return ["paths": found.paths, "truncated": found.truncated,
+                    "ignored": ignored, "source": workspace.isGit ? "git" : "scan"]
+        case "files.folder":
+            let found = try workspace.folder(path())
+            return ["entries": found.entries, "truncated": found.truncated]
         case "file.read", "markdown.render":
             if let at = fields["at"], !(at is String) { throw ExplorerError("invalid", "The revision is invalid.") }
             let at = fields["at"] as? String

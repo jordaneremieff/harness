@@ -1,6 +1,14 @@
 import CoreFoundation
 import Foundation
 
+func ignoredOption(_ value: String?) throws -> Bool {
+    switch value {
+    case nil, "show": return true
+    case "hide": return false
+    default: throw ExplorerError("arguments", "--ignored must be show or hide.")
+    }
+}
+
 struct Launch {
     let root: String
     let fields: [String: Any]

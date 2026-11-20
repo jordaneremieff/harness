@@ -3,6 +3,7 @@ import { access, open } from "node:fs/promises";
 import { join } from "node:path";
 import { isRecord } from "./live-protocol.ts";
 import type { ReviewScope } from "./repository.ts";
+import { readSettings } from "./settings.ts";
 
 export interface LaunchTarget {
 	root: string;
@@ -16,7 +17,13 @@ export interface LaunchTarget {
 }
 export const BUILD_COMMAND = "node extensions/explorer/native/build.mts";
 export const BUILD_REMEDY = `The Explorer app is missing or incompatible. Run /explorer update, or run ${BUILD_COMMAND}.`;
-export type PaneBuild = { paneOpen: boolean; live: boolean; commit: string | null; dirty: boolean };
+export type PaneBuild = {
+	paneOpen: boolean;
+	live: boolean;
+	ignoredOption: boolean;
+	commit: string | null;
+	dirty: boolean;
+};
 export type PaneLaunch =
 	| { show: string[]; paneInput?: string; live: boolean }
 	| { showUnavailable: string; build: string };
@@ -49,6 +56,7 @@ export async function readBuild(app: string): Promise<PaneBuild | undefined> {
 		return {
 			paneOpen: value.paneOpen === 1,
 			live: value.live === 1,
+			ignoredOption: value.ignoredOption === 1,
 			commit:
 				typeof source.commit === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(source.commit)
 					? source.commit
@@ -69,12 +77,26 @@ export function targetArgs(target: LaunchTarget): string[] {
 	return args;
 }
 
-export async function paneLaunch(app: string, store: string, target: LaunchTarget): Promise<PaneLaunch> {
+export async function paneLaunch(
+	app: string,
+	store: string,
+	target: LaunchTarget,
+	agentDir: string,
+): Promise<PaneLaunch> {
 	const build = await readBuild(app);
-	if (!build) return { showUnavailable: BUILD_REMEDY, build: BUILD_COMMAND };
+	if (!build?.ignoredOption) return { showUnavailable: BUILD_REMEDY, build: BUILD_COMMAND };
 	const args = targetArgs(target);
+	const { showIgnored } = readSettings({ agentDir }).values;
 	return {
-		show: [join(app, "Contents", "MacOS", "Explorer"), "--pane", "--store", store, ...args],
+		show: [
+			join(app, "Contents", "MacOS", "Explorer"),
+			"--pane",
+			"--store",
+			store,
+			"--ignored",
+			showIgnored ? "show" : "hide",
+			...args,
+		],
 		live: build.live,
 		...(build.paneOpen
 			? {

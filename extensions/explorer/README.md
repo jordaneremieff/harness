@@ -23,7 +23,7 @@ Each card has one filled button on the right; ⌘↩ performs it. Text you type 
 
 Marked lines are tinted: yellow for review comments, blue for your notes and questions, mauve for the agent's notes. Click a marked line, its dot or **Open note** in its menu to open the card; a further click on the same lines while the card is open shows the next note there. A review comment opens in its editor with **Remove**, **Send now** and **Save**. A note opens its thread: **Reply** sends the reply to the conversation when one is connected and otherwise saves it in the note; your own open notes can be edited, and your notes can be deleted. Viewed ticks and unsent comments persist. A review finishes when you send it or mark all its files Viewed.
 
-### Markdown preview
+## Markdown preview
 
 In the File view, `.md` and `.markdown` files open rendered by default. Use **Preview** to switch between the rendered document and its source. Explorer remembers your choice. **Changes** always shows the source diff.
 
@@ -31,12 +31,19 @@ Find in file searches rendered text in Preview. Go to line switches to source. N
 
 Relative links open files inside the current root. Links to headings scroll the preview, including when a relative file link contains a heading fragment. HTTP and HTTPS links open in the default browser; email links open in the default mail app. Other URL schemes are inactive. Supported local images load from the root; remote images show their alt text instead.
 
+## Files list
+
+The Files list shows Git-ignored files and folders with muted text and icons. Ignored folders start closed and list their immediate contents when you expand them. The Files filter matches all paths the list has read, including children of ignored folders you have expanded. Quick Open (⌘P) and content search still respect Git ignore rules. Plain folders keep their existing file list. Set `showIgnored` to `false` to hide ignored entries in panes opened afterwards; an open pane keeps the value it started with.
+
+## Settings
+
 <!-- harness:settings:start -->
 | Key | Environment | Type | Default | Applies | Constraints | Description |
 |---|---|---|---|---|---|---|
 | app | `PI_EXPLORER_APP` | path | &lt;agentDir&gt;/explorer-app/Explorer.app | reload | none | Installed native Explorer application. |
 | dir | `PI_EXPLORER_DIR` | path | &lt;agentDir&gt;/explorer | reload | none | Private directory for Explorer notes and review state. |
 | agentPane | `PI_EXPLORER_AGENT_PANE` | enum | "split" | reload | split, float | Pane in which an ordinary session shows an Explorer location. split names a split on the right of the session's own pane; float names a floating pane over its window. Agents without a pane of their own, such as Durable workers, always use a floating pane on the tab of the ordinary session that started them. An operator's request for another pane still applies, and /explorer always opens a split. A new or reloaded session applies a change. |
+| showIgnored | `PI_EXPLORER_SHOW_IGNORED` | boolean | true | next use | none | Show Git-ignored files and folders in the Files list of a newly opened pane. Direct file access, Quick Open and content search are unchanged. Open panes keep their launch value. |
 <!-- harness:settings:end -->
 
 Relative paths for settings resolve against the agent directory. See the [extension configuration contract](../../docs/conventions/extension-config.md).

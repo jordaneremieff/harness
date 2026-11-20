@@ -53,6 +53,7 @@
 		filesError = "",
 		treeTruncated = false,
 		filter = "";
+	let ignored: ExplorerRequests["files.list"][1]["ignored"] = { paths: [], truncated: false };
 	let path = "",
 		view: "file" | "changes" = "file",
 		file: ExplorerFile | null = null,
@@ -229,14 +230,29 @@
 		body.replaceChildren(node);
 	}
 
-	type Tree = { folders: Map<string, Tree>; files: string[] };
+	type Tree = { folders: Map<string, Tree>; files: { path: string; ignored: boolean }[]; ignored?: boolean };
 	let tree: Tree = { folders: new Map(), files: [] };
 	const folders = new Set<string>();
+	let ignoredPaint = 0;
+	const ignoredFolders = app.ignoredFolders(
+		(path) => request("files.folder", { path }),
+		() => {
+			if (ignoredPaint) return;
+			ignoredPaint = requestAnimationFrame(() => {
+				ignoredPaint = 0;
+				if (settings.tab === "files") renderSidebar();
+			});
+		},
+	);
 	function makeTree() {
 		tree = { folders: new Map(), files: [] };
-		for (const item of paths) {
+		const ordinary = paths.map((path) => ({ path, ignored: false }));
+		const hidden = ignored.paths.map((path) => ({ path, ignored: true }));
+		const entries = hidden.length ? ordinary.concat(hidden).sort((a, b) => a.path.localeCompare(b.path)) : ordinary;
+		for (const entry of entries) {
+			const isFolder = entry.path.endsWith("/");
 			let at = tree;
-			for (const part of item.split("/").slice(0, -1)) {
+			for (const part of entry.path.split("/").slice(0, -1)) {
 				let child = at.folders.get(part);
 				if (!child) {
 					child = { folders: new Map(), files: [] };
@@ -244,7 +260,8 @@
 				}
 				at = child;
 			}
-			at.files.push(item);
+			if (isFolder) at.ignored = true;
+			else at.files.push(entry);
 		}
 	}
 	function revealPath(value: string, self = false) {
@@ -252,61 +269,81 @@
 		for (let index = 1; index <= pieces.length; index++) folders.add(pieces.slice(0, index).join("/"));
 	}
 	function fileRowIcon(item: string, language: ReturnType<typeof model.language>, folder?: boolean) {
-		if (folder) return icon(folders.has(item) || filter ? "open" : "folder");
+		if (folder) return icon(folders.has(item) ? "open" : "folder");
 		if (!language.mark) return icon("file");
 		return el("span", `language-mark lang-${language.id}`, language.mark);
 	}
-	function fileRow(item: string, depth: number, folder?: boolean) {
+	function toggleFolder(item: string) {
+		if (filter) {
+			filter = filterInput.value = "";
+			revealPath(item, true);
+		} else if (folders.has(item)) folders.delete(item);
+		else folders.add(item);
+		if (folders.has(item)) ignoredFolders.retryOnOpen(item);
+		renderSidebar(item);
+	}
+	function fileRow(item: string, depth: number, folder = false, isIgnored = false) {
 		const node = button(
 			"",
-			() => {
-				if (folder) {
-					if (folders.has(item)) folders.delete(item);
-					else folders.add(item);
-					renderSidebar(item);
-				} else report(navigate({ path: item, view: "file" }));
-			},
-			"list-row",
+			folder ? () => toggleFolder(item) : () => report(navigate({ path: item, view: "file" })),
+			isIgnored ? "list-row is-ignored" : "list-row",
 		);
 		const language = model.language(item);
 		node.style.setProperty("--depth", String(depth));
 		node.dataset.path = item;
-		if (folder) node.setAttribute("aria-expanded", String(folders.has(item) || !!filter));
+		if (folder) node.setAttribute("aria-expanded", String(folders.has(item)));
 		else if (item === path && view === "file") node.setAttribute("aria-current", "true");
 		node.append(fileRowIcon(item, language, folder), el("span", "row-title", basename(item)));
 		return node;
 	}
-	let treeLimit = 1500;
-	function renderTree() {
-		if (filesError) {
-			list.append(
-				el("p", "empty-list", filesError),
-				button("Try again", () => report(refreshFiles()), "quiet"),
-			);
+	function folderStatus(message: string, depth: number) {
+		const row = el("p", "folder-list-status", message);
+		row.style.setProperty("--depth", String(depth));
+		return row;
+	}
+	function* ignoredChildren(
+		folder: string,
+		entries: ExplorerRequests["files.folder"][1]["entries"],
+		depth: number,
+	): Generator<HTMLElement> {
+		for (const { name, kind } of entries) {
+			const item = `${folder}/${name}`;
+			yield fileRow(item, depth, kind === "folder", true);
+			if (kind === "folder" && folders.has(item)) yield* ignoredRows(item, depth + 1);
+		}
+	}
+	function* ignoredRows(folder: string, depth: number): Generator<HTMLElement> {
+		const { pending, data, error } = ignoredFolders.get(folder);
+		if (error) yield folderStatus(error, depth);
+		if (!data) {
+			if (pending) yield folderStatus("Loading…", depth);
 			return;
 		}
-		const output = document.createDocumentFragment();
-		let remaining = treeLimit;
-		function emitFiles(files: string[], depth: number) {
-			for (const item of files) {
-				if (remaining-- <= 0) return;
-				output.append(fileRow(item, depth));
-			}
+		yield* ignoredChildren(folder, data.entries, depth);
+		if (data.truncated) yield folderStatus("The host listed only the first entries.", depth);
+		else if (!data.entries.length && !error) yield folderStatus("Empty folder", depth);
+	}
+	function* treeRows(branch: Tree, prefix = "", depth = 0): Generator<HTMLElement> {
+		for (const [name, child] of branch.folders) {
+			const key = prefix + name;
+			yield fileRow(key, depth, true, child.ignored);
+			if (!folders.has(key)) continue;
+			yield* child.ignored ? ignoredRows(key, depth + 1) : treeRows(child, `${key}/`, depth + 1);
 		}
-		function emit(branch: Tree, prefix = "", depth = 0) {
-			for (const [name, child] of branch.folders.entries()) {
-				if (remaining-- <= 0) return;
-				const key = prefix + name;
-				output.append(fileRow(key, depth, true));
-				if (folders.has(key)) emit(child, `${key}/`, depth + 1);
-			}
-			emitFiles(branch.files, depth);
+		for (const entry of branch.files) yield fileRow(entry.path, depth, false, entry.ignored);
+	}
+	function* filterRows(): Generator<HTMLElement> {
+		const hidden = new Set([...ignored.paths, ...ignoredFolders.loaded()]);
+		for (const { path: item } of model.fuzzy(paths.concat([...hidden]), filter, 250)) {
+			const folder = item.endsWith("/");
+			yield fileRow(folder ? item.slice(0, -1) : item, 0, folder, hidden.has(item));
 		}
-		if (filter) for (const { path: item } of model.fuzzy(paths, filter, 250)) output.append(fileRow(item, 0));
-		else emit(tree);
+	}
+	let treeLimit = 1500;
+	function finishTree(output: DocumentFragment, hasMore: boolean) {
 		if (!output.childNodes.length)
 			output.append(el("p", "empty-list", filter ? "No paths match this filter." : "No files to show."));
-		if (remaining <= 0)
+		if (hasMore)
 			output.append(
 				button(
 					"Show more paths",
@@ -318,6 +355,24 @@
 				),
 			);
 		if (treeTruncated) output.append(el("p", "empty-list", "The host listed only the first paths."));
+		if (ignored.truncated) output.append(el("p", "empty-list", "The host listed only the first ignored paths."));
+		if (ignored.error) output.append(el("p", "empty-list", ignored.error));
+	}
+	function renderTree() {
+		if (filesError) {
+			list.append(
+				el("p", "empty-list", filesError),
+				button("Try again", () => report(refreshFiles()), "quiet"),
+			);
+			return;
+		}
+		const output = document.createDocumentFragment();
+		let remaining = treeLimit;
+		for (const row of filter ? filterRows() : treeRows(tree)) {
+			if (remaining-- <= 0) break;
+			output.append(row);
+		}
+		finishTree(output, remaining < 0);
 		list.append(output);
 	}
 	const filterLabel = el("label", "filter");
@@ -576,6 +631,8 @@
 			if (stamp !== filesStamp) return;
 			paths = [...data.paths].sort((a, b) => a.localeCompare(b));
 			treeTruncated = data.truncated;
+			ignored = data.ignored;
+			ignoredFolders.replace(ignored.paths);
 			filesError = "";
 			makeTree();
 		} catch (error) {
@@ -1813,6 +1870,9 @@
 		notes = [];
 		tours = [];
 		paths = [];
+		ignored = { paths: [], truncated: false };
+		ignoredFolders.replace([]);
+		queuedFileChanges = undefined;
 		viewed.clear();
 		folders.clear();
 		path = "";
@@ -1852,7 +1912,56 @@
 		}
 		report(open(event));
 	}
-	function filesChanged(event: Extract<ExplorerEvent, { type: "files.changed" }>) {
+	type FileChanges = Extract<ExplorerEvent, { type: "files.changed" }>;
+	type QueuedFileChanges = { paths: Set<string> | null; head?: FileChanges["head"] };
+	let queuedFileChanges: QueuedFileChanges | undefined;
+	let fileChangeTimer: number | undefined;
+	let refreshingFileChanges = false;
+	function scheduleFileChanges() {
+		if (!queuedFileChanges || refreshingFileChanges || fileChangeTimer !== undefined) return;
+		fileChangeTimer = window.setTimeout(() => {
+			fileChangeTimer = undefined;
+			report(flushFileChanges());
+		}, 500);
+	}
+	function filesChanged(event: FileChanges) {
+		queuedFileChanges ??= { paths: new Set<string>() };
+		const pending = queuedFileChanges;
+		if (event.head) pending.head = event.head;
+		if (!event.paths.length) pending.paths = null;
+		if (pending.paths) {
+			for (const path of event.paths) {
+				pending.paths.add(path);
+				if (pending.paths.size > 512) {
+					pending.paths = null;
+					break;
+				}
+			}
+		}
+		scheduleFileChanges();
+	}
+	async function flushFileChanges() {
+		const event = queuedFileChanges;
+		if (!event) return;
+		queuedFileChanges = undefined;
+		refreshingFileChanges = true;
+		try {
+			await applyFileChanges(event);
+		} finally {
+			refreshingFileChanges = false;
+			scheduleFileChanges();
+		}
+	}
+	async function refreshIgnoredChanges(changed: string[], stale: string[]) {
+		if (settings.tab === "files" && stale.some((folder) => folders.has(folder))) renderSidebar();
+		if (view === "file" && changed.includes(path) && !loadingFile) await navigate({ path, view }, { refresh: true });
+	}
+	async function applyFileChanges(event: QueuedFileChanges) {
+		const changed = event.paths ? [...event.paths] : [];
+		const stale = ignoredFolders.invalidate(changed);
+		const knownIgnored =
+			!ignored.truncated && changed.length && changed.every((path) => ignoredFolders.contains(path, false));
+		if (!event.head && knownIgnored) return refreshIgnoredChanges(changed, stale);
 		const oldHead = root.head;
 		if (event.head) {
 			root = {
@@ -1862,10 +1971,12 @@
 			};
 			rootChrome();
 		}
-		const stamp = openStamp;
-		report(refreshFiles());
-		report(refreshNotes());
-		report(refreshChangedView(stamp, oldHead, event.paths));
+		const results = await Promise.allSettled([
+			refreshFiles(),
+			refreshNotes(),
+			refreshChangedView(openStamp, oldHead, changed),
+		]);
+		for (const result of results) if (result.status === "rejected") throw result.reason;
 	}
 	function touchesOpenFile(oldHead: ExplorerRoot["head"], paths: string[]) {
 		return (

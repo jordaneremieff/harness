@@ -504,6 +504,18 @@ kbd {
   width: 15px;
   height: 15px;
 }
+.list-row.is-ignored .row-title {
+  color: var(--ink-3);
+}
+.list-row.is-ignored .ico,
+.list-row.is-ignored .language-mark {
+  color: color-mix(in srgb, var(--ink-3) 80%, var(--paper));
+}
+.folder-list-status {
+  margin: 3px 5px 5px calc(6px + 10px * min(var(--depth, 0), 9));
+  color: var(--ink-3);
+  font-size: 12px;
+}
 .row-title {
   min-width: 0;
   white-space: nowrap;

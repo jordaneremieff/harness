@@ -11,15 +11,16 @@ enum ExplorerCheck {
         override var occlusionState: NSWindow.OcclusionState { isVisible ? [.visible] : super.occlusionState }
     }
     static func export(_ argv: [String], resources: URL) throws {
-        let raw = try options(argv, allowed: ["out", "width", "height", "appearance", "root", "path", "line", "script"])
+        let raw = try options(argv, allowed: ["out", "width", "height", "appearance", "root", "path", "line", "script", "ignored"])
         guard let out = raw["out"], let width = raw["width"].flatMap(Int.init), let height = raw["height"].flatMap(Int.init),
               (320...4096).contains(width), (240...4096).contains(height), (raw["appearance"].map { ["dark", "light"].contains($0) } ?? true) else {
-            throw ExplorerError("arguments", "Use --export-image --out <png> --width <n> --height <n> --root <dir> [--appearance dark|light] [--path <path>] [--line <n>] [--script <file>].")
+            throw ExplorerError("arguments", "Use --export-image --out <png> --width <n> --height <n> --root <dir> [--appearance dark|light] [--path <path>] [--line <n>] [--script <file>] [--ignored show|hide].")
         }
         let target = try Launch(arguments: ["root", "path", "line"].flatMap { key in raw[key].map { ["--\(key)", $0] } ?? [] })
         let scratch = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
-        try execute(target: target, resources: resources, store: scratch, width: width, height: height, appearance: raw["appearance"]) { host, window in
+        try execute(target: target, resources: resources, store: scratch, width: width, height: height, appearance: raw["appearance"],
+                    showIgnored: try ignoredOption(raw["ignored"])) { host, _ in
             if let file = raw["script"] {
                 let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: file))
                 let data = try handle.read(upToCount: mib + 1) ?? Data()
@@ -49,7 +50,12 @@ enum ExplorerCheck {
         let file = root.appendingPathComponent("example.ts")
         try Data("export const answer = 41;\n".utf8).write(to: file)
         try Data("const first = 1;\nconst second = 2;\nconst third = 3;\n".utf8).write(to: root.appendingPathComponent("lines.ts"))
-        try git(["add", "example.ts", "lines.ts"]); try git(["commit", "--quiet", "-m", "Fixture"])
+        try Data("cache/\nprivate.log\n".utf8).write(to: root.appendingPathComponent(".gitignore"))
+        let cache = root.appendingPathComponent("cache")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: false)
+        try Data("hiddenNeedle\n".utf8).write(to: cache.appendingPathComponent("settings.txt"))
+        try Data().write(to: root.appendingPathComponent("private.log"))
+        try git(["add", "example.ts", "lines.ts", ".gitignore"]); try git(["commit", "--quiet", "-m", "Fixture"])
         try Data("export const answer = 42;\n".utf8).write(to: file)
         try Data("# Preview\n\nA **rendered** paragraph.\n\n[Source](example.ts)\n".utf8).write(to: root.appendingPathComponent("guide.md"))
         let fake = try FakeLive()
@@ -74,6 +80,23 @@ enum ExplorerCheck {
             if ((await accept('hello')).launch.draft !== undefined) throw Error('draft not cleared');
             const files = await accept('files.list');
             if (!files.paths.includes('example.ts')) throw Error('file list');
+            if (files.paths.includes('private.log') || files.ignored.paths.join() !== 'cache/,private.log') throw Error('ignored file list');
+            const filesTab = document.querySelector('[data-tab="files"]');
+            filesTab.click();
+            const row = path => Array.from(document.querySelectorAll('#sidebar-list [data-path]')).find(node => node.dataset.path === path);
+            if (!row('cache')?.classList.contains('is-ignored') || row('cache').ariaExpanded !== 'false' || row('cache/settings.txt')) throw Error('ignored folder was not collapsed');
+            row('cache').click();
+            for (let i = 0; i < 180 && !row('cache/settings.txt'); i++) await new Promise(requestAnimationFrame);
+            if (!row('cache/settings.txt')?.classList.contains('is-ignored') || row('cache').ariaExpanded !== 'true') throw Error('ignored folder children');
+            const filter = document.querySelector('[aria-label="Filter files"]');
+            filter.value = 'settings.txt';
+            filter.dispatchEvent(new Event('input'));
+            if (!row('cache/settings.txt')) throw Error('loaded ignored file did not match the filter');
+            filter.value = '';
+            filter.dispatchEvent(new Event('input'));
+            if ((await accept('file.read', {path:'cache/settings.txt'})).text !== 'hiddenNeedle\\n') throw Error('ignored file content');
+            if ((await accept('search', {query:'hiddenNeedle'})).results.length) throw Error('search included ignored content');
+            if ((await call('files.folder', {path:'.git'})).ok) throw Error('listed Git metadata');
             if ((await accept('file.read', {path:'example.ts'})).text !== 'export const answer = 42;\\n') throw Error('file content');
             if ((await call('file.read', {path:'../example.ts'})).ok) throw Error('escaped path');
             if ((await bridge.postMessage({v:2,type:'hello'})).ok || (await call('unknown')).ok) throw Error('unknown request accepted');
@@ -168,8 +191,17 @@ enum ExplorerCheck {
             return document.visibilityState;
             """, arguments: [:], in: nil, contentWorld: .page)
             guard result as? String == "visible" else { throw ExplorerError("verify", "WebKit did not render a visible page.") }
+            try Data().write(to: cache.appendingPathComponent("added.txt"))
+            let refreshed = try await host.page.view.callAsyncJavaScript("""
+            for (let i = 0; i < 180 && !document.querySelector('[data-path="cache/added.txt"]'); i++) await new Promise(requestAnimationFrame);
+            const folder = document.querySelector('[data-path="cache"]');
+            const added = document.querySelector('[data-path="cache/added.txt"]');
+            if (folder?.ariaExpanded !== 'true' || !added?.classList.contains('is-ignored')) throw Error('ignored folder did not refresh in place');
+            return true;
+            """, arguments: [:], in: nil, contentWorld: .page)
+            guard refreshed as? Bool == true else { throw ExplorerError("verify", "The ignored folder did not refresh.") }
         }
-        print("Explorer verified: real page, file, Markdown preview, Git review, search, notes, note marks, card drafts, live prompt and answer.")
+        print("Explorer verified: real page, files, ignored folders and file events, Markdown preview, Git review, search, notes, note marks, card drafts, live prompt and answer.")
     }
 
     private static func scratchDirectory() throws -> URL {
@@ -183,7 +215,7 @@ enum ExplorerCheck {
     }
 
     private static func execute(target: Launch, resources: URL, store: URL, width: Int, height: Int, appearance: String?, live: LiveConfiguration? = nil,
-                                body: @escaping (ExplorerHost, NSWindow) async throws -> Void) throws {
+                                showIgnored: Bool = true, body: @escaping (ExplorerHost, NSWindow) async throws -> Void) throws {
         let workspace = try prepareWorkspace(target)
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
@@ -196,7 +228,7 @@ enum ExplorerCheck {
         window.ignoresMouseEvents = true
         window.isExcludedFromWindowsMenu = true
         if let appearance { window.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
-        let host = ExplorerHost(target, workspace: workspace, store: store, resources: resources)
+        let host = ExplorerHost(target, workspace: workspace, store: store, resources: resources, showIgnored: showIgnored)
         window.contentView = host.page.view
         host.page.view.frame = CGRect(x: 0, y: 0, width: width, height: height)
         host.page.view.autoresizingMask = [.width, .height]

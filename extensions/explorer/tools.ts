@@ -195,7 +195,7 @@ async function showLaunch(
 	target: LaunchTarget,
 	detail: Record<string, unknown>,
 ): Promise<Outcome> {
-	const launch = await paneLaunch(context.app, context.dir, target);
+	const launch = await paneLaunch(context.app, context.dir, target, context.agentDir);
 	if ("showUnavailable" in launch) return outcome("show", launch.showUnavailable, { ...detail, ...launch });
 	const { live, ...data } = launch;
 	if (context.connect) {

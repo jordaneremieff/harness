@@ -32,20 +32,24 @@ test("manifests gate fixed executable argv and same-pane navigation", { timeout:
 			end: 8,
 			review: { kind: "range" as const, base: "HEAD^", head: "HEAD" },
 		};
-		const absent = await paneLaunch(app, dir, target);
+		const absent = await paneLaunch(app, dir, target, dir);
 		assert.deepEqual("build" in absent && absent.build, BUILD_COMMAND);
 		await mkdir(join(app, "Contents", "MacOS"), { recursive: true });
 		await mkdir(resources, { recursive: true });
 		await writeFile(executable, "#!/bin/sh\nexit 0\n");
 		await chmod(executable, 0o700);
 		await writeFile(manifest, JSON.stringify({ contract: 1, pane: 1 }));
-		assert.deepEqual(await paneLaunch(app, dir, target), {
-			show: [executable, "--pane", "--store", dir, ...targetArgs(target)],
+		assert.deepEqual(await paneLaunch(app, dir, target, dir), absent);
+		await writeFile(manifest, JSON.stringify({ contract: 1, pane: 1, ignoredOption: 1 }));
+		assert.deepEqual(await paneLaunch(app, dir, target, dir), {
+			show: [executable, "--pane", "--store", dir, "--ignored", "show", ...targetArgs(target)],
 			live: false,
 		});
-		await writeFile(manifest, JSON.stringify({ contract: 1, pane: 1, paneOpen: 1, live: 1 }));
-		const result = await paneLaunch(app, dir, target);
+		await writeFile(manifest, JSON.stringify({ contract: 1, pane: 1, paneOpen: 1, live: 1, ignoredOption: 1 }));
+		await writeFile(join(dir, "harness.json"), JSON.stringify({ version: 1, explorer: { showIgnored: false } }));
+		const result = await paneLaunch(app, dir, target, dir);
 		assert.ok("show" in result);
+		assert.deepEqual(result.show, [executable, "--pane", "--store", dir, "--ignored", "hide", ...targetArgs(target)]);
 		assert.equal(result.live, true);
 		assert.equal(
 			result.paneInput,

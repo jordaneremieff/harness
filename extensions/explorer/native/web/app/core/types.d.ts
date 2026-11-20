@@ -137,7 +137,16 @@ type ExplorerRequests = {
 			build: { version: string; commit: string | null };
 		},
 	];
-	"files.list": [undefined, { paths: string[]; truncated: boolean; source: string }];
+	"files.list": [
+		undefined,
+		{
+			paths: string[];
+			truncated: boolean;
+			ignored: { paths: string[]; truncated: boolean; error?: string };
+			source: string;
+		},
+	];
+	"files.folder": [{ path: string }, { entries: { name: string; kind: "file" | "folder" }[]; truncated: boolean }];
 	"file.read": [{ path: string; at?: string }, ExplorerFile];
 	"markdown.render": [{ path: string; at?: string }, { file: ExplorerFile; html?: string }];
 	"link.open": [{ url: string }, object];
@@ -234,6 +243,17 @@ interface ExplorerModel {
 	size(bytes: number): string;
 }
 interface ExplorerApp {
+	ignoredFolders(
+		list: (path: string) => Promise<ExplorerRequests["files.folder"][1]>,
+		changed: () => void,
+	): {
+		replace(paths: string[]): void;
+		contains(path: string, includeSelf?: boolean): boolean;
+		invalidate(paths: string[]): string[];
+		get(path: string): { data?: ExplorerRequests["files.folder"][1]; error?: string; pending: boolean };
+		retryOnOpen(path: string): void;
+		loaded(): string[];
+	};
 	request<K extends keyof ExplorerRequests>(
 		type: K,
 		...args: undefined extends ExplorerRequests[K][0]

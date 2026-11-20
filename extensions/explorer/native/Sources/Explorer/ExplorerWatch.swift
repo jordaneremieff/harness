@@ -65,9 +65,9 @@ final class ExplorerWatch: @unchecked Sendable {
         if path == store { notesChanged = true }
         let metadata = roots.compactMap(relative)
         if !metadata.isEmpty {
-            if metadata.contains(where: { $0 == "HEAD" || $0 == "packed-refs" || $0 == "refs" || $0.hasPrefix("refs/") }) { gitChanged = true }
+            if metadata.contains(where: { ["HEAD", "info/exclude", "packed-refs", "refs"].contains($0) || $0.hasPrefix("refs/") }) { gitChanged = true }
         } else if let local = relative(workspace.root.path), validPath(local), relative(store) == nil, path != store {
-            if paths.count < 512 { paths.insert(local) } else { rootChanged = true }
+            if paths.count < 512 || paths.contains(local) { paths.insert(local) } else { rootChanged = true }
         }
         guard rootChanged || gitChanged || notesChanged || !paths.isEmpty, pending == nil else { return }
         let task = DispatchWorkItem { [weak self] in self?.flush() }

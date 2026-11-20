@@ -113,33 +113,51 @@ final class Workspace: @unchecked Sendable {
                 "defaultBranch": defaultBranch as Any? ?? jsonNull, "onDefaultBranch": branch != nil && branch == defaultBranch]
     }
 
+    private func gitFiles(_ args: [String], maxPaths: Int, includeDirectories: Bool = false) throws -> (paths: [String], truncated: Bool) {
+        var names = Set<String>(), jsonBytes = 0
+        let nameLimit = includeDirectories ? 4097 : 4096
+        var pending = Data(), skipOversize = false
+        let output = try Self.invoke(root, ["ls-files", "-z"] + args, limit: 31 * mib, seconds: 6) { chunk in
+            var start = chunk.startIndex
+            while let end = chunk[start...].firstIndex(of: 0) {
+                let part = chunk[start..<end]
+                start = end + 1
+                defer { pending.removeAll(keepingCapacity: true); skipOversize = false }
+                guard !skipOversize, pending.count + part.count <= nameLimit else { continue }
+                let record: Data
+                if pending.isEmpty { record = part } else { pending.append(part); record = pending }
+                guard let path = String(data: record, encoding: .utf8), !names.contains(path) else { continue }
+                guard validPath(includeDirectories && path.hasSuffix("/") ? String(path.dropLast()) : path) else { continue }
+                let escaped = record.reduce(3) { count, byte in count + (byte < 32 ? 6 : byte == 34 || byte == 92 ? 2 : 1) }
+                guard names.count < maxPaths, jsonBytes + escaped < 31 * mib else { return false }
+                jsonBytes += escaped
+                names.insert(path)
+            }
+            if !skipOversize {
+                if pending.count + chunk.count - start > nameLimit { skipOversize = true }
+                else { pending.append(chunk[start...]) }
+            }
+            return true
+        }
+        guard output.status == 0 || output.truncated else { throw ExplorerError("git", "Git could not list files.") }
+        return (names.sorted(), output.truncated)
+    }
+
+    func ignoredFiles(maxPaths: Int = 200_000) throws -> (paths: [String], truncated: Bool) {
+        guard isGit else { return ([], false) }
+        let output = try gitFiles(["--others", "--ignored", "--exclude-standard", "--directory"], maxPaths: maxPaths, includeDirectories: true)
+        // Git may emit a summary for an unignored folder alongside its ignored descendants.
+        let paths = output.paths
+        return (paths.indices.compactMap { i in
+            let path = paths[i]
+            if path.hasSuffix("/"), i + 1 < paths.count, paths[i + 1].hasPrefix(path) { return nil }
+            return path
+        }, output.truncated)
+    }
+
     func files(maxPaths: Int = 200_000) throws -> (paths: [String], truncated: Bool) {
         if isGit {
-            var names = Set<String>(), jsonBytes = 0
-            var pending = Data(), skipOversize = false
-            let output = try Self.invoke(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--deduplicate"], limit: 31 * mib, seconds: 6) { chunk in
-                var start = chunk.startIndex
-                while let end = chunk[start...].firstIndex(of: 0) {
-                    let part = chunk[start..<end]
-                    start = end + 1
-                    defer { pending.removeAll(keepingCapacity: true); skipOversize = false }
-                    guard !skipOversize, pending.count + part.count <= 4096 else { continue }
-                    let record: Data
-                    if pending.isEmpty { record = part } else { pending.append(part); record = pending }
-                    guard let path = String(data: record, encoding: .utf8), validPath(path), !names.contains(path) else { continue }
-                    let escaped = record.reduce(3) { count, byte in count + (byte < 32 ? 6 : byte == 34 || byte == 92 ? 2 : 1) }
-                    guard names.count < maxPaths, jsonBytes + escaped < 31 * mib else { return false }
-                    jsonBytes += escaped
-                    names.insert(path)
-                }
-                if !skipOversize {
-                    if pending.count + chunk.count - start > 4096 { skipOversize = true }
-                    else { pending.append(chunk[start...]) }
-                }
-                return true
-            }
-            guard output.status == 0 || output.truncated else { throw ExplorerError("git", "Git could not list files.") }
-            return (names.sorted(), output.truncated)
+            return try gitFiles(["--cached", "--others", "--exclude-standard", "--deduplicate"], maxPaths: maxPaths)
         }
         let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
         guard let scan = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys) else {
@@ -160,6 +178,47 @@ final class Workspace: @unchecked Sendable {
             names.append(path)
         }
         return (names.sorted(), false)
+    }
+
+    func folder(_ path: String, maxEntries: Int = 5000) throws -> (entries: [[String: String]], truncated: Bool) {
+        guard let (fd, _) = try openContained(root, path) else {
+            throw ExplorerError("not-found", "The folder no longer exists.")
+        }
+        guard let directory = fdopendir(fd) else {
+            Darwin.close(fd)
+            throw ExplorerError("io", "The folder could not be listed.")
+        }
+        defer { closedir(directory) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 4
+        var entries: [[String: String]] = [], visited = 0, bytes = 0
+        while true {
+            errno = 0
+            guard let row = readdir(directory) else {
+                if errno != 0 { throw ExplorerError("io", "The folder could not be listed.") }
+                return (entries, false)
+            }
+            visited += 1
+            if visited > maxEntries * 4 + 2 || ProcessInfo.processInfo.systemUptime > deadline { return (entries, true) }
+            let name = withUnsafeBytes(of: &row.pointee.d_name) { raw in
+                String(bytes: raw.prefix(Int(row.pointee.d_namlen)), encoding: .utf8)
+            }
+            guard let name else { continue }
+            let relative = path + "/" + name
+            guard validPath(relative) else { continue }
+            var details = stat()
+            guard fstatat(fd, name, &details, AT_SYMLINK_NOFOLLOW) == 0 else { continue }
+            if details.st_mode & S_IFMT == S_IFLNK {
+                guard let (child, _) = try? openContained(root, relative) else { continue }
+                let status = fstat(child, &details)
+                Darwin.close(child)
+                guard status == 0 else { continue }
+            }
+            let kind = details.st_mode & S_IFMT
+            guard kind == S_IFDIR || kind == S_IFREG else { continue }
+            bytes += name.utf8.reduce(40) { count, byte in count + (byte < 32 ? 6 : byte == 34 || byte == 92 ? 2 : 1) }
+            if entries.count >= maxEntries || bytes > 3 * mib { return (entries, true) }
+            entries.append(["name": name, "kind": kind == S_IFDIR ? "folder" : "file"])
+        }
     }
 
     func checkedCommit(_ ref: String) -> String? {

@@ -15,6 +15,78 @@ struct WorkspaceTests {
         #expect(throws: ExplorerError.self) { try paneArguments(#"open --root "bad"suffix"#) }
     }
 
+    @Test func ignoredVisibilityIsAPaneOptionNotALocationField() throws {
+        #expect(try ignoredOption(nil))
+        #expect(try ignoredOption("show"))
+        #expect(try !ignoredOption("hide"))
+        #expect(throws: ExplorerError.self) { try ignoredOption("false") }
+        #expect(throws: ExplorerError.self) { try Launch(arguments: ["--root", "/", "--ignored", "hide"]) }
+        #expect(throws: ExplorerError.self) { try Launch(target: ["root": "/", "ignored": "hide"]) }
+    }
+
+    @Test func gitListsIgnoredEntriesSeparatelyAndCollapsesWhollyIgnoredFolders() throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let git = { (args: [String]) in
+            try command("/usr/bin/git", args, cwd: root, environment: ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"], limit: 8192, seconds: 2)
+        }
+        let files = FileManager.default
+        try files.createDirectory(at: root.appendingPathComponent("build/child"), withIntermediateDirectories: true)
+        try files.createDirectory(at: root.appendingPathComponent("node_modules/child"), withIntermediateDirectories: true)
+        try files.createDirectory(at: root.appendingPathComponent("mixed"), withIntermediateDirectories: false)
+        try Data("build/\nnode_modules/\nmixed/*\n!mixed/ordinary.txt\n*.log\n".utf8).write(to: root.appendingPathComponent(".gitignore"))
+        for name in ["src.ts", "build/tracked", "build/child/local", "node_modules/child/local", "mixed/ignored.txt", "private.log"] {
+            try Data().write(to: root.appendingPathComponent(name))
+        }
+        let plain = try Workspace(root.path)
+        #expect(try plain.ignoredFiles().paths.isEmpty)
+        #expect(try plain.files().paths.contains("node_modules/child/local"))
+        #expect(try git(["init", "--quiet", "--template="]).status == 0)
+        #expect(try git(["add", "-f", "--", "build/tracked"]).status == 0)
+        let workspace = try Workspace(root.path)
+        let paths = try workspace.files()
+        let ignored = try workspace.ignoredFiles()
+        #expect(paths.paths == [".gitignore", "build/tracked", "src.ts"])
+        #expect(ignored.paths == ["build/child/", "mixed/ignored.txt", "node_modules/", "private.log"])
+        #expect(!ignored.truncated)
+        #expect(try workspace.ignoredFiles(maxPaths: 1).truncated)
+        #expect(try workspace.ignoredFiles(maxPaths: 1).paths.count == 1)
+        try Data().write(to: root.appendingPathComponent("mixed/ordinary.txt"))
+        #expect(try workspace.files().paths.contains("mixed/ordinary.txt"))
+        #expect(try workspace.ignoredFiles().paths == ignored.paths)
+        let hidden = ExplorerServices(workspace: workspace, store: root, resources: root, showIgnored: false)
+        let listing = try hidden.handle("files.list", [:])
+        #expect(try listing["paths"] as? [String] == workspace.files().paths)
+        #expect((listing["ignored"] as? [String: Any])?["paths"] as? [String] == [])
+        #expect(try hidden.handle("file.read", ["path": "private.log"])["kind"] as? String == "text")
+    }
+
+    @Test func folderListingIsImmediateBoundedAndContained() throws {
+        let scratch = try fixture()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let files = FileManager.default
+        let root = scratch.appendingPathComponent("root")
+        try files.createDirectory(at: root.appendingPathComponent("cache/child"), withIntermediateDirectories: true)
+        try files.createDirectory(at: root.appendingPathComponent("cache/.git"), withIntermediateDirectories: true)
+        for path in ["root/cache/a.txt", "root/cache/child/deep.txt", "secret.txt"] {
+            try Data().write(to: scratch.appendingPathComponent(path))
+        }
+        for (name, target) in [("in.txt", "a.txt"), ("out.txt", "../../secret.txt"), ("meta", ".git"), ("escape", "../.."), ("alias", "child")] {
+            try files.createSymbolicLink(atPath: root.appendingPathComponent("cache/\(name)").path, withDestinationPath: target)
+        }
+        let workspace = try Workspace(root.path)
+        let result = try workspace.folder("cache")
+        #expect(Dictionary(uniqueKeysWithValues: result.entries.compactMap { row in row["name"].flatMap { name in row["kind"].map { (name, $0) } } }) ==
+                ["a.txt": "file", "in.txt": "file", "child": "folder", "alias": "folder"])
+        #expect(!result.truncated)
+        #expect(try workspace.folder("cache/alias").entries == [["name": "deep.txt", "kind": "file"]])
+        let bounded = try workspace.folder("cache", maxEntries: 1)
+        #expect(bounded.truncated && bounded.entries.count == 1)
+        for path in ["cache/escape", "cache/.git", "cache/meta", "cache/a.txt", "../root/cache", "cache/missing"] {
+            #expect(throws: ExplorerError.self) { try workspace.folder(path) }
+        }
+    }
+
     @Test func fileReadResolvesInsideLinksAndRejectsEscapes() throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

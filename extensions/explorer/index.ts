@@ -137,7 +137,7 @@ export default function explorer(pi: ExtensionAPI): void {
 					id: "explorer.folder",
 					title: "Explore a Folder…",
 					description: "Open a recent folder in Explorer",
-					argv: [process.execPath, fileURLToPath(new URL("./palette-command.ts", import.meta.url)), dir, app],
+					argv: [process.execPath, fileURLToPath(new URL("./palette-command.ts", import.meta.url)), dir, app, agentDir],
 				},
 			],
 		});

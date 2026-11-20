@@ -6,8 +6,8 @@ import { paneLaunch } from "./pane-command.ts";
 import { resolveTarget } from "./repository.ts";
 
 export async function paletteStep(args: string[]) {
-	const [dir, app, json] = args;
-	if (args.length !== 3 || !isAbsolute(dir) || !isAbsolute(app) || json.length > 16384)
+	const [dir, app, agentDir, json] = args;
+	if (args.length !== 4 || !isAbsolute(dir) || !isAbsolute(app) || !isAbsolute(agentDir) || json.length > 16384)
 		return { error: "The Explorer palette request is invalid." };
 	try {
 		const request: unknown = JSON.parse(json);
@@ -44,7 +44,7 @@ export async function paletteStep(args: string[]) {
 		if (!selected || request.answers.length !== 1)
 			return { error: "This folder is no longer in Explorer's recent list." };
 		const { repo } = await resolveTarget(selected.path, selected.path);
-		const pane = await paneLaunch(app, dir, { root: repo.root });
+		const pane = await paneLaunch(app, dir, { root: repo.root }, agentDir);
 		if ("showUnavailable" in pane) return { error: pane.showUnavailable };
 		return {
 			show: {

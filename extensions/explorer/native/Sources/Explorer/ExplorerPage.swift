@@ -87,7 +87,12 @@ final class ExplorerPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler
                 guard let receive else { throw ExplorerError("unavailable", "The Explorer host is closed.") }
                 var result = try await receive(type, fields)
                 result["ok"] = true
-                let cap = ["file.read", "review.diff", "files.list"].contains(type) ? 32 * mib : 256 * kib
+                let cap = switch type {
+                case "files.list": 64 * mib
+                case "files.folder": 4 * mib
+                case "file.read", "review.diff": 32 * mib
+                default: 256 * kib
+                }
                 guard let data = try? JSONSerialization.data(withJSONObject: result, options: [.withoutEscapingSlashes]), data.count <= cap else {
                     throw ExplorerError("too-large", "The result exceeds the bridge limit.")
                 }
