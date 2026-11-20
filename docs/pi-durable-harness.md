@@ -1,6 +1,6 @@
 # Pi durable-harness track
 
-Pi 1.5.2 supplies the ordinary coding-agent host and the separate Pi Durable
+Pi 1.6.0 supplies the ordinary coding-agent host and the separate Pi Durable
 runtime. Ordinary sessions retain their ordinary host. A native operator
 conversation does not require an ordinary primary. Durable owns native agent
 conversations, generation, tool tasks, committed state, and recovery. The Agent
@@ -8,12 +8,12 @@ extension supplies cwd-bound resources, process ownership, controls, and deliver
 The [session host roles](conventions/session-host-roles.md) and
 [Agent host contract](agent-host-contract.md) define that composition.
 
-Source review date: 2026-11-11. The current review checks the installed 1.5.2
-manifests and the 1.5.1–1.5.2 contracts identified below against harness consumers.
-Earlier source coverage includes the coding-agent, Durable, Chord, and MCP
-release notes from 1.0.4 through 1.5.0, plus the initial pi-schema release.
-Each contract below names its source boundary; earlier verification dates remain
-historical evidence, not a claim that every source was rechecked at 1.5.2.
+Source review date: 2026-11-20. The current review compares installed 1.5.2
+and 1.6.0 `dist/` trees, excluding source maps and bundles, and checks current
+manifests, release notes, changed defining sources and affected harness consumers.
+Earlier verification dates remain historical evidence. The registry's `latest`
+tags for coding-agent, Durable, Chord and MCP and the upstream `v1.6.0` ref
+were checked separately from the installation and checkout dependency graph.
 Release-note coverage is not package-wide runtime parity.
 Dependency installation does not replace modules in retained processes.
 Source inspection does not establish live provider behavior, conversion
@@ -37,7 +37,7 @@ Earlier runtime trials do not become current trials through a comparison.
 
 ## Release review coverage
 
-<!-- pi-release-reviewed-through: 1.5.2 -->
+<!-- pi-release-reviewed-through: 1.6.0 -->
 
 This declaration records the latest Pi release through which the harness
 completed cumulative release intake. Its value is a numeric major.minor.patch
@@ -73,12 +73,16 @@ A manifest does not identify another process's loaded modules.
 
 | Source | Current contract |
 |---|---|
-| Coding-agent 1.5.2 manifest | Runtime exports are the ordinary root and `./rpc-entry`. It depends on agent-core, AI, Codemode, MCP, TUI, and TypeBox. |
-| Agent-core 1.5.2 manifest | The root and package metadata remain public; no AgentHarness lane runtime is published there. It depends on AI and pi-schema. |
-| AI 1.5.2 manifest | The root no longer re-exports TypeBox. A `./compat` export is published; the extension loader maps both the AI root and `./compat` to an extension view that keeps `Type`, `Static`, `TSchema`, and a TypeBox `StringEnum`. AI depends on pi-schema, not TypeBox. |
-| Durable 1.5.2 manifest | Root, environments, tools, native codemode, native tool-search, optional image processing, storage adapters including IndexedDB and the Chord store (`./storage/store`), and testing exports are published. It depends on Chord, AI, Codemode, pi-schema, and telemetry; TypeBox is no longer its dependency. |
-| Chord 1.5.2 manifest | The root exports Chord v2. The v1 root, `./old`, `./node`, and `./next` surfaces are absent. Context, JSON, watches, delta, SQLite, telemetry, HTTP, workers, plugins, app, sync, and client surfaces have explicit subpaths. It depends on pi-schema and telemetry; esbuild, React, and ws are optional peers. |
-| pi-schema 1.5.2 manifest | Root and `./formats` exports. No runtime dependencies. |
+| Coding-agent 1.6.0 manifest | Runtime exports are the ordinary root and `./rpc-entry`. It depends on agent-core, AI, Codemode, MCP, TUI, and TypeBox. Its undici dependency is 8.12.4. |
+| Agent-core 1.6.0 manifest | The root and package metadata remain public; no AgentHarness lane runtime is published there. It depends on AI and pi-schema. |
+| AI 1.6.0 manifest | The root and subpaths for compatibility, models, providers, APIs, OAuth, session resources and utilities are public. AI depends on pi-schema and telemetry, not TypeBox. The extension loader still aliases the AI root and `./compat` to its TypeBox-compatible view. |
+| Durable 1.6.0 manifest | The root, environments, tools, codemode, tool-search, image processing (including `./images/fit`), storage adapters (including IndexedDB and `./storage/store`) and testing are public. It depends on Chord, AI, Codemode, pi-schema and telemetry, not TypeBox. |
+| Chord 1.6.0 manifest | The root exports Chord v2. Context, JSON, watches, delta, SQLite, telemetry ingest and storage, HTTP, workers, plugins, app, sync and client surfaces have explicit subpaths. It depends on pi-schema and telemetry. esbuild, React and ws are optional peers with caret ranges. The v1 root, `./old`, `./node` and `./next` are absent. |
+| pi-schema 1.6.0 manifest | The root and `./formats` are public. No runtime dependencies. |
+| Codemode 1.6.0 manifest | The root and Cloudflare, declarations, portable, source and worker subpaths are public. It depends on quickjs-wasi. |
+| MCP 1.6.0 manifest | The root, `./oauth` and `./testing` are public. It depends on cross-spawn. |
+| Telemetry 1.6.0 manifest | The root, `./render` and `./testing` are public. No runtime dependencies. |
+| TUI 1.6.0 manifest | The manifest uses `main` and `types` for the root, with no `exports` map. It depends on get-east-asian-width, marked and marked-cjk-friendly. |
 | Coding-agent dependencies | Chord is not its dependency. Durable still depends on Chord; this does not remove the harness's direct Chord requirement. |
 | Removed packages | Pi Client, Pi Protocol, and Pi Server served the removed experimental runtime and are no longer released. Their old transport is not a current integration surface. |
 | Loaded processes | Unknown unless that process reports its descriptor or its resolution is directly observed. |
@@ -93,9 +97,10 @@ after a lockfile update; worktree source synchronization does not install it.
 The current-source review separates these layers:
 
 - Published files and installed defining declarations establish available APIs.
-- Byte-identical ordinary SessionManager, services, session-runtime, message,
-  extension-loader, cache-warmer, and RPC sources support their unchanged source
-  claims across the compared releases.
+- Ordinary services, message conversion, and cache-warmer implementation files
+  are unchanged from 1.5.2. The SessionManager, session-runtime, extension loader
+  and RPC sources differ; unchanged claims about them rest on inspected hunks.
+  The Codemode, pi-schema and telemetry comparisons found no `dist/` changes.
 - Changed-source inspection establishes the changed contracts described below.
   It does not establish complete OAuth flow or Codemode replay behavior.
 - Controlled owning-layer tests establish only their exercised setup.
@@ -201,17 +206,14 @@ adopts them as one host transition with no compatibility path for 1.4.0:
    `session_failed` renamed `storage_failed`. `DocumentCommitChange`,
    `FileChange`, `ReportFrom`, and `TaskInspection.state` are also tagged by
    `kind`. Source: `pi-durable/dist/types.d.ts`.
-6. **Task and document versions.** `pi.tool` is version 3 (migrating versions 1
-   and 2), `pi.generation` is version 2, and `pi.live` is version 3 with a
-   read-time `migrate`. An older Harness leaves these tasks blocked
-   (`task_too_old`) and cannot read a `pi.live` value this release wrote.
-   `pi.live.runFailure` records why the newest run ended without an answer.
-   Sources: `pi-durable/dist/harness/{tool,generation,live}.js`.
+6. **Run failures.** `pi.live.runFailure` records why the newest run ended
+   without an answer. See [current retained versions](#store-format-and-retained-task-versions)
+   for the task and document version boundaries.
 
 ### Native schema package
 
-Checked on 2026-11-11 against the installed package manifests and README.
-`@earendil-works/pi-schema` 1.5.2 is installed in this checkout. It supplies
+The 1.6.0 manifest and byte comparison on 2026-11-20 confirm the public entry
+points and unchanged dist sources of `@earendil-works/pi-schema`. It supplies
 plain JSON Schema builders (`str`,
 `num`, `int`, `bool`, `nul`, `unknown`, `lit`, `oneOf`, `obj`, `opt`, `arr`,
 `tuple`, `map`, `union`, `nullable`, `bytes`, `bigint`, `unsafe`, `recursive`),
@@ -268,7 +270,10 @@ its grapheme-based limit with an extension-local counter. pi-schema treats
   frames each message with its length. Chord owns the codec, calls, cancellation,
   and state. The adapter owns stream framing, encoded-message and queued-byte
   bounds, and initial identity admission; it does not interpret encoded calls
-  to expose per-call refusal evidence. Checked on 2026-11-11 against Chord 1.5.2
+  to expose per-call refusal evidence. Chord adds a wire-visible `denied`
+  reference failure for admitted contracts and changes its event codec; its
+  handshake protocol number is unchanged. That number does not verify mixed
+  release compatibility. Checked on 2026-11-20 against Chord 1.6.0
   `dist/{host,link,contracts}` and `transport/{endpoint,unix-link}.ts`.
   The owning contract is [Chord wire contract](agent-host-contract.md#chord-wire-contract).
 - Chord 1.5.0 checks contract and state schemas with pi-schema. TypeBox-built
@@ -366,6 +371,8 @@ The ordinary public contracts remain separate from Durable adoption:
   the second hook's prompt/tool ownership is required.
 - `finishTurn` runs after the tool batch, before steering consumption. Ending
   that low-level loop does not bypass session retries, recovery, or queued work.
+  An aborted batch now completes calls that did not start with an
+  `Operation aborted` error result, rather than leaving the call without a result.
 - `ExtensionAPI.on()` returns an unsubscribe function. Session replacement changes
   the AgentSession, its bindings, and its event subscriptions.
 - Tool arguments and retained result details use current JSON types, not arbitrary
@@ -406,7 +413,8 @@ documentation, and release notes:
   `dist/core/extensions/types.d.ts`.
 - `pi.exec()` accepts `maxBuffer` (combined stdout and stderr). Its result has
   `truncated`, true when output passed the limit; the command is then terminated
-  with a nonzero code. Source: `dist/core/exec.d.ts`.
+  with a nonzero code. In 1.6.0 a child terminated by a signal returns 128 plus
+  the signal number, not zero. Sources: `dist/core/exec.{d.ts,js}`.
 - Inline `ctx.ui.custom()` components and overlays accept `blocked` to report
   that Pi waits for user input. At 1.5.2, an overlay retains that status while
   hidden, until `done()`. Each overlay has its own status source. Checked on
@@ -421,7 +429,9 @@ documentation, and release notes:
 
 ### Current loading, tools and ordinary lifecycle
 
-Checked on 2026-11-11 against the installed coding-agent 1.5.2 sources:
+Checked on 2026-11-20 in the coding-agent 1.6.0 defining sources for
+extension loading, built-in tools and reload. Settings and directory-choice
+contracts retain their earlier source boundary.
 
 - Extension imports use the entry file's canonical path. Native contribution
   admission compares canonical source identities with loaded entrypoints. The
@@ -429,15 +439,31 @@ Checked on 2026-11-11 against the installed coding-agent 1.5.2 sources:
   does not admit a contribution. Sources: `dist/core/extensions/loader.js` and
   `extensions/agent/durable-services.ts`.
 - The read tool streams local files; custom operations opt in with
-  `createReadStream`. Native read delegates the selected installation's tool
-  without replacing its operations. Grep receives context from ripgrep rather
-  than `GrepOperations.readFile`; no harness override needs that deprecated hook.
-  Sources: `dist/core/tools/{read,grep}.js` and
+  `createReadStream`. Cancellation during file open settles the read without an
+  uncaught stream error. Native read delegates the selected installation's tool
+  without replacing its operations. `find` matches slash-containing patterns
+  relative to the search directory, accepts a leading `./`, and keeps basename
+  matching at any depth for patterns without `/`. Use `**/` for a path pattern
+  that must match at any depth. Grep gets context from ripgrep, not from
+  `GrepOperations.readFile`. Sources: `dist/core/tools/{read,find,grep}.js` and
   `extensions/agent/durable-services.ts`.
 - Ordinary reload refuses an active response or compaction. Native reload has
   its own storage-idle and closed-observer conditions before resource reload.
   Neither path permits a running invocation to use replaced registrations.
   Sources: `dist/core/agent-session.js` and `extensions/agent/durable-runtime.ts`.
+- `AgentSessionRuntime.takeUnreportedDiagnostics()` returns startup and session
+  replacement diagnostics not yet seen by that runtime host, keyed by type and
+  message. Interactive mode reports them in chat; print, JSON and RPC use stderr.
+  Model fallback notices also surface at startup and after replacement. Errors
+  from ordinary `pi.events` handlers enter extension error reporting; old
+  replaced runners no longer report them. Sources: `dist/core/agent-session-runtime.js`,
+  `dist/core/extensions/{loader,runner}.js` and `dist/modes`.
+- RPC subscribes to the new session before binding its extensions, rather than
+  running `session_start` and `resources_discover` twice. JSON output also
+  subscribes before `session_start`, at startup and after replacement. An SDK
+  host that called `bindExtensions({})` gets `session_start` after reload, even
+  without UI or error callbacks. Sources: `dist/modes/{rpc/rpc-mode,print-mode}.js`
+  and `dist/core/agent-session.js`.
 - `cacheWarming` accepts `off`, `streaming`, or `idle` and defaults to `idle`.
   Runtime fixtures that disable warming use the string `off`, not a mode object.
   This ordinary default does not establish native provider cache behaviour.
@@ -459,7 +485,19 @@ Ordinary overflow recovery omits a failed assistant attempt and its matching
 tool results from projected model context, including resumed attempts. Tool
 restoration replays branch system messages, retains explicit removals, and adds
 newly registered extension tools unless their registration disables default
-activation. Sources: `dist/core/agent-session.js`.
+activation. A pending late registration survives activation changes that remove
+only tools outside the restored loadout; removing a tool in that loadout or
+starting the next run clears the pending set. This preserves MCP tools opened
+by `tool_search` through resume or reload when a `session_start` handler turns
+only its own newly added tool off. Source: `dist/core/agent-session.js`.
+
+Ordinary and Durable use `isRetryableAssistantError()` from pi-ai. The 1.6.0
+classifier recognises `Connection closed.` and bare socket error codes such as
+`ECONNRESET`, `EPIPE` and `ETIMEDOUT`. Their retry budgets and separate overflow
+recovery rules still apply. The Codex provider's fresh-WebSocket retry for a
+mid-turn connection age limit belongs to the provider transport. Sources:
+`pi-ai/dist/{utils/retry,api/openai-codex-responses}.js`,
+`dist/core/agent-session.js`, and `pi-durable/dist/harness/generation.js`.
 
 The extension loader aliases `pi-ai/models` to the running installation.
 Provider attribution now flows through pi-ai client identity; ordinary
@@ -560,22 +598,32 @@ separate sets. Model-only controls, including self-compaction, stay outside
 script access. Nested calls run validation, hooks, output limits, replay policy,
 and parent-call events through native `ToolTask`.
 
-Ordinary read returns text or a structured image block. Durable's native read
-also supports PNG, JPEG, GIF, and WebP, with optional image preparation through
-its image exports. The host's selected coding-tool adaptation must preserve its
-ordinary file bounds and error semantics. Native `read` declares a
-`structuredOutputSchema` (a text file's text or an image's `ImageContent`), so
-scripts receive an image value. Show an image with
-`image(await tools.read({path}))`; printing base64 text does not show it.
-Source: `pi-durable/dist/tools/read.js`.
+Ordinary read returns text or an image block. Durable's built-in read supports
+PNG, JPEG, GIF and WebP with optional image preparation, and declares a
+`structuredOutputSchema` for a text or image value. Show an image with
+`image(await tools.read({path}))`; printing base64 text does not show it. Both
+read implementations now keep the unsupported-model warning out of retained
+model content. `details.imageUnsupportedByModel` identifies the model for UIs;
+ordinary Pi renders the warning even when the tool card is collapsed. Model
+projection still substitutes a placeholder per request for non-vision models.
+The Durable `./images/fit` export offers a separate model-aware `afterTool`
+extension to fit model-call results before storage, and `fitImage()` and
+`fitImages()` for host inputs. Sources: `dist/core/tools/{read,renderers/read}.js`
+and `pi-durable/dist/{tools/read,images/fit}.js`.
 
 Ordinary declaration generation includes input constraints in property comments
-and spells out MCP result types. Ordinary tool namespaces accept registered aliases;
-MCP aliases include server names. Native `CodemodeNamespace` has no alias field.
-The native host supplies configured and normalized namespace names through the
-factory's public namespace options. It does not claim ordinary alias parity or
-add an extra namespace field to native tool registration. Sources: `dist/extensions/codemode/{tool,execute}.js`,
-`dist/core/extensions/types.d.ts`, and `pi-durable/dist/codemode/describe.d.ts`.
+and spells out MCP result types. Ordinary namespaces accept registered aliases;
+MCP aliases include server names. Durable 1.6.0 takes namespaces from
+`Extension.namespace: { name, description, instructions? }`. The first selected
+extension that supplies a tool determines its namespace. `namespacesOf(extensions)`
+returns that mapping. `CodemodeNamespace`, prefix matching, `namespaceOf` and
+`CodemodeToolOptions.namespaces` are removed, with no fallback. Every selected
+namespace gets a heading and description even before its deferred tools are
+available. The heading has no tool count. `describeNamespace()` exposes full
+instructions; `searchTools()` searches descriptions and instructions. The
+native declaration has no alias field. Sources:
+`dist/extensions/codemode/{tool,execute}.js`, `dist/core/extensions/types.d.ts`
+and `pi-durable/dist/{codemode/{codemode,describe}.js,harness/types.d.ts}`.
 
 Discovery helpers are async. Scripts await `searchTools()`, `describeTool()`,
 and `describeNamespace()`. Multiple text items have explicit item markers;
@@ -596,9 +644,13 @@ host capability. Current ordinary defining sources are
 - Default server `codemode` exposure registers deferred tools. They are neither
   direct model declarations nor inline codemode listings; scripts discover them.
   `direct`, `deferred`, and `hidden` have their separate reachability contracts.
-- The bounded `mcp_servers` prompt section names enabled servers, their access
+- The bounded ordinary `mcp_servers` prompt section names enabled servers, their access
   surface, and a summary. Full instructions remain available through namespace
-  discovery; a prompt summary does not replace them.
+  discovery; a prompt summary does not replace them. pi-mcp 1.6.0 exports
+  `mcpServerSummary(description, instructions)`: the first line of the
+  configured description, or of the server's instructions if absent or blank.
+  Ordinary Pi applies its own prompt length limits to the helper's result. Sources:
+  `pi-mcp/dist/naming.js` and `dist/extensions/mcp/index.js`.
 - `ToolNamespace.aliases` participates in `describeNamespace()` and the search
   namespace filter. MCP registers its server name as an alias. Raw tool names
   use normalized `mcp__<server>__<tool>` identifiers; aliases do not rename them.
@@ -694,8 +746,9 @@ preserve that member. Source: `chord/dist/context/index.d.ts`.
 a sleeping task and ends its invocation; its promise resolves after that commit,
 not after the deadline. The next phase carries work after the wait. A returned
 `{ status: "sleeping", until, checkpoint }` commits the same state alongside other
-writes. `setTimer()` only paces work inside the current invocation and does not
-survive it. Source: `pi-durable/dist/types.d.ts`.
+writes. Since 1.6.0 a returned sleep can wait on `signals`, with an optional
+`until` deadline. `setTimer()` only paces work inside the current invocation
+and does not survive it. Source: `pi-durable/dist/types.d.ts`.
 
 Sleeping tasks use the Harness clock. `HarnessOptions.now` and `setTimer` supply
 that clock and its timers; `ToolExecutionApi.now()` reads it. `Harness.wake()`
@@ -705,11 +758,11 @@ authority to add agent-side waits. Source: `pi-durable/dist/harness/types.d.ts`.
 
 Repeated interruption without a new task state reaches `settings.restartLimit`
 (default 5), then ends the task with a `restart_limit` outcome, as the
-[host transition contracts](#pi-15-host-transition-contracts) describe. No task
-parks and no retry call exists; running the work again needs a new submission.
-A clean close does not count as a crash. Exhaustive task-state and
-blocked-reason consumers must preserve sleeping states instead of treating them
-as terminal or empty. Sources: `pi-durable/dist/{types,harness/types}.d.ts`.
+[host transition contracts](#pi-15-host-transition-contracts) describe. There is
+no automatic park at the restart limit and no retry call. A clean close does
+not count as a crash. Consumers must preserve sleeping states, including those
+without `until`, rather than treating them as terminal or empty. Sources:
+`pi-durable/dist/{types,harness/types}.d.ts`.
 
 ### Host options and reports
 
@@ -734,7 +787,7 @@ requirement to add a recorder or duplicate retained history. Sources:
 
 ## Pi Durable runtime
 
-The installed 1.5.0 `pi-durable/README.md` and manifest define a separate
+The installed `pi-durable` README and manifest define a separate
 runtime whose API changes between releases. Available primitives do not by
 themselves supply a complete ordinary Pi session, terminal UI, or detached host.
 
@@ -743,7 +796,10 @@ themselves supply a complete ordinary Pi session, terminal UI, or detached host.
 `Harness.open()` uses host-supplied models, registry, storage, and environments.
 Conversations retain inputs, entries, ownership, queued work, and terminal
 outcomes. Admission is not an answer; canceling a wait does not cancel admitted
-work. Generation owns native tool tasks; tool intent commits before effects.
+work. In 1.6.0 the cancellation or close race in `Submission.wait()` and
+`waitForTask()` still rejects the caller's wait without also leaking an unhandled
+rejection. Sources: `pi-durable/CHANGELOG.md` and `pi-durable/dist/harness/scheduler.js`.
+Generation owns native tool tasks; tool intent commits before effects.
 Safe tools replay under their contract, not a general exactly-once promise.
 Compaction changes context without deleting older retained entries.
 
@@ -763,6 +819,12 @@ skipped-byte accounting preserve bounded tails. Defining sources are
 `pi-durable/dist/env/{index.d.ts,node.js,node-watch.js,decode.js,line-scan.js}`
 and `dist/harness/{types.d.ts,output.js}`.
 
+`NodeExecutionEnv.listDir()` omits entries that disappear between enumeration
+and `lstat`; this includes the `ENOENT` reported for invalid UTF-8 names. A
+read-only JSONL open beside a writer no longer fails for this directory race.
+That fix does not change the Agent's private SQLite capture path. Source:
+`pi-durable/dist/env/node.js`.
+
 Current Node watch fixes cover permission errors, replaced directories,
 symbolic-link targets, overlapping recursive coverage, and close during rescan.
 Polling still misses changes undone between snapshots. Optional `listFiles()`
@@ -781,7 +843,9 @@ No PowerShell adoption is required for this macOS host.
 `ProviderDoc` retains one conversation-scoped UUID. Generation and compaction
 forward it as provider `sessionId`. Turns, retries, reopen, reset, and model
 selection reuse it; children and forks receive distinct identities. It is not
-a storage ID, submission ID, or task ID. Defining sources:
+a storage ID, submission ID, or task ID. Durable 1.6.0 tracks the provider
+session IDs used by a Harness and cleans up their local pi-ai resources on
+close; the committed identities remain. Defining sources:
 `pi-durable/dist/harness/{provider,generation,compaction,harness,view}.js`.
 
 The host uses public configured model services and forwards current transport,
@@ -806,18 +870,48 @@ through normal delivery. Result settlement is not acceptance. The
 [Agent README](../extensions/agent/README.md#read-peer-results) owns exact result,
 placement and delivery semantics.
 
-### Generation park/resume gap
+### Task parks, signals and generation boundaries
 
-Checked on 2026-11-12 against the installed Durable 1.5.2 public exports and
-source. `Harness.wake()` reports whether the Session needs a process and its
-next scheduled wake time. `Harness.resume()` enables task scheduling; it is
-not a continuation of a selected generation or request. `Conversation.submit()`
-admits input, a passive write or a new continuation run. Its `continue` draft
-starts a run only while idle and is not a saved model-call continuation.
-`GenerationHooks.onYield` either accepts a final answer or continues with a
-user message; `afterTools` runs after every tool in the round is terminal.
-None of these public contracts parks one generation, releases its tool call,
-and later resumes the same outstanding request on a dependency result.
+Checked on 2026-11-20 in Durable 1.6.0. `Harness.resume()` enables the scheduler;
+it does not replay a provider stream or resume one selected generation.
+`Conversation.submit()` with a `continue` draft starts a new run only while
+idle. Durable now lets a pending tool call park without holding an invocation
+while its generation awaits the result. `Harness.wake()` reports runnable work
+and the earliest deadline if one exists. A signal-only sleep contributes no
+alarm; a parked task alone does not make `wake().active` true.
+
+- `defineSignal()` declares a versioned JSON value. `Harness.signal()` and
+  `tx.signal()` deliver it to a live task by key: `delivered`, `duplicate`,
+  `invalid`, `closed` or `not_found`. Early delivery is retained and satisfies a
+  later sleep; one key serves one wait. `readSignal()` reads its retained state
+  and migrates the value to the token's version. Timed or signal sleeps and
+  task waits expose `time`, `expired`, `signal` or `tasks` in `state.wake` until
+  the next checkpoint. A wait with `policy: "any"` resumes when one task ends.
+- A tool's `execute()` returns `ToolExecutionResult | ToolPark`. A `{ sleep }`
+  park waits for a deadline, signals or both; a `{ wait }` park waits on
+  tasks. The slot is sleeping or waiting, without a result. After wake,
+  `execute()` runs again with `api.wake` and `api.checkpoint`. An invalid park
+  settles `invalid_park`. A wrapper cannot introduce a park the base tool did
+  not return. A parked tool's optional `cancel()` cleans up its external work
+  on abort.
+- `executeTool(..., { wait: false })` returns `{ taskId, result(context) }`
+  without waiting; keyed nested calls and `api.createTask()` reconnect on a
+  later invocation. After wake, use explicit keys. A restart preserves
+  `abandonOnRestart` children of a call that was parked or not yet started.
+  `SubmissionDraft.notify` sends `SubmissionSettled` in the settling commit.
+  A `beforeTool` hook may gate a call by sleeping; wake, registry publication
+  and open re-evaluate the gates from the current registry.
+- `HookTask` and `hookTask()` replace `RunEndTask` and `runEndTask()`.
+  `afterTools` and `onYield` may request tasks owned by the current generation.
+  `afterTools` runs after the whole tool round and its tasks may steer or
+  terminate the run. `onYield` may hold the final boundary open in
+  `pi.live.run.yield`; the first valid continuation in creation order wins
+  after the requested tasks settle, unless queued user input or reset takes
+  precedence.
+- For a queued input, `onAbort: "keep"` preserves it through conversation
+  abort and abort cascades. A later run places it. `Submission.abort()` still
+  withdraws it. The default `"withdraw"` ends the queued input as `unanswered`
+  with reason `aborted`.
 
 The native post-tools placement boundary follows the whole tool round. With
 `steeringMode: "all"`, it places all queued steer inputs, not merely the input
@@ -826,18 +920,18 @@ and a compaction do not supply an input-placement boundary inside their work.
 The harness uses public input placement and normal settlement; it does not
 patch Pi or reconstruct a suspended generation through private state.
 
-`TaskRecord.startedAt` is wall-clock time of the first transition to `running`.
-It survives waits and recovery, so it is not the start of the current model
-attempt. Missing time is unknown, not zero or a guessed start. The unplaced-input
-notice uses this first-start fact when it describes the current step.
+`TaskRecord.startedAt` is the first transition to `running` on the Harness
+clock; it survives waits and recovery. New native tool `durationMs` is the
+span from that time to settlement, including hooks, parks, downtime and
+reruns, even for a call that never entered `execute()`. Older records without
+`startedAt` retain the previous attempt-based measure when available. Treat
+this as elapsed task time, not time spent executing the tool.
 
-Sources: `pi-durable/dist/index.d.ts` (public exports),
-`pi-durable/dist/harness/types.d.ts` (`Harness`, `Wake`, `Conversation`,
-`SubmissionDraft`, `GenerationHooks`), `pi-durable/dist/types.d.ts`
-(`TaskRecord`), `pi-durable/dist/harness/generation.js` (`finishToolRound`),
-`pi-durable/dist/harness/inbox.js` (`applyBoundary`), and
-`extensions/agent/unplaced-inputs.ts` (`currentStep`). This is a targeted source
-check, not a release-intake declaration or runtime trial.
+Sources: `pi-durable/dist/{types.d.ts,signals.js,session/transaction.js}`,
+`pi-durable/dist/harness/types.d.ts` and
+`pi-durable/dist/harness/{tool,parks,generation,inbox,scheduler,submissions}.js`.
+These are public primitives, not evidence that a particular harness tool or
+delivery route adopts parks or signals.
 
 ### Durability limits
 
@@ -976,9 +1070,10 @@ experimental coding-agent client is assumed.
 
 ### Store format and retained task versions
 
-Checked on 2026-11-11 against the installed Durable 1.5.2 migration list and
-native task definitions. Durable 1.5.2 opens SQLite storage at schema version 2,
-the version 1.4.0 introduced; 1.5.1–1.5.2 add no SQLite migration.
+Checked on 2026-11-20 against the installed Durable 1.6.0 migration list and
+native task definitions. Durable 1.6.0 still opens SQLite storage at schema
+version 2, introduced in 1.4.0. The Durable migration list and Chord's SQLite
+migration runner are byte-identical to 1.5.2; there is no new SQLite migration.
 `SqliteStorage.open()`
 automatically applies pending migrations before reading metadata. Migration 2
 rebuilds the tasks table to admit the `sleeping` status, copies its records,
@@ -993,15 +1088,18 @@ JSONL needs no SQLite migration, but Pi 1.3.0 and earlier do not resume stored
 sleeping tasks. Source: `pi-durable/CHANGELOG.md`. Neither format supplies a safe
 rollback merely because the transcript remains readable.
 
-Native `pi.tool` is version 3 with a migration from versions 1 and 2 in
-`pi-durable/dist/harness/tool.js`; `pi.generation` is version 2 and `pi.live`
-version 3. An older Harness leaves these tasks blocked (`task_too_old`) and
-cannot read a version-3 `pi.live` value. Task-definition migrations and SQLite
-schema migration are separate changes.
+Native `pi.tool` is version 4 and `pi.generation` version 3. Both have
+migration functions for earlier task definitions. `pi.live` remains version 3
+with read-time migration for earlier values; its current shape includes the
+yield state. An older Harness blocks tasks written at newer versions
+(`task_too_old`) and treats a sleep without `until` as due. These are Pi's
+retained task changes, not a harness migration or compatibility path.
+Task and document versions are separate from the SQLite schema. Sources:
+`pi-durable/dist/harness/{tool,generation,live}.js` and `pi-durable/CHANGELOG.md`.
 
 The controlled `extensions/agent/host-upgrade.test.mts` trial completed an
 isolated Pi/Durable 1.3.0-to-1.4.0 transition. It does not establish a transition
-to 1.5.2. It drained tools and deliveries,
+to 1.6.0. It drained tools and deliveries,
 closed the old writer, and released its claim before the new open. The trial
 checked schema 1 to 2, the rebuilt task constraint, unchanged other schema
 objects and retained rows, exact retained results, and successful follow-up work.
@@ -1011,11 +1109,13 @@ are absent. This result concerns that drained synthetic store, not arbitrary
 operator stores, unsafe-effect replay, or compatibility with live consumers.
 
 Operator migration authority must cover a current-host open of an existing
-operator store when that open changes its schema or retained task versions. A schema-1 SQLite store migrates to schema 2 on open, even when drained.
-Unfinished `pi.tool` tasks at version 1 or 2, unfinished `pi.generation` tasks,
-and the first `pi.live` write at version 3 also need authority, because older
-hosts cannot resume or read them afterward. An explicit grant supplies that
-authority without repeated approval; the safe consumer transition still binds.
+operator store when that open changes its schema or retained task versions.
+A schema-1 SQLite store migrates to schema 2 on open, even when drained.
+Migration of unfinished tasks to `pi.tool` version 4 or `pi.generation`
+version 3 changes retained task definitions even when the SQLite schema stays
+at 2. Older hosts cannot resume those new task versions. An explicit grant
+supplies that authority without repeated approval; the safe consumer transition
+still binds.
 A read-only inspection request does not authorize a writer or live migration.
 No live-store trial or compatibility reader follows from these source checks.
 UI reload, retained ordinary managers, and every changed contribution still
@@ -1030,6 +1130,14 @@ transcoder. Sources: `pi-tui/dist/{index.d.ts,tui.js,tui-alt-screen.js,terminal-
 (`tui.js` resolves overlay width before calling `component.render(width)`),
 `pi-tui/dist/components/image.js`, and coding-agent interactive/image-convert sources.
 These are source boundaries, not a new terminal interaction trial.
+
+In 1.6.0 `Component.render()` returns `readonly string[]`. A `Container` reuses
+its combined array while the width, child identities and order, and rendered
+line contents are unchanged. Copy the lines, including output from
+`super.render()`, before changing them. Array identity matters for cached
+transcript rendering. Sources: `pi-tui/dist/tui.{d.ts,js}` and
+`dist/modes/interactive/interactive-mode.js`. This is a source check, not a
+fullscreen rendering or terminal restore trial.
 
 `ToolRenderContext` carries recorded `durationMs` and `outputPad`.
 `agent_settled.aborted` distinguishes cancellation from ordinary completion.
@@ -1074,8 +1182,12 @@ UI spans, not proof of a required human response. Cache-warming decisions report
 proposed action; a decision is not completed refresh or current cache state.
 Reload retains the SessionManager while replacing the extension runtime.
 Shortcut handlers receive ExtensionContext, not command-only session controls.
-Sources: resource-loader, skills, extension runner/types, cache-warmer, and
-agent-session sources. Interactive focus and input require interactive evidence.
+The ordinary interactive loader captures package setup output instead of
+writing git and npm output into the TUI. Interactive package setup does not
+prompt through git or SSH; standalone `pi install` and `pi update` keep live
+output. Sources: resource-loader, skills, extension runner/types, cache-warmer,
+agent-session, `dist/core/package-manager.js` and `dist/main.js`.
+Interactive focus and input require interactive evidence.
 
 ## Current-session evidence retrieval
 
@@ -1084,8 +1196,9 @@ agent-session sources. Interactive focus and input require interactive evidence.
 supply producer visit limits. Truncating their output does not bound their reads.
 `buildSessionProjection()` applies context edits; raw active entries do not.
 Foreign-file inspection uses bounded read-only capture, not writable `open()`.
-Current public parsing skips malformed lines and does not supply structural or
-capture bounds. A Durable live view is not a paged archive query.
+Current public parsing skips malformed lines. The ordinary session picker closes
+its stream on abort or early exit, including for a file that is not a session;
+that change does not add structural or capture bounds. A Durable live view is not a paged archive query.
 Sources: `dist/core/session-manager.{d.ts,js}` and `docs/session-format.md`.
 
 ## Ordinary-session completion delivery
