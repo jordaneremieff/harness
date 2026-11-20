@@ -19,7 +19,7 @@ export type { AgentPreferences } from "./preference-schema.ts";
 export function presetParameter(snapshot: PreferenceSnapshot) {
 	return opt({
 		...name,
-		description: `Delegate with a named execution preset. Omit model and preset for the machine default on creation. Explicit fields override the preset. ${presetInventory(snapshot)}`,
+		description: `Delegate with a named execution preset. Omit model and preset for the machine default on creation. Explicit fields override the preset. ${presetDeclaration(snapshot)}`,
 	});
 }
 export const PresetParameter = opt({
@@ -245,6 +245,16 @@ export function presetChoices(snapshot: PreferenceSnapshot): {
 		return { value: preset, label: preset, description: facts.join(" \u00b7 ") };
 	});
 	return { ...(defaultPreset === undefined ? {} : { defaultPreset }), choices };
+}
+
+/**
+ * The model-facing preset choices of a tool declaration. It omits the file digest, so an edit to
+ * another part of the machine document leaves declarations byte-stable: Pi re-sends the tool list
+ * and every tool guideline when one declaration changes. The agent-preferences section and dispatch
+ * receipts carry the digest.
+ */
+export function presetDeclaration(snapshot: PreferenceSnapshot): string {
+	return `Presets: ${JSON.stringify(presetNames(snapshot))}; file ${JSON.stringify(snapshot.source.path)} (${snapshot.source.status}).`;
 }
 
 export function presetInventory(snapshot: PreferenceSnapshot): string {

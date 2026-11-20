@@ -4649,17 +4649,20 @@ never intersects choices with `enabledModels` or silently substitutes a model.
 
 Base tool guidance directs delegation through `preset`, omission for the machine
 default, and explicit `model` only when a task or direction requires an override.
-The preset parameter descriptions list names, file state, and digest at tool
-registration. Ordinary Pi supports `registerTool` replacement: the extension
-refreshes these declarations at session start, prompt start, fresh control reads,
-and before peer-message delivery. Pi invokes `before_agent_start` for both user
+The preset parameter descriptions list preset names and file state at tool
+registration, not the file digest: Pi re-sends the whole tool list and every tool
+guideline when one declaration changes, so an edit elsewhere in the machine
+document leaves the declarations byte-stable. Ordinary Pi supports
+`registerTool` replacement: the extension refreshes these declarations when
+preset names or file state change, checked at session start, prompt start,
+fresh control reads, and before peer-message delivery. Pi invokes `before_agent_start` for both user
 prompts and idle custom-message runs started by peer delivery. Both receive fresh
 agent preferences and effort awareness before the first model request; these
 sections remain present after tool results in that run. Startup counts as busy,
 so another delivery joins that run rather than starting a competing run. Base
 tool guidelines and parameter descriptions also deliver preset-first guidance.
-Refreshed parameter descriptions and dispatch receipts supply current names and
-digest.
+Refreshed parameter descriptions supply current names; the agent-preferences
+section and dispatch receipts supply the digest.
 No watcher exists. Native declarations refresh on explicit
 host reload; native prompt sections and fresh receipts read current file facts.
 Direct file edits between these boundaries do not imply instant declaration

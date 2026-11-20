@@ -495,7 +495,8 @@ it("refreshes preset descriptions and guidance through the peer-message prompt-s
 				(declaration.parameters as { properties: { preset: { description: string } } }).properties.preset.description,
 			);
 			assert.ok(description.includes(`["${key}"]`), description);
-			assert.match(description, /digest [a-f0-9]{64}/u);
+			assert.match(description, /\(loaded\)/u);
+			assert.doesNotMatch(description, /digest/u, "an unrelated machine-document edit keeps the declaration");
 			const actual = getCurrentSystemMessage(request.messages)?.toolsAdded?.find((tool) => tool.name === name);
 			const parameters = JSON.stringify(actual?.parameters);
 			assert.ok(parameters?.includes(key), "the refreshed schema reaches the actual provider request");

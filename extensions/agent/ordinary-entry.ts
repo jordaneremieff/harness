@@ -20,7 +20,7 @@ import {
 	parseExecutionSelection,
 	parsePreferenceSnapshot,
 	presetChoices,
-	presetInventory,
+	presetDeclaration,
 	presetParameter,
 	readAgentPreferences,
 	renderAgentPreferences,
@@ -469,7 +469,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	const refreshPreferences = (ctx?: ExtensionContext): PreferenceSnapshot => {
 		const snapshot = readAgentPreferences(undefined, ctx ? caller(ctx, pi).preferenceCatalog : undefined);
 		currentPreferences = snapshot;
-		if (presetInventory(snapshot) !== presetInventory(registrationPreferences)) {
+		if (presetDeclaration(snapshot) !== presetDeclaration(registrationPreferences)) {
 			registrationPreferences = snapshot;
 			for (const refresh of refreshRegistrations.values()) refresh(snapshot);
 		}

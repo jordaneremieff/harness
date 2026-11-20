@@ -20,6 +20,9 @@ import {
 	renderAgentPreferences,
 	parseExecutionSelection,
 	parsePreferenceSnapshot,
+	presetDeclaration,
+	presetInventory,
+	presetParameter,
 } from "./agent-preferences.ts";
 
 const catalogModel = {
@@ -152,6 +155,25 @@ it("reads fresh snapshots, preserves digests and resolution, and treats exclusio
 	assert.equal(resolveExecutionPreset(snapshot, { preset: "review" }, {}).values.model, "acme/model-x");
 	assert.notEqual(readAgentPreferences(root, catalog).source.digest, selection.source.digest);
 	assert.deepEqual(effectiveExecutionSelection(selection, "off").thinking, { requested: "low", effective: "off" });
+});
+
+it("keeps preset declarations byte-stable when another part of the machine document changes", (t) => {
+	const root = fixture(t);
+	const path = join(root, "harness.json");
+	writeFileSync(path, JSON.stringify(machineConfig(document())));
+	const before = readAgentPreferences(root, catalog);
+	writeFileSync(path, JSON.stringify({ ...machineConfig(document()), unrelated: { note: "edited elsewhere" } }));
+	const after = readAgentPreferences(root, catalog);
+	assert.notEqual(after.source.digest, before.source.digest, "the edit changes the file digest");
+	assert.equal(presetDeclaration(after), presetDeclaration(before));
+	assert.equal(
+		JSON.stringify(presetParameter(after).schema),
+		JSON.stringify(presetParameter(before).schema),
+		"the tool parameter keeps its bytes",
+	);
+	assert.notEqual(presetInventory(after), presetInventory(before), "refusals and receipts still name the digest");
+	writeFileSync(path, JSON.stringify(machineConfig({ presets: { other: { model: "other/model-y" } } })));
+	assert.notEqual(presetDeclaration(readAgentPreferences(root, catalog)), presetDeclaration(before));
 });
 
 it("renders identical guidance for unchanged facts regardless of observation time", (t) => {
