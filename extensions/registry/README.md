@@ -78,6 +78,10 @@ Examples:
 validity, description, environment variable, document path, source status, and
 field diagnostics. Secrets show `set` or `unset`, never their bytes. Invalid
 selected inputs retain the safe default and a rejected-source diagnostic.
+JSON settings include the owner's value schema as a separate `schema` detail.
+The setting block shows compact JSON on one line, with a truncation marker if
+its schema text exceeds 4096 characters. The result limit still applies to the
+whole record.
 
 `settingsCoverage` names only responding loaded publishers. It preserves each
 publication's document and unknown-key diagnostics, including diagnostics with

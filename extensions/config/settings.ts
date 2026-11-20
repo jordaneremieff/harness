@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
+export const CUSTOM_TYPES = ["string", "number", "integer", "boolean", "array", "object", "json"] as const;
+export const CUSTOM_MAX_ENTRIES = 512;
+export const CUSTOM_KEY_MAX = 256;
+export const CUSTOM_DESCRIPTION_MAX = 1024;
+
 export const settings = {
 	slice: "config",
 	fields: {
@@ -16,6 +21,38 @@ export const settings = {
 			type: "json",
 			env: "PI_CONFIG_CUSTOM",
 			default: {},
+			schema: {
+				type: "object",
+				propertyNames: {
+					type: "string",
+					title: "Setting name",
+					minLength: 1,
+					maxLength: CUSTOM_KEY_MAX,
+					pattern: "^[^\\p{Cc}\\p{Cf}\\ud800-\\udfff]+$",
+				},
+				maxProperties: CUSTOM_MAX_ENTRIES,
+				additionalProperties: {
+					type: "object",
+					title: "Custom setting",
+					properties: {
+						value: {},
+						description: {
+							type: "string",
+							title: "Description",
+							maxLength: CUSTOM_DESCRIPTION_MAX,
+							pattern: "^[^\\p{Cc}\\p{Cf}\\ud800-\\udfff]*$",
+						},
+						type: {
+							title: "Value type",
+							anyOf: CUSTOM_TYPES.map((type) => ({
+								const: type,
+								title: type === "json" ? "JSON" : `${type[0].toUpperCase()}${type.slice(1)}`,
+							})),
+						},
+					},
+					additionalProperties: false,
+				},
+			},
 			description:
 				"User-created settings: an object keyed by setting name, each entry {value?, description?, type?}. type is string, number, integer, boolean, array, object or json. The Config app and the config tools read and change these entries; they add no behaviour to Pi or another extension.",
 			apply: "use",
@@ -27,10 +64,6 @@ const DOCUMENT_MAX_BYTES = 131072;
 const PUBLICATION_MAX_BYTES = 262144;
 export const SETTINGS_PUBLISH = "harness:settings:publish";
 export const SETTINGS_REQUEST = "harness:settings:request";
-export const CUSTOM_TYPES = ["string", "number", "integer", "boolean", "array", "object", "json"] as const;
-export const CUSTOM_MAX_ENTRIES = 512;
-export const CUSTOM_KEY_MAX = 256;
-export const CUSTOM_DESCRIPTION_MAX = 1024;
 export type Environment = Readonly<Record<string, string | undefined>>;
 export type Origin = "env" | "file" | "default";
 export type ReadOptions = { agentDir: string; env?: Environment };

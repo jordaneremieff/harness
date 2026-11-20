@@ -170,7 +170,8 @@ type SettingsPublication = {
 The local snapshot adds the slice's typed `values`, which may hold an accepted
 secret. `values` never leaves the slice. `declaration` is the plain data of the
 [declaration](#declaration) below, so a consumer learns types, choices, bounds,
-defaults, secrecy, and application timing from the owner without importing it.
+value schemas, defaults, secrecy, and application timing from the owner without
+importing it.
 
 ## Declaration
 
@@ -214,11 +215,55 @@ Field entries carry `type`, `env` (always explicit and equal to the
 [Application timing](#application-timing)), and optionally `default` (a static
 JSON value the reader uses), `defaultText` (README text for a default the slice
 derives at run time), `secret`, `absolute`, `min`, `max`, `minLength`,
-`maxLength`, and `choices`. A field has at most one of `default` and
+`maxLength`, `choices`, and `schema`. A field has at most one of `default` and
 `defaultText`. Semantic checks and derivations live in the slice's reader code,
 not in the plain declaration. Without injected `env`, a read uses the current
 `process.env`. A slice applies its own cross-field checks inside its
 publication; `publishSettings` takes no validation callback.
+
+### Value schemas
+
+A `json` field declares `schema`: a JSON Schema (draft 2020-12) object that
+describes the shape of the value it accepts. Other types carry no `schema`.
+The schema tells editors which inputs to offer, and tells the registry and
+agents what a valid value looks like. The owner still judges every value with
+its own reader code, which can add checks that the schema does not express,
+such as relations between fields. The declared `default` satisfies the schema.
+Where the slice validates with the same schema object, the two cannot
+diverge; where it validates with other code, its tests pin the agreement.
+
+A schema node uses only these keywords:
+
+- `type`: one of `object`, `array`, `string`, `number`, `integer`, `boolean`,
+  or `null`;
+- objects: `properties`, `required`, `additionalProperties` (a boolean or a
+  schema), `patternProperties`, `propertyNames`, `minProperties`, and
+  `maxProperties`;
+- arrays: `items`, `minItems`, `maxItems`, and `uniqueItems`;
+- strings: `minLength`, `maxLength`, `pattern`, and `format`;
+- numbers: `minimum` and `maximum`;
+- choices: `enum`, `const`, and `anyOf`;
+- annotations: `title`, `description`, `default`, `examples`, and
+  `deprecated`.
+
+`{}` accepts any JSON value; an editor shows such a value as JSON text. An
+object whose `additionalProperties` is a schema and that lists no `properties`
+is a map from names to values of that schema; `propertyNames` constrains and
+names its keys. A choice among constants is `enum`, or `anyOf` whose members
+are each a `const` with an optional `title` and `description` for that choice.
+`title` is a short label in sentence case without a final full stop, and
+`description` is one or two plain sentences. `format` names the kind of text
+a string holds:
+
+| Format | Meaning |
+|---|---|
+| `model` | An exact Pi model identity, `provider/id`. |
+| `provider` | A Pi provider identity. |
+| `path` | A file system path. |
+
+A validator treats `format` as an annotation, as draft 2020-12 specifies; an
+editor can offer the identities that the host knows. The serialized schema is
+at most 32768 bytes, and nodes nest at most 16 deep.
 
 ## Application timing
 
@@ -334,7 +379,8 @@ Default text is `env-only` for a secret, `defaultText` when present, the JSON
 form of `default` when present, and `unset` otherwise. Applies is `next use`,
 `reload`, or `restart` for the `apply` values `use`, `reload`, and `restart`.
 Constraints list `min`, `max`, `minLength`, `maxLength`, `absolute input`, and
-the choices, or `none`. Do not hand-edit the rows.
+the choices, `declared schema` for a `json` field, or `none`. Do not hand-edit
+the rows.
 
 ## Verification
 
@@ -362,7 +408,9 @@ the choices, or `none`. Do not hand-edit the rows.
   `node_modules` directories, but rejects encountered symlinks before those
   skips, including hidden symlink entries.
   It imports each `settings.ts` and validates the `settings` export: slice name
-  equal to the directory, valid keys, types, bounds, and choices, explicit and
+  equal to the directory, valid keys, types, bounds, and choices, a value
+  schema on each `json` field and on no other field, schemas that use only the
+  listed keywords and formats within their size and depth bounds, explicit and
   unique `PI_*` names, at most one of `default` and `defaultText`, secrets
   as strings without defaults, an `apply` value on every field, and each `env`
   equal to its `PI_<SLICE>_<KEY>` name. It does not reject reader or publisher

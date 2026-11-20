@@ -4683,8 +4683,8 @@ facts. No new command is required.
 |---|---|---|---|---|---|---|
 | idleMinutes | `PI_AGENT_IDLE_MINUTES` | number | 5 | reload | min 0; max 35791 | Idle host retirement interval in minutes; zero disables. |
 | checkInMinutes | `PI_AGENT_CHECK_IN_MINUTES` | number | 0 | next use | min 0; max 35791 | Automatic owner check-in interval for model tasks in minutes; zero, the default, arms none. |
-| presets | `PI_AGENT_PRESETS` | json | {} | next use | none | Named execution presets with exact model identities and optional creation fields. |
-| preferences | `PI_AGENT_PREFERENCES` | json | {} | next use | none | Delegation preferences, default preset, exclusions, planning budgets, and reporting guidance. |
+| presets | `PI_AGENT_PRESETS` | json | {} | next use | declared schema | Named execution presets with exact model identities and optional creation fields. |
+| preferences | `PI_AGENT_PREFERENCES` | json | {} | next use | declared schema | Delegation preferences, default preset, exclusions, planning budgets, and reporting guidance. |
 <!-- harness:settings:end -->
 
 Passive clients do not extend the idle interval. Per-call `checkInMinutes`

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { type Declaration, type Field, validateSettingsDeclaration } from "./check-slices.mts";
+import { compile } from "@earendil-works/pi-schema";
+import { type Declaration, type Field, validateSettingsDeclaration, valueSchemaChildren } from "./check-slices.mts";
 
 type Diagnostic = { field: string; source: string; code: string; message: string };
 type SettingRecord = {
@@ -427,6 +428,19 @@ function assertPublisherLifecycle(module: SettingsModule): void {
 	}
 }
 
+function checkSchemaAnnotations(schema: Record<string, unknown>, label: string): void {
+	if (Object.hasOwn(schema, "default") || Array.isArray(schema.examples)) {
+		const validator = compile(schema);
+		if (Object.hasOwn(schema, "default")) assert.ok(validator.check(schema.default), `${label}: default`);
+		if (Array.isArray(schema.examples))
+			for (const [index, example] of schema.examples.entries())
+				assert.ok(validator.check(example), `${label}: examples[${index}]`);
+	}
+	// validateSettingsDeclaration already checked that each child is a schema object.
+	for (const [path, child] of valueSchemaChildren(schema))
+		checkSchemaAnnotations(child as Record<string, unknown>, `${label}/${path}`);
+}
+
 const extensionsRoot = fileURLToPath(new URL("../extensions/", import.meta.url));
 const declarations = readdirSync(extensionsRoot, { withFileTypes: true })
 	.filter((entry) => entry.isDirectory() && existsSync(join(extensionsRoot, entry.name, "settings.ts")))
@@ -443,6 +457,18 @@ for (const declaration of declarations) {
 		assert.equal(typeof module.readSettings, "function");
 		assert.equal(typeof module.publishSettings, "function");
 		const { settings } = module;
+		for (const [key, field] of Object.entries(settings.fields)) {
+			if (field.type !== "json") continue;
+			await t.test(`value schema: ${key}`, () => {
+				assert.ok(field.schema, `${key} requires a schema`);
+				assert.ok(Object.hasOwn(field, "default"), `${key} requires a declared default`);
+				assert.ok(
+					compile(field.schema).check(field.default),
+					`${key}: declared default does not satisfy the value schema`,
+				);
+				checkSchemaAnnotations(field.schema, key);
+			});
+		}
 		await testInclusiveBounds(t, module);
 		for (const [key, field] of Object.entries(settings.fields)) {
 			for (const { bound, value } of outsideBounds(field)) {

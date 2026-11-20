@@ -22,6 +22,7 @@ test("publication parsing copies only protocol fields and sanitizes diagnostic m
 		description: field.description,
 		apply: "use",
 		default: { nested: [0] },
+		schema: { type: "object", properties: { nested: { type: "array" } } },
 	};
 
 	input.diagnostics = [fact];
@@ -33,8 +34,48 @@ test("publication parsing copies only protocol fields and sanitizes diagnostic m
 	assert.notEqual(parsed.records[0].value, input.records[0].value);
 	assert.deepEqual(parsed.declaration, input.declaration);
 	assert.notEqual(parsed.declaration.fields.count.default, input.declaration.fields.count.default);
+	assert.notEqual(parsed.declaration.fields.count.schema, input.declaration.fields.count.schema);
 	input.records[0].value = "changed";
 	assert.deepEqual(parsed.records[0].value, { nested: [1, true, null] });
+});
+
+test("value schemas require plain JSON objects within the schema byte limit", () => {
+	const input = publication();
+	input.declaration.fields.count.schema = {};
+	assert.equal(parseSettingsPublication(input), undefined, "scalar fields cannot carry a schema");
+
+	input.records[0].type = "json";
+	const { description, env } = input.declaration.fields.count;
+	const field = {
+		type: "json",
+		description,
+		env,
+		apply: "use",
+	} as SettingsPublication["declaration"]["fields"][string];
+	input.declaration.fields.count = field;
+	assert.equal(parseSettingsPublication(input), undefined, "JSON fields need a schema");
+	const accessor = {
+		get title(): string {
+			return assert.fail("Schema accessors must not run");
+		},
+	};
+	const descriptionAtLimit = "é".repeat((32768 - Buffer.byteLength(JSON.stringify({ description: "" }))) / 2);
+	for (const schema of [
+		null,
+		[],
+		true,
+		"object",
+		new Date(),
+		accessor,
+		{ default: Infinity },
+		{ description: `${descriptionAtLimit}é` },
+	]) {
+		field.schema = schema as typeof field.schema;
+		assert.equal(parseSettingsPublication(input), undefined);
+	}
+	field.schema = { description: descriptionAtLimit };
+	assert.equal(Buffer.byteLength(JSON.stringify(field.schema)), 32768);
+	assert.deepEqual(parseSettingsPublication(input)?.declaration.fields.count.schema, field.schema);
 });
 
 test("publication parsing retains records and diagnostics beside a safely truncated Unicode key", () => {
@@ -279,6 +320,7 @@ test("publication values enforce type, JSON depth, node and byte bounds", () => 
 	}
 	record.type = "json";
 	input.declaration.fields.count.type = "json";
+	input.declaration.fields.count.schema = {};
 
 	let nested: unknown = null;
 	for (let depth = 0; depth < 33; depth++) nested = [nested];

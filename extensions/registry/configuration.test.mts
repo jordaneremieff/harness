@@ -40,6 +40,51 @@ function verify(result: Awaited<ReturnType<typeof lookup>>) {
 	return result.details.records as Record<string, unknown>[];
 }
 
+test("JSON setting details retain the schema while the text shows a bounded schema line", async () => {
+	const current = publication();
+	const { env, description } = current.declaration.fields.count;
+	const field = {
+		type: "json" as const,
+		env,
+		description,
+		apply: "use" as const,
+		schema: { type: "object", description: "Two  spaces." },
+	};
+	current.declaration.fields.count = field;
+	current.records[0] = { ...current.records[0], type: "json", value: {} };
+	const bus = createEventBus();
+	const off = fakePublisher(bus, () => current);
+	const reader = settingsReader(bus);
+	const inspect = () =>
+		lookup({
+			params: { kind: "setting", name: "example.count" },
+			snapshot: hostSnapshot,
+			settings: reader.read(),
+			session: {},
+			epoch: "fixture",
+		});
+	try {
+		const shortResult = await inspect();
+		const [row] = verify(shortResult);
+		assert.deepEqual(row.schema, field.schema);
+		assert.deepEqual(row.constraints, {});
+		assert.ok(shortResult.text.split("\n").includes(`  schema: ${JSON.stringify(field.schema)}`));
+
+		const prefixLength = JSON.stringify({ ...field.schema, description: "" }).length - 2;
+		field.schema.description = `${"x".repeat(4096 - "… [truncated]".length - prefixLength - 1)}😀${"x".repeat(100)}`;
+		const longResult = await inspect();
+		assert.deepEqual(verify(longResult)[0].schema, field.schema);
+		const schemaLine = longResult.text.split("\n").find((line) => line.startsWith("  schema: "));
+		assert.ok(schemaLine);
+		assert.ok(schemaLine.slice("  schema: ".length).length <= 4096);
+		assert.match(schemaLine, /… \[truncated\]$/u);
+		assert.doesNotMatch(schemaLine, /[\ud800-\udfff]/u);
+	} finally {
+		reader.dispose();
+		off();
+	}
+});
+
 test("setting queries inspect fresh public snapshots, origins and diagnostics without secret bytes", async () => {
 	const bus = createEventBus();
 	const current = publication();

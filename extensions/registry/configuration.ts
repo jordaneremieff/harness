@@ -79,12 +79,14 @@ function declarationDetail({
 	apply,
 	default: fallback,
 	defaultText,
+	schema,
 	...constraints
 }: SettingField) {
 	return {
 		apply,
 		...(fallback === undefined ? {} : { default: fallback }),
 		...(defaultText === undefined ? {} : { defaultText }),
+		...(schema === undefined ? {} : { schema }),
 		constraints,
 	};
 }
@@ -140,6 +142,15 @@ function matchesSetting(record: ReturnType<typeof projection>[number], query: Qu
 		return false;
 	return query.search === undefined || matchesSearch(query.search, [record.name, record.description, record.env]);
 }
+function schemaLine(schema: NonNullable<SettingField["schema"]>): string {
+	const compact = escapeJsonControls(JSON.stringify(schema));
+	const maxLength = 4096;
+	const marker = "… [truncated]";
+	if (compact.length <= maxLength) return `  schema: ${compact}`;
+	const prefix = compact.slice(0, maxLength - marker.length).replace(/[\ud800-\udbff]$/, "");
+	return `  schema: ${prefix}${marker}`;
+}
+
 function settingBlock(record: ReturnType<typeof projection>[number]) {
 	const value = record.secret
 		? record.secretState
@@ -168,6 +179,7 @@ function settingBlock(record: ReturnType<typeof projection>[number]) {
 			`  env: ${record.env}`,
 			`  default: ${fallback}`,
 			`  constraints: ${constraints.join("; ") || "none"}`,
+			...(record.schema === undefined ? [] : [schemaLine(record.schema)]),
 			`  applies: ${record.apply === "use" ? "next use" : record.apply}`,
 			`  document: ${oneLine(record.documentPath, 4096)}`,
 			...record.diagnostics.map((fact) => `  diagnostic: ${fact.code}: ${fact.message}`),

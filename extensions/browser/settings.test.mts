@@ -8,7 +8,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
-import { readSettings, validAccess } from "./settings.ts";
+import { compile } from "@earendil-works/pi-schema";
+import { readSettings, settings, validAccess } from "./settings.ts";
 
 function fixture(t: TestContext) {
 	const agentDir = mkdtempSync(join(tmpdir(), "browser-settings-"));
@@ -20,11 +21,15 @@ function fixture(t: TestContext) {
 }
 
 describe("browser settings", () => {
-	it("accepts only known browser keys with known access levels", () => {
-		assert.equal(validAccess({ chrome: "inspect", brave: "interact", "chrome-for-testing": "interact" }), true);
-		assert.equal(validAccess({}), true);
+	it("the owner and declared schema accept only known browser keys with known access levels", () => {
+		const schema = compile(settings.fields.access.schema);
+		for (const value of [{}, { chrome: "inspect", brave: "interact", "chrome-for-testing": "interact" }]) {
+			assert.equal(validAccess(value), true);
+			assert.equal(schema.check(value), true);
+		}
 		for (const bad of [{ firefox: "inspect" }, { chrome: "read" }, { chrome: true }, ["chrome"], null, "chrome", 42]) {
-			assert.equal(validAccess(bad), false, String(bad));
+			assert.equal(validAccess(bad), false, JSON.stringify(bad));
+			assert.equal(schema.check(bad), false, JSON.stringify(bad));
 		}
 	});
 

@@ -16,7 +16,7 @@ Each fenced code block shows its language label at the top left and Copy code at
 | app | `PI_MARKDOWN_APP` | path | &lt;agentDir&gt;/markdown-reader/Markdown Reader.app | reload | none | Installed native reader application and headless parser tool. |
 | dir | `PI_MARKDOWN_DIR` | path | &lt;agentDir&gt;/markdown | reload | none | Private directory for Markdown documents. |
 | checks | `PI_MARKDOWN_CHECKS` | enum | "block" | reload | off, warn, block | Writing checks for new Markdown publications and updates. off skips validation, warn saves and reports findings, and block refuses a publication with findings. Exact captures and saved replays are unchanged. |
-| checksRules | `PI_MARKDOWN_CHECKS_RULES` | json | {} | reload | none | Rule overrides and an optional lexicon path for publication checks and the writing brief. |
+| checksRules | `PI_MARKDOWN_CHECKS_RULES` | json | {} | reload | declared schema | Rule overrides and an optional lexicon path for publication checks and the writing brief. |
 | readerFile | `PI_MARKDOWN_READER_FILE` | path | &lt;agentDir&gt;/markdown-reader.md | reload | none | Optional plain Markdown reader profile for the writing brief. |
 | agentPane | `PI_MARKDOWN_AGENT_PANE` | enum | "split" | reload | split, float | Pane in which the markdown_publish guidance of an ordinary session shows a publication. split names a split on the right of the session's own pane; float names a floating pane over its window. Agents without a pane of their own, such as Durable workers, always use a floating pane on the tab of the ordinary session that started them. An operator's request for another pane still applies, and /markdown always opens a split. A new or reloaded session applies a change. |
 <!-- harness:settings:end -->

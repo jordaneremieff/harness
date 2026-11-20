@@ -4,12 +4,70 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkWriting } from "./checks.ts";
-import { describeRules } from "./check-rules.ts";
-import { readSettings } from "./settings.ts";
+import { compile } from "@earendil-works/pi-schema";
+import { describeRules, invalidCheckField } from "./check-rules.ts";
+import { readSettings, settings } from "./settings.ts";
 import { loadLexicon, loadReader, writingOptions } from "./writing-config.ts";
 
 const rules = (text: string, options?: Parameters<typeof checkWriting>[1]) =>
 	checkWriting(text, options).map((entry) => entry.rule);
+
+test("the checksRules schema agrees with the owner's structural checks", () => {
+	const schema = compile(settings.fields.checksRules.schema);
+	for (const value of [
+		{},
+		{ lexicon: "terms.txt" },
+		{ lexicon: "\u2028terms.txt" },
+		{
+			rules: {
+				dashes: { enabled: false, limit: 0 },
+				identifiers: {},
+				escapedBreaks: {},
+				labelLines: {},
+				opening: {},
+				negations: {},
+			},
+		},
+		{
+			rules: {
+				phrases: { phrases: ["stock phrase"], addPhrases: [], removePhrases: ["other"] },
+				coinages: { allow: ["well-known"] },
+			},
+		},
+		{ rules: { codeSpans: { perHundred: 1.5, minWords: 1 }, processNarration: { limit: 1, share: 1 } } },
+		{ rules: { codeSpans: { limit: 1.5 } } },
+	]) {
+		assert.equal(invalidCheckField(value), undefined, JSON.stringify(value));
+		assert.equal(schema.check(value), true, JSON.stringify(value));
+	}
+	for (const value of [
+		null,
+		[],
+		{ extra: true },
+		{ lexicon: " " },
+		{ lexicon: "x\n" },
+		{ lexicon: "x".repeat(4097) },
+		{ rules: [] },
+		{ rules: { extra: {} } },
+		{ rules: { dashes: { enabled: "yes" } } },
+		{ rules: { dashes: { limit: 1.5 } } },
+		{ rules: { dashes: { perHundred: 1 } } },
+		{ rules: { phrases: { addPhrases: [""] } } },
+		{ rules: { phrases: { removePhrases: ["x".repeat(121)] } } },
+		{ rules: { coinages: { allow: Array(129).fill("word") } } },
+		{ rules: { codeSpans: { minWords: -1 } } },
+		{ rules: { codeSpans: { perHundred: -1 } } },
+		{ rules: { processNarration: { limit: 0 } } },
+		{ rules: { processNarration: { share: 1.1 } } },
+	]) {
+		assert.notEqual(invalidCheckField(value), undefined, JSON.stringify(value));
+		assert.equal(schema.check(value), false, JSON.stringify(value));
+	}
+
+	const conflictingRate = { rules: { codeSpans: { limit: 1, perHundred: 2 } } };
+	assert.equal(schema.check(conflictingRate), true);
+	assert.equal(invalidCheckField(conflictingRate), "checksRules.rules.codeSpans.limit");
+});
 
 test("dash checks catch clause punctuation and leave ranges and list markers alone", () => {
 	const source =

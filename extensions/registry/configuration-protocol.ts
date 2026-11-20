@@ -4,6 +4,7 @@ import { types } from "node:util";
 const VALUE_MAX_BYTES = 131072;
 const VALUE_MAX_DEPTH = 32;
 const VALUE_MAX_NODES = 10000;
+const SCHEMA_MAX_BYTES = 32768;
 export const PUBLICATION_MAX_BYTES = 262144;
 export const SETTINGS_MAX_FIELDS = 128;
 export const SETTINGS_MAX_SLICES = 64;
@@ -30,6 +31,7 @@ const fieldKeys = [
 	...numericBounds,
 	...textBounds,
 	"choices",
+	"schema",
 ];
 
 export type SettingConstraints = {
@@ -48,6 +50,7 @@ export type SettingField = SettingConstraints & {
 	default?: Json;
 	defaultText?: string;
 	secret?: boolean;
+	schema?: Record<string, Json>;
 };
 export type Declaration = { slice: string; fields: Record<string, SettingField> };
 
@@ -233,8 +236,14 @@ function validFieldOptions(field: Record<string, unknown>): boolean {
 		(!Object.hasOwn(field, "secret") || typeof secret === "boolean") &&
 		(!hasDefaultText || (!hasDefault && boundedText(defaultText, 2048, 1))) &&
 		(!secret || (type === "string" && !hasDefault && !hasDefaultText)) &&
-		validFieldChoices(field)
+		validFieldChoices(field) &&
+		validFieldSchema(field)
 	);
+}
+function validFieldSchema(field: Record<string, unknown>): boolean {
+	if (field.type !== "json") return !Object.hasOwn(field, "schema");
+	// The declaration has already been copied as bounded plain JSON.
+	return plainObject(field.schema) && Buffer.byteLength(JSON.stringify(field.schema)) <= SCHEMA_MAX_BYTES;
 }
 function validFieldChoices(field: Record<string, unknown>): boolean {
 	if (field.type !== "enum") return !Object.hasOwn(field, "choices");

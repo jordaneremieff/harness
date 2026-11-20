@@ -19,7 +19,7 @@ Credentials, project-trust records, models and provider configuration, MCP confi
 | Key | Environment | Type | Default | Applies | Constraints | Description |
 |---|---|---|---|---|---|---|
 | app | `PI_CONFIG_APP` | path | &lt;agentDir&gt;/config-app/Config.app | next use | none | Installed native Config application that /config opens. |
-| custom | `PI_CONFIG_CUSTOM` | json | {} | next use | none | User-created settings: an object keyed by setting name, each entry {value?, description?, type?}. type is string, number, integer, boolean, array, object or json. The Config app and the config tools read and change these entries; they add no behaviour to Pi or another extension. |
+| custom | `PI_CONFIG_CUSTOM` | json | {} | next use | declared schema | User-created settings: an object keyed by setting name, each entry {value?, description?, type?}. type is string, number, integer, boolean, array, object or json. The Config app and the config tools read and change these entries; they add no behaviour to Pi or another extension. |
 <!-- harness:settings:end -->
 
 ## Targets, scopes and sources

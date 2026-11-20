@@ -4,6 +4,8 @@ import { isAbsolute, resolve } from "node:path";
 import {
 	validPresets,
 	validPreferences,
+	presetsSchema,
+	preferenceSchema,
 	type ExecutionPresets,
 	type DelegationPreferences,
 } from "./preference-schema.ts";
@@ -35,6 +37,7 @@ export const settings = {
 			env: "PI_AGENT_PRESETS",
 			description: "Named execution presets with exact model identities and optional creation fields.",
 			default: {},
+			schema: presetsSchema,
 		},
 		preferences: {
 			apply: "use",
@@ -42,6 +45,7 @@ export const settings = {
 			env: "PI_AGENT_PREFERENCES",
 			description: "Delegation preferences, default preset, exclusions, planning budgets, and reporting guidance.",
 			default: {},
+			schema: preferenceSchema,
 		},
 	},
 } as const;

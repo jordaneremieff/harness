@@ -1269,6 +1269,150 @@ test("declarations reject executable, cyclic, and nonplain data without invoking
 		assert.throws(() => validateSettingsDeclaration(value, "example"));
 });
 
+function jsonDeclaration(schema: unknown): unknown {
+	return plainDeclaration({ type: "json", default: {}, schema });
+}
+
+test("JSON declarations require an object schema and other field types forbid it", () => {
+	assert.throws(
+		() => validateSettingsDeclaration(plainDeclaration({ type: "json" }), "example"),
+		/require a value schema/,
+	);
+	assert.throws(() => validateSettingsDeclaration(plainDeclaration({ schema: {} }), "example"), /apply to JSON fields/);
+	for (const schema of [null, [], true, "object"])
+		assert.throws(() => validateSettingsDeclaration(jsonDeclaration(schema), "example"), /schema must be an object/);
+	validateSettingsDeclaration(jsonDeclaration({}), "example");
+});
+
+test("value schemas accept the supported keywords and nested schemas", () => {
+	validateSettingsDeclaration(
+		jsonDeclaration({
+			type: "object",
+			properties: {
+				choice: {
+					anyOf: [
+						{ const: null, title: "None" },
+						{ const: "a", description: "Select A." },
+					],
+				},
+				list: { type: "array", items: { enum: [1, 2] }, uniqueItems: true, minItems: 0, maxItems: 2 },
+				path: { type: "string", minLength: 1, maxLength: 9, format: "path", pattern: "^\\p{L}", deprecated: true },
+			},
+			required: ["list"],
+			patternProperties: { "^extra-": { type: "integer", minimum: -2, maximum: 10 } },
+			propertyNames: { type: "string", minLength: 1 },
+			additionalProperties: { type: "boolean" },
+			minProperties: 1,
+			maxProperties: 8,
+			default: { list: [] },
+			examples: [{ list: [1] }],
+		}),
+		"example",
+	);
+	for (const type of ["object", "array", "string", "number", "integer", "boolean", "null"])
+		validateSettingsDeclaration(jsonDeclaration({ type }), "example");
+	for (const format of ["model", "provider", "path"])
+		validateSettingsDeclaration(jsonDeclaration({ type: "string", format }), "example");
+});
+
+test("value schemas reject unsupported keywords at every schema position", () => {
+	const bad = { $ref: "other.json" };
+	for (const schema of [
+		bad,
+		{ properties: { child: bad } },
+		{ patternProperties: { "^child": bad } },
+		{ propertyNames: bad },
+		{ additionalProperties: bad },
+		{ items: bad },
+		{ anyOf: [{}, bad] },
+	])
+		assert.throws(
+			() => validateSettingsDeclaration(jsonDeclaration(schema), "example"),
+			/Unsupported value schema keyword: \$ref/,
+		);
+});
+
+test("value schemas reject malformed keyword values", () => {
+	for (const schema of [
+		{ type: ["string", "null"] },
+		{ type: "path" },
+		{ format: "email" },
+		{ format: 1 },
+		{ properties: [] },
+		{ properties: { child: 1 } },
+		{ patternProperties: { "[": {} } },
+		{ patternProperties: { "^x": null } },
+		{ propertyNames: "name" },
+		{ additionalProperties: "open" },
+		{ items: [] },
+		{ anyOf: [] },
+		{ anyOf: [true] },
+		{ minProperties: -1 },
+		{ maxProperties: "2" },
+		{ minItems: 1.5 },
+		{ maxItems: -1 },
+		{ minLength: false },
+		{ maxLength: -1 },
+		{ minimum: "2" },
+		{ maximum: null },
+		{ uniqueItems: "true" },
+		{ deprecated: "true" },
+		{ pattern: "[" },
+		{ pattern: "\\q" },
+		{ pattern: 1 },
+		{ enum: {} },
+		{ examples: {} },
+		{ title: "Title." },
+		{ title: 1 },
+		{ description: null },
+	]) {
+		assert.throws(
+			() => validateSettingsDeclaration(jsonDeclaration(schema), "example"),
+			/value schema/i,
+			JSON.stringify(schema),
+		);
+	}
+	for (const required of ["first", [1], ["first", "first"], Array(1)])
+		assert.throws(() => validateSettingsDeclaration(jsonDeclaration({ required }), "example"));
+});
+
+test("value schema bounds count serialized UTF-8 bytes and schema nodes", () => {
+	const overhead = Buffer.byteLength(JSON.stringify({ description: "" }));
+	const description = "é".repeat((32768 - overhead) / 2);
+	assert.equal(Buffer.byteLength(JSON.stringify({ description })), 32768);
+	validateSettingsDeclaration(jsonDeclaration({ description }), "example");
+	assert.throws(
+		() => validateSettingsDeclaration(jsonDeclaration({ description: `${description}é` }), "example"),
+		/too large/,
+	);
+
+	let schema: object = { type: "string" };
+	for (let i = 1; i < 16; i++) schema = { properties: { child: schema } };
+	validateSettingsDeclaration(jsonDeclaration(schema), "example");
+	assert.throws(() => validateSettingsDeclaration(jsonDeclaration({ items: schema }), "example"), /schema is too deep/);
+});
+
+test("value schemas contain only plain JSON data", () => {
+	const hidden = Object.defineProperty({}, "type", { value: "number" });
+	const getter = {
+		get title(): string {
+			return assert.fail("Schema accessors must not run");
+		},
+	};
+	const cycle: Record<string, unknown> = {};
+	cycle.items = cycle;
+	for (const schema of [
+		hidden,
+		getter,
+		cycle,
+		{ default: new Date() },
+		{ examples: [undefined] },
+		{ const: Infinity },
+		{ const: () => 1 },
+	])
+		assert.throws(() => validateSettingsDeclaration(jsonDeclaration(schema), "example"), /Declaration/);
+});
+
 test("README projection preserves literal rows, escaping, defaults, and constraint order", () => {
 	const declaration: Declaration = {
 		slice: "example",
@@ -1293,6 +1437,14 @@ test("README projection preserves literal rows, escaping, defaults, and constrai
 			},
 			secret: { type: "string", env: "PI_EXAMPLE_SECRET", description: "Secret.", apply: "restart", secret: true },
 			optional: { type: "number", env: "PI_EXAMPLE_OPTIONAL", description: "Optional.", apply: "use", min: 0, max: 2 },
+			data: {
+				type: "json",
+				env: "PI_EXAMPLE_DATA",
+				description: "Data.",
+				apply: "use",
+				default: {},
+				schema: { type: "object" },
+			},
 		},
 	};
 	const table = [
@@ -1303,6 +1455,7 @@ test("README projection preserves literal rows, escaping, defaults, and constrai
 		'| mode | `PI_EXAMPLE_MODE` | enum | "a" | reload | a, b | Mode. |',
 		"| secret | `PI_EXAMPLE_SECRET` | string | env-only | restart | none | Secret. |",
 		"| optional | `PI_EXAMPLE_OPTIONAL` | number | unset | next use | min 0; max 2 | Optional. |",
+		"| data | `PI_EXAMPLE_DATA` | json | {} | next use | declared schema | Data. |",
 		"<!-- harness:settings:end -->",
 	].join("\n");
 	assert.equal(settingsReadme(declaration), table);

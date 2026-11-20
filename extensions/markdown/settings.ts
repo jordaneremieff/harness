@@ -2,7 +2,68 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
-import { invalidCheckField, type CheckOverrides } from "./check-rules.ts";
+import { invalidCheckField, RULE_IDS, type CheckOverrides, type Rule } from "./check-rules.ts";
+
+const ruleTitles: Record<Rule, string> = {
+	dashes: "Dashes",
+	escapedBreaks: "Escaped line breaks and tabs",
+	phrases: "Stock phrases",
+	labelLines: "Lines with labels",
+	coinages: "Invented compounds",
+	identifiers: "Paths and identifiers",
+	codeSpans: "Inline code",
+	processNarration: "Work notes",
+	opening: "Opening",
+	negations: "Definitions by negation",
+};
+const nonblankText = { type: "string", minLength: 1, pattern: "^(?=[\\s\\S]*\\S)[^\\p{Cc}\\p{Cf}\\ud800-\\udfff]+$" };
+const count = { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
+const rate = { ...count, type: "number" };
+const termList = { type: "array", items: { ...nonblankText, maxLength: 120 }, maxItems: 128 };
+const ruleLimits = {
+	codeSpans: { ...rate, title: "Limit per 100 words", description: "Use this limit or the rate, not both." },
+	processNarration: { ...count, title: "Minimum work notes", minimum: 1 },
+} satisfies Partial<Record<Rule, object>>;
+const ruleOptions: Partial<Record<Rule, Record<string, object>>> = {
+	phrases: {
+		phrases: { ...termList, title: "Replacement phrases" },
+		addPhrases: { ...termList, title: "Phrases to add" },
+		removePhrases: { ...termList, title: "Phrases to remove" },
+	},
+	coinages: { allow: { ...termList, title: "Allowed compounds" } },
+	codeSpans: {
+		perHundred: { ...rate, title: "Rate per 100 words", description: "Use this rate or the limit, not both." },
+		minWords: { ...count, title: "Minimum words" },
+	},
+	processNarration: { share: { ...rate, maximum: 1, title: "Minimum share" } },
+};
+const checksRulesSchema = {
+	type: "object",
+	properties: {
+		lexicon: { ...nonblankText, title: "Lexicon file", format: "path", maxLength: 4096 },
+		rules: {
+			type: "object",
+			title: "Rules",
+			properties: Object.fromEntries(
+				RULE_IDS.map((rule) => [
+					rule,
+					{
+						title: ruleTitles[rule],
+						type: "object",
+						properties: {
+							enabled: { type: "boolean", title: "Enabled" },
+							limit: ruleLimits[rule as keyof typeof ruleLimits] ?? { ...count, title: "Limit" },
+							...ruleOptions[rule],
+						},
+						additionalProperties: false,
+					},
+				]),
+			),
+			additionalProperties: false,
+		},
+	},
+	additionalProperties: false,
+};
 
 export const settings = {
 	slice: "markdown",
@@ -35,6 +96,7 @@ export const settings = {
 			type: "json",
 			env: "PI_MARKDOWN_CHECKS_RULES",
 			default: {},
+			schema: checksRulesSchema,
 			description: "Rule overrides and an optional lexicon path for publication checks and the writing brief.",
 		},
 		readerFile: {

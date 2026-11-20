@@ -133,6 +133,7 @@ const setting = obj({
 	apply: oneOf(applicationTimings),
 	default: opt(unknown()),
 	defaultText: opt(text),
+	schema: opt(map(unknown())),
 	constraints: obj({
 		absolute: opt(bool()),
 		min: opt(num()),

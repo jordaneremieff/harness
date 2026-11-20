@@ -361,6 +361,7 @@ export type Field = {
 	minLength?: number;
 	maxLength?: number;
 	choices?: readonly string[];
+	schema?: Record<string, unknown>;
 };
 export type Declaration = { slice: string; fields: Record<string, Field> };
 const fieldKeys = new Set([
@@ -377,6 +378,7 @@ const fieldKeys = new Set([
 	"minLength",
 	"maxLength",
 	"choices",
+	"schema",
 ]);
 const settingTypes = new Set(["string", "path", "integer", "number", "boolean", "enum", "json"]);
 const applies = { use: "next use", reload: "reload", restart: "restart" } as const satisfies Record<
@@ -388,20 +390,108 @@ const validText = (value: unknown, max: number): value is string =>
 const plainObject = (value: unknown): value is Record<string, unknown> =>
 	value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype;
 
+function plainDataEntries(value: object): (string | symbol)[] {
+	const keys = Reflect.ownKeys(value);
+	if (!Array.isArray(value)) return keys;
+	if (Object.getPrototypeOf(value) !== Array.prototype || keys.length !== value.length + 1)
+		throw new Error("Declaration arrays must be plain, dense and have no extra properties");
+	if (keys.some((key, i) => key !== (i < value.length ? String(i) : "length")))
+		throw new Error("Declaration arrays must be plain, dense and have no extra properties");
+	return keys.slice(0, -1);
+}
+
+function dataProperty(value: object, key: string | symbol): unknown {
+	if (typeof key !== "string") throw new Error("Declaration contains a symbol");
+	const descriptor = Object.getOwnPropertyDescriptor(value, key);
+	if (!descriptor || !("value" in descriptor)) throw new Error("Declaration contains an accessor");
+	if (!descriptor.enumerable) throw new Error("Declaration contains a hidden property");
+	return descriptor.value;
+}
+
 function assertPlainData(value: unknown, seen = new Set<object>(), depth = 0): void {
-	if (depth > 32) throw new Error("Declaration is too deep");
+	// Schema keyword containers and schema nodes are separate levels of plain data.
+	if (depth > 36) throw new Error("Declaration is too deep");
 	if (value === null || typeof value === "string" || typeof value === "boolean") return;
 	if (typeof value === "number" && Number.isFinite(value)) return;
-	if ((!plainObject(value) && !Array.isArray(value)) || seen.has(value))
-		throw new Error("Declaration must be plain data");
+	if (!plainObject(value) && !Array.isArray(value)) throw new Error("Declaration must be plain data");
+	if (seen.has(value)) throw new Error("Declaration must not be cyclic");
 	seen.add(value);
-	for (const key of Reflect.ownKeys(value)) {
-		if (typeof key !== "string") throw new Error("Declaration contains a symbol");
-		const descriptor = Object.getOwnPropertyDescriptor(value, key);
-		if (!descriptor || !("value" in descriptor)) throw new Error("Declaration contains an accessor");
-		assertPlainData(descriptor.value, seen, depth + 1);
-	}
+	for (const key of plainDataEntries(value)) assertPlainData(dataProperty(value, key), seen, depth + 1);
 	seen.delete(value);
+}
+
+const SCHEMA_MAX_BYTES = 32768;
+const SCHEMA_MAX_DEPTH = 16;
+const schemaTypes = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
+const schemaFormats = new Set(["model", "provider", "path"]);
+
+function validPattern(value: unknown): boolean {
+	if (typeof value !== "string") return false;
+	try {
+		new RegExp(value, "u");
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+const isNumber = (value: unknown) => typeof value === "number";
+const isBoolean = (value: unknown) => typeof value === "boolean";
+const isCount = (value: unknown) => isNumber(value) && Number.isInteger(value) && value >= 0;
+const nonemptyArray = (value: unknown) => Array.isArray(value) && value.length > 0;
+
+const schemaKeywordChecks = {
+	type: (value) => typeof value === "string" && schemaTypes.has(value),
+	format: (value) => typeof value === "string" && schemaFormats.has(value),
+	properties: plainObject,
+	patternProperties: (value) => plainObject(value) && Object.keys(value).every(validPattern),
+	required: (value) =>
+		Array.isArray(value) && value.every((name) => typeof name === "string") && new Set(value).size === value.length,
+	additionalProperties: (value) => isBoolean(value) || plainObject(value),
+	propertyNames: plainObject,
+	items: plainObject,
+	anyOf: nonemptyArray,
+	minProperties: isCount,
+	maxProperties: isCount,
+	minItems: isCount,
+	maxItems: isCount,
+	minLength: isCount,
+	maxLength: isCount,
+	minimum: isNumber,
+	maximum: isNumber,
+	uniqueItems: isBoolean,
+	deprecated: isBoolean,
+	pattern: validPattern,
+	enum: nonemptyArray,
+	examples: Array.isArray,
+	title: (value) => validText(value, SCHEMA_MAX_BYTES) && value === value.trim() && !value.endsWith("."),
+	description: (value) => validText(value, SCHEMA_MAX_BYTES),
+	// assertPlainData already checks arbitrary JSON values.
+	const: () => true,
+	default: () => true,
+} satisfies Record<string, (value: unknown) => boolean>;
+
+export function* valueSchemaChildren(node: Record<string, unknown>): Generator<[path: string, value: unknown]> {
+	for (const keyword of ["properties", "patternProperties"] as const) {
+		const schemas = node[keyword];
+		if (plainObject(schemas)) for (const [name, child] of Object.entries(schemas)) yield [`${keyword}/${name}`, child];
+	}
+	for (const keyword of ["propertyNames", "additionalProperties", "items"] as const) {
+		const child = node[keyword];
+		if (plainObject(child)) yield [keyword, child];
+	}
+	if (Array.isArray(node.anyOf)) for (const [index, child] of node.anyOf.entries()) yield [`anyOf/${index}`, child];
+}
+
+function validateSchemaNode(node: unknown, depth: number): void {
+	if (depth > SCHEMA_MAX_DEPTH) throw new Error("Value schema is too deep");
+	if (!plainObject(node)) throw new Error("Value schema must be an object");
+	for (const [key, value] of Object.entries(node)) {
+		if (!Object.hasOwn(schemaKeywordChecks, key)) throw new Error(`Unsupported value schema keyword: ${key}`);
+		if (!schemaKeywordChecks[key as keyof typeof schemaKeywordChecks](value))
+			throw new Error(`Invalid value schema keyword: ${key}`);
+	}
+	for (const [, child] of valueSchemaChildren(node)) validateSchemaNode(child, depth + 1);
 }
 
 function validateFieldBounds(field: Field): void {
@@ -445,6 +535,12 @@ function validateField(field: Field): void {
 	if (typeof field.apply !== "string" || !Object.hasOwn(applies, field.apply)) throw new Error("Invalid apply value");
 	validateFieldBounds(field);
 	validateFieldOptions(field);
+	if (field.type === "json") {
+		if (!Object.hasOwn(field, "schema")) throw new Error("JSON fields require a value schema");
+		validateSchemaNode(field.schema, 1);
+		if (Buffer.byteLength(JSON.stringify(field.schema)) > SCHEMA_MAX_BYTES)
+			throw new Error("Value schema is too large");
+	} else if (Object.hasOwn(field, "schema")) throw new Error("Value schemas apply to JSON fields");
 	if (field.type === "enum") {
 		if (
 			!Array.isArray(field.choices) ||
@@ -511,6 +607,7 @@ export function settingsReadme(declaration: Declaration): string {
 			.map((name) => `${name} ${field[name]}`);
 		if (field.absolute) constraints.push("absolute input");
 		if (field.choices) constraints.push(field.choices.join(", "));
+		if (field.type === "json") constraints.push("declared schema");
 		return `| ${[key, `\`${field.env}\``, field.type, tableCell(fallback), applies[field.apply], tableCell(constraints.join("; ") || "none"), tableCell(field.description)].join(" | ")} |`;
 	});
 	return [

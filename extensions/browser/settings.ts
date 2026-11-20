@@ -1,7 +1,26 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { type AccessMap, isAccessLevel, isBrowserKey } from "./browsers.ts";
+import {
+	ACCESS_LEVELS,
+	BROWSER_KEYS,
+	type AccessLevel,
+	type AccessMap,
+	type BrowserKey,
+	isAccessLevel,
+	isBrowserKey,
+} from "./browsers.ts";
+
+const browserTitles: Record<BrowserKey, string> = {
+	chrome: "Chrome",
+	brave: "Brave",
+	"chrome-for-testing": "Chrome for Testing",
+};
+const accessChoices: Record<AccessLevel, { title: string; description: string }> = {
+	inspect: { title: "Inspect", description: "Allow tab listing, bounded inspection, and window capture." },
+	interact: { title: "Interact", description: "Allow inspection, browser actions, and JavaScript evaluation." },
+};
+const accessLevels = ACCESS_LEVELS.map((level) => ({ const: level, ...accessChoices[level] }));
 
 export const settings = {
 	slice: "browser",
@@ -13,6 +32,13 @@ export const settings = {
 			description:
 				'Browsers the browser tools may address, as an object from browser key (chrome, brave, chrome-for-testing) to "inspect" or "interact". inspect allows tab listing, bounded inspection, and window capture; interact also allows browser_act and browser_evaluate. An unlisted browser receives no Apple Events; browser_tabs still reports its installation and running state. Access configures reach only and grants no task authority.',
 			default: {},
+			schema: {
+				type: "object",
+				properties: Object.fromEntries(
+					BROWSER_KEYS.map((key) => [key, { title: browserTitles[key], anyOf: accessLevels }]),
+				),
+				additionalProperties: false,
+			},
 		},
 	},
 } as const;
