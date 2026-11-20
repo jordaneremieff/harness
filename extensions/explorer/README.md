@@ -23,6 +23,14 @@ Each card has one filled button on the right; ⌘↩ performs it. Text you type 
 
 Marked lines are tinted: yellow for review comments, blue for your notes and questions, mauve for the agent's notes. Click a marked line, its dot or **Open note** in its menu to open the card; a further click on the same lines while the card is open shows the next note there. A review comment opens in its editor with **Remove**, **Send now** and **Save**. A note opens its thread: **Reply** sends the reply to the conversation when one is connected and otherwise saves it in the note; your own open notes can be edited, and your notes can be deleted. Viewed ticks and unsent comments persist. A review finishes when you send it or mark all its files Viewed.
 
+### Markdown preview
+
+In the File view, `.md` and `.markdown` files open rendered by default. Use **Preview** to switch between the rendered document and its source. Explorer remembers your choice. **Changes** always shows the source diff.
+
+Find in file searches rendered text in Preview. Go to line switches to source. Notes, comments and Ask stay tied to source lines: select rendered text to act on the corresponding lines, or click a tinted block to open its note. Line links and search results jump to the matching block. Explorer keeps your reading position when a file changes.
+
+Relative links open files inside the current root. Links to headings scroll the preview, including when a relative file link contains a heading fragment. HTTP and HTTPS links open in the default browser; email links open in the default mail app. Other URL schemes are inactive. Supported local images load from the root; remote images show their alt text instead.
+
 <!-- harness:settings:start -->
 | Key | Environment | Type | Default | Applies | Constraints | Description |
 |---|---|---|---|---|---|---|

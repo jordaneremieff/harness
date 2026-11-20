@@ -52,9 +52,11 @@ struct ExplorerServices {
         case "files.list":
             let found = try workspace.files()
             return ["paths": found.paths, "truncated": found.truncated, "source": workspace.isGit ? "git" : "scan"]
-        case "file.read":
+        case "file.read", "markdown.render":
             if let at = fields["at"], !(at is String) { throw ExplorerError("invalid", "The revision is invalid.") }
-            return try workspace.readFile(path(), at: fields["at"] as? String)
+            let at = fields["at"] as? String
+            if type == "markdown.render" { return try workspace.renderMarkdown(path(), at: at) }
+            return try workspace.readFile(path(), at: at)
         case "review.scopes": return try workspace.reviewScopes(marker: marker())
         case "review.files", "review.diff":
             let scope = try scopeShape(fields["scope"])

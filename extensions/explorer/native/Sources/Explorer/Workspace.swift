@@ -238,6 +238,17 @@ final class Workspace: @unchecked Sendable {
         return result
     }
 
+    func markdownImageURL(_ path: String, at: String?) -> String? {
+        guard validPath(path), imageMedia[URL(fileURLWithPath: path).pathExtension.lowercased()] != nil else { return nil }
+        if at == nil {
+            guard let (fd, _) = try? openContained(root, path) else { return nil }
+            defer { Darwin.close(fd) }
+            var details = stat()
+            guard fstat(fd, &details) == 0, details.st_mode & S_IFMT == S_IFREG, details.st_size <= 32 * mib else { return nil }
+        }
+        return assetURL(path, at: at)
+    }
+
     private func assetURL(_ path: String, at: String?) -> String {
         let id = UUID().uuidString.lowercased()
         assetLock.lock(); defer { assetLock.unlock() }

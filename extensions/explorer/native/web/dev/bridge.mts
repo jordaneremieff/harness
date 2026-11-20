@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { defaultPath, type Fixture } from "./fixture.mts";
+import { renderFixtureMarkdown } from "./markdown.mts";
 import { createReview, lines, uncommitted } from "./review.mts";
 
 type Packet = {
@@ -25,6 +26,7 @@ export function createBridge(
 	let settings: ExplorerSettings = {
 		textSize: 16,
 		wrap: false,
+		preview: true,
 		diff: "auto",
 		sidebar: { open: true, width: 270 },
 		tab: "changes",
@@ -312,6 +314,11 @@ export function createBridge(
 				case "file.read":
 					result = file(message.path, message.at);
 					break;
+				case "markdown.render": {
+					const read = file(message.path, message.at);
+					result = { file: read, html: read.text === undefined ? undefined : renderFixtureMarkdown(read.text) };
+					break;
+				}
 				case "review.scopes":
 					result = review.scopes();
 					break;
@@ -350,6 +357,7 @@ export function createBridge(
 				case "clipboard.read":
 					result = { text: clipboard };
 					break;
+				case "link.open":
 				case "finder.reveal":
 				case "focus.return":
 					return fail("unavailable", "This action requires the native host.");

@@ -12,7 +12,9 @@
 		status = get("notice");
 	const isNarrow = matchMedia("(max-width: 759px)"),
 		isWide = matchMedia("(min-width: 1200px)");
-	const code = app.code(body);
+	const source = app.code(body);
+	const preview = app.preview(body, followMarkdownLink);
+	let code: ExplorerCodeView = source;
 	let root: ExplorerRoot = {
 		path: "",
 		name: "Repository",
@@ -25,6 +27,7 @@
 	let settings: ExplorerSettings = {
 		textSize: 16,
 		wrap: false,
+		preview: true,
 		diff: "auto",
 		sidebar: { width: 245, open: true },
 		tab: "files",
@@ -54,6 +57,7 @@
 		view: "file" | "changes" = "file",
 		file: ExplorerFile | null = null,
 		diff: ExplorerDiff | null = null;
+	let previewHTML: string | undefined;
 	let fileError = "",
 		loadingFile = false;
 	let headLines: string[] = [],
@@ -87,14 +91,14 @@
 	};
 	const sameScope = (a?: ExplorerScope, b?: ExplorerScope) => JSON.stringify(a) === JSON.stringify(b);
 	const activeNotes = () => notes.filter((note) => note.path === path);
-	// Unresolved notes whose current lines include the first line of a range.
+	// A rendered block covers a span. A source row represents one line.
 	const notesOn = (range: ExplorerRange) =>
 		activeNotes().filter(
 			(note) =>
 				note.location !== "outdated" &&
 				note.state !== "resolved" &&
 				note.side === range.side &&
-				note.start <= range.start &&
+				note.start <= (code === preview ? range.end : range.start) &&
 				range.start <= note.end,
 		);
 	const openLabel = (marked: ExplorerNote[]) => {
@@ -744,6 +748,10 @@
 		pressed(get("file-view"), view === "file");
 		pressed(get("diff-view"), view === "changes");
 		pressed(get("wrap-lines"), settings.wrap);
+		get("wrap-lines").hidden = wantsPreview() && (loadingFile || previewHTML !== undefined);
+		const previewToggle = get("preview-mode");
+		previewToggle.hidden = !markdownFile();
+		pressed(previewToggle, wantsPreview() && (loadingFile || previewHTML !== undefined));
 		const change = review?.files.find((item) => item.path === path);
 		disabled("diff-view", !path || !change);
 		disabled("copy-path", !path);
@@ -837,11 +845,21 @@
 		if (view === "file") return file?.kind === "text";
 		return !!diff && !diff.binary && diff.hunks.length > 0;
 	}
+	function markdownFile() {
+		return view === "file" && app.markdown.isMarkdown(path) && (!file || file.kind === "text");
+	}
+	function wantsPreview() {
+		return markdownFile() && settings.preview;
+	}
 	function restoreCodeView(saved?: ReturnType<ExplorerCodeView["place"]>) {
 		if (saved) code.restore(saved);
-		if (lineRange || targetRange) code.highlight(lineRange ?? targetRange);
+		code.highlight(lineRange ?? reviewUI.range() ?? (code === preview ? null : targetRange));
 		if (findQuery.value) computeFind(false);
-		if (file?.truncated || diff?.truncated) get("file-annotation").textContent = "Large file · partial preview";
+		get("file-annotation").textContent = fileAnnotation();
+	}
+	function fileAnnotation() {
+		if (wantsPreview() && previewHTML === undefined) return "Rendered preview unavailable · source shown";
+		return file?.truncated || diff?.truncated ? "Large file · partial preview" : "";
 	}
 	function renderCode(saved?: ReturnType<ExplorerCodeView["place"]>) {
 		if (!showsCode()) {
@@ -849,7 +867,20 @@
 			renderCodePlaceholder();
 			return;
 		}
-		code.show({
+		const next = wantsPreview() && previewHTML !== undefined ? preview : source;
+		if (code !== next) {
+			code.clear();
+			code = next;
+			if (saved) saved = { ...saved, offset: 0, left: 0 };
+		}
+		body.setAttribute("aria-label", next === preview ? "Markdown preview" : "Source code");
+		const options = codeOptions();
+		if (next === preview) preview.show({ ...options, html: previewHTML });
+		else source.show(options);
+		restoreCodeView(saved);
+	}
+	function codeOptions(): ExplorerCodeOptions {
+		return {
 			path,
 			base: baseLines,
 			head: headLines,
@@ -869,8 +900,7 @@
 				placeStrip();
 				reviewUI.reposition();
 			},
-		});
-		restoreCodeView(saved);
+		};
 	}
 	type NavigationOptions = {
 		replace?: boolean;
@@ -934,7 +964,7 @@
 		targetRange = { side, start, end };
 		code.jump(end, side, true);
 		code.jump(start, side, true);
-		code.highlight(targetRange);
+		if (code !== preview) code.highlight(targetRange);
 		setAnchorLine(start);
 	}
 	function showDirectory(keepSheet?: boolean) {
@@ -942,18 +972,31 @@
 		if (isNarrow.matches && keepSheet) sheet = true;
 		renderSidebarState();
 	}
+	async function followFileLink(link: Extract<ExplorerMarkdownLink, { kind: "file" }>) {
+		const stamp = openStamp + 1;
+		await navigate({ path: link.path, view: "file" });
+		if (stamp === openStamp && code === preview && link.fragment) preview.fragment(link.fragment);
+	}
+	function followMarkdownLink(link: ExplorerMarkdownLink) {
+		if (link.kind === "fragment") preview.fragment(link.fragment);
+		else if (link.kind === "external") report(request("link.open", { url: link.url }));
+		else report(followFileLink(link));
+	}
 	function readNavigation(change: boolean) {
 		const selectedScope = scope;
 		const at =
 			change && review?.resolved.head && review.resolved.head !== "worktree" ? review.resolved.head : undefined;
 		return Promise.all([
-			request("file.read", { path, ...(at ? { at } : {}) }),
+			!change && settings.preview && app.markdown.isMarkdown(path)
+				? request("markdown.render", { path, at })
+				: request("file.read", { path, at }).then((file) => ({ file, html: undefined })),
 			change && selectedScope ? request("review.diff", { path, scope: selectedScope }) : Promise.resolve(null),
 		]);
 	}
 	function clearFileData() {
 		file = null;
 		diff = null;
+		previewHTML = undefined;
 		headLines = [];
 		baseLines = [];
 	}
@@ -1012,8 +1055,9 @@
 		if (!prepareFileRead(options.refresh, target.line)) return;
 		try {
 			const change = view === "changes";
-			const [next, patch] = await readNavigation(change);
+			const [{ file: next, html }, patch] = await readNavigation(change);
 			if (stamp !== openStamp) return;
+			previewHTML = html;
 			applyNavigation(next, patch, change, options.keepSheet);
 		} catch (error) {
 			if (stamp !== openStamp) return;
@@ -1124,7 +1168,7 @@
 		findQuery.select();
 	}
 	function computeFind(jump: boolean) {
-		matches = model.find(headLines, findQuery.value, "head");
+		matches = code === preview ? preview.find(findQuery.value) : model.find(headLines, findQuery.value, "head");
 		if (view === "changes" && matches.length < 10000 && diff)
 			matches.push(
 				...model
@@ -1133,7 +1177,8 @@
 						diff?.hunks.some((hunk) => hunk.baseStart <= match.line && match.line < hunk.baseStart + hunk.baseCount),
 					),
 			);
-		matches.sort((a, b) => a.line - b.line || (a.side === b.side ? a.start - b.start : a.side === "base" ? -1 : 1));
+		if (code !== preview)
+			matches.sort((a, b) => a.line - b.line || (a.side === b.side ? a.start - b.start : a.side === "base" ? -1 : 1));
 		if (jump) {
 			const first = matches.findIndex((match) => match.line >= latestLine);
 			hit = first < 0 ? 0 : first;
@@ -1150,7 +1195,9 @@
 		findBack.disabled = findNext.disabled = !matches.length;
 		const current = matches[hit];
 		code.marks(matches, current);
-		if (current && jump) code.jump(current.line, current.side);
+		if (!current || !jump) return;
+		if (code === preview) preview.focusMatch(current);
+		else code.jump(current.line, current.side);
 	}
 	function stepFind(delta: number) {
 		if (matches.length) {
@@ -1271,7 +1318,19 @@
 	function lineReference(range: ExplorerRange) {
 		return `${path}:${range.start}${range.end === range.start ? "" : `–${range.end}`}`;
 	}
+	function togglePreview() {
+		if (!markdownFile()) return;
+		settings.preview = !settings.preview;
+		saveSettings();
+		if (settings.preview || fileError) report(navigate({ path, view }, { refresh: true }));
+		else {
+			const saved = code.place();
+			renderHeader();
+			renderCode(saved);
+		}
+	}
 	function toggleWrap() {
+		if (code === preview) return;
 		const saved = code.place();
 		settings.wrap = !settings.wrap;
 		saveSettings();
@@ -1284,20 +1343,25 @@
 	}
 	type Action = { label: string; key: string; glyph: string; run: () => void; disabled?: boolean; divide?: boolean };
 	function appendCodeActions(result: Action[]) {
-		if (headLines.length || baseLines.length) {
-			result.push(
-				{ label: "Find in file", key: "⌘F", glyph: "search", divide: true, run: findInFile },
-				{ label: "Go to line", key: "⌃G", glyph: "list", run: () => command("line") },
-			);
-			if (review?.files.some((item) => item.path === path))
-				result.push({
-					label: view === "file" ? "Show changes" : "Show file",
-					key: "⌘⌥D",
-					glyph: "branch",
-					run: toggleView,
-				});
-			result.push({ label: settings.wrap ? "Turn wrap off" : "Wrap lines", key: "⌥Z", glyph: "file", run: toggleWrap });
-		}
+		if (!headLines.length && !baseLines.length) return;
+		result.push(
+			{ label: "Find in file", key: "⌘F", glyph: "search", divide: true, run: findInFile },
+			{ label: "Go to line", key: "⌃G", glyph: "list", run: () => command("line") },
+		);
+		if (review?.files.some((item) => item.path === path))
+			result.push({
+				label: view === "file" ? "Show changes" : "Show file",
+				key: "⌘⌥D",
+				glyph: "branch",
+				run: toggleView,
+			});
+		if (code !== preview)
+			result.push({
+				label: settings.wrap ? "Turn wrap off" : "Wrap lines",
+				key: "⌥Z",
+				glyph: "file",
+				run: toggleWrap,
+			});
 	}
 	function appendReviewActions(
 		result: Action[],
@@ -1607,6 +1671,7 @@
 				return;
 			}
 			closeCommand();
+			if (code === preview) togglePreview();
 			code.jump(line, side, true);
 			changeRange({ side, start: line, end: line });
 			code.highlight(lineRange);
@@ -1882,6 +1947,7 @@
 	click("quick-open", () => command("quick"));
 	click("search", () => command("search"), "search");
 	click("wrap-lines", toggleWrap);
+	click("preview-mode", togglePreview);
 	click(
 		"copy-path",
 		() => {

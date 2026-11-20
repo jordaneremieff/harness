@@ -124,23 +124,23 @@
   white-space: break-spaces;
   overflow-wrap: anywhere;
 }
-.code-cell.has-note {
+.code-cell.has-note, .markdown-preview .has-note {
   --note-tint: var(--accent);
   --note-share: 11%;
   --note-hover: 19%;
   box-shadow: inset 0 0 0 100vmax color-mix(in oklch, var(--note-tint) var(--note-share), transparent);
 }
-.code-cell.has-agent {
+.code-cell.has-agent, .markdown-preview .has-agent {
   --note-tint: var(--agent);
   --note-share: 12%;
   --note-hover: 21%;
 }
-.code-cell.has-draft {
+.code-cell.has-draft, .markdown-preview .has-draft {
   --note-tint: var(--comment-mark);
   --note-share: 78%;
   --note-hover: 100%;
 }
-.code-cell.has-note:not(.range-picked):hover {
+.code-cell.has-note:not(.range-picked):hover, .markdown-preview .has-note:not(.markdown-picked):hover {
   box-shadow: inset 0 0 0 100vmax color-mix(in oklch, var(--note-tint) var(--note-hover), transparent);
 }
 .code-cell.range-picked,

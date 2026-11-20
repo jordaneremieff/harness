@@ -195,6 +195,13 @@ final class ExplorerHost {
             }
             Darwin.close(fd)
             NSWorkspace.shared.activateFileViewerSelecting([url])
+        case "link.open":
+            guard let raw = fields["url"] as? String, raw.utf8.count <= 8192, let url = URL(string: raw),
+                  let scheme = url.scheme?.lowercased(), ["http", "https", "mailto"].contains(scheme),
+                  scheme == "mailto" || (url.host?.isEmpty == false) else {
+                throw ExplorerError("invalid", "Only HTTP, HTTPS and email links open outside Explorer.")
+            }
+            guard NSWorkspace.shared.open(url) else { throw ExplorerError("io", "The link could not be opened.") }
         case "focus.return": overlay?.releaseFocus()
         case "settings.save": try state.saveSettings(fields["settings"])
         case "state.save":

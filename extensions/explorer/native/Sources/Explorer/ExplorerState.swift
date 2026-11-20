@@ -5,7 +5,7 @@ import Foundation
 struct ExplorerState {
     let store: URL
     private var dir: URL { store.appendingPathComponent("pane-v1", isDirectory: true) }
-    static let defaults: [String: Any] = ["textSize": 16, "wrap": false, "diff": "auto", "sidebar": ["open": true, "width": 244], "tab": "files"]
+    static let defaults: [String: Any] = ["textSize": 16, "wrap": false, "preview": true, "diff": "auto", "sidebar": ["open": true, "width": 244], "tab": "files"]
 
     var settings: [String: Any] {
         (try? Self.validSettings(load(dir.appendingPathComponent("settings.json")))) ?? Self.defaults
@@ -23,7 +23,10 @@ struct ExplorerState {
               let tab = value["tab"] as? String, ["files", "changes", "notes"].contains(tab) else {
             throw ExplorerError("invalid", "Explorer page settings are invalid.")
         }
-        return ["textSize": textSize, "wrap": wrap, "diff": diff, "sidebar": ["open": open, "width": width], "tab": tab]
+        guard value["preview"] == nil || value["preview"] is Bool else {
+            throw ExplorerError("invalid", "The Markdown preview setting is invalid.")
+        }
+        return ["textSize": textSize, "wrap": wrap, "preview": value["preview"] as? Bool ?? true, "diff": diff, "sidebar": ["open": open, "width": width], "tab": tab]
     }
 
     private func location(_ key: String, record: String = "position") -> URL {

@@ -8,11 +8,14 @@
 <link rel="stylesheet" href="styles/tokens.css">
 <link rel="stylesheet" href="styles/page.css">
 <link rel="stylesheet" href="styles/code.css">
+<link rel="stylesheet" href="styles/preview.css">
 <link rel="stylesheet" href="styles/review.css">
 <script defer src="app/core/model.js"></script>
 <script defer src="app/core/syntax.js"></script>
+<script defer src="app/core/markdown.js"></script>
 <script defer src="app/ui/dom.js"></script>
 <script defer src="app/ui/code.js"></script>
+<script defer src="app/ui/preview.js"></script>
 <script defer src="app/ui/review.js"></script>
 <script defer src="app/ui/main.js"></script>
 </head>
@@ -35,7 +38,7 @@
    <header id="file-header">
     <div id="main-scope" hidden></div>
     <nav id="crumbs" aria-label="File path"></nav>
-    <div class="file-title-row"><h1 id="file-title">Explorer</h1><div class="file-actions"><div class="seg" id="view-tabs"><button id="file-view" aria-pressed="true">File</button><button id="diff-view" disabled>Changes</button></div><button id="wrap-lines" class="tool-button" title="Wrap lines (⌥Z)" aria-pressed="false">Wrap</button><button id="copy-path" class="icon-button" title="Copy path (⌘⌥C)" aria-label="Copy path" disabled></button><button id="ask-file" class="icon-button" title="Ask about file (⌘⌥M)" aria-label="Ask about file" disabled></button></div></div>
+    <div class="file-title-row"><h1 id="file-title">Explorer</h1><div class="file-actions"><div class="seg" id="view-tabs"><button id="file-view" aria-pressed="true">File</button><button id="diff-view" disabled>Changes</button></div><button id="preview-mode" class="tool-button" aria-pressed="true" hidden>Preview</button><button id="wrap-lines" class="tool-button" title="Wrap lines (⌥Z)" aria-pressed="false">Wrap</button><button id="copy-path" class="icon-button" title="Copy path (⌘⌥C)" aria-label="Copy path" disabled></button><button id="ask-file" class="icon-button" title="Ask about file (⌘⌥M)" aria-label="Ask about file" disabled></button></div></div>
     <div id="file-facts"></div>
    </header>
    <div id="diff-header" hidden></div>

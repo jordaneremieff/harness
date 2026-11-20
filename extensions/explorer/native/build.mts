@@ -135,12 +135,14 @@ function sourceRecord(): { commit: string | null; dirty: boolean; digest: string
 	const inputs = [
 		"build.mts",
 		"Package.swift",
+		"Package.resolved",
 		"../settings.ts",
 		"../helper-sources.ts",
 		"../../../package-lock.json",
 		...NOTES_HELPER_SOURCES.map((name) => `../${name}`),
 	];
-	if (existsSync(join(packageDir, "Package.resolved"))) inputs.push("Package.resolved");
+	const licenses = regularFiles(join(packageDir, "Licenses"), (name) => name.startsWith("."));
+	inputs.push(...licenses.map((file) => relative(packageDir, file)));
 	const sources = regularFiles(join(packageDir, "Sources"), (name) => name.startsWith("."));
 	const web = webFiles(join(packageDir, "web"));
 	const files = [...inputs, ...[...sources, ...web].map((file) => relative(packageDir, file))].sort();
@@ -151,7 +153,7 @@ function sourceRecord(): { commit: string | null; dirty: boolean; digest: string
 	}
 	const head = git(["rev-parse", "--verify", "HEAD"]);
 	const commit = head && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(head) ? head : null;
-	const status = git(["status", "--porcelain", "--untracked-files=all", "--", ...inputs, "Sources", "web"]);
+	const status = git(["status", "--porcelain", "--untracked-files=all", "--", ...inputs, "Sources", "web", "Licenses"]);
 	return { commit, dirty: status !== "", digest: `sha256:${hash.digest("hex")}` };
 }
 
@@ -318,6 +320,12 @@ async function install(app: string): Promise<number> {
 			chmodSync(executable, 0o755);
 			stageWeb(resources);
 			stageNotes(resources);
+			const licenses = join(packageDir, "Licenses");
+			for (const source of regularFiles(licenses, (name) => name.startsWith("."))) {
+				const target = join(resources, "Licenses", relative(licenses, source));
+				mkdirSync(dirname(target), { recursive: true });
+				copyFileSync(source, target);
+			}
 			writeFileSync(join(contents, "Info.plist"), infoPlist());
 			const build = {
 				contract: 1,

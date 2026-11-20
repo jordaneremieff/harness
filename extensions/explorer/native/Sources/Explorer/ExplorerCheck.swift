@@ -51,6 +51,7 @@ enum ExplorerCheck {
         try Data("const first = 1;\nconst second = 2;\nconst third = 3;\n".utf8).write(to: root.appendingPathComponent("lines.ts"))
         try git(["add", "example.ts", "lines.ts"]); try git(["commit", "--quiet", "-m", "Fixture"])
         try Data("export const answer = 42;\n".utf8).write(to: file)
+        try Data("# Preview\n\nA **rendered** paragraph.\n\n[Source](example.ts)\n".utf8).write(to: root.appendingPathComponent("guide.md"))
         let fake = try FakeLive()
         defer { fake.stop() }
         let config = LiveConfiguration(version: 1, endpoint: URL(string: "http://127.0.0.1:\(fake.port)")!, token: FakeLive.token)
@@ -135,11 +136,40 @@ enum ExplorerCheck {
             if (receipt.status !== 'admitted') throw Error('prompt receipt');
             for (let i=0; i<180 && !globalThis.__verifiedAnswer; i++) await new Promise(requestAnimationFrame);
             if (!globalThis.__verifiedAnswer) throw Error('prompt answer');
+            const rendered = await accept('markdown.render', {path:'guide.md'});
+            if (!rendered.html.includes('<strong>rendered</strong>') || !rendered.html.includes('data-sourcepos="3:')) throw Error('Markdown render and source map');
+            if ((await call('link.open', {url:'file:///etc/passwd'})).ok) throw Error('outside link accepted');
+            const waitFor = selector => until(() => document.querySelector(selector), 'Missing ' + selector);
+            await accept('notes.write',{op:'create',note:{path:'guide.md',side:'head',start:3,end:3,commit:null,quote:'A **rendered** paragraph.',text:'Markdown note',state:'open',author:'operator'}});
+            explorer.receive({ v:1, type:'notes.changed' });
+            explorer.receive({ v:1, type:'open', path:'guide.md', line:3 });
+            const paragraph = await waitFor('.markdown-preview p.has-note');
+            if (!paragraph.classList.contains('markdown-jump')) throw Error('Markdown line jump');
+            paragraph.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, button:0, detail:1}));
+            const previewCard = await waitFor('.float-card');
+            if (!previewCard.textContent.includes('Markdown note')) throw Error('Marked block opens its note');
+            press('Escape');
+            getSelection().selectAllChildren(paragraph);
+            document.dispatchEvent(new Event('selectionchange'));
+            await waitFor('.selection-strip:not([hidden])');
+            getSelection().removeAllRanges();
+            document.dispatchEvent(new KeyboardEvent('keydown', {key:'f', metaKey:true, bubbles:true}));
+            const find = await waitFor('#find-slot:not([hidden]) input');
+            find.value = 'rendered paragraph';
+            find.dispatchEvent(new Event('input'));
+            if (CSS.highlights.get('explorer-preview-current')?.size !== 1) throw Error('Find rendered text across inline formatting');
+            const toggle = document.getElementById('preview-mode');
+            toggle.click();
+            await waitFor('#view-body .source-row');
+            if (toggle.getAttribute('aria-pressed') !== 'false' || (await accept('hello')).settings.preview !== false) throw Error('Source toggle not retained');
+            toggle.click();
+            (await waitFor('.markdown-preview a')).click();
+            await until(() => document.getElementById('file-title')?.textContent === 'example.ts', 'Relative preview link');
             return document.visibilityState;
             """, arguments: [:], in: nil, contentWorld: .page)
             guard result as? String == "visible" else { throw ExplorerError("verify", "WebKit did not render a visible page.") }
         }
-        print("Explorer verified: real page, file, Git review, search, notes, note marks, card drafts, live prompt and answer.")
+        print("Explorer verified: real page, file, Markdown preview, Git review, search, notes, note marks, card drafts, live prompt and answer.")
     }
 
     private static func scratchDirectory() throws -> URL {

@@ -28,6 +28,7 @@ type ExplorerLaunch = {
 type ExplorerSettings = {
 	textSize: number;
 	wrap: boolean;
+	preview: boolean;
 	diff: ExplorerMode;
 	sidebar: { open: boolean; width: number };
 	tab: ExplorerTab;
@@ -138,6 +139,8 @@ type ExplorerRequests = {
 	];
 	"files.list": [undefined, { paths: string[]; truncated: boolean; source: string }];
 	"file.read": [{ path: string; at?: string }, ExplorerFile];
+	"markdown.render": [{ path: string; at?: string }, { file: ExplorerFile; html?: string }];
+	"link.open": [{ url: string }, object];
 	"review.scopes": [undefined, { scopes: ExplorerScopeOption[]; defaultId: string }];
 	"review.files": [{ scope: ExplorerScope }, ExplorerReview];
 	"review.diff": [{ scope: ExplorerScope; path: string }, ExplorerDiff];
@@ -196,6 +199,16 @@ type ExplorerCodeOptions = {
 	onRange: (range: ExplorerRange | null) => void;
 	onScroll: (line: number) => void;
 };
+type ExplorerMarkdownLink =
+	| { kind: "external"; url: string }
+	| { kind: "file"; path: string; fragment: string }
+	| { kind: "fragment"; fragment: string };
+type ExplorerPreviewView = ExplorerCodeView & {
+	show(opts: ExplorerCodeOptions & { html?: string }): void;
+	find(query: string): ExplorerMatch[];
+	focusMatch(match: ExplorerMatch): void;
+	fragment(name: string): void;
+};
 type ExplorerCodeView = {
 	show: (opts: ExplorerCodeOptions) => void;
 	clear: () => void;
@@ -242,6 +255,14 @@ interface ExplorerApp {
 		glyph(button: HTMLElement, name: string): void;
 	};
 	code(body: HTMLElement): ExplorerCodeView;
+	preview(body: HTMLElement, follow: (link: ExplorerMarkdownLink) => void): ExplorerPreviewView;
+	markdown: {
+		isMarkdown(path: string): boolean;
+		sourceSpan(sourcepos: string): ExplorerRange | null;
+		cover(ranges: Iterable<ExplorerRange>): ExplorerRange | null;
+		slugs(): (text: string) => string;
+		link(destination: string, path: string): ExplorerMarkdownLink | null;
+	};
 }
 interface Window {
 	explorer: ExplorerApp;

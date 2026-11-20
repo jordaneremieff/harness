@@ -10,11 +10,13 @@ The app scheme serves installed HTML, scripts, styles and supporting files. The 
 
 `Workspace` reads files and computes Git reviews. Text reads return at most 4 MiB, with a notice on truncated previews. Image reads stop at 32 MiB. A file list is limited to 200,000 paths. Search returns at most 2,000 results and uses a bounded scan for paths not covered by Git. `ExplorerWatch` coalesces file and repository changes through FSEvents.
 
+`markdown.render` reads `.md` and `.markdown` through the same file boundary and returns source metadata and safe GitHub-flavoured HTML. The app uses swift-cmark 0.9.0 with source positions, tables, strikethrough, autolinks, tag filtering and task lists. It omits raw HTML and rejects unsafe link destinations. Markdown images resolve relative to the file inside the workspace; image requests use the same Git revision as the Markdown source. The page never fetches remote images. The host accepts only HTTP, HTTPS and `mailto` for external links. The browser-only fixture uses a small renderer for headings, paragraphs, lists, links and fenced code; the native app defines the full rendering behaviour.
+
 `NotesHelper` runs the bundled Node writer with a 1 MiB request limit, a 16 MiB response limit and a ten-second deadline. The writer owns note, review and recent-root records. The host saves page preferences, positions and unsent card drafts as private records. A draft belongs to one root and file. A normal close gives the page a brief opportunity to finish pending draft writes. `LiveClient` consumes a one-use private file and sends authenticated requests only to its loopback endpoint. It does not follow redirects. A pane without a live connection still reads and saves notes.
 
 ## Build and checks
 
-From the repository root, run `node extensions/explorer/native/build.mts` to build and install the app. Use `PI_EXPLORER_APP` to select a private install path instead of the configured app location. Run `node extensions/explorer/native/build.mts test` for the Swift tests. The app bundle contains its web page, notes helper and build manifest.
+From the repository root, run `node extensions/explorer/native/build.mts` to build and install the app. Use `PI_EXPLORER_APP` to select a private install path instead of the configured app location. Run `node extensions/explorer/native/build.mts test` for the Swift tests. The app bundle contains its web page, notes helper and build manifest. `Licenses/swift-cmark-COPYING` carries the parser's licence notices and ships in the app's Resources.
 
 Run the binary inside the bundle with `--pane --store <directory> --root <folder>`. Pass `--path <relative-path>` and `--line <line>` to select a location. Pane mode requires a terminal.
 
