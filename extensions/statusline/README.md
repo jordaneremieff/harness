@@ -222,7 +222,12 @@ set the window title, write the clipboard, or emit a hyperlink.
   in any mode but only touches the footer in TUI mode; it notifies when
   `ctx.hasUI`. The view commands explain the requirement outside the TUI.
 - One 5-second interval owns wall-clock freshness: Pi re-renders only on
-  events, so without it the duration would go stale while idle. The tick is
+  events, so without it the duration would go stale while idle. A render
+  recomputes the lines of every component in the session view, so the tick
+  requests one only when line 1 would show different text: an idle session
+  past its first minute renders about once a minute instead of every tick.
+  Line 2 changes arrive with branch and status events, which render on their
+  own. The tick is
   `unref`'d (it cannot hold the process open) and is
   cleared on footer `dispose()`, on `session_shutdown`, and before any
   reinstall, so toggling or reloading can never accumulate intervals.

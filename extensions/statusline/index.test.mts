@@ -832,6 +832,36 @@ describe("tick ownership", () => {
 		await handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mocks.ctx);
 		assert.equal(liveTicks.size, 0);
 	});
+
+	it("requests a render from the tick only when line 1 would change", async (t) => {
+		let now = Date.parse("2026-11-20T00:00:00.000Z");
+		t.mock.method(Date, "now", () => now);
+		const { handlers } = makePi();
+		let percent = 10;
+		const mocks = makeCtx({ getContextUsage: () => ({ tokens: percent * 1000, contextWindow: 100_000, percent }) });
+		liveTicks.clear();
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const footer = installFooter(mocks);
+		try {
+			const [tick] = liveTicks;
+			tick.callback();
+			assert.equal(mocks.tui.renders, 1, "a footer that never rendered asks for its first render");
+			footer.render(120);
+			now += 10 * 60_000;
+			tick.callback();
+			assert.equal(mocks.tui.renders, 2, "a new duration text renders");
+			footer.render(120);
+			now += 5_000;
+			tick.callback();
+			tick.callback();
+			assert.equal(mocks.tui.renders, 2, "an idle tick with unchanged text repaints nothing");
+			percent = 40;
+			tick.callback();
+			assert.equal(mocks.tui.renders, 3, "changed context usage renders");
+		} finally {
+			footer.dispose();
+		}
+	});
 });
 
 describe("/statusline toggle", () => {

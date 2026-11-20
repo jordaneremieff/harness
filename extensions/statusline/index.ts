@@ -231,8 +231,9 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		}
 	}
 
-	function refresh(): void {
-		if (!current || !enabled) return;
+	/** Read current usage and catch the metrics up; false when no session is attached. */
+	function update(): boolean {
+		if (!current || !enabled) return false;
 		contextUsage = current.getContextUsage();
 		if (!metrics.refresh(current.sessionManager) && catchup === undefined) {
 			catchup = setImmediate(() => {
@@ -240,7 +241,11 @@ export default function registerStatusline(pi: ExtensionAPI) {
 				refresh();
 			});
 		}
-		requestRender();
+		return true;
+	}
+
+	function refresh(): void {
+		if (update()) requestRender();
 	}
 
 	const stopTick = () => {
@@ -269,12 +274,24 @@ export default function registerStatusline(pi: ExtensionAPI) {
 			stopTick();
 			requestRender = () => tui.requestRender();
 			readStatuses = () => footerData.getExtensionStatuses();
-			tick = setInterval(refresh, TICK_MS);
-			tick.unref?.();
 			let layout: Line2Layout | undefined;
 			let spans: Line1Spans | undefined;
 			let renderedWidth = -1;
+			let renderedLine1: string | undefined;
 			const session = () => current ?? ctx;
+			// The tick advances the duration and catches usage up between events. A render recomputes the
+			// lines of every component in the session view, so the tick requests one only when line 1
+			// would show different text; line 2 changes arrive with branch and status events that render
+			// on their own.
+			tick = setInterval(() => {
+				if (!update() || composerPresent) return;
+				const next =
+					renderedWidth < 0
+						? undefined
+						: buildLine1(session(), fg, sep, renderedWidth, attachedAt, metrics.value, contextUsage).line;
+				if (next === undefined || next !== renderedLine1) requestRender();
+			}, TICK_MS);
+			tick.unref?.();
 			return {
 				dispose() {
 					unsub();
@@ -292,6 +309,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 					renderedWidth = width;
 					layout = buildLine2(session(), footerData, fg, sep, width);
 					const first = buildLine1(session(), fg, sep, width, attachedAt, metrics.value, contextUsage);
+					renderedLine1 = first.line;
 					spans = first.spans;
 					return [truncateToWidth(first.line, width), layout.line];
 				},
