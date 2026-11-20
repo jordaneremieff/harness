@@ -7,61 +7,57 @@ import { BLOCK_VERSION, configBlock, findConfigBlock, withConfigBlock, withoutCo
 import { rexCommand, type SetupDeps } from "./setup.ts";
 
 const REGISTRY = "/agent/rex/palette.json";
-const askActionBlock = () => configBlock(REGISTRY);
-const findAskBlock = (source: string) => findConfigBlock(source, REGISTRY);
-const withAskAction = (source: string) => withConfigBlock(source, REGISTRY);
-const withoutAskAction = (source: string) => withoutConfigBlock(source, REGISTRY);
+const piBlock = () => configBlock(REGISTRY);
+const findBlock = (source: string) => findConfigBlock(source, REGISTRY);
+const withBlock = (source: string) => withConfigBlock(source, REGISTRY);
+const withoutBlock = (source: string) => withoutConfigBlock(source, REGISTRY);
 import type { CliCall, CliResult, RexTransport } from "./transport.ts";
 
 const operatorConfig = '-- my bindings\nrex.bind("cmd+x", "pi_quit")\n';
 
 test("setup adds and removes only its own exact block, leaving every other byte as it was", () => {
-	assert.equal(findAskBlock(operatorConfig), undefined);
-	const added = withAskAction(operatorConfig);
-	assert.equal(added, `${operatorConfig}${askActionBlock()}\n`);
-	assert.match(added, /-- pi-harness: pi actions v3 begin/);
+	assert.equal(findBlock(operatorConfig), undefined);
+	const added = withBlock(operatorConfig);
+	assert.equal(added, `${operatorConfig}${piBlock()}\n`);
+	assert.match(added, /-- pi-harness: pi actions v4 begin/);
 	assert.deepEqual(
 		[...added.matchAll(/^ {2}name = "([^"]+)"/gm)].map((match) => match[1]),
-		["pi_ask", "pi_command"],
+		["pi_command"],
 	);
-	assert.ok(findAskBlock(added));
-	const otherVersion = added.replace(`pi actions v${BLOCK_VERSION} begin`, "pi actions v2 begin");
-	assert.throws(() => withAskAction(otherVersion), /differs from the version 3 block/);
-	assert.throws(() => withoutAskAction(otherVersion), /differs from the version 3 block/);
-	assert.equal(withAskAction(added), added, "a configuration that holds the block stays as it is");
-	assert.equal(withoutAskAction(added), operatorConfig, "removal restores the text before setup");
+	assert.ok(findBlock(added));
+	const otherVersion = added.replace(`pi actions v${BLOCK_VERSION} begin`, "pi actions v3 begin");
+	assert.throws(() => withBlock(otherVersion), /differs from the version 4 block/);
+	assert.throws(() => withoutBlock(otherVersion), /differs from the version 4 block/);
+	assert.equal(withBlock(added), added, "a configuration that holds the block stays as it is");
+	assert.equal(withoutBlock(added), operatorConfig, "removal restores the text before setup");
 	const spaced = "x = 1\n\n\n";
-	assert.equal(withoutAskAction(withAskAction(spaced)), spaced, "blank lines of the operator stay");
-	assert.equal(withAskAction(""), `${askActionBlock()}\n`);
+	assert.equal(withoutBlock(withBlock(spaced)), spaced, "blank lines of the operator stay");
+	assert.equal(withBlock(""), `${piBlock()}\n`);
 	assert.equal(
-		withAskAction("x = 1"),
-		`x = 1\n${askActionBlock()}\n`,
+		withBlock("x = 1"),
+		`x = 1\n${piBlock()}\n`,
 		"a last line without a line break gets one before the block",
 	);
-	const crlf = `a = 1\r\n${askActionBlock().replaceAll("\n", "\r\n")}\r\nb = 2\r\n`;
-	assert.equal(withoutAskAction(crlf), "a = 1\r\nb = 2\r\n", "a block saved with CRLF line ends is removed whole");
-	assert.equal(
-		withoutAskAction(`${askActionBlock()}`),
-		"",
-		"a block at the end without a final line break is removed whole",
-	);
+	const crlf = `a = 1\r\n${piBlock().replaceAll("\n", "\r\n")}\r\nb = 2\r\n`;
+	assert.equal(withoutBlock(crlf), "a = 1\r\nb = 2\r\n", "a block saved with CRLF line ends is removed whole");
+	assert.equal(withoutBlock(`${piBlock()}`), "", "a block at the end without a final line break is removed whole");
 	for (const broken of [
 		`-- pi-harness: pi actions v${BLOCK_VERSION} begin\nno end\n`,
 		"no begin\n-- pi-harness: pi actions end\n",
 		`-- pi-harness: pi actions end\n-- pi-harness: pi actions v${BLOCK_VERSION} begin\n`,
-		`${askActionBlock()}\n${askActionBlock()}\n`,
+		`${piBlock()}\n${piBlock()}\n`,
 	])
-		assert.throws(() => withAskAction(broken), /partial or repeated/, broken);
+		assert.throws(() => withBlock(broken), /partial or repeated/, broken);
 	const inString = `local note = [[\n-- pi-harness: pi actions v${BLOCK_VERSION} begin\nkeep this text\n-- pi-harness: pi actions end\n]]\n`;
 	assert.throws(
-		() => withAskAction(inString),
+		() => withBlock(inString),
 		new RegExp(`differs from the version ${BLOCK_VERSION} block`),
 		"markers around other text are never taken for the block",
 	);
-	assert.throws(() => withoutAskAction(inString), /differs/);
-	const edited = askActionBlock().replace("Pi: Agent Question", "My question");
+	assert.throws(() => withoutBlock(inString), /differs/);
+	const edited = piBlock().replace("Pi: Run Command", "My command");
 	assert.throws(
-		() => withoutAskAction(`${edited}\n`),
+		() => withoutBlock(`${edited}\n`),
 		/Remove the block by hand/,
 		"a changed block is left for the operator",
 	);
@@ -107,7 +103,7 @@ class SetupTransport implements RexTransport {
 		}
 		if (first === "config" && second === "reload") {
 			const text = await readFile(this.path, "utf8");
-			this.loaded = text.includes('name = "pi_ask"');
+			this.loaded = text.includes('name = "pi_command"');
 			this.registry = /registry = "([^"]+)"/.exec(text)?.[1];
 			return ok("generation: 4\n");
 		}
@@ -116,14 +112,13 @@ class SetupTransport implements RexTransport {
 			return ok(
 				JSON.stringify({
 					actions: this.loaded
-						? ["pi_ask", "pi_command"].map((name) => ({
-								name,
-								kind: "lua",
-								description:
-									name === "pi_command"
-										? `Runs one Pi command by its ID, for a key binding. Pi records its commands in ${this.registry}.`
-										: "",
-							}))
+						? [
+								{
+									name: "pi_command",
+									kind: "lua",
+									description: `Runs one Pi command by its ID, for a key binding. Pi records its commands in ${this.registry}.`,
+								},
+							]
 						: [],
 				}),
 			);
@@ -165,8 +160,8 @@ test("setup shows the block, checks the new text before it replaces the file, ke
 	const f = await fixture(operatorConfig);
 	try {
 		await rexCommand("setup", f.deps);
-		assert.match(f.asked[0] ?? "", /name = "pi_ask"/, "the confirmation shows the complete block");
-		assert.equal(await readFile(f.path, "utf8"), withAskAction(operatorConfig));
+		assert.match(f.asked[0] ?? "", /name = "pi_command"/, "the confirmation shows the complete block");
+		assert.equal(await readFile(f.path, "utf8"), withBlock(operatorConfig));
 		assert.equal(await readFile(`${f.path}.before-pi-setup`, "utf8"), operatorConfig);
 		assert.equal((await stat(f.path)).mode & 0o777, 0o600, "the file keeps its mode");
 		assert.deepEqual(
@@ -240,13 +235,13 @@ test("setup creates a missing configuration, and status names what an old server
 		);
 		assert.ok(
 			f.lines.some((line) =>
-				/^warning: Rex server 0\.1\.0-test, API revision 13: questions and Pi commands need API revision 17/.test(line),
+				/^warning: Rex server 0\.1\.0-test, API revision 13: Pi commands need API revision 17/.test(line),
 			),
 			f.lines.join("\n"),
 		);
 		assert.ok(f.lines.some((line) => /^warning: No Pi command is recorded for the palette yet/.test(line)));
 		await rexCommand("setup", f.deps);
-		assert.equal(await readFile(f.path, "utf8"), `${askActionBlock()}\n`);
+		assert.equal(await readFile(f.path, "utf8"), `${piBlock()}\n`);
 		assert.deepEqual(await readdir(f.dir), ["init.lua"], "no backup of a file that did not exist");
 		f.lines.length = 0;
 		await rexCommand("unknown", f.deps);
@@ -266,7 +261,7 @@ test("setup keeps a linked configuration linked and never overwrites an edit mad
 		await symlink(real, f.path);
 		await rexCommand("setup", f.deps);
 		assert.ok((await lstat(f.path)).isSymbolicLink(), "the configured path is still a link");
-		assert.equal(await readFile(real, "utf8"), withAskAction(operatorConfig), "the linked file holds the block");
+		assert.equal(await readFile(real, "utf8"), withBlock(operatorConfig), "the linked file holds the block");
 		assert.equal((await stat(real)).mode & 0o777, 0o640);
 		assert.equal(await readFile(`${f.path}.before-pi-setup`, "utf8"), operatorConfig);
 		assert.deepEqual(
@@ -306,10 +301,10 @@ test("setup keeps a linked configuration linked and never overwrites an edit mad
 });
 
 test("a file that holds the block while the server has not loaded it reloads only after confirmation", async () => {
-	const f = await fixture(withAskAction(operatorConfig), { confirm: false });
+	const f = await fixture(withBlock(operatorConfig), { confirm: false });
 	try {
 		await rexCommand("setup", f.deps);
-		assert.match(f.asked[0] ?? "", /has not loaded pi_ask, pi_command/);
+		assert.match(f.asked[0] ?? "", /has not loaded pi_command/);
 		assert.match(f.asked[0] ?? "", /^Reload the Rex configuration\?\n.*including any other change in it/s);
 		assert.equal(
 			f.transport.calls.some((call) => call[1] === "reload"),
@@ -344,7 +339,7 @@ test("setup refuses files that a replacement would change in other ways", async 
 });
 
 test("status names the recorded palette commands and the actions that the server has not loaded", async () => {
-	const f = await fixture(withAskAction(operatorConfig));
+	const f = await fixture(withBlock(operatorConfig));
 	try {
 		const registry = join(f.dir, "palette.json");
 		await writeFile(
@@ -380,10 +375,10 @@ test("status names the recorded palette commands and the actions that the server
 
 test("an earlier Pi block is refused, and a loaded block of another agent directory counts as not loaded", async () => {
 	const earlier = '-- pi-harness: pi_ask v1 begin\nrex.action{ name = "pi_ask" }\n-- pi-harness: pi_ask end\n';
-	assert.throws(() => withAskAction(`${operatorConfig}${earlier}`), /earlier Pi block/);
-	assert.throws(() => withoutAskAction(`${operatorConfig}${earlier}`), /earlier Pi block/);
-	assert.throws(() => withAskAction(`${withAskAction(operatorConfig)}${earlier}`), /earlier Pi block/);
-	const f = await fixture(withAskAction(operatorConfig));
+	assert.throws(() => withBlock(`${operatorConfig}${earlier}`), /earlier Pi block/);
+	assert.throws(() => withoutBlock(`${operatorConfig}${earlier}`), /earlier Pi block/);
+	assert.throws(() => withBlock(`${withBlock(operatorConfig)}${earlier}`), /earlier Pi block/);
+	const f = await fixture(withBlock(operatorConfig));
 	try {
 		f.transport.loaded = true;
 		f.transport.registry = "/another/agent/rex/palette.json";

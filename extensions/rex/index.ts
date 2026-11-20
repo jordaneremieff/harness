@@ -1,14 +1,11 @@
-import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	getAgentDir,
 	type ExtensionAPI,
-	type ExtensionContext,
 	type ExtensionToolContext,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Schema, Static } from "@earendil-works/pi-schema";
-import { askInDialog, askMeaning, askTrouble, askWaitMs, ASK_UNREACHED, type AskRequest } from "./ask.ts";
 import {
 	boundResult,
 	deadlineResult,
@@ -19,7 +16,7 @@ import {
 	type RexRequest,
 	type RexResult,
 } from "./core.ts";
-import type { RexBudget } from "./deadline.ts";
+import { createRexBudget, type RexBudget } from "./deadline.ts";
 import {
 	liveCalls,
 	ordinaryOwner,
@@ -27,7 +24,6 @@ import {
 	ordinaryStatusStore,
 	resultChannels,
 	serialiseOwners,
-	toolBudget,
 	type RexAdapterOptions,
 } from "./config.ts";
 import { rexContribution } from "./durable.ts";
@@ -50,7 +46,7 @@ import {
 	type ConversationKeeperOptions,
 	type FloatedPane,
 } from "./keep-visible.ts";
-import { createSessionPaneRegistrar, launchPane, type SessionPaneRegistrarOptions } from "./session-pane.ts";
+import { createSessionPaneRegistrar, type SessionPaneRegistrarOptions } from "./session-pane.ts";
 import { registerRexCommand } from "./setup.ts";
 import { createPaletteCollector, paletteRegistryPath } from "./palette.ts";
 import { paneStackingCommand } from "./pane-stacking.ts";
@@ -75,72 +71,6 @@ function createdFloats(tool: string, request: unknown, result: unknown): Floated
 	);
 }
 
-/** The person who answers knows a session by its name, or else by its working directory. */
-function askerName(pi: Pick<ExtensionAPI, "getSessionName">, ctx: Pick<ExtensionContext, "cwd">): string {
-	return pi.getSessionName()?.trim() || basename(ctx.cwd);
-}
-
-/**
- * An interactive session asks in its own dialog for the rest of the wait if Rex could not show the question or the
- * operator chose to see the session first. The result keeps what Rex reported.
- */
-async function askHere(
-	request: AskRequest,
-	rex: RexResult,
-	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
-	budget: RexBudget,
-): Promise<RexResult> {
-	const showFirst = rex.outcome === "show";
-	if (!showFirst && (!ASK_UNREACHED.has(rex.outcome) || !ctx.hasUI)) return rex;
-	const wait = askWaitMs(request.timeoutMs) - budget.elapsed();
-	const stop = budget.stopReason();
-	if (!showFirst && (wait < 1000 || budget.signal.aborted)) return rex;
-	const settled =
-		stop || wait < 1000
-			? { outcome: stop ?? "timeout", answer: undefined, detail: undefined }
-			: await askInDialog(request, request.question, ctx.ui, budget.signal, wait);
-	const answered = settled.outcome === "answered";
-	return {
-		ok: answered,
-		outcome: settled.outcome,
-		...(rex.target ? { target: rex.target } : {}),
-		data: {
-			question: request.question,
-			channel: "dialog",
-			...(settled.answer ? { answer: settled.answer } : {}),
-			rex: { outcome: rex.outcome, ...(rex.error ? { reason: rex.error } : {}) },
-			meaning: askMeaning(settled.outcome, "dialog", showFirst),
-		},
-		...(answered ? {} : { error: askTrouble(settled.outcome, settled.detail) }),
-		effects: { state: "none" },
-		coverage: showFirst
-			? rex.coverage
-			: {
-					bounded: true,
-					note: `Rex could not show the question (${rex.outcome.replaceAll("_", " ")}), so it opened as a dialog in this session.`,
-				},
-	};
-}
-
-/** A message from the operator ends a pending question: Rex closes it in every app and the message follows. */
-function superseded(result: RexResult): RexResult {
-	const data = result.data !== null && typeof result.data === "object" ? (result.data as Record<string, unknown>) : {};
-	const rex = data.rex as { outcome?: unknown } | undefined;
-	const showFirst = rex?.outcome === "show";
-	return {
-		...result,
-		ok: false,
-		outcome: "superseded",
-		data: {
-			question: data.question,
-			channel: data.channel,
-			...(showFirst ? { rex } : {}),
-			meaning: askMeaning("superseded", "rex", showFirst),
-		},
-		error: askTrouble("superseded"),
-	};
-}
-
 export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {}): void {
 	const agentDir = getAgentDir();
 	const stopPublisher = publishSettings(pi.events, { agentDir });
@@ -163,8 +93,6 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 	const serialise = serialiseOwners();
 	const active = new Set<RexExecutor>();
 	const invocations = liveCalls();
-	// Questions that wait for the operator; a message from the operator ends them.
-	const questions = new Set<AbortController>();
 	let lifetime = new AbortController();
 	const stopCalls = async () => {
 		lifetime.abort();
@@ -177,14 +105,13 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 	const tools: ToolDefinition<Schema>[] = [];
 	// One record set: the registration spreads the same renderer records the pure display module returns.
 	const displayRecords = new Map(toolDisplay().tools.map((record) => [record.name, record]));
-	/** One operation on its core; a question can continue in the session's own dialog. */
+	/** One operation on its core. */
 	const perform = async (
 		name: RexToolName,
 		request: RexRequest | StatusRequest,
 		core: RexExecutor,
 		context: RexCallContext,
 		ctx: ExtensionToolContext,
-		question: AbortController | undefined,
 	): Promise<RexResult> => {
 		if (name === "rex_status") {
 			const budget = context.budget;
@@ -202,10 +129,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 				}),
 			);
 		}
-		const result = await core.execute(request as RexRequest, context);
-		return question && context.budget && (!question.signal.aborted || result.outcome === "show")
-			? askHere(request as AskRequest, result, ctx, context.budget)
-			: result;
+		return core.execute(request as RexRequest, context);
 	};
 	/** A fresh core for one call, with its live-call identity held until the call's cleanup. */
 	const withCore = async (
@@ -234,7 +158,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 			}
 		}
 	};
-	/** A validated call within one budget. A question also ends when the operator sends a message. */
+	/** A validated call within one budget. */
 	const run = async (
 		name: RexToolName,
 		request: RexRequest | StatusRequest,
@@ -242,36 +166,18 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 		signal: AbortSignal | undefined,
 		ctx: ExtensionToolContext,
 	): Promise<RexResult> => {
-		const question = name === "rex_ask" ? new AbortController() : undefined;
-		const pane = question ? launchPane(process.env) : undefined;
-		const stops = [lifetime.signal, question?.signal, signal].filter((stop): stop is AbortSignal => stop !== undefined);
-		const budget = toolBudget(name, request.timeoutMs, settings.maxWaitMs, AbortSignal.any(stops));
-		if (question) questions.add(question);
+		const budget = createRexBudget(
+			request.timeoutMs,
+			settings.maxWaitMs,
+			AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]),
+		);
 		try {
 			const result = await withCore(callId, ctx, budget, (core, ownerId) =>
-				perform(
-					name,
-					request,
-					core,
-					{
-						ownerId,
-						callId,
-						cwd: ctx.cwd,
-						signal: budget.signal,
-						budget,
-						...(question ? { asker: askerName(pi, ctx) } : {}),
-						...(pane ? { askPane: { ...pane, hasUI: ctx.hasUI } } : {}),
-					},
-					ctx,
-					question,
-				),
+				perform(name, request, core, { ownerId, callId, cwd: ctx.cwd, signal: budget.signal, budget }, ctx),
 			);
 			keeper.floated(createdFloats(name, request, result));
-			const settled = deadlineResult(result, budget, request.op);
-			// An answer that arrived first stands; the operator's message then follows it.
-			return question?.signal.aborted && settled.outcome !== "answered" ? superseded(settled) : settled;
+			return deadlineResult(result, budget, request.op);
 		} finally {
-			if (question) questions.delete(question);
 			budget.dispose();
 		}
 	};
@@ -321,8 +227,6 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 		tabLabels.refresh(ctx);
 	});
 	pi.on("input", (event, ctx) => {
-		// The operator's own message answers a waiting question better than the question does.
-		if (event.source !== "extension") for (const question of questions) question.abort();
 		if (event.source === "interactive") tabLabels.input(ctx);
 	});
 	pi.on("session_shutdown", async () => {

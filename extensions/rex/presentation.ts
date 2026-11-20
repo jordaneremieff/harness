@@ -46,7 +46,6 @@ export function createRexToolDisplay(name: string) {
 				if (target) lines.push(line(target, "muted"));
 			}
 			lines.push(...callBody(args, request, context.expanded));
-			if (name === "rex_ask" && context.isPartial) lines.push(line("Waiting for the operator's answer.", "muted"));
 			return card(lines, theme);
 		},
 		renderResult(
@@ -94,21 +93,6 @@ function callHeader(name: string, request: Record<string, unknown>): Line[] {
 function callBody(args: unknown, request: Record<string, unknown>, expanded: boolean): Line[] {
 	if (expanded) return [line(""), ...jsonLines(args)];
 	const lines: Line[] = [];
-	// The matter of a question, in full: the operator reads it here before answering.
-	if (typeof request.about === "string" && request.about.trim()) {
-		for (const text of request.about.trim().split(/\r?\n/)) lines.push(line(text, "toolOutput"));
-		lines.push(line(""));
-	}
-	if (typeof request.question === "string") lines.push(line(request.question, "toolTitle"));
-	const choices = choiceTitles(request);
-	if (choices.length)
-		lines.push(
-			line(
-				`${request.multiple ? "choose any of" : "choose"} ${choices.join(" · ")}${request.allowOther ? " · or type an answer" : ""}`,
-				"muted",
-				true,
-			),
-		);
 	if (typeof request.text === "string") lines.push(line(JSON.stringify(request.text), "toolOutput", true));
 	if (Array.isArray(request.keys))
 		lines.push(line(`keys ${request.keys.filter((key) => typeof key === "string").join(" · ")}`, "muted", true));
@@ -137,7 +121,6 @@ function canonicalLines(
 	const request = object(args);
 	return [
 		leadLine(name, request, value, data, options.isPartial),
-		...answerLines(name, request, data),
 		...statusSummaryLines(name, data),
 		...terminalQualifications(name, request, value),
 		...authorityQualifications(name, request, value),
@@ -209,55 +192,11 @@ function subjectKind(name: string, request: Record<string, unknown>, target: unk
 		rex_owned: () => OWNED_SUBJECTS[op],
 		rex_status: () => STATUS_SUBJECTS[op] ?? "status",
 		rex_environment: () => (op === "resolve" ? `${kind ?? "target"} resolution` : "environment"),
-		rex_ask: () => "question",
 	};
 	const named = byTool[name]?.();
 	if (named) return named;
 	const t = object(target);
 	return TARGET_KINDS.find(([id, alias]) => t[id] ?? t[alias])?.[2];
-}
-
-/** The titles of a question's choices, as the operator saw them. */
-/** The titles the operator saw, with the asking agent's recommendation marked. */
-function choiceTitles(request: Record<string, unknown>): string[] {
-	return Array.isArray(request.choices)
-		? request.choices
-				.map((value) => {
-					const choice = object(value);
-					const title = string(choice.title) ?? string(choice.id) ?? "";
-					return title && choice.recommended === true ? `${title} (recommended)` : title;
-				})
-				.filter(Boolean)
-		: [];
-}
-
-/** A question's answer by the titles the operator chose, and where it was answered. */
-function answerLines(name: string, request: Record<string, unknown>, data: Record<string, unknown>): Line[] {
-	if (name !== "rex_ask") return [];
-	const where = data.channel === "dialog" ? "in this session's dialog" : "in Rex";
-	const showFirst = object(data.rex).outcome === "show";
-	const lines = showFirst ? [line("You chose to see this session first.", "muted")] : [];
-	const answer = object(data.answer);
-	const titled = (id: unknown) => {
-		const found = Array.isArray(request.choices)
-			? request.choices.map(object).find((choice) => choice.id === id)
-			: undefined;
-		return string(found?.title) ?? String(id);
-	};
-	if (typeof answer.text === "string")
-		lines.push(line(`Answer ${where}: ${JSON.stringify(answer.text)}`, "toolOutput", true));
-	else if (answer.choice !== undefined)
-		lines.push(line(`Answer ${where}: ${titled(answer.choice)}`, "toolOutput", true));
-	else if (Array.isArray(answer.choices))
-		lines.push(
-			line(
-				`Answer ${where}: ${answer.choices.length ? answer.choices.map(titled).join(", ") : "none chosen"}`,
-				"toolOutput",
-				true,
-			),
-		);
-	else if (data.channel === "dialog" && !showFirst) lines.push(line("Asked in this session's dialog.", "muted"));
-	return lines;
 }
 
 /** Program states reported anywhere inside the status payload, bounded in depth and count. */
@@ -334,7 +273,6 @@ function authorityQualifications(
 	if (name === "rex_status") lines.push(line("Reported status is not permission or task acceptance.", "muted"));
 	if (name === "rex_native" && ["api", "lua", "action"].includes(String(request.kind)) && value.ok)
 		lines.push(line("CLI success is not inner application success.", "muted"));
-	if (name === "rex_ask" && value.ok) lines.push(line("The answer covers this question only.", "muted"));
 	return lines;
 }
 

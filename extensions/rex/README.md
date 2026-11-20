@@ -1,12 +1,11 @@
 # Rex
 
 Operate interactive applications and persistent terminal work through the installed
-Rex CLI, and ask the operator questions in the Rex apps. Ordinary Pi and native Durable
-expose the same tools and domain results.
+Rex CLI. Ordinary Pi and native Durable expose the same tools and domain results.
 Rex owns terminals and their programs. This extension owns exact target resolution,
 bounded observations, caller-specific ownership claims and uncertain-effect records.
 It does not replace Bash, Jobs, Agent, Policy or Rex's skill, and it changes the Rex
-configuration only through [`/rex setup`](#set-up-questions-in-rex).
+configuration only through [`/rex setup`](#set-up-palette-commands-in-rex).
 
 ## Tools
 
@@ -18,7 +17,6 @@ configuration only through [`/rex setup`](#set-up-questions-in-rex).
 | `rex_native` | `native` | Retrieve the installed method catalogue or one method's schema; call an API, execute Lua or invoke an existing action. |
 | `rex_owned` | `owned`, `observe`, `reconcile`, `cleanup` | Read stored claims or current child evidence and output for selected claims; reconcile uncertainty, close only recorded owned blocks, or forget closed records. |
 | `rex_status` | `snapshot`, `bind`, `unbind` | Inspect cooperating programs' reports beside actual current host activity. Optionally retain one verified inspection target per caller. |
-| `rex_ask` | `ask` | Put one short question to the operator in the command palette of every connected Rex app and return the first answer. See [Ask the operator](#ask-the-operator). |
 
 Each request includes a visible `op`. Native execution also exposes `kind`,
 `method`, `args`, `code` and `action` in the tool arguments. These are the real
@@ -107,10 +105,6 @@ The expansion hint uses your configured Pi key, read through the `keyText`
 function that the host passes in the tool render context. An unbound key, or a
 render context without keybinding hints, produces no hint and no invented mouse
 instruction.
-
-A question card shows the question and its choices, and says that it waits for the operator
-while the call runs. Its result leads with the outcome, then the answer by the titles that the
-operator saw and where the operator answered: in Rex or in the session's own dialog.
 
 Child-exit wait cards show the direct child's exit code and the last two non-trailing-blank
 output lines. Capture cards also preview the end of their bounded output, not its beginning.
@@ -350,113 +344,12 @@ error names the explicit remedy: select a resource, or request `source: "focus"`
 operator's current focus. Inheritance never falls back to focus by itself. A standing agent keeps
 the ordinary session that created it, even when another session sends it work.
 
-## Ask the operator
-
-`rex_ask` puts one short question to the operator through Rex's prompt API (`rex.ui.input` and
-`rex.ui.pick`). Rex opens the question in the command palette of every connected Rex app, on the
-Mac and on other devices, and the first answer ends it in all of them. The call waits for that
-answer, so an agent that needs a decision continues in the same run instead of ending its turn.
-
-An agent asks only for a decision that only the operator can make. A worker asks its requester
-first. The agent writes the matter in `about`: what it found, the choices and what each changes,
-and its recommendation. The question's card in the asking session shows `about` in full above the
-question, so the operator can read the matter there, for example after **Show me first**; Rex
-shows only the question. A request without `about` fails validation, so no question reaches the
-operator without its matter. Rex shows the title on one line of
-about 50 characters and cuts off the rest, so the title starts with the question and the name of
-the asker follows it, after ` · `, only when the whole title fits in 50 characters. The asker is the asking session's Rex
-tab label. If the label is missing, unavailable or the Rex default, the title uses the Pi session
-name, then the last part of the working directory. A native conversation uses the last part of its
-working directory. Rex shows the choices in the given order, so the choice that changes nothing
-comes first.
-
-The palette shows each choice title, subtitle and placeholder on one line too, so every visible
-field has a limit that fits its line: 45 characters for the question, 40 for a choice title and
-for `confirm`, 48 for a subtitle and for `placeholder`, and 16 for `detail`, which shares the row
-with the title. A choice without a title shows its `id`, so that `id` holds at most 40 characters.
-A longer field fails validation, and the agent writes a shorter one; the complete matter belongs
-in the chat or the pane that the agent shows first.
-
-An ordinary interactive session in a Rex pane gets a final **Show me first** row on single-choice
-questions, including those with `allowOther`. It is absent on text and multiple-choice questions
-and in native conversations. If a choice uses the reserved ID `pi:show-me-first`, Rex shows that
-choice as given and does not add the row. The row's subtitle names the tab, cut to 24 characters.
-Only the operator's explicit selection of **Show me first**
-moves focus to the asking pane. The question closes in Rex and continues in that Pi session's own
-dialog for the rest of the same wait. The dialog still opens if Rex cannot focus the pane. If less
-than a second remains, the result is `timeout`. The row is not an answer; `data.rex.outcome: "show"`
-records the move to the dialog.
-
-| Field | Meaning |
-|---|---|
-| `about` | The matter in plain words, at most 1,200 characters. Required. The card shows it; Rex does not. |
-| `question` | The question. Required. |
-| `choices` | Answers to choose from, each with an `id` and optional `title`, `subtitle`, `detail`, `selected` and `recommended`. Without choices the operator types an answer. |
-| `recommended` | Marks the asking agent's recommendation on one choice of a single-choice question. Rex shows `Recommended` at the far end of its row, the session's dialog adds it to the choice's label, and the card marks it. A recommended choice takes no `detail`. |
-| `multiple` | Choose any number of choices. `selected` starts a choice ticked. |
-| `allowOther` | Type an answer instead of choosing. Not with `multiple`. |
-| `placeholder`, `value`, `confirm` | The hint of the empty field, the text the field starts with, and the label of the row that submits. |
-| `timeoutMs` | How long to wait for an answer: 10 seconds to one hour, five minutes by default. |
-
-A request that fails validation, including a question without visible text, returns
-`invalid_request` and asks nobody. Otherwise an answer returns `outcome: "answered"` and `ok: true`
-with `data.answer`: `{ "text" }` for a typed answer, `{ "choice" }` with the chosen ID, or
-`{ "choices" }` with the chosen IDs in the order of the choices, possibly none. `data.channel`
-names where the operator answered. Every other outcome means that no answer arrived. Its result
-tells the agent not to act on what it asked and to put no further questions to the operator in the
-same run, so a person who closes a question or is away is not asked one question after another:
-
-| Outcome | Meaning |
-|---|---|
-| `declined` | The person closed the question without answering. |
-| `timeout` | Nobody answered within the wait, or other questions kept every app busy for all of it. |
-| `no_client` | No Rex app is connected to the server. |
-| `unsupported` | No connected app can show questions, or the server's API revision is below 17. |
-| `not_configured` | The server has not loaded the `pi_ask` action. |
-| `unavailable` | Rex could not be reached before the question was asked: no server, or the CLI failed. |
-| `superseded` | The operator typed into the session while the question waited. |
-| `cancelled` | The call ended before an answer. |
-| `failed` | Rex reported another failure; `error` carries its text. |
-
-When every app already shows another question, this one waits its turn: the extension asks again
-every two seconds, for the rest of the wait, so questions from several agents queue instead of
-failing.
-
-The answer comes from a person who uses a connected Rex app or from the Pi dialog, and it answers this question only.
-It approves an act only when the question asked about that act, the complete act was shown first,
-and the answer chose that act; any other answer approves nothing, and no answer grants anything
-beyond that act. Rex returns the answer and records no approval of its own: a policy approval of
-one exact action still goes through the policy extension's approval step, which records the
-answer as the operator's decision. Rex sends the question to every app connected to the server,
-so anyone with access to the server can answer it. A question creates no Rex resource, so
-the call keeps no ownership record. Its allowance is its own wait plus 30 seconds for the calls
-around it, not `rex.maxWaitMs`, because a person answers it. When the call ends without an answer,
-for any reason, the extension stops the Rex action, and Rex closes the question in every app. An
-answer that Rex had already returned when the call was stopped still counts as the answer.
-
-In ordinary Pi, a message that the operator types or sends to the session while a question waits
-ends the question as `superseded`; when Pi admits the message, it follows the result. A slash
-command does not end the question. Escape in the editor stops the agent's run and with it the
-question (`cancelled`).
-
-When Rex cannot put the question to anybody (`not_configured`, `unsupported`, `no_client` or
-`unavailable`), an interactive session asks it in its own dialog for the rest of the wait, if
-at least a second remains, and the result keeps Rex's outcome in `data.rex`. The dialog offers the
-same answers in Pi's own controls. It has no multiple choice, so each pick ticks or unticks a
-choice until Done. It has no prefilled field, so it offers a proposed `value` as a choice beside
-typing another answer, and a typed answer instead of a choice starts empty. It shows no `confirm`
-label, and labels that repeat get the choice ID added. Escape in the dialog closes the question as
-`declined`. A native conversation has no dialog and receives Rex's outcome. Input that reaches it
-while it waits, such as a steer, is placed after the question ends; the operator can close the
-question in any app to end the wait sooner.
-
-### Set up questions in Rex
+## Set up palette commands in Rex
 
 Rex lets only an action that the server configuration defines show a question; a Lua script that
-`rex do` runs, including a `rex_native` Lua call, receives `unsupported`. The question therefore
-travels through a small action, `pi_ask`, that forwards it to `rex.ui` unchanged and returns the
-answer or Rex's reason for none. Run by hand from the palette, it does nothing. The same
-configuration block holds the runtime of [palette commands](#palette-commands).
+`rex do` runs, including a `rex_native` Lua call, receives `unsupported`. The runtime of
+[palette commands](#palette-commands), which asks with `rex.ui`, therefore lives in a block of
+the Rex configuration that `/rex setup` writes.
 
 - `/rex setup` shows the block and asks for confirmation. It then adds the block, between two
   marker lines, at the end of the configuration file that `rex config check` names (`REX_CONFIG`,
@@ -471,7 +364,7 @@ configuration block holds the runtime of [palette commands](#palette-commands).
   a file with several hard links or a file of another kind is refused. Pi keeps the previous file
   beside the configured path, with `.before-pi-setup` added to its name, and runs
   `rex config reload`.
-- Setup and remove recognise only the exact version 3 block for this agent directory. They
+- Setup and remove recognise only the exact version 4 block for this agent directory. They
   refuse any other block, including a partial or repeated block, and leave the file untouched.
   If the file holds a block of another version, remove that block by hand before you run
   `/rex setup`.
@@ -483,7 +376,7 @@ configuration block holds the runtime of [palette commands](#palette-commands).
   Rex apps.
 - `/rex remove` deletes the block the same way, with confirmation.
 
-Questions and palette commands need API revision 17 or later on the server (Rex
+Palette commands need API revision 17 or later on the server (Rex
 0.1.0-preview.21 has revision 18) and Rex apps as new as the server; an older app reports
 `unsupported`. After a Rex update, the server runs the new version only once it restarts.
 
@@ -704,8 +597,7 @@ applies its own time limit to an action; the time that a person takes to answer 
 question does not count toward it. A configured action that asks the operator a
 question therefore waits for the answer within the call's deadline, and when the
 deadline ends Rex stops the action and closes its question. A Lua script cannot
-ask: `rex.ui` answers it with `unsupported`. Use `rex_ask` for a question of your
-own.
+ask: `rex.ui` answers it with `unsupported`.
 
 ### Verified read-only methods
 
@@ -1064,7 +956,7 @@ The helper is separate from tool configuration and caller ownership records.
 
 Load `extensions/rex/index.ts` through Pi's normal extension configuration.
 The factory registers ordinary tools and the `/rex` command of
-[Set up questions in Rex](#set-up-questions-in-rex), and synchronously emits its native
+[Set up palette commands in Rex](#set-up-palette-commands-in-rex), and synchronously emits its native
 `durable:contribution`. Native hosts install that contribution without an ordinary
 shadow session. Active worktree routing belongs to the normal
 [worktree procedure](../../docs/conventions/worktrees.md).

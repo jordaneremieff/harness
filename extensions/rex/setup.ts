@@ -3,10 +3,12 @@ import { readFileSync, realpathSync, renameSync } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { ASK_ACTION, ASK_API_REVISION } from "./ask.ts";
 import { BLOCK_VERSION, configBlock, findConfigBlock, withConfigBlock, withoutConfigBlock } from "./config-block.ts";
 import { readPaletteRegistry } from "./palette.ts";
 import { CliTransport, type RexTransport } from "./transport.ts";
+
+/** The first control API revision whose apps receive prompts, which the steps of palette commands use. */
+const PROMPT_API_REVISION = 17;
 
 export interface SetupDeps {
 	transport: RexTransport;
@@ -123,25 +125,24 @@ function commandActions(deps: SetupDeps): Array<{ action: string; title: string 
 }
 
 /**
- * Actions of the block that the server has not loaded: the question action, `pi_command` and each recorded command.
- * `pi_command` names the registry that its block reads, so a loaded block of another agent directory counts as not
- * loaded.
+ * Actions of the block that the server has not loaded: `pi_command` and each recorded command. `pi_command` names the
+ * registry that its block reads, so a loaded block of another agent directory counts as not loaded.
  */
 function missingActions(deps: SetupDeps, facts: ServerFacts): string[] {
 	const stale = !facts.actions.get("pi_command")?.endsWith(`Pi records its commands in ${deps.registryPath}.`);
-	return [ASK_ACTION, "pi_command", ...commandActions(deps).map((command) => command.action)].filter(
+	return ["pi_command", ...commandActions(deps).map((command) => command.action)].filter(
 		(action) => !facts.actions.has(action) || (action === "pi_command" && stale),
 	);
 }
 
 function serverLines(deps: SetupDeps, facts: ServerFacts | undefined): Array<[string, "info" | "warning"]> {
 	if (!facts) return [["The Rex server did not answer. Start Rex, then run /rex status again.", "warning"]];
-	const ready = facts.revision >= ASK_API_REVISION;
+	const ready = facts.revision >= PROMPT_API_REVISION;
 	const commands = commandActions(deps);
 	const missing = missingActions(deps, facts);
 	return [
 		[
-			`Rex server ${facts.version}, API revision ${facts.revision}: ${ready ? "it can ask questions and run Pi commands" : `questions and Pi commands need API revision ${ASK_API_REVISION} or later; update Rex and restart its server`}.`,
+			`Rex server ${facts.version}, API revision ${facts.revision}: ${ready ? "it can run Pi commands" : `Pi commands need API revision ${PROMPT_API_REVISION} or later; update Rex and restart its server`}.`,
 			ready ? "info" : "warning",
 		],
 		[
@@ -158,7 +159,7 @@ function serverLines(deps: SetupDeps, facts: ServerFacts | undefined): Array<[st
 		],
 		[
 			facts.apps.length
-				? `Connected Rex apps: ${facts.apps.join("; ")}. Each app must be as new as the server to show questions.`
+				? `Connected Rex apps: ${facts.apps.join("; ")}. Each app must be as new as the server to show the questions of Pi commands.`
 				: "No Rex app is connected.",
 			facts.apps.length ? "info" : "warning",
 		],
@@ -244,14 +245,14 @@ const CHANGES = {
 	setup: {
 		title: "Add Pi's actions to Rex?",
 		message: (path: string, registryPath: string) =>
-			`Agents then ask you questions in the command palette of every connected Rex app, and the palette offers the commands of your Pi extensions under "Pi:". Pi writes this block to ${path}, keeps the previous file beside it, and reloads the Rex configuration:\n\n${configBlock(registryPath)}`,
+			`The Rex command palette then offers the commands of your Pi extensions under "Pi:". Pi writes this block to ${path}, keeps the previous file beside it, and reloads the Rex configuration:\n\n${configBlock(registryPath)}`,
 		done: (path: string) => `Added Pi's actions to ${path}.`,
 		unchanged: (path: string) => `${path} already holds the current Pi block.`,
 	},
 	remove: {
 		title: "Remove Pi's actions from Rex?",
 		message: (path: string) =>
-			`Pi removes its block from ${path}, keeps the previous file beside it, and reloads the Rex configuration. Agents then ask in their own sessions only, and the palette no longer offers Pi commands.`,
+			`Pi removes its block from ${path}, keeps the previous file beside it, and reloads the Rex configuration. The palette then no longer offers Pi commands.`,
 		done: (path: string) => `Removed Pi's actions from ${path}.`,
 		unchanged: (path: string) => `${path} has no Pi block.`,
 	},
@@ -263,7 +264,7 @@ const CHANGES = {
  */
 async function reloadWhenMissing(deps: SetupDeps, path: string): Promise<void> {
 	const facts = await serverFacts(deps);
-	if (!facts || facts.revision < ASK_API_REVISION) return;
+	if (!facts || facts.revision < PROMPT_API_REVISION) return;
 	const missing = missingActions(deps, facts);
 	if (missing.length === 0) return;
 	const reload = await deps.confirm(
@@ -305,8 +306,7 @@ export function registerRexCommand(
 	options: { executable: string; registryPath: string; transport?: RexTransport },
 ): void {
 	pi.registerCommand("rex", {
-		description:
-			"Set up, check or remove Pi's actions in Rex (agent questions and palette commands): /rex setup | status | remove",
+		description: "Set up, check or remove Pi's actions in Rex (palette commands): /rex setup | status | remove",
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			const transport = options.transport ?? new CliTransport(options.executable, process.env);
 			try {

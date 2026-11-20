@@ -26,13 +26,7 @@ the harness already holds the answer:
 - A request covers the means it needs. Ask first only before an act outside
   it that publishes, deletes what is not yours, uses credentials, or changes
   systems beyond this machine. When you ask, show the complete thing to
-  approve in the chat or in a pane. Then ask with `rex_ask`, which reaches
-  the operator in every Rex app. Continue only on a clear yes to the exact
-  act you showed; any other answer, no answer, or no such tool means stop.
-- When the work needs any other decision that only the operator can make,
-  ask it with `rex_ask` too, after you show the matter, instead of ending
-  your turn with a question in the chat. If no answer arrives in time, end
-  the turn with the same question in the chat.
+  approve with that message, in the chat or in a pane, then stop.
 - A decision the operator made keeps its authority when another agent passes
   it to you with its source and scope. Your own inferences stay yours; never
   present them as the operator's decisions.

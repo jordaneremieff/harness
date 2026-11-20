@@ -1,7 +1,5 @@
-import { ASK_ACTION } from "./ask.ts";
-
 /** The version of the configuration block. Setup recognises only the exact block of this version. */
-export const BLOCK_VERSION = 3;
+export const BLOCK_VERSION = 4;
 const BEGIN = /^-- pi-harness: pi actions v(\d+) begin\r?$/gm;
 const END = /^-- pi-harness: pi actions end\r?$/gm;
 const MARKER = /^-- pi-harness: .*$/gm;
@@ -149,24 +147,6 @@ function pi_harness.run(ctx, registry, entry)
 end
 
 rex.action{
-  name = "${ASK_ACTION}",
-  title = "Pi: Agent Question",
-  description = "Shows a question from a Pi agent. Pi runs this action; running it by hand does nothing.",
-  category = "Pi",
-  args = { kind = "string?", prompt = "object?" },
-  run = function(ctx, args)
-    if args.prompt == nil then return nil end
-    if rex.ui == nil then
-      return { why = "unsupported", detail = "This Rex server has no rex.ui.", version = ${BLOCK_VERSION} }
-    end
-    local ask = rex.ui.input
-    if args.kind == "pick" then ask = rex.ui.pick end
-    local answer, why, detail = ask(args.prompt)
-    return { answer = answer, why = why, detail = detail, version = ${BLOCK_VERSION} }
-  end,
-}
-
-rex.action{
   name = "pi_command",
   title = "Pi: Run Command",
   description = "Runs one Pi command by its ID, for a key binding. Pi records its commands in " .. pi_harness.registry .. ".",
@@ -201,13 +181,10 @@ function luaPath(path: string): string {
 	return `"${path}"`;
 }
 
-/**
- * The Rex configuration block that Pi's /rex setup writes. Rex lets only an action of its configuration show a
- * question, so the block holds the `pi_ask` action that `rex_ask` runs, and the runtime of palette commands.
- */
+/** The Rex configuration block that Pi's /rex setup writes: the runtime of palette commands. */
 export function configBlock(registryPath: string): string {
 	return `-- pi-harness: pi actions v${BLOCK_VERSION} begin
--- Pi commands in the Rex palette, and questions from Pi agents.
+-- Pi commands in the Rex palette.
 -- Pi's /rex setup wrote this block and /rex remove deletes it.
 local pi_harness = { registry = ${luaPath(registryPath)} }
 ${RUNTIME}

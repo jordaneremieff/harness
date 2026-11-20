@@ -9,23 +9,7 @@ import {
 } from "./ownership.ts";
 import type { OwnershipRecord, OwnershipState, OwnershipStore, ResourceRef, ServerRef } from "./ownership.ts";
 import { createRexBudget, deadlineCoverage, RexStopped, type RexBudget, type BudgetPhase } from "./deadline.ts";
-import { setTimeout as delay } from "node:timers/promises";
-import {
-	ASK_ACTION,
-	ASK_API_REVISION,
-	ASK_BUDGET_LIMIT_MS,
-	askBudget,
-	askCliSettlement,
-	askMeaning,
-	askPrompt,
-	askTrouble,
-	askWaitMs,
-	askWindow,
-	type AskRequest,
-	type AskSettlement,
-} from "./ask.ts";
 import { paneStackingCommand, withPaneStacking } from "./pane-stacking.ts";
-import type { SessionPane } from "./session-pane.ts";
 import { CliTransport } from "./transport.ts";
 import type { CliResult, RexTransport } from "./transport.ts";
 
@@ -116,19 +100,15 @@ export type RexRequest =
 			offset?: number;
 			limit?: number;
 	  })
-	| (RequestBase & { op: "cleanup"; recordId: string; forget?: boolean })
-	| AskRequest;
-/** Requests that select or run work; retained-record operations and questions are handled before target selection. */
-type DispatchingRequest = Exclude<RexRequest, { op: "owned" | "observe" | "reconcile" | "cleanup" | "ask" }>;
+	| (RequestBase & { op: "cleanup"; recordId: string; forget?: boolean });
+/** Requests that select or run work; retained-record operations are handled before target selection. */
+type DispatchingRequest = Exclude<RexRequest, { op: "owned" | "observe" | "reconcile" | "cleanup" }>;
 export interface RexCallContext {
 	ownerId: string;
 	callId: string;
 	cwd: string;
 	signal?: AbortSignal;
 	budget?: RexBudget;
-	/** Who asks a question, as the person who answers it knows the session or agent. */
-	asker?: string;
-	askPane?: SessionPane & { hasUI: boolean };
 }
 export interface RexResult {
 	ok: boolean;
@@ -171,8 +151,6 @@ export interface RexCoreOptions {
 	 * target when it names nothing. Absent: the process's own launch environment.
 	 */
 	launch?: { readonly description: string; readonly unavailable?: string };
-	/** Time between two attempts of a question while every Rex app shows another question. */
-	askRetryMs?: number;
 }
 
 /** Aggregate envelope budget shared by domain results and host model-output limits. */
@@ -201,8 +179,7 @@ export function deadlineResult(value: RexResult, budget: RexBudget | undefined, 
 	const stop = budget.stopReason();
 	const established =
 		value.effects.state === "confirmed" ||
-		(operation === "ask" && value.outcome === "show") ||
-		["child_completed", "child_failed", "condition_observed", "observation_failed", "answered"].includes(value.outcome);
+		["child_completed", "child_failed", "condition_observed", "observation_failed"].includes(value.outcome);
 	const stopped =
 		stop && !established
 			? { ...value, ok: false, outcome: stop, data: { ...object(value.data), operation, phase: budget.phase } }
@@ -248,15 +225,11 @@ export class RexCore {
 				throw new Error("Rex requires stable owner and call identities.");
 			if (Buffer.byteLength(JSON.stringify(request), "utf8") > 131072)
 				throw new Error("Rex request exceeds its byte limit.");
-			if (!context.budget)
-				owned =
-					request.op === "ask"
-						? askBudget(request.timeoutMs, context.signal)
-						: createRexBudget(request.timeoutMs, this.maxWaitMs, context.signal);
+			if (!context.budget) owned = createRexBudget(request.timeoutMs, this.maxWaitMs, context.signal);
 			context = { ...context, budget: context.budget ?? owned, signal: (context.budget ?? owned)?.signal };
 			context.budget?.check("resolve");
 			const response = finish(await this.dispatch(request, context));
-			return request.op !== "ask" && request.timeoutMs !== undefined && request.timeoutMs > this.maxWaitMs
+			return request.timeoutMs !== undefined && request.timeoutMs > this.maxWaitMs
 				? this.cappedDeadline(response, request.timeoutMs)
 				: response;
 		} catch (error) {
@@ -267,7 +240,6 @@ export class RexCore {
 	}
 
 	private async dispatch(request: RexRequest, context: RexCallContext): Promise<RexResult> {
-		if (request.op === "ask") return this.ask(request, context);
 		if (request.op === "owned") return this.owned(request, context);
 		if (request.op === "observe") return this.observeOwned(request, context);
 		if (request.op === "reconcile" || request.op === "cleanup") return this.manage(request, context);
@@ -342,15 +314,14 @@ export class RexCore {
 	}
 	/**
 	 * An action call (`run.action`) may run until the call's own allowance ends, not only the connection limit; the
-	 * process deadline below still ends it first. With `run.keepResult`, a response that arrived as the call was
-	 * stopped is returned with its outcome instead of a stop, so its caller can keep output that was already complete.
+	 * process deadline below still ends it first.
 	 */
 	private async cli(
 		args: string[],
 		server: string | undefined,
 		context: RexCallContext,
 		timeoutMs = 15000,
-		run: { action?: boolean; keepResult?: boolean } = {},
+		run: { action?: boolean } = {},
 	): Promise<CliResult> {
 		context.budget?.check(context.budget.phase);
 		context.signal?.throwIfAborted();
@@ -366,7 +337,7 @@ export class RexCore {
 				maxOutputBytes: this.maxOutputBytes,
 			},
 		);
-		if (!run.keepResult) context.budget?.check(context.budget.phase);
+		context.budget?.check(context.budget.phase);
 		return response;
 	}
 	private async json(
@@ -469,142 +440,18 @@ export class RexCore {
 		return Math.min(16384, Math.floor(this.maxOutputBytes / 4));
 	}
 	private async selectServer(intent: TargetIntent | undefined, context: RexCallContext): Promise<ServerRef> {
-		return (await this.identify(intent?.server ?? this.options.server ?? this.env.REX_SERVER, context)).server;
-	}
-	/** The selected server's exact identity, with the rest of what it reports about itself. */
-	private async identify(
-		selection: string | undefined,
-		context: RexCallContext,
-	): Promise<{ server: ServerRef; data: Record<string, unknown> }> {
 		context.signal?.throwIfAborted();
+		const selection = intent?.server ?? this.options.server ?? this.env.REX_SERVER;
 		if (selection !== undefined && !boundedText(selection, 4096)) throw new Error("Rex server selector is invalid.");
 		const data = object(await this.json(["whoami", "--json"], selection, context));
 		if (!boundedText(data.endpoint, 4096) || !boundedText(data.host_id, 128) || !boundedText(data.instance_id, 128))
 			throw new Error("Rex did not report an exact endpoint, host ID and server instance ID.");
 		return {
-			server: {
-				endpoint: data.endpoint,
-				hostId: data.host_id,
-				instanceId: data.instance_id,
-				selection: selection ?? "home",
-			},
-			data,
+			endpoint: data.endpoint,
+			hostId: data.host_id,
+			instanceId: data.instance_id,
+			selection: selection ?? "home",
 		};
-	}
-
-	/**
-	 * Put one question to the person through the configured `pi_ask` action, which forwards it to `rex.ui`. A question
-	 * creates no Rex resource, so no ownership record is kept. Ending the call stops the action, and Rex then closes the
-	 * question in every app.
-	 */
-	private async ask(request: AskRequest, context: RexCallContext): Promise<RexResult> {
-		let question = askPrompt(request, context.asker);
-		const stopped = (target?: ResolvedTarget) =>
-			askResult(question.title, target, { outcome: context.budget?.stopReason() ?? "cancelled" });
-		let target: ResolvedTarget;
-		try {
-			const ready = await this.askReady(question.title, context);
-			if ("outcome" in ready) return ready;
-			target = ready;
-		} catch (error) {
-			if (error instanceof RexStopped || context.signal?.aborted) return stopped();
-			// Nothing has asked anybody yet: the server or the CLI was not available.
-			return askResult(question.title, undefined, {
-				outcome: "unavailable",
-				detail: `Rex could not be reached before the question was asked: ${error instanceof NativeFailure ? (error.result.error ?? error.result.outcome) : errorText(error)}`,
-			});
-		}
-		try {
-			question = (await this.askTabPrompt(request, target, context)) ?? question;
-			return await this.askInTurn(request, question, target, context);
-		} catch (error) {
-			// A call stopped before it started asked nobody; a stopped action closed its question in every app.
-			if (error instanceof RexStopped || context.signal?.aborted) return stopped(target);
-			throw error;
-		}
-	}
-
-	/** The server's target once it can ask: new enough, with the `pi_ask` action loaded. Otherwise the reason it cannot. */
-	private async askReady(title: string, context: RexCallContext): Promise<ResolvedTarget | RexResult> {
-		const { server, data: identity } = await this.identify(this.options.server ?? this.env.REX_SERVER, context);
-		const target: ResolvedTarget = { server, source: "server" };
-		const tooOld = askServerTooOld(identity);
-		if (tooOld) return askResult(title, target, tooOld);
-		const listed = object(await this.json(["actions", "--json"], server.endpoint, context));
-		const actions = Array.isArray(listed.actions) ? listed.actions : [];
-		if (!actions.some((action) => object(action).name === ASK_ACTION && object(action).kind === "lua"))
-			return askResult(title, target, { outcome: "not_configured" });
-		context.budget?.check("observe");
-		return target;
-	}
-
-	private async askTabPrompt(request: AskRequest, target: ResolvedTarget, context: RexCallContext) {
-		const pane = context.askPane;
-		if (!pane) return;
-		// Leave time for the question itself when the optional view is slow or unavailable.
-		const allowance = Math.min(1000, askWaitMs(request.timeoutMs) - (context.budget?.elapsed() ?? 0) - 2000);
-		if (allowance < 1) return;
-		const view = await this.api("session.view", { session_id: pane.session }, target.server, context, allowance).catch(
-			() => undefined,
-		);
-		context.budget?.check("observe");
-		const window = askWindow(view, pane.block);
-		if (!window) return;
-		const showAt = pane.hasUI ? (window.label ?? "this session's Rex tab") : undefined;
-		return askPrompt(request, window.label ?? context.asker, showAt);
-	}
-
-	/** Ask, and while every app shows another question, ask again for the rest of the wait, so questions queue. */
-	private async askInTurn(
-		request: AskRequest,
-		question: ReturnType<typeof askPrompt>,
-		target: ResolvedTarget,
-		context: RexCallContext,
-	): Promise<RexResult> {
-		const waitMs = askWaitMs(request.timeoutMs);
-		const left = () => waitMs - (context.budget?.elapsed() ?? 0);
-		for (let attempt = 0; ; attempt++) {
-			if (left() < 1000)
-				return askResult(question.title, target, {
-					outcome: "timeout",
-					detail: attempt
-						? "Other questions kept every Rex app busy for the whole wait."
-						: "Rex took the whole wait before the question could be shown.",
-				});
-			const prompt = { ...question.prompt, timeout: Math.max(1, Math.ceil(left() / 1000)) };
-			// An answer that arrived as the call was stopped stands; askCliSettlement reads it from the output.
-			const raw = await this.cli(
-				["do", ASK_ACTION, "--args", JSON.stringify({ kind: question.kind, prompt }), "--json"],
-				target.server.endpoint,
-				context,
-				ASK_BUDGET_LIMIT_MS,
-				{ action: true, keepResult: true },
-			);
-			const settled = askCliSettlement(request, raw, context.budget?.stopReason(), question.showFirst);
-			if (settled.outcome === "show") return this.askFocus(target, context);
-			if (settled.outcome !== "busy") return askResult(question.title, target, settled);
-			await delay(Math.max(0, Math.min(this.options.askRetryMs ?? 2000, left() - 1000)), undefined, {
-				signal: context.signal,
-			});
-		}
-	}
-
-	private async askFocus(target: ResolvedTarget, context: RexCallContext): Promise<RexResult> {
-		const pane = context.askPane;
-		if (!pane) throw new Error("The question did not offer a session pane.");
-		const handoff = result(false, "show", target);
-		try {
-			await this.api(
-				"session.focus_block",
-				{ session_id: pane.session, block_id: pane.block },
-				target.server,
-				context,
-				1000,
-			);
-		} catch {
-			handoff.coverage.note = "Rex could not confirm focus on this session's pane.";
-		}
-		return handoff;
 	}
 
 	private async resolve(
@@ -2652,43 +2499,6 @@ function boundedInteger(value: number, min: number, max: number, name: string): 
 	if (!Number.isSafeInteger(value) || value < min || value > max)
 		throw new Error(`Rex ${name} must be an integer from ${min} to ${max}.`);
 	return value;
-}
-/** A server whose API revision predates prompts cannot ask; its apps would never receive the question. */
-function askServerTooOld(identity: Record<string, unknown>): AskSettlement | undefined {
-	const revision = typeof identity.api_revision === "number" ? identity.api_revision : 0;
-	if (revision >= ASK_API_REVISION) return undefined;
-	const version = typeof identity.rex_version === "string" ? identity.rex_version : "an unknown version";
-	return {
-		outcome: "unsupported",
-		reason: "server_revision",
-		detail: `This Rex server (${version}, API revision ${revision}) cannot ask questions; that needs API revision ${ASK_API_REVISION} or later. Update Rex and restart its server.`,
-	};
-}
-
-/** A settled question. Only an answer is success; every other outcome names why no answer arrived. */
-function askResult(
-	question: string,
-	target: ResolvedTarget | undefined,
-	settlement: AskSettlement | { outcome: "cancelled" | "timeout" },
-): RexResult {
-	const answered = settlement.outcome === "answered";
-	const found = settlement as AskSettlement;
-	const trouble = answered ? undefined : askTrouble(settlement.outcome, found.detail);
-	return {
-		ok: answered,
-		outcome: settlement.outcome,
-		...(target ? { target } : {}),
-		data: {
-			question,
-			channel: "rex",
-			...(found.answer ? { answer: found.answer } : {}),
-			...(found.reason ? { reason: found.reason } : {}),
-			meaning: askMeaning(settlement.outcome, "rex"),
-		},
-		...(trouble ? { error: trouble } : {}),
-		effects: { state: "none" },
-		coverage: { bounded: true },
-	};
 }
 function result(ok: boolean, outcome: string, target?: ResolvedTarget, data?: unknown, error?: string): RexResult {
 	return {

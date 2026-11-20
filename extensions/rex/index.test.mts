@@ -75,7 +75,7 @@ test("ordinary shutdown drains owned calls before reload replaces live-call stat
 	});
 	assert.deepEqual(
 		[...tools.keys()],
-		["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status", "rex_ask"],
+		["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status"],
 	);
 	assert.ok([...tools.values()].every((tool) => tool.outputSchema));
 	const ctx = {
@@ -489,7 +489,7 @@ test("ordinary registration wires tab labels without changing the tool surface",
 	});
 	assert.deepEqual(
 		[...tools.keys()],
-		["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status", "rex_ask"],
+		["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status"],
 	);
 	assert.deepEqual([...handlers.keys()].sort(), [
 		"agent_settled",
