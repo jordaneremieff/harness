@@ -210,6 +210,17 @@ final class ExplorerHost {
             if try state.save(root: workspace.root, fields: fields) {
                 shownPath = fields["path"] as? String; draw()
             }
+        case "edit.paths", "edit.draft":
+            guard fields["root"] as? String == workspace.root.path else { throw ExplorerError("invalid-root", "The open folder changed.") }
+            let state = self.state
+            if type == "edit.paths" {
+                let paths = try await Task.detached(priority: .utility) { try state.editedPaths(root: workspace.root) }.value
+                return ["paths": paths]
+            }
+            guard let path = fields["path"] as? String else { throw ExplorerError("invalid-path", "An edit draft needs a file path.") }
+            let value = fields["draft"]
+            let draft = try await Task.detached(priority: .utility) { try state.editDraft(root: workspace.root, path: path, value: value) }.value
+            return draft.map { ["draft": $0] } ?? [:]
         case "prompt":
             guard let live else { throw ExplorerError("unavailable", "No live Pi conversation is attached.") }
             return try await live.submit(fields)

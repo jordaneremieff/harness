@@ -54,9 +54,15 @@ Relative paths for settings resolve against the agent directory. See the [extens
 
 `explorer_notes` accepts a `root` or uses the working directory. Use `list` with optional `path` and `state`, `read` with `id`, `reply` with `id` and `text`, `resolve` or `reopen` with `ids`, `note` with `path`, `start`, `end`, `text` and optional `title`, or `tour` with `title`, optional `review` and ordered `stops` (`path`, `start`, `end`, `title`, `text`). Pass the returned `tourId` to `explorer_show`. Tool lists return bounded previews; read a single note for the quote and recent replies. The ordinary Pi and Durable tools return structured results. Durable does not automatically replay interrupted tool calls because a call can write a note, reply or walkthrough, or move a live pane.
 
+## Edit and create files
+
+Only **Save** (or ⌘S) and **New file** write to the opened workspace. Select the pencil in the File view to edit a working-tree text file. The editor supports UTF-8 text up to 2 MiB and 20,000 lines. Images, binary files, links, partial previews, and commit views are read-only. Use **New file** in the Files header or a folder's context menu to create an empty text file. Explorer creates missing parent directories and refuses to replace an existing path. Neither action writes through links or inside `.git`.
+
+Save compares the file's current SHA-256 digest with the editor's base. It replaces the file atomically, retains the read, write, and execute permission bits, and applies the original line-ending style (the dominant style if the file mixes endings). If the disk version changes, Explorer keeps your text. Reload the disk version, copy the edit, or acknowledge the new base and save again. Unsaved text stays in the private `explorer.dir` store, not the workspace. Explorer marks up to 32 edited files per root and restores the draft when you reopen the file.
+
 ## Notes and review store
 
-Explorer does not write to the repositories it opens. Notes, walkthroughs and review state live under `explorer.dir`. A repository is keyed by the first 32 digits of the SHA-256 of its canonical Git common directory, or its canonical root for a plain folder. Git worktrees share the notes but resolve their locations independently. A note retains its exact quote. Explorer first checks the original lines, then a Git diff from the anchor commit, then whether the quote occurs exactly once. If none matches, the note is outdated and keeps its original quote. Location and state are separate: a note may be open, draft, sent, answered or resolved wherever the quote falls.
+Notes, walkthroughs and review state live under `explorer.dir`. A repository is keyed by the first 32 digits of the SHA-256 of its canonical Git common directory, or its canonical root for a plain folder. Git worktrees share the notes but resolve their locations independently. A note retains its exact quote. Explorer first checks the original lines, then a Git diff from the anchor commit, then whether the quote occurs exactly once. If none matches, the note is outdated and keeps its original quote. Location and state are separate: a note may be open, draft, sent, answered or resolved wherever the quote falls.
 
 ```text
 store.json                               {version:1, storeId}

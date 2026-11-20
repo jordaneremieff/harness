@@ -71,6 +71,15 @@ struct ExplorerServices {
             let at = fields["at"] as? String
             if type == "markdown.render" { return try workspace.renderMarkdown(path(), at: at) }
             return try workspace.readFile(path(), at: at)
+        case "file.write":
+            guard fields["root"] as? String == workspace.root.path, let text = fields["text"] as? String,
+                  let base = fields["base"] as? String else { throw ExplorerError("invalid", "The open root or edit is invalid.") }
+            try workspace.writeFile(path(), text: text, base: base)
+            return ["base": contentDigest(Data(text.utf8))]
+        case "file.create":
+            guard fields["root"] as? String == workspace.root.path else { throw ExplorerError("invalid-root", "The open folder changed.") }
+            try workspace.createFile(path())
+            return [:]
         case "review.scopes": return try workspace.reviewScopes(marker: marker())
         case "review.files", "review.diff":
             let scope = try scopeShape(fields["scope"])

@@ -1,15 +1,18 @@
 import { execFileSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	type Dir,
+	chmodSync,
 	lstatSync,
 	mkdirSync,
 	opendirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join, sep } from "node:path";
+import { dirname, extname, join, sep } from "node:path";
 
 export const defaultPath = "src/router.ts";
 const imageTypes = new Map([
@@ -21,10 +24,18 @@ const imageTypes = new Map([
 	["webp", "image/webp"],
 ]);
 const textLimit = 4 * 1024 * 1024;
+const editLimit = 2 * 1024 * 1024;
+export const devDigest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+export const devEditText = (text: unknown): text is string =>
+	typeof text === "string" &&
+	!text.includes("\0") &&
+	Buffer.byteLength(text) <= editLimit &&
+	text.split(/\r\n|\r|\n/, 20_001).length <= 20_000;
+const problem = (code: string, message: string) => Object.assign(new Error(message), { bridgeCode: code });
 type FixtureFile = ExplorerFile & { bytes?: Buffer };
-const validPath = (path: unknown): path is string =>
+export const validFixturePath = (path: unknown): path is string =>
 	typeof path === "string" &&
-	!path.includes("\\") &&
+	Buffer.byteLength(path) <= 4096 &&
 	!path.includes("\0") &&
 	path.split("/").every((part) => part && part !== "." && part !== ".." && part.toLowerCase() !== ".git");
 
@@ -33,7 +44,7 @@ function readFolderEntries(scan: Dir) {
 	for (let i = 0; i < 20_002; i++) {
 		const row = scan.readSync();
 		if (!row) return { entries, truncated: false };
-		if (!validPath(row.name) || !(row.isDirectory() || row.isFile())) continue;
+		if (!validFixturePath(row.name) || !(row.isDirectory() || row.isFile())) continue;
 		if (entries.length >= 5000) break;
 		entries.push({ name: row.name, kind: row.isDirectory() ? "folder" : "file" });
 	}
@@ -162,20 +173,20 @@ export function createFixture(directory: string) {
 	const paths = () =>
 		[
 			...new Set(
-				output(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).split("\0").filter(validPath),
+				output(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).split("\0").filter(validFixturePath),
 			),
 		].sort();
 	function ignoredPaths() {
 		const paths = output(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"])
 			.split("\0")
-			.filter((path) => validPath(path.endsWith("/") ? path.slice(0, -1) : path))
+			.filter((path) => validFixturePath(path.endsWith("/") ? path.slice(0, -1) : path))
 			.sort();
 		const actual = paths.filter((path, index) => !path.endsWith("/") || !paths[index + 1]?.startsWith(path));
 		return { paths: actual.slice(0, 200_000), truncated: actual.length > 200_000 };
 	}
 	function folder(path: string) {
 		const target = join(root, path);
-		if (!validPath(path) || realpathSync(target) !== target) throw new Error("Invalid folder path.");
+		if (!validFixturePath(path) || realpathSync(target) !== target) throw new Error("Invalid folder path.");
 		const scan = opendirSync(target);
 		try {
 			return readFolderEntries(scan);
@@ -206,28 +217,99 @@ export function createFixture(directory: string) {
 			throw error;
 		}
 	}
-	function read(path: string, at?: string | null): FixtureFile {
-		if (!validPath(path)) throw new Error("Invalid file path.");
-		const bytes = at == null ? working(path) : committed(path, at);
-		if (!Buffer.isBuffer(bytes)) return bytes;
+	function checkEditFolder(folder: string, create: boolean) {
+		let info = lstatSync(folder, { throwIfNoEntry: false });
+		if (!info && create) {
+			mkdirSync(folder);
+			info = lstatSync(folder);
+		}
+		if (!info) throw problem("conflict", "The file changed on disk.");
+		const real = realpathSync(folder);
+		if (!info.isDirectory() || !real.startsWith(`${root}${sep}`) || !validFixturePath(real.slice(root.length + 1)))
+			throw problem("invalid-path", "The path leaves the fixture or enters Git metadata.");
+	}
+	function editTarget(path: string, create: boolean) {
+		if (
+			!validFixturePath(path) ||
+			imageTypes.has(extname(path).slice(1).toLowerCase()) ||
+			(create && /[\x00-\x1f]/.test(path))
+		)
+			throw problem("invalid-path", "Use a relative text file path inside the fixture.");
+		let folder = root;
+		const parts = path.split("/");
+		const name = parts.pop() ?? "";
+		for (const part of parts) {
+			folder = join(folder, part);
+			checkEditFolder(folder, create);
+		}
+		return join(folder, name);
+	}
+	function createFile(path: string) {
+		const target = editTarget(path, true);
+		try {
+			writeFileSync(target, "", { flag: "wx" });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") throw problem("exists", "That path already exists.");
+			throw error;
+		}
+	}
+	function writeEdit(path: string, text: string, base: string) {
+		if (!devEditText(text) || typeof base !== "string" || !/^[0-9a-f]{64}$/.test(base))
+			throw problem("invalid", "Invalid edit text or base.");
+		const target = editTarget(path, false);
+		function check() {
+			const info = lstatSync(target, { throwIfNoEntry: false });
+			if (!info?.isFile() || info.size > editLimit || read(path).editBase !== base)
+				throw problem("conflict", "The file changed on disk.");
+			return info.mode & 0o777;
+		}
+		check();
+		const staged = join(dirname(target), `.explorer-${randomUUID()}.tmp`);
+		writeFileSync(staged, text, { flag: "wx", mode: 0o600 });
+		try {
+			editTarget(path, false);
+			chmodSync(staged, check());
+			renameSync(staged, target);
+		} finally {
+			if (lstatSync(staged, { throwIfNoEntry: false })) unlinkSync(staged);
+		}
+		return devDigest(Buffer.from(text));
+	}
+	function fileEditBase(path: string, bytes: Buffer, text: string, at?: string | null) {
+		if (at != null || !devEditText(text)) return undefined;
+		try {
+			return editTarget(path, false) === realpathSync(join(root, path)) ? devDigest(bytes) : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+	function readBytes(path: string, bytes: Buffer, at?: string | null): FixtureFile {
 		const size = bytes.length;
-		const mediaType = imageTypes.get(path.split(".").pop()?.toLowerCase() ?? "");
+		const mediaType = imageTypes.get(extname(path).slice(1).toLowerCase());
 		if (mediaType) return { path, kind: "image", size, mediaType, bytes };
 		const truncated = size > textLimit;
 		try {
 			const preview = bytes.subarray(0, textLimit);
-			if (!preview.includes(0))
+			if (!preview.includes(0)) {
+				const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(preview, { stream: truncated });
 				return {
 					path,
 					kind: "text",
 					size,
-					text: new TextDecoder("utf-8", { fatal: true }).decode(preview, { stream: truncated }),
+					text,
 					truncated,
+					editBase: truncated ? undefined : fileEditBase(path, bytes, text, at),
 				};
+			}
 		} catch {
 			// Non-UTF-8 input is binary.
 		}
 		return { path, kind: "binary", size };
+	}
+	function read(path: string, at?: string | null): FixtureFile {
+		if (!validFixturePath(path)) throw new Error("Invalid file path.");
+		const bytes = at == null ? working(path) : committed(path, at);
+		return Buffer.isBuffer(bytes) ? readBytes(path, bytes, at) : bytes;
 	}
 	function log(args: string[]): ExplorerCommit[] {
 		return output(["log", "-n30", "--format=%H%x00%h%x00%s%x00%an%x00%aI", ...args])
@@ -239,7 +321,22 @@ export function createFixture(directory: string) {
 				return { commit, short, subject, author, date };
 			});
 	}
-	return { root, head, branch, rev, parent, empty, paths, ignoredPaths, folder, read, log, output };
+	return {
+		root,
+		head,
+		branch,
+		rev,
+		parent,
+		empty,
+		paths,
+		ignoredPaths,
+		folder,
+		read,
+		log,
+		output,
+		createFile,
+		writeEdit,
+	};
 }
 
 export type Fixture = ReturnType<typeof createFixture>;

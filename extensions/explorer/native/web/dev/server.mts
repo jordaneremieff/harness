@@ -69,17 +69,23 @@ async function handlePost(
 	let length = 0;
 	for await (const chunk of req.iterator({ destroyOnReturn: false })) {
 		length += chunk.length;
-		if (length > 256 * KiB) {
-			json(413, error("invalid", "Bridge packet exceeds 256 KiB."));
+		if (length > 13 * MiB) {
+			json(413, error("invalid", "Bridge packet exceeds its size limit."));
 			req.resume();
 			return;
 		}
 		chunks.push(chunk);
 	}
 	const packet = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+	if (length > 256 * KiB && !["file.write", "edit.draft", "clipboard.write"].includes(packet?.type)) {
+		json(413, error("invalid", "Bridge packet exceeds its size limit."));
+		return;
+	}
 	const result = bridge.handle(packet);
 	const reply = JSON.stringify(result);
-	const large = ["files.list", "file.read", "review.diff"].includes(packet?.type);
+	const large = ["files.list", "file.read", "review.diff", "edit.draft", "edit.paths", "clipboard.read"].includes(
+		packet?.type,
+	);
 	if (Buffer.byteLength(reply) > (large ? 32 * MiB : 256 * KiB))
 		json(413, error("invalid", "Bridge reply exceeds the size limit."));
 	else json(200, result);

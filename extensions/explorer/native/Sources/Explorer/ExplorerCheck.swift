@@ -58,6 +58,7 @@ enum ExplorerCheck {
         try git(["add", "example.ts", "lines.ts", ".gitignore"]); try git(["commit", "--quiet", "-m", "Fixture"])
         try Data("export const answer = 42;\n".utf8).write(to: file)
         try Data("# Preview\n\nA **rendered** paragraph.\n\n[Source](example.ts)\n".utf8).write(to: root.appendingPathComponent("guide.md"))
+        try Data("one\r\n  two\r\n".utf8).write(to: root.appendingPathComponent("crlf.txt"))
         let fake = try FakeLive()
         defer { fake.stop() }
         let config = LiveConfiguration(version: 1, endpoint: URL(string: "http://127.0.0.1:\(fake.port)")!, token: FakeLive.token)
@@ -200,8 +201,94 @@ enum ExplorerCheck {
             return true;
             """, arguments: [:], in: nil, contentWorld: .page)
             guard refreshed as? Bool == true else { throw ExplorerError("verify", "The ignored folder did not refresh.") }
+            try await verifyEditor(host.page.view)
         }
-        print("Explorer verified: real page, files, ignored folders and file events, Markdown preview, Git review, search, notes, note marks, card drafts, live prompt and answer.")
+        print("Explorer verified: real page, ignored folders and file events, Markdown preview, Git review, search, note marks, card drafts, live prompt and answer, file create, save, edit drafts, and conflict.")
+    }
+
+    private static func verifyEditor(_ view: WKWebView) async throws {
+        _ = try await view.callAsyncJavaScript(#"""
+        const app = globalThis.explorer;
+        const select = s => document.querySelector(s);
+        const control = label => [...select('#editor-toolbar').querySelectorAll('button')].find(b => b.textContent === label && !b.disabled);
+        const row = path => select(`#sidebar-list [data-path="${path}"]`);
+        const textarea = () => select('.edit-input');
+        async function until(label, predicate) {
+          for (let i=0; i<240; i++) {
+            const value = predicate();
+            if (value) return value;
+            await new Promise(requestAnimationFrame);
+          }
+          throw Error(label);
+        }
+        function type(value) {
+          const editor = textarea();
+          editor.focus(); editor.select();
+          if (!document.execCommand('insertText', false, value)) throw Error('platform insert');
+        }
+        const read = path => app.request('file.read', {path});
+        select('[aria-label="New file"]').click();
+        select('[aria-label="New file path"]').value = 'notes/todo.md';
+        [...select('#overlay').querySelectorAll('button')].find(b => b.textContent === 'Create file').click();
+        await until('new file did not open in edit mode', textarea);
+        if (!select('#preview-mode').hidden || select('#wrap-lines').hidden) throw Error('Markdown edit mode controls');
+        type('# Tasks\n');
+        (await until('Save did not appear', () => control('Save'))).click();
+        await until('first save did not settle', () => !textarea().readOnly && !control('Save'));
+        const first = await read('notes/todo.md');
+        if (first.text !== '# Tasks\n' || !first.editBase) throw Error('new file save');
+        type('# My draft\n');
+        row('example.ts').click();
+        await until('navigation away from draft', () => !textarea() && select('#file-title').textContent === 'example.ts');
+        if (!row('notes/todo.md')?.querySelector('.edited-mark')) throw Error('draft marker lost');
+        row('notes/todo.md').click();
+        await until('draft not restored', () => textarea()?.value === '# My draft\n');
+        const { root } = await app.request('hello');
+        const identity = { root: root.path, path: 'notes/todo.md' };
+        await app.request('file.write', { ...identity, text: '# Disk edit\n', base: first.editBase });
+        const overwrite = await until('no conflict notice after external write', () => control('Keep editing and overwrite on save'));
+        if (textarea().value !== '# My draft\n' || !control('Reload disk version') || !control('Copy edited text')) throw Error('conflict draft or actions lost');
+        const stale = await globalThis.webkit.messageHandlers.explorer.postMessage({v:1,type:'file.write',...identity,base:first.editBase,text:'stale'});
+        if (stale.ok || stale.error.code !== 'conflict') throw Error('write with stale base accepted');
+        overwrite.click();
+        textarea().dispatchEvent(new KeyboardEvent('keydown', {key:'s',metaKey:true,bubbles:true,cancelable:true}));
+        await until('overwrite did not settle', () => !textarea().readOnly && !control('Save'));
+        if ((await read('notes/todo.md')).text !== '# My draft\n') throw Error('overwrite did not save');
+        select('#edit-file').click();
+        await until('Markdown preview did not return with the saved text', () => {
+          return !select('#preview-mode').hidden && select('.markdown-preview h1')?.textContent === 'My draft';
+        });
+        select('#preview-mode').click();
+        await until('Markdown source did not open', () => !select('.markdown-preview') && !select('#edit-file').hidden);
+        select('#edit-file').click();
+        if (!textarea() || !select('#preview-mode').hidden) throw Error('Markdown source edit mode');
+        select('#edit-file').click();
+        await until('Markdown source did not return', () => !textarea() && !select('#preview-mode').hidden);
+        if (select('#preview-mode').getAttribute('aria-pressed') !== 'false') throw Error('Source choice lost after edit');
+        row('crlf.txt').click();
+        (await until('CRLF file unavailable', () => select('#file-title').textContent === 'crlf.txt' && !select('#edit-file').hidden && select('#edit-file'))).click();
+        const edit = textarea();
+        if (edit.value !== 'one\n  two\n') throw Error('CRLF textarea normalisation');
+        edit.setSelectionRange(6,6);
+        edit.dispatchEvent(new KeyboardEvent('keydown', {key:'Tab',bubbles:true,cancelable:true}));
+        if (edit.value !== 'one\n    two\n') throw Error('tab indent');
+        document.execCommand('undo');
+        if (edit.value !== 'one\n  two\n') throw Error('platform undo');
+        type('one\n  changed\n');
+        select('#edit-file').click();
+        if (!control('Keep editing') || !control('Discard')) throw Error('no inline save confirmation');
+        control('Save').click();
+        await until('Save and leave did not close the editor', () => !textarea());
+        if ((await read('crlf.txt')).text !== 'one\r\n  changed\r\n') throw Error('CRLF not preserved');
+        (await until('ignored folder entry missing', () => row('cache/settings.txt'))).click();
+        (await until('ignored file not editable', () => select('#file-title').textContent === 'settings.txt' && !select('#edit-file').hidden && select('#edit-file'))).click();
+        type('unsaved ignored draft\n');
+        const ignored = await read('cache/settings.txt');
+        await app.request('file.write', {root:root.path, path:ignored.path, base:ignored.editBase, text:'changed on disk\n'});
+        await until('no conflict for ignored path', () => control('Reload disk version'));
+        if (textarea().value !== 'unsaved ignored draft\n') throw Error('ignored file draft lost');
+        return true;
+        """#, arguments: [:], in: nil, contentWorld: .page)
     }
 
     private static func scratchDirectory() throws -> URL {

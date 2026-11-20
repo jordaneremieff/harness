@@ -55,11 +55,15 @@ type ExplorerChange = {
 type ExplorerCommit = { commit: string; short: string; subject: string; author: string; date: string };
 type ExplorerReview = { resolved: ExplorerResolved; commits: ExplorerCommit[]; files: ExplorerChange[] };
 type ExplorerScopeOption = { id: string; label: string; scope: ExplorerScope; available: boolean; reason?: string };
+type ExplorerLineEnding = "lf" | "crlf" | "cr";
+type ExplorerEditDraft = { base: string; text: string; ending: ExplorerLineEnding };
+type ExplorerEditPath = { root: string; path: string };
 type ExplorerFile = {
 	path: string;
 	kind: "text" | "image" | "binary" | "missing" | "directory";
 	size: number;
 	text?: string;
+	editBase?: string;
 	truncated?: boolean;
 	mediaType?: string;
 	url?: string;
@@ -150,6 +154,10 @@ type ExplorerRequests = {
 	"file.read": [{ path: string; at?: string }, ExplorerFile];
 	"markdown.render": [{ path: string; at?: string }, { file: ExplorerFile; html?: string }];
 	"link.open": [{ url: string }, object];
+	"file.create": [ExplorerEditPath, object];
+	"file.write": [ExplorerEditPath & { text: string; base: string }, { base: string }];
+	"edit.paths": [{ root: string }, { paths: string[] }];
+	"edit.draft": [ExplorerEditPath & { draft?: ExplorerEditDraft | null }, { draft?: ExplorerEditDraft }];
 	"review.scopes": [undefined, { scopes: ExplorerScopeOption[]; defaultId: string }];
 	"review.files": [{ scope: ExplorerScope }, ExplorerReview];
 	"review.diff": [{ scope: ExplorerScope; path: string }, ExplorerDiff];
@@ -242,6 +250,46 @@ interface ExplorerModel {
 	source(item: ExplorerExcerpt): string;
 	size(bytes: number): string;
 }
+interface ExplorerEditing {
+	limit: number;
+	byteLength(value: string): number;
+	normalise(value: string): string;
+	lineEnding(value: string): ExplorerLineEnding;
+	restore(value: string, ending: ExplorerLineEnding): string;
+	indentUnit(value: string): string;
+	indentLines(
+		text: string,
+		start: number,
+		end: number,
+		unit: string,
+		outdent: boolean,
+	): {
+		from: number;
+		to: number;
+		value: string;
+		start: number;
+		end: number;
+	};
+	nextIndent(text: string, offset: number): string;
+	validNewPath(path: string): boolean;
+}
+type ExplorerEditorContext = {
+	notice(text: string): void;
+	change(identity: ExplorerEditPath, dirty: boolean): void;
+	saved(identity: ExplorerEditPath, text: string, base: string): void;
+	closed(identity: ExplorerEditPath): void;
+};
+type ExplorerEditor = {
+	active(): boolean;
+	open(identity: ExplorerEditPath, file: ExplorerFile | null, draft?: ExplorerEditDraft): void;
+	mount(settings: ExplorerSettings, line?: number): void;
+	checkDisk(): Promise<void>;
+	toggle(): void;
+	save(): Promise<void>;
+	flush(): Promise<void>;
+	detach(): void;
+	focus(): void;
+};
 interface ExplorerApp {
 	ignoredFolders(
 		list: (path: string) => Promise<ExplorerRequests["files.folder"][1]>,
@@ -254,6 +302,8 @@ interface ExplorerApp {
 		retryOnOpen(path: string): void;
 		loaded(): string[];
 	};
+	editing: ExplorerEditing;
+	editor(body: HTMLElement, toolbar: HTMLElement, context: ExplorerEditorContext): ExplorerEditor;
 	request<K extends keyof ExplorerRequests>(
 		type: K,
 		...args: undefined extends ExplorerRequests[K][0]

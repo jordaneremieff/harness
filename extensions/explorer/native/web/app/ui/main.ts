@@ -45,10 +45,11 @@
 	let targetRange: ExplorerRange | null = null;
 	let anchoredLine: number | null = null;
 	app.flushDraft = async () => {
-		await Promise.all(draftWrites);
+		await Promise.all([...draftWrites, editor.flush()]);
 	};
 	let notes: ExplorerNote[] = [],
 		tours: ExplorerTour[] = [];
+	let editedPaths = new Set<string>();
 	let paths: string[] = [],
 		filesError = "",
 		treeTruncated = false,
@@ -75,7 +76,7 @@
 		historyAt = -1;
 	let stateTimer = 0,
 		noticeTimer = 0;
-	let mode: "quick" | "search" | "line" | "scope" | null = null;
+	let mode: "quick" | "search" | "line" | "scope" | "new-file" | null = null;
 	let previousFocus: HTMLElement | null = null;
 	let pendingOpen: ({ type: "open"; root?: ExplorerRoot } & ExplorerLaunch) | undefined;
 	let booted = false;
@@ -193,6 +194,63 @@
 		},
 		notice,
 	});
+	const editor = app.editor(body, get("editor-toolbar"), {
+		notice,
+		change(identity, dirty) {
+			if (identity.root !== root.path || editedPaths.has(identity.path) === dirty) return;
+			if (dirty) editedPaths.add(identity.path);
+			else editedPaths.delete(identity.path);
+			if (settings.tab === "files") {
+				const row = list.querySelector<HTMLElement>(`[data-path="${CSS.escape(identity.path)}"]:not([aria-expanded])`);
+				if (row) markEdited(row, dirty);
+			}
+		},
+		saved(identity, text, base) {
+			if (identity.root !== root.path) return;
+			if (identity.path === path && view === "file" && editor.active()) {
+				file = { ...file, path, kind: "text", text, size: app.editing.byteLength(text), editBase: base };
+				headLines = model.lines(text);
+				renderFileFacts();
+			}
+			report(refreshNotes());
+			if (review) report(refreshReview());
+			notice("File saved");
+		},
+		closed(identity) {
+			if (identity.root !== root.path || identity.path !== path || view !== "file") return;
+			previewHTML = undefined;
+			renderHeader();
+			renderCode();
+			get("edit-file").focus({ preventScroll: true });
+			report(navigate({ path, view }, { refresh: true }));
+		},
+	});
+	function editable() {
+		return view === "file" && !loadingFile && !!file?.editBase;
+	}
+	function openEditor(draft?: ExplorerEditDraft) {
+		if (!draft && !editedPaths.has(path) && editedPaths.size >= 32) {
+			notice("Explorer holds 32 edited files for this folder. Save or discard one first.");
+			return;
+		}
+		clearNavigationSelection();
+		closeMenu(false);
+		editor.open({ root: root.path, path }, file, draft);
+		renderHeader();
+		renderCode();
+		editor.focus();
+	}
+	function toggleEditor() {
+		if (editor.active()) editor.toggle();
+		else if (editable()) openEditor();
+	}
+	async function refreshEditedPaths() {
+		const origin = rootStamp;
+		const result = await request("edit.paths", { root: root.path });
+		if (origin !== rootStamp) return;
+		editedPaths = new Set(result.paths);
+		if (settings.tab === "files") renderSidebar();
+	}
 	function excerptCommit(side?: ExplorerSide) {
 		if (view !== "changes") return null;
 		if (side === "base") return review?.resolved.base ?? null;
@@ -200,7 +258,8 @@
 		return head === "worktree" ? null : (head ?? null);
 	}
 	function selectionExcerpt(range: ExplorerRange | null): ExplorerExcerpt | null {
-		if (!path || !file || file.kind === "directory" || (file.kind === "missing" && !diff)) return null;
+		if (editor.active() || !path || !file || file.kind === "directory" || (file.kind === "missing" && !diff))
+			return null;
 		const lines = range?.side === "base" ? baseLines : headLines;
 		const commit = excerptCommit(range?.side);
 		if (!range) return { path, commit, text: "" };
@@ -282,6 +341,10 @@
 		if (folders.has(item)) ignoredFolders.retryOnOpen(item);
 		renderSidebar(item);
 	}
+	function markEdited(row: HTMLElement, dirty: boolean) {
+		row.querySelector(".edited-mark")?.remove();
+		if (dirty) row.append(el("span", "edited-mark", "Edited"));
+	}
 	function fileRow(item: string, depth: number, folder = false, isIgnored = false) {
 		const node = button(
 			"",
@@ -294,6 +357,7 @@
 		if (folder) node.setAttribute("aria-expanded", String(folders.has(item)));
 		else if (item === path && view === "file") node.setAttribute("aria-current", "true");
 		node.append(fileRowIcon(item, language, folder), el("span", "row-title", basename(item)));
+		if (!folder && editedPaths.has(item)) markEdited(node, true);
 		return node;
 	}
 	function folderStatus(message: string, depth: number) {
@@ -386,6 +450,11 @@
 		renderTree();
 	});
 	filterLabel.append(icon("search"), filterInput);
+	const filesTools = el("div", "files-tools");
+	const newFileButton = iconButton("new-file", "New file", () =>
+		command("new-file", file?.kind === "directory" ? path : dirname(path)),
+	);
+	filesTools.append(filterLabel, newFileButton);
 
 	function appendScopeOptions(choices: HTMLSelectElement) {
 		for (const [position, item] of scopes.entries()) {
@@ -584,7 +653,7 @@
 	}
 	function prepareSidebarHeading() {
 		if (settings.tab === "files") {
-			if (!heading.contains(filterLabel)) heading.replaceChildren(filterLabel);
+			if (!heading.contains(filesTools)) heading.replaceChildren(filesTools);
 		} else heading.replaceChildren();
 	}
 	function focusedPath(active: HTMLElement | null) {
@@ -800,15 +869,23 @@
 		toolbar.replaceChildren(info, diffModes());
 	}
 	function renderHeader() {
+		const editing = editor.active();
+		shell.classList.toggle("editing", editing);
+		const pencil = get("edit-file");
+		pencil.hidden = !editing && !editable();
+		pencil.title = editing ? "End editing" : "Edit file";
+		pencil.setAttribute("aria-label", pencil.title);
+		pressed(pencil, editing);
 		renderCrumbs();
 		get("file-title").textContent = basename(path) || root.name;
 		pressed(get("file-view"), view === "file");
 		pressed(get("diff-view"), view === "changes");
 		pressed(get("wrap-lines"), settings.wrap);
-		get("wrap-lines").hidden = wantsPreview() && (loadingFile || previewHTML !== undefined);
+		const previewShown = !editing && wantsPreview() && (loadingFile || previewHTML !== undefined);
+		get("wrap-lines").hidden = previewShown;
 		const previewToggle = get("preview-mode");
-		previewToggle.hidden = !markdownFile();
-		pressed(previewToggle, wantsPreview() && (loadingFile || previewHTML !== undefined));
+		previewToggle.hidden = editing || !markdownFile();
+		pressed(previewToggle, previewShown);
 		const change = review?.files.find((item) => item.path === path);
 		disabled("diff-view", !path || !change);
 		disabled("copy-path", !path);
@@ -824,7 +901,8 @@
 		const anchor = get("anchor-notice");
 		anchor.replaceChildren();
 		const old = activeNotes().filter((note) => note.location === "outdated");
-		anchor.hidden = !old.length;
+		anchor.hidden = editor.active() || !old.length;
+		if (anchor.hidden) return;
 		for (const note of old) {
 			const display = button("", () => reviewUI.thread([note]));
 			display.append(
@@ -919,6 +997,17 @@
 		return file?.truncated || diff?.truncated ? "Large file · partial preview" : "";
 	}
 	function renderCode(saved?: ReturnType<ExplorerCodeView["place"]>) {
+		if (editor.active()) {
+			renderEditor();
+			return;
+		}
+		renderReadingView(saved);
+	}
+	function renderEditor() {
+		if (!body.querySelector(".edit-surface")) code.clear();
+		editor.mount(settings, latestLine);
+	}
+	function renderReadingView(saved?: ReturnType<ExplorerCodeView["place"]>) {
 		if (!showsCode()) {
 			code.clear();
 			renderCodePlaceholder();
@@ -1102,25 +1191,44 @@
 		if (!refresh) showFileLoading(line);
 		return true;
 	}
+	async function applyFileRead(stamp: number, keepSheet?: boolean) {
+		const change = view === "changes";
+		try {
+			const [{ file: next, html }, patch] = await readNavigation(change);
+			if (stamp !== openStamp) return;
+			previewHTML = html;
+			applyNavigation(next, patch, change, keepSheet);
+		} catch (error) {
+			if (stamp === openStamp) fileError = errorText(error);
+		}
+	}
+	function loadEditDraft(stamp: number) {
+		return request("edit.draft", { root: root.path, path }).catch((error) => {
+			if (stamp === openStamp) notice(errorText(error));
+			return undefined;
+		});
+	}
+	async function navigationRead(stamp: number, options: NavigationOptions) {
+		if (!options.refresh) await editor.flush();
+		if (stamp !== openStamp) return;
+		const draft = !options.refresh && view === "file" ? loadEditDraft(stamp) : undefined;
+		await applyFileRead(stamp, options.keepSheet);
+		return draft;
+	}
 	async function navigate(target: ExplorerLaunch, options: NavigationOptions = {}) {
-		const stamp = ++openStamp;
 		const candidatePath = target.path ?? path;
 		const requestedView = target.view === "changes" ? "changes" : "file";
+		if (editor.active() && candidatePath === path && requestedView === view) return;
+		editor.detach();
+		const stamp = ++openStamp;
 		const previous = code.place();
 		if (!options.refresh) prepareNavigation(target, options, candidatePath, requestedView);
 		fileError = "";
 		if (!prepareFileRead(options.refresh, target.line)) return;
-		try {
-			const change = view === "changes";
-			const [{ file: next, html }, patch] = await readNavigation(change);
-			if (stamp !== openStamp) return;
-			previewHTML = html;
-			applyNavigation(next, patch, change, options.keepSheet);
-		} catch (error) {
-			if (stamp !== openStamp) return;
-			fileError = errorText(error);
-		}
+		const result = await navigationRead(stamp, options);
+		if (stamp !== openStamp) return;
 		finishNavigation(target, options, previous);
+		if (result?.draft) openEditor(result.draft);
 	}
 	async function moveHistory(delta: number) {
 		const next = historyAt + delta;
@@ -1322,7 +1430,14 @@
 		reviewUI.ask(range, mode);
 	}
 	function placeStrip() {
-		if (sheet || !menu.hidden || !overlay.hidden || document.querySelector(".float-card") || !activeRange()) {
+		if (
+			editor.active() ||
+			sheet ||
+			!menu.hidden ||
+			!overlay.hidden ||
+			document.querySelector(".float-card") ||
+			!activeRange()
+		) {
 			strip.hidden = true;
 			return;
 		}
@@ -1448,6 +1563,58 @@
 				{ label: "Add note", key: "⌘⌥N", glyph: "bookmark", run: () => askAt(range, "note") },
 			);
 	}
+	function editorActions(input: HTMLTextAreaElement, text?: string): Action[] {
+		return [
+			{
+				label: "Cut",
+				key: "⌘X",
+				glyph: "copy",
+				disabled: !text || input.readOnly,
+				run: () => {
+					const selected = text ?? "";
+					const start = input.selectionStart,
+						end = input.selectionEnd;
+					report(
+						request("clipboard.write", { text: selected }).then(() => {
+							if (
+								document.activeElement !== input ||
+								input.selectionStart !== start ||
+								input.selectionEnd !== end ||
+								input.value.slice(start, end) !== selected
+							)
+								return;
+							document.execCommand("delete");
+						}),
+					);
+				},
+			},
+			{
+				label: "Copy",
+				key: "⌘C",
+				glyph: "copy",
+				disabled: !text,
+				run: () => {
+					if (text) copy(text);
+				},
+			},
+			{
+				label: "Paste",
+				key: "⌘V",
+				glyph: "copy",
+				disabled: input.readOnly,
+				run: () => {
+					const start = input.selectionStart,
+						end = input.selectionEnd;
+					report(
+						request("clipboard.read").then(({ text: value }) => {
+							if (document.activeElement === input && input.selectionStart === start && input.selectionEnd === end)
+								document.execCommand("insertText", false, value);
+						}),
+					);
+				},
+			},
+		];
+	}
 	function actions(range: ExplorerRange | null, text?: string): Action[] {
 		const source = range ? selectionExcerpt(range) : null;
 		const fileHere = !!selectionExcerpt(null);
@@ -1489,7 +1656,9 @@
 				glyph: "folder",
 				run: () => report(request("finder.reveal", { path })),
 			});
-		appendCodeActions(result);
+		if (editable() && !editor.active())
+			result.push({ label: "Edit file", key: "", glyph: "edit", divide: true, run: toggleEditor });
+		if (!editor.active()) appendCodeActions(result);
 		return result;
 	}
 	const menu = el("div", "context-menu");
@@ -1504,12 +1673,12 @@
 		menu.hidden = true;
 		if (restore) menuFocus?.focus({ preventScroll: true });
 	}
-	function showMenu(x: number, y: number, range: ExplorerRange | null, text?: string) {
+	function showMenu(x: number, y: number, range: ExplorerRange | null, items: Action[]) {
 		menuFocus = document.activeElement as HTMLElement | null;
 		if (range) setAnchorLine(range.start);
 		menu.replaceChildren();
 		strip.hidden = true;
-		for (const action of actions(range, text)) {
+		for (const action of items) {
 			const node = button(
 				"",
 				() => {
@@ -1546,6 +1715,15 @@
 			return target.value.slice(target.selectionStart ?? 0, target.selectionEnd ?? 0);
 		return selected ?? (range && lineRange === range ? selectionExcerpt(range)?.quote : undefined);
 	}
+	function menuActions(target: EventTarget | null, text: string | undefined, range: ExplorerRange | null) {
+		const folder = target instanceof Element && target.closest<HTMLElement>("[aria-expanded][data-path]");
+		const folderPath = folder && list.contains(folder) ? folder.dataset.path : undefined;
+		if (folderPath)
+			return [{ label: "New file…", key: "", glyph: "new-file", run: () => command("new-file", folderPath) }];
+		if (editor.active() && target instanceof HTMLTextAreaElement && body.contains(target))
+			return editorActions(target, text);
+		return actions(range, text);
+	}
 	document.addEventListener(
 		"contextmenu",
 		(event) => {
@@ -1557,7 +1735,7 @@
 			const range = chosen?.range ?? clicked ?? (body.contains(event.target as Node) ? lineRange : null);
 			const text = menuText(event.target, chosen?.text, range);
 			closeMenu(false);
-			showMenu(event.clientX, event.clientY, range, text);
+			showMenu(event.clientX, event.clientY, range, menuActions(event.target, text, range));
 		},
 		true,
 	);
@@ -1605,6 +1783,73 @@
 		if (next === "line") return "Line number";
 		return detail === "range" ? "Base and head, for example main..HEAD" : "Commit or ref, for example HEAD~2";
 	}
+	async function openNewFile(destination: string) {
+		closeCommand();
+		filterInput.value = filter = "";
+		await navigate({ path: destination, view: "file" });
+		if (path === destination && editable() && !editor.active()) openEditor();
+	}
+	async function validateNewFile(destination: string) {
+		if (!app.editing.validNewPath(destination))
+			throw new Error("Enter a relative text file path without empty components, parent references or .git.");
+		if (editedPaths.size >= 32 && !editedPaths.has(destination))
+			throw new Error("Save or discard one of your 32 edited files first.");
+		if (paths.includes(destination) && (await request("file.read", { path: destination })).kind !== "missing")
+			throw new Error("That path already exists.");
+	}
+	async function createInRoot(destination: string, dialog: HTMLElement, origin: number) {
+		await validateNewFile(destination);
+		if (!dialog.isConnected || origin !== rootStamp) return;
+		await request("file.create", { root: root.path, path: destination });
+		if (origin !== rootStamp) return;
+		ignoredFolders.invalidate([destination]);
+		if (dialog.isConnected) await openNewFile(destination);
+		await refreshFiles();
+	}
+	function newFileCommand(dialog: HTMLElement, folder: string) {
+		const input = el("input");
+		input.id = "quick-input";
+		input.setAttribute("aria-label", "New file path");
+		input.placeholder = "Path relative to this folder's root";
+		input.value = folder ? `${folder}/` : "";
+		input.autocomplete = "off";
+		input.spellcheck = false;
+		const summary = el("div", "command-summary", "Enter a relative path for a new text file.");
+		summary.setAttribute("role", "status");
+		const controls = el("div", "card-actions");
+		const origin = rootStamp;
+		const create = button("Create file", () => report(submit()), "primary");
+		async function submit() {
+			if (create.disabled) return;
+			const destination = input.value;
+			create.disabled = input.disabled = true;
+			try {
+				await createInRoot(destination, dialog, origin);
+			} catch (error) {
+				if (dialog.isConnected) summary.textContent = errorText(error);
+				else if (origin === rootStamp) notice(errorText(error));
+			} finally {
+				create.disabled = input.disabled = false;
+			}
+		}
+		controls.append(button("Cancel", closeCommand, "quiet"), create);
+		dialog.append(input, summary, controls);
+		dialog.onkeydown = (event) => {
+			if (event.isComposing) return;
+			if (event.key === "Escape") {
+				event.preventDefault();
+				event.stopPropagation();
+				closeCommand();
+			} else if (event.key === "Enter" && event.target === input) {
+				event.preventDefault();
+				report(submit());
+			}
+		};
+		overlay.replaceChildren(dialog);
+		overlay.hidden = false;
+		input.focus({ preventScroll: true });
+		input.setSelectionRange(input.value.length, input.value.length);
+	}
 	function command(next: NonNullable<typeof mode>, detail?: string) {
 		clearTimeout(searchTimer);
 		commandStamp++;
@@ -1619,12 +1864,14 @@
 			quick: "Quick open",
 			search: "Search repository",
 			line: "Go to line",
+			"new-file": "New file",
 			scope: detail === "range" ? "Choose a commit range" : "Choose a commit",
 		};
 		dialog.setAttribute("aria-label", titles[next]);
 		const header = el("header");
 		header.append(el("strong", "", titles[next]), iconButton("close", "Close (Esc)", closeCommand));
 		dialog.append(header);
+		if (next === "new-file") return newFileCommand(dialog, detail ?? "");
 		const input = el("input");
 		input.id = "quick-input";
 		input.setAttribute("aria-label", titles[next]);
@@ -1795,7 +2042,7 @@
 	};
 
 	function restoreLaunchDraft(target: ExplorerLaunch, candidate: string | undefined, stamp: number) {
-		if (target.draft && candidate === path && stamp === rootStamp) {
+		if (!editor.active() && target.draft && candidate === path && stamp === rootStamp) {
 			targetRange = null;
 			reviewUI.restore(path, target.draft);
 		}
@@ -1852,6 +2099,8 @@
 		await openPath(target, requested, stamp);
 	}
 	function resetRoot(next: ExplorerRoot) {
+		editor.detach();
+		editedPaths.clear();
 		clearTimeout(stateTimer);
 		closeCommand();
 		closeMenu(false);
@@ -1896,6 +2145,7 @@
 		code.clear();
 		rootChrome();
 		reviewUI.refresh();
+		report(refreshEditedPaths());
 		report(refreshFiles());
 		report(refreshNotes());
 		report(refreshScopes());
@@ -1956,8 +2206,13 @@
 		if (settings.tab === "files" && stale.some((folder) => folders.has(folder))) renderSidebar();
 		if (view === "file" && changed.includes(path) && !loadingFile) await navigate({ path, view }, { refresh: true });
 	}
+	function checkEditedPath(changed: string[]) {
+		if (editor.active() && (!changed.length || changed.some((item) => item === path || path.startsWith(`${item}/`))))
+			report(editor.checkDisk());
+	}
 	async function applyFileChanges(event: QueuedFileChanges) {
 		const changed = event.paths ? [...event.paths] : [];
+		checkEditedPath(changed);
 		const stale = ignoredFolders.invalidate(changed);
 		const knownIgnored =
 			!ignored.truncated && changed.length && changed.every((path) => ignoredFolders.contains(path, false));
@@ -1991,7 +2246,7 @@
 			await refreshScopes();
 			if (view === "changes" || review) await refreshReview();
 		}
-		if (stamp !== openStamp || !path || loadingFile) return;
+		if (stamp !== openStamp || !path || loadingFile || editor.active()) return;
 		if (touchesOpenFile(oldHead, paths)) await navigate({ path, view }, { refresh: true });
 	}
 	app.listen((event) => {
@@ -2026,7 +2281,12 @@
 			liveChrome();
 			renderSidebarState();
 			renderSidebar();
-			const initial = Promise.all([refreshFiles(), refreshNotes(), refreshScopes()]);
+			const initial = Promise.all([
+				refreshFiles(),
+				refreshNotes(),
+				refreshScopes(),
+				refreshEditedPaths().catch((error) => notice(errorText(error))),
+			]);
 			const deferred = pendingOpen;
 			pendingOpen = undefined;
 			booted = true;
@@ -2059,6 +2319,7 @@
 	click("search", () => command("search"), "search");
 	click("wrap-lines", toggleWrap);
 	click("preview-mode", togglePreview);
+	click("edit-file", toggleEditor, "edit");
 	click(
 		"copy-path",
 		() => {
@@ -2122,7 +2383,10 @@
 		reviewUI.reposition();
 	});
 	window.addEventListener("pagehide", () => {
-		if (booted) savePosition(true);
+		if (booted) {
+			void editor.flush();
+			savePosition(true);
+		}
 	});
 
 	function returnFocus() {
@@ -2203,9 +2467,17 @@
 	function isEditing(target: EventTarget | null) {
 		return target instanceof HTMLElement && !!target.closest("input,textarea,select,[contenteditable=true]");
 	}
+	function editorShortcut(event: KeyboardEvent, key: string) {
+		if (!editor.active()) return false;
+		if (event.metaKey && !event.altKey && !event.ctrlKey && !event.shiftKey && key === "s") {
+			event.preventDefault();
+			report(editor.save());
+			return true;
+		}
+		return (event.metaKey && !event.shiftKey && key === "f") || (event.ctrlKey && key === "g");
+	}
 	document.addEventListener("keydown", (event) => {
-		if (event.isComposing || event.defaultPrevented) return;
-		if (!menu.hidden) return;
+		if (event.isComposing || event.defaultPrevented || !menu.hidden) return;
 		const key = event.key.toLowerCase();
 		const editing = isEditing(event.target);
 		const range = activeRange();
@@ -2214,7 +2486,7 @@
 			escapeExplorer();
 			return;
 		}
-		if (mode) return;
+		if (mode || editorShortcut(event, key)) return;
 		const action = metaShortcut(event, key, editing, range) ?? secondaryShortcut(event, key, editing);
 		if (action) {
 			event.preventDefault();

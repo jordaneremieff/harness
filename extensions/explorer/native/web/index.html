@@ -10,14 +10,17 @@
 <link rel="stylesheet" href="styles/code.css">
 <link rel="stylesheet" href="styles/preview.css">
 <link rel="stylesheet" href="styles/review.css">
+<link rel="stylesheet" href="styles/editor.css">
 <script defer src="app/core/model.js"></script>
 <script defer src="app/core/syntax.js"></script>
 <script defer src="app/core/markdown.js"></script>
+<script defer src="app/core/editing.js"></script>
 <script defer src="app/ui/dom.js"></script>
 <script defer src="app/ui/code.js"></script>
 <script defer src="app/ui/preview.js"></script>
 <script defer src="app/ui/review.js"></script>
 <script defer src="app/ui/ignored-folders.js"></script>
+<script defer src="app/ui/editor.js"></script>
 <script defer src="app/ui/main.js"></script>
 </head>
 <body>
@@ -32,15 +35,16 @@
    <nav id="note-tabs" aria-label="Sidebar lists" class="seg"><button data-tab="files" aria-pressed="true">Files</button><button data-tab="changes" aria-pressed="false">Changes <span id="change-count"></span></button><button data-tab="notes" aria-pressed="false">Notes <span id="note-count"></span></button></nav>
    <div id="sidebar-heading"><p class="empty-list">Reading folder…</p></div>
    <div id="sidebar-list"></div>
-   <footer id="sidebar-footer"><span class="capture-dot"></span><span id="connection">Read-only files</span><span id="capture-short"></span></footer>
+   <footer id="sidebar-footer"><span class="capture-dot"></span><span id="connection">Local files</span><span id="capture-short"></span></footer>
   </aside>
   <div id="resize" role="separator" tabindex="0" aria-label="Sidebar width" aria-orientation="vertical"></div>
   <main id="main">
    <header id="file-header">
     <div id="main-scope" hidden></div>
     <nav id="crumbs" aria-label="File path"></nav>
-    <div class="file-title-row"><h1 id="file-title">Explorer</h1><div class="file-actions"><div class="seg" id="view-tabs"><button id="file-view" aria-pressed="true">File</button><button id="diff-view" disabled>Changes</button></div><button id="preview-mode" class="tool-button" aria-pressed="true" hidden>Preview</button><button id="wrap-lines" class="tool-button" title="Wrap lines (⌥Z)" aria-pressed="false">Wrap</button><button id="copy-path" class="icon-button" title="Copy path (⌘⌥C)" aria-label="Copy path" disabled></button><button id="ask-file" class="icon-button" title="Ask about file (⌘⌥M)" aria-label="Ask about file" disabled></button></div></div>
+    <div class="file-title-row"><h1 id="file-title">Explorer</h1><div class="file-actions"><div class="seg" id="view-tabs"><button id="file-view" aria-pressed="true">File</button><button id="diff-view" disabled>Changes</button></div><button id="preview-mode" class="tool-button" aria-pressed="true" hidden>Preview</button><button id="wrap-lines" class="tool-button" title="Wrap lines (⌥Z)" aria-pressed="false">Wrap</button><button id="edit-file" class="icon-button" title="Edit file" aria-label="Edit file" aria-pressed="false" hidden></button><button id="copy-path" class="icon-button" title="Copy path (⌘⌥C)" aria-label="Copy path" disabled></button><button id="ask-file" class="icon-button" title="Ask about file (⌘⌥M)" aria-label="Ask about file" disabled></button></div></div>
     <div id="file-facts"></div>
+    <div id="editor-toolbar" hidden></div>
    </header>
    <div id="diff-header" hidden></div>
    <div id="anchor-notice" hidden></div>

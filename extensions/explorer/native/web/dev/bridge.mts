@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { defaultPath, type Fixture } from "./fixture.mts";
+import { defaultPath, devEditText, type Fixture, validFixturePath } from "./fixture.mts";
 import { renderFixtureMarkdown } from "./markdown.mts";
 import { createReview, lines, uncommitted } from "./review.mts";
 
@@ -23,6 +23,7 @@ export function createBridge(
 	const review = createReview(repo);
 	let launch: ExplorerLaunch = { path: defaultPath, view: "changes", review: uncommitted };
 	const cardDrafts = new Map<string, ExplorerCardDraft>();
+	const editDrafts = new Map<string, ExplorerEditDraft>();
 	let settings: ExplorerSettings = {
 		textSize: 16,
 		wrap: false,
@@ -283,6 +284,41 @@ export function createBridge(
 		}
 		launch = { ...launch, ...position };
 	}
+	function editDraft({ path, draft }: ExplorerRequests["edit.draft"][0]) {
+		if (!validFixturePath(path)) return fail("invalid-path", "An edit draft needs a valid file path.");
+		if (draft === undefined) return { ok: true, draft: editDrafts.get(path) };
+		if (draft === null) editDrafts.delete(path);
+		else {
+			if (
+				!devEditText(draft.text) ||
+				draft.text.includes("\r") ||
+				typeof draft.base !== "string" ||
+				!/^[0-9a-f]{64}$/.test(draft.base) ||
+				!["lf", "crlf", "cr"].includes(draft.ending)
+			)
+				return fail("invalid", "The edit draft is invalid or too large.");
+			if (!editDrafts.has(path) && editDrafts.size >= 32)
+				return fail("draft-limit", "The fixture already holds 32 edited files.");
+			editDrafts.set(path, draft);
+		}
+		return { ok: true };
+	}
+	function editRequest(message: Extract<Packet, { type: "file.create" | "file.write" | "edit.paths" | "edit.draft" }>) {
+		if (message.root !== repo.root) return fail("invalid-root", "The open folder changed.");
+		if (message.type === "edit.draft") return editDraft(message);
+		if (message.type === "edit.paths") return { ok: true, paths: [...editDrafts.keys()] };
+		let base: string | undefined;
+		if (message.type === "file.create") repo.createFile(message.path);
+		else base = repo.writeEdit(message.path, message.text, message.base);
+		schedule(() => emit({ type: "files.changed", paths: [message.path] }), 0);
+		return { ok: true, base };
+	}
+	function rejected(error: unknown) {
+		return fail(
+			error instanceof Error && "bridgeCode" in error ? String(error.bridgeCode) : "invalid",
+			error instanceof Error && !("status" in error) ? error.message : "Git rejected this request.",
+		);
+	}
 	function handle(value: unknown) {
 		const message = value as Packet;
 		if (message?.v !== 1) return fail("invalid", "Expected bridge version 1.");
@@ -322,6 +358,11 @@ export function createBridge(
 					result = { file: read, html: read.text === undefined ? undefined : renderFixtureMarkdown(read.text) };
 					break;
 				}
+				case "file.create":
+				case "file.write":
+				case "edit.paths":
+				case "edit.draft":
+					return editRequest(message);
 				case "review.scopes":
 					result = review.scopes();
 					break;
@@ -371,10 +412,7 @@ export function createBridge(
 			}
 			return { ok: true, ...result };
 		} catch (error) {
-			return fail(
-				"invalid",
-				error instanceof Error && !("status" in error) ? error.message : "Git rejected this request.",
-			);
+			return rejected(error);
 		}
 	}
 	return {

@@ -251,7 +251,7 @@ final class Workspace: @unchecked Sendable {
                 data = content.data
             }
         } else {
-            guard let (fd, _) = try openContained(root, path) else { return result }
+            guard let (fd, resolved) = try openContained(root, path) else { return result }
             let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
             var details = stat()
             guard fstat(fd, &details) == 0 else { throw ExplorerError("io", "The file could not be read.") }
@@ -259,7 +259,12 @@ final class Workspace: @unchecked Sendable {
             case S_IFDIR: result["kind"] = "directory"; return result
             case S_IFREG:
                 size = Int(details.st_size)
-                if kind == nil { data = try handle.read(upToCount: 4 * mib) ?? Data() }
+                if kind == nil {
+                    data = try handle.read(upToCount: 4 * mib) ?? Data()
+                    if size == data.count, String(validating: data, as: UTF8.self) != nil {
+                        result["editBase"] = editBase(path: path, resolved: resolved, bytes: data)
+                    }
+                }
             default: result["kind"] = "binary"; return result
             }
         }
@@ -272,7 +277,7 @@ final class Workspace: @unchecked Sendable {
             let truncated = size > data.count && kind == nil
             var text: String?
             if kind == nil, !data.contains(0) {
-                text = String(data: data, encoding: .utf8)
+                text = String(validating: data, as: UTF8.self)
                 if text == nil, truncated {
                     for drop in 1...min(3, max(1, data.count)) {
                         if let valid = String(bytes: data.dropLast(drop), encoding: .utf8) { text = valid; break }

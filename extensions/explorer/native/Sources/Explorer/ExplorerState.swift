@@ -1,5 +1,4 @@
 import CoreFoundation
-import CryptoKit
 import Foundation
 
 struct ExplorerState {
@@ -30,8 +29,74 @@ struct ExplorerState {
     }
 
     private func location(_ key: String, record: String = "position") -> URL {
-        let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
-        return dir.appendingPathComponent("\(record)-\(digest).json")
+        dir.appendingPathComponent("\(record)-\(contentDigest(Data(key.utf8))).json")
+    }
+
+    private func editDirectory(_ root: URL) -> URL {
+        dir.appendingPathComponent("edits-\(contentDigest(Data(root.path.utf8)))", isDirectory: true)
+    }
+
+    private func editFile(_ folder: URL, _ path: String) -> URL {
+        folder.appendingPathComponent(contentDigest(Data(path.utf8)) + ".draft")
+    }
+
+    private func editRecords(_ folder: URL) throws -> [URL] {
+        guard let scan = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil, options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles]) else { return [] }
+        var records: [URL] = []
+        for case let file as URL in scan where file.pathExtension == "draft" {
+            guard records.count < 32 else { throw ExplorerError("draft-limit", "Explorer already holds 32 edited files for this folder.") }
+            records.append(file)
+        }
+        return records
+    }
+
+    func editedPaths(root: URL) throws -> [String] {
+        let folder = editDirectory(root)
+        return try editRecords(folder).compactMap { file in
+            guard let handle = try? FileHandle(forReadingFrom: file),
+                  let bytes = try? handle.read(upToCount: 25 * kib), let end = bytes.firstIndex(of: 10),
+                  let values = try? JSONDecoder().decode([String].self, from: bytes.prefix(upTo: end)),
+                  let path = values.first, validPath(path), editFile(folder, path).lastPathComponent == file.lastPathComponent else { return nil }
+            return path
+        }
+    }
+
+    func editDraft(root: URL, path: String, value: Any?) throws -> [String: Any]? {
+        guard validPath(path) else { throw ExplorerError("invalid-path", "An edit draft needs a valid file path.") }
+        let folder = editDirectory(root), file = editFile(folder, path)
+        if value == nil {
+            guard let handle = try? FileHandle(forReadingFrom: file), let bytes = try handle.read(upToCount: 13 * mib),
+                  let end = bytes.firstIndex(of: 10), let fields = try? JSONSerialization.jsonObject(with: bytes.suffix(from: end + 1)) else { return nil }
+            return try Self.validEditDraft(fields)
+        }
+        if value is NSNull {
+            if unlink(file.path) != 0, errno != ENOENT { throw ExplorerError("io", "Explorer could not clear the edit draft.") }
+            return nil
+        }
+        let fields = try Self.validEditDraft(value)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let fd = open(folder.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else { throw ExplorerError("io", "Explorer could not open the edit draft folder.") }
+        defer { close(fd) }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else { throw ExplorerError("busy", "Another pane is saving an edit draft.") }
+        if !FileManager.default.fileExists(atPath: file.path), try editRecords(folder).count >= 32 {
+            throw ExplorerError("draft-limit", "Explorer already holds 32 edited files for this folder.")
+        }
+        var bytes = try JSONEncoder().encode([path])
+        bytes.append(10)
+        bytes.append(try JSONSerialization.data(withJSONObject: fields))
+        try write(bytes, to: file)
+        return nil
+    }
+
+    private static func validEditDraft(_ value: Any?) throws -> [String: Any] {
+        guard let fields = value as? [String: Any], Set(fields.keys) == ["base", "text", "ending"],
+              let base = fields["base"] as? String, validEditBase(base),
+              let text = fields["text"] as? String, validEditText(Data(text.utf8)), !text.utf8.contains(13),
+              let ending = fields["ending"] as? String, ["lf", "crlf", "cr"].contains(ending) else {
+            throw ExplorerError("invalid", "The edit draft is invalid or too large.")
+        }
+        return fields
     }
 
     func restore(root: URL, launch: [String: Any]) -> [String: Any] {
@@ -98,8 +163,10 @@ struct ExplorerState {
     }
     private func write(_ fields: [String: Any], to file: URL) throws {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let data = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
-        let staged = dir.appendingPathComponent(".\(UUID().uuidString).tmp")
+        try write(JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]), to: file)
+    }
+    private func write(_ data: Data, to file: URL) throws {
+        let staged = file.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).tmp")
         defer { try? FileManager.default.removeItem(at: staged) }
         try data.write(to: staged, options: [.withoutOverwriting])
         guard chmod(staged.path, 0o600) == 0, rename(staged.path, file.path) == 0 else {

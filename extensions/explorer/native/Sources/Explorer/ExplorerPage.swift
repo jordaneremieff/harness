@@ -76,10 +76,11 @@ final class ExplorerPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler
             detail["retryable"] = problem.retryable
             replyHandler(["ok": false, "error": detail], nil)
         }
+        let largeMessages = ["file.write", "edit.draft", "clipboard.write"]
         guard message.frameInfo.isMainFrame, message.frameInfo.request.url == Self.entry,
               var fields = message.body as? [String: Any], let version = fields.removeValue(forKey: "v") as? Int, version == 1,
               let type = fields.removeValue(forKey: "type") as? String, let data = try? JSONSerialization.data(withJSONObject: fields),
-              data.count <= (type == "prompt" ? 160 : 256) * kib else {
+              data.count <= (largeMessages.contains(type) ? 13 * mib : (type == "prompt" ? 160 : 256) * kib) else {
             failure(ExplorerError("invalid-message", "The page message or version is invalid or too large.")); return
         }
         Task {
@@ -90,7 +91,7 @@ final class ExplorerPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler
                 let cap = switch type {
                 case "files.list": 64 * mib
                 case "files.folder": 4 * mib
-                case "file.read", "review.diff": 32 * mib
+                case "file.read", "markdown.render", "review.diff", "edit.draft", "clipboard.read": 32 * mib
                 default: 256 * kib
                 }
                 guard let data = try? JSONSerialization.data(withJSONObject: result, options: [.withoutEscapingSlashes]), data.count <= cap else {

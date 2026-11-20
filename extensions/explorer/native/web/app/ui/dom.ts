@@ -3,6 +3,7 @@
 		folder: "M2 16V4h5l2 2h9v10z",
 		open: "M2 16V4h5l2 2h9v3M2 16l3-7h14l-3 7z",
 		file: "M5 2h7l4 4v12H5zM12 2v5h4",
+		"new-file": "M11 2H4v16h12V7l-5-5v5h5M7 12h6M10 9v6",
 		sidebar: "M2 3h16v14H2zM7 3v14",
 		search: "M14 8a5 5 0 1 1-10 0 5 5 0 0 1 10 0zm-1 4 4 4",
 		copy: "M7 6h10v11H7zM13 3H3v11",
