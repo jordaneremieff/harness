@@ -357,7 +357,7 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 	}
 });
 
-test("keeps the native index for the rest of a run and reads a changed corpus at the next run", async () => {
+test("keeps the native index across tool rounds and runs until a new conversation or compaction", async () => {
 	const root = mkdtempSync(join(tmpdir(), "memory-durable-run-"));
 	const corpus = join(root, "corpus");
 	mkdirSync(corpus);
@@ -373,42 +373,55 @@ test("keeps the native index for the rest of a run and reads a changed corpus at
 	try {
 		const contribution = emitContribution();
 		registry.install(await contribution.create(hostFor(contribution, corpus, harness)));
-		const conversation = await harness.root(BACKGROUND_CONTEXT, {
-			agent: { model: { provider: "faux", modelId: "faux-1" } },
-		});
+		const agent = { model: { provider: "faux", modelId: "faux-1" }, compaction: { keepRecentTokens: 1 } };
+		const conversation = await harness.root(BACKGROUND_CONTEXT, { agent });
 		const requests: TranscriptContext[] = [];
+		const reply = (context: TranscriptContext) => {
+			requests.push(context);
+			return fauxAssistantMessage("done");
+		};
 		faux.setResponses([
 			(context) => {
 				requests.push(context);
-				// Another session adds a note while this run still has a tool round to go.
 				writeFileSync(join(corpus, "later-note.md"), note("Later note"));
-				return fauxAssistantMessage(fauxToolCall("memory_search", {}), { stopReason: "toolUse" });
+				return fauxAssistantMessage(fauxToolCall("memory_search", { query: "later note" }), { stopReason: "toolUse" });
 			},
-			(context) => {
-				requests.push(context);
-				return fauxAssistantMessage("done");
-			},
-			(context) => {
-				requests.push(context);
-				return fauxAssistantMessage("done");
-			},
+			reply,
+			reply,
+			reply,
+			fauxAssistantMessage("Earlier exchanges summarised."),
+			reply,
 		]);
-		const run = async () =>
-			(await conversation.submit({ type: "input", content: "check memory" }, BACKGROUND_CONTEXT)).wait(
-				BACKGROUND_CONTEXT,
-			);
+		const run = async (target = conversation) =>
+			(await target.submit({ type: "input", content: "check memory" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
 		assert.equal((await run()).status, "done");
 		assert.equal(requests.length, 2);
 		const indexPatches = (context: TranscriptContext | undefined) =>
 			(context?.messages ?? []).filter(
 				(message) => message.role === "system" && message.sections?.memory_index !== undefined,
 			).length;
-		const laterRound = sectionsOf(requests[1].messages).memory_index ?? "";
-		assert.match(laterRound, /editor-choice: Editor choice/);
-		assert.doesNotMatch(laterRound, /later-note/, "a running prompt keeps its run's index");
-		assert.equal(indexPatches(requests[1]), indexPatches(requests[0]), "no index patch lands mid-run");
+		const first = sectionsOf(requests[0].messages).memory_index ?? "";
+		assert.match(first, /editor-choice: Editor choice/);
+		assert.doesNotMatch(first, /later-note/);
+		assert.equal(sectionsOf(requests[1].messages).memory_index, first);
+		assert.equal(indexPatches(requests[1]), indexPatches(requests[0]));
+		const result = (await toolResults(conversation)).at(-1)?.message;
+		assert.ok(result);
+		assert.match(messageText(result), /later-note/);
 		assert.equal((await run()).status, "done");
-		assert.match(sectionsOf(requests[2].messages).memory_index ?? "", /later-note: Later note/);
+		assert.equal(sectionsOf(requests[2].messages).memory_index, first);
+		assert.equal(indexPatches(requests[2]), indexPatches(requests[0]));
+
+		const second = await harness.createConversation({ ownership: { kind: "ownerless" }, agent }, BACKGROUND_CONTEXT);
+		assert.equal((await run(second)).status, "done");
+		assert.match(sectionsOf(requests[3].messages).memory_index ?? "", /later-note: Later note/);
+
+		const task = await conversation.compact(undefined, BACKGROUND_CONTEXT);
+		await harness.waitForTask(task, BACKGROUND_CONTEXT);
+		await conversation.waitForIdle(BACKGROUND_CONTEXT);
+		assert.ok((await conversation.context(BACKGROUND_CONTEXT)).head);
+		assert.equal((await run()).status, "done");
+		assert.match(sectionsOf(requests[4].messages).memory_index ?? "", /later-note: Later note/);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 		if (previous === undefined) delete process.env.PI_MEMORY_DIR;

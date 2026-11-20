@@ -1,6 +1,7 @@
 // Bounded, read-only lexical retrieval over an explicitly supplied memory corpus.
 // Search pages rescan current sources; source pages bind continuations to a digest.
 
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	type Dirent,
@@ -16,11 +17,12 @@ import {
 } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { setImmediate } from "node:timers/promises";
+import { promisify } from "node:util";
 import { findMarkdownHeading, markdownHeadings } from "./headings.ts";
 import { findFrontmatterClose, memorySourceCache, type ParsedMemoryHeader } from "./source-cache.ts";
 import { memoryRoot, redactCredentials, SLUG } from "./store.ts";
 import { historyDirectory, revisionIdentity } from "./history.ts";
-import { sourceFreshness, type Freshness } from "./lifecycle.ts";
+import { isDate, sourceFreshness, type Freshness } from "./lifecycle.ts";
 
 const INVENTORY_CAP = 16384;
 const PROMPT_NOTE_CAP = 2048;
@@ -1690,13 +1692,49 @@ function indexTitle(title: string, limit: number): string {
 	return result;
 }
 
-function renderMemoryIndex(scan: Scan): string {
-	const eligible = scan.notes
-		.filter((note) => SLUG.test(note.slug) && note.slug !== "readme")
-		.map((note) => ({ note, status: note.lifecycle.status }));
-	const pointers = eligible
-		.filter(({ status }) => status === "active")
-		.map(({ note }) => ({ slug: note.slug, title: indexTitle(pointerTitle(note), 160) }));
+const execFileAsync = promisify(execFile);
+
+async function gitTopLevel(cwd: string, signal?: AbortSignal): Promise<string | undefined> {
+	try {
+		const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
+			cwd,
+			signal,
+			timeout: 1000,
+			maxBuffer: 16 * 1024,
+		});
+		return stdout.replace(/\n$/, "") || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function projectTokens(value: string): string[] {
+	return value
+		.toLowerCase()
+		.split(/[^\p{L}\p{N}]+/u)
+		.filter((token) => [...token].length >= 3);
+}
+
+function renderMemoryIndex(scan: Scan, project: string, repository?: string): string {
+	const tokens = new Set(projectTokens(project));
+	const pointers = scan.notes
+		.filter((note) => note.lifecycle.status === "active" && SLUG.test(note.slug) && note.slug !== "readme")
+		.map((note) => {
+			const metadata = note.header.parsed;
+			const tags = Array.isArray(metadata?.tags)
+				? metadata.tags.filter((tag): tag is string => typeof tag === "string")
+				: [];
+			const match =
+				[note.slug, note.header.pointer("title") ?? note.title, ...tags].some((cue) =>
+					projectTokens(cue).some((token) => tokens.has(token)),
+				) ||
+				(repository !== undefined && tags.some((tag) => tag.toLowerCase() === repository));
+			const updated = metadata?.updated;
+			const verified = metadata?.verified_date;
+			const date = isDate(updated) ? updated : isDate(verified) ? verified : "";
+			return { slug: note.slug, title: indexTitle(pointerTitle(note), 160), match, date };
+		})
+		.sort((a, b) => Number(b.match) - Number(a.match) || b.date.localeCompare(a.date) || a.slug.localeCompare(b.slug));
 	const unknown = scan.notes.filter((note) => note.lifecycle.status === "unknown").length;
 	const retired = scan.notes.filter((note) => note.lifecycle.status === "retired").length;
 	const candidates = scan.candidates;
@@ -1727,15 +1765,19 @@ export async function memoryIndex(
 	root: string | undefined,
 	signal?: AbortSignal,
 	proactive = false,
+	cwd?: string,
 ): Promise<string | undefined> {
 	try {
 		checkAbort(signal);
 		if (root === undefined) return proactive ? MEMORY_UNAVAILABLE : undefined;
 		const resolved = validateRoot(memoryRoot(root));
 		requireReadme(resolved);
+		const topLevel = cwd === undefined ? undefined : await gitTopLevel(cwd, signal);
+		const repository = topLevel === undefined ? undefined : basename(topLevel).toLowerCase();
+		const project = repository ?? (cwd === undefined ? "" : basename(cwd));
 		const scan = await scanCorpus(resolved, null, signal, undefined, 0, PROMPT_NOTE_CAP);
 		checkAbort(signal);
-		return renderMemoryIndex(scan);
+		return renderMemoryIndex(scan, project, repository);
 	} catch (error) {
 		if (error instanceof InventoryLimitError)
 			return `${error.message}. Subject count and lifecycle coverage are unknown; no pointers are included.`;

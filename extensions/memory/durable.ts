@@ -69,9 +69,6 @@ export interface MemoryDurableContribution {
 	create(host: MemoryDurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 }
 
-/** Conversations whose run-scoped index text one host keeps; the oldest is scanned again. */
-const RUN_INDEX_CONVERSATIONS = 64;
-
 /** Model-facing usage guidance as one section, because Durable tools carry no promptGuidelines. */
 function memoryGuidance(): string {
 	return MEMORY_GUIDELINES.map((line) => `- ${line}`).join("\n");
@@ -90,26 +87,31 @@ export function createMemoryContribution(
 			disposeOrdinarySettings();
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));
 			host.onClose(() => memorySourceCache.clear());
-			const { defineExtension, defineTool, LiveDoc, section } = host.durable;
+			const { defineExtension, defineTool, section } = host.durable;
 			const configuration = () => readSettings({ agentDir: host.agentDir }).values;
-			// Durable renders sections before every request. The index is scanned at the first request of
-			// a run and kept for that run's later tool rounds: a corpus change never patches a running
-			// prompt (a full prompt-cache miss on models without mid-conversation system messages), and
-			// tool rounds do not rescan the corpus. The next run reads the changed corpus.
-			const runIndex = new Map<Durable.ConversationId, string | undefined>();
+			const indexes = new Map<Durable.ConversationId, Promise<string | undefined>>();
+			let observation: Durable.CommitObservation | undefined;
+			host.onClose(() => observation?.detach());
 			const indexSection = async (input: Durable.PromptInput, context: Context) => {
-				if (runIndex.has(input.conversationId)) {
-					const live = await input.read.snapshot(LiveDoc, input.conversationId, context);
-					if ((live?.run?.turns ?? 0) > 0) return runIndex.get(input.conversationId);
-				}
+				// Invalidate on the committed compaction marker, not when compaction starts.
+				observation ??= host.harness.observeCommits({
+					advance({ changes }) {
+						for (const change of changes) {
+							if (change.type === "entry" && change.value.head !== undefined) {
+								indexes.delete(change.value.conversationId);
+							}
+						}
+					},
+					end() {},
+				});
+				const id = input.conversationId;
+				const existing = indexes.get(id);
+				if (existing !== undefined) return existing;
 				const config = configuration();
-				const text = await memoryIndex(config.dir, context.abortSignal, config.proactive);
-				runIndex.delete(input.conversationId);
-				runIndex.set(input.conversationId, text);
-				if (runIndex.size > RUN_INDEX_CONVERSATIONS) {
-					const oldest = runIndex.keys().next().value;
-					if (oldest !== undefined) runIndex.delete(oldest);
-				}
+				const pending = memoryIndex(config.dir, context.abortSignal, config.proactive, input.agent.cwd ?? host.cwd);
+				indexes.set(id, pending);
+				const text = await pending;
+				if (context.abortSignal?.aborted && indexes.get(id) === pending) indexes.delete(id);
 				return text;
 			};
 			const configuredDir = () => configuration().dir;
@@ -157,13 +159,7 @@ export function createMemoryContribution(
 						}),
 					),
 				],
-				sections: [
-					section("memory", () => memoryGuidance()),
-					// The index text depends only on corpus content. A stable corpus
-					// renders identical bytes, so the section adds no prompt delta and
-					// provider caches stay warm; a changed corpus reaches the next run.
-					section("memory_index", indexSection),
-				],
+				sections: [section("memory", () => memoryGuidance()), section("memory_index", indexSection)],
 				tools: [
 					searchTool,
 					defineTool({

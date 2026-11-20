@@ -249,6 +249,8 @@ test("loaded tools preserve a note through correction, review, retirement, react
 		};
 		const created = details(await invoke("memory_write", input));
 		assert.equal(created.initialized, true);
+		assert.equal(sections.at(-1), sections[0]);
+		await active.reload();
 		const firstDigest = digest(created.digest);
 		assert.equal(details(await invoke("memory_read", { slug: "README" })).source, "contract");
 		const found = details(
@@ -411,8 +413,10 @@ return {
 		assert.deepEqual(withdrawn.lifecycle, { status: "retired", supersededBy: null });
 		assert.equal((withdrawn.freshness as JsonObject).verified, true);
 		assert.equal(parseFrontmatter(readFileSync(path, "utf8")).body, parseFrontmatter(current).body);
-		assert.doesNotMatch(sections.at(-1) ?? "", /configuration-notes:/);
+		assert.match(sections.at(-1) ?? "", /configuration-notes: Configuration notes/);
+		await active.reload();
 		const withoutRetired = details(await invoke("memory_search", { query: "configuration" }));
+		assert.doesNotMatch(sections.at(-1) ?? "", /configuration-notes:/);
 		assert.deepEqual(withoutRetired.notes, []);
 		assert.equal(withoutRetired.excludedRetired, 1);
 		const withRetired = details(await invoke("memory_search", { query: "configuration", includeRetired: true }));
@@ -437,6 +441,7 @@ return {
 				reviewAfter: null,
 			}),
 		);
+		await active.reload();
 		const restoredRead = details(await invoke("memory_read", { slug: input.slug, digest: restored.digest }));
 		assert.deepEqual(restoredRead.lifecycle, { status: "active", supersededBy: null });
 		assert.equal((restoredRead.freshness as JsonObject).retirement, null);
@@ -523,6 +528,7 @@ return {
 			).isError,
 			true,
 		);
+		await active.reload();
 		await invoke("memory_search", {});
 		const section = sections.at(-1);
 		assert.match(section ?? "", /configuration-choice: Configuration choice/);

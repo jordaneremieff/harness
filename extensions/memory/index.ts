@@ -43,10 +43,21 @@ export default function memory(pi: ExtensionAPI): void {
 		"durable:contribution",
 		createMemoryContribution(fileURLToPath(import.meta.url), pi.events, disposeSettings),
 	);
+	let index: Promise<string | undefined> | undefined;
+	const resetIndex = () => {
+		index = undefined;
+	};
+	pi.on("session_start", resetIndex);
+	pi.on("session_compact", resetIndex);
 	pi.on("before_agent_start", async (event, ctx) => {
 		delete event.systemPromptOptions.sections.memory_index;
-		const config = configuration();
-		const section = await memoryIndex(config.dir, ctx.signal, config.proactive);
+		if (index === undefined) {
+			const config = configuration();
+			index = memoryIndex(config.dir, ctx.signal, config.proactive, ctx.cwd);
+		}
+		const pending = index;
+		const section = await pending;
+		if (ctx.signal?.aborted && index === pending) resetIndex();
 		if (section !== undefined) event.systemPromptOptions.sections.memory_index = section;
 	});
 	registerTool({

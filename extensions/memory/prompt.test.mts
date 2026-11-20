@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs, { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -133,7 +134,7 @@ test("status uses the complete header to resolve scalar values", async (t) => {
 	assert.deepEqual(pointers(section(await memoryIndex(root))), ["alias: Alias"]);
 });
 
-test("index bytes ignore body and date changes and sort independently of directory order", async (t) => {
+test("index bytes ignore body changes and sort ties independently of directory order", async (t) => {
 	const first = corpus(t);
 	const second = corpus(t);
 	for (const slug of ["z", "m", "a"]) note(first, slug, `title: ${slug}\nstatus: active\nupdated: 2020-01-01`);
@@ -143,11 +144,63 @@ test("index bytes ignore body and date changes and sort independently of directo
 	assert.equal(await memoryIndex(second), before);
 	writeFileSync(
 		join(first, "m.md"),
-		"---\nstatus: active\nsuperseded_by: null\ntitle: m\n---\nA completely different body",
+		"---\nstatus: active\nsuperseded_by: null\ntitle: m\nupdated: 2020-01-01\n---\nA completely different body",
 	);
 	assert.equal(await memoryIndex(first), before);
 	note(first, "m", "status: active\ntitle: New subject");
 	assert.notEqual(await memoryIndex(first), before);
+});
+
+test("Git project matches precede other slugs under byte pressure", async (t) => {
+	const root = corpus(t);
+	const repo = join(root, "Zephyr_v2");
+	const cwd = join(repo, "components");
+	mkdirSync(cwd, { recursive: true });
+	execFileSync("git", ["init", "--quiet"], { cwd: repo, timeout: 3000, maxBuffer: 4096 });
+	for (let i = 0; i < 300; i++) {
+		note(root, `aaa-components-${String(i).padStart(3, "0")}-${"a".repeat(60)}`, "status: active");
+	}
+	note(root, "zz-slug-zephyr", "status: active");
+	note(root, "zz-tag", 'status: active\ntags: ["ZEPHYR"]');
+	note(root, "zz-title", 'status: active\ntitle: "Release: Zephyr"');
+	note(root, "aaa-short-token", 'status: active\ntags: ["v2", "zephyrish"]');
+	const text = section(await memoryIndex(root, undefined, false, cwd));
+	const lines = pointers(text);
+	assert.deepEqual(lines.slice(0, 3), ["zz-slug-zephyr", "zz-tag", "zz-title"]);
+	assert.ok(lines.slice(3).every((slug) => slug.startsWith("aaa-")));
+	assert.match(text, new RegExp(`Omitted observed active cues: ${304 - lines.length} \\(byte limit\\)`));
+});
+
+test("the working directory fallback ranks both groups by update, verification and slug", async (t) => {
+	const root = corpus(t);
+	const cwd = join(root, "Zephyr");
+	mkdirSync(cwd);
+	for (const [slug, fields] of [
+		["zephyr-z", "updated: 2024-01-01"],
+		["zephyr-a", "updated: 2024-01-01"],
+		["zephyr-undated", "updated: 2025-02-31"],
+		["zephyr-verified", "verified_date: 2025-01-01"],
+		["other-a", "updated: 2026-02-01"],
+		["other-z", "updated: 2026-03-01"],
+		["other-undated", ""],
+	])
+		note(root, slug, `status: active\n${fields}`);
+	const text = section(await memoryIndex(root, undefined, false, cwd));
+	assert.deepEqual(
+		pointers(text).map((line) => line.split(":")[0]),
+		["zephyr-verified", "zephyr-a", "zephyr-z", "zephyr-undated", "other-z", "other-a", "other-undated"],
+	);
+});
+
+test("an explicit Git repository tag matches a short repository name", async (t) => {
+	const root = corpus(t);
+	const cwd = join(root, "Go");
+	mkdirSync(cwd);
+	execFileSync("git", ["init", "--quiet"], { cwd, timeout: 3000, maxBuffer: 4096 });
+	note(root, "aaa-go", "status: active\ntitle: Go tools");
+	note(root, "zzz-note", "status: active\ntags: [go]");
+	const text = section(await memoryIndex(root, undefined, false, cwd));
+	assert.equal(pointers(text)[0], "zzz-note: zzz-note");
 });
 
 test("byte pressure retains complete shortened titles before compact pointers", async (t) => {

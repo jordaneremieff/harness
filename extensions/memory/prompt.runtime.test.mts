@@ -1,6 +1,6 @@
 import { isolateMachineSettings } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -28,7 +28,7 @@ function compactNotes(corpus: string, count: number, source: (title: string) => 
 }
 
 for (const form of ["titles", "slugs", "partial"] as const) {
-	test(`native ${form} reach a controlled provider, avoid unchanged deltas, and remove unavailable memory`, {
+	test(`ordinary ${form} stay fixed across prompts and refresh at lifecycle boundaries`, {
 		timeout: 20000,
 	}, async () => {
 		const root = mkdtempSync(join(tmpdir(), "memory-prompt-runtime-"));
@@ -50,7 +50,7 @@ for (const form of ["titles", "slugs", "partial"] as const) {
 		const settingsManager = SettingsManager.inMemory({
 			defaultProvider: "memory-fixture",
 			defaultModel: "controlled",
-			compaction: { enabled: false },
+			compaction: { enabled: false, keepRecentTokens: 1 },
 			retry: { enabled: false },
 		});
 		let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
@@ -71,6 +71,13 @@ for (const form of ["titles", "slugs", "partial"] as const) {
 				additionalExtensionPaths: [fileURLToPath(new URL("./index.ts", import.meta.url))],
 				extensionFactories: [
 					(pi) => {
+						pi.on("session_before_compact", ({ preparation }) => ({
+							compaction: {
+								summary: "Earlier exchanges summarised.",
+								firstKeptEntryId: preparation.firstKeptEntryId,
+								tokensBefore: preparation.tokensBefore,
+							},
+						}));
 						pi.registerProvider("memory-fixture", {
 							baseUrl: "https://memory.invalid",
 							api: "memory-fixture",
@@ -174,47 +181,28 @@ for (const form of ["titles", "slugs", "partial"] as const) {
 			);
 			assert.deepEqual(patches(), [first]);
 
-			await session.prompt("Unchanged request");
+			writeFileSync(join(corpus, "additional-choice.md"), source("Additional choice"));
+			await session.prompt("New note on disk");
 			assert.equal(promptSection(), first);
-			assert.deepEqual(patches(), [first]);
-			await session.prompt("Unchanged request again");
-			assert.equal(promptSection(), first);
-			assert.deepEqual(patches(), [first]);
-			writeFileSync(join(corpus, "editor-choice.md"), source("Editor choice", "DIFFERENT PRIVATE BODY"));
-			await session.prompt("Body-only change");
 			assert.deepEqual(patches(), [first]);
 
-			writeFileSync(join(corpus, "editor-choice.md"), source("Editor replacement"));
-			await session.prompt("Changed title");
-			if (form !== "titles") {
-				assert.equal(promptSection(), first);
-				assert.deepEqual(patches(), [first]);
-				renameSync(join(corpus, "editor-choice.md"), join(corpus, "editor-replacement.md"));
-				await session.prompt("Changed subject");
-			}
+			if (form === "titles") await session.reload();
+			else await session.compact();
+			await session.prompt("Refreshed index");
 			const changed = promptSection();
 			assert.match(
 				changed as string,
-				form === "titles" ? /editor-choice: Editor replacement/ : /^editor-replacement$/m,
+				form === "titles" ? /additional-choice: Additional choice/ : /^additional-choice$/m,
 			);
-			assert.deepEqual(patches(), [first, changed]);
+			assert.equal(patches().at(-1), changed);
 
-			delete process.env.PI_MEMORY_DIR;
-			await session.prompt("Unavailable memory");
-			const unavailable = promptSection();
-			assert.match(unavailable as string, /Memory is unavailable, not empty/);
-			assert.deepEqual(patches(), [first, changed, unavailable]);
-			await session.prompt("Still unavailable");
-			assert.deepEqual(patches(), [first, changed, unavailable]);
-			process.env.PI_MEMORY_DIR = corpus;
-			await session.prompt("Restored memory");
+			const missingRoot = join(root, "missing");
+			process.env.PI_MEMORY_DIR = missingRoot;
+			await session.prompt("Unavailable corpus on disk");
 			assert.equal(promptSection(), changed);
-			assert.deepEqual(patches(), [first, changed, unavailable, changed]);
-			rmSync(join(corpus, "README.md"));
-			await session.prompt("Missing contract");
-			assert.equal(promptSection(), unavailable);
-			assert.deepEqual(patches(), [first, changed, unavailable, changed, unavailable]);
-			assert.equal(requests.length, form === "titles" ? 9 : 10);
+			await session.reload();
+			await session.prompt("Refreshed unavailable index");
+			assert.match(promptSection() as string, /Memory is unavailable, not empty/);
 			assert.deepEqual(errors, []);
 		} finally {
 			if (session) {

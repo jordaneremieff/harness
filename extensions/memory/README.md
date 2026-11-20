@@ -531,11 +531,20 @@ missing or unusable titles fall back to the slug. Controls and format characters
 become spaces, whitespace collapses to one line, and angle brackets become non-markup
 characters. Titles remain untrusted even after display sanitization.
 
-The complete section, including Pi's wrapper, fits **12 KiB of UTF-8**. Pointers
-sort by slug. Titles first retain at most 160 Unicode code points; if the whole list
+The project name is the basename of the Git worktree root, or of the working
+directory when no Git root is available. Active pointers that match the project
+come first. A match shares a lowercase alphanumeric token of at least three
+characters with the project in its slug, title or tags. A tag equal to the Git
+root name also counts as a repository match. The corpus has no separate
+repository field. Within each group, pointers sort by descending `updated` date
+(`verified_date` if `updated` is missing or invalid), then by slug. Undated notes
+come after dated notes in their group.
+
+The complete section, including Pi's wrapper, fits **12 KiB of UTF-8**. Titles
+first retain at most 160 Unicode code points; if the whole list
 does not fit, all titles shorten to at most 64 code points. If that complete list
 still does not fit, the section uses slugs only. If the complete slug list exceeds
-the cap, the section retains the longest alphabetical slug prefix and reports the
+the cap, the section retains the longest prefix in priority order and reports the
 exact number of observed active notes omitted by the byte limit. The omission
 clause appears only when notes are omitted. It always points to `memory_search`.
 This preserves subject coverage before retaining title detail. Byte accounting
@@ -550,10 +559,13 @@ If the filename inventory itself exceeds its hard capacity, the section reports
 that exact boundary without pointers or an invented subject count. Search reports
 the same inventory refusal. Direct source reads remain available by known slug.
 
-The hook rebuilds from disk at each `before_agent_start`, not each model request
-within that run. Every call repeats the root and contract validation, directory
-inventory, no-follow regular-file opens, bounded reads, and before/after file
-evidence checks. A bounded process cache reuses only the header parse products of
+The first `before_agent_start` after session start, reload or completed compaction
+renders a snapshot from disk. Later runs reuse the same section bytes, including
+an absent or unavailable section. `memory_search` reads the current corpus, so
+new notes remain available before the next index refresh. Each refresh validates
+the root and contract, inventories the directory, opens regular files without
+following links, and checks file evidence before and after bounded reads.
+A bounded process cache reuses only the header parse products of
 verified source text: metadata and its state, cue lines, unusable fields, lifecycle
 status and isolated scalar pointer fields such as the title. It retains the bounded
 header region and those parse products only; it stores no separate note body, scan,
@@ -572,13 +584,12 @@ products. A successful owned publication invalidates that root and filename, inc
 an earlier success in a partly failed multi-write operation. Final ordinary and Durable
 teardown clear the cache. Freshness and UTC-day calculations run outside the cache and
 report copies of the small review records, so a caller cannot change cached parse
-products. Identical cues produce identical section bytes;
-body-only or date-only changes produce no index delta. A change to visible cues or
-membership updates the next run's section. Title changes that leave the same compact
-pointer list and form produce no index delta.
+products. A refresh only changes the section if the rendered text changes. Dates
+can affect pointer order but do not appear in the section.
 
-If configuration, the root, the contract, or the scan is unavailable, the hook adds
-no section and never blocks the run. A later unavailable run removes a prior section.
+If configuration, the root, the contract, or the scan is unavailable at refresh,
+the section uses the unavailable-state line when proactive notices are enabled
+and is omitted otherwise. Unavailable memory never blocks the run.
 
 Pi clones base prompt options for each `before_agent_start`, compares the
 resulting sections with the transcript, and records changed text or a `null` removal.
@@ -586,9 +597,8 @@ An unchanged section adds no transcript delta. The extension edits only
 `event.systemPromptOptions.sections.memory_index`; it does not replace the whole
 prompt. A different extension that forces an opaque system prompt owns that separate
 projection. Controlled native-session tests verify ordinary provider delivery of
-title and compact pointers, metadata-budget qualifications, unchanged suppression,
-changed cues, removal, and restoration. These tests establish delivery and coverage, not model comprehension
-or improved answer quality.
+title and compact pointers, metadata-budget qualifications, byte stability between
+runs, and refresh after reload or compaction.
 
 ## Proactive notices
 
@@ -717,12 +727,10 @@ forms.
 Two prompt sections carry the ordinary model-facing surface. `memory` holds the
 usage guidelines that the ordinary tools declare as `promptGuidelines`.
 `memory_index` renders the same bounded pointer index as the ordinary
-`before_agent_start` hook. Durable renders sections before every request, so
-the native form scans the corpus at the first request of a run and keeps that
-index text for the run's later tool rounds. The index text depends only on
-corpus content, so an unchanged corpus produces identical bytes and adds no
-system-prompt delta; a changed corpus reaches the next run, as it does in the
-ordinary form, and never patches a running prompt. Native results use `output` for model-visible text and `details`
+`before_agent_start` hook. It retains one snapshot per conversation in the host.
+The first render after a host restart or a committed compaction marker builds a
+fresh snapshot. Later renders reuse it across tool rounds and runs. Native
+results use `output` for model-visible text and `details`
 for the ordinary tool details. `memory_search` declares `structuredOutputSchema`
 and returns its bounded page as `structuredOutput` for nested callers. Other
 memory tools have no structured schema; nested callers receive their bounded text.
