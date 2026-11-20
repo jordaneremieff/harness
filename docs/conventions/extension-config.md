@@ -8,7 +8,7 @@ implements its own side in its own files. Do not create a shared runtime module,
 import another slice, or copy another slice's implementation as a dependency.
 
 The contract has two consumers. The registry is a read-only projection of the
-publications below. The [settings extension](../../extensions/settings/README.md)
+publications below. The [config extension](../../extensions/config/README.md)
 is the generic editor and the one writer of the machine document: it reads the
 same publications, writes the document under the rules in [Writes](#writes),
 and learns each owner's judgement of a proposed value from that owner's ordinary
@@ -276,7 +276,7 @@ writes.
 
 ## Writes
 
-The settings extension is the only writer of the machine document. Its tools,
+The config extension is the only writer of the machine document. Its tools,
 its command, and its native application call one operation backend in the Pi
 host process; nothing else writes. The writer:
 

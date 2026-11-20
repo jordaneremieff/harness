@@ -433,7 +433,7 @@ const declarations = readdirSync(extensionsRoot, { withFileTypes: true })
 	.map((entry) => ({ slice: entry.name, path: join(extensionsRoot, entry.name, "settings.ts") }));
 
 test("configuration declarations are discovered", () => {
-	assert.ok(declarations.some(({ slice }) => slice === "settings"));
+	assert.ok(declarations.some(({ slice }) => slice === "config"));
 });
 
 for (const declaration of declarations) {
