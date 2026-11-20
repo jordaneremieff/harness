@@ -128,6 +128,7 @@ extension Workspace {
             let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
             defer { _ = unlinkat(parent, staged, 0) }
             try handle.write(contentsOf: bytes)
+            guard fsync(fd) == 0 else { throw ExplorerError("io", "Explorer could not flush the edit to disk.") }
             guard flock(parent, LOCK_EX | LOCK_NB) == 0 else {
                 throw ExplorerError("busy", "Another Explorer pane is saving in this folder. Try again.")
             }
