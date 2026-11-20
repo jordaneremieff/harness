@@ -223,6 +223,8 @@ function choiceTitles(request: Record<string, unknown>): string[] {
 function answerLines(name: string, request: Record<string, unknown>, data: Record<string, unknown>): Line[] {
 	if (name !== "rex_ask") return [];
 	const where = data.channel === "dialog" ? "in this session's dialog" : "in Rex";
+	const showFirst = object(data.rex).outcome === "show";
+	const lines = showFirst ? [line("You chose to see this session first.", "muted")] : [];
 	const answer = object(data.answer);
 	const titled = (id: unknown) => {
 		const found = Array.isArray(request.choices)
@@ -231,17 +233,19 @@ function answerLines(name: string, request: Record<string, unknown>, data: Recor
 		return string(found?.title) ?? String(id);
 	};
 	if (typeof answer.text === "string")
-		return [line(`Answer ${where}: ${JSON.stringify(answer.text)}`, "toolOutput", true)];
-	if (answer.choice !== undefined) return [line(`Answer ${where}: ${titled(answer.choice)}`, "toolOutput", true)];
-	if (Array.isArray(answer.choices))
-		return [
+		lines.push(line(`Answer ${where}: ${JSON.stringify(answer.text)}`, "toolOutput", true));
+	else if (answer.choice !== undefined)
+		lines.push(line(`Answer ${where}: ${titled(answer.choice)}`, "toolOutput", true));
+	else if (Array.isArray(answer.choices))
+		lines.push(
 			line(
 				`Answer ${where}: ${answer.choices.length ? answer.choices.map(titled).join(", ") : "none chosen"}`,
 				"toolOutput",
 				true,
 			),
-		];
-	return data.channel === "dialog" ? [line("Asked in this session's dialog.", "muted")] : [];
+		);
+	else if (data.channel === "dialog" && !showFirst) lines.push(line("Asked in this session's dialog.", "muted"));
+	return lines;
 }
 
 /** Program states reported anywhere inside the status payload, bounded in depth and count. */

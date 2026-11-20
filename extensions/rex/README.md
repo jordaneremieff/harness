@@ -358,11 +358,20 @@ Mac and on other devices, and the first answer ends it in all of them. The call 
 answer, so an agent that needs a decision continues in the same run instead of ending its turn.
 
 An agent asks only for a decision that only the operator can make, after it shows the complete
-matter in chat or a pane. A worker asks its requester first. The question names what it is about,
-and Rex shows it after the name of the asking session: the ordinary session's name, or the last
-part of its working directory when it has none; a native conversation shows the last part of its
-working directory. Rex shows the choices in the given order, so the choice that changes nothing
-comes first.
+matter in chat or a pane. A worker asks its requester first. The title starts with the asking
+session's Rex tab label. If the label is missing, unavailable or the Rex default, the title uses
+the Pi session name, then the last part of the working directory. A native conversation uses the
+last part of its working directory. Rex shows the choices in the given order, so the choice that
+changes nothing comes first.
+
+An ordinary interactive session in a Rex pane gets a final **Show me first** row on single-choice
+questions, including those with `allowOther`. It is absent on text and multiple-choice questions
+and in native conversations. If a choice uses the reserved ID `pi:show-me-first`, Rex shows that
+choice as given and does not add the row. Only the operator's explicit selection of **Show me first**
+moves focus to the asking pane. The question closes in Rex and continues in that Pi session's own
+dialog for the rest of the same wait. The dialog still opens if Rex cannot focus the pane. If less
+than a second remains, the result is `timeout`. The row is not an answer; `data.rex.outcome: "show"`
+records the move to the dialog.
 
 | Field | Meaning |
 |---|---|
@@ -396,7 +405,7 @@ When every app already shows another question, this one waits its turn: the exte
 every two seconds, for the rest of the wait, so questions from several agents queue instead of
 failing.
 
-The answer comes from a person who uses a connected Rex app, and it answers this question only.
+The answer comes from a person who uses a connected Rex app or from the Pi dialog, and it answers this question only.
 It approves an act only when the question asked about that act, the complete act was shown first,
 and the answer chose that act; any other answer approves nothing, and no answer grants anything
 beyond that act. Rex returns the answer and records no approval of its own: a policy approval of

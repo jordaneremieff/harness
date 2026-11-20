@@ -669,6 +669,7 @@ test("a native question waits on its own allowance and names its working directo
 		createCore: () => ({
 			dispose: () => {},
 			execute: async (request, context) => {
+				assert.equal(context.askPane, undefined, "a native question has no ordinary pane handoff");
 				seen.push({ effectiveMs: context.budget?.effectiveMs, asker: context.asker });
 				return {
 					ok: true,

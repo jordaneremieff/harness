@@ -50,7 +50,7 @@ import {
 	type ConversationKeeperOptions,
 	type FloatedPane,
 } from "./keep-visible.ts";
-import { createSessionPaneRegistrar, type SessionPaneRegistrarOptions } from "./session-pane.ts";
+import { createSessionPaneRegistrar, launchPane, type SessionPaneRegistrarOptions } from "./session-pane.ts";
 import { registerRexCommand } from "./setup.ts";
 import { createPaletteCollector, paletteRegistryPath } from "./palette.ts";
 import { paneStackingCommand } from "./pane-stacking.ts";
@@ -81,8 +81,8 @@ function askerName(pi: Pick<ExtensionAPI, "getSessionName">, ctx: Pick<Extension
 }
 
 /**
- * When Rex could not put the question to anybody, an interactive session asks in its own dialog for the rest of the
- * wait. The result keeps what Rex reported, so the agent and the operator can see why the dialog opened.
+ * An interactive session asks in its own dialog for the rest of the wait if Rex could not show the question or the
+ * operator chose to see the session first. The result keeps what Rex reported.
  */
 async function askHere(
 	request: AskRequest,
@@ -90,10 +90,15 @@ async function askHere(
 	ctx: Pick<ExtensionContext, "hasUI" | "ui">,
 	budget: RexBudget,
 ): Promise<RexResult> {
-	if (!ASK_UNREACHED.has(rex.outcome) || !ctx.hasUI) return rex;
+	const showFirst = rex.outcome === "show";
+	if (!showFirst && (!ASK_UNREACHED.has(rex.outcome) || !ctx.hasUI)) return rex;
 	const wait = askWaitMs(request.timeoutMs) - budget.elapsed();
-	if (wait < 1000 || budget.signal.aborted) return rex;
-	const settled = await askInDialog(request, request.question, ctx.ui, budget.signal, wait);
+	const stop = budget.stopReason();
+	if (!showFirst && (wait < 1000 || budget.signal.aborted)) return rex;
+	const settled =
+		stop || wait < 1000
+			? { outcome: stop ?? "timeout", answer: undefined, detail: undefined }
+			: await askInDialog(request, request.question, ctx.ui, budget.signal, wait);
 	const answered = settled.outcome === "answered";
 	return {
 		ok: answered,
@@ -103,26 +108,35 @@ async function askHere(
 			question: request.question,
 			channel: "dialog",
 			...(settled.answer ? { answer: settled.answer } : {}),
-			rex: { outcome: rex.outcome, reason: rex.error },
-			meaning: askMeaning(settled.outcome, "dialog"),
+			rex: { outcome: rex.outcome, ...(rex.error ? { reason: rex.error } : {}) },
+			meaning: askMeaning(settled.outcome, "dialog", showFirst),
 		},
 		...(answered ? {} : { error: askTrouble(settled.outcome, settled.detail) }),
 		effects: { state: "none" },
-		coverage: {
-			bounded: true,
-			note: `Rex could not show the question (${rex.outcome.replaceAll("_", " ")}), so it opened as a dialog in this session.`,
-		},
+		coverage: showFirst
+			? rex.coverage
+			: {
+					bounded: true,
+					note: `Rex could not show the question (${rex.outcome.replaceAll("_", " ")}), so it opened as a dialog in this session.`,
+				},
 	};
 }
 
 /** A message from the operator ends a pending question: Rex closes it in every app and the message follows. */
 function superseded(result: RexResult): RexResult {
 	const data = result.data !== null && typeof result.data === "object" ? (result.data as Record<string, unknown>) : {};
+	const rex = data.rex as { outcome?: unknown } | undefined;
+	const showFirst = rex?.outcome === "show";
 	return {
 		...result,
 		ok: false,
 		outcome: "superseded",
-		data: { question: data.question, channel: data.channel, meaning: askMeaning("superseded", "rex") },
+		data: {
+			question: data.question,
+			channel: data.channel,
+			...(showFirst ? { rex } : {}),
+			meaning: askMeaning("superseded", "rex", showFirst),
+		},
 		error: askTrouble("superseded"),
 	};
 }
@@ -189,7 +203,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 			);
 		}
 		const result = await core.execute(request as RexRequest, context);
-		return question && !question.signal.aborted && context.budget
+		return question && context.budget && (!question.signal.aborted || result.outcome === "show")
 			? askHere(request as AskRequest, result, ctx, context.budget)
 			: result;
 	};
@@ -229,6 +243,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 		ctx: ExtensionToolContext,
 	): Promise<RexResult> => {
 		const question = name === "rex_ask" ? new AbortController() : undefined;
+		const pane = question ? launchPane(process.env) : undefined;
 		const stops = [lifetime.signal, question?.signal, signal].filter((stop): stop is AbortSignal => stop !== undefined);
 		const budget = toolBudget(name, request.timeoutMs, settings.maxWaitMs, AbortSignal.any(stops));
 		if (question) questions.add(question);
@@ -245,6 +260,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 						signal: budget.signal,
 						budget,
 						...(question ? { asker: askerName(pi, ctx) } : {}),
+						...(pane ? { askPane: { ...pane, hasUI: ctx.hasUI } } : {}),
 					},
 					ctx,
 					question,

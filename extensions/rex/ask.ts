@@ -17,6 +17,7 @@ export const ASK_LIMIT_MS = 3600000;
 export const ASK_MARGIN_MS = 30000;
 export const ASK_BUDGET_LIMIT_MS = ASK_LIMIT_MS + ASK_MARGIN_MS;
 export const ASK_MAX_CHOICES = 50;
+export const ASK_SHOW_FIRST_ID = "pi:show-me-first";
 
 export interface AskChoice {
 	id: string;
@@ -80,6 +81,24 @@ const plain = (text: string) =>
 		.replace(/\s+/gu, " ")
 		.trim();
 
+/** The window that holds the launch block, whether its tab has a useful label or not. */
+export function askWindow(view: unknown, blockId: string): { label?: string } | undefined {
+	const { windows } = object(view);
+	if (!Array.isArray(windows)) return undefined;
+	for (const candidate of windows) {
+		const { window_id: id, label, layers } = object(candidate);
+		if (typeof id !== "string" || !id || !Array.isArray(layers)) continue;
+		const holds = layers.some((layer) => {
+			const { blocks } = object(layer);
+			return Array.isArray(blocks) && blocks.some((block) => object(block).block_id === blockId);
+		});
+		if (!holds) continue;
+		const name = typeof label === "string" ? plain(label) : "";
+		return name && name !== `Window ${id.slice(-8)}` ? { label: name } : {};
+	}
+	return undefined;
+}
+
 /** The cross-field rules of a question, shared by request validation and the core. */
 export function askProblem(request: AskRequest): string | undefined {
 	const choices = request.choices;
@@ -119,7 +138,8 @@ export function askTitle(question: string, asker: string | undefined): string {
 export function askPrompt(
 	request: AskRequest,
 	asker: string | undefined,
-): { kind: "input" | "pick"; prompt: Record<string, unknown>; title: string } {
+	showAt?: string,
+): { kind: "input" | "pick"; prompt: Record<string, unknown>; title: string; showFirst?: true } {
 	const problem = askProblem(request);
 	if (problem) throw new Error(`Invalid Rex question: ${problem}.`);
 	const title = askTitle(request.question, asker);
@@ -129,16 +149,24 @@ export function askPrompt(
 	if (request.value !== undefined) prompt.value = request.value;
 	if (request.confirm !== undefined) prompt.confirm = request.confirm;
 	if (!request.choices) return { kind: "input", prompt, title };
-	prompt.items = request.choices.map((choice) => ({
+	const items = request.choices.map((choice) => ({
 		id: choice.id,
 		...(choice.title === undefined ? {} : { title: choice.title }),
 		...(choice.subtitle === undefined ? {} : { subtitle: choice.subtitle }),
 		...(choice.detail === undefined ? {} : { detail: choice.detail }),
 		...(choice.selected ? { selected: true } : {}),
 	}));
+	const showFirst =
+		showAt !== undefined && !request.multiple && !request.choices.some(({ id }) => id === ASK_SHOW_FIRST_ID);
+	prompt.items = showFirst
+		? [
+				...items,
+				{ id: ASK_SHOW_FIRST_ID, title: "Show me first", subtitle: `Opens ${showAt} and asks there`, icon: "terminal" },
+			]
+		: items;
 	if (request.multiple) prompt.multiple = true;
 	if (request.allowOther) prompt.allow_other = true;
-	return { kind: "pick", prompt, title };
+	return { kind: "pick", prompt, title, ...(showFirst ? { showFirst: true } : {}) };
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -185,10 +213,15 @@ export function askCliSettlement(
 	request: AskRequest,
 	raw: { outcome: string; exitCode: number | null; stdout: string; stderr: string },
 	stop?: "cancelled" | "timeout",
-): AskSettlement | { outcome: "cancelled" | "timeout" } {
-	let parsed: AskSettlement | undefined;
+	showFirst?: boolean,
+): AskSettlement | { outcome: "cancelled" } | { outcome: "show" } {
+	let parsed: AskSettlement | { outcome: "show" } | undefined;
 	try {
-		parsed = askSettlement(request, JSON.parse(raw.stdout));
+		const reply = object(JSON.parse(raw.stdout));
+		parsed =
+			showFirst && typeof reply.why !== "string" && reply.answer === ASK_SHOW_FIRST_ID
+				? { outcome: "show" }
+				: askSettlement(request, reply);
 	} catch {
 		parsed = undefined;
 	}
@@ -212,7 +245,12 @@ export function askCliFailure(stderr: string): AskSettlement {
 }
 
 /** What a settled question means for the agent that asked it. */
-export function askMeaning(outcome: string, channel: "rex" | "dialog"): string {
+export function askMeaning(outcome: string, channel: "rex" | "dialog", showFirst = false): string {
+	const meaning = answerMeaning(outcome, channel);
+	return showFirst ? `The operator chose to see this session first. ${meaning}` : meaning;
+}
+
+function answerMeaning(outcome: string, channel: "rex" | "dialog"): string {
 	if (outcome === "answered")
 		return channel === "rex"
 			? "A person using a connected Rex app answered. The answer covers this question only."

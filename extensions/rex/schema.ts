@@ -439,6 +439,6 @@ export const toolSpecs = [
 		label: "Rex ask",
 		parameters: declaration(requestVariants.rex_ask),
 		description:
-			"Ask the operator one short question (op ask) in the command palette of every connected Rex app, on the Mac or the phone, and wait for the first answer: typed text, one of your choices, or several. Use it only for a decision that only the operator can make, after you show the complete matter in chat or a pane; a worker asks its requester first. In ordinary Pi, a message from the operator ends the wait, and the question opens as a dialog in this session when Rex cannot show it. No answer means no decision: do not act on it. The answer covers this question only.",
+			"Ask the operator one short question (op ask) in the command palette of every connected Rex app, on the Mac or the phone, and wait for the first answer: typed text, one of your choices, or several. Use it only for a decision that only the operator can make, after you show the complete matter in chat or a pane; a worker asks its requester first. In ordinary Pi, a message from the operator ends the wait, and the question opens as a dialog in this session when Rex cannot show it or the operator chooses to see the session first. No answer means no decision: do not act on it. The answer covers this question only.",
 	},
 ] as const satisfies readonly { name: RexToolName; label: string; parameters: Schema; description: string }[];

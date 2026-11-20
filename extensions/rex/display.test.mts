@@ -504,10 +504,11 @@ test("question cards show the question, its choices, the wait and the answer by 
 		fixture({
 			outcome: "answered",
 			effects: { state: "none" },
-			data: { channel: "dialog", answer: { text: "later" } },
+			data: { channel: "dialog", answer: { text: "later" }, rex: { outcome: "show" } },
 		}),
 		{ op: "ask", question: "When?" },
 	).join("\n");
+	assert.match(typed, /You chose to see this session first/);
 	assert.match(typed, /Answer in this session's dialog: "later"/);
 	const declined = render(
 		"rex_ask",

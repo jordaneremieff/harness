@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Schema } from "@earendil-works/pi-schema";
 import {
+	ASK_SHOW_FIRST_ID,
 	ASK_UNREACHED,
 	askCliFailure,
 	askCliSettlement,
@@ -19,7 +20,7 @@ import {
 	type AskDialogs,
 	type AskRequest,
 } from "./ask.ts";
-import { RexCore, type RexResult } from "./core.ts";
+import { RexCore, type RexCallContext, type RexRequest, type RexResult } from "./core.ts";
 import { registerRex } from "./index.ts";
 import { initialOwnershipState, type OwnershipStore } from "./ownership.ts";
 import { validateRequest } from "./schema.ts";
@@ -59,6 +60,8 @@ class AskTransport implements RexTransport {
 	calls: { args: readonly string[]; call: CliCall }[] = [];
 	revision = 18;
 	actions: unknown[] = [{ name: "pi_ask", kind: "lua" }];
+	view = () => reply({});
+	focus = () => reply({ revision: 2 });
 	answer: (args: readonly string[], call: CliCall) => CliResult | Promise<CliResult> = () =>
 		reply({ answer: "hold", version: 1 });
 	async run(args: readonly string[], call: CliCall): Promise<CliResult> {
@@ -72,8 +75,10 @@ class AskTransport implements RexTransport {
 				api_revision: this.revision,
 			});
 		if (args.includes("actions")) return reply({ actions: this.actions });
+		if (args.includes("session.view")) return this.view();
+		if (args.includes("session.focus_block")) return this.focus();
 		if (args.includes("do")) return this.answer(args, call);
-		return reply({});
+		throw new Error(`Unexpected Rex call: ${args.join(" ")}`);
 	}
 	dispose() {}
 }
@@ -90,8 +95,26 @@ function core(transport = new AskTransport()) {
 	};
 }
 const context = { ownerId: "owner", callId: "ask", cwd: "/work", asker: "harness" };
-const doArgs = (transport: AskTransport) => {
-	const call = transport.calls.find((entry) => entry.args.includes("do"));
+const pane = {
+	session: "session:10000000-0000-0000-0000-000000000000",
+	block: "block:20000000-0000-0000-0000-000000000000",
+	hasUI: true,
+};
+const windowId = "window:30000000-0000-0000-0000-000012345678";
+function paneView(label: string, kind = "floating") {
+	return reply({
+		windows: [
+			{ window_id: "window:elsewhere", label: "harness", layers: [{ blocks: [{ block_id: "block:other" }] }] },
+			{
+				window_id: windowId,
+				label,
+				layers: [{ kind, blocks: [{ block_id: "block:peer" }, { block_id: pane.block }] }],
+			},
+		],
+	});
+}
+const doArgs = (transport: AskTransport, attempt = 0) => {
+	const call = transport.calls.filter((entry) => entry.args.includes("do"))[attempt];
 	assert.ok(call, "the question ran the pi_ask action");
 	return {
 		args: call.args,
@@ -268,6 +291,97 @@ test("the core asks through pi_ask without an ownership record, and an action ca
 		transport.calls.map((entry) => entry.args.find((arg) => ["whoami", "actions", "do"].includes(arg))),
 		["whoami", "actions", "do"],
 	);
+});
+
+test("a question uses its containing tab label and offers one last row across busy retries", async () => {
+	const { core: rex, transport } = core();
+	transport.view = () => paneView(" md\u200b  improve\n ");
+	const answers = [reply({ why: "busy" }), reply({ answer: { text: ASK_SHOW_FIRST_ID } })];
+	transport.answer = () => {
+		const answer = answers.shift();
+		assert.ok(answer);
+		return answer;
+	};
+	const result = await rex.execute(ask({ choices, allowOther: true }), { ...context, askPane: pane });
+	assert.equal(result.outcome, "answered");
+	assert.deepEqual((result.data as { answer: unknown }).answer, { text: ASK_SHOW_FIRST_ID });
+	for (const attempt of [0, 1]) {
+		const { prompt } = doArgs(transport, attempt).json;
+		assert.equal(prompt.title, "md improve: Publish the change?");
+		assert.equal(prompt.allow_other, true);
+		assert.deepEqual(prompt.items, [
+			...choices,
+			{ id: ASK_SHOW_FIRST_ID, title: "Show me first", subtitle: "Opens md improve and asks there", icon: "terminal" },
+		]);
+	}
+	assert.equal(transport.calls.filter(({ args }) => args.includes("session.view")).length, 1);
+	assert.ok(!transport.calls.some(({ args }) => args.includes("session.focus_block")));
+});
+
+test("the tab label falls back independently of the Show me first row", async () => {
+	for (const [label, view, showsRow] of [
+		["default label", () => paneView("Window 12345678", "tiled"), true],
+		["blank label", () => paneView("\u200b \n"), true],
+		["missing block", () => reply({ windows: [] }), false],
+		["lookup failed", () => reply({}, 1), false],
+	] as const) {
+		const { core: rex, transport } = core();
+		transport.view = view;
+		const result = await rex.execute(ask({ choices }), { ...context, askPane: pane });
+		assert.equal(result.outcome, "answered", label);
+		const { prompt } = doArgs(transport).json;
+		assert.equal(prompt.title, "harness: Publish the change?", label);
+		assert.equal((prompt.items as unknown[]).length, choices.length + Number(showsRow), label);
+		assert.ok((transport.calls.find(({ args }) => args.includes("session.view"))?.call.timeoutMs ?? Infinity) <= 1000);
+	}
+});
+
+test("the extra row requires a single choice, an interactive UI and a located pane", async () => {
+	const cases = [
+		{ fields: {}, askPane: pane, answer: ASK_SHOW_FIRST_ID, outcome: "answered", value: { text: ASK_SHOW_FIRST_ID } },
+		{
+			fields: { choices, multiple: true },
+			askPane: pane,
+			answer: ["hold"],
+			outcome: "answered",
+			value: { choices: ["hold"] },
+		},
+		{ fields: { choices }, askPane: { ...pane, hasUI: false }, answer: ASK_SHOW_FIRST_ID, outcome: "failed" },
+		{ fields: { choices }, askPane: undefined, answer: ASK_SHOW_FIRST_ID, outcome: "failed" },
+		{
+			fields: { choices: [{ id: ASK_SHOW_FIRST_ID, title: "Agent's own choice" }] },
+			askPane: pane,
+			answer: ASK_SHOW_FIRST_ID,
+			outcome: "answered",
+			value: { choice: ASK_SHOW_FIRST_ID },
+		},
+	];
+	for (const { fields, askPane, answer, outcome, value } of cases) {
+		const { core: rex, transport } = core();
+		transport.view = () => paneView("composer");
+		transport.answer = () => reply({ answer });
+		const result = await rex.execute(ask(fields), { ...context, askPane });
+		assert.deepEqual(doArgs(transport).json.prompt.items, fields.choices);
+		assert.equal(result.outcome, outcome);
+		assert.deepEqual((result.data as { answer?: unknown }).answer, value);
+		assert.ok(!transport.calls.some(({ args }) => args.includes("session.focus_block")));
+		assert.equal(
+			transport.calls.some(({ args }) => args.includes("session.view")),
+			!!askPane,
+		);
+	}
+});
+
+test("cancellation during the tab lookup does not start a question", async () => {
+	const { core: rex, transport } = core();
+	const stop = new AbortController();
+	transport.view = () => {
+		stop.abort();
+		return paneView("composer");
+	};
+	const result = await rex.execute(ask({ choices }), { ...context, askPane: pane, signal: stop.signal });
+	assert.equal(result.outcome, "cancelled");
+	assert.ok(!transport.calls.some(({ args }) => args.includes("do")));
 });
 
 test("the core refuses before any action when the server is too old or has no pi_ask action", async () => {
@@ -509,9 +623,7 @@ test("a session's own dialog asks the same question forms", async () => {
 	);
 });
 
-function ordinary(
-	execute: (request: unknown, context: { signal?: AbortSignal; asker?: string }) => Promise<RexResult>,
-) {
+function ordinary(execute: (request: RexRequest, context: RexCallContext) => Promise<RexResult>) {
 	const tools = new Map<string, ToolDefinition<Schema>>();
 	const handlers = new Map<string, (...args: unknown[]) => unknown>();
 	const pi = {
@@ -525,7 +637,7 @@ function ordinary(
 		appendEntry: () => {},
 		getSessionName: () => "release review",
 	} as unknown as ExtensionAPI;
-	registerRex(pi, { createCore: () => ({ dispose: () => {}, execute: execute as never }) });
+	registerRex(pi, { createCore: () => ({ dispose: () => {}, execute }) });
 	const tool = tools.get("rex_ask");
 	assert.ok(tool);
 	return { tool, handlers };
@@ -578,6 +690,71 @@ test("an ordinary session asks in its own dialog when Rex cannot show the questi
 		}
 	} finally {
 		await handlers.get("session_shutdown")?.();
+	}
+});
+
+test("Show me first focuses the launch block once and continues the same question in Pi", async (t) => {
+	t.mock.property(process, "env", { ...process.env, REX_SESSION: pane.session, REX_BLOCK: pane.block });
+	for (const [path, selection, outcome, focusFails] of [
+		["answer", "Hold · Do not publish", "answered", false],
+		["Escape", undefined, "declined", false],
+		["operator message", undefined, "superseded", false],
+		["too late", undefined, "timeout", false],
+		["focus failed", "Hold · Do not publish", "answered", true],
+	] as const) {
+		const { core: rex, transport } = core();
+		let focused = false;
+		transport.view = () => paneView("composer");
+		transport.answer = () => reply({ answer: ASK_SHOW_FIRST_ID });
+		transport.focus = () => {
+			focused = true;
+			return focusFails ? reply({ error: "not_found" }, 1) : reply({ revision: 2 });
+		};
+		const { tool, handlers } = ordinary((request, context) => {
+			if (path === "too late" && context.budget) t.mock.method(context.budget, "elapsed", () => (focused ? 9500 : 0));
+			return rex.execute(request, context);
+		});
+		const ui = {
+			...dialogs([]),
+			select: async (title: string, options: string[], time?: { timeout?: number }) => {
+				assert.ok(focused, "Rex attempts focus before Pi asks");
+				assert.equal(title, "Publish the change?");
+				assert.deepEqual(options, ["Hold · Do not publish", "Publish"]);
+				assert.ok(time?.timeout && time.timeout <= 10000);
+				if (path === "operator message")
+					await handlers.get("input")?.({ source: "interactive", text: "Leave it as is." }, ctx);
+				return selection;
+			},
+		};
+		const select = t.mock.method(ui, "select");
+		const ctx = {
+			cwd: "/work",
+			hasUI: true,
+			ui,
+			sessionManager: { getSessionId: () => "ask-session", getEntries: () => [], getSessionFile: () => undefined },
+		} as unknown as ExtensionToolContext;
+		try {
+			const result = structured(
+				await tool.execute("ask-call", ask({ choices, timeoutMs: 10000 }), undefined, undefined, ctx),
+			);
+			const apis = transport.calls.flatMap(({ args }) =>
+				args.includes("api") ? [args.slice(args.indexOf("call") + 1)] : [],
+			);
+			assert.deepEqual(apis, [
+				["session.view", JSON.stringify({ session_id: pane.session })],
+				["session.focus_block", JSON.stringify({ session_id: pane.session, block_id: pane.block })],
+			]);
+			assert.equal(select.mock.callCount(), path === "too late" ? 0 : 1, path);
+			assert.equal(result.outcome, outcome, path);
+			assert.equal(result.ok, outcome === "answered", path);
+			assert.equal(result.data.channel, "dialog", path);
+			assert.deepEqual(result.data.rex, { outcome: "show" }, path);
+			assert.match(String(result.data.meaning), /chose to see this session first/, path);
+			assert.deepEqual(result.data.answer, outcome === "answered" ? { choice: "hold" } : undefined, path);
+			if (focusFails) assert.match(result.coverage.note ?? "", /could not confirm focus/);
+		} finally {
+			await handlers.get("session_shutdown")?.();
+		}
 	}
 });
 

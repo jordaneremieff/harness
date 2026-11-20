@@ -20,10 +20,12 @@ import {
 	askPrompt,
 	askTrouble,
 	askWaitMs,
+	askWindow,
 	type AskRequest,
 	type AskSettlement,
 } from "./ask.ts";
 import { paneStackingCommand, withPaneStacking } from "./pane-stacking.ts";
+import type { SessionPane } from "./session-pane.ts";
 import { CliTransport } from "./transport.ts";
 import type { CliResult, RexTransport } from "./transport.ts";
 
@@ -126,6 +128,7 @@ export interface RexCallContext {
 	budget?: RexBudget;
 	/** Who asks a question, as the person who answers it knows the session or agent. */
 	asker?: string;
+	askPane?: SessionPane & { hasUI: boolean };
 }
 export interface RexResult {
 	ok: boolean;
@@ -198,6 +201,7 @@ export function deadlineResult(value: RexResult, budget: RexBudget | undefined, 
 	const stop = budget.stopReason();
 	const established =
 		value.effects.state === "confirmed" ||
+		(operation === "ask" && value.outcome === "show") ||
 		["child_completed", "child_failed", "condition_observed", "observation_failed", "answered"].includes(value.outcome);
 	const stopped =
 		stop && !established
@@ -392,8 +396,9 @@ export class RexCore {
 		args: Record<string, unknown>,
 		server: ServerRef,
 		context: RexCallContext,
+		timeoutMs?: number,
 	): Promise<unknown> {
-		return this.json(["api", "call", method, JSON.stringify(args)], server.endpoint, context);
+		return this.json(["api", "call", method, JSON.stringify(args)], server.endpoint, context, timeoutMs);
 	}
 	private async block(
 		method: string,
@@ -493,7 +498,7 @@ export class RexCore {
 	 * question in every app.
 	 */
 	private async ask(request: AskRequest, context: RexCallContext): Promise<RexResult> {
-		const question = askPrompt(request, context.asker);
+		let question = askPrompt(request, context.asker);
 		const stopped = (target?: ResolvedTarget) =>
 			askResult(question.title, target, { outcome: context.budget?.stopReason() ?? "cancelled" });
 		let target: ResolvedTarget;
@@ -510,6 +515,7 @@ export class RexCore {
 			});
 		}
 		try {
+			question = (await this.askTabPrompt(request, target, context)) ?? question;
 			return await this.askInTurn(request, question, target, context);
 		} catch (error) {
 			// A call stopped before it started asked nobody; a stopped action closed its question in every app.
@@ -530,6 +536,22 @@ export class RexCore {
 			return askResult(title, target, { outcome: "not_configured" });
 		context.budget?.check("observe");
 		return target;
+	}
+
+	private async askTabPrompt(request: AskRequest, target: ResolvedTarget, context: RexCallContext) {
+		const pane = context.askPane;
+		if (!pane) return;
+		// Leave time for the question itself when the optional view is slow or unavailable.
+		const allowance = Math.min(1000, askWaitMs(request.timeoutMs) - (context.budget?.elapsed() ?? 0) - 2000);
+		if (allowance < 1) return;
+		const view = await this.api("session.view", { session_id: pane.session }, target.server, context, allowance).catch(
+			() => undefined,
+		);
+		context.budget?.check("observe");
+		const window = askWindow(view, pane.block);
+		if (!window) return;
+		const showAt = pane.hasUI ? (window.label ?? "this session's Rex tab") : undefined;
+		return askPrompt(request, window.label ?? context.asker, showAt);
 	}
 
 	/** Ask, and while every app shows another question, ask again for the rest of the wait, so questions queue. */
@@ -558,12 +580,31 @@ export class RexCore {
 				ASK_BUDGET_LIMIT_MS,
 				{ action: true, keepResult: true },
 			);
-			const settled = askCliSettlement(request, raw, context.budget?.stopReason());
+			const settled = askCliSettlement(request, raw, context.budget?.stopReason(), question.showFirst);
+			if (settled.outcome === "show") return this.askFocus(target, context);
 			if (settled.outcome !== "busy") return askResult(question.title, target, settled);
 			await delay(Math.max(0, Math.min(this.options.askRetryMs ?? 2000, left() - 1000)), undefined, {
 				signal: context.signal,
 			});
 		}
+	}
+
+	private async askFocus(target: ResolvedTarget, context: RexCallContext): Promise<RexResult> {
+		const pane = context.askPane;
+		if (!pane) throw new Error("The question did not offer a session pane.");
+		const handoff = result(false, "show", target);
+		try {
+			await this.api(
+				"session.focus_block",
+				{ session_id: pane.session, block_id: pane.block },
+				target.server,
+				context,
+				1000,
+			);
+		} catch {
+			handoff.coverage.note = "Rex could not confirm focus on this session's pane.";
+		}
+		return handoff;
 	}
 
 	private async resolve(
