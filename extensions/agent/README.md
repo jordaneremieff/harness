@@ -2775,7 +2775,11 @@ leave global recency unknown.
 
 Ordinary primaries read this view through untargeted `agent_status`. Inside a
 Durable agent the compact untargeted read omits it. Both receive a separate
-current-effort section in their model context at natural run boundaries. Prompt rows use identity order and omit activity,
+current-effort section in their model context at natural run boundaries. Durable
+renders sections before every model request, so a native conversation reads
+awareness at the first request of a run and keeps those bytes for that run's
+later tool rounds; peers that start or stop mid-run appear at the next run.
+Prompt rows use identity order and omit activity,
 start, and update timestamps. Traversal counters stay in `agent_status`, not
 the system prefix. Clock and counter changes alone leave section bytes unchanged;
 material purpose, scope, presence, and thread changes still update the section.

@@ -457,7 +457,7 @@ it("keeps zero-live-effort context to one line without losing unknown coverage",
 		assert.ok(line.includes(label), label);
 });
 
-it("refreshes native root and child sections at model requests while stable state emits no new section patch", async (t) => {
+it("refreshes native root and child sections at run starts while stable state emits no new section patch", async (t) => {
 	const ambientMarker = ambientPreferences(t);
 	const { root: sessionsRoot, catalog } = fixture(t);
 	const peer = randomUUID();
@@ -539,6 +539,71 @@ it("refreshes native root and child sections at model requests while stable stat
 	rmSync(join(sessionsRoot, "durable"), { recursive: true, force: true });
 	await say(root);
 	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("No other live effort is shown."));
+});
+
+it("keeps native awareness for the rest of a run and refreshes it at the next run", async (t) => {
+	ambientPreferences(t);
+	const { root: sessionsRoot } = fixture(t);
+	const peer = randomUUID();
+	publish(sessionsRoot, peer, claim("BEFORE-PURPOSE"));
+	const requests: Message[][] = [];
+	const faux = fauxProvider();
+	const models = createModels();
+	models.setProvider(faux.provider);
+	faux.setResponses(
+		Array.from({ length: 20 }, (_, index) => (request) => {
+			requests.push([...request.messages]);
+			if (index !== 0) return fauxAssistantMessage("DONE");
+			// A peer changes its claim while this run still has a tool round to go.
+			publish(sessionsRoot, peer, claim("MID-RUN-PURPOSE"));
+			return fauxAssistantMessage([fauxToolCall("agent_status", {})], { stopReason: "toolUse" });
+		}),
+	);
+	const registry = Durable.createRegistry();
+	registry.install(
+		createAgentContribution({
+			configureSettings: () => {},
+			source: "/extensions/agent/index.ts",
+			dispatch: async () => ({
+				conversations: [],
+				live: false,
+				storageId: randomUUID(),
+				coverage: { complete: true, returned: 0, scanned: 0, next: null },
+			}),
+		}).create({
+			onClose() {},
+			durable: Durable,
+			storageId: randomUUID(),
+			catalogRoot: join(sessionsRoot, "durable"),
+			cwd: sessionsRoot,
+			agentDir: sessionsRoot,
+			services: { modelRuntime: { getModel: (provider, modelId) => models.getModel(provider, modelId) } },
+		}),
+	);
+	const context = BACKGROUND_CONTEXT;
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
+	t.after(async () => {
+		await harness.close(context);
+	});
+	harness.resume();
+	const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+	const say = async () => {
+		const submission = await root.submit({ type: "input", content: "Read current view" }, context);
+		await submission.wait(context);
+	};
+	const effortPatches = (messages: Message[] | undefined) =>
+		(messages ?? []).filter((message) => message.role === "system" && message.sections?.["agent-efforts"] !== undefined)
+			.length;
+	await say();
+	assert.equal(requests.length, 2, "one run with one tool round makes two requests");
+	const laterRound = getCurrentSystemPrompt(requests[1]);
+	assert.ok(laterRound.includes("BEFORE-PURPOSE"), laterRound);
+	assert.equal(laterRound.includes("MID-RUN-PURPOSE"), false, "a running prompt keeps its run's awareness");
+	assert.equal(effortPatches(requests[1]), effortPatches(requests[0]), "no awareness patch lands mid-run");
+	await say();
+	const nextRun = getCurrentSystemPrompt(requests.at(-1) ?? []);
+	assert.ok(nextRun.includes("MID-RUN-PURPOSE"), nextRun);
+	assert.equal(nextRun.includes("BEFORE-PURPOSE"), false);
 });
 
 it("omits awareness from compact native status and preserves selected detail", async (t) => {

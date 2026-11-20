@@ -642,6 +642,9 @@ type ResetInput = Static<typeof ResetParams>;
 
 // ─── Extension ──────────────────────────────────────────────────────────────
 
+/** Conversations whose run-scoped effort awareness one host keeps; the oldest is read again. */
+const RUN_AWARENESS_CONVERSATIONS = 64;
+
 const SECTION_PREAMBLE = [
 	"Every conversation has an external identity: the bare storage id for the root, storageId:conversationId otherwise. Use the identity from agent_status or agent_list as sessionId for agent_send, agent_steer, agent_abort, agent_configure, agent_compact, agent_rewind, and agent_command.",
 	"Final answers route to each request's reply recipient. Use agent_send mode: report for interim notices; the creating owner is provenance, not every request's recipient.",
@@ -2598,8 +2601,16 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		renderAgentPreferences(readAgentPreferences(host.agentDir, host.services.modelRuntime)),
 	);
 
-	const efforts = durable.section("agent-efforts", async (input, context) => {
-		if (effortResources === undefined) return undefined;
+	// Durable renders sections before every request. Awareness is read at the first request of a run
+	// and kept for that run's later tool rounds, so peers that start or stop never patch a running
+	// prompt (a full prompt-cache miss on models without mid-conversation system messages) and tool
+	// rounds do not rescan presence. An evicted or restarted host reads once more.
+	const runAwareness = new Map<Durable.ConversationId, string>();
+	const currentAwareness = async (
+		resources: EffortReadResources,
+		input: Durable.PromptInput,
+		context: Context,
+	): Promise<string> => {
 		try {
 			const meta = await input.read.snapshot(AgentMetaDoc, input.conversationId, context);
 			const self = nativeIntentSelf(
@@ -2607,10 +2618,26 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				input.agent.cwd ?? host.cwd,
 				meta === undefined ? null : meta.intent,
 			);
-			return formatEffortAwareness(await readEffortAwareness(effortResources, self, "reported"), "prompt");
+			return formatEffortAwareness(await readEffortAwareness(resources, self, "reported"), "prompt");
 		} catch {
 			return "Current effort and active thread awareness is unavailable. Read agent_status for a new bounded observation. Earlier notices describe changes, not current state.";
 		}
+	};
+	const efforts = durable.section("agent-efforts", async (input, context) => {
+		if (effortResources === undefined) return undefined;
+		const kept = runAwareness.get(input.conversationId);
+		if (kept !== undefined) {
+			const live = await input.read.snapshot(durable.LiveDoc, input.conversationId, context);
+			if ((live?.run?.turns ?? 0) > 0) return kept;
+		}
+		const text = await currentAwareness(effortResources, input, context);
+		runAwareness.delete(input.conversationId);
+		runAwareness.set(input.conversationId, text);
+		if (runAwareness.size > RUN_AWARENESS_CONVERSATIONS) {
+			const oldest = runAwareness.keys().next().value;
+			if (oldest !== undefined) runAwareness.delete(oldest);
+		}
+		return text;
 	});
 
 	// Model choices happen in conversations that can spawn, place or configure agents; others carry no section.
