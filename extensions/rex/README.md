@@ -464,10 +464,10 @@ configuration block holds the runtime of [palette commands](#palette-commands).
   a file with several hard links or a file of another kind is refused. Pi keeps the previous file
   beside the configured path, with `.before-pi-setup` added to its name, and runs
   `rex config reload`.
-- Setup and remove recognise only the exact block that Pi writes, which names the palette
-  registry of this agent directory. A block with other text between its markers, a partial block
-  or a repeated block is refused and stays for the operator to correct, so marker lines around
-  other text, such as inside a Lua string, are never taken for it.
+- Setup and remove recognise only the exact version 3 block for this agent directory. They
+  refuse any other block, including a partial or repeated block, and leave the file untouched.
+  If the file holds a block of another version, remove that block by hand before you run
+  `/rex setup`.
 - When the file already holds the block but the server has not loaded one of its actions, such as
   the action of a palette command recorded since the last reload, setup offers to run
   `rex config reload`, which reads the whole file again, and runs it only after confirmation.
@@ -487,28 +487,27 @@ Extensions offer the operator commands in the Rex command palette under `Pi:`, f
 of its extension that answers one step at a time: it asks a question, opens a pane, or ends. The
 runtime that `/rex setup` installs asks the questions with `rex.ui` in every connected Rex app,
 runs each step with `rex.exec` on the server's machine, and opens the panes. This extension
-publishes no command of its own; the agent and markdown extensions publish theirs.
+publishes no command of its own. The [Explorer extension](../explorer/README.md) publishes
+**Explore a Folder…**.
 
-- Ordinary Pi sessions in the interactive terminal that heard a publication record the published
-  commands in `<agentDir>/rex/palette.json` when they start and when a publication arrives later,
-  provided that Pi's global settings load this harness package; a trial that loads a checkout
-  with `-e` records nothing. A record
-  replaces the commands of each extension that the session heard and keeps the commands of other
-  extensions while their program and its first argument, when that names a file, exist. A trial
-  that loads only some extensions therefore removes nothing, and the commands of a removed
-  snapshot drop out. The update holds a lock beside the file, so two sessions never merge against
-  the same old record; a session that finds the lock held skips its update, because the holder
-  records the same publications. The file is written in one rename and only when it changes. RPC,
+- Ordinary interactive Pi sessions record published commands in `<agentDir>/rex/palette.json`
+  at session start and when a publication arrives later. Before each record, Pi checks that its
+  global settings still load the session's package root. A trial that loads a checkout with `-e`
+  but not through those settings records nothing. A record replaces the commands of each source
+  that the session heard. It keeps an unheard command only if its program exists and any absolute
+  first argument resolves to an existing path inside the recording package's real root. A script
+  from another snapshot drops out even if that snapshot remains on disk. The update holds a lock
+  beside the file, so two sessions never merge against the same old record. A session that finds
+  the lock held skips its update. The file is written in one rename and only when it changes. RPC,
   JSON and print sessions and native hosts record nothing. One warning per extension runtime
   reports a failed record.
-- `Pi: Commands…` (the `pi` action) lists every recorded command and runs the chosen one. Each
-  command also appears under its own name, `Pi: <title>` (the action `pi_<extension>_<name>`),
-  once Rex has reloaded its configuration after the command was first recorded. `Pi: Run Command`
-  (`pi_command`) runs one command by its ID for a key binding, for example
-  `rex.bind("cmd+shift+o", "pi_command", { id = "markdown.read" })`.
-- The runtime reads the record each time a command runs, so a newly activated harness snapshot
-  takes effect without a reload. `Pi: Commands…` runs the command as it was when the list showed
-  it. The runtime keeps only well-formed recorded commands, runs at most eight steps of 20 seconds
+- Each command appears as `Pi: <title>` (the action `pi_<extension>_<name>`) when Rex loads its
+  configuration. Reload the configuration after a command first appears in the registry or drops
+  out to refresh the palette. `Pi: Run Command` (`pi_command`) runs a command by its ID for a key
+  binding, for example `rex.bind("cmd+shift+o", "pi_command", { id = "explorer.folder" })`.
+- The runtime looks up the command by ID each time an action runs. Updated arguments take effect
+  without a reload, and an action cannot run a command absent from the registry. The runtime keeps
+  only well-formed recorded commands, runs at most eight steps of 20 seconds
   each (the time that a person takes to answer does not count), and accepts a reply of at most
   1 MiB that holds exactly one of `ask`, `show`, `done` or `error` in the contract's shape. A
   question without an answer ends the run quietly. A failed step, a malformed reply, an error

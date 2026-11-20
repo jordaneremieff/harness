@@ -1,7 +1,7 @@
 import { ASK_ACTION } from "./ask.ts";
 
 /** The version of the configuration block. Setup recognises only the exact block of this version. */
-export const BLOCK_VERSION = 2;
+export const BLOCK_VERSION = 3;
 const BEGIN = /^-- pi-harness: pi actions v(\d+) begin\r?$/gm;
 const END = /^-- pi-harness: pi actions end\r?$/gm;
 const MARKER = /^-- pi-harness: .*$/gm;
@@ -126,7 +126,6 @@ function pi_harness.run_id(ctx, id)
   pi_harness.say("Pi has no command " .. tostring(id) .. ". Start Pi in a Rex pane, then try again.")
 end
 
--- Runs the entry that the person chose, as it was when it was shown.
 function pi_harness.run(ctx, registry, entry)
   local answers = {}
   for _ = 1, 8 do
@@ -164,29 +163,6 @@ rex.action{
     if args.kind == "pick" then ask = rex.ui.pick end
     local answer, why, detail = ask(args.prompt)
     return { answer = answer, why = why, detail = detail, version = ${BLOCK_VERSION} }
-  end,
-}
-
-rex.action{
-  name = "pi",
-  title = "Pi: Commands…",
-  description = "Choose one of the commands that your Pi extensions offer.",
-  category = "Pi",
-  run = function(ctx)
-    pi_harness.require_ui()
-    local registry, problem = pi_harness.read_registry()
-    if registry == nil then return pi_harness.say(problem) end
-    local items = {}
-    local shown = {}
-    for _, entry in ipairs(registry.commands) do
-      if shown[entry.id] == nil then
-        items[#items + 1] = { id = entry.id, title = entry.title, subtitle = entry.description }
-        shown[entry.id] = entry
-      end
-    end
-    if #items == 0 then return pi_harness.say("Your Pi extensions offer no commands.") end
-    local id = rex.ui.pick{ title = "Pi commands", placeholder = "Filter commands", items = items }
-    if id ~= nil then pi_harness.run(ctx, registry, shown[id]) end
   end,
 }
 

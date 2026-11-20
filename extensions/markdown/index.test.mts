@@ -3,7 +3,6 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import { createEventBus, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import markdown, { ordinaryLifecycle, ordinaryOperations, readerUpdates } from "./index.ts";
@@ -191,59 +190,6 @@ test("headless commands notify without session messages or stdout and resolve bo
 		}
 		await rm(root, { recursive: true, force: true });
 	}
-});
-
-test("the ordinary factory publishes the palette command at setup and on version 1 requests until shutdown", async (t) => {
-	const root = await mkdtemp(join(tmpdir(), "markdown-palette-publication-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
-	const dir = join(root, "store");
-	const app = join(root, "Reader.app");
-	const overrides = { PI_MARKDOWN_DIR: dir, PI_MARKDOWN_APP: app, PI_HARNESS_FILE: join(root, "harness.json") };
-	for (const [key, value] of Object.entries(overrides)) {
-		const previous = process.env[key];
-		t.after(() => {
-			if (previous === undefined) delete process.env[key];
-			else process.env[key] = previous;
-		});
-		process.env[key] = value;
-	}
-	const shutdown: Array<() => void> = [];
-	const events = createEventBus();
-	const publications: unknown[] = [];
-	events.on("harness:palette:publish", (payload) => {
-		publications.push(payload);
-	});
-	const pi = {
-		events,
-		on: (name: string, handler: () => void) => {
-			if (name === "session_shutdown") shutdown.push(handler);
-		},
-		registerCommand: () => {},
-		registerShortcut: () => {},
-		registerTool: () => {},
-	} as unknown as ExtensionAPI;
-	markdown(pi);
-	const expected = {
-		version: 1,
-		source: "markdown",
-		commands: [
-			{
-				id: "markdown.read",
-				title: "Read a Document…",
-				description: "Open a stored Markdown document in a reader pane",
-				argv: [process.execPath, fileURLToPath(new URL("./palette-command.ts", import.meta.url)), dir, app],
-			},
-		],
-	};
-	assert.deepEqual(publications, [expected]);
-	events.emit("harness:palette:request", { version: 2 });
-	assert.deepEqual(publications, [expected]);
-	events.emit("harness:palette:request", { version: 1 });
-	assert.deepEqual(publications, [expected, expected]);
-	for (const handler of shutdown) handler();
-	events.emit("harness:palette:request", { version: 1 });
-	assert.deepEqual(publications, [expected, expected]);
-	assert.deepEqual(await readdir(root), []);
 });
 
 test("the file command reads a path under the home directory written with a leading tilde", async (t) => {

@@ -19,7 +19,15 @@ test("setup adds and removes only its own exact block, leaving every other byte 
 	assert.equal(findAskBlock(operatorConfig), undefined);
 	const added = withAskAction(operatorConfig);
 	assert.equal(added, `${operatorConfig}${askActionBlock()}\n`);
+	assert.match(added, /-- pi-harness: pi actions v3 begin/);
+	assert.deepEqual(
+		[...added.matchAll(/^ {2}name = "([^"]+)"/gm)].map((match) => match[1]),
+		["pi_ask", "pi_command"],
+	);
 	assert.ok(findAskBlock(added));
+	const otherVersion = added.replace(`pi actions v${BLOCK_VERSION} begin`, "pi actions v2 begin");
+	assert.throws(() => withAskAction(otherVersion), /differs from the version 3 block/);
+	assert.throws(() => withoutAskAction(otherVersion), /differs from the version 3 block/);
 	assert.equal(withAskAction(added), added, "a configuration that holds the block stays as it is");
 	assert.equal(withoutAskAction(added), operatorConfig, "removal restores the text before setup");
 	const spaced = "x = 1\n\n\n";
@@ -38,16 +46,16 @@ test("setup adds and removes only its own exact block, leaving every other byte 
 		"a block at the end without a final line break is removed whole",
 	);
 	for (const broken of [
-		"-- pi-harness: pi actions v2 begin\nno end\n",
+		`-- pi-harness: pi actions v${BLOCK_VERSION} begin\nno end\n`,
 		"no begin\n-- pi-harness: pi actions end\n",
-		"-- pi-harness: pi actions end\n-- pi-harness: pi actions v2 begin\n",
+		`-- pi-harness: pi actions end\n-- pi-harness: pi actions v${BLOCK_VERSION} begin\n`,
 		`${askActionBlock()}\n${askActionBlock()}\n`,
 	])
 		assert.throws(() => withAskAction(broken), /partial or repeated/, broken);
 	const inString = `local note = [[\n-- pi-harness: pi actions v${BLOCK_VERSION} begin\nkeep this text\n-- pi-harness: pi actions end\n]]\n`;
 	assert.throws(
 		() => withAskAction(inString),
-		/differs from the version 2 block/,
+		new RegExp(`differs from the version ${BLOCK_VERSION} block`),
 		"markers around other text are never taken for the block",
 	);
 	assert.throws(() => withoutAskAction(inString), /differs/);
@@ -108,7 +116,7 @@ class SetupTransport implements RexTransport {
 			return ok(
 				JSON.stringify({
 					actions: this.loaded
-						? ["pi_ask", "pi", "pi_command"].map((name) => ({
+						? ["pi_ask", "pi_command"].map((name) => ({
 								name,
 								kind: "lua",
 								description:
@@ -212,10 +220,11 @@ test("a refused check, a declined confirmation or a broken block leaves the conf
 	} finally {
 		await declined.done();
 	}
-	const broken = await fixture("-- pi-harness: pi actions v2 begin\n");
+	const partial = `-- pi-harness: pi actions v${BLOCK_VERSION} begin\n`;
+	const broken = await fixture(partial);
 	try {
 		await assert.rejects(rexCommand("setup", broken.deps), /partial or repeated/);
-		assert.equal(await readFile(broken.path, "utf8"), "-- pi-harness: pi actions v2 begin\n");
+		assert.equal(await readFile(broken.path, "utf8"), partial);
 	} finally {
 		await broken.done();
 	}
@@ -300,7 +309,7 @@ test("a file that holds the block while the server has not loaded it reloads onl
 	const f = await fixture(withAskAction(operatorConfig), { confirm: false });
 	try {
 		await rexCommand("setup", f.deps);
-		assert.match(f.asked[0] ?? "", /has not loaded pi_ask, pi, pi_command/);
+		assert.match(f.asked[0] ?? "", /has not loaded pi_ask, pi_command/);
 		assert.match(f.asked[0] ?? "", /^Reload the Rex configuration\?\n.*including any other change in it/s);
 		assert.equal(
 			f.transport.calls.some((call) => call[1] === "reload"),
@@ -344,10 +353,10 @@ test("status names the recorded palette commands and the actions that the server
 				version: 1,
 				commands: [
 					{
-						id: "markdown.read",
-						title: "Read a Document…",
+						id: "files.browse",
+						title: "Browse Files…",
 						argv: [process.execPath, "/x/palette-command.ts"],
-						source: "markdown",
+						source: "files",
 					},
 				],
 			}),
@@ -357,10 +366,10 @@ test("status names the recorded palette commands and the actions that the server
 		f.transport.loaded = true;
 		f.transport.registry = registry;
 		await rexCommand("status", f.deps);
-		assert.ok(f.lines.includes("info: Pi commands for the palette: Read a Document…."), f.lines.join("\n"));
+		assert.ok(f.lines.includes("info: Pi commands for the palette: Browse Files…."), f.lines.join("\n"));
 		assert.ok(
 			f.lines.includes(
-				"warning: The server has not loaded these actions: pi_markdown_read. /rex setup reloads the configuration after you confirm.",
+				"warning: The server has not loaded these actions: pi_files_browse. /rex setup reloads the configuration after you confirm.",
 			),
 			f.lines.join("\n"),
 		);

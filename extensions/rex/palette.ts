@@ -13,7 +13,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /** One command that an extension offers in the Rex palette, as docs/conventions/palette-commands.md defines it. */
@@ -118,24 +118,40 @@ export function readPaletteRegistry(path: string): PaletteRegistry | undefined {
 	return { version: 1, commands, ...(paneStacking ? { paneStacking } : {}) };
 }
 
+function realPath(path: string): string | undefined {
+	try {
+		return realpathSync.native(path);
+	} catch {
+		return undefined;
+	}
+}
+
+function insidePackage(root: string | undefined, path: string): boolean {
+	const target = realPath(path);
+	if (root === undefined || target === undefined) return false;
+	const local = relative(root, target);
+	return local !== "" && local !== ".." && !local.startsWith(`..${sep}`) && !isAbsolute(local);
+}
+
 /**
- * The registry after the publications that this process heard: each heard source replaces its commands, and every
- * other source keeps its commands while their program and its first argument, when that names a file, exist. A
- * process that loads only some extensions therefore removes nothing, and a removed snapshot's commands drop out.
+ * Each heard source replaces its commands. An unheard command stays while its program exists and any absolute
+ * first argument resolves to an existing path inside this package.
  */
 export function mergePalette(
 	existing: PaletteRegistry | undefined,
 	heard: ReadonlyMap<string, readonly PaletteCommand[]>,
 	paneStacking: string[] | undefined,
+	packageRoot: string,
 	exists: (path: string) => boolean = existsSync,
 ): PaletteRegistry {
+	const root = realPath(packageRoot);
 	const commands = new Map<string, RecordedCommand>();
 	for (const command of existing?.commands ?? []) {
 		const [program, first] = command.argv;
 		if (
 			!heard.has(command.source) &&
 			exists(program as string) &&
-			(first === undefined || !isAbsolute(first) || exists(first))
+			(first === undefined || !isAbsolute(first) || insidePackage(root, first))
 		)
 			commands.set(command.id, command);
 	}
@@ -217,14 +233,7 @@ export function configuredPackage(agentDir: string, packageRoot: string): boolea
 	} catch {
 		return false;
 	}
-	const real = (path: string) => {
-		try {
-			return realpathSync(path);
-		} catch {
-			return undefined;
-		}
-	};
-	const root = real(packageRoot);
+	const root = realPath(packageRoot);
 	const sources = Array.isArray(settings.packages) ? settings.packages : [];
 	return (
 		root !== undefined &&
@@ -233,7 +242,7 @@ export function configuredPackage(agentDir: string, packageRoot: string): boolea
 			return (
 				typeof source === "string" &&
 				(source.startsWith(".") || source.startsWith("/") || source.startsWith("~")) &&
-				real(resolve(agentDir, source.replace(/^~(?=\/)/, process.env.HOME ?? "~"))) === root
+				realPath(resolve(agentDir, source.replace(/^~(?=\/)/, process.env.HOME ?? "~"))) === root
 			);
 		})
 	);
@@ -262,6 +271,7 @@ export function createPaletteCollector(options: {
 	configured?: () => boolean;
 }): PaletteCollector {
 	const path = paletteRegistryPath(options.agentDir);
+	const configured = options.configured ?? (() => configuredPackage(options.agentDir, options.packageRoot));
 	const heard = new Map<string, PaletteCommand[]>();
 	let active: Parameters<PaletteCollector["start"]>[0] | undefined;
 	let warned = false;
@@ -269,8 +279,12 @@ export function createPaletteCollector(options: {
 		// A process that heard no publication, such as a trial of this extension alone, has nothing to record.
 		if (!active || heard.size === 0) return;
 		try {
+			if (!configured()) return;
 			withRegistryLock(path, () => {
-				writePaletteRegistry(path, mergePalette(readPaletteRegistry(path), heard, options.paneStacking()));
+				writePaletteRegistry(
+					path,
+					mergePalette(readPaletteRegistry(path), heard, options.paneStacking(), options.packageRoot),
+				);
 			});
 		} catch (error) {
 			if (warned) return;
@@ -290,11 +304,7 @@ export function createPaletteCollector(options: {
 	options.events.emit("harness:palette:request", { version: 1 });
 	return {
 		start(ctx) {
-			active =
-				ctx?.mode === "tui" &&
-				(options.configured ?? (() => configuredPackage(options.agentDir, options.packageRoot)))()
-					? ctx
-					: undefined;
+			active = ctx?.mode === "tui" ? ctx : undefined;
 			record();
 		},
 		shutdown() {

@@ -123,13 +123,13 @@ function commandActions(deps: SetupDeps): Array<{ action: string; title: string 
 }
 
 /**
- * Actions of the block that the server has not loaded: the question action, the palette entries, and each recorded
- * command. `pi_command` names the registry that its block reads, so a loaded block of another agent directory counts
- * as not loaded.
+ * Actions of the block that the server has not loaded: the question action, `pi_command` and each recorded command.
+ * `pi_command` names the registry that its block reads, so a loaded block of another agent directory counts as not
+ * loaded.
  */
 function missingActions(deps: SetupDeps, facts: ServerFacts): string[] {
 	const stale = !facts.actions.get("pi_command")?.endsWith(`Pi records its commands in ${deps.registryPath}.`);
-	return [ASK_ACTION, "pi", "pi_command", ...commandActions(deps).map((command) => command.action)].filter(
+	return [ASK_ACTION, "pi_command", ...commandActions(deps).map((command) => command.action)].filter(
 		(action) => !facts.actions.has(action) || (action === "pi_command" && stale),
 	);
 }

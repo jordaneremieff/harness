@@ -30,14 +30,14 @@ type PaletteRequestEvent = { version: 1 };
 These are process-local payloads on Pi's `pi.events` bus. Only version `1` is
 defined.
 
-- `source` is the publishing extension's directory name, such as `markdown`:
+- `source` is the publishing extension's directory name, such as `explorer`:
   lowercase letters and digits, without underscores, so that each Rex action
   name belongs to one command.
 - `id` is `<source>.<name>`: lowercase letters, digits and underscores in each
   part, at most 48 characters, unique within the source. The runtime offers
   the command as the Rex action `pi_<source>_<name>`.
 - `title` is what the palette shows after `Pi: `, 1 to 64 characters, such as
-  `Read a Document…`.
+  `Explore a Folder…`.
 - `description` is one line of at most 200 characters.
 - `argv` is the command's program and its arguments: 1 to 16 entries, the first
   an absolute path. It usually names the Node executable of the publishing
@@ -64,14 +64,20 @@ starts no work and touches no file.
 
 The Rex extension collects publications in ordinary interactive Pi sessions
 and records them in `<agentDir>/rex/palette.json`, which only its own runtime
-reads. Each write replaces the commands of the sources that the writing
-process heard and keeps the commands of other sources while their program and
-its first argument, when that names a file, exist. A process that loads only
-some extensions therefore removes nothing. The
-runtime reads the registry each time a command runs, so a new snapshot's
-commands take effect without a Rex reload. Rex shows a command under its own
-name in the palette only after it reloads its configuration; until then
-`Pi: Commands…` lists every recorded command.
+reads. Before each record, Pi checks that its global settings still load
+that process's package root. Each write replaces the commands of the sources
+that the process heard. For other sources, it keeps a command only if its
+program exists and any absolute first argument resolves to an existing path
+inside the recording package's real root. A command file that the package
+still ships stays registered even if its source did not publish in that
+process. A command file that exists only in another snapshot drops out.
+
+Rex defines each recorded command by its own title (`Pi: <title>`) when it
+loads its configuration. Reload the configuration after a command first
+appears in the registry or drops out to refresh the palette. Each action
+looks up its command by ID in the current registry when invoked, so an
+existing action uses updated arguments without a reload and cannot run a
+command that the registry no longer lists.
 
 ## Steps
 
@@ -135,5 +141,5 @@ command that changes anything takes its effect only after an answer that names
 it; a command that only shows something needs no answer.
 
 The Rex extension owns the runtime, the registry and `/rex setup`. The
-contributing slices are agent and markdown; see their READMEs for their
-commands.
+[Explorer extension](../../extensions/explorer/README.md) publishes
+**Explore a Folder…**.
