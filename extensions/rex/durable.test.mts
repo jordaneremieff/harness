@@ -701,6 +701,7 @@ test("a native question waits on its own allowance and names its working directo
 			fauxAssistantMessage(
 				fauxToolCall("rex_ask", {
 					op: "ask",
+					about: "The change is ready.",
 					question: "Publish?",
 					choices: [{ id: "hold" }, { id: "publish" }],
 					timeoutMs: 1800000,

@@ -469,17 +469,21 @@ test("cards use the host-injected expansion key and invent no mouse fallback whe
 test("question cards show the question, its choices, the wait and the answer by the titles the operator saw", () => {
 	const args = {
 		op: "ask",
+		about: "The Rex change passed its checks.\nIt is ready to publish.",
 		question: "Publish the Rex change?",
 		choices: [
 			{ id: "hold", title: "Hold" },
-			{ id: "publish", title: "Publish" },
+			{ id: "publish", title: "Publish", recommended: true },
 		],
 	};
 	const display = createRexToolDisplay("rex_ask");
 	const waiting = display.renderCall(args, theme, { expanded: false, isPartial: true }).render(120).join("\n");
 	assert.match(waiting, /rex_ask · ask/);
-	assert.match(waiting, /Publish the Rex change\?/);
-	assert.match(waiting, /choose Hold · Publish/);
+	assert.match(
+		waiting,
+		/The Rex change passed its checks\.\n\s*It is ready to publish\.\n\s*\n\s*Publish the Rex change\?/,
+	);
+	assert.match(waiting, /choose Hold · Publish \(recommended\)/);
 	assert.match(waiting, /Waiting for the operator's answer\./);
 	assert.doesNotMatch(
 		display.renderCall(args, theme, { expanded: false, isPartial: false }).render(120).join("\n"),
@@ -506,7 +510,7 @@ test("question cards show the question, its choices, the wait and the answer by 
 			effects: { state: "none" },
 			data: { channel: "dialog", answer: { text: "later" }, rex: { outcome: "show" } },
 		}),
-		{ op: "ask", question: "When?" },
+		{ op: "ask", about: "The release needs a date.", question: "When?" },
 	).join("\n");
 	assert.match(typed, /You chose to see this session first/);
 	assert.match(typed, /Answer in this session's dialog: "later"/);

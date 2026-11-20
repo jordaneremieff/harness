@@ -357,10 +357,14 @@ the ordinary session that created it, even when another session sends it work.
 Mac and on other devices, and the first answer ends it in all of them. The call waits for that
 answer, so an agent that needs a decision continues in the same run instead of ending its turn.
 
-An agent asks only for a decision that only the operator can make, after it shows the complete
-matter in chat or a pane. A worker asks its requester first. Rex shows the title on one line of
+An agent asks only for a decision that only the operator can make. A worker asks its requester
+first. The agent writes the matter in `about`: what it found, the choices and what each changes,
+and its recommendation. The question's card in the asking session shows `about` in full above the
+question, so the operator can read the matter there, for example after **Show me first**; Rex
+shows only the question. A request without `about` fails validation, so no question reaches the
+operator without its matter. Rex shows the title on one line of
 about 50 characters and cuts off the rest, so the title starts with the question and the name of
-the asker follows it, after ` · `, where the line has room. The asker is the asking session's Rex
+the asker follows it, after ` · `, only when the whole title fits in 50 characters. The asker is the asking session's Rex
 tab label. If the label is missing, unavailable or the Rex default, the title uses the Pi session
 name, then the last part of the working directory. A native conversation uses the last part of its
 working directory. Rex shows the choices in the given order, so the choice that changes nothing
@@ -385,8 +389,10 @@ records the move to the dialog.
 
 | Field | Meaning |
 |---|---|
+| `about` | The matter in plain words, at most 1,200 characters. Required. The card shows it; Rex does not. |
 | `question` | The question. Required. |
-| `choices` | Answers to choose from, each with an `id` and optional `title`, `subtitle`, `detail` and `selected`. Without choices the operator types an answer. |
+| `choices` | Answers to choose from, each with an `id` and optional `title`, `subtitle`, `detail`, `selected` and `recommended`. Without choices the operator types an answer. |
+| `recommended` | Marks the asking agent's recommendation on one choice of a single-choice question. Rex shows `Recommended` at the far end of its row, the session's dialog adds it to the choice's label, and the card marks it. A recommended choice takes no `detail`. |
 | `multiple` | Choose any number of choices. `selected` starts a choice ticked. |
 | `allowOther` | Type an answer instead of choosing. Not with `multiple`. |
 | `placeholder`, `value`, `confirm` | The hint of the empty field, the text the field starts with, and the label of the row that submits. |
@@ -396,8 +402,9 @@ A request that fails validation, including a question without visible text, retu
 `invalid_request` and asks nobody. Otherwise an answer returns `outcome: "answered"` and `ok: true`
 with `data.answer`: `{ "text" }` for a typed answer, `{ "choice" }` with the chosen ID, or
 `{ "choices" }` with the chosen IDs in the order of the choices, possibly none. `data.channel`
-names where the operator answered. Every other outcome means that no answer arrived, and the agent
-does not act on what it asked:
+names where the operator answered. Every other outcome means that no answer arrived. Its result
+tells the agent not to act on what it asked and to put no further questions to the operator in the
+same run, so a person who closes a question or is away is not asked one question after another:
 
 | Outcome | Meaning |
 |---|---|

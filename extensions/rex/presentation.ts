@@ -94,7 +94,12 @@ function callHeader(name: string, request: Record<string, unknown>): Line[] {
 function callBody(args: unknown, request: Record<string, unknown>, expanded: boolean): Line[] {
 	if (expanded) return [line(""), ...jsonLines(args)];
 	const lines: Line[] = [];
-	if (typeof request.question === "string") lines.push(line(request.question, "toolOutput"));
+	// The matter of a question, in full: the operator reads it here before answering.
+	if (typeof request.about === "string" && request.about.trim()) {
+		for (const text of request.about.trim().split(/\r?\n/)) lines.push(line(text, "toolOutput"));
+		lines.push(line(""));
+	}
+	if (typeof request.question === "string") lines.push(line(request.question, "toolTitle"));
 	const choices = choiceTitles(request);
 	if (choices.length)
 		lines.push(
@@ -213,9 +218,16 @@ function subjectKind(name: string, request: Record<string, unknown>, target: unk
 }
 
 /** The titles of a question's choices, as the operator saw them. */
+/** The titles the operator saw, with the asking agent's recommendation marked. */
 function choiceTitles(request: Record<string, unknown>): string[] {
 	return Array.isArray(request.choices)
-		? request.choices.map((choice) => string(object(choice).title) ?? string(object(choice).id) ?? "").filter(Boolean)
+		? request.choices
+				.map((value) => {
+					const choice = object(value);
+					const title = string(choice.title) ?? string(choice.id) ?? "";
+					return title && choice.recommended === true ? `${title} (recommended)` : title;
+				})
+				.filter(Boolean)
 		: [];
 }
 

@@ -32,6 +32,7 @@ const choices = [
 ];
 const ask = (fields: Partial<AskRequest> = {}): AskRequest => ({
 	op: "ask",
+	about: "The change is ready on its branch, and the checks pass.",
 	question: "Publish the change?",
 	...fields,
 });
@@ -131,6 +132,13 @@ test("a question names its session and maps every field to Rex's prompt table", 
 	assert.equal(askTitle("harness: Publish?", "harness"), "harness: Publish?", "an asker already named is not repeated");
 	assert.equal(askTitle("Publish? · harness", "harness"), "Publish? · harness");
 	assert.equal(
+		askTitle("Which product name for the v2.0 announcement?", "launch notes"),
+		"Which product name for the v2.0 announcement?",
+		"the asker is left out when the title would not fit its one line",
+	);
+	assert.equal(askTitle("q".repeat(40), "harness"), `${"q".repeat(40)} · harness`, "50 characters fit");
+	assert.equal(askTitle("q".repeat(41), "harness"), "q".repeat(41));
+	assert.equal(
 		askTitle("Line\none\u202e", "a\u0007b"),
 		"Line one · a b",
 		"controls and format characters never reach the palette",
@@ -188,6 +196,37 @@ test("a question names its session and maps every field to Rex's prompt table", 
 	}
 });
 
+test("a recommended choice shows Recommended in Rex and in the session's dialog", () => {
+	const recommended = [
+		{ id: "hold", title: "Hold", subtitle: "Nothing changes" },
+		{ id: "publish", title: "Publish", subtitle: "Pushes to main", recommended: true },
+	];
+	assert.equal(validateRequest("rex_ask", ask({ choices: recommended })).ok, true);
+	assert.deepEqual(askPrompt(ask({ choices: recommended }), undefined).prompt.items, [
+		{ id: "hold", title: "Hold", subtitle: "Nothing changes" },
+		{ id: "publish", title: "Publish", subtitle: "Pushes to main", detail: "Recommended" },
+	]);
+	assert.deepEqual(choiceLabels(recommended), ["Hold · Nothing changes", "Publish · Pushes to main · (Recommended)"]);
+	const problems: Array<[Partial<AskRequest>, RegExp]> = [
+		[
+			{
+				choices: [
+					{ id: "a", recommended: true },
+					{ id: "b", recommended: true },
+				],
+			},
+			/at most one/,
+		],
+		[{ choices: [{ id: "a", recommended: true }], multiple: true }, /only without multiple/],
+		[{ choices: [{ id: "a", recommended: true, detail: "safe" }] }, /takes no detail/],
+	];
+	for (const [fields, problem] of problems) {
+		const validated = validateRequest("rex_ask", ask(fields));
+		assert.equal(validated.ok, false);
+		assert.match(validated.ok ? "" : validated.error, problem);
+	}
+});
+
 test("the Show me first row names a long tab in at most 24 characters", () => {
 	const { prompt } = askPrompt(ask({ choices }), "x".repeat(30), "x".repeat(30));
 	assert.deepEqual((prompt.items as Array<Record<string, unknown>>).at(-1), {
@@ -224,6 +263,10 @@ test("the tool schema accepts a question within its bounds and refuses the rest 
 		{ timeoutMs: 3600001 },
 		{ question: "" },
 		{ question: " \u0007\u202e " },
+		{ about: "" },
+		{ about: " \u0007 " },
+		{ about: "a".repeat(1201) },
+		{ about: undefined },
 		{ choices: [] },
 		{ choices: [{ id: "" }] },
 		{ target: { server: "x" } },

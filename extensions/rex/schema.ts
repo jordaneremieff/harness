@@ -16,6 +16,7 @@ import {
 	type Validator,
 } from "@earendil-works/pi-schema";
 import {
+	ASK_ABOUT_MAX,
 	ASK_CHOICE_MAX,
 	ASK_DEFAULT_MS,
 	ASK_DETAIL_MAX,
@@ -202,6 +203,12 @@ export const requestVariants = {
 	rex_ask: [
 		obj({
 			op: choice("ask"),
+			about: str({
+				minLength: 1,
+				maxLength: ASK_ABOUT_MAX,
+				description:
+					"The matter in plain words, which the operator reads in this session before answering: what you found, the choices and what each changes, and your recommendation. A few sentences; Rex shows only the question.",
+			}),
 			question: str({
 				minLength: 1,
 				maxLength: ASK_QUESTION_MAX,
@@ -216,6 +223,9 @@ export const requestVariants = {
 						subtitle: opt(text(ASK_LINE_MAX)),
 						detail: opt(text(ASK_DETAIL_MAX)),
 						selected: opt(bool({ description: "Start ticked. Only with multiple." })),
+						recommended: opt(
+							bool({ description: "Your recommendation; Rex marks it Recommended. At most one, not with multiple." }),
+						),
 					}),
 					{
 						minItems: 1,
@@ -450,6 +460,6 @@ export const toolSpecs = [
 		label: "Rex ask",
 		parameters: declaration(requestVariants.rex_ask),
 		description:
-			"Ask the operator one short question (op ask) in the command palette of every connected Rex app, on the Mac or the phone, and wait for the first answer: typed text, one of your choices, or several. Rex shows the question and each choice on one line, so keep them short. Use it only for a decision that only the operator can make, after you show the complete matter in chat or a pane; a worker asks its requester first. In ordinary Pi, a message from the operator ends the wait, and the question opens as a dialog in this session when Rex cannot show it or the operator chooses to see the session first. No answer means no decision: do not act on it. The answer covers this question only.",
+			"Ask the operator one decision (op ask) in the command palette of every connected Rex app, on the Mac or the phone, and wait for the first answer: typed text, one of your choices, or several. Use it for a decision that only the operator can make; a worker asks its requester first. Put the matter in about. Rex shows the question and each choice on one line, so use plain words and no shorthand: the question names the decision, each choice has a short title and says in its subtitle what it changes, the choice that changes nothing comes first, and your recommendation is marked. Ask separate decisions in separate calls. In ordinary Pi, a message from the operator ends the wait, and the question opens as a dialog in this session when Rex cannot show it or the operator chooses to see the session first. No answer means no decision: do not act on it. The answer covers this question only.",
 	},
 ] as const satisfies readonly { name: RexToolName; label: string; parameters: Schema; description: string }[];

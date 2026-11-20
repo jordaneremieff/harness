@@ -23,11 +23,17 @@ export const ASK_SHOW_FIRST_ID = "pi:show-me-first";
  * the rest, so each of them fits that line.
  */
 export const ASK_QUESTION_MAX = 45;
+/** About as many characters as the title line shows before Rex cuts it off. */
+export const ASK_TITLE_LINE = 50;
+/** The matter that the asking session shows with the question: a few sentences, not a document. */
+export const ASK_ABOUT_MAX = 1200;
 export const ASK_CHOICE_MAX = 40;
 export const ASK_LINE_MAX = 48;
 export const ASK_DETAIL_MAX = 16;
 /** The most of a tab or session name that the Show me first row names. */
 const SHOW_AT_MAX = 24;
+/** The detail that marks the asking agent's recommended choice. */
+export const ASK_RECOMMENDED = "Recommended";
 
 export interface AskChoice {
 	id: string;
@@ -35,9 +41,12 @@ export interface AskChoice {
 	subtitle?: string;
 	detail?: string;
 	selected?: boolean;
+	recommended?: boolean;
 }
 export interface AskRequest {
 	op: "ask";
+	/** The matter, shown in the asking session; Rex shows only the question. */
+	about: string;
 	question: string;
 	choices?: AskChoice[];
 	multiple?: boolean;
@@ -112,16 +121,31 @@ export function askWindow(view: unknown, blockId: string): { label?: string } | 
 /** The cross-field rules of a question, shared by request validation and the core. */
 export function askProblem(request: AskRequest): string | undefined {
 	const choices = request.choices;
+	if (typeof request.about === "string" && !plain(request.about)) return "about needs visible text";
 	if (typeof request.question === "string" && !plain(request.question)) return "the question needs visible text";
 	if (!choices && request.multiple) return "multiple requires choices";
 	if (!choices && request.allowOther) return "allowOther requires choices";
 	if (request.multiple && request.allowOther) return "multiple and allowOther cannot be combined";
-	if (choices && new Set(choices.map((choice) => choice.id)).size !== choices.length)
-		return "choice ids must be unique";
-	if (choices?.some((choice) => choice.selected) && !request.multiple) return "selected applies only with multiple";
-	if (choices?.some((choice) => choice.title === undefined && [...choice.id].length > ASK_CHOICE_MAX))
+	return choices ? choiceProblem(choices, request.multiple === true) : undefined;
+}
+
+/** The rules of the choices themselves. */
+function choiceProblem(choices: readonly AskChoice[], multiple: boolean): string | undefined {
+	if (new Set(choices.map((choice) => choice.id)).size !== choices.length) return "choice ids must be unique";
+	if (choices.some((choice) => choice.selected) && !multiple) return "selected applies only with multiple";
+	if (choices.some((choice) => choice.title === undefined && [...choice.id].length > ASK_CHOICE_MAX))
 		return `a choice without a title shows its id, so that id needs at most ${ASK_CHOICE_MAX} characters`;
+	const recommended = choices.filter((choice) => choice.recommended);
+	if (recommended.length > 1) return "recommend at most one choice";
+	if (recommended.length && multiple) return "recommended applies only without multiple; tick choices with selected";
+	if (recommended.some((choice) => choice.detail !== undefined))
+		return `a recommended choice shows ${ASK_RECOMMENDED} as its detail, so it takes no detail`;
 	return undefined;
+}
+
+/** The short text at the far end of a choice's row: the recommendation mark, or the agent's own detail. */
+function choiceDetail(choice: AskChoice): string | undefined {
+	return choice.recommended ? ASK_RECOMMENDED : choice.detail;
 }
 
 export function askWaitMs(timeoutMs: number | undefined): number {
@@ -141,12 +165,15 @@ export function askBudget(timeoutMs: number | undefined, signal?: AbortSignal): 
 
 /**
  * The title names who asks, because several sessions and agents can ask the same person. The question comes first, so
- * the one line that Rex shows always holds it, and the name follows where the line has room.
+ * the one line that Rex shows always holds it, and the name follows only when the whole title fits that line.
  */
 export function askTitle(question: string, asker: string | undefined): string {
 	const who = asker === undefined ? "" : [...plain(asker)].slice(0, 64).join("");
 	const text = plain(question);
-	return who && !text.startsWith(`${who}:`) && !text.endsWith(`· ${who}`) ? `${text} · ${who}` : text;
+	const titled = `${text} · ${who}`;
+	return who && !text.startsWith(`${who}:`) && !text.endsWith(`· ${who}`) && [...titled].length <= ASK_TITLE_LINE
+		? titled
+		: text;
 }
 
 /** Text cut to at most `max` characters, with an ellipsis where it was cut. */
@@ -174,7 +201,7 @@ export function askPrompt(
 		id: choice.id,
 		...(choice.title === undefined ? {} : { title: choice.title }),
 		...(choice.subtitle === undefined ? {} : { subtitle: choice.subtitle }),
-		...(choice.detail === undefined ? {} : { detail: choice.detail }),
+		...(choiceDetail(choice) === undefined ? {} : { detail: choiceDetail(choice) }),
 		...(choice.selected ? { selected: true } : {}),
 	}));
 	const showFirst =
@@ -283,7 +310,7 @@ function answerMeaning(outcome: string, channel: "rex" | "dialog"): string {
 			: "The operator answered in this session's dialog. The answer covers this question only.";
 	if (outcome === "superseded")
 		return "The operator typed into this session while the question waited, so the question was closed without an answer. When that input reaches you after this result, read it before you act on the question.";
-	return "No answer arrived. Do not act on what the question asked. Put the question in your final message, or continue work that does not depend on it.";
+	return "No answer arrived. Do not act on what the question asked, and put no further questions to the operator in this run. Put the question in your final message, or continue work that does not depend on it.";
 }
 
 /** Why a question has no answer, for the agent and the person who reads its card. */
@@ -326,8 +353,9 @@ const TYPE = "Type another answer";
 export function choiceLabels(choices: readonly AskChoice[]): string[] {
 	const used = new Set([OTHER, DONE, TYPE]);
 	return choices.map((choice) => {
+		const detail = choiceDetail(choice);
 		const base = plain(
-			[choice.title ?? choice.id, choice.subtitle, choice.detail && `(${choice.detail})`].filter(Boolean).join(" · "),
+			[choice.title ?? choice.id, choice.subtitle, detail && `(${detail})`].filter(Boolean).join(" · "),
 		);
 		let label = used.has(base) ? `${base} [${plain(choice.id)}]` : base;
 		for (let copy = 2; used.has(label); copy++) label = `${base} [${plain(choice.id)}] (${copy})`;
