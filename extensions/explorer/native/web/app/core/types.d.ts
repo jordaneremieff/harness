@@ -273,6 +273,7 @@ type ExplorerReviewUI = {
 	prompt(event: ExplorerPromptState): void;
 	reposition(): void;
 	escape(): boolean;
+	range(): ExplorerRange | null;
 };
 
 interface ExplorerApp {

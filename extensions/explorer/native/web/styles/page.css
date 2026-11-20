@@ -729,6 +729,26 @@ kbd {
   width: 24px;
   height: 24px;
 }
+.card-tools {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  flex: none;
+}
+.card-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.card-confirm > span {
+  flex: 1;
+}
+.card-actions > .danger:first-child {
+  margin-right: auto;
+}
 .quoted-lines,
 .outgoing {
   font: 12px / 1.5 var(--mono);

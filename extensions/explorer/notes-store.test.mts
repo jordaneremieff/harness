@@ -118,7 +118,7 @@ test("note writes enforce edit rules and validate all state members before publi
 	);
 	assert.equal(replied.requestId, "request-1");
 	await notes.request("state", { ids: [id, agent.id], state: "resolved" });
-	await notes.request("state", { ids: [id, agent.id], state: "open" });
+	await notes.request("state", { ids: [id, agent.id], state: "answered" });
 	await notes.request("delete", { id });
 	await assert.rejects(notes.request("read", { id }), { code: "not-found" });
 	for (const patch of [

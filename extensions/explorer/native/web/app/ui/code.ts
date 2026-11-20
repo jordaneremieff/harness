@@ -124,6 +124,7 @@
 		let width = 0;
 		let longest = 0;
 		let notePaint: ExplorerNote[] = [];
+		let indexed: ExplorerNote[] = [];
 		const syntaxBySource = new WeakMap<string[], { language: string; at: (line: number) => ExplorerSpan[] }>();
 		function syntaxAt(source: string[], language: string, line: number) {
 			let index = syntaxBySource.get(source);
@@ -140,6 +141,7 @@
 		canvas.append(top, list, bottom);
 
 		function indexNotes(notes: ExplorerNote[]) {
+			indexed = notes;
 			notePaint = [];
 			gutterNotes.clear();
 			for (const note of notes) {
@@ -263,11 +265,12 @@
 		function appendNoteDot(cell: HTMLElement, line: number, side: ExplorerSide) {
 			const notes = gutterNotes.get(`${side}:${line}`);
 			if (!notes?.length) return;
-			const mark = button(
-				"",
-				() => opts?.onNote(notes),
-				`note-dot ${notes.some((note) => note.author === "agent") ? "agent" : ""}`,
-			);
+			const kind = notes.some((note) => note.state === "draft")
+				? "draft"
+				: notes.some((note) => note.author === "agent")
+					? "agent"
+					: "";
+			const mark = button("", () => opts?.onNote(notes), `note-dot ${kind}`);
 			mark.setAttribute("aria-label", `Open ${notes.length === 1 ? "note" : `${notes.length} notes`} on line ${line}`);
 			cell.append(mark);
 		}
@@ -294,12 +297,7 @@
 			if (!line) return part;
 			part.dataset.line = String(line);
 			part.dataset.side = side;
-			if (
-				notePaint.some(
-					(note) => note.side === side && note.state !== "resolved" && note.start <= line && line <= note.end,
-				)
-			)
-				part.classList.add("has-note");
+			part.classList.add(...noteClasses(side, line));
 			const sign = el("span", "sign", signed);
 			sign.setAttribute("aria-hidden", "true");
 			const text = el("code", "source");
@@ -524,6 +522,38 @@
 			};
 			return { range: selected, text: selection.toString(), rect: dom.getBoundingClientRect() };
 		}
+		// Unresolved notes painted over one line, in their stored order.
+		function notesAt(side: ExplorerSide, line: number) {
+			return notePaint.filter(
+				(note) => note.side === side && note.state !== "resolved" && note.start <= line && line <= note.end,
+			);
+		}
+		// Review comments, then agent notes, choose the tint of a marked line.
+		function noteClasses(side: ExplorerSide, line: number) {
+			const covering = notesAt(side, line);
+			if (!covering.length) return [];
+			if (covering.some((note) => note.state === "draft")) return ["has-note", "has-draft"];
+			return covering.every((note) => note.author === "agent") ? ["has-note", "has-agent"] : ["has-note"];
+		}
+		function plainClick(event: MouseEvent) {
+			return (
+				event.button === 0 && event.detail <= 1 && !(event.shiftKey || event.metaKey || event.ctrlKey || event.altKey)
+			);
+		}
+		function markedCell(event: MouseEvent) {
+			if (!plainClick(event) || !window.getSelection()?.isCollapsed) return null;
+			return event.target instanceof Element ? event.target.closest<HTMLElement>(".code-cell.has-note") : null;
+		}
+		// A plain click on a marked line opens its notes; a drag or a double-click keeps selecting text.
+		function openMarked(event: MouseEvent) {
+			const part = markedCell(event);
+			if (!part?.dataset.line || !opts) return;
+			const found = notesAt(part.dataset.side === "base" ? "base" : "head", Number(part.dataset.line));
+			const ids = new Set(found.map((note) => note.id));
+			const notes = indexed.filter((note) => ids.has(note.id));
+			if (notes.length) opts.onNote(notes);
+		}
+		canvas.addEventListener("click", openMarked);
 		body.addEventListener(
 			"scroll",
 			() => {

@@ -599,7 +599,7 @@ export class NotesStore {
 		if (op === "delete")
 			return async () => {
 				const note = await this.note(noteId);
-				this.checkEditable(note);
+				if (note.author !== "operator") message("conflict", "Only operator notes can be deleted.");
 				await unlink(this.file("notes", noteId));
 				return {};
 			};

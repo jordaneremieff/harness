@@ -33,10 +33,13 @@
 		batch: boolean;
 		recorded: Set<string>;
 	};
+	type CardMode = "ask" | "comment" | "note";
+	type DraftAction = "keep" | "add" | "send" | "save" | "remove";
 	type Card = {
 		node: HTMLElement;
 		content: HTMLElement;
 		actions: HTMLElement;
+		tools: HTMLElement;
 		range: ExplorerRange | null;
 		root: string;
 		focus: HTMLElement | null;
@@ -59,11 +62,16 @@
 		let walkthrough: { tour: ExplorerTour; index: number; serial: number } | null = null;
 		let removeUndo: { notes: ExplorerNote[]; root: string } | null = null;
 		let tourSerial = 0;
+		let lastOpened: { key: string; index: number } | null = null;
 		let trayStamp = "";
 		const report = (promise: Promise<unknown>) => {
 			void promise.catch((error) => ctx.notice(message(error)));
 		};
 		const here = () => ctx.root().path;
+		const rangeKey = (range?: ExplorerRange | null) => (range ? `${range.side}:${range.start}-${range.end}` : "file");
+		// Unsent card text belongs to its exact lines, or to the review comment it edits.
+		const draftKey = (path: string, range?: ExplorerRange | null, noteId?: string) =>
+			noteId ? `${here()}\0note\0${noteId}` : `${here()}\0${path}\0${rangeKey(range)}`;
 		const currentDrafts = () => ctx.drafts().filter((note) => !pending.has(note.id));
 		const reason = () => ctx.live().reason ?? "There is no live conversation.";
 		const destination = () => ctx.live().label ?? "conversation";
@@ -182,18 +190,19 @@
 			const identity = el("div");
 			identity.append(el("strong", "", title));
 			if (caption) identity.append(el("small", "", caption));
-			header.append(
-				identity,
+			const tools = el("div", "card-tools");
+			tools.append(
 				iconButton("close", "Close (Esc)", () => {
 					walkthrough = null;
 					tourSerial++;
 					closeCard();
 				}),
 			);
+			header.append(identity, tools);
 			const content = el("div", "card-content"),
 				actions = el("div", "card-actions");
 			node.append(header, content, actions);
-			const next = { node, content, actions, range, root: here(), focus };
+			const next = { node, content, actions, tools, range, root: here(), focus };
 			card = next;
 			container.append(node);
 			ctx.highlight(range);
@@ -474,113 +483,134 @@
 		}
 
 		// The card title for each edit mode.
-		function cardTitle(mode: "ask" | "comment" | "note", draft?: ExplorerNote) {
-			if (draft) return "Edit review comment";
-			if (mode === "note") return "Keep a note";
-			if (mode === "comment") return "Comment on code";
-			return "Ask about this";
+		function cardTitle(mode: CardMode, draft?: ExplorerNote) {
+			if (draft || mode === "comment") return "Review comment";
+			return mode === "note" ? "New note" : "Ask about this";
+		}
+		const placeholders: Record<CardMode, string> = {
+			ask: "Ask about this code…",
+			note: "Write a note…",
+			comment: "Write a review comment…",
+		};
+		// The one action that the filled button on the right and Command-Return perform.
+		function primaryAction(mode: CardMode, draft: boolean, lines: boolean): DraftAction {
+			if (draft) return "save";
+			if (mode !== "ask") return mode === "note" ? "keep" : "add";
+			return ctx.live().connected || !lines ? "send" : "keep";
+		}
+		// The quieter actions shown to the left of the primary one.
+		function secondaryActions(mode: CardMode, draft: boolean, lines: boolean, lead: DraftAction): DraftAction[] {
+			if (draft) return ["remove", "send"];
+			if (mode === "note") return [];
+			if (mode === "comment") return ["keep", "send"];
+			if (lead !== "send") return ["add"];
+			return lines ? ["keep", "add"] : [];
+		}
+		function actionLabels(mode: CardMode, draft: boolean): Record<DraftAction, string> {
+			return {
+				keep: mode === "note" ? "Save note" : "Keep as note",
+				add: "Add to review",
+				send: draft || mode === "comment" ? "Send now" : "Send",
+				save: "Save",
+				remove: "Remove",
+			};
+		}
+		const doneNotices: Record<DraftAction, string> = {
+			keep: "Note saved",
+			add: "Comment added to review",
+			save: "Comment updated",
+			remove: "Comment removed",
+			send: "",
+		};
+		function cardRange(range: ExplorerRange | null, draft?: ExplorerNote, retained?: ExplorerCardDraft) {
+			const kept = retained?.range ?? range;
+			if (kept) return kept;
+			return draft ? (anchorOf(draft) ?? undefined) : undefined;
+		}
+		function storedDraft(
+			mode: CardMode,
+			text: string,
+			item: ExplorerExcerpt,
+			range?: ExplorerRange,
+			draft?: ExplorerNote,
+		): ExplorerCardDraft {
+			const quote = item.quote !== undefined && bytes(item.quote) <= 32000 ? item.quote : undefined;
+			return { mode, text, range, noteId: draft?.id, quote, commit: item.commit };
+		}
+		// The note record that a sent comment refers to: the edited review comment, or a new one for lines.
+		async function recordFor(text: string, item: ExplorerExcerpt, range?: ExplorerRange, draft?: ExplorerNote) {
+			if (draft) {
+				const result = await request("notes.write", { op: "update", id: draft.id, text });
+				return result.note ?? { ...draft, text };
+			}
+			return range ? create({ ...item, text }, range.side, "draft") : null;
+		}
+		function checkMessageSize(item: ExplorerExcerpt, text: string) {
+			if (bytes(bake([{ ...item, text }])) > 128 * 1024 - 40)
+				throw new Error("This message exceeds 128 KB. Select fewer lines.");
+		}
+		function questionRun(item: ExplorerExcerpt, text: string, saved: ExplorerNote | null) {
+			const quoted = saved ? excerptOf(saved) : { ...item, text };
+			return runFor(bake([quoted]), text, saved ? [saved.id] : [], quoted);
 		}
 		function draftEditor(
 			item: ExplorerExcerpt,
 			range: ExplorerRange | null,
-			mode: "ask" | "comment" | "note",
+			mode: CardMode,
 			draft?: ExplorerNote,
 			retained?: ExplorerCardDraft,
 		) {
-			const key = `${here()}\0${item.path}`;
-			const storedRange = retained?.range ?? range ?? undefined;
+			const storedRange = cardRange(range, draft, retained);
+			const key = draftKey(item.path, storedRange, draft?.id);
 			const current = makeCard(cardTitle(mode, draft), label(item), range);
-			const field = textarea(
-				mode === "ask" ? "Ask about this code…" : "Write a comment…",
-				retained?.text ?? draft?.text,
-			);
+			const field = textarea(placeholders[mode], retained?.text ?? draft?.text);
 			field.maxLength = 16000;
+			const fail = errorField();
+			const hint = el("p", "shortcut-hint");
+			const lead = primaryAction(mode, !!draft, !!storedRange);
+			const labels = actionLabels(mode, !!draft);
+			const controls = new Map<DraftAction, HTMLButtonElement>();
+			let busy = false;
 			function clearDraft() {
 				unsaved.delete(key);
 				report(ctx.saveDraft(item.path, null));
 			}
 			function saveDraft() {
-				if (!field.value) {
-					clearDraft();
-					return;
-				}
-				const quote = item.quote !== undefined && bytes(item.quote) <= 32000 ? item.quote : undefined;
-				const data: ExplorerCardDraft = {
-					mode,
-					text: field.value,
-					range: storedRange,
-					noteId: draft?.id,
-					quote,
-					commit: item.commit,
-				};
+				if (!field.value || field.value === draft?.text) return clearDraft();
+				const data = storedDraft(mode, field.value, item, storedRange, draft);
 				unsaved.set(key, data);
 				report(ctx.saveDraft(item.path, data));
 			}
-			const fail = errorField();
-			const hint = el("p", "shortcut-hint");
-			let busy = false;
-			// The card refuses writes while busy, empty or left behind by navigation.
-			function blocked() {
-				return busy || !field.value.trim() || current.root !== here();
+			async function sendCardText(text: string) {
+				checkMessageSize(item, text);
+				const saved = await recordFor(text, item, storedRange, draft);
+				if (current.root !== here()) return;
+				const run = questionRun(item, text, saved);
+				clearDraft();
+				if (card === current) showRun(run, range);
+				await send(run);
 			}
-			type DraftAction = "keep" | "add" | "send" | "batch";
-			function createCardNote(action: DraftAction, text: string) {
-				const state = action === "keep" ? "open" : "draft";
-				return create({ ...item, text }, storedRange?.side ?? "head", state);
-			}
-			function afterKeep(action: DraftAction) {
+			const writers: Record<Exclude<DraftAction, "send">, (text: string) => Promise<unknown>> = {
+				keep: (text) => create({ ...item, text }, storedRange?.side ?? "head", "open"),
+				add: (text) => create({ ...item, text }, storedRange?.side ?? "head", "draft"),
+				save: (text) => request("notes.write", { op: "update", id: draft?.id ?? "", text }),
+				remove: () => remove(draft ? [draft] : []),
+			};
+			async function applyAction(action: DraftAction, text: string) {
+				if (action === "send") return sendCardText(text);
+				await writers[action](text);
+				await ctx.refresh();
+				if (current.root !== here()) return;
 				clearDraft();
 				if (card === current) closeCard();
-				ctx.notice(keptNotice(action));
-				if (action === "batch") return sendBatch();
+				ctx.notice(doneNotices[action]);
 			}
-			function keptNotice(action: DraftAction) {
-				if (action === "keep") return "Note saved";
-				return draft ? "Comment updated" : "Comment added to review";
-			}
-			function checkPromptSize(text: string) {
-				if (bytes(bake([{ ...item, text }])) > 128 * 1024 - 40)
-					throw new Error("This message exceeds 128 KB. Select fewer lines.");
-			}
-			function cardRun(saved: ExplorerNote | null, text: string) {
-				const quoted = saved ? excerptOf(saved) : { ...item, text };
-				return runFor(bake([quoted]), text, saved ? [saved.id] : [], quoted);
-			}
-			function clearAfterSend(saved: ExplorerNote | null, run: Run) {
-				if (saved) return;
-				if (run.admission !== "accepted" || current.root !== here()) return;
-				clearDraft();
-			}
-			function prepareCardRun(saved: ExplorerNote | null, text: string) {
-				const run = cardRun(saved, text);
-				if (card === current) showRun(run, range);
-				if (saved) clearDraft();
-				return run;
-			}
-			function persistNote(action: DraftAction, text: string) {
-				if (draft) return request("notes.write", { op: "update", id: draft.id, text });
-				if (action !== "send") return createCardNote(action, text);
-			}
-			async function sendCardText(text: string) {
-				checkPromptSize(text);
-				const saved = storedRange ? await create({ ...item, text }, storedRange.side, "draft") : null;
-				if (current.root !== here()) return;
-				const run = prepareCardRun(saved, text);
-				await send(run);
-				clearAfterSend(saved, run);
-			}
-			async function applyAction(action: DraftAction, text: string) {
-				const saved = persistNote(action, text);
-				if (saved) {
-					await saved;
-					await ctx.refresh();
-				}
-				if (current.root !== here()) return;
-				if (action === "send") return sendCardText(text);
-				return afterKeep(action);
+			// Removing needs no text; every other action needs some.
+			function refused(action: DraftAction) {
+				return busy || current.root !== here() || (action !== "remove" && !field.value.trim());
 			}
 			async function write(action: DraftAction) {
-				if (blocked()) return;
+				if (refused(action)) return;
 				busy = true;
 				field.readOnly = true;
 				announce(fail, "");
@@ -595,108 +625,53 @@
 					update();
 				}
 			}
-
-			function keepStyle() {
-				return mode === "note" || draft ? "primary" : "quiet";
+			function addControl(action: DraftAction, style: string) {
+				const node = ctl(labels[action], () => report(write(action)), style);
+				controls.set(action, node);
+				current.actions.append(node);
 			}
-			// The primary save control for the card.
-			function keepControl() {
-				const text = draft ? "Save comment" : "Keep as note";
-				const action = draft ? "add" : "keep";
-				return ctl(text, () => report(write(action)), keepStyle());
-			}
-			const keep = keepControl();
-			const add = ctl("Add to review", () => report(write("add")));
-			const sendNow = ctl("Send now", () => report(write("send")), "primary");
-			function keepHidden() {
-				return !draft && !storedRange;
-			}
-			function sendHidden() {
-				return mode === "note" || !!draft;
-			}
-			// The add action needs selected lines, a new note and a live conversation.
-			function addable(live: ExplorerLive) {
-				if (!storedRange || draft || mode === "note") return false;
-				return live.connected;
-			}
-			function unavailable() {
-				return busy || !field.value.trim();
-			}
-			function disableControls(live: ExplorerLive) {
-				const blocked = unavailable();
-				disable(keep, blocked);
-				disable(add, blocked);
-				disable(sendNow, blocked || !live.connected, live.connected ? senderLabel() : reason());
-			}
-			function batchHint(inBatch: boolean) {
-				return inBatch && !!range;
-			}
-			// The keyboard hint shown under the card field.
-			function hintText(live: ExplorerLive, inBatch: boolean) {
-				if (!live.connected) return reason();
-				if (sendHidden()) return "⌘↩ Save";
-				if (batchHint(inBatch)) return "⌘↩ Add · ⇧⌘↩ Add and send";
-				return "⌘↩ Send now";
+			for (const action of secondaryActions(mode, !!draft, !!storedRange, lead))
+				addControl(action, action === "remove" ? "quiet danger" : "quiet");
+			addControl(lead, "primary");
+			// Sending needs a live conversation; a secondary send hides without one.
+			function paintControl(action: DraftAction, node: HTMLButtonElement, connected: boolean) {
+				const offline = action === "send" && !connected;
+				node.hidden = offline && action !== lead;
+				disable(node, refused(action) || offline, offline ? reason() : undefined);
 			}
 			function update() {
-				const live = ctx.live();
-				const inBatch = !!currentDrafts().length;
-				keep.hidden = keepHidden();
-				add.hidden = !addable(live);
-				sendNow.hidden = sendHidden();
-				disableControls(live);
-				hint.textContent = hintText(live, inBatch);
+				const connected = ctx.live().connected;
+				for (const [action, node] of controls) paintControl(action, node, connected);
+				hint.textContent = lead === "send" && !connected ? reason() : `⌘↩ ${labels[lead]}`;
 				reposition();
 			}
 			field.oninput = () => {
 				saveDraft();
 				update();
 			};
-			function offlineCard() {
-				return !ctx.live().connected && !!storedRange;
-			}
-			function simpleCard() {
-				return !!draft || mode === "note";
-			}
-			function keepCurrent() {
-				if (draft) report(write("add"));
-				else report(write("keep"));
-			}
-			function cardShortcut(shift: boolean) {
-				if (currentDrafts().length && storedRange) return shift ? "batch" : "add";
-				return "send";
-			}
-			// The Enter shortcut picks the action the current card state allows.
-			function submitCard(shift: boolean) {
-				if (simpleCard() || offlineCard()) {
-					keepCurrent();
-					return;
-				}
-				if (!ctx.live().connected) return;
-				report(write(cardShortcut(shift)));
-			}
-			shortcuts(field, submitCard);
+			shortcuts(field, () => {
+				if (controls.get(lead)?.disabled === false) report(write(lead));
+			});
 			drawQuote(current.content, item.quote);
 			current.content.append(field, hint, fail);
-			current.actions.append(keep, add, sendNow);
 			current.rebuild = update;
 			update();
 			field.focus({ preventScroll: true });
 		}
-		function ask(range: ExplorerRange | null, mode: "ask" | "comment" | "note" = "ask") {
+		function ask(range: ExplorerRange | null, mode: CardMode = "ask") {
 			const item = ctx.excerpt(range);
 			if (!item) return;
 			walkthrough = null;
 			tourSerial++;
-			const stored = unsaved.get(`${here()}\0${item.path}`);
+			const stored = unsaved.get(draftKey(item.path, range));
 			if (stored) {
-				restore(item.path, stored);
+				restore(item.path, { ...stored, mode });
 				return;
 			}
-			draftEditor(item, range, !ctx.live().connected && mode === "comment" ? "note" : mode);
+			draftEditor(item, range, mode);
 		}
 		function restore(path: string, stored: ExplorerCardDraft) {
-			unsaved.set(`${here()}\0${path}`, stored);
+			unsaved.set(draftKey(path, stored.range, stored.noteId), stored);
 			const note = ctx.notes().find((note) => note.id === stored.noteId && note.state === "draft");
 			const mark = stored.range ?? null;
 			const source = ctx.excerpt(mark);
@@ -889,54 +864,105 @@
 			appendReplies(block, note);
 			return block;
 		}
+		const isDraft = (note: ExplorerNote) => note.state === "draft" && note.author === "operator";
+		// Each review comment opens alone in its editor; the other notes open together.
+		function noteGroups(notes: ExplorerNote[]) {
+			const others = notes.filter((note) => !isDraft(note));
+			const groups = notes.filter(isDraft).map((note) => [note]);
+			return others.length ? [...groups, others] : groups;
+		}
+		// Opening the same notes again while their card is open shows the next group.
+		function groupIndex(key: string, count: number) {
+			return card && lastOpened?.key === key ? (lastOpened.index + 1) % count : 0;
+		}
 		function thread(notes: ExplorerNote[], position?: ExplorerRange | null) {
-			const first = notes[0];
-			if (!first) return;
+			const fresh = currentNotes(notes);
+			const groups = noteGroups(fresh);
+			if (!groups.length) return;
+			const key = fresh
+				.map((note) => note.id)
+				.sort()
+				.join(",");
+			const index = groupIndex(key, groups.length);
+			const [first] = groups[index];
 			walkthrough = null;
 			tourSerial++;
+			if (isDraft(first)) editComment(first, position === undefined ? anchorOf(first) : position);
+			else threadCard(groups[index], position);
+			lastOpened = { key, index };
+		}
+		function editComment(note: ExplorerNote, range: ExplorerRange | null) {
+			const stored = unsaved.get(draftKey(note.path, anchorOf(note), note.id));
+			draftEditor(excerptOf(note), range, "comment", note, stored);
+		}
+		function currentNotes(notes: ExplorerNote[]) {
+			const byId = new Map(ctx.notes().map((note) => [note.id, note]));
+			return notes.map((note) => byId.get(note.id) ?? note);
+		}
+		function threadCard(notes: ExplorerNote[], position?: ExplorerRange | null) {
+			const first = notes[0];
+			const range = position === undefined ? anchorOf(first) : position;
 			const current = makeCard(
-				first.title ?? (notes.length > 1 ? `${notes.length} notes` : "Note thread"),
+				first.title ?? (notes.length > 1 ? `${notes.length} notes` : "Note"),
 				label(excerptOf(first)),
-				position === undefined ? anchorOf(first) : position,
+				range,
 				first.author === "agent",
 			);
+			const own = () => {
+				const latest = currentNotes([first])[0];
+				return latest.author === "operator" && (latest.state === "draft" || latest.state === "open");
+			};
 			const entries = el("div", "thread-entries");
 			const field = textarea("Write a reply…");
 			field.hidden = true;
+			const confirm = el("div", "card-confirm");
+			confirm.hidden = true;
 			const fail = errorField();
 			let locked = false;
+			let editing = false;
 			let threadStamp = "";
-			const save = async () => {
+			// A reply reaches the conversation when one is connected; otherwise it stays in the note.
+			async function deliverReply(text: string) {
+				await request("notes.write", { op: "reply", id: first.id, text, author: "operator" });
+				if (field.value.trim() === text) field.value = "";
+				await ctx.refresh();
+				if (!ctx.live().connected || current.root !== here()) return ctx.notice("Reply saved in the note");
+				const item = { ...excerptOf(currentNotes([first])[0]), text };
+				const run = runFor(bake([item]), text, [], item);
+				run.ids = [first.id];
+				if (card === current) showRun(run, range);
+				await send(run);
+			}
+			async function reply() {
 				const text = field.value.trim();
 				if (locked || !text || current.root !== here()) return;
 				locked = true;
 				announce(fail, "");
 				try {
-					await request("notes.write", { op: "reply", id: first.id, text, author: "operator" });
-					if (field.value.trim() === text) field.value = "";
-					await ctx.refresh();
+					await deliverReply(text);
 				} catch (error) {
 					announce(fail, message(error));
 				} finally {
 					locked = false;
 				}
-			};
-			const reveal = ctl(
+			}
+			const replyLabel = () => (ctx.live().connected ? "Send reply" : "Save reply");
+			const answer = ctl(
 				"Reply",
 				() => {
 					if (field.hidden) {
 						field.hidden = false;
-						reveal.textContent = "Save reply";
+						answer.textContent = replyLabel();
 						reposition();
 						field.focus({ preventScroll: true });
-					} else report(save());
+					} else report(reply());
 				},
 				"primary",
 			);
 			const state = ctl(
 				"Resolve",
 				() => {
-					const latest = ctx.notes().find((note) => note.id === first.id) ?? first;
+					const latest = currentNotes([first])[0];
 					report(
 						request("notes.write", {
 							op: "state",
@@ -947,24 +973,85 @@
 				},
 				"quiet",
 			);
-			current.content.append(entries, field, fail);
-			current.actions.append(state, reveal);
-			shortcuts(field, () => report(save()));
-			function currentNotes(notes: ExplorerNote[]) {
-				const byId = new Map(ctx.notes().map((note) => [note.id, note]));
-				return notes.map((note) => byId.get(note.id) ?? note);
+			// Rewrites the note text in place; only open notes of the operator accept it.
+			function startEdit() {
+				if (editing || !own()) return;
+				editing = true;
+				const latest = currentNotes([first])[0];
+				const editor = textarea("Write a note…", latest.text);
+				const save = ctl(
+					"Save",
+					() =>
+						report(
+							(async () => {
+								const text = editor.value.trim();
+								if (!text || current.root !== here()) return;
+								await request("notes.write", { op: "update", id: first.id, text });
+								editing = false;
+								threadStamp = "";
+								await ctx.refresh();
+								card?.rebuild?.();
+							})().catch((error) => announce(fail, message(error))),
+						),
+					"primary",
+				);
+				const cancel = ctl("Cancel", () => {
+					editing = false;
+					threadStamp = "";
+					current.rebuild?.();
+				});
+				shortcuts(editor, () => save.click());
+				entries.replaceChildren(editor);
+				current.actions.replaceChildren(cancel, save);
+				reposition();
+				editor.focus({ preventScroll: true });
 			}
-			function refreshThreadState(first: ExplorerNote) {
-				state.textContent = first.state === "resolved" ? "Reopen" : "Resolve";
-				state.hidden = first.state === "draft";
+			function askDelete() {
+				confirm.replaceChildren(
+					el("span", "", "Delete this note?"),
+					ctl("Cancel", () => {
+						confirm.hidden = true;
+						reposition();
+					}),
+					ctl(
+						"Delete",
+						() =>
+							report(
+								(async () => {
+									await request("notes.write", { op: "delete", id: first.id });
+									if (card === current) closeCard();
+									await ctx.refresh();
+									ctx.notice("Note deleted");
+								})().catch((error) => announce(fail, message(error))),
+							),
+						"quiet danger",
+					),
+				);
+				confirm.hidden = false;
+				reposition();
+			}
+			const editButton = iconButton("edit", "Edit note", startEdit);
+			const deleteButton = iconButton("trash", "Delete note", askDelete);
+			current.tools.prepend(editButton, deleteButton);
+			current.content.append(entries, field, confirm, fail);
+			shortcuts(field, () => report(reply()));
+			function refreshThreadState(latest: ExplorerNote) {
+				state.textContent = latest.state === "resolved" ? "Reopen" : "Resolve";
+				state.hidden = latest.state === "draft";
+				const single = notes.length === 1 && latest.author === "operator";
+				editButton.hidden = !single || !own();
+				deleteButton.hidden = !single;
+				if (!field.hidden) answer.textContent = replyLabel();
 			}
 			current.rebuild = () => {
+				if (editing) return;
 				const visible = currentNotes(notes);
-				const next = JSON.stringify(visible);
+				const next = JSON.stringify([visible, ctx.live().connected]);
 				if (next === threadStamp) return;
 				threadStamp = next;
 				entries.replaceChildren();
 				for (const note of visible) entries.append(threadEntry(note));
+				current.actions.replaceChildren(state, answer);
 				refreshThreadState(visible[0]);
 				reposition();
 			};
@@ -1037,6 +1124,17 @@
 			report(moveTour(walkthrough.index + direction));
 			return true;
 		}
-		return { ask, restore, thread, tour, step, refresh, prompt, reposition, escape: dismiss };
+		return {
+			ask,
+			restore,
+			thread,
+			tour,
+			step,
+			refresh,
+			prompt,
+			reposition,
+			escape: dismiss,
+			range: () => card?.range ?? null,
+		};
 	};
 })();

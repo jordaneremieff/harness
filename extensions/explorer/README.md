@@ -9,7 +9,19 @@ Explorer opens a repository, folder or file in a native window over a Rex pane. 
 - `/explorer notes` opens the Notes list. `/explorer help [topic]` describes the command forms. `/explorer update` installs the app in the background on macOS. Interactive starts and reloads check the installed build against the loaded checkout. If the checkout cannot order the two builds, it leaves the installed app in place. Already open panes keep their build.
 - **Explore a Folder…** in the Rex command palette lists recent roots and opens the selected root beside the invoking pane. This route has no live conversation. You can keep notes or copy a review, but cannot send a review to an agent from that pane.
 
-In the file view, use ⌘P for files, ⌘⇧F for repository search, ⌘F for the current file and ⌃G for a line. Select code or Control-click it to ask about the selected lines, leave a note, or add a comment to a review. Viewed ticks and unsent comments persist. A review finishes when you send it or mark all its files Viewed. In the terminal placeholder, `q` closes Explorer. On compatible builds, `:open --root …` navigates the current pane without changing its placement.
+In the file view, use ⌘P for files, ⌘⇧F for repository search, ⌘F for the current file and ⌃G for a line. In the terminal placeholder, `q` closes Explorer. On compatible builds, `:open --root …` navigates the current pane without changing its placement.
+
+## Notes, review comments and questions
+
+Select code, or click line numbers, to show the strip with **Ask**, **Comment**, **Note** and **Copy**. A right-click (or Control-click) offers the same actions with copy and navigation items. ⌘D asks about the selection, or about the file when nothing is selected.
+
+- **Ask** sends a question about the lines to the conversation. Its answer appears in the card and stays in the note's thread.
+- **Comment** adds a review comment. Review comments wait in the tray at the bottom until you send them together, or send one with **Send now**.
+- **Note** keeps a private note on the lines. It reaches the agent only when you reply to it while a conversation is connected.
+
+Each card has one filled button on the right; ⌘↩ performs it. Text you type and do not save stays with its lines: selecting the same lines again brings it back, and other lines open an empty card. Unsent text also survives closing the pane.
+
+Marked lines are tinted: yellow for review comments, blue for your notes and questions, mauve for the agent's notes. Click a marked line, its dot or **Open note** in its menu to open the card; a further click on the same lines while the card is open shows the next note there. A review comment opens in its editor with **Remove**, **Send now** and **Save**. A note opens its thread: **Reply** sends the reply to the conversation when one is connected and otherwise saves it in the note; your own open notes can be edited, and your notes can be deleted. Viewed ticks and unsent comments persist. A review finishes when you send it or mark all its files Viewed.
 
 <!-- harness:settings:start -->
 | Key | Environment | Type | Default | Applies | Constraints | Description |

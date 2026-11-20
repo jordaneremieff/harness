@@ -48,7 +48,8 @@ enum ExplorerCheck {
         try git(["init", "--quiet", "-b", "main"])
         let file = root.appendingPathComponent("example.ts")
         try Data("export const answer = 41;\n".utf8).write(to: file)
-        try git(["add", "example.ts"]); try git(["commit", "--quiet", "-m", "Fixture"])
+        try Data("const first = 1;\nconst second = 2;\nconst third = 3;\n".utf8).write(to: root.appendingPathComponent("lines.ts"))
+        try git(["add", "example.ts", "lines.ts"]); try git(["commit", "--quiet", "-m", "Fixture"])
         try Data("export const answer = 42;\n".utf8).write(to: file)
         let fake = try FakeLive()
         defer { fake.stop() }
@@ -86,6 +87,35 @@ enum ExplorerCheck {
             if (!found.results.some(row => row.path === 'example.ts' && row.line === 1)) throw Error('search results');
             const note = await accept('notes.write',{op:'create',note:{path:'example.ts',side:'head',start:1,end:1,commit:null,quote:'export const answer = 42;',text:'Notice',state:'open',author:'operator'}});
             if (!(await accept('notes.list')).notes.some(item => item.id === note.note.id)) throw Error('note not retained');
+            const until = async (test, label) => {
+              for (let i = 0; i < 240; i++) { const value = test(); if (value) return value; await new Promise(requestAnimationFrame); }
+              throw Error(label);
+            };
+            const press = key => document.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles:true, cancelable:true}));
+            globalThis.explorer.receive({v:1, type:'notes.changed'});
+            const marked = await until(() => document.querySelector('.code-cell.has-note .source'), 'note mark');
+            marked.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, button:0, detail:1}));
+            const opened = await until(() => document.querySelector('.float-card'), 'marked line opens its note');
+            if (!opened.textContent.includes('Notice')) throw Error('note card text');
+            press('Escape');
+            globalThis.explorer.receive({v:1, type:'open', path:'lines.ts', view:'file'});
+            await until(() => document.getElementById('file-title')?.textContent === 'lines.ts' && document.querySelectorAll('.gutter .line-number').length >= 3, 'second file');
+            const comment = async line => {
+              document.querySelector(`.gutter[data-line="${line}"] .line-number`).click();
+              const strip = await until(() => [...document.querySelectorAll('.selection-strip button')].find(b => b.textContent.trim() === 'Comment' && !b.closest('[hidden]')), 'selection strip');
+              strip.click();
+              return until(() => document.querySelector('.float-card textarea'), 'comment card');
+            };
+            const typed = await comment(1);
+            typed.value = 'Unsent comment';
+            typed.dispatchEvent(new Event('input', {bubbles:true}));
+            press('Escape');
+            await until(() => !document.querySelector('.float-card'), 'card closes');
+            if ((await comment(3)).value !== '') throw Error('unsent text moved to other lines');
+            press('Escape');
+            await until(() => !document.querySelector('.float-card'), 'card closes again');
+            if ((await comment(1)).value !== 'Unsent comment') throw Error('unsent text not kept with its lines');
+            press('Escape');
             const viewed = await accept('review.state', {op:'set',key:review.resolved.key,viewed:['example.ts']});
             if (viewed.viewed[0] !== 'example.ts') throw Error('review state');
             let connected = false;
@@ -109,7 +139,7 @@ enum ExplorerCheck {
             """, arguments: [:], in: nil, contentWorld: .page)
             guard result as? String == "visible" else { throw ExplorerError("verify", "WebKit did not render a visible page.") }
         }
-        print("Explorer verified: real page, file, Git review, search, notes, drafts, live prompt and answer.")
+        print("Explorer verified: real page, file, Git review, search, notes, note marks, card drafts, live prompt and answer.")
     }
 
     private static func scratchDirectory() throws -> URL {

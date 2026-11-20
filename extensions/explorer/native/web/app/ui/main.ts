@@ -87,6 +87,20 @@
 	};
 	const sameScope = (a?: ExplorerScope, b?: ExplorerScope) => JSON.stringify(a) === JSON.stringify(b);
 	const activeNotes = () => notes.filter((note) => note.path === path);
+	// Unresolved notes whose current lines include the first line of a range.
+	const notesOn = (range: ExplorerRange) =>
+		activeNotes().filter(
+			(note) =>
+				note.location !== "outdated" &&
+				note.state !== "resolved" &&
+				note.side === range.side &&
+				note.start <= range.start &&
+				range.start <= note.end,
+		);
+	const openLabel = (marked: ExplorerNote[]) => {
+		if (marked.length > 1) return `Open ${marked.length} notes`;
+		return marked[0].state === "draft" ? "Open review comment" : "Open note";
+	};
 	const scopeLabel = () =>
 		review?.resolved.label ?? scopes.find((item) => sameScope(scope, item.scope))?.label ?? "Working files";
 	const narrowClose = () => {
@@ -146,7 +160,10 @@
 		notes: () => notes,
 		excerpt: selectionExcerpt,
 		bounds: code.anchor,
-		highlight: code.highlight,
+		highlight: (range) => {
+			code.highlight(range);
+			setAnchorLine(range?.start ?? null);
+		},
 		go: async (note) => {
 			await goNote(note, false);
 		},
@@ -1161,6 +1178,7 @@
 	strip.hidden = true;
 	const stripAsk = button("Ask", () => askAt(activeRange(), "ask"));
 	const stripComment = button("Comment", () => askAt(activeRange(), "comment"));
+	const stripNote = button("Note", () => askAt(activeRange(), "note"));
 	const stripCopy = button("Copy", () => {
 		const range = activeRange();
 		const text = code.selection()?.text ?? (range ? selectionExcerpt(range)?.quote : undefined);
@@ -1168,8 +1186,9 @@
 	});
 	stripAsk.prepend(icon("ask"));
 	stripComment.prepend(icon("note"));
+	stripNote.prepend(icon("bookmark"));
 	stripCopy.prepend(icon("copy"));
-	strip.append(stripAsk, stripComment, stripCopy);
+	strip.append(stripAsk, stripComment, stripNote, stripCopy);
 	float.append(strip);
 	strip.addEventListener("mousedown", (event) => event.preventDefault());
 	function activeRange() {
@@ -1241,8 +1260,8 @@
 		if (event.button !== 0 || event.ctrlKey || (event.target instanceof Element && event.target.closest("button")))
 			return;
 		lineRange = null;
-		setAnchorLine(null);
-		code.highlight(null);
+		setAnchorLine(reviewUI.range()?.start ?? null);
+		code.highlight(reviewUI.range());
 		strip.hidden = true;
 	});
 
@@ -1286,17 +1305,26 @@
 		source: ExplorerExcerpt | null,
 		fileHere: boolean,
 	) {
+		const marked = range ? notesOn(range) : [];
+		if (marked.length)
+			result.push({
+				label: openLabel(marked),
+				key: "",
+				glyph: marked.some((note) => note.state === "draft") ? "note" : "bookmark",
+				run: () => reviewUI.thread(marked),
+			});
 		if (fileHere)
 			result.push({
 				label: "Ask about this",
-				key: range ? "⌘⇧M" : "⌘⌥M",
+				key: "⌘D",
 				glyph: "ask",
+				divide: result.length > 0,
 				run: () => askAt(range, "ask"),
 			});
 		if (source)
 			result.push(
-				{ label: "Comment on line(s)", key: "⌘⇧L", glyph: "note", run: () => askAt(range, "comment") },
-				{ label: "Keep a note", key: "⌘⌥N", glyph: "edit", run: () => askAt(range, "note") },
+				{ label: "Add review comment", key: "⌘⇧L", glyph: "note", run: () => askAt(range, "comment") },
+				{ label: "Add note", key: "⌘⌥N", glyph: "bookmark", run: () => askAt(range, "note") },
 			);
 	}
 	function actions(range: ExplorerRange | null, text?: string): Action[] {
@@ -1951,12 +1979,11 @@
 				return editing ? undefined : toggleSidebar;
 		}
 	}
-	function noteShortcut(event: KeyboardEvent, key: string, range: ExplorerRange | null) {
-		if ((key === "m" || event.code === "KeyM") && event.altKey) return () => askAt(null, "ask");
+	function noteShortcut(event: KeyboardEvent, key: string, range: ExplorerRange | null, editing: boolean) {
+		if (event.code === "KeyD" && !event.altKey && !event.shiftKey && !editing) return () => askAt(range, "ask");
 		if (range) return rangeShortcut(event, key, range);
 	}
 	function rangeShortcut(event: KeyboardEvent, key: string, range: ExplorerRange) {
-		if (event.shiftKey && key === "m") return () => askAt(range, "ask");
 		if (event.shiftKey && key === "l") return () => askAt(range, "comment");
 		if (!event.altKey) return;
 		if (event.code === "KeyN") return () => askAt(range, "note");
@@ -1982,7 +2009,7 @@
 		if (!event.metaKey || event.ctrlKey) return;
 		return (
 			navigationShortcut(event, key, editing) ??
-			noteShortcut(event, key, range) ??
+			noteShortcut(event, key, range, editing) ??
 			fileShortcut(event) ??
 			copyShortcut(event, key, editing, range)
 		);
