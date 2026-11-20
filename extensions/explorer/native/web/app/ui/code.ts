@@ -3,6 +3,107 @@
 	const { el, button } = app.dom;
 	const model = app.model;
 
+	// A note anchors where its quote still matches the shown text.
+	function quoteAt(data: string[], start: number, end: number, quote: string) {
+		return data.slice(start - 1, end).join("\n") === quote && start <= data.length;
+	}
+
+	function noteSpot(note: ExplorerNote, opts: ExplorerCodeOptions): ExplorerRange | null {
+		if (note.path !== opts.path) return null;
+		const data = note.side === "base" ? opts.base : opts.head;
+		if (quoteAt(data, note.start, note.end, note.anchor.quote) && note.location !== "outdated")
+			return { side: note.side, start: note.start, end: note.end };
+		if (!opts.diff && note.location === "outdated") return null;
+		return quoteAt(data, note.anchor.start, note.anchor.end, note.anchor.quote)
+			? { side: note.side, start: note.anchor.start, end: note.anchor.end }
+			: null;
+	}
+
+	// The widest line, with tabs counted at four columns.
+	function longestOf(sources: string[][]) {
+		let longest = 0;
+		for (const source of sources)
+			for (const line of source) {
+				const spaces = line.includes("\t") ? line.replaceAll("\t", "    ").length : line.length;
+				longest = Math.max(longest, spaces);
+			}
+		return longest;
+	}
+
+	function wrappedHeight(text: string, columns: number) {
+		if (!text.includes("\t")) return Math.ceil(text.length / columns) || 1;
+		let col = 0;
+		for (const char of text) col += char === "\t" ? 4 - (col % 4) : 1;
+		return Math.ceil(col / columns) || 1;
+	}
+
+	function wrappedCount(
+		row: ExplorerCodeRow & { type: "line" },
+		lines: (line: number, side: ExplorerSide) => string,
+		split: boolean,
+		cols: number,
+	) {
+		let height = 1;
+		if (row.base !== undefined && (split || row.head === undefined))
+			height = wrappedHeight(lines(row.base, "base"), cols);
+		if (row.head !== undefined) height = Math.max(height, wrappedHeight(lines(row.head, "head"), cols));
+		return height;
+	}
+
+	function cellWidth(width: number, opts: { split: boolean; diff: unknown }) {
+		const half = opts.split ? (width - 1) / 2 : width;
+		const gutter = opts.split || !opts.diff ? 68 : 112;
+		return half - gutter;
+	}
+
+	// Expands the folded context rows that the view has unfolded.
+	function diffRows(base: string[], head: string[], diff: ExplorerDiff, split: boolean, folds: Set<string>) {
+		const rows: ExplorerCodeRow[] = [];
+		for (const row of model.project(base, head, diff.hunks, split)) {
+			rows.push(row);
+			if (row.type === "fold" && folds.has(row.key))
+				for (let offset = 0; offset < row.count; offset++)
+					rows.push({ type: "line", kind: "context", base: row.base + offset, head: row.head + offset });
+		}
+		return rows;
+	}
+
+	function fileFor(side: ExplorerSide, opts: ExplorerCodeOptions | null) {
+		if (side !== "base") return opts?.path;
+		return opts?.diff?.oldPath ?? opts?.path;
+	}
+
+	function plainRow(syntax: ExplorerSpan[], matches: ExplorerMatch[], word: [number, number] | undefined) {
+		return !syntax.length && !matches.length && !word;
+	}
+
+	function spanStyles(
+		syntax: ExplorerSpan[],
+		word: [number, number] | undefined,
+		matches: ExplorerMatch[],
+		current: ExplorerMatch | undefined,
+	) {
+		const styles = [...syntax];
+		if (word && word[0] !== word[1]) styles.push({ start: word[0], end: word[1], role: "word" });
+		for (const match of matches) styles.push({ ...match, role: match === current ? "find-current" : "find-match" });
+		return styles;
+	}
+
+	function styleBoundaries(value: string, styles: ExplorerSpan[]) {
+		return [...new Set([0, value.length, ...styles.flatMap((style) => [style.start, style.end])])].sort(
+			(a, b) => a - b,
+		);
+	}
+
+	// The syntax span that covers a segment start, then every overlay that spans it.
+	function sliceClasses(syntax: ExplorerSpan[], scan: number, styles: ExplorerSpan[], from: number, to: number) {
+		const active = syntax[scan];
+		const cls = active && active.start <= from ? [`syn-${active.role}`] : [];
+		for (let extra = syntax.length; extra < styles.length; extra++)
+			if (styles[extra].start <= from && styles[extra].end >= to) cls.push(styles[extra].role);
+		return cls;
+	}
+
 	app.code = function code(body) {
 		let opts: ExplorerCodeOptions | null = null;
 		let rows: ExplorerCodeRow[] = [];
@@ -38,23 +139,11 @@
 		const canvas = el("div", "code-canvas");
 		canvas.append(top, list, bottom);
 
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep virtual row or fold coordinates consistent with the DOM for this render pass.
-		function noteRange(note: ExplorerNote): ExplorerRange | null {
-			if (!opts || note.path !== opts.path) return null;
-			const data = note.side === "base" ? opts.base : opts.head;
-			const exact = (start: number, end: number) =>
-				data.slice(start - 1, end).join("\n") === note.anchor.quote && start <= data.length;
-			if (exact(note.start, note.end) && note.location !== "outdated") return note;
-			if (exact(note.anchor.start, note.anchor.end) && (opts.diff || note.location !== "outdated"))
-				return { side: note.side, start: note.anchor.start, end: note.anchor.end };
-			return null;
-		}
-
 		function indexNotes(notes: ExplorerNote[]) {
 			notePaint = [];
 			gutterNotes.clear();
 			for (const note of notes) {
-				const spot = noteRange(note);
+				const spot = opts ? noteSpot(note, opts) : null;
 				if (!spot) continue;
 				notePaint.push({ ...note, ...spot });
 				const key = `${spot.side}:${spot.start}`;
@@ -71,22 +160,32 @@
 			return sourceLines(side)[line - 1] ?? "";
 		}
 
-		function textWidth(text: string, columns: number) {
-			if (!text.includes("\t")) return Math.ceil(text.length / columns) || 1;
-			let col = 0;
-			for (const char of text) col += char === "\t" ? 4 - (col % 4) : 1;
-			return Math.ceil(col / columns) || 1;
+		// Measures one row and records its line numbers and fold span.
+		function measureRow(row: ExplorerCodeRow, index: number, cols: number) {
+			if (row.type === "fold") {
+				baseFolds.push({ start: row.base, end: row.base + row.count, row: index });
+				headFolds.push({ start: row.head, end: row.head + row.count, row: index });
+				return lineHeight;
+			}
+			if (row.type === "hunk") return lineHeight;
+			return rowHeight(row, index, cols);
 		}
 
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep virtual row or fold coordinates consistent with the DOM for this render pass.
+		// Measures one line row and records its line numbers.
+		function rowHeight(row: ExplorerCodeRow & { type: "line" }, index: number, cols: number) {
+			if (row.base !== undefined) baseIndex.set(row.base, index);
+			if (row.head !== undefined) headIndex.set(row.head, index);
+			if (!opts?.wrap) return lineHeight;
+			return lineHeight * wrappedCount(row, codeText, !!opts.split, cols);
+		}
+
 		function layout() {
 			if (!opts) return;
 			width = body.clientWidth;
 			lineHeight = Math.ceil(opts.size * 1.5);
 			body.style.setProperty("--code-size", `${opts.size}px`);
 			body.style.setProperty("--row-h", `${lineHeight}px`);
-			const cellWidth = (opts.split ? (width - 1) / 2 : width) - (opts.split || !opts.diff ? 68 : 112);
-			const cols = Math.max(5, Math.floor(cellWidth / (opts.size * 0.61)));
+			const cols = Math.max(5, Math.floor(cellWidth(width, opts) / (opts.size * 0.61)));
 			offsets = [0];
 			headIndex.clear();
 			baseIndex.clear();
@@ -94,23 +193,7 @@
 			baseFolds.length = 0;
 			let total = 0;
 			for (const [index, row] of rows.entries()) {
-				let height = lineHeight;
-				if (row.type === "line") {
-					if (row.base !== undefined) baseIndex.set(row.base, index);
-					if (row.head !== undefined) headIndex.set(row.head, index);
-					if (opts.wrap) {
-						const a =
-							row.base !== undefined && (opts.split || row.head === undefined)
-								? textWidth(codeText(row.base, "base"), cols)
-								: 1;
-						const b = row.head !== undefined ? textWidth(codeText(row.head, "head"), cols) : 1;
-						height *= Math.max(a, b);
-					}
-				} else if (row.type === "fold") {
-					baseFolds.push({ start: row.base, end: row.base + row.count, row: index });
-					headFolds.push({ start: row.head, end: row.head + row.count, row: index });
-				}
-				total += height;
+				total += measureRow(row, index, cols);
 				offsets.push(total);
 			}
 			canvas.classList.toggle("wrap", opts.wrap);
@@ -119,18 +202,11 @@
 			canvas.style.setProperty("--columns", String(Math.min(24000, longest)));
 		}
 
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep virtual row or fold coordinates consistent with the DOM for this render pass.
 		function rebuild() {
 			if (!opts) return;
-			if (opts.diff) {
-				rows = [];
-				for (const row of model.project(opts.base, opts.head, opts.diff.hunks, opts.split)) {
-					rows.push(row);
-					if (row.type === "fold" && folds.has(row.key))
-						for (let offset = 0; offset < row.count; offset++)
-							rows.push({ type: "line", kind: "context", base: row.base + offset, head: row.head + offset });
-				}
-			} else rows = opts.head.map((_, index) => ({ type: "line", kind: "context", head: index + 1 }));
+			rows = opts.diff
+				? diffRows(opts.base, opts.head, opts.diff, opts.split, folds)
+				: opts.head.map((_, index) => ({ type: "line", kind: "context", head: index + 1 }));
 			layout();
 			invalidate();
 		}
@@ -146,36 +222,56 @@
 			return Math.min(lo, Math.max(0, rows.length - 1));
 		}
 
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep virtual row or fold coordinates consistent with the DOM for this render pass.
 		function decorated(target: HTMLElement, line: number, side: ExplorerSide, word?: [number, number]) {
 			const value = codeText(line, side);
-			const file = side === "base" ? (opts?.diff?.oldPath ?? opts?.path) : opts?.path;
-			const syntax = syntaxAt(sourceLines(side), model.language(file ?? "").id, line);
+			const syntax = syntaxAt(sourceLines(side), model.language(fileFor(side, opts) ?? "").id, line);
 			const matches = marked.get(`${side}:${line}`) ?? [];
-			if (!syntax.length && !matches.length && !word) {
+			if (plainRow(syntax, matches, word)) {
 				target.textContent = value || "\u200b";
 				return;
 			}
-			const styles = [...syntax];
-			if (word && word[0] !== word[1]) styles.push({ start: word[0], end: word[1], role: "word" });
-			for (const match of matches) styles.push({ ...match, role: match === current ? "find-current" : "find-match" });
-			const boundaries = [...new Set([0, value.length, ...styles.flatMap((style) => [style.start, style.end])])].sort(
-				(a, b) => a - b,
-			);
+			const styles = spanStyles(syntax, word, matches, current);
+			appendStyledSegments(target, value, syntax, styles);
+		}
+
+		function appendStyledSegments(target: HTMLElement, value: string, syntax: ExplorerSpan[], styles: ExplorerSpan[]) {
+			const boundaries = styleBoundaries(value, styles);
 			let scan = 0;
 			for (let index = 1; index < boundaries.length; index++) {
 				const from = boundaries[index - 1],
 					to = boundaries[index];
 				while (scan < syntax.length && syntax[scan].end <= from) scan++;
-				const cls = syntax[scan] && syntax[scan].start <= from ? [`syn-${syntax[scan].role}`] : [];
-				for (let extra = syntax.length; extra < styles.length; extra++)
-					if (styles[extra].start <= from && styles[extra].end >= to) cls.push(styles[extra].role);
+				const cls = sliceClasses(syntax, scan, styles, from, to);
 				const slice = value.slice(from, to);
 				target.append(cls.length ? el("span", cls.join(" "), slice) : document.createTextNode(slice));
 			}
 		}
 
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep virtual row or fold coordinates consistent with the DOM for this render pass.
+		// Extends a shift-click from the anchored gutter number to this one.
+		function pickLines(event: MouseEvent, line: number, side: ExplorerSide) {
+			const selected = { side, start: line, end: line };
+			if (event.shiftKey && gutterAnchor?.side === side) {
+				selected.start = Math.min(gutterAnchor.start, line);
+				selected.end = Math.max(gutterAnchor.end, line);
+			} else gutterAnchor = selected;
+			window.getSelection()?.removeAllRanges();
+			highlight(selected);
+			opts?.onRange(selected);
+		}
+
+		// Adds the note marker for a gutter line that carries notes.
+		function appendNoteDot(cell: HTMLElement, line: number, side: ExplorerSide) {
+			const notes = gutterNotes.get(`${side}:${line}`);
+			if (!notes?.length) return;
+			const mark = button(
+				"",
+				() => opts?.onNote(notes),
+				`note-dot ${notes.some((note) => note.author === "agent") ? "agent" : ""}`,
+			);
+			mark.setAttribute("aria-label", `Open ${notes.length === 1 ? "note" : `${notes.length} notes`} on line ${line}`);
+			cell.append(mark);
+		}
+
 		function gutter(line: number | undefined, side: ExplorerSide, signed: string) {
 			const cell = el("div", `gutter ${side}`);
 			if (!line) return cell;
@@ -185,30 +281,9 @@
 			pick.type = "button";
 			pick.tabIndex = -1;
 			pick.setAttribute("aria-label", `Select ${side === "base" ? "old " : ""}line ${line}`);
-			pick.onclick = (event) => {
-				const selected = { side, start: line, end: line };
-				if (event.shiftKey && gutterAnchor?.side === side) {
-					selected.start = Math.min(gutterAnchor.start, line);
-					selected.end = Math.max(gutterAnchor.end, line);
-				} else gutterAnchor = selected;
-				window.getSelection()?.removeAllRanges();
-				highlight(selected);
-				opts?.onRange(selected);
-			};
+			pick.onclick = (event) => pickLines(event, line, side);
 			cell.append(pick);
-			const notes = gutterNotes.get(`${side}:${line}`);
-			if (notes?.length) {
-				const mark = button(
-					"",
-					() => opts?.onNote(notes),
-					`note-dot ${notes.some((note) => note.author === "agent") ? "agent" : ""}`,
-				);
-				mark.setAttribute(
-					"aria-label",
-					`Open ${notes.length === 1 ? "note" : `${notes.length} notes`} on line ${line}`,
-				);
-				cell.append(mark);
-			}
+			appendNoteDot(cell, line, side);
 			if (signed) cell.dataset.sign = signed;
 			return cell;
 		}
@@ -233,7 +308,18 @@
 			return part;
 		}
 
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep virtual row or fold coordinates consistent with the DOM for this render pass.
+		// Folds and expands one run of unchanged lines under its own control.
+		function toggleFold(row: ExplorerCodeRow & { type: "fold" }, node: HTMLElement, expanded: boolean) {
+			const y = node.getBoundingClientRect().top - body.getBoundingClientRect().top;
+			if (expanded) folds.delete(row.key);
+			else folds.add(row.key);
+			rebuild();
+			const newIndex = rows.findIndex((candidate) => candidate.type === "fold" && candidate.key === row.key);
+			body.scrollTop = offsets[newIndex] - y;
+			paint();
+			list.querySelector<HTMLButtonElement>(`[data-row="${newIndex}"] button`)?.focus({ preventScroll: true });
+		}
+
 		function paintRow(row: ExplorerCodeRow, index: number) {
 			const node = el("div", `source-row ${row.type}`);
 			node.dataset.row = String(index);
@@ -246,16 +332,7 @@
 				const expanded = folds.has(row.key);
 				const control = button(
 					`${expanded ? "Hide" : "Show"} ${row.count.toLocaleString()} unchanged lines`,
-					() => {
-						const y = node.getBoundingClientRect().top - body.getBoundingClientRect().top;
-						if (expanded) folds.delete(row.key);
-						else folds.add(row.key);
-						rebuild();
-						const newIndex = rows.findIndex((candidate) => candidate.type === "fold" && candidate.key === row.key);
-						body.scrollTop = offsets[newIndex] - y;
-						paint();
-						list.querySelector<HTMLButtonElement>(`[data-row="${newIndex}"] button`)?.focus({ preventScroll: true });
-					},
+					() => toggleFold(row, node, expanded),
 					"fold-button",
 				);
 				control.setAttribute("aria-expanded", String(expanded));
@@ -263,23 +340,43 @@
 				node.append(control);
 				return node;
 			}
-			const baseSign = row.kind === "del" || row.kind === "pair" ? "−" : "";
-			const headSign = row.kind === "add" || row.kind === "pair" ? "+" : "";
-			if (opts?.split)
-				node.append(
-					gutter(row.base, "base", baseSign),
-					cell(row.base, "base", baseSign, row.word?.base),
-					gutter(row.head, "head", headSign),
-					cell(row.head, "head", headSign, row.word?.head),
-				);
-			else {
-				if (opts?.diff) node.append(gutter(row.base, "base", baseSign));
-				node.append(gutter(row.head, "head", headSign));
-				if (row.head !== undefined) node.append(cell(row.head, "head", headSign, row.word?.head));
-				else if (row.base !== undefined) node.append(cell(row.base, "base", baseSign, row.word?.base));
-			}
+			appendLineCells(node, row);
 			applyRange(node);
 			return node;
+		}
+
+		// The sign shown beside each side of a changed line pair.
+		function rowSigns(row: ExplorerCodeRow & { type: "line" }) {
+			const base = row.kind === "del" || row.kind === "pair" ? "−" : "";
+			const head = row.kind === "add" || row.kind === "pair" ? "+" : "";
+			return { base, head };
+		}
+
+		function appendLineCells(node: HTMLElement, row: ExplorerCodeRow & { type: "line" }) {
+			const signs = rowSigns(row);
+			if (opts?.split) {
+				node.append(
+					gutter(row.base, "base", signs.base),
+					cell(row.base, "base", signs.base, row.word?.base),
+					gutter(row.head, "head", signs.head),
+					cell(row.head, "head", signs.head, row.word?.head),
+				);
+				return;
+			}
+			unifiedCells(node, row, signs);
+		}
+
+		function unifiedCells(
+			node: HTMLElement,
+			row: ExplorerCodeRow & { type: "line" },
+			signs: { base: string; head: string },
+		) {
+			if (opts?.diff) node.append(gutter(row.base, "base", signs.base));
+			node.append(gutter(row.head, "head", signs.head));
+			const side: ExplorerSide = row.head !== undefined ? "head" : "base";
+			const line = row[side];
+			if (line === undefined) return;
+			node.append(cell(line, side, signs[side], row.word?.[side]));
 		}
 
 		function applyRange(node: HTMLElement) {
@@ -292,15 +389,11 @@
 			}
 		}
 
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep virtual row or fold coordinates consistent with the DOM for this render pass.
-		function paint() {
-			if (!opts || !rows.length) return;
-			const start = Math.max(0, rowIndex(body.scrollTop) - 36);
-			const end = Math.min(rows.length, rowIndex(body.scrollTop + body.clientHeight) + 37);
-			const next = new Map<number, HTMLElement>();
-			top.style.height = `${offsets[start]}px`;
-			bottom.style.height = `${(offsets.at(-1) ?? 0) - offsets[end]}px`;
+		function pruneShown(start: number, end: number) {
 			for (const [index, node] of shown) if (index < start || index >= end) node.remove();
+		}
+
+		function mountRange(start: number, end: number, next: Map<number, HTMLElement>) {
 			let before = list.firstChild;
 			for (let index = start; index < end; index++) {
 				const node = shown.get(index) ?? paintRow(rows[index], index);
@@ -308,6 +401,17 @@
 				before = node.nextSibling;
 				next.set(index, node);
 			}
+		}
+
+		function paint() {
+			if (!opts || !rows.length) return;
+			const start = Math.max(0, rowIndex(body.scrollTop) - 36);
+			const end = Math.min(rows.length, rowIndex(body.scrollTop + body.clientHeight) + 37);
+			const next = new Map<number, HTMLElement>();
+			top.style.height = `${offsets[start]}px`;
+			bottom.style.height = `${(offsets.at(-1) ?? 0) - offsets[end]}px`;
+			pruneShown(start, end);
+			mountRange(start, end, next);
 			shown = next;
 		}
 
@@ -327,45 +431,51 @@
 			range = next;
 			for (const node of shown.values()) applyRange(node);
 		}
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep virtual row or fold coordinates consistent with the DOM for this render pass.
+		// The first visible row with a line number, kept with its scroll offsets.
+		function spotAt(candidate: ExplorerCodeRow & { type: "line" | "fold" }, row: number) {
+			if (candidate.head)
+				return {
+					line: candidate.head,
+					side: "head" as const,
+					offset: body.scrollTop - offsets[row],
+					left: body.scrollLeft,
+				};
+			if (candidate.base)
+				return {
+					line: candidate.base,
+					side: "base" as const,
+					offset: body.scrollTop - offsets[row],
+					left: body.scrollLeft,
+				};
+			return undefined;
+		}
+
 		function place() {
 			const index = rowIndex(body.scrollTop);
 			for (let row = index; row < rows.length; row++) {
 				const candidate = rows[row];
-				if (candidate.type === "line" || candidate.type === "fold") {
-					if (candidate.head)
-						return {
-							line: candidate.head,
-							side: "head" as const,
-							offset: body.scrollTop - offsets[row],
-							left: body.scrollLeft,
-						};
-					if (candidate.base)
-						return {
-							line: candidate.base,
-							side: "base" as const,
-							offset: body.scrollTop - offsets[row],
-							left: body.scrollLeft,
-						};
-				}
+				if (candidate.type !== "line" && candidate.type !== "fold") continue;
+				const spot = spotAt(candidate, row);
+				if (spot) return spot;
 			}
 			return { line: 1, side: "head" as const, offset: 0, left: body.scrollLeft };
 		}
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep virtual row or fold coordinates consistent with the DOM for this render pass.
+
+		function foldFor(line: number, side: ExplorerSide) {
+			return (side === "head" ? headFolds : baseFolds).find((fold) => fold.start <= line && line < fold.end);
+		}
+
 		function indexAt(line: number, side: ExplorerSide, unfold: boolean) {
 			const map = side === "head" ? headIndex : baseIndex;
 			const found = map.get(line);
 			if (found !== undefined || !unfold) return found;
-			const fold = (side === "head" ? headFolds : baseFolds).find((fold) => fold.start <= line && line < fold.end);
-			if (fold) {
-				const row = rows[fold.row];
-				if (row.type === "fold") {
-					folds.add(row.key);
-					rebuild();
-					return map.get(line);
-				}
-			}
-			return undefined;
+			const fold = foldFor(line, side);
+			if (!fold) return undefined;
+			const row = rows[fold.row];
+			if (row.type !== "fold") return undefined;
+			folds.add(row.key);
+			rebuild();
+			return map.get(line);
 		}
 		function restore(saved: ReturnType<typeof place>) {
 			const index = indexAt(saved.line, saved.side, true);
@@ -434,7 +544,6 @@
 		}).observe(body);
 
 		return {
-			// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep virtual row or fold coordinates consistent with the DOM for this render pass.
 			show(next) {
 				const same = opts?.path === next.path && opts.diff?.path === next.diff?.path;
 				if (!same) {
@@ -445,12 +554,7 @@
 					current = undefined;
 				}
 				opts = next;
-				longest = 0;
-				for (const source of [next.base, next.head])
-					for (const line of source) {
-						const spaces = line.includes("\t") ? line.replaceAll("\t", "    ").length : line.length;
-						longest = Math.max(longest, spaces);
-					}
+				longest = longestOf([next.base, next.head]);
 				indexNotes(next.notes);
 				if (!body.contains(canvas)) body.replaceChildren(canvas);
 				rebuild();

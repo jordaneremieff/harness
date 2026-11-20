@@ -87,41 +87,63 @@
 			control.title = description ?? "";
 		};
 
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
+		// Height limit for a floating card within the code viewport.
+		function cardLimit(body: DOMRect) {
+			return Math.max(120, Math.min(465, body.height - 16));
+		}
+
+		// Space below and above the anchored lines.
+		function anchorSpace(body: DOMRect, anchor: DOMRect | null) {
+			const bottom = anchor ? body.bottom - anchor.bottom - 12 : body.height - 16;
+			const top = anchor ? anchor.top - body.top - 12 : 0;
+			return { bottom, top };
+		}
+
+		// Attaches the card beside its lines when a side fits, or docks it.
+		function attachCard(node: HTMLElement, body: DOMRect, anchor: DOMRect | null, desired: number) {
+			const space = anchorSpace(body, anchor);
+			if (desired <= space.bottom || !anchor) {
+				const top = anchor ? anchor.bottom + 8 : Math.max(body.top + 8, body.bottom - desired - 8);
+				node.style.top = `${top}px`;
+				dock.hidden = true;
+				return;
+			}
+			if (desired <= space.top) {
+				node.style.top = `${anchor.top - desired - 8}px`;
+				dock.hidden = true;
+				return;
+			}
+			dockCard(node, body, space);
+		}
+
+		function dockCard(node: HTMLElement, body: DOMRect, space: { bottom: number; top: number }) {
+			const cap = Math.max(0, Math.min(260, Math.max(space.top, space.bottom)));
+			node.classList.add("docked");
+			if (cap >= 155) {
+				node.style.maxHeight = `${cap}px`;
+				node.style.top = `${space.bottom >= space.top ? body.bottom - cap - 5 : body.top + 5}px`;
+				dock.hidden = true;
+				return;
+			}
+			// The dock changes only the lower edge of the code viewport, never its scroll offset.
+			dock.hidden = false;
+			dock.append(node);
+			node.style.maxHeight = `${Math.min(260, Math.max(165, body.height * 0.34))}px`;
+		}
+
 		function reposition() {
 			if (!card) return;
 			const node = card.node;
 			const body = codeBody.getBoundingClientRect();
 			const main = get("main").getBoundingClientRect();
 			const anchor = ctx.bounds(card.range);
-			const left = Math.max(main.left + 10, main.right - Math.min(Math.max(main.width - 20, 0), 426) - 12);
-			node.style.width = `${Math.min(Math.max(main.width - 20, 0), 426)}px`;
-			node.style.left = `${left}px`;
+			const width = Math.min(Math.max(main.width - 20, 0), 426);
+			node.style.width = `${width}px`;
+			node.style.left = `${Math.max(main.left + 10, main.right - width - 12)}px`;
 			if (!container.contains(node)) container.append(node);
 			node.classList.remove("docked");
-			node.style.maxHeight = `${Math.max(120, Math.min(465, body.height - 16))}px`;
-			const desired = Math.min(node.scrollHeight + 2, Math.max(120, Math.min(465, body.height - 16)));
-			const bottom = anchor ? body.bottom - anchor.bottom - 12 : body.height - 16;
-			const top = anchor ? anchor.top - body.top - 12 : 0;
-			if (desired <= bottom || !anchor)
-				node.style.top = `${anchor ? anchor.bottom + 8 : Math.max(body.top + 8, body.bottom - desired - 8)}px`;
-			else if (desired <= top) node.style.top = `${anchor.top - desired - 8}px`;
-			else {
-				const space = Math.max(top, bottom);
-				const cap = Math.max(0, Math.min(260, space));
-				node.classList.add("docked");
-				if (cap >= 155) {
-					node.style.maxHeight = `${cap}px`;
-					node.style.top = `${bottom >= top ? body.bottom - cap - 5 : body.top + 5}px`;
-				} else {
-					// The dock changes only the lower edge of the code viewport, never its scroll offset.
-					dock.hidden = false;
-					dock.append(node);
-					node.style.maxHeight = `${Math.min(260, Math.max(165, body.height * 0.34))}px`;
-					return;
-				}
-			}
-			dock.hidden = true;
+			node.style.maxHeight = `${cardLimit(body)}px`;
+			attachCard(node, body, anchor, Math.min(node.scrollHeight + 2, cardLimit(body)));
 		}
 		const cardResize = new ResizeObserver(() => {
 			if (card && card.node.parentElement !== dock) reposition();
@@ -252,30 +274,82 @@
 		function paintRun(run: Run) {
 			if (shownRun === run && card?.root === here()) card.rebuild?.();
 		}
-		function syncReply(run: Run) {
+		// The answer of a run that the host accepted and owes note replies.
+		function answeredRun(run: Run) {
 			const answer = run.last;
-			if (answer?.status !== "answer" || run.admission !== "accepted" || !run.ids.length) return;
+			if (answer?.status !== "answer") return false;
+			return run.admission === "accepted" && run.ids.length > 0 ? answer : false;
+		}
+		function replyText(answer: ExplorerPromptState) {
+			const retained = truncateReply(answer.text || "The agent returned no text.");
+			return `${retained}${answer.truncated || retained.length < answer.text.length ? "\n\nRead the rest in the conversation." : ""}`;
+		}
+		function unresolvedIds(run: Run) {
+			return run.packet.noteIds?.filter((id) => ctx.notes().find((note) => note.id === id)?.state !== "resolved");
+		}
+		// Writes the agent answer back into the notes that asked for it.
+		async function writeAnswer(run: Run, answer: ExplorerPromptState) {
+			if (run.root !== here()) return;
+			for (const id of run.ids) {
+				if (run.recorded.has(id)) continue;
+				await request("notes.write", {
+					op: "reply",
+					id,
+					text: replyText(answer),
+					author: "agent",
+					requestId: run.packet.requestId,
+				});
+				run.recorded.add(id);
+			}
+			const ids = unresolvedIds(run);
+			if (ids?.length)
+				await request("notes.write", { op: "state", ids, state: "answered", requestId: run.packet.requestId });
+			await ctx.refresh();
+		}
+		function syncReply(run: Run) {
+			const answer = answeredRun(run);
+			if (!answer) return;
 			run.noteWrite = run.noteWrite
-				// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
-				.then(async () => {
-					if (run.root !== here()) return;
-					for (const id of run.ids) {
-						if (run.recorded.has(id)) continue;
-						const retained = truncateReply(answer.text || "The agent returned no text.");
-						const text = `${retained}${answer.truncated || retained.length < answer.text.length ? "\n\nRead the rest in the conversation." : ""}`;
-						await request("notes.write", { op: "reply", id, text, author: "agent", requestId: run.packet.requestId });
-						run.recorded.add(id);
-					}
-					const ids = run.packet.noteIds?.filter(
-						(id) => ctx.notes().find((note) => note.id === id)?.state !== "resolved",
-					);
-					if (ids?.length)
-						await request("notes.write", { op: "state", ids, state: "answered", requestId: run.packet.requestId });
-					await ctx.refresh();
-				})
+				.then(() => writeAnswer(run, answer))
 				.catch((error) => ctx.notice(`The answer did not save: ${message(error)}`));
 		}
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
+		// Restores the card state after the host refuses a prompt.
+		function failSend(run: Run, error: unknown) {
+			const issue = error as { code?: string; retryable?: boolean };
+			run.admission = "failed";
+			run.error = message(error);
+			run.retryable = issue.retryable === true || issue.code === undefined;
+			releasePending(run, issue);
+			refresh();
+			paintRun(run);
+		}
+		function releasePending(run: Run, issue: { code?: string }) {
+			if (issue.code === "uncertain" || issue.code === undefined) return;
+			for (const id of run.ids) pending.delete(id);
+		}
+		function markSent(run: Run, ids: string[]) {
+			return request("notes.write", {
+				op: "state",
+				ids,
+				state: "sent",
+				requestId: run.packet.requestId,
+			});
+		}
+		// Records the sent state and finishes the batch once the host accepts.
+		async function settleSend(run: Run, finish: () => Promise<void>) {
+			if (run.packet.noteIds?.length) await markSent(run, run.packet.noteIds);
+			if (run.batch) await finish();
+			await ctx.refresh();
+		}
+		function releaseIds(run: Run) {
+			for (const id of run.ids) pending.delete(id);
+			refresh();
+		}
+		function deliverSend(run: Run, finish: () => Promise<void>) {
+			run.noteWrite = settleSend(run, finish)
+				.catch((error) => ctx.notice(`The message was sent, but its review state did not save: ${message(error)}`))
+				.finally(() => releaseIds(run));
+		}
 		async function send(run: Run) {
 			if (run.root !== here()) return;
 			const finish = ctx.finish();
@@ -288,34 +362,13 @@
 			try {
 				await request("prompt", run.packet);
 			} catch (error) {
-				const issue = error as { code?: string; retryable?: boolean };
-				run.admission = "failed";
-				run.error = message(error);
-				run.retryable = issue.retryable === true || issue.code === undefined;
-				if (issue.code !== "uncertain" && issue.code !== undefined) for (const id of run.ids) pending.delete(id);
-				refresh();
-				paintRun(run);
+				failSend(run, error);
 				return;
 			}
 			run.admission = "accepted";
 			paintRun(run);
 			if (run.root !== here()) return;
-			run.noteWrite = (async () => {
-				if (run.packet.noteIds?.length)
-					await request("notes.write", {
-						op: "state",
-						ids: run.packet.noteIds,
-						state: "sent",
-						requestId: run.packet.requestId,
-					});
-				if (run.batch) await finish();
-				await ctx.refresh();
-			})()
-				.catch((error) => ctx.notice(`The message was sent, but its review state did not save: ${message(error)}`))
-				.finally(() => {
-					for (const id of run.ids) pending.delete(id);
-					refresh();
-				});
+			deliverSend(run, finish);
 			syncReply(run);
 		}
 		function prompt(event: ExplorerPromptState) {
@@ -325,14 +378,39 @@
 			paintRun(run);
 			syncReply(run);
 		}
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
+		function errorText(run: Run) {
+			const answer = run.last;
+			if (answer?.status !== "error") return undefined;
+			return answer.text || "The conversation reports an error.";
+		}
+		function statusMessage(run: Run) {
+			const failed = errorText(run);
+			if (failed !== undefined) return failed;
+			if (run.last?.status === "working") return "The agent is working…";
+			if (run.last?.status === "queued") return "Queued in the conversation…";
+			return undefined;
+		}
 		function runMessage(run: Run) {
 			if (run.error) return run.error;
 			if (run.last?.status === "answer") return "Agent reply";
-			if (run.last?.status === "error") return run.last.text || "The conversation reports an error.";
-			if (run.last?.status === "working") return "The agent is working…";
-			if (run.last?.status === "queued") return "Queued in the conversation…";
+			const status = statusMessage(run);
+			if (status !== undefined) return status;
 			return run.admission === "accepted" ? "Sent to the conversation…" : "Sending…";
+		}
+		// The retained agent answer shown under a run.
+		function answerBody(answer: ExplorerPromptState) {
+			const body = answer.text || "The agent returned no text.";
+			const tail = answer.truncated ? "\n\nRead the rest in the conversation." : "";
+			return `${body}${tail}`;
+		}
+		function answerText(run: Run) {
+			const answer = run.last;
+			if (!answer) return "";
+			if (answer.status !== "answer") return "";
+			return answerBody(answer);
+		}
+		function failedRun(run: Run) {
+			return !!run.error || run.last?.status === "error";
 		}
 		function showRun(run: Run, range: ExplorerRange | null = null) {
 			const current = makeCard(
@@ -345,18 +423,15 @@
 			progress.setAttribute("role", "status");
 			const answer = el("div", "thread-reply");
 			const follow = textarea("Write a follow-up");
-			// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
+			const followable = (text: string) => {
+				if (!text) return false;
+				if (!ctx.live().connected) return false;
+				return card === current;
+			};
 			const later = () => {
 				const text = follow.value.trim();
-				if (!text || !ctx.live().connected || card !== current) return;
-				try {
-					const item = run.item ? { ...run.item, text } : null;
-					const next = runFor(item ? bake([item]) : text, text, [], item, false, run.packet.threadId);
-					showRun(next, current.range);
-					report(send(next));
-				} catch (error) {
-					ctx.notice(message(error));
-				}
+				if (!followable(text)) return;
+				sendFollowUp(run, current, text);
 			};
 			const submit = ctl("Send follow-up", later, "primary");
 			const retry = ctl("Retry", () => report(send(run)), "secondary");
@@ -366,26 +441,45 @@
 			current.actions.append(retry, submit);
 			shortcuts(follow, later);
 			follow.oninput = () => disable(submit, !ctx.live().connected || !follow.value.trim());
-			// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
+			// Follows up the same thread with the text from the reply field.
+			function followRun(run: Run, text: string) {
+				const item = run.item ? { ...run.item, text } : null;
+				return runFor(item ? bake([item]) : text, text, [], item, false, run.packet.threadId);
+			}
+			function sendFollowUp(run: Run, current: Card, text: string) {
+				try {
+					const next = followRun(run, text);
+					showRun(next, current.range);
+					report(send(next));
+				} catch (error) {
+					ctx.notice(message(error));
+				}
+			}
+			function disableRunControls() {
+				disable(retry, !ctx.live().connected, reason());
+				disable(submit, !ctx.live().connected || !follow.value.trim(), ctx.live().connected ? undefined : reason());
+			}
 			current.rebuild = () => {
 				progress.textContent = runMessage(run);
-				progress.classList.toggle("card-error", !!run.error || run.last?.status === "error");
+				progress.classList.toggle("card-error", failedRun(run));
 				answer.hidden = run.last?.status !== "answer";
-				answer.textContent =
-					run.last?.status === "answer"
-						? `${run.last.text || "The agent returned no text."}${run.last.truncated ? "\n\nRead the rest in the conversation." : ""}`
-						: "";
+				answer.textContent = answerText(run);
 				const ready = run.admission === "accepted";
 				follow.hidden = submit.hidden = !ready;
 				retry.hidden = !run.retryable;
-				disable(retry, !ctx.live().connected, reason());
-				disable(submit, !ctx.live().connected || !follow.value.trim(), ctx.live().connected ? undefined : reason());
+				disableRunControls();
 				reposition();
 			};
 			current.rebuild();
 		}
 
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
+		// The card title for each edit mode.
+		function cardTitle(mode: "ask" | "comment" | "note", draft?: ExplorerNote) {
+			if (draft) return "Edit review comment";
+			if (mode === "note") return "Keep a note";
+			if (mode === "comment") return "Comment on code";
+			return "Ask about this";
+		}
 		function draftEditor(
 			item: ExplorerExcerpt,
 			range: ExplorerRange | null,
@@ -395,17 +489,7 @@
 		) {
 			const key = `${here()}\0${item.path}`;
 			const storedRange = retained?.range ?? range ?? undefined;
-			const current = makeCard(
-				draft
-					? "Edit review comment"
-					: mode === "note"
-						? "Keep a note"
-						: mode === "comment"
-							? "Comment on code"
-							: "Ask about this",
-				label(item),
-				range,
-			);
+			const current = makeCard(cardTitle(mode, draft), label(item), range);
 			const field = textarea(
 				mode === "ask" ? "Ask about this code…" : "Write a comment…",
 				retained?.text ?? draft?.text,
@@ -435,40 +519,74 @@
 			const fail = errorField();
 			const hint = el("p", "shortcut-hint");
 			let busy = false;
-			// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
-			const write = async (action: "keep" | "add" | "send" | "batch") => {
-				if (busy || !field.value.trim() || current.root !== here()) return;
+			// The card refuses writes while busy, empty or left behind by navigation.
+			function blocked() {
+				return busy || !field.value.trim() || current.root !== here();
+			}
+			type DraftAction = "keep" | "add" | "send" | "batch";
+			function createCardNote(action: DraftAction, text: string) {
+				const state = action === "keep" ? "open" : "draft";
+				return create({ ...item, text }, storedRange?.side ?? "head", state);
+			}
+			function afterKeep(action: DraftAction) {
+				clearDraft();
+				if (card === current) closeCard();
+				ctx.notice(keptNotice(action));
+				if (action === "batch") return sendBatch();
+			}
+			function keptNotice(action: DraftAction) {
+				if (action === "keep") return "Note saved";
+				return draft ? "Comment updated" : "Comment added to review";
+			}
+			function checkPromptSize(text: string) {
+				if (bytes(bake([{ ...item, text }])) > 128 * 1024 - 40)
+					throw new Error("This message exceeds 128 KB. Select fewer lines.");
+			}
+			function cardRun(saved: ExplorerNote | null, text: string) {
+				const quoted = saved ? excerptOf(saved) : { ...item, text };
+				return runFor(bake([quoted]), text, saved ? [saved.id] : [], quoted);
+			}
+			function clearAfterSend(saved: ExplorerNote | null, run: Run) {
+				if (saved) return;
+				if (run.admission !== "accepted" || current.root !== here()) return;
+				clearDraft();
+			}
+			function prepareCardRun(saved: ExplorerNote | null, text: string) {
+				const run = cardRun(saved, text);
+				if (card === current) showRun(run, range);
+				if (saved) clearDraft();
+				return run;
+			}
+			function persistNote(action: DraftAction, text: string) {
+				if (draft) return request("notes.write", { op: "update", id: draft.id, text });
+				if (action !== "send") return createCardNote(action, text);
+			}
+			async function sendCardText(text: string) {
+				checkPromptSize(text);
+				const saved = storedRange ? await create({ ...item, text }, storedRange.side, "draft") : null;
+				if (current.root !== here()) return;
+				const run = prepareCardRun(saved, text);
+				await send(run);
+				clearAfterSend(saved, run);
+			}
+			async function applyAction(action: DraftAction, text: string) {
+				const saved = persistNote(action, text);
+				if (saved) {
+					await saved;
+					await ctx.refresh();
+				}
+				if (current.root !== here()) return;
+				if (action === "send") return sendCardText(text);
+				return afterKeep(action);
+			}
+			async function write(action: DraftAction) {
+				if (blocked()) return;
 				busy = true;
 				field.readOnly = true;
 				announce(fail, "");
 				update();
 				try {
-					const text = field.value.trim();
-					if (draft) {
-						await request("notes.write", { op: "update", id: draft.id, text });
-						await ctx.refresh();
-					} else if (action !== "send") {
-						await create({ ...item, text }, storedRange?.side ?? "head", action === "keep" ? "open" : "draft");
-						await ctx.refresh();
-					}
-					if (current.root !== here()) return;
-					if (action === "send") {
-						if (bytes(bake([{ ...item, text }])) > 128 * 1024 - 40)
-							throw new Error("This message exceeds 128 KB. Select fewer lines.");
-						const saved = storedRange ? await create({ ...item, text }, storedRange.side, "draft") : null;
-						if (current.root !== here()) return;
-						const quoted = saved ? excerptOf(saved) : { ...item, text };
-						const run = runFor(bake([quoted]), text, saved ? [saved.id] : [], quoted);
-						if (card === current) showRun(run, range);
-						if (saved) clearDraft();
-						await send(run);
-						if (!saved && run.admission === "accepted" && current.root === here()) clearDraft();
-					} else {
-						clearDraft();
-						if (card === current) closeCard();
-						ctx.notice(action === "keep" ? "Note saved" : draft ? "Comment updated" : "Comment added to review");
-						if (action === "batch") await sendBatch();
-					}
+					await applyAction(action, field.value.trim());
 				} catch (error) {
 					announce(fail, message(error));
 				} finally {
@@ -476,44 +594,88 @@
 					field.readOnly = false;
 					update();
 				}
-			};
-			const keep = ctl(
-				draft ? "Save comment" : "Keep as note",
-				() => report(write(draft ? "add" : "keep")),
-				mode === "note" || draft ? "primary" : "quiet",
-			);
+			}
+
+			function keepStyle() {
+				return mode === "note" || draft ? "primary" : "quiet";
+			}
+			// The primary save control for the card.
+			function keepControl() {
+				const text = draft ? "Save comment" : "Keep as note";
+				const action = draft ? "add" : "keep";
+				return ctl(text, () => report(write(action)), keepStyle());
+			}
+			const keep = keepControl();
 			const add = ctl("Add to review", () => report(write("add")));
 			const sendNow = ctl("Send now", () => report(write("send")), "primary");
-			// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
+			function keepHidden() {
+				return !draft && !storedRange;
+			}
+			function sendHidden() {
+				return mode === "note" || !!draft;
+			}
+			// The add action needs selected lines, a new note and a live conversation.
+			function addable(live: ExplorerLive) {
+				if (!storedRange || draft || mode === "note") return false;
+				return live.connected;
+			}
+			function unavailable() {
+				return busy || !field.value.trim();
+			}
+			function disableControls(live: ExplorerLive) {
+				const blocked = unavailable();
+				disable(keep, blocked);
+				disable(add, blocked);
+				disable(sendNow, blocked || !live.connected, live.connected ? senderLabel() : reason());
+			}
+			function batchHint(inBatch: boolean) {
+				return inBatch && !!range;
+			}
+			// The keyboard hint shown under the card field.
+			function hintText(live: ExplorerLive, inBatch: boolean) {
+				if (!live.connected) return reason();
+				if (sendHidden()) return "⌘↩ Save";
+				if (batchHint(inBatch)) return "⌘↩ Add · ⇧⌘↩ Add and send";
+				return "⌘↩ Send now";
+			}
 			function update() {
 				const live = ctx.live();
 				const inBatch = !!currentDrafts().length;
-				const unavailable = busy || !field.value.trim();
-				keep.hidden = !draft && !storedRange;
-				add.hidden = !storedRange || mode === "note" || !!draft || !live.connected;
-				sendNow.hidden = mode === "note" || !!draft;
-				disable(keep, unavailable);
-				disable(add, unavailable);
-				disable(sendNow, unavailable || !live.connected, live.connected ? senderLabel() : reason());
-				hint.textContent = !live.connected
-					? reason()
-					: mode === "note" || draft
-						? "⌘↩ Save"
-						: inBatch && range
-							? "⌘↩ Add · ⇧⌘↩ Add and send"
-							: "⌘↩ Send now";
+				keep.hidden = keepHidden();
+				add.hidden = !addable(live);
+				sendNow.hidden = sendHidden();
+				disableControls(live);
+				hint.textContent = hintText(live, inBatch);
 				reposition();
 			}
 			field.oninput = () => {
 				saveDraft();
 				update();
 			};
-			// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
-			shortcuts(field, (shift) => {
-				if (draft || mode === "note" || (!ctx.live().connected && storedRange)) report(write(draft ? "add" : "keep"));
-				else if (ctx.live().connected)
-					report(write(currentDrafts().length && storedRange ? (shift ? "batch" : "add") : "send"));
-			});
+			function offlineCard() {
+				return !ctx.live().connected && !!storedRange;
+			}
+			function simpleCard() {
+				return !!draft || mode === "note";
+			}
+			function keepCurrent() {
+				if (draft) report(write("add"));
+				else report(write("keep"));
+			}
+			function cardShortcut(shift: boolean) {
+				if (currentDrafts().length && storedRange) return shift ? "batch" : "add";
+				return "send";
+			}
+			// The Enter shortcut picks the action the current card state allows.
+			function submitCard(shift: boolean) {
+				if (simpleCard() || offlineCard()) {
+					keepCurrent();
+					return;
+				}
+				if (!ctx.live().connected) return;
+				report(write(cardShortcut(shift)));
+			}
+			shortcuts(field, submitCard);
 			drawQuote(current.content, item.quote);
 			current.content.append(field, hint, fail);
 			current.actions.append(keep, add, sendNow);
@@ -582,7 +744,10 @@
 				}
 			}
 		}
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
+		function restoreUndo(removed: { notes: ExplorerNote[]; root: string }) {
+			if (removed.notes.length) removeUndo = removed;
+			return ctx.refresh();
+		}
 		async function undo() {
 			if (!removeUndo || removeUndo.root !== here()) return;
 			const removed = removeUndo;
@@ -594,12 +759,10 @@
 					removed.notes.shift();
 				}
 			} finally {
-				if (here() === removed.root) {
-					if (removed.notes.length) removeUndo = removed;
-					await ctx.refresh();
-				}
+				if (here() === removed.root) await restoreUndo(removed);
 			}
 		}
+
 		function renderDraftList(drafts: ExplorerNote[]) {
 			commands.replaceChildren();
 			const header = el("div", "ask-head");
@@ -642,13 +805,12 @@
 			if (removeUndo?.root === here() && removeUndo.notes.length) actions.append(ctl("Undo", () => report(undo())));
 			commands.append(items, actions);
 		}
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
-		function refresh() {
-			const drafts = currentDrafts();
-			const undoVisible = removeUndo?.root === here() && !!removeUndo.notes.length;
-			const connected = ctx.live().connected;
-			tray.hidden = !drafts.length && !undoVisible;
-			const stamp = JSON.stringify([
+		function undoShown() {
+			return removeUndo?.root === here() && !!removeUndo?.notes.length;
+		}
+		// The tray state that decides whether its controls need repainting.
+		function trayStampFor(drafts: ExplorerNote[], undoVisible: boolean, connected: boolean) {
+			return JSON.stringify([
 				here(),
 				drafts.map((note) => [note.id, note.text, note.start]),
 				undoVisible,
@@ -656,32 +818,77 @@
 				destination(),
 				reason(),
 			]);
+		}
+		function toggleDraftList() {
+			commands.hidden = !commands.hidden;
+			if (commands.hidden) return;
+			renderDraftList(currentDrafts());
+			commands.querySelector("button")?.focus({ preventScroll: true });
+		}
+		// The tray button that opens and closes the draft list.
+		function trayCount(drafts: ExplorerNote[]) {
+			const count = ctl(`${drafts.length} comment${drafts.length === 1 ? "" : "s"}`, toggleDraftList, "tray-count");
+			count.prepend(icon("list"));
+			return count;
+		}
+		function copyReview() {
+			return ctl("Copy review", () => flashCopy(bake(currentDrafts().map(excerptOf))));
+		}
+		// The send control for the review tray.
+		function traySend(drafts: ExplorerNote[], connected: boolean) {
+			const send = ctl(connected ? senderLabel() : "Send", () => report(sendBatch()), "primary");
+			disable(send, !drafts.length || !connected, connected ? undefined : reason());
+			return send;
+		}
+		// Rebuilds the review tray controls from the current draft list.
+		function renderTray(drafts: ExplorerNote[], undoVisible: boolean, connected: boolean) {
+			const count = trayCount(drafts);
+			const send = traySend(drafts, connected);
+			tray.replaceChildren(count);
+			if (undoVisible) tray.append(ctl("Undo remove", () => report(undo())));
+			if (!connected && drafts.length) tray.append(copyReview());
+			tray.append(send);
+			if (!commands.hidden) renderDraftList(drafts);
+		}
+		function refresh() {
+			const drafts = currentDrafts();
+			const undoVisible = undoShown();
+			const connected = ctx.live().connected;
+			tray.hidden = !drafts.length && !undoVisible;
+			const stamp = trayStampFor(drafts, undoVisible, connected);
 			if (trayStamp !== stamp) {
 				trayStamp = stamp;
-				const count = ctl(
-					`${drafts.length} comment${drafts.length === 1 ? "" : "s"}`,
-					() => {
-						commands.hidden = !commands.hidden;
-						if (!commands.hidden) {
-							renderDraftList(currentDrafts());
-							commands.querySelector("button")?.focus({ preventScroll: true });
-						}
-					},
-					"tray-count",
-				);
-				count.prepend(icon("list"));
-				const send = ctl(connected ? senderLabel() : "Send", () => report(sendBatch()), "primary");
-				disable(send, !drafts.length || !connected, connected ? undefined : reason());
-				tray.replaceChildren(count);
-				if (undoVisible) tray.append(ctl("Undo remove", () => report(undo())));
-				if (!connected && drafts.length)
-					tray.append(ctl("Copy review", () => flashCopy(bake(currentDrafts().map(excerptOf)))));
-				tray.append(send);
-				if (!commands.hidden) renderDraftList(drafts);
+				renderTray(drafts, undoVisible, connected);
 			}
 			card?.rebuild?.();
 		}
 
+		function authorName(author: string) {
+			return author === "agent" ? "Agent" : "You";
+		}
+		function movedSuffix(note: ExplorerNote) {
+			if (note.location === "outdated") return " · Outdated";
+			if (note.location === "moved") return ` · Moved from L${note.movedFrom ?? note.anchor.start}`;
+			return "";
+		}
+		function appendReplies(block: HTMLElement, note: ExplorerNote) {
+			for (const reply of note.thread) {
+				const response = el("div", "thread-reply");
+				response.append(el("strong", "", authorName(reply.author)), el("p", "", reply.text));
+				block.append(response);
+			}
+		}
+		// One note and its replies as a thread entry block.
+		function threadEntry(note: ExplorerNote) {
+			const block = el("div", "thread-entry");
+			block.append(
+				el("p", "thread-meta", `${authorName(note.author)} · ${note.state}${movedSuffix(note)}`),
+				el("p", "note-text", note.text),
+			);
+			if (note.location !== "same") drawQuote(block, note.anchor.quote);
+			appendReplies(block, note);
+			return block;
+		}
 		function thread(notes: ExplorerNote[], position?: ExplorerRange | null) {
 			const first = notes[0];
 			if (!first) return;
@@ -743,36 +950,22 @@
 			current.content.append(entries, field, fail);
 			current.actions.append(state, reveal);
 			shortcuts(field, () => report(save()));
-			// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep the active draft, receipt and visible controls at the same transition boundary.
-			current.rebuild = () => {
+			function currentNotes(notes: ExplorerNote[]) {
 				const byId = new Map(ctx.notes().map((note) => [note.id, note]));
-				const visible = notes.map((note) => byId.get(note.id) ?? note);
+				return notes.map((note) => byId.get(note.id) ?? note);
+			}
+			function refreshThreadState(first: ExplorerNote) {
+				state.textContent = first.state === "resolved" ? "Reopen" : "Resolve";
+				state.hidden = first.state === "draft";
+			}
+			current.rebuild = () => {
+				const visible = currentNotes(notes);
 				const next = JSON.stringify(visible);
 				if (next === threadStamp) return;
 				threadStamp = next;
 				entries.replaceChildren();
-				for (const note of visible) {
-					const block = el("div", "thread-entry");
-					const moved =
-						note.location === "outdated"
-							? " · Outdated"
-							: note.location === "moved"
-								? ` · Moved from L${note.movedFrom ?? note.anchor.start}`
-								: "";
-					block.append(
-						el("p", "thread-meta", `${note.author === "agent" ? "Agent" : "You"} · ${note.state}${moved}`),
-						el("p", "note-text", note.text),
-					);
-					if (note.location !== "same") drawQuote(block, note.anchor.quote);
-					for (const reply of note.thread) {
-						const response = el("div", "thread-reply");
-						response.append(el("strong", "", reply.author === "agent" ? "Agent" : "You"), el("p", "", reply.text));
-						block.append(response);
-					}
-					entries.append(block);
-				}
-				state.textContent = visible[0].state === "resolved" ? "Reopen" : "Resolve";
-				state.hidden = visible[0].state === "draft";
+				for (const note of visible) entries.append(threadEntry(note));
+				refreshThreadState(visible[0]);
 				reposition();
 			};
 			current.rebuild();

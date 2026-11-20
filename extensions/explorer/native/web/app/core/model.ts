@@ -56,34 +56,48 @@
 		return byExtension.get(name.split(".").at(-1) ?? "") ?? { id: "text", label: "Plain text", mark: "" };
 	}
 
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep source coordinates and their matching or projection rules in one pass.
+	// Scores one path against the query: substring hits outrank subsequence hits.
+	function exactScore(value: string, exact: number, leaf: number): number {
+		return 200 + (exact >= leaf ? 60 : 0) + (exact === leaf ? 25 : 0) - value.length * 0.1;
+	}
+
+	function sequenceScore(value: string, needle: string, leaf: number): number | undefined {
+		let index = 0;
+		let first = Number.POSITIVE_INFINITY;
+		let last = -1;
+		let score = 0;
+		for (let cursor = 0; cursor < value.length && index < needle.length; cursor++) {
+			if (value[cursor] !== needle[index]) continue;
+			first = Math.min(first, cursor);
+			if (cursor === last + 1) score += 5;
+			if (cursor >= leaf) score += 2;
+			last = cursor;
+			index++;
+		}
+		if (index !== needle.length) return undefined;
+		return score - (last - first) * 0.4 - value.length * 0.13;
+	}
+
+	function fuzzyScore(value: string, needle: string): number | undefined {
+		const leaf = value.lastIndexOf("/") + 1;
+		const exact = value.indexOf(needle);
+		if (exact >= 0) return exactScore(value, exact, leaf);
+		return sequenceScore(value, needle, leaf);
+	}
+
 	function fuzzy(paths: string[], query: string, limit = 100): ExplorerHit[] {
 		const needle = query.trim().toLowerCase();
 		if (!needle) return paths.slice(0, limit).map((path) => ({ path, score: 0 }));
 		const matches: ExplorerHit[] = [];
 		for (const path of paths) {
-			const value = path.toLowerCase();
-			const leaf = value.lastIndexOf("/") + 1;
-			const exact = value.indexOf(needle);
-			if (exact >= 0) {
-				matches.push({ path, score: 200 + (exact >= leaf ? 60 : 0) + (exact === leaf ? 25 : 0) - value.length * 0.1 });
-				continue;
-			}
-			let index = 0;
-			let first = -1;
-			let last = -1;
-			let score = 0;
-			for (let cursor = 0; cursor < value.length; cursor++) {
-				if (value[cursor] !== needle[index]) continue;
-				if (first < 0) first = cursor;
-				if (cursor === last + 1) score += 5;
-				if (cursor >= leaf) score += 2;
-				last = cursor;
-				if (++index === needle.length) break;
-			}
-			if (index === needle.length) matches.push({ path, score: score - (last - first) * 0.4 - value.length * 0.13 });
+			const score = fuzzyScore(path.toLowerCase(), needle);
+			if (score !== undefined) matches.push({ path, score });
 		}
-		return matches.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)).slice(0, limit);
+		return matches.sort(byScore).slice(0, limit);
+	}
+
+	function byScore(a: ExplorerHit, b: ExplorerHit) {
+		return b.score - a.score || a.path.localeCompare(b.path);
 	}
 
 	function find(source: string[], query: string, side: ExplorerSide, limit = 10000): ExplorerMatch[] {
@@ -118,60 +132,117 @@
 		};
 	}
 
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep source coordinates and their matching or projection rules in one pass.
+	// Walking line counters shared by the context and hunk row builders.
+	type Cursor = { base: number; head: number };
+
+	function addContextLine(rows: ExplorerCodeRow[], cursor: Cursor) {
+		rows.push({ type: "line", kind: "context", base: cursor.base++, head: cursor.head++ });
+	}
+
+	// Emits the unchanged lines around a hunk, folding the distant middle when it is long.
+	function contextRows(rows: ExplorerCodeRow[], cursor: Cursor, count: number, leading: number, trailing: number) {
+		if (count > leading + trailing + 3) {
+			for (let index = 0; index < leading; index++) addContextLine(rows, cursor);
+			const folded = count - leading - trailing;
+			rows.push({
+				type: "fold",
+				key: `${cursor.base}:${cursor.head}`,
+				base: cursor.base,
+				head: cursor.head,
+				count: folded,
+			});
+			cursor.base += folded;
+			cursor.head += folded;
+			for (let index = 0; index < trailing; index++) addContextLine(rows, cursor);
+		} else for (let index = 0; index < count; index++) addContextLine(rows, cursor);
+	}
+
+	function wordPairs(
+		base: string[],
+		head: string[],
+		cursor: Cursor,
+		bn: number,
+		hn: number,
+	): ReturnType<ExplorerModel["word"]>[] {
+		const words: ReturnType<ExplorerModel["word"]>[] = [];
+		if (!(bn + hn <= 360)) return words;
+		for (let offset = 0; offset < Math.min(bn, hn); offset++)
+			words.push(word(base[cursor.base + offset - 1], head[cursor.head + offset - 1]));
+		return words;
+	}
+
+	function lineKind(offset: number, bn: number, hn: number): "pair" | "del" | "add" {
+		if (offset >= bn) return "add";
+		return offset < hn ? "pair" : "del";
+	}
+
+	function lineNumber(offset: number, count: number, start: number): number | undefined {
+		return offset < count ? start + offset : undefined;
+	}
+
+	function hunkLines(
+		rows: ExplorerCodeRow[],
+		cursor: Cursor,
+		bn: number,
+		hn: number,
+		words: ReturnType<ExplorerModel["word"]>[],
+		split: boolean,
+	) {
+		if (split) {
+			for (let offset = 0; offset < Math.max(bn, hn); offset++)
+				rows.push({
+					type: "line",
+					kind: lineKind(offset, bn, hn),
+					base: lineNumber(offset, bn, cursor.base),
+					head: lineNumber(offset, hn, cursor.head),
+					word: words[offset],
+				});
+		} else {
+			for (let offset = 0; offset < bn; offset++)
+				rows.push({ type: "line", kind: "del", base: cursor.base + offset, word: words[offset] });
+			for (let offset = 0; offset < hn; offset++)
+				rows.push({ type: "line", kind: "add", head: cursor.head + offset, word: words[offset] });
+		}
+		cursor.base += bn;
+		cursor.head += hn;
+	}
+
+	// The Git zero-count coordinate picks the line before or after an empty side.
+	function startOf(start: number, count: number) {
+		return start + (count === 0 ? 1 : 0);
+	}
+
 	function project(base: string[], head: string[], hunks: ExplorerHunk[], split: boolean): ExplorerCodeRow[] {
 		const rows: ExplorerCodeRow[] = [];
-		let b = 1,
-			h = 1;
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keep source coordinates and their matching or projection rules in one pass.
-		const context = (count: number, nearStart: boolean, nearEnd: boolean) => {
-			const add = () => rows.push({ type: "line", kind: "context", base: b++, head: h++ });
-			const leading = nearStart ? 3 : 0;
-			const trailing = nearEnd ? 3 : 0;
-			if (count > leading + trailing + 3) {
-				for (let index = 0; index < leading; index++) add();
-				const folded = count - leading - trailing;
-				rows.push({ type: "fold", key: `${b}:${h}`, base: b, head: h, count: folded });
-				b += folded;
-				h += folded;
-				for (let index = 0; index < trailing; index++) add();
-			} else for (let index = 0; index < count; index++) add();
-		};
+		const cursor: Cursor = { base: 1, head: 1 };
 		for (const [index, hunk] of hunks.entries()) {
-			const bs = hunk.baseStart + (hunk.baseCount === 0 ? 1 : 0);
-			const hs = hunk.headStart + (hunk.headCount === 0 ? 1 : 0);
-			context(Math.max(0, Math.min(bs - b, hs - h, base.length - b + 1, head.length - h + 1)), index > 0, true);
+			const bs = startOf(hunk.baseStart, hunk.baseCount);
+			const hs = startOf(hunk.headStart, hunk.headCount);
+			const gap = Math.min(
+				bs - cursor.base,
+				hs - cursor.head,
+				base.length - cursor.base + 1,
+				head.length - cursor.head + 1,
+			);
+			contextRows(rows, cursor, Math.max(0, gap), index > 0 ? 3 : 0, 3);
 			rows.push({
 				type: "hunk",
 				label: `@@ −${hunk.baseStart},${hunk.baseCount} +${hunk.headStart},${hunk.headCount} @@`,
 			});
-			b = bs;
-			h = hs;
-			const bn = Math.max(0, Math.min(hunk.baseCount, base.length - b + 1));
-			const hn = Math.max(0, Math.min(hunk.headCount, head.length - h + 1));
-			const words: ReturnType<ExplorerModel["word"]>[] = [];
-			if (bn + hn <= 360)
-				for (let offset = 0; offset < Math.min(bn, hn); offset++)
-					words.push(word(base[b + offset - 1], head[h + offset - 1]));
-			if (split) {
-				for (let offset = 0; offset < Math.max(bn, hn); offset++)
-					rows.push({
-						type: "line",
-						kind: offset < bn ? (offset < hn ? "pair" : "del") : "add",
-						base: offset < bn ? b + offset : undefined,
-						head: offset < hn ? h + offset : undefined,
-						word: words[offset],
-					});
-			} else {
-				for (let offset = 0; offset < bn; offset++)
-					rows.push({ type: "line", kind: "del", base: b + offset, word: words[offset] });
-				for (let offset = 0; offset < hn; offset++)
-					rows.push({ type: "line", kind: "add", head: h + offset, word: words[offset] });
-			}
-			b += bn;
-			h += hn;
+			cursor.base = bs;
+			cursor.head = hs;
+			const bn = Math.max(0, Math.min(hunk.baseCount, base.length - cursor.base + 1));
+			const hn = Math.max(0, Math.min(hunk.headCount, head.length - cursor.head + 1));
+			hunkLines(rows, cursor, bn, hn, wordPairs(base, head, cursor, bn, hn), split);
 		}
-		if (hunks.length) context(Math.max(0, Math.min(base.length - b + 1, head.length - h + 1)), true, false);
+		if (hunks.length)
+			contextRows(
+				rows,
+				cursor,
+				Math.max(0, Math.min(base.length - cursor.base + 1, head.length - cursor.head + 1)),
+				3,
+				0,
+			);
 		return rows;
 	}
 

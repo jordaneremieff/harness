@@ -48,7 +48,20 @@
 		]),
 	);
 
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Test token roles in priority order before assigning the first matching class.
+	// Assigns the first matching class to each tag-innard token of an HTML fragment.
+	function tagRole(token: string): string {
+		if (token.startsWith("<")) return "fn";
+		return /^["']/.test(token) ? "str" : /^[\w-]/.test(token) ? "member" : "punct";
+	}
+
+	// Classifies one whole line of a diff: marker, addition, deletion or plain.
+	function diffMarker(line: string): string {
+		if (/^(?:@@|diff |index |---|\+\+\+)/.test(line)) return "meta";
+		if (line.startsWith("+")) return "str";
+		if (line.startsWith("-")) return "builtin";
+		return "";
+	}
+
 	function html(text: string): ExplorerSpan[] {
 		const output: ExplorerSpan[] = [];
 		for (const match of text.matchAll(/<!--.*?(?:-->|$)|<\/?[A-Za-z](?:"[^"]*"|'[^']*'|[^'">])*(?:>|$)|&[#\w]+;/g)) {
@@ -62,14 +75,7 @@
 			}
 			for (const token of match[0].matchAll(/<\/?[\w:-]+|"[^"]*"|'[^']*'|[\w:-]+(?=\s*=)|[=/>]/g)) {
 				const start = match.index + token.index;
-				const role = token[0].startsWith("<")
-					? "fn"
-					: /^["']/.test(token[0])
-						? "str"
-						: /^[\w-]/.test(token[0])
-							? "member"
-							: "punct";
-				output.push({ start, end: start + token[0].length, role });
+				output.push({ start, end: start + token[0].length, role: tagRole(token[0]) });
 			}
 		}
 		return output;
@@ -86,15 +92,26 @@
 		}
 		return output;
 	}
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Test token roles in priority order before assigning the first matching class.
-	function classifyWord(id: string, word: string, before: string, after: string) {
+	// A word names a member after a dot, or a key before a colon in YAML and CSS.
+	function memberPosition(id: string, before: string, after: string) {
+		if (before === ".") return true;
+		return (id === "yaml" || id === "css") && /^\s*:/.test(after);
+	}
+
+	function keywordRole(id: string, word: string): string | undefined {
 		const keyword = id === "sql" ? word.toLowerCase() : word;
 		if (/^(?:true|false|null|nil|undefined)$/i.test(keyword)) return "num";
 		if (keywords[id]?.has(keyword)) return "key";
 		if (builtins.has(word)) return "builtin";
+		return undefined;
+	}
+
+	function classifyWord(id: string, word: string, before: string, after: string) {
+		const fixed = keywordRole(id, word);
+		if (fixed) return fixed;
 		if (/^\s*\(/.test(after)) return "fn";
 		if (/^[A-Z][\w$]*/.test(word) && id !== "sql") return "type";
-		if (before === "." || ((id === "yaml" || id === "css") && /^\s*:/.test(after))) return "member";
+		if (memberPosition(id, before, after)) return "member";
 		return "";
 	}
 	function role(id: string, match: RegExpMatchArray, text: string, start: number) {
@@ -114,23 +131,7 @@
 		return match[5] ? "punct" : "op";
 	}
 
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Test token roles in priority order before assigning the first matching class.
-	function paint(line: string, id: string): ExplorerSpan[] {
-		if (!line) return [];
-		if (id === "html") return html(line);
-		if (id === "markdown") return markdown(line);
-		if (id === "diff") {
-			const marker = /^(?:@@|diff |index |---|\+\+\+)/.test(line)
-				? "meta"
-				: line.startsWith("+")
-					? "str"
-					: line.startsWith("-")
-						? "builtin"
-						: "";
-			return marker ? [{ start: 0, end: line.length, role: marker }] : [];
-		}
-		const pattern = tokens.get(id);
-		if (!pattern) return [];
+	function tokenSpans(line: string, id: string, pattern: RegExp): ExplorerSpan[] {
 		const output: ExplorerSpan[] = [];
 		for (const match of line.matchAll(pattern)) {
 			const start = match.index;
@@ -138,6 +139,19 @@
 			if (name) output.push({ start, end: start + match[0].length, role: name });
 		}
 		return output;
+	}
+
+	function paint(line: string, id: string): ExplorerSpan[] {
+		if (!line) return [];
+		if (id === "html") return html(line);
+		if (id === "markdown") return markdown(line);
+		if (id === "diff") {
+			const marker = diffMarker(line);
+			return marker ? [{ start: 0, end: line.length, role: marker }] : [];
+		}
+		const pattern = tokens.get(id);
+		if (!pattern) return [];
+		return tokenSpans(line, id, pattern);
 	}
 
 	const lineLimit = 8192;
