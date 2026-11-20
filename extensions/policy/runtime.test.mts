@@ -956,26 +956,78 @@ async function completed(f: ReturnType<typeof fixture>, id: string, error: boole
 describe("pre-call shell guidance", () => {
 	const shellFixture = (mode: PolicyMode = "enforce") =>
 		fixture([shellRule()], mode, obj({ command: str() }, { open: true }), false, "/unused", "bash");
-	it("projects once before tools, without consuming rule guidance state", async () => {
+	const beforeRun = async (f: ReturnType<typeof shellFixture>) =>
+		(await f.handlers.get("before_agent_start")?.({ messageType: "user" }, f.ctx)) as
+			| { message: { customType: string; content: string; display: boolean } }
+			| undefined;
+	const storeCard = async (f: ReturnType<typeof shellFixture>) => {
+		const result = await beforeRun(f);
+		assert.ok(result);
+		const { customType, content, display } = result.message;
+		assert.equal(customType, "policy_shell_contract");
+		assert.equal(display, false);
+		assert.match(content, /Shell contract snapshot/);
+		return f.session.appendCustomMessageEntry(customType, content, display);
+	};
+	const visibleCards = (f: ReturnType<typeof shellFixture>) =>
+		f.session
+			.buildSessionProjection()
+			.entries.filter(({ messages }) =>
+				messages.some((message) => message.role === "custom" && message.customType === "policy_shell_contract"),
+			)
+			.map(({ sourceEntry }) => sourceEntry.id);
+
+	it("gives a fresh context one card before tools without changing observation state", async () => {
 		const f = shellFixture();
+		await f.handlers.get("session_start")?.({ reason: "new" }, f.ctx);
 		const before = await f.views();
-		const result = (await f.handlers.get("before_agent_start")?.({}, f.ctx)) as {
-			message: { customType: string; content: string; display: boolean };
-		};
-		assert.equal(result.message.customType, "policy_shell_contract");
-		assert.equal(result.message.display, false);
-		assert.match(result.message.content, /Shell contract snapshot/);
+		assert.deepEqual(visibleCards(f), []);
+		const card = await storeCard(f);
 		assert.deepEqual(await f.views(), before);
-		assert.equal(await f.runtime.beforeAgentStart(f.ctx), undefined);
+		assert.equal(await beforeRun(f), undefined);
 		await f.handlers.get("session_tree")?.({}, f.ctx);
+		f.session.appendCompaction("Earlier work.", card, 1000);
 		await f.handlers.get("session_compact")?.({}, f.ctx);
 		f.runtime.reset(undefined, "Operator reset");
-		assert.equal(await f.runtime.beforeAgentStart(f.ctx), undefined);
-		await f.handlers.get("session_start")?.({ reason: "reload" }, f.ctx);
-		assert.match((await f.runtime.beforeAgentStart(f.ctx)) ?? "", /Shell contract snapshot/);
+		assert.equal(await beforeRun(f), undefined);
+		assert.deepEqual(visibleCards(f), [card]);
 	});
 
-	it("honors modes and authority health without consuming the latch", async () => {
+	for (const reason of ["reload", "resume"] as const) {
+		it(`keeps the original card in place after ${reason}`, async () => {
+			const f = shellFixture();
+			const card = await storeCard(f);
+			const original = f.session.buildSessionProjection().messages;
+			f.restart();
+			await f.handlers.get("session_start")?.({ reason }, f.ctx);
+			assert.equal(await beforeRun(f), undefined);
+			const prompt = { role: "user" as const, content: "Continue the work.", timestamp: 2 };
+			f.session.appendMessage(prompt);
+			assert.deepEqual(f.session.buildSessionProjection().messages, [...original, prompt]);
+			assert.deepEqual(visibleCards(f), [card]);
+		});
+	}
+
+	for (const removal of ["context edit", "compaction"] as const) {
+		it(`supplies one new card when ${removal} removes the original`, async () => {
+			const f = shellFixture();
+			const original = await storeCard(f);
+			if (removal === "context edit") {
+				f.session.appendContextEdit(original, null);
+			} else {
+				const kept = f.session.appendMessage({ role: "user", content: "Keep this request.", timestamp: 2 });
+				f.session.appendCompaction("Earlier work.", kept, 1000);
+				await f.handlers.get("session_compact")?.({}, f.ctx);
+			}
+			assert.deepEqual(visibleCards(f), []);
+			const replacement = await storeCard(f);
+			assert.notEqual(replacement, original);
+			assert.equal(await beforeRun(f), undefined);
+			assert.deepEqual(visibleCards(f), [replacement]);
+		});
+	}
+
+	it("requires an eligible mode and healthy authority", async () => {
 		for (const mode of ["observe", "notice"] as const) {
 			const f = shellFixture(mode);
 			assert.equal(await f.runtime.beforeAgentStart(f.ctx), undefined);
@@ -996,18 +1048,8 @@ describe("pre-call shell guidance", () => {
 		assert.match((await f.runtime.beforeAgentStart(f.ctx)) ?? "", /Shell contract snapshot/);
 	});
 
-	it("has one latch across overlapping callbacks and rejects stale work", async () => {
-		const f = shellFixture();
+	it("does not supply a card if shutdown interrupts the authority load", async () => {
 		let release: () => void = () => {};
-		f.setLoadGate(
-			new Promise<void>((resolve) => {
-				release = resolve;
-			}),
-		);
-		const first = f.runtime.beforeAgentStart(f.ctx);
-		const second = f.runtime.beforeAgentStart(f.ctx);
-		release();
-		assert.equal((await Promise.all([first, second])).filter(Boolean).length, 1);
 		const stale = shellFixture();
 		stale.setLoadGate(
 			new Promise<void>((resolve) => {

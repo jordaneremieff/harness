@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { AgentEvent, AgentTurnContext } from "@earendil-works/pi-agent-core";
+import type { AgentEvent, AgentMessage, AgentTurnContext } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, SessionBoundaryDraft, TurnEndEvent } from "@earendil-works/pi-coding-agent";
 
@@ -222,10 +222,7 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 			timestamp: Date.now(),
 		}));
 		const messages = await runAgentLoop(
-			[
-				{ role: "user", content: "Run controlled tools", timestamp: promptTimestamp },
-				...host.convertToLlm(preparationMessages),
-			],
+			[{ role: "user", content: "Run controlled tools", timestamp: promptTimestamp }, ...preparationMessages],
 			{
 				systemPrompt: "Controlled test",
 				messages: options.continueSession ? session.buildSessionProjection().messages : [],
@@ -233,7 +230,7 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 			},
 			{
 				model,
-				convertToLlm: (messages: unknown[]) => messages,
+				convertToLlm: (messages: AgentMessage[]) => host.convertToLlm(messages),
 				transformContext: (messages: unknown[]) => runner.emitContext(messages),
 				beforeToolCall: ({ toolCall, args }: { toolCall: { id: string; name: string }; args: unknown }) =>
 					runner.emitToolCall({ type: "tool_call", toolCallId: toolCall.id, toolName: toolCall.name, input: args }),
@@ -273,7 +270,17 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 					case "message_end": {
 						const replacement = await runner.emitMessageEnd(event);
 						assert.equal(replacement, undefined, "This fixture does not apply message replacements");
-						messageIds.set(event.message, session.appendMessage(event.message));
+						const message = event.message;
+						const id =
+							message.role === "custom"
+								? session.appendCustomMessageEntry(
+										message.customType,
+										message.content,
+										message.display,
+										message.details,
+									)
+								: session.appendMessage(message);
+						messageIds.set(message, id);
 						break;
 					}
 					case "turn_end": {
@@ -645,9 +652,9 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			assert.equal(executions, 1);
 			assert.equal(f.requests(), 1);
 			assert.match(JSON.stringify(f.requestContexts[0]), /Bound rg --files/);
-			await f.run([], { endAfterTurn: true });
+			await f.run([], { endAfterTurn: true, continueSession: true });
 			assert.equal(f.requests(), 2);
-			assert.doesNotMatch(JSON.stringify(f.requestContexts[1]), /Shell contract snapshot/);
+			assert.equal(JSON.stringify(f.requestContexts[1]).match(/Shell contract snapshot/g)?.length, 1);
 			await f.telemetry();
 			assert.deepEqual(f.errors, []);
 		} finally {

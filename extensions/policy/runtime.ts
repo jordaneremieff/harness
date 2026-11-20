@@ -74,6 +74,7 @@ import { DEFAULT_TELEMETRY_RETENTION, type TelemetryHealth, type TelemetryRetent
 const MAX_CATALOG_TOOLS = 1024;
 const MAX_FINAL_IDS = 8192;
 const PROJECT_CONTEXT_MARKER = "<project_context>";
+const SHELL_CARD_TYPE = "policy_shell_contract";
 
 type Result = { content?: ContentLike[]; isError?: boolean; details?: unknown; usage?: unknown };
 type Catalog = ReturnType<ExtensionAPI["getAllTools"]>;
@@ -342,7 +343,6 @@ export class PolicyRuntime {
 	private generation = 0;
 	private turn = 0;
 	private closed = false;
-	private shellCardSent = false;
 	private incomplete = 0;
 	private stale = 0;
 	private readonly writer: Pick<PolicyWriter, "enqueue" | "health" | "close">;
@@ -1078,17 +1078,21 @@ export class PolicyRuntime {
 		};
 	}
 	async beforeAgentStart(ctx: ExtensionContext): Promise<string | undefined> {
-		if (this.closed || !this.enabled() || this.shellCardSent) return;
+		if (this.closed || !this.enabled()) return;
 		if (this.mode() !== "annotate" && this.mode() !== "enforce") return;
 		const generation = this.generation;
 		await this.load(ctx);
-		if (!this.live(generation) || this.shellCardSent) return;
+		if (!this.live(generation)) return;
 		if (this.effectiveMode() !== "annotate" && this.effectiveMode() !== "enforce") return;
 		const catalog = this.catalog();
 		if (!catalog.available || !catalog.active.includes("bash")) return;
-		const text = shellContractCard(this.prepared().records.values(), sessionScope(ctx), this.publicContext(catalog));
-		if (text) this.shellCardSent = true;
-		return text;
+		if (
+			ctx.sessionManager
+				.buildSessionProjection()
+				.messages.some((message) => message.role === "custom" && message.customType === SHELL_CARD_TYPE)
+		)
+			return;
+		return shellContractCard(this.prepared().records.values(), sessionScope(ctx), this.publicContext(catalog));
 	}
 	/** The newest compaction, branch-summary or context-edit entry on the active branch bounds the context epoch. */
 	private guidanceEpochFor(ctx: ExtensionContext): string {
@@ -1429,13 +1433,12 @@ export class PolicyRuntime {
 	attach(): void {
 		this.pi.on("session_start", (event) => {
 			this.closed = false;
-			this.shellCardSent = false;
 			this.resetSession(event.reason ?? "startup");
 			this.enabled();
 		});
 		this.pi.on("before_agent_start", async (_event, ctx) => {
 			const content = await this.beforeAgentStart(ctx);
-			if (content) return { message: { customType: "policy_shell_contract", content, display: false } };
+			if (content) return { message: { customType: SHELL_CARD_TYPE, content, display: false } };
 		});
 		this.pi.on("session_tree", () => this.resetSession("tree"));
 		this.pi.on("session_compact", () => {

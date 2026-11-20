@@ -711,11 +711,11 @@ sequence of retries. Policy never serializes tool execution to simplify counters
 
 ### Shell guidance before command selection
 
-In annotate/enforce mode, the first eligible `before_agent_start` supplies one
-hidden custom message with a shell-contract snapshot. Bash must be active, the
-public tool catalog must be available, and rule authority must be healthy. A
-`tool_call` trigger occurs after the model selects its command, so it cannot
-teach that first selection without another call.
+In annotate/enforce mode, `before_agent_start` supplies a shell-contract snapshot
+as a hidden custom message if Pi's current context projection contains no card.
+Bash must be active, the public tool catalog must be available, and rule authority
+must be healthy. A `tool_call` trigger occurs after the model selects its command,
+so it cannot teach that first selection without another call.
 
 [shell-card.ts](shell-card.ts) derives every command note and suggested form
 from the current stored definitions, not a hardcoded copy of bundled defaults.
@@ -728,12 +728,11 @@ contribute nothing. Arbitrary facts programs are not translated into prose;
 The message supplies preparation guidance, not a denial response or permission
 to execute. It does not evaluate a candidate command, change rule state, force
 a turn, or replace other instructions. Observe/notice mode and degraded
-authority produce no model message. An in-memory latch limits delivery attempts
-to one per session load. Reload, new session, resume, and fork reset it;
-ordinary prompts, tree navigation, rule resets, and compaction do not.
-The host retains and compacts the message normally. Later rule changes still
-control execution; the earlier message remains a labeled snapshot, not live
-rule authority. Injection does not establish provider receipt or compliance.
+authority produce no model message. A retained card stays in its original
+position across reload and resume. If a context edit or compaction removes the
+card from the projection, the next eligible request can add a new one. Later
+rule changes still control execution; a retained card remains a labeled snapshot,
+not live rule authority. Injection does not establish provider receipt or compliance.
 
 ### Persistent guidance placement
 
