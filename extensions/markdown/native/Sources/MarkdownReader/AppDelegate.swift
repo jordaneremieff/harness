@@ -355,7 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func selectAllPage(_ sender: Any?) { pageCommand("selectAll") }
     @objc func toggleLock(_ sender: Any?) { pageCommand("toggleLock") }
     @objc func replacePage(_ sender: Any?) { pageCommand("replace") }
-    @objc func commentOnSelection(_ sender: Any?) { pageCommand("askSelection") }
+    @objc func askAboutSelection(_ sender: Any?) { pageCommand("askSelection") }
     @objc func askAboutDocument(_ sender: Any?) { pageCommand("askDocument") }
     @objc func copyMarkdown(_ sender: Any?) { pageCommand("copyMarkdown") }
     @objc func copyPassage(_ sender: Any?) { pageCommand("copyPassage") }
@@ -397,9 +397,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let action = item.action else { return true }
-        if [#selector(commentOnSelection(_:)), #selector(askAboutDocument(_:))].contains(action) {
+        if [#selector(askAboutSelection(_:)), #selector(askAboutDocument(_:))].contains(action) {
             guard let workspace = windows.keyEditor, let client = workspace.collaboration else { return false }
-            return !client.isClosed && !workspace.closing && windows.keySurface?.commandEnabled(action == #selector(commentOnSelection(_:)) ? "askSelection" : "askDocument") == true
+            return !client.isClosed && !workspace.closing && windows.keySurface?.commandEnabled(action == #selector(askAboutSelection(_:)) ? "askSelection" : "askDocument") == true
         }
         if [#selector(newScratchpad(_:)), #selector(showDrafts(_:)), #selector(showLibrary(_:)), #selector(openDocument(_:)), #selector(openStore(_:)), #selector(openRecent(_:))].contains(action) { return true }
         if [#selector(saveEditor(_:)), #selector(saveEditorAs(_:))].contains(action) { return windows.keyEditor?.active != nil }
@@ -577,7 +577,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             item("Select All", #selector(selectAllPage(_:)), "a"),
             item("Edit", #selector(toggleLock(_:)), "e"),
             .separator(),
-            item("Comment on Selection…", #selector(commentOnSelection(_:)), "m", [.command, .shift]),
+            item("Ask about Selection…", #selector(askAboutSelection(_:)), "d"),
             item("Ask about Document…", #selector(askAboutDocument(_:)), "m", [.command, .option]),
             .separator(),
             submenu("Format", [
@@ -627,7 +627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             item("Older Revision", #selector(olderRevision(_:)), "[", [.command, .option]),
             item("Newer Revision", #selector(newerRevision(_:)), "]", [.command, .option]),
             item("Go to Revision…", #selector(goToRevision(_:)), "g", [.command, .option]),
-            item("Review Changes", #selector(reviewChanges(_:)), "d"),
+            item("Review Changes", #selector(reviewChanges(_:)), ""),
             .separator(),
             item("Document Details", #selector(showDetails(_:)), "i"),
             .separator(),

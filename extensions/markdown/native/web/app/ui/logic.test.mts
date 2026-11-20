@@ -49,7 +49,10 @@ test("the mirrored Mac keys select one command for each context", () => {
 	assert.equal(key("g", false, { shiftKey: true })?.name, "findPrevious");
 	assert.equal(key("f", false, { altKey: true })?.name, "replace");
 	assert.equal(key("s", false, { ctrlKey: true })?.name, "toggleOutline");
-	assert.equal(key("m", false, { shiftKey: true })?.name, "askSelection");
+	assert.equal(key("d")?.name, "askSelection");
+	assert.equal(key("d", true)?.name, "askSelection");
+	assert.equal(key("d", false, {}, true)?.name, "askSelection");
+	assert.equal(key("m", false, { shiftKey: true }), null);
 	assert.equal(key("m", false, { altKey: true })?.name, "askDocument");
 	assert.equal(key("c", false, { shiftKey: true })?.name, "copyMarkdown");
 	assert.equal(key("c", false, { altKey: true })?.name, "copyPassage");
@@ -302,6 +305,12 @@ test("the context menu offers the actions that apply where the person clicks", (
 		"toggleLock",
 	]);
 	assert.deepEqual(ids(target({})), ["askDocument", "|", "editHere", "find", "toggleLock"]);
+	assert.deepEqual(ids(target({ annotation: "comment" })).slice(0, 3), ["openAnnotation", "askDocument", "|"]);
+	assert.deepEqual(
+		Array.from(logic.contextMenuItems(target({ annotation: "question", selection: true })).slice(0, 2), (e) => e.label),
+		["Open Question", "Ask about this"],
+	);
+	assert.equal(logic.contextMenuItems(target({ annotation: "comment" }))[0].label, "Open Comment");
 	assert.deepEqual(ids(target({ lock: "writing", editor: true })), [
 		"askDocument",
 		"|",
@@ -366,7 +375,7 @@ test("the context menu offers the actions that apply where the person clicks", (
 			.contextMenuItems(target({ lock: "writing", editor: true, selection: true, selectionInOneBlock: true }))
 			.map((e) => [e.id, e.key]),
 	);
-	assert.equal(keys.ask, "⇧⌘M");
+	assert.equal(keys.ask, "⌘D");
 	assert.equal(keys.cut, "⌘X");
 	assert.equal(keys.paste, "⌘V");
 	assert.equal(keys.bold, "⌘B");

@@ -65,6 +65,8 @@ declare global {
 		block: boolean;
 		heading: boolean;
 		link?: { internal: boolean };
+		/** A pending comment or an asked question marks the clicked text. */
+		annotation?: "comment" | "question";
 		image: boolean;
 		imageAlt: boolean;
 		code: boolean;
@@ -156,6 +158,8 @@ declare global {
 		clearSelection?(): void;
 		/** Shows the document text that holds a node before a find match there comes into view. */
 		reveal?(node: Node): void;
+		/** The kind of mark at a point of the page, if a comment or a question marks the text there. */
+		annotationAt?(x: number, y: number): "comment" | "question" | null;
 	}
 	interface ReaderCodeViews {
 		/** Adds the controls of new code blocks and applies each block's chosen view. */
@@ -185,6 +189,10 @@ declare global {
 	interface ReaderAskUI {
 		noteHeld(): void;
 		letAgentChange(): void;
+		/** The kind of mark at a point of the page: a pending comment or a question already asked. */
+		annotationAt(x: number, y: number): "comment" | "question" | null;
+		/** Opens the card of the mark at a point; false when no mark is there. */
+		openAt(x: number, y: number): boolean;
 		open(selection?: ReaderSelection | null): void;
 		close(): boolean;
 		refresh(): void;

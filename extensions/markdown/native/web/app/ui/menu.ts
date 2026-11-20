@@ -53,7 +53,12 @@
 			if (!block) return "";
 			return controller.blocks.find((b) => b.key === block.dataset.block)?.type ?? block.dataset.type ?? "";
 		}
-		function documentTarget(target: Element, selection: ReaderSelection | null, block: HTMLElement | null) {
+		function documentTarget(
+			target: Element,
+			selection: ReaderSelection | null,
+			block: HTMLElement | null,
+			point: { x: number; y: number },
+		) {
 			const link = documentLink(target),
 				image = target.closest<HTMLElement>("[data-image]"),
 				inEditor = block?.dataset.role === "block-editor",
@@ -68,6 +73,7 @@
 				block: !!block,
 				heading: type.startsWith("heading"),
 				link: link && !inEditor ? { internal } : undefined,
+				annotation: ctx.annotationAt?.(point.x, point.y) ?? undefined,
 				image: !!image,
 				imageAlt: !!(image?.getAttribute("alt") || image?.getAttribute("aria-label")),
 				code: type === "code",
@@ -89,7 +95,7 @@
 				block,
 				link: block?.dataset.role === "block-editor" ? null : link,
 				image: target.closest<HTMLElement>("[data-image]"),
-				target: documentTarget(target, selection, block),
+				target: documentTarget(target, selection, block, { x, y }),
 			};
 		}
 		function menuTarget(partial: Partial<ReaderMenuTarget>): ReaderMenuTarget {

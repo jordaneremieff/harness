@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry", "wide-code-and-tables", "layout-fits-every-pane-size",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-batch-sends-one-prompt", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-batch-sends-one-prompt", "ask-marks-reopen-cards-and-command-d", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "code-syntax-and-rendered-markdown", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -80,6 +80,7 @@ struct Verification {
                 await run("agent-hold-change-panel-find-and-code") { await context.agentPanels(keep: &keep) }
                 await run("ask-card-keeps-newest-exchange-in-view") { await context.askCardLatest(keep: &keep) }
                 await run("ask-batch-sends-one-prompt") { await context.askBatch(keep: &keep) }
+                await run("ask-marks-reopen-cards-and-command-d") { await context.askMarks(keep: &keep) }
                 await run("ask-from-open-block-and-let-it") { await context.askFromOpenBlock(keep: &keep) }
                 await run("narrow-writing-bar-keeps-save-icon") { await context.narrowWritingBar(keep: &keep) }
                 await run("agent-change-keeps-reading-position") { await context.agentChangeKeepsPlace(keep: &keep) }
@@ -735,6 +736,14 @@ struct Context {
             return 'clicked';
             """, ["original": original, "replacement": replacement]) as? String ?? "unavailable"
             let undone = await wait(seconds: 5) { document.text.source == source }
+            // Show changes closed the empty question card, which leaves no entry in the Ask menu.
+            let askEntries = await js(model, """
+            document.getElementById('b-ask').click();
+            const menu = document.querySelector('#activity:popover-open');
+            const titles = [...(menu?.querySelectorAll('.thread b') ?? [])].map(b => b.textContent);
+            menu?.hidePopover();
+            return menu ? titles : null;
+            """) as? [String]
             _ = await js(model, "document.getElementById('page').scrollTop = 0; return true;")
             await model.sendCommand("find")
             let find = await js(model, """
@@ -749,10 +758,10 @@ struct Context {
             const rect = hit.getBoundingClientRect();
             return rect.top >= view.top && rect.bottom <= view.bottom ? 'revealed' : 'hidden at ' + Math.round(rect.top);
             """) as? String ?? "unavailable"
-            let pass = oneCopy && closedLayersInert && cardOpen && held.reason == "held" && holdNotice && applied.status == "applied" && afterAgent != source && panel == "clicked" && undone && find == "revealed"
+            let pass = oneCopy && closedLayersInert && cardOpen && held.reason == "held" && holdNotice && applied.status == "applied" && afterAgent != source && panel == "clicked" && undone && askEntries == [] && find == "revealed"
             await editor.closeViews()
             await model.close()
-            return .init(name: name, pass: pass, detail: "code \(code); closed menus inert \(closedLayersInert); hold \(held.status)/\(held.reason ?? "") notice \(holdNotice); ask card open \(cardOpen); agent edit \(applied.status); change panel \(panel); panel Undo restored \(undone); find \(find)")
+            return .init(name: name, pass: pass, detail: "code \(code); closed menus inert \(closedLayersInert); hold \(held.status)/\(held.reason ?? "") notice \(holdNotice); ask card open \(cardOpen); agent edit \(applied.status); change panel \(panel); panel Undo restored \(undone); Ask menu entries after Show changes \(String(describing: askEntries)); find \(find)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
@@ -922,6 +931,202 @@ struct Context {
             await model.close()
             return .init(name: name, pass: added.allSatisfy { $0 } && highlights.sorted() == quotes.sorted() && reopenedWithFocus && deferred && sent && sentOnce && exact && answered && restored && retriesExact,
                          detail: "added \(added); comment highlights \(highlights); reopened with focus \(reopenedWithFocus); deferred \(deferred); tray Send \(sent); one initial prompt \(sentOnce); exact annotations \(exact); batch reply \(answered); exact retry \(retriesExact); refusal restored batch \(restored)")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    /// A person's real Command-D asks about a selection. Questions sent about a passage keep marks
+    /// while their cards are closed, and so does a comment added to the batch; a refused question
+    /// leaves none. A real click on a mark in Reading opens its card again, and where two marks
+    /// overlap, each further click opens the next card. A click beside the marks opens none, a
+    /// double-click on a mark still selects its word, an empty question closed without a message
+    /// leaves no entry in the Ask menu, the page menu offers the mark's card, and in Writing a click
+    /// on a mark edits the text.
+    func askMarks(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "ask-marks-reopen-cards-and-command-d"
+        let source = "# Marks\n\nThe word here and the word there.\n\nA question about this sentence.\n\nA refused question stays unmarked.\n\nPlain closing paragraph.\n"
+        do {
+            let file = workspace.appendingPathComponent("ask-marks.md")
+            try Data(source.utf8).write(to: file)
+            let model = ReaderModel(reference: .file(path: file.path), platform: CheckRunner.platform(), state: ReadingStateStore(directory: nil))
+            var prompts: [[String: Any]] = []
+            model.page.onMessage = { message in
+                guard message["type"] as? String == "prompt" else { return [:] }
+                prompts.append(message)
+                if message["text"] as? String == "Refuse this." { return ["accepted": false, "detail": "Refused."] }
+                return ["accepted": true]
+            }
+            let window = CheckRunner.offscreenWindow(page: model.page, width: 760, height: 700, focused: true)
+            keep.append(window)
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            await model.sendCommand("toggleLock", args: ["lock": "reading"])
+            window.makeFirstResponder(model.page.webView)
+            let view = model.page.webView
+            func key(_ code: UInt16, _ characters: String, flags: NSEvent.ModifierFlags = []) async {
+                for type in [NSEvent.EventType.keyDown, .keyUp] {
+                    guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code) else { continue }
+                    if type == .keyDown, window.performKeyEquivalent(with: event) || NSApp.mainMenu?.performKeyEquivalent(with: event) == true { continue }
+                    window.sendEvent(event)
+                }
+                _ = await js(model, "await new Promise(r => setTimeout(r, 120)); return true;")
+            }
+            func click(_ point: [Double], down: NSEvent.EventType = .leftMouseDown, up: NSEvent.EventType = .leftMouseUp, count: Int = 1) async {
+                guard point.count == 2 else { return }
+                let location = view.convert(NSPoint(x: point[0], y: view.isFlipped ? point[1] : view.bounds.height - point[1]), to: nil)
+                for type in [down, up] {
+                    guard let event = NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: count, pressure: type == down ? 1 : 0) else { continue }
+                    NSApp.sendEvent(event)
+                    _ = await js(model, "await new Promise(r => setTimeout(r, 70)); return true;")
+                }
+                _ = await js(model, "await new Promise(r => setTimeout(r, 150)); return true;")
+            }
+            func select(_ text: String, occurrence: Int = 1) async -> Bool {
+                await js(model, """
+                const walker = document.createTreeWalker(document.querySelector('[data-role="document"]'), NodeFilter.SHOW_TEXT);
+                let node, seen = 0, at = -1;
+                while ((node = walker.nextNode())) {
+                  let from = 0;
+                  while ((at = node.data.indexOf(text, from)) >= 0 && ++seen < occurrence) from = at + 1;
+                  if (at >= 0 && seen === occurrence) break;
+                }
+                if (!node) return false;
+                const range = document.createRange(); range.setStart(node, at); range.setEnd(node, at + text.length);
+                getSelection().removeAllRanges(); getSelection().addRange(range);
+                document.dispatchEvent(new Event('selectionchange'));
+                return getSelection().toString() === text;
+                """, ["text": text, "occurrence": occurrence]) as? Bool == true
+            }
+            func markCentre(_ highlight: String) async -> [Double] {
+                await js(model, """
+                const range = [...(CSS.highlights.get(name) ?? [])][0];
+                if (!range) return [];
+                const r = range.getClientRects()[0];
+                return [r.left + r.width / 2, r.top + r.height / 2];
+                """, ["name": highlight]) as? [Double] ?? []
+            }
+            func highlighted(_ highlight: String) async -> [String] {
+                await js(model, "return Array.from(CSS.highlights.get(name) ?? [], range => range.toString());", ["name": highlight]) as? [String] ?? []
+            }
+            // The open card: title, quote, field text, field focus, reply and latest question.
+            let card = """
+            const card = document.querySelector('.ask-card[data-open]');
+            const field = card?.querySelector('textarea');
+            const questions = card ? [...card.querySelectorAll('.ask-question')] : [];
+            return card ? [card.querySelector('.ask-head .who')?.textContent ?? '', card.querySelector('.quote')?.textContent ?? '', field?.value ?? '', String(document.activeElement === field), card.querySelector('.reply')?.textContent ?? '', questions.at(-1)?.textContent ?? ''] : [];
+            """
+            let closeCard = "document.querySelector('.ask-card[data-open] .ask-head button')?.click(); return !document.querySelector('.ask-card[data-open]');"
+            /// Command-D on a selection, then a message and a press of one of the card's buttons.
+            func ask(_ text: String, occurrence: Int = 1, message: String, button: String) async -> (selected: Bool, card: [String], done: Bool) {
+                let selected = await select(text, occurrence: occurrence)
+                await key(2, "d", flags: [.command])
+                let opened = await js(model, card) as? [String] ?? []
+                let done = await js(model, """
+                const card = document.querySelector('.ask-card[data-open]');
+                const field = card?.querySelector('textarea');
+                if (!field) return false;
+                field.value = message;
+                field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: message }));
+                const press = card.querySelector(button);
+                if (!press || press.disabled) return false;
+                press.click();
+                return true;
+                """, ["message": message, "button": button]) as? Bool == true
+                return (selected, opened, done)
+            }
+            func answer(_ count: Int, _ reply: String) async throws {
+                _ = await wait(seconds: 2) { prompts.count == count }
+                guard prompts.count == count, let request = prompts[count - 1]["requestId"] as? String,
+                      let thread = prompts[count - 1]["threadId"] as? String else { return }
+                _ = try await model.sendEnvelope(["v": 1, "type": "promptState", "requestId": request, "threadId": thread, "state": "answered", "detail": reply])
+            }
+            // Command-D opens the card about the selected passage; the question is sent and answered.
+            let first = await ask("about this sentence", message: "Is this sentence needed?", button: ".ask-primary")
+            let reply = "It carries the example."
+            try await answer(1, reply)
+            let expected = (source as NSString).range(of: "about this sentence")
+            let range = prompts.first?["quoteRange"] as? [String: Any]
+            let located = range?["start"] as? Int == expected.location && range?["end"] as? Int == NSMaxRange(expected)
+            let closedQuestion = await js(model, closeCard) as? Bool == true
+            let askedMarks = await highlighted("asked")
+            // A real click on the question's dotted mark opens its card with the answer.
+            await click(await markCentre("asked"))
+            let answered = await js(model, card) as? [String] ?? []
+            _ = await js(model, closeCard)
+            // A second question about the same passage: each click on the overlap opens the next card.
+            let second = await ask("about this sentence", message: "Who reads it?", button: ".ask-primary")
+            try await answer(2, "The operator.")
+            _ = await js(model, closeCard)
+            var cycle: [String] = []
+            for _ in 0..<3 {
+                await click(await markCentre("asked"))
+                cycle.append((await js(model, card) as? [String])?.last ?? "")
+            }
+            _ = await js(model, closeCard)
+            // A question that the conversation refuses leaves no mark.
+            let refused = await ask("refused question", message: "Refuse this.", button: ".ask-primary")
+            _ = await wait(seconds: 2) { prompts.count == 3 }
+            _ = await js(model, closeCard)
+            let afterRefusal = await highlighted("asked")
+            // An empty question closed without a message leaves no entry in the Ask menu.
+            let menuTitles = await js(model, """
+            document.getElementById('b-ask').click();
+            document.querySelector('#activity:popover-open .item')?.click();
+            if (!document.querySelector('.ask-card[data-open]')) return [];
+            document.querySelector('.ask-card[data-open] .ask-head button')?.click();
+            document.getElementById('b-ask').click();
+            const menu = document.querySelector('#activity:popover-open');
+            const titles = [...(menu?.querySelectorAll('.thread b') ?? [])].map(b => b.textContent);
+            menu?.hidePopover();
+            return titles;
+            """) as? [String] ?? []
+            // Command-D on one word; the comment goes to the batch and keeps its highlight.
+            let comment = "Name the second word."
+            let added = await ask("word", occurrence: 2, message: comment, button: ".ask-secondary")
+            let commentMarks = await highlighted("comment")
+            // A real click on the comment's mark opens it to edit, with the keyboard in its field.
+            await click(await markCentre("comment"))
+            let reopened = await js(model, card) as? [String] ?? []
+            let closedComment = await js(model, closeCard) as? Bool == true
+            // A click beside the marks opens no card.
+            let beside = await js(model, """
+            const walker = document.createTreeWalker(document.querySelector('[data-role="document"]'), NodeFilter.SHOW_TEXT);
+            let node; while ((node = walker.nextNode()) && !node.data.includes('closing'));
+            const range = document.createRange(); const at = node.data.indexOf('closing');
+            range.setStart(node, at); range.setEnd(node, at + 7);
+            const r = range.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2];
+            """) as? [Double] ?? []
+            await click(beside)
+            let noCard = await js(model, card) as? [String] ?? ["open"]
+            // A double-click on a mark still selects its word; its first click opens the card.
+            let word = await markCentre("comment")
+            await click(word, count: 1)
+            await click(word, count: 2)
+            let doubleClick = await js(model, "return [getSelection().toString(), String(!!document.querySelector('.ask-card[data-open]'))];") as? [String] ?? []
+            _ = await js(model, closeCard)
+            _ = await js(model, "getSelection().removeAllRanges(); return true;")
+            // The page menu on a mark offers its card.
+            await click(await markCentre("comment"), down: .rightMouseDown, up: .rightMouseUp)
+            let menuItems = await js(model, "const m = document.querySelector('[data-role=\"context-menu\"]'); return m.hidden ? [] : [...m.querySelectorAll('.item')].map(i => i.dataset.id);") as? [String] ?? []
+            await key(53, "\u{1b}")
+            // In Writing, a click on a mark edits the text and opens no card. The right-click selected
+            // the word, and a click inside a selection opens no block.
+            _ = await js(model, "getSelection().removeAllRanges(); return true;")
+            await model.sendCommand("toggleLock", args: ["lock": "writing"])
+            _ = await js(model, "await new Promise(r => setTimeout(r, 200)); return true;")
+            await click(await markCentre("comment"))
+            let writing = await js(model, "return [!!document.querySelector('[data-role=\"block-editor\"]'), !!document.querySelector('.ask-card[data-open]')];") as? [Bool] ?? []
+            await model.close()
+            let commandOK = first.selected && first.done && first.card.count == 6 && first.card[1] == "about this sentence" && first.card[3] == "true"
+            let questionOK = located && closedQuestion && askedMarks == ["about this sentence"]
+                && answered.count == 6 && answered[1] == "about this sentence" && answered[4].hasSuffix(reply)
+            let cycleOK = second.done && cycle.count == 3 && cycle[0].hasSuffix("Who reads it?") && cycle[1].hasSuffix("Is this sentence needed?") && cycle[2].hasSuffix("Who reads it?")
+            let refusalOK = refused.done && prompts.count == 3 && afterRefusal == ["about this sentence", "about this sentence"]
+            let menuOK = menuTitles == ["Refuse this.", "Who reads it?", "Is this sentence needed?"]
+            let commentOK = added.done && commentMarks == ["word"] && reopened.count == 6 && reopened[0] == "Edit batch comment"
+                && reopened[1] == "word" && reopened[2] == comment && reopened[3] == "true" && closedComment && noCard.isEmpty
+            let pass = commandOK && questionOK && cycleOK && refusalOK && menuOK && commentOK && doubleClick.first == "word"
+                && menuItems.first == "openAnnotation" && writing == [true, false]
+            return .init(name: name, pass: pass, detail: "Command-D card \(first.card); question range \(String(describing: range)) (expected \(expected.location)-\(NSMaxRange(expected))); asked marks \(askedMarks); reopened question \(answered); overlap clicks \(cycle); marks after a refusal \(afterRefusal); Ask menu after an empty question \(menuTitles); comment marks \(commentMarks); reopened comment \(reopened); click beside opened \(noCard); double-click [selection, card] \(doubleClick); mark menu \(menuItems); Writing click [editor, card] \(writing)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 

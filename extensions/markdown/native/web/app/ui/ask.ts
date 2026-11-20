@@ -109,16 +109,75 @@
 				return range ? [range] : [];
 			});
 		}
+		// Each pending comment and each question that the conversation did not refuse keeps a mark on
+		// its passage; a click on a mark in Reading opens its card again. The open card's own mark gives
+		// way to the passage highlight.
+		type Mark = {
+			kind: "comment" | "asked";
+			owner: ReaderComment | ReaderThread;
+			ranges: Range[];
+			open: () => void;
+		};
+		let marks: Mark[] = [],
+			hovered: Mark | null = null;
+		function commentMark(comment: ReaderComment): Mark[] {
+			const range = rangeFor(comment.range);
+			return range ? [{ kind: "comment", owner: comment, ranges: [range], open: () => editComment(comment) }] : [];
+		}
+		function threadRanges(thread: ReaderThread) {
+			if (thread.comments) return passageRanges(thread.comments);
+			const range = rangeFor(thread.range);
+			return range ? [range] : [];
+		}
+		function askedMark(thread: ReaderThread): Mark[] {
+			// A question that the conversation refused was not asked; the Ask menu still lists its card.
+			if (!thread.messages.some((message) => message.state !== "failed")) return [];
+			const ranges = threadRanges(thread);
+			return ranges.length ? [{ kind: "asked", owner: thread, ranges, open: () => openThread(thread) }] : [];
+		}
+		function isOpen(mark: Mark) {
+			return visible && !!current && (mark.owner === current || mark.owner === current.pendingComment);
+		}
 		function paintPassage() {
 			const range = visible ? rangeFor(threadRange()) : null;
-			editor.highlight(
-				"comment",
-				passageRanges(comments.filter((comment) => !visible || current?.pendingComment !== comment)),
-			);
+			// In the order that clicks open them: comments as listed, then questions, newest first.
+			marks = [...comments.flatMap(commentMark), ...threads.flatMap(askedMark)];
+			const shown = marks.filter((mark) => !isOpen(mark));
+			for (const kind of ["comment", "asked"])
+				editor.highlight(
+					kind,
+					shown.filter((mark) => mark.kind === kind).flatMap((mark) => mark.ranges),
+				);
 			editor.highlight(
 				"passage",
 				visible && current?.comments ? passageRanges(current.comments) : range ? [range] : [],
 			);
+			// The hover highlights paint after the marks they strengthen.
+			hovered = null;
+			paintHover();
+		}
+		function covers(range: Range, x: number, y: number) {
+			return Array.from(range.getClientRects()).some(
+				(rect) => rect.width > 0 && x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom,
+			);
+		}
+		// The mark that a click at a point opens. Where marks overlap, each click opens the one after
+		// the open card, so every card stays reachable; the open card's own passage opens nothing.
+		function markAt(x: number, y: number) {
+			const hits = marks.filter((mark) => mark.ranges.some((range) => covers(range, x, y)));
+			const open = hits.findIndex(isOpen);
+			if (open >= 0 && hits.length === 1) return null;
+			return hits[(open + 1) % hits.length] ?? null;
+		}
+		function paintHover() {
+			doc.toggleAttribute("data-over-mark", !!hovered);
+			for (const kind of ["comment", "asked"])
+				editor.highlight(`${kind}-hover`, hovered?.kind === kind ? hovered.ranges : []);
+		}
+		function hover(mark: Mark | null) {
+			if (mark === hovered) return;
+			hovered = mark;
+			paintHover();
 		}
 		function action(label: string, run: () => void) {
 			return button(label, "", run, { className: "link agent" });
@@ -308,7 +367,7 @@
 						batchList.hidePopover();
 						const target = comment.range && blockAt(comment.range.start);
 						if (target) navigation.jumpElement(target);
-						openThread({ threadId: "", quote: comment.quote, pendingComment: comment, draft: "", messages: [] });
+						editComment(comment);
 					},
 					{ className: "batch-row-open batch-entry" },
 				);
@@ -341,6 +400,9 @@
 			if (!comments.length) return;
 			batchList.togglePopover();
 		}
+		function editComment(comment: ReaderComment) {
+			openThread({ threadId: "", quote: comment.quote, pendingComment: comment, draft: "", messages: [] });
+		}
 		const trayOpen = button("", "ask", openBatchList, { className: "batch-tray-open" });
 		const trayCount = el("span");
 		trayOpen.lastElementChild?.replaceWith(trayCount);
@@ -364,6 +426,14 @@
 				const index = comments.indexOf(comment);
 				if (index >= 0) comments.splice(index, 1);
 			}
+		}
+		// A question card closed before anything was typed or sent leaves no entry in the Ask menu.
+		function discardEmptyQuestion() {
+			const thread = current;
+			if (!thread || thread.pendingComment || thread.comments || thread.messages.length || thread.draft.trim()) return;
+			const index = threads.indexOf(thread);
+			if (index >= 0) threads.splice(index, 1);
+			current = null;
 		}
 		function removeComment(comment: ReaderComment) {
 			const index = comments.indexOf(comment);
@@ -767,7 +837,10 @@
 		}
 		function openThread(thread: ReaderThread, focus = true) {
 			closeReview();
-			if (current !== thread) discardEmptyComment();
+			if (current !== thread) {
+				discardEmptyComment();
+				discardEmptyQuestion();
+			}
 			current = thread;
 			visible = true;
 			refreshBatch();
@@ -933,6 +1006,15 @@
 		const ask: ReaderAskUI = {
 			noteHeld,
 			letAgentChange,
+			annotationAt(x, y) {
+				const mark = markAt(x, y);
+				return mark ? (mark.kind === "comment" ? "comment" : "question") : null;
+			},
+			openAt(x, y) {
+				const mark = markAt(x, y);
+				mark?.open();
+				return !!mark;
+			},
 			open(selection) {
 				const thread: ReaderThread = {
 					threadId: "",
@@ -951,6 +1033,7 @@
 				}
 				if (!visible) return false;
 				discardEmptyComment();
+				discardEmptyQuestion();
 				if (current?.pendingComment) current = null;
 				visible = false;
 				card.removeAttribute("data-open");
@@ -981,6 +1064,7 @@
 				const group = selected.threadId ? all.filter((op) => op.threadId === selected.threadId) : [selected];
 				editor.close();
 				if (current?.pendingComment) ask.close();
+				discardEmptyQuestion();
 				visible = false;
 				draw();
 				review = group.flatMap((operation) => operation.edits.map((edit) => ({ operation, edit })));
@@ -1055,6 +1139,44 @@
 		const scroll = () => position();
 		page.addEventListener("scroll", scroll, { passive: true });
 		off.push(() => page.removeEventListener("scroll", scroll));
+		// A plain click on a mark in Reading opens its card. A drag, a selection, a link and a
+		// modified click keep their own meaning, and in Writing a click edits the text.
+		function plainReadingClick(event: MouseEvent) {
+			const modified = event.metaKey || event.ctrlKey || event.altKey || event.shiftKey;
+			if (event.defaultPrevented || event.button !== 0 || modified) return false;
+			if (controller.lock !== "reading" || getSelection()?.isCollapsed === false) return false;
+			const target = event.target instanceof Element ? event.target : null;
+			return !target?.closest("a[href], img, button, input, textarea, [data-reader-control]");
+		}
+		const openClickedMark = (event: MouseEvent) => {
+			const mark = plainReadingClick(event) ? markAt(event.clientX, event.clientY) : null;
+			if (!mark) return;
+			event.preventDefault();
+			mark.open();
+		};
+		let hoverFrame = 0;
+		const trackHover = (event: PointerEvent) => {
+			cancelAnimationFrame(hoverFrame);
+			if (controller.lock !== "reading" || !marks.length) {
+				hover(null);
+				return;
+			}
+			const { clientX, clientY } = event;
+			hoverFrame = requestAnimationFrame(() => hover(markAt(clientX, clientY)));
+		};
+		const endHover = () => {
+			cancelAnimationFrame(hoverFrame);
+			hover(null);
+		};
+		doc.addEventListener("click", openClickedMark);
+		doc.addEventListener("pointermove", trackHover, { passive: true });
+		doc.addEventListener("pointerleave", endHover);
+		off.push(() => {
+			cancelAnimationFrame(hoverFrame);
+			doc.removeEventListener("click", openClickedMark);
+			doc.removeEventListener("pointermove", trackHover);
+			doc.removeEventListener("pointerleave", endHover);
+		});
 		const observer = new ResizeObserver(position);
 		observer.observe(app);
 		observer.observe(card);

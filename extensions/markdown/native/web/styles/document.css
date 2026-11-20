@@ -100,6 +100,7 @@
   .doc [data-role="block-editor"] .bold { font-weight:650; }.doc [data-role="block-editor"] .italic { font-style:italic; }
   .doc [data-role="block-editor"] .link { color:var(--accent-text); }.doc [data-role="block-editor"] .code { font-family:var(--mono);color:var(--code-ink);background:var(--sunk); }
   #app[data-mode="writing"] .doc > .reader-block { cursor:text; }.doc a,.doc button { cursor:pointer; }
+  .doc[data-over-mark] { cursor:pointer; }
   .doc .agent-flash { border-radius:3px;animation:agent-flash 2.6s var(--ease) both; }
   @keyframes agent-flash { from { background:color-mix(in oklch,var(--agent) 38%,transparent); } to { background:transparent; } }
   .doc .agent-claimed { padding:28px 8px 8px; }
@@ -135,3 +136,6 @@
 ::highlight(agent-claim) { background-color:var(--agent-soft); }
 ::highlight(comment) { background-color:var(--comment-mark);color:var(--ink); }
 ::highlight(passage) { background-color:var(--agent-soft);text-decoration:underline;text-decoration-color:color-mix(in oklch,var(--agent) 55%,transparent);text-decoration-thickness:1.5px;text-underline-offset:.2em; }
+::highlight(asked) { text-decoration:underline dotted;text-decoration-color:color-mix(in oklch,var(--agent) 75%,transparent);text-decoration-thickness:1.5px;text-underline-offset:.2em; }
+::highlight(asked-hover) { background-color:var(--agent-soft);text-decoration:underline;text-decoration-color:var(--agent);text-decoration-thickness:1.5px;text-underline-offset:.2em; }
+::highlight(comment-hover) { background-color:color-mix(in oklch,var(--comment-mark),var(--ink) 16%);color:var(--ink); }

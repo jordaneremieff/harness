@@ -555,7 +555,7 @@
 						"Review changes",
 						"compare",
 						() => views.show("review", { against: reviewAgainst() }),
-						"⌘D",
+						"",
 						unavailable(reviewAgainst() === "base" || revisions.length > 1),
 					),
 				);

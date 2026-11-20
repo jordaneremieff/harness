@@ -12,7 +12,7 @@
 			if (format[signature]) return { name: "format", args: { command: format[signature] } };
 		}
 		return commandFor(
-			{ z: "undo", "shift:z": "redo", k: "open", r: "latest", d: "showReview", i: "showDetails", a: "selectAll" },
+			{ z: "undo", "shift:z": "redo", k: "open", r: "latest", i: "showDetails", a: "selectAll" },
 			signature,
 		);
 	}
@@ -37,9 +37,9 @@
 					"]": "forward",
 					"ctrl:s": "toggleOutline",
 					"alt:f": "replace",
+					d: "askSelection",
 					"alt:m": "askDocument",
 					"alt:c": "copyPassage",
-					"shift:m": "askSelection",
 					"shift:c": "copyMarkdown",
 				},
 				signature,
@@ -244,9 +244,12 @@
 	}
 	function documentGroups(t: ReaderMenuTarget) {
 		const ask = t.selection
-			? menuItem("ask", "Ask about this", "⇧⌘M")
+			? menuItem("ask", "Ask about this", "⌘D")
 			: menuItem("askDocument", "Ask about this document", "⌥⌘M");
-		return [[ask], clipboardGroup(t), ...formatGroups(t), targetGroup(t), documentGroup(t)];
+		const mark = t.annotation
+			? [menuItem("openAnnotation", t.annotation === "comment" ? "Open Comment" : "Open Question")]
+			: [];
+		return [[...mark, ask], clipboardGroup(t), ...formatGroups(t), targetGroup(t), documentGroup(t)];
 	}
 	function contextMenuItems(t: ReaderMenuTarget): ReaderMenuEntry[] {
 		const groups = t.area === "input" ? inputGroups(t) : t.area === "document" ? documentGroups(t) : [];

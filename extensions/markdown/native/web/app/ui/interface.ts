@@ -181,6 +181,7 @@
 			views = api.createViewsUI(context, navigation),
 			contextMenu = api.createContextMenu(context, (id, c) => runMenu(id, c));
 		context.reveal = (node) => codeViews.reveal(node);
+		context.annotationAt = (x, y) => ask.annotationAt(x, y);
 		const findbar = get(".find");
 		bar.insertBefore(findbar, bar.querySelector(".spacer"));
 		function showKind() {
@@ -303,8 +304,11 @@
 			return opened;
 		}
 		function selectionButtons(selected: ReaderSelection) {
+			const askSelected = button("Ask", "spark", () => ask.open(selected), { className: "ask" });
+			askSelected.dataset.tip = "Ask about the selection";
+			askSelected.dataset.key = "⌘D";
 			strip.replaceChildren(
-				button("Ask", "spark", () => ask.open(selected), { className: "ask" }),
+				askSelected,
 				el("span", { class: "sep" }),
 				button("Copy with source", "copy", copyPassage, { className: "copy-selection" }),
 			);
@@ -516,6 +520,9 @@
 			const actions: Record<string, () => void | Promise<void>> = {
 				ask: () => ask.open(c.selection),
 				askDocument: () => ask.open(),
+				openAnnotation: () => {
+					ask.openAt(c.point.x, c.point.y);
+				},
 				copy: () => copyText(getSelection()?.toString() ?? ""),
 				cut: () => copyText(editor.cut() ?? "", "Cut"),
 				paste: async () => {

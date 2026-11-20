@@ -190,16 +190,28 @@ final class ReaderSurface: NSView {
                   generation == expected || client.knowsPrompt(requestId: request, threadId: thread) else {
                 return ["accepted": false, "detail": "The conversation connection is not available for this document version."]
             }
+            // Passages are located in the text that the page's generation names. A retry against
+            // later text repeats the message of its first submission instead.
+            let source = generation == expected ? workspace?.active?.text.source : nil
+            var structure: SourceStructure?
+            func passage(_ range: NSRange?) -> PassageExcerpt? {
+                guard let source, let range else { return nil }
+                if structure == nil { structure = SourceStructure.scan(source) }
+                return PassageExcerpt(source: source, start: range.location, end: NSMaxRange(range), structure: structure)
+            }
             let result: CollaborationClient.PromptSubmission
             if let records = message["annotations"] as? [[String: Any]] {
                 let annotations = try records.map { record in
                     guard let text = record["text"] as? String else { throw BridgeFailure.invalid }
-                    return CollaborationClient.Annotation(text: text, quote: record["quote"] as? String)
+                    let range = Self.range(record["quoteRange"])
+                    return CollaborationClient.Annotation(text: text, quote: record["quote"] as? String, passage: passage(range), range: range)
                 }
-                result = await client.submitBatch(requestId: request, threadId: thread, annotations: annotations)
+                result = await client.submitBatch(requestId: request, threadId: thread, annotations: annotations, generation: generation)
             } else {
                 guard let text = message["text"] as? String else { throw BridgeFailure.invalid }
-                result = await client.submitAnnotation(requestId: request, threadId: thread, text: text, quote: message["quote"] as? String)
+                let range = Self.range(message["quoteRange"])
+                result = await client.submitAnnotation(requestId: request, threadId: thread, text: text, quote: message["quote"] as? String,
+                                                       range: range, passage: passage(range), generation: generation)
             }
             switch result {
             case .submitted: return ["accepted": true]
