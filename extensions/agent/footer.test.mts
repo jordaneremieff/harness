@@ -385,14 +385,16 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 	}
 	const first = create("primary-a", [1, 2]);
 	create(`${first}:2`, [3]);
-	create("primary-b", [8]);
+	const second = create("primary-b", [8]);
 	const statuses = new Map<string, string | undefined>();
+	const writes = new Map<string, number>();
 	for (const ownerId of ["primary-a", "primary-b", "empty-primary"]) {
 		await manager.registerPrimary(ownerId, {
 			signal: new AbortController().signal,
 			send: () => {},
 			status: (text) => {
 				statuses.set(ownerId, text);
+				writes.set(ownerId, (writes.get(ownerId) ?? 0) + 1);
 			},
 		});
 	}
@@ -406,4 +408,18 @@ test("manager supplies distinct primary footers and the same UI-local figures wi
 		assert.equal(await manager.sessionFigures(ownerId), expected);
 		assert.equal(await manager.sessionFigures(ownerId, page), expected);
 	}
+	// Notices refresh the footer; only a changed text reaches the status cell.
+	const refreshFooter = () => (manager as unknown as { refreshFooter(): Promise<void> }).refreshFooter();
+	const before = new Map(writes);
+	await refreshFooter();
+	assert.deepEqual(writes, before, "an unchanged footer text writes no status");
+	manager.catalog.updateView(second, {
+		updatedAt: new Date().toISOString(),
+		coverage: { complete: true, omitted: 0 },
+		rows: [row(second, { storageId: second, cost: 9 })],
+	});
+	await refreshFooter();
+	assert.equal(statuses.get("primary-b"), "agents: 0/1 active · ~$9.00");
+	assert.equal(writes.get("primary-b"), (before.get("primary-b") ?? 0) + 1);
+	assert.equal(writes.get("primary-a"), before.get("primary-a"), "an unrelated owner's text stays unwritten");
 });

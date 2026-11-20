@@ -28,6 +28,10 @@ import { profileText } from "./profile-schema.ts";
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
 export const MAX_RECORD_BYTES = 32_768;
 const MAX_VISITS = 256;
+/** Claim age after which an explicit inventory read reconciles every record and claim. */
+const EXPLICIT_RECONCILE_MS = 2_000;
+/** Claim age after which a notice-driven background read reconciles every record and claim. */
+export const BACKGROUND_RECONCILE_MS = 30_000;
 const VALIDATED_RECORD_LIMIT = 512;
 const VALIDATED_PAYLOAD_LIMIT = 8 * 1024 * 1024;
 // A read opens the bounded file and checks its identity. Only an unchanged file skips payload reads.
@@ -250,11 +254,16 @@ export class CatalogObservation {
 		return this.facts.get(storageId)?.record.ownerId;
 	}
 
-	read(): Promise<CatalogInventory> {
+	/**
+	 * Every read checks all record stamps. Explicit reads (dashboard, status, list) also observe every
+	 * claim when the last full pass is two seconds old, which reveals silent host deaths. Background
+	 * readers that react to change notices pass a longer bound, so a busy host elsewhere does not make
+	 * every ordinary session observe every claim in the catalogue every two seconds.
+	 */
+	read(options: { reconcileAfterMs?: number } = {}): Promise<CatalogInventory> {
+		// A stricter reader that joins a read in flight still gets a full pass before it resolves.
+		if (Date.now() - this.reconciledAt >= (options.reconcileAfterMs ?? EXPLICIT_RECONCILE_MS)) this.full = true;
 		if (this.pending) return this.pending;
-		// The dashboard's existing reconciliation demand refreshes silent claim deaths.
-		// Footer and status requests share the same claim-age boundary.
-		if (Date.now() - this.reconciledAt >= 2000) this.full = true;
 		this.pending = this.refresh().finally(() => {
 			this.pending = undefined;
 		});
@@ -269,14 +278,13 @@ export class CatalogObservation {
 				const changed = new Set(this.dirty);
 				this.dirty.clear();
 				const started = Date.now();
+				// A full pass in progress already satisfies readers that join it; a failed pass forces another.
+				if (full) this.reconciledAt = started;
 				const identities = await this.catalog.identities();
 				const facts = new Map<string, CatalogFact | null>();
 				for (const id of identities) await this.refreshRecord(facts, id, full || changed.has(id));
 				this.facts = facts;
-				if (full) {
-					this.reconciledAt = started;
-					this.observedAt = new Date(started).toISOString();
-				}
+				if (full) this.observedAt = new Date(started).toISOString();
 			} while (this.full || this.dirty.size);
 			return { facts: this.facts, observedAt: this.observedAt };
 		} catch (error) {

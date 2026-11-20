@@ -171,7 +171,7 @@ it("shares footer and roster reads and rereads only the published storage", asyn
 			ownerId,
 		}),
 	);
-	const publish = (id: string, name: string) =>
+	const publish = (id: string, name: string, cost = 0) =>
 		f.manager.catalog.updateView(id, {
 			updatedAt: new Date().toISOString(),
 			rows: [
@@ -183,7 +183,7 @@ it("shares footer and roster reads and rereads only the published storage", asyn
 					modifiedAt: 1,
 					owner: "unknown",
 					state: "idle",
-					cost: 0,
+					cost,
 					partial: false,
 				},
 			],
@@ -222,7 +222,8 @@ it("shares footer and roster reads and rereads only the published storage", asyn
 		f.manager.sessionFigures(ownerId),
 	]);
 	assert.equal(reads.mock.callCount(), 0, "footer facts also serve both caller-specific roster views");
-	publish(records[0].storageId, "Updated");
+	// The cost changes the footer text; the footer writes its status only when that text changes.
+	publish(records[0].storageId, "Updated", 1);
 	await statuses.waitFor((events) => events.some((value) => value.includes("Updated")));
 	const page = await f.manager.dashboardPage({ ownerId });
 	assert.equal(page.rows.find((row) => row.storageId === records[0].storageId)?.name, "Updated");

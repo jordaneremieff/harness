@@ -270,9 +270,13 @@ The opened file supplies the retained stamp, not an earlier pathname check.
 Namespace notices carry bounded changed storage identities. The manager combines
 these with connected-host notices and refreshes the affected claim facts.
 Concurrent changes accumulate; an unknown, identity-free or oversized notice
-invalidates claims across the namespace. The next read also refreshes all claims
-when the last full observation is two seconds old, without reopening unchanged
-record payloads. The dashboard's existing reconciliation demand uses this same owner; no
+invalidates claims across the namespace. The next explicit read (dashboard,
+status, list) also refreshes all claims when the last full observation is two
+seconds old, without reopening unchanged record payloads. The footer and recovery
+refreshes that follow notices use a 30-second bound instead, so one busy host does
+not make every ordinary session observe every claim every two seconds; a stricter
+reader that joins a read in flight still receives a full pass. The dashboard's
+existing reconciliation demand uses this same owner; no
 extra polling service or persistent catalog copy exists. Reconciliation discovers
 missed publications, deletions, unreadable records and silent process death.
 Rows label claim observation time. A cached claim is not a fresh liveness check,

@@ -29,6 +29,7 @@ import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
 	AgentCatalog,
+	BACKGROUND_RECONCILE_MS,
 	CatalogObservation,
 	projectCatalogPriority,
 	hostMetadata,
@@ -391,6 +392,8 @@ export class AgentManager {
 		this.toolCardRows = page.rows;
 	}
 	private readonly rosterListeners = new Set<() => void>();
+	/** The figures text last written to each primary's footer cell. */
+	private readonly footerFigures = new Map<string, string>();
 	private stopCatalogObservation?: () => void;
 	private observeCatalogChanges(): void {
 		if (this.stopCatalogObservation) return;
@@ -1543,8 +1546,15 @@ export class AgentManager {
 	}
 
 	async dashboardPage(input: { cursor?: string; ownerId?: string } = {}): Promise<AgentPriorityPage> {
+		return this.priorityPage(input, {});
+	}
+
+	private async priorityPage(
+		input: { cursor?: string; ownerId?: string },
+		read: { reconcileAfterMs?: number },
+	): Promise<AgentPriorityPage> {
 		const rows: AgentPrioritySummary[] = [];
-		const inventory = await this.inventory.read();
+		const inventory = await this.inventory.read(read);
 		const activeStorageIds = [...new Set([...this.launchRows.keys(), ...this.opening.keys(), ...this.recovering])];
 		const page = projectCatalogPriority(inventory, {
 			cursor: input.cursor,
@@ -1908,7 +1918,7 @@ export class AgentManager {
 				this.catalogueScanAgain = false;
 				const owner = [...this.primaries.values()].find((primary) => !this.stopping(primary));
 				if (owner === undefined || this.stopping(owner)) return;
-				await this.scanRecovery(owner);
+				await this.scanRecovery(owner, undefined, { reconcileAfterMs: BACKGROUND_RECONCILE_MS });
 			} while (this.catalogueScanAgain && !this.shuttingDown);
 		})()
 			.catch((error) => {
@@ -1920,9 +1930,13 @@ export class AgentManager {
 			});
 	}
 
-	private async scanRecovery(owner: RecoveryOwner, registeringPrimary?: string): Promise<void> {
+	private async scanRecovery(
+		owner: RecoveryOwner,
+		registeringPrimary?: string,
+		read: { reconcileAfterMs?: number } = {},
+	): Promise<void> {
 		const due: CatalogRecord[] = [];
-		const inventory = await this.inventory.read();
+		const inventory = await this.inventory.read(read);
 		let visited = 0;
 		let complete = true;
 		for (const fact of inventory.facts.values()) {
@@ -1975,6 +1989,7 @@ export class AgentManager {
 		ownedClosures.set(ownerId, closing);
 		this.primaryClosures.set(signal, ownedClosures);
 		this.closingPrimaries.set(ownerId, closing);
+		this.footerFigures.delete(ownerId);
 		try {
 			primary.status?.(undefined);
 		} catch (error) {
@@ -2379,7 +2394,9 @@ export class AgentManager {
 			);
 		}
 		try {
-			primary.status?.(this.figuresForRows(ownerId, this.toolCardRows) || undefined);
+			const figures = this.figuresForRows(ownerId, this.toolCardRows);
+			this.footerFigures.set(ownerId, figures);
+			primary.status?.(figures || undefined);
 		} catch (error) {
 			this.failures.set("footer", errorText(error));
 		}
@@ -2423,10 +2440,16 @@ export class AgentManager {
 			do {
 				this.refreshAgain = false;
 				for (const [ownerId, primary] of this.primaries) {
-					const page = await this.dashboardPage({ ownerId });
+					// Footer refreshes follow catalogue notices, so they reconcile claims on the background bound.
+					const page = await this.priorityPage({ ownerId }, { reconcileAfterMs: BACKGROUND_RECONCILE_MS });
 					this.observeToolCardRows(page);
 					const text = await this.sessionFigures(ownerId, page);
-					if (!primary.signal.aborted) primary.status?.(text || undefined);
+					// Each status write requests a terminal render, and notices arrive far more often than
+					// the figures change, so an unchanged text writes nothing.
+					if (!primary.signal.aborted && this.footerFigures.get(ownerId) !== text) {
+						this.footerFigures.set(ownerId, text);
+						primary.status?.(text || undefined);
+					}
 				}
 			} while (this.refreshAgain && !this.shuttingDown && this.primaries.size);
 		} catch (error) {

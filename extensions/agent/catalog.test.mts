@@ -18,7 +18,14 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
-import { AgentCatalog, CatalogObservation, projectCatalogPriority, hostMetadata, storageIdOf } from "./catalog.ts";
+import {
+	AgentCatalog,
+	BACKGROUND_RECONCILE_MS,
+	CatalogObservation,
+	projectCatalogPriority,
+	hostMetadata,
+	storageIdOf,
+} from "./catalog.ts";
 import { boundCatalogView, type CatalogViewRow } from "./catalog-view.ts";
 import { hostPaths } from "./host-protocol.ts";
 import { tryNativeWriterLease } from "./native-lease.ts";
@@ -175,6 +182,30 @@ it("checks file stamps on every read and observes only changed records without n
 	assert.equal(reads.mock.callCount(), 7, "a claim-only notice does not reopen an unchanged record");
 	assert.equal(claims.mock.callCount(), 8);
 	assert.equal(stats.mock.callCount(), 21);
+});
+
+it("observes every claim on the explicit bound and on the longer background bound for notice-driven reads", async (t) => {
+	const { catalog, input } = fixture(t);
+	for (let index = 0; index < 3; index++) catalog.create(input);
+	let now = Date.parse("2026-11-20T00:00:00.000Z");
+	t.mock.method(Date, "now", () => now);
+	const observation = new CatalogObservation(catalog);
+	const claims = t.mock.method(catalog, "observeClaim");
+	await observation.read();
+	assert.equal(claims.mock.callCount(), 3);
+	now += 5_000;
+	await observation.read({ reconcileAfterMs: BACKGROUND_RECONCILE_MS });
+	assert.equal(claims.mock.callCount(), 3, "a background read within its bound observes no unchanged claim");
+	await observation.read();
+	assert.equal(claims.mock.callCount(), 6, "an explicit read past two seconds observes every claim");
+	now += 5_000;
+	const background = observation.read({ reconcileAfterMs: BACKGROUND_RECONCILE_MS });
+	const explicit = observation.read();
+	assert.equal(await explicit, await background, "a stricter reader joins the read in flight");
+	assert.equal(claims.mock.callCount(), 9, "the joined read still completes a full pass");
+	now += BACKGROUND_RECONCILE_MS;
+	await observation.read({ reconcileAfterMs: BACKGROUND_RECONCILE_MS });
+	assert.equal(claims.mock.callCount(), 12, "a background read past its own bound observes every claim");
 });
 
 it("reconciles catalogue changes without inferring ownership from process presence", async (t) => {
