@@ -727,10 +727,13 @@ forms.
 Two prompt sections carry the ordinary model-facing surface. `memory` holds the
 usage guidelines that the ordinary tools declare as `promptGuidelines`.
 `memory_index` renders the same bounded pointer index as the ordinary
-`before_agent_start` hook. It retains one snapshot per conversation in the host.
-The first render after a host restart or a committed compaction marker builds a
-fresh snapshot. Later renders reuse it across tool rounds and runs. Native
-results use `output` for model-visible text and `details`
+`before_agent_start` hook. Each host retains snapshots for at most 64 conversations.
+Each read moves its conversation to the most recently used position. When the
+host exceeds the limit, it discards the least recently used snapshot. The next
+request for that conversation builds a fresh snapshot, as does the first render
+after a host restart or a committed compaction marker. Otherwise, renders reuse
+the snapshot across tool rounds and runs. Native results use `output` for
+model-visible text and `details`
 for the ordinary tool details. `memory_search` declares `structuredOutputSchema`
 and returns its bounded page as `structuredOutput` for nested callers. Other
 memory tools have no structured schema; nested callers receive their bounded text.

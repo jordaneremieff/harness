@@ -430,6 +430,59 @@ test("keeps the native index across tool rounds and runs until a new conversatio
 	}
 });
 
+test("the native index evicts the least recently used snapshot at capacity", async () => {
+	const corpus = mkdtempSync(join(tmpdir(), "memory-durable-index-"));
+	writeFileSync(join(corpus, "README.md"), "# Memory corpus\n");
+	writeFileSync(join(corpus, "editor-choice.md"), note("Editor choice"));
+	const previous = process.env.PI_MEMORY_DIR;
+	process.env.PI_MEMORY_DIR = corpus;
+	const faux = fauxProvider();
+	const models = createModels();
+	models.setProvider(faux.provider);
+	const registry = Durable.createRegistry();
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+	try {
+		const contribution = emitContribution();
+		registry.install(await contribution.create(hostFor(contribution, corpus, harness)));
+		const createConversation = () =>
+			harness.createConversation(
+				{ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-1" } } },
+				BACKGROUND_CONTEXT,
+			);
+		const run = async (conversation: Durable.Conversation) => {
+			let index: string | undefined;
+			faux.setResponses([
+				(context) => {
+					index = sectionsOf(context.messages).memory_index;
+					return fauxAssistantMessage("done");
+				},
+			]);
+			const submission = await conversation.submit({ type: "input", content: "check memory" }, BACKGROUND_CONTEXT);
+			assert.equal((await submission.wait(BACKGROUND_CONTEXT)).status, "done");
+			assert.ok(index);
+			return index;
+		};
+
+		const first = await createConversation();
+		const initial = await run(first);
+		const second = await createConversation();
+		assert.equal(await run(second), initial);
+		for (let i = 2; i < 64; i++) await run(await createConversation());
+
+		writeFileSync(join(corpus, "later-note.md"), note("Later note"));
+		assert.equal(await run(first), initial);
+		const fresh = await run(await createConversation());
+		assert.match(fresh, /later-note: Later note/);
+		assert.equal(await run(first), initial);
+		assert.equal(await run(second), fresh);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+		if (previous === undefined) delete process.env.PI_MEMORY_DIR;
+		else process.env.PI_MEMORY_DIR = previous;
+		rmSync(corpus, { recursive: true, force: true });
+	}
+});
+
 test("native codemode receives memory pages and errors through nested tool tasks and hooks", async () => {
 	const root = mkdtempSync(join(tmpdir(), "memory-native-codemode-"));
 	const corpus = join(root, "corpus");

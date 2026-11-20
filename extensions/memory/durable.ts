@@ -69,6 +69,8 @@ export interface MemoryDurableContribution {
 	create(host: MemoryDurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 }
 
+const INDEX_CONVERSATION_LIMIT = 64;
+
 /** Model-facing usage guidance as one section, because Durable tools carry no promptGuidelines. */
 function memoryGuidance(): string {
 	return MEMORY_GUIDELINES.map((line) => `- ${line}`).join("\n");
@@ -106,10 +108,18 @@ export function createMemoryContribution(
 				});
 				const id = input.conversationId;
 				const existing = indexes.get(id);
-				if (existing !== undefined) return existing;
+				if (existing !== undefined) {
+					indexes.delete(id);
+					indexes.set(id, existing);
+					return existing;
+				}
 				const config = configuration();
 				const pending = memoryIndex(config.dir, context.abortSignal, config.proactive, input.agent.cwd ?? host.cwd);
 				indexes.set(id, pending);
+				if (indexes.size > INDEX_CONVERSATION_LIMIT) {
+					const oldest = indexes.keys().next().value;
+					if (oldest !== undefined) indexes.delete(oldest);
+				}
 				const text = await pending;
 				if (context.abortSignal?.aborted && indexes.get(id) === pending) indexes.delete(id);
 				return text;
