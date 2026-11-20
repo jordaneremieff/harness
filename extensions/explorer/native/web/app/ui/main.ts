@@ -171,18 +171,16 @@
 		},
 		notice,
 	});
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
+	function excerptCommit(side?: ExplorerSide) {
+		if (view !== "changes") return null;
+		if (side === "base") return review?.resolved.base ?? null;
+		const head = review?.resolved.head;
+		return head === "worktree" ? null : (head ?? null);
+	}
 	function selectionExcerpt(range: ExplorerRange | null): ExplorerExcerpt | null {
 		if (!path || !file || file.kind === "directory" || (file.kind === "missing" && !diff)) return null;
 		const lines = range?.side === "base" ? baseLines : headLines;
-		const commit =
-			view === "changes"
-				? range?.side === "base"
-					? (review?.resolved.base ?? null)
-					: review?.resolved.head === "worktree"
-						? null
-						: (review?.resolved.head ?? null)
-				: null;
+		const commit = excerptCommit(range?.side);
 		if (!range) return { path, commit, text: "" };
 		const start = Math.max(1, range.start),
 			end = Math.min(lines.length, range.end);
@@ -232,7 +230,11 @@
 		const pieces = (self ? value : dirname(value)).split("/");
 		for (let index = 1; index <= pieces.length; index++) folders.add(pieces.slice(0, index).join("/"));
 	}
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
+	function fileRowIcon(item: string, language: ReturnType<typeof model.language>, folder?: boolean) {
+		if (folder) return icon(folders.has(item) || filter ? "open" : "folder");
+		if (!language.mark) return icon("file");
+		return el("span", `language-mark lang-${language.id}`, language.mark);
+	}
 	function fileRow(item: string, depth: number, folder?: boolean) {
 		const node = button(
 			"",
@@ -250,12 +252,7 @@
 		node.dataset.path = item;
 		if (folder) node.setAttribute("aria-expanded", String(folders.has(item) || !!filter));
 		else if (item === path && view === "file") node.setAttribute("aria-current", "true");
-		node.append(
-			folder || !language.mark
-				? icon(folder ? (folders.has(item) || filter ? "open" : "folder") : "file")
-				: el("span", `language-mark lang-${language.id}`, language.mark),
-			el("span", "row-title", basename(item)),
-		);
+		node.append(fileRowIcon(item, language, folder), el("span", "row-title", basename(item)));
 		return node;
 	}
 	let treeLimit = 1500;
@@ -269,7 +266,12 @@
 		}
 		const output = document.createDocumentFragment();
 		let remaining = treeLimit;
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
+		function emitFiles(files: string[], depth: number) {
+			for (const item of files) {
+				if (remaining-- <= 0) return;
+				output.append(fileRow(item, depth));
+			}
+		}
 		function emit(branch: Tree, prefix = "", depth = 0) {
 			for (const [name, child] of branch.folders.entries()) {
 				if (remaining-- <= 0) return;
@@ -277,10 +279,7 @@
 				output.append(fileRow(key, depth, true));
 				if (folders.has(key)) emit(child, `${key}/`, depth + 1);
 			}
-			for (const item of branch.files) {
-				if (remaining-- <= 0) return;
-				output.append(fileRow(item, depth));
-			}
+			emitFiles(branch.files, depth);
 		}
 		if (filter) for (const { path: item } of model.fuzzy(paths, filter, 250)) output.append(fileRow(item, 0));
 		else emit(tree);
@@ -312,17 +311,7 @@
 	});
 	filterLabel.append(icon("search"), filterInput);
 
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
-	function makeScopeControl(inSidebar: boolean) {
-		const choices = el("select", "scope-menu");
-		choices.dataset.part = "scope-menu";
-		choices.setAttribute("aria-label", inSidebar ? "Review scope in sidebar" : "Review scope");
-		const index = scopes.findIndex((item) => sameScope(item.scope, scope));
-		if (index < 0 || !inSidebar) {
-			const item = el("option", "", scopeLabel());
-			item.value = "current";
-			choices.append(item);
-		}
+	function appendScopeOptions(choices: HTMLSelectElement) {
 		for (const [position, item] of scopes.entries()) {
 			const option = el("option", "", item.available || !item.reason ? item.label : `${item.label} (${item.reason})`);
 			option.value = String(position);
@@ -337,28 +326,74 @@
 			item.value = value;
 			choices.append(item);
 		}
-		choices.value = inSidebar && index >= 0 ? String(index) : "current";
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
+	}
+	function chooseScope(value: string) {
+		if (value === "current") return;
+		if (value === "enter-range" || value === "enter-commit") {
+			command("scope", value === "enter-range" ? "range" : "commit");
+			return;
+		}
+		const item = scopes[Number(value)];
+		if (item?.available) report(selectScope(item.scope));
+	}
+	function makeScopeControl(inSidebar: boolean) {
+		const choices = el("select", "scope-menu");
+		choices.dataset.part = "scope-menu";
+		choices.setAttribute("aria-label", inSidebar ? "Review scope in sidebar" : "Review scope");
+		const index = scopes.findIndex((item) => sameScope(item.scope, scope));
+		if (index < 0 || !inSidebar) {
+			const item = el("option", "", scopeLabel());
+			item.value = "current";
+			choices.append(item);
+		}
+		appendScopeOptions(choices);
+		const selected = inSidebar && index >= 0 ? String(index) : "current";
+		choices.value = selected;
 		choices.onchange = () => {
 			const value = choices.value;
-			choices.value = inSidebar && index >= 0 ? String(index) : "current";
-			if (value === "current") return;
-			if (value === "enter-range" || value === "enter-commit")
-				command("scope", value === "enter-range" ? "range" : "commit");
-			else if (scopes[Number(value)]?.available) report(selectScope(scopes[Number(value)].scope));
+			choices.value = selected;
+			chooseScope(value);
 		};
 		return choices;
 	}
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
-	function renderChanges() {
-		if (root.kind !== "git") {
-			list.append(el("p", "empty-list", "Changes are available in Git repositories."));
-			return;
-		}
-		const summary = el("div", "range-box");
-		const kicker = el("div", "range-kicker", "REVIEW RANGE");
-		kicker.prepend(icon("branch"));
-		summary.append(kicker, makeScopeControl(true));
+	function viewedButton(item: ExplorerChange) {
+		const check = button(
+			"",
+			() => {
+				const next = new Set(viewed);
+				if (next.has(item.path)) next.delete(item.path);
+				else next.add(item.path);
+				report(setViewed([...next], !!review?.files.length && review.files.every((file) => next.has(file.path))));
+			},
+			"viewed",
+		);
+		check.setAttribute("aria-label", `Viewed: ${item.path}`);
+		pressed(check, viewed.has(item.path));
+		if (viewed.has(item.path)) check.append(icon("check"));
+		return check;
+	}
+	function changeRow(item: ExplorerChange) {
+		const row = el("div", `change-row${item.path === path ? " current" : ""}`);
+		const open = button("", () => report(navigate({ path: item.path, view: "changes" })), "changed-open");
+		const kind = el(
+			"span",
+			`git-status ${item.status}`,
+			item.status === "typechange" ? "T" : item.status.at(0)?.toUpperCase(),
+		);
+		kind.setAttribute("aria-label", item.status);
+		const description = el("span", "change-text");
+		description.append(el("strong", "", basename(item.path)), el("small", "", dirname(item.path) || root.name));
+		const count = el("span", "numstat");
+		if (item.binary) count.append("Binary");
+		else count.append(el("span", "added", `+${item.additions}`), el("span", "deleted", `−${item.deletions}`));
+		open.append(kind, description, count);
+		open.dataset.path = item.path;
+		if (item.path === path) open.setAttribute("aria-current", "true");
+		const check = viewedButton(item);
+		row.append(open, check);
+		return row;
+	}
+	function appendReviewSummary(summary: HTMLElement) {
 		if (review) {
 			const ref = el("div", "range-id");
 			const { base, head } = review.resolved;
@@ -370,6 +405,36 @@
 			const outcome = sentReviews.has(review.resolved.key) ? " · Review sent" : "";
 			summary.append(ref, el("p", "", `${count} of ${review.files.length} viewed${outcome}`));
 		} else summary.append(el("p", "", reviewError || "Reading review…"));
+	}
+	function commitList(entries: ExplorerReview["commits"]) {
+		const details = el("details");
+		details.append(el("summary", "", `${entries.length} commit${entries.length === 1 ? "" : "s"} in this range`));
+		const commits = el("ol");
+		for (const commit of entries) {
+			const item = el("li");
+			item.append(el("code", "", commit.short), ` ${commit.subject}`);
+			commits.append(item);
+		}
+		details.append(commits);
+		return details;
+	}
+	function renderChangedFiles() {
+		if (review?.files.length) list.append(el("div", "list-label", "CHANGED FILES"));
+		for (const item of review?.files ?? []) {
+			list.append(changeRow(item));
+		}
+		if (review && !review.files.length) list.append(el("p", "empty-list", "No files changed in this scope."));
+	}
+	function renderChanges() {
+		if (root.kind !== "git") {
+			list.append(el("p", "empty-list", "Changes are available in Git repositories."));
+			return;
+		}
+		const summary = el("div", "range-box");
+		const kicker = el("div", "range-kicker", "REVIEW RANGE");
+		kicker.prepend(icon("branch"));
+		summary.append(kicker, makeScopeControl(true));
+		appendReviewSummary(summary);
 		for (const tour of tours) {
 			const entry = button("", () => report(startTour(tour)), "tour-launch");
 			entry.append(
@@ -379,58 +444,35 @@
 			);
 			summary.append(entry);
 		}
-		if (review?.commits.length) {
-			const details = el("details");
-			details.append(
-				el("summary", "", `${review.commits.length} commit${review.commits.length === 1 ? "" : "s"} in this range`),
-			);
-			const commits = el("ol");
-			for (const commit of review.commits) {
-				const item = el("li");
-				item.append(el("code", "", commit.short), ` ${commit.subject}`);
-				commits.append(item);
-			}
-			details.append(commits);
-			summary.append(details);
-		}
+		if (review?.commits.length) summary.append(commitList(review.commits));
 		heading.append(summary);
-		if (review?.files.length) list.append(el("div", "list-label", "CHANGED FILES"));
-		for (const item of review?.files ?? []) {
-			const row = el("div", `change-row${item.path === path ? " current" : ""}`);
-			const open = button("", () => report(navigate({ path: item.path, view: "changes" })), "changed-open");
-			const kind = el(
-				"span",
-				`git-status ${item.status}`,
-				item.status === "typechange" ? "T" : item.status.at(0)?.toUpperCase(),
-			);
-			kind.setAttribute("aria-label", item.status);
-			const description = el("span", "change-text");
-			description.append(el("strong", "", basename(item.path)), el("small", "", dirname(item.path) || root.name));
-			const count = el("span", "numstat");
-			if (item.binary) count.append("Binary");
-			else count.append(el("span", "added", `+${item.additions}`), el("span", "deleted", `−${item.deletions}`));
-			open.append(kind, description, count);
-			open.dataset.path = item.path;
-			if (item.path === path) open.setAttribute("aria-current", "true");
-			const check = button(
-				"",
-				() => {
-					const next = new Set(viewed);
-					if (next.has(item.path)) next.delete(item.path);
-					else next.add(item.path);
-					report(setViewed([...next], !!review?.files.length && review.files.every((file) => next.has(file.path))));
-				},
-				"viewed",
-			);
-			check.setAttribute("aria-label", `Viewed: ${item.path}`);
-			pressed(check, viewed.has(item.path));
-			if (viewed.has(item.path)) check.append(icon("check"));
-			row.append(open, check);
-			list.append(row);
-		}
-		if (review && !review.files.length) list.append(el("p", "empty-list", "No files changed in this scope."));
+		renderChangedFiles();
 	}
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
+	function noteLocation(note: ExplorerNote) {
+		if (note.location === "outdated") return `Outdated · was L${note.anchor.start}`;
+		if (note.location === "moved") return `L${note.start} · moved from L${note.movedFrom ?? note.anchor.start}`;
+		return `L${note.start}`;
+	}
+	function noteRow(note: ExplorerNote) {
+		const row = el("div", "note-list-row");
+		const open = button("", () => report(goNote(note)), "note-open");
+		open.dataset.path = note.id;
+		const kind = el("span", `note-kind ${note.author}`);
+		kind.append(icon(note.author === "agent" ? "ask" : "note"));
+		const preview = el("span", "note-preview");
+		const loc = noteLocation(note);
+		preview.append(
+			el("strong", "", note.title || note.text.split("\n")[0]),
+			el(
+				"small",
+				note.location === "moved" ? "moved-fact" : "",
+				`${loc} · ${note.author === "agent" ? "Agent" : "You"} · ${note.state}`,
+			),
+		);
+		open.append(kind, preview);
+		row.append(open);
+		return row;
+	}
 	function renderNotes() {
 		const intro = el("div", "notes-heading");
 		intro.append(
@@ -460,42 +502,23 @@
 			const header = el("header");
 			header.append(el("strong", "", basename(item)), el("small", "", dirname(item) || root.name));
 			group.append(header);
-			for (const note of entries) {
-				const row = el("div", "note-list-row");
-				const open = button("", () => report(goNote(note)), "note-open");
-				open.dataset.path = note.id;
-				const kind = el("span", `note-kind ${note.author}`);
-				kind.append(icon(note.author === "agent" ? "ask" : "note"));
-				const preview = el("span", "note-preview");
-				const loc =
-					note.location === "outdated"
-						? `Outdated · was L${note.anchor.start}`
-						: note.location === "moved"
-							? `L${note.start} · moved from L${note.movedFrom ?? note.anchor.start}`
-							: `L${note.start}`;
-				preview.append(
-					el("strong", "", note.title || note.text.split("\n")[0]),
-					el(
-						"small",
-						note.location === "moved" ? "moved-fact" : "",
-						`${loc} · ${note.author === "agent" ? "Agent" : "You"} · ${note.state}`,
-					),
-				);
-				open.append(kind, preview);
-				row.append(open);
-				group.append(row);
-			}
+			for (const note of entries) group.append(noteRow(note));
 			list.append(group);
 		}
 	}
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
-	function renderSidebar(refocus?: string) {
-		const active = document.activeElement as HTMLElement | null;
-		const key = refocus ?? (active && list.contains(active) ? active.dataset.path : undefined);
-		const scroll = list.scrollTop;
+	function prepareSidebarHeading() {
 		if (settings.tab === "files") {
 			if (!heading.contains(filterLabel)) heading.replaceChildren(filterLabel);
 		} else heading.replaceChildren();
+	}
+	function focusedPath(active: HTMLElement | null) {
+		return active && list.contains(active) ? active.dataset.path : undefined;
+	}
+	function renderSidebar(refocus?: string) {
+		const active = document.activeElement as HTMLElement | null;
+		const key = refocus ?? focusedPath(active);
+		const scroll = list.scrollTop;
+		prepareSidebarHeading();
 		list.replaceChildren();
 		const tabs = get("note-tabs");
 		for (const tab of tabs.querySelectorAll<HTMLElement>("[data-tab]")) pressed(tab, tab.dataset.tab === settings.tab);
@@ -571,7 +594,9 @@
 			if (stamp === rootStamp) reviewError = errorText(error);
 		}
 	}
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
+	function staleReview(stamp: number, requested: ExplorerScope) {
+		return stamp !== reviewStamp || !sameScope(requested, scope);
+	}
 	async function refreshReview() {
 		if (!scope) await refreshScopes();
 		if (!scope || root.kind !== "git") return;
@@ -579,14 +604,14 @@
 		const requested = scope;
 		try {
 			const result = await request("review.files", { scope: requested });
-			if (stamp !== reviewStamp || !sameScope(requested, scope)) return;
+			if (staleReview(stamp, requested)) return;
 			const state = await request("review.state", { op: "get", key: result.resolved.key });
-			if (stamp !== reviewStamp || !sameScope(requested, scope)) return;
+			if (staleReview(stamp, requested)) return;
 			review = result;
 			reviewError = "";
 			viewed = new Set(state.viewed);
 		} catch (error) {
-			if (stamp !== reviewStamp || !sameScope(requested, scope)) return;
+			if (staleReview(stamp, requested)) return;
 			reviewError = errorText(error);
 			review = null;
 			viewed.clear();
@@ -628,8 +653,7 @@
 		}
 	}
 
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
-	function renderHeader() {
+	function renderCrumbs() {
 		const crumbs = get("crumbs");
 		crumbs.replaceChildren();
 		const parts = path.split("/");
@@ -642,6 +666,63 @@
 			);
 		}
 		if (path) crumbs.append(el("span", "dot", "/"));
+	}
+	function fileFacts(file: ExplorerFile) {
+		const pieces: string[] = [];
+		if (file.kind === "text")
+			pieces.push(
+				`${(view === "file" ? headLines : model.lines(file.text)).length.toLocaleString()}${file.truncated ? "+" : ""} lines`,
+			);
+		if (file.kind !== "directory" && file.kind !== "missing") pieces.push(model.size(file.size));
+		if (file.kind === "text") pieces.push(model.language(path).label);
+		else if (file.mediaType) pieces.push(file.mediaType);
+		return pieces;
+	}
+	function renderFileFacts() {
+		const facts = get("file-facts");
+		facts.replaceChildren();
+		if (file) {
+			facts.append(fileFacts(file).join(" · "));
+			if (file.lastCommit) {
+				const commit = el("span", "last-touch");
+				commit.append(" · ", el("code", "", sha(file.lastCommit.commit)), el("span", "", file.lastCommit.subject));
+				facts.append(commit);
+			}
+		} else if (path && loadingFile) facts.append("Reading file…");
+	}
+	function diffModes() {
+		const modes = el("div", "seg diff-modes");
+		modes.setAttribute("aria-label", "Diff layout");
+		for (const value of ["auto", "unified", "split"] as const) {
+			const control = button(value[0].toUpperCase() + value.slice(1), () => {
+				const saved = code.place();
+				settings.diff = value;
+				saveSettings();
+				renderHeader();
+				renderCode(saved);
+			});
+			pressed(control, settings.diff === value);
+			modes.append(control);
+		}
+		return modes;
+	}
+	function renderDiffHeader(change: ExplorerChange | undefined) {
+		const toolbar = get("diff-header");
+		toolbar.hidden = view !== "changes" || !path;
+		if (toolbar.hidden) return;
+		const info = el("div", "compare-info");
+		info.append(el("strong", "", "Changes"));
+		if (review) {
+			const { base, head } = review.resolved;
+			info.append(el("code", "", `${sha(base) || "empty"}..${head === "worktree" ? "worktree" : sha(head)}`));
+		}
+		if (change && !change.binary)
+			info.append(el("span", "added", `+${change.additions}`), el("span", "deleted", `−${change.deletions}`));
+		if (change?.oldPath) info.append(el("span", "rename-caption", `From ${change.oldPath}`));
+		toolbar.replaceChildren(info, diffModes());
+	}
+	function renderHeader() {
+		renderCrumbs();
 		get("file-title").textContent = basename(path) || root.name;
 		pressed(get("file-view"), view === "file");
 		pressed(get("diff-view"), view === "changes");
@@ -653,51 +734,8 @@
 		const section = get("main-scope");
 		section.hidden = root.kind !== "git" || !(view === "changes" || settings.tab === "changes");
 		if (!section.hidden) section.replaceChildren(makeScopeControl(false));
-		const facts = get("file-facts");
-		facts.replaceChildren();
-		const pieces: string[] = [];
-		if (file) {
-			if (file.kind === "text")
-				pieces.push(
-					`${(view === "file" ? headLines : model.lines(file.text)).length.toLocaleString()}${file.truncated ? "+" : ""} lines`,
-				);
-			if (file.kind !== "directory" && file.kind !== "missing") pieces.push(model.size(file.size));
-			if (file.kind === "text") pieces.push(model.language(path).label);
-			else if (file.mediaType) pieces.push(file.mediaType);
-			facts.append(pieces.join(" · "));
-			if (file.lastCommit) {
-				const commit = el("span", "last-touch");
-				commit.append(" · ", el("code", "", sha(file.lastCommit.commit)), el("span", "", file.lastCommit.subject));
-				facts.append(commit);
-			}
-		} else if (path && loadingFile) facts.append("Reading file…");
-		const toolbar = get("diff-header");
-		toolbar.hidden = view !== "changes" || !path;
-		if (!toolbar.hidden) {
-			const info = el("div", "compare-info");
-			info.append(el("strong", "", "Changes"));
-			if (review) {
-				const { base, head } = review.resolved;
-				info.append(el("code", "", `${sha(base) || "empty"}..${head === "worktree" ? "worktree" : sha(head)}`));
-			}
-			if (change && !change.binary)
-				info.append(el("span", "added", `+${change.additions}`), el("span", "deleted", `−${change.deletions}`));
-			if (change?.oldPath) info.append(el("span", "rename-caption", `From ${change.oldPath}`));
-			const modes = el("div", "seg diff-modes");
-			modes.setAttribute("aria-label", "Diff layout");
-			for (const value of ["auto", "unified", "split"] as const) {
-				const control = button(value[0].toUpperCase() + value.slice(1), () => {
-					const saved = code.place();
-					settings.diff = value;
-					saveSettings();
-					renderHeader();
-					renderCode(saved);
-				});
-				pressed(control, settings.diff === value);
-				modes.append(control);
-			}
-			toolbar.replaceChildren(info, modes);
-		}
+		renderFileFacts();
+		renderDiffHeader(change);
 		renderOutdated();
 	}
 	function renderOutdated() {
@@ -726,55 +764,72 @@
 			Math.min(counts.base, counts.head) / Math.max(1, Math.max(counts.base, counts.head)) >= 0.12
 		);
 	}
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
+	function renderImage(file: ExplorerFile, url: string) {
+		const asset = el("div", "asset-view");
+		const image = el("img");
+		image.alt = basename(path);
+		image.src = url;
+		image.addEventListener("error", () => {
+			if (asset.isConnected) empty("Image not available", "Explorer could not read this image.", "image");
+		});
+		asset.append(image, el("p", "", `${model.size(file.size)} · ${file.mediaType ?? "Image"}`));
+		body.append(asset);
+	}
+	function renderDiffPlaceholder() {
+		if (diff?.binary)
+			return empty("Binary file changed", "A line-by-line comparison is not available for this file.", "binary");
+		empty(
+			"No text changes",
+			diff?.truncated
+				? "This comparison is larger than the available preview."
+				: "The file has no line changes in this review.",
+			"branch",
+		);
+	}
+	function renderCodePlaceholder() {
+		if (fileError)
+			return empty(
+				"File not available",
+				fileError,
+				"error",
+				button("Try again", () => report(navigate({ path, view }, { replace: true })), "secondary"),
+			);
+		if (loadingFile)
+			return empty(
+				view === "changes" ? "Reading changes…" : "Reading file…",
+				"Explorer is waiting for the local file.",
+			);
+		if (!path || file?.kind === "directory")
+			return empty(
+				path ? basename(path) : root.name,
+				"Pick a file from the sidebar or use Quick open (⌘P).",
+				"folder",
+				button("Quick open", () => command("quick"), "secondary"),
+			);
+		if (view === "changes") return renderDiffPlaceholder();
+		renderFilePlaceholder();
+	}
+	function renderFilePlaceholder() {
+		if (file?.kind === "image" && file.url) return renderImage(file, file.url);
+		if (file?.kind === "binary")
+			return empty("Binary file", `${model.size(file.size)} · ${file.mediaType ?? "Unknown type"}`, "binary");
+		empty("File not found", "This path is not present in the selected version.", "error");
+	}
+	function showsCode() {
+		if (!path || fileError || loadingFile) return false;
+		if (view === "file") return file?.kind === "text";
+		return !!diff && !diff.binary && diff.hunks.length > 0;
+	}
+	function restoreCodeView(saved?: ReturnType<ExplorerCodeView["place"]>) {
+		if (saved) code.restore(saved);
+		if (lineRange || targetRange) code.highlight(lineRange ?? targetRange);
+		if (findQuery.value) computeFind(false);
+		if (file?.truncated || diff?.truncated) get("file-annotation").textContent = "Large file · partial preview";
+	}
 	function renderCode(saved?: ReturnType<ExplorerCodeView["place"]>) {
-		if (
-			!path ||
-			fileError ||
-			loadingFile ||
-			(view === "file" && file?.kind !== "text") ||
-			(view === "changes" && (!diff || diff.binary || !diff.hunks.length))
-		) {
+		if (!showsCode()) {
 			code.clear();
-			if (fileError)
-				empty(
-					"File not available",
-					fileError,
-					"error",
-					button("Try again", () => report(navigate({ path, view }, { replace: true })), "secondary"),
-				);
-			else if (loadingFile)
-				empty(view === "changes" ? "Reading changes…" : "Reading file…", "Explorer is waiting for the local file.");
-			else if (!path || file?.kind === "directory")
-				empty(
-					path ? basename(path) : root.name,
-					"Pick a file from the sidebar or use Quick open (⌘P).",
-					"folder",
-					button("Quick open", () => command("quick"), "secondary"),
-				);
-			else if (view === "changes" && diff?.binary)
-				empty("Binary file changed", "A line-by-line comparison is not available for this file.", "binary");
-			else if (view === "changes")
-				empty(
-					"No text changes",
-					diff?.truncated
-						? "This comparison is larger than the available preview."
-						: "The file has no line changes in this review.",
-					"branch",
-				);
-			else if (file?.kind === "image" && file.url) {
-				const asset = el("div", "asset-view");
-				const image = el("img");
-				image.alt = basename(path);
-				image.src = file.url;
-				image.addEventListener("error", () => {
-					if (asset.isConnected) empty("Image not available", "Explorer could not read this image.", "image");
-				});
-				asset.append(image, el("p", "", `${model.size(file.size)} · ${file.mediaType ?? "Image"}`));
-				body.append(asset);
-			} else if (file?.kind === "binary")
-				empty("Binary file", `${model.size(file.size)} · ${file.mediaType ?? "Unknown type"}`, "binary");
-			else empty("File not found", "This path is not present in the selected version.", "error");
+			renderCodePlaceholder();
 			return;
 		}
 		code.show({
@@ -798,130 +853,156 @@
 				reviewUI.reposition();
 			},
 		});
-		if (saved) code.restore(saved);
-		if (lineRange || targetRange) code.highlight(lineRange ?? targetRange);
-		if (findQuery.value) computeFind(false);
-		if (file?.truncated || diff?.truncated) get("file-annotation").textContent = "Large file · partial preview";
+		restoreCodeView(saved);
 	}
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
-	async function navigate(
+	type NavigationOptions = {
+		replace?: boolean;
+		keepSheet?: boolean;
+		keepTab?: boolean;
+		refresh?: boolean;
+		side?: ExplorerSide;
+		noHistory?: boolean;
+	};
+	function recordNavigation(target: ExplorerLaunch, replace?: boolean) {
+		const nav = { path, view: target.view ?? view, line: target.line, review: scope };
+		if (replace && historyAt >= 0) history[historyAt] = nav;
+		else if (history[historyAt]?.path !== path || history[historyAt]?.view !== nav.view || target.line !== undefined) {
+			history = history.slice(0, historyAt + 1);
+			history.push(nav);
+			historyAt = history.length - 1;
+		}
+	}
+	function clearNavigationSelection() {
+		if (!keepCardOnNavigate) reviewUI.escape();
+		window.getSelection()?.removeAllRanges();
+		lineRange = null;
+		placeStrip();
+		closeFind();
+	}
+	function leavesView(
 		target: ExplorerLaunch,
-		options: {
-			replace?: boolean;
-			keepSheet?: boolean;
-			keepTab?: boolean;
-			refresh?: boolean;
-			side?: ExplorerSide;
-			noHistory?: boolean;
-		} = {},
+		options: NavigationOptions,
+		candidatePath: string,
+		requestedView: "file" | "changes",
 	) {
-		const stamp = ++openStamp;
-		const candidatePath = target.path ?? path;
-		const requestedView = target.view === "changes" ? "changes" : "file";
-		const previous = code.place();
-		if (!options.refresh) {
-			lineRange = null;
-			targetRange = null;
-			anchoredLine = null;
-			if (historyAt >= 0 && !options.noHistory) history[historyAt].line = latestLine;
-			if (path !== candidatePath || view !== requestedView || (!options.keepTab && target.view === "notes")) {
-				if (!keepCardOnNavigate) reviewUI.escape();
-				window.getSelection()?.removeAllRanges();
-				lineRange = null;
-				placeStrip();
-				closeFind();
-			}
-			if (!options.keepSheet) narrowClose();
-			if (!options.keepTab && target.view) settings.tab = target.view === "file" ? "files" : target.view;
-			revealPath(candidatePath);
-			path = candidatePath;
-			view = requestedView;
-			const nav = { path, view: target.view ?? view, line: target.line, review: scope };
-			if (!options.noHistory) {
-				if (options.replace && historyAt >= 0) history[historyAt] = nav;
-				else if (
-					history[historyAt]?.path !== path ||
-					history[historyAt]?.view !== nav.view ||
-					target.line !== undefined
-				) {
-					history = history.slice(0, historyAt + 1);
-					history.push(nav);
-					historyAt = history.length - 1;
-				}
-			}
-			disabled("back", historyAt <= 0);
-			disabled("forward", historyAt >= history.length - 1);
-			renderSidebar();
-		}
-		fileError = "";
-		if (!options.refresh) {
-			file = null;
-			diff = null;
-			headLines = [];
-			baseLines = [];
-		}
-		if (!path) {
-			file = null;
-			diff = null;
-			loadingFile = false;
-			renderHeader();
-			renderCode();
-			savePosition();
-			return;
-		}
-		if (!options.refresh) {
-			loadingFile = true;
-			get("file-annotation").textContent = "";
-			latestLine = target.line ?? 1;
-			renderHeader();
-			renderCode();
-		}
-		try {
-			const change = view === "changes";
-			const selectedScope = scope;
-			const at =
-				change && review?.resolved.head && review.resolved.head !== "worktree" ? review.resolved.head : undefined;
-			const [next, patch] = await Promise.all([
-				request("file.read", { path, ...(at ? { at } : {}) }),
-				change && selectedScope ? request("review.diff", { path, scope: selectedScope }) : Promise.resolve(null),
-			]);
-			if (stamp !== openStamp) return;
-			file = next;
-			diff = patch ?? null;
-			headLines = model.lines(change ? diff?.head : next.text);
-			baseLines = model.lines(diff?.base);
-			if (next.kind === "directory") {
-				revealPath(path, true);
-				if (isNarrow.matches && options.keepSheet) sheet = true;
-				renderSidebarState();
-			}
-		} catch (error) {
-			if (stamp !== openStamp) return;
-			fileError = errorText(error);
-		}
+		return path !== candidatePath || view !== requestedView || (!options.keepTab && target.view === "notes");
+	}
+	function prepareNavigation(
+		target: ExplorerLaunch,
+		options: NavigationOptions,
+		candidatePath: string,
+		requestedView: "file" | "changes",
+	) {
+		lineRange = null;
+		targetRange = null;
+		anchoredLine = null;
+		if (historyAt >= 0 && !options.noHistory) history[historyAt].line = latestLine;
+		if (leavesView(target, options, candidatePath, requestedView)) clearNavigationSelection();
+		if (!options.keepSheet) narrowClose();
+		if (!options.keepTab && target.view) settings.tab = target.view === "file" ? "files" : target.view;
+		revealPath(candidatePath);
+		path = candidatePath;
+		view = requestedView;
+		if (!options.noHistory) recordNavigation(target, options.replace);
+		disabled("back", historyAt <= 0);
+		disabled("forward", historyAt >= history.length - 1);
+		renderSidebar();
+	}
+	function showTargetLines(line: number, last: number | undefined, preferred?: ExplorerSide) {
+		const side = preferred ?? (view === "changes" && !headLines.length ? "base" : "head");
+		const maxLine = (side === "base" ? baseLines : headLines).length;
+		if (!maxLine) return;
+		const start = Math.min(line, maxLine);
+		const end = Math.max(start, Math.min(last ?? start, maxLine));
+		targetRange = { side, start, end };
+		code.jump(end, side, true);
+		code.jump(start, side, true);
+		code.highlight(targetRange);
+		setAnchorLine(start);
+	}
+	function showDirectory(keepSheet?: boolean) {
+		revealPath(path, true);
+		if (isNarrow.matches && keepSheet) sheet = true;
+		renderSidebarState();
+	}
+	function readNavigation(change: boolean) {
+		const selectedScope = scope;
+		const at =
+			change && review?.resolved.head && review.resolved.head !== "worktree" ? review.resolved.head : undefined;
+		return Promise.all([
+			request("file.read", { path, ...(at ? { at } : {}) }),
+			change && selectedScope ? request("review.diff", { path, scope: selectedScope }) : Promise.resolve(null),
+		]);
+	}
+	function clearFileData() {
+		file = null;
+		diff = null;
+		headLines = [];
+		baseLines = [];
+	}
+	function showRootDirectory() {
+		file = null;
+		diff = null;
+		loadingFile = false;
+		renderHeader();
+		renderCode();
+		savePosition();
+	}
+	function showFileLoading(line?: number) {
+		loadingFile = true;
+		get("file-annotation").textContent = "";
+		latestLine = line ?? 1;
+		renderHeader();
+		renderCode();
+	}
+	function applyNavigation(next: ExplorerFile, patch: ExplorerDiff | null, change: boolean, keepSheet?: boolean) {
+		file = next;
+		diff = patch ?? null;
+		headLines = model.lines(change ? diff?.head : next.text);
+		baseLines = model.lines(diff?.base);
+		if (next.kind === "directory") showDirectory(keepSheet);
+	}
+	function finishNavigation(
+		target: ExplorerLaunch,
+		options: NavigationOptions,
+		previous: ReturnType<ExplorerCodeView["place"]>,
+	) {
 		loadingFile = false;
 		renderSidebar();
 		renderHeader();
 		renderCode(options.refresh ? previous : undefined);
-		const line = target.line;
-		if (line !== undefined && !options.refresh) {
-			const side = options.side ?? (view === "changes" && !headLines.length ? "base" : "head");
-			if (target.end !== undefined || target.line !== undefined) {
-				const maxLine = (side === "base" ? baseLines : headLines).length;
-				if (maxLine) {
-					const start = Math.min(line, maxLine),
-						end = Math.max(start, Math.min(target.end ?? start, maxLine));
-					targetRange = { side, start, end };
-					code.jump(end, side, true);
-					code.jump(start, side, true);
-					code.highlight(targetRange);
-					setAnchorLine(start);
-				}
-			}
-		}
+		if (!options.refresh && target.line !== undefined) showTargetLines(target.line, target.end, options.side);
 		renderLocation();
 		savePosition();
 		reviewUI.reposition();
+	}
+	function prepareFileRead(refresh: boolean | undefined, line?: number) {
+		if (!refresh) clearFileData();
+		if (!path) {
+			showRootDirectory();
+			return false;
+		}
+		if (!refresh) showFileLoading(line);
+		return true;
+	}
+	async function navigate(target: ExplorerLaunch, options: NavigationOptions = {}) {
+		const stamp = ++openStamp;
+		const candidatePath = target.path ?? path;
+		const requestedView = target.view === "changes" ? "changes" : "file";
+		const previous = code.place();
+		if (!options.refresh) prepareNavigation(target, options, candidatePath, requestedView);
+		fileError = "";
+		if (!prepareFileRead(options.refresh, target.line)) return;
+		try {
+			const change = view === "changes";
+			const [next, patch] = await readNavigation(change);
+			if (stamp !== openStamp) return;
+			applyNavigation(next, patch, change, options.keepSheet);
+		} catch (error) {
+			if (stamp !== openStamp) return;
+			fileError = errorText(error);
+		}
+		finishNavigation(target, options, previous);
 	}
 	async function moveHistory(delta: number) {
 		const next = historyAt + delta;
@@ -1183,11 +1264,28 @@
 		report(navigate({ path, view: view === "file" ? "changes" : "file", line: latestLine }, { keepTab: true }));
 	}
 	type Action = { label: string; key: string; glyph: string; run: () => void; disabled?: boolean; divide?: boolean };
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
-	function actions(range: ExplorerRange | null, text?: string): Action[] {
-		const source = range ? selectionExcerpt(range) : null;
-		const fileHere = !!selectionExcerpt(null);
-		const result: Action[] = [];
+	function appendCodeActions(result: Action[]) {
+		if (headLines.length || baseLines.length) {
+			result.push(
+				{ label: "Find in file", key: "⌘F", glyph: "search", divide: true, run: findInFile },
+				{ label: "Go to line", key: "⌃G", glyph: "list", run: () => command("line") },
+			);
+			if (review?.files.some((item) => item.path === path))
+				result.push({
+					label: view === "file" ? "Show changes" : "Show file",
+					key: "⌘⌥D",
+					glyph: "branch",
+					run: toggleView,
+				});
+			result.push({ label: settings.wrap ? "Turn wrap off" : "Wrap lines", key: "⌥Z", glyph: "file", run: toggleWrap });
+		}
+	}
+	function appendReviewActions(
+		result: Action[],
+		range: ExplorerRange | null,
+		source: ExplorerExcerpt | null,
+		fileHere: boolean,
+	) {
 		if (fileHere)
 			result.push({
 				label: "Ask about this",
@@ -1200,6 +1298,12 @@
 				{ label: "Comment on line(s)", key: "⌘⇧L", glyph: "note", run: () => askAt(range, "comment") },
 				{ label: "Keep a note", key: "⌘⌥N", glyph: "edit", run: () => askAt(range, "note") },
 			);
+	}
+	function actions(range: ExplorerRange | null, text?: string): Action[] {
+		const source = range ? selectionExcerpt(range) : null;
+		const fileHere = !!selectionExcerpt(null);
+		const result: Action[] = [];
+		appendReviewActions(result, range, source, fileHere);
 		result.push(
 			{
 				label: "Copy",
@@ -1236,20 +1340,7 @@
 				glyph: "folder",
 				run: () => report(request("finder.reveal", { path })),
 			});
-		if (headLines.length || baseLines.length) {
-			result.push(
-				{ label: "Find in file", key: "⌘F", glyph: "search", divide: true, run: findInFile },
-				{ label: "Go to line", key: "⌃G", glyph: "list", run: () => command("line") },
-			);
-			if (review?.files.some((item) => item.path === path))
-				result.push({
-					label: view === "file" ? "Show changes" : "Show file",
-					key: "⌘⌥D",
-					glyph: "branch",
-					run: toggleView,
-				});
-			result.push({ label: settings.wrap ? "Turn wrap off" : "Wrap lines", key: "⌥Z", glyph: "file", run: toggleWrap });
-		}
+		appendCodeActions(result);
 		return result;
 	}
 	const menu = el("div", "context-menu");
@@ -1291,32 +1382,31 @@
 		menuActive = 0;
 		(menu.querySelector<HTMLElement>("button:not(:disabled)") ?? menu).focus({ preventScroll: true });
 	}
+	function selectionAt(
+		selection: NonNullable<ReturnType<ExplorerCodeView["selection"]>>,
+		clicked: ExplorerRange | null,
+		x: number,
+		y: number,
+	) {
+		const { range, rect } = selection;
+		if (clicked && range.side === clicked.side && clicked.start >= range.start && clicked.end <= range.end) return true;
+		return rect.x <= x && x <= rect.right && rect.y <= y && y <= rect.bottom;
+	}
+	function menuText(target: EventTarget | null, selected: string | undefined, range: ExplorerRange | null) {
+		if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement)
+			return target.value.slice(target.selectionStart ?? 0, target.selectionEnd ?? 0);
+		return selected ?? (range && lineRange === range ? selectionExcerpt(range)?.quote : undefined);
+	}
 	document.addEventListener(
 		"contextmenu",
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
 		(event) => {
 			event.preventDefault();
 			if (!overlay.hidden) return;
 			const selection = code.selection();
 			const clicked = code.rowAt(event.target instanceof Node ? event.target : null);
-			const chosen =
-				selection &&
-				((clicked &&
-					selection.range.side === clicked.side &&
-					clicked.start >= selection.range.start &&
-					clicked.end <= selection.range.end) ||
-					(selection.rect.x <= event.clientX &&
-						event.clientX <= selection.rect.right &&
-						selection.rect.y <= event.clientY &&
-						event.clientY <= selection.rect.bottom))
-					? selection
-					: null;
+			const chosen = selection && selectionAt(selection, clicked, event.clientX, event.clientY) ? selection : null;
 			const range = chosen?.range ?? clicked ?? (body.contains(event.target as Node) ? lineRange : null);
-			const editable =
-				event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement ? event.target : null;
-			const text = editable
-				? editable.value.slice(editable.selectionStart ?? 0, editable.selectionEnd ?? 0)
-				: (chosen?.text ?? (range && lineRange === range ? selectionExcerpt(range)?.quote : undefined));
+			const text = menuText(event.target, chosen?.text, range);
 			closeMenu(false);
 			showMenu(event.clientX, event.clientY, range, text);
 		},
@@ -1356,7 +1446,16 @@
 		previousFocus = null;
 		placeStrip();
 	}
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
+	function arrowStep(key: string) {
+		if (key === "ArrowDown") return 1;
+		return key === "ArrowUp" ? -1 : 0;
+	}
+	function commandPlaceholder(next: NonNullable<typeof mode>, detail?: string) {
+		if (next === "quick") return "Type any part of a path";
+		if (next === "search") return "Find text across this repository";
+		if (next === "line") return "Line number";
+		return detail === "range" ? "Base and head, for example main..HEAD" : "Commit or ref, for example HEAD~2";
+	}
 	function command(next: NonNullable<typeof mode>, detail?: string) {
 		clearTimeout(searchTimer);
 		commandStamp++;
@@ -1382,16 +1481,7 @@
 		input.setAttribute("aria-label", titles[next]);
 		input.autocomplete = "off";
 		input.spellcheck = false;
-		input.placeholder =
-			next === "quick"
-				? "Type any part of a path"
-				: next === "search"
-					? "Find text across this repository"
-					: next === "line"
-						? "Line number"
-						: detail === "range"
-							? "Base and head, for example main..HEAD"
-							: "Commit or ref, for example HEAD~2";
+		input.placeholder = commandPlaceholder(next, detail);
 		if (next === "line") input.inputMode = "numeric";
 		dialog.append(input);
 		const summary = el("div", "command-summary");
@@ -1435,98 +1525,104 @@
 		}
 		const regex = flag("Regular expression"),
 			sensitive = flag("Match case");
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
+		function queryPaths(value: string) {
+			showResult(
+				model
+					.fuzzy(paths, value)
+					.map(({ path }) => ({ title: basename(path), hint: dirname(path) || root.name, path })),
+				value ? `${paths.length.toLocaleString()} indexed paths · ↑ ↓ to move · ↩ to open` : "↑ ↓ to move · ↩ to open",
+			);
+			if (!entries.length) summary.textContent = filesError || "No matching paths.";
+		}
+		function showSearchResult(data: ExplorerRequests["search"][1]) {
+			showResult(
+				data.results.map((item) => ({
+					title: `${item.path}:${item.line}`,
+					hint: item.preview,
+					path: item.path,
+					line: item.line,
+				})),
+				data.results.length
+					? `${data.results.length.toLocaleString()} results${data.truncated ? " · list truncated" : ""} · ↩ to open`
+					: "No matches.",
+			);
+		}
+		function queryContents(value: string, stamp: number) {
+			if (!value) {
+				showResult([], "Search file contents in the opened root.");
+				return;
+			}
+			showResult([], "Searching…");
+			searchTimer = window.setTimeout(() => {
+				void request("search", { query: value, regex: regex.checked, caseSensitive: sensitive.checked, limit: 2000 })
+					.then((data) => {
+						if (commandStamp === stamp) showSearchResult(data);
+					})
+					.catch((error) => {
+						if (commandStamp === stamp) showResult([], errorText(error));
+					});
+			}, 140);
+		}
 		function query() {
 			const value = input.value.trim();
 			const stamp = ++commandStamp;
 			clearTimeout(searchTimer);
-			if (next === "quick") {
-				showResult(
-					model
-						.fuzzy(paths, value)
-						.map(({ path }) => ({ title: basename(path), hint: dirname(path) || root.name, path })),
-					value
-						? `${paths.length.toLocaleString()} indexed paths · ↑ ↓ to move · ↩ to open`
-						: "↑ ↓ to move · ↩ to open",
-				);
-				if (!entries.length) summary.textContent = filesError || "No matching paths.";
-			} else if (next === "search") {
-				if (!value) {
-					showResult([], "Search file contents in the opened root.");
-					return;
-				}
-				showResult([], "Searching…");
-				searchTimer = window.setTimeout(() => {
-					void request("search", { query: value, regex: regex.checked, caseSensitive: sensitive.checked, limit: 2000 })
-						// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
-						.then((data) => {
-							if (commandStamp !== stamp) return;
-							showResult(
-								data.results.map((item) => ({
-									title: `${item.path}:${item.line}`,
-									hint: item.preview,
-									path: item.path,
-									line: item.line,
-								})),
-								data.results.length
-									? `${data.results.length.toLocaleString()} results${data.truncated ? " · list truncated" : ""} · ↩ to open`
-									: "No matches.",
-							);
-						})
-						.catch((error) => {
-							if (commandStamp === stamp) showResult([], errorText(error));
-						});
-				}, 140);
-			}
+			if (next === "quick") queryPaths(value);
+			else if (next === "search") queryContents(value, stamp);
 		}
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
-		const submit = () => {
-			if (next === "quick" || next === "search") openPicked(picked);
-			else if (next === "line") {
-				const line = Number(input.value.trim());
-				const side = activeRange()?.side ?? (headLines.length ? "head" : "base");
-				const total = side === "head" ? headLines.length : baseLines.length;
-				if (!Number.isSafeInteger(line) || line < 1 || line > total) {
-					summary.textContent = `Enter a line from 1 to ${total.toLocaleString()}.`;
-					return;
-				}
-				closeCommand();
-				code.jump(line, side, true);
-				changeRange({ side, start: line, end: line });
-				code.highlight(lineRange);
-				body.focus({ preventScroll: true });
-			} else {
-				const value = input.value.trim();
-				const pair = /^(.+?)\.\.([^.].*)$/.exec(value);
-				if (!value || (detail === "range" && !pair)) {
-					summary.textContent = detail === "range" ? "Enter a range such as main..HEAD." : "Enter a commit or ref.";
-					return;
-				}
-				closeCommand();
-				report(
-					selectScope(
-						detail === "range" && pair
-							? { kind: "range", base: pair[1], head: pair[2] }
-							: { kind: "commit", commit: value },
-					),
-				);
+		function submitLine() {
+			const line = Number(input.value.trim());
+			const side = activeRange()?.side ?? (headLines.length ? "head" : "base");
+			const total = side === "head" ? headLines.length : baseLines.length;
+			if (!Number.isSafeInteger(line) || line < 1 || line > total) {
+				summary.textContent = `Enter a line from 1 to ${total.toLocaleString()}.`;
+				return;
 			}
-		};
+			closeCommand();
+			code.jump(line, side, true);
+			changeRange({ side, start: line, end: line });
+			code.highlight(lineRange);
+			body.focus({ preventScroll: true });
+		}
+		function submitScope() {
+			const value = input.value.trim();
+			const pair = /^(.+?)\.\.([^.].*)$/.exec(value);
+			if (!value || (detail === "range" && !pair)) {
+				summary.textContent = detail === "range" ? "Enter a range such as main..HEAD." : "Enter a commit or ref.";
+				return;
+			}
+			closeCommand();
+			report(
+				selectScope(
+					detail === "range" && pair
+						? { kind: "range", base: pair[1], head: pair[2] }
+						: { kind: "commit", commit: value },
+				),
+			);
+		}
+		function submit() {
+			if (next === "line") submitLine();
+			else if (next === "scope") submitScope();
+			else openPicked(picked);
+		}
 		input.oninput = query;
 		regex.onchange = sensitive.onchange = query;
-		// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
 		dialog.onkeydown = (event) => {
 			if (event.isComposing) return;
 			if (event.key === "Escape") {
 				event.preventDefault();
 				event.stopPropagation();
 				closeCommand();
-			} else if (event.target === input && event.key === "Enter") {
+				return;
+			}
+			if (event.target === input && event.key === "Enter") {
 				event.preventDefault();
 				submit();
-			} else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+				return;
+			}
+			if (arrowStep(event.key) !== 0) {
 				event.preventDefault();
-				selectPicked(picked + (event.key === "ArrowDown" ? 1 : -1));
+				selectPicked(picked + arrowStep(event.key));
 			}
 		};
 		if (next === "search") dialog.append(flags);
@@ -1548,26 +1644,13 @@
 		if (event.target === overlay) closeCommand();
 	};
 
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
-	async function open(target: ExplorerLaunch) {
-		const stamp = rootStamp;
-		if (target.review) scope = target.review;
-		const requested = target.view ?? (target.review || target.tour ? "changes" : undefined);
-		if (requested) settings.tab = requested === "file" ? "files" : requested;
-		if ((requested === "changes" || target.review) && root.kind === "git") await refreshReview();
-		if (stamp !== rootStamp) return;
-		if ((target.note || target.tour) && !notes.length) await refreshNotes();
-		if (stamp !== rootStamp) return;
-		const note = notes.find((note) => note.id === target.note);
-		const tour = tours.find((tour) => tour.id === target.tour);
-		if (tour) {
-			await startTour(tour);
-			return;
+	function restoreLaunchDraft(target: ExplorerLaunch, candidate: string | undefined, stamp: number) {
+		if (target.draft && candidate === path && stamp === rootStamp) {
+			targetRange = null;
+			reviewUI.restore(path, target.draft);
 		}
-		if (note) {
-			await goNote(note);
-			return;
-		}
+	}
+	async function openPath(target: ExplorerLaunch, requested: ExplorerLaunch["view"], stamp: number) {
 		const candidate = target.path ?? (requested === "changes" ? review?.files[0]?.path : "");
 		const anchor = target.draft?.range;
 		await navigate(
@@ -1580,12 +1663,43 @@
 			},
 			{ keepTab: !requested, keepSheet: true, side: anchor?.side },
 		);
-		if (target.draft && candidate === path && stamp === rootStamp) {
-			targetRange = null;
-			reviewUI.restore(path, target.draft);
-		}
+		restoreLaunchDraft(target, candidate, stamp);
 		if (target.tour || target.note)
 			notice(target.tour ? "That walkthrough is not available." : "That note is not available.");
+	}
+	function launchView(target: ExplorerLaunch) {
+		return target.view ?? (target.review || target.tour ? "changes" : undefined);
+	}
+	function launchNeedsReview(requested: ExplorerLaunch["view"], target: ExplorerLaunch) {
+		return (requested === "changes" || target.review) && root.kind === "git";
+	}
+	function launchNeedsNotes(target: ExplorerLaunch) {
+		return (target.note || target.tour) && !notes.length;
+	}
+	function prepareLaunch(target: ExplorerLaunch) {
+		if (target.review) scope = target.review;
+		const requested = launchView(target);
+		if (requested) settings.tab = requested === "file" ? "files" : requested;
+		return requested;
+	}
+	async function open(target: ExplorerLaunch) {
+		const stamp = rootStamp;
+		const requested = prepareLaunch(target);
+		if (launchNeedsReview(requested, target)) await refreshReview();
+		if (stamp !== rootStamp) return;
+		if (launchNeedsNotes(target)) await refreshNotes();
+		if (stamp !== rootStamp) return;
+		const note = notes.find((note) => note.id === target.note);
+		const tour = tours.find((tour) => tour.id === target.tour);
+		if (tour) {
+			await startTour(tour);
+			return;
+		}
+		if (note) {
+			await goNote(note);
+			return;
+		}
+		await openPath(target, requested, stamp);
 	}
 	function resetRoot(next: ExplorerRoot) {
 		clearTimeout(stateTimer);
@@ -1633,20 +1747,53 @@
 		report(refreshNotes());
 		report(refreshScopes());
 	}
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
+	function hostOpen(event: Extract<ExplorerEvent, { type: "open" }>) {
+		if (!booted) {
+			pendingOpen = event;
+			return;
+		}
+		if (event.root && root.path !== event.root.path) resetRoot(event.root);
+		else if (event.root) {
+			root = event.root;
+			rootChrome();
+		}
+		report(open(event));
+	}
+	function filesChanged(event: Extract<ExplorerEvent, { type: "files.changed" }>) {
+		const oldHead = root.head;
+		if (event.head) {
+			root = {
+				...root,
+				...event.head,
+				onDefaultBranch: !!event.head.branch && event.head.branch === root.defaultBranch,
+			};
+			rootChrome();
+		}
+		const stamp = openStamp;
+		report(refreshFiles());
+		report(refreshNotes());
+		report(refreshChangedView(stamp, oldHead, event.paths));
+	}
+	function touchesOpenFile(oldHead: ExplorerRoot["head"], paths: string[]) {
+		return (
+			oldHead !== root.head ||
+			!paths.length ||
+			paths.includes(path) ||
+			(view === "changes" && scope?.kind === "uncommitted")
+		);
+	}
+	async function refreshChangedView(stamp: number, oldHead: ExplorerRoot["head"], paths: string[]) {
+		if (root.kind === "git") {
+			await refreshScopes();
+			if (view === "changes" || review) await refreshReview();
+		}
+		if (stamp !== openStamp || !path || loadingFile) return;
+		if (touchesOpenFile(oldHead, paths)) await navigate({ path, view }, { refresh: true });
+	}
 	app.listen((event) => {
 		switch (event.type) {
 			case "open":
-				if (!booted) {
-					pendingOpen = event;
-					break;
-				}
-				if (event.root && root.path !== event.root.path) resetRoot(event.root);
-				else if (event.root) {
-					root = event.root;
-					rootChrome();
-				}
-				report(open(event));
+				hostOpen(event);
 				break;
 			case "notes.changed":
 				if (booted) report(refreshNotes());
@@ -1658,39 +1805,9 @@
 			case "promptState":
 				reviewUI.prompt(event);
 				break;
-			case "files.changed": {
-				if (!booted) break;
-				const oldHead = root.head;
-				if (event.head) {
-					root = {
-						...root,
-						...event.head,
-						onDefaultBranch: !!event.head.branch && event.head.branch === root.defaultBranch,
-					};
-					rootChrome();
-				}
-				const stamp = openStamp;
-				report(refreshFiles());
-				report(refreshNotes());
-				report(
-					// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
-					(async () => {
-						if (root.kind === "git") {
-							await refreshScopes();
-							if (view === "changes" || review) await refreshReview();
-						}
-						if (stamp !== openStamp || !path || loadingFile) return;
-						if (
-							oldHead !== root.head ||
-							!event.paths.length ||
-							event.paths.includes(path) ||
-							(view === "changes" && scope?.kind === "uncommitted")
-						)
-							await navigate({ path, view }, { refresh: true });
-					})(),
-				);
+			case "files.changed":
+				if (booted) filesChanged(event);
 				break;
-			}
 		}
 	});
 	async function boot() {
@@ -1803,67 +1920,104 @@
 		if (booted) savePosition(true);
 	});
 
-	// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
+	function returnFocus() {
+		window.getSelection()?.removeAllRanges();
+		changeRange(null);
+		code.highlight(null);
+		report(request("focus.return"));
+	}
+	function escapeExplorer() {
+		if (mode) return closeCommand();
+		if (reviewUI.escape()) return placeStrip();
+		if (!findSlot.hidden) {
+			closeFind();
+			body.focus({ preventScroll: true });
+			return;
+		}
+		if (sheet) return narrowClose();
+		returnFocus();
+	}
+	function navigationShortcut(event: KeyboardEvent, key: string, editing: boolean) {
+		switch (key) {
+			case "p":
+				return event.altKey ? undefined : () => command("quick");
+			case "f":
+				return event.shiftKey ? () => command("search") : findInFile;
+			case "[":
+				return () => report(moveHistory(-1));
+			case "]":
+				return () => report(moveHistory(1));
+			case "b":
+				return editing ? undefined : toggleSidebar;
+		}
+	}
+	function noteShortcut(event: KeyboardEvent, key: string, range: ExplorerRange | null) {
+		if ((key === "m" || event.code === "KeyM") && event.altKey) return () => askAt(null, "ask");
+		if (range) return rangeShortcut(event, key, range);
+	}
+	function rangeShortcut(event: KeyboardEvent, key: string, range: ExplorerRange) {
+		if (event.shiftKey && key === "m") return () => askAt(range, "ask");
+		if (event.shiftKey && key === "l") return () => askAt(range, "comment");
+		if (!event.altKey) return;
+		if (event.code === "KeyN") return () => askAt(range, "note");
+		if (event.code === "KeyL") return () => copy(lineReference(range), "Line reference copied");
+	}
+	function fileShortcut(event: KeyboardEvent) {
+		if (!event.altKey) return;
+		if (event.code === "KeyR" && path) return () => report(request("finder.reveal", { path }));
+		if (event.code === "KeyD") return toggleView;
+		if (event.code === "KeyC" && path) return () => copy(path, "Path copied");
+	}
+	function copyShortcut(event: KeyboardEvent, key: string, editing: boolean, range: ExplorerRange | null) {
+		if (key !== "c" || editing) return;
+		const source = range && selectionExcerpt(range);
+		const text = event.shiftKey
+			? source
+				? model.source(source)
+				: undefined
+			: (code.selection()?.text ?? source?.quote);
+		if (text) return () => copy(text);
+	}
+	function metaShortcut(event: KeyboardEvent, key: string, editing: boolean, range: ExplorerRange | null) {
+		if (!event.metaKey || event.ctrlKey) return;
+		return (
+			navigationShortcut(event, key, editing) ??
+			noteShortcut(event, key, range) ??
+			fileShortcut(event) ??
+			copyShortcut(event, key, editing, range)
+		);
+	}
+	function secondaryShortcut(event: KeyboardEvent, key: string, editing: boolean) {
+		if (event.ctrlKey && key === "g" && (headLines.length || baseLines.length)) return () => command("line");
+		if (event.altKey && !event.metaKey && event.code === "KeyZ" && !editing) return toggleWrap;
+	}
+	function stepWalkthrough(key: string) {
+		if (key === "arrowleft") return reviewUI.step(-1);
+		if (key === "arrowright") return reviewUI.step(1);
+		return false;
+	}
+	function isEditing(target: EventTarget | null) {
+		return target instanceof HTMLElement && !!target.closest("input,textarea,select,[contenteditable=true]");
+	}
 	document.addEventListener("keydown", (event) => {
 		if (event.isComposing || event.defaultPrevented) return;
 		if (!menu.hidden) return;
 		const key = event.key.toLowerCase();
-		const editing =
-			event.target instanceof HTMLElement && !!event.target.closest("input,textarea,select,[contenteditable=true]");
+		const editing = isEditing(event.target);
 		const range = activeRange();
-		const run = (action: () => void) => {
-			event.preventDefault();
-			action();
-		};
 		if (key === "escape") {
-			// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Apply the ordered UI guards before updating dependent controls or requesting host data.
-			run(() => {
-				if (mode) closeCommand();
-				else if (reviewUI.escape()) placeStrip();
-				else if (!findSlot.hidden) {
-					closeFind();
-					body.focus({ preventScroll: true });
-				} else if (sheet) narrowClose();
-				else {
-					window.getSelection()?.removeAllRanges();
-					changeRange(null);
-					code.highlight(null);
-					report(request("focus.return"));
-				}
-			});
+			event.preventDefault();
+			escapeExplorer();
 			return;
 		}
 		if (mode) return;
-		if (event.metaKey && !event.ctrlKey) {
-			if (key === "p" && !event.altKey) return run(() => command("quick"));
-			if (key === "f" && event.shiftKey) return run(() => command("search"));
-			if (key === "f") return run(findInFile);
-			if (key === "[") return run(() => report(moveHistory(-1)));
-			if (key === "]") return run(() => report(moveHistory(1)));
-			if (key === "b" && !editing) return run(toggleSidebar);
-			if ((key === "m" || event.code === "KeyM") && event.altKey) return run(() => askAt(null, "ask"));
-			if (key === "m" && event.shiftKey && range) return run(() => askAt(range, "ask"));
-			if (key === "l" && event.shiftKey && range) return run(() => askAt(range, "comment"));
-			if (event.altKey && event.code === "KeyN" && range) return run(() => askAt(range, "note"));
-			if (event.altKey && event.code === "KeyL" && range)
-				return run(() => copy(lineReference(range), "Line reference copied"));
-			if (event.altKey && event.code === "KeyR" && path) return run(() => report(request("finder.reveal", { path })));
-			if (event.altKey && event.code === "KeyD") return run(toggleView);
-			if (event.altKey && event.code === "KeyC" && path) return run(() => copy(path, "Path copied"));
-			if (key === "c" && !editing) {
-				const source = range && selectionExcerpt(range);
-				const text = event.shiftKey
-					? source
-						? model.source(source)
-						: undefined
-					: (code.selection()?.text ?? source?.quote);
-				if (text) return run(() => copy(text));
-			}
-		}
-		if (event.ctrlKey && key === "g" && (headLines.length || baseLines.length)) return run(() => command("line"));
-		if (event.altKey && !event.metaKey && event.code === "KeyZ" && !editing) return run(toggleWrap);
-		if (!editing && (key === "arrowleft" || key === "arrowright") && reviewUI.step(key === "arrowleft" ? -1 : 1))
+		const action = metaShortcut(event, key, editing, range) ?? secondaryShortcut(event, key, editing);
+		if (action) {
 			event.preventDefault();
+			action();
+			return;
+		}
+		if (!editing && stepWalkthrough(key)) event.preventDefault();
 	});
 	void boot();
 })();
