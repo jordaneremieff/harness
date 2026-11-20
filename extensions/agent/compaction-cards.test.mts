@@ -25,7 +25,7 @@ import { createAgentToolCards, type AgentCardContext } from "./tool-cards.ts";
 initTheme("dark", false);
 const identity = "12345678-1234-4234-8234-123456789abc";
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
-const screen = (component: { render(width: number): string[] }, width = 240) =>
+const screen = (component: { render(width: number): readonly string[] }, width = 240) =>
 	component
 		.render(width)
 		.map((line) => stripVTControlCharacters(line).trimEnd())

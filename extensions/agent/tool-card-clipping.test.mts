@@ -49,7 +49,7 @@ function nativeRow(name = "agent_collaborate", value: unknown = args): ToolExecu
 }
 
 function assertBackground(
-	lines: string[],
+	lines: readonly string[],
 	width: number,
 	color: "toolPendingBg" | "toolSuccessBg" | "toolErrorBg",
 ): void {

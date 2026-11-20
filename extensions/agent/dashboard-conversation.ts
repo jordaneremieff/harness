@@ -38,7 +38,7 @@ export function cleanDashboardText(text: string): string {
 }
 
 /** Blank rows at a component's edge are removed; the transcript owns the one shared gap. */
-function trimBlankRows(lines: string[]): { lines: string[]; top: number } {
+function trimBlankRows(lines: readonly string[]): { lines: string[]; top: number } {
 	const blank = (line: string) => stripVTControlCharacters(line).trim() === "";
 	let start = 0;
 	let end = lines.length;
@@ -89,7 +89,7 @@ class ReadingToolComponent extends ToolExecutionComponent {
 	choice = false;
 	argumentsError?: string;
 	onInvalidate?: () => void;
-	override render(width: number): string[] {
+	override render(width: number): readonly string[] {
 		const lines = super.render(width);
 		if (this.argumentsError === undefined) return lines;
 		const note = ` · Arguments error: ${cleanDashboardText(this.argumentsError).replace(/\s+/gu, " ")}`;
@@ -562,7 +562,7 @@ export class AgentConversation {
 						? "error"
 						: "ok"
 					: "done (result unavailable)";
-		const duration = slot.summary?.durationMs === undefined ? "" : ` ${slot.summary.durationMs}ms`;
+		const duration = slot.summary?.durationMs === undefined ? "" : ` · ${slot.summary.durationMs} ms elapsed`;
 		this.blocks.push({
 			id: `${id}:parent`,
 			component: new Text(`Nested tool ${slot.callId} under ${slot.parentCallId}: ${status}${duration}`, 0, 0),

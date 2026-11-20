@@ -446,12 +446,16 @@ for (const totalFromProvider of [undefined, false, true])
 				summary: { isError: false, durationMs: 0, usage },
 			};
 			const raw = {
+				run: { taskId: 8, inputs: [1], turns: 1, yield: { answer: 2, tasks: [9] } },
 				nestedTools: [
 					nested,
-					{ ...nested, callId: "outer/pending", taskId: 3, status: "pending", summary: undefined },
+					{ ...nested, callId: "outer/waiting", taskId: 3, status: "waiting", summary: undefined },
 					{ ...nested, callId: "outer/unmetered", taskId: 4, summary: { isError: true, error: "Tool failed" } },
 				],
-				tools: [{ callId: "outer", name: "codemode", taskId: 1, status: "running", details: { usage } }],
+				tools: [
+					{ callId: "outer", name: "codemode", taskId: 1, status: "running", details: { usage } },
+					{ callId: "parked", name: "gate", taskId: 5, status: "sleeping" },
+				],
 				...(withGeneration
 					? {
 							generation: {
@@ -474,6 +478,8 @@ for (const totalFromProvider of [undefined, false, true])
 			};
 			structuredObservation(LiveStateSchema, status.conversation.live);
 			structuredObservation(StatusOutputSchema, status);
+			assert.deepEqual(status.conversation.live.run, raw.run);
+			assert.deepEqual(status.conversation.live.tools[1], raw.tools[1]);
 			assert.deepEqual(status.conversation.live.nestedTools[0].summary, nested.summary);
 			assert.deepEqual(
 				status.conversation.live.nestedTools.slice(1),
@@ -1323,7 +1329,7 @@ it("leaves diagnostics for unrelated schemas on the ordinary validator errors", 
 
 it("serializes the host status and roster schemas to their published identities", () => {
 	const hash = (schema: unknown) => createHash("sha256").update(JSON.stringify(schema)).digest("hex");
-	assert.equal(hash(StatusOutputSchema), "c7e0c61ec52e95af09374c8d94d31d06c2c53044dcd4eee5cdfb2141bf17f91c");
+	assert.equal(hash(StatusOutputSchema), "23f657fb5139ea7fffef3c57796b84fddaa73a1c51efcfc34d5dcde288cabf24");
 	assert.equal(
 		hash(AgentConversationSummarySchema),
 		"4c8bb08f1d45d17bbd2233fc90851992ec5440b58a6b99c3f77080d001f4866e",

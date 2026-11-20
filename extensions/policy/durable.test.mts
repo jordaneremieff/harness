@@ -61,6 +61,7 @@ test("host diagnostics distinguish rejected calls from uncertain execution and t
 		["blocked", "denied", false],
 		["interrupted", "incomplete", "unknown"],
 		["restart_limit", "incomplete", "unknown"],
+		["invalid_park", "incomplete", "unknown"],
 		["aborted", "aborted", "unknown"],
 		["abandoned", "unexecuted", false],
 	] as const) {

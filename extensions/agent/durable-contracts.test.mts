@@ -66,6 +66,12 @@ it("preserves sleeping deadlines and native blocked reasons in task rows", () =>
 			},
 		},
 	};
+	const timed = graph.tasks["1"];
+	assert.ok(timed);
+	const untimed: TaskGraph["tasks"][string] = { ...timed, state: { status: "sleeping", phase: "wait" } };
+	const [signalWait] = taskGraphRows({ tasks: { "1": untimed } });
+	assert.equal(signalWait.status, "sleeping");
+	assert.equal(Object.hasOwn(signalWait, "until"), false);
 	assert.deepEqual(taskGraphRows(graph), [
 		{
 			id: 1,

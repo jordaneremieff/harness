@@ -211,12 +211,13 @@ const toolDiagnostic = obj({
 	message: string,
 	code: opt(string),
 });
+const toolSlotStatus = union([lit("pending"), lit("running"), lit("sleeping"), lit("waiting"), lit("done")]);
 const toolSlot = obj({
 	callId: string,
 	name: string,
 	taskId: opt(id),
 	unoffered: opt(lit(true)),
-	status: union([lit("pending"), lit("running"), lit("done")]),
+	status: toolSlotStatus,
 	output: opt(string),
 	droppedBytes: opt(count),
 	droppedLines: opt(count),
@@ -231,7 +232,7 @@ const nestedToolSlot = obj({
 	parentCallId: string,
 	parentTaskId: id,
 	arguments: jsonObject,
-	status: union([lit("pending"), lit("running"), lit("done")]),
+	status: toolSlotStatus,
 	output: opt(string),
 	droppedBytes: opt(count),
 	droppedLines: opt(count),
@@ -261,7 +262,14 @@ const compactionStatus = obj({
 });
 export const LiveStateSchema = obj({
 	run: opt(
-		obj({ taskId: id, inputs: arr(id), turns: count, first: opt(id), afterRun: opt(obj({ tasks: opt(arr(id)) })) }),
+		obj({
+			taskId: id,
+			inputs: arr(id),
+			turns: count,
+			first: opt(id),
+			afterRun: opt(obj({ tasks: opt(arr(id)) })),
+			yield: opt(obj({ answer: id, tasks: arr(id) })),
+		}),
 	),
 	generation: opt(
 		obj({

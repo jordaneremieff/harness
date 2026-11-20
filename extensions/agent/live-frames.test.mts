@@ -139,7 +139,7 @@ for (const width of [40, 80, 120])
 					slot: { ...base, status: "done", summary: { isError: true, durationMs: 4, error: "rejected" } },
 					partial: false,
 					starts: 1,
-					status: /error 4ms/u,
+					status: /error · 4 ms elapsed/u,
 					topic: /example/u,
 					output: "rejected",
 				},

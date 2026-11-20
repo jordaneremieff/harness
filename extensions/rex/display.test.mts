@@ -25,7 +25,7 @@ function fixture(changes: Partial<RexResult> = {}): RexResult {
 		...changes,
 	};
 }
-function render(name: string, value: RexResult, args: unknown, expanded = false, width = 120): string[] {
+function render(name: string, value: RexResult, args: unknown, expanded = false, width = 120): readonly string[] {
 	return createRexToolDisplay(name)
 		.renderResult(resultChannels(value), { expanded, isPartial: false }, theme, { args, isError: !value.ok, keyText })
 		.render(width);

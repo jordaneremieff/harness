@@ -354,7 +354,7 @@ function structuredControl<P extends Schema, D extends JsonValue>(
 		structuredOutputSchema: schema,
 		execute: async (args, api, context) => {
 			const result = await tool.execute(args, api, context);
-			if (result.isError) return result;
+			if (result.sleep !== undefined || result.wait !== undefined || result.isError) return result;
 			const text = result.output?.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n") ?? "";
 			const native = nativeStructuredObservation(schema, result.details, text);
 			return { ...result, output: native.output, structuredOutput: native.structuredOutput };

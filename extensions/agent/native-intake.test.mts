@@ -38,7 +38,10 @@ function tool(dispatch: AgentControlDispatch, name: string) {
 	return selected;
 }
 const api = { conversationId: 2, taskId: 7 } as unknown as Durable.ToolExecutionApi;
-function text(output: Durable.ToolExecutionResult): string {
+type NativeOutcome = Durable.ToolExecutionResult | Durable.ToolPark;
+
+function text(output: NativeOutcome): string {
+	assert.ok(output.sleep === undefined && output.wait === undefined, "expected a completed control call");
 	return output.output?.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("") ?? "";
 }
 
@@ -159,7 +162,7 @@ type StoragePage = {
 		next: null | ({ tool: "agent_status" } & StorageStatusPageInput);
 	};
 };
-function publicPage(output: Durable.ToolExecutionResult, coverage: unknown): StoragePage {
+function publicPage(output: NativeOutcome, coverage: unknown): StoragePage {
 	assert.notEqual(output.isError, true, text(output));
 	assert.equal(matchesSchema(StatusToolOutputSchema, output.structuredOutput), true);
 	const page = output.structuredOutput as StoragePage;

@@ -12,12 +12,12 @@ import registerRegistry, { type RegistryParams } from "./index.ts";
 import { renderRegistryCall, renderRegistryResult } from "./presentation.ts";
 
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
-const screen = (component: { render(width: number): string[] }, width = 140) =>
+const screen = (component: { render(width: number): readonly string[] }, width = 140) =>
 	component
 		.render(width)
 		.map((line) => stripVTControlCharacters(line).trimEnd())
 		.join("\n");
-const rows = (component: { render(width: number): string[] }, width = 100) =>
+const rows = (component: { render(width: number): readonly string[] }, width = 100) =>
 	component
 		.render(width)
 		.map((line) => stripVTControlCharacters(line).trimEnd())

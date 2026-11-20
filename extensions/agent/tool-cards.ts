@@ -129,7 +129,7 @@ class CardText extends Text {
 		this.source = value;
 		super.setText(value);
 	}
-	override render(width: number): string[] {
+	override render(width: number): readonly string[] {
 		return this.expanded ? super.render(width) : this.source.split("\n").map((line) => clipCardLine(line, width));
 	}
 }
@@ -1136,12 +1136,13 @@ function readOnlySnapshot(details: Record<string, unknown>): boolean {
 function runningSlots(live: Record<string, unknown>): Record<string, unknown>[] {
 	return array(live.tools)
 		.map(record)
-		.filter((slot) => slot.status === "running" || slot.status === "pending");
+		.filter((slot) => ["running", "pending", "sleeping", "waiting"].some((status) => status === slot.status));
 }
 
 function runningSlotLine(slot: Record<string, unknown>): string {
+	const label = slot.status === "sleeping" ? "Sleeping" : slot.status === "waiting" ? "Waiting" : "Running";
 	const parts = [
-		`Running: ${displayPreview(text(slot.name) || "tool", 100)}`,
+		`${label}: ${displayPreview(text(slot.name) || "tool", 100)}`,
 		`call ${displayIdentity(text(slot.callId) || "unknown")}`,
 	];
 	if (slot.status === "pending") parts.push("pending");
@@ -1211,7 +1212,7 @@ function activityLines(status: Record<string, unknown>, readOnly: boolean, theme
 	const lines = [muted(theme, parts.filter(Boolean).join(" · "))];
 	if (readOnly) lines.unshift(theme.fg("muted", "Read-only snapshot; live owner state unavailable"));
 	for (const slot of running.slice(0, 4)) lines.push(muted(theme, runningSlotLine(slot)));
-	if (running.length > 4) lines.push(muted(theme, `${running.length - 4} more running tools`));
+	if (running.length > 4) lines.push(muted(theme, `${running.length - 4} more active tools`));
 	// The status contract carries no role for this text, so the label reports the state only.
 	const lastText = text(status.lastText);
 	if (lastText)

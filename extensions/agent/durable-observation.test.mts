@@ -213,7 +213,7 @@ it("preserves native message durations without deriving them from message timest
 	assert.ok(projected.omissions);
 });
 
-it("preserves upstream absence for tools that never execute", async (t) => {
+it("preserves native task duration for tools that never execute", async (t) => {
 	const storagePath = join(fixtureRoot(t), "unexecuted.sqlite");
 	const host = await DurableHost.open(
 		hostOptions(
@@ -231,11 +231,12 @@ it("preserves upstream absence for tools that never execute", async (t) => {
 	assert.ok(result);
 	const native = result.model?.find((message) => message.role === "toolResult");
 	assert.ok(native);
-	assert.equal(Object.hasOwn(native, "durationMs"), false);
-	assert.equal(Object.hasOwn(entryRow(result).toolResults?.[0] ?? {}, "durationMs"), false);
+	assert.ok(native.isError);
+	assert.ok(native.durationMs !== undefined && native.durationMs >= 0);
+	assert.equal(entryRow(result).toolResults?.[0]?.durationMs, native.durationMs);
 });
 
-it("preserves upstream absence for an interrupted tool execution", async (t) => {
+it("preserves native task duration for an interrupted tool", async (t) => {
 	const storagePath = join(fixtureRoot(t), "interrupted.sqlite");
 	const started = defer();
 	const release = defer();
@@ -260,8 +261,9 @@ it("preserves upstream absence for an interrupted tool execution", async (t) => 
 	assert.ok(result);
 	const native = result.model?.find((message) => message.role === "toolResult");
 	assert.ok(native);
-	assert.equal(Object.hasOwn(native, "durationMs"), false);
-	assert.equal(Object.hasOwn(entryRow(result).toolResults?.[0] ?? {}, "durationMs"), false);
+	assert.ok(native.isError);
+	assert.ok(native.durationMs !== undefined && native.durationMs >= 0);
+	assert.equal(entryRow(result).toolResults?.[0]?.durationMs, native.durationMs);
 });
 
 function retainedFingerprint(path: string) {

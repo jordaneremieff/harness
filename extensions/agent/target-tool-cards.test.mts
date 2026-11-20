@@ -32,7 +32,7 @@ const theme = {
 	getBgAnsi: () => "",
 	bold: (value: string) => value,
 } as unknown as Theme;
-const screen = (component: { render(width: number): string[] }) =>
+const screen = (component: { render(width: number): readonly string[] }) =>
 	component
 		.render(240)
 		.map((line) => stripVTControlCharacters(line).trimEnd())

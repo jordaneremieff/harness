@@ -10,12 +10,12 @@ const colorTheme = {
 	fg: (color: string, value: string) => `{${color}}${value}`,
 	bold: (value: string) => value,
 } as unknown as Theme;
-const screen = (component: { render(width: number): string[] }, width = 120) =>
+const screen = (component: { render(width: number): readonly string[] }, width = 120) =>
 	component
 		.render(width)
 		.map((line) => stripVTControlCharacters(line).trimEnd())
 		.join("\n");
-const lines = (component: { render(width: number): string[] }, width = 120) =>
+const lines = (component: { render(width: number): readonly string[] }, width = 120) =>
 	component
 		.render(width)
 		.map((line) => stripVTControlCharacters(line).trimEnd())

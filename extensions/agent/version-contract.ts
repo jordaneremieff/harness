@@ -128,8 +128,8 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 	format: "pi.agent.contract/1",
 	release: "2.0.0",
 	upstream: Object.freeze({ codingAgent: CODING_AGENT_VERSION, durable: durableVersion }),
-	// Injected key hints set the coding-agent floor; Chord v2 and stream options set the Durable floor.
-	requires: Object.freeze({ codingAgent: "1.5.0", durable: "1.5.1" }),
+	// Injected key hints set the coding-agent floor; extension-owned namespaces set the Durable floor.
+	requires: Object.freeze({ codingAgent: "1.5.0", durable: "1.6.0" }),
 	operations: Object.freeze(
 		Object.fromEntries(Object.entries(operations).map(([name, contract]) => [name, Object.freeze(contract)])),
 	),

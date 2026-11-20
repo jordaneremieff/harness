@@ -499,10 +499,11 @@ export function pillarsDurableContribution(
 					}),
 					hook(GenerationTask, {
 						afterTools: async (_assistant, _results, _api, context) => {
-							if (collector === undefined || closing) return;
+							if (collector === undefined || closing) return undefined;
 							const flush = flushChain.then(() => collector.flush(true, context.abortSignal));
 							flushChain = flush.catch(() => undefined);
 							await flush;
+							return undefined;
 						},
 					}),
 				],

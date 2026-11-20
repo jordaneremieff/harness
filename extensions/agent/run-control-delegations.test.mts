@@ -406,6 +406,7 @@ async function placedFamily(
 						execute: async (args, api, context) => {
 							placeTaskId = api.taskId;
 							const result = await tool.execute(args, api, context);
+							assert.ok(result.sleep === undefined && result.wait === undefined, "expected a completed place call");
 							outcomes.push(result);
 							captured[executions++]?.resolve();
 							await holdUntilAbort(context, release.promise);

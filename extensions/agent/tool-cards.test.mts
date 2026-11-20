@@ -57,7 +57,7 @@ const theme = {
 	getBgAnsi: () => "",
 	bold: (value: string) => value,
 } as unknown as Theme;
-const screen = (component: { render(width: number): string[] }, width = 100) =>
+const screen = (component: { render(width: number): readonly string[] }, width = 100) =>
 	component
 		.render(width)
 		.map((line) => stripVTControlCharacters(line).trimEnd())
@@ -333,6 +333,25 @@ describe("agent result cards", () => {
 			240,
 		);
 		assert.match(expanded, /"callId": "call-7"/);
+	});
+
+	it("lists parked tool calls without calling them running", () => {
+		const live = {
+			tools: [
+				{ callId: "signal", name: "read", status: "sleeping" },
+				{ callId: "child", name: "codemode", status: "waiting" },
+			],
+		};
+		const card = renderAgentResult(
+			snapshotResult(conversationStatus({ live })),
+			{ ...cardKeys, expanded: false, isPartial: false },
+			theme,
+			context(),
+		);
+		const text = screen(card, 180);
+		assert.match(text, /Sleeping: read · call signal/u);
+		assert.match(text, /Waiting: codemode · call child/u);
+		assert.doesNotMatch(text, /Running:/u);
 	});
 
 	it("marks a cold snapshot read-only instead of reporting it idle", () => {

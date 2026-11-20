@@ -185,7 +185,7 @@ function taskGraphRow(node: TaskGraphNode): TaskGraphRow {
 		background: node.background,
 		abortRequested: node.abortRequested,
 		status: state.status,
-		...(state.status === "sleeping" ? { until: state.until } : {}),
+		...(state.status === "sleeping" && state.until !== undefined ? { until: state.until } : {}),
 		...(node.blocked === undefined ? {} : { blocked: node.blocked }),
 		phase: state.status === "completing" ? "completing" : state.phase,
 		waitsOn: state.status === "waiting" ? [...state.on] : [],

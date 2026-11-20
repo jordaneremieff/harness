@@ -771,25 +771,34 @@ it("reaches a stdio MCP server from codemode with normalized names and structure
 		for (const name of info.tools.filter((tool) => tool.startsWith("mcp__dev_docs__lookup_doc"))) {
 			routed[name] = (await tools[name]({ topic: "x" })).content[0].text;
 		}
-		return { info, listed: listed.content[0].text, result: listed, routed };`;
+		const byDescription = await searchTools("product", { namespace: "dev-docs" });
+		const byInstructions = await searchTools("string", { namespace: "dev-docs" });
+		return { info, listed: listed.content[0].text, result: listed, routed, byDescription, byInstructions };`;
 	const f = await executionFixture(t, {
 		code,
 		mcpServers: {
 			"dev-docs": {
 				command: process.execPath,
 				args: [fixtureServerPath],
-				description: "Search the product docs",
+				description: "Search the product docs\nNot part of the prompt description",
 				env: { MCP_FIXTURE_MODE: "respond" },
 			},
 		},
 	});
 	const result = await f.submit("look up the docs");
+	const before = systemSection(f.requests[0], "codemode") ?? "";
+	assert.match(before, /^## dev-docs\nSearch the product docs$/mu);
+	assert.doesNotMatch(before, /mcp__dev_docs__list_topics|Not part of the prompt description/u);
 	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as {
 		info: { name: string; description: string; instructions: string; tools: string[] };
 		listed: string;
 		result: { content: { type: string; text: string }[]; isError?: boolean };
 		routed: Record<string, string>;
+		byDescription: Array<{ name: string }>;
+		byInstructions: Array<{ name: string }>;
 	};
+	assert.ok(output.byDescription.some((tool) => tool.name === "mcp__dev_docs__list_topics"));
+	assert.ok(output.byInstructions.some((tool) => tool.name === "mcp__dev_docs__list_topics"));
 	assert.equal(output.info.name, "dev-docs");
 	assert.equal(output.info.description, "Search the product docs");
 	assert.equal(output.info.instructions, "Documentation fixture server. Use lookup-doc with a topic string.");

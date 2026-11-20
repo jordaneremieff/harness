@@ -11,11 +11,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { awaitWithContext, withCancel } from "@earendil-works/chord/context";
 import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode";
 import { CodemodeSandbox, parseCodemodeSource } from "@earendil-works/pi-codemode";
-import {
-	createCodemodeExtension,
-	createCodemodeTool,
-	type CodemodeNamespace,
-} from "@earendil-works/pi-durable/codemode";
+import { createCodemodeExtension, createCodemodeTool } from "@earendil-works/pi-durable/codemode";
 import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
 import type {
 	AuthProvider,
@@ -685,10 +681,10 @@ class McpServerConnection {
 			if (transport instanceof StdioTransport) guardStdio(transport, this.guardian);
 			await client.connect(transport);
 			if (this.closed) throw new Error("shut down while connecting");
+			this.instructions = client.instructions?.trim() || undefined;
 			const tools = client.serverCapabilities?.tools === undefined ? [] : await client.listTools();
 			if (this.closed) throw new Error("shut down while connecting");
 			this.tools = tools;
-			this.instructions = client.instructions?.trim() || undefined;
 			this.hasResources = client.serverCapabilities?.resources !== undefined;
 			this.state = "connected";
 			this.error = undefined;
@@ -872,9 +868,6 @@ class DurableExecutionRuntime implements DurableExecution {
 	readonly extensions: readonly Durable.Extension[];
 	readonly ready: Promise<void>;
 	private readonly host: DurableExecutionHost;
-	private readonly liveTools: NestedTool[] = [];
-	private readonly namespaces: CodemodeNamespace[] = [];
-	private readonly resourceTools: NestedTool[];
 	private readonly servers: McpServerConnection[] = [];
 	private readonly guardian: McpGuardian;
 	private readonly auth: NativeMcpAuth;
@@ -893,24 +886,11 @@ class DurableExecutionRuntime implements DurableExecution {
 		this.host = host;
 		this.guardian = new McpGuardian((message) => host.services.diagnostics.push({ type: "warning", message }));
 		this.readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
-		this.resourceTools = this.defineResourceTools();
 		const activation = computeActivation(host);
 		this.auth = new NativeMcpAuth(host.agentDir);
 		this.extensions = this.buildExtensions(activation);
 		if (host.signal.aborted) void this.close();
 		else host.signal.addEventListener("abort", this.closeOnHostAbort, { once: true });
-		for (const server of host.signal.aborted ? [] : activation.servers) {
-			this.servers.push(
-				new McpServerConnection(
-					server,
-					host.cwd,
-					() => this.rebuildMcpTools(),
-					createServerAuthProvider(server, this.auth, host.services.modelRuntime),
-					this.guardian,
-				),
-			);
-		}
-		this.rebuildMcpTools();
 		this.ready = this.waitForDirectServers();
 	}
 
@@ -939,7 +919,7 @@ class DurableExecutionRuntime implements DurableExecution {
 				initial: () => ({ admitted: false }),
 				checkpointWhen: () => false,
 			});
-			const native = createCodemodeExtension({ sandbox: this.sandbox, namespaces: this.namespaces });
+			const native = createCodemodeExtension({ sandbox: this.sandbox });
 			const tools = (native.tools ?? []).map((tool) =>
 				tool.name !== CODEMODE_TOOL_NAME
 					? tool
@@ -995,10 +975,19 @@ class DurableExecutionRuntime implements DurableExecution {
 				})),
 			});
 		}
+		if (!this.host.signal.aborted)
+			for (const entry of activation.servers) result.push(this.defineServerExtension(entry));
+		// Resource capabilities are unknown until use. Keep declarations independent of connection progress.
+		const exposures = new Set(
+			this.servers
+				.filter(({ entry }) => entry.config.exposure !== "hidden")
+				.map(({ entry }) => entry.config.exposure ?? "codemode"),
+		);
+		const resourceTools = exposures.size === 0 ? [] : this.defineResourceTools();
 		result.push(
 			this.host.durable.defineExtension({
 				name: EXTENSION_NAME,
-				tools: this.liveTools,
+				tools: exposures.has("direct") ? resourceTools : resourceTools.map((tool) => ({ ...tool, deferred: true })),
 				sections: activation.indirect
 					? [this.host.durable.section(MCP_SERVERS_SECTION, () => this.renderServersSection())]
 					: [],
@@ -1060,7 +1049,7 @@ class DurableExecutionRuntime implements DurableExecution {
 				refusal === undefined
 					? Math.max(1, Math.ceil(deadline - api.now()))
 					: (parsed.options.timeoutMs ?? DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS);
-			return await createCodemodeTool({ sandbox, namespaces: this.namespaces }).execute(
+			return await createCodemodeTool({ sandbox }).execute(
 				{ ...args, code: replaceCodemodeTimeout(args.code, remainingBudget) },
 				this.catalogApi(api),
 				context,
@@ -1133,31 +1122,36 @@ class DurableExecutionRuntime implements DurableExecution {
 		return this.closePromise;
 	}
 
-	private rebuildMcpTools(): void {
-		if (this.closed) return;
-		this.liveTools.splice(0);
-		this.namespaces.splice(0);
-		for (const server of this.servers) {
-			this.namespaces.push({
-				name: server.entry.name,
-				prefix: `${mcpNamespace(server.entry.name)}__`,
-				...(server.entry.config.description === undefined ? {} : { description: server.entry.config.description }),
-				...(server.instructions === undefined ? {} : { instructions: server.instructions }),
-			});
-			this.registerServerTools(server);
-		}
-		// Resource capabilities are unknown until use. Keep the declarations independent of connection progress.
-		const exposures = new Set(
-			this.servers
-				.filter((server) => server.entry.config.exposure !== "hidden")
-				.map((server) => server.entry.config.exposure ?? "codemode"),
+	private defineServerExtension(entry: McpServerEntry): Durable.Extension {
+		let tools: NestedTool[] = [];
+		const server = new McpServerConnection(
+			entry,
+			this.host.cwd,
+			() => {
+				if (!this.closed) tools = this.serverToolRegistrations(server);
+			},
+			createServerAuthProvider(entry, this.auth, this.host.services.modelRuntime),
+			this.guardian,
 		);
-		if (exposures.size > 0)
-			for (const tool of this.resourceTools)
-				this.liveTools.push({ ...tool, ...(exposures.has("direct") ? {} : { deferred: true }) });
+		this.servers.push(server);
+		const description = (entry.config.description ?? "").split(/\r\n?|\n/u, 1)[0].trim();
+		return this.host.durable.defineExtension({
+			name: `${EXTENSION_NAME}:${entry.name}`,
+			get tools() {
+				return tools;
+			},
+			get namespace() {
+				return {
+					name: entry.name,
+					description,
+					...(server.instructions === undefined ? {} : { instructions: server.instructions }),
+				};
+			},
+		});
 	}
 
-	private registerServerTools(server: McpServerConnection): void {
+	private serverToolRegistrations(server: McpServerConnection): NestedTool[] {
+		const registrations: NestedTool[] = [];
 		const tools = [...new Map(server.tools.map((tool) => [tool.name, tool])).values()];
 		const owners = new Set<string>();
 		const plain = tools.map((tool) => createMcpToolName(server.entry.name, tool.name));
@@ -1170,8 +1164,9 @@ class DurableExecutionRuntime implements DurableExecution {
 				(candidate) => owners.has(candidate) || plain.indexOf(candidate) !== plain.lastIndexOf(candidate),
 			);
 			owners.add(name);
-			this.liveTools.push(this.defineMcpTool(server, tool, name, exposure));
+			registrations.push(this.defineMcpTool(server, tool, name, exposure));
 		}
+		return registrations;
 	}
 
 	private resourceServers(): McpServerConnection[] {

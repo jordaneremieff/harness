@@ -201,7 +201,7 @@ export class AgentComposer implements Component, Focusable {
 	}
 
 	render(width: number, caption: string | ((width: number) => string) = "Message", mode = "", receipt = ""): string[] {
-		const lines = this.editor.render(Math.max(1, width - 2));
+		const lines = [...this.editor.render(Math.max(1, width - 2))];
 		const bottom = lines.findIndex((line, index) => index > 0 && line === "");
 		this.autocompleteRows = Math.max(0, lines.length - bottom - 1);
 		this.textRows = Math.max(1, bottom - 1);

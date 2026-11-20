@@ -17,18 +17,19 @@ import {
 } from "./presentation.ts";
 
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
-const screen = (component: { render(width: number): string[] }, width = 100) =>
+const screen = (component: { render(width: number): readonly string[] }, width = 100) =>
 	component
 		.render(width)
 		.map((line) => stripVTControlCharacters(line).trimEnd())
 		.join("\n")
 		.replace(/^\n+/, "");
-const raw = (component: { render(width: number): string[] }, width = 1000) => component.render(width).join("\n");
+const raw = (component: { render(width: number): readonly string[] }, width = 1000) =>
+	component.render(width).join("\n");
 const text = (value: string, details?: unknown) => ({ content: [{ type: "text" as const, text: value }], details });
 const collapsed = { expanded: false, isError: false };
 const expanded = { expanded: true, isError: false };
 
-function assertFits(component: { render(width: number): string[] }, widths: number[] = [20, 60, 100]): void {
+function assertFits(component: { render(width: number): readonly string[] }, widths: number[] = [20, 60, 100]): void {
 	for (const width of widths)
 		assert.ok(
 			component.render(width).every((line) => visibleWidth(line) <= width),

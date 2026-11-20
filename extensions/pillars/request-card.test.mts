@@ -276,7 +276,7 @@ test("a left click anywhere on the card toggles it, as on Pi's cards, and Pi's g
 			clickCount: 1,
 			...patch,
 		} as never) as { handled?: boolean } | undefined;
-	const text = (component: { render(width: number): string[] }) =>
+	const text = (component: { render(width: number): readonly string[] }) =>
 		component
 			.render(80)
 			.map((line) => stripVTControlCharacters(line))

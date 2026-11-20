@@ -141,7 +141,7 @@ export class ComposerEditor extends CustomEditor {
 		if (!this.base) return super.render(width);
 		if (this.base.borderColor !== undefined) this.base.borderColor = this.borderColor;
 		if ("focused" in this.base) this.base.focused = this.focused;
-		return this.base.render(width);
+		return [...this.base.render(width)];
 	}
 	private appendPaste(chunk: string, final: boolean): void {
 		if (this.discardPaste) return;

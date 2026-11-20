@@ -11,7 +11,7 @@ const result = (details: unknown): AgentToolResult<unknown> => ({
 	content: [{ type: "text", text: JSON.stringify(details) }],
 	details,
 });
-const screen = (card: { render(width: number): string[] }, width = 80) =>
+const screen = (card: { render(width: number): readonly string[] }, width = 80) =>
 	card.render(width).map(stripVTControlCharacters).join("\n");
 it("profile tool cards keep expertise on demand and show conflicts distinctly", () => {
 	const profile = {

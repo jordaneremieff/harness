@@ -76,7 +76,7 @@ function expansionHint(theme: Theme, options: MessageRenderOptions, hidden: numb
 }
 
 /** Blank lines at the start and the end of a run of lines are dropped; blank lines inside it stay. */
-function trimBlank(lines: string[]): string[] {
+function trimBlank(lines: readonly string[]): string[] {
 	let start = 0;
 	let end = lines.length;
 	while (start < end && stripVTControlCharacters(lines[start] ?? "").trim() === "") start++;

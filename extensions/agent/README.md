@@ -1443,13 +1443,15 @@ summaries. Search and result reads keep their existing evidence paths.
 Native timing stays separate from elapsed activity. Compact tool-result excerpts
 retain optional recorded `durationMs`, including zero, without deriving it from
 entry age. Snapshot assistant and tool-result messages retain their native
-recorded durations for existing Pi terminal components. Status task rows expose
+recorded durations for existing Pi terminal components. A tool result records
+elapsed Harness time from the tool task's first run through its result,
+including gates, parks, restarts, and recovery. This applies even when the
+body of the tool did not execute. Status task rows expose
 optional native `startedAt` and `endedAt`: wall-clock first-running and terminal
 timestamps whose span includes waits and recovery. These status rows contain
-live tasks, so `endedAt` is absent there. Unavailable or interrupted tools need
-not carry duration. Dashboard `durationMs` remains latest-user-turn wall-clock
-elapsed; activity `elapsedMs` remains qualified tool-call-entry age. Neither
-quantity replaces recorded execution time. See the
+live tasks, so `endedAt` is absent there. Dashboard `durationMs` remains
+latest-user-turn wall-clock elapsed; activity `elapsedMs` remains qualified
+tool-call-entry age. Neither quantity replaces the recorded tool-task span. See the
 [host timing contract](../../docs/agent-host-contract.md#current-operation-identities)
 for fields and current schema identities.
 
@@ -3064,9 +3066,12 @@ non-console text items, including a returned value, start with
 `==> text N/M <==`. Console lines follow other output in one
 `<console_output>` block. Adjacent text joins on separate lines without moving
 text across images, and full-text spill files retain that format. Native codemode
-saves displayed images and adds their file paths to its output. Native namespace
-discovery uses names and prefixes; Durable's public namespace contract has no
-alias field. Tool selection and MCP server configuration follow the current Pi
+saves displayed images and adds their file paths to its output. Each configured,
+enabled MCP server owns a Durable extension namespace. The namespace name and
+first line of the configured description are visible before connection. The
+server's instructions join the namespace after the MCP handshake and appear in
+`describeNamespace()`, not in the prompt. MCP tool names retain their normal
+prefixes. Tool selection and MCP server configuration follow the current Pi
 settings.
 
 Durable hosts start servers with `direct` tool exposure at host startup because

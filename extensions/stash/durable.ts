@@ -1493,7 +1493,7 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 			host.durable.hook(host.durable.GenerationTask, {
 				afterTools: async (_assistant, results, api, context) => {
 					const config = readCapacityConfig();
-					if (!config.enabled) return;
+					if (!config.enabled) return undefined;
 					const state = currentGate(api);
 					const currentBand = band(state.measure ?? { kind: "unknown" }, config);
 					const countResults = currentBand === "stop" || state.decisionRoundOpen;
@@ -1501,9 +1501,10 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					if (currentBand === "decision") state.decisionRoundUsed = true;
 					if (state.released || !countResults) {
 						state.blockedRounds = 0;
-						return;
+						return undefined;
 					}
 					state.blockedRounds = (await refusedNativeRound(host, results, api, context)) ? state.blockedRounds + 1 : 0;
+					return undefined;
 				},
 
 				afterResponse: async (message, api, context) => {

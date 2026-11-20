@@ -54,9 +54,10 @@ const theme = {
 	getBgAnsi: () => "",
 	bold: (value: string) => value,
 } as unknown as Theme;
-const clean = (component: { render(width: number): string[] }, width = 240) =>
+const clean = (component: { render(width: number): readonly string[] }, width = 240) =>
 	component.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
-const text = (component: { render(width: number): string[] }, width = 240) => clean(component, width).join("\n");
+const text = (component: { render(width: number): readonly string[] }, width = 240) =>
+	clean(component, width).join("\n");
 async function registeredTools(): Promise<Map<string, ToolDefinition>> {
 	const tools = new Map<string, ToolDefinition>();
 	await register({

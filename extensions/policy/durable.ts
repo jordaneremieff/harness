@@ -191,6 +191,8 @@ export function durableResultDisposition(result: Durable.ToolExecutionResult): {
 				return { outcome: "aborted", executed: "unknown", diagnostic: code };
 			case "interrupted":
 			case "restart_limit":
+			// Durable ends a refused gate sleep (before execute) and an invalid returned park (after execute) with this code.
+			case "invalid_park":
 				return { outcome: "incomplete", executed: "unknown", diagnostic: code };
 		}
 	}

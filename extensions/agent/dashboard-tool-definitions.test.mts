@@ -54,7 +54,7 @@ function rendered(
 	expanded: boolean,
 	width = 80,
 	partial = false,
-): string[] {
+): readonly string[] {
 	const tool = new ToolExecutionComponent(
 		definition.name,
 		"call",
@@ -69,7 +69,7 @@ function rendered(
 	if (result) tool.updateResult(result, partial);
 	return tool.render(width);
 }
-const text = (lines: string[]) => stripVTControlCharacters(lines.join("\n"));
+const text = (lines: readonly string[]) => stripVTControlCharacters(lines.join("\n"));
 
 it("captures Pi codemode presentation through its synchronous public factory", () => {
 	const definition = nativeCodemode();
