@@ -12,7 +12,7 @@ import Testing
         let bridge = try Transport(capability: Capability.consume(path: launchFile(root, endpoint: server.endpoint).path))
         var ids = Set<String>()
         for route in Route.allCases {
-            let result = try await bridge.post(route, Data(#"{"client":"forged","version":1}"#.utf8))
+            let result = try await bridge.post(route, Data(#"{"version":1}"#.utf8))
             let reply = try #require(JSONSerialization.jsonObject(with: result) as? [String: Any])
             let id = try #require(reply["client"] as? String)
             #expect(UUID(uuidString: id) != nil)
@@ -20,6 +20,8 @@ import Testing
             ids.insert(id)
         }
         #expect(ids.count == 1)
+        await #expect(throws: ConfigFailure.self) { _ = try await bridge.post(.edit, Data(#"{"client":"forged"}"#.utf8)) }
+        await #expect(throws: ConfigFailure.self) { _ = try await bridge.post(.edit, Data(#"[1]"#.utf8)) }
         let requests = server.requests()
         #expect(requests.count == 7)
         for (headers, path) in zip(requests, ["/connect", "/poll", "/catalogue", "/edit", "/tools", "/tools/apply", "/close"]) {
@@ -114,4 +116,12 @@ private final class HTTPFixture: @unchecked Sendable {
             else { receive(connection, data: bytes) }
         }
     }
+}
+
+@Test func transportKeepsTheOrderOfObjectMembers() throws {
+    let body = Data(#"{"request":{"changes":[{"value":{"zeta":1,"alpha":{"model":"a/b","notes":"n","effort":"x"}}}]}}"#.utf8)
+    let sent = try Transport.addingClient("6d8e7f4e-0c1a-4b2a-9e3d-2f1b5c6a7d8e", to: body)
+    #expect(String(decoding: sent, as: UTF8.self) == #"{"client":"6d8e7f4e-0c1a-4b2a-9e3d-2f1b5c6a7d8e","request":{"changes":[{"value":{"zeta":1,"alpha":{"model":"a/b","notes":"n","effort":"x"}}}]}}"#)
+    let empty = try Transport.addingClient("6d8e7f4e-0c1a-4b2a-9e3d-2f1b5c6a7d8e", to: Data(" { } ".utf8))
+    #expect(String(decoding: empty, as: UTF8.self) == #"{"client":"6d8e7f4e-0c1a-4b2a-9e3d-2f1b5c6a7d8e"}"#)
 }

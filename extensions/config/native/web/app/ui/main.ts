@@ -49,11 +49,17 @@ const host = window as Window & {
 	webkit?: { messageHandlers?: { config?: { postMessage: (value: unknown) => Promise<unknown> } } };
 	configEvent?: (event: Event) => void;
 };
+/**
+ * The native shell forwards `body` as text and returns replies that carry settings as `json` text. Its own JSON
+ * objects do not keep member order, and member order is part of a value that reaches the file.
+ */
 async function call<T>(op: string, payload: Record<string, unknown> = {}): Promise<T> {
 	if (fixture) return (await (await import("../../dev/bridge.ts")).fixtureMessage(op, payload)) as T;
 	const handler = host.webkit?.messageHandlers?.config;
 	if (!handler) throw new Error("Open Config from a Pi session.");
-	return (await handler.postMessage({ op, payload })) as T;
+	const reply = await handler.postMessage({ op, body: JSON.stringify(payload) });
+	const text = reply !== null && typeof reply === "object" ? (reply as { json?: unknown }).json : undefined;
+	return (typeof text === "string" ? JSON.parse(text) : reply) as T;
 }
 
 let context: ConfigContext | undefined;
@@ -84,7 +90,7 @@ function persist(): Promise<boolean> {
 	const snapshot: Snapshot = { version: 1, drafts: [...drafts.values()], interrupted };
 	retention = retention.then(async () => {
 		try {
-			await call("draftSave", { snapshot });
+			await call("draftSave", { snapshot: JSON.stringify(snapshot) });
 			retentionError = "";
 			return true;
 		} catch (error) {
@@ -592,10 +598,16 @@ async function start(): Promise<void> {
 		connected = true;
 		paintTarget();
 		try {
-			const result = await call<{ recoveries: Recovery[] }>("draftLoad");
-			recoveries = result.recoveries.filter(
-				(item) => item.snapshot?.version === 1 && Array.isArray(item.snapshot.drafts),
-			);
+			const result = await call<{ recoveries: { id: string; snapshot: string }[] }>("draftLoad");
+			recoveries = result.recoveries
+				.flatMap((item): Recovery[] => {
+					try {
+						return [{ id: item.id, snapshot: JSON.parse(item.snapshot) as Snapshot }];
+					} catch {
+						return [];
+					}
+				})
+				.filter((item) => item.snapshot?.version === 1 && Array.isArray(item.snapshot.drafts));
 		} catch (error) {
 			retentionError = `Draft recovery unavailable: ${message(error)}`;
 		}

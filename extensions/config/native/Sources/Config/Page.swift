@@ -10,7 +10,7 @@ struct ConfigFailure: LocalizedError {
 final class ConfigPage: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWithReply {
     let address: URL
     let view: WKWebView
-    var receive: ((String, [String: Any]) async throws -> [String: Any])?
+    var receive: ((String, [String: Any], Data) async throws -> [String: Any])?
     var onFailure: ((String) -> Void)?
     var onLoad: (() -> Void)?
 
@@ -53,10 +53,11 @@ final class ConfigPage: NSObject, WKNavigationDelegate, WKScriptMessageHandlerWi
               message.frameInfo.securityOrigin.protocol == AppResources.scheme,
               message.frameInfo.securityOrigin.host == "app",
               let envelope = message.body as? [String: Any], let op = envelope["op"] as? String,
-              let fields = envelope["payload"] as? [String: Any], let receive else {
+              let text = envelope["body"] as? String, let body = text.data(using: .utf8),
+              let fields = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any], let receive else {
             return (nil, "Invalid Config message.")
         }
-        do { return (try await receive(op, fields), nil) }
+        do { return (try await receive(op, fields, body), nil) }
         catch { return (nil, error.localizedDescription) }
     }
 

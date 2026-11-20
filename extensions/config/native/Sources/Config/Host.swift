@@ -30,9 +30,9 @@ final class ConfigHost {
         self.recoveryRoot = recoveryRoot
         bridge = Transport(capability: capability)
         page = try ConfigPage(frame: checkFrame ?? overlay.content.bounds, query: query, checkTheme: checkFrame == nil ? nil : "light", liveCheck: checkFrame != nil)
-        page.receive = { [weak self] op, payload in
+        page.receive = { [weak self] op, payload, body in
             guard let self else { throw ConfigFailure("This Config pane closed.") }
-            return try await self.handle(op, payload)
+            return try await self.handle(op, payload, body)
         }
     }
 
@@ -78,7 +78,9 @@ final class ConfigHost {
         }
     }
 
-    private func handle(_ op: String, _ fields: [String: Any]) async throws -> [String: Any] {
+    /// `body` is the page's exact JSON text of `fields`. Requests and replies that carry setting values pass through as
+    /// text, so the order of object members survives; `fields` serves only for checks.
+    private func handle(_ op: String, _ fields: [String: Any], _ body: Data) async throws -> [String: Any] {
         guard !closing else { throw ConfigFailure("This Config pane is closing.") }
         switch op {
         case "connect":
@@ -86,43 +88,45 @@ final class ConfigHost {
             connecting = true
             var request: [String: Any] = ["version": 1]
             if let build { request["build"] = build }
-            let response = try await post(.connect, request)
-            guard let context = response["context"] as? [String: Any],
+            let reply = try await post(.connect, JSONSerialization.data(withJSONObject: request))
+            guard let context = try object(reply)["context"] as? [String: Any],
                   let agentDir = context["agentDir"] as? String, let cwd = context["cwd"] as? String else {
                 throw ConfigFailure("Pi did not identify the original session.")
             }
             attached = true
             if let recoveryRoot { store = RecoveryStore(agentDir: agentDir, cwd: cwd, applicationSupport: recoveryRoot) }
             else { store = RecoveryStore(agentDir: agentDir, cwd: cwd) }
-            return response
+            return text(reply)
         case "ready":
             if terminal != nil { overlay.ready = true }
             place()
             if attached && poll == nil { poll = Task { await runPoll() } }
             return ["ok": true]
         case "catalogue":
-            guard attached, let generation = fields["generation"] as? Int, generation >= 0 else { throw ConfigFailure("Invalid catalogue request.") }
-            return try await post(.catalogue, ["generation": generation])
+            guard attached, fields.count == 1, let generation = fields["generation"] as? Int, generation >= 0 else { throw ConfigFailure("Invalid catalogue request.") }
+            return text(try await post(.catalogue, body))
         case "edit":
-            guard attached, let request = fields["request"] as? [String: Any] else { throw ConfigFailure("Invalid edit request.") }
-            return try await post(.edit, ["request": request])
+            guard attached, fields.count == 1, fields["request"] is [String: Any] else { throw ConfigFailure("Invalid edit request.") }
+            return text(try await post(.edit, body))
         case "tools":
-            guard attached else { throw ConfigFailure("This pane has no session.") }
-            return try await post(.tools)
+            guard attached, fields.isEmpty else { throw ConfigFailure("This pane has no session.") }
+            return text(try await post(.tools, body))
         case "toolsApply":
-            guard attached, let change = fields["change"] as? [String: Any] else { throw ConfigFailure("Invalid tools request.") }
-            return try await post(.toolsApply, ["change": change])
+            guard attached, fields.count == 1, fields["change"] is [String: Any] else { throw ConfigFailure("Invalid tools request.") }
+            return text(try await post(.toolsApply, body))
         case "draftLoad":
             guard let store else { throw ConfigFailure("This pane has no draft target.") }
             let recoveries = try await store.load()
             return ["recoveries": recoveries.compactMap { recovery -> [String: Any]? in
-                guard let snapshot = try? JSONSerialization.jsonObject(with: recovery.data) else { return nil }
+                guard (try? JSONSerialization.jsonObject(with: recovery.data)) is [String: Any],
+                      let snapshot = String(data: recovery.data, encoding: .utf8) else { return nil }
                 return ["id": recovery.id, "snapshot": snapshot]
             }]
         case "draftSave":
-            guard let store, let snapshot = fields["snapshot"] as? [String: Any], snapshot["version"] as? Int == 1,
-                  let drafts = snapshot["drafts"] as? [Any] else { throw ConfigFailure("Invalid recovery snapshot.") }
-            try await store.save(drafts.isEmpty ? nil : JSONSerialization.data(withJSONObject: snapshot))
+            guard let store, let snapshot = fields["snapshot"] as? String, let data = snapshot.data(using: .utf8),
+                  let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], parsed["version"] as? Int == 1,
+                  let drafts = parsed["drafts"] as? [Any] else { throw ConfigFailure("Invalid recovery snapshot.") }
+            try await store.save(drafts.isEmpty ? nil : data)
             return ["ok": true]
         case "draftDiscard":
             guard let store, let id = fields["id"] as? String else { throw ConfigFailure("Invalid recovery id.") }
@@ -141,20 +145,29 @@ final class ConfigHost {
         }
     }
 
-    private func post(_ route: Route, _ fields: [String: Any] = [:]) async throws -> [String: Any] {
-        let bytes = try JSONSerialization.data(withJSONObject: fields)
-        let reply = try await bridge.post(route, bytes)
-        guard let object = try JSONSerialization.jsonObject(with: reply) as? [String: Any] else {
+    private func post(_ route: Route, _ body: Data = Data("{}".utf8)) async throws -> Data {
+        let reply = try await bridge.post(route, body)
+        _ = try object(reply)
+        return reply
+    }
+
+    private func object(_ reply: Data) throws -> [String: Any] {
+        guard let object = (try? JSONSerialization.jsonObject(with: reply)) as? [String: Any] else {
             throw ConfigFailure("Invalid reply from Pi.")
         }
         return object
+    }
+
+    /// The page parses the reply itself, so its object members keep their order.
+    private func text(_ reply: Data) -> [String: Any] {
+        ["json": String(decoding: reply, as: UTF8.self)]
     }
 
     private func runPoll() async {
         var sequence = 0
         while !Task.isCancelled && !closing {
             do {
-                let reply = try await post(.poll, ["after": sequence])
+                let reply = try object(await post(.poll, JSONSerialization.data(withJSONObject: ["after": sequence])))
                 guard let current = reply["sequence"] as? Int, current >= sequence,
                       let changed = reply["changed"] as? Bool else { throw ConfigFailure("Invalid poll reply.") }
                 sequence = current

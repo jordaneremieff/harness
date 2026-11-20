@@ -45,15 +45,23 @@ final class Transport: Sendable {
 
     deinit { session.invalidateAndCancel() }
 
+    /// Adds the pane's client identity to a JSON object without re-encoding it. Foundation's JSON objects do not
+    /// keep member order, and the order of a setting's members is part of the value that reaches the file.
+    static func addingClient(_ client: String, to bytes: Data) throws -> Data {
+        let invalid = ConfigFailure("Invalid Config request.")
+        guard let fields = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any], fields["client"] == nil,
+              let text = String(data: bytes, encoding: .utf8) else { throw invalid }
+        let object = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard object.hasPrefix("{"), object.hasSuffix("}") else { throw invalid }
+        let members = object.dropFirst().dropLast().trimmingCharacters(in: .whitespacesAndNewlines)
+        return Data(("{\"client\":\"\(client)\"" + (members.isEmpty ? "" : "," + members) + "}").utf8)
+    }
+
     @concurrent
     func post(_ route: Route, _ bytes: Data) async throws -> Data {
         let tooLarge = ConfigFailure("The Config request is too large.")
         guard bytes.count <= Self.requestLimit else { throw tooLarge }
-        guard var fields = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else {
-            throw ConfigFailure("Invalid Config request.")
-        }
-        fields["client"] = client
-        let body = try JSONSerialization.data(withJSONObject: fields)
+        let body = try Self.addingClient(client, to: bytes)
         guard body.count <= Self.requestLimit else { throw tooLarge }
         var request = capability.authorize(route)
         request.timeoutInterval = route == .poll ? 30 : 10
