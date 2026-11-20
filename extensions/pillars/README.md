@@ -589,11 +589,11 @@ The [`settings.ts`](settings.ts) declaration and local reader/publisher use the 
 directory; the corpus default remains package-relative.
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| dir | `PI_PILLARS_DIR` | path | &lt;agentDir&gt;/pillars | absolute input | Private aggregate directory. |
-| corpus | `PI_PILLARS_CORPUS` | path | Package sibling ../../pillars | absolute input | Corpus root with inventory and governance sources. |
-| collect | `PI_PILLARS_COLLECT` | boolean | true | none | Collect source access evidence. false stops collection only; corpus access and retained-data readback stay available. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| dir | `PI_PILLARS_DIR` | path | &lt;agentDir&gt;/pillars | reload | absolute input | Private aggregate directory. |
+| corpus | `PI_PILLARS_CORPUS` | path | Package sibling ../../pillars | reload | absolute input | Corpus root with inventory and governance sources. |
+| collect | `PI_PILLARS_COLLECT` | boolean | true | reload | none | Collect source access evidence. false stops collection only; corpus access and retained-data readback stay available. |
 <!-- harness:settings:end -->
 
 Document collection values are booleans. Environment collection values accept

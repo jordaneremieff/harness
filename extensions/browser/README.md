@@ -379,9 +379,9 @@ calls of one of them, runs them one at a time.
 ## Configuration
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| access | `PI_BROWSER_ACCESS` | json | {} | none | Browsers the browser tools may address, as an object from browser key (chrome, brave, chrome-for-testing) to "inspect" or "interact". inspect allows tab listing, bounded inspection, and window capture; interact also allows browser_act and browser_evaluate. An unlisted browser receives no Apple Events; browser_tabs still reports its installation and running state. Access configures reach only and grants no task authority. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| access | `PI_BROWSER_ACCESS` | json | {} | reload | none | Browsers the browser tools may address, as an object from browser key (chrome, brave, chrome-for-testing) to "inspect" or "interact". inspect allows tab listing, bounded inspection, and window capture; interact also allows browser_act and browser_evaluate. An unlisted browser receives no Apple Events; browser_tabs still reports its installation and running state. Access configures reach only and grants no task authority. |
 <!-- harness:settings:end -->
 
 ## Files and checks

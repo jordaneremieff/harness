@@ -261,7 +261,7 @@ describe("browser extension entrypoint", () => {
 			records?: { name?: unknown }[];
 			diagnostics?: unknown[];
 		};
-		assert.equal(publication.version, 1);
+		assert.equal(publication.version, 2);
 		assert.equal(publication.slice, "browser");
 		assert.deepEqual(
 			publication.records?.map((record) => record.name),
@@ -276,11 +276,11 @@ describe("browser extension entrypoint", () => {
 		const count = () => publications(emitted).length;
 		assert.equal(count(), 1);
 
-		api.events.emit("harness:settings:request", { version: 1 });
+		api.events.emit("harness:settings:request", { version: 2 });
 		assert.equal(count(), 2);
 
 		shutdown();
-		api.events.emit("harness:settings:request", { version: 1 });
+		api.events.emit("harness:settings:request", { version: 2 });
 		assert.equal(count(), 2, "the shut-down publisher answers no request");
 	});
 });

@@ -12,8 +12,10 @@ import * as Durable from "@earendil-works/pi-durable";
 import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createRegistryDurableContribution, type RegistryDurableHost } from "./durable.ts";
+import { publishSettings } from "./settings.ts";
 
-async function fixture() {
+type Create = ReturnType<typeof createRegistryDurableContribution>["create"];
+async function fixture(create?: Create) {
 	const root = await mkdtemp(join(tmpdir(), "registry-notes-durable-"));
 	const cwd = join(root, "workspace"),
 		agentDir = join(root, "agent");
@@ -59,9 +61,9 @@ async function fixture() {
 			},
 		},
 	};
-	const extension = await createRegistryDurableContribution("/fixture/registry/index.ts", createEventBus()).create(
-		host,
-	);
+	const extension = await (
+		create ?? createRegistryDurableContribution("/fixture/registry/index.ts", createEventBus()).create
+	)(host);
 	const registry = Durable.createRegistry();
 	registry.install(extension);
 	registry.install(
@@ -133,6 +135,33 @@ async function fixture() {
 function text(result: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>["run"]>>): string {
 	return result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
+test("Durable creation replaces the factory settings publisher and closes its own publisher", async () => {
+	const bus = createEventBus();
+	let publications = 0;
+	const stopReader = bus.on("harness:settings:publish", () => publications++);
+	const request = () => {
+		publications = 0;
+		bus.emit("harness:settings:request", { version: 2 });
+		return publications;
+	};
+	try {
+		const sample = await fixture(async (host) => {
+			const stopFactory = publishSettings(bus, { agentDir: host.agentDir, env: {} });
+			assert.equal(request(), 1);
+			return createRegistryDurableContribution("/fixture/registry/index.ts", bus, stopFactory).create(host);
+		});
+		try {
+			assert.equal(request(), 1);
+		} finally {
+			await sample.close();
+		}
+		assert.equal(request(), 0);
+	} finally {
+		stopReader();
+		bus.clear();
+	}
+});
+
 test("Durable built-in read appends a note once per conversation over real Harness tasks", async () => {
 	const sample = await fixture();
 	try {

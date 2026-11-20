@@ -20,14 +20,14 @@ type SettingRecord = {
 	value?: unknown;
 	secretState?: string;
 };
-type Snapshot = {
-	version: number;
+type Resolution = { records: SettingRecord[]; diagnostics: Diagnostic[] };
+type Observation = Resolution & {
+	version: 2;
 	slice: string;
 	source: { path: string; status: string; digest: string | null; observedAt: string };
-	records: SettingRecord[];
-	diagnostics: Diagnostic[];
-	values: Record<string, unknown>;
 };
+type Snapshot = Observation & { values: Record<string, unknown> };
+type Publication = Observation & { declaration: Declaration };
 type Options = { agentDir: string; env?: Record<string, string | undefined> };
 type SettingsModule = {
 	settings: Declaration;
@@ -81,15 +81,24 @@ function fixture() {
 		close: () => rmSync(agentDir, { recursive: true, force: true }),
 	};
 }
-function record(snapshot: Snapshot, key: string): SettingRecord {
+function record(snapshot: Resolution, key: string): SettingRecord {
 	const result = snapshot.records.find((entry) => entry.key === key);
 	assert.ok(result, key);
 	return result;
 }
-function stable(snapshot: Snapshot): unknown {
+function stable(snapshot: Observation): unknown {
 	return { ...snapshot, source: { ...snapshot.source, observedAt: "<time>" } };
 }
-function assertDiagnostics(snapshot: Snapshot): void {
+function assertDetachedCopy(actual: unknown, original: unknown): void {
+	assert.deepEqual(actual, original);
+	function visit(copy: unknown, source: unknown): void {
+		if (source === null || typeof source !== "object") return;
+		assert.notEqual(copy, source);
+		for (const [key, value] of Object.entries(source)) visit((copy as Record<string, unknown>)[key], value);
+	}
+	visit(actual, original);
+}
+function assertDiagnostics(snapshot: Resolution): void {
 	for (const diagnostic of snapshot.diagnostics) {
 		assert.equal(diagnostic.message, messages[diagnostic.code]);
 		assert.ok(["file", "env", "default"].includes(diagnostic.source));
@@ -259,8 +268,8 @@ function assertUnknownKeyPublication(module: SettingsModule, key: string, suffix
 		writeFileSync(f.path, JSON.stringify({ version: 1, [settings.slice]: { ...section, [key]: true } }));
 		const snapshot = module.readSettings(f.options);
 		const bus = new Bus();
-		const publications: Snapshot[] = [];
-		bus.on(PUBLISH, (data) => publications.push(data as Snapshot));
+		const publications: Publication[] = [];
+		bus.on(PUBLISH, (data) => publications.push(data as Publication));
 		const off = module.publishSettings(bus, f.options);
 		try {
 			assert.equal(publications.length, 1);
@@ -283,6 +292,136 @@ function assertUnknownKeyPublication(module: SettingsModule, key: string, suffix
 		} finally {
 			off();
 		}
+	} finally {
+		f.close();
+	}
+}
+
+function assertPublication(module: SettingsModule): void {
+	const f = fixture();
+	const { settings } = module;
+	const bus = new Bus();
+	const secretMarker = "contract-private-marker";
+	f.options.env = Object.fromEntries(
+		Object.values(settings.fields)
+			.filter((field) => field.secret)
+			.map((field) => [field.env, secretMarker]),
+	);
+	const publications: Publication[] = [];
+	bus.on(PUBLISH, (data) => publications.push(data as Publication));
+	try {
+		const off = module.publishSettings(bus, f.options);
+		try {
+			assert.equal(publications.length, 1);
+			const { values: _values, ...snapshot } = module.readSettings(f.options);
+			const { version, slice, source, records, diagnostics, declaration } = publications[0];
+			assert.equal(version, 2);
+			assertDetachedCopy(declaration, settings);
+			assert.deepEqual(stable({ version, slice, source, records, diagnostics }), stable(snapshot));
+			writeFileSync(f.path, JSON.stringify({ version: 1, [settings.slice]: { contractUnknown: true } }));
+			bus.emit(REQUEST, { version: 2 });
+			assert.equal(publications.length, 2);
+			const fresh = publications[1];
+			assert.equal(fresh.version, 2);
+			assertDetachedCopy(fresh.declaration, settings);
+			assertDetachedCopy(fresh.declaration, declaration);
+			assert.equal(fresh.source.status, "loaded");
+			assert.equal(fresh.diagnostics[0].code, "unknown");
+			assert.ok(Buffer.byteLength(JSON.stringify(fresh)) <= 262144);
+			for (const publication of publications) {
+				assert.ok(!JSON.stringify(publication).includes(secretMarker));
+				assert.ok(!Object.hasOwn(publication, "values"));
+			}
+		} finally {
+			off();
+		}
+	} finally {
+		f.close();
+	}
+}
+
+function assertFreshPathOverride(module: SettingsModule): void {
+	const f = fixture();
+	const bus = new Bus();
+	const publications: Publication[] = [];
+	bus.on(PUBLISH, (data) => publications.push(data as Publication));
+	const { settings } = module;
+	const previous = process.env.PI_HARNESS_FILE;
+	const path = join(f.agentDir, "next.json");
+	const fields = Object.entries(settings.fields);
+	const masked = fields.map(([, field]) => [field.env, process.env[field.env]] as const);
+	const marker = "contract-file-secret";
+	try {
+		for (const [name] of masked) delete process.env[name];
+		delete process.env.PI_HARNESS_FILE;
+		writeFileSync(f.path, JSON.stringify({ version: 1, [settings.slice]: {} }));
+		const off = module.publishSettings(bus, { agentDir: f.agentDir });
+		try {
+			assert.equal(publications.length, 1);
+			const [initial] = publications;
+			assert.equal(initial.source.path, f.path);
+			assert.equal(initial.source.status, "loaded");
+			const selected = fields.find(([, field]) => !field.secret);
+			const [key, field] = selected ?? fields[0];
+			const before = record(initial, key);
+			const value = field.secret
+				? marker
+				: settings.slice === "browser"
+					? { chrome: "inspect" }
+					: validValue(field, before.value, f.agentDir);
+			writeFileSync(path, JSON.stringify({ version: 1, [settings.slice]: { [key]: value } }));
+			process.env.PI_HARNESS_FILE = "next.json";
+			bus.emit(REQUEST, { version: 2 });
+			assert.equal(publications.length, 2);
+			const fresh = publications[1];
+			assert.equal(fresh.source.path, path);
+			assert.equal(fresh.source.status, "loaded");
+			assert.notEqual(fresh.source.digest, initial.source.digest);
+			const effective = record(fresh, key);
+			if (field.secret) {
+				assert.equal(before.status, "unset");
+				assert.equal(effective.status, "invalid");
+				assert.equal(effective.secretState, "unset");
+				assert.ok(!Object.hasOwn(effective, "value"));
+				assert.ok(fresh.diagnostics.some((d) => d.code === "secret" && d.field === `${settings.slice}.${key}`));
+				assert.ok(!JSON.stringify(fresh).includes(marker));
+			} else {
+				assert.equal(before.origin, "default");
+				assert.equal(effective.origin, "file");
+				assert.equal(effective.status, "valid");
+				assert.deepEqual(effective.value, value);
+				assert.notDeepEqual(effective.value, before.value);
+			}
+		} finally {
+			off();
+		}
+	} finally {
+		for (const [name, value] of [...masked, ["PI_HARNESS_FILE", previous] as const]) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+		f.close();
+	}
+}
+
+function assertPublisherLifecycle(module: SettingsModule): void {
+	const f = fixture();
+	const bus = new Bus();
+	let publications = 0;
+	bus.on(PUBLISH, () => publications++);
+	try {
+		const off = module.publishSettings(bus, f.options);
+		assert.equal(typeof off, "function");
+		try {
+			bus.emit(REQUEST, { version: 1 });
+			bus.emit(REQUEST, null);
+			assert.equal(publications, 1);
+		} finally {
+			off();
+		}
+		bus.emit(REQUEST, { version: 2 });
+		assert.equal(publications, 1);
+		assert.equal(bus.listeners.get(REQUEST)?.size ?? 0, 0);
 	} finally {
 		f.close();
 	}
@@ -362,7 +501,7 @@ for (const declaration of declarations) {
 			const f = fixture();
 			try {
 				const snapshot = module.readSettings(f.options);
-				assert.equal(snapshot.version, 1);
+				assert.equal(snapshot.version, 2);
 				assert.equal(snapshot.slice, settings.slice);
 				assert.equal(snapshot.source.status, "missing");
 				assert.equal(snapshot.source.path, f.path);
@@ -504,42 +643,10 @@ for (const declaration of declarations) {
 				f.close();
 			}
 		});
-		await t.test("publication handshake is fresh, redacted, and disposable", () => {
-			const f = fixture();
-			try {
-				const bus = new Bus();
-				const secretMarker = "contract-private-marker";
-				f.options.env = Object.fromEntries(
-					Object.values(settings.fields)
-						.filter((field) => field.secret)
-						.map((field) => [field.env, secretMarker]),
-				);
-				const publications: Snapshot[] = [];
-				bus.on(PUBLISH, (data) => publications.push(data as Snapshot));
-				const off = module.publishSettings(bus, f.options);
-				assert.equal(typeof off, "function");
-				assert.equal(publications.length, 1);
-				assert.ok(!Object.hasOwn(publications[0], "values"));
-				const { values: _values, ...snapshot } = module.readSettings(f.options);
-				assert.deepEqual(stable(publications[0]), stable(snapshot as Snapshot));
-				bus.emit(REQUEST, { version: 2 });
-				bus.emit(REQUEST, null);
-				assert.equal(publications.length, 1);
-				writeFileSync(f.path, JSON.stringify({ version: 1, [settings.slice]: { contractUnknown: true } }));
-				bus.emit(REQUEST, { version: 1 });
-				assert.equal(publications.length, 2);
-				assert.equal(publications[1].source.status, "loaded");
-				assert.equal(publications[1].diagnostics[0].code, "unknown");
-				assert.ok(Buffer.byteLength(JSON.stringify(publications[1])) <= 262144);
-				assert.ok(!JSON.stringify(publications).includes(secretMarker));
-				assert.ok(!Object.hasOwn(publications[1], "values"));
-				off();
-				bus.emit(REQUEST, { version: 1 });
-				assert.equal(publications.length, 2);
-				assert.equal(bus.listeners.get(REQUEST)?.size ?? 0, 0);
-			} finally {
-				f.close();
-			}
+		await t.test("version 2 publications are fresh, detached, and redacted", () => assertPublication(module));
+		await t.test("publisher follows the current document override on request", () => assertFreshPathOverride(module));
+		await t.test("publishers ignore malformed requests and unsubscribe", () => {
+			assertPublisherLifecycle(module);
 		});
 	});
 }

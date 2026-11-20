@@ -28,7 +28,7 @@ function observeSettings(bus: ReturnType<typeof createEventBus>) {
 	});
 	const refresh = () => {
 		publications = [];
-		bus.emit("harness:settings:request", { version: 1 });
+		bus.emit("harness:settings:request", { version: 2 });
 	};
 	refresh();
 	return { snapshots: () => publications, refresh, dispose };
@@ -248,13 +248,13 @@ describe("Brave settings", () => {
 		bus.on(SETTINGS_PUBLISH, (data) => emitted.push(data));
 		const publisher = ordinary(bus);
 		assert.equal(emitted.length, 1);
-		for (const request of [undefined, null, {}, { version: 2 }, { version: "1" }]) bus.emit(SETTINGS_REQUEST, request);
+		for (const request of [undefined, null, {}, { version: 1 }, { version: "1" }]) bus.emit(SETTINGS_REQUEST, request);
 		assert.equal(emitted.length, 1);
-		bus.emit(SETTINGS_REQUEST, { version: 1 });
+		bus.emit(SETTINGS_REQUEST, { version: 2 });
 		assert.equal(emitted.length, 2);
 		assertSecretFree(emitted);
 		publisher.shutdown();
-		bus.emit(SETTINGS_REQUEST, { version: 1 });
+		bus.emit(SETTINGS_REQUEST, { version: 2 });
 		assert.equal(emitted.length, 2);
 	});
 });

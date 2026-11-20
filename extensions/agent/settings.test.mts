@@ -254,15 +254,15 @@ it("publishes fresh protocol data without local values and stops after disposal"
 	assert.equal(publications.length, 1);
 	assert.equal(Object.hasOwn(publications[0], "values"), false);
 	assert.equal(publications[0].source.status, "missing");
-	for (const request of [null, {}, { version: 2 }, { version: "1" }]) events.emit("harness:settings:request", request);
+	for (const request of [null, {}, { version: 1 }, { version: "1" }]) events.emit("harness:settings:request", request);
 	assert.equal(publications.length, 1);
 	writeFileSync(join(agentDir, "harness.json"), JSON.stringify({ version: 1, agent: { idleMinutes: 2 } }));
-	events.emit("harness:settings:request", { version: 1 });
+	events.emit("harness:settings:request", { version: 2 });
 	assert.equal(publications.length, 2);
 	assert.equal(publications[1].records[0].value, 2);
 	dispose();
 	dispose();
-	events.emit("harness:settings:request", { version: 1 });
+	events.emit("harness:settings:request", { version: 2 });
 	assert.equal(publications.length, 2);
 });
 
@@ -305,7 +305,7 @@ it("replaces the factory publisher with the native host directory and keeps clea
 	const collector = {
 		refresh() {
 			publications = [];
-			events.emit("harness:settings:request", { version: 1 });
+			events.emit("harness:settings:request", { version: 2 });
 			assert.ok(publications.length <= 1, "Only one agent publisher owns the lifecycle");
 		},
 		snapshots: () => publications,

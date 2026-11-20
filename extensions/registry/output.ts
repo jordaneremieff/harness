@@ -1,4 +1,5 @@
 import { arr, bool, int, lit, map, nul, num, obj, oneOf, opt, str, union, unknown } from "@earendil-works/pi-schema";
+import { applicationTimings } from "./configuration-protocol.ts";
 import { AUTH_SOURCES } from "./models.ts";
 
 // Aggregate byte/line limits apply before publication, including both structured copies.
@@ -129,6 +130,17 @@ const setting = obj({
 	status: oneOf(["valid", "unset", "invalid"]),
 	value: opt(unknown()),
 	secretState: opt(oneOf(["set", "unset"])),
+	apply: oneOf(applicationTimings),
+	default: opt(unknown()),
+	defaultText: opt(text),
+	constraints: obj({
+		absolute: opt(bool()),
+		min: opt(num()),
+		max: opt(num()),
+		minLength: opt(count),
+		maxLength: opt(count),
+		choices: opt(strings),
+	}),
 	documentPath: text,
 	documentStatus: oneOf(["loaded", "missing", "invalid", "unavailable"]),
 	observedAt: text,

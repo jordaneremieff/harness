@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { RegistryNotes, noteTargets, simpleCommands, type NoteKnowledge, type NoteCall } from "./notes.ts";
 import type { SettingsSnapshot } from "./configuration.ts";
 import type { SettingRecord } from "./configuration-protocol.ts";
+import { publication, withDeclaration } from "./configuration-fixtures.mts";
 
 function row(name = "example.limit", env = "PI_EXAMPLE_LIMIT"): SettingRecord {
 	return {
@@ -22,18 +23,19 @@ function knowledge(): NoteKnowledge {
 		available: true,
 		collection: { status: "available", slices: ["example"], malformed: 0, omitted: 0 },
 		publications: [
-			{
-				version: 1,
-				slice: "example",
-				source: {
-					path: "/test-home/.pi/agent/harness.json",
-					status: "loaded",
-					digest: null,
-					observedAt: "2026-10-29T00:00:00.000Z",
+			withDeclaration(
+				{
+					...publication(),
+					source: {
+						path: "/test-home/.pi/agent/harness.json",
+						status: "loaded",
+						digest: null,
+						observedAt: "2026-10-29T00:00:00.000Z",
+					},
+					records: [row()],
 				},
-				records: [row()],
-				diagnostics: [],
-			},
+				{ limit: { type: "integer", description: "Limit", env: "PI_EXAMPLE_LIMIT", apply: "use" } },
+			),
 		],
 	};
 	return {

@@ -12,7 +12,7 @@ import {
 	type ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
 import registerRegistry from "./index.ts";
-import { SETTINGS_PUBLISH, SETTINGS_REQUEST } from "./configuration-protocol.ts";
+import { fakePublisher, publication, withDeclaration } from "./configuration-fixtures.mts";
 
 type Handler = (event: ToolResultEvent, ctx: ExtensionContext) => Promise<ToolResultEventResult | undefined>;
 function fixture() {
@@ -22,26 +22,27 @@ function fixture() {
 	const previous = process.env.PI_HARNESS_FILE;
 	process.env.PI_HARNESS_FILE = file;
 	const bus = createEventBus();
-	bus.on(SETTINGS_REQUEST, () =>
-		bus.emit(SETTINGS_PUBLISH, {
-			version: 1,
-			slice: "example",
-			source: { path: file, status: "loaded", digest: null, observedAt: new Date().toISOString() },
-			diagnostics: [],
-			records: [
-				{
-					name: "example.limit",
-					key: "limit",
-					type: "integer",
-					env: "PI_EXAMPLE_LIMIT",
-					description: "Limit",
-					secret: false,
-					origin: "env",
-					status: "valid",
-					value: 7,
-				},
-			],
-		}),
+	const stopPublisher = fakePublisher(bus, () =>
+		withDeclaration(
+			{
+				...publication(),
+				source: { path: file, status: "loaded", digest: null, observedAt: new Date().toISOString() },
+				records: [
+					{
+						name: "example.limit",
+						key: "limit",
+						type: "integer",
+						env: "PI_EXAMPLE_LIMIT",
+						description: "Limit",
+						secret: false,
+						origin: "env",
+						status: "valid",
+						value: 7,
+					},
+				],
+			},
+			{ limit: { type: "integer", description: "Limit", env: "PI_EXAMPLE_LIMIT", apply: "use" } },
+		),
 	);
 	// Pi runs every handler registered for an event, in registration order.
 	const handlers = new Map<string, Handler[]>();
@@ -76,6 +77,7 @@ function fixture() {
 		invoke,
 		close: async () => {
 			await invoke("session_shutdown");
+			stopPublisher();
 			if (previous === undefined) delete process.env.PI_HARNESS_FILE;
 			else process.env.PI_HARNESS_FILE = previous;
 			rmSync(root, { recursive: true, force: true });

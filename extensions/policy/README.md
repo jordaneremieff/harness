@@ -164,12 +164,12 @@ resolve against the agent directory, not the working directory. Invalid director
 input uses `<agentDir>/policy` and retains its rejected-source diagnostic.
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| dir | `PI_POLICY_DIR` | path | &lt;agentDir&gt;/policy | none | Private directory for rules, approved data, and telemetry. |
-| mode | `PI_POLICY_MODE` | enum | "observe" | observe, notice, annotate, enforce | Machine mode. observe records facts and candidate effects only; notice adds operator notices; annotate adds model guidance; enforce also applies approved denials and corrections. No mode unloads the extension. An ordinary --policy-mode flag overrides it for that session. |
-| telemetryMaxBytes | `PI_POLICY_TELEMETRY_MAX_BYTES` | integer | 1073741824 | min 33554432 | Byte budget for retained telemetry segments. A write removes the oldest segments to stay within it. A rotated segment needs at least one segment of room. |
-| telemetryMaxAgeDays | `PI_POLICY_TELEMETRY_MAX_AGE_DAYS` | integer | 30 | min 1 | Retention age for telemetry segments, in writer-local calendar days. A write removes older segments. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| dir | `PI_POLICY_DIR` | path | &lt;agentDir&gt;/policy | reload | none | Private directory for rules, approved data, and telemetry. |
+| mode | `PI_POLICY_MODE` | enum | "observe" | reload | observe, notice, annotate, enforce | Machine mode. observe records facts and candidate effects only; notice adds operator notices; annotate adds model guidance; enforce also applies approved denials and corrections. No mode unloads the extension. An ordinary --policy-mode flag overrides it for that session. |
+| telemetryMaxBytes | `PI_POLICY_TELEMETRY_MAX_BYTES` | integer | 1073741824 | reload | min 33554432 | Byte budget for retained telemetry segments. A write removes the oldest segments to stay within it. A rotated segment needs at least one segment of room. |
+| telemetryMaxAgeDays | `PI_POLICY_TELEMETRY_MAX_AGE_DAYS` | integer | 30 | reload | min 1 | Retention age for telemetry segments, in writer-local calendar days. A write removes older segments. |
 <!-- harness:settings:end -->
 
 `--policy-mode` is an ordinary per-invocation/session override, not a document

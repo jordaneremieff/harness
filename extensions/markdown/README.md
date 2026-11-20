@@ -11,14 +11,14 @@ A right-click or Control-click shows the reader's own menu, never the system men
 Each fenced code block shows its language label at the top left and Copy code at the top right. The label opens a menu of syntaxes: Automatic keeps the colours that the label or the code selects, Plain text removes them, and each language colours the block as that language. A block coloured as Markdown, by its label or by that choice, also shows Source and Rendered. Rendered shows the block's Markdown inside the block, rendered as the reader renders documents, with its images as placeholders. A choice changes only how the page shows the block, never its source: Copy code copies the source, and Find searches the source, so a match in a rendered block shows the source again. In Writing, a click on a rendered block, or Edit Here from its menu, opens the block's Markdown at the first line of its code. A choice lasts while the block's text is unchanged; a reopened document starts from its labels.
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| app | `PI_MARKDOWN_APP` | path | &lt;agentDir&gt;/markdown-reader/Markdown Reader.app | none | Installed native reader application and headless parser tool. |
-| dir | `PI_MARKDOWN_DIR` | path | &lt;agentDir&gt;/markdown | none | Private directory for Markdown documents. |
-| checks | `PI_MARKDOWN_CHECKS` | enum | "block" | off, warn, block | Writing checks for new Markdown publications and updates. off skips validation, warn saves and reports findings, and block refuses a publication with findings. Exact captures and saved replays are unchanged. |
-| checksRules | `PI_MARKDOWN_CHECKS_RULES` | json | {} | none | Rule overrides and an optional lexicon path for publication checks and the writing brief. |
-| readerFile | `PI_MARKDOWN_READER_FILE` | path | &lt;agentDir&gt;/markdown-reader.md | none | Optional plain Markdown reader profile for the writing brief. |
-| agentPane | `PI_MARKDOWN_AGENT_PANE` | enum | "split" | split, float | Pane in which the markdown_publish guidance of an ordinary session shows a publication. split names a split on the right of the session's own pane; float names a floating pane over its window. Agents without a pane of their own, such as Durable workers, always use a floating pane on the tab of the ordinary session that started them. An operator's request for another pane still applies, and /markdown always opens a split. A new or reloaded session applies a change. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| app | `PI_MARKDOWN_APP` | path | &lt;agentDir&gt;/markdown-reader/Markdown Reader.app | reload | none | Installed native reader application and headless parser tool. |
+| dir | `PI_MARKDOWN_DIR` | path | &lt;agentDir&gt;/markdown | reload | none | Private directory for Markdown documents. |
+| checks | `PI_MARKDOWN_CHECKS` | enum | "block" | reload | off, warn, block | Writing checks for new Markdown publications and updates. off skips validation, warn saves and reports findings, and block refuses a publication with findings. Exact captures and saved replays are unchanged. |
+| checksRules | `PI_MARKDOWN_CHECKS_RULES` | json | {} | reload | none | Rule overrides and an optional lexicon path for publication checks and the writing brief. |
+| readerFile | `PI_MARKDOWN_READER_FILE` | path | &lt;agentDir&gt;/markdown-reader.md | reload | none | Optional plain Markdown reader profile for the writing brief. |
+| agentPane | `PI_MARKDOWN_AGENT_PANE` | enum | "split" | reload | split, float | Pane in which the markdown_publish guidance of an ordinary session shows a publication. split names a split on the right of the session's own pane; float names a floating pane over its window. Agents without a pane of their own, such as Durable workers, always use a floating pane on the tab of the ordinary session that started them. An operator's request for another pane still applies, and /markdown always opens a split. A new or reloaded session applies a change. |
 <!-- harness:settings:end -->
 
 Relative setting paths resolve against the agent directory. Settings follow the [extension configuration contract](../../docs/conventions/extension-config.md).

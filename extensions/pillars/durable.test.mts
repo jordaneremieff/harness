@@ -711,7 +711,7 @@ function captureSettings(bus: SettingsBus) {
 	});
 	const refresh = () => {
 		publications = [];
-		bus.emit("harness:settings:request", { version: 1 });
+		bus.emit("harness:settings:request", { version: 2 });
 	};
 	refresh();
 	return { snapshots: () => publications, refresh, dispose };

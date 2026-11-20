@@ -144,15 +144,18 @@ export default function registerRegistry(pi: ExtensionAPI) {
 	pi.events.on("harness:tool-display:request", (request: unknown) => {
 		if (request && typeof request === "object" && "version" in request && request.version === 1) publish();
 	});
-	// The host, when one is listening, installs the native Durable form. In an
-	// ordinary session nothing subscribes and the emission has no effect.
-	pi.events.emit("durable:contribution", createRegistryDurableContribution(fileURLToPath(import.meta.url), pi.events));
 	const observations = new ObservationStore();
 	const agentDir = getAgentDir();
-	// The notes switch is this slice's own setting, published and read like any other slice's settings.
 	const stopPublishing = publishSettings(pi.events, { agentDir });
 	const configuredSettings = settingsReader(pi.events);
 	configuredSettings.read();
+	pi.events.emit(
+		"durable:contribution",
+		createRegistryDurableContribution(fileURLToPath(import.meta.url), pi.events, () => {
+			stopPublishing();
+			configuredSettings.dispose();
+		}),
+	);
 	let noteCwd = "";
 	const notes = new RegistryNotes(
 		() => {

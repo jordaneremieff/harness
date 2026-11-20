@@ -221,7 +221,8 @@ test("an adapter failure preserves the environment and removes its isolated stor
 				events: {
 					emit(channel, data) {
 						if (channel === "harness:settings:publish") {
-							const snapshot = data as { records: Array<{ key: string; value?: string }> };
+							const snapshot = data as { version: number; records: Array<{ key: string; value?: string }> };
+							assert.equal(snapshot.version, 2);
 							store = snapshot.records.find((record) => record.key === "dir")?.value;
 						}
 					},
@@ -265,7 +266,8 @@ test("the evaluation wrapper awaits real command output and confines filesystem 
 	let store: string | undefined;
 	const eventBus = sdk.createEventBus();
 	const unsubscribe = eventBus.on("harness:settings:publish", (data) => {
-		const snapshot = data as { records: Array<{ key: string; value?: string | boolean }> };
+		const snapshot = data as { version: number; records: Array<{ key: string; value?: string | boolean }> };
+		assert.equal(snapshot.version, 2);
 		store = snapshot.records.find((record) => record.key === "dir")?.value as string;
 		assert.equal(snapshot.records.find((record) => record.key === "collect")?.value, false);
 	});

@@ -26,7 +26,7 @@ import {
 } from "./durable.ts";
 import { RegistryOutputSchema } from "./output.ts";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
-import { fakePublisher, publication } from "./configuration-fixtures.mts";
+import { fakePublisher, publication, withDeclaration } from "./configuration-fixtures.mts";
 const settingsBus = createEventBus();
 
 const ROOT = await mkdtemp(join(tmpdir(), "registry-durable-"));
@@ -982,11 +982,14 @@ test("native setting queries use the captured host bus and release collection on
 	const directory = await mkdtemp(join(tmpdir(), "registry-native-settings-"));
 	const current = publication();
 	current.source = { ...current.source, path: join(directory, "harness.json"), status: "loaded" };
-	current.records = [{ ...current.records[0], value: 8, origin: "file" }];
-	const dispose = fakePublisher(bus, () => current);
+	current.records[0] = { ...current.records[0], value: 8, origin: "file" };
+	const dispose = fakePublisher(bus, () =>
+		withDeclaration({ ...current, records: current.records.slice(0, 1) }, { count: current.declaration.fields.count }),
+	);
 	const close: (() => void | Promise<void>)[] = [];
 	let requests = 0;
-	bus.on("harness:settings:request", () => {
+	bus.on("harness:settings:request", (request) => {
+		assert.deepEqual(request, { version: 2 });
 		requests++;
 	});
 	let subscriptions = 0;
@@ -1029,6 +1032,9 @@ test("native setting queries use the captured host bus and release collection on
 		assert.equal(records[0].kind, "setting");
 		assert.equal(records[0].value, 8);
 		assert.equal(records[0].origin, "file");
+		assert.equal(records[0].default, 2);
+		assert.deepEqual(records[0].constraints, { min: 1, max: 20 });
+		assert.equal(records[0].apply, "use");
 		assert.equal(records[0].documentPath, join(directory, "harness.json"));
 		assert.equal(requests, 2);
 		assert.equal(subscriptions, 1);

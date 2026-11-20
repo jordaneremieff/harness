@@ -93,7 +93,7 @@ function required<T>(value: T | undefined): T {
 	return value;
 }
 
-function record(snapshot: SettingsPublication, key: string) {
+function record(snapshot: Pick<SettingsPublication, "records">, key: string) {
 	return required(snapshot.records.find((entry) => entry.key === key));
 }
 
@@ -224,7 +224,7 @@ test("ordinary flag overrides applied mode but publication stays a fresh machine
 	registerPolicy(adapter.pi);
 	assert.equal(record(required(adapter.publications.at(-1)), "mode").origin, "file");
 	process.env.PI_POLICY_MODE = "observe";
-	adapter.pi.events.emit(SETTINGS_REQUEST, { version: 1 });
+	adapter.pi.events.emit(SETTINGS_REQUEST, { version: 2 });
 	assert.equal(record(required(adapter.publications.at(-1)), "mode").value, "observe");
 	const result = await required(adapter.tools.get("policy_control")).execute(
 		"mode",
@@ -305,20 +305,20 @@ test("native creation replaces the ordinary publisher with the host directory an
 	} as unknown as PolicyDurableHost;
 	await adapter.contribution().create(host);
 	assert.equal(adapter.listeners.get(SETTINGS_REQUEST)?.size, 1);
-	adapter.pi.events.emit(SETTINGS_REQUEST, { version: 1 });
+	adapter.pi.events.emit(SETTINGS_REQUEST, { version: 2 });
 	assert.equal(required(adapter.publications.at(-1)).source.path, join(nativeDir, "harness.json"));
 	assert.equal(record(required(adapter.publications.at(-1)), "dir").value, join(nativeDir, "native-store"));
 	assert.equal(record(required(adapter.publications.at(-1)), "mode").value, "notice");
 	for (const shutdown of adapter.handlers.get("session_shutdown") ?? []) await shutdown();
 	assert.equal(adapter.listeners.get(SETTINGS_REQUEST)?.size, 1);
 	const beforeRequest = adapter.publications.length;
-	adapter.pi.events.emit(SETTINGS_REQUEST, { version: 1 });
+	adapter.pi.events.emit(SETTINGS_REQUEST, { version: 2 });
 	assert.equal(adapter.publications.length, beforeRequest + 1);
 	assert.equal(required(adapter.publications.at(-1)).source.path, join(nativeDir, "harness.json"));
 	for (const cleanup of cleanups) await cleanup();
 	assert.equal(adapter.listeners.get(SETTINGS_REQUEST)?.size, 0);
 	const count = adapter.publications.length;
-	adapter.pi.events.emit(SETTINGS_REQUEST, { version: 1 });
+	adapter.pi.events.emit(SETTINGS_REQUEST, { version: 2 });
 	assert.equal(adapter.publications.length, count);
 });
 

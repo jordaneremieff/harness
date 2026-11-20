@@ -12,11 +12,11 @@ Explorer opens a repository, folder or file in a native window over a Rex pane. 
 In the file view, use ⌘P for files, ⌘⇧F for repository search, ⌘F for the current file and ⌃G for a line. Select code or Control-click it to ask about the selected lines, leave a note, or add a comment to a review. Viewed ticks and unsent comments persist. A review finishes when you send it or mark all its files Viewed. In the terminal placeholder, `q` closes Explorer. On compatible builds, `:open --root …` navigates the current pane without changing its placement.
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| app | `PI_EXPLORER_APP` | path | &lt;agentDir&gt;/explorer-app/Explorer.app | none | Installed native Explorer application. |
-| dir | `PI_EXPLORER_DIR` | path | &lt;agentDir&gt;/explorer | none | Private directory for Explorer notes and review state. |
-| agentPane | `PI_EXPLORER_AGENT_PANE` | enum | "split" | split, float | Pane in which an ordinary session shows an Explorer location. split names a split on the right of the session's own pane; float names a floating pane over its window. Agents without a pane of their own, such as Durable workers, always use a floating pane on the tab of the ordinary session that started them. An operator's request for another pane still applies, and /explorer always opens a split. A new or reloaded session applies a change. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| app | `PI_EXPLORER_APP` | path | &lt;agentDir&gt;/explorer-app/Explorer.app | reload | none | Installed native Explorer application. |
+| dir | `PI_EXPLORER_DIR` | path | &lt;agentDir&gt;/explorer | reload | none | Private directory for Explorer notes and review state. |
+| agentPane | `PI_EXPLORER_AGENT_PANE` | enum | "split" | reload | split, float | Pane in which an ordinary session shows an Explorer location. split names a split on the right of the session's own pane; float names a floating pane over its window. Agents without a pane of their own, such as Durable workers, always use a floating pane on the tab of the ordinary session that started them. An operator's request for another pane still applies, and /explorer always opens a split. A new or reloaded session applies a change. |
 <!-- harness:settings:end -->
 
 Relative paths for settings resolve against the agent directory. See the [extension configuration contract](../../docs/conventions/extension-config.md).

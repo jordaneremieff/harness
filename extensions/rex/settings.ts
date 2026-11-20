@@ -7,6 +7,7 @@ export const settings = {
 	slice: "rex",
 	fields: {
 		executable: {
+			apply: "reload",
 			type: "string",
 			env: "PI_REX_EXECUTABLE",
 			default: "rex",
@@ -15,6 +16,7 @@ export const settings = {
 			description: "Installed Rex executable name or path. The extension uses the supported CLI without a shell.",
 		},
 		maxOutputBytes: {
+			apply: "reload",
 			type: "integer",
 			env: "PI_REX_MAX_OUTPUT_BYTES",
 			default: DEFAULT_MAX_OUTPUT_BYTES,
@@ -24,6 +26,7 @@ export const settings = {
 				"Maximum combined stdout/stderr bytes retained from one Rex CLI process. Core results have a separate aggregate bound. Capture is not a complete transcript.",
 		},
 		maxWaitMs: {
+			apply: "reload",
 			type: "integer",
 			env: "PI_REX_MAX_WAIT_MS",
 			default: 120000,
@@ -33,6 +36,7 @@ export const settings = {
 				"Deadline cap for a complete Rex tool operation, including nested calls and cleanup. Background label CLI calls also use this cap. A larger request uses the cap and reports it. Deadline cancellation does not stop persistent terminal work.",
 		},
 		maxRecords: {
+			apply: "reload",
 			type: "integer",
 			env: "PI_REX_MAX_RECORDS",
 			default: 128,
@@ -55,8 +59,12 @@ export interface RexSettings {
 	maxWaitMs: number;
 	maxRecords: number;
 }
+type ReadOptions = {
+	agentDir: string;
+	env?: Readonly<Record<string, string | undefined>>;
+};
 export interface SettingsSnapshot {
-	version: 1;
+	version: 2;
 	slice: "rex";
 	source: {
 		path: string;
@@ -200,10 +208,7 @@ function settingRecord(
 	};
 }
 
-export function readSettings(options: {
-	agentDir: string;
-	env?: Readonly<Record<string, string | undefined>>;
-}): SettingsSnapshot {
+export function readSettings(options: ReadOptions): SettingsSnapshot {
 	const env = options.env ?? process.env;
 	const selectedPath = env.PI_HARNESS_FILE;
 	const path =
@@ -231,20 +236,31 @@ export function readSettings(options: {
 		Object.assign(values, { [key]: record.value });
 		records.push(record);
 	}
-	return { version: 1, slice: "rex", source, records, diagnostics, values };
+	return { version: 2, slice: "rex", source, records, diagnostics, values };
 }
 
-export function publishSettings(
-	bus: SettingsBus,
-	options: { agentDir: string; env?: Readonly<Record<string, string | undefined>> },
-): () => void {
-	const publish = () => {
-		const { values: _values, ...publication } = readSettings(options);
-		bus.emit("harness:settings:publish", publication);
-	};
-	const stop = bus.on("harness:settings:request", (payload) => {
-		if (object(payload) && payload.version === 1) publish();
+type SettingsPublication = Omit<SettingsSnapshot, "values"> & { declaration: typeof settings };
+
+function bounded<T>(value: T): T {
+	if (Buffer.byteLength(JSON.stringify(value)) > 262144) throw new Error("Settings payload exceeds byte limit");
+	return structuredClone(value);
+}
+
+function publication(options: ReadOptions): SettingsPublication {
+	const { slice, source, records, diagnostics } = readSettings(options);
+	return bounded({ version: 2, slice, declaration: settings, source, records, diagnostics });
+}
+
+export function publishSettings(bus: SettingsBus, options: ReadOptions): () => void {
+	const publish = () => bus.emit("harness:settings:publish", publication(options));
+	const off = bus.on("harness:settings:request", (value) => {
+		if (object(value) && value.version === 2) publish();
 	});
-	publish();
-	return stop;
+	try {
+		publish();
+	} catch (error) {
+		off();
+		throw error;
+	}
+	return off;
 }

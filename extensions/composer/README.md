@@ -5,10 +5,10 @@ Use `/composer` in an ordinary interactive Pi session in Rex on macOS. It opens 
 ## Configuration
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| app | `PI_COMPOSER_APP` | path | &lt;agentDir&gt;/composer/Composer.app | none | Installed native composer application. |
-| mode | `PI_COMPOSER_MODE` | enum | "manual" | manual, auto | Composer mode. manual opens only through /composer; auto opens at startup in an ordinary interactive Pi session in Rex on macOS. No mode disables /composer. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| app | `PI_COMPOSER_APP` | path | &lt;agentDir&gt;/composer/Composer.app | reload | none | Installed native composer application. |
+| mode | `PI_COMPOSER_MODE` | enum | "manual" | reload | manual, auto | Composer mode. manual opens only through /composer; auto opens at startup in an ordinary interactive Pi session in Rex on macOS. No mode disables /composer. |
 <!-- harness:settings:end -->
 
 Pi checks the app's build manifest in interactive macOS sessions. If the app is missing, its manifest is unreadable or incompatible, or the app was built from an earlier commit, Pi starts a background build. Open the composer after the install completes. A build failure puts a failure record and log beside the app; Pi does not automatically retry that source digest. Use `/composer update` to retry. Print, JSON and RPC sessions never build the app.

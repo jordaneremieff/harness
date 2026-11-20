@@ -7,7 +7,7 @@ import {
 	type Diagnostic,
 	type Origin,
 	type SettingsBus,
-	type SettingsPublication,
+	type SettingRecord,
 	type Source,
 } from "./configuration-protocol.ts";
 
@@ -15,6 +15,7 @@ export const settings = {
 	slice: "registry",
 	fields: {
 		notes: {
+			apply: "use",
 			type: "boolean",
 			env: "PI_REGISTRY_NOTES",
 			default: true,
@@ -23,8 +24,20 @@ export const settings = {
 		},
 	},
 } as const;
-export type ReadOptions = { agentDir: string; env?: Readonly<Record<string, string | undefined>> };
-export type Snapshot = SettingsPublication & { values: { notes: boolean } };
+
+export type ReadOptions = {
+	agentDir: string;
+	env?: Readonly<Record<string, string | undefined>>;
+};
+export type Snapshot = {
+	version: 2;
+	slice: "registry";
+	source: Source;
+	records: SettingRecord[];
+	diagnostics: Diagnostic[];
+	values: { notes: boolean };
+};
+type SettingsPublication = Omit<Snapshot, "values"> & { declaration: typeof settings };
 const messages = {
 	document: "Configuration document is invalid or unavailable.",
 	unknown: "Unknown setting in this section.",
@@ -141,7 +154,7 @@ export function readSettings(options: ReadOptions): Snapshot {
 	const { source, section, diagnostics } = readSection(options);
 	const { value, origin, invalid } = selectNotes(section, options, diagnostics);
 	return {
-		version: 1,
+		version: 2,
 		slice: "registry",
 		source,
 		diagnostics,
@@ -161,13 +174,20 @@ export function readSettings(options: ReadOptions): Snapshot {
 		],
 	};
 }
+function bounded<T>(value: T): T {
+	if (Buffer.byteLength(JSON.stringify(value)) > 262144) throw new Error("Settings payload exceeds byte limit");
+	return structuredClone(value);
+}
+
+function publication(options: ReadOptions): SettingsPublication {
+	const { slice, source, records, diagnostics } = readSettings(options);
+	return bounded({ version: 2, slice, declaration: settings, source, records, diagnostics });
+}
+
 export function publishSettings(bus: SettingsBus, options: ReadOptions): () => void {
-	const publish = () => {
-		const { values: _values, ...publication } = readSettings(options);
-		bus.emit(SETTINGS_PUBLISH, structuredClone(publication));
-	};
-	const off = bus.on(SETTINGS_REQUEST, (input) => {
-		if (object(input) && input.version === 1) publish();
+	const publish = () => bus.emit(SETTINGS_PUBLISH, publication(options));
+	const off = bus.on(SETTINGS_REQUEST, (value) => {
+		if (object(value) && value.version === 2) publish();
 	});
 	try {
 		publish();

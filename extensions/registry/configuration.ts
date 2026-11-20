@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import { collectSettings, type SettingsBus, type SettingsPublication } from "./configuration-protocol.ts";
+import {
+	collectSettings,
+	type SettingField,
+	type SettingsBus,
+	type SettingsPublication,
+} from "./configuration-protocol.ts";
 import { boundResult, escapeJsonControls, isoTime, oneLine, queryLine, type Outcome } from "./format.ts";
 import {
 	decodeCursor,
@@ -66,12 +71,31 @@ export function settingQuery(params: RawParams): boolean {
 	}
 }
 
+function declarationDetail({
+	type: _type,
+	env: _env,
+	description: _description,
+	secret: _secret,
+	apply,
+	default: fallback,
+	defaultText,
+	...constraints
+}: SettingField) {
+	return {
+		apply,
+		...(fallback === undefined ? {} : { default: fallback }),
+		...(defaultText === undefined ? {} : { defaultText }),
+		constraints,
+	};
+}
+
 function projection(publications: SettingsPublication[]) {
 	return publications
 		.flatMap((publication) =>
 			publication.records.map((record) => ({
 				kind: "setting" as const,
 				...record,
+				...declarationDetail(publication.declaration.fields[record.key]),
 				slice: publication.slice,
 				documentPath: publication.source.path,
 				documentStatus: publication.source.status,
@@ -122,6 +146,17 @@ function settingBlock(record: ReturnType<typeof projection>[number]) {
 		: record.value === undefined
 			? "unset"
 			: escapeJsonControls(JSON.stringify(record.value));
+	const fallback = record.secret
+		? "env-only"
+		: record.defaultText !== undefined
+			? oneLine(record.defaultText, 2048)
+			: record.default === undefined
+				? "unset"
+				: escapeJsonControls(JSON.stringify(record.default));
+	const { absolute, choices, ...bounds } = record.constraints;
+	const constraints = Object.entries(bounds).map(([key, bound]) => `${key} ${bound}`);
+	if (absolute) constraints.push("absolute input");
+	if (choices) constraints.push(escapeJsonControls(JSON.stringify(choices)));
 	return {
 		detail: record,
 		lines: [
@@ -131,6 +166,9 @@ function settingBlock(record: ReturnType<typeof projection>[number]) {
 			`  origin: ${record.origin} | validity: ${record.status} | type: ${record.type}`,
 			`  description: ${oneLine(record.description, 2048)}`,
 			`  env: ${record.env}`,
+			`  default: ${fallback}`,
+			`  constraints: ${constraints.join("; ") || "none"}`,
+			`  applies: ${record.apply === "use" ? "next use" : record.apply}`,
 			`  document: ${oneLine(record.documentPath, 4096)}`,
 			...record.diagnostics.map((fact) => `  diagnostic: ${fact.code}: ${fact.message}`),
 		],

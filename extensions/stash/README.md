@@ -522,15 +522,15 @@ invoked. A fresh registry request publishes current configured values, not proof
 that an existing runtime applied them.
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| dir | `PI_STASH_DIR` | path | &lt;agentDir&gt;/stash | none | Handover store directory. |
-| capacity | `PI_STASH_CAPACITY` | boolean | true | none | Context-capacity observation and continuity requests. false turns off only this feature; other stash tools and commands stay available. |
-| checkpointPercent | `PI_STASH_CHECKPOINT_PERCENT` | number | 85 | max 100 | Positive checkpoint threshold, strictly below the decision threshold. |
-| decisionPercent | `PI_STASH_DECISION_PERCENT` | number | 90 | max 100 | Positive continuity-decision threshold, at most 100. |
-| stopPercent | `PI_STASH_STOP_PERCENT` | number | 95 | max 100 | Positive stop threshold, strictly above the decision threshold. |
-| intakeTokenBudget | `PI_STASH_INTAKE_TOKEN_BUDGET` | integer | unset | min 1 | Positive token budget for the unknown-usage text-intake trigger. |
-| checkpointDir | `PI_STASH_CHECKPOINT_DIR` | path | &lt;dir&gt;/checkpoints | none | Working-checkpoint directory, separate from the handover store. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| dir | `PI_STASH_DIR` | path | &lt;agentDir&gt;/stash | next use | none | Handover store directory. |
+| capacity | `PI_STASH_CAPACITY` | boolean | true | next use | none | Context-capacity observation and continuity requests. false turns off only this feature; other stash tools and commands stay available. |
+| checkpointPercent | `PI_STASH_CHECKPOINT_PERCENT` | number | 85 | next use | max 100 | Positive checkpoint threshold, strictly below the decision threshold. |
+| decisionPercent | `PI_STASH_DECISION_PERCENT` | number | 90 | next use | max 100 | Positive continuity-decision threshold, at most 100. |
+| stopPercent | `PI_STASH_STOP_PERCENT` | number | 95 | next use | max 100 | Positive stop threshold, strictly above the decision threshold. |
+| intakeTokenBudget | `PI_STASH_INTAKE_TOKEN_BUDGET` | integer | unset | next use | min 1 | Positive token budget for the unknown-usage text-intake trigger. |
+| checkpointDir | `PI_STASH_CHECKPOINT_DIR` | path | &lt;dir&gt;/checkpoints | next use | none | Working-checkpoint directory, separate from the handover store. |
 <!-- harness:settings:end -->
 
 All thresholds must be positive. When capacity is enabled, they must satisfy

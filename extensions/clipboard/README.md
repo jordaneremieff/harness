@@ -71,9 +71,9 @@ default. An invalid selected path uses the default and produces a diagnostic;
 it does not fall back to an underlying document value.
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| dir | `PI_CLIPBOARD_DIR` | path | &lt;agentDir&gt;/clipboard | none | Private clipboard archive directory. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| dir | `PI_CLIPBOARD_DIR` | path | &lt;agentDir&gt;/clipboard | next use | none | Private clipboard archive directory. |
 <!-- harness:settings:end -->
 
 Relative paths resolve against the host's agent directory. Paths do not expand

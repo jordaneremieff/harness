@@ -36,9 +36,9 @@ entry is rejected with a diagnostic, even when an environment token is set.
 Public settings records show only set/unset, never credential bytes.
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| apiKey | `PI_BRAVE_API_KEY` | string | env-only | none | Subscription token for Brave web search. Public-page reads require no token. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| apiKey | `PI_BRAVE_API_KEY` | string | env-only | next use | none | Subscription token for Brave web search. Public-page reads require no token. |
 <!-- harness:settings:end -->
 
 The token must be nonblank, contain no control or format characters, and fit the

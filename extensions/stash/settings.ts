@@ -32,7 +32,8 @@ export type SettingRecord = {
 	value?: string | number | boolean;
 };
 export type SettingsPublication = {
-	version: 1;
+	version: 2;
+	declaration: typeof settings;
 	slice: string;
 	source: Source;
 	records: SettingRecord[];
@@ -47,12 +48,14 @@ export const settings = {
 	slice: "stash",
 	fields: {
 		dir: {
+			apply: "use",
 			type: "path",
 			env: "PI_STASH_DIR",
 			description: "Handover store directory.",
 			defaultText: "<agentDir>/stash",
 		},
 		capacity: {
+			apply: "use",
 			type: "boolean",
 			env: "PI_STASH_CAPACITY",
 			description:
@@ -60,6 +63,7 @@ export const settings = {
 			default: true,
 		},
 		checkpointPercent: {
+			apply: "use",
 			type: "number",
 			env: "PI_STASH_CHECKPOINT_PERCENT",
 			description: "Positive checkpoint threshold, strictly below the decision threshold.",
@@ -67,6 +71,7 @@ export const settings = {
 			max: 100,
 		},
 		decisionPercent: {
+			apply: "use",
 			type: "number",
 			env: "PI_STASH_DECISION_PERCENT",
 			description: "Positive continuity-decision threshold, at most 100.",
@@ -74,6 +79,7 @@ export const settings = {
 			max: 100,
 		},
 		stopPercent: {
+			apply: "use",
 			type: "number",
 			env: "PI_STASH_STOP_PERCENT",
 			description: "Positive stop threshold, strictly above the decision threshold.",
@@ -81,12 +87,14 @@ export const settings = {
 			max: 100,
 		},
 		intakeTokenBudget: {
+			apply: "use",
 			type: "integer",
 			env: "PI_STASH_INTAKE_TOKEN_BUDGET",
 			description: "Positive token budget for the unknown-usage text-intake trigger.",
 			min: 1,
 		},
 		checkpointDir: {
+			apply: "use",
 			type: "path",
 			env: "PI_STASH_CHECKPOINT_DIR",
 			description: "Working-checkpoint directory, separate from the handover store.",
@@ -94,6 +102,7 @@ export const settings = {
 		},
 	},
 } as const;
+
 export type StashSettings = {
 	dir: string;
 	capacity: boolean;
@@ -103,7 +112,7 @@ export type StashSettings = {
 	intakeTokenBudget: number | undefined;
 	checkpointDir: string;
 };
-export type Snapshot = SettingsPublication & { values: StashSettings };
+export type Snapshot = Omit<SettingsPublication, "declaration"> & { values: StashSettings };
 type Field = {
 	type: "path" | "boolean" | "number" | "integer";
 	env: string;
@@ -315,7 +324,7 @@ export function readSettings(options: ReadOptions): Snapshot {
 		values[key] = record.value;
 		records.push(record);
 	}
-	return { version: 1, slice: settings.slice, source, values: values as Snapshot["values"], records, diagnostics };
+	return { version: 2, slice: settings.slice, source, values: values as Snapshot["values"], records, diagnostics };
 }
 
 function invalidRelations(values: StashSettings): Set<string> {
@@ -332,37 +341,40 @@ function invalidRelations(values: StashSettings): Set<string> {
 	return invalid;
 }
 
-export function publishSettings(bus: SettingsBus, options: ReadOptions): () => void {
-	const publish = () => {
-		const snapshot = readSettings(options);
-		const invalid = invalidRelations(snapshot.values);
-		if (invalid.size) {
-			for (const key of invalid) {
-				const record = snapshot.records.find((item) => item.key === key);
-				if (!record) throw new Error(`Missing setting record ${settings.slice}.${key}`);
-				record.status = "invalid";
-				snapshot.diagnostics.push(diagnostic(record.name, record.origin, "relation"));
-			}
+function checkedSnapshot(options: ReadOptions): Snapshot {
+	const snapshot = readSettings(options);
+	const invalid = invalidRelations(snapshot.values);
+	if (invalid.size) {
+		for (const key of invalid) {
+			const record = snapshot.records.find((item) => item.key === key);
+			if (!record) throw new Error(`Missing setting record ${settings.slice}.${key}`);
+			record.status = "invalid";
+			snapshot.diagnostics.push(diagnostic(record.name, record.origin, "relation"));
 		}
-		const publication: SettingsPublication = {
-			version: 1,
-			slice: snapshot.slice,
-			source: snapshot.source,
-			records: snapshot.records,
-			diagnostics: snapshot.diagnostics,
-		};
-		if (Buffer.byteLength(JSON.stringify(publication)) > 262144)
-			throw new Error("Settings publication exceeds byte limit");
-		bus.emit(SETTINGS_PUBLISH, structuredClone(publication));
-	};
-	const unsubscribe = bus.on(SETTINGS_REQUEST, (value) => {
-		if (object(value) && value.version === 1) publish();
+	}
+	return snapshot;
+}
+
+function bounded<T>(value: T): T {
+	if (Buffer.byteLength(JSON.stringify(value)) > 262144) throw new Error("Settings payload exceeds byte limit");
+	return structuredClone(value);
+}
+
+function publication(options: ReadOptions): SettingsPublication {
+	const { slice, source, records, diagnostics } = checkedSnapshot(options);
+	return bounded({ version: 2, slice, declaration: settings, source, records, diagnostics });
+}
+
+export function publishSettings(bus: SettingsBus, options: ReadOptions): () => void {
+	const publish = () => bus.emit(SETTINGS_PUBLISH, publication(options));
+	const off = bus.on(SETTINGS_REQUEST, (value) => {
+		if (object(value) && value.version === 2) publish();
 	});
 	try {
 		publish();
 	} catch (error) {
-		unsubscribe();
+		off();
 		throw error;
 	}
-	return unsubscribe;
+	return off;
 }

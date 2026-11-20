@@ -141,14 +141,14 @@ test("ordinary publication refreshes and native archive reads remain host-isolat
 		);
 		assert.match(JSON.stringify(nativeResult), /native-entry/);
 		assert.doesNotMatch(JSON.stringify(nativeResult), /ordinary-entry/);
-		for (const request of [null, {}, { version: 2 }]) bus.emit("harness:settings:request", request);
+		for (const request of [null, {}, { version: 1 }]) bus.emit("harness:settings:request", request);
 		assert.equal(publications.length, 2);
 		process.env.PI_CLIPBOARD_DIR = "env-archive";
-		bus.emit("harness:settings:request", { version: 1 });
+		bus.emit("harness:settings:request", { version: 2 });
 		assert.equal(publications.at(-1)?.records[0].value, join(nativeDir, "env-archive"));
 		assert.equal(publications.at(-1)?.records[0].origin, "env");
 		process.env.PI_CLIPBOARD_DIR = "";
-		bus.emit("harness:settings:request", { version: 1 });
+		bus.emit("harness:settings:request", { version: 2 });
 		assert.equal(publications.at(-1)?.records[0].value, join(nativeDir, "clipboard"));
 		assert.equal(publications.at(-1)?.diagnostics[0].source, "env");
 		delete process.env.PI_CLIPBOARD_DIR;
@@ -156,20 +156,20 @@ test("ordinary publication refreshes and native archive reads remain host-isolat
 			join(ordinaryDir, "harness.json"),
 			JSON.stringify({ version: 1, clipboard: { dir: "changed-archive" } }),
 		);
-		bus.emit("harness:settings:request", { version: 1 });
+		bus.emit("harness:settings:request", { version: 2 });
 		assert.equal(publications.at(-1)?.records[0].value, join(nativeDir, "native-archive"));
 		await writeFile(
 			join(nativeDir, "harness.json"),
 			JSON.stringify({ version: 1, clipboard: { dir: "changed-archive" } }),
 		);
-		bus.emit("harness:settings:request", { version: 1 });
+		bus.emit("harness:settings:request", { version: 2 });
 		assert.equal(publications.at(-1)?.records[0].value, join(nativeDir, "changed-archive"));
 		shutdown();
 		assert.equal(bus.listenerCount("harness:settings:request"), 1);
 		nativeClose();
 		nativeClose();
 		assert.equal(bus.listenerCount("harness:settings:request"), 0);
-		bus.emit("harness:settings:request", { version: 1 });
+		bus.emit("harness:settings:request", { version: 2 });
 		assert.equal(publications.length, 6);
 	} finally {
 		shutdown();

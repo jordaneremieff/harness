@@ -24,6 +24,7 @@ mechanism without amending this document first.
   name. Example: `{ "version": 1, "policy": { "mode": "enforce" } }`.
 - A slice reads only its own section and validates only its own keys. It never
   reads, validates, or writes another slice's section.
+- The document is machine-scoped. There is no project-scoped harness document.
 - No project discovery, includes, watchers, writes, live reload, migration, or
   reader for any retired document.
 - A missing document is normal: source status `missing`, no diagnostic.
@@ -146,8 +147,9 @@ type SettingRecord = {
 };
 type Diagnostic = { field: string; source: Origin; code: string; message: string };
 type SettingsPublication = {
-  version: 1;
+  version: 2;
   slice: string;
+  declaration: Declaration; // the slice's plain `settings` export, copied
   source: Source;
   records: SettingRecord[]; // declaration order
   diagnostics: Diagnostic[];
@@ -155,7 +157,9 @@ type SettingsPublication = {
 ```
 
 The local snapshot adds the slice's typed `values`, which may hold an accepted
-secret. `values` never leaves the slice.
+secret. `values` never leaves the slice. `declaration` is the plain data of the
+[declaration](#declaration) below, so a consumer learns types, choices, bounds,
+defaults, secrecy, and application timing from the owner without importing it.
 
 ## Declaration
 
@@ -177,6 +181,7 @@ export const settings = {
       env: "PI_POLICY_DIR",
       description: "Private directory for rules, approved data, and telemetry.",
       defaultText: "<agentDir>/policy",
+      apply: "reload",
     },
     mode: {
       type: "enum",
@@ -184,35 +189,59 @@ export const settings = {
       choices: ["observe", "notice", "annotate", "enforce"],
       default: "observe",
       description: "Machine mode. observe records facts and candidate effects only; notice adds operator notices; annotate adds model guidance; enforce also applies approved denials and corrections. No mode unloads the extension. An ordinary --policy-mode flag overrides it for that session.",
+      apply: "reload",
     },
   },
 } as const;
-export function readSettings(options: { agentDir: string; env?: Readonly<Record<string, string | undefined>> }): Snapshot;
-export function publishSettings(bus: SettingsBus, options: { agentDir: string; env?: Readonly<Record<string, string | undefined>> }): () => void;
+type ReadOptions = { agentDir: string; env?: Readonly<Record<string, string | undefined>> };
+export function readSettings(options: ReadOptions): Snapshot;
+export function publishSettings(bus: SettingsBus, options: ReadOptions): () => void;
 ```
 
 Field entries carry `type`, `env` (always explicit and equal to the
-`PI_<SLICE>_<KEY>` name above), `description`, and optionally `default` (a
-static JSON value the reader uses), `defaultText` (README text for a default
-the slice derives at run time), `secret`, `absolute`, `min`, `max`,
-`minLength`, `maxLength`, and `choices`. A field has at most one of `default`
-and `defaultText`. Semantic checks and derivations live in the slice's reader
-code, not in the plain declaration. Without injected `env`, a read uses the
-current `process.env`. A slice publishes its own cross-field checks inside its
-`publishSettings`; the function takes no validation callback.
+`PI_<SLICE>_<KEY>` name above), `description`, `apply` (see
+[Application timing](#application-timing)), and optionally `default` (a static
+JSON value the reader uses), `defaultText` (README text for a default the slice
+derives at run time), `secret`, `absolute`, `min`, `max`, `minLength`,
+`maxLength`, and `choices`. A field has at most one of `default` and
+`defaultText`. Semantic checks and derivations live in the slice's reader code,
+not in the plain declaration. Without injected `env`, a read uses the current
+`process.env`. A slice applies its own cross-field checks inside its
+publication; `publishSettings` takes no validation callback.
 
-## Inspection events
+## Application timing
+
+`apply` states when a saved document change reaches the slice's running code.
+It describes the slice's actual consumption sites; when sites differ, it names
+the latest one.
+
+| `apply` | Meaning |
+|---|---|
+| `use` | The slice reads the document again at each use. A saved change applies at the next use in every process that loads the slice, unless an environment value masks it there. |
+| `reload` | The slice reads the value when Pi loads the extension: ordinary factory setup, which `/reload` and new, resumed, or forked sessions repeat, or Durable host creation. A saved change applies after a reload or a new session in ordinary Pi and in a new Durable host. |
+| `restart` | The value is read once per process, for example at module load or by a separately started native application at launch. A saved change applies when that process starts again. |
+
+This contract defines no live application operation. A `use` setting needs
+none; an owner that needs one amends this contract first. A fresh publication
+shows what the document now resolves to, not what a running consumer applied.
+
+## Events
 
 `harness:settings:publish` carries `SettingsPublication`.
-`harness:settings:request` carries `{ version: 1 }`. These are process-local
-payloads on `pi.events`. Only version `1` exists.
+`harness:settings:request` carries `{ version: 2 }`. These are process-local
+payloads on `pi.events`. Only version `2` exists.
 
 Publisher lifecycle, at factory setup (ordinary) or native host creation:
 
 1. Subscribe to `harness:settings:request`.
-2. On a request with `version === 1`, read fresh and emit the publication.
+2. On a request with `version === 2`, read fresh and emit the publication
+   synchronously, during the request's delivery.
 3. Emit one publication during setup as well.
 4. Return the unsubscribe function; call it on `session_shutdown` or host close.
+
+A publisher created without injected `env` reads the current `process.env` for
+every publication, including `PI_HARNESS_FILE`; it keeps no copy of the
+environment.
 
 A publication is a configuration snapshot, not proof that a running runtime
 applied a value. It carries no execution capability, secret value, or local
@@ -225,11 +254,13 @@ subscribes to `harness:settings:publish` before it emits its first request,
 clears its previous publications and emits a new request for each query, and
 unsubscribes when its runtime ends (`session_shutdown` or host close). The bus
 delivers synchronously, so the query reads the responses that the request
-produced. It validates each envelope and record defensively, ignores malformed publications and counts them, rejects any
-secret record that carries a value, applies the publication bounds above and
-keeps at most 64 slices (counting further new slices as omitted), copies only
-the fields above, and replaces each slice's previous publication. Coverage is
-the set of responding publishers, never an inventory of absent ones.
+produced. It validates each envelope, declaration, and record defensively,
+ignores malformed publications and counts them, rejects any secret record that
+carries a value, applies the publication bounds above and keeps at most 64
+slices (counting further new slices as omitted), copies only the fields above,
+and replaces each slice's previous publication. Coverage is the set of
+responding publishers, never an inventory of absent ones. The registry never
+writes.
 
 ## README table
 
@@ -237,13 +268,14 @@ Each declaring slice's README holds its configuration table between
 `<!-- harness:settings:start -->` and `<!-- harness:settings:end -->`. The
 repository check generates the rows from the plain declaration:
 
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
 
 Default text is `env-only` for a secret, `defaultText` when present, the JSON
-form of `default` when present, and `unset` otherwise. Constraints list `min`,
-`max`, `minLength`, `maxLength`, `absolute input`, and the choices, or `none`.
-Do not hand-edit the rows.
+form of `default` when present, and `unset` otherwise. Applies is `next use`,
+`reload`, or `restart` for the `apply` values `use`, `reload`, and `restart`.
+Constraints list `min`, `max`, `minLength`, `maxLength`, `absolute input`, and
+the choices, or `none`. Do not hand-edit the rows.
 
 ## Verification
 
@@ -272,9 +304,10 @@ Do not hand-edit the rows.
   skips, including hidden symlink entries.
   It imports each `settings.ts` and validates the `settings` export: slice name
   equal to the directory, valid keys, types, bounds, and choices, explicit and
-  unique `PI_*` names, at most one of `default` and `defaultText`, and secrets
-  as strings without defaults, and each `env` equal to its `PI_<SLICE>_<KEY>`
-  name. It does not reject reader or publisher bodies in the module. It imports
+  unique `PI_*` names, at most one of `default` and `defaultText`, secrets
+  as strings without defaults, an `apply` value on every field, and each `env`
+  equal to its `PI_<SLICE>_<KEY>` name. It does not reject reader or publisher
+  bodies in the module. It imports
   each module, so it cannot prove that an import performs no work; review
   enforces that rule. Context inputs `PI_AGENT_DIR`, `PI_AGENT_SESSIONS_DIR`,
   `PI_MANAGED_INSTALL_ROOT`, `PI_CODING_AGENT_DIR` (Pi's own agent-directory
@@ -290,8 +323,9 @@ Do not hand-edit the rows.
   their diagnostic limit, invalid-key placeholders, Unicode-safe unknown-key
   truncation with intact publication records and diagnostics, secrets,
   malformed and missing documents, a
-  section that is not an object, relative and absolute `PI_HARNESS_FILE`, and
-  the publication handshake including unsubscribe.
+  section that is not an object, relative and absolute `PI_HARNESS_FILE`, the
+  publication handshake with its declaration, a publisher that follows a
+  changed `process.env` `PI_HARNESS_FILE` at its next request, and unsubscribe.
 - Slice-local tests cover slice-specific semantics: session flags, semantic
   checks, derived defaults with an overridden dependency, cross-field
   publication checks, and structured validators. No slice test imports another

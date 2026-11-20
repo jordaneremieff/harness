@@ -156,7 +156,7 @@ function captureSettings(bus: SettingsBus) {
 	});
 	const refresh = () => {
 		publications = [];
-		bus.emit("harness:settings:request", { version: 1 });
+		bus.emit("harness:settings:request", { version: 2 });
 	};
 	refresh();
 	return { snapshots: () => publications, refresh, dispose };
@@ -184,12 +184,12 @@ test("publisher ignores unsupported requests and omits local values", async (t) 
 	assert.equal(publications.length, 1);
 	assert.equal(Object.hasOwn(publications[0], "values"), false);
 	assert.equal(publications[0].records.find((record) => record.key === "corpus")?.value, defaultCorpusRoot());
-	bus.emit("harness:settings:request", { version: 2 });
-	assert.equal(publications.length, 1);
 	bus.emit("harness:settings:request", { version: 1 });
+	assert.equal(publications.length, 1);
+	bus.emit("harness:settings:request", { version: 2 });
 	assert.equal(publications.length, 2);
 	stop();
-	bus.emit("harness:settings:request", { version: 1 });
+	bus.emit("harness:settings:request", { version: 2 });
 	assert.equal(publications.length, 2);
 	off();
 });

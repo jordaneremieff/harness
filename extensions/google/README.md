@@ -353,11 +353,11 @@ offered tools only.
 ## Configuration
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| executable | `PI_GOOGLE_EXECUTABLE` | path | &lt;agentDir&gt;/google/bin/&lt;pinned version&gt;/gws | absolute input | Absolute path to the gws executable. The default is the copy that /google setup installs. |
-| configDir | `PI_GOOGLE_CONFIG_DIR` | path | &lt;agentDir&gt;/google/gws | none | Dedicated gws configuration directory for the personal Google account. |
-| expectedAccount | `PI_GOOGLE_EXPECTED_ACCOUNT` | string | unset | minLength 3; maxLength 320 | Google account address that every operation must use. When unset, the account that /google setup signed in applies. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| executable | `PI_GOOGLE_EXECUTABLE` | path | &lt;agentDir&gt;/google/bin/&lt;pinned version&gt;/gws | next use | absolute input | Absolute path to the gws executable. The default is the copy that /google setup installs. |
+| configDir | `PI_GOOGLE_CONFIG_DIR` | path | &lt;agentDir&gt;/google/gws | next use | none | Dedicated gws configuration directory for the personal Google account. |
+| expectedAccount | `PI_GOOGLE_EXPECTED_ACCOUNT` | string | unset | next use | minLength 3; maxLength 320 | Google account address that every operation must use. When unset, the account that /google setup signed in applies. |
 <!-- harness:settings:end -->
 
 ## Files and checks

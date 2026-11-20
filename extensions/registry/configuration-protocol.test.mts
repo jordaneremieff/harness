@@ -8,13 +8,22 @@ import {
 	SETTINGS_REQUEST,
 	type SettingsPublication,
 } from "./configuration-protocol.ts";
-import { fakePublisher, publication } from "./configuration-fixtures.mts";
+import { fakePublisher, publication, withDeclaration } from "./configuration-fixtures.mts";
 
 const fact = { field: "document", source: "file" as const, code: "document" as const, message: "untrusted error text" };
 
 test("publication parsing copies only protocol fields and sanitizes diagnostic messages", () => {
 	const input = { ...publication(), values: { token: "private-value" }, execute: () => {} };
 	input.records[0] = { ...input.records[0], type: "json", value: { nested: [1, true, null] } };
+	const field = input.declaration.fields.count;
+	input.declaration.fields.count = {
+		type: "json",
+		env: field.env,
+		description: field.description,
+		apply: "use",
+		default: { nested: [0] },
+	};
+
 	input.diagnostics = [fact];
 	const parsed = parseSettingsPublication(input);
 	assert.ok(parsed);
@@ -22,6 +31,8 @@ test("publication parsing copies only protocol fields and sanitizes diagnostic m
 	assert.doesNotMatch(JSON.stringify(parsed), /private-value|untrusted error text|execute/);
 	assert.equal(Object.hasOwn(parsed, "values"), false);
 	assert.notEqual(parsed.records[0].value, input.records[0].value);
+	assert.deepEqual(parsed.declaration, input.declaration);
+	assert.notEqual(parsed.declaration.fields.count.default, input.declaration.fields.count.default);
 	input.records[0].value = "changed";
 	assert.deepEqual(parsed.records[0].value, { nested: [1, true, null] });
 });
@@ -66,7 +77,7 @@ test("publication parsing retains records and diagnostics beside a safely trunca
 test("publication parsing rejects malformed envelopes, records, sources and diagnostics", () => {
 	const changes: ((input: SettingsPublication) => void)[] = [
 		(input) => {
-			Object.assign(input, { version: 2 });
+			Object.assign(input, { version: 1 });
 		},
 		(input) => {
 			input.slice = "invalid-slice";
@@ -158,6 +169,89 @@ test("publication parsing rejects malformed envelopes, records, sources and diag
 	}
 });
 
+test("publication declarations reject inconsistent records and invalid field metadata", () => {
+	for (const change of [
+		(input: SettingsPublication) => {
+			input.declaration.slice = "another";
+		},
+		(input: SettingsPublication) => {
+			input.records.reverse();
+		},
+		(input: SettingsPublication) => {
+			input.records.pop();
+		},
+		(input: SettingsPublication) => {
+			input.records[1].secret = false;
+		},
+		(input: SettingsPublication) => {
+			input.records[0].description = "A different description.";
+		},
+		(input: SettingsPublication) => {
+			input.records[0].value = 21;
+		},
+		(input: SettingsPublication) => {
+			input.declaration.fields.count.apply = "live" as never;
+		},
+		(input: SettingsPublication) => {
+			input.declaration.fields.count.env = input.records[0].env = "PI_EXAMPLE_OTHER";
+		},
+		(input: SettingsPublication) => {
+			input.declaration.fields.count.defaultText = "a second default";
+		},
+		(input: SettingsPublication) => {
+			input.declaration.fields.token.default = "private-declared-value";
+		},
+		(input: SettingsPublication) => {
+			input.declaration.fields.token.defaultText = "private-declared-text";
+		},
+		(input: SettingsPublication) => {
+			input.declaration.fields.count.min = 21;
+		},
+		(input: SettingsPublication) => {
+			input.declaration.fields.count.default = 0;
+		},
+		(input: SettingsPublication) => {
+			input.declaration.fields.count.maxLength = 10;
+		},
+		(input: SettingsPublication) => {
+			Object.assign(input.declaration.fields.count, { extra: "not declared" });
+		},
+	]) {
+		const input = publication();
+		change(input);
+
+		assert.equal(parseSettingsPublication(input), undefined, String(change));
+	}
+});
+
+test("publication declarations reject exotic data without invoking publisher code", () => {
+	let called = false;
+	const mark = () => {
+		called = true;
+		return "not data";
+	};
+	const base = publication();
+	const exotic = [
+		Object.defineProperty({ ...base.declaration }, "fields", { get: mark }),
+		{ ...base.declaration, [Symbol("extra")]: true },
+		{ ...base.declaration, fields: Object.create(base.declaration.fields) },
+		{ ...base.declaration, toJSON: mark },
+		new Proxy(base.declaration, {
+			getPrototypeOf: () => {
+				called = true;
+				return Object.prototype;
+			},
+		}),
+		{ ...base.declaration, fields: { count: { ...base.declaration.fields.count, default: base.declaration } } },
+	];
+	const cyclic = { ...base.declaration, extra: {} };
+	cyclic.extra = cyclic;
+	for (const declaration of [...exotic, cyclic, null, undefined]) {
+		assert.equal(parseSettingsPublication({ ...base, declaration }), undefined);
+	}
+	assert.equal(called, false);
+});
+
 test("publication values enforce type, JSON depth, node and byte bounds", () => {
 	const input = publication();
 	const record = input.records[0];
@@ -170,12 +264,22 @@ test("publication values enforce type, JSON depth, node and byte bounds", () => 
 		["boolean", true, 1],
 	] as const) {
 		record.type = type;
+		input.declaration.fields.count = {
+			type,
+			description: record.description,
+			env: record.env,
+			apply: "use",
+			...(type === "enum" ? { choices: ["choice"] } : {}),
+		};
+
 		record.value = valid;
 		assert.ok(parseSettingsPublication(input), type);
 		record.value = invalid;
 		assert.equal(parseSettingsPublication(input), undefined, type);
 	}
 	record.type = "json";
+	input.declaration.fields.count.type = "json";
+
 	let nested: unknown = null;
 	for (let depth = 0; depth < 33; depth++) nested = [nested];
 	const cyclic: unknown[] = [];
@@ -198,12 +302,14 @@ test("publication values enforce type, JSON depth, node and byte bounds", () => 
 });
 
 test("publication record, diagnostic and combined byte limits admit their bounded edge", () => {
-	const input = publication();
-	input.records = Array.from({ length: 128 }, (_, index) => ({
-		...input.records[0],
-		key: `key${index}`,
-		name: `example.key${index}`,
-	}));
+	const base = publication();
+	const keys = Array.from({ length: 128 }, (_, index) => `key${index}`);
+	const env = (key: string) => `PI_EXAMPLE_${key.toUpperCase()}`;
+	const input = withDeclaration(
+		base,
+		Object.fromEntries(keys.map((key) => [key, { ...base.declaration.fields.count, env: env(key) }])),
+	);
+	input.records = keys.map((key) => ({ ...base.records[0], key, name: `example.${key}`, env: env(key) }));
 	input.diagnostics = Array.from({ length: 385 }, () => ({ ...fact }));
 	assert.ok(parseSettingsPublication(input));
 	input.diagnostics.push(fact);
@@ -211,14 +317,32 @@ test("publication record, diagnostic and combined byte limits admit their bounde
 	input.diagnostics.pop();
 	input.records.push({ ...input.records[0], key: "extra", name: "example.extra" });
 	assert.equal(parseSettingsPublication(input), undefined);
-	input.records = Array.from({ length: 3 }, (_, index) => ({
-		...input.records[0],
-		key: `key${index}`,
-		name: `example.key${index}`,
-		type: "string",
-		value: "x".repeat(100000),
-	}));
-	assert.equal(parseSettingsPublication(input), undefined);
+	assert.equal(
+		parseSettingsPublication(
+			withDeclaration(input, { ...input.declaration.fields, extra: base.declaration.fields.count }),
+		),
+		undefined,
+	);
+	const huge = withDeclaration(
+		{
+			...base,
+			records: input.records.slice(0, 2).map((row) => ({ ...row, type: "string", value: "v".repeat(66000) })),
+		},
+		Object.fromEntries(
+			keys.slice(0, 2).map((key) => [
+				key,
+				{
+					type: "string",
+					env: env(key),
+					description: base.records[0].description,
+					apply: "use",
+					maxLength: 66000,
+					default: "d".repeat(66000),
+				},
+			]),
+		),
+	);
+	assert.equal(parseSettingsPublication(huge), undefined, "declaration and record bytes share one publication limit");
 });
 
 test("collector replaces slices, clones snapshots, refreshes coverage and disposes once", () => {
@@ -236,7 +360,7 @@ test("collector replaces slices, clones snapshots, refreshes coverage and dispos
 		assert.equal(collector.snapshots()[0].records[0].value, 7);
 		bus.emit(SETTINGS_PUBLISH, null);
 		assert.equal(collector.coverage().malformed, 1);
-		current = { ...publication(), slice: "another", records: [] };
+		current = withDeclaration({ ...publication(), slice: "another", records: [] }, {});
 		collector.refresh();
 		assert.deepEqual(collector.coverage(), { status: "available", slices: ["another"], malformed: 0, omitted: 0 });
 		stop();
@@ -259,10 +383,13 @@ test("collector caps slices but still replaces admitted slices at capacity", () 
 	const collector = collectSettings(bus);
 	try {
 		for (let index = 0; index < 66; index++)
-			bus.emit(SETTINGS_PUBLISH, { ...publication(), slice: `slice${index}`, records: [] });
+			bus.emit(SETTINGS_PUBLISH, withDeclaration({ ...publication(), slice: `slice${index}`, records: [] }, {}));
 		assert.equal(collector.snapshots().length, 64);
 		assert.equal(collector.coverage().omitted, 2);
-		bus.emit(SETTINGS_PUBLISH, { ...publication(), slice: "slice0", records: [], diagnostics: [fact] });
+		bus.emit(
+			SETTINGS_PUBLISH,
+			withDeclaration({ ...publication(), slice: "slice0", records: [], diagnostics: [fact] }, {}),
+		);
 		assert.equal(collector.snapshots()[0].diagnostics.length, 1);
 		assert.equal(collector.coverage().omitted, 2);
 		collector.refresh();
@@ -283,7 +410,7 @@ test("collector releases failed setup and exposes refresh failure without raw er
 		},
 		emit: (channel: string, request: unknown) => {
 			assert.equal(channel, SETTINGS_REQUEST);
-			assert.deepEqual(request, { version: 1 });
+			assert.deepEqual(request, { version: 2 });
 			requests++;
 			if (fail) throw new Error("private-error");
 		},

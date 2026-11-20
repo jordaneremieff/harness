@@ -351,6 +351,7 @@ export type Field = {
 	type: "string" | "path" | "integer" | "number" | "boolean" | "enum" | "json";
 	env: string;
 	description: string;
+	apply: "use" | "reload" | "restart";
 	default?: unknown;
 	defaultText?: string;
 	secret?: boolean;
@@ -366,6 +367,7 @@ const fieldKeys = new Set([
 	"type",
 	"env",
 	"description",
+	"apply",
 	"default",
 	"defaultText",
 	"secret",
@@ -377,6 +379,10 @@ const fieldKeys = new Set([
 	"choices",
 ]);
 const settingTypes = new Set(["string", "path", "integer", "number", "boolean", "enum", "json"]);
+const applies = { use: "next use", reload: "reload", restart: "restart" } as const satisfies Record<
+	Field["apply"],
+	string
+>;
 const validText = (value: unknown, max: number): value is string =>
 	typeof value === "string" && value.length > 0 && value.length <= max && !/[\p{Cc}\p{Cf}\ud800-\udfff]/u.test(value);
 const plainObject = (value: unknown): value is Record<string, unknown> =>
@@ -436,6 +442,7 @@ function validateField(field: Field): void {
 		!validText(field.description, 2048)
 	)
 		throw new Error("Invalid field declaration");
+	if (typeof field.apply !== "string" || !Object.hasOwn(applies, field.apply)) throw new Error("Invalid apply value");
 	validateFieldBounds(field);
 	validateFieldOptions(field);
 	if (field.type === "enum") {
@@ -504,12 +511,12 @@ export function settingsReadme(declaration: Declaration): string {
 			.map((name) => `${name} ${field[name]}`);
 		if (field.absolute) constraints.push("absolute input");
 		if (field.choices) constraints.push(field.choices.join(", "));
-		return `| ${[key, `\`${field.env}\``, field.type, tableCell(fallback), tableCell(constraints.join("; ") || "none"), tableCell(field.description)].join(" | ")} |`;
+		return `| ${[key, `\`${field.env}\``, field.type, tableCell(fallback), applies[field.apply], tableCell(constraints.join("; ") || "none"), tableCell(field.description)].join(" | ")} |`;
 	});
 	return [
 		README_START,
-		"| Key | Environment | Type | Default | Constraints | Description |",
-		"|---|---|---|---|---|---|",
+		"| Key | Environment | Type | Default | Applies | Constraints | Description |",
+		"|---|---|---|---|---|---|---|",
 		...rows,
 		README_END,
 	].join("\n");

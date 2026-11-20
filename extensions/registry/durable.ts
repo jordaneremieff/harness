@@ -473,7 +473,11 @@ async function resolveCall(
 	return { snapshot: readDurableSnapshot(host, api.registry, agent, at), agent };
 }
 
-export function createRegistryDurableContribution(source: string, bus: SettingsBus): RegistryDurableContribution {
+export function createRegistryDurableContribution(
+	source: string,
+	bus: SettingsBus,
+	stopFactorySettings?: () => void,
+): RegistryDurableContribution {
 	return {
 		name: "registry",
 		source,
@@ -481,6 +485,7 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 		create(host) {
 			const durable = host.durable;
 			const hostEpoch = randomUUID();
+			stopFactorySettings?.();
 			const stopPublishing = publishSettings(bus, { agentDir: host.agentDir });
 			const configuredSettings = settingsReader(bus);
 			configuredSettings.read();

@@ -1051,12 +1051,12 @@ Settings apply at extension or native host creation. Registry publications are
 fresh configuration snapshots, not proof of runtime application.
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| executable | `PI_REX_EXECUTABLE` | string | "rex" | minLength 1; maxLength 4096 | Installed Rex executable name or path. The extension uses the supported CLI without a shell. |
-| maxOutputBytes | `PI_REX_MAX_OUTPUT_BYTES` | integer | 65536 | min 4096; max 1048576 | Maximum combined stdout/stderr bytes retained from one Rex CLI process. Core results have a separate aggregate bound. Capture is not a complete transcript. |
-| maxWaitMs | `PI_REX_MAX_WAIT_MS` | integer | 120000 | min 1000; max 300000 | Deadline cap for a complete Rex tool operation, including nested calls and cleanup. Background label CLI calls also use this cap. A larger request uses the cap and reports it. Deadline cancellation does not stop persistent terminal work. |
-| maxRecords | `PI_REX_MAX_RECORDS` | integer | 128 | min 2; max 256 | Maximum retained ownership and operation records per caller. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| executable | `PI_REX_EXECUTABLE` | string | "rex" | reload | minLength 1; maxLength 4096 | Installed Rex executable name or path. The extension uses the supported CLI without a shell. |
+| maxOutputBytes | `PI_REX_MAX_OUTPUT_BYTES` | integer | 65536 | reload | min 4096; max 1048576 | Maximum combined stdout/stderr bytes retained from one Rex CLI process. Core results have a separate aggregate bound. Capture is not a complete transcript. |
+| maxWaitMs | `PI_REX_MAX_WAIT_MS` | integer | 120000 | reload | min 1000; max 300000 | Deadline cap for a complete Rex tool operation, including nested calls and cleanup. Background label CLI calls also use this cap. A larger request uses the cap and reports it. Deadline cancellation does not stop persistent terminal work. |
+| maxRecords | `PI_REX_MAX_RECORDS` | integer | 128 | reload | min 2; max 256 | Maximum retained ownership and operation records per caller. |
 <!-- harness:settings:end -->
 
 Combined CLI stdout/stderr retention is bounded per subprocess, with one shared

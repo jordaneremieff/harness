@@ -941,7 +941,9 @@ function declarationFixture() {
 	const declarationPath = join(directory, "settings.ts");
 	const declaration: Declaration = {
 		slice: "example",
-		fields: { name: { type: "string", env: "PI_EXAMPLE_NAME", description: "Name.", default: "safe" } },
+		fields: {
+			name: { type: "string", env: "PI_EXAMPLE_NAME", description: "Name.", apply: "reload", default: "safe" },
+		},
 	};
 	writeFileSync(
 		declarationPath,
@@ -1191,6 +1193,7 @@ function plainDeclaration(field: Record<string, unknown> = {}): unknown {
 				type: "integer",
 				env: "PI_EXAMPLE_CHECK_IN_MINUTES",
 				description: "Interval.",
+				apply: "reload",
 				default: 5,
 				...field,
 			},
@@ -1239,6 +1242,16 @@ test("plain declarations require explicit canonical environment names and valid 
 		assert.throws(() => validateSettingsDeclaration(value, "example"));
 });
 
+test("declarations require an exact application timing on every field", () => {
+	const declaration = plainDeclaration() as { fields: Record<string, Record<string, unknown>> };
+	delete declaration.fields.checkInMinutes.apply;
+	assert.throws(() => validateSettingsDeclaration(declaration, "example"), /Invalid apply value/);
+	for (const apply of ["use", "reload", "restart"])
+		assert.doesNotThrow(() => validateSettingsDeclaration(plainDeclaration({ apply }), "example"));
+	for (const apply of ["", "next use", "Reload", "toString", null, 1, ["use"]])
+		assert.throws(() => validateSettingsDeclaration(plainDeclaration({ apply }), "example"), /Invalid apply value/);
+});
+
 test("declarations reject executable, cyclic, and nonplain data without invoking accessors", () => {
 	let invoked = false;
 	const getter = {
@@ -1264,24 +1277,32 @@ test("README projection preserves literal rows, escaping, defaults, and constrai
 				type: "path",
 				env: "PI_EXAMPLE_DIR",
 				description: "A | B <C>.",
+				apply: "use",
 				defaultText: "<agentDir>/data",
 				minLength: 1,
 				maxLength: 64,
 				absolute: true,
 			},
-			mode: { type: "enum", env: "PI_EXAMPLE_MODE", description: "Mode.", choices: ["a", "b"], default: "a" },
-			secret: { type: "string", env: "PI_EXAMPLE_SECRET", description: "Secret.", secret: true },
-			optional: { type: "number", env: "PI_EXAMPLE_OPTIONAL", description: "Optional.", min: 0, max: 2 },
+			mode: {
+				type: "enum",
+				env: "PI_EXAMPLE_MODE",
+				description: "Mode.",
+				apply: "reload",
+				choices: ["a", "b"],
+				default: "a",
+			},
+			secret: { type: "string", env: "PI_EXAMPLE_SECRET", description: "Secret.", apply: "restart", secret: true },
+			optional: { type: "number", env: "PI_EXAMPLE_OPTIONAL", description: "Optional.", apply: "use", min: 0, max: 2 },
 		},
 	};
 	const table = [
 		"<!-- harness:settings:start -->",
-		"| Key | Environment | Type | Default | Constraints | Description |",
-		"|---|---|---|---|---|---|",
-		"| dir | `PI_EXAMPLE_DIR` | path | &lt;agentDir&gt;/data | minLength 1; maxLength 64; absolute input | A \\| B &lt;C&gt;. |",
-		'| mode | `PI_EXAMPLE_MODE` | enum | "a" | a, b | Mode. |',
-		"| secret | `PI_EXAMPLE_SECRET` | string | env-only | none | Secret. |",
-		"| optional | `PI_EXAMPLE_OPTIONAL` | number | unset | min 0; max 2 | Optional. |",
+		"| Key | Environment | Type | Default | Applies | Constraints | Description |",
+		"|---|---|---|---|---|---|---|",
+		"| dir | `PI_EXAMPLE_DIR` | path | &lt;agentDir&gt;/data | next use | minLength 1; maxLength 64; absolute input | A \\| B &lt;C&gt;. |",
+		'| mode | `PI_EXAMPLE_MODE` | enum | "a" | reload | a, b | Mode. |',
+		"| secret | `PI_EXAMPLE_SECRET` | string | env-only | restart | none | Secret. |",
+		"| optional | `PI_EXAMPLE_OPTIONAL` | number | unset | next use | min 0; max 2 | Optional. |",
 		"<!-- harness:settings:end -->",
 	].join("\n");
 	assert.equal(settingsReadme(declaration), table);

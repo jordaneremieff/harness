@@ -34,10 +34,10 @@ Ordinary Pi uses its public agent directory; Durable uses the host-supplied dire
 See [extension configuration](../../docs/conventions/extension-config.md).
 
 <!-- harness:settings:start -->
-| Key | Environment | Type | Default | Constraints | Description |
-|---|---|---|---|---|---|
-| dir | `PI_MEMORY_DIR` | path | unset | maxLength 1024; absolute input | Absolute directory of the external Markdown memory corpus. |
-| proactive | `PI_MEMORY_PROACTIVE` | boolean | true | none | Automatic recall candidates, storage cues, and the unavailable-state line for admitted input. false turns off only these notices; memory tools, guidance, and pointer indexes stay available. |
+| Key | Environment | Type | Default | Applies | Constraints | Description |
+|---|---|---|---|---|---|---|
+| dir | `PI_MEMORY_DIR` | path | unset | next use | maxLength 1024; absolute input | Absolute directory of the external Markdown memory corpus. |
+| proactive | `PI_MEMORY_PROACTIVE` | boolean | true | next use | none | Automatic recall candidates, storage cues, and the unavailable-state line for admitted input. false turns off only these notices; memory tools, guidance, and pointer indexes stay available. |
 <!-- harness:settings:end -->
 
 The path accepts at most 1024 UTF-16 code units and rejects empty, relative,

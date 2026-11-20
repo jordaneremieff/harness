@@ -1,9 +1,36 @@
-import type { SettingsBus, SettingsPublication } from "./configuration-protocol.ts";
+import type { Declaration, SettingsBus, SettingsPublication } from "./configuration-protocol.ts";
+
+export function withDeclaration(input: SettingsPublication, fields: Declaration["fields"]): SettingsPublication {
+	const declaration = { slice: input.slice, fields };
+	return { ...input, declaration };
+}
 
 export function publication(): SettingsPublication {
-	return {
-		version: 1,
+	const declaration: Declaration = {
 		slice: "example",
+		fields: {
+			count: {
+				type: "integer",
+				env: "PI_EXAMPLE_COUNT",
+				description: "A bounded count.",
+				default: 2,
+				min: 1,
+				max: 20,
+				apply: "use",
+			},
+			token: {
+				type: "string",
+				env: "PI_EXAMPLE_TOKEN",
+				description: "An environment-only secret.",
+				secret: true,
+				apply: "reload",
+			},
+		},
+	};
+	return {
+		version: 2,
+		slice: "example",
+		declaration,
 		source: { path: "/fixtures/harness.json", status: "missing", digest: null, observedAt: "2026-01-01T00:00:00.000Z" },
 		records: [
 			{
@@ -37,7 +64,7 @@ export function publication(): SettingsPublication {
 export function fakePublisher(bus: SettingsBus, current: () => SettingsPublication): () => void {
 	const emit = () => bus.emit("harness:settings:publish", structuredClone(current()));
 	const dispose = bus.on("harness:settings:request", (request) => {
-		if (request !== null && typeof request === "object" && "version" in request && request.version === 1) emit();
+		if (request !== null && typeof request === "object" && "version" in request && request.version === 2) emit();
 	});
 	emit();
 	return dispose;

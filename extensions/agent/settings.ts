@@ -12,6 +12,7 @@ export const settings = {
 	slice: "agent",
 	fields: {
 		idleMinutes: {
+			apply: "reload",
 			type: "number",
 			env: "PI_AGENT_IDLE_MINUTES",
 			description: "Idle host retirement interval in minutes; zero disables.",
@@ -20,6 +21,7 @@ export const settings = {
 			max: 35791,
 		},
 		checkInMinutes: {
+			apply: "use",
 			type: "number",
 			env: "PI_AGENT_CHECK_IN_MINUTES",
 			description: "Automatic owner check-in interval for model tasks in minutes; zero, the default, arms none.",
@@ -28,12 +30,14 @@ export const settings = {
 			max: 35791,
 		},
 		presets: {
+			apply: "use",
 			type: "json",
 			env: "PI_AGENT_PRESETS",
 			description: "Named execution presets with exact model identities and optional creation fields.",
 			default: {},
 		},
 		preferences: {
+			apply: "use",
 			type: "json",
 			env: "PI_AGENT_PREFERENCES",
 			description: "Delegation preferences, default preset, exclusions, planning budgets, and reporting guidance.",
@@ -68,7 +72,8 @@ type SettingRecord = {
 	value: unknown;
 };
 export type SettingsPublication = {
-	version: 1;
+	version: 2;
+	declaration: typeof settings;
 	slice: "agent";
 	source: Source;
 	records: SettingRecord[];
@@ -80,7 +85,7 @@ type SettingsValues = {
 	presets: ExecutionPresets;
 	preferences: DelegationPreferences;
 };
-type Snapshot = SettingsPublication & { values: SettingsValues };
+type Snapshot = Omit<SettingsPublication, "declaration"> & { values: SettingsValues };
 type ReadOptions = { agentDir: string; env?: Environment };
 export type SettingsBus = {
 	emit: (channel: string, data: unknown) => void;
@@ -267,25 +272,29 @@ export function readSettings(options: ReadOptions): Snapshot {
 			value: structuredClone(value),
 		});
 	}
-	return { version: 1, slice: "agent", source, values: values as SettingsValues, records, diagnostics };
+	return { version: 2, slice: "agent", source, values: values as SettingsValues, records, diagnostics };
+}
+
+function bounded<T>(value: T): T {
+	if (Buffer.byteLength(JSON.stringify(value)) > 262144) throw new Error("Settings payload exceeds byte limit");
+	return structuredClone(value);
+}
+
+function publication(options: ReadOptions): SettingsPublication {
+	const { slice, source, records, diagnostics } = readSettings(options);
+	return bounded({ version: 2, slice, declaration: settings, source, records, diagnostics });
 }
 
 export function publishSettings(bus: SettingsBus, options: ReadOptions): () => void {
-	const publish = () => {
-		const { version, slice, source, records, diagnostics } = readSettings(options);
-		const publication: SettingsPublication = { version, slice, source, records, diagnostics };
-		if (Buffer.byteLength(JSON.stringify(publication)) > 262144)
-			throw new Error("Settings publication exceeds byte limit");
-		bus.emit("harness:settings:publish", publication);
-	};
-	const unsubscribe = bus.on("harness:settings:request", (value) => {
-		if (object(value) && value.version === 1) publish();
+	const publish = () => bus.emit("harness:settings:publish", publication(options));
+	const off = bus.on("harness:settings:request", (value) => {
+		if (object(value) && value.version === 2) publish();
 	});
 	try {
 		publish();
 	} catch (error) {
-		unsubscribe();
+		off();
 		throw error;
 	}
-	return unsubscribe;
+	return off;
 }

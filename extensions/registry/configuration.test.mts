@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { compile } from "@earendil-works/pi-schema";
 import { createEventBus, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { SETTINGS_PUBLISH } from "./configuration-protocol.ts";
-import { fakePublisher, publication } from "./configuration-fixtures.mts";
+import { fakePublisher, publication, withDeclaration } from "./configuration-fixtures.mts";
 import { settingsReader, type SettingsSnapshot } from "./configuration.ts";
 import { lookup } from "./lookup.ts";
 import { parseQuery } from "./query.ts";
@@ -63,6 +66,10 @@ test("setting queries inspect fresh public snapshots, origins and diagnostics wi
 		assert.equal(rows[0].name, "example.count");
 		assert.equal(rows[0].value, 7);
 		assert.equal(rows[0].origin, "env");
+		assert.equal(rows[0].default, 2);
+		assert.equal(rows[0].apply, "use");
+		assert.deepEqual(rows[0].constraints, { min: 1, max: 20 });
+		assert.match(first.text, /default: 2\n {2}constraints: min 1; max 20\n {2}applies: next use/);
 		assert.match(first.text, /not proof a running runtime applied/);
 		assert.match(first.text, /example.unknown: file unknown/);
 		assert.equal(typeof first.details.cursor, "string");
@@ -70,6 +77,8 @@ test("setting queries inspect fresh public snapshots, origins and diagnostics wi
 		assert.equal(continuation.outcome, "ok", "observation time does not invalidate cursors");
 		assert.equal(verify(continuation)[0].secretState, "set");
 		assert.equal(Object.hasOwn(verify(continuation)[0], "value"), false);
+		assert.equal(Object.hasOwn(verify(continuation)[0], "default"), false);
+		assert.match(continuation.text, /default: env-only\n {2}constraints: none\n {2}applies: reload/);
 		const originalCursor = first.details.cursor;
 		current.source.observedAt = "2026-01-02T00:00:00.000Z";
 		current.source.digest = "a".repeat(64);
@@ -78,6 +87,13 @@ test("setting queries inspect fresh public snapshots, origins and diagnostics wi
 			"ok",
 			"observation time and document digest do not enter fingerprints",
 		);
+		current.declaration.fields.count.apply = "restart";
+		assert.equal(
+			(await inspect({ cursor: originalCursor })).outcome,
+			"stale_cursor",
+			"declaration changes enter fingerprints",
+		);
+		current.declaration.fields.count.apply = "use";
 		current.records[0] = { ...current.records[0], value: 2, status: "invalid", origin: "default" };
 		current.diagnostics.push({
 			field: "example.count",
@@ -175,7 +191,17 @@ test("setting output bounds drop whole rows or report a blocked page", async () 
 			value: "x".repeat(20000),
 		},
 	];
-	const dispose = fakePublisher(bus, () => huge);
+	const dispose = fakePublisher(bus, () =>
+		withDeclaration(huge, {
+			value: {
+				type: "string",
+				description: huge.records[0].description,
+				env: "PI_EXAMPLE_VALUE",
+				apply: "use",
+				maxLength: 20000,
+			},
+		}),
+	);
 	const reader = settingsReader(bus);
 	try {
 		const result = await lookup({
@@ -276,6 +302,47 @@ test("setting metadata keeps Unicode line separators off terminal rows", async (
 	assert.equal((result.details.records as { description: string }[])[0].description, "first\u2028second\u2029third");
 });
 
+test("setting rows show derived defaults and enum choices in text and structured output", async () => {
+	const input = publication();
+	const { env, description } = input.records[0];
+	input.records = [{ ...input.records[0], type: "enum", value: "manual" }];
+	const bus = createEventBus();
+	const dispose = fakePublisher(bus, () =>
+		withDeclaration(input, {
+			count: {
+				type: "enum",
+				env,
+				description,
+				apply: "restart",
+				choices: ["manual", "auto"],
+				defaultText: "Derived from the host mode.",
+			},
+		}),
+	);
+	const reader = settingsReader(bus);
+	try {
+		const result = await lookup({
+			params: { kind: "setting" },
+			snapshot: hostSnapshot,
+			settings: reader.read(),
+			session: {},
+			epoch: "fixture",
+		});
+		const [row] = verify(result);
+		assert.equal(row.defaultText, "Derived from the host mode.");
+		assert.equal(Object.hasOwn(row, "default"), false);
+		assert.deepEqual(row.constraints, { choices: ["manual", "auto"] });
+		assert.match(
+			result.text,
+			/default: Derived from the host mode\.\n {2}constraints: \["manual","auto"\]\n {2}applies: restart/,
+		);
+	} finally {
+		reader.dispose();
+		dispose();
+		bus.clear();
+	}
+});
+
 test("setting selectors reject content scans and tool/model-only parameters", () => {
 	for (const params of [
 		{ contains: "value" },
@@ -288,11 +355,26 @@ test("setting selectors reject content scans and tool/model-only parameters", ()
 	}
 });
 
-test("ordinary registry collects at setup, refreshes valid live setting queries, and releases its collector", async () => {
-	const agentDir = "/fixtures";
+test("ordinary registry refreshes v2 settings without editing the document and releases its collector", async (t) => {
+	const agentDir = await mkdtemp(join(tmpdir(), "registry-settings-"));
+	const document = join(agentDir, "harness.json");
+	const original = '{"version":1,"registry":{"notes":true}}\n';
+	await writeFile(document, original);
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	const previousDocument = process.env.PI_HARNESS_FILE;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+	process.env.PI_HARNESS_FILE = document;
+	t.after(async () => {
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previous;
+		if (previousDocument === undefined) delete process.env.PI_HARNESS_FILE;
+		else process.env.PI_HARNESS_FILE = previousDocument;
+		await rm(agentDir, { recursive: true, force: true });
+	});
 	const bus = createEventBus();
 	let requests = 0;
-	bus.on("harness:settings:request", () => {
+	bus.on("harness:settings:request", (request) => {
+		assert.deepEqual(request, { version: 2 });
 		requests++;
 	});
 	const current = publication();
@@ -354,6 +436,7 @@ test("ordinary registry collects at setup, refreshes valid live setting queries,
 		assert.equal((stopped.details as { outcome: string }).outcome, "cancelled");
 		assert.equal(requests, 3);
 		assert.equal(subscriptions, 1);
+		assert.equal(await readFile(document, "utf8"), original);
 		await handlers.get("session_shutdown")?.();
 		assert.equal(releases, 1);
 	} finally {

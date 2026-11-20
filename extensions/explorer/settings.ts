@@ -6,18 +6,21 @@ export const settings = {
 	slice: "explorer",
 	fields: {
 		app: {
+			apply: "reload",
 			type: "path",
 			env: "PI_EXPLORER_APP",
 			defaultText: "<agentDir>/explorer-app/Explorer.app",
 			description: "Installed native Explorer application.",
 		},
 		dir: {
+			apply: "reload",
 			type: "path",
 			env: "PI_EXPLORER_DIR",
 			defaultText: "<agentDir>/explorer",
 			description: "Private directory for Explorer notes and review state.",
 		},
 		agentPane: {
+			apply: "reload",
 			type: "enum",
 			env: "PI_EXPLORER_AGENT_PANE",
 			choices: ["split", "float"],
@@ -63,14 +66,15 @@ export type SettingRecord = {
 	value?: unknown;
 };
 export type SettingsPublication = {
-	version: 1;
+	version: 2;
+	declaration: typeof settings;
 	slice: string;
 	source: Source;
 	records: SettingRecord[];
 	diagnostics: Diagnostic[];
 };
 
-export type Snapshot = SettingsPublication & { values: Values };
+export type Snapshot = Omit<SettingsPublication, "declaration"> & { values: Values };
 function textValid(value: unknown): value is string {
 	return typeof value === "string" && !/[\p{Cc}\p{Cf}\ud800-\udfff]/u.test(value);
 }
@@ -241,28 +245,32 @@ export function readSettings(options: ReadOptions): Snapshot {
 		dir: selectedValues.dir,
 		agentPane: choice("agentPane", selectedValues.agentPane),
 	};
-	return { version: 1, slice: settings.slice, source, values, records, diagnostics };
+	return { version: 2, slice: settings.slice, source, values, records, diagnostics };
 }
 export type SettingsBus = {
 	emit: (channel: string, data: unknown) => void;
 	on: (channel: string, handler: (data: unknown) => void) => () => void;
 };
+function bounded<T>(value: T): T {
+	if (Buffer.byteLength(JSON.stringify(value)) > 262144) throw new Error("Settings payload exceeds byte limit");
+	return structuredClone(value);
+}
+
+function publication(options: ReadOptions): SettingsPublication {
+	const { slice, source, records, diagnostics } = readSettings(options);
+	return bounded({ version: 2, slice, declaration: settings, source, records, diagnostics });
+}
+
 export function publishSettings(bus: SettingsBus, options: ReadOptions): () => void {
-	const publish = () => {
-		const { version, slice, source, records, diagnostics } = readSettings(options);
-		const publication: SettingsPublication = { version, slice, source, records, diagnostics };
-		if (Buffer.byteLength(JSON.stringify(publication)) > 262144)
-			throw new Error("Settings publication exceeds byte limit");
-		bus.emit(SETTINGS_PUBLISH, structuredClone(publication));
-	};
-	const unsubscribe = bus.on(SETTINGS_REQUEST, (value) => {
-		if (object(value) && value.version === 1) publish();
+	const publish = () => bus.emit(SETTINGS_PUBLISH, publication(options));
+	const off = bus.on(SETTINGS_REQUEST, (value) => {
+		if (object(value) && value.version === 2) publish();
 	});
 	try {
 		publish();
 	} catch (error) {
-		unsubscribe();
+		off();
 		throw error;
 	}
-	return unsubscribe;
+	return off;
 }
