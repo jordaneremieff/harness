@@ -1,6 +1,6 @@
 import type { Catalogue, Entry, Json, Scope } from "../../../../protocol.ts";
 import { type Draft, display, documentFor, scopeLabel, scopeNotice, stored } from "../core/state.ts";
-import { editor } from "../form/control.ts";
+import { editor, wideEditor } from "../form/control.ts";
 import { button, el } from "./dom.ts";
 
 const sources = {
@@ -29,7 +29,7 @@ type RowOptions = {
 
 export function entryRow(options: RowOptions): HTMLElement {
 	const { entry } = options;
-	const row = el("article", undefined, "row");
+	const row = el("article", undefined, wideEditor(editorSchema(entry, options.draft)) ? "row wide" : "row");
 	row.dataset.row = entry.id;
 	row.tabIndex = 0;
 	row.setAttribute("aria-label", entry.label);

@@ -28,7 +28,8 @@ import {
 	stored,
 	targetKey,
 } from "../core/state.ts";
-import { editor, initialValue, parseValue } from "../form/control.ts";
+import { describeChanges } from "../core/changes.ts";
+import { editor, initialValue, parseValue, setModelChoices } from "../form/control.ts";
 import { button, el, id, message, option } from "./dom.ts";
 import { entryRow } from "./entry.ts";
 
@@ -927,8 +928,17 @@ function appendProposedValue(line: HTMLElement, draft: Draft, action: Draft["cha
 	if (action === "unset") line.append(el("p", "Reset to the inherited value"));
 	else if (action === "delete") line.append(el("p", "Remove this key"));
 	else if (draft.error) line.append(el("p", "The draft has incomplete or invalid input.", "note"));
-	else if (draft.change.value !== undefined)
-		line.append(el("p", "Draft value", "muted"), el("pre", display(draft.change.value)));
+	else if (draft.change.value !== undefined) {
+		const base = draft.change.base;
+		const changes = base?.present ? describeChanges(base.value, draft.change.value, draft.valueSchema) : [];
+		if (!changes.length) {
+			line.append(el("p", "Draft value", "muted"), el("pre", display(draft.change.value)));
+			return;
+		}
+		const list = el("ul", undefined, "change-list");
+		list.append(...changes.map((text) => el("li", text)));
+		line.append(el("p", "Changes", "muted"), list);
+	}
 }
 
 function appendDraftActions(line: HTMLElement, draft: Draft, change: ReturnType<typeof compareResult>["change"]): void {
@@ -1050,6 +1060,7 @@ function acceptCatalogue(ticket: ReturnType<typeof catalogueGate.issue>, respons
 	}
 	if (response.generation !== ticket.serial || response.generation !== response.catalogue.generation) return;
 	catalogue = response.catalogue;
+	setModelChoices(catalogue.models ?? []);
 	context = catalogue.context;
 	paintTarget();
 	// Do not replace the active editor while the operator types.

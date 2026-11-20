@@ -203,6 +203,42 @@ const entries: Entry[] = [
 	),
 	harness(
 		"viewer",
+		"profiles",
+		"Render profiles",
+		"Named render profiles with a model and an optional detail level.",
+		{
+			type: "map",
+			keys: { type: "string", pattern: "^[a-z][a-z0-9-]*$", label: "Name" },
+			values: {
+				type: "object",
+				label: "Profile",
+				properties: {
+					model: { type: "string", format: "model", pattern: "^[^/\\s]+/\\S+$", label: "Model" },
+					detail: {
+						type: "enum",
+						choices: ["brief", "full"],
+						labels: ["Brief", "Full"],
+						label: "Detail",
+						help: "How much each preview shows.",
+					},
+					notes: { type: "string", maxLength: 2000, multiline: true, label: "Notes" },
+				},
+				required: ["model"],
+				additional: false,
+			},
+		},
+		{ draft: { model: "acme/model-small", detail: "brief" }, final: { model: "acme/model-large", detail: "full" } },
+	),
+	harness(
+		"viewer",
+		"skipped",
+		"Skipped models",
+		"Models that previews never use.",
+		{ type: "array", items: { type: "string", format: "model", label: "Model" }, unique: true },
+		["example/fast-1"],
+	),
+	harness(
+		"viewer",
 		"size",
 		"Preview width",
 		"Set a width or let the viewer choose it.",
@@ -282,6 +318,11 @@ export const catalogue: Catalogue = {
 	observedAt: "2026-01-01T00:00:00.000Z",
 	context,
 	entries,
+	models: [
+		{ id: "acme/model-large", name: "Model Large" },
+		{ id: "acme/model-small", name: "Model Small" },
+		{ id: "example/fast-1" },
+	],
 	owners: [
 		{ group: "pi", owner: "Pi", state: "available", schema: "fixture-pi", detail: "Installed schema." },
 		{

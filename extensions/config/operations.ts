@@ -15,7 +15,8 @@ import {
 import { type DocumentRead, type DocumentSpec, readDocument, withLockedDocument } from "./documents.ts";
 import { boundedJson, getAt, isObject, jsonEqual, parseEntryId, preview, savedEqual, setAt, unsetAt } from "./json.ts";
 import { type Diagnostic, type Field, type Judgement, judgeCandidate, type Publication } from "./owners.ts";
-import { type PiLeaf, validateValue } from "./pi-schema.ts";
+import { validateValue } from "./json-schema.ts";
+import type { PiLeaf } from "./pi-schema.ts";
 import type {
 	Catalogue,
 	Change,
@@ -288,6 +289,15 @@ function planOwnedSection(
 		planned.secret = true;
 		if (change.action === "set") {
 			refuse(planned, "refused", `${field.env} is a secret and lives only in the environment; Config never stores it.`);
+			return false;
+		}
+	}
+	// The declared schema states what the owner accepts; its plain-word problems come before the owner's judgement.
+	if (field.schema && change.action === "set" && change.value !== undefined) {
+		const problems = validateValue(field.schema, field.schema, change.value, `${slice}.${path[1]}`);
+		if (problems.length) {
+			planned.result.status = "invalid";
+			planned.result.problems.push(...problems);
 			return false;
 		}
 	}

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
-import { loadPiSchema, normalize, parseReference, schemaAt, validateValue } from "./pi-schema.ts";
+import { normalize, schemaAt, validateValue } from "./json-schema.ts";
+import { loadPiSchema, parseReference } from "./pi-schema.ts";
 
 test("the installed schema becomes form descriptors without dropping a property", () => {
 	const schema = loadPiSchema(getPackageDir());

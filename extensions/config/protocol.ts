@@ -40,17 +40,34 @@ export type ConfigContext = {
 };
 
 /** A form descriptor derived from the Pi schema, an owner declaration or a custom entry. */
-export type ValueSchema =
+/** The kind of text a string holds, as the extension configuration contract names it. */
+export type TextFormat = "model" | "provider" | "path";
+export type TextSchema = {
+	type: "string";
+	minLength?: number;
+	maxLength?: number;
+	path?: "any" | "absolute";
+	multiline?: boolean;
+	/** A regular expression with the u flag that the whole text matches somewhere. */
+	pattern?: string;
+	format?: TextFormat;
+	examples?: string[];
+};
+/** A form descriptor. `label`, `help` and `default` come from a schema's title, description and default. */
+export type ValueSchema = { label?: string; help?: string; default?: Json } & (
 	| { type: "boolean" }
-	| { type: "string"; minLength?: number; maxLength?: number; path?: "any" | "absolute"; multiline?: boolean }
+	| TextSchema
 	| { type: "number" | "integer"; minimum?: number; maximum?: number }
-	| { type: "enum"; choices: Json[] }
-	| { type: "array"; items: ValueSchema; minItems?: number }
+	/** `labels` and `notes` name and explain each choice, by index. */
+	| { type: "enum"; choices: Json[]; labels?: (string | undefined)[]; notes?: (string | undefined)[] }
+	| { type: "array"; items: ValueSchema; minItems?: number; maxItems?: number; unique?: boolean }
 	| { type: "object"; properties: Record<string, ValueSchema>; required?: string[]; additional: boolean }
-	| { type: "map"; values: ValueSchema }
+	/** A map from names to values; `keys` constrains and names the names. */
+	| { type: "map"; values: ValueSchema; keys?: TextSchema & { label?: string; help?: string }; maxEntries?: number }
 	| { type: "union"; options: ValueSchema[] }
 	/** Any JSON value. `unsupported` names schema keywords that the backend cannot check. */
-	| { type: "json"; unsupported?: string[] };
+	| { type: "json"; unsupported?: string[] }
+);
 
 export type Saved = { present: false } | { present: true; value: Json };
 export type ResolvedSource = "env" | "machine" | "project" | "global" | "default" | "unset" | "combined";
@@ -123,7 +140,10 @@ export type Catalogue = {
 	owners: OwnerState[];
 	/** Plain statements of what discovery could not establish. */
 	coverage: string[];
+	/** Models that the host can use now, offered for text in the `model` and `provider` formats. */
+	models: ModelChoice[];
 };
+export type ModelChoice = { id: string; name?: string };
 
 export type Change = {
 	id: string;

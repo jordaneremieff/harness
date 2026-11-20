@@ -55,6 +55,8 @@ export default function configExtension(pi: ExtensionAPI): void {
 			env: process.env,
 			pi: { version: VERSION, packageDir: getPackageDir(), configDir: CONFIG_DIR_NAME, SettingsManager },
 			sessionSettings: () => pi.getSettings(),
+			models: () =>
+				ctx.modelRegistry.getAvailable().map((model) => ({ provider: model.provider, id: model.id, name: model.name })),
 			tools: {
 				all: () => pi.getAllTools(),
 				active: () => pi.getActiveTools(),

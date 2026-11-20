@@ -31,6 +31,8 @@ export type Field = {
 	minLength?: number;
 	maxLength?: number;
 	choices?: string[];
+	/** A json field's value schema: a plain JSON Schema object. */
+	schema?: Record<string, Json>;
 };
 export type Declaration = { slice: string; fields: Record<string, Field> };
 export type Diagnostic = {
@@ -117,6 +119,18 @@ function applyFieldChoices(input: Record<string, unknown>, field: Field): void {
 		throw new Error("field");
 	field.choices = [...input.choices];
 }
+const SCHEMA_MAX_BYTES = 32768;
+function applyFieldSchema(input: Record<string, unknown>, field: Field): void {
+	if (input.schema === undefined) return;
+	if (
+		field.type !== "json" ||
+		!isPlainObject(input.schema) ||
+		!boundedJson(input.schema) ||
+		Buffer.byteLength(JSON.stringify(input.schema)) > SCHEMA_MAX_BYTES
+	)
+		throw new Error("field");
+	field.schema = structuredClone(input.schema) as Record<string, Json>;
+}
 function parseField(input: unknown): Field {
 	if (!isPlainObject(input)) throw new Error("field");
 	const { type, env, description, apply } = input;
@@ -127,6 +141,7 @@ function parseField(input: unknown): Field {
 	applyFieldFlags(input, field);
 	applyFieldBounds(input, field);
 	applyFieldChoices(input, field);
+	applyFieldSchema(input, field);
 	return field;
 }
 function parseDeclaration(input: unknown, slice: string): Declaration {

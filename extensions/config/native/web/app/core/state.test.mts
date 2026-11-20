@@ -89,6 +89,7 @@ const catalogue: Catalogue = {
 	version: 1,
 	generation: 1,
 	observedAt: "",
+	models: [],
 	context,
 	entries: [entry],
 	owners: [],

@@ -11,7 +11,8 @@ import {
 	type Publication,
 	type SettingRecord,
 } from "./owners.ts";
-import { loadPiSchema, type PiLeaf, type PiSchema, validateValue } from "./pi-schema.ts";
+import { type Raw, settingShape, validateValue } from "./json-schema.ts";
+import { loadPiSchema, type PiLeaf, type PiSchema } from "./pi-schema.ts";
 import type {
 	ApplyState,
 	Catalogue,
@@ -19,6 +20,7 @@ import type {
 	DocumentState,
 	Entry,
 	Json,
+	ModelChoice,
 	OwnerState,
 	Resolution,
 	Saved,
@@ -56,6 +58,8 @@ export type ConfigHost = {
 	sessionSettings?: () => unknown;
 	/** Current-session tool controls; ordinary sessions only. */
 	tools?: { all(): ToolInfoLike[]; active(): string[]; setActive(names: string[]): void };
+	/** Models with configured access in this host, offered for model and provider text. */
+	models?: () => readonly { provider: string; id: string; name?: string }[];
 };
 
 export type Snapshot = {
@@ -157,8 +161,26 @@ function fieldSchema(field: Field): ValueSchema {
 		case "path":
 			return { type: "string", minLength: 1, path: field.absolute ? "absolute" : "any" };
 		case "json":
-			return { type: "json" };
+			return field.schema ? settingShape(field.schema as Raw, field.schema as Raw) : { type: "json" };
 	}
+}
+const MODELS_MAX = 1024;
+/** The host's usable models as sorted `provider/id` identities, bounded and deduplicated. */
+function modelChoices(host: ConfigHost): ModelChoice[] {
+	let listed: ReturnType<NonNullable<ConfigHost["models"]>> = [];
+	try {
+		listed = host.models?.() ?? [];
+	} catch {
+		return [];
+	}
+	const choices = new Map<string, ModelChoice>();
+	for (const model of listed.slice(0, MODELS_MAX)) {
+		const id = `${model.provider}/${model.id}`;
+		if (!/^[^/\s]+\/\S+$/.test(id) || id.length > 512 || choices.has(id)) continue;
+		const name = typeof model.name === "string" ? model.name.replace(/[\p{Cc}\p{Cf}]+/gu, " ").slice(0, 120) : "";
+		choices.set(id, name && name !== model.id ? { id, name } : { id });
+	}
+	return [...choices.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 function customSchema(type: CustomType | undefined): ValueSchema {
 	switch (type) {
@@ -828,6 +850,7 @@ export function buildSnapshot(host: ConfigHost): Snapshot {
 		entries: all,
 		owners,
 		coverage,
+		models: modelChoices(host),
 	};
 	return {
 		catalogue,

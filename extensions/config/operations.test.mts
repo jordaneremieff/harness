@@ -497,6 +497,67 @@ describe("harness settings", () => {
 		assert.equal(valid.documents[0].changes[0].apply?.state, "masked");
 	});
 
+	it("shapes a structured value from its declared schema and keeps member order", async () => {
+		const { backend, bus, agentDir, harnessPath, env } = fixture();
+		writeFileSync(harnessPath, JSON.stringify({ version: 1 }));
+		const structured = {
+			slice: "team",
+			fields: {
+				profiles: {
+					type: "json",
+					env: "PI_TEAM_PROFILES",
+					description: "Named profiles.",
+					default: {},
+					apply: "use",
+					schema: {
+						type: "object",
+						propertyNames: { type: "string", title: "Name", pattern: "^[a-z]+$" },
+						additionalProperties: {
+							type: "object",
+							title: "Profile",
+							properties: { model: { type: "string", title: "Model", format: "model" }, depth: { type: "integer" } },
+							required: ["model"],
+							additionalProperties: false,
+						},
+					},
+				},
+			},
+		};
+		let judged = 0;
+		syntheticOwner(bus, agentDir, structured, {
+			env,
+			check: () => {
+				judged++;
+				return true;
+			},
+		});
+		const entry = backend.get(["harness:/team/profiles"]).entries[0];
+		assert.equal(entry.value.type, "map");
+		assert.deepEqual(entry.value.type === "map" && entry.value.keys, {
+			type: "string",
+			pattern: "^[a-z]+$",
+			label: "Name",
+		});
+		assert.equal(entry.value.type === "map" && entry.value.values.label, "Profile");
+		judged = 0;
+		const invalid = await commit(backend, [
+			{ id: "harness:/team/profiles", action: "set", value: { Main: { model: "a/b" } }, base: { present: false } },
+		]);
+		assert.equal(invalid.outcome, "rejected");
+		assert.match(
+			invalid.documents[0].changes[0].problems.join(" "),
+			/team.profiles has a name that is not allowed: "Main"/,
+		);
+		assert.equal(judged, 0);
+		assert.deepEqual(json(harnessPath), { version: 1 });
+		const value = { zed: { model: "a/b", depth: 2 }, alpha: { depth: 1, model: "c/d" } };
+		const saved = await commit(backend, [
+			{ id: "harness:/team/profiles", action: "set", value, base: { present: false } },
+		]);
+		assert.equal(saved.outcome, "committed", saved.summary);
+		assert.equal(JSON.stringify(json(harnessPath)), JSON.stringify({ version: 1, team: { profiles: value } }));
+	});
+
 	it("refuses a change that creates a cross-field conflict", async () => {
 		const { backend, bus, agentDir, harnessPath, env } = fixture();
 		writeFileSync(harnessPath, JSON.stringify({ version: 1, sample: { limit: 3 } }));

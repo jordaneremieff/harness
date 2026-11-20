@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ValueSchema } from "../../../../protocol.ts";
-import { initialValue, parseValue } from "./control.ts";
+import { initialValue, parseValue } from "./value.ts";
 
 const layout = {
 	type: "object",
@@ -40,7 +40,7 @@ test("nested schema errors distinguish bounds, missing keys and extra keys", () 
 	assert.match(error('{"root": "/", "widths": ["auto"], "other": true}', layout), /does not allow "other"/);
 	assert.match(
 		error('{"root": "/", "widths": ["auto"], "overrides": {"small": 1}}', layout),
-		/"small" must be true or false/,
+		/overrides › small must be true or false/,
 	);
 });
 
@@ -56,6 +56,29 @@ test("incomplete numbers and overflowing JSON numbers do not become values", () 
 	assert.match(error("1e-", { type: "number" }), /complete JSON/);
 	assert.match(error("1.5", { type: "integer" }), /whole number/);
 	assert.match(error('{"nested":[1e1000]}', { type: "json" }), /finite/);
+});
+
+test("structured values name the entry and field that need attention", () => {
+	const presets: ValueSchema = {
+		type: "map",
+		keys: { type: "string", pattern: "^[a-z]+$", label: "Name" },
+		values: {
+			type: "object",
+			label: "Preset",
+			properties: {
+				model: { type: "string", format: "model", pattern: "^[^/\\s]+/[^\\s]+$", label: "Model" },
+			},
+			required: ["model"],
+			additional: false,
+		},
+	};
+	assert.deepEqual(parseValue('{"judge": {"model": "a/b"}}', presets), { value: { judge: { model: "a/b" } } });
+	assert.match(error('{"Judge": {"model": "a/b"}}', presets), /"Judge" is not an allowed name/);
+	assert.match(error('{"judge": {"model": "ab"}}', presets), /judge › Model must be a model identity/);
+	assert.match(error('{"judge": {}}', presets), /requires "model"/);
+	const list: ValueSchema = { type: "array", items: { type: "string" }, unique: true, maxItems: 2 };
+	assert.match(error('["a", "a"]', list), /same item twice/);
+	assert.match(error('["a", "b", "c"]', list), /at most 2 items/);
 });
 
 function error(raw: string, schema: ValueSchema): string {
