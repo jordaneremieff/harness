@@ -492,7 +492,7 @@ test("question cards show the question, its choices, the wait and the answer by 
 			outcome: "answered",
 			target: { server, source: "server" },
 			effects: { state: "none" },
-			data: { question: "harness: Publish the Rex change?", channel: "rex", answer: { choice: "publish" } },
+			data: { question: "Publish the Rex change? · harness", channel: "rex", answer: { choice: "publish" } },
 		}),
 		args,
 	).join("\n");

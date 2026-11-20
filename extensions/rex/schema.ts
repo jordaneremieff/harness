@@ -15,7 +15,17 @@ import {
 	type Static,
 	type Validator,
 } from "@earendil-works/pi-schema";
-import { ASK_DEFAULT_MS, ASK_LIMIT_MS, ASK_MAX_CHOICES, askProblem, type AskRequest } from "./ask.ts";
+import {
+	ASK_CHOICE_MAX,
+	ASK_DEFAULT_MS,
+	ASK_DETAIL_MAX,
+	ASK_LIMIT_MS,
+	ASK_LINE_MAX,
+	ASK_MAX_CHOICES,
+	ASK_QUESTION_MAX,
+	askProblem,
+	type AskRequest,
+} from "./ask.ts";
 import type { RexRequest } from "./core.ts";
 
 const text = (maxLength = 4096) => str({ minLength: 1, maxLength });
@@ -194,16 +204,17 @@ export const requestVariants = {
 			op: choice("ask"),
 			question: str({
 				minLength: 1,
-				maxLength: 300,
-				description: "The question, with what it is about. Rex shows it as the title, after the name of your session.",
+				maxLength: ASK_QUESTION_MAX,
+				description:
+					"The decision as one short line. Rex shows it on one line, followed by the name of your tab or session.",
 			}),
 			choices: opt(
 				arr(
 					obj({
 						id: text(256),
-						title: opt(text(256)),
-						subtitle: opt(text(512)),
-						detail: opt(text(64)),
+						title: opt(text(ASK_CHOICE_MAX)),
+						subtitle: opt(text(ASK_LINE_MAX)),
+						detail: opt(text(ASK_DETAIL_MAX)),
 						selected: opt(bool({ description: "Start ticked. Only with multiple." })),
 					}),
 					{
@@ -216,9 +227,9 @@ export const requestVariants = {
 			),
 			multiple: opt(bool({ description: "Let the operator choose several choices." })),
 			allowOther: opt(bool({ description: "Let the operator type an answer instead of choosing. Not with multiple." })),
-			placeholder: opt(text(256)),
+			placeholder: opt(text(ASK_LINE_MAX)),
 			value: opt(str({ maxLength: 4096, description: "Text the answer field starts with, for the operator to edit." })),
-			confirm: opt(text(64)),
+			confirm: opt(text(ASK_CHOICE_MAX)),
 			timeoutMs: opt(
 				int({
 					minimum: 10000,
@@ -439,6 +450,6 @@ export const toolSpecs = [
 		label: "Rex ask",
 		parameters: declaration(requestVariants.rex_ask),
 		description:
-			"Ask the operator one short question (op ask) in the command palette of every connected Rex app, on the Mac or the phone, and wait for the first answer: typed text, one of your choices, or several. Use it only for a decision that only the operator can make, after you show the complete matter in chat or a pane; a worker asks its requester first. In ordinary Pi, a message from the operator ends the wait, and the question opens as a dialog in this session when Rex cannot show it or the operator chooses to see the session first. No answer means no decision: do not act on it. The answer covers this question only.",
+			"Ask the operator one short question (op ask) in the command palette of every connected Rex app, on the Mac or the phone, and wait for the first answer: typed text, one of your choices, or several. Rex shows the question and each choice on one line, so keep them short. Use it only for a decision that only the operator can make, after you show the complete matter in chat or a pane; a worker asks its requester first. In ordinary Pi, a message from the operator ends the wait, and the question opens as a dialog in this session when Rex cannot show it or the operator chooses to see the session first. No answer means no decision: do not act on it. The answer covers this question only.",
 	},
 ] as const satisfies readonly { name: RexToolName; label: string; parameters: Schema; description: string }[];

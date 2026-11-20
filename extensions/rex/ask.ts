@@ -18,6 +18,16 @@ export const ASK_MARGIN_MS = 30000;
 export const ASK_BUDGET_LIMIT_MS = ASK_LIMIT_MS + ASK_MARGIN_MS;
 export const ASK_MAX_CHOICES = 50;
 export const ASK_SHOW_FIRST_ID = "pi:show-me-first";
+/**
+ * The Rex palette shows the question, each choice and each subtitle on one line of about 50 characters and cuts off
+ * the rest, so each of them fits that line.
+ */
+export const ASK_QUESTION_MAX = 45;
+export const ASK_CHOICE_MAX = 40;
+export const ASK_LINE_MAX = 48;
+export const ASK_DETAIL_MAX = 16;
+/** The most of a tab or session name that the Show me first row names. */
+const SHOW_AT_MAX = 24;
 
 export interface AskChoice {
 	id: string;
@@ -109,6 +119,8 @@ export function askProblem(request: AskRequest): string | undefined {
 	if (choices && new Set(choices.map((choice) => choice.id)).size !== choices.length)
 		return "choice ids must be unique";
 	if (choices?.some((choice) => choice.selected) && !request.multiple) return "selected applies only with multiple";
+	if (choices?.some((choice) => choice.title === undefined && [...choice.id].length > ASK_CHOICE_MAX))
+		return `a choice without a title shows its id, so that id needs at most ${ASK_CHOICE_MAX} characters`;
 	return undefined;
 }
 
@@ -127,11 +139,20 @@ export function askBudget(timeoutMs: number | undefined, signal?: AbortSignal): 
 	return createRexBudget(askBudgetMs(timeoutMs), ASK_BUDGET_LIMIT_MS, signal, undefined, ASK_BUDGET_LIMIT_MS);
 }
 
-/** The title names who asks, because several sessions and agents can ask the same person. */
+/**
+ * The title names who asks, because several sessions and agents can ask the same person. The question comes first, so
+ * the one line that Rex shows always holds it, and the name follows where the line has room.
+ */
 export function askTitle(question: string, asker: string | undefined): string {
 	const who = asker === undefined ? "" : [...plain(asker)].slice(0, 64).join("");
 	const text = plain(question);
-	return who && !text.startsWith(`${who}:`) ? `${who}: ${text}` : text;
+	return who && !text.startsWith(`${who}:`) && !text.endsWith(`· ${who}`) ? `${text} · ${who}` : text;
+}
+
+/** Text cut to at most `max` characters, with an ellipsis where it was cut. */
+function cut(text: string, max: number): string {
+	const characters = [...text];
+	return characters.length > max ? `${characters.slice(0, max - 1).join("")}…` : text;
 }
 
 /** The `rex.ui` table for this question, in Rex's own field names. */
@@ -161,7 +182,12 @@ export function askPrompt(
 	prompt.items = showFirst
 		? [
 				...items,
-				{ id: ASK_SHOW_FIRST_ID, title: "Show me first", subtitle: `Opens ${showAt} and asks there`, icon: "terminal" },
+				{
+					id: ASK_SHOW_FIRST_ID,
+					title: "Show me first",
+					subtitle: `Opens ${cut(showAt, SHOW_AT_MAX)} and asks there`,
+					icon: "terminal",
+				},
 			]
 		: items;
 	if (request.multiple) prompt.multiple = true;

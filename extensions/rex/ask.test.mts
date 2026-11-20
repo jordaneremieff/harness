@@ -127,20 +127,21 @@ const doArgs = (transport: AskTransport, attempt = 0) => {
 };
 
 test("a question names its session and maps every field to Rex's prompt table", () => {
-	assert.equal(askTitle("Publish?", "harness"), "harness: Publish?");
+	assert.equal(askTitle("Publish?", "harness"), "Publish? · harness", "the question comes first on its one line");
 	assert.equal(askTitle("harness: Publish?", "harness"), "harness: Publish?", "an asker already named is not repeated");
+	assert.equal(askTitle("Publish? · harness", "harness"), "Publish? · harness");
 	assert.equal(
 		askTitle("Line\none\u202e", "a\u0007b"),
-		"a b: Line one",
+		"Line one · a b",
 		"controls and format characters never reach the palette",
 	);
 	assert.deepEqual(
 		askPrompt(ask({ value: "feature/", placeholder: "branch", confirm: "Create", timeoutMs: 60000 }), "harness"),
 		{
 			kind: "input",
-			title: "harness: Publish the change?",
+			title: "Publish the change? · harness",
 			prompt: {
-				title: "harness: Publish the change?",
+				title: "Publish the change? · harness",
 				timeout: 60,
 				placeholder: "branch",
 				value: "feature/",
@@ -187,9 +188,38 @@ test("a question names its session and maps every field to Rex's prompt table", 
 	}
 });
 
+test("the Show me first row names a long tab in at most 24 characters", () => {
+	const { prompt } = askPrompt(ask({ choices }), "x".repeat(30), "x".repeat(30));
+	assert.deepEqual((prompt.items as Array<Record<string, unknown>>).at(-1), {
+		id: ASK_SHOW_FIRST_ID,
+		title: "Show me first",
+		subtitle: `Opens ${"x".repeat(23)}… and asks there`,
+		icon: "terminal",
+	});
+});
+
 test("the tool schema accepts a question within its bounds and refuses the rest before any Rex access", () => {
 	assert.equal(validateRequest("rex_ask", ask({ choices, timeoutMs: 3600000 })).ok, true);
+	// Each visible field fits the one line that the Rex palette shows for it.
+	const fits = {
+		question: "q".repeat(45),
+		choices: [
+			{ id: "i".repeat(40) },
+			{ id: "long-".repeat(20), title: "t".repeat(40), subtitle: "s".repeat(48), detail: "d".repeat(16) },
+		],
+		allowOther: true,
+		placeholder: "p".repeat(48),
+		confirm: "c".repeat(40),
+	};
+	assert.equal(validateRequest("rex_ask", ask(fits)).ok, true);
 	for (const fields of [
+		{ question: "q".repeat(46) },
+		{ choices: [{ id: "a", title: "t".repeat(41) }] },
+		{ choices: [{ id: "a", subtitle: "s".repeat(49) }] },
+		{ choices: [{ id: "a", detail: "d".repeat(17) }] },
+		{ choices: [{ id: "i".repeat(41) }] },
+		{ placeholder: "p".repeat(49) },
+		{ confirm: "c".repeat(41) },
 		{ timeoutMs: 9999 },
 		{ timeoutMs: 3600001 },
 		{ question: "" },
@@ -268,7 +298,7 @@ test("the core asks through pi_ask without an ownership record, and an action ca
 	assert.equal(result.ok, true);
 	assert.equal(result.outcome, "answered");
 	assert.deepEqual(result.data, {
-		question: "harness: Publish the change?",
+		question: "Publish the change? · harness",
 		channel: "rex",
 		answer: { choice: "hold" },
 		meaning: "A person using a connected Rex app answered. The answer covers this question only.",
@@ -278,7 +308,7 @@ test("the core asks through pi_ask without an ownership record, and an action ca
 	const { timeout: promptSeconds, ...prompt } = sent.json.prompt;
 	assert.deepEqual(
 		{ kind: sent.json.kind, prompt },
-		{ kind: "pick", prompt: { title: "harness: Publish the change?", items: choices } },
+		{ kind: "pick", prompt: { title: "Publish the change? · harness", items: choices } },
 	);
 	assert.ok(
 		promptSeconds === 600 || promptSeconds === 599,
@@ -307,7 +337,7 @@ test("a question uses its containing tab label and offers one last row across bu
 	assert.deepEqual((result.data as { answer: unknown }).answer, { text: ASK_SHOW_FIRST_ID });
 	for (const attempt of [0, 1]) {
 		const { prompt } = doArgs(transport, attempt).json;
-		assert.equal(prompt.title, "md improve: Publish the change?");
+		assert.equal(prompt.title, "Publish the change? · md improve");
 		assert.equal(prompt.allow_other, true);
 		assert.deepEqual(prompt.items, [
 			...choices,
@@ -330,7 +360,7 @@ test("the tab label falls back independently of the Show me first row", async ()
 		const result = await rex.execute(ask({ choices }), { ...context, askPane: pane });
 		assert.equal(result.outcome, "answered", label);
 		const { prompt } = doArgs(transport).json;
-		assert.equal(prompt.title, "harness: Publish the change?", label);
+		assert.equal(prompt.title, "Publish the change? · harness", label);
 		assert.equal((prompt.items as unknown[]).length, choices.length + Number(showsRow), label);
 		assert.ok((transport.calls.find(({ args }) => args.includes("session.view"))?.call.timeoutMs ?? Infinity) <= 1000);
 	}
@@ -523,7 +553,7 @@ test("cancelling a question stops the action call, which closes the question in 
 	stop.abort();
 	const result = await pending;
 	assert.equal(result.outcome, "cancelled");
-	assert.equal((result.data as { question?: string }).question, "harness: Publish the change?");
+	assert.equal((result.data as { question?: string }).question, "Publish the change? · harness");
 });
 
 function dialogs(
