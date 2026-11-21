@@ -68,6 +68,7 @@ export class CliTransport implements RexTransport {
 				let stdout = "";
 				let stderr = "";
 				let bytes = 0;
+				let counted = 0;
 				let truncated = false;
 				let started = false;
 				let settled = false;
@@ -137,16 +138,29 @@ export class CliTransport implements RexTransport {
 						}
 					}
 				};
+				// A streaming consumer handles each complete stdout line as it arrives, so handled lines spend no
+				// output allowance. The unfinished line stays within the limit and stdout keeps only a recent tail.
+				const streamLines = (chunk: Buffer) => {
+					if (truncated) return;
+					const text = decoders.stdout.write(chunk);
+					// A line handler can settle the call, so the result's tail includes the line first.
+					stdout = recentTail(stdout + text, call.maxOutputBytes);
+					emitLines(text);
+					if (!settled && Buffer.byteLength(lineBuffer) > call.maxOutputBytes) {
+						truncated = true;
+						stop("output_limit");
+					}
+				};
 				const consume = (stream: "stdout" | "stderr", chunk: Buffer) => {
 					if (settled) return;
-					const remaining = Math.max(0, call.maxOutputBytes - bytes);
 					bytes += chunk.length;
+					if (stream === "stdout" && call.onLine) return streamLines(chunk);
+					const remaining = Math.max(0, call.maxOutputBytes - counted);
+					counted += chunk.length;
 					const accepted = chunk.subarray(0, remaining);
 					const text = decoders[stream].write(accepted);
-					if (stream === "stdout") {
-						stdout += text;
-						emitLines(text);
-					} else stderr += text;
+					if (stream === "stdout") stdout += text;
+					else stderr += text;
 					if (chunk.length > remaining) {
 						truncated = true;
 						stop("output_limit");
@@ -203,6 +217,16 @@ export class CliTransport implements RexTransport {
 		this.disposed = true;
 		for (const abort of this.active) abort.abort();
 	}
+}
+
+/** The last `maxBytes` UTF-8 bytes of `text`. A character that the cut splits is dropped from the start. */
+function recentTail(text: string, maxBytes: number): string {
+	if (Buffer.byteLength(text) <= maxBytes) return text;
+	const bytes = Buffer.from(text);
+	let start = bytes.length - maxBytes;
+	// UTF-8 continuation bytes have the form 10xxxxxx.
+	while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+	return bytes.subarray(start).toString("utf8");
 }
 
 function empty(outcome: TransportOutcome): CliResult {

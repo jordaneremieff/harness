@@ -527,7 +527,10 @@ Text and status observations resume on relevant events, event-process exit, canc
 or the deadline. Only the exact terminal block's `program_status_changed` and
 `program_status_removed` events refresh a status observation. Its `child_exited`
 event refreshes a text observation immediately. Client, layout, unrelated terminal,
-and other-block events spend no snapshots. These names follow Rex's public
+and other-block events spend no snapshots. They spend no output allowance either: the
+event source handles each line as it arrives and keeps only a recent tail, so busy
+clients in the session cannot end the observation. One event line longer than the
+CLI output limit still ends it as `observation_failed`. These names follow Rex's public
 [event contract](https://www.superlogical.com/rex/docs/reference/events).
 Text observations also refresh the current output snapshot on a bounded
 cadence because Rex publishes no output-change event. The interval starts at 250 ms and

@@ -61,6 +61,43 @@ test("CLI transport bounds combined output and terminates only its owned subproc
 	}
 });
 
+test("a streaming call handles more output than its byte limit when each line fits", async () => {
+	const transport = new CliTransport(process.execPath);
+	const lines: string[] = [];
+	try {
+		const result = await transport.run(
+			["-e", "for (let i = 0; i < 300; i++) process.stdout.write('line ' + i + ' ' + 'y'.repeat(190) + '\\n')"],
+			{ timeoutMs: 5000, maxOutputBytes: 4096, onLine: (line) => lines.push(line) },
+		);
+		assert.equal(result.outcome, "exited");
+		assert.equal(result.truncated, false);
+		assert.equal(lines.length, 300, "every handled line arrives, beyond the byte limit");
+		assert.match(lines[299] ?? "", /^line 299 y+$/);
+		assert.ok(Buffer.byteLength(result.stdout) <= 4096, "stdout keeps only a recent tail");
+		assert.match(result.stdout, /line 299 y+\n$/);
+	} finally {
+		transport.dispose();
+	}
+});
+
+test("a streaming line longer than the byte limit still ends the call", async () => {
+	const transport = new CliTransport(process.execPath);
+	let handled = 0;
+	try {
+		const result = await transport.run(["-e", "process.stdout.write('x'.repeat(8000));setInterval(()=>{},10000)"], {
+			timeoutMs: 3000,
+			maxOutputBytes: 4096,
+			onLine: () => handled++,
+		});
+		assert.equal(result.outcome, "output_limit");
+		assert.equal(result.truncated, true);
+		assert.equal(handled, 0);
+		assert.ok(Buffer.byteLength(result.stdout) <= 4096);
+	} finally {
+		transport.dispose();
+	}
+});
+
 test("call cancellation reaches an active observer and settles after process termination", async () => {
 	const controller = new AbortController();
 	const transport = new CliTransport(process.execPath);
