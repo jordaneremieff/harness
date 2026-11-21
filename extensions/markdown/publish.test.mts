@@ -1178,6 +1178,19 @@ test("a response snapshot saves the earlier answer exactly, once per response", 
 		}
 	}));
 
+test("only a conversation that receives pane closure notices is told to expect them", () => {
+	const store = new MarkdownStore(join(tmpdir(), "unused-markdown-store"));
+	const ordinary = createPublishTool({ store, paneNotices: true });
+	assert.match(
+		ordinary.description,
+		/When a reader pane connected to this conversation closes, a notice in the conversation says so/u,
+	);
+	assert.match(ordinary.description, /never tell the operator that a pane shows it/u);
+	for (const description of [publishDescription("float"), createPublishTool({ store }).description]) {
+		assert.doesNotMatch(description, /a notice in the conversation/u);
+		assert.match(description, /The result of an update says how many reader panes are still connected/u);
+	}
+});
 test("an update says whether a reader pane is still connected, so a closed pane is never reported as showing it", async () => {
 	const base = {
 		ok: true as const,

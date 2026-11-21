@@ -15,12 +15,13 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
+import { InMemoryCredentialStore, InMemoryModelsStore, type Message } from "@earendil-works/pi-ai";
+import { obj } from "@earendil-works/pi-schema";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
 import { ordinaryLifecycle } from "./index.ts";
-import { ordinaryLive } from "./live-host.ts";
+import { ordinaryLive, PANE_NOTICE_TYPE, paneClosedNotice } from "./live-host.ts";
 import { markdownContribution, type MarkdownHost, type MarkdownCommandCall } from "./durable.ts";
 import { readLiveConfig, type LiveCommand, type LiveConfig, type LiveState } from "./live-protocol.ts";
 import { responseDigest } from "./responses.ts";
@@ -209,6 +210,141 @@ test("ordinary Pi delivers queued questions to their own panes and does not gues
 		session?.dispose();
 		await rm(root, { recursive: true, force: true });
 	}
+});
+const messageText = (message: Message) =>
+	typeof message.content === "string"
+		? message.content
+		: message.content.map((part) => (part.type === "text" ? part.text : "")).join("");
+test("an ordinary conversation reads a pane closure before its next response, without a turn of its own", {
+	timeout: 15000,
+}, async () => {
+	const root = await mkdtemp(join(tmpdir(), "markdown-pane-notice-"));
+	const faux = fauxProvider({ tokensPerSecond: 0 });
+	const settings = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } });
+	const runtime = await ModelRuntime.create({
+		credentials: new InMemoryCredentialStore(),
+		modelsStore: new InMemoryModelsStore(),
+		modelsPath: null,
+		refreshOnCreate: false,
+	});
+	runtime.registerNativeProvider(faux.provider);
+	const [shown, later] = [pane(), pane()];
+	let config!: LiveConfig, close: (() => void) | undefined;
+	const loader = new DefaultResourceLoader({
+		cwd: root,
+		agentDir: root,
+		settingsManager: settings,
+		noContextFiles: true,
+		noExtensions: true,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		extensionFactories: [
+			(pi) => {
+				const live = ordinaryLive(pi, ordinaryLifecycle(pi), 20);
+				pi.on("session_start", async (_event, ctx) => {
+					config = await live.connection(ctx);
+					const bridge = await live.find(ctx);
+					close = () => bridge?.close();
+				});
+				pi.registerTool({
+					name: "operator_closes_pane",
+					label: "Close pane",
+					description: "The operator closes the shown reader pane while the agent works.",
+					parameters: obj({}, { open: true }),
+					async execute() {
+						await post(config, "/close", shown);
+						await new Promise((resolve) => setTimeout(resolve, 300));
+						return { content: [{ type: "text", text: "closed" }], details: {} };
+					},
+				});
+			},
+		],
+	});
+	const requests: Message[][] = [];
+	const answer = (text: string) => (context: { messages: Message[] }) => {
+		requests.push([...context.messages]);
+		return fauxAssistantMessage(text);
+	};
+	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+	try {
+		await loader.reload();
+		({ session } = await createAgentSession({
+			cwd: root,
+			agentDir: root,
+			modelRuntime: runtime,
+			model: faux.getModel(),
+			sessionManager: SessionManager.inMemory(root),
+			settingsManager: settings,
+			resourceLoader: loader,
+			tools: ["operator_closes_pane"],
+		}));
+		await session.bindExtensions({ mode: "tui" });
+		await post(config, "/connect", shown);
+		faux.setResponses([
+			(context) => {
+				requests.push([...context.messages]);
+				return fauxAssistantMessage(fauxToolCall("operator_closes_pane", {}), { stopReason: "toolUse" });
+			},
+			answer("Saved the report."),
+		]);
+		await session.prompt("Update the report.");
+		await session.waitForIdle();
+		assert.equal(requests.length, 2, "the notice starts no turn of its own");
+		const during = requests[1];
+		assert.equal(during.at(-2)?.role, "toolResult");
+		assert.equal(during.at(-1)?.role, "user");
+		assert.match(
+			messageText(during.at(-1) as Message),
+			/^\[markdown\] A reader pane connected to this conversation closed/u,
+		);
+		assert.match(messageText(during.at(-1) as Message), /No reader pane is connected to this conversation now/u);
+
+		const stored = new Promise<void>((resolve) => {
+			const stop = session?.subscribe((event) => {
+				if (
+					event.type === "message_end" &&
+					event.message.role === "custom" &&
+					event.message.customType === PANE_NOTICE_TYPE
+				) {
+					stop?.();
+					resolve();
+				}
+			});
+		});
+		await post(config, "/connect", later);
+		await post(config, "/close", later);
+		await stored;
+		assert.equal(session.isStreaming, false);
+		assert.equal(requests.length, 2, "an idle conversation stores the notice without a turn");
+		faux.setResponses([answer("Here are the totals.")]);
+		await session.prompt("Add the totals.");
+		await session.waitForIdle();
+		const next = requests[2];
+		assert.match(messageText(next.at(-2) as Message), /^\[markdown\] A reader pane connected/u);
+		assert.equal(messageText(next.at(-1) as Message), "Add the totals.");
+		assert.equal(requests.length, 3);
+		const notices = session.messages.filter((message) => message.role === "custom");
+		assert.equal(notices.length, 2);
+		for (const notice of notices) assert.ok(notice.role === "custom" && notice.display === false);
+	} finally {
+		close?.();
+		session?.dispose();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+test("a pane closure notice names the closed and still connected panes", () => {
+	assert.match(paneClosedNotice({ closed: 1, connected: 0 }), /needs no reply\.$/u);
+	const several = paneClosedNotice({ closed: 2, connected: 1 });
+	assert.match(
+		several,
+		/^\[markdown\] 2 reader panes connected to this conversation closed; the operator may have closed them\./u,
+	);
+	assert.match(
+		several,
+		/1 reader pane is still connected to this conversation; a document update reaches a pane only while that pane shows the document\./u,
+	);
+	assert.match(paneClosedNotice({ closed: 1, connected: 2 }), /2 reader panes are still connected/u);
 });
 test("the real Durable contribution reconciles lost admission and edits only its exact live native buffer", {
 	timeout: 15000,

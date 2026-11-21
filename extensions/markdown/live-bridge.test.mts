@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { LiveBridge, LiveBridges } from "./live-bridge.ts";
+import { LiveBridge, LiveBridges, type PaneClosure } from "./live-bridge.ts";
 import {
 	readLiveAction,
 	readLiveConfig,
@@ -638,6 +638,126 @@ test("an explicit identical edit retry restores delivery after an aborted lost-p
 			},
 		});
 		assert.equal((await retentionRetry).status, "applied");
+	} finally {
+		bridge.close();
+	}
+});
+/** A bridge that records each settled pane closure; `next` resolves with the following report. */
+function closureBridge(graceMs: number) {
+	const reports: PaneClosure[] = [];
+	let notify: (() => void) | undefined;
+	const bridge = new LiveBridge(
+		{
+			submit: async () => ({ status: "requested" }),
+			panesClosed: (closure) => {
+				reports.push(closure);
+				notify?.();
+			},
+		},
+		undefined,
+		undefined,
+		graceMs,
+	);
+	const next = () =>
+		new Promise<PaneClosure>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error("No pane closure was reported.")), 2000);
+			const seen = reports.length;
+			notify = () => {
+				if (reports.length === seen) return;
+				clearTimeout(timer);
+				notify = undefined;
+				resolve(reports[seen]);
+			};
+		});
+	return { bridge, reports, next };
+}
+const settled = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+test("a pane that closes and stays away is reported once with the panes that remain", { timeout: 10000 }, async () => {
+	const { bridge, reports, next } = closureBridge(30);
+	const config = await bridge.start();
+	const [first, second] = [binding(), binding()];
+	try {
+		await post(config, "/connect", first);
+		await post(config, "/connect", second);
+		let report = next();
+		await post(config, "/close", first);
+		assert.equal(bridge.list().length, 1, "the count drops at once; only the report waits");
+		assert.deepEqual(await report, { closed: 1, connected: 1 });
+		report = next();
+		await post(config, "/close", second);
+		assert.deepEqual(await report, { closed: 1, connected: 0 });
+		await settled(100);
+		assert.equal(reports.length, 2);
+	} finally {
+		bridge.close();
+	}
+});
+test("a pane that switches documents is not reported as closed", { timeout: 10000 }, async () => {
+	const { bridge, reports } = closureBridge(30);
+	const config = await bridge.start();
+	const pane = binding();
+	try {
+		await post(config, "/connect", pane);
+		// A pane closes its shown document and connects the next one at once.
+		await post(config, "/close", pane);
+		await post(config, "/connect", { ...pane, document: randomUUID().toUpperCase() });
+		await settled(150);
+		assert.deepEqual(reports, []);
+		assert.equal(bridge.list().length, 1);
+	} finally {
+		bridge.close();
+	}
+});
+test("panes that close together are reported together", { timeout: 10000 }, async () => {
+	const { bridge, reports, next } = closureBridge(60);
+	const config = await bridge.start();
+	const panes = [binding(), binding(), binding()];
+	try {
+		for (const pane of panes) await post(config, "/connect", pane);
+		const report = next();
+		await post(config, "/close", panes[0]);
+		await post(config, "/close", panes[1]);
+		assert.deepEqual(await report, { closed: 2, connected: 1 });
+		await settled(150);
+		assert.equal(reports.length, 1);
+	} finally {
+		bridge.close();
+	}
+});
+test("closing the conversation's bridge reports no pane closure", { timeout: 10000 }, async () => {
+	const { bridge, reports } = closureBridge(30);
+	const config = await bridge.start();
+	const pane = binding();
+	await post(config, "/connect", pane);
+	await post(config, "/close", pane);
+	bridge.close();
+	await settled(150);
+	assert.deepEqual(reports, []);
+});
+test("a route that refuses the closure report leaves the bridge working", { timeout: 10000 }, async () => {
+	let calls = 0;
+	const bridge = new LiveBridge(
+		{
+			submit: async () => ({ status: "requested" }),
+			panesClosed: () => {
+				calls++;
+				throw new Error("The conversation is gone.");
+			},
+		},
+		undefined,
+		undefined,
+		20,
+	);
+	const config = await bridge.start();
+	const pane = binding();
+	try {
+		await post(config, "/connect", pane);
+		await post(config, "/close", pane);
+		await settled(150);
+		assert.equal(calls, 1);
+		const other = binding();
+		assert.equal((await post(config, "/connect", other)).status, 200);
+		assert.equal(bridge.list().length, 1);
 	} finally {
 		bridge.close();
 	}

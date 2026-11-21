@@ -398,6 +398,7 @@ export default function markdown(pi: ExtensionAPI): void {
 			connection: live.connection,
 			panes: async (ctx) => (await live.find(ctx))?.list().length ?? 0,
 			pane: agentPane,
+			paneNotices: true,
 		}),
 	);
 	pi.registerTool(

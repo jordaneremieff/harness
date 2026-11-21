@@ -2,7 +2,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-wor
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import { LiveBridges, type LivePublisher, type LiveRoute } from "./live-bridge.ts";
+import { LiveBridges, type LivePublisher, type LiveRoute, type PaneClosure } from "./live-bridge.ts";
 import type { LiveConfig, LiveState } from "./live-protocol.ts";
 import type { MarkdownCommandCall, MarkdownHost } from "./durable.ts";
 
@@ -106,6 +106,19 @@ function ordinaryReplies(
 		pending.clear();
 	};
 }
+export const PANE_NOTICE_TYPE = "markdown-pane-closed";
+/** Tells the conversation's agent that a report it showed is no longer in front of the operator. */
+export function paneClosedNotice({ closed, connected }: PaneClosure): string {
+	const event =
+		closed === 1
+			? "A reader pane connected to this conversation closed; the operator may have closed it."
+			: `${closed} reader panes connected to this conversation closed; the operator may have closed them.`;
+	const state =
+		connected === 0
+			? "No reader pane is connected to this conversation now, so a document update that you save reaches no pane."
+			: `${connected} reader ${connected === 1 ? "pane is" : "panes are"} still connected to this conversation; a document update reaches a pane only while that pane shows the document.`;
+	return `[markdown] ${event} ${state} To show a document to the operator again, run its show command as the program of a new pane. This notice needs no reply.`;
+}
 function ordinaryRoute(pi: ExtensionAPI, check: () => void, active: () => boolean): LiveRoute {
 	const pending = new Map<string, string>();
 	return {
@@ -116,13 +129,21 @@ function ordinaryRoute(pi: ExtensionAPI, check: () => void, active: () => boolea
 			return { status: "requested" };
 		},
 		observe: async (publish) => ordinaryReplies(pi, active, pending, publish),
+		// Without a turn of its own: a running agent reads it before its next response, an idle one with the next prompt.
+		panesClosed: (closure) => {
+			if (!active()) return;
+			pi.sendMessage(
+				{ customType: PANE_NOTICE_TYPE, content: paneClosedNotice(closure), display: false, details: closure },
+				{ triggerTurn: false },
+			);
+		},
 	};
 }
-export function ordinaryLive(pi: ExtensionAPI, lifecycle: () => AbortSignal) {
-	let bridges = new LiveBridges();
+export function ordinaryLive(pi: ExtensionAPI, lifecycle: () => AbortSignal, paneGraceMs?: number) {
+	let bridges = new LiveBridges(paneGraceMs);
 	const invalidate = () => {
 		bridges.close();
-		bridges = new LiveBridges();
+		bridges = new LiveBridges(paneGraceMs);
 	};
 	pi.on("session_before_switch", invalidate);
 	pi.on("session_before_fork", invalidate);

@@ -21,11 +21,21 @@ import {
 import { validUnicode } from "./responses.ts";
 
 export type LivePublisher = (status: LiveState["status"], text: string, operationId: string) => void;
+/** Reader panes that left the conversation, and the panes that remain connected to it. */
+export interface PaneClosure {
+	closed: number;
+	connected: number;
+}
 export interface LiveRoute {
 	submit(text: string, operationId: string): Promise<LivePromptReceipt>;
 	/** Only a route with idempotent admission may repeat a failed submission. */
 	retryFailedSubmission?: boolean;
 	observe?(publish: LivePublisher): Promise<() => void>;
+	/**
+	 * Receives each settled group of pane closures. A pane that closes one document and connects
+	 * another within the grace period switched documents and did not close.
+	 */
+	panesClosed?(closure: PaneClosure): void;
 }
 interface Pending {
 	command: LiveCommand;
@@ -70,14 +80,21 @@ export class LiveBridge {
 	>();
 	private readonly wakes = new Map<string, () => void>();
 	private readonly states = new Map<string, Map<string, LiveState>>();
+	/** Panes whose document closed and that have not connected another document since. */
+	private readonly vacated = new Set<string>();
+	private vacancy?: ReturnType<typeof setTimeout>;
+	/** Requests whose body, and so whose pane, is not yet known. */
+	private arriving = 0;
 	private sequence = 0;
 	private readonly route: LiveRoute;
 	private readonly commandTimeoutMs: number;
 	private readonly pollTimeoutMs: number;
-	constructor(route: LiveRoute, commandTimeoutMs = 30000, pollTimeoutMs = 25000) {
+	private readonly paneGraceMs: number;
+	constructor(route: LiveRoute, commandTimeoutMs = 30000, pollTimeoutMs = 25000, paneGraceMs = 1000) {
 		this.route = route;
 		this.commandTimeoutMs = commandTimeoutMs;
 		this.pollTimeoutMs = pollTimeoutMs;
+		this.paneGraceMs = paneGraceMs;
 	}
 	async start(): Promise<LiveConfig> {
 		if (this.closed) throw new Error("The live Markdown host closed.");
@@ -303,7 +320,10 @@ export class LiveBridge {
 			if (this.documents.size >= 512) throw new Error("The native document capability limit is reached.");
 			this.documents.add(handle);
 		}
-		if (this.bindings.get(binding.workspace)?.document === binding.document) this.bindings.delete(binding.workspace);
+		if (this.bindings.get(binding.workspace)?.document === binding.document) {
+			this.bindings.delete(binding.workspace);
+			if (retire) this.vacate(binding.workspace);
+		}
 		if (retire) {
 			this.retired.add(handle);
 			this.states.delete(handle);
@@ -314,11 +334,44 @@ export class LiveBridge {
 		}
 		this.wakes.get(handle)?.();
 	}
+	/**
+	 * A pane reports the close of its shown document and connects the next one at once when it
+	 * switches documents, so a closure counts only when the pane stays away for the grace period.
+	 */
+	private vacate(workspace: string): void {
+		if (this.closed || !this.route.panesClosed) return;
+		this.vacated.add(workspace);
+		this.settleVacancyAfter(this.paneGraceMs);
+	}
+	private settleVacancyAfter(delay: number): void {
+		clearTimeout(this.vacancy);
+		// The immediate lets input that arrived while the process was busy reach the bridge first.
+		this.vacancy = setTimeout(() => setImmediate(() => this.settleVacancy()), delay);
+		this.vacancy.unref();
+	}
+	private settleVacancy(): void {
+		if (this.closed) return;
+		if (this.arriving > 0) {
+			this.settleVacancyAfter(50);
+			return;
+		}
+		this.vacancy = undefined;
+		const closed = [...this.vacated].filter((workspace) => !this.bindings.has(workspace)).length;
+		this.vacated.clear();
+		if (!closed) return;
+		try {
+			this.route.panesClosed?.({ closed, connected: this.bindings.size });
+		} catch {
+			// A route that cannot take the notice leaves the connection state unchanged.
+		}
+	}
 	close(): void {
 		if (this.closed) return;
 		this.closed = true;
 		this.lifetime.abort();
 		this.detach?.();
+		clearTimeout(this.vacancy);
+		this.vacated.clear();
 		for (const binding of [...this.bindings.values()]) this.disconnect(binding);
 		this.server?.close();
 		this.server?.closeAllConnections();
@@ -364,6 +417,7 @@ export class LiveBridge {
 		if (previous && previous.document !== binding.document) this.disconnect(previous, false);
 		if (!previous && this.bindings.size >= 8) throw new Error("The native workspace limit is reached.");
 		this.bindings.set(binding.workspace, binding);
+		this.vacated.delete(binding.workspace);
 		this.versions.set(handle, version === 2 ? 2 : 1);
 		this.documents.add(handle);
 		return { ok: true, handle };
@@ -473,7 +527,14 @@ export class LiveBridge {
 				this.send(response, 404, { ok: false, error: "Unknown live Markdown operation." });
 				return;
 			}
-			const result = await this.dispatch(request.url ?? "", await this.body(request), response);
+			this.arriving++;
+			let body: Record<string, unknown>;
+			try {
+				body = await this.body(request);
+			} finally {
+				this.arriving--;
+			}
+			const result = await this.dispatch(request.url ?? "", body, response);
 			this.send(response, 200, result);
 		} catch (error) {
 			this.send(response, 409, {
@@ -488,12 +549,16 @@ export class LiveBridge {
 export class LiveBridges {
 	private readonly bridges = new Map<string, Promise<LiveBridge>>();
 	private closed = false;
+	private readonly paneGraceMs?: number;
+	constructor(paneGraceMs?: number) {
+		this.paneGraceMs = paneGraceMs;
+	}
 	async get(key: string, route: () => LiveRoute): Promise<LiveBridge> {
 		if (this.closed) throw new Error("The live Markdown host closed.");
 		let promise = this.bridges.get(key);
 		if (!promise) {
 			if (this.bridges.size >= 32) throw new Error("The live conversation limit is reached.");
-			const bridge = new LiveBridge(route());
+			const bridge = new LiveBridge(route(), undefined, undefined, this.paneGraceMs);
 			promise = bridge
 				.start()
 				.then(() => bridge)
