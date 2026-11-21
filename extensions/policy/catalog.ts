@@ -8,7 +8,7 @@ export const DEFAULT_LIMITS = {
 	errorCount: 2,
 	errorWindowMs: 30_000,
 	periodMs: 300_000,
-	outputBytes: 65_536,
+	outputBytes: 196_608,
 	outputEvents: 16,
 } as const;
 

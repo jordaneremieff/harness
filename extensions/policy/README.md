@@ -360,7 +360,7 @@ a call that stalls or fails. Required complete reads remain valid.
 | `arguments.schema` | Refuse a final argument object that violates the available tool schema. This includes mutations from earlier hooks. Unavailable schemas remain unknown. |
 | `recovery.repeated-errors` | Diagnose two consecutive completed execution errors less than 30 seconds apart, across tools. Each further qualifying error triggers guidance again. Success resets future streaks without erasing a triggered notice; policy denials and unexecuted calls do not count. |
 | `recovery.pillars-application` | Guide after a successful draftless Pillars entry read; a successful draft resets the period. Projection requires an active `pillars` tool in the public catalog. The cross-extension seed contract is documented in [docs/conventions/policy-recovery.md](../../docs/conventions/policy-recovery.md). |
-| `resources.output-volume` | Guide after 65,536 measured UTF-8 text bytes across at most sixteen executed results within a five-minute period/window. The measurement precedes this extension's guidance. |
+| `resources.output-volume` | Guide after 196,608 measured UTF-8 text bytes across at most sixteen executed results within a five-minute period/window, about four results at the 50 KB output limit of Pi's built-in read and bash tools. The measurement precedes this extension's guidance. |
 
 Repeated-errors guidance is captured at completion and delivered before the next
 real model request; multiple triggers before that request coalesce into one

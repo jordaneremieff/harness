@@ -521,12 +521,14 @@ describe("integrated catalogue guidance", () => {
 	it("projects the qualified volume notice after several complete read results", async (t) => {
 		const f = bundledFixture("read");
 		t.after(() => f.writer.close());
+		// Three equal results reach the bound together; two stay below it.
+		const size = Math.ceil(DEFAULT_LIMITS.outputBytes / 3);
 		for (let index = 0; index < 3; index++) {
 			const id = `read-${index}`;
 			const input = { path: `src/synthetic-${index}.txt` };
 			assert.equal(await f.call(id, input), undefined);
 			const original = {
-				content: [{ type: "text" as const, text: "a".repeat(24_000) }],
+				content: [{ type: "text" as const, text: "a".repeat(size) }],
 				isError: false,
 				details: undefined,
 			};
@@ -546,7 +548,7 @@ describe("integrated catalogue guidance", () => {
 		};
 		assert.equal(
 			state.observationPeriods.find((period) => period.id === "resources.output-volume")?.windowTotal,
-			72_000,
+			3 * size,
 		);
 		assert.match(note, /does not establish unnecessary breadth.*Preserve required complete reads/);
 	});
