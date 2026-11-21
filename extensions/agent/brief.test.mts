@@ -77,7 +77,7 @@ Stop after the check passes.
 ## Result
 One paragraph.
 
-Make every other tool call first. Your last message is the complete result.`,
+Make every other tool call first. Give the complete result in your last message, or in the agent_work complete report when you declared open work.`,
 	);
 	assert.deepEqual(rendered.brief, {
 		kind: "task",
@@ -119,7 +119,7 @@ Stop after the check passes.
 ## Result
 One paragraph.
 
-Make every other tool call first. Your last message is the complete result.`,
+Make every other tool call first. Give the complete result in your last message, or in the agent_work complete report when you declared open work.`,
 	);
 	assert.deepEqual(rendered.brief.sections, ["objective", "endCondition", "result"]);
 	assert.equal(rendered.brief.characters, rendered.text.length - 1);
@@ -157,7 +157,17 @@ test("recognises path tokens without treating URLs, globs or prose as local file
 		["<./src/index.ts:7:3> contract", "./src/index.ts"],
 		["('../source.ts:7#symbol'); note", "../source.ts"],
 		['"/work/docs/intro". note', "/work/docs/intro"],
-		["(pkg/v1) note", "pkg/v1"],
+		["(pkg/v1) note", undefined],
+		["extensions/agent/brief.ts:192:4 parser", "extensions/agent/brief.ts"],
+		["origin/main branch", undefined],
+		["7447f1c9-e9c8-ccbf-29ad-4d26ea94c0e4/e7e1d7428412dc8785b75a24ea09df87 thread", undefined],
+		["@earendil-works/pi-coding-agent package", undefined],
+		["1.6.0 version", undefined],
+		["v1.6.0 tag", undefined],
+		["d425a3c61:extensions/agent/brief.ts Git object", undefined],
+		["d425a3c61:extensions/agent/brief.ts:192 Git object with line", undefined],
+		["extensions/agent directory", undefined],
+		["./extensions/agent directory", "./extensions/agent"],
 		["~/README.md reference", "~/README.md"],
 		["file.a1234567", "file.a1234567"],
 		["https://example.test/manual#section note", undefined],
@@ -185,6 +195,9 @@ test("resolves sources relative to the selected creation directory and skips onl
 	const sources = ["./child.md:1", "../caller.md", "~/", absoluteMissing, "https://example.test", "./child/*.md"];
 	assert.equal(briefSourceToken("~/"), "~/");
 	assert.deepEqual(briefSourceProblems({ sources: ["caller.md"] }, cwd), []);
+	assert.deepEqual(briefSourceProblems({ sources: ["extensions/agent", "./extensions/agent"] }, cwd), [
+		`Source path does not exist: ./extensions/agent (resolved ${join(cwd, "extensions", "agent")})`,
+	]);
 	assert.deepEqual(briefSourceProblems({ cwd: "child", sources }, cwd), [
 		`Source path does not exist: ${absoluteMissing} (resolved ${absoluteMissing})`,
 	]);

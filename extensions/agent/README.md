@@ -129,12 +129,17 @@ and blank operator quotes or sources. `kind` defaults to `task`. The `lead`,
 `review`, `partner`, and `handoff` kinds open with instructions for ownership,
 independence, shared inquiry, and continuation respectively.
 
-Begin each `sources` item with its path, followed by what it establishes. The
-check reads only the first whitespace-delimited token, without surrounding
-quotes or punctuation, fragments, or line and column suffixes. It skips URLs,
-globs, and tokens that do not look like paths. The check uses the local
-filesystem; it does not read file contents, validate URLs, or check a line or
-fragment. It resolves `~/` against home and checks absolute paths directly.
+Begin each `sources` item with its path or reference, followed by what it
+establishes. The check reads only the first whitespace-delimited token, without
+surrounding quotes or punctuation, fragments, or line and column suffixes. It
+skips globs and tokens that still contain a colon, such as URLs or Git object
+references. It checks tokens that start with `/`, `~/`, `./`, or `../`, or
+whose last slash-separated segment is a filename with a non-empty stem and
+an extension of one to eight letters or digits, including at least one letter.
+For example, `extensions/agent` is skipped but `./extensions/agent` is checked.
+The check uses the local filesystem; it does not read file contents, validate
+URLs, or check a line or fragment. It resolves `~/` against home and checks
+absolute paths directly.
 On creation it checks relative paths against the requested `cwd` resolved
 from the caller, or against the caller's directory when `cwd` is omitted.
 For an existing agent it skips relative paths because the target directory

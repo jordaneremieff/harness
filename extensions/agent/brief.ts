@@ -158,7 +158,9 @@ export function renderBrief(input: Record<string, unknown>) {
 		sections.push(name);
 		parts.push(`## ${titles[name]}\n${body}`);
 	}
-	parts.push("Make every other tool call first. Your last message is the complete result.");
+	parts.push(
+		"Make every other tool call first. Give the complete result in your last message, or in the agent_work complete report when you declared open work.",
+	);
 	const rendered = parts.join("\n\n");
 	return { text: rendered, brief: { kind, characters: Array.from(rendered).length, sections }, counts };
 }
@@ -194,8 +196,12 @@ export function briefSourceToken(entry: string): string | undefined {
 		.replace(/^[`'"<(]+|[`'">).,;:]+$/gu, "")
 		.replace(/#.*$/u, "")
 		.replace(/:\d+(?::\d+)?$/u, "");
-	if (token.includes("://") || /[*?[\]{}]/u.test(token)) return undefined;
-	return token.includes("/") || /^[^/]+\.[a-z\d]{1,8}$/iu.test(token) ? token : undefined;
+	if (token.includes(":") || /[*?[\]{}]/u.test(token)) return undefined;
+	if (/^(?:\/|~\/|\.{1,2}\/)/u.test(token)) return token;
+	const file = token.slice(token.lastIndexOf("/") + 1);
+	const dot = file.lastIndexOf(".");
+	const extension = file.slice(dot + 1);
+	return dot > 0 && /^[a-z\d]{1,8}$/iu.test(extension) && /[a-z]/iu.test(extension) ? token : undefined;
 }
 
 export function briefSourceProblems(input: Record<string, unknown>, callerCwd: string): string[] {
