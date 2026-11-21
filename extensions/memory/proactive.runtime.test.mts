@@ -21,6 +21,27 @@ import { isolateMachineSettings } from "./settings-fixture.mts";
 import { proactiveCorpus, recallText, writeRecall } from "./proactive-fixture.mts";
 isolateMachineSettings();
 
+/**
+ * Raw-input correlation needs an admitted message newer than every earlier user message, and a controlled run can
+ * finish inside one millisecond. Wait for the clock to pass the newest input before an admission that must correlate.
+ */
+async function afterNewestInput(manager: SessionManager): Promise<void> {
+	const newest = Math.max(
+		-1,
+		...manager
+			.getBranch()
+			.flatMap((entry) =>
+				entry.type === "message" && (entry.message.role === "user" || entry.message.role === "custom")
+					? [entry.message.timestamp]
+					: [],
+			),
+	);
+	for (let turns = 0; Date.now() <= newest; turns++) {
+		assert.ok(turns < 100_000, "the clock did not pass the newest input timestamp");
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+}
+
 test("native provider receives notices only at admission and preserves old bytes across streamed input and tool rounds", {
 	timeout: 20000,
 }, async () => {
@@ -70,6 +91,7 @@ test("native provider receives notices only at admission and preserves old bytes
 						parameters: obj({}, { open: true }),
 						async execute() {
 							assert.ok(session);
+							await afterNewestInput(manager);
 							await session.prompt("I prefer durable plain words", { streamingBehavior: "steer" });
 							await session.prompt("From now on use short paragraphs", { streamingBehavior: "followUp" });
 							return { content: [{ type: "text", text: "done" }], details: {} };
@@ -189,6 +211,7 @@ test("native provider receives notices only at admission and preserves old bytes
 			3,
 		);
 		writeRecall(corpus, "Changed source permits another recall.");
+		await afterNewestInput(manager);
 		await session.sendCustomMessage(
 			{ customType: "fixture-task", content: `${recallText}. I prefer carried text`, display: false },
 			{ triggerTurn: true },
@@ -198,6 +221,7 @@ test("native provider receives notices only at admission and preserves old bytes
 		assert.doesNotMatch(customNotices.at(-1) as string, /Memory check: this message uses preference/);
 		writeRecall(corpus, "Changed source permits recall from a long brief.");
 		const brief = `${recallText}. From now on I prefer long briefs.\n${"Unrelated filler words. ".repeat(120)}${recallText}.`;
+		await afterNewestInput(manager);
 		await session.prompt(brief);
 		const briefRequest = requests.at(-1) as TranscriptContext;
 		const briefIndex = briefRequest.messages.findIndex((message) => textOf(message) === brief);
