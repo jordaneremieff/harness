@@ -93,6 +93,8 @@ import {
 	type InputPlan,
 	observationSelected,
 	planInput,
+	PROGRAM_ACTIONS,
+	PROGRAM_PHASES,
 	type ProgramEvaluation,
 	type ProgramRule,
 	programSteps,
@@ -2477,8 +2479,8 @@ class DurablePolicyRuntime {
 		if (view === "capabilities") {
 			const active = new Set(agent.tools.map((tool) => tool.name));
 			return {
-				phases: ["input", "result", "completion", "context"],
-				actions: ["deny", "require-approval", "rename-key", "substitute", "assert-error", "guide", "observe"],
+				phases: PROGRAM_PHASES,
+				actions: PROGRAM_ACTIONS,
 				mode: this.getMode(),
 				effectiveMode: this.effectiveMode(snapshot),
 				schemas: {

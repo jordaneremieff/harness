@@ -52,6 +52,8 @@ import {
 	type ProgramEvaluation,
 	type ProgramRule,
 	planInput,
+	PROGRAM_ACTIONS,
+	PROGRAM_PHASES,
 	programSteps,
 } from "./program.ts";
 import {
@@ -1329,8 +1331,8 @@ export class PolicyRuntime {
 	private inspectCapabilities(): unknown {
 		const catalog = this.catalog();
 		return {
-			phases: ["input", "result", "completion", "context"],
-			actions: ["deny", "require-approval", "rename-key", "substitute", "assert-error", "guide", "observe"],
+			phases: PROGRAM_PHASES,
+			actions: PROGRAM_ACTIONS,
 			mode: this.mode(),
 			effectiveMode: this.effectiveMode(),
 			schemas: {

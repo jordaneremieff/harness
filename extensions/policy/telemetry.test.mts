@@ -7,7 +7,8 @@ import { describe, it, type TestContext } from "node:test";
 import type { PolicyRecord } from "./record.ts";
 import { appendRecord } from "./store.ts";
 import { localDate, TELEMETRY_INVENTORY_ENTRIES } from "./telemetry-files.ts";
-import { telemetryDecisionRows } from "./runtime.ts";
+import { PROGRAM_ACTIONS, type ProgramAction, type ProgramEvaluation } from "./program.ts";
+import { metadata, telemetryDecisionRows } from "./runtime.ts";
 import {
 	formatTelemetry,
 	readTelemetry,
@@ -262,6 +263,65 @@ describe("policy telemetry aggregation", () => {
 		assert.equal(result.rules.find((row) => row.id === "second.rule")?.deniedCalls, 1);
 		assert.equal(result.rules.find((row) => row.id === "observe.only")?.deniedCalls, 0);
 		assert.equal(result.rules.find((row) => row.id === "not.denied")?.inapplicableEvaluations, 1);
+		accounting(result);
+	});
+
+	it("validates every action kind the writer records and attributes approval-gate denials", async (t) => {
+		const written = (id: string, action: ProgramAction, deny = false): ProgramEvaluation => ({
+			id,
+			revision: "123456789abc",
+			phase: "input",
+			inputView: "effective",
+			applicable: true,
+			truth: true,
+			action,
+			unavailable: false,
+			deny,
+		});
+		const actions: ProgramAction[] = [
+			{ kind: "deny" },
+			{ kind: "require-approval" },
+			{ kind: "rename-key", path: [], from: "old", to: "new" },
+			{ kind: "substitute", path: ["name"], table: "names" },
+			{ kind: "assert-error" },
+			{ kind: "guide", text: "Guide." },
+			{ kind: "observe", label: "seen" },
+		];
+		assert.deepEqual(
+			actions.map((action) => action.kind),
+			[...PROGRAM_ACTIONS],
+		);
+		const gate: ProgramAction = { kind: "require-approval" };
+		const dir = await directory(t);
+		await records(dir, [
+			fixture({ policy: policy(metadata(actions.map((action) => written(`kind.${action.kind}`, action))), "none") }),
+			fixture({
+				outcome: "denied",
+				error: true,
+				errorKind: "other",
+				policy: policy(metadata([written("approval.gate", gate, true)])),
+			}),
+			fixture({ policy: policy(metadata([written("approval.gate", gate)]), "none") }),
+		]);
+		const result = await readTelemetry(dir, DAY, DAY);
+		assert.equal(result.evaluations.malformed, 0);
+		assert.equal(result.evaluations.retained, actions.length + 2);
+		assert.equal(result.coverage.pageStatus, "complete");
+		assert.equal(result.coverage.status, "complete");
+		assert.deepEqual(result.denials, {
+			confirmed: 1,
+			policyConfirmed: 1,
+			withRuleAttribution: 1,
+			withoutRuleAttribution: 0,
+			ruleAttributionLinks: 1,
+		});
+		const row = result.rules.find((entry) => entry.id === "approval.gate");
+		assert.equal(row?.evaluations, 2);
+		assert.equal(row?.trueEvaluations, 2);
+		assert.equal(row?.denialEvaluations, 1);
+		assert.equal(row?.deniedCalls, 1);
+		for (const action of actions)
+			assert.equal(result.rules.find((entry) => entry.id === `kind.${action.kind}`)?.evaluations, 1, action.kind);
 		accounting(result);
 	});
 

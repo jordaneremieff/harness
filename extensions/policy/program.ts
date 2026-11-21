@@ -90,7 +90,23 @@ export type ProgramAction =
 	| { kind: "assert-error" }
 	| { kind: "guide"; text: string }
 	| { kind: "observe"; label: string };
-export type ProgramPhase = "input" | "result" | "completion" | "context";
+/** Every program phase; `ProgramPhase` derives from this list. */
+export const PROGRAM_PHASES = Object.freeze(["input", "result", "completion", "context"] as const);
+export type ProgramPhase = (typeof PROGRAM_PHASES)[number];
+/** The phases each action runs in. Its keys are every action kind, so a new kind cannot go unlisted. */
+const ACTION_PHASES: Readonly<Record<ProgramAction["kind"], readonly ProgramPhase[]>> = Object.freeze({
+	deny: ["input"],
+	"require-approval": ["input"],
+	"rename-key": ["input"],
+	substitute: ["input"],
+	"assert-error": ["result"],
+	guide: PROGRAM_PHASES,
+	observe: ["completion"],
+});
+/** Every action kind that a facts program, an evaluation record, or a capability report can name. */
+export const PROGRAM_ACTIONS: readonly ProgramAction["kind"][] = Object.freeze(
+	Object.keys(ACTION_PHASES) as ProgramAction["kind"][],
+);
 export interface ArgumentCodec {
 	argumentsPath: string[];
 	operationPath?: string[];
@@ -220,7 +236,7 @@ function stateShape<C extends Schema>(condition: C) {
 function programShape<C extends Schema>(condition: C) {
 	return obj(
 		{
-			phase: StringEnum(["input", "result", "completion", "context"]),
+			phase: StringEnum(PROGRAM_PHASES),
 			selector: opt(
 				obj(
 					{
@@ -377,16 +393,7 @@ export function validateApplicability(value: unknown, program?: FactsProgram): s
 
 /** Phase, action, and path compatibility for one validated facts program. */
 function programActionError(program: FactsProgram): string | undefined {
-	const permitted: Record<ProgramAction["kind"], ProgramPhase[]> = {
-		deny: ["input"],
-		"require-approval": ["input"],
-		"rename-key": ["input"],
-		substitute: ["input"],
-		"assert-error": ["result"],
-		guide: ["input", "result", "completion", "context"],
-		observe: ["completion"],
-	};
-	if (!permitted[program.action.kind].includes(program.phase)) return "Action is unavailable in this phase";
+	if (!ACTION_PHASES[program.action.kind].includes(program.phase)) return "Action is unavailable in this phase";
 	if (program.onUnavailable === "deny" && program.phase !== "input")
 		return "Unavailable denial requires the input phase";
 	if (program.action.kind === "require-approval" && (program.inputView !== undefined || program.state !== undefined))

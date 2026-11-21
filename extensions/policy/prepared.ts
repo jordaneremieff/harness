@@ -5,7 +5,7 @@
 
 import { compileRule } from "./compiler.ts";
 import { type NamedData, type PreparedNamedData, prepareNamedData } from "./data.ts";
-import { type ProgramPhase, type ProgramRule, programSteps } from "./program.ts";
+import { PROGRAM_PHASES, type ProgramPhase, type ProgramRule, programSteps } from "./program.ts";
 import { contentRevision, effectiveState, type RuleRecord } from "./rule.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
 
@@ -19,8 +19,6 @@ export interface PreparedPolicy {
 	readonly byPhase: Readonly<Record<ProgramPhase, readonly ProgramRule[]>>;
 	readonly data: PreparedNamedData;
 }
-
-const phases: readonly ProgramPhase[] = ["input", "result", "completion", "context"];
 
 /** Compile each verified record once and group its steps by phase. */
 export function preparePolicy(
@@ -40,7 +38,7 @@ export function preparePolicy(
 		if (effectiveState(record) === "active" && record.matcherAvailable) rules.push(rule);
 	}
 	const byPhase = Object.fromEntries(
-		phases.map((phase) => [
+		PROGRAM_PHASES.map((phase) => [
 			phase,
 			Object.freeze(
 				rules

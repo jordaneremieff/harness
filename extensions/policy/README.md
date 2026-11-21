@@ -1373,8 +1373,12 @@ and `unknown` otherwise; it is never complete. Complete parsing of retained file
 does not prove complete recording. Counts describe accepted records within those
 bounds, not all live activity or lost writes. Error classes are the recorded
 text inference, not proof of the error's cause. Denial attribution uses recorded
-input decisions, not matched rule names. A call with several denying rules
-contributes to each rule, so those rule totals are not distinct-call totals.
+input decisions, not matched rule names. Evaluation entries use the phase and
+action vocabulary of facts programs, including `require-approval`; an entry
+outside that vocabulary counts as malformed. An approval gate that refused a call
+is a denying input decision; an approved action that ran is not. A call with
+several denying rules contributes to each rule, so those rule totals are not
+distinct-call totals.
 
 Worker outcomes are unavailable because policy does not record them. Tool
 success does not prove worker success. The report reads no sibling store or

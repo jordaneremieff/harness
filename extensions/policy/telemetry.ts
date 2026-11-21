@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import { join } from "node:path";
+import { PROGRAM_ACTIONS, PROGRAM_PHASES } from "./program.ts";
 import type { CallOutcome } from "./record.ts";
 import {
 	readTelemetryInventory,
@@ -52,7 +53,9 @@ const OUTCOMES: readonly CallOutcome[] = [
 	"unexecuted",
 	"incomplete",
 ];
-const ACTIONS = ["deny", "rename-key", "substitute", "assert-error", "guide", "observe"];
+/** Evaluation records carry the writer's phase and action vocabulary; the program grammar owns both lists. */
+const PHASES: readonly string[] = PROGRAM_PHASES;
+const ACTIONS: readonly string[] = PROGRAM_ACTIONS;
 type OutcomeCounts = Record<CallOutcome | "unavailable", number>;
 type CoverageStatus = "complete" | "partial" | "unavailable";
 export type TelemetryDayIssue =
@@ -453,7 +456,7 @@ function evaluation(value: unknown): value is Evaluation {
 	return (
 		object(value) &&
 		safeName(value.id, RULE_ID) &&
-		["input", "result", "completion", "context"].includes(value.phase as string) &&
+		PHASES.includes(value.phase as string) &&
 		truth(value.truth) &&
 		truth(value.applicable) &&
 		typeof value.deny === "boolean" &&
