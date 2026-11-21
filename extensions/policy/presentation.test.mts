@@ -35,6 +35,12 @@ describe("policy_rules call cards", () => {
 		assertFits(named);
 	});
 
+	it("marks a call that continues a paged view", () => {
+		const card = renderRulesCall({ view: "data", id: "sample-lookup", cursor: "WyJkYXRhIl0" }, theme, collapsed);
+		assert.equal(screen(card), "policy_rules · data · sample-lookup · next page");
+		assertFits(card);
+	});
+
 	it("summarizes a draft check with effect and case count", () => {
 		const card = renderRulesCall(
 			{
@@ -117,6 +123,33 @@ describe("policy_rules result cards", () => {
 		assert.equal(lines[0], "3 rules · 1 pending proposal");
 		assert.match(lines[1] ?? "", /[Ee]xpand/);
 		assertFits(card);
+	});
+
+	it("adds the page position of a paged view and whether more follow", () => {
+		const first = renderRulesResult(
+			text("SESSION CONTEXT", {
+				rules: 51,
+				pending: 1,
+				page: { start: 0, returned: 17, total: 52, nextCursor: "WyJydWxlcyJd" },
+			}),
+			{ expanded: false, isPartial: false },
+			theme,
+			{ ...collapsed, args: { view: "rules" } },
+		);
+		assert.equal(screen(first).split("\n")[0], "51 rules · 1 pending proposal · 1–17 of 52 · more follow");
+		assertFits(first);
+		const last = renderRulesResult(
+			text(JSON.stringify({ phases: [], schemas: {}, page: {} }, null, 2), {
+				rules: 1,
+				pending: 0,
+				page: { start: 280, returned: 305, total: 585, nextCursor: null },
+			}),
+			{ expanded: false, isPartial: false },
+			theme,
+			{ ...collapsed, args: { view: "capabilities" } },
+		);
+		assert.match(screen(last).split("\n")[0] ?? "", /281–585 of 585$/);
+		assertFits(last);
 	});
 
 	it("keeps singular counts grammatical and flags a degraded store", () => {

@@ -37,7 +37,10 @@ import { PolicyRuntime } from "./runtime.ts";
 import { formatTelemetry, readTelemetryPage } from "./telemetry.ts";
 import {
 	boundedInspection,
+	COMMAND_PAGE_BYTES,
+	capabilitiesPage,
 	formatCatalog,
+	type PolicyCapabilities,
 	policyDataCommand,
 	policyImportCommand,
 	prepareDataCommand,
@@ -63,11 +66,12 @@ const POLICY_USAGE = [
 	"  /policy retire <id> <reason...>               Retire a definition",
 	"  /policy catalog [id]                         Inspect bundled starter definitions",
 	"  /policy import <id|--all> [exact REV]         Approve selected bundled definitions",
-	"  /policy capabilities | state | health       Inspect the runtime",
+	"  /policy capabilities [cursor]                Inspect capabilities and one page of tools",
+	"  /policy health | state                       Inspect the runtime",
 	"  /policy explain <rule-id|call:call-id>        Explain a rule or recorded call",
 	"  /policy preview <JSON>                       Preview without simulated execution or state changes",
 	"  /policy reset <id|--all> <reason...>          Start a new observation period",
-	"  /policy data list|show <name>|set <JSON>|remove <name> <revision>",
+	"  /policy data list [cursor]|show <name> [cursor]|set <JSON>|remove <name> <revision>",
 	"  /policy data set-file <JSON>                 Review and import one complete local data file",
 	"  /policy telemetry <from> <to> [cursor]       Summarize retained segments (YYYY-MM-DD, inclusive)",
 	"  /policy mode                                Report the session mode",
@@ -436,8 +440,13 @@ async function policyInspectVerb(
 	_trimmed: string,
 	_snapshot: RuleSnapshot,
 ): Promise<void> {
+	if (verb === "capabilities" && parts.length <= 1) {
+		const capabilities = (await env.runtime.inspect(verb, {}, ctx)) as PolicyCapabilities;
+		env.output(ctx, capabilitiesPage(capabilities, parts[0], COMMAND_PAGE_BYTES).text);
+		return;
+	}
 	if (parts.length) {
-		env.output(ctx, `Usage: /policy ${verb}`, true);
+		env.output(ctx, `Usage: /policy ${verb}${verb === "capabilities" ? " [cursor]" : ""}`, true);
 		return;
 	}
 	env.output(ctx, JSON.stringify(await env.runtime.inspect(verb, {}, ctx), null, 2));

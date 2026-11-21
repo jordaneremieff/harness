@@ -41,7 +41,7 @@
  * at-most-once: a newly applied completion writes one record after its state
  * commit.
  */
-import { bool, lit, num, obj, str, type Static } from "@earendil-works/pi-schema";
+import { bool, lit, num, obj, opt, type Schema, str, type Static } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import {
@@ -148,9 +148,12 @@ import { readTelemetryPage } from "./telemetry.ts";
 import {
 	approvalReadback,
 	boundedInspection,
+	capabilitiesPage,
+	dataPage,
 	formatCatalog,
-	formatDataView,
 	formatRulesTool,
+	type PagedOutput,
+	type PolicyCapabilities,
 	type PolicyInspectionView,
 	POLICY_APPROVE_DESCRIPTION,
 	POLICY_PROPOSE_DESCRIPTION,
@@ -163,6 +166,8 @@ import {
 	PolicyRulesParams,
 	pendingProposalOutput,
 	prepareDataCommand,
+	rulesDetails,
+	rulesPage,
 	submitProposal,
 	type ToolDeps,
 	validateInspectionParams,
@@ -508,6 +513,17 @@ export async function createPolicyDurableExtension(
 				pending: num(),
 				ruleStoreDegraded: bool(),
 				ruleStorePath: str(),
+				page: opt(
+					obj(
+						{
+							start: num(),
+							returned: num(),
+							total: num(),
+							nextCursor: { type: ["string", "null"] } as Schema<string | null>,
+						},
+						{ open: false },
+					),
+				),
 			},
 			{ open: true },
 		),
@@ -2045,14 +2061,9 @@ class DurablePolicyRuntime {
 		const { agent, scope } = await this.activeRules(surface, context);
 		const view = params.view ?? "rules";
 		const output = await this.rulesOutput(params, view, snapshot, agent, scope, surface, context);
-		const detail = {
-			rules: snapshot.records.size,
-			pending: snapshot.pending.length,
-			ruleStoreDegraded: snapshot.health.status === "degraded",
-			ruleStorePath: snapshot.health.path,
-		};
+		const detail = rulesDetails(snapshot, output);
 		return {
-			output: [{ type: "text", text: output }],
+			output: [{ type: "text", text: typeof output === "string" ? output : output.text }],
 			structuredOutput: detail,
 			details: detail,
 		};
@@ -2066,21 +2077,8 @@ class DurablePolicyRuntime {
 		scope: RuleMatchContext,
 		surface: PolicySurface,
 		context: Context,
-	): Promise<string> {
-		if (view === "rules") {
-			if (params.id) {
-				const record = snapshot.records.get(params.id);
-				const pending = snapshot.pending.filter((entry) => entry.ruleId === params.id || entry.id === params.id);
-				if (pending.length) return pendingProposalOutput(pending[0]);
-				return record
-					? formatRulesTool(
-							{ ...snapshot, records: new Map([[record.id, record]]), pending: [] },
-							toolScope(scope, agent.model),
-						)
-					: ruleAbsenceMessage(snapshot.health, `No rule or pending proposal named ${params.id}.`);
-			}
-			return formatRulesTool(snapshot, toolScope(scope, agent.model));
-		}
+	): Promise<string | PagedOutput> {
+		if (view === "rules") return this.rulesView(params, snapshot, toolScope(scope, agent.model));
 		if (view === "authoring") return authoringGuide();
 		if (view === "check") {
 			const draftContext: DraftCheckContext = toolScope(scope, agent.model);
@@ -2094,10 +2092,30 @@ class DurablePolicyRuntime {
 			);
 		}
 		if (view === "catalog") return formatCatalog(this.registry, params.id);
-		if (view === "data") return formatDataView(snapshot, params.id);
-		if (view === "capabilities" || view === "state" || view === "health" || view === "explain" || view === "preview")
+		if (view === "data") return dataPage(snapshot, params.id, params.cursor);
+		if (view === "capabilities")
+			return capabilitiesPage(
+				(await this.inspect("capabilities", params, surface, context)) as PolicyCapabilities,
+				params.cursor,
+			);
+		if (view === "state" || view === "health" || view === "explain" || view === "preview")
 			return boundedInspection(await this.inspect(view as PolicyInspectionView, params, surface, context));
 		throw new Error(`policy ${view} inspection is unavailable: runtime callback absent`);
+	}
+
+	/** One rule or pending proposal by id, or a page of the all-rules listing. */
+	private rulesView(
+		params: Static<typeof PolicyRulesParams>,
+		snapshot: RuleSnapshot,
+		scope: PolicyToolScope,
+	): string | PagedOutput {
+		if (!params.id) return rulesPage(snapshot, scope, params.cursor);
+		const record = snapshot.records.get(params.id);
+		const pending = snapshot.pending.filter((entry) => entry.ruleId === params.id || entry.id === params.id);
+		if (pending.length) return pendingProposalOutput(pending[0]);
+		return record
+			? formatRulesTool({ ...snapshot, records: new Map([[record.id, record]]), pending: [] }, scope)
+			: ruleAbsenceMessage(snapshot.health, `No rule or pending proposal named ${params.id}.`);
 	}
 
 	async executePropose(
@@ -2495,7 +2513,7 @@ class DurablePolicyRuntime {
 				dataKinds: ["table"],
 				observationStorage: "conversation documents",
 				projection: "full transcript with retained guidance, no new turn",
-			};
+			} satisfies PolicyCapabilities;
 		}
 		if (view === "explain")
 			return this.inspectExplain(params, snapshot, reading.state, reading.observation, now, surface);

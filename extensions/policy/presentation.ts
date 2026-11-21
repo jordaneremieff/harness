@@ -208,6 +208,15 @@ function storeLead(details: Record<string, unknown>): string {
 	return `${count("rule", details.rules)} · ${count("pending proposal", details.pending)}`;
 }
 
+/** The position of a paged view's entries, and whether a further page follows. */
+function pageSuffix(details: Record<string, unknown>, theme: Theme): string {
+	const page = asRecord(details.page);
+	const { start, returned, total } = page;
+	if (typeof start !== "number" || typeof returned !== "number" || typeof total !== "number") return "";
+	const range = returned === 0 ? "none" : `${start + 1}–${start + returned}`;
+	return theme.fg("dim", ` · ${range} of ${total}${typeof page.nextCursor === "string" ? " · more follow" : ""}`);
+}
+
 function degradedSuffix(details: Record<string, unknown>, theme: Theme): string {
 	return details.ruleStoreDegraded === true ? theme.fg("warning", " · rule store degraded") : "";
 }
@@ -268,6 +277,7 @@ export function renderRulesCall(value: unknown, theme: Theme, context: CardConte
 	heading += theme.fg("accent", ` · ${displayPreview(view, 24)}`);
 	const id = stringField(args, "id");
 	if (id) heading += theme.fg("accent", ` · ${displayPreview(id, 100)}`);
+	if (stringField(args, "cursor")) heading += theme.fg("dim", " · next page");
 	const lines = [heading];
 	const qualifier = inspectionQualifier(view, args);
 	if (context.expanded) lines.push(expandedArguments(args, theme));
@@ -332,7 +342,7 @@ export function renderRulesResult(
 	const view = stringField(args, "view") || "rules";
 	const details = asRecord(result.details);
 	const { lead, color } = rulesOutcome(view, args, details, output);
-	let text = `\n${theme.fg(color, lead)}${degradedSuffix(details, theme)}`;
+	let text = `\n${theme.fg(color, lead)}${pageSuffix(details, theme)}${degradedSuffix(details, theme)}`;
 	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
 	else text += `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);

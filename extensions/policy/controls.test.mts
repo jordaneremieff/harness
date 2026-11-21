@@ -696,7 +696,11 @@ describe("named data controls", () => {
 		assert.match(await policyDataCommand(reg, `show ${data.name}`, operator, async () => false), /operator-table/);
 		await assert.rejects(
 			policyDataCommand(reg, "list extra", operator, async () => true),
-			/does not accept/,
+			/cursor is malformed/,
+		);
+		await assert.rejects(
+			policyDataCommand(reg, "list extra more", operator, async () => true),
+			/only an optional cursor/,
 		);
 		await assert.rejects(
 			policyDataCommand(reg, `set ${request}`, agent as never, async () => true),

@@ -1219,6 +1219,10 @@ test("every tool declares its replay class explicitly", async () => {
 					true,
 				);
 				assert.equal(check.check({ rules: 0 }), false);
+				const base = { rules: 0, pending: 0, ruleStoreDegraded: false, ruleStorePath: "rules.jsonl" };
+				for (const nextCursor of [null, "WyJydWxlcyJd"])
+					assert.equal(check.check({ ...base, page: { start: 0, returned: 1, total: 2, nextCursor } }), true);
+				assert.equal(check.check({ ...base, page: { start: 0, returned: 1, total: 2 } }), false);
 			}
 			if (entry.tool.name === "policy_control") {
 				assert.deepEqual(schema, { type: "object", patternProperties: { "^.*$": {} } });
@@ -2091,7 +2095,38 @@ test("durable inspection and control surfaces answer model-issued calls", async 
 		assert.equal(typeof previewJson.decision, "object");
 
 		const capabilities = await call("policy_rules", { view: "capabilities" });
-		assert.match(textOf(capabilities), /"phases"/);
+		const capabilityPage = JSON.parse(textOf(capabilities)) as {
+			actions: string[];
+			schemas: { tools: Array<{ name: string }> };
+			page: { start: number; returned: number; total: number; nextCursor: string | null };
+		};
+		assert.ok(capabilityPage.actions.includes("require-approval"));
+		assert.deepEqual(capabilityPage.page, {
+			start: 0,
+			returned: capabilityPage.schemas.tools.length,
+			total: capabilityPage.schemas.tools.length,
+			nextCursor: null,
+		});
+		assert.deepEqual(detailsOf(capabilities)?.page, capabilityPage.page);
+		const listed: string[] = [];
+		let cursor: string | null = null;
+		for (let pages = 0; pages < 8; pages++) {
+			const listing = await call("policy_rules", cursor === null ? { view: "rules" } : { view: "rules", cursor });
+			const page = detailsOf(listing)?.page as { start: number; nextCursor: string | null };
+			assert.equal(page.start, listed.length);
+			assert.match(textOf(listing), /^page: entries \d+-\d+ of \d+ \| next cursor: \S+$/m);
+			listed.push(...[...textOf(listing).matchAll(/^([a-z][\w.-]*) \| source=/gm)].map((match) => match[1]));
+			cursor = page.nextCursor;
+			if (cursor === null) break;
+		}
+		assert.equal(cursor, null);
+		assert.ok(listed.includes("durable-guide-probe"));
+		assert.equal(new Set(listed).size, listed.length);
+		const data = JSON.parse(textOf(await call("policy_rules", { view: "data" }))) as { page?: unknown };
+		assert.deepEqual(data.page, { start: 0, returned: 0, total: 0, nextCursor: null });
+		const refused = await call("policy_rules", { view: "capabilities", cursor: "WyJydWxlcyJd" });
+		assert.equal(refused?.isError, true);
+		assert.match(textOf(refused), /cursor is malformed/);
 
 		const explain = await call("policy_rules", { view: "explain", id: "durable-guide-probe" });
 		assert.match(textOf(explain), /durable-guide-probe/);

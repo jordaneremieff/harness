@@ -640,6 +640,30 @@ describe("telemetry operator command", () => {
 	});
 });
 
+describe("capabilities operator command", () => {
+	it("prints one page of the tool catalog and continues only from a valid cursor", async () => {
+		const { pi, ctx, notifications } = await setup();
+		await pi.command().handler("capabilities", ctx as never);
+		const page = JSON.parse(notifications.at(-1)?.message ?? "") as {
+			schemas: { tools: Array<{ name: string }> };
+			page: { nextCursor: string | null; total: number };
+		};
+		assert.deepEqual(
+			page.schemas.tools.map((tool) => tool.name),
+			pi
+				.getAllTools()
+				.map((tool) => tool.name)
+				.sort(),
+		);
+		assert.equal(page.page.nextCursor, null);
+		await pi.command().handler("capabilities not-a-cursor", ctx as never);
+		assert.equal(notifications.at(-1)?.type, "error");
+		assert.match(notifications.at(-1)?.message ?? "", /cursor is malformed/);
+		await pi.command().handler("capabilities one two", ctx as never);
+		assert.match(notifications.at(-1)?.message ?? "", /Usage: \/policy capabilities \[cursor\]/);
+	});
+});
+
 describe("unified tools and command gates", () => {
 	it("validates command previews with the same bounded inspection contract as the tool", async () => {
 		const { dir, pi, ctx, notifications } = await setup("enforce");

@@ -3,8 +3,11 @@
 Inspect `policy_rules` first. Its default view supplies current rules, pending
 proposals, health, exact provider/model identities, and cwd. Use `capabilities`
 for active tools and supported actions, `catalog` for installed examples, and
-`data` for approved table status. Inspect the actual tool schema before a
-correction. Never invent a tool's failure contract or a private identifier.
+`data` for approved table status. The default view, `capabilities`, and `data`
+return pages: repeat the same view and `id` with `cursor` set to the page's
+`nextCursor` until it is null. `data` with a binding name as `id` pages that
+table's rows. Inspect the actual tool schema before a correction. Never invent a
+tool's failure contract or a private identifier.
 
 ## Author, check, propose, approve
 

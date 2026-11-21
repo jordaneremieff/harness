@@ -72,6 +72,7 @@ import { shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin } from "./state.ts";
 import { PolicyWriter, TelemetryNotices } from "./store.ts";
 import { DEFAULT_TELEMETRY_RETENTION, type TelemetryHealth, type TelemetryRetention } from "./telemetry-files.ts";
+import type { PolicyCapabilities } from "./tools.ts";
 
 const MAX_CATALOG_TOOLS = 1024;
 const MAX_FINAL_IDS = 8192;
@@ -1328,7 +1329,7 @@ export class PolicyRuntime {
 		};
 	}
 
-	private inspectCapabilities(): unknown {
+	private inspectCapabilities(): PolicyCapabilities {
 		const catalog = this.catalog();
 		return {
 			phases: PROGRAM_PHASES,

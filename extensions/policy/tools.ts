@@ -8,7 +8,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { authoringGuide, checkDraft, DraftCasesSchema, type ParsedDraft, validateDraftCases } from "./authoring.ts";
 import { ruleScopeVisibility } from "./classify.ts";
 import { registerControlTool } from "./control.ts";
-import { snapshotData } from "./data.ts";
+import { type DataSnapshot, snapshotData } from "./data.ts";
 import { dataFileApprovalText, dataReview, normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
 import {
 	MAX_COMMAND_LENGTH,
@@ -32,6 +32,14 @@ import {
 	validateLocalCandidate,
 } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
+import {
+	listingFingerprint,
+	PAGE_CURSOR_PATTERN,
+	pageEntries,
+	pageLine,
+	type PageSummary,
+	pageSummary,
+} from "./pages.ts";
 import { capText, terminalSafe } from "./panel.ts";
 import { toolDisplayRecord } from "./display.ts";
 import type { TelemetryRequest, TelemetrySummary } from "./telemetry.ts";
@@ -279,6 +287,15 @@ export const PolicyRulesParams = obj(
 			]),
 		),
 		id: opt(str({ minLength: 1, maxLength: 261 })),
+		cursor: opt(
+			str({
+				minLength: 1,
+				maxLength: 512,
+				pattern: PAGE_CURSOR_PATTERN,
+				description:
+					"Next page of the rules listing, the capabilities tool list, or a data view: repeat the same view and id with the nextCursor of the previous page.",
+			}),
+		),
 		draft: opt({
 			type: "object",
 			patternProperties: { "^.*$": {} },
@@ -325,6 +342,40 @@ export const PolicyApproveParams = obj(
 const approvalValidator = compile(PolicyApproveParams);
 
 export type PolicyInspectionView = "capabilities" | "state" | "health" | "explain" | "preview" | "data";
+
+/** One configured tool as the capabilities view lists it; the fields mirror the `context.tools` facts. */
+export interface CapabilityTool {
+	name: string;
+	active: boolean;
+	configured: boolean;
+}
+
+/** Engine capabilities and the complete tool catalog that one host reports; the view pages `schemas.tools`. */
+export interface PolicyCapabilities {
+	phases: readonly string[];
+	actions: readonly string[];
+	mode: string;
+	effectiveMode: string;
+	schemas: { available: boolean; tools: readonly CapabilityTool[] };
+	innerSchemas: string;
+	dataKinds: readonly string[];
+	observationStorage: string;
+	projection: string;
+}
+
+/**
+ * Entry bytes of one page. Tool pages stay below the tool text cap and command pages below the command
+ * notice cap, with room for the view's fixed fields; only an entry larger than the budget reaches the
+ * truncation backstop.
+ */
+const TOOL_PAGE_BYTES = 40 * 1024;
+export const COMMAND_PAGE_BYTES = 24 * 1024;
+
+/** A paged view's text and the page facts that tool details repeat. */
+export interface PagedOutput {
+	text: string;
+	page: PageSummary;
+}
 
 /** Session facts the policy tools read; a native host supplies these without an ExtensionContext. */
 export type PolicyToolScope = { cwd: string; model?: { provider: string; id: string } | null };
@@ -411,7 +462,55 @@ function ruleSummaryLines(record: RuleRecord, context: PolicyToolScope): string[
 	return lines;
 }
 
-export function formatRulesTool(snapshot: RuleSnapshot, context: PolicyToolScope): string {
+function proposalSummaryLines(proposal: RuleSnapshot["pending"][number]): string[] {
+	const lines = [
+		`${proposal.id} | ${proposal.operation} | ${line(proposal.ruleId)} | revision=${proposalRevision(proposal)} | ${line(proposal.reason)}`,
+	];
+	if (proposal.candidate) lines.push(`  candidate: ${line(JSON.stringify(proposal.candidate))}`);
+	if (proposal.expectedRevision) lines.push(`  expected definition revision: ${proposal.expectedRevision}`);
+	return lines;
+}
+
+/** One rule or pending proposal of the rules listing, rendered as its complete text block. */
+interface ListingEntry {
+	section: "RULES" | "PENDING PROPOSALS";
+	text: string;
+}
+
+function listingEntries(snapshot: RuleSnapshot, context: PolicyToolScope): ListingEntry[] {
+	return [
+		...[...snapshot.records.values()].map((record) => ({
+			section: "RULES" as const,
+			text: ruleSummaryLines(record, context).join("\n"),
+		})),
+		...snapshot.pending.map((proposal) => ({
+			section: "PENDING PROPOSALS" as const,
+			text: proposalSummaryLines(proposal).join("\n"),
+		})),
+	];
+}
+
+/** One listing section with its entries, or `(none)` where the listing names an empty section. */
+function sectionLines(
+	section: ListingEntry["section"],
+	entries: readonly ListingEntry[],
+	nameEmpty: boolean,
+): string[] {
+	const selected = entries.filter((entry) => entry.section === section).map((entry) => entry.text);
+	if (selected.length === 0) return nameEmpty ? ["", section, "(none)"] : [];
+	return ["", section, ...selected];
+}
+
+/**
+ * Rules listing text. Each section appears when the entries include it; the first page names an empty
+ * rules section and the last page an empty proposals section, so the complete listing names both.
+ */
+function rulesText(
+	snapshot: RuleSnapshot,
+	context: PolicyToolScope,
+	entries: readonly ListingEntry[],
+	bounds: { first: boolean; last: boolean; page?: PageSummary },
+): string {
 	const model = context.model;
 	const lines = [
 		"SESSION CONTEXT",
@@ -420,24 +519,43 @@ export function formatRulesTool(snapshot: RuleSnapshot, context: PolicyToolScope
 		`cwd: ${line(context.cwd)}`,
 		line(ruleStoreHealthLine(snapshot.health)),
 		`record count: ${snapshot.records.size} | pending proposal count: ${snapshot.pending.length}`,
-		"",
-		"RULES",
 	];
-	if (snapshot.records.size === 0) lines.push("(none)");
-	for (const record of snapshot.records.values()) lines.push(...ruleSummaryLines(record, context));
-	lines.push("", "PENDING PROPOSALS");
-	if (snapshot.pending.length === 0) lines.push("(none)");
-	else {
-		for (const proposal of snapshot.pending) {
-			lines.push(
-				`${proposal.id} | ${proposal.operation} | ${line(proposal.ruleId)} | revision=${proposalRevision(proposal)} | ${line(proposal.reason)}`,
-			);
-			if (proposal.candidate) lines.push(`  candidate: ${line(JSON.stringify(proposal.candidate))}`);
-			if (proposal.expectedRevision) lines.push(`  expected definition revision: ${proposal.expectedRevision}`);
-		}
-	}
-	lines.push("", line(ruleStoreHealthLine(snapshot.health)));
-	return capText(lines.join("\n"));
+	if (bounds.page) lines.push(pageLine(bounds.page, "entries"));
+	lines.push(
+		...sectionLines("RULES", entries, bounds.first && snapshot.records.size === 0),
+		...sectionLines("PENDING PROPOSALS", entries, bounds.last && snapshot.pending.length === 0),
+		"",
+		line(ruleStoreHealthLine(snapshot.health)),
+	);
+	return lines.join("\n");
+}
+
+/** The complete listing of the given snapshot, for one selected rule; the all-rules listing pages. */
+export function formatRulesTool(snapshot: RuleSnapshot, context: PolicyToolScope): string {
+	return capText(rulesText(snapshot, context, listingEntries(snapshot, context), { first: true, last: true }));
+}
+
+/** One page of every rule followed by every pending proposal, bound to the complete listing it pages. */
+export function rulesPage(
+	snapshot: RuleSnapshot,
+	context: PolicyToolScope,
+	cursor?: string,
+	budget = TOOL_PAGE_BYTES,
+): PagedOutput {
+	const entries = listingEntries(snapshot, context);
+	const page = pageEntries(entries, (entry) => Buffer.byteLength(entry.text, "utf8") + 1, {
+		view: "rules",
+		...(cursor !== undefined ? { cursor } : {}),
+		fingerprint: listingFingerprint(entries),
+		budget,
+	});
+	const summary = pageSummary(page);
+	const text = rulesText(snapshot, context, page.entries, {
+		first: page.start === 0,
+		last: page.nextCursor === null,
+		page: summary,
+	});
+	return { text: capText(text), page: summary };
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -499,9 +617,13 @@ function validatePreviewParams(params: Record<string, unknown>): void {
 		throw new Error(`preview content supports at most ${MAX_PREVIEW_CONTENT_BLOCKS} text blocks with type/text only`);
 }
 
+/** Views whose listings page with `cursor`. */
+const PAGED_VIEWS = new Set(["rules", "capabilities", "data"]);
+
 function inspectionFields(view: string): string[] {
 	if (view === "preview") return ["view", "tool", "input", "result"];
 	if (view === "check") return ["view", "draft", "effect", "cases"];
+	if (PAGED_VIEWS.has(view)) return ["view", "id", "cursor"];
 	return view === "authoring" ? ["view"] : ["view", "id"];
 }
 
@@ -510,6 +632,18 @@ function validateCheckParams(params: Record<string, unknown>): void {
 	if (params.effect !== undefined && params.effect !== "steer" && params.effect !== "block")
 		throw new Error("check effect must be steer or block");
 	validateDraftCases(params.cases ?? []);
+}
+
+const CURSOR_TEXT = new RegExp(PAGE_CURSOR_PATTERN);
+
+/** A cursor is the text of an earlier page's nextCursor; a rule or proposal lookup takes none. */
+function validateCursorParams(view: string, params: Record<string, unknown>): void {
+	if (typeof params.cursor !== "string" || !CURSOR_TEXT.test(params.cursor))
+		throw new Error("cursor must be the nextCursor text of an earlier page");
+	if (view === "rules" && params.id !== undefined)
+		throw new Error(
+			"cursor pages the all-rules listing; a rule or proposal lookup by id returns one complete artifact",
+		);
 }
 
 export function validateInspectionParams(params: Record<string, unknown>): void {
@@ -534,25 +668,129 @@ export function validateInspectionParams(params: Record<string, unknown>): void 
 	const idLimit = view === "explain" && typeof params.id === "string" && params.id.startsWith("call:") ? 261 : 80;
 	if (params.id !== undefined && (typeof params.id !== "string" || params.id.length < 1 || params.id.length > idLimit))
 		throw new Error(`inspection id must contain 1 to ${idLimit} characters`);
+	validateViewParams(view, params);
+}
+
+/** The checks one view adds to the shared field and id checks. */
+function validateViewParams(view: string, params: Record<string, unknown>): void {
 	if (view === "explain" && !params.id) throw new Error("explain requires id");
+	if (params.cursor !== undefined) validateCursorParams(view, params);
 	if (view === "preview") validatePreviewParams(params);
 	if (view === "check") validateCheckParams(params);
 }
 
-export function boundedInspection(value: unknown): string {
-	return capText(terminalSafe(typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? "(none)")));
+/**
+ * Pretty JSON for inspection. JSON.stringify already escapes C0 controls; DEL and C1 controls take JSON
+ * escapes here, so the text stays both valid JSON and safe for a terminal.
+ */
+export function inspectionJson(value: unknown): string {
+	return (JSON.stringify(value, null, 2) ?? "(none)").replace(
+		/[\u007f-\u009f]/g,
+		(character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+	);
 }
 
-export function formatDataView(snapshot: RuleSnapshot, name?: string): string {
-	const bindings = name
-		? [...snapshot.data.values()].filter((data) => data.name === name)
-		: [...snapshot.data.values()];
-	const snapshots = Object.values(snapshotData(bindings, Date.now()));
-	return boundedInspection({
-		health: snapshot.health,
-		count: snapshot.data.size,
-		bindings: name && snapshots.length === 0 ? [{ name, status: "missing" }] : snapshots,
+export function boundedInspection(value: unknown): string {
+	return capText(typeof value === "string" ? terminalSafe(value) : inspectionJson(value));
+}
+
+/** Bytes that one element adds to pretty JSON when its array sits `depth` levels below the root. */
+function jsonEntryBytes(entry: unknown, depth: number): number {
+	const text = inspectionJson(entry);
+	return Buffer.byteLength(text, "utf8") + text.split("\n").length * 2 * depth + 2;
+}
+
+/** One page of the configured tools, sorted by name; the engine fields repeat on every page. */
+export function capabilitiesPage(
+	capabilities: PolicyCapabilities,
+	cursor?: string,
+	budget = TOOL_PAGE_BYTES,
+): PagedOutput {
+	const byName = new Map<string, CapabilityTool>();
+	for (const tool of capabilities.schemas.tools) if (!byName.has(tool.name)) byName.set(tool.name, tool);
+	const tools = [...byName.values()].sort((left, right) =>
+		left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+	);
+	// Activation changes between calls, so the cursor binds the configured names, not their active flags.
+	const page = pageEntries(tools, (tool) => jsonEntryBytes(tool, 3), {
+		view: "capabilities",
+		...(cursor !== undefined ? { cursor } : {}),
+		fingerprint: listingFingerprint(tools.map((tool) => tool.name)),
+		budget,
 	});
+	const summary = pageSummary(page);
+	return {
+		text: boundedInspection({
+			...capabilities,
+			schemas: { available: capabilities.schemas.available, tools: page.entries },
+			page: summary,
+		}),
+		page: summary,
+	};
+}
+
+/** A binding's facts without its rows; `rows` counts them. */
+function dataSummary(snapshot: DataSnapshot): Record<string, unknown> {
+	const { data, ...facts } = snapshot;
+	if (!data) return facts;
+	return {
+		...facts,
+		...(data.maxAgeMs !== undefined ? { maxAgeMs: data.maxAgeMs } : {}),
+		kind: data.kind,
+		...(data.collation !== undefined ? { collation: data.collation } : {}),
+		rows: data.rows.length,
+	};
+}
+
+/**
+ * Named data inspection. Without a name, one page of binding summaries; with a name, that binding's
+ * summary and one page of its rows, bound to the binding revision.
+ */
+export function dataPage(
+	snapshot: RuleSnapshot,
+	name?: string,
+	cursor?: string,
+	budget = TOOL_PAGE_BYTES,
+): PagedOutput {
+	const bound = [...snapshot.data.values()].filter((data) => name === undefined || data.name === name);
+	const snapshots = Object.values(snapshotData(bound, Date.now()));
+	const request = { ...(name !== undefined ? { id: name } : {}), ...(cursor !== undefined ? { cursor } : {}), budget };
+	if (name === undefined) {
+		const bindings = snapshots.map(dataSummary);
+		const page = pageEntries(bindings, (binding) => jsonEntryBytes(binding, 2), {
+			...request,
+			view: "data",
+			fingerprint: listingFingerprint(snapshots.map((binding) => [binding.name, binding.revision ?? null])),
+		});
+		const summary = pageSummary(page);
+		return {
+			text: boundedInspection({
+				health: snapshot.health,
+				count: snapshot.data.size,
+				bindings: page.entries,
+				page: summary,
+			}),
+			page: summary,
+		};
+	}
+	const selected = snapshots.find((binding) => binding.name === name);
+	const rows = selected?.data?.rows ?? [];
+	const page = pageEntries(rows, (row) => jsonEntryBytes(row, 2), {
+		...request,
+		view: "data",
+		fingerprint: listingFingerprint([name, selected?.revision ?? null]),
+	});
+	const summary = pageSummary(page);
+	return {
+		text: boundedInspection({
+			health: snapshot.health,
+			count: snapshot.data.size,
+			binding: selected ? dataSummary(selected) : { name, status: "missing" },
+			rows: page.entries,
+			page: summary,
+		}),
+		page: summary,
+	};
 }
 
 /**
@@ -590,7 +828,9 @@ export async function prepareDataCommand(
 	if (verb === "set-file") return dataSetFile(registry, tail, auditValue, cwd);
 	if (verb === "set") return dataSet(registry, tail, auditValue);
 	if (verb === "remove") return dataRemove(registry, tail, auditValue);
-	throw new Error("Use /policy data list|show <name>|set <JSON>|set-file <JSON>|remove <name> <revision>.");
+	throw new Error(
+		"Use /policy data list [cursor]|show <name> [cursor]|set <JSON>|set-file <JSON>|remove <name> <revision>.",
+	);
 }
 
 /** Commands supply operator authority; model tools never call this mutation surface. */
@@ -608,9 +848,14 @@ export async function policyDataCommand(
 }
 
 async function dataListShow(registry: RuleRegistry, verb: string, tail: string): Promise<string> {
-	if (verb === "list" && tail) throw new Error("data list does not accept arguments");
-	if (verb === "show" && (!tail || /\s/.test(tail))) throw new Error("data show requires one name");
-	return formatDataView(await registry.snapshot(), verb === "show" ? tail : undefined);
+	const parts = tail ? tail.split(/\s+/) : [];
+	if (verb === "list" && parts.length > 1) throw new Error("data list accepts only an optional cursor");
+	if (verb === "show" && (parts.length < 1 || parts.length > 2))
+		throw new Error("data show requires one name and an optional cursor");
+	const snapshot = await registry.snapshot();
+	return verb === "show"
+		? dataPage(snapshot, parts[0], parts[1], COMMAND_PAGE_BYTES).text
+		: dataPage(snapshot, undefined, parts[0], COMMAND_PAGE_BYTES).text;
 }
 
 async function dataSetFile(
@@ -870,7 +1115,18 @@ export function pendingProposalOutput(proposal: ProposalEvent): string {
 	return result;
 }
 
-/** Render one read-only inspection view as bounded tool text. */
+/** Store counts for every view, with the page facts of a paged view. */
+export function rulesDetails(snapshot: RuleSnapshot, output: string | PagedOutput) {
+	return {
+		rules: snapshot.records.size,
+		pending: snapshot.pending.length,
+		ruleStoreDegraded: snapshot.health.status === "degraded",
+		ruleStorePath: snapshot.health.path,
+		...(typeof output === "string" ? {} : { page: output.page }),
+	};
+}
+
+/** Render one read-only inspection view as bounded tool text; paged views also return their page facts. */
 async function rulesToolOutput(
 	pi: ExtensionAPI,
 	deps: ToolDeps,
@@ -878,7 +1134,7 @@ async function rulesToolOutput(
 	params: PolicyRulesInput,
 	view: string,
 	ctx: PolicyToolContext,
-): Promise<string> {
+): Promise<string | PagedOutput> {
 	if (view === "rules") {
 		if (params.id) {
 			const record = snapshot.records.get(params.id);
@@ -888,15 +1144,17 @@ async function rulesToolOutput(
 				? formatRulesTool({ ...snapshot, records: new Map([[record.id, record]]), pending: [] }, ctx)
 				: line(ruleAbsenceMessage(snapshot.health, `No rule or pending proposal named ${line(params.id)}.`));
 		}
-		return formatRulesTool(snapshot, ctx);
+		return rulesPage(snapshot, ctx, params.cursor);
 	}
 	if (view === "authoring") return authoringGuide();
 	if (view === "check")
 		return boundedInspection(JSON.stringify(await checkDraft(params, snapshot, pi, ctx, parseAuthoringDraft)));
 	if (view === "catalog") return formatCatalog(deps.registry, params.id);
-	if (view === "data") return formatDataView(snapshot, params.id);
+	if (view === "data") return dataPage(snapshot, params.id, params.cursor);
 	if (!deps.inspect) throw new Error(`policy ${view} inspection is unavailable: runtime callback absent`);
-	return boundedInspection(await deps.inspect(view as PolicyInspectionView, params, ctx));
+	const inspected = await deps.inspect(view as PolicyInspectionView, params, ctx);
+	if (view === "capabilities") return capabilitiesPage(inspected as PolicyCapabilities, params.cursor);
+	return boundedInspection(inspected);
 }
 
 export function approvalReadback(
@@ -937,7 +1195,7 @@ export const POLICY_PROPOSE_DESCRIPTION =
 	"Submit one inert policy rule proposal. add and replace require id, purpose, authority, reason, note, and exactly one authoring form: match (command-shape/v1), predicate (an installed bounded matcher key from policy_rules view=catalog), or language=facts/v1 with a complete program. purpose states the positive outcome. authority is exact or steer-or-block. Compact match authoring supports flags (AND), anyFlags (OR), and absentFlags. match.cli with profile git and subcommand [push] uses command-aware options and requires explicit top-level onUnavailable skip or deny. Literal matching defaults to skip. Compact match authoring declares guidance from note and suggestion; the operator selects steer or block only with steer-or-block authority. Only input guide/deny actions permit steer-or-block authority; it never authorizes correction. Selected steer never denies, including unavailable evidence. Optional applicability is a bounded condition; only true permits rule evaluation, and false or unavailable skips the rule. Exact actions require approval of the complete proposal revision. replace also requires the current expectedRevision and exact proposal revision at approval. Programs declare applicability phase and selector, bounded evidence conditions, action parameters, unavailable behavior, optional data names and observation state. retire and disable accept only id and reason. Scope uses exact provider/model identities and absolute cwd prefixes. Inspect policy_rules before authoring scope or data-dependent rules. Proposals cannot approve actions, write data, reset state, or invoke tools.";
 
 export const POLICY_RULES_DESCRIPTION =
-	"Inspect policy rules (default), bundled starter catalog, capabilities, state, health, named data, explain, preview, authoring guidance, or a read-only draft check. authoring returns the canonical guide. check accepts an existing add/replace draft, optional bounded cases, and an explicit simulated effect for steer-or-block drafts; it validates and simulates with isolated state, without tool execution, proposals, or approval. id selects a rule, pending proposal (by rule ID or proposal ID), or data name. A pending lookup returns one complete compact artifact and exact revision, bounded by the stored event size plus lossless control-character escaping rather than the all-rules display cap. explain also accepts call:<callId> for bounded current-session decision evidence. Preview requires tool and bounded input, with optional result (isError, details, and text-only content). It leads with the decision, retains matched or unavailable evaluations, and counts non-matching rules; recorded call explanations retain bounded per-rule metadata. Preview never executes a simulated tool or changes simulated/live policy state or data. The real inspection call retains ordinary telemetry. Views report exact revisions, authority, availability, and unavailable boundaries. This tool has no control mutation action.";
+	"Inspect policy rules (default), bundled starter catalog, capabilities, state, health, named data, explain, preview, authoring guidance, or a read-only draft check. authoring returns the canonical guide. check accepts an existing add/replace draft, optional bounded cases, and an explicit simulated effect for steer-or-block drafts; it validates and simulates with isolated state, without tool execution, proposals, or approval. id selects a rule, pending proposal (by rule ID or proposal ID), or data name. The all-rules listing, the capabilities tool list, and data (binding summaries, or with id that binding's rows) return byte-bounded pages: each page reports its start, returned, total, and nextCursor; repeat the same view and id with cursor until nextCursor is null. A cursor refuses a changed listing; start again without it. A pending lookup returns one complete compact artifact and exact revision, bounded by the stored event size plus lossless control-character escaping rather than the all-rules display cap. explain also accepts call:<callId> for bounded current-session decision evidence. Preview requires tool and bounded input, with optional result (isError, details, and text-only content). It leads with the decision, retains matched or unavailable evaluations, and counts non-matching rules; recorded call explanations retain bounded per-rule metadata. Preview never executes a simulated tool or changes simulated/live policy state or data. The real inspection call retains ordinary telemetry. Views report exact revisions, authority, availability, and unavailable boundaries. This tool has no control mutation action.";
 
 function registerApprovalTool(pi: Pick<ExtensionAPI, "registerTool">, deps: ToolDeps): void {
 	pi.registerTool({
@@ -1060,13 +1318,8 @@ export function registerRuleTools(
 			const view = params.view ?? "rules";
 			const output = await rulesToolOutput(pi, deps, snapshot, params, view, ctx);
 			return {
-				content: [{ type: "text" as const, text: output }],
-				details: {
-					rules: snapshot.records.size,
-					pending: snapshot.pending.length,
-					ruleStoreDegraded: snapshot.health.status === "degraded",
-					ruleStorePath: snapshot.health.path,
-				},
+				content: [{ type: "text" as const, text: typeof output === "string" ? output : output.text }],
+				details: rulesDetails(snapshot, output),
 			};
 		},
 	});

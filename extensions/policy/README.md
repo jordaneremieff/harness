@@ -1187,6 +1187,25 @@ Missing records may lie outside the read bound or await persistence;
 absence does not prove that no decision occurred. Records remain untrusted
 historical evidence, not current rule authority.
 
+Three listings return byte-bounded pages: the all-rules listing (every rule, then
+every pending proposal), the `capabilities` tool list (configured tools sorted by
+name, with the engine fields on every page), and `data`. Without `id`, `data`
+lists binding summaries, each with its row count instead of its rows; with `id`,
+it returns that binding's summary and a page of its rows. Each page reports a
+zero-based `start`, `returned`, `total`, and `nextCursor` in the `page` object of
+the JSON views and in the tool details; the rules text states the same page in a
+`page:` line with a one-based entry range. Repeat the same view and `id` with
+`cursor` until `nextCursor` is null. A page holds at least one entry and keeps
+within a byte budget below the tool text bound, so paged JSON parses unless one
+entry alone exceeds that budget. A cursor binds its view,
+`id`, position, and an identity of the complete listing: the displayed rule and
+proposal entries, the configured tool names (not their active state, which can
+change between calls), the binding names and revisions, or one binding's
+revision. A changed listing refuses the cursor; start again without it. A rule or
+proposal lookup by `id` takes no cursor. JSON views escape DEL and C1 control
+characters as JSON `\u` escapes, so the text stays valid JSON and safe for a
+terminal.
+
 Preview requires `tool` and bounded `input`, with optional `result` containing
 `isError`, `details`, and text `content` blocks. Binary/image content and `usage`
 are not accepted. Preview and execution share result fact projection and the
@@ -1227,16 +1246,17 @@ row adds the authority, the authoring form, and the expected revision for
 `replace`. The purpose, reason, and note stay expanded-only.
 
 `policy_rules`: the collapsed heading names the view and, when present, the rule,
-data, or call id. A `check` row adds the draft operation and id, effect, and case
-count; a `preview` row adds the tool, input key count, and result replay state.
-Other views add no qualifier row.
+data, or call id, and marks a call with `cursor` as a next page. A `check` row
+adds the draft operation and id, effect, and case count; a `preview` row adds the
+tool, input key count, and result replay state. Other views add no qualifier row.
 
 Results lead with the outcome that view produces: admission and diagnostic
 counts for `check`; the simulated decision and the rules that caused it for
 `preview`; the selected rule's id, state, and effect when `id` narrows `rules`,
 or the rule and pending-proposal counts otherwise; and a top-level field summary
 for JSON views such as `health`, `state`, `capabilities`, `explain`, `catalog`,
-and `data`. A preview result never claims that a tool ran; its expansion carries
+and `data`. A paged view adds the position of its entries and whether more
+follow. A preview result never claims that a tool ran; its expansion carries
 the boundary text. A degraded rule store appends a warning. Expansion shows the
 complete arguments or result text with a display bound; terminal controls escape
 to text in every collapsed value.
@@ -1258,19 +1278,23 @@ to text in every collapsed value.
 /policy retire <rule-id> <reason...>
 /policy mode
 /policy telemetry <from YYYY-MM-DD> <to YYYY-MM-DD> [cursor]
-/policy capabilities
+/policy capabilities [cursor]
 /policy state
 /policy health
 /policy explain <rule-id|call:call-id>
 /policy preview <JSON>
 /policy reset <rule-id|--all> <reason...>
-/policy data list
-/policy data show <name>
+/policy data list [cursor]
+/policy data show <name> [cursor]
 /policy data set <JSON>
 /policy data set-file <JSON>
 /policy data remove <name> <current-revision> [exact]
 /policy help
 ```
+
+`/policy capabilities` and `/policy data list|show` print one page of the same
+paged views as `policy_rules`, sized for a command notice. Pass the printed
+`nextCursor` as the last argument for the next page.
 
 In the TUI, `/policy approve` and `/policy reject` select a proposal by readable
 rule name. `/policy approve local.example` asks for a selectable effect and shows
