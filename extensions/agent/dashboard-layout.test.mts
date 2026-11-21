@@ -2,19 +2,20 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, truncateToWidth, CURSOR_MARKER } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { dashboardRows } from "./dashboard.ts";
 import {
 	dashboardGeometry,
 	dashboardHeading,
 	fitLine,
 	LIST_BLOCK_ROWS,
 	listBlock,
-	readingGeometry,
 	MAX_ROSTER_COLUMNS,
 	MIN_DETAIL_COLUMNS,
+	readingGeometry,
 } from "./dashboard-layout.ts";
-import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
 import { agentState, updateDraft } from "./dashboard-state.ts";
+import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
 
 /** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
 const visible = (lines: string[]) =>
@@ -59,7 +60,7 @@ it("the roster keeps its share of the window and the conversation keeps the body
 	assert.equal(dashboardGeometry(100, 30, 3, false, 0, 4, { rosterRatio: 0.01 }).rosterWidth, 32);
 });
 
-it("the list widens for the longest model while it preserves the pane minimum", async () => {
+it("the list widens for the longest model and its cost while it preserves the pane minimum", async () => {
 	for (const width of [100, 164, 240])
 		for (const modelId of ["small", "long-model-identity-with-provider", "model".repeat(30)]) {
 			const model = { provider: "test", modelId, thinkingLevel: "high" };
@@ -67,13 +68,16 @@ it("the list widens for the longest model while it preserves the pane minimum", 
 			try {
 				await turn();
 				const lines = visible(f.ui.render(width));
-				const longest = visibleWidth(`test/${modelId} [high]`) + 5;
+				const longest = visibleWidth(`test/${modelId} [high]`) + 2 + visibleWidth("~$0.42") + 5;
 				const base = dashboardGeometry(width, 40, 0).rosterWidth;
 				const expected = Math.max(base, Math.min(longest, MAX_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS));
 				const divider = lines[1]?.indexOf("│") ?? -1;
 				assert.equal(divider, expected);
 				assert.ok(divider <= MAX_ROSTER_COLUMNS);
 				assert.ok(width - divider - 1 >= MIN_DETAIL_COLUMNS);
+				const list = lines.slice(1).map((line) => line.slice(0, divider).trimEnd());
+				if (longest <= divider)
+					assert.ok(list.some((line) => line.includes(`test/${modelId} [high]`) && line.endsWith("~$0.42")));
 				assert.ok(lines.every((line) => visibleWidth(line) === width));
 			} finally {
 				f.ui.dispose();
@@ -207,7 +211,7 @@ for (const width of [60, 80])
 	for (const height of [20, 21])
 		for (const focus of ["list", "composer", "conversation"] as const)
 			for (const notice of [false, true]) {
-				it(`compact failed conversations keep warnings, draft, status and targets at ${width}x${height} from the ${focus}, notice ${notice}`, async () => {
+				it(`compact failed conversations keep warnings, draft, facts and targets at ${width}x${height} from the ${focus}, notice ${notice}`, async () => {
 					const observed = source([row("one", { state: "failed", error: "quota limit" })]);
 					observed.availability = () => ({ state: "unavailable", at: new Date(0).toISOString() });
 					const f = fixture(width, height, observed);
@@ -220,8 +224,16 @@ for (const width of [60, 80])
 						if (focus === "composer") f.ui.handleInput("\r");
 						if (focus === "conversation") f.ui.handleInput("\t");
 						assert.equal(f.ui.focus.region, focus);
-						if (notice) f.ui.notify("Layout could not be saved", "warning");
 						f.ui.focused = true;
+						if (height === 20 && focus === "list") {
+							const list = visible(f.ui.render(width));
+							assert.match(list.join("\n"), /quota limit/);
+							assert.doesNotMatch(list.join("\n"), /╭─ To |A new message runs the work again/);
+							assert.match(list.at(-1) ?? "", /enter read/);
+							f.ui.handleInput("\r");
+							assert.equal(f.ui.focus.region, "conversation");
+						}
+						if (notice) f.ui.notify("Layout could not be saved", "warning");
 						const lines = f.ui.render(width);
 						const plain = visible(lines);
 						assert.equal(lines.length, height, `${width}x${height} ${focus}`);
@@ -232,20 +244,16 @@ for (const width of [60, 80])
 							/esc (list|close|cancel|done)$/u,
 							"the way out is the last footer control",
 						);
-						if (notice) {
-							assert.match(text, /Layout could not be saved/);
-							assert.doesNotMatch(plain[1] ?? "", /quota limit/, "the notice takes the header line");
-						} else {
-							assert.match(
-								text,
-								/quota limit · A new message runs the work again/,
-								"the header states the reason and the way forward",
-							);
-							assert.doesNotMatch(text, /Not connected/, "the reason takes the line the connection warning would use");
-						}
-						const statusY = plain.findIndex((line) => /model │ ~\$0\.42/.test(line));
-						assert.ok(statusY > 0, "the model and cost line stays visible");
-						assert.match(plain[statusY + 1] ?? "", /\/work/);
+						assert.doesNotMatch(text, /Not connected/, "the higher-priority notice takes the connection warning's row");
+						const factsY = plain.findIndex((line) => /model │ ~\$0\.42 │ \/work/.test(line));
+						assert.ok(factsY > 0, "the model, cost and folder stay on the facts row");
+						assert.match(plain[factsY - 1] ?? "", /one +! Failed/);
+						assert.match(
+							plain[factsY + 1] ?? "",
+							notice ? /Layout could not be saved/ : /quota limit · A new message runs the work again/,
+							"the note shows the notice or the reason and the way forward",
+						);
+						assert.equal(plain[factsY + 2]?.trim(), "", "one blank row separates the header from the conversation");
 						assert.doesNotMatch(plain[0] ?? "", /Close/u, "the header holds no commands");
 						const click = (y: number, x = 2) =>
 							f.ui.handleMouse({
@@ -262,8 +270,7 @@ for (const width of [60, 80])
 								ctrl: false,
 								clickCount: 1,
 							});
-						for (const y of [statusY, statusY + 1])
-							assert.equal(click(y), undefined, "status rows are not editor targets");
+						assert.equal(click(factsY), undefined, "the facts row is not an editor target");
 						const top = plain.findIndex((line, index) => index > 0 && line.startsWith("╭─"));
 						assert.ok(top >= 0, focus);
 						assert.ok(
@@ -297,7 +304,7 @@ for (const width of [60, 80])
 					}
 				});
 			}
-it("narrow strips preserve the composer, two status lines and two conversation rows above the key footer", async () => {
+it("narrow strips preserve the header, conversation and focused message field above the key footer", async () => {
 	for (const [width, height, stripRows, visibleAgents] of [
 		[80, 25, 8, 2],
 		[60, 21, 5, 1],
@@ -305,31 +312,134 @@ it("narrow strips preserve the composer, two status lines and two conversation r
 		const f = fixture(
 			width,
 			height,
-			source([row("one", { modifiedAt: 3 }), row("two", { modifiedAt: 2 }), row("three", { modifiedAt: 1 })]),
+			source([
+				row("First agent", { state: "idle", modifiedAt: 3 }),
+				row("Second agent", { state: "idle", modifiedAt: 2 }),
+				row("Third agent", { state: "idle", modifiedAt: 1 }),
+			]),
 		);
 		try {
 			await turn();
 			await turn();
+			f.ui.handleInput("\r");
 			const plain = visible(f.ui.render(width));
-			const state = plain.findIndex((line, index) => index > 0 && STATE_LINE.test(line));
-			assert.ok(state > 0);
-			const title = state;
+			const title = plain.findIndex((line, index) => index > 0 && STATE_LINE.test(line));
 			assert.equal(title - 1, stripRows, `${width}x${height} list strip`);
 			const strip = plain.slice(1, title).join("\n");
-			assert.match(strip, /one/);
-			assert.equal(strip.includes("two"), visibleAgents === 2);
-			assert.doesNotMatch(strip, /three/);
+			assert.match(strip, /First agent/);
+			assert.equal(strip.includes("Second agent"), visibleAgents === 2);
+			assert.doesNotMatch(strip, /Third agent/);
 			assert.match(strip, /[↓↑] \d.*more/);
+			assert.match(plain[title + 1] ?? "", /model │ .*\/work/);
 			const composerTop = plain.findIndex((line) => line.startsWith("╭─ To "));
 			const composerBottom = plain.findIndex((line) => line.startsWith("╰─"));
 			assert.ok(composerTop - title - 3 >= 2, "at least two conversation rows remain");
+			assert.ok(plain.slice(title + 3, composerTop).some((line) => line.includes("Check the task")));
 			assert.ok(composerBottom > composerTop);
-			assert.match(plain[composerBottom + 1] ?? "", /model │/);
-			assert.match(plain[composerBottom + 2] ?? "", /\/work/);
+			assert.equal(composerBottom, plain.length - 2, "the message field ends above the key footer");
 		} finally {
 			f.ui.dispose();
 		}
 	}
+});
+
+it("ordinary Pi's row share keeps room for the transcript and has a ten-row minimum", () => {
+	for (const [rows, regular, expanded] of [
+		[8, 10, 10],
+		[10, 10, 10],
+		[16, 10, 12],
+		[17, 10, 13],
+		[18, 11, 14],
+		[32, 19, 28],
+		[44, 26, 40],
+	]) {
+		assert.equal(dashboardRows(rows, false), regular, `${rows} rows, regular`);
+		assert.equal(dashboardRows(rows, true), expanded, `${rows} rows, expanded`);
+	}
+});
+
+it("the framed Agents view displays its size control and leaves z as text in Find and the message field", async (t) => {
+	const f = fixture(164, 44, source([row("z match"), row("other agent")]), { viewRows: dashboardRows });
+	t.after(() => f.ui.dispose());
+	await turn();
+	const render = () => visible(f.ui.render(164));
+	const compact = render();
+	assert.equal(compact.length, 26);
+	assert.equal(f.ui.capturesViewportInput, true);
+	assert.match(compact.at(-1) ?? "", /\bz expand\b/);
+	f.ui.handleInput("z");
+	const expanded = render();
+	assert.equal(expanded.length, 40);
+	assert.match(expanded.at(-1) ?? "", /\bz shrink\b/);
+	f.ui.handleInput("/");
+	f.ui.handleInput("z");
+	const filtered = render();
+	assert.equal(filtered.length, 40);
+	assert.match(filtered[1] ?? "", /^z +│/);
+	assert.doesNotMatch(filtered.join("\n"), /other agent/);
+	f.ui.handleInput("\r");
+	f.ui.handleInput("z");
+	assert.equal(render().length, 26);
+	f.ui.handleInput("\r");
+	f.ui.handleInput("z");
+	const composing = render();
+	assert.equal(composing.length, 26);
+	assert.equal(agentState(f.state, "z match").draft, "z");
+	assert.doesNotMatch(composing.at(-1) ?? "", /\bz (?:expand|shrink)\b/);
+});
+
+it("the top rule right-aligns session figures below 100 columns when they fit", async (t) => {
+	const figures = "agents: 1/1 active · ~$0.42";
+	const f = fixture(80, 24, undefined, { sessionFigures: async () => figures });
+	t.after(() => f.ui.dispose());
+	await turn();
+	await turn();
+	const heading = visible(f.ui.render(80))[0] ?? "";
+	assert.match(heading, /^─ Agents ─+ /);
+	assert.ok(heading.endsWith(` ${figures} ─`));
+	assert.equal(visibleWidth(heading), 80);
+});
+
+it("a short narrow view shows only the focused list or conversation", async (t) => {
+	const f = fixture(80, 19);
+	t.after(() => f.ui.dispose());
+	await turn();
+	const render = () => visible(f.ui.render(80));
+	const list = render();
+	assert.match(list.join("\n"), /Find/);
+	assert.match(list.at(-1) ?? "", /enter read/);
+	assert.doesNotMatch(list.join("\n"), /Check the task|╭─ To /);
+	f.ui.handleInput("\r");
+	const conversation = render();
+	assert.equal(f.ui.focus.region, "conversation");
+	assert.match(conversation.join("\n"), /Check the task/);
+	assert.doesNotMatch(conversation.join("\n"), /Find|╭─ To /);
+	assert.match(conversation.at(-1) ?? "", /enter message.*esc list/);
+	f.ui.handleInput("\x1b");
+	assert.match(render().at(-1) ?? "", /enter read/);
+});
+
+it("Enter shows the message field and Escape hides it unless it holds a draft", async (t) => {
+	const f = fixture(140, 30);
+	t.after(() => f.ui.dispose());
+	await turn();
+	const screen = () => visible(f.ui.render(140)).join("\n");
+	assert.doesNotMatch(screen(), /╭─ To /);
+	f.ui.handleInput("\r");
+	assert.match(screen(), /╭─ To storage:1 /);
+	f.ui.handleInput("\x1b");
+	assert.doesNotMatch(screen(), /╭─ To /);
+	f.ui.handleInput("\r");
+	f.ui.handleInput("Keep this draft");
+	f.ui.handleInput("\x1b");
+	assert.equal(f.ui.focus.region, "list");
+	const withDraft = screen();
+	assert.match(withDraft, /╭─ To storage:1 /);
+	assert.match(withDraft, /Keep this draft/);
+	f.ui.handleInput("z");
+	const attached = visible(f.ui.render(140));
+	assert.equal(attached.length, 30);
+	assert.doesNotMatch(attached.at(-1) ?? "", /\bz (?:expand|shrink)\b/);
 });
 
 const painted = {

@@ -3,23 +3,29 @@ import { it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
 	attentionReason,
+	coverageText,
 	dashboardRecords,
 	dashboardText,
-	readableError,
-	recoveryHint,
-	rosterLines,
-	coverageText,
-	rosterTotals,
 	groupRows,
-	rosterGroup,
 	modelLabel,
 	ROSTER_ROWS,
+	readableError,
+	recoveryHint,
+	rosterGroup,
+	rosterLines,
+	rosterRowCount,
+	rosterTotals,
 } from "./dashboard-roster.ts";
-import { row, theme, coverage as rosterCoverage } from "./dashboard-test-fixture.mts";
+import { coverage as rosterCoverage, row, theme } from "./dashboard-test-fixture.mts";
 import { mergeAgentCoverage } from "./dashboard-types.ts";
+
+const dimTheme = Object.assign(Object.create(theme), {
+	fg: (tone: string, text: string) => (tone === "dim" ? `\x1b[90m${text}\x1b[39m` : text),
+}) as typeof theme;
+
 for (const [width, height] of [
 	[38, 36],
-	[80, 4],
+	[80, 8],
 ] as const) {
 	it(`truncated roster keeps focus and neighbors and states hidden rows at ${width}`, () => {
 		const rows = Array.from({ length: 100 }, (_, index) => row(String(index), { name: `Agent${index}` }));
@@ -39,7 +45,7 @@ it("selected roster blocks close their styles before the adjacent pane", () => {
 	colored.bold = (text: string) => `\x1b[1m${text}\x1b[22m`;
 	const lines = rosterLines([row("one", { name: "Recipient" })], "one", 29, 10, 0, colored);
 	const selected = lines.filter((line) => line.includes("▌"));
-	assert.equal(selected.length, 2, "two painted lines; the spacing line below stays plain");
+	assert.equal(selected.length, 3, "three painted lines; the spacing line below stays plain");
 	assert.ok(selected.every((line) => line.endsWith("\x1b[0m")));
 });
 
@@ -136,8 +142,9 @@ it("starting agents appear under the Working heading", () => {
 	const snapshot = { observedAt: 0, sessions: [row("done", { state: "done" }), { ...starting, modifiedAt: 1 }] };
 	assert.equal(dashboardRecords(snapshot, "")[0]?.id, starting.id);
 	const lines = rosterLines([starting], starting.id, 80, 10, 0, theme);
-	assert.equal(lines[0]?.trim(), "Working 1");
+	assert.equal(lines[0]?.trim(), "Working 1 · ~$0.42");
 	assert.match(lines[1] ?? "", /◌ starting/);
+	assert.match(lines[3] ?? "", /Starting/);
 	assert.equal(rosterTotals(snapshot), "1 working · $0.84 retained");
 	assert.match(dashboardText(snapshot), /◌ Starting/);
 	assert.doesNotMatch(dashboardText(snapshot), /Starting · stored/);
@@ -150,10 +157,11 @@ it("unknown row costs stay unknown and totals retain the known lower bound", () 
 			row("unknown", { cost: unknown }),
 		];
 		const snapshot = { observedAt: 0, sessions: rows };
-		const lines = rosterLines(rows, "unknown", 80, 4, 0, theme);
+		const lines = rosterLines(rows, "unknown", 80, 5, 0, theme);
+		assert.equal(lines[0]?.trim(), "Working 3 · ~$1.50+");
 		assert.match(lines[1] ?? "", /unknown/);
 		assert.match(lines[2] ?? "", /test\/model \[high\]/);
-		assert.doesNotMatch(lines.join("\n"), /\$|NaN|Infinity/);
+		assert.doesNotMatch(lines.slice(1).join("\n"), /\$|NaN|Infinity/);
 		assert.equal(rosterTotals(snapshot), "3 working · $1.50+ retained");
 		assert.doesNotMatch(dashboardText(snapshot), /NaN|Infinity/);
 		assert.equal(
@@ -188,34 +196,36 @@ it("roster order follows recent activity across states and breaks ties by identi
 });
 it("a narrow strip truncates the name above its model and states hidden rows", () => {
 	const rows = Array.from({ length: 100 }, (_, index) => row(String(index), { name: "界".repeat(100) }));
-	const lines = rosterLines(rows, "50", 80, 4, 60000, theme);
-	assert.equal(lines.length, 4);
-	assert.equal(lines[0]?.trim(), "Working 100");
+	const lines = rosterLines(rows, "50", 80, 5, 60000, theme);
+	assert.equal(lines.length, 5);
+	assert.equal(lines[0]?.trim(), "Working 100 · ~$42.00");
 	assert.match(lines[1] ?? "", /▌ ● 界.*…/);
-	assert.match(lines[2] ?? "", /test\/model \[high\]/);
-	assert.match(lines[3] ?? "", /↑ 50 · ↓ 49 more/);
-	assert.doesNotMatch(lines.join("\n"), /ago|Responding|\$/);
+	assert.match(lines[2] ?? "", /test\/model \[high\].*~\$0\.42/);
+	assert.match(lines[3] ?? "", /Responding/);
+	assert.match(lines[4] ?? "", /↑ 50 · ↓ 49 more/);
+	assert.doesNotMatch(lines.join("\n"), /ago/);
 	assert.ok(lines.every((line) => visibleWidth(line) <= 80));
 });
-it("roster rows omit times for active and settled agents", () => {
-	const at = new Date(2026, 9, 3, 13, 24).getTime();
+it("only settled names show a dim relative age when the roster has at least 24 columns", () => {
 	for (const state of ["working", "starting", "idle", "done", "stopped"] as const) {
-		const rows = [row("one", { state, modifiedAt: at })];
-		for (const [width, height] of [
-			[64, 12],
-			[60, 4],
-			[80, 4],
-		] as const) {
-			for (const now of [at + 1000, at + 3700000]) {
-				const lines = rosterLines(rows, "one", width, height, now, theme);
-				assert.match(lines.join("\n"), /test\/model \[high\]/);
-				assert.doesNotMatch(lines.join("\n"), /just now|ago|Oct 3|Updated|2026/);
+		const rows = [row("one", { state, modifiedAt: 0 })];
+		for (const width of [23, 24, 64]) {
+			for (const [now, age] of [
+				[1000, "just now"],
+				[3700000, "1h ago"],
+			] as const) {
+				const lines = rosterLines(rows, undefined, width, 5, now, dimTheme);
+				assert.match(lines[2] ?? "", /test\/model \[high\]/);
+				const name = lines[1] ?? "";
+				if (width >= 24 && state !== "working" && state !== "starting")
+					assert.ok(name.endsWith(`\x1b[90m${age}\x1b[39m`), name);
+				else assert.doesNotMatch(name, /just now|ago/);
 				assert.ok(lines.every((line) => visibleWidth(line) <= width));
 			}
 		}
 	}
 });
-it("sections show their counts with one blank separator and two rows per agent", () => {
+it("sections show their counts with one blank separator and variable row heights", () => {
 	const now = 2 * 86400000;
 	const rows = groupRows(
 		[
@@ -231,26 +241,26 @@ it("sections show their counts with one blank separator and two rows per agent",
 		row: (item, line, height) => hits.push([item.id, line, height]),
 	});
 	assert.equal(ROSTER_ROWS, 2);
-	assert.equal(lines[0]?.trim(), "Working 1");
-	assert.equal(lines[3], "");
-	assert.equal(lines[4]?.trim(), "Recent 2");
-	assert.equal(lines[9], "");
-	assert.equal(lines[10]?.trim(), "Earlier 1");
+	assert.equal(lines[0]?.trim(), "Working 1 · ~$0.42");
+	assert.equal(lines[4], "");
+	assert.equal(lines[5]?.trim(), "Recent 2 · ~$0.84");
+	assert.equal(lines[11], "");
+	assert.equal(lines[12]?.trim(), "Earlier 1 · ~$0.42");
 	assert.deepEqual(hits, [
-		["work", 1, 2],
-		["failure", 5, 2],
-		["today", 7, 2],
-		["earlier", 11, 2],
+		["work", 1, 3],
+		["failure", 6, 3],
+		["today", 9, 2],
+		["earlier", 13, 2],
 	]);
-	assert.match(lines[11] ?? "", /▌ ✓ earlier/);
-	assert.doesNotMatch(lines.join("\n"), /agents|with errors|failure.*failure|\$/);
+	assert.match(lines[13] ?? "", /▌ ✓ earlier/);
+	assert.doesNotMatch(lines.join("\n"), /agents|with errors|failure.*failure/);
 	assert.ok(lines.every((line) => visibleWidth(line) <= 64));
 });
 it("a time-like name stays an ordinary roster name", () => {
-	const lines = rosterLines([row("one", { name: "Updated fake" })], "one", 80, 4, 0, theme);
+	const lines = rosterLines([row("one", { name: "Updated fake" })], "one", 80, 5, 0, theme);
 	assert.match(lines[1] ?? "", /Updated fake/);
 	assert.match(lines[2] ?? "", /test\/model \[high\]/);
-	assert.equal(lines[3]?.trim(), "");
+	assert.equal(lines[4]?.trim(), "");
 });
 
 it("duplicate titles receive distinct shortest suffixes and coverage remains explicit", () => {
@@ -276,7 +286,7 @@ it("roster titles use the name, then the handle, ahead of the historical first i
 	const handleOnly = row("handle", { name: undefined, firstMessage: "One old task", profile });
 	for (const [width, height] of [
 		[38, 18],
-		[80, 4],
+		[80, 5],
 		[120, 24],
 	] as const) {
 		const lines = rosterLines([expert], expert.id, width, height, 0, theme);
@@ -336,7 +346,7 @@ it("provider errors read as plain words", () => {
 	);
 });
 
-it("failed rows colour their mark without a reason, cost or error-count footer", () => {
+it("roster errors colour the state mark and reason without an error-count footer", () => {
 	const colored = Object.create(theme) as typeof theme;
 	colored.fg = (color, text) => `\x1b[${color === "warning" ? 33 : color === "error" ? 31 : 37}m${text}\x1b[39m`;
 	const lines = rosterLines(
@@ -349,7 +359,8 @@ it("failed rows colour their mark without a reason, cost or error-count footer",
 	);
 	assert.ok(lines[1]?.includes("\x1b[33m!"));
 	assert.match(lines[2] ?? "", /test\/model/);
-	assert.doesNotMatch(lines.join("\n"), /429|Usage limit|with errors|\$/);
+	assert.match(lines[3] ?? "", /\x1b\[33m429 Usage limit reached/);
+	assert.equal(visibleWidth(lines.at(-1) ?? ""), 0);
 	const fault = rosterLines(
 		[row("host", { state: "idle", health: { lastError: "Host fault sentinel" } })],
 		undefined,
@@ -359,9 +370,9 @@ it("failed rows colour their mark without a reason, cost or error-count footer",
 		colored,
 	);
 	assert.ok(fault[1]?.includes("\x1b[31m○"));
-	assert.doesNotMatch(fault.join("\n"), /Host fault sentinel/);
+	assert.match(fault[3] ?? "", /\x1b\[31mHost error: Host fault sentinel/);
 });
-it("grouped rows appear once with two-row hit areas and no activity previews", () => {
+it("grouped agents appear once and their hit areas include every activity or error row", () => {
 	const now = 2 * 86400000;
 	const rows = groupRows(
 		[
@@ -377,18 +388,33 @@ it("grouped rows appear once with two-row hit areas and no activity previews", (
 			row: (item, line, height) => hits.push([item.id, line, height]),
 		});
 		assert.deepEqual(hits, [
-			["work", 1, 2],
-			["done", 5, 2],
-			["failed", 9, 2],
+			["work", 1, 3],
+			["done", 6, 2],
+			["failed", 10, 3],
 		]);
 		for (const item of rows) {
 			assert.ok(item.name);
 			assert.equal(lines.filter((line) => line.includes(item.name ?? "")).length, 1);
 		}
-		for (const [, , height] of hits) assert.equal(height, ROSTER_ROWS);
-		assert.doesNotMatch(lines.join("\n"), /private-file|Result ready|quota limit|Responding|\$|ago/);
+		assert.deepEqual(rows.map(rosterRowCount), [3, 2, 3]);
+		assert.match(lines[3] ?? "", /read private-file/);
+		assert.match(lines[12] ?? "", /quota limit/);
+		assert.doesNotMatch(lines.join("\n"), /Result ready|Responding/);
 		assert.ok(lines.every((line) => visibleWidth(line) <= 100));
 	}
+});
+it("the compact strip keeps its two-row entries when the same roster renders with full heights", () => {
+	const rows = [row("active", { currentTool: { name: "read", argument: "work.md" } })];
+	const hits: number[] = [];
+	const render = (compact: boolean) =>
+		rosterLines(rows, "active", 80, 6, 0, theme, { compact, row: (_, _line, height) => hits.push(height) }).join("\n");
+	const full = render(false);
+	assert.match(full, /read work\.md/);
+	const compact = render(true);
+	assert.match(compact, /● active[^\n]*\n[^\n]*test\/model/);
+	assert.doesNotMatch(compact, /read work\.md/);
+	assert.equal(render(false), full);
+	assert.deepEqual(hits, [3, 2, 3]);
 });
 it("section membership uses active state and the last-day boundary", () => {
 	const now = 2 * 86400000;
@@ -464,12 +490,54 @@ it("a complete roster footer has no totals, costs or retired error controls", ()
 	const rows = groupRows([row("ok"), row("bad", { state: "failed", error: "quota limit" })], 0);
 	const lines = rosterLines(rows, "ok", 80, 14, 0, theme);
 	assert.equal(lines.at(-1)?.trim(), "");
-	assert.doesNotMatch(lines.join("\n"), /with errors|errors only|loaded|retained|\$/);
+	assert.doesNotMatch(lines.join("\n"), /with errors|errors only|loaded|retained/);
 });
 
 it("the footer names hidden rows above or below the window", () => {
 	const rows = Array.from({ length: 10 }, (_, index) => row(String(index)));
-	assert.match(rosterLines(rows, "0", 80, 7, 0, theme).at(-1) ?? "", /↓ 8 more/);
-	assert.match(rosterLines(rows, "5", 80, 7, 0, theme).at(-1) ?? "", /↑ 4 · ↓ 4 more/);
-	assert.match(rosterLines(rows, "9", 80, 7, 0, theme).at(-1) ?? "", /↑ 8 more/);
+	assert.match(rosterLines(rows, "0", 80, 8, 0, theme).at(-1) ?? "", /↓ 8 more/);
+	assert.match(rosterLines(rows, "5", 80, 8, 0, theme).at(-1) ?? "", /↑ 4 · ↓ 4 more/);
+	assert.match(rosterLines(rows, "9", 80, 8, 0, theme).at(-1) ?? "", /↑ 8 more/);
+});
+
+it("the model row shows a dim right-aligned cost only when the whole model fits beside it", () => {
+	const model = "test/model [high]";
+	const normal = row("one", { state: "idle", cost: 1.42 });
+	const width = 4 + visibleWidth(model) + 2 + visibleWidth("~$1.42");
+	const modelRow = (agent: ReturnType<typeof row>, columns = width) =>
+		rosterLines([agent], undefined, columns, 7, 0, dimTheme)[2] ?? "";
+	const full = modelRow(normal);
+	assert.match(full, /test\/model \[high\] {2}\x1b\[90m~\$1\.42\x1b\[39m$/);
+	assert.equal(visibleWidth(full), width);
+	const noRoomForCost = modelRow(normal, width - 1);
+	assert.match(noRoomForCost, /test\/model \[high\]/);
+	assert.doesNotMatch(noRoomForCost, /\$/);
+	const shortModel = modelRow(normal, 4 + visibleWidth(model) - 1);
+	assert.match(shortModel, /…/);
+	assert.doesNotMatch(shortModel, /\$/);
+	assert.match(modelRow({ ...normal, partial: true }, width + 1), /~\$1\.42\+/);
+	assert.match(modelRow({ ...normal, cost: 0.005 }), /~\$0\.01/);
+	for (const cost of [0.0049, Number.NaN, Number.POSITIVE_INFINITY])
+		assert.doesNotMatch(modelRow({ ...normal, cost }), /\$/);
+});
+
+it("section headings total all loaded costs and mark missing or partial estimates", () => {
+	const recent = (id: string, cost: number, partial = false) => row(id, { state: "idle", cost, partial });
+	const working = row("separate", { cost: 9 });
+	const screen = (rows: ReturnType<typeof row>[], height = 20) =>
+		rosterLines(rows, undefined, 38, height, 0, theme).join("\n");
+	const known = [recent("one", 1.42), recent("two", 2.78), working];
+	assert.match(screen(known), /Recent 2 · ~\$4\.20\s*\n/);
+	assert.match(screen(known), /Working 1 · ~\$9\.00\s*\n/);
+	const recentHeading = rosterLines(known, undefined, 38, 20, 0, dimTheme).find((line) => line.includes("Recent"));
+	assert.match(recentHeading ?? "", /\x1b\[90m · ~\$4\.20\x1b\[39m$/);
+	assert.match(screen([recent("one", 1.42, true), recent("two", 2.78)]), /Recent 2 · ~\$4\.20\+/);
+	assert.match(screen([...known, recent("unknown", Number.NaN)]), /Recent 3 · ~\$4\.20\+/);
+	assert.match(screen([recent("one", 0.0049), recent("unknown", Number.NaN)]), /Recent 2\s*\n/);
+	assert.match(screen(known.slice(0, 2), 4), /Recent 2 · ~\$4\.20/);
+	assert.doesNotMatch(
+		screen(known.slice(0, 2), 4),
+		/○ two/,
+		"a hidden loaded agent still contributes to its section total",
+	);
 });

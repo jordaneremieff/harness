@@ -71,10 +71,12 @@ const MAX_SOURCE_PAGES = 8;
 /** A roster notice rereads the selected thread at once; the whole discovery at most this often. */
 const DISCOVERY_INTERVAL_MS = 10_000;
 /** A post longer than this many rendered lines opens as a preview of PREVIEW_LINES lines. */
-const LONG_POST_LINES = 16;
-const PREVIEW_LINES = 10;
+const LONG_POST_LINES = 40;
+const PREVIEW_LINES = 24;
 /** Maximum purpose rows in the reading header. */
 const PURPOSE_ROWS = 2;
+/** Rows a thread's title takes in the list before it is shortened. */
+const TITLE_ROWS = 2;
 
 /** One rendered exchange entry: its rows, the row that toggles a long post, and its post header row. */
 interface EventRows {
@@ -242,6 +244,8 @@ export class ThreadsView {
 	private postsOpen = false;
 	/** The top visible exchange row, kept by event so a rebuilt document does not move the reader. */
 	private exchangeTop?: ExchangeAnchor;
+	/** The window follows the newest post: opening a thread and End show its start, and a new post moves there. */
+	private exchangeFollow = true;
 	/** The last render's exchange geometry, for scroll steps and anchor capture. */
 	private exchangeSpans: readonly ExchangeSpan[] = [];
 	private exchangeStart = 0;
@@ -297,6 +301,7 @@ export class ThreadsView {
 		this.replyIndex = 0;
 		this.replyStart = 0;
 		this.exchangeTop = undefined;
+		this.exchangeFollow = true;
 		if (threadId) this.select(threadId);
 		else if (this.options.state.selected) this.select(this.options.state.selected);
 		this.region = threadId ? "exchange" : "list";
@@ -455,6 +460,7 @@ export class ThreadsView {
 			if (this.options.state.selected) this.direct = false;
 			this.options.state.selected = threadId;
 			this.exchangeTop = undefined;
+			this.exchangeFollow = true;
 			this.exchangeStart = 0;
 			this.detailsOffset = 0;
 			this.memberIndex = 0;
@@ -605,6 +611,7 @@ export class ThreadsView {
 		if (this.disposed || this.options.state.selected !== threadId) return;
 		this.composer.setText(draft.text);
 		this.exchangeTop = undefined;
+		this.exchangeFollow = true;
 		void this.readThread(threadId);
 	}
 
@@ -684,6 +691,7 @@ export class ThreadsView {
 
 	/** Turn the current top row into an event anchor, so a rebuilt document keeps it in place. */
 	private holdExchangeTop(): void {
+		this.exchangeFollow = false;
 		this.exchangeTop = this.exchangeSpot(this.exchangeStart);
 	}
 
@@ -1033,12 +1041,33 @@ export class ThreadsView {
 		else if (matchesKey(data, "pageDown")) this.scroll(-page);
 		else if (matchesKey(data, "home")) {
 			this.exchangeTop = "document";
+			this.exchangeFollow = false;
 			this.exchangeStart = 0;
 			void this.earlier();
-		} else if (matchesKey(data, "end")) {
-			this.exchangeTop = undefined;
-			this.exchangeStart = this.exchangeMax;
-		}
+		} else if (matchesKey(data, "end")) this.showLatest();
+	}
+
+	/**
+	 * End and the `lines below` row: follow the newest post, which shows it from its top with every
+	 * complete post before it that fits. A window already inside the newest post, or already at its top
+	 * while the post runs past the window, goes to the last row instead.
+	 */
+	private showLatest(): void {
+		const newest = this.newestTop(this.exchangeSpans);
+		const following = this.exchangeFollow || this.exchangeStart === this.latestStart(this.exchangeSpans);
+		const toEnd =
+			newest === undefined ||
+			this.exchangeStart > newest ||
+			(following && this.exchangeStart >= newest && this.exchangeMax > newest);
+		this.exchangeTop = undefined;
+		this.exchangeFollow = !toEnd;
+		this.exchangeStart = toEnd ? this.exchangeMax : this.latestStart(this.exchangeSpans);
+	}
+
+	/** The first row of the newest post's card, with the blank row above it; undefined without a post. */
+	private newestTop(spans: readonly ExchangeSpan[]): number | undefined {
+		const newest = spans.findLast((span) => span.header !== undefined);
+		return newest ? Math.max(0, newest.start - 1) : undefined;
 	}
 
 	private detailsInput(data: string): void {
@@ -1064,10 +1093,26 @@ export class ThreadsView {
 
 	/** Move the exchange top by `lines` rows; a negative count moves toward the newest line. */
 	private scrollExchange(lines: number): void {
+		// A window that already shows the newest row stays where it is.
+		if (lines < 0 && this.exchangeStart >= this.exchangeMax) return;
 		const start = Math.max(0, Math.min(this.exchangeMax, this.exchangeStart - lines));
 		this.exchangeStart = start;
+		this.exchangeFollow = false;
 		this.exchangeTop = start >= this.exchangeMax ? undefined : this.exchangeSpot(start);
 		if (start === 0 && lines > 0) void this.earlier();
+	}
+
+	/**
+	 * Where the window starts while it follows the latest post: at the top of the earliest post from which
+	 * every later post fits, so no post shows without its author; at the newest post's own top when even
+	 * that post is taller than the window; at the document's top when everything fits.
+	 */
+	private latestStart(spans: readonly ExchangeSpan[]): number {
+		if (this.exchangeMax === 0) return 0;
+		const tops = spans.filter((span) => span.header !== undefined).map((span) => Math.max(0, span.start - 1));
+		const newest = tops.at(-1);
+		if (newest === undefined) return this.exchangeMax;
+		return tops.find((top) => top >= this.exchangeMax) ?? newest;
 	}
 
 	/** The reading anchor for the exchange row at `start`: the document top, or the event and row inside it. */
@@ -1409,8 +1454,8 @@ export class ThreadsView {
 	}
 
 	/**
-	 * One quiet line per thread: the state mark, the title and, at the right, the age of its latest
-	 * activity. The exchange's header carries the purpose.
+	 * One quiet block per thread: the state mark and the title, wrapped onto a second row when it is
+	 * long; then the members and the age of its latest activity. The exchange's header carries the purpose.
 	 */
 	private threadBlock(
 		row: CollaborationSummary,
@@ -1418,16 +1463,28 @@ export class ThreadsView {
 	): { lines: string[]; timeLine: number; timeX: number; timeWidth: number } {
 		const theme = this.options.theme;
 		const chosen = row.id === this.options.state.selected && !this.closedFocused;
+		const rail = chosen ? theme.fg("accent", "▌") : " ";
+		const room = Math.max(1, width - 4);
+		const words = wrapTextWithAnsi(oneLine(row.title) || "Untitled thread", room);
+		const titleRows = words.length > TITLE_ROWS ? words.slice(0, TITLE_ROWS) : words;
+		if (words.length > TITLE_ROWS) {
+			const rest = words.slice(TITLE_ROWS - 1).join(" ");
+			titleRows[TITLE_ROWS - 1] = truncateToWidth(rest, room, "…");
+		}
+		const paint = (text: string) =>
+			chosen ? theme.bold(theme.fg("text", text)) : theme.fg(row.closed ? "muted" : "text", text);
+		const mark = theme.fg(row.closed ? "dim" : "success", row.closed ? "○" : "●");
+		const lines = titleRows.map((text, index) => `${rail} ${index === 0 ? mark : " "} ${paint(text)}`);
+		const members = `${row.members} member${row.members === 1 ? "" : "s"} · `;
 		const time = dashboardTime(row.updatedAt, this.options.exactTime());
-		const timeWidth = Math.min(visibleWidth(time), Math.max(0, width - 8));
-		const title = truncateToWidth(oneLine(row.title) || "Untitled thread", Math.max(1, width - 5 - timeWidth), "…");
-		const label = chosen ? theme.bold(theme.fg("text", title)) : theme.fg(row.closed ? "muted" : "text", title);
-		const left = `${chosen ? theme.fg("accent", "▌") : " "} ${theme.fg(row.closed ? "dim" : "success", row.closed ? "○" : "●")} ${label}`;
-		const line = `${fitLine(left, width - timeWidth)}${theme.fg("dim", truncateToWidth(time, timeWidth, ""))}`;
+		const timeWidth = Math.min(visibleWidth(time), Math.max(0, room - visibleWidth(members)));
+		lines.push(
+			`${rail}   ${theme.fg("dim", truncateToWidth(members, room, ""))}${theme.fg("dim", truncateToWidth(time, timeWidth, ""))}`,
+		);
 		return {
-			lines: [chosen ? highlightRow(line, width, 2, theme) : fitLine(line, width)],
-			timeLine: 0,
-			timeX: width - timeWidth,
+			lines: lines.map((line) => (chosen ? highlightRow(line, width, 2, theme) : fitLine(line, width))),
+			timeLine: lines.length - 1,
+			timeX: 4 + visibleWidth(members),
 			timeWidth,
 		};
 	}
@@ -1439,7 +1496,8 @@ export class ThreadsView {
 		const summary = this.threads.get(id);
 		const closed = read?.page.thread.closed ?? summary?.closed ?? false;
 		const header = this.threadHeader(read, summary, x0, width, narrow, closed);
-		const composer = this.panel === "exchange" ? this.renderComposer(width, height, closed) : [];
+		const composer =
+			this.panel === "exchange" && this.composerShown() ? this.renderComposer(width, height, closed) : [];
 		const middleHeight = Math.max(1, height - header.length - composer.length);
 		const middle = this.threadMiddle(read, x0, header.length, width, middleHeight);
 		if (composer.length && !closed) this.composerHits(x0, header.length + middleHeight, width, composer.length);
@@ -1572,7 +1630,7 @@ export class ThreadsView {
 		const { lines, spans } = this.exchangeDocument(read, width);
 		this.exchangeSpans = spans;
 		this.exchangeMax = Math.max(0, lines.length - height);
-		const start = this.exchangeRow(this.exchangeTop);
+		const start = this.exchangeFollow ? this.latestStart(spans) : this.exchangeRow(this.exchangeTop);
 		this.exchangeStart = start;
 		const visible = lines.slice(start, start + height);
 		if (start === 0 && read.nextBefore)
@@ -1589,7 +1647,7 @@ export class ThreadsView {
 				this.scrollExchange(-delta);
 			},
 		});
-		this.exchangeTop = start >= this.exchangeMax ? undefined : this.exchangeSpot(start);
+		if (!this.exchangeFollow) this.exchangeTop = start >= this.exchangeMax ? undefined : this.exchangeSpot(start);
 		return visible.map((line) => fitLine(line, width));
 	}
 
@@ -1683,8 +1741,7 @@ export class ThreadsView {
 			width: area.width,
 			height: 1,
 			click: () => {
-				this.exchangeTop = undefined;
-				this.exchangeStart = this.exchangeMax;
+				this.showLatest();
 			},
 		});
 	}
@@ -1738,10 +1795,14 @@ export class ThreadsView {
 		const theme = this.options.theme;
 		const bar = (text: string, used: number) => theme.bg(CARD_HEADER, `${text}${" ".repeat(Math.max(0, card - used))}`);
 		const time = dashboardTime(event.at, this.options.exactTime());
-		const role = this.role(event.sender);
+		// The operator's own posts name the operator, and the session they were posted through as a tag.
+		const operator = event.origin === "operator";
+		const role = [operator ? `via ${this.name(event.sender)}` : "", this.role(event.sender)]
+			.filter(Boolean)
+			.join(" · ");
 		const right = `${time}${" ".repeat(CARD_PADDING)}`;
 		const room = Math.max(1, card - visibleWidth(right) - CARD_PADDING - 1);
-		const name = truncateToWidth(this.name(event.sender), room, "…", false);
+		const name = truncateToWidth(operator ? "You" : this.name(event.sender), room, "…", false);
 		let first = `${" ".repeat(CARD_PADDING)}${theme.bold(theme.fg("accent", name))}`;
 		let used = CARD_PADDING + visibleWidth(name);
 		if (role && used + 3 + role.length <= room + CARD_PADDING) {
@@ -1750,7 +1811,7 @@ export class ThreadsView {
 		}
 		first += `${" ".repeat(Math.max(1, card - used - visibleWidth(right)))}${theme.fg("muted", right)}`;
 		const rows = [halfRow(theme, undefined, CARD_HEADER, card), theme.bg(CARD_HEADER, first)];
-		const model = this.options.modelFor?.(event.sender);
+		const model = operator ? undefined : this.options.modelFor?.(event.sender);
 		if (model && visibleWidth(model) <= card - 2 * CARD_PADDING)
 			rows.push(bar(`${" ".repeat(CARD_PADDING)}${model}`, CARD_PADDING + visibleWidth(model)));
 		rows.push(halfRow(theme, CARD_HEADER, CARD_BODY, card));
@@ -1939,6 +2000,14 @@ export class ThreadsView {
 			},
 		});
 		return lines.slice(this.detailsOffset, this.detailsOffset + height).map((line) => fitLine(line, width));
+	}
+
+	/** The post field shows while it has focus, holds a draft or posts one; Enter or a reply opens it. */
+	private composerShown(): boolean {
+		const draft = this.options.state.selected ? this.options.state.drafts.get(this.options.state.selected) : undefined;
+		return (
+			this.region === "composer" || Boolean(draft?.pending) || Boolean(draft?.text.trim()) || Boolean(draft?.replyTo)
+		);
 	}
 
 	private renderComposer(width: number, height: number, closed: boolean): string[] {

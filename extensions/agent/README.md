@@ -8,13 +8,15 @@ agent's work. Reopening the primary reconnects to its agents. An acquiring contr
 resumes retained work after the previous writer exits and the new host takes its lease.
 
 The ordinary primary owns its terminal, editor, transcript, `/restart`, and
-self-compaction. `/agent` opens the agent work view over that workspace. The
-existing `ctrl+alt+g` shortcut also opens it without changing your native draft.
-The view lists agents beside the selected conversation on wide terminals and
-above it on narrow terminals, with the conversation, its message field and the
-agent's controls in one place. Esc steps back to the untouched primary without
-stopping work. The view measures bounded rows before truncation and retains
-fitting text with its terminal styling and padding.
+self-compaction. `/agent` opens the agent work view below that transcript, in
+the editor's place, as `/stash` opens its view, so the conversation above stays
+readable. The existing `ctrl+alt+g` shortcut also opens it without changing your
+native draft. The view lists agents beside the selected conversation on wide
+terminals, and above it or in its place on narrow ones, with the conversation
+and the agent's controls in one place; the message field opens when you write.
+Esc steps back to the untouched primary without stopping work. The view
+measures bounded rows before truncation and retains fitting text with its
+terminal styling and padding.
 
 Choose the surface that serves your task:
 
@@ -475,11 +477,13 @@ syntax. Tab completes actions, canonical identities, and retained `@handle`
 addresses without executing them. Completion searches retained role hints too.
 Without an action, `/agent` opens the work view. A TUI command that names a
 target without its other arguments, such as `/agent configure @handle`, opens
-that target's form there. In the list, Up/Down selects and Enter writes to the
-selected agent. `/` moves to Find, where letters narrow the list; Enter or
-Escape returns to the list. PageUp/PageDown reads the selected conversation.
-Ctrl+O expands tool output; Ctrl+T toggles thinking. Esc clears Find before
-closing the view.
+that target's form there. In the list, Up/Down selects and Enter opens the
+message field for the selected agent; when the window is too small to show the
+list beside or above the conversation, Enter reads the conversation instead.
+`/` moves to Find, where letters narrow the list; Enter or Escape returns to the
+list. PageUp/PageDown reads the selected conversation. Ctrl+O expands tool
+output; Ctrl+T toggles thinking; `z` gives the view most of the window. Esc
+clears Find before closing the view.
 
 In the message field, letters are message text. Enter starts an idle turn or
 steers working agents at the next step; the field's top border names the
@@ -592,11 +596,11 @@ exact nonroot conversation, or a retained `@handle`. The terminal resolves it
 through the existing manager and selects it in the agent work view, the same
 view `/agent` opens in ordinary Pi (see below). Selection reads passively: it
 sends no prompt, changes no model, starts no host, and creates no ordinary Pi
-session. A target need not appear in the bounded list. The work view fills the
-window with the list, the selected conversation's transcript, tool cards, live
-output, native pi-tui `Editor`, and its header and controls. The message field
-caption names the selected conversation by its observed name, or by its exact
-identity when it has none.
+session. A target need not appear in the bounded list. Here the work view fills
+the window, because it is the terminal's only screen: the list, the selected
+conversation's transcript, tool cards, live output, native pi-tui `Editor`, and
+its header and controls. The message field caption names the selected
+conversation by its observed name, or by its exact identity when it has none.
 
 The same command shows an agent in any terminal pane beside the main
 conversation, so the operator can watch its work and type to it directly. In a
@@ -699,8 +703,8 @@ the target. Each live frame refreshes the name, state, unplaced-input facts, mod
 reasoning level without rescanning the store. Model name, reasoning support and
 context window come from the host's `models` read once per selection. The read
 uses a running host, or a launch the same manager already owns, and never starts
-one; with no running host, and for a model the host did not list, the status
-line shows the model identifier without a context bar. When the
+one; with no running host, and for a model the host did not list, the facts
+row shows the model identifier without a context bar. When the
 observation is lost, the last facts stay on screen under a warning.
 
 Owner tool cards come from a presentation-only module each owning extension
@@ -755,38 +759,65 @@ selected conversation. No retained ordinary archive is converted or edited.
 ## Agent work view
 
 `/agent` opens the agent work view (also called the dashboard in this README)
-over the ordinary session; the attached terminal shows the same view. It is a
-place to watch agents work: pick an agent and read its session as the main
-session shows one. It observes agents and effort presence, not primary
-conversations: it reads no primary draft and writes no primary editor text.
-Close leaves it; work continues.
+below the ordinary session's transcript, in the editor's place, as the other
+[operator views](../../docs/conventions/operator-panels.md) open; the attached
+terminal shows the same view filling its window. It is a place to watch agents
+work: pick an agent and read its session as the main session shows one. It
+observes agents and effort presence, not primary conversations: it reads no
+primary draft and writes no primary editor text. Close leaves it and the editor
+with its draft returns; work continues.
 
-The view has a heading row, the list, and the selected agent's pane:
+In ordinary Pi the view takes 60% of the terminal's rows, rounded, at most all
+but six rows and at least ten, so the conversation above stays readable. `z`,
+or a click on `z expand` in the key row, gives it all but four rows, and again
+its usual share. The view takes PageUp, PageDown and pointer events over its
+own rows; the wheel over the transcript above still scrolls the transcript.
 
-- **Heading.** The Agents and Threads tabs on the left. On the Agents tab at
-  100 columns or more, the session's delegated figures sit at the right. An
-  Efforts tab joins them only while Efforts is open; More (`b`) opens it.
+The view has a top rule, the list, and the selected agent's pane:
+
+- **Top rule.** The Agents and Threads titles at the left of a rule, the one
+  shown bold in the accent colour; a click on another opens it. On the Agents
+  tab the session's delegated figures sit at the rule's right end when they
+  fit. An Efforts title joins them only while Efforts is open; More (`b`)
+  opens it.
 - **List.** A Find field (`/ Find`), with Related and All (ordinary Pi only) at
   its right end; then the agents in three sections:
   **Working** (working or starting), **Recent** (active in the last 24 hours)
-  and **Earlier**. A quiet heading with the section's count opens each section,
-  after a blank row. Each section lists its newest activity first. Each agent
-  takes two rows. Row 1 is the selection rail, the state glyph and the label:
+  and **Earlier**. A quiet heading with the section's count and cost total
+  opens each section, after a blank row. Each section lists its newest activity
+  first. Each agent takes two rows, or three as below. Row 1 is the selection
+  rail, the state glyph and the label:
   bold when selected, in the text colour while the agent works or has an error,
   muted otherwise. The label is the display name, else the `@handle`, else the
   quoted first input, else the folder; duplicate labels add the shortest
-  identity suffix that tells them apart. Row 2 is the model as the main
-  session's status line writes it, `provider/model [level]`: the route in the
-  accent colour and the thinking level in its own colour, the level only for a
-  model that reasons. Only agents at work and agents with an error colour their
-  glyph. The list's last row counts the agents above and below the window (`↓ N
-  more`, `↑ N more`, or `↑ A · ↓ B more`), with Load more at its right when the
-  store has more agents. It shows `Reading related work…` during a first read,
-  and a warning after a failed read or three failed refreshes. At 100 columns or
-  more the list sits beside the pane at full height; narrower windows stack a
-  strip above the pane.
-- **Pane.** The selected agent's header, its conversation, the message field,
-  then the agent's two status lines in the main session's footer layout.
+  identity suffix that tells them apart. Row 1 ends with the age of an agent
+  that is not at work, the time since its last recorded change, when the list
+  is at least 24 columns wide; list ages stay relative while other times show
+  the date. Row 2 is the model as the main session's status line writes it,
+  `provider/model [level]`: the route in the accent colour and the thinking
+  level in its own colour, the level only for a model that reasons. The
+  agent's recorded cost estimate sits dim at the right of row 2 (`~$1.42`, a
+  `+` when a cost component is missing, nothing below half a cent) while the
+  whole model fits beside it, and each section heading adds the total of its
+  loaded agents (`Recent 14 · ~$27.35`). Costs are estimates, not a billing
+  statement. A working
+  or starting agent takes a third row with what it does now: its current tool
+  with the start of its argument, `Responding`, or `Starting`. An agent with an
+  error reason takes a third row with that reason, in the error colour for a
+  current fault and the warning colour otherwise. Only agents at work and
+  agents with an error colour their glyph. The list widens to fit the longest
+  model row with its cost, within the limits under [Layout and
+  resizing](#layout-and-resizing). The list's last row counts the
+  agents above and below the window (`↓ N more`, `↑ N more`, or `↑ A · ↓ B
+  more`), with Load more at its right when the store has more agents. It shows
+  `Reading related work…` during a first read, and a warning after a failed
+  read or three failed refreshes. At 100 columns or more the list sits beside
+  the pane at full height. Narrower views stack a strip above the pane when they
+  have at least 20 rows; shorter ones show the list alone while it has focus and
+  the pane alone once you read a conversation.
+- **Pane.** The selected agent's header with its facts row, then its
+  conversation. The message field opens below the conversation while you
+  write.
 
 The list starts in **Related** for the current session when it holds related
 work; with none, it shows All, so the view never opens on an empty list. After
@@ -828,7 +859,8 @@ Escape leaves an inspector form, then the message field,
 then the view; it never stops work. `/` moves to Find, where letters narrow
 the list: the selection follows the first match, and the pane previews it
 without starting its host. Up and Down select, Home and End select the first
-and last agent; Enter writes to the selected agent. Outside a text field, the
+and last agent; Enter opens the message field for the selected agent, or reads
+its conversation while the list shows alone. Outside a text field, the
 keys in the footer run their actions; `x` lists every other action with its
 key. In a text field every letter is text, so `ctrl+n` opens and closes More
 there, and the row shows that chord instead of `x`. A key the
@@ -846,8 +878,11 @@ primary process. Different primary sessions have independent UI state.
 
 ### Messages
 
-Enter sends; Ctrl+J adds a new line. The message field's caption names the
-recipient (`To Parser review`). A working agent's message is a correction at
+The message field shows while it has focus, holds a draft, sends one, or while
+its grip is dragged. Escape leaves it, and an empty field then closes so the
+conversation keeps its rows. Enter sends; Ctrl+J adds a new line. The message
+field's caption names the recipient (`To Parser review`). A working agent's
+message is a correction at
 its next step; More (`f`) switches it to new work at the next step, which the
 field's top border then names (`New work at next step`). After a send, the next
 message starts as a correction again. In the message field, letters, slash
@@ -861,11 +896,14 @@ space on the field's borders.
 
 ### Controls and forms
 
-The footer holds what the operator needs to read and talk to agents: over the
-list `↑↓ select · enter message · / find · t threads · x more · esc close`,
-with **Stop** (`s`) while the selected agent works and **Reconnect** (`r`) when
-it needs attention; over the conversation `↑↓ scroll · end latest · enter
-message`; in the message field `enter send`, the newline keys and `esc done`.
+The key row holds what the operator needs to read and talk to agents: over the
+list `↑↓ select · enter message · / find · t threads · z expand · x more ·
+esc close` (`enter read` while the list shows alone, and `z` only below the
+transcript), with **Stop** (`s`) while the selected agent works and
+**Reconnect** (`r`) when it needs attention; over the conversation `↑↓ scroll ·
+end latest · enter message`; in the message field `enter send`, the newline keys
+and `esc done`. `z` works wherever no text field or form has focus, on the
+Agents, Threads and Efforts tabs.
 
 **x more** (`ctrl+n` while a text field has focus) lists every other action
 with its key: the delivery effect (`f`), Work (`w`), Configure (`c`), Tasks
@@ -874,7 +912,8 @@ Rewind, Compact, Reset context, Schedule message, Scheduled messages, Run
 command, Profile, Details, Stop and release host, host extras such as the
 terminal's Recover input (`u`), New conversation (`n`), Related or All (`v`),
 Efforts (`b`), the error filter (`e`), Hide list (`l`), exact times (`i`), Help
-(`?`), Expand all (Ctrl+O) and Show or Hide thinking (Ctrl+T).
+(`?`), Expand view or Shrink view (`z`, below the transcript), Expand all
+(Ctrl+O) and Show or Hide thinking (Ctrl+T).
 
 Each action except the delivery effect opens a staged form or reader in the
 inspector: beside the
@@ -977,13 +1016,13 @@ agent extension's own code on Pi's `pi-tui` components: forms use `Input` and
 At side-by-side widths, drag the list's divider to exchange width with the
 pane. The list takes 30% of the width, clamped to 32 to 60 columns; a saved
 divider position is clamped to the same range. The list then widens to fit the
-longest model row of the loaded agents, within 60 columns and while the pane
+longest model row of the loaded agents, cost included, within 60 columns and while the pane
 keeps 60. Threads uses the same list width. While a drag lasts, the list keeps
-32 to 60 columns and the pane keeps at least 60. Drag the small grip at the
-message field's top-right corner upward for more draft rows or downward for
-more conversation rows; the conversation keeps at least four rows, and a window
-too short for that shows no grip. The header's second line shows the sizes a
-drag sets (`List N · conversation N columns · release to keep · esc restores`,
+32 to 60 columns and the pane keeps at least 60. While the message field shows,
+drag the small grip at its top-right corner upward for more draft rows or
+downward for more conversation rows; the conversation keeps at least four rows,
+and a view too short for that shows no grip. The header's notice row shows the
+sizes a drag sets (`List N · conversation N columns · release to keep · esc restores`,
 or the message field rows); Escape restores the previous size; double-click a
 handle to reset it. Hide list gives the pane the full width. Stable pane
 preferences survive Pi restarts in the agent-owned
@@ -995,19 +1034,20 @@ mouse-only in fullscreen mode; keyboard-only and regular-mode use keep the
 default or saved split. Resize cancels on terminal dimension changes, hiding,
 or disposal.
 
-Below 60 columns or 16 rows the view asks for a larger window.
+A view below 60 columns or 10 rows asks for a larger window.
 
 ### Header and fact lines
 
-The header is one line: the selected agent's bold label at the left and, at
-the right, its state glyph and label, with ` · <age>` while it does not work. A
-second line shows only while one of these applies, the first that applies: the
-sizes of a resize drag in progress, a notice from the last action, the agent's
-error reason with its supported way forward, a lost connection while the agent
-works, a `Loading…` status, or inputs the agent has not read yet (`N messages
-not read yet`). An agent that has settled shows no host fault there: its stored
-messages are its whole conversation, and writing to it starts the host again.
-One blank line follows the header.
+The header's first row is the selected agent's bold label at the left and, at
+the right, its state glyph and label, with ` · <age>` while it does not work.
+The facts row follows (below). A notice row shows only while one of these
+applies, the first that applies: the sizes of a resize drag in progress, a
+notice from the last action, the agent's error reason with its supported way
+forward, a lost connection while the agent works, a `Loading…` status, or
+inputs the agent has not read yet (`N messages not read yet`). An agent that
+has settled shows no host fault there: its stored messages are its whole
+conversation, and writing to it starts the host again. One blank line follows
+the header.
 
 The ways forward are `Configure another model, then send a message` for a
 provider block the host published, `The host must repair a blocked task;
@@ -1016,12 +1056,13 @@ storage is readable` for unavailable storage, `Reconnect starts the host;
 unfinished work resumes` for another host fault, and `A new message runs the
 work again` for a failed run. Details keeps the complete error.
 
-The agent's two status lines sit under the message field, in the main
-session's footer layout. A line with nothing known takes no row. The first
-line writes the model as the main session's status line does, `provider/model`,
+The facts row sits under the agent's name, so Pi's own status line below the
+view keeps describing the main session. With nothing known it takes no row. It
+writes the model as the main session's status line does, `provider/model`,
 then a coloured `[level]` only for a reasoning-capable model, a ten-cell `█░`
 context bar and percent, context tokens over model window, `~$` recorded cost,
-and `● NN% hit`. Dim `│` separators divide the fields. The bar uses success
+`● NN% hit`, and the agent's home-relative cwd with its cached Git branch.
+Dim `│` separators divide the fields. The bar uses success
 through 60%, warning through 80%, and error above; it fills at 100% but retains
 overflow percentages. These are display bands, not compaction thresholds or a
 safe remaining budget. An unknown registry model keeps its known model ID
@@ -1038,13 +1079,13 @@ across every model call in the agent's live `UsageState.models` totals,
 when those totals contain cache reads and red for write-only cache use. It does
 not establish a recent assistant cache result or a cache that is alive now.
 Cache-free or unavailable totals produce no cache field. Unknown facts have no
-placeholders. Narrow widths remove cache rate, cache dot, token count, then
-cost; model and context bar stay to the end, with width clipping as a final
-guard.
+placeholders. The directory takes at most 44 columns. Narrow widths remove the
+cache rate, the cache dot and the token count first; then the directory
+shortens from the left, before the branch shortens or leaves, down to 16
+columns; then the directory leaves, then the cost. Model and context bar stay
+to the end, with width clipping as a final guard.
 
-The second fact line shows the agent's home-relative cwd and its cached Git
-branch. It shortens the path from the left before shortening or omitting the
-branch. Git reads use a bounded subprocess without a shell, cache a bounded set
+Git reads use a bounded subprocess without a shell, cache a bounded set
 of cwd values per view, and refresh only on selection, cwd changes, or
 committed-entry events. In-flight events coalesce; disposal and cache eviction
 abort pending reads. No Git polling or duration tick exists.
@@ -1095,8 +1136,9 @@ and multiple clicks stay available for Pi's native text selection. Ctrl+O sets
 all tool cards and communications and clears individual choices; Ctrl+T does
 the same for thinking.
 
-In Pi fullscreen mode, click a list row to select it, a footer control to run
-its key, the message field to focus it and place its caret, and a time to
+In Pi fullscreen mode, click a list row to select it, a key-row control to run
+its key, the message field while it shows to focus it and place its caret, and
+a time in the header or a thread to
 switch every time between relative age and local date and time. A control
 drawn before a refresh or resize never runs a replaced action. The wheel
 scrolls the pane under the pointer; list scroll does not change the selected
@@ -2550,9 +2592,11 @@ within a fixed bound per refresh, so the operator never pages through storages.
 Open threads come first, newest first; closed threads fold into one muted row,
 `▸ Closed · N`, after them and a blank row. Enter or a click expands that row to
 `▾ Closed · N` and shows the closed threads below it; opening a closed thread
-directly expands the group. Each thread takes one row: the selection rail, a
-`●` for an open thread or a muted `○` for a closed one, the title (bold when
-selected, shortened with `…`), and the age of its last activity at the right.
+directly expands the group. Each thread takes two or three rows: the selection
+rail, a `●` for an open thread or a muted `○` for a closed one, and the title,
+bold when selected, wrapped onto a second row when it is long and shortened
+with `…` after two rows; then a dim row with the member count and the age of
+its last activity, which a click switches to the date.
 `/` moves to Find, whose letters search open and closed threads and show every
 match; Enter keeps the filter and returns to the list, Escape clears it, and
 clearing Find restores the earlier choice. Over the list, letters are keys,
@@ -2578,7 +2622,9 @@ is a card at the reading width (at most 100 columns after the margin): a header
 bar on the selection colour with half a row of padding above, the sender's
 name in bold accent colour, ` · lead` for the thread's integrator and the time
 at the right, then a second header row with the sender's model as the status
-line writes it, `provider/model [level]`. Then half a row in the header colour
+line writes it, `provider/model [level]`. A post the operator wrote (origin
+`operator`) names `You`, adds ` · via <session>` for the session it was posted
+through, and has no model row. Then half a row in the header colour
 over the body colour, the post text on Pi's neutral block colour, and half a
 row of the body colour below it; a blank row in the terminal's own colour
 separates one card from the next. The text inside a card keeps three columns
@@ -2586,12 +2632,21 @@ of padding at each side. The model row shows when it is known: an agent's from
 the agent list, a main session's from the model and thinking level its own Pi
 session file last recorded, read once per session and kept for the view. The
 post text renders as Markdown (paragraphs, lists, inline code and code blocks);
-the stored message is unchanged. A post longer than 16 rows opens as a preview
-of 10 rows with `▸ N more lines`; a click opens it in place, `▴ Show less`
+the stored message is unchanged. A post longer than 40 rows opens as a preview
+of 24 rows with `▸ N more lines`; a click opens it in place, `▴ Show less`
 closes it, and Ctrl+O opens or closes every long post. Opening or closing a
 post keeps the rows above it where they are, and the top visible post stays in
-place through a refresh, an earlier page and a resize; a window that already
-shows the newest line keeps following it. A card's header scrolls with its card.
+place through a refresh, an earlier page and a resize. A card's header scrolls
+with its card.
+
+A thread opens at its newest post, from that post's top, so the author shows
+before the text: the window starts at the earliest post from which every later
+post fits, or at the newest post's own top when that post is taller than the
+window. While the window stays there it follows the newest post, and a new post
+moves it to that post's top. Scrolling stops following. End from above the
+newest post follows it again; End inside the newest post, or at its top while
+it runs past the window, shows its last row. A click on the `lines below` row
+does what End does.
 
 A participant's name comes from the roster (name, else handle), `This session`
 for the session that runs the view, or a Pi session name from effort presence.
@@ -2611,7 +2666,9 @@ click returns there. All thread text is plain text: terminal sequences are
 removed.
 
 The message field at the bottom posts to the selected thread with origin
-`operator`; a post wakes nobody unless members are ticked. Click a post's header
+`operator`; a post wakes nobody unless members are ticked. It shows while it has
+focus (Enter over the exchange, or `r` and a chosen post), holds a draft or a
+reply target, or posts, so the exchange keeps those rows otherwise. Click a post's header
 row, or press `r` and choose the post in the reply panel, to reply to that
 message; Enter in the panel marks or clears the chosen post. The field's caption
 shows the reply and the number of members it wakes, and the exchange marks the

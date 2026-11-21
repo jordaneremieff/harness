@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { visibleWidth } from "@earendil-works/pi-tui";
 import type { UsageState } from "@earendil-works/pi-durable";
-import { agentStatusLines, agentContextBar, agentCacheShare, formatCost } from "./agent-footer.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { agentCacheShare, agentContextBar, agentFactsLine, formatCost } from "./agent-footer.ts";
 import { row, theme } from "./dashboard-test-fixture.mts";
+
 const info = { name: "Example model", reasoning: true, contextWindow: 1000 };
 const usage = (input: number, cacheRead: number, cacheWrite: number) => ({
 	input,
@@ -54,9 +55,9 @@ it("context bar keeps ten cells, display bands, zero and overflow", () => {
 		assert.deepEqual(colors, [color, "dim", color]);
 	}
 });
-it("status lines use the provider/model route and reasoning capability, with no placeholders", () => {
-	assert.deepEqual(
-		agentStatusLines(
+it("the facts row uses the provider/model route and reasoning capability, with no placeholders", () => {
+	assert.equal(
+		agentFactsLine(
 			row(),
 			140,
 			theme,
@@ -66,53 +67,68 @@ it("status lines use the provider/model route and reasoning capability, with no 
 			"main",
 			"/srv/example",
 		),
-		["test/model [high] │ ██████░░░░ 56% │ 560/1.0k │ ~$0.42 │ ● 99% hit", "/work (main)"],
+		"test/model [high] │ ██████░░░░ 56% │ 560/1.0k │ ~$0.42 │ ● 99% hit │ /work (main)",
 	);
-	assert.match(
-		agentStatusLines(row(), 140, theme, undefined, { ...info, reasoning: false })[0],
-		/^test\/model │ ~\$0.42$/,
+	assert.equal(
+		agentFactsLine(row(), 140, theme, undefined, { ...info, reasoning: false }),
+		"test/model │ ~$0.42 │ /work",
 	);
-	assert.deepEqual(agentStatusLines(row("unknown", { model: undefined, cost: Number.NaN }), 80, theme), ["", "/work"]);
-	assert.equal(agentStatusLines(row(), 140, theme, 0, info)[0].includes("0/1.0k"), true);
+	assert.equal(agentFactsLine(row("unknown", { model: undefined, cost: Number.NaN }), 80, theme), "/work");
+	assert.equal(agentFactsLine(row(), 140, theme, 0, info).includes("0/1.0k"), true);
 });
 it("elapsed stays absent without a placed-run start, not inferred from activity or turn duration", () => {
 	const known = row("one", { modifiedAt: 12345678, durationMs: 3665000 });
-	assert.equal(agentStatusLines(known, 140, theme)[0], "test/model │ ~$0.42");
+	assert.equal(agentFactsLine(known, 140, theme), "test/model │ ~$0.42 │ /work");
 });
-it("narrow metrics shed rate then dot then tokens then cost and preserve model and context", () => {
+it("the facts row sheds cache, tokens, folder and cost in order before truncation", () => {
+	const selected = row("one", { cwd: "/srv/example/work/a-long-component/target-app" });
 	const state = { models: { main: usage(10, 990, 0) }, tools: {} };
-	const full = agentStatusLines(row(), 140, theme, 560, info, state)[0];
-	const noRate = agentStatusLines(row(), visibleWidth(full) - 1, theme, 560, info, state)[0];
-	assert.doesNotMatch(noRate, /hit/);
-	assert.match(noRate, /●/);
-	const noDot = agentStatusLines(row(), visibleWidth(noRate) - 1, theme, 560, info, state)[0];
-	assert.doesNotMatch(noDot, /●|hit/);
-	assert.match(noDot, /560\/1.0k/);
-	const noTokens = agentStatusLines(row(), visibleWidth(noDot) - 1, theme, 560, info, state)[0];
-	assert.doesNotMatch(noTokens, /560\/1.0k/);
-	assert.match(noTokens, /~\$0.42/);
-	const minimal = agentStatusLines(row(), visibleWidth(noTokens) - 1, theme, 560, info, state)[0];
-	assert.doesNotMatch(minimal, /\$/);
-	assert.match(minimal, /test\/model \[high\] │ ██████░░░░ 56%/);
+	const render = (width: number) => agentFactsLine(selected, width, theme, 560, info, state, "main", "/srv/example");
+	const stable = "test/model [high] │ ██████░░░░ 56%";
+	const withCost = `${stable} │ ~$0.42`;
+	const folder = "~/work/a-long-component/target-app (main)";
+	const full = render(140);
+	assert.equal(full, `${stable} │ 560/1.0k │ ~$0.42 │ ● 99% hit │ ${folder}`);
+	const noRate = render(visibleWidth(full) - 1);
+	assert.equal(noRate, `${stable} │ 560/1.0k │ ~$0.42 │ ● │ ${folder}`);
+	const noDot = render(visibleWidth(noRate) - 1);
+	assert.equal(noDot, `${stable} │ 560/1.0k │ ~$0.42 │ ${folder}`);
+	const noTokens = render(visibleWidth(noDot) - 1);
+	assert.equal(noTokens, `${withCost} │ ${folder}`);
+	const minimum = visibleWidth(withCost) + 3 + 16;
+	const shortFolder = render(minimum);
+	assert.equal(visibleWidth(shortFolder), minimum);
+	assert.ok(shortFolder.startsWith(`${withCost} │ …`), shortFolder);
+	assert.match(shortFolder, /target-app/);
+	assert.equal(render(minimum - 1), withCost);
+	assert.equal(render(visibleWidth(withCost) - 1), stable);
+	assert.equal(stripVTControlCharacters(render(8)), "test/mo…");
 });
 it("project labels shorten from the left and keep the branch without delegate figures", () => {
-	const selected = row("one", { cwd: "/srv/example/work/long/project" });
+	const selected = row("one", { cwd: "/srv/example/work/long/project", model: undefined, cost: Number.NaN });
 	assert.equal(
-		agentStatusLines(selected, 140, theme, undefined, info, undefined, "main", "/srv/example")[1],
+		agentFactsLine(selected, 140, theme, undefined, info, undefined, "main", "/srv/example"),
 		"~/work/long/project (main)",
 	);
-	const narrow = agentStatusLines(selected, 24, theme, undefined, info, undefined, "main", "/srv/example")[1];
+	const narrow = agentFactsLine(selected, 24, theme, undefined, info, undefined, "main", "/srv/example");
 	assert.match(narrow, /….*project \(main\)/);
 	for (const width of [1, 5, 20, 60, 140]) {
-		const lines = agentStatusLines(selected, width, theme, 560, info, undefined, "long-branch");
-		assert.equal(lines.length, 2);
-		assert.ok(lines.every((line) => visibleWidth(line) <= width));
-		assert.doesNotMatch(lines.join("\n"), /agents:/u);
+		const line = agentFactsLine(
+			row("one", { cwd: "/srv/example/work/long/project" }),
+			width,
+			theme,
+			560,
+			info,
+			undefined,
+			"long-branch",
+		);
+		assert.ok(visibleWidth(line) <= width);
+		assert.doesNotMatch(line, /agents:/u);
 	}
 });
 it("labels contain no controls, Unicode clipping respects width and costs omit half-cent estimates", () => {
 	for (const width of [40, 80, 140]) {
-		const text = agentStatusLines(
+		const text = agentFactsLine(
 			row("one", {
 				cwd: "/work/界",
 				model: { provider: "test", modelId: `\x1b[8m${"界".repeat(100)}\x1b[0m\n`, thinkingLevel: "high" },
@@ -124,11 +140,11 @@ it("labels contain no controls, Unicode clipping respects width and costs omit h
 			undefined,
 			"\x1b]0;title\x07main",
 		);
-		assert.ok(text.every((line) => visibleWidth(line) <= width));
-		assert.doesNotMatch(text.join("\n"), /\x1b\[8m|\x1b\]|title/);
-		assert.match(stripVTControlCharacters(text[0]), /界/);
+		assert.ok(visibleWidth(text) <= width);
+		assert.doesNotMatch(text, /\x1b\[8m|\x1b\]|title/);
+		assert.match(stripVTControlCharacters(text), /界/);
 	}
-	assert.doesNotMatch(agentStatusLines(row("one", { cost: 0.004 }), 100, theme)[0], /\$/);
+	assert.doesNotMatch(agentFactsLine(row("one", { cost: 0.004 }), 100, theme), /\$/);
 	assert.equal(formatCost(undefined), "$?");
 	assert.equal(formatCost(0), "$0.00");
 	assert.equal(formatCost(1, true), "$1.00+");

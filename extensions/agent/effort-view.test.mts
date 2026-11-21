@@ -1,19 +1,18 @@
 import assert from "node:assert/strict";
-import { stripVTControlCharacters } from "node:util";
-import { dashboardTime } from "./dashboard-time.ts";
 import { it } from "node:test";
-import { KeybindingsManager, TUI_KEYBINDINGS, visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import type { EffortAwareness } from "./effort-awareness.ts";
-import type { EffortPresencePage } from "./effort-presence.ts";
-import { fixture, source, row, turn, deferred, theme } from "./dashboard-test-fixture.mts";
-import { rosterLines } from "./dashboard-roster.ts";
-import type { CollaborationPage } from "./collaboration-contract.ts";
-import { createAgentCommand } from "./command.ts";
-import { EffortView } from "./effort-view.ts";
-import type { AgentDashboard } from "./dashboard.ts";
+import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import { keys } from "./dashboard-test-fixture.mts";
+import { KeybindingsManager, TUI_KEYBINDINGS, type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui";
+import type { CollaborationPage } from "./collaboration-contract.ts";
+import { createAgentCommand } from "./command.ts";
+import { type AgentDashboard, dashboardRows } from "./dashboard.ts";
+import { rosterLines } from "./dashboard-roster.ts";
+import { deferred, fixture, keys, row, source, theme, turn } from "./dashboard-test-fixture.mts";
+import { dashboardTime } from "./dashboard-time.ts";
+import type { EffortAwareness } from "./effort-awareness.ts";
+import type { EffortPresencePage } from "./effort-presence.ts";
+import { EffortView } from "./effort-view.ts";
 
 function efforts(): EffortPresencePage {
 	return {
@@ -373,7 +372,7 @@ it("the command adapter binds effort reads and operator messages to the unchange
 				new Promise<void>((resolve) => {
 					finish = resolve;
 					dashboard = factory(
-						{ terminal: { rows: 30, columns: 100 }, requestRender() {} } as unknown as TUI,
+						{ terminal: { rows: 40, columns: 100 }, requestRender() {} } as unknown as TUI,
 						theme,
 						keys,
 						resolve,
@@ -414,10 +413,11 @@ it("the command adapter binds effort reads and operator messages to the unchange
 	try {
 		await turn();
 		assert.ok(dashboard);
-		assert.doesNotMatch(dashboard.render(100).join("\n"), /\[other\]/);
-		const findRow = stripVTControlCharacters((dashboard.render(100)[1] ?? "").replace(/\x1b_[^\x07]*\x07/g, ""));
+		const lines = dashboard.render(100);
+		assert.doesNotMatch(lines.join("\n"), /\[other\]/);
+		const findRow = stripVTControlCharacters((lines[1] ?? "").replace(/\x1b_[^\x07]*\x07/g, ""));
 		assert.match(findRow, / Related {2}All /, "Related and All are visible choices on the list's Find row");
-		assert.equal(dashboard.handleMouse(click(findRow.indexOf(" All ") + 1, 1, 100, 30))?.handled, true);
+		assert.equal(dashboard.handleMouse(click(findRow.indexOf(" All ") + 1, 1, 100, lines.length))?.handled, true);
 		await turn();
 		assert.match(dashboard.render(100).join("\n"), /one/);
 		assert.doesNotMatch(dashboard.render(100).join("\n"), /\[other\]/);
@@ -441,6 +441,71 @@ it("the command adapter binds effort reads and operator messages to the unchange
 		finish();
 		await opened;
 	}
+});
+
+it("the framed Efforts view gives z to the size control unless the message field has focus", async (t) => {
+	const f = fixture(140, 40, source(), {
+		viewRows: dashboardRows,
+		efforts: async () => awareness(),
+		messageEffort: async () => ({ text: "admitted" }),
+	});
+	t.after(() => f.ui.dispose());
+	await turn();
+	f.ui.openNamedAction("efforts");
+	await turn();
+	const render = () => f.ui.render(140).map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+	const compact = render();
+	assert.equal(compact.length, 24);
+	assert.match(compact.at(-1) ?? "", /z expand.*esc back/);
+	f.ui.handleInput("z");
+	const expanded = render();
+	assert.equal(expanded.length, 36);
+	assert.match(expanded.at(-1) ?? "", /z shrink.*esc back/);
+	f.ui.handleInput("m");
+	f.ui.handleInput("z");
+	const writing = render();
+	assert.equal(writing.length, 36);
+	assert.match(writing.join("\n"), /│z +│/u, "z goes to the message draft");
+	assert.doesNotMatch(writing.at(-1) ?? "", /z (?:expand|shrink)/);
+	f.ui.handleInput("\x1b");
+	f.ui.handleInput("z");
+	assert.equal(render().length, 24);
+});
+
+it("the compact Efforts share shows the selected effort in a 30-row terminal", async (t) => {
+	const f = fixture(100, 30, source(), { viewRows: dashboardRows, efforts: async () => awareness() });
+	t.after(() => f.ui.dispose());
+	await turn();
+	f.ui.openNamedAction("efforts");
+	await turn();
+	const lines = f.ui.render(100).map(stripVTControlCharacters);
+	assert.equal(lines.length, 18);
+	assert.match(
+		lines.slice(1, -1).join("\n"),
+		/Review the overlap/u,
+		"the compact body shows the selected effort's purpose",
+	);
+});
+
+it("an Efforts size refusal stays visible below the host's top rule", async (t) => {
+	const view = new EffortView({
+		tui: { terminal: { rows: 10, columns: 100 }, requestRender() {} } as unknown as TUI,
+		theme,
+		keys,
+		efforts: async () => awareness(),
+		openContact: () => undefined,
+		openThreads: () => undefined,
+		onBack() {},
+		redraw() {},
+	});
+	t.after(() => view.dispose());
+	view.open();
+	await turn();
+	const minimal = view.render(100, 9, 30).map(stripVTControlCharacters);
+	assert.match(minimal.slice(1).join("\n"), /Review the overlap/);
+	const refused = view.render(100, 8, 30).map(stripVTControlCharacters);
+	assert.equal(refused[0]?.trim(), "", "the host replaces the top row");
+	assert.equal(refused[1]?.trim(), "Resize to use Related efforts. Esc back.");
 });
 
 it("roster reconciliation does not read effort presence", async (t) => {
@@ -2041,7 +2106,7 @@ it("a routine contact refresh keeps the declaration already read", async () => {
 });
 
 it("a contact thread opened from Related efforts at the minimum width shows the thread and returns there", async () => {
-	const f = fixture(80, 24, source(), { efforts: async () => awareness(), collaborate: async () => contactPage() });
+	const f = fixture(60, 24, source(), { efforts: async () => awareness(), collaborate: async () => contactPage() });
 	try {
 		await turn();
 		f.ui.openNamedAction("efforts");
@@ -2050,10 +2115,14 @@ it("a contact thread opened from Related efforts at the minimum width shows the 
 		await turn();
 		await turn();
 		assert.equal(f.ui.focus.surface, "threads");
-		const text = f.ui.render(80).join("\n");
+		const text = f.ui.render(60).join("\n");
 		assert.match(text, /Contact exchange/, "the contact thread opens in the thread pane");
-		assert.match(text, /Post to Contact exchange/, "the thread pane is the visible pane");
-		assert.doesNotMatch(text, /Find {2}\/ to find threads/, "the thread list does not replace the requested thread");
+		assert.match(text, /Review the overlap/, "the reading pane shows the thread's purpose");
+		assert.doesNotMatch(text, /Post to Contact exchange|Find {2}\/ to find threads/, "only the reading pane is open");
+		f.ui.handleInput("\r");
+		assert.match(f.ui.render(60).join("\n"), /Post to Contact exchange/, "Enter opens the field for this thread");
+		f.ui.handleInput("\x1b");
+		assert.doesNotMatch(f.ui.render(60).join("\n"), /Post to Contact exchange/, "Escape closes the empty field");
 		f.ui.handleInput("\x1b");
 		await turn();
 		assert.equal(f.ui.focus.surface, "efforts", "Escape returns to Related efforts");

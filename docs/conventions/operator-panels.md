@@ -197,8 +197,8 @@ own UI opens next, or text placed in the editor, sees the real editor.
 Owners: stash (`/stash`), clipboard (`/clipboard`), markdown
 (`/markdown recent` and `/markdown published`), pillars (`/pillars browse`),
 policy (`/policy`), and statusline (`/commands`, `/statuses`, and the Model
-view). The agent extension
-draws its own dashboard and hosts owner views in the attached terminal.
+view). The agent extension draws its own work view, which `/agent` opens in
+the same editor slot, and hosts owner views in the attached terminal.
 
 ## Attached panels
 

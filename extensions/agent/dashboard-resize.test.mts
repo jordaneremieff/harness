@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent, type Component } from "@earendil-works/pi-tui";
+import { type Component, type Terminal, TuiAltScreen, type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui";
+import { dashboardRows } from "./dashboard.ts";
 import { dashboardGeometry, MAX_ROSTER_COLUMNS, MIN_ROSTER_COLUMNS } from "./dashboard-layout.ts";
 import { DashboardResize } from "./dashboard-resize.ts";
-import { createDashboardState, agentState, updateDraft, type DashboardLayout } from "./dashboard-state.ts";
+import { agentState, createDashboardState, type DashboardLayout, updateDraft } from "./dashboard-state.ts";
 import { fixture, row, source, turn } from "./dashboard-test-fixture.mts";
 
 function mouse(type: TuiMouseEvent["type"], x = 35, y = 8, patch: Partial<TuiMouseEvent> = {}): TuiMouseEvent {
@@ -230,6 +231,7 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 	const f = fixture(164, 44);
 	try {
 		await turn();
+		f.ui.handleInput("\r");
 		const render = () => f.ui.render(164).map(stripVTControlCharacters);
 		const lines = render();
 		const y = lines.findIndex((line) => line.includes("┄┄┄"));
@@ -242,8 +244,8 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 		send(0, 161, y - 4, true);
 		assert.equal(f.state.layout.composerRows, 9);
 		assert.match(dragged.join("\n"), /Message field 9 rows/);
-		assert.ok(dragged.some((line) => line.includes("━━━")));
-		assert.ok(dragged.some((line) => line.includes("model │")));
+		const activeY = dragged.findIndex((line) => line.includes("━━━"));
+		assert.ok(activeY >= 0 && activeY < y, "the active grip moves up with the drag");
 		assert.ok(
 			dragged.some((line) => line.includes("╭─ To storage:1")),
 			"the recipient stays on the resized field",
@@ -253,6 +255,7 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 			"the caption has no retired delivery text",
 		);
 		const resetY = render().findIndex((line) => line.includes("┄┄┄"));
+		assert.ok(resetY > 0, "the resized grip remains available for reset");
 		send(0, 161, resetY);
 		send(0, 161, resetY, true);
 		render();
@@ -264,6 +267,34 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 		f.ui.dispose();
 	}
 });
+it("a framed composer grip captures a resize only at the rendered view height", async () => {
+	const width = 164;
+	const terminalRows = 44;
+	const saved: DashboardLayout[] = [];
+	const f = fixture(width, terminalRows, source(), {
+		viewRows: dashboardRows,
+		saveLayout: (layout) => saved.push(layout),
+	});
+	try {
+		await turn();
+		f.ui.handleInput("\r");
+		const lines = f.ui.render(width);
+		const height = lines.length;
+		assert.ok(height < terminalRows);
+		const y = lines.findIndex((line) => line.includes("┄┄┄"));
+		assert.ok(y > 0, "the rendered message field has a grip");
+		const x = visibleWidth(lines[y]?.split("┄┄┄")[0] ?? "");
+		assert.equal(f.ui.handleMouse(mouse("press", x, y, { width, height: terminalRows })), undefined);
+		assert.equal(f.ui.handleMouse(mouse("press", x, y, { width, height }))?.capture, true);
+		assert.ok(f.ui.handleMouse(mouse("drag", x, y - 2, { width, height }))?.handled);
+		assert.match(f.ui.render(width).map(stripVTControlCharacters).join("\n"), /Message field 7 rows/);
+		assert.ok(f.ui.handleMouse(mouse("release", x, y - 2, { width, height }))?.handled);
+		assert.deepEqual(saved, [{ composerRows: 7 }]);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
 it("/ sends letters to Find, and letters over the list never resize the split", async () => {
 	const saved: DashboardLayout[] = [];
 	const f = fixture(164, 44, source(), { saveLayout: (layout) => saved.push(layout) });
@@ -300,6 +331,7 @@ it("short windows hide the composer grip without discarding the saved row prefer
 	const f = fixture(164, 44, source(), { saveLayout: (layout) => saved.push(layout) });
 	try {
 		await turn();
+		f.ui.handleInput("\r");
 		const y = f.ui.render(164).findIndex((line) => line.includes("┄┄┄"));
 		assert.ok(y > 0);
 		const send = rawDispatcher(f.ui, 164, 44);
@@ -342,7 +374,7 @@ it("save failure retains the local split and gives a restart notice", async () =
 		f.ui.dispose();
 	}
 });
-it("raw text drags use the native fallback and focus loss clears the abandoned resize", async () => {
+it("raw text drags use native selection, and focus loss or a new render cancels an abandoned resize", async () => {
 	const f = fixture(164, 44);
 	const selection: unknown[] = [];
 	try {
@@ -362,10 +394,13 @@ it("raw text drags use the native fallback and focus loss clears the abandoned r
 		send(35, 60, 8);
 		f.ui.render(164);
 		assert.deepEqual(f.state.layout, {});
-		// Captured bounds are stale after a terminal resize, even before the next render.
+		// Pi's capture still carries the old rectangle when the dashboard paints at the new size.
 		send(0, 48, 8);
 		send(32, 60, 8);
+		assert.ok(f.state.layout.rosterRatio);
 		f.resize(120, 32);
+		f.ui.render(120);
+		assert.deepEqual(f.state.layout, {}, "the new render cancels the resize");
 		send(32, 70, 8);
 		send(0, 70, 8, true);
 		assert.deepEqual(f.state.layout, {});

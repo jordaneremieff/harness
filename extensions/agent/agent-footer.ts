@@ -91,17 +91,24 @@ function contextCells(
 		theme.fg("dim", `${compactTokens(context)}/${compactTokens(capacity)}`),
 	];
 }
-function metricsLine(
+interface MetricParts {
+	model: string;
+	bar: string;
+	tokens: string;
+	cost: string;
+	dot: string;
+	rate: string;
+}
+function metricParts(
 	row: AgentConversationSummary,
-	width: number,
 	theme: Pick<Theme, "fg">,
 	context: number | undefined,
 	info: AgentModelInfo | undefined,
 	usage: UsageState | undefined,
-): string {
+): MetricParts {
 	const [bar, tokens] = contextCells(context, info?.contextWindow, theme);
 	const cache = agentCacheShare(usage);
-	const parts = {
+	return {
 		model: modelLabel(row, info, theme),
 		bar,
 		tokens,
@@ -110,17 +117,22 @@ function metricsLine(
 		dot: cache ? theme.fg(cache.read ? "success" : "error", "●") : "",
 		rate: cache ? theme.fg("dim", `${cache.percent}% hit`) : "",
 	};
-	const compose = () =>
-		[parts.model, parts.bar, parts.tokens, parts.cost, [parts.dot, parts.rate].filter(Boolean).join(" ")]
-			.filter(Boolean)
-			.join(theme.fg("dim", " │ "));
-	for (const field of ["rate", "dot", "tokens", "cost"] as const) {
-		if (visibleWidth(compose()) <= width) break;
-		parts[field] = "";
-	}
-	return truncateToWidth(compose(), width, "…");
 }
-export function agentStatusLines(
+function composeMetrics(parts: MetricParts, theme: Pick<Theme, "fg">): string {
+	return [parts.model, parts.bar, parts.tokens, parts.cost, [parts.dot, parts.rate].filter(Boolean).join(" ")]
+		.filter(Boolean)
+		.join(theme.fg("dim", " │ "));
+}
+/** Columns the directory and branch take at most on the facts row, and at least before they leave it. */
+const FACTS_PROJECT_MAX = 44;
+const FACTS_PROJECT_MIN = 16;
+
+/**
+ * The agent's facts on one row: the metrics as the status line writes them, then the directory and
+ * branch. When the row is short, the cache rate and token count leave first, then the directory
+ * shortens from the left, then it leaves, then the cost; the model and the context bar stay.
+ */
+export function agentFactsLine(
 	row: AgentConversationSummary,
 	width: number,
 	theme: Pick<Theme, "fg">,
@@ -129,7 +141,19 @@ export function agentStatusLines(
 	usage?: UsageState,
 	branch?: string,
 	home = homedir(),
-): string[] {
-	const project = projectLabel(row.cwd, branch, width, home, theme);
-	return [metricsLine(row, width, theme, context, info, usage), truncateToWidth(project, width, "…")];
+): string {
+	const parts = metricParts(row, theme, context, info, usage);
+	const separator = theme.fg("dim", " │ ");
+	let project = projectLabel(row.cwd, branch, Math.min(FACTS_PROJECT_MAX, width), home, theme);
+	const line = () => [composeMetrics(parts, theme), project].filter(Boolean).join(separator);
+	for (const field of ["rate", "dot", "tokens"] as const) {
+		if (visibleWidth(line()) <= width) break;
+		parts[field] = "";
+	}
+	if (visibleWidth(line()) > width) {
+		const room = width - visibleWidth(composeMetrics(parts, theme)) - visibleWidth(separator);
+		project = room >= FACTS_PROJECT_MIN ? projectLabel(row.cwd, branch, room, home, theme) : "";
+	}
+	if (visibleWidth(line()) > width) parts.cost = "";
+	return truncateToWidth(line(), width, "…");
 }

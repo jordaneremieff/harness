@@ -53,6 +53,7 @@ import {
 	modelLabel,
 	recoveryHint,
 	rosterLines,
+	rosterModelColumns,
 	sessionAppearance,
 	titleOf,
 	needsAttention,
@@ -139,57 +140,87 @@ export interface DashboardOperations {
 	extraActions?(target: AgentConversationSummary): readonly Action[];
 	/** The way out of this view: "Close" in ordinary Pi, "Detach" in the attached terminal. */
 	readonly exitLabel?: string;
+	/**
+	 * Rows the view takes below the transcript, read at every render. Absent, the view fills the
+	 * terminal, as the attached terminal's only screen does.
+	 */
+	viewRows?(terminalRows: number, expanded: boolean): number;
 }
+
+/**
+ * Rows of the view in ordinary Pi: most of the window with transcript rows kept above it, as the
+ * other operator views take; expanded, all but four rows.
+ */
+export function dashboardRows(terminalRows: number, expanded: boolean): number {
+	const rows = Math.max(10, Math.floor(terminalRows));
+	if (expanded) return Math.max(10, rows - 4);
+	return Math.max(10, Math.min(rows - 6, Math.round(rows * 0.6)));
+}
+
+/** The key that gives the view below the transcript most of the window, and again its usual share. */
+const VIEW_SIZE_KEY = "z";
+
+/** The view needs this many columns and rows; a smaller one asks for a larger window. */
+const MIN_VIEW_COLUMNS = 60;
+const MIN_VIEW_ROWS = 10;
 
 export type Region = "list" | "find" | "conversation" | "composer" | "inspector";
 export type Surface = "work" | "threads" | "efforts";
 
-const HELP = [
-	"Agents",
-	"The list starts with Related: this session's work. v switches between Related and All, every loaded agent.",
-	"Relations use exact creation ancestry, task targets and shared thread membership, never directory proximity.",
-	"Selecting an agent reads its conversation without starting its host. Sending a message starts a stopped host.",
-	"",
-	"Keys",
-	"The footer at the bottom lists the keys that work where the focus is now. A click on a footer control does the same as its key.",
-	"x lists every other action with its key; in a text field ctrl+n does, because every letter there is text. Escape goes back one step: it clears Find, closes a form, leaves the message field, then the view.",
-	"Escape never stops work. Tab and Shift+Tab move between the list, the conversation, the message field and an open form.",
-	"n starts a new conversation; ? shows this help.",
-	"",
-	"List",
-	"Up and Down select; Home and End go to the first and last agent. Enter writes to the selected agent.",
-	"/ moves to Find, where letters narrow the list; Enter or Escape returns to the list. Outside a text field, letters are keys.",
-	"e lists only the agents with an error reason, and again every agent. The line under the list names the scope and filters.",
-	"l hides or shows the list. Drag the list divider or the message field's grip to resize; double-click a handle to reset it.",
-	"",
-	"Selected agent",
-	"s stops current work, f switches the next message between a correction (steer) and new work (follow-up), r reconnects a stopped host.",
-	"c configures the agent's name, model and reasoning when idle. k shows live tasks. x lists more actions.",
-	"w opens Work, as a click on the work count above the conversation does: each request the agent declared background work for,",
-	"its dependencies and its final report. Enter on a dependency reads its result; Enter on a final report reads all of it. Reading changes nothing.",
-	"Forms open beside the conversation and bind to the agent they opened for; selecting another agent closes them without sending anything.",
-	"",
-	"Messages",
-	"Enter sends. The newline keys (Shift+Enter or Ctrl+J by default) add a line. In the message field every letter, slash and bang is text.",
-	"A working agent reads the message at its next step, when its current tool calls end: as a correction of its current work (steer),",
-	"or as new work for the same run (follow-up) after f or a click on the effect above the message field.",
-	"Ctrl+X makes the message field taller, and again shorter.",
-	"",
-	"Reading",
-	"PageUp and PageDown read the conversation; PageUp at the top reads earlier entries. End returns to live output.",
-	"Ctrl+O expands every tool and notice; click one to expand only it. Ctrl+T shows or hides thinking.",
-	"A message with text or tool calls hides its thinking without a row; a thinking-only message keeps a ▸ Thinking row.",
-	"",
-	"Threads and Efforts",
-	"t opens Threads and b opens Efforts, as the tabs at the top left do. Escape returns to where you came from.",
-	"Threads lists every thread, open ones first and newest first. Select one to read its exchange; the message field posts to it.",
-	"In Threads, m shows the members (tick who your next post wakes), d shows the thread's frame and Ctrl+O opens every long post.",
-	"A post wakes nobody unless you tick members. A closed thread takes no posts.",
-	"Efforts shows declared intent and contact declarations, not agreement. Enter opens a contact thread; o reads an observation; m sends a message.",
-	"A time shows the last recorded change, not an activity timer. i, or a click on a time, switches between age and date.",
-	"",
-	"Context tokens come from the latest assistant usage; compaction makes them unknown.",
-];
+/** Help for the work view; below the transcript it also names the key that sizes the view. */
+function helpLines(framed: boolean): string[] {
+	return [
+		"Agents",
+		"The list starts with Related: this session's work. v switches between Related and All, every loaded agent.",
+		"Relations use exact creation ancestry, task targets and shared thread membership, never directory proximity.",
+		"Each agent shows its name and age, its model, and while it works what it is doing now; an error shows its reason.",
+		"Selecting an agent reads its conversation without starting its host. Sending a message starts a stopped host.",
+		"",
+		"Keys",
+		"The key row at the bottom lists the keys that work where the focus is now. A click on a control does the same as its key.",
+		"x lists every other action with its key; in a text field ctrl+n does, because every letter there is text. Escape goes back one step: it clears Find, closes a form, leaves the message field, then the view.",
+		"Escape never stops work. Tab and Shift+Tab move between the list, the conversation, the message field and an open form.",
+		...(framed
+			? ["z gives the view most of the window, and again its usual share below the conversation above it."]
+			: []),
+		"n starts a new conversation; ? shows this help.",
+		"",
+		"List",
+		"Up and Down select; Home and End go to the first and last agent. Enter opens the message field for the selected agent.",
+		"/ moves to Find, where letters narrow the list; Enter or Escape returns to the list. Outside a text field, letters are keys.",
+		"e lists only the agents with an error reason, and again every agent.",
+		"l hides or shows the list. Drag the list divider or the message field's grip to resize; double-click a handle to reset it.",
+		"",
+		"Selected agent",
+		"s stops current work, f switches the next message between a correction (steer) and new work (follow-up), r reconnects a stopped host.",
+		"c configures the agent's name, model and reasoning when idle. k shows live tasks. x lists more actions.",
+		"w opens Work: each request the agent declared background work for, its dependencies and its final report.",
+		"Enter on a dependency reads its result; Enter on a final report reads all of it. Reading changes nothing.",
+		"Forms open beside the conversation and bind to the agent they opened for; selecting another agent closes them without sending anything.",
+		"",
+		"Messages",
+		"The message field shows while you write; Escape hides it, and a draft keeps it on screen.",
+		"Enter sends. The newline keys (Shift+Enter or Ctrl+J by default) add a line. In the message field every letter, slash and bang is text.",
+		"A working agent reads the message at its next step, when its current tool calls end: as a correction of its current work (steer),",
+		"or as new work for the same run (follow-up) after f or a click on the effect above the message field.",
+		"Ctrl+X makes the message field taller, and again shorter.",
+		"",
+		"Reading",
+		"PageUp and PageDown read the conversation; PageUp at the top reads earlier entries. End returns to live output.",
+		"Ctrl+O expands every tool and notice; click one to expand only it. Ctrl+T shows or hides thinking.",
+		"A message with text or tool calls hides its thinking without a row; a thinking-only message keeps a ▸ Thinking row.",
+		"",
+		"Threads and Efforts",
+		"t opens Threads and b opens Efforts, as the titles on the top rule do. Escape returns to where you came from.",
+		"Threads lists every thread, open ones first and newest first. Selecting one shows it from the top of its newest post.",
+		"In Threads, Enter or r opens the field that posts to the thread; m shows the members (tick who your next post wakes), d the thread's frame, and Ctrl+O opens every long post.",
+		"A post wakes nobody unless you tick members. A closed thread takes no posts.",
+		"Efforts shows declared intent and contact declarations, not agreement. Enter opens a contact thread; o reads an observation; m sends a message.",
+		"A time shows the last recorded change, not an activity timer. i, or a click on a time, switches between age and date.",
+		"",
+		"Context tokens come from the latest assistant usage; compaction makes them unknown.",
+	];
+}
 
 /** The message field's taller and shorter switch; Pi binds no key for it, and the editor leaves Ctrl+X free. */
 const EXPAND_COMPOSER_KEY = "ctrl+x";
@@ -324,6 +355,12 @@ export class AgentDashboard implements Component, Focusable {
 	private frameStarted = false;
 	private bodyHeight = 10;
 	private expanded = false;
+	/** The view takes most of the window instead of its usual share; ordinary Pi only. */
+	private viewExpanded = false;
+	/** The last render had no room for the list beside or above the pane, so the list showed alone. */
+	private listAlone = false;
+	/** The size of the last render: pointer events and resize gestures belong to it. */
+	private size = { width: 0, height: 0 };
 	/** An identity chosen explicitly (remembered, created or named by a command); a refresh never replaces it. */
 	private pinned?: string;
 	/** An action a command asked for, opened once its target is selected. */
@@ -356,6 +393,8 @@ export class AgentDashboard implements Component, Focusable {
 		composerHeight: 0,
 	};
 	focused = true;
+	/** In fullscreen mode Pi gives PageUp and PageDown to the transcript unless the focused component takes them. */
+	readonly capturesViewportInput = true;
 	private readonly tui: TUI;
 	private readonly theme: Theme;
 	private readonly keys: KeybindingsManager;
@@ -1153,7 +1192,7 @@ export class AgentDashboard implements Component, Focusable {
 				if (this.inspector?.frame === frame) this.inspector = undefined;
 				this.newerIntent();
 				// A late close, such as a finished request, leaves focus where the operator moved it.
-				if (this.region === "inspector") this.region = this.console ? "composer" : "list";
+				if (this.region === "inspector") this.region = "list";
 				this.redraw();
 				then?.();
 			},
@@ -1379,7 +1418,9 @@ export class AgentDashboard implements Component, Focusable {
 	}
 
 	private openHelp(): void {
-		const text = ["Machine execution preferences", ...this.machinePreferences, "", ...HELP].join("\n");
+		const text = ["Machine execution preferences", ...this.machinePreferences, "", ...helpLines(this.framed)].join(
+			"\n",
+		);
 		this.openInspector("Help", (host) => new ReaderView("Help", host, () => text));
 	}
 
@@ -1799,9 +1840,28 @@ export class AgentDashboard implements Component, Focusable {
 			},
 		});
 		actions.push({ id: "help", label: "Help", key: "?", short: "help", run: () => this.openHelp() });
+		actions.push(...this.sizeActions());
 		// The reading switches come last, so a short footer row gives them up together.
 		actions.push(...this.readingActions());
 		return actions;
+	}
+
+	/** Below the transcript, `z` gives the view most of the window, and again its usual share. */
+	private sizeActions(): Action[] {
+		if (!this.framed) return [];
+		return [
+			{
+				id: "size",
+				label: this.viewExpanded ? "Shrink view" : "Expand view",
+				key: VIEW_SIZE_KEY,
+				short: this.viewExpanded ? "shrink" : "expand",
+				primary: true,
+				description: this.viewExpanded
+					? "Give the conversation above more room again"
+					: "Most of the window, with a few transcript rows kept",
+				run: () => this.toggleViewSize(),
+			},
+		];
 	}
 
 	/** Related or All, and the other tabs, when this host offers them. */
@@ -1875,11 +1935,13 @@ export class AgentDashboard implements Component, Focusable {
 
 	handleInput(data: string): void {
 		if (this.closed) return;
-		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeKey());
+		this.resize.beginInputGeometry(this.size.width, this.size.height, this.resizeKey());
 		if (this.resize.input(data)) {
 			// The resize handle consumed the key.
 		} else if (this.footer.menuShown) this.footer.menuInput(data);
-		else if (this.moreChord(data)) {
+		else if (this.viewSizeKey(data)) {
+			// `z` gives the view most of the window, and again its usual share, wherever no text field has focus.
+		} else if (this.moreChord(data)) {
 			// Ctrl+N opens More from any focus, before a text field or a surface view sees the key.
 		} else if (this.surface !== "work") this.surfaceKey(data);
 		else {
@@ -2067,7 +2129,7 @@ export class AgentDashboard implements Component, Focusable {
 
 	private listEnter(): void {
 		if (this.loadMore) this.loadMoreAgents();
-		else if (this.console) this.region = "composer";
+		else if (this.console) this.region = this.listAlone ? "conversation" : "composer";
 		else if (this.emptyStore()) this.openNew();
 	}
 
@@ -2185,9 +2247,9 @@ export class AgentDashboard implements Component, Focusable {
 	/** The work view's pointer route: a resize gesture, the regions of the last paint, then the pane. */
 	private workMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		// A pointer event drawn for another size acts on nothing and ends a resize at its committed layout.
-		if (event.width !== this.tui.terminal.columns || event.height !== this.tui.terminal.rows)
+		if (event.width !== this.size.width || event.height !== this.size.height)
 			return this.resize.cancel() ? { handled: true, render: true } : undefined;
-		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeKey());
+		this.resize.beginInputGeometry(this.size.width, this.size.height, this.resizeKey());
 		return this.resize.handle(event) ?? this.hits.handle(event) ?? this.paneMouse(event);
 	}
 
@@ -2245,13 +2307,48 @@ export class AgentDashboard implements Component, Focusable {
 		return `${this.surface}:${this.inspector ? "inspector" : "work"}`;
 	}
 
+	/** Rows of this render: the host's share of the window below the transcript, or the whole terminal. */
+	private viewHeight(): number {
+		const rows = Math.max(1, Math.floor(this.tui.terminal.rows));
+		const share = this.operations.viewRows?.(rows, this.viewExpanded);
+		return share === undefined ? rows : Math.max(1, Math.min(rows, Math.floor(share)));
+	}
+
+	/** True in ordinary Pi, where the view sits below the transcript and `z` sizes it. */
+	private get framed(): boolean {
+		return this.operations.viewRows !== undefined;
+	}
+
+	private viewSizeKey(data: string): boolean {
+		if (!this.framed || !keyMatches(data, VIEW_SIZE_KEY) || this.typing()) return false;
+		this.toggleViewSize();
+		return true;
+	}
+
+	/** True while a text field or a form of the shown surface takes printable keys. */
+	private typing(): boolean {
+		if (this.surface === "threads") return this.threads?.editing() ?? false;
+		if (this.surface === "efforts") return this.efforts?.editing() ?? false;
+		return this.region === "find" || this.region === "composer" || this.region === "inspector";
+	}
+
+	private toggleViewSize(): void {
+		this.viewExpanded = !this.viewExpanded;
+		this.resize.cancel();
+		this.hits.clear();
+	}
+
 	render(width: number): string[] {
-		const height = this.tui.terminal.rows;
+		const height = this.viewHeight();
+		this.size = { width, height };
 		this.resize.begin(width, height, this.resizeKey());
 		this.hits.begin(width, height);
-		if (width < 60 || height < 16)
+		if (width < MIN_VIEW_COLUMNS || height < MIN_VIEW_ROWS)
 			return Array.from({ length: height }, (_, row) =>
-				fitLine(row === 0 ? "Make the window larger to use Agents (60×16). Esc leaves." : "", width),
+				fitLine(
+					row === 0 ? `Make the window larger to use Agents (${MIN_VIEW_COLUMNS}×${MIN_VIEW_ROWS}). Esc leaves.` : "",
+					width,
+				),
 			);
 		// Threads and Efforts sit under the same tabs as the agents; each owns the rows between the tabs and the footer.
 		let lines: string[];
@@ -2297,9 +2394,26 @@ export class AgentDashboard implements Component, Focusable {
 	}
 
 	private footerControls(): { controls: Control[]; menu: Control[] } {
-		if (this.surface === "threads") return this.threads?.footer() ?? { controls: [], menu: [] };
-		if (this.surface === "efforts") return this.efforts?.footer() ?? { controls: [], menu: [] };
+		if (this.surface === "threads" && this.threads)
+			return this.withViewSize(this.threads.footer(), this.threads.editing());
+		if (this.surface === "efforts" && this.efforts)
+			return this.withViewSize(this.efforts.footer(), this.efforts.editing());
+		if (this.surface !== "work") return { controls: [], menu: [] };
 		return this.workFooter();
+	}
+
+	/** Threads and Efforts keep the view's size control on their row, before the way out. */
+	private withViewSize(
+		footer: { controls: Control[]; menu: Control[] },
+		editing: boolean,
+	): { controls: Control[]; menu: Control[] } {
+		const size = this.sizeActions()[0];
+		const control = size && !editing ? actionControl(size, () => this.toggleViewSize(), 2) : undefined;
+		if (!control) return footer;
+		const controls = [...footer.controls];
+		const out = controls.findIndex((item) => item.keys.includes("escape"));
+		controls.splice(out < 0 ? controls.length : out, 0, control);
+		return { controls, menu: footer.menu };
 	}
 
 	/** The open More menu over the rows above the footer; clicks inside it never reach the view below. */
@@ -2339,6 +2453,7 @@ export class AgentDashboard implements Component, Focusable {
 		errors: 2,
 		list: 3,
 		expand: 3,
+		size: 2,
 		thinking: 3,
 	};
 
@@ -2416,7 +2531,9 @@ export class AgentDashboard implements Component, Focusable {
 		const enter = this.loadMore
 			? "load more"
 			: this.console
-				? "message"
+				? this.listAlone
+					? "read"
+					: "message"
 				: this.emptyStore() && this.operations.newAgent
 					? "new"
 					: undefined;
@@ -2441,9 +2558,13 @@ export class AgentDashboard implements Component, Focusable {
 		];
 	}
 
-	/** Agents, Threads and Efforts as tabs; the agents' own scope and list controls follow on their tab. */
+	/**
+	 * Agents, Threads and Efforts as titles on the view's top rule; the shown one is bold in the accent
+	 * colour and a click on another opens it.
+	 */
 	private renderTabs(): { line: string; x: number } {
 		const theme = this.theme;
+		const rule = (text: string) => theme.fg("borderMuted", text);
 		const tabs: Array<{ surface: Surface; label: string; open(): void }> = [
 			{ surface: "work", label: "Agents", open: () => this.backToWork() },
 		];
@@ -2451,27 +2572,32 @@ export class AgentDashboard implements Component, Focusable {
 			tabs.push({ surface: "threads", label: "Threads", open: () => void this.openThreads() });
 		// Efforts stays under More: other main sessions and their published plans are not part of reading agents.
 		if (this.surface === "efforts") tabs.push({ surface: "efforts", label: "Efforts", open: () => this.openEfforts() });
-		let x = 0;
-		let line = "";
+		let x = 1;
+		let line = rule("─");
 		for (const tab of tabs) {
 			const text = ` ${tab.label} `;
 			const active = this.surface === tab.surface;
-			line += active ? theme.bg("selectedBg", theme.bold(theme.fg("accent", text))) : theme.fg("muted", text);
+			line += active ? theme.bold(theme.fg("accent", text)) : theme.fg("muted", text);
 			if (!active) this.hits.add({ x, y: 0, width: visibleWidth(text), height: 1, click: () => tab.open() });
 			x += visibleWidth(text);
+			line += rule("─");
+			x += 1;
 		}
-		return { line: `${line}  `, x: x + 2 };
+		return { line, x };
 	}
 
-	/** The tabs on the left and, on the agents tab, the session's agent figures at the right. Commands live in the footer. */
+	/**
+	 * The view's top rule: the tabs at the left and, on the agents tab, the session's agent figures at
+	 * the right. Commands live in the key row.
+	 */
 	private renderHeading(width: number): string {
+		const theme = this.theme;
+		const rule = (text: string) => theme.fg("borderMuted", text);
 		const tabs = this.renderTabs();
-		const figures =
-			this.surface === "work" && width >= 100 && this.sessionFigures
-				? this.theme.fg("muted", ` ${plainLine(this.sessionFigures)} `)
-				: "";
-		if (!figures) return fitLine(tabs.line, width);
-		return `${fitLine(tabs.line, Math.max(0, width - visibleWidth(figures)))}${figures}`;
+		const figures = this.surface === "work" && this.sessionFigures ? ` ${plainLine(this.sessionFigures)} ` : "";
+		const tail =
+			figures && tabs.x + visibleWidth(figures) + 4 <= width ? `${theme.fg("muted", figures)}${rule("─")}` : "";
+		return fitLine(`${tabs.line}${rule("─".repeat(Math.max(0, width - tabs.x - visibleWidth(tail))))}${tail}`, width);
 	}
 
 	/** Related and All, ending at `xEnd` on the Find row; `v` in the footer switches them too. */
@@ -2517,29 +2643,30 @@ export class AgentDashboard implements Component, Focusable {
 		const listWidth = showList && wide ? this.listColumns(width, shape.rosterWidth) : 0;
 		this.resizeColumns = { list: listWidth, pane: width - listWidth - 1 };
 		let body: string[];
+		this.listAlone = false;
 		if (listWidth) body = this.renderSplit(width, bodyHeight, listWidth);
 		else if (showList && bodyHeight >= 19 && !this.inspector) {
 			// The pane keeps at least 14 rows below the strip: two agents from 25 rows, one from 21, none below.
-			const strip = this.renderList(width, bodyHeight >= 23 ? 8 : 5, 0, 1);
+			// The strip keeps two rows per agent: an activity or reason row would leave no room for a working agent.
+			const strip = this.renderList(width, bodyHeight >= 23 ? 8 : 5, 0, 1, true);
 			body = [...strip, ...this.renderPane(0, 1 + strip.length, width, bodyHeight - strip.length)];
+		} else if (showList && (this.region === "list" || this.region === "find" || !this.console) && !this.inspector) {
+			// Too small for both: the list shows alone while it has focus, and Enter reads the selected agent.
+			this.listAlone = true;
+			body = this.renderList(width, bodyHeight, 0, 1);
 		} else body = this.renderPane(0, 1, width, bodyHeight);
 		return [heading, ...body.slice(0, bodyHeight)];
 	}
 
 	/**
-	 * The list's width: the chosen or default width, widened so that every loaded agent's model and
-	 * thinking level fit on its second row, while the pane keeps its minimum width.
+	 * The list's width: the chosen or default width, widened so that every loaded agent's model,
+	 * thinking level and cost estimate fit on its second row, while the pane keeps its minimum width.
 	 */
 	private listColumns(width: number, chosen: number): number {
 		if (this.modelColumns?.rows !== this.rows) {
-			const longest = this.rows.reduce(
-				(most, row) =>
-					Math.max(
-						most,
-						row.model ? visibleWidth(`${row.model.provider}/${row.model.modelId} [${row.model.thinkingLevel}]`) : 0,
-					),
-				0,
-			);
+			const reasons = (row: Pick<AgentConversationSummary, "model">) =>
+				row.model ? this.operations.modelInfo?.(row.model.provider, row.model.modelId)?.reasoning : undefined;
+			const longest = this.rows.reduce((most, row) => Math.max(most, rosterModelColumns(row, reasons)), 0);
 			this.modelColumns = { rows: this.rows, columns: longest ? longest + 5 : 0 };
 		}
 		return Math.max(chosen, Math.min(this.modelColumns.columns, MAX_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS));
@@ -2567,7 +2694,7 @@ export class AgentDashboard implements Component, Focusable {
 		);
 	}
 
-	private renderList(width: number, height: number, x0: number, y0: number): string[] {
+	private renderList(width: number, height: number, x0: number, y0: number, compact = false): string[] {
 		const theme = this.theme;
 		this.find.focused = this.focused && this.region === "find";
 		// Find and Related/All share the first row; list facts and Load more share the last.
@@ -2592,6 +2719,7 @@ export class AgentDashboard implements Component, Focusable {
 			theme,
 			{
 				start: this.rosterScroll,
+				compact,
 				reasons: (row) =>
 					row.model ? this.operations.modelInfo?.(row.model.provider, row.model.modelId)?.reasoning : undefined,
 				footer: facts.text ? { text: facts.text, color: facts.tone } : undefined,
@@ -2699,23 +2827,35 @@ export class AgentDashboard implements Component, Focusable {
 		return `${fitLine(this.theme.fg(tone, text), Math.max(0, width - label - 1))} ${this.theme.fg("accent", more)}`;
 	}
 
-	/** The selected agent's header, its conversation or an open form, and the message field. */
+	/**
+	 * The selected agent's header with its facts, then its conversation or an open form. The message
+	 * field shows while it has focus, holds a draft or sends one; Enter opens it.
+	 */
 	private renderPane(x0: number, y0: number, width: number, height: number): string[] {
 		const console = this.console;
 		if (!console) return this.renderNoSelection(x0, y0, width, height);
+		// One blank row separates the header from the conversation.
 		const header = [...this.renderTargetHeader(console, width, x0, y0), ""];
-		const status = console
-			.statusLines(width - 1, this.modelInfo(console), this.branches.get(console.row.cwd))
-			.filter((line) => visibleWidth(line) > 0)
-			.map((line) => fitLine(` ${line}`, width));
-		const composer = this.renderComposer(console, width, Math.max(3, height - header.length - status.length - 4));
-		const middleHeight = Math.max(1, height - header.length - composer.length - status.length);
+		const composer = this.composerShown(console)
+			? this.renderComposer(console, width, Math.max(3, height - header.length - 4))
+			: [];
+		const middleHeight = Math.max(1, height - header.length - composer.length);
 		const middleY = y0 + header.length;
 		const middle = this.renderMiddle(console, x0, middleY, width, middleHeight);
 		const composerY = middleY + middle.length;
 		this.geometry = { ...this.geometry, paneX: x0, paneWidth: width, composerY, composerHeight: composer.length };
-		this.composerHits(console, x0, composerY, width, composer.length);
-		return [...header, ...middle, ...composer, ...status];
+		if (composer.length) this.composerHits(console, x0, composerY, width, composer.length);
+		return [...header, ...middle, ...composer];
+	}
+
+	/** The message field shows while it has focus, holds a draft, sends one, or is being resized. */
+	private composerShown(console: AgentConsole): boolean {
+		return (
+			this.region === "composer" ||
+			Boolean(console.state.pending) ||
+			console.composer.getText().trim().length > 0 ||
+			this.resize.active("composer")
+		);
 	}
 
 	private modelInfo(console: AgentConsole): AgentModelInfo | undefined {
@@ -2745,8 +2885,9 @@ export class AgentDashboard implements Component, Focusable {
 	}
 
 	/**
-	 * One header line: the bold name and, at the right, the state with its age. A notice, an error with
-	 * its way forward, or a load status takes a second line while it applies.
+	 * The bold name with the state and its age at the right; then the agent's facts on one row (model,
+	 * context, cost, directory and branch); then, while it applies, a notice, an error with its way
+	 * forward, or a load status.
 	 */
 	private renderTargetHeader(console: AgentConsole, width: number, x: number, y: number): string[] {
 		const theme = this.theme;
@@ -2768,8 +2909,12 @@ export class AgentDashboard implements Component, Focusable {
 			});
 		const name = theme.bold(theme.fg("text", plainLine(titleOf(row))));
 		const first = `${fitLine(` ${name}`, Math.max(0, width - stateWidth - 1))}${state} `;
+		const facts = console.factsLine(Math.max(1, width - 2), this.modelInfo(console), this.branches.get(row.cwd));
+		const lines = [fitLine(first, width)];
+		if (visibleWidth(facts) > 0) lines.push(fitLine(` ${facts}`, width));
 		const note = this.headerNote(console, width);
-		return note ? [fitLine(first, width), fitLine(note, width)] : [fitLine(first, width)];
+		if (note) lines.push(fitLine(note, width));
+		return lines;
 	}
 
 	/** A notice takes priority over an error, a load status and unread inputs. */
@@ -2999,7 +3144,7 @@ export class AgentDashboard implements Component, Focusable {
 			height: 1,
 			value,
 			min: MIN_COMPOSER_ROWS,
-			max: Math.max(MIN_COMPOSER_ROWS, this.tui.terminal.rows - 12),
+			max: Math.max(MIN_COMPOSER_ROWS, this.size.height - 12),
 		});
 	}
 
@@ -3046,7 +3191,10 @@ export class AgentDashboard implements Component, Focusable {
 	}
 }
 
-/** Open the work view over the ordinary session. It is a temporary surface; closing returns to the session. */
+/**
+ * Open the work view below the ordinary session's transcript, in the editor's place, as the other
+ * operator views open. The editor and its draft return when the view closes; work continues.
+ */
 export async function showAgentDashboard(input: {
 	ctx: ExtensionContext;
 	source: AgentObservationSource;
@@ -3061,22 +3209,19 @@ export async function showAgentDashboard(input: {
 		ctx.ui.notify(`Agents need the interactive terminal. ${page.rows.length} loaded agents.`, "info");
 		return;
 	}
-	await ctx.ui.custom<void>(
-		(tui, theme, keys, done) => {
-			const view = new AgentDashboard(
-				tui,
-				theme,
-				keys,
-				done,
-				input.state ?? dashboardSessionState(ctx.sessionManager.getSessionId()),
-				input.source,
-				input.operations,
-				ctx.sessionManager.getSessionId(),
-			);
-			if (input.select) view.selectIdentity(input.select);
-			if (input.action) view.openNamedAction(input.action);
-			return view;
-		},
-		{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 } },
-	);
+	await ctx.ui.custom<void>((tui, theme, keys, done) => {
+		const view = new AgentDashboard(
+			tui,
+			theme,
+			keys,
+			done,
+			input.state ?? dashboardSessionState(ctx.sessionManager.getSessionId()),
+			input.source,
+			{ ...input.operations, viewRows: input.operations.viewRows ?? dashboardRows },
+			ctx.sessionManager.getSessionId(),
+		);
+		if (input.select) view.selectIdentity(input.select);
+		if (input.action) view.openNamedAction(input.action);
+		return view;
+	});
 }

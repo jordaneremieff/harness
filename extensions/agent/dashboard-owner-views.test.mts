@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { TuiMouseEvent } from "@earendil-works/pi-tui";
-import { fixture, source, row, turn, deferred, page } from "./dashboard-test-fixture.mts";
 import { agentState } from "./dashboard-state.ts";
-import type { OwnerView } from "./panel-modules.ts";
+import { deferred, fixture, page, row, source, turn } from "./dashboard-test-fixture.mts";
 import type { AgentConversationPage } from "./dashboard-types.ts";
+import type { OwnerView } from "./panel-modules.ts";
 
 type Fixture = ReturnType<typeof fixture>;
 
@@ -157,7 +157,8 @@ it("New, leave, select B, then onCreated keeps B and its draft and retains the c
 		await turn();
 		assert.equal(f.ui.focus.inspector, "New conversation");
 		press(f, "\x1b");
-		press(f, "\x1b");
+		assert.equal(f.ui.focus.inspector, undefined);
+		assert.equal(f.ui.focus.region, "list");
 		press(f, "\x1b[B");
 		assert.equal(f.state.selected, "two", "B is selected while creation is pending");
 		press(f, "\r");

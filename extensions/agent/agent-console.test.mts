@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { fixture, turn, row, source, page, conversationFrame } from "./dashboard-test-fixture.mts";
-import { agentState, updateDraft } from "./dashboard-state.ts";
 import { stripVTControlCharacters } from "node:util";
-import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui";
 import { sessionAppearance } from "./dashboard-roster.ts";
+import { agentState, updateDraft } from "./dashboard-state.ts";
+import { conversationFrame, fixture, page, row, source, turn } from "./dashboard-test-fixture.mts";
 import { buildLiveEntries } from "./live-frames.ts";
 
 /** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
@@ -170,7 +170,7 @@ function factSource(state: "working" | "idle" | "failed") {
 for (const state of ["working", "idle", "failed"] as const) {
 	for (const width of [164, 100, 80, 60])
 		for (const writing of [false, true]) {
-			it(`${state} target facts appear once, the state beside the name and the status below the message field, at ${width}${writing ? " while writing" : ""}`, async () => {
+			it(`${state} target facts appear once beneath the name and state, at ${width}${writing ? " while writing" : ""}`, async () => {
 				const f = fixture(width, 30, factSource(state), {
 					modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }),
 				});
@@ -191,22 +191,16 @@ for (const state of ["working", "idle", "failed"] as const) {
 					assert.doesNotMatch(header, /@recipient/);
 					assert.doesNotMatch(pane[0] ?? "", /model|high|%|\$/);
 					assert.match(header, new RegExp(sessionAppearance[state].label), "the state shares the name row");
-					const bottom = pane.findIndex((line) => line.includes("╰─"));
-					const facts = pane.findIndex((line) => /test\/model \[high\].*16%.*160\/1.0k/.test(line));
-					assert.ok(
-						bottom > 0 && facts > bottom,
-						"the status lines sit under the message field, as in the main session",
-					);
-					assert.match(pane[facts + 1] ?? "", /\/work/);
-					for (const fact of ["test/model", "[high]", "16%", "160/1.0k", "~$0.42"])
+					assert.match(pane[1] ?? "", /test\/model \[high\].*16%.*~\$0\.42.*\/work/);
+					for (const fact of ["test/model", "[high]", "16%", "~$0.42", "/work"])
 						assert.equal(right.split(fact).length - 1, 1, right);
-					const caption = pane.find((line) => line.includes("╭─")) ?? "";
-					assert.match(caption, /╭─ To Recipient /);
-					assert.doesNotMatch(caption, /Correction|New work/u, "steer is implicit on every message field");
+					const caption = pane.find((line) => line.includes("╭─ To "));
+					if (writing) {
+						assert.match(caption ?? "", /╭─ To Recipient /);
+						assert.doesNotMatch(caption ?? "", /Correction|New work/u, "steer is implicit on every message field");
+						assert.doesNotMatch(caption ?? "", /Working|Idle|Failed|model|high|%|\$|hit|ctx| in| out/);
+					} else assert.equal(caption, undefined, "the idle message field is hidden");
 					assert.doesNotMatch(right, /First task|agents:|test:model/u);
-					assert.doesNotMatch(caption, /Working|Idle|Failed|model|high|%|\$|hit|ctx| in| out/);
-					const status = "test/model [high] │ ██░░░░░░░░ 16% │ 160/1.0k │ ~$0.42 │ ● 21% hit";
-					assert.equal(right.split("21% hit").length - 1, width - paneX > visibleWidth(status) ? 1 : 0);
 				} finally {
 					f.ui.dispose();
 				}
@@ -241,7 +235,7 @@ it("the delivery effect and a long draft stay on the message field without other
 		f.ui.dispose();
 	}
 });
-it("project status shows the selected folder and branch without delegate statistics", async () => {
+it("the facts row shows the selected folder, branch and cost without other agents' costs", async () => {
 	const observed = source([
 		row("one", { modifiedAt: 100 }),
 		row("child", { creatingOwnerId: "one", cost: 1 }),
@@ -256,24 +250,27 @@ it("project status shows the selected folder and branch without delegate statist
 	try {
 		await turn();
 		await turn();
-		const screen = visible(f.ui.render(164)).join("\n");
-		assert.match(screen, /\/work \(main\)/);
-		assert.doesNotMatch(screen, /agents:|~\$1\.00|~\$99\.00/u);
+		const lines = visible(f.ui.render(164));
+		const divider = lines[1]?.indexOf("│") ?? -1;
+		assert.ok(divider > 0);
+		const facts = lines[2]?.slice(divider + 1) ?? "";
+		assert.match(facts, /~\$0\.42.*\/work \(main\)/);
+		assert.doesNotMatch(facts, /agents:|~\$1\.00|~\$99\.00/u);
 		const before = f.ui.focus;
 		f.ui.handleMouse({
 			type: "press",
 			button: "left",
-			x: 100,
-			y: 28,
-			screenX: 100,
-			screenY: 28,
+			x: divider + 2,
+			y: 2,
+			screenX: divider + 2,
+			screenY: 2,
 			width: 164,
 			height: 30,
 			shift: false,
 			alt: false,
 			ctrl: false,
 		});
-		assert.deepEqual(f.ui.focus, before, "a press on the figures changes nothing");
+		assert.deepEqual(f.ui.focus, before, "a press on the facts row does not change focus");
 	} finally {
 		f.ui.dispose();
 	}

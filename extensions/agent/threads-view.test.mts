@@ -3,14 +3,15 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import {
 	KeybindingsManager,
-	TUI_KEYBINDINGS,
-	visibleWidth,
 	type TUI,
+	TUI_KEYBINDINGS,
 	type TuiMouseEvent,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration-contract.ts";
-import { fixture, row, source, theme as fixtureTheme, turn } from "./dashboard-test-fixture.mts";
+import { type DashboardOperations, dashboardRows } from "./dashboard.ts";
 import { readingGeometry } from "./dashboard-layout.ts";
+import { fixture, theme as fixtureTheme, row, source, turn } from "./dashboard-test-fixture.mts";
 import { ThreadsView } from "./threads-view.ts";
 
 const theme = Object.assign(Object.create(fixtureTheme), {
@@ -89,7 +90,13 @@ function page(
 
 type Collaborate = (input: Record<string, unknown>) => Promise<unknown>;
 
-function setup(collaborate: Collaborate, width = 140, height = 40, paint: typeof theme = theme) {
+function setup(
+	collaborate: Collaborate,
+	width = 140,
+	height = 40,
+	paint: typeof theme = theme,
+	operations: Partial<DashboardOperations> = {},
+) {
 	const calls: Record<string, unknown>[] = [];
 	const observed = source([row("one", { name: "Designer" }), row("two", { name: "Reviewer" })]);
 	const f = fixture(
@@ -101,12 +108,13 @@ function setup(collaborate: Collaborate, width = 140, height = 40, paint: typeof
 				calls.push(input);
 				return collaborate(input);
 			},
+			...operations,
 		},
 		undefined,
 		paint,
 	);
 	const text = () => stripVTControlCharacters(f.ui.render(width).join("\n"));
-	const click = (x: number, y: number) =>
+	const click = (x: number, y: number, eventHeight = height) =>
 		f.ui.handleMouse({
 			type: "click",
 			button: "left",
@@ -115,7 +123,7 @@ function setup(collaborate: Collaborate, width = 140, height = 40, paint: typeof
 			screenX: x,
 			screenY: y,
 			width,
-			height,
+			height: eventHeight,
 			shift: false,
 			alt: false,
 			ctrl: false,
@@ -169,10 +177,16 @@ it("Threads reads every discovery page itself and lists open threads first, newe
 	assert.equal(left.at(-2)?.trim(), "3 threads", "the count omits discovery coverage");
 	assert.doesNotMatch(left.join("\n"), /partial|Purpose of/, "the rail has no coverage suffix or purpose rows");
 	const newest = left.findIndex((line) => line.includes("Thread new"));
-	assert.match(left[newest] ?? "", /^▌ ● Thread new.*ago\s*$/, "the selected row has a rail, state and right-hand age");
-	assert.match(left[newest + 1] ?? "", /^\s+● Thread old.*ago\s*$/, "threads occupy consecutive single rows");
-	assert.equal(left[newest + 2]?.trim(), "", "one blank row precedes the closed group");
-	assert.match(left[newest + 3] ?? "", /▸ Closed · 1/);
+	assert.match(left[newest] ?? "", /^▌ ● Thread new\s*$/, "the selected title has a rail and state");
+	assert.match(
+		left[newest + 1] ?? "",
+		/2 members · .*ago\s*$/,
+		"the metadata row carries members and the right-hand age",
+	);
+	assert.match(left[newest + 2] ?? "", /^\s+● Thread old\s*$/, "the next thread's title follows its metadata");
+	assert.match(left[newest + 3] ?? "", /2 members · .*ago\s*$/, "each thread has its own metadata row");
+	assert.equal(left[newest + 4]?.trim(), "", "one blank row precedes the closed group");
+	assert.match(left[newest + 5] ?? "", /▸ Closed · 1/);
 	f.click(
 		3,
 		lines.findIndex((line) => line.includes("▸ Closed · 1")),
@@ -223,7 +237,7 @@ it("selecting a thread shows posts with names and no routing metadata", async ()
 	assert.ok(f.calls.some((call) => call.action === "read" && call.threadId === "t1"));
 });
 
-it("thread rail rows paint only the selected title bold and keep each age dim at the right", async () => {
+it("thread rail rows paint only the selected title bold and keep dim members and age on its metadata row", async () => {
 	const f = setup(
 		async (input) =>
 			input.action === "list"
@@ -243,16 +257,25 @@ it("thread rail rows paint only the selected title bold and keep each age dim at
 		await settle();
 		const rail = () => f.ui.render(f.width).map((line) => line.split("│")[0] ?? line);
 		const rows = rail();
-		const selected = rows.find((line) => line.includes("Thread one")) ?? "";
-		const other = rows.find((line) => line.includes("Thread two")) ?? "";
+		const one = rows.findIndex((line) => line.includes("Thread one"));
+		const two = rows.findIndex((line) => line.includes("Thread two"));
+		const selected = rows[one] ?? "";
+		const other = rows[two] ?? "";
 		assert.ok(selected.includes(cardTheme.fg("accent", "▌")), "the selection has an accent rail");
 		assert.ok(selected.includes(cardTheme.bold(cardTheme.fg("text", "Thread one"))), "the selected title is bold");
 		assert.ok(selected.includes(theme.getBgAnsi("selectedBg")), "the selection has a background");
 		assert.doesNotMatch(other, /\u001b\[1m|▌/, "an unselected title has no bold or rail");
-		for (const line of [selected, other]) {
+		for (const index of [one, two]) {
+			const line = rows[index + 1] ?? "";
+			assert.match(line, /\u001b\[90m2 members · /, "the members use the dim token");
 			assert.match(line, /\u001b\[90m\d+d ago/, "the age uses the dim token");
-			assert.match(stripVTControlCharacters(line), /ago\s*$/, "the age is the last content on its row");
+			assert.match(stripVTControlCharacters(line), /2 members · .*ago\s*$/, "members and age share one row");
 		}
+		const age = stripVTControlCharacters(rows[one + 1] ?? "").lastIndexOf("ago");
+		assert.ok(age > 0);
+		f.click(age, one + 1);
+		await settle();
+		assert.doesNotMatch(stripVTControlCharacters(rail()[one + 1] ?? ""), /ago/, "the age is clickable for its date");
 		f.ui.handleInput("\u001b[B");
 		await settle();
 		assert.ok(
@@ -441,7 +464,7 @@ it("the tabs switch between agents and threads with one click", async () => {
 	await turn();
 	f.ui.render(f.width);
 	const heading = () => f.text().split("\n")[0] ?? "";
-	assert.match(heading(), /Agents\s+Threads/);
+	assert.match(heading(), /Agents.*Threads/);
 	f.click(heading().indexOf("Threads") + 1, 0);
 	await settle();
 	assert.match(f.text(), /1 thread/);
@@ -665,7 +688,13 @@ it("the exchange keeps a readable text width and stays inside 80 and 60 columns"
 			const thread = f.ui.render(width).map((line) => stripVTControlCharacters(line));
 			assert.ok(thread.every((line) => visibleWidth(line) <= width));
 			assert.ok(thread.length <= height);
-			assert.match(thread.join("\n"), /Post to Thread t1/);
+			assert.doesNotMatch(thread.join("\n"), /Post to Thread t1/, "the field stays hidden until it has focus");
+			f.ui.handleInput("\r");
+			await settle();
+			const composed = f.ui.render(width).map((line) => stripVTControlCharacters(line));
+			assert.ok(composed.every((line) => visibleWidth(line) <= width));
+			assert.ok(composed.length <= height);
+			assert.match(composed.join("\n"), /Post to Thread t1/);
 		} finally {
 			f.ui.dispose();
 		}
@@ -696,7 +725,7 @@ it("one unknown main session reads without a raw identity or notification row", 
 	assert.doesNotMatch(screen, /\.\.\./);
 });
 
-it("long thread rows clip with one ellipsis, not three dots", async () => {
+it("long thread titles wrap onto two rows and shorten only the second with one ellipsis", async () => {
 	const title = "A very long thread title for clipping ".repeat(8).trim();
 	const f = setup(async (input) =>
 		input.action === "list"
@@ -712,10 +741,14 @@ it("long thread rows clip with one ellipsis, not three dots", async () => {
 		.map((line) => line.split("│")[0] ?? line);
 	const at = left.findIndex((line) => line.includes("A very long"));
 	assert.ok(at >= 0);
-	const block = left[at] ?? "";
-	assert.match(block, /…/, "the single-row title shortens with one ellipsis");
-	assert.equal(left[at + 1]?.trim(), "", "the title never wraps into a second rail row");
-	assert.doesNotMatch(block, /\.\.\./);
+	const first = left[at] ?? "";
+	const second = left[at + 1] ?? "";
+	assert.match(first, /A very long thread title/, "the first title row carries the start");
+	assert.doesNotMatch(first, /…/, "the first row is not shortened");
+	assert.match(second, /…/, "the second title row shortens with one ellipsis");
+	assert.doesNotMatch(second, /\.\.\./);
+	assert.match(left[at + 2] ?? "", /2 members · .*ago\s*$/, "the metadata row follows exactly two title rows");
+	assert.equal(left[at + 3]?.trim(), "", "the title never wraps into a third rail row");
 });
 
 it("a thread read failure uses error colour in the header", async () => {
@@ -803,7 +836,7 @@ it("the thread header omits event counts and limits the purpose to two lines", a
 	assert.match(f.text(), /TAIL_MARKER/, "Details keeps the complete purpose");
 });
 
-it("a long post previews and keeps its window top without a continuation header", async () => {
+it("a post above 40 rendered lines previews 24 rows without moving its window top", async () => {
 	const paragraphs = Array.from({ length: 30 }, (_, index) => `Paragraph ${index + 1}`).join("\n\n");
 	const f = setup(
 		async (input) =>
@@ -811,7 +844,7 @@ it("a long post previews and keeps its window top without a continuation header"
 				? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
 				: page("t1", [event(1, { message: paragraphs })]),
 		140,
-		20,
+		38,
 	);
 	try {
 		await turn();
@@ -823,13 +856,18 @@ it("a long post previews and keeps its window top without a continuation header"
 		const preview = pane();
 		const screen = preview.join("\n");
 		assert.match(screen, /▸ \d+ more lines/);
-		assert.doesNotMatch(screen, /Paragraph 30/, "the preview stops before the end");
-		assert.doesNotMatch(
-			screen,
-			/continued|Designer · lead/,
-			"a window inside a post has no continuation row or pinned header",
+		assert.equal(
+			preview.filter((line) => /Paragraph \d+/.test(line)).length,
+			12,
+			"24 preview rows hold twelve paragraphs with their blank separators",
 		);
+		assert.match(screen, /Paragraph 12/);
+		assert.doesNotMatch(screen, /Paragraph 13/);
+		assert.doesNotMatch(screen, /Paragraph 30/, "the preview stops before the end");
+		assert.doesNotMatch(screen, /continued/, "a window starting inside a post has no continuation row");
+		assert.match(screen, /Designer · lead/, "the newest post starts at its own header");
 		const control = preview.findIndex((line) => line.includes("more lines"));
+		assert.ok(control > 0, "the preview control is visible");
 		f.click(f.width - 2, control);
 		const grown = pane();
 		assert.equal(grown[4], preview[4], "the window keeps its first row while the post grows");
@@ -1047,7 +1085,8 @@ it("a narrow window shows the pane that holds focus and gives each key its visib
 		assert.equal(f.state.threads?.selected, "two", "the list selection changes where the list shows");
 		f.ui.handleInput("\r");
 		await settle();
-		assert.match(f.text(), /Post to Thread two/);
+		assert.match(f.text(), /Body of two/);
+		assert.doesNotMatch(f.text(), /Post to Thread two/, "opening a thread leaves the field hidden");
 		f.ui.handleInput("\u001b");
 		await settle();
 		assert.match(footer(), /^↑↓ select/);
@@ -1597,6 +1636,237 @@ it("a click on the post time toggles its date without starting a reply", async (
 		assert.doesNotMatch(f.text().split("\n")[header] ?? "", /ago/);
 		assert.equal(f.state.threads?.drafts.get("t1")?.replyTo, undefined);
 		assert.match(f.text().split("\n").at(-1) ?? "", /↑↓ select/);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("operator posts are named You with the via session tag before lead and no model row", async () => {
+	const f = setup(async (input) =>
+		input.action === "list"
+			? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+			: page("t1", [
+					event(1, { sender: "one", message: "Model post" }),
+					event(2, { sender: "one", origin: "operator", message: "Operator post" }),
+				]),
+	);
+	try {
+		await turn();
+		f.ui.openNamedAction("threads");
+		await settle();
+		const rows = f.text().split("\n");
+		const operator = rows.findIndex((line) => line.includes("You · via Designer · lead"));
+		assert.ok(operator > 0, "the operator post names You and its session before the lead label");
+		assert.doesNotMatch(rows[operator + 1] ?? "", /test\/model/, "an operator post has no model row");
+		assert.match(rows[operator + 1] ?? "", /▀+/, "the header transitions straight to the body");
+		const model = rows.findIndex((line) => line.includes("Designer · lead") && !line.includes("You"));
+		assert.ok(model > 0, "a non-operator post keeps its author name");
+		assert.doesNotMatch(rows[model] ?? "", /via|You/);
+		assert.match(rows[model + 1] ?? "", /test\/model/, "a non-operator post keeps its model row");
+		assert.match(f.text(), /Operator post/);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("the exchange follows the newest complete posts, the newest top, or the first row when all fit", async () => {
+	const short = Array.from({ length: 10 }, (_, index) =>
+		event(index + 1, { message: `Post ${String(index + 1).padStart(2, "0")}` }),
+	);
+	const open = async (events: CollaborationEvent[], height: number) => {
+		const f = setup(
+			async (input) =>
+				input.action === "list"
+					? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+					: page("t1", events),
+			140,
+			height,
+		);
+		await turn();
+		f.ui.openNamedAction("threads");
+		await settle();
+		f.ui.handleInput("\r");
+		await settle();
+		return f;
+	};
+	const partial = await open(short, 30);
+	try {
+		const following = partial.text();
+		assert.doesNotMatch(following, /Post 07/, "the window starts at the earliest post whose successors all fit");
+		assert.match(following, /Designer[^\n]*\n[\s\S]*Post 08[\s\S]*Post 10/);
+		partial.ui.handleInput("\x1b[F");
+		assert.equal(partial.text(), following, "End keeps the start of post 8, not the headerless tail of post 7");
+		partial.ui.handleInput("\x1b[H");
+		assert.match(partial.text(), /Post 01/, "Home moves the reader above the tail");
+		partial.ui.handleInput("\x1b[F");
+		assert.equal(partial.text(), following, "End follows complete posts again from the earlier position");
+	} finally {
+		partial.ui.dispose();
+	}
+	const complete = await open(short.slice(0, 5), 60);
+	try {
+		const screen = complete.text();
+		assert.match(screen, /Start of the thread/, "a window that fits every post starts at the document top");
+		for (const post of ["Post 01", "Post 02", "Post 05"]) assert.match(screen, new RegExp(post));
+	} finally {
+		complete.ui.dispose();
+	}
+	const tall = Array.from({ length: 18 }, (_, index) => `Line ${index + 1}`).join("\n\n");
+	const newest = await open([event(1, { message: tall })], 34);
+	try {
+		const screen = newest.text();
+		assert.doesNotMatch(screen, /Start of the thread/, "the newest post starts at its own top when it is too tall");
+		assert.match(screen, /Line 1/);
+		assert.match(screen, /↓ \d+ lines? below/, "the window sits above the newest line");
+		newest.ui.handleInput("\x1b[B");
+		assert.notEqual(newest.text(), screen, "a scroll moves inside the newest post");
+		newest.ui.handleInput("\x1b[F");
+		const end = newest.text();
+		assert.doesNotMatch(end, /lines below/, "End goes to the last row inside the newest post");
+		assert.match(end, /Line 18/);
+		const clickBelow = () => {
+			const y = newest
+				.text()
+				.split("\n")
+				.findIndex((line) => /↓ \d+ lines? below/.test(line));
+			assert.ok(y > 0);
+			assert.ok(newest.click(newest.width - 2, y)?.handled);
+		};
+		newest.ui.handleInput("\x1b[H");
+		assert.match(newest.text(), /Start of the thread/);
+		clickBelow();
+		assert.equal(newest.text(), screen, "from above the newest post a click follows, like End");
+		newest.ui.handleInput("\x1b[B");
+		clickBelow();
+		assert.equal(newest.text(), end, "inside the newest post a click goes to the last row, like End");
+	} finally {
+		newest.ui.dispose();
+	}
+});
+
+it("a post previews only when it renders more than 40 lines", async () => {
+	const body = (count: number) => Array.from({ length: count }, (_, index) => `Line ${index + 1}`).join("\n\n");
+	const render = async (count: number) => {
+		const f = setup(
+			async (input) =>
+				input.action === "list"
+					? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+					: page("t1", [event(1, { message: body(count) })]),
+			140,
+			38,
+		);
+		await turn();
+		f.ui.openNamedAction("threads");
+		await settle();
+		f.ui.handleInput("\r");
+		await settle();
+		return f;
+	};
+	const atForty = await render(20);
+	try {
+		assert.doesNotMatch(atForty.text(), /more lines/, "39 rendered body lines stay whole");
+		assert.match(atForty.text(), /Line 1/);
+	} finally {
+		atForty.ui.dispose();
+	}
+	const aboveForty = await render(21);
+	try {
+		assert.match(aboveForty.text(), /▸ \d+ more lines/, "41 rendered body lines open as a preview");
+	} finally {
+		aboveForty.ui.dispose();
+	}
+});
+
+it("the post field shows only while focused, drafted, replied or pending", async () => {
+	const f = setup(
+		async (input) =>
+			input.action === "list"
+				? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+				: page("t1", [event(1, { message: "First" }), event(2, { message: "Second" })]),
+		140,
+		40,
+	);
+	try {
+		await turn();
+		f.ui.openNamedAction("threads");
+		await settle();
+		f.ui.handleInput("\r");
+		await settle();
+		assert.doesNotMatch(f.text(), /Post to Thread t1/, "the field is hidden while the exchange has focus");
+		f.ui.handleInput("\r");
+		await settle();
+		assert.match(f.text(), /Post to Thread t1/, "the field shows while it has focus");
+		for (const char of "Draft") f.ui.handleInput(char);
+		f.ui.handleInput("\u001b");
+		await settle();
+		assert.match(f.text(), /Post to Thread t1/, "a draft keeps the field shown");
+		f.ui.handleInput("\r");
+		await settle();
+		for (let step = 0; step < 5; step++) f.ui.handleInput("\u007f");
+		f.ui.handleInput("\u001b");
+		await settle();
+		assert.doesNotMatch(f.text(), /Post to Thread t1/, "an empty, unfocused field hides");
+		f.ui.handleInput("r");
+		await settle();
+		f.ui.handleInput("\r");
+		await settle();
+		assert.match(f.text(), /Post to Thread t1/, "a reply target keeps the field shown");
+		assert.match(f.text(), /reply to #2/);
+		f.ui.handleInput("\u001b");
+		await settle();
+		assert.match(f.text(), /Post to Thread t1/, "a reply target keeps it shown outside the field");
+		f.ui.handleInput("r");
+		await settle();
+		f.ui.handleInput("\r");
+		await settle();
+		f.ui.handleInput("\u001b");
+		await settle();
+		assert.doesNotMatch(f.text(), /Post to Thread t1/, "clearing the reply hides an empty field");
+		const draft = f.state.threads?.drafts.get("t1");
+		assert.ok(draft);
+		draft.pending = true;
+		assert.match(f.text(), /Post to Thread t1/, "a pending post keeps the field shown");
+		draft.pending = false;
+		assert.doesNotMatch(f.text(), /Post to Thread t1/);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("a framed Threads view adds the z size action before Escape and hides it while writing", async () => {
+	const f = setup(
+		async (input) =>
+			input.action === "list"
+				? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+				: page("t1", [event(1)]),
+		140,
+		40,
+		theme,
+		{ viewRows: dashboardRows },
+	);
+	try {
+		await turn();
+		f.ui.openNamedAction("threads");
+		await settle();
+		const footer = () => (f.text().split("\n").at(-1) ?? "").trimEnd();
+		assert.match(footer(), /z expand/);
+		assert.ok(footer().indexOf("z expand") < footer().indexOf("esc close"), "the size action sits before the way out");
+		assert.equal(f.ui.render(f.width).length, 24);
+		f.click(footer().indexOf("z expand") + 1, f.ui.render(f.width).length - 1, f.ui.render(f.width).length);
+		await settle();
+		assert.match(footer(), /z shrink/);
+		assert.equal(f.ui.render(f.width).length, 36, "the view takes most of the window");
+		f.ui.handleInput("z");
+		await settle();
+		assert.match(footer(), /z expand/);
+		assert.equal(f.ui.render(f.width).length, 24, "z restores the usual share");
+		f.ui.handleInput("\r");
+		await settle();
+		f.ui.handleInput("\r");
+		await settle();
+		assert.doesNotMatch(footer(), /z (expand|shrink)/, "the field's letters hide the size action");
+		f.ui.handleInput("z");
+		assert.equal(f.state.threads?.drafts.get("t1")?.text, "z", "z is text while the field has focus");
 	} finally {
 		f.ui.dispose();
 	}

@@ -5,6 +5,7 @@ import type { AgentConversationSummary, AgentDashboardCoverage } from "./dashboa
 import { cleanDashboardText } from "./dashboard-conversation.ts";
 import { formatCost } from "./agent-footer.ts";
 import { fitLine, highlightRow } from "./dashboard-layout.ts";
+import { dashboardTime } from "./dashboard-time.ts";
 
 export interface AgentDashboardSnapshot {
 	observedAt: number;
@@ -320,9 +321,20 @@ export function groupRows(rows: readonly AgentConversationSummary[], now = Date.
 export const ROSTER_ROWS = 2;
 
 /**
- * Two quiet rows per agent: the state mark and the name, then the model and its thinking level. Only
- * agents at work and agents with an error carry colour; a settled agent's name is muted, and the
- * selected agent is bold on the selection colour.
+ * Rows one agent takes: the name and the model, and a third row while the agent works (what it is
+ * doing now) or while it has an error reason (the reason). A compact list, such as the narrow strip
+ * above the pane, keeps every agent to the first two rows.
+ */
+export function rosterRowCount(row: AgentConversationSummary): number {
+	const active = row.state === "working" || row.state === "starting";
+	return active || listReason(row) ? ROSTER_ROWS + 1 : ROSTER_ROWS;
+}
+
+/**
+ * Quiet rows per agent: the state mark, the name and, for a settled agent, its age at the right; then
+ * the model and its thinking level; then, while it applies, what a working agent is doing or the
+ * error reason. Only agents at work and agents with an error carry colour; a settled agent's name is
+ * muted, and the selected agent is bold on the selection colour.
  */
 function rosterRow(
 	row: AgentConversationSummary,
@@ -330,21 +342,105 @@ function rosterRow(
 	selected: string | undefined,
 	width: number,
 	theme: Theme,
+	now: number,
 	reasons?: (row: Pick<AgentConversationSummary, "model">) => boolean | undefined,
+	compact = false,
 ): string[] {
-	const appearance = sessionAppearance[row.state];
 	const chosen = row.id === selected;
+	const rail = chosen ? theme.fg("accent", "▌") : " ";
+	const lines = [
+		rosterNameRow(row, rows, chosen, rail, width, theme, now),
+		`${rail}   ${rosterModelRow(row, Math.max(1, width - 4), theme, reasons)}`,
+	];
+	const third = compact ? undefined : rosterThirdRow(row, width, theme);
+	if (third) lines.push(`${rail}   ${third}`);
+	return lines.map((line) => (chosen ? highlightRow(line, width, 2, theme) : fitLine(line, width)));
+}
+
+/** The rail, the state mark and the name; a settled agent's age sits at the right while the list has room. */
+function rosterNameRow(
+	row: AgentConversationSummary,
+	rows: readonly AgentConversationSummary[],
+	chosen: boolean,
+	rail: string,
+	width: number,
+	theme: Theme,
+	now: number,
+): string {
 	const active = row.state === "working" || row.state === "starting";
 	const reason = listReason(row);
-	const mark = theme.fg(
-		active ? "accent" : reason ? (currentFault(listedRow(row)) ? "error" : "warning") : "dim",
-		appearance.glyph,
-	);
-	const name = truncateToWidth(uniqueName(row, rows), Math.max(1, width - 4), "…");
+	const tone = active ? "accent" : !reason ? "dim" : currentFault(listedRow(row)) ? "error" : "warning";
+	const mark = theme.fg(tone, sessionAppearance[row.state].glyph);
+	// A working agent's third row says what it does, so only a settled agent shows its age.
+	const age = active ? "" : dashboardTime(row.modifiedAt, false, now);
+	const ageRoom = age && width >= 24 ? visibleWidth(age) + 1 : 0;
+	const name = truncateToWidth(uniqueName(row, rows), Math.max(1, width - 4 - ageRoom), "…");
 	const label = chosen ? theme.bold(theme.fg("text", name)) : theme.fg(active || reason ? "text" : "muted", name);
-	const rail = chosen ? theme.fg("accent", "▌") : " ";
-	const lines = [`${rail} ${mark} ${label}`, `${rail}   ${modelLabel(row, theme, Math.max(1, width - 4), reasons)}`];
-	return lines.map((line) => (chosen ? highlightRow(line, width, 2, theme) : fitLine(line, width)));
+	const head = `${rail} ${mark} ${label}`;
+	if (!ageRoom) return head;
+	return `${head}${" ".repeat(Math.max(1, width - visibleWidth(head) - visibleWidth(age)))}${theme.fg("dim", age)}`;
+}
+
+/** An agent's recorded cost estimate as the status line writes it, or nothing below half a cent. */
+export function rosterCost(row: Pick<AgentConversationSummary, "cost" | "partial">): string {
+	return Number.isFinite(row.cost) && row.cost >= 0.005 ? `~${formatCost(row.cost, row.partial)}` : "";
+}
+
+/** Columns between the model and the cost estimate on a model row. */
+const COST_GAP = 2;
+
+/**
+ * The model row: the model and its thinking level, and the cost estimate at the right. The cost
+ * shows only while the whole model fits beside it, so the model is never shortened for the cost.
+ */
+function rosterModelRow(
+	row: AgentConversationSummary,
+	width: number,
+	theme: Theme,
+	reasons?: (row: Pick<AgentConversationSummary, "model">) => boolean | undefined,
+): string {
+	const model = modelLabel(row, theme, width, reasons);
+	const cost = rosterCost(row);
+	// The whole model's width, so a shortened model leaves no room for the cost.
+	const used = row.model ? modelColumns(row, reasons) : visibleWidth(model);
+	const room = width - used - COST_GAP - visibleWidth(cost);
+	if (!cost || room < 0) return model;
+	return `${model}${" ".repeat(room + COST_GAP)}${theme.fg("dim", cost)}`;
+}
+
+/** Columns of the whole model label, `provider/model [level]`; nothing for an unknown model. */
+function modelColumns(
+	row: Pick<AgentConversationSummary, "model">,
+	reasons?: (row: Pick<AgentConversationSummary, "model">) => boolean | undefined,
+): number {
+	const model = row.model;
+	if (!model) return 0;
+	const level = oneLine(model.thinkingLevel);
+	const bracket = level && THINKING_LEVELS.includes(level) && reasons?.(row) !== false ? ` [${level}]` : "";
+	return visibleWidth(oneLine(`${model.provider}/${model.modelId}`)) + visibleWidth(bracket);
+}
+
+/** Columns a model row needs to show the whole model and the cost estimate beside it. */
+export function rosterModelColumns(
+	row: Pick<AgentConversationSummary, "model" | "cost" | "partial">,
+	reasons?: (row: Pick<AgentConversationSummary, "model">) => boolean | undefined,
+): number {
+	const model = modelColumns(row, reasons);
+	if (!model) return 0;
+	const cost = rosterCost(row);
+	return model + (cost ? COST_GAP + visibleWidth(cost) : 0);
+}
+
+/** What a working agent does now, or an error reason; nothing for a settled agent without one. */
+function rosterThirdRow(row: AgentConversationSummary, width: number, theme: Theme): string | undefined {
+	const room = Math.max(1, width - 4);
+	if (row.state === "working" || row.state === "starting") {
+		const doing = row.state === "starting" ? "Starting" : activityOf(row);
+		return theme.fg("muted", truncateToWidth(doing, room, "…"));
+	}
+	const reason = listReason(row);
+	if (!reason) return undefined;
+	return theme.fg(currentFault(listedRow(row)) ? "error" : "warning", truncateToWidth(oneLine(reason), room, "…"));
 }
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -374,6 +470,8 @@ interface RosterViewport {
 	reasons?(row: Pick<AgentConversationSummary, "model">): boolean | undefined;
 	start?: number;
 	footer?: { text: string; color: ThemeColor };
+	/** Two rows per agent, without the activity or reason row, for a list with little height. */
+	compact?: boolean;
 	range?(start: number, maxStart: number): void;
 	row?(row: AgentConversationSummary, line: number, height: number): void;
 }
@@ -397,8 +495,9 @@ export function invalidateRoster(rows: readonly AgentConversationSummary[]): voi
 }
 
 /** A section heading: the quiet label and its count, after one blank row unless it opens the window. */
-function groupHeading(group: RosterGroup, count: number, theme: Theme): string {
-	return ` ${theme.bold(theme.fg("muted", GROUP_LABEL[group]))} ${theme.fg("dim", String(count))}`;
+function groupHeading(group: RosterGroup, total: SectionTotal, theme: Theme): string {
+	const cost = rosterCost(total);
+	return ` ${theme.bold(theme.fg("muted", GROUP_LABEL[group]))} ${theme.fg("dim", String(total.count))}${cost ? theme.fg("dim", ` · ${cost}`) : ""}`;
 }
 
 /** The lines from row `start` on: each section's heading before its first shown row. */
@@ -407,22 +506,49 @@ function layoutFrom(
 	groups: readonly RosterGroup[],
 	start: number,
 	height: number,
+	compact = false,
 ): { headings: Array<{ index: number; line: number; first: boolean }>; last: number } {
 	let lines = 0;
 	const headings: Array<{ index: number; line: number; first: boolean }> = [];
 	let last = start - 1;
 	for (let index = start; index < rows.length; index++) {
+		const row = rows[index];
+		const size = row && !compact ? rosterRowCount(row) : ROSTER_ROWS;
 		const heading = index === start || groups[index] !== groups[index - 1];
 		const headingRows = heading ? (lines === 0 ? 1 : 2) : 0;
-		if (lines + headingRows + ROSTER_ROWS > height) break;
+		if (lines + headingRows + size > height) break;
 		if (heading) {
 			headings.push({ index, line: lines + headingRows - 1, first: lines === 0 });
 			lines += headingRows;
 		}
-		lines += ROSTER_ROWS;
+		lines += size;
 		last = index;
 	}
 	return { headings, last };
+}
+
+/** A section's row count and cost estimate over its loaded rows; an unknown or partial cost marks it partial. */
+interface SectionTotal {
+	count: number;
+	cost: number;
+	partial: boolean;
+}
+function sectionTotals(
+	rows: readonly AgentConversationSummary[],
+	groups: readonly RosterGroup[],
+): Map<RosterGroup, SectionTotal> {
+	const totals = new Map<RosterGroup, SectionTotal>();
+	rows.forEach((row, index) => {
+		const group = groups[index] ?? "earlier";
+		const total = totals.get(group) ?? { count: 0, cost: 0, partial: false };
+		const known = Number.isFinite(row.cost);
+		totals.set(group, {
+			count: total.count + 1,
+			cost: total.cost + (known ? row.cost : 0),
+			partial: total.partial || row.partial || !known,
+		});
+	});
+	return totals;
 }
 
 /** Keep the selection in view unless the operator chose an explicit scroll position. */
@@ -432,10 +558,11 @@ function rosterWindow(
 	selected: string | undefined,
 	room: number,
 	requested: number | undefined,
+	compact = false,
 ): { start: number; maxStart: number } {
 	// The last start that still fills the window from the end.
 	let maxStart = rows.length - 1;
-	while (maxStart > 0 && layoutFrom(rows, groups, maxStart - 1, room).last === rows.length - 1) maxStart--;
+	while (maxStart > 0 && layoutFrom(rows, groups, maxStart - 1, room, compact).last === rows.length - 1) maxStart--;
 	maxStart = Math.max(0, maxStart);
 	const index = Math.max(
 		0,
@@ -444,7 +571,7 @@ function rosterWindow(
 	let start = Math.min(maxStart, Math.max(0, requested ?? 0));
 	if (requested === undefined) {
 		// Keep the selection in view: from the top when it fits, else with the selection near the window's end.
-		while (start < index && layoutFrom(rows, groups, start, room).last < index) start++;
+		while (start < index && layoutFrom(rows, groups, start, room, compact).last < index) start++;
 	}
 	return { start, maxStart };
 }
@@ -459,11 +586,11 @@ function deriveRoster(
 	viewport?: RosterViewport,
 ): DerivedRoster {
 	const groups = rows.map((row) => rosterGroup(row, now));
-	const counts = new Map<RosterGroup, number>();
-	for (const group of groups) counts.set(group, (counts.get(group) ?? 0) + 1);
-	const room = Math.max(ROSTER_ROWS, height - 1);
-	const { start, maxStart } = rosterWindow(rows, groups, selected, room, viewport?.start);
-	const layout = layoutFrom(rows, groups, start, room);
+	const totals = sectionTotals(rows, groups);
+	const compact = viewport?.compact ?? false;
+	const room = Math.max(ROSTER_ROWS + 1, height - 1);
+	const { start, maxStart } = rosterWindow(rows, groups, selected, room, viewport?.start, compact);
+	const layout = layoutFrom(rows, groups, start, room, compact);
 	const lines: string[] = [];
 	const hits: RosterHit[] = [];
 	for (let index = start; index <= layout.last; index++) {
@@ -472,9 +599,10 @@ function deriveRoster(
 		const heading = layout.headings.find((item) => item.index === index);
 		if (heading) {
 			if (!heading.first) lines.push("");
-			lines.push(groupHeading(groups[index] ?? "earlier", counts.get(groups[index] ?? "earlier") ?? 0, theme));
+			const group = groups[index] ?? "earlier";
+			lines.push(groupHeading(group, totals.get(group) ?? { count: 0, cost: 0, partial: false }, theme));
 		}
-		const block = rosterRow(row, rows, selected, width, theme, viewport?.reasons);
+		const block = rosterRow(row, rows, selected, width, theme, now, viewport?.reasons, compact);
 		const line = lines.length;
 		hits.push({ row, line, height: block.length });
 		lines.push(...block);
@@ -517,7 +645,15 @@ export function rosterLines(
 		cache = new Map();
 		themes.set(theme, cache);
 	}
-	const key = JSON.stringify([selected, width, height, Math.floor(now / 60000), viewport?.start, viewport?.footer]);
+	const key = JSON.stringify([
+		selected,
+		width,
+		height,
+		Math.floor(now / 60000),
+		viewport?.start,
+		viewport?.footer,
+		viewport?.compact ?? false,
+	]);
 	let derived = cache.get(key);
 	if (!derived) {
 		derived = deriveRoster(rows, selected, width, height, now, theme, viewport);

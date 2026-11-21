@@ -1,31 +1,31 @@
-import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { manualClock } from "./observation-clock-fixture.mts";
+import { type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui";
+import type { ActionResult } from "./agent-forms.ts";
+import { createAgentObservationSource } from "./agent-observation.ts";
+import { NATIVE_COMPACTION_SEED } from "./control-guidance.ts";
+import { agentState, createDashboardState } from "./dashboard-state.ts";
 import {
+	conversationFrame,
+	deferred,
+	type FormCall,
 	fixture,
 	formsHost,
-	source,
-	row,
 	page,
+	row,
+	source,
 	turn,
-	deferred,
-	conversationFrame,
-	type FormCall,
 } from "./dashboard-test-fixture.mts";
-import { agentState, createDashboardState } from "./dashboard-state.ts";
-import type { ConversationFrame } from "./live-frames.ts";
-import { sessionFigures } from "./footer.ts";
 import type { AgentConversationPage } from "./dashboard-types.ts";
-import { createAgentObservationSource } from "./agent-observation.ts";
-import type { ActionResult } from "./agent-forms.ts";
-import { NATIVE_COMPACTION_SEED } from "./control-guidance.ts";
+import { sessionFigures } from "./footer.ts";
+import type { ConversationFrame } from "./live-frames.ts";
+import { manualClock } from "./observation-clock-fixture.mts";
+import { machineConfig } from "./settings-fixture.mts";
 
 type Fixture = ReturnType<typeof fixture>;
 
@@ -243,13 +243,17 @@ for (const [width, height] of [
 				clock.advance(50);
 				await turn();
 				const screen = shown(f);
-				assert.match(screen, /╭─ To one ─+┄*╮/u);
-				assert.doesNotMatch(screen, /Correction at next step|New message/u);
+				assert.doesNotMatch(screen, /╭─ To /u, "the quiet view hides the empty message field");
 				const header = targetHeader(f).join("\n");
 				assert.match(header, busy ? /● Working/u : /Idle/u);
 				assert.doesNotMatch(header, /Stop/u, "the header holds no commands");
-				if (busy) assert.match(shown(f), /s stop/u);
-				else assert.doesNotMatch(shown(f), /s stop/u, "Stop shows only while work runs");
+				if (busy) assert.match(screen, /s stop/u);
+				else assert.doesNotMatch(screen, /s stop/u, "Stop shows only while work runs");
+				press(f, "\r");
+				const writing = shown(f);
+				assert.match(writing, /╭─ To one ─+┄*╮/u);
+				assert.doesNotMatch(writing, /Correction at next step|New message/u);
+				press(f, "\x1b");
 			}
 		} finally {
 			f.ui.dispose();
@@ -351,9 +355,10 @@ for (const [width, height] of [
 				assert.equal(lines.length, height);
 				assert.ok(lines.every((line) => visibleWidth(line) <= width));
 				const screen = visible(lines).join("\n");
-				assert.match(screen, /▌ ● Build/u);
 				assert.match(visible(lines)[1] ?? "", /^Build\s*(?:│|$)/u, "the focused Find field shows its value");
+				assert.match(targetHeader(f)[0] ?? "", /Build \d+ +● Working/u);
 				assert.match(screen, /Check the task/u);
+				assert.match(screen, /▌ ● Build/u, "the list shows the selected working match beside its transcript");
 			} finally {
 				f.ui.dispose();
 			}
@@ -507,10 +512,11 @@ for (const [patch, reason, recovery] of [
 		const f = fixture(240, 45, source([row("one", patch)]));
 		try {
 			await turn();
-			const header = targetHeader(f).join("\n");
-			assert.equal(header.split("\n").length, 2);
-			assert.ok(header.includes(`${reason} · ${recovery}`), header);
-			assert.doesNotMatch(header, /Details has the stored error/u);
+			const { lines, title } = paneLines(f);
+			assert.match(lines[title + 1] ?? "", /test\/model/u, "the facts precede the notice");
+			assert.equal(lines[title + 2]?.trim(), `${reason} · ${recovery}`);
+			assert.equal(lines[title + 3]?.trim(), "", "one blank row follows the notice");
+			assert.doesNotMatch(lines.slice(title, title + 3).join("\n"), /Details has the stored error/u);
 		} finally {
 			f.ui.dispose();
 		}
@@ -529,11 +535,15 @@ it("an unavailable row without a stored error names its unreadable storage", asy
 	try {
 		await turn();
 		await turn();
-		const header = targetHeader(f).join("\n");
-		assert.match(header, /Unavailable/u);
+		const { lines, title } = paneLines(f);
+		assert.match(lines[title] ?? "", /\? Unavailable/u);
 		assert.match(shown(f), /Check the task/u);
-		assert.doesNotMatch(header, /Partial history/u, "the settled header omits read coverage");
-		assert.match(header, /Unavailable: Storage cannot be read · Reconnect starts the host/u);
+		assert.doesNotMatch(
+			lines.slice(title, title + 3).join("\n"),
+			/Partial history/u,
+			"the settled header omits read coverage",
+		);
+		assert.match(lines[title + 2] ?? "", /Unavailable: Storage cannot be read · Reconnect starts the host/u);
 	} finally {
 		f.ui.dispose();
 	}
@@ -720,10 +730,10 @@ it("a late new conversation completion respects a later list selection", async (
 		press(f, "\r", "\r");
 		clickLabel(f, "start");
 		await settle(() => f.state.selected === "two");
-		f.ui.handleInput("\x1b");
-		f.ui.handleInput("\x1b");
+		press(f, "\x1b");
+		assert.equal(f.ui.focus.inspector, undefined);
 		assert.equal(f.ui.focus.region, "list");
-		f.ui.handleInput("\x1b[A");
+		press(f, "\x1b[A");
 		assert.equal(f.state.selected, "one");
 		gate.resolve();
 		await turn();
@@ -905,7 +915,9 @@ it("a new conversation selects its purpose and starting state before host readin
 			);
 		}
 		f.resize(140, 45);
-		assert.match(shown(f), /╭─ To Write the startup note ─+┄*╮/u);
+		assert.doesNotMatch(shown(f), /╭─ To /u, "startup does not open the empty message field");
+		press(f, "\x1b", "\r");
+		assert.match(shown(f), /╭─ To Write the startup note ─+┄*╮/u, "Enter addresses the new conversation");
 		await turn();
 		assert.match(shown(f), /Starting/u);
 		assert.doesNotMatch(shown(f), /Conversation unavailable/u);
@@ -929,13 +941,17 @@ it("a busy live frame updates the header, the list and the message field togethe
 	const f = fixture(140, 45, observed);
 	try {
 		await turn();
+		press(f, "\r");
+		type(f, "draft");
+		assert.match(targetHeader(f)[0] ?? "", /✓ Done/u);
 		frame = conversationFrame();
 		changed();
 		const screen = shown(f);
 		assert.match(screen, /╭─ To one/u);
+		assert.match(screen, /│draft +│/u, "the open message field retains its draft");
 		assert.doesNotMatch(screen, /Correction at next step/u);
-		assert.match(targetHeader(f).join("\n"), /● Working/u);
-		assert.match(shown(f), /model │/u);
+		assert.match(targetHeader(f)[0] ?? "", /● Working/u);
+		assert.match(screen, /▌ ● one/u, "the roster agrees with the header");
 		assert.doesNotMatch(screen, /Done|0 working/u);
 	} finally {
 		f.ui.dispose();
@@ -992,8 +1008,12 @@ it("a new conversation without a creation callback selects the created identity"
 		await settle(() => f.state.selected === "two");
 		await settle(() => f.ui.focus.inspector === undefined);
 		assert.equal(f.state.newTask, "");
-		assert.equal(f.ui.focus.inspector, undefined);
-		assert.equal(f.ui.focus.region, "composer");
+		assert.equal(f.ui.focus.region, "list");
+		assert.doesNotMatch(
+			shown(f),
+			/╭─ To /u,
+			"the completed form returns to the list without opening the message field",
+		);
 	} finally {
 		f.ui.dispose();
 	}
@@ -1327,22 +1347,15 @@ for (const width of [80, 164]) {
 }
 
 for (const width of [80, 164]) {
-	it(`the header omits fact lines with nothing known at ${width}`, async () => {
+	it(`the header retains the directory without placeholders for unknown metrics at ${width}`, async () => {
 		const f = fixture(width, 30, source([row("one", { state: "idle", model: undefined, cost: Number.NaN })]));
 		try {
 			await turn();
-			const header = targetHeader(f);
-			assert.match(header[0] ?? "", /^ one +○ Idle · .*ago\s*$/u);
-			assert.equal(header[1]?.trim(), "");
-			assert.equal(header.length, 2);
-			assert.doesNotMatch(header.join("\n"), /Model|Tokens|Context|Cost|\$\?/u);
-			const { lines } = paneLines(f);
-			const composerBottom = lines.findIndex((line) => line.startsWith("╰─"));
-			assert.match(
-				lines[composerBottom + 1] ?? "",
-				/^ \/work/u,
-				"the directory follows the composer without an empty metrics line",
-			);
+			const { lines, title } = paneLines(f);
+			assert.match(lines[title] ?? "", /^ one +○ Idle · .*ago\s*$/u);
+			assert.equal(lines[title + 1]?.trim(), "/work", "the facts row shows only the known directory");
+			assert.equal(lines[title + 2]?.trim(), "");
+			assert.equal(lines[title + 3]?.trim(), "Check the task");
 		} finally {
 			f.ui.dispose();
 		}

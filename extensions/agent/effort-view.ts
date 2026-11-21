@@ -32,6 +32,8 @@ const clip = (text: string, width: number) => truncateToWidth(text, Math.max(1, 
 const folderLabel = (cwd: string) => (cwd === homedir() ? "~" : basename(cwd) || cwd);
 /** Activity this close to the start is the registration itself, not later input or tool work. */
 const START_SLACK_MS = 5_000;
+/** Rows the view needs: its title row, one effort, and a few detail rows; the work view's smallest share gives it nine. */
+const MIN_EFFORT_ROWS = 9;
 /** Readable words for presence scan stop reasons; an unknown reason keeps its own word. */
 const SCAN_REASONS: Record<string, string> = {
 	"visit-limit": "scan limit hit",
@@ -1219,10 +1221,11 @@ export class EffortView {
 	render(width: number, height: number, listWidth?: number): string[] {
 		this.mouse.reset(width, height);
 		this.composer.focused = this.composing;
-		// The host gives the view every row above the footer, so 19 rows here is a 20-row terminal.
-		if (width < 60 || height < 19)
+		// The host gives the view every row above the key row and draws its own title over the first one,
+		// so a refusal states itself on the second row. Both layouts shrink their lists to the rows they get.
+		if (width < 60 || height < MIN_EFFORT_ROWS)
 			return Array.from({ length: height }, (_, index) =>
-				fitLine(index ? "" : "Resize to use Related efforts. Esc back.", width),
+				fitLine(index === 1 ? "Resize to use Related efforts. Esc back." : "", width),
 			);
 		if (width >= 100) return this.renderWide(width, height, listWidth ?? this.fallbackListWidth(width));
 		return this.renderTight(width, height);

@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { dashboardRows } from "./dashboard.ts";
 import { DashboardMouse } from "./dashboard-mouse.ts";
-import { fixture, row, source, turn } from "./dashboard-test-fixture.mts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
+import { fixture, row, source, turn } from "./dashboard-test-fixture.mts";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
 
 const event = (
@@ -101,8 +102,7 @@ it("a control click opens its form beside the conversation, the inspector wheel 
 		assert.deepEqual(f.calls, [], "opening a form sends nothing");
 		f.ui.handleInput("\x1b");
 		assert.equal(f.ui.focus.inspector, undefined);
-		f.ui.handleInput("\x1b");
-		assert.equal(f.ui.focus.region, "list");
+		assert.equal(f.ui.focus.region, "list", "a closed form returns to the list");
 		click("Help");
 		assert.equal(f.ui.focus.inspector, "Help");
 		const before = lines().join("\n");
@@ -142,6 +142,31 @@ it("the More menu wheel reaches Details and opens it only when chosen", async ()
 	}
 });
 
+it("framed footer clicks use the rendered view height, not the terminal height", async () => {
+	const width = 140;
+	const terminalRows = 44;
+	const f = fixture(width, terminalRows, source(), { viewRows: dashboardRows });
+	const render = () => visible(f.ui.render(width));
+	try {
+		await turn();
+		const compact = render();
+		assert.ok(compact.length < terminalRows);
+		const expand = point(compact, "z expand");
+		assert.equal(expand.y, compact.length - 1);
+		assert.equal(f.ui.handleMouse(event(expand.x, expand.y, width, terminalRows)), undefined);
+		assert.ok(f.ui.handleMouse(event(expand.x, expand.y, width, compact.length))?.handled);
+		const expanded = render();
+		assert.ok(expanded.length > compact.length);
+		const shrink = point(expanded, "z shrink");
+		assert.equal(shrink.y, expanded.length - 1);
+		assert.equal(f.ui.handleMouse(event(expand.x, expand.y, width, compact.length)), undefined);
+		assert.ok(f.ui.handleMouse(event(shrink.x, shrink.y, width, expanded.length))?.handled);
+		assert.equal(render().length, compact.length);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
 for (const width of [80, 140]) {
 	it(`list clicks select passively, times toggle by click, and the message field keeps its draft at ${width}`, async () => {
 		const f = fixture(
@@ -163,7 +188,16 @@ for (const width of [80, 140]) {
 			await turn();
 			assert.equal(f.state.selected, "bravo");
 			assert.equal(f.ui.focus.region, "list");
-			click("d ago");
+			// The selected agent's header owns the time control; the list row's age selects instead.
+			const headerTime = (text: string) => {
+				const rendered = lines();
+				const y = rendered.findIndex((line) => line.includes("Done · "));
+				assert.ok(y >= 0, "the selected agent header shows its state");
+				const x = rendered[y]?.lastIndexOf(text) ?? -1;
+				assert.ok(x >= 0, `Missing ${text} in the agent header`);
+				return f.ui.handleMouse(event(x, y, width, 30));
+			};
+			headerTime("d ago");
 			assert.equal(f.state.exactTime, true);
 			const exact = new Date(0).toLocaleString("en-US", {
 				year: "numeric",
@@ -174,8 +208,14 @@ for (const width of [80, 140]) {
 				hour12: true,
 			});
 			assert.ok(lines().join("\n").includes(exact));
-			click(exact);
+			headerTime(exact);
 			assert.equal(f.state.exactTime, false, "a second click on a time switches it back");
+			assert.doesNotMatch(lines().join("\n"), /╭─ To Agent bravo/, "an unfocused empty field stays hidden");
+			f.ui.handleInput("\r");
+			assert.match(lines().join("\n"), /╭─ To Agent bravo/, "Enter shows the empty field");
+			f.ui.handleInput("\x1b");
+			assert.doesNotMatch(lines().join("\n"), /╭─ To Agent bravo/, "Escape hides the empty field");
+			f.ui.handleInput("\r");
 			const field = point(lines(), "╭─ To Agent bravo");
 			assert.equal(f.ui.handleMouse(event(field.x + 3, field.y + 1, width, 30))?.handled, true);
 			assert.equal(f.ui.focus.region, "composer");
@@ -186,12 +226,15 @@ for (const width of [80, 140]) {
 			assert.equal(f.state.exactTime, false);
 			f.ui.handleInput("\x1b");
 			assert.equal(f.ui.focus.region, "list");
+			assert.match(lines().join("\n"), /╭─ To Agent bravo/, "a nonblank draft keeps the field on screen");
 			assert.equal(f.state.agents.get("bravo")?.draft, "draft retained");
 			click("Agent alpha");
 			await turn();
 			assert.equal(f.state.agents.get("alpha")?.draft ?? "", "", "selection never moves a draft between agents");
 			assert.equal(f.state.agents.get("bravo")?.draft, "draft retained");
+			assert.doesNotMatch(lines().join("\n"), /╭─ To Agent alpha/, "an unfocused empty field stays hidden");
 			f.resize(width + 1, 30);
+			f.ui.render(width + 1);
 			assert.equal(
 				f.ui.handleMouse(event(p.x, p.y, width, 30)),
 				undefined,
@@ -245,22 +288,31 @@ for (const width of [80, 140]) {
 }
 
 for (const width of [80, 140]) {
-	it(`two-row roster clicks select the correct agent at ${width}`, async () => {
-		const f = fixture(
-			width,
-			30,
-			source([
-				row("work", { name: "Worker", modifiedAt: 3 }),
-				row("done", { name: "Second worker", state: "working", modifiedAt: 2 }),
-				row("failed", { name: "Failure", state: "failed", error: "quota limit", modifiedAt: 1 }),
-			]),
-		);
+	const title =
+		width >= 100
+			? `clicks within two- and three-row roster entries select the correct agent at ${width}`
+			: `two-row roster clicks select the correct agent at ${width}`;
+	it(title, async () => {
+		const rows =
+			width >= 100
+				? [
+						row("work", { name: "Worker", state: "done", modifiedAt: 3 }),
+						row("done", { name: "Second worker", state: "working", modifiedAt: 2 }),
+						row("failed", { name: "Failure", state: "failed", error: "quota limit", modifiedAt: 1 }),
+					]
+				: [
+						row("work", { name: "Worker", state: "failed", error: "quota limit", modifiedAt: 3 }),
+						row("done", { name: "Second worker", state: "done", modifiedAt: 2 }),
+					];
+		const f = fixture(width, 30, source(rows));
 		try {
 			await turn();
 			// The side list shows all three agents; the 80-column strip shows the newest two.
 			const target = width >= 100 ? { name: "Failure", id: "failed" } : { name: "Second worker", id: "done" };
 			const lines = f.ui.render(width).map(stripVTControlCharacters);
 			const block = point(lines, target.name);
+			if (width < 100)
+				assert.equal(block.y, point(lines, "Worker").y + 2, "the compact strip uses two rows even for a failed agent");
 			assert.equal(
 				f.ui.handleMouse(event(5, block.y + 1, width, 30))?.handled,
 				true,
@@ -275,6 +327,11 @@ for (const width of [80, 140]) {
 				"a click on the name line selects its agent",
 			);
 			assert.equal(f.state.selected, "work");
+			if (width >= 100) {
+				const reason = point(visible(f.ui.render(width)), "quota limit");
+				assert.ok(f.ui.handleMouse(event(reason.x, reason.y, width, 30))?.handled);
+				assert.equal(f.state.selected, "failed", "the third row selects its agent");
+			}
 		} finally {
 			f.ui.dispose();
 		}

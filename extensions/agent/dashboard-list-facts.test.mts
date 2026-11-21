@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { fixture, source, row, turn, deferred } from "./dashboard-test-fixture.mts";
-import type { AgentConversationPage } from "./dashboard-types.ts";
+import { type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui";
 import type { CollaborationPage } from "./collaboration-contract.ts";
+import { deferred, fixture, row, source, turn } from "./dashboard-test-fixture.mts";
+import type { AgentConversationPage } from "./dashboard-types.ts";
 
 const ordinary = "11111111-1111-1111-1111-111111111111";
 const storage = "22222222-2222-2222-2222-222222222222";
@@ -140,7 +140,18 @@ it("the compact strip at 80x24 draws Find and Related/All above the grouped rows
 		reading = false;
 		gate.resolve();
 		for (let attempt = 0; attempt < 8; attempt++) await turn();
-		assert.match(facts(f), /Working 1/u);
+		const settled = facts(f);
+		assert.match(settled, /Working 1/u);
+		assert.match(
+			settled,
+			/● Builder[^\n]*\n[^\n]*test\/model/,
+			"the short strip fits an active agent's name and model",
+		);
+		assert.doesNotMatch(
+			settled,
+			/Responding|↓ 1 more/,
+			"the strip omits the third row instead of hiding the only agent",
+		);
 		const complete = visible(f)[1] ?? "";
 		for (const text of ["/ Find", " Related ", " All "])
 			assert.ok(complete.includes(text), `${text} is drawn after the read`);

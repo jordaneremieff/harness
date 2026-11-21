@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
-import { createAgentCommand } from "./command.ts";
-import register from "./index.ts";
-import { AgentDashboard } from "./dashboard.ts";
-import { source, theme, keys } from "./dashboard-test-fixture.mts";
 import type { TUI } from "@earendil-works/pi-tui";
+import { createAgentCommand } from "./command.ts";
+import { AgentDashboard } from "./dashboard.ts";
+import { keys, source, theme } from "./dashboard-test-fixture.mts";
+import register from "./index.ts";
+
 it("/agent mounts one dashboard, not a primary projection, and releases the open guard", {
 	timeout: 5000,
 }, async () => {
@@ -33,7 +34,8 @@ it("/agent mounts one dashboard, not a primary projection, and releases the open
 		cwd: "/work",
 		sessionManager: { getSessionId: () => "shortcut-primary" },
 		ui: {
-			custom: async (factory: (...args: unknown[]) => AgentDashboard) => {
+			custom: async (factory: (...args: unknown[]) => AgentDashboard, options?: unknown) => {
+				assert.equal(options, undefined, "the dashboard replaces the editor instead of opening an overlay");
 				opens++;
 				await new Promise<void>((resolve) => {
 					done = resolve;
@@ -57,6 +59,9 @@ it("/agent mounts one dashboard, not a primary projection, and releases the open
 	await mounting;
 	assert.ok(ui instanceof AgentDashboard);
 	assert.equal(ui.focus.region, "list");
+	assert.equal(ui.render(80).length, 14, "the dashboard leaves room for the primary transcript");
+	ui.handleInput("z");
+	assert.equal(ui.render(80).length, 20);
 	await command.openDashboard(ctx);
 	assert.equal(opens, 1);
 	done();

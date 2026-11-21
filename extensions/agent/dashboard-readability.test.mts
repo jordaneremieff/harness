@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
-import { it } from "node:test";
-import { fixture, source, row, turn, conversationFrame, page, theme, deferred } from "./dashboard-test-fixture.mts";
-import { rosterLines, argumentSummary, activityOf, sessionAppearance } from "./dashboard-roster.ts";
-import { dashboardGeometry } from "./dashboard-layout.ts";
-import { AgentManager } from "./manager.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
+import { dashboardGeometry } from "./dashboard-layout.ts";
+import { activityOf, argumentSummary, rosterLines, sessionAppearance } from "./dashboard-roster.ts";
+import { conversationFrame, deferred, fixture, page, row, source, theme, turn } from "./dashboard-test-fixture.mts";
+import { AgentManager } from "./manager.ts";
 
 /** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
 const visible = (lines: string[]) =>
@@ -22,7 +22,7 @@ it("activity summarizes string arguments without raw JSON, including published p
 	assert.equal(activityOf(agent), "any_tool review the notes");
 	assert.doesNotMatch(activityOf(agent), /[{}]/);
 });
-it("roster rows show only the name, state mark and model with its thinking level", () => {
+it("working roster rows show identity, model, cost and current activity without the handle", () => {
 	const agent = row("worker", {
 		name: "Research",
 		modifiedAt: 0,
@@ -36,21 +36,24 @@ it("roster rows show only the name, state mark and model with its thinking level
 			updatedAt: 0,
 		},
 	});
-	const text = rosterLines([agent], agent.id, 64, 12, 15 * 60000, theme).join("\n");
-	for (const fact of ["Research", "●", "test/model [high]"]) assert.ok(text.includes(fact), fact);
-	assert.doesNotMatch(text, /@research · Research|read notes.md|\$0.42|15m ago/);
+	const lines = rosterLines([agent], agent.id, 64, 12, 15 * 60000, theme);
+	assert.match(lines[1] ?? "", /● Research/);
+	assert.match(lines[2] ?? "", /test\/model \[high\].*~\$0\.42/);
+	assert.match(lines[3] ?? "", /read notes\.md/);
+	assert.doesNotMatch(lines.join("\n"), /@research · Research|15m ago/);
 	assert.ok(dashboardGeometry(160, 45, 3).rosterWidth <= 60);
 	const compact = rosterLines(
 		[row("worker", { name: "Work", currentTool: { name: "read", argument: "file" } })],
 		"worker",
 		100,
-		4,
+		5,
 		0,
 		theme,
 	).join("\n");
 	assert.match(compact, /Work/);
 	assert.match(compact, /test\/model \[high\]/);
-	assert.doesNotMatch(compact, /read file|just now|\$/);
+	assert.match(compact, /read file/);
+	assert.doesNotMatch(compact, /just now/);
 });
 it("selected status uses the same state labels as the roster", async () => {
 	for (const state of Object.keys(sessionAppearance) as Array<keyof typeof sessionAppearance>) {
@@ -91,10 +94,11 @@ for (const [width, skipped] of [
 			const wide = width >= 100;
 			const paneX = wide ? (lines[1]?.indexOf("│") ?? 0) + 1 : 0;
 			const headerY = wide ? 1 : 9;
-			const header = lines.slice(headerY, headerY + 2).map((line) => line.slice(paneX));
+			const header = lines.slice(headerY, headerY + 3).map((line) => line.slice(paneX));
 			assert.doesNotMatch(header.join("\n"), /coverage|unreadable|omitted|incomplete/i);
 			assert.match(header[0] ?? "", /^ 0 +● Working\s*$/u, "the name is left-aligned and the state is right-aligned");
-			assert.equal((header[1] ?? "").trim(), "", "one blank row follows the header");
+			assert.match(header[1] ?? "", /test\/model.*~\$0\.42.*\/work/);
+			assert.equal((header[2] ?? "").trim(), "", "one blank row follows the header");
 			assert.doesNotMatch(header[0] ?? "", /work|ago|\$/u);
 			const roster = wide ? lines.slice(1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 9);
 			assert.doesNotMatch(roster.join("\n"), /unreadable|omitted|incomplete/, "storage coverage stays in Details");
@@ -157,10 +161,11 @@ it("live usage sits under the target header and receipts stay on the message fie
 		const state = f.state.agents.get("one");
 		assert.ok(state);
 		state.receipt = "Message admitted";
+		f.ui.handleInput("\r");
 		const lines = visible(f.ui.render(160));
 		assert.match(lines[0] ?? "", /agents: 1\/1 active · ~\$0\.42/, "session figures sit in the heading");
 		assert.doesNotMatch(lines[0] ?? "", /Close/u, "the heading holds no commands");
-		assert.match((lines.at(-1) ?? "").trimEnd(), /esc close$/u, "the way out is the last footer control");
+		assert.match((lines.at(-1) ?? "").trimEnd(), /esc done$/u, "the way out is the last footer control");
 		const paneX = (lines[1]?.indexOf("│") ?? 0) + 1;
 		const pane = lines.slice(1).map((line) => line.slice(paneX));
 		assert.doesNotMatch(
@@ -168,11 +173,8 @@ it("live usage sits under the target header and receipts stay on the message fie
 			/LIVE|RETAINED|Earlier messages available|Roster|Message admitted/,
 		);
 		assert.match(pane[0] ?? "", /^ one +● Working\s*$/u);
-		assert.equal(pane[1]?.trim(), "");
-		const model = pane.findIndex((line) => /test\/model \[high\]/.test(line));
-		assert.ok(model > 0);
-		assert.match(pane[model] ?? "", /16%.*160\/1\.0k.*~\$0\.42.*21% hit/);
-		assert.match(pane[model + 1] ?? "", /\/work/);
+		assert.match(pane[1] ?? "", /test\/model \[high\].*16%.*160\/1\.0k.*~\$0\.42.*21% hit.*\/work/);
+		assert.equal(pane[2]?.trim(), "");
 		const caption = lines.find((line) => line.includes("╭─ To one"));
 		assert.match(caption ?? "", /╭─ To one/);
 		assert.doesNotMatch(caption ?? "", /Correction at next step|New message/);
