@@ -11,9 +11,10 @@ description: >
   on delegated work. Do not use for agent tool arguments, delivery or recovery
   rules, which the tool definitions and the Agent extension own.
 compatibility: >
-  Pi-specific. Uses the Agent extension's tools (agent_spawn, agent_send,
-  agent_status, agent_yield, agent_profile, agent_compact), the history
-  extension's history_search, and a worker tool when the session offers one.
+  Pi-specific. Uses the Agent extension's tools (agent_brief, agent_spawn,
+  agent_send, agent_status, agent_yield, agent_profile, agent_compact), the
+  history extension's history_search, and a worker tool when the session
+  offers one.
   Package-root references: `extensions/agent/README.md` for tool contracts and
   `extensions/agent/codemode.md` for codemode recipes.
 ---
@@ -166,12 +167,14 @@ machine.
   with named sources, the exact files it may change, checks and a checkable
   end condition. Keep decisions that depend on this conversation, and work
   that needs your access, out of it.
-- **Durable agent** (`agent_spawn`): work that needs judgment, a full
-  session's tools, a long run or later corrections. Choose the preset for the
-  work. Reuse an existing `@handle` expert when its expertise fits. Use a new
-  agent for unrelated work, independent review or conflicting ownership.
-- **Same agent** (`agent_send`): corrections, repairs and further work in an
-  area that agent owns.
+- **Durable agent** (`agent_brief`, or `agent_spawn` with a short prompt):
+  work that needs judgment, a full session's tools, a long run or later
+  corrections. Choose the preset for the work. Reuse an existing `@handle`
+  expert when its expertise fits. Use a new agent for unrelated work,
+  independent review or conflicting ownership.
+- **Same agent** (`agent_brief` with its `sessionId` for a new task,
+  `agent_send` for a short follow-up or a correction): repairs and further
+  work in an area that agent owns.
 - **Parallel agents**: only independent parts, each with its own files,
   branch or worktree. Two agents never edit one area.
 - **You**: only what the mode keeps.
@@ -181,22 +184,30 @@ recipes in `extensions/agent/codemode.md`.
 
 ## Brief the work
 
-The agent sees only the brief, not this conversation. Give it:
+The agent sees only the brief, not this conversation. Brief a task with
+`agent_brief`: it takes the brief as fields, checks them, renders one standard
+brief, and creates or reaches the agent in the same call. A short follow-up, a
+report or a correction stays an `agent_send` or `agent_steer` message. Fill
+the fields:
 
-1. **Objective**: one bounded outcome.
-2. **Purpose**: why the work matters and which decision the result feeds.
-3. **Sources**: exact paths, commits, URLs, and what each one establishes.
+1. `objective`: one bounded outcome.
+2. `purpose`: why the work matters and which decision the result feeds.
+3. `sources`: exact paths, commits, URLs, and what each one establishes.
    Point to files instead of pasting long material; what you paste also stays
    in your own context.
-4. **Authority**: each operator decision you carry, quoted, with its source
-   and scope. Mark your own proposals and interpretations as yours.
-5. **Boundaries**: what it may change, what it must not touch (such as another
-   session's uncommitted work), and acts it must not do (such as push, delete
-   or activate).
-6. **Checks**: the commands that establish the result, with time limits.
-7. **End condition**: the observable state that ends the task.
-8. **Result**: what the final message contains, and that the final message is
-   the complete result.
+4. `operator`: each operator decision you carry, quoted, with its source and
+   scope. Your own proposals and interpretations go in the other fields.
+5. `permitted` and `restrictions`: what the agent may change, what it must not
+   touch (such as another session's uncommitted work), and acts it must not do
+   (such as push, delete or activate).
+6. `checks`: the commands that establish the result, with time limits.
+7. `endCondition`: the observable state that ends the task.
+8. `result`: what the final message contains.
+
+Set `kind` when the work is not a bounded task: `lead` for ownership of a
+composed outcome, `review` for an independent judgment, `partner` for a shared
+inquiry, `handoff` to continue existing work. In codemode, keep the fields
+that several briefs share in one object and spread it into each call.
 
 Shape the requested result by the mode:
 
@@ -207,9 +218,9 @@ Shape the requested result by the mode:
 - maker: the actionable detail for the part that you integrate.
 
 Before you send a brief, test it: could the agent judge its own result with
-only this brief? If not, add the missing criterion, dependency or source. For
-fixed structures (a lead, a review, a handoff or a thread frame), read
-[briefs.md](references/briefs.md).
+only this brief? If not, add the missing criterion, dependency or source. A
+thread frame needs no brief: `agent_collaborate` create takes its purpose,
+authority, source, restrictions, acceptance and integrator as fields.
 
 ## Supervise without polling
 
