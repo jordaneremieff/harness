@@ -1,5 +1,6 @@
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
+import { renderBrief } from "./brief.ts";
 
 export const targetId = "12345678-1234-1234-1234-123456789abc";
 export const forkId = `${targetId}:2`;
@@ -46,12 +47,22 @@ export interface CardFixture {
 	args: Record<string, unknown>;
 	details: unknown;
 }
+const briefInput = {
+	name: "Parser review",
+	objective: "Review the parser.",
+	endCondition: "Stop after review.",
+	result: "List findings.",
+};
 export const fixtures: Record<string, CardFixture> = {
 	agent_send: { args: { sessionId: targetId, message: "Review the parser.\nCheck edge cases." }, details: admission },
 	agent_steer: { args: { sessionId: targetId, message: "Review the parser.\nCheck edge cases." }, details: admission },
 	agent_spawn: {
 		args: { name: "Parser review", prompt: "Review the parser." },
 		details: { sessionId: targetId, status: snapshot, admission },
+	},
+	agent_brief: {
+		args: briefInput,
+		details: { sessionId: targetId, status: snapshot, admission, brief: renderBrief(briefInput).brief },
 	},
 	agent_attach: { args: { sessionId: targetId }, details: { sessionId: targetId, status: snapshot } },
 	agent_place: { args: { area: "/work", topic: "Parser review" }, details: { sessionId: targetId, status: snapshot } },

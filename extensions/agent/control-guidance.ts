@@ -10,6 +10,7 @@
 /** Control names in prompt order. */
 export const AGENT_CONTROL_TOOL_NAMES = [
 	"agent_spawn",
+	"agent_brief",
 	"agent_send",
 	"agent_steer",
 	"agent_abort",
@@ -41,6 +42,7 @@ export type AgentControlExposure = "direct" | "deferred" | "model-only";
 /** The Agent slice owns the exposure of every control it registers. */
 export const AGENT_CONTROL_EXPOSURE: Readonly<Record<AgentControlToolName, AgentControlExposure>> = {
 	agent_abort: "direct",
+	agent_brief: "direct",
 	agent_attach: "deferred",
 	agent_collaborate: "direct",
 	agent_command: "deferred",
@@ -119,10 +121,18 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 			EXECUTION_PRESET_GUIDANCE,
 			"If you choose to delegate a recurring concern, look for a suitable existing @handle. Reuse it when its expertise and context serve the task. Spawn with handle resolves or creates one independent root and never reapplies creation defaults on reuse. Display names may repeat; targets accept @handle or canonical identity, not bare names.",
 			"An explicit creation role is saved on the new agent's profile with or without a handle. Inside a Durable agent, spawning without a handle in the same cwd creates a conversation in your storage; a different cwd creates a storage with its own host. The receipt states placement. Created conversations use the resolved machine preset or explicit execution values, not your model or thinking level; their selected controls permit further delegation. Created agents remain addressable to the operator and eligible for the bounded /agent roster.",
-			"Write each agent task as a contract: objective, output format, source guidance, and boundaries. Include purpose, acceptance, and an end condition. In assignments, corrections, and relayed decisions, carry each operator decision with its source, scope, and restrictions, and mark which choices are your own.",
+			"Brief each substantial task with agent_brief, which creates the agent and checks the brief; a prompt suits a short instruction. In corrections and relayed decisions, carry each operator decision with its source, scope, and restrictions, and mark which choices are your own.",
 			CHECK_IN_GUIDANCE,
 			"Agent work runs in the background. Each task's answer reports to its request's reply recipient automatically. Settlement is execution evidence, not task acceptance. Integrate the delegated results required by this request before claiming completion; a spawn or send receipt is not that result. Resolve live work for this request: continue useful work, redirect changed work, or abort superseded work. Do not stop unrelated, standing, or background agents merely to finish this request.",
 			OPEN_WORK_GUIDANCE,
+		],
+	},
+	agent_brief: {
+		snippet: "Brief an agent with a checked, standard task brief",
+		guidelines: [
+			"Use agent_brief to assign work that needs more than a short instruction: a new agent's task, or new work for an existing agent. It creates or reaches the agent in the same call. Use agent_send for short follow-ups and reports, and agent_steer for corrections.",
+			"Fill the fields instead of writing the layout. objective, endCondition and result are required; the agent must be able to judge its own result with only the brief. Quote each operator decision you carry in operator with its source and scope; everything else in the brief is your direction. Point to files in sources instead of pasting long material; the tool refuses a brief whose named source paths do not exist.",
+			"In codemode, keep fields that several briefs share in one object and spread it into each agent_brief call. preview renders and checks a brief without sending it.",
 		],
 	},
 	agent_send: {

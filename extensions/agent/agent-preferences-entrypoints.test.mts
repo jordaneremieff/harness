@@ -28,6 +28,8 @@ import { HOST_CONTRACT, MANAGER_CONTRACT, CONTROL_BINDING_CONTRACT } from "./ver
 import { acquireHost, waitForHostRelease, type HostConnection } from "./host-client.ts";
 import { runtimeFixture, trackHost } from "./durable-runtime-fixture.mts";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
+import { renderBrief } from "./brief.ts";
+import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 
 type RegisteredTool = {
 	name: string;
@@ -63,9 +65,10 @@ it("ordinary and native callers share machine preferences and receive advisory s
 		rmSync(directory, { recursive: true, force: true });
 	});
 	const seen: Array<{ method: string; input: unknown }> = [];
+	const receipt = { result: { sessionId: "target", submissionId: 7, requestId: "test:7" }, placement: "placed" };
 	manager.spawn = async (input) => {
 		seen.push({ method: "spawn", input });
-		return {};
+		return receipt;
 	};
 	manager.place = async (input) => {
 		seen.push({ method: "place", input });
@@ -73,7 +76,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	};
 	manager.control = async (method, input) => {
 		seen.push({ method, input });
-		return {};
+		return method === "submit" ? receipt : {};
 	};
 	const tools = new Map<string, RegisteredTool>();
 	const entries: Array<{ type: "custom"; customType: string; data: unknown }> = [];
@@ -164,6 +167,96 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	const admitted = seen.at(-1);
 	assert.ok(admitted);
 	const ordinarySnapshot = (admitted.input as { preferenceSnapshot: PreferenceSnapshot }).preferenceSnapshot;
+	await t.test("checks and dispatches ordinary briefs with retained preset admission", async () => {
+		const brief = tools.get("agent_brief");
+		assert.ok(brief);
+		const fields = { objective: "Review the source.", endCondition: "Stop after review.", result: "List findings." };
+		const briefCall = (id: string, input: Record<string, unknown>) =>
+			brief.execute(id, { ...fields, ...input }, undefined, undefined, ctx) as Promise<AgentToolResult>;
+		const props = (schema: Schema) => schema.properties as Record<string, Schema>;
+		for (const field of [
+			"handle",
+			"preset",
+			"role",
+			"cwd",
+			"name",
+			"model",
+			"thinkingLevel",
+			"trust",
+			"checkInMinutes",
+		]) {
+			assert.deepEqual(props(brief.parameters)[field], props(tools.get("agent_spawn")?.parameters ?? {})[field], field);
+		}
+		assert.equal(matchesSchema(brief.parameters, { objective: "Incomplete" }), false);
+		assert.equal(matchesSchema(brief.parameters, { ...fields, preset: "review", sources: ["harness.json"] }), true);
+		const created = await briefCall("brief-create", { preset: "review", sources: ["harness.json"], trust: true });
+		const expected = renderBrief({ ...fields, sources: ["harness.json"] });
+		assert.deepEqual(created.details, { ...receipt, brief: expected.brief });
+		assert.deepEqual(created.structuredContent, created.details);
+		assert.doesNotMatch(JSON.stringify(created.content), /Review the source/u);
+		const briefSpawn = seen.at(-1);
+		assert.ok(briefSpawn);
+		assert.equal(briefSpawn.method, "spawn");
+		const { preferenceSnapshot, ...dispatchedInput } = briefSpawn.input as Record<string, unknown> & {
+			preferenceSnapshot: PreferenceSnapshot;
+		};
+		assert.equal(preferenceSnapshot.source.digest, ordinarySnapshot.source.digest);
+		assert.equal(preferenceSnapshot.source.path, ordinarySnapshot.source.path);
+		assert.deepEqual(preferenceSnapshot.document, ordinarySnapshot.document);
+		assert.deepEqual(dispatchedInput, {
+			preset: "review",
+			trust: true,
+			prompt: expected.text,
+			origin: "model",
+			requestId: "spawn:primary:brief-create",
+		});
+		for (const [mode, interval] of [
+			[undefined, undefined],
+			["steer", undefined],
+			["steer", 2],
+		] as const) {
+			const dispatched = await briefCall(`reach-${mode}-${interval}`, {
+				sessionId: "@target",
+				mode,
+				checkInMinutes: interval,
+			});
+			assert.deepEqual(dispatched.details, { ...receipt, brief: renderBrief(fields).brief });
+			const submission = seen.at(-1);
+			assert.ok(submission);
+			assert.equal(submission.method, "submit");
+			assert.equal((submission.input as Record<string, unknown>).message, renderBrief(fields).text);
+			assert.equal((submission.input as Record<string, unknown>).whenBusy, mode ?? "followUp");
+			if (interval !== undefined) assert.equal((submission.input as Record<string, unknown>).checkInMinutes, interval);
+			else if (mode === "steer") assert.equal(Object.hasOwn(submission.input as object, "checkInMinutes"), false);
+		}
+		const beforePreview = { calls: seen.length, entries: entries.length };
+		const missing = `Source path does not exist: missing.ts (resolved ${join(directory, "missing.ts")})`;
+		const unplaced = await briefCall("preview", {
+			preview: true,
+			mode: "steer",
+			objective: " ",
+			sources: ["missing.ts"],
+		});
+		const previewBrief = renderBrief({ ...fields, objective: " ", sources: ["missing.ts"] });
+		assert.deepEqual(unplaced.details, {
+			preview: true,
+			brief: { ...previewBrief.brief, text: previewBrief.text },
+			problems: ["mode requires sessionId.", "objective must not be blank.", missing],
+		});
+		assert.deepEqual(unplaced.content, [
+			{
+				type: "text",
+				text: `${previewBrief.text}\n\nNothing was sent.\nmode requires sessionId.\nobjective must not be blank.\n${missing}`,
+			},
+		]);
+		await assert.rejects(briefCall("missing", { sources: ["missing.ts"] }), {
+			message: `${missing}\nCorrect each path, or move a path that does not exist yet from sources into context.`,
+		});
+		await assert.rejects(briefCall("conflict", { sessionId: "@target", preset: "review" }), {
+			message: "sessionId cannot be combined with creation fields: preset.",
+		});
+		assert.deepEqual({ calls: seen.length, entries: entries.length }, beforePreview);
+	});
 	const models = createModels();
 	const primaryProvider = fauxProvider({ provider: "acme", models: [{ id: "model-x" }] });
 	const otherProvider = fauxProvider({ provider: "other", models: [{ id: "model-y" }] });

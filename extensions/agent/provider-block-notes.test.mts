@@ -125,10 +125,12 @@ it("adds the receipt sentence only to model-choice tools whose outcome names a n
 	const notes = new ProviderBlockNotes();
 	notes.observe({ providerBlock: block("alpha", "a-1", NOW - 60_000) });
 	const outcome = { sessionId: "s", status: { agent: { model: { provider: "alpha", modelId: "a-2" } } } };
-	const spawned: Array<{ type: string; text?: string }> = [{ type: "text", text: "{}" }];
-	appendProviderBlockReceipt("agent_spawn", spawned, outcome, notes, NOW);
-	assert.equal(spawned.length, 2);
-	assert.match(String(spawned[1].text), /^Earlier provider refusal for the selected provider/);
+	for (const tool of ["agent_spawn", "agent_brief"]) {
+		const spawned: Array<{ type: string; text?: string }> = [{ type: "text", text: "{}" }];
+		appendProviderBlockReceipt(tool, spawned, outcome, notes, NOW);
+		assert.equal(spawned.length, 2);
+		assert.match(String(spawned[1].text), /^Earlier provider refusal for the selected provider/);
+	}
 	const status: Array<{ type: string }> = [{ type: "text" }];
 	appendProviderBlockReceipt("agent_status", status, outcome, notes, NOW);
 	assert.equal(status.length, 1, "observation tools carry no receipt sentence");

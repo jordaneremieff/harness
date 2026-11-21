@@ -985,6 +985,7 @@ it("declares direct controls, defers infrequent ones, and discovers a deferred c
 	const first = declaredTools(f.requests[0]);
 	for (const name of [
 		"agent_spawn",
+		"agent_brief",
 		"agent_send",
 		"agent_steer",
 		"agent_abort",

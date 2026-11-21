@@ -74,7 +74,18 @@ import { prepareAdmittedCapture } from "./communication-retention.ts";
 import { taskInputSender, type TaskInputSender } from "./task-senders.ts";
 import { targetIdentity } from "./identity.ts";
 import { admittedResult, dispatchFacts } from "./result-reference.ts";
-import { DispatchOutputSchema, type ResultReference } from "./result-schema.ts";
+import { BriefOutputSchema, DispatchOutputSchema, type ResultReference } from "./result-schema.ts";
+import {
+	BRIEF_DESCRIPTION,
+	briefCreationInput,
+	briefInputProblems,
+	briefParameters,
+	briefPreview,
+	briefPreviewText,
+	briefRefusal,
+	briefSourceProblems,
+	renderBrief,
+} from "./brief.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { CollaborationParams } from "./collaboration-contract.ts";
 import { controlText, readableControlText, projectReportReceipt } from "./control-result.ts";
@@ -397,28 +408,31 @@ const CheckInParams = opt(
 	}),
 );
 
+const SpawnFields = {
+	handle: opt(HandleSchema),
+	preset: PresetParameter,
+	role: opt(
+		str({
+			maxLength: 2000,
+			description:
+				"Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.",
+		}),
+	),
+	name: opt(str({ description: "Display name for the agent. Names may repeat." })),
+	cwd: opt(str({ description: "Working directory for the agent. Default: inherited from the creating conversation." })),
+	model: opt(str({ minLength: 3, description: MODEL_SELECTION_GUIDANCE })),
+	thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
+};
 const SpawnParams = obj(
 	{
-		handle: opt(HandleSchema),
-		preset: PresetParameter,
-		role: opt(
-			str({
-				maxLength: 2000,
-				description:
-					"Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.",
-			}),
-		),
+		...SpawnFields,
 		prompt: opt(str({ description: "Initial assignment for the agent. Without one the agent stays idle." })),
-		name: opt(str({ description: "Display name for the agent. Names may repeat." })),
-		cwd: opt(
-			str({ description: "Working directory for the agent. Default: inherited from the creating conversation." }),
-		),
-		model: opt(str({ minLength: 3, description: MODEL_SELECTION_GUIDANCE })),
-		thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
 		checkInMinutes: CheckInParams,
 	},
 	{},
 );
+const BriefParams = briefParameters(SpawnFields, CheckInParams);
+const spawnCreationKeys = Object.keys(SpawnFields);
 
 const SendParams = obj(
 	{
@@ -724,7 +738,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const effortResources: EffortReadResources | undefined =
 		effortCatalog === undefined ? undefined : { catalog: effortCatalog, locations };
 	const registrationPreferences = readAgentPreferences(host.agentDir, host.services.modelRuntime);
-	const presetParams = <T extends typeof SpawnParams | typeof ConfigureParams | typeof PlaceParams>(params: T): T => ({
+	const presetParams = <
+		T extends typeof SpawnParams | typeof BriefParams | typeof ConfigureParams | typeof PlaceParams,
+	>(
+		params: T,
+	): T => ({
 		...params,
 		properties: {
 			...(params.properties as Record<string, Schema>),
@@ -1658,7 +1676,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	};
 
 	const spawnTool = {
-		...durable.defineTool({
+		...durable.defineTool<typeof SpawnParams, ControlDetails>({
 			name: "agent_spawn",
 			description:
 				"Create an agent conversation. The same cwd uses an owned conversation in this storage; a different cwd starts an agent in a new storage. Answers report back to you. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool; steering does not interrupt a running tool. Names may repeat.",
@@ -1880,7 +1898,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return scheduled;
 	};
 
-	const sendTool = durable.defineTool({
+	const sendTool = durable.defineTool<typeof SendParams, ControlDetails>({
 		name: "agent_send",
 		description: `Send a message to an agent conversation. A busy conversation receives it at its next tool boundary, the end of its current tool round; mode is the class of the message, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Reports request attention by default. For progress that asks for no action, set mode:'report',passive:true. Passive reports enter context at the next result or normal boundary. They do not wake the recipient. Keep questions, blockers, corrections and capacity interventions active. Send explicit instructions as followUp or steer, not passive reports. Task answers report back to you. With deliverAt, schedule the input instead of admitting it now. Owner check-ins for an unanswered task run only when checkInMinutes, or the configured agent.checkInMinutes setting, names an interval; the default is 0. At a check-in, assess progress, let work continue, steer a wrap-up, or abort a hung tool.`,
 		parameters: SendParams,
@@ -1917,7 +1935,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		},
 	});
 
-	const steerTool = durable.defineTool({
+	const steerTool = durable.defineTool<typeof SteerParams, ControlDetails>({
 		name: "agent_steer",
 		description:
 			"Redirect a live agent conversation. The message is placed at its next tool boundary, the end of its current tool round, and corrects its current work; the answer reports back to you.",
@@ -1925,6 +1943,51 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		replay: "safe",
 		execute: async (args: SteerInput, api, context) =>
 			sendTarget(api, context, args.sessionId, args.message, "steer", args.replyTo),
+	});
+
+	const dispatchBrief = (
+		args: Static<typeof BriefParams>,
+		message: string,
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
+	) => {
+		if (args.sessionId === undefined) {
+			return spawnTool.execute(
+				{
+					...briefCreationInput(args, spawnCreationKeys),
+					prompt: message,
+					...(args.checkInMinutes === undefined ? {} : { checkInMinutes: args.checkInMinutes }),
+				},
+				api,
+				context,
+			);
+		}
+		const target = { sessionId: args.sessionId, message };
+		if (args.mode === "steer" && args.checkInMinutes === undefined) return steerTool.execute(target, api, context);
+		return sendTool.execute({ ...target, mode: args.mode, checkInMinutes: args.checkInMinutes }, api, context);
+	};
+	const briefTool = durable.defineTool<typeof BriefParams, ControlDetails>({
+		name: "agent_brief",
+		description: BRIEF_DESCRIPTION,
+		parameters: presetParams(BriefParams),
+		replay: "safe",
+		execute: async (args: Static<typeof BriefParams>, api, context) => {
+			const inputProblems = briefInputProblems(args, spawnCreationKeys);
+			const sourceProblems =
+				(await api.memo<string[]>("brief-source-problems", context)) ??
+				(await api.memo("brief-source-problems", briefSourceProblems(args, host.cwd), context));
+			const rendered = renderBrief(args);
+			if (args.preview === true) {
+				const preview = briefPreview(rendered, [...inputProblems, ...sourceProblems]);
+				return textResult(briefPreviewText(preview), { ...preview });
+			}
+			if (inputProblems.length || sourceProblems.length)
+				return errorResult(briefRefusal(inputProblems, sourceProblems));
+
+			const receipt = await dispatchBrief(args, rendered.text, api, context);
+			if (receipt.sleep !== undefined || receipt.wait !== undefined) return receipt;
+			return { ...receipt, details: { ...receipt.details, brief: rendered.brief } };
+		},
 	});
 
 	/**
@@ -2656,6 +2719,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		sections: [guidance, efforts, preferences, providerBlocks],
 		tools: [
 			structuredControl(spawnTool, DispatchOutputSchema),
+			structuredControl(briefTool, BriefOutputSchema),
 			structuredControl(workTool, AgentWorkOutputSchema),
 			profileTool,
 			intentTool,

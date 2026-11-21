@@ -31,13 +31,13 @@ function receipt(session: SessionManager, toolName: string, details: JsonValue, 
 
 test("restores successful retained dispatches across branches and custom markers after disk reopen", (t) => {
 	const { session, root, user } = fixture(t);
-	for (const [index, tool] of ["agent_send", "agent_steer", "agent_spawn", "agent_place"].entries()) {
+	for (const [index, tool] of ["agent_send", "agent_steer", "agent_spawn", "agent_place", "agent_brief"].entries()) {
 		receipt(session, tool, {
 			result: { sessionId: `${storage}:${index + 2}`, submissionId: index + 1, requestId: `request-${index}` },
 		});
 	}
-	receipt(session, "agent_rewind", { identity: `${storage}:6`, submissionId: 9 });
-	receipt(session, "agent_send", { identity: `${storage}:7`, timerId: 3 });
+	receipt(session, "agent_rewind", { identity: `${storage}:7`, submissionId: 9 });
+	receipt(session, "agent_send", { identity: `${storage}:8`, timerId: 3 });
 	session.branch(user);
 	session.appendCustomEntry(SENT_WORK_ENTRY, { sessionId: `${storage}:1` });
 	session.appendCustomEntry(SENT_WORK_ENTRY, { sessionId: `${storage}:2` });
@@ -50,7 +50,7 @@ test("restores successful retained dispatches across branches and custom markers
 	);
 	assert.deepEqual(
 		[...retainedSentWork(reopened.getEntries())].sort(),
-		[storage, ...Array.from({ length: 6 }, (_, index) => `${storage}:${index + 2}`)].sort(),
+		[storage, ...Array.from({ length: 7 }, (_, index) => `${storage}:${index + 2}`)].sort(),
 	);
 });
 
@@ -61,6 +61,8 @@ test("ignores failure, report, idle creation, attachment, observations, and malf
 	for (const tool of ["agent_status", "agent_profile", "agent_attach", "unrelated"]) receipt(session, tool, result);
 	receipt(session, "agent_send", { admitted: true, sourceId: "report" });
 	receipt(session, "agent_spawn", { sessionId: storage });
+	receipt(session, "agent_brief", { preview: true, brief: { kind: "task" }, problems: [] });
+	receipt(session, "agent_brief", result, true);
 	receipt(session, "agent_place", { sessionId: storage });
 	for (const value of [null, "@handle", `${storage}:0`, `${storage}:9007199254740992`, "other", `${storage}:2:3`]) {
 		session.appendCustomEntry(SENT_WORK_ENTRY, { sessionId: value });

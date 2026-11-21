@@ -80,6 +80,8 @@ import { fixtureRegistry } from "./durable-host-fixture.mts";
 import { ContinuityDoc } from "./continuity-native.ts";
 import { NATIVE_COMPACTION_SEED, REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
 import { modelFailureText } from "./provider-block-facts.ts";
+import { renderBrief } from "./brief.ts";
+import type { ResultReference } from "./result-schema.ts";
 
 const context = BACKGROUND_CONTEXT;
 const storageId = "test-storage";
@@ -133,6 +135,7 @@ const TestChildren = Durable.defineDoc<ChildrenState>({
 const CONTROL_TOOLS = [
 	"agent_abort",
 	"agent_attach",
+	"agent_brief",
 	"agent_collaborate",
 	"agent_command",
 	"agent_compact",
@@ -155,6 +158,7 @@ const CONTROL_TOOLS = [
 const REPLAY_CLASSIFICATION: Record<string, string> = {
 	agent_collaborate: "safe",
 	agent_spawn: "safe",
+	agent_brief: "safe",
 	agent_send: "safe",
 	agent_steer: "safe",
 	agent_fork: "safe",
@@ -664,6 +668,128 @@ it("declares every control tool with an explicit replay classification", () => {
 	});
 	assert.equal(contribution.name, "agent");
 	assert.equal(contribution.source, "/abs/extensions/agent/index.ts");
+});
+
+it("dispatches a checked brief through native spawn and send, and retains its source decision on replay", async (t) => {
+	const route = createRoute();
+	const { extension } = buildRegistry();
+	const registry = Durable.createRegistry();
+	const source = join(testCwd, "brief-source.md");
+	writeFileSync(source, "Reference");
+	t.after(() => rmSync(source, { force: true }));
+	const spawn = extension.tools?.find((tool) => tool.name === "agent_spawn");
+	const brief = extension.tools?.find((tool) => tool.name === "agent_brief");
+	assert.ok(brief && spawn);
+	const properties = (tool: typeof brief) => (tool.parameters as { properties: Record<string, unknown> }).properties;
+	for (const field of ["handle", "preset", "role", "cwd", "name", "model", "thinkingLevel", "checkInMinutes"]) {
+		assert.deepEqual(properties(brief)[field], properties(spawn)[field], field);
+	}
+	assert.equal(properties(brief).trust, undefined);
+	let replayChecked = false;
+	registry.install({
+		...extension,
+		tools: extension.tools?.map((tool) =>
+			tool.name !== "agent_brief"
+				? tool
+				: {
+						...tool,
+						async execute(args, api, ctx) {
+							const first = await tool.execute(args, api, ctx);
+							if ((args as { name?: string }).name !== "brief-child") return first;
+							assert.equal(first.isError, undefined);
+							rmSync(source);
+							const replay = await tool.execute(args, api, ctx);
+							assert.equal(replay.isError, undefined, "replay keeps the first path decision after the file disappears");
+							assert.deepEqual(
+								(replay.details as { result: ResultReference }).result,
+								(first.details as { result: ResultReference }).result,
+							);
+							assert.deepEqual(replay.structuredOutput, replay.details);
+							replayChecked = true;
+							return replay;
+						},
+					},
+		),
+	});
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	const call = async (args: Durable.JsonObject) => {
+		route.script.push({ tool: "agent_brief", args });
+		await say(root, "Dispatch a structured brief");
+		await settle(harness, root.id);
+		const outcome = (await toolOutcomes(harness, root.id)).find((result) => result.name === "agent_brief");
+		assert.ok(outcome);
+		return outcome;
+	};
+	const base = { endCondition: "Stop after the reply.", result: "Reply once." };
+	const initial = {
+		...base,
+		objective: "CONTRACT: reply INITIAL",
+		sources: ["brief-source.md"],
+		name: "brief-child",
+		preset: "standard",
+	};
+	const spawned = await call(initial);
+	assert.ok(replayChecked);
+	assert.equal(spawned.isError, false);
+	assert.match(spawned.text, /Reused the agent created by this call/u);
+	assert.doesNotMatch(spawned.text, /CONTRACT: reply INITIAL/u);
+	const childList = (await harness.snapshot(TestChildren, root.id, context))?.children;
+	assert.equal(childList?.length, 1);
+	const childId = childList?.[0].conversationId;
+	assert.ok(childId);
+	const sessionId = `${storageId}:${childId}`;
+	const creation = spawned.details as {
+		result: ResultReference;
+		placement: string;
+		sessionId: string;
+		brief: unknown;
+		selection: ExecutionSelection;
+	};
+	assert.equal(creation.sessionId, sessionId);
+	assert.equal(creation.result.sessionId, sessionId);
+	assert.equal(creation.placement, "placed");
+	assert.equal(creation.selection.origins.model, "preset");
+	assert.deepEqual(creation.brief, renderBrief(initial).brief);
+	assert.deepEqual(await userTexts(harness, childId), [renderBrief(initial).text]);
+	for (const mode of ["followUp", "steer"] as const) {
+		const args = { ...base, objective: `CONTRACT: reply ${mode}`, sessionId, mode, sources: ["brief-source.md"] };
+		const sent = await call(args);
+		assert.equal(sent.isError, false);
+		const details = sent.details as { result: ResultReference; placement: string; brief: unknown };
+		assert.equal(details.result.sessionId, sessionId);
+		assert.ok(details.result.requestId);
+		assert.equal(details.placement, "placed");
+		assert.deepEqual(details.brief, renderBrief(args).brief);
+		const received: Durable.EntryRecord | undefined = (await entriesOf(harness, childId)).find(
+			(entry) => messageText(entry.model?.[0]) === renderBrief(args).text,
+		);
+		assert.equal((received?.data as { class?: string } | undefined)?.class, mode);
+	}
+	const previewArgs = {
+		...base,
+		objective: "Do not start another agent.",
+		sources: [source],
+		preview: true,
+		mode: "steer",
+	};
+	const preview = await call(previewArgs);
+	assert.equal(preview.isError, false);
+	const rendered = renderBrief(previewArgs);
+	const missing = `Source path does not exist: ${source} (resolved ${source})`;
+	assert.deepEqual(preview.details, {
+		preview: true,
+		brief: { ...rendered.brief, text: rendered.text },
+		problems: ["mode requires sessionId.", missing],
+	});
+	assert.equal(preview.text, `${rendered.text}\n\nNothing was sent.\nmode requires sessionId.\n${missing}`);
+	const refused = await call({ ...base, objective: "Refuse missing sources.", sources: [source] });
+	assert.equal(refused.isError, true);
+	assert.equal(
+		refused.text,
+		`${missing}\nCorrect each path, or move a path that does not exist yet from sources into context.`,
+	);
+	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length, 1);
 });
 
 it("labels a spawn prompt and a send without a mode as new work, and only a steer as a correction", async (t) => {
@@ -1919,6 +2045,13 @@ it("drives one model-issued call per control tool", async (t) => {
 		await say(root, `RUN ${tool}`);
 	};
 
+	await run("agent_brief", {
+		sessionId: childSessionId,
+		objective: "Preview the brief.",
+		endCondition: "Stop after preview.",
+		result: "Return the preview.",
+		preview: true,
+	});
 	await run("agent_send", { sessionId: childSessionId, message: "CONTRACT: reply BETA" });
 	await settle(harness, root.id);
 	await run("agent_steer", { sessionId: childSessionId, message: "CONTRACT: reply GAMMA" });

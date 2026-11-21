@@ -79,7 +79,19 @@ import { PrimaryRetention } from "./primary-retention.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { HandleSchema, ProfileOutputSchema, ProfileParams } from "./profile-schema.ts";
 import { createRestartCommand, type RestartHosts } from "./restart.ts";
-import { DispatchOutputSchema } from "./result-schema.ts";
+import { BriefOutputSchema, DispatchOutputSchema } from "./result-schema.ts";
+import {
+	BRIEF_DESCRIPTION,
+	briefCreationInput,
+	briefInputProblems,
+	briefParameters,
+	briefPreview,
+	briefPreviewText,
+	briefRefusal,
+	briefSourceProblems,
+	renderBrief,
+	type BriefPreview,
+} from "./brief.ts";
 import { MAX_CONTINUITY_SUMMARY, SELF_COMPACTION_NOTICE, SelfCompaction } from "./self-compaction.ts";
 import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
 import { publishSettings } from "./settings.ts";
@@ -168,27 +180,25 @@ const send = obj(
 	},
 	{},
 );
-const spawn = obj(
-	{
-		handle: opt(HandleSchema),
-		preset: PresetParameter,
-		role: opt(
-			str({
-				maxLength: 2000,
-				description:
-					"Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.",
-			}),
-		),
-		cwd: opt(str()),
-		name: opt(str({ maxLength: 256 })),
-		prompt: opt(str()),
-		model: opt(str({ description: MODEL_SELECTION_GUIDANCE })),
-		thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
-		trust: maybeTrust,
-		checkInMinutes: checkIn,
-	},
-	{},
-);
+const spawnFields = {
+	handle: opt(HandleSchema),
+	preset: PresetParameter,
+	role: opt(
+		str({
+			maxLength: 2000,
+			description:
+				"Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.",
+		}),
+	),
+	cwd: opt(str()),
+	name: opt(str({ maxLength: 256 })),
+	model: opt(str({ description: MODEL_SELECTION_GUIDANCE })),
+	thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
+	trust: maybeTrust,
+};
+const spawn = obj({ ...spawnFields, prompt: opt(str()), checkInMinutes: checkIn }, {});
+const brief = briefParameters(spawnFields, checkIn);
+const creationKeys = Object.keys(spawnFields);
 const nativeEntryId = int({ minimum: 1 });
 const inspect = obj(
 	{
@@ -267,6 +277,23 @@ const result = (value: unknown, schema?: Schema): AgentToolResult<unknown> => ({
 	details: value,
 	structuredContent: schema ? structuredObservation(schema, value) : JSON.parse(JSON.stringify(value ?? null)),
 });
+function controlToolResult(
+	name: AgentControlToolName,
+	input: Record<string, unknown>,
+	value: unknown,
+	schema: Schema | undefined,
+): AgentToolResult<unknown> {
+	const projected = name === "agent_send" && input.mode === "report" ? projectReportReceipt(value) : value;
+	const output = result(projected, schema);
+	const compactText = (value as { text?: unknown } | null)?.text;
+	const text =
+		name === "agent_brief" && input.preview === true
+			? briefPreviewText(value as BriefPreview)
+			: name === "agent_compact" && typeof compactText === "string"
+				? compactText
+				: undefined;
+	return text === undefined ? output : { ...output, content: [{ type: "text", text }] };
+}
 function releaseCommandMessage(value: unknown, label: string): string {
 	const state = value as { retiring: boolean; blockers: string[]; writesPlaced: number };
 	const message = state.retiring
@@ -281,6 +308,7 @@ function releaseCommandMessage(value: unknown, label: string): string {
 
 const observationSchemas: Partial<Record<AgentControlToolName, Schema>> = {
 	agent_spawn: DispatchOutputSchema,
+	agent_brief: BriefOutputSchema,
 	agent_send: DispatchOutputSchema,
 	agent_steer: DispatchOutputSchema,
 	agent_list: ProfiledListOutputSchema,
@@ -492,6 +520,29 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		refreshPreferences(ctx);
 		return admitExecutionInput(pi, ctx, name, callId, input);
 	};
+	const executeSpawn = (
+		input: Record<string, unknown>,
+		ctx: ExtensionContext,
+		callId: string,
+		admissionCaller?: AgentCaller,
+	) =>
+		getManager().spawn(
+			{ ...input, origin: "model", requestId: `spawn:${ctx.sessionManager.getSessionId()}:${callId}` },
+			admissionCaller ?? caller(ctx, pi),
+		);
+	const sendImmediate = (input: Record<string, unknown>, ctx: ExtensionContext) =>
+		control(
+			"submit",
+			{
+				...input,
+				checkInMinutes: checkInMinutes(input.checkInMinutes),
+				whenBusy: input.mode ?? "followUp",
+				origin: "model",
+			},
+			ctx,
+		);
+	const steer = (input: Record<string, unknown>, ctx: ExtensionContext) =>
+		control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx);
 	const register = (
 		name: AgentControlToolName,
 		description: string,
@@ -506,7 +557,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const guidance = agentControlGuidance(name, "ordinary");
 		const exposure: AgentControlExposure = AGENT_CONTROL_EXPOSURE[name];
 		const schema = observationSchemas[name];
-		const presetAware = ["agent_spawn", "agent_place", "agent_configure"].includes(name);
+		const admitsPreset = ["agent_spawn", "agent_place", "agent_configure"].includes(name);
+		const presetAware = admitsPreset || name === "agent_brief";
 		const registerDefinition = (snapshot: PreferenceSnapshot): void =>
 			pi.registerTool({
 				name,
@@ -526,15 +578,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				outputSchema: schema ?? unknown(),
 				...(exposure === "direct" ? {} : { exposure }),
 				async execute(callId, input: Static<typeof parameters>, _signal, _update, ctx) {
-					const { admitted, admissionCaller } = presetAware
+					const { admitted, admissionCaller } = admitsPreset
 						? prepareInput(name, input, ctx, callId)
 						: { admitted: input, admissionCaller: undefined };
 					const value = await execute(admitted, ctx, callId, admissionCaller);
-					const projected = name === "agent_send" && admitted.mode === "report" ? projectReportReceipt(value) : value;
-					const output = result(projected, schema);
+					const output = controlToolResult(name, input, value, schema);
 					appendProviderBlockReceipt(name, output.content, value, providerBlocks, Date.now());
-					if (name === "agent_compact" && typeof (value as { text?: unknown })?.text === "string")
-						return { ...output, content: [{ type: "text", text: (value as { text: string }).text }] };
 					return output;
 				},
 				renderCall: cards[name].renderCall,
@@ -595,12 +644,33 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		"agent_spawn",
 		"Start an independent Durable agent. A prompt starts work; no prompt creates an idle agent. Results arrive without check-ins. Task check-ins run only when checkInMinutes or the configured agent.checkInMinutes sets a nonzero interval; the default is 0. Assess a check-in: report progress, let work continue, steer a wrap-up, or abort a hung tool. Steering does not interrupt a running tool. checkInMinutes 0 disables.",
 		spawn,
-		(input, ctx, callId, admissionCaller) =>
-			getManager().spawn(
-				{ ...input, origin: "model", requestId: `spawn:${ctx.sessionManager.getSessionId()}:${callId}` },
-				admissionCaller ?? caller(ctx, pi),
-			),
+		executeSpawn,
 	);
+	register("agent_brief", BRIEF_DESCRIPTION, brief, async (input, ctx, callId) => {
+		const inputProblems = briefInputProblems(input, creationKeys);
+		const sourceProblems = briefSourceProblems(input, ctx.cwd);
+		const rendered = renderBrief(input);
+		if (input.preview === true) return briefPreview(rendered, [...inputProblems, ...sourceProblems]);
+		if (inputProblems.length || sourceProblems.length) throw new Error(briefRefusal(inputProblems, sourceProblems));
+
+		let value: unknown;
+		if (input.sessionId === undefined) {
+			const dispatch = {
+				...briefCreationInput(input, creationKeys),
+				prompt: rendered.text,
+				...(input.checkInMinutes === undefined ? {} : { checkInMinutes: input.checkInMinutes }),
+			};
+			const { admitted, admissionCaller } = prepareInput("agent_brief", dispatch, ctx, callId);
+			value = await executeSpawn(admitted, ctx, callId, admissionCaller);
+		} else {
+			const target = { sessionId: input.sessionId, message: rendered.text };
+			value =
+				input.mode === "steer" && input.checkInMinutes === undefined
+					? await steer(target, ctx)
+					: await sendImmediate({ ...target, mode: input.mode, checkInMinutes: input.checkInMinutes }, ctx);
+		}
+		return { ...(value as Record<string, unknown>), brief: rendered.brief };
+	});
 	register(
 		"agent_list",
 		"Discover Durable agent identities and names without a writer. An exact retained handle match comes first, with or without the leading @. A query then observes other storages whose catalog record carries it. While coverage.complete is false, a page without rows is not absence: call agent_list again with the fields of coverage.next.",
@@ -676,17 +746,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					ctx,
 				);
 			}
-			if (input.deliverAt === undefined)
-				return control(
-					"submit",
-					{
-						...input,
-						checkInMinutes: checkInMinutes(input.checkInMinutes),
-						whenBusy: input.mode ?? "followUp",
-						origin: "model",
-					},
-					ctx,
-				);
+			if (input.deliverAt === undefined) return sendImmediate(input, ctx);
 			if (input.replyTo !== undefined) throw new Error("replyTo cannot be combined with deliverAt");
 			return control(
 				"timer-schedule",
@@ -708,7 +768,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		"agent_steer",
 		"Steer live or retained work through its Durable owner. Admitted steering survives process loss. Carried operator decisions retain their original scope; agent claims remain claims.",
 		message,
-		(input, ctx) => control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx),
+		steer,
 	);
 	register(
 		"agent_abort",

@@ -8,6 +8,8 @@ import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { OpenWorkDependencyView, OpenWorkDetails, OpenWorkView } from "./open-work.ts";
 import { projectReportReceipt } from "./control-result.ts";
+import { briefPreview, briefPreviewText, renderBrief } from "./brief.ts";
+import { fixtures, rows, targetId } from "./tool-card-fixture.mts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { coverage as rosterCoverage } from "./dashboard-test-fixture.mts";
 import type { AgentConversationSummary, AgentPrioritySummary } from "./dashboard-types.ts";
@@ -74,6 +76,72 @@ const result = (details: unknown, text = JSON.stringify(details)): AgentToolResu
 	content: [{ type: "text", text }],
 	details,
 });
+it("shows the brief objective, section summary, and exact expanded source", () => {
+	const card = createAgentToolCards(() => rows).agent_brief;
+	const args = {
+		...fixtures.agent_brief.args,
+		kind: "review",
+		handle: "parser",
+		preset: "review",
+		model: "test/other",
+		thinkingLevel: "high",
+		preview: true,
+		purpose: "Find gaps before release.",
+		operator: [{ quote: "Use the source.", source: "Original request" }],
+		sources: ["README.md", "docs/guide.md"],
+		checks: ["Check the example."],
+	};
+	const collapsed = screen(card.renderCall(args, theme, context()), 200);
+	assert.match(collapsed, /agent_brief · @parser/u);
+	assert.match(collapsed, /review.*Requested: test\/other · high.*preset review.*preview/u);
+	assert.match(collapsed, /Review the parser\./u);
+	assert.match(collapsed, /purpose · 1 operator decision · 2 sources · checks · end condition · result/u);
+	assert.doesNotMatch(collapsed, /Find gaps before release|Original request/u);
+	const expanded = screen(card.renderCall(args, theme, context({ expanded: true })), 320);
+	for (const line of renderBrief(args).text.split("\n").filter(Boolean)) assert.ok(expanded.includes(line), line);
+	assert.match(expanded, /"handle": "parser"/u);
+	assert.match(expanded, /"thinkingLevel": "high"/u);
+	assert.doesNotMatch(expanded, /"objective"/u);
+	const steer = screen(
+		card.renderCall(
+			{ ...fixtures.agent_brief.args, sessionId: targetId, mode: "steer" },
+			theme,
+			context({ lookup: () => rows }),
+		),
+	);
+	assert.match(steer, /agent_brief · Parser review[\s\S]*mode steer/u);
+	assert.match(
+		screen(card.renderCall({ objective: "x".repeat(215) }, theme, context()), 250),
+		/agent_brief · new agent[\s\S]*x{175}…/u,
+	);
+	assert.doesNotMatch(screen(card.renderCall({ objective: "x".repeat(215) }, theme, context()), 250), /x{181}/u);
+});
+
+it("renders a brief creation or admission like its dispatch path and a preview like no dispatch", () => {
+	const cards = createAgentToolCards();
+	const { args, details } = fixtures.agent_brief;
+	const options = { isPartial: false, expanded: false };
+	const render = (name: keyof typeof cards, value: AgentToolResult<unknown>, args: Record<string, unknown>) =>
+		screen(cards[name].renderResult(value, options, theme, context({ args, lookup: () => rows })));
+	const created = result(details);
+	assert.equal(render("agent_brief", created, args), render("agent_spawn", created, args));
+	for (const [mode, tool] of [
+		["followUp", "agent_send"],
+		["steer", "agent_steer"],
+	] as const) {
+		const reach = { ...args, sessionId: targetId, mode };
+		const admission = result({ ...(fixtures.agent_send.details as object), brief: renderBrief(reach).brief });
+		assert.equal(render("agent_brief", admission, reach), render(tool, admission, reach));
+	}
+	const problem = "Source path does not exist: missing.md (resolved /work/missing.md)";
+	const preview = briefPreview(renderBrief(args), [problem]);
+	const output = render("agent_brief", result(preview, briefPreviewText(preview)), { ...args, preview: true });
+	assert.match(output, new RegExp(`Preview · ${preview.brief.characters} characters`));
+	assert.match(output, /Nothing was sent/u);
+	assert.ok(output.includes(problem));
+	assert.doesNotMatch(output, /Spawned|Admitted/u);
+});
+
 const conversationStatus = (overrides: Record<string, unknown> = {}) => ({
 	conversationId: 1,
 	identity: "storage-a",
@@ -1731,6 +1799,7 @@ describe("agent tool card factory", () => {
 		assert.deepEqual(Object.keys(cards).sort(), [
 			"agent_abort",
 			"agent_attach",
+			"agent_brief",
 			"agent_collaborate",
 			"agent_command",
 			"agent_compact",

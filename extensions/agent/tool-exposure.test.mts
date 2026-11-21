@@ -179,6 +179,9 @@ it("offers tool_search by configuration while deferred controls stay undeclared 
 	assert.ok(settingsManager.getDefaultTools()?.includes("codemode"));
 	const exposure = new Map(session.getAllTools().map((tool) => [tool.name, tool.exposure]));
 	assert.equal(exposure.get("agent_spawn"), "direct");
+	assert.equal(exposure.get("agent_brief"), "direct");
+	assert.ok(session.getActiveToolNames().includes("agent_brief"));
+	assert.ok(session.getCallableToolNames().includes("agent_brief"));
 	assert.equal(exposure.get("agent_compact"), "model-only");
 	for (const name of [
 		"agent_inspect",

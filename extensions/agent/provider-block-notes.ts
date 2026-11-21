@@ -180,7 +180,12 @@ export function outcomeProvider(value: unknown): string | undefined {
 }
 
 /** Tools that choose an agent model; their outcome reports the selected model. */
-export const MODEL_CHOICE_TOOL_NAMES: ReadonlySet<string> = new Set(["agent_spawn", "agent_place", "agent_configure"]);
+export const MODEL_CHOICE_TOOL_NAMES: ReadonlySet<string> = new Set([
+	"agent_spawn",
+	"agent_brief",
+	"agent_place",
+	"agent_configure",
+]);
 
 /** Adds the receipt sentence to a model-choice tool result when its selected provider has a current note. */
 export function appendProviderBlockReceipt(

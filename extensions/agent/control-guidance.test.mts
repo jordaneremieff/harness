@@ -76,6 +76,7 @@ it("ordinary delegation guidance names only registered controls and native guida
 const CURRENT_TOOLS = [
 	"agent_abort",
 	"agent_attach",
+	"agent_brief",
 	"agent_collaborate",
 	"agent_command",
 	"agent_compact",
@@ -149,7 +150,7 @@ it("keeps the approved snippets", () => {
 
 it("keeps the contract, reporting, polling, live-work, and authority guidance", () => {
 	const all = JSON.stringify(AGENT_CONTROL_GUIDANCE);
-	assert.match(all, /objective, output format, source guidance, and boundaries/u);
+	assert.match(all, /objective, endCondition and result are required/u);
 	assert.match(all, /carry each operator decision with its source, scope, and restrictions/u);
 	assert.match(all, /Say whether a correction comes from the operator or from you/u);
 	assert.doesNotMatch(all, /AGENTS\.md|Intent authority/u);
@@ -204,6 +205,16 @@ it("describes retained delivery and opt-in unfinished-task check-ins", () => {
 	assert.match(all, /Check-ins wake a model owner, not an operator owner/u);
 	assert.doesNotMatch(all, /default 30/u);
 	assert.match(all, /not a finished result/u);
+});
+
+it("teaches substantial assignments through a checked brief", () => {
+	const tools = agentControlGuidanceLines(["agent_send", "agent_brief", "agent_spawn"]).join("\n");
+	assert.match(tools, /Brief each substantial task with agent_brief/u);
+	assert.match(tools, /- agent_brief: Brief an agent with a checked, standard task brief/u);
+	assert.match(tools, /objective, endCondition and result are required/u);
+	assert.match(tools, /Quote each operator decision you carry in operator with its source and scope/u);
+	assert.match(tools, /preview renders and checks a brief without sending it/u);
+	assert.equal(AGENT_CONTROL_TOOL_NAMES.indexOf("agent_brief"), AGENT_CONTROL_TOOL_NAMES.indexOf("agent_spawn") + 1);
 });
 
 it("teaches nested spawn placement and lineage status", () => {
@@ -276,7 +287,16 @@ it("keeps frequent controls direct and defers infrequent ones", () => {
 			.filter(([, exposure]) => exposure === "direct")
 			.map(([name]) => name)
 			.sort(),
-		["agent_abort", "agent_collaborate", "agent_intent", "agent_send", "agent_spawn", "agent_status", "agent_steer"],
+		[
+			"agent_abort",
+			"agent_brief",
+			"agent_collaborate",
+			"agent_intent",
+			"agent_send",
+			"agent_spawn",
+			"agent_status",
+			"agent_steer",
+		],
 	);
 	assert.deepEqual(
 		Object.entries(AGENT_CONTROL_EXPOSURE)

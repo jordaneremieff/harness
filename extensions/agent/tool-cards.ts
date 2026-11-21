@@ -29,6 +29,7 @@ import type { Communication } from "./communication.ts";
 import { receiptContinuationLine, resultContinuationLines } from "./control-result.ts";
 import { planningBudgetSelfFacts } from "./continuity-budget.ts";
 import { threadEventTitle } from "./thread-notice-display.ts";
+import { BRIEF_SECTIONS, renderBrief } from "./brief.ts";
 
 /**
  * Observed display facts for cards: the roster rows, and in the dashboard also known thread titles and
@@ -526,6 +527,7 @@ function headerHasModel(
 const SUBJECT_KEYS = ["handle", "name", "topic", "area", "prompt", "correction", "sessionId"] as const;
 const MODEL_CALLS = new Set([
 	"agent_spawn",
+	"agent_brief",
 	"agent_attach",
 	"agent_place",
 	"agent_fork",
@@ -661,6 +663,68 @@ export function renderSendCall(value: unknown, theme: Theme, context: AgentCardC
 
 export function renderSteerCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	return renderMessageCall("agent_steer", value, theme, context);
+}
+
+function briefSectionSummary({ brief, counts }: ReturnType<typeof renderBrief>): string {
+	return brief.sections
+		.filter((section) => section !== "objective")
+		.map((section) => {
+			const count = counts[section] ?? 0;
+			if (section === "operator") return `${count} operator decision${count === 1 ? "" : "s"}`;
+			if (section === "sources") return `${count} source${count === 1 ? "" : "s"}`;
+			if (section === "endCondition") return "end condition";
+			return count > 1 ? `${section} (${count})` : section;
+		})
+		.join(" · ");
+}
+
+function briefCallBody(
+	args: Record<string, unknown>,
+	rendered: ReturnType<typeof renderBrief>,
+	theme: Theme,
+	context: AgentCardContext,
+): string[] {
+	const lines: string[] = [];
+	if (context.expanded) {
+		lines.push(theme.fg("toolOutput", boundedSource(rendered.text, MESSAGE_DISPLAY_LIMIT)));
+		appendExpandedTarget(lines, args, theme, context);
+		const fields = new Set<string>(["kind", ...BRIEF_SECTIONS]);
+		const targetAndOptions = Object.fromEntries(Object.entries(args).filter(([key]) => !fields.has(key)));
+		if (Object.keys(targetAndOptions).length)
+			lines.push(theme.fg("dim", boundedSource(JSON.stringify(targetAndOptions, null, 2))));
+	} else {
+		lines.push(theme.fg("toolOutput", displayPreview(text(args.objective), 180) || "(objective pending)"));
+		const sections = briefSectionSummary(rendered);
+		if (sections) lines.push(theme.fg("dim", sections));
+	}
+	return lines;
+}
+
+function renderBriefCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
+	const args = record(value);
+	const existing = text(args.sessionId);
+	const handle = text(args.handle);
+	const identity = existing || (handle ? `@${handle.replace(/^@/u, "")}` : "");
+	const label = existing ? targetLabel(existing, context) : identity || displayText(text(args.name)) || "new agent";
+	const rendered = renderBrief(args);
+	return cardLayout(
+		{
+			title: "agent_brief",
+			label,
+			metadata: [
+				rendered.brief.kind === "task" ? "" : rendered.brief.kind,
+				targetConfiguration(identity, context),
+				requestedConfiguration("agent_brief", args, context) ?? "",
+				text(args.preset) ? `preset ${displayPreview(text(args.preset), 80)}` : "",
+				args.mode === "steer" ? "mode steer" : "",
+				args.preview === true ? "preview" : "",
+			],
+			body: briefCallBody(args, rendered, theme, context),
+			hint: cardHint(context, "call", "brief"),
+		},
+		theme,
+		{ expanded: context.expanded, previous: context.lastComponent },
+	);
 }
 
 function compactCallTarget(args: Record<string, unknown>, context: AgentCardContext): string {
@@ -1565,6 +1629,30 @@ export function renderSteerResult(
 		partial: "Steering disposition pending",
 		receipt: "Steer admitted",
 	});
+}
+
+function renderBriefResult(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: AgentCardContext,
+): Component {
+	const details = resultDetails(result);
+	if (details.preview === true) {
+		const problems = Array.isArray(details.problems) ? details.problems : [];
+		const size = record(details.brief).characters;
+		const lines = [theme.fg("toolOutput", `Preview · ${size} characters`), muted(theme, "Nothing was sent")];
+		for (const problem of problems) {
+			if (typeof problem === "string")
+				lines.push(theme.fg("warning", options.expanded ? boundedSource(problem) : displayPreview(problem, 300)));
+		}
+		return cardLayout({ body: lines }, theme, { expanded: options.expanded, previous: context.lastComponent });
+	}
+	const args = record(context.args);
+	if (!text(args.sessionId)) return renderAgentResult(result, options, theme, context);
+	return args.mode === "steer"
+		? renderSteerResult(result, options, theme, context)
+		: renderSendResult(result, options, theme, context);
 }
 
 function compactTarget(facts: Record<string, unknown>): string {
@@ -3084,6 +3172,7 @@ export function ordinaryWorkCard(name: string, lookup: AgentCardLookup = () => [
 export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readonly<Record<string, AgentToolCard>> {
 	const cards: Record<string, AgentToolCard> = {
 		agent_spawn: { renderCall: bindCall("agent_spawn"), renderResult: renderAgentResult },
+		agent_brief: { renderCall: renderBriefCall, renderResult: renderBriefResult },
 		agent_attach: { renderCall: bindCall("agent_attach"), renderResult: renderAgentResult },
 		agent_place: { renderCall: bindCall("agent_place"), renderResult: renderAgentResult },
 		agent_intent: {

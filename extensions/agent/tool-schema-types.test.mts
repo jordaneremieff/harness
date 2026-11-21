@@ -92,6 +92,7 @@ it("declares an explicit JSON Schema type on every agent tool parameter, ordinar
 		assert.ok(tools.length > 0, `${surface} surface exposes agent tools`);
 		for (const name of [
 			"agent_spawn",
+			"agent_brief",
 			"agent_send",
 			"agent_configure",
 			"agent_inspect",

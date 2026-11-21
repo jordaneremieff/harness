@@ -1,4 +1,5 @@
 import { str, int, bool, lit, arr, union, opt, obj, type Static } from "@earendil-works/pi-schema";
+import { BRIEF_KINDS, BRIEF_SECTIONS, briefEnum } from "./brief.ts";
 
 /** Exact admitted native input. Creation and message routing are not results. */
 export const ResultReferenceSchema = obj({
@@ -36,4 +37,19 @@ export const ReceiptAssociationSchema = obj({
 export type ReceiptAssociation = Static<typeof ReceiptAssociationSchema>;
 
 /** Dispatch facts remain additive; only result names an admitted answer input. */
-export const DispatchOutputSchema = obj({ result: opt(ResultReferenceSchema) }, { open: true });
+const dispatchFields = { result: opt(ResultReferenceSchema) };
+export const DispatchOutputSchema = obj(dispatchFields, { open: true });
+export const BriefOutputSchema = obj(
+	{
+		...dispatchFields,
+		brief: obj({
+			kind: briefEnum(BRIEF_KINDS),
+			characters: int({ minimum: 1 }),
+			sections: arr(briefEnum(BRIEF_SECTIONS)),
+			text: opt(str()),
+		}),
+		preview: opt(lit(true)),
+		problems: opt(arr(str())),
+	},
+	{ open: true },
+);

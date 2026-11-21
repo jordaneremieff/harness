@@ -29,7 +29,7 @@ function object(value: unknown): Record<string, unknown> {
 /** Successful native admission, correction, or scheduled work, never a report or idle attachment. */
 function workTarget(tool: string, details: unknown): string | undefined {
 	const value = object(details);
-	if (["agent_send", "agent_steer", "agent_spawn", "agent_place"].includes(tool)) {
+	if (["agent_send", "agent_steer", "agent_spawn", "agent_brief", "agent_place"].includes(tool)) {
 		const result = object(value.result);
 		if (Number.isSafeInteger(result.submissionId) && Number(result.submissionId) > 0)
 			return sentWorkIdentity(result.sessionId);

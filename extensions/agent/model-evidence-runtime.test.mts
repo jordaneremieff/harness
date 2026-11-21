@@ -143,7 +143,7 @@ it("publishes real host evidence and reads fleet status locally from ordinary an
 		services: { modelRuntime: models },
 	});
 	registry.install(contribution);
-	for (const name of ["agent_spawn", "agent_configure"]) {
+	for (const name of ["agent_spawn", "agent_brief", "agent_configure"]) {
 		const ordinaryTool = tools.get(name);
 		const nativeTool = contribution.tools?.find((tool) => tool.name === name);
 		assert.ok(ordinaryTool);

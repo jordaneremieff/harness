@@ -488,7 +488,7 @@ it("refreshes preset descriptions and guidance through the peer-message prompt-s
 		assert.ok(request);
 		assert.equal(f.promptStarts(), starts + 1, "each custom peer run invokes before_agent_start");
 		assertPresetGuidance(request, key);
-		for (const name of ["agent_spawn", "agent_place", "agent_configure"]) {
+		for (const name of ["agent_spawn", "agent_brief", "agent_place", "agent_configure"]) {
 			const declaration = f.session.getAllTools().find((tool) => tool.name === name);
 			assert.ok(declaration);
 			const description = String(
@@ -517,7 +517,7 @@ it("refreshes preset descriptions and guidance through the peer-message prompt-s
 	await f.session.waitForIdle();
 	const declarations = f.session
 		.getAllTools()
-		.filter((tool) => ["agent_spawn", "agent_place", "agent_configure"].includes(tool.name));
+		.filter((tool) => ["agent_spawn", "agent_brief", "agent_place", "agent_configure"].includes(tool.name));
 	for (const declaration of declarations) {
 		const text = JSON.stringify(declaration.parameters);
 		assert.match(text, /Presets: \[\]/u);

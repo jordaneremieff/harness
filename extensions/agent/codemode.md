@@ -60,18 +60,35 @@ Notes:
 
 ## Parallel dispatch
 
-When you choose to delegate independent tasks together, keep their exact result references.
+When you delegate independent tasks together, put the common brief fields in
+one object. Keep the exact result reference from each dispatch.
 
 ```js
 const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
+const shared = {
+  purpose: "Decide which parser cases need new examples.",
+  sources: ["README.md:1 Current examples and how to run them"],
+  restrictions: ["Review only. Do not edit files."],
+  checkInMinutes: 0,
+};
 const tasks = [
-  { name: "<label>", preset: "reader", prompt: "<task message>", checkInMinutes: 0 },
-  { name: "<label>", preset: "worker", prompt: "<task message>", checkInMinutes: 30 },
+  {
+    name: "Input cases", preset: "reader",
+    objective: "Identify input cases absent from the current examples.",
+    endCondition: "Stop once each documented input type has an example or a named gap.",
+    result: "List gaps with one example input each.",
+  },
+  {
+    name: "Error cases", preset: "worker",
+    objective: "Identify which parser errors need examples.",
+    endCondition: "Stop when each public error has a documented example or a named gap.",
+    result: "List gaps with the source that defines each error.",
+  },
 ];
 
-const sent = await Promise.all(tasks.map(async (t) => {
-  const receipt = asObject(await tools.agent_spawn({ name: t.name, preset: t.preset, prompt: t.prompt, checkInMinutes: t.checkInMinutes }));
-  return { name: t.name, ref: receipt.result ?? null, receipt: receipt.result ? undefined : receipt };
+const sent = await Promise.all(tasks.map(async (task) => {
+  const receipt = asObject(await tools.agent_brief({ ...shared, ...task }));
+  return { name: task.name, ref: receipt.result ?? null, receipt: receipt.result ? undefined : receipt };
 }));
 
 const refs = [...(load("refs") ?? []), ...sent.filter((s) => s.ref).map((s) => s.ref)];
@@ -79,10 +96,9 @@ store("refs", refs);
 return sent.map((s) => (s.ref ? { name: s.name, ref: s.ref } : { name: s.name, failed: s.receipt }));
 ```
 
-A task message that already lives in a scratch file can come from
-`await tools.read({ path })`. A receipt does not settle the task. Follow
-[the delegate skill](../../skills/delegate/SKILL.md) for
-results and open work.
+Point to source material in `sources` rather than copying it into each brief.
+A receipt does not settle the task. Follow
+[the delegate skill](../../skills/delegate/SKILL.md) for results and open work.
 
 ## Fleet sweep
 

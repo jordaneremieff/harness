@@ -62,7 +62,8 @@ submissions and `pi.user`, not Agent document names or entry formats. Native
 repair continuations are user messages without new input submissions, so entry
 kind alone does not establish new operator direction.
 
-Answer-bearing `agent_send`, `agent_steer`, and prompted `agent_spawn` return
+Answer-bearing `agent_brief`, `agent_send`, `agent_steer`, and prompted
+`agent_spawn` return
 `result: { sessionId, submissionId, requestId? }` after native admission. The
 reference names the canonical conversation and its actual admitted submission,
 not a Reporter task, creation record, name, or latest answer. A known request ID
@@ -95,6 +96,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | Tool | Effect |
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. |
+| `agent_brief` | Render and check a task brief, then create an agent or admit the brief to an existing one. Preview renders and checks without dispatch. |
 | `agent_work` | Inside a native agent, declare background work with `continue`, or close it with `complete` and one final report to its retained reply recipient. Both actions return at once. Results and native settlement do not complete declared work; see [declared background work](#declared-background-work). An ordinary session has no `agent_work`; it has `agent_yield`. |
 | `agent_yield` | In an ordinary session, end the turn with one state note for the operator while work that the session sent to agents is still open; an agent result, a message or the operator's input starts the next turn. See [state note of an ordinary session](#state-note-of-an-ordinary-session). |
 | `agent_send` | Admit a task or correction. Omitted `mode` means `followUp`, new work, on every path. `mode: "steer"` corrects current work; both reach the same tool-round boundary. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. A busy Durable recipient receives each active input at its next tool boundary, for `steer` and for `followUp`; no input waits for the end of the run. These inputs do not promise separate answers. See [input placement](#input-placement-and-unplaced-notices). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
@@ -115,13 +117,50 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. The result view returns the answer in pages with separate continuations for answer text and for recipient references; see [result pages](#result-pages). |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
 
+### Briefs
+
+Use `agent_brief` for work that needs more than a short instruction. Supply
+`objective`, `endCondition`, and `result`. Add `purpose`, `operator`,
+`context`, `sources`, `permitted`, `restrictions`, and `checks` as needed.
+Quote operator decisions verbatim in `operator` with a `source` and optional
+`scope`. The tool trims fields, omits empty sections, and renders the rest in
+fixed Markdown sections. It refuses blank required fields, blank list items,
+and blank operator quotes or sources. `kind` defaults to `task`. The `lead`,
+`review`, `partner`, and `handoff` kinds open with instructions for ownership,
+independence, shared inquiry, and continuation respectively.
+
+Begin each `sources` item with its path, followed by what it establishes. The
+check reads only the first whitespace-delimited token, without surrounding
+quotes or punctuation, fragments, or line and column suffixes. It skips URLs,
+globs, and tokens that do not look like paths. The check uses the local
+filesystem; it does not read file contents, validate URLs, or check a line or
+fragment. It resolves `~/` against home and checks absolute paths directly.
+On creation it checks relative paths against the requested `cwd` resolved
+from the caller, or against the caller's directory when `cwd` is omitted.
+For an existing agent it skips relative paths because the target directory
+is not known before dispatch. A missing path refuses dispatch and reports the
+original token and resolved path. Move a path that does not exist yet to
+`context`. Native calls retain the path check for replay, so changes on disk
+do not change the decision for the same call.
+
+Without `sessionId`, the tool uses the creation fields, preset selection, and
+admission path of `agent_spawn`; the rendered brief is the initial prompt.
+With `sessionId` or `@handle` as its value, the tool refuses creation fields.
+It follows the immediate `agent_send` path for new work or the `agent_steer`
+path for `mode: "steer"`. A steer with an explicit `checkInMinutes` uses the
+send path with steer placement. `mode` requires `sessionId`. Dispatch preserves
+the result reference and placement, and adds `brief: { kind, characters,
+sections }` without returning the rendered text. With `preview: true`, the
+tool admits nothing and returns the rendered text, `preview: true`, brief
+metadata with `text`, and all field and source path problems.
+
 ### Default exposure and discovery
 
 Both forms register every Agent control, but only the frequent ones are declared
 by default. The Agent slice owns this table in `control-guidance.ts`; Pi's
 exposure fields carry it.
 
-- Direct controls are declared and callable: `agent_spawn`, `agent_send`,
+- Direct controls are declared and callable: `agent_spawn`, `agent_brief`, `agent_send`,
   `agent_steer`, `agent_abort`, `agent_status`, `agent_intent` and
   `agent_collaborate`. `agent_work` is a direct control of a native agent, and
   `agent_yield` is a direct control of an ordinary session.
@@ -4854,6 +4893,9 @@ compaction outcome and appear as body diagnostics. No path adds a transcript mes
 post-compaction context; the card makes no post-size claim.
 
 ## Checks
+
+`node --test extensions/agent/brief.test.mts` checks the exact brief format,
+field validation, and source path rules.
 
 Run focused tests with `node --test "extensions/agent/*.test.mts"`. The normal
 repository gates are `npm run lint`, `npm run typecheck`, `npm run check`, and
