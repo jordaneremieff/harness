@@ -17,8 +17,6 @@ provider, model ID, and thinking level before planning or execution.
 
 ```bash
 npm run evals -- validate prompts/tldr.eval.mts
-npm run evals -- validate prompts/seed.eval.mts
-npm run evals -- validate prompts/seed-transfer.eval.mts
 
 npm run evals -- plan prompts/tldr.eval.mts \
   --participant anthropic/claude-model:high \
@@ -116,11 +114,6 @@ A `tool-result` check has config `{ name: string, isError?: boolean, contentCont
 
 ### Prompt behavior suites
 
-`prompts/drift.eval.mts` tests opening-intent reconstruction against later
-implementation, operator clarification, a changed goal, and absent opening
-context. It uses human-required semantic review. Its empty tool list isolates
-text behavior and does not prove that a model declines an available tool.
-
 `prompts/tldr.eval.mts` compares the maintained short-by-default summary with
 a plain `tldr <hint>` message over identical synthetic context. It covers bare
 requests, long assessments, proposals, focus and form hints, whole-session
@@ -138,28 +131,6 @@ synthetic outputs without model inference.
 `prompts/templates.test.mts` checks discovery through the public Pi resource
 loader without model inference. Package discovery and an explicit candidate
 load remain separate from semantic quality and active-session readback.
-
-### /seed prompt suites
-
-`prompts/seed.eval.mts` holds the delivery surfaces of the `/seed` clipboard
-brief: it binds an inert `clipboard_copy` fixture (`prompts/mock-clipboard.ts`)
-through success, archive-warning, failure, and missing-tool variants, so real
-executions reach the clipboard-first mechanism while no run touches an
-operating system clipboard or archive. It includes a hint-selected update for
-an existing session and a no-hint continuation, with recipient knowledge and
-task boundaries assessed separately from delivery.
-
-`prompts/seed-transfer.eval.mts` holds transfer quality on the success variant.
-Its cases decide each token by its stated role, not its shape: bare fragments
-that carry no stated role must stay out of the payload and chat unnamed, while
-an operator-identified raw diagnostic line and a structured status field must
-survive exactly, with unknown meaning left unknown. The same contexts require
-speaker, qualification, frame, and approval-scope retention, so formatting-class
-and position rules cannot pass. The colocated tests in
-`prompts/seed.eval.test.mts` validate both suites, keep forbidden tokens
-role-less in the fixtures, and prove that a qualified rejection naming scrapped
-work still passes the structural floors; invented meaning beyond the recorded
-role stays human adjudication.
 
 ### Policy enforcement suite
 

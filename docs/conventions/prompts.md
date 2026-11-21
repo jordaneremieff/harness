@@ -37,19 +37,14 @@ of the corpus.
 
 ## Maintained commands
 
-- [`/drift`](../../prompts/drift.md) reconstructs the opening intent.
-- [`/recap [work, topic, or session; optional focus or comparison]`](../../prompts/recap.md)
-  explains selected work, its practical consequences, and changes from a relevant
-  earlier account.
-- [`/seed [hint]`](../../prompts/seed.md) puts a brief for another session on the
-  clipboard. The hint selects its purpose or recipient.
 - [`/tldr [hint]`](../../prompts/tldr.md) explains the current discussion, its
   result, and what it means for you in at most three plain sentences by default.
   The optional hint selects focus, scope, or length. A hint such as "more detail"
   asks for a longer version.
 
-The templates own their detailed instructions, evidence limits, and delivery
-rules. None executes the underlying work or changes persistent configuration.
+The template owns its detailed instructions, evidence limits, and delivery
+rules. It does not execute the underlying work or change persistent
+configuration.
 Ordinary requests for status or a short explanation need no command; clear
 answers are not an opt-in behavior. Maintained evaluations use the
 [evaluation application](../../evals/README.md) and its approval gate.
