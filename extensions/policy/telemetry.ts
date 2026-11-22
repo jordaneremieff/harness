@@ -14,6 +14,7 @@ import {
 } from "./telemetry-files.ts";
 
 export const TELEMETRY_LIMITS = Object.freeze({
+	/** Day files of a date selection, and days between the instants of an instant selection. */
 	days: 31,
 	/** Bytes read from segments by one page. */
 	bytes: 8 * 1024 * 1024,
@@ -24,10 +25,12 @@ export const TELEMETRY_LIMITS = Object.freeze({
 	lines: 20_000,
 	entriesPerRecord: 512,
 	groups: 64,
+	/** Reason rows per rule; the rest fold into one other-reasons row. */
+	reasons: 8,
 	coverageLines: 64,
 	outputBytes: 24 * 1024 - 1,
 	/** Serialized structured page, reached only at maximal groups and counts. */
-	structuredBytes: 96 * 1024,
+	structuredBytes: 112 * 1024,
 	cursorChars: 1024,
 });
 const CHUNK_BYTES = 64 * 1024;
@@ -37,7 +40,15 @@ const HOUR_MS = 3_600_000;
 /** Civil UTC offsets span -12:00 to +14:00, so these margins cover every writer's local day. */
 const EARLIEST_OFFSET_MS = -12 * HOUR_MS;
 const LATEST_OFFSET_MS = 14 * HOUR_MS;
+/** The 26-hour margin adds at most three writer-local day files to an instant interval. */
+const OFFSET_DAY_FILES = 3;
 const RULE_ID = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/;
+const REASON_CODE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+/** Labels contain spaces, so no recorded reason code can take them. */
+const NO_REASON = "no recorded reason";
+const OTHER_REASONS = "other reasons";
+/** Distinct reason codes tracked per rule before further codes count as other reasons. */
+const TRACKED_REASONS = 64;
 const TOOL_NAME = /^[A-Za-z][A-Za-z0-9_.:-]*$/;
 const SEGMENT_NAME = /^(\d{4}-\d{2}-\d{2})\.(\d{6})\.jsonl$/;
 const INSTANT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?(?:Z|([+-])(\d{2}):(\d{2}))$/;
@@ -142,6 +153,14 @@ export interface TelemetryRule {
 	denialEvaluations: number;
 	/** Distinct calls for this rule; one call can contribute to several rules. */
 	deniedCalls: number;
+	/** Distinct calls with an unknown evaluation of this rule; the input views of one call count once. */
+	unknownCalls: number;
+	/** Unknown calls by recorded evidence reason, most frequent first; a call can count under several reasons. */
+	unknownReasons: TelemetryReason[];
+}
+export interface TelemetryReason {
+	reason: string;
+	calls: number;
 }
 export interface TelemetryContinuation {
 	page: "first" | "resumed";
@@ -238,11 +257,11 @@ function dateValue(value: string): number {
 function dayName(ms: number): string {
 	return new Date(Math.floor(ms / DAY_MS) * DAY_MS).toISOString().slice(0, 10);
 }
-function dayRange(from: string, to: string): string[] {
+function dayRange(from: string, to: string, limit: number = TELEMETRY_LIMITS.days): string[] {
 	const first = dateValue(from);
 	const last = dateValue(to);
 	const count = (last - first) / DAY_MS + 1;
-	if (count < 1 || count > TELEMETRY_LIMITS.days)
+	if (count < 1 || count > limit)
 		throw new RangeError(`Policy telemetry needs an ordered range of at most ${TELEMETRY_LIMITS.days} days.`);
 	return Array.from({ length: count }, (_, index) => dayName(first + index * DAY_MS));
 }
@@ -300,9 +319,11 @@ function resolveSelection(request: TelemetryRequest): ResolvedSelection {
 	const since = telemetryInstant(request.since);
 	const until = telemetryInstant(request.until);
 	if (until <= since) throw new RangeError("Policy telemetry needs since earlier than until.");
+	if (until - since > TELEMETRY_LIMITS.days * DAY_MS)
+		throw new RangeError(`Policy telemetry needs since and until at most ${TELEMETRY_LIMITS.days} days apart.`);
 	const from = dayName(since + EARLIEST_OFFSET_MS);
 	const to = dayName(until - 1 + LATEST_OFFSET_MS);
-	const days = dayRange(from, to);
+	const days = dayRange(from, to, TELEMETRY_LIMITS.days + OFFSET_DAY_FILES);
 	return {
 		selection: {
 			kind: "instants",
@@ -334,6 +355,8 @@ function ruleGroup(id: string): TelemetryRule {
 		unknownApplicabilityEvaluations: 0,
 		denialEvaluations: 0,
 		deniedCalls: 0,
+		unknownCalls: 0,
+		unknownReasons: [],
 	};
 }
 function recording(health: TelemetryHealth | undefined): TelemetryRecording {
@@ -451,6 +474,40 @@ interface Evaluation {
 	truth: boolean | "unknown";
 	applicable: boolean | "unknown";
 	deny: boolean;
+	unavailableReasons?: unknown;
+}
+/** Recorded reason codes of one evaluation; entries outside the code form are not reported. */
+function evaluationReasons(entry: Evaluation): string[] {
+	if (!Array.isArray(entry.unavailableReasons)) return [];
+	return entry.unavailableReasons
+		.slice(0, TELEMETRY_LIMITS.entriesPerRecord)
+		.filter((reason): reason is string => safeName(reason, REASON_CODE) && reason.length <= 40);
+}
+/** Each rule's unknown evaluations in one record, with the union of their recorded reasons. */
+function unknownByRule(entries: readonly Evaluation[]): Map<string, Set<string>> {
+	const unknown = new Map<string, Set<string>>();
+	for (const entry of entries) {
+		if (entry.truth !== "unknown") continue;
+		const reasons = unknown.get(entry.id) ?? new Set<string>();
+		for (const reason of evaluationReasons(entry)) reasons.add(reason);
+		unknown.set(entry.id, reasons);
+	}
+	return unknown;
+}
+/** Most frequent reasons first; reasons beyond the row bound fold into one other-reasons row. */
+function reasonRows(counts: ReadonlyMap<string, number> | undefined): TelemetryReason[] {
+	if (!counts) return [];
+	const rows = [...counts]
+		.filter(([reason]) => reason !== OTHER_REASONS)
+		.map(([reason, calls]) => ({ reason, calls }))
+		.sort((left, right) => right.calls - left.calls || left.reason.localeCompare(right.reason));
+	const untracked = counts.get(OTHER_REASONS) ?? 0;
+	const kept = rows.slice(
+		0,
+		untracked > 0 || rows.length > TELEMETRY_LIMITS.reasons ? TELEMETRY_LIMITS.reasons - 1 : rows.length,
+	);
+	const folded = rows.slice(kept.length).reduce((total, row) => total + row.calls, untracked);
+	return folded > 0 ? [...kept, { reason: OTHER_REASONS, calls: folded }] : kept;
 }
 function evaluation(value: unknown): value is Evaluation {
 	return (
@@ -468,6 +525,7 @@ function evaluation(value: unknown): value is Evaluation {
 class Aggregator {
 	private readonly tools = new Map<string, TelemetryTool>();
 	private readonly rules = new Map<string, TelemetryRule>();
+	private readonly reasons = new Map<TelemetryRule, Map<string, number>>();
 	readonly summary: TelemetrySummary;
 	constructor(summary: TelemetrySummary) {
 		this.summary = summary;
@@ -512,35 +570,57 @@ class Aggregator {
 		else if (entry.applicable === "unknown") row.unknownApplicabilityEvaluations++;
 		if (entry.deny) row.denialEvaluations++;
 	}
-	private evaluations(policy: unknown, policyDenied: boolean): Set<string> {
-		const counts = this.summary.evaluations;
-		const attributed = new Set<string>();
-		if (!object(policy) || !Array.isArray(policy.evaluations)) {
-			counts.recordsUnavailable++;
-			return attributed;
+	/** One call counts once per rule and once per reason, whatever the number of its input views. */
+	private countUnknownCall(id: string, reasons: ReadonlySet<string>): void {
+		const row = this.rule(id);
+		row.unknownCalls++;
+		let counts = this.reasons.get(row);
+		if (!counts) {
+			counts = new Map();
+			this.reasons.set(row, counts);
 		}
-		const entries = policy.evaluations;
-		const coverage = object(policy.coverage) ? policy.coverage.evaluations : undefined;
+		const keys = new Set<string>();
+		for (const reason of reasons.size ? reasons : [NO_REASON])
+			keys.add(counts.has(reason) || counts.size < TRACKED_REASONS ? reason : OTHER_REASONS);
+		for (const key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
+	}
+	/** Writer coverage counts apply only when they account exactly for the recorded entries. */
+	private coverage(value: unknown, entries: number): void {
+		const counts = this.summary.evaluations;
+		const coverage = object(value) ? value.evaluations : undefined;
 		if (
 			object(coverage) &&
 			integer(coverage.total) &&
 			integer(coverage.omitted) &&
 			integer(coverage.irrelevant) &&
-			coverage.total - entries.length === coverage.omitted + coverage.irrelevant
+			coverage.total - entries === coverage.omitted + coverage.irrelevant
 		) {
 			counts.writerOmitted = sum(counts.writerOmitted, coverage.omitted);
 			counts.irrelevant = sum(counts.irrelevant, coverage.irrelevant);
 		} else counts.recordsWithUnknownCoverage++;
-		counts.readerOmitted += Math.max(0, entries.length - TELEMETRY_LIMITS.entriesPerRecord);
-		for (const entry of entries.slice(0, TELEMETRY_LIMITS.entriesPerRecord)) {
-			if (!evaluation(entry)) {
-				counts.malformed++;
-				continue;
-			}
-			this.countEvaluation(entry);
-			if (policyDenied && entry.phase === "input" && entry.deny && entry.applicable === true && entry.truth !== false)
-				attributed.add(entry.id);
+	}
+	private evaluations(policy: unknown, policyDenied: boolean): Set<string> {
+		const counts = this.summary.evaluations;
+		if (!object(policy) || !Array.isArray(policy.evaluations)) {
+			counts.recordsUnavailable++;
+			return new Set();
 		}
+		const entries = policy.evaluations;
+		this.coverage(policy.coverage, entries.length);
+		counts.readerOmitted += Math.max(0, entries.length - TELEMETRY_LIMITS.entriesPerRecord);
+		const read = entries.slice(0, TELEMETRY_LIMITS.entriesPerRecord);
+		const valid = read.filter((entry): entry is Evaluation => evaluation(entry));
+		counts.malformed += read.length - valid.length;
+		for (const entry of valid) this.countEvaluation(entry);
+		for (const [id, reasons] of unknownByRule(valid)) this.countUnknownCall(id, reasons);
+		const attributed = new Set(
+			valid
+				.filter(
+					(entry) =>
+						policyDenied && entry.phase === "input" && entry.deny && entry.applicable === true && entry.truth !== false,
+				)
+				.map((entry) => entry.id),
+		);
 		for (const id of attributed) this.rule(id).deniedCalls++;
 		return attributed;
 	}
@@ -596,6 +676,8 @@ class Aggregator {
 		this.summary.rules = [...this.rules.values()].sort(
 			(a, b) => b.deniedCalls - a.deniedCalls || a.id.localeCompare(b.id),
 		);
+		for (const row of [...this.summary.rules, this.summary.otherRules])
+			row.unknownReasons = reasonRows(this.reasons.get(row));
 	}
 }
 
@@ -1212,6 +1294,7 @@ export function formatTelemetry(summary: TelemetrySummary): string {
 		`Evaluation records unavailable: ${e.recordsUnavailable}; records with unknown evaluation coverage: ${e.recordsWithUnknownCoverage}.`,
 		`Matched call-rule pairs: ${summary.matches.retained}; malformed entries ${summary.matches.malformed}; reader omitted ${summary.matches.readerOmitted}.`,
 		"Matches and denial evaluations do not prove enforcement. Attribution requires a confirmed policy denial and an applicable input deny evaluation.",
+		"Unknown evidence counts calls, so the original and effective input checks of one call count once; a call can count under several reasons.",
 		"Day coverage:",
 		...coverageLines,
 	].join("\n");
@@ -1235,13 +1318,14 @@ export function formatTelemetry(summary: TelemetrySummary): string {
 			omittedTools++;
 	}
 	append(
-		"Rules (matched calls; evaluations true/false/unknown; applicability false/unknown; deny evaluations; attributed denied calls):",
+		"Rules (matched calls; evaluations true/false/unknown; applicability false/unknown; deny evaluations; attributed denied calls; calls with unknown evidence, by reason):",
 	);
 	for (const row of [...summary.rules, summary.otherRules]) {
 		if (row.matchedCalls + row.evaluations + row.deniedCalls === 0) continue;
+		const reasons = row.unknownReasons.map(({ reason, calls }) => `${reason} ${calls}`).join(", ");
 		if (
 			!append(
-				`  ${row.id}: ${row.matchedCalls}; ${row.evaluations} (${row.trueEvaluations}/${row.falseEvaluations}/${row.unknownEvaluations}); ${row.inapplicableEvaluations}/${row.unknownApplicabilityEvaluations}; ${row.denialEvaluations}; ${row.deniedCalls}`,
+				`  ${row.id}: ${row.matchedCalls}; ${row.evaluations} (${row.trueEvaluations}/${row.falseEvaluations}/${row.unknownEvaluations}); ${row.inapplicableEvaluations}/${row.unknownApplicabilityEvaluations}; ${row.denialEvaluations}; ${row.deniedCalls}; ${row.unknownCalls}${reasons ? ` (${reasons})` : ""}`,
 			)
 		)
 			omittedRules++;

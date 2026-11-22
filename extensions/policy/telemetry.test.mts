@@ -146,8 +146,12 @@ function accounting(summary: Awaited<ReturnType<typeof readTelemetry>>): void {
 		rules.reduce((n, row) => n + row.deniedCalls, 0),
 		summary.denials.ruleAttributionLinks,
 	);
-	for (const row of rules)
+	for (const row of rules) {
 		assert.equal(row.evaluations, row.trueEvaluations + row.falseEvaluations + row.unknownEvaluations);
+		assert.ok(row.unknownCalls <= row.unknownEvaluations);
+		for (const reason of row.unknownReasons)
+			if (reason.reason !== "other reasons") assert.ok(reason.calls <= row.unknownCalls, reason.reason);
+	}
 }
 
 describe("compact policy decision records", () => {
@@ -264,6 +268,74 @@ describe("policy telemetry aggregation", () => {
 		assert.equal(result.rules.find((row) => row.id === "observe.only")?.deniedCalls, 0);
 		assert.equal(result.rules.find((row) => row.id === "not.denied")?.inapplicableEvaluations, 1);
 		accounting(result);
+	});
+
+	it("counts unknown evidence once per call and by recorded reason", async (t) => {
+		const dir = await directory(t);
+		const unknown = (inputView: string, unavailableReasons?: unknown) =>
+			evalRow("local.skip", {
+				inputView,
+				truth: "unknown",
+				unavailable: true,
+				deny: false,
+				...(unavailableReasons === undefined ? {} : { unavailableReasons }),
+			});
+		const call = (evaluations: unknown[]) => fixture({ tool: "bash", policy: policy(evaluations, "none") });
+		await records(dir, [
+			call([unknown("original", ["unresolved-command"]), unknown("effective", ["unresolved-command"])]),
+			call([
+				unknown("original", ["unsupported-shell", "unresolved-command"]),
+				unknown("effective", ["unsupported-shell"]),
+			]),
+			call([unknown("original")]),
+			call([unknown("original", ["Not A Code", 5, "x".repeat(41)])]),
+			call([evalRow("local.skip", { truth: true, deny: false })]),
+		]);
+		const result = await readTelemetry(dir, DAY, DAY);
+		accounting(result);
+		const row = result.rules.find((entry) => entry.id === "local.skip");
+		assert.equal(row?.unknownEvaluations, 6);
+		assert.equal(row?.unknownCalls, 4);
+		assert.deepEqual(row?.unknownReasons, [
+			{ reason: "no recorded reason", calls: 2 },
+			{ reason: "unresolved-command", calls: 2 },
+			{ reason: "unsupported-shell", calls: 1 },
+		]);
+		assert.match(
+			formatTelemetry(result),
+			/ {2}local\.skip: 0; 7 \(1\/0\/6\); 0\/0; 0; 0; 4 \(no recorded reason 2, unresolved-command 2, unsupported-shell 1\)\n/,
+		);
+	});
+
+	it("folds reasons beyond the row bound into one other-reasons row", async (t) => {
+		const dir = await directory(t);
+		const reasons = Array.from({ length: TELEMETRY_LIMITS.reasons + 2 }, (_, n) => `reason-${n}`);
+		const values: PolicyRecord[] = [];
+		for (const [index, reason] of reasons.entries())
+			for (let n = index; n < reasons.length; n++)
+				values.push(
+					fixture({
+						policy: policy(
+							[
+								evalRow("local.skip", {
+									truth: "unknown",
+									unavailable: true,
+									deny: false,
+									unavailableReasons: [reason],
+								}),
+							],
+							"none",
+						),
+					}),
+				);
+		await records(dir, values);
+		const result = await readTelemetry(dir, DAY, DAY);
+		accounting(result);
+		const row = result.rules.find((entry) => entry.id === "local.skip");
+		assert.equal(row?.unknownCalls, values.length);
+		assert.equal(row?.unknownReasons.length, TELEMETRY_LIMITS.reasons);
+		assert.deepEqual(row?.unknownReasons.at(0), { reason: "reason-0", calls: reasons.length });
+		assert.deepEqual(row?.unknownReasons.at(-1), { reason: "other reasons", calls: 3 + 2 + 1 });
 	});
 
 	it("validates every action kind the writer records and attributes approval-gate denials", async (t) => {
@@ -865,6 +937,20 @@ describe("policy telemetry instants", () => {
 		assert.equal(result.coverage.status, "complete");
 	});
 
+	it("accepts an interval of up to the day limit however many covering day files it needs", async (t) => {
+		const dir = await directory(t);
+		await records(dir, [fixture({ at: "2026-11-01T00:00:00.000Z" })], "2026-11-01");
+		for (const [since, until, days] of [
+			["2026-10-23T09:25:00Z", "2026-11-22T09:25:00Z", 32],
+			["2026-10-23T09:25:00Z", "2026-11-23T09:25:00Z", 33],
+			["2026-10-23T11:00:00Z", "2026-11-23T11:00:00Z", 34],
+		] as const) {
+			const result = await readTelemetryPage(dir, { since, until });
+			assert.equal(result.coverage.days.length, days, since);
+			assert.equal(result.coverage.status, "complete");
+		}
+	});
+
 	it("requires explicit zones, valid calendar times, one selection, and a bounded ordered interval", async () => {
 		assert.equal(telemetryInstant("2026-09-03T10:00:00.5-03:30"), Date.parse("2026-09-03T13:30:00.500Z"));
 		for (const [since, until] of [
@@ -873,7 +959,7 @@ describe("policy telemetry instants", () => {
 			["2026-09-03T24:00:00Z", "2026-09-04T01:00:00Z"],
 			["2026-09-03T10:00:00+14:30", "2026-09-04T01:00:00Z"],
 			["2026-09-03T10:00:00Z", "2026-09-03T10:00:00Z"],
-			["2026-09-03T10:00:00Z", "2026-10-03T10:00:00Z"],
+			["2026-09-03T10:00:00Z", "2026-10-04T10:00:00.001Z"],
 		])
 			await assert.rejects(readTelemetryPage("/unused", { since, until }), RangeError);
 		await assert.rejects(
@@ -957,7 +1043,8 @@ describe("policy telemetry text", () => {
 
 	it("caps formatted output and names omitted rows even at maximal bounded groups", async (t) => {
 		const dir = await directory(t);
-		const result = await readTelemetry(dir, "2026-09-01", "2026-10-01");
+		const result = await readTelemetryPage(dir, { since: "2026-09-01T11:00:00Z", until: "2026-10-02T11:00:00Z" });
+		assert.equal(result.coverage.days.length, TELEMETRY_LIMITS.days + 3);
 		await records(dir, [fixture({ policy: policy([evalRow("rule")]) })]);
 		const template = await readTelemetry(dir, DAY, DAY);
 		result.tools = Array.from({ length: TELEMETRY_LIMITS.groups }, (_, n) => ({
@@ -980,6 +1067,11 @@ describe("policy telemetry text", () => {
 			inapplicableEvaluations: Number.MAX_SAFE_INTEGER,
 			denialEvaluations: Number.MAX_SAFE_INTEGER,
 			deniedCalls: Number.MAX_SAFE_INTEGER,
+			unknownCalls: Number.MAX_SAFE_INTEGER,
+			unknownReasons: Array.from({ length: TELEMETRY_LIMITS.reasons }, (_, index) => ({
+				reason: `r${index}${"x".repeat(38)}`,
+				calls: Number.MAX_SAFE_INTEGER,
+			})),
 		}));
 		result.otherRules = { ...result.rules[0], id: "(other rules)" };
 		result.otherTools = { ...result.tools[0], name: "(other tools)" };
@@ -1010,7 +1102,8 @@ describe("policy telemetry text", () => {
 			...row,
 			issues: [...row.issues],
 		}));
-		assert.ok(Buffer.byteLength(JSON.stringify(result)) <= TELEMETRY_LIMITS.structuredBytes);
+		const structured = Buffer.byteLength(JSON.stringify(result));
+		assert.ok(structured <= TELEMETRY_LIMITS.structuredBytes, String(structured));
 		const text = formatTelemetry(result);
 		assert.ok(Buffer.byteLength(text) <= TELEMETRY_LIMITS.outputBytes);
 		assert.match(text, /Output omits \d+ tool rows and [1-9]\d* rule rows/);

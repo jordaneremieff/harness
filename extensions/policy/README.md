@@ -1346,8 +1346,8 @@ creates telemetry files, aggregate stores, background work, or retention changes
 two selections:
 
 - `from` and `to` name inclusive writer-local day files, as in the command.
-- `since` and `until` name a half-open interval of instants. Each needs seconds
-  and an explicit zone, `Z` or `+HH:MM`/`-HH:MM`, for example
+- `since` and `until` name a half-open interval of instants at most 31 days long.
+  Each needs seconds and an explicit zone, `Z` or `+HH:MM`/`-HH:MM`, for example
   `2026-11-14T09:00:00+11:00`. The reader selects every day file that a writer
   at any UTC offset from -12:00 to +14:00 could use for that interval, and it
   keeps only records whose recorded `at` instant satisfies
@@ -1402,7 +1402,12 @@ action vocabulary of facts programs, including `require-approval`; an entry
 outside that vocabulary counts as malformed. An approval gate that refused a call
 is a denying input decision; an approved action that ran is not. A call with
 several denying rules contributes to each rule, so those rule totals are not
-distinct-call totals.
+distinct-call totals. Each rule row also counts the calls with unknown evidence,
+once per call whatever its original and effective input checks, and the same
+calls by recorded reason code. A call can count under several reasons; codes
+beyond eight per rule fold into `other reasons`, and an unknown evaluation without
+a recorded code counts as `no recorded reason`. These rows show where a skip rule
+could not see the call, not a decision.
 
 Worker outcomes are unavailable because policy does not record them. Tool
 success does not prove worker success. The report reads no sibling store or
