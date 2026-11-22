@@ -955,10 +955,30 @@
 		if (settings.tab === "files" && filter) scheduleTree();
 		else if (settings.tab === "changes" && root.kind === "folder") renderSidebar();
 	}
+	// File events rebuild an index in use no more often than a few times its last build time, so a large folder
+	// that changes constantly does not keep the host listing it. Opening Quick Open, typing a filter or selecting
+	// a tab still rebuilds a stale index at once.
+	let indexBuilt = { at: 0, took: 0 };
+	let indexRefreshTimer = 0;
+	function scheduleIndexRefresh() {
+		if (indexRefreshTimer || indexPending) return;
+		const origin = rootStamp;
+		const wait = indexBuilt.at + Math.max(5000, 3 * indexBuilt.took) - performance.now();
+		indexRefreshTimer = window.setTimeout(
+			() => {
+				indexRefreshTimer = 0;
+				if (origin === rootStamp && indexInUse()) void ensureIndex();
+			},
+			Math.max(0, wait),
+		);
+	}
 	function ensureIndex() {
 		if (indexPending || loadedIndexVersion === indexVersion) return indexPending;
+		clearTimeout(indexRefreshTimer);
+		indexRefreshTimer = 0;
 		const origin = rootStamp;
 		const version = indexVersion;
+		const started = performance.now();
 		indexError = "";
 		indexPending = request("files.list")
 			.then((result) => {
@@ -973,8 +993,9 @@
 			.finally(() => {
 				if (origin !== rootStamp) return;
 				indexPending = undefined;
-				if (version !== indexVersion && indexInUse()) void ensureIndex();
-				else indexUpdated();
+				indexBuilt = { at: performance.now(), took: performance.now() - started };
+				indexUpdated();
+				if (version !== indexVersion && indexInUse()) scheduleIndexRefresh();
 			});
 		indexUpdated();
 		return indexPending;
@@ -2474,6 +2495,9 @@
 		index = undefined;
 		indexedPaths = [];
 		indexPending = undefined;
+		clearTimeout(indexRefreshTimer);
+		indexRefreshTimer = 0;
+		indexBuilt = { at: 0, took: 0 };
 		indexVersion = 0;
 		loadedIndexVersion = -1;
 		indexError = "";
@@ -2595,7 +2619,7 @@
 		const changed = event.paths ? [...event.paths] : [];
 		checkEditedPath(changed);
 		tree.invalidate(event.paths ? event.structural : null);
-		if (indexInUse()) void ensureIndex();
+		if (indexInUse() && loadedIndexVersion !== indexVersion) scheduleIndexRefresh();
 		const headChanged = updateHead(event.head);
 		const relevant = (candidate: string) =>
 			changed.some((item) => item === candidate || candidate.startsWith(`${item}/`));
