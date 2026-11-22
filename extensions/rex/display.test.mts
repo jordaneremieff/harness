@@ -465,3 +465,96 @@ test("cards use the host-injected expansion key and invent no mouse fallback whe
 		.join("\n");
 	assert.doesNotMatch(withoutHints, /to expand/);
 });
+
+test("a create sent without op renders as the create that validation and policy see", () => {
+	const args = {
+		kind: "split",
+		direction: "right",
+		focus: false,
+		keepOpen: false,
+		label: "Reader",
+		command: ["reader"],
+	};
+	const display = createRexToolDisplay("rex_terminal");
+	const collapsed = display.renderCall(args, theme, { expanded: false, isPartial: false }).render(120).join("\n");
+	assert.match(collapsed, /^rex_terminal \u00b7 create split$/m);
+	assert.match(collapsed, /^Reader$/m);
+	const expanded = display.renderCall(args, theme, { expanded: true, isPartial: false }).render(120).join("\n");
+	assert.match(expanded, /"op": "create"/);
+	const partial = display
+		.renderCall({ kind: "fl" }, theme, { expanded: false, isPartial: true })
+		.render(120)
+		.join("\n");
+	assert.match(partial, /^rex_terminal \u00b7 create fl$/m);
+	const created = render("rex_terminal", fixture({ outcome: "created", effects: { state: "confirmed" } }), {
+		kind: "window",
+	}).join("\n");
+	assert.match(created, /^new window \u00b7 created/m, "the result card reads the prepared create too");
+	const wait = createRexToolDisplay("rex_wait")
+		.renderCall({ kind: "split" }, theme, { expanded: false, isPartial: false })
+		.render(120)
+		.join("\n");
+	assert.match(wait, /^rex_wait \u00b7 split$/m, "other tools render their arguments unchanged");
+});
+
+test("a wait that did not observe its condition reads as a budget ending, not an error", () => {
+	const colours: Array<[ThemeColor, string]> = [];
+	const recording = {
+		fg: (colour: ThemeColor, text: string) => {
+			colours.push([colour, text]);
+			return text;
+		},
+	};
+	const value = fixture({
+		ok: false,
+		outcome: "not_observed",
+		effects: { state: "none" },
+		data: { condition: "text", ending: "deadline", snapshot: { content: "still building\n" } },
+	});
+	const rows = createRexToolDisplay("rex_wait")
+		.renderResult(resultChannels(value), { expanded: false, isPartial: false }, recording, {
+			args: { op: "wait", condition: "text", text: "READY" },
+			isError: false,
+			keyText,
+		})
+		.render(120);
+	const text = rows.join("\n");
+	assert.match(text, /^wait for text \u00b7 not observed$/m);
+	assert.match(text, /Condition not observed within this wait's budget; terminal work continues\./);
+	assert.match(text, /still building/);
+	const lead = colours.find(([, row]) => row.startsWith("wait for text"));
+	assert.equal(lead?.[0], "warning");
+	colours.length = 0;
+	createRexToolDisplay("rex_wait")
+		.renderResult(
+			resultChannels(fixture({ ok: false, outcome: "observation_failed", effects: { state: "none" } })),
+			{ expanded: false, isPartial: false },
+			recording,
+			{ args: { op: "wait", condition: "text", text: "READY" }, isError: true, keyText },
+		)
+		.render(120);
+	assert.equal(colours.find(([, row]) => row.startsWith("wait for text"))?.[0], "error");
+});
+
+test("an observed finished record without resources reads as complete, not unresolved", () => {
+	const value = fixture({
+		outcome: "observed",
+		effects: { state: "none" },
+		data: {
+			reports: [
+				{
+					recordId: "finished-input",
+					phase: "confirmed",
+					observedAt: "2026-11-22T00:00:00.000Z",
+					complete: true,
+					observations: [],
+					note: "This finished record holds no owned resources to observe.",
+				},
+			],
+		},
+	});
+	const text = render("rex_owned", value, { op: "observe", recordId: "finished-input" }).join("\n");
+	assert.match(text, /^stored confirmed \u00b7 no owned resources$/m);
+	assert.match(text, /holds no owned resources to observe/);
+	assert.doesNotMatch(text, /unresolved/);
+});

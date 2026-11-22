@@ -13,6 +13,7 @@ import {
 	type Properties,
 	type Schema,
 	type Static,
+	type ValidationError,
 	type Validator,
 } from "@earendil-works/pi-schema";
 import type { RexRequest } from "./core.ts";
@@ -20,6 +21,8 @@ import type { RexRequest } from "./core.ts";
 const text = (maxLength = 4096) => str({ minLength: 1, maxLength });
 /** Enumerations use `enum` so every provider declaration keeps a plain object root without schema unions. */
 const choice = <T extends string>(...values: T[]): Schema<T> => ({ type: "string", enum: values });
+/** A field description names its owning operation where the flat provider declaration hides it. */
+const described = <T>(schema: Schema<T>, description: string): Schema<T> => ({ ...schema, description });
 const jsonObject = obj({}, { open: true, description: "JSON object passed to Rex unchanged." });
 export const TargetSchema = obj(
 	{
@@ -47,7 +50,34 @@ const base = {
 	),
 };
 const variant = <const T extends Properties>(properties: T) => obj({ ...properties, ...base });
-const page = { offset: opt(int({ minimum: 0 })), limit: opt(int({ minimum: 1, maximum: 4 })) };
+const page = {
+	offset: opt(
+		int({
+			minimum: 0,
+			description: "Ops owned, observe and reconcile only: the first selected record of this page; defaults to 0.",
+		}),
+	),
+	limit: opt(
+		int({
+			minimum: 1,
+			maximum: 4,
+			description: "Ops owned, observe and reconcile only: the most records on this page; defaults to 4.",
+		}),
+	),
+};
+const phase = opt(
+	described(
+		choice("pending", "confirmed", "unknown", "closed", "released"),
+		"Ops owned and observe only: select records in exactly this stored phase, finished phases included. Without phase or recordId, a page selects open claims only: pending, unknown, and confirmed records with resources.",
+	),
+);
+const maxSnapshots = opt(
+	int({
+		minimum: 2,
+		maximum: 64,
+		description: "Conditions text and status only: the most snapshots this wait takes; defaults to 24.",
+	}),
+);
 
 /**
  * Each tool accepts one operation shape per `op` (and `kind` or `condition` where those select the shape).
@@ -97,12 +127,23 @@ export const requestVariants = {
 		}),
 		variant({
 			op: choice("inspect"),
-			view: opt(choice("summary", "capture", "process", "status", "structure")),
-			maxBytes: opt(int({ minimum: 256, maximum: 524288 })),
+			view: opt(
+				described(
+					choice("summary", "capture", "process", "status", "structure"),
+					"Op inspect only: what to read; defaults to summary.",
+				),
+			),
+			maxBytes: opt(
+				int({
+					minimum: 256,
+					maximum: 524288,
+					description: "Op inspect only: JSON-encoded byte budget for the captured output of view summary or capture.",
+				}),
+			),
 		}),
 		variant({
 			op: choice("input"),
-			text: opt(str({ minLength: 1, maxLength: 65536 })),
+			text: opt(str({ minLength: 1, maxLength: 65536, description: "Op input only: literal text to write." })),
 			keys: opt(
 				arr(text(64), {
 					minItems: 1,
@@ -111,7 +152,7 @@ export const requestVariants = {
 						"Key presses in Rex key binding syntax, one per item: a key name with modifiers joined by +, for example enter, ctrl+c or shift+left. Other notations such as C-c are not accepted.",
 				}),
 			),
-			observe: opt(bool()),
+			observe: opt(bool({ description: "Op input only: return a summary inspection after delivery." })),
 		}),
 	],
 	rex_wait: [
@@ -119,15 +160,28 @@ export const requestVariants = {
 		variant({
 			op: choice("wait"),
 			condition: choice("text"),
-			text: text(2048),
-			maxSnapshots: opt(int({ minimum: 2, maximum: 64 })),
+			text: str({
+				minLength: 1,
+				maxLength: 2048,
+				description: "Condition text only: literal text to find in the most recent output.",
+			}),
+			maxSnapshots,
 		}),
 		variant({
 			op: choice("wait"),
 			condition: choice("status"),
-			state: choice("idle", "working", "done", "blocked", "error"),
-			statusId: opt(text(128)),
-			maxSnapshots: opt(int({ minimum: 2, maximum: 64 })),
+			state: described(
+				choice("idle", "working", "done", "blocked", "error"),
+				"Condition status only: the reported program state to wait for.",
+			),
+			statusId: opt(
+				str({
+					minLength: 1,
+					maxLength: 128,
+					description: "Condition status only: the ID of the one status record that must report the state.",
+				}),
+			),
+			maxSnapshots,
 		}),
 	],
 	rex_native: [
@@ -156,16 +210,11 @@ export const requestVariants = {
 		variant({ op: choice("native"), kind: choice("action"), action: text(256), args: opt(jsonObject) }),
 	],
 	rex_owned: [
-		variant({
-			op: choice("owned"),
-			recordId: opt(text(1024)),
-			phase: opt(choice("pending", "confirmed", "unknown", "closed", "released")),
-			...page,
-		}),
+		variant({ op: choice("owned"), recordId: opt(text(1024)), phase, ...page }),
 		obj({
 			op: choice("observe"),
 			recordId: opt(text(1024)),
-			phase: opt(choice("pending", "confirmed", "unknown", "closed", "released")),
+			phase,
 			...page,
 			timeoutMs: base.timeoutMs,
 			maxBytes: opt(
@@ -173,19 +222,45 @@ export const requestVariants = {
 					minimum: 256,
 					maximum: 16384,
 					description:
-						"Requested JSON-encoded bytes per tail, reduced by the configured capture cap and remaining shared page budget.",
+						"Op observe only: requested JSON-encoded bytes per tail, reduced by the configured capture cap and remaining shared page budget.",
 				}),
 			),
 		}),
 		variant({
 			op: choice("reconcile"),
 			recordId: opt(text(1024)),
-			recover: opt(bool()),
-			release: opt(bool()),
-			note: opt(text(2048)),
+			recover: opt(
+				bool({
+					description:
+						"Op reconcile with one recordId only: adopt the conclusive current presence or absence of every retained resource. Present blocks stay claimed for cleanup; a claim without present blocks closes.",
+				}),
+			),
+			release: opt(
+				bool({
+					description:
+						"Op reconcile with one recordId and a note only: release this bookkeeping claim. Its native effects are not undone or proven absent.",
+				}),
+			),
+			note: opt(
+				str({
+					minLength: 1,
+					maxLength: 2048,
+					description:
+						"Op reconcile with release only: what remains of the native effects that the release leaves in place.",
+				}),
+			),
 			...page,
 		}),
-		variant({ op: choice("cleanup"), recordId: text(1024), forget: opt(bool()) }),
+		variant({
+			op: choice("cleanup"),
+			recordId: text(1024),
+			forget: opt(
+				bool({
+					description:
+						"Op cleanup only: also remove the record. A finished record (closed, released, or confirmed without resources) is removed at once; the owned blocks of a confirmed record are closed first.",
+				}),
+			),
+		}),
 	],
 	rex_status: [obj({ op: choice("snapshot", "bind", "unbind"), ...base })],
 } as const satisfies Record<string, readonly Schema[]>;
@@ -235,6 +310,45 @@ function declaration(
 	}
 	const required = Object.keys(fields).filter((name) => variants.every((shape) => requiredOf(shape).includes(name)));
 	return { type: "object", properties: fields, required, additionalProperties: false };
+}
+
+/**
+ * The arguments that Pi validates and policy sees. Models that open a split for a published document send the
+ * `rex_terminal` create without `op`, so a request that names `kind` but no `op` is that create. The declared contract
+ * still requires `op`; every other request, of every tool, is returned unchanged. The input is never mutated, because
+ * a host may prepare the same stored arguments again.
+ */
+export function prepareRequest(tool: string, args: unknown): unknown {
+	if (tool !== "rex_terminal" || !plainObject(args)) return args;
+	const { op, ...rest } = args;
+	if (op !== undefined || rest.kind === undefined) return args;
+	return { op: "create", ...rest };
+}
+function plainObject(value: unknown): value is Record<string, unknown> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * A top-level field that the selected shape lacks but another shape of the same tool accepts: name the selector values
+ * of the shapes that accept it, at the first selector that tells them apart from the request.
+ */
+function misplacedField(
+	variants: readonly Schema[],
+	request: Record<string, unknown>,
+	error: ValidationError,
+): string | undefined {
+	const match = error.keyword === "additionalProperties" ? /^\/([^/]+)$/.exec(error.path) : null;
+	if (!match?.[1]) return undefined;
+	const field = match[1].replaceAll("~1", "/").replaceAll("~0", "~");
+	const owners = variants.filter((shape) => Object.hasOwn(propertiesOf(shape), field));
+	for (const selector of SELECTORS) {
+		const values = [...new Set(owners.flatMap((shape) => enumValues(propertiesOf(shape)[selector]) ?? []))];
+		if (values.length > 0 && !values.includes(request[selector] as string))
+			return `${field} applies only to ${selector} ${values.join(", ")}`;
+	}
+	return undefined;
 }
 
 export interface InvalidRequest {
@@ -296,7 +410,7 @@ export function validateRequest<T extends RexToolName>(
 	const schema = selected.shapes.length === 1 && first ? first : union(selected.shapes);
 	const errors = validatorFor(schema)
 		.errors(request)
-		.map((error) => `${error.path || "/"} ${error.message}`);
+		.map((error) => misplacedField(requestVariants[tool], request, error) ?? `${error.path || "/"} ${error.message}`);
 	const rule = requestRules[tool]?.(request);
 	if (rule) errors.push(rule);
 	if (errors.length > 0) return invalid([...new Set(errors)].join("; "));
@@ -370,21 +484,21 @@ export const toolSpecs = [
 		label: "Rex wait",
 		parameters: declaration(requestVariants.rex_wait),
 		description:
-			"Observe child exit (the result includes the exit status and the most recent bounded output), literal terminal text in the most recent output (condition text with text) or reported program status (condition status with state) with bounded event-informed waits and current-state reconciliation. Cancellation stops this observer, not the terminal, child program or Rex server.",
+			"Observe child exit (the result includes the exit status and the most recent bounded output), literal terminal text in the most recent output (condition text with text) or reported program status (condition status with state) with bounded event-informed waits and current-state reconciliation. Text waits match the most recent output at each snapshot, so output that scrolls further between snapshots is missed; on busy terminals wait for a final line, a status or child exit. Cancellation stops this observer, not the terminal, child program or Rex server.",
 	},
 	{
 		name: "rex_native",
 		label: "Rex native",
 		parameters: declaration(requestVariants.rex_native),
 		description:
-			"Discover installed Rex methods (kind catalog with query, offset, limit) and schemas (kind describe with method), call a server API (kind api with method and args), compose Lua (kind lua with code and args), or invoke a configured action (kind action with action and args). API/Lua/action calls may mutate any authorised Rex resource. Inspect partial effects; never blindly replay. Lua local helpers execute on the CLI host.",
+			"Discover installed Rex methods (kind catalog with query, offset, limit) and schemas (kind describe with method), call a server API (kind api with method and args), compose Lua (kind lua with code and args), or invoke a configured action (kind action with action and args). Lua reads its arguments from rex.args; rex.call(method, params) returns the result, or nil and an error string. API/Lua/action calls may mutate any authorised Rex resource. Inspect partial effects; never blindly replay. Lua local helpers execute on the CLI host.",
 	},
 	{
 		name: "rex_owned",
 		label: "Rex owned work",
 		parameters: declaration(requestVariants.rex_owned),
 		description:
-			"Inspect this caller's retained claims (op owned), read current presence, direct-child state/exit, reported status and bounded tails by exact recordId or page (op observe), reconcile uncertainty (op reconcile), or close exact owned resources (op cleanup with recordId). Observation is read-only, bounded by one deadline and a shared byte budget; cancellation stops observation only. Rename and focus do not transfer ownership. Recovery deliberately adopts conclusive current state; release with a note discards only a bookkeeping claim. Cleanup mutates Rex; forget removes a closed, released, or resource-free confirmed record.",
+			"Inspect this caller's retained claims (op owned), read current presence, direct-child state/exit, reported status and bounded tails by exact recordId or page (op observe), reconcile uncertainty (op reconcile), or close exact owned resources (op cleanup with recordId). Observation is read-only, bounded by one deadline and a shared byte budget; cancellation stops observation only. Rename and focus do not transfer ownership. Recovery deliberately adopts conclusive current state; release with a note discards only a bookkeeping claim. Pages without recordId or phase select open claims only. Cleanup mutates Rex and closes only owned blocks that are still present; forget removes a finished record (closed, released, or confirmed without resources) and first closes the owned blocks of a confirmed record. A full store drops its oldest finished records; open claims stay until cleanup, recovery or release.",
 	},
 	{
 		name: "rex_status",

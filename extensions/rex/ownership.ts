@@ -157,8 +157,27 @@ export function boundedText(value: unknown, max: number): value is string {
 	return typeof value === "string" && value.length > 0 && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value);
 }
 
+/**
+ * A finished record holds no open claim: it is closed, released, or confirmed without resources. Pending and unknown
+ * records, and confirmed records with resources, are open claims.
+ */
+export function isFinished(record: Pick<OwnershipRecord, "phase" | "resources">): boolean {
+	return (
+		record.phase === "closed" ||
+		record.phase === "released" ||
+		(record.phase === "confirmed" && record.resources.length === 0)
+	);
+}
+
+export const RECORD_LIMIT_MESSAGE =
+	'Rex ownership record limit reached, and every retained record is an open claim. List them with rex_owned {"op":"owned"}. Close the owned blocks of a confirmed record with rex_owned {"op":"cleanup","recordId":"<recordId>"}. For a pending or unknown record, adopt its current state with rex_owned {"op":"reconcile","recordId":"<recordId>","recover":true}, or release the claim with rex_owned {"op":"reconcile","recordId":"<recordId>","release":true,"note":"<what remains>"}.';
+
+/**
+ * Admit a new record within `maxRecords`, the admission limit of this call; the store adapters enforce the store's own
+ * limit. A full store drops its oldest finished records first and never drops an open claim.
+ */
 export function beginOwnership(state: OwnershipState, record: OwnershipRecord, maxRecords = 128): OwnershipState {
-	const next = validateOwnershipState(state, maxRecords);
+	const next = validateOwnershipState(state, Number.MAX_SAFE_INTEGER);
 	const previous = next.records.find((item) => item.callId === record.callId);
 	if (previous) {
 		throw new Error(
@@ -167,10 +186,11 @@ export function beginOwnership(state: OwnershipState, record: OwnershipRecord, m
 				: "This Rex call ID already names different input.",
 		);
 	}
-	if (next.records.length >= maxRecords)
-		throw new Error(
-			'Rex ownership record limit reached. List retained records with rex_owned {"op":"owned"}, then forget each closed, released, or confirmed record without resources with rex_owned {"op":"cleanup","recordId":"<recordId>","forget":true}. Reconcile or release other records first.',
-		);
+	while (next.records.length >= maxRecords) {
+		const oldest = next.records.findIndex(isFinished);
+		if (oldest < 0) throw new Error(RECORD_LIMIT_MESSAGE);
+		next.records.splice(oldest, 1);
+	}
 	next.records.push(record);
 	return validateOwnershipState(next, maxRecords);
 }

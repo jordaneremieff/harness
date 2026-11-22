@@ -23,6 +23,30 @@ function record(callId: string): OwnershipRecord {
 	};
 }
 
+test("a wait that did not observe its condition within its budget is no tool error; every other failure is", () => {
+	const value = (ok: boolean, outcome: string): RexResult => ({
+		ok,
+		outcome,
+		effects: { state: "none" },
+		coverage: { bounded: true },
+	});
+	assert.equal(resultChannels(value(false, "not_observed")).isError, false);
+	assert.deepEqual(resultChannels(value(false, "not_observed")).details, { outcome: "not_observed", effects: "none" });
+	assert.equal(resultChannels(value(true, "condition_observed")).isError, false);
+	for (const outcome of [
+		"timeout",
+		"cancelled",
+		"observer_ended",
+		"observation_failed",
+		"completion_unknown",
+		"target_not_found",
+		"invalid_request",
+		"cli_failure",
+		"child_failed",
+	])
+		assert.equal(resultChannels(value(false, outcome)).isError, true, outcome);
+});
+
 test("settings and core share one CLI capture default", () => {
 	assert.equal(settings.fields.maxOutputBytes.default, DEFAULT_MAX_OUTPUT_BYTES);
 	assert.equal(DEFAULT_MAX_OUTPUT_BYTES, 65536);

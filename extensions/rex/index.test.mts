@@ -4,8 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	fauxAssistantMessage,
+	fauxProvider,
+	fauxToolCall,
+	InMemoryCredentialStore,
+	InMemoryModelsStore,
+} from "@earendil-works/pi-ai";
+import {
+	createAgentSession,
 	createEventBus,
+	DefaultResourceLoader,
+	ModelRuntime,
 	SessionManager,
+	SettingsManager,
 	type ExtensionAPI,
 	type ExtensionContext,
 	type ExtensionToolContext,
@@ -14,7 +25,7 @@ import {
 import type { Schema } from "@earendil-works/pi-schema";
 import { registerRex } from "./index.ts";
 import { toolDisplay } from "./display.ts";
-import { RexCore, resultByteLimit, type RexResult } from "./core.ts";
+import { RexCore, resultByteLimit, type RexRequest, type RexResult } from "./core.ts";
 import { createTabLabelProjector, type TabLabelProjector } from "./tab-label.ts";
 import type { CliCall, CliResult, RexTransport } from "./transport.ts";
 
@@ -758,4 +769,145 @@ test("ordinary tab label wiring runs no process for an unchanged name event and 
 		await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
 		await rm(agentDir, { recursive: true, force: true });
 	}
+});
+
+test("ordinary Pi prepares a create sent without op before validation, policy and execution", {
+	timeout: 30000,
+}, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "rex-ordinary-prepare-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const saved = ["PI_CODING_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]] as const);
+	t.after(() => {
+		for (const [key, value] of saved) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	});
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	process.env.PI_HARNESS_FILE = join(root, "agent", "harness.json");
+	const faux = fauxProvider({
+		provider: "rex-prepare-fixture",
+		models: [{ id: "fixture", contextWindow: 100_000, maxTokens: 512 }],
+	});
+	const modelRuntime = await ModelRuntime.create({
+		credentials: new InMemoryCredentialStore(),
+		modelsStore: new InMemoryModelsStore(),
+		modelsPath: null,
+		allowModelNetwork: false,
+		refreshOnCreate: false,
+	});
+	modelRuntime.registerNativeProvider(faux.provider);
+	const settingsManager = SettingsManager.inMemory({
+		compaction: { enabled: false },
+		retry: { enabled: false },
+		cacheWarming: "off",
+	});
+	const executed: RexRequest[] = [];
+	const inputs: Array<{ toolName: string; input: unknown }> = [];
+	const ending = (request: RexRequest): RexResult =>
+		request.op === "create"
+			? {
+					ok: true,
+					outcome: "created",
+					data: { label: request.label },
+					effects: { state: "confirmed", recordId: "split" },
+					coverage: { bounded: true },
+				}
+			: {
+					ok: false,
+					outcome: request.op === "wait" && request.condition === "text" ? "not_observed" : "observation_failed",
+					data: { condition: request.op === "wait" ? request.condition : undefined },
+					effects: { state: "none" },
+					coverage: { bounded: true },
+				};
+	const loader = new DefaultResourceLoader({
+		cwd: root,
+		agentDir: join(root, "agent"),
+		settingsManager,
+		noExtensions: true,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+		systemPrompt: "Synthetic Rex argument preparation test.",
+		extensionFactories: [
+			(pi) =>
+				registerRex(pi, {
+					createCore: () => ({
+						dispose: () => {},
+						execute: async (request) => {
+							executed.push(request);
+							return ending(request);
+						},
+					}),
+					createTabLabelProjector: () => ({
+						start: () => {},
+						refresh: () => {},
+						input: () => {},
+						idle: async () => {},
+						shutdown: async () => {},
+					}),
+					createConversationKeeper: () => ({
+						start: () => {},
+						floated: () => {},
+						attention: () => {},
+						idle: async () => {},
+						shutdown: async () => {},
+					}),
+					createSessionPaneRegistrar: () => ({ start: () => {}, shutdown: () => {} }),
+				}),
+			(pi) => {
+				pi.on("tool_call", (event) => {
+					if (event.toolName.startsWith("rex_"))
+						inputs.push({ toolName: event.toolName, input: structuredClone(event.input) });
+				});
+			},
+		],
+	});
+	await loader.reload();
+	assert.deepEqual(loader.getExtensions().errors, []);
+	const { session } = await createAgentSession({
+		cwd: root,
+		agentDir: join(root, "agent"),
+		modelRuntime,
+		model: faux.getModel(),
+		thinkingLevel: "off",
+		settingsManager,
+		resourceLoader: loader,
+		sessionManager: SessionManager.inMemory(root),
+		tools: ["rex_terminal", "rex_wait"],
+	});
+	t.after(() => session.dispose());
+	await session.bindExtensions({ mode: "print" });
+	const split = {
+		kind: "split",
+		direction: "right",
+		focus: false,
+		keepOpen: false,
+		label: "Reader",
+		command: ["reader", "/docs/report.md"],
+	};
+	faux.setResponses([
+		fauxAssistantMessage(
+			[
+				fauxToolCall("rex_terminal", split, { id: "split" }),
+				fauxToolCall("rex_wait", { op: "wait", condition: "text", text: "READY" }, { id: "text-wait" }),
+				fauxToolCall("rex_wait", { op: "wait", condition: "status", state: "done" }, { id: "status-wait" }),
+			],
+			{ stopReason: "toolUse" },
+		),
+		fauxAssistantMessage("Done."),
+	]);
+	await session.prompt("Open the published document beside the conversation.", { expandPromptTemplates: false });
+	const create = executed.find((request) => request.op === "create");
+	assert.deepEqual(create, { op: "create", ...split }, "the core executes the prepared create");
+	assert.deepEqual(inputs.find((entry) => entry.toolName === "rex_terminal")?.input, { op: "create", ...split });
+	const result = (id: string) => {
+		const message = session.messages.find((entry) => entry.role === "toolResult" && entry.toolCallId === id);
+		assert.ok(message?.role === "toolResult", id);
+		return message;
+	};
+	assert.equal(result("split").isError, false);
+	assert.equal(result("text-wait").isError, false, "not_observed is a normal wait ending");
+	assert.equal(result("status-wait").isError, true, "other wait endings stay tool errors");
 });

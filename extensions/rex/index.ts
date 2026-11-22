@@ -31,6 +31,7 @@ import { toolDisplay } from "./display.ts";
 import { publishRexToolDisplay } from "./presentation.ts";
 import { publishSettings, readSettings } from "./settings.ts";
 import {
+	prepareRequest,
 	REX_GUIDANCE,
 	ResultSchema,
 	toolSpecs,
@@ -191,6 +192,7 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 			outputSchema: ResultSchema,
 			promptSnippet: spec.description,
 			promptGuidelines: spec.name === "rex_environment" ? [REX_GUIDANCE] : undefined,
+			prepareArguments: (args) => prepareRequest(spec.name, args) as Static<typeof spec.parameters>,
 			execute: async (callId, args: Static<typeof spec.parameters>, signal, _onUpdate, ctx) => {
 				const validated = validateRequest(spec.name, args);
 				if (!validated.ok) return resultChannels(validated);

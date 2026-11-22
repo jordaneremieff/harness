@@ -7,6 +7,7 @@ import type {
 	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import { prepareRequest } from "./schema.ts";
 
 type DisplayRecord = Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">;
 type CardTheme = Pick<Theme, "fg">;
@@ -35,17 +36,19 @@ export function publishRexToolDisplay(events: ExtensionAPI["events"], tools: rea
 	return stop;
 }
 
+/** Cards render the prepared request, the one that validation and policy see, not the raw model arguments. */
 export function createRexToolDisplay(name: string) {
 	return {
 		renderShell: "default" as const,
 		renderCall(args: unknown, theme: CardTheme, context: { expanded: boolean; isPartial: boolean }): Component {
-			const request = object(args);
+			const prepared = prepareRequest(name, args);
+			const request = object(prepared);
 			const lines = callHeader(name, request);
 			if (context.isPartial || context.expanded) {
 				const target = targetText(request.target);
 				if (target) lines.push(line(target, "muted"));
 			}
-			lines.push(...callBody(args, request, context.expanded));
+			lines.push(...callBody(prepared, request, context.expanded));
 			return card(lines, theme);
 		},
 		renderResult(
@@ -60,7 +63,7 @@ export function createRexToolDisplay(name: string) {
 				.join("\n");
 			const value = canonicalResult(text);
 			const lines = value
-				? canonicalLines(name, value, options, context.args)
+				? canonicalLines(name, value, options, prepareRequest(name, context.args))
 				: fallbackLines(text, options, context.isError);
 			// The host injects keyText with the operator's configured bindings; without it the card omits the key row.
 			const key = context.keyText?.("app.tools.expand");
@@ -157,7 +160,9 @@ function leadLine(
 		childExit,
 		unknown ? "UNKNOWN EFFECTS" : undefined,
 	].filter(Boolean);
-	return line(parts.join(" · "), unknown ? "warning" : value.ok ? "toolOutput" : "error");
+	// A condition that a wait did not observe within its budget is not a tool error.
+	const colour = unknown || value.outcome === "not_observed" ? "warning" : value.ok ? "toolOutput" : "error";
+	return line(parts.join(" · "), colour);
 }
 
 const OWNED_SUBJECTS: Record<string, string> = {
@@ -249,9 +254,11 @@ function terminalQualifications(
 	if (name === "rex_wait")
 		lines.push(
 			line(
-				value.outcome === "timeout"
-					? "Observer deadline; terminal work remains independent."
-					: "Observer end does not stop terminal work.",
+				value.outcome === "not_observed"
+					? "Condition not observed within this wait's budget; terminal work continues."
+					: value.outcome === "timeout"
+						? "Observer deadline; terminal work remains independent."
+						: "Observer end does not stop terminal work.",
 				"muted",
 			),
 		);
@@ -299,7 +306,8 @@ function reportLines(report: Record<string, unknown>, prefix: string): Line[] {
 	]
 		.filter(Boolean)
 		.join(" · ");
-	const lines = [line(`${prefix}stored ${report.phase} · ${facts || "unresolved"}`, "toolOutput")];
+	const unobserved = report.complete === true && observations.length === 0 ? "no owned resources" : "unresolved";
+	const lines = [line(`${prefix}stored ${report.phase} · ${facts || unobserved}`, "toolOutput")];
 	const error =
 		report.error ??
 		observation.error ??
@@ -307,6 +315,7 @@ function reportLines(report: Record<string, unknown>, prefix: string): Line[] {
 		observation.statusError ??
 		observation.captureError;
 	if (typeof error === "string") lines.push(line(error, "muted", true));
+	else if (typeof report.note === "string") lines.push(line(report.note, "muted", true));
 	const capture = string(object(observation.capture).content);
 	if (capture) lines.push(line(capture.trimEnd().split("\n").at(-1) ?? "", "toolOutput", true));
 	if (observations.length > 1)

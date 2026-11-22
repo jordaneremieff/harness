@@ -654,3 +654,96 @@ test("each native tool call builds its core from the current ordinary pane", { t
 		await rm(agentDir, { recursive: true, force: true });
 	}
 });
+
+test("native Durable prepares a create sent without op and reports a budget-ended wait without error status", {
+	timeout: 30000,
+}, async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "rex-native-prepare-"));
+	const models = createModels();
+	const faux = fauxProvider();
+	models.setProvider(faux.provider);
+	const registry = Durable.createRegistry();
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+	const controller = new AbortController();
+	const closers: Array<() => void | Promise<void>> = [];
+	const executed: RexRequest[] = [];
+	const contribution = rexContribution("/test/rex/index.ts", createEventBus(), () => {}, {
+		createCore: () => ({
+			dispose: () => {},
+			execute: async (request) => {
+				executed.push(request);
+				if (request.op === "create")
+					return {
+						ok: true,
+						outcome: "created",
+						effects: { state: "confirmed", recordId: "split" },
+						coverage: { bounded: true },
+					};
+				return {
+					ok: false,
+					outcome: request.op === "wait" && request.condition === "text" ? "not_observed" : "observation_failed",
+					effects: { state: "none" },
+					coverage: { bounded: true },
+				};
+			},
+		}),
+	});
+	const split = {
+		kind: "split",
+		direction: "right",
+		focus: false,
+		keepOpen: false,
+		label: "Reader",
+		command: ["reader", "/docs/report.md"],
+	};
+	try {
+		const extension = await contribution.create({
+			durable: Durable,
+			cwd: agentDir,
+			agentDir,
+			storageId: "prepare-storage",
+			harness,
+			signal: controller.signal,
+			onClose: (close) => closers.push(close),
+			ordinarySession: () => undefined,
+		});
+		assert.ok(extension.tools?.every((tool) => typeof tool.prepareArguments === "function"));
+		registry.install(extension);
+		const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+		faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("rex_terminal", split, { id: "split" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("rex_wait", { op: "wait", condition: "text", text: "READY" }, { id: "text" }), {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage(
+				fauxToolCall("rex_wait", { op: "wait", condition: "status", state: "done" }, { id: "status" }),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("Complete."),
+		]);
+		await (await root.submit({ type: "input", content: "Open the reader." }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
+		assert.deepEqual(
+			executed.find((request) => request.op === "create"),
+			{ op: "create", ...split },
+			"the native validation boundary and the core receive the prepared create",
+		);
+		const entries = (await root.entries({ order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT)).items;
+		const result = (id: string) => {
+			const message = entries
+				.flatMap((entry) => entry.model ?? [])
+				.find((entry) => entry.role === "toolResult" && entry.toolCallId === id);
+			assert.ok(message?.role === "toolResult", id);
+			return message;
+		};
+		assert.equal(result("split").isError, false);
+		assert.equal(result("text").isError, false, "not_observed is a normal wait ending");
+		assert.equal(result("status").isError, true, "other wait endings stay tool errors");
+	} finally {
+		controller.abort();
+		for (const close of closers.reverse()) await close();
+		await harness.close(BACKGROUND_CONTEXT);
+		await rm(agentDir, { recursive: true, force: true });
+	}
+});

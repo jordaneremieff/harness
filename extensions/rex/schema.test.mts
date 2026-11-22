@@ -16,7 +16,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { compile, type Schema } from "@earendil-works/pi-schema";
 import { registerRex } from "./index.ts";
-import { requestVariants, ResultSchema, toolSpecs, validateRequest } from "./schema.ts";
+import { prepareRequest, requestVariants, ResultSchema, toolSpecs, validateRequest } from "./schema.ts";
 import type { RexResult } from "./core.ts";
 
 const strictBuiltins = [
@@ -150,7 +150,9 @@ test("runtime validation enforces each operation shape", () => {
 			{ op: "resolve", kind: "split" },
 			/kind must be one of session, window, block, client for the selected resolve/,
 		],
-		["rex_environment", { op: "environment", query: "x" }, /\/query unknown field/],
+		["rex_environment", { op: "environment", query: "x" }, /query applies only to op resolve$/],
+		["rex_environment", { op: "environment", kind: "block" }, /kind applies only to op resolve$/],
+		["rex_environment", { op: "environment", pane: "1" }, /\/pane unknown field/],
 		["rex_environment", { op: "environment", target: { session, pane: "1" } }, /\/target\/pane unknown field/],
 		["rex_environment", { op: "environment", target: { source: "ambient" } }, /\/target\/source/],
 		["rex_environment", { op: "environment", timeoutMs: 10 }, /\/timeoutMs/],
@@ -159,7 +161,9 @@ test("runtime validation enforces each operation shape", () => {
 		["rex_terminal", { op: "create", kind: "session", label: "x", ratio: 100 }, /\/ratio/],
 		["rex_terminal", { op: "create", kind: "session", label: "x", command: [] }, /\/command/],
 		["rex_terminal", { op: "inspect", view: "events" }, /\/view/],
-		["rex_terminal", { op: "inspect", label: "x" }, /\/label unknown field/],
+		["rex_terminal", { op: "inspect", label: "x" }, /label applies only to op create$/],
+		["rex_terminal", { op: "input", text: "x", maxBytes: 4096 }, /maxBytes applies only to op inspect$/],
+		["rex_terminal", { op: "input", kind: "split", text: "x" }, /kind applies only to op create$/],
 		["rex_terminal", { op: "input" }, /input requires text or keys/],
 		["rex_terminal", { op: "input", text: "" }, /\/text/],
 		["rex_terminal", { op: "input", keys: [] }, /\/keys/],
@@ -168,23 +172,35 @@ test("runtime validation enforces each operation shape", () => {
 		["rex_wait", { op: "wait", condition: "text" }, /\/text missing/],
 		["rex_wait", { op: "wait", condition: "status" }, /\/state missing/],
 		["rex_wait", { op: "wait", condition: "status", state: "finished" }, /\/state/],
-		["rex_wait", { op: "wait", condition: "child_exit", text: "x" }, /\/text unknown field/],
+		["rex_wait", { op: "wait", condition: "child_exit", text: "x" }, /text applies only to condition text$/],
+		[
+			"rex_wait",
+			{ op: "wait", condition: "child_exit", maxSnapshots: 4 },
+			/maxSnapshots applies only to condition text, status$/,
+		],
+		[
+			"rex_wait",
+			{ op: "wait", condition: "text", text: "x", state: "done" },
+			/state applies only to condition status$/,
+		],
 		["rex_native", { op: "native" }, /kind must be one of catalog, describe, api, lua, action/],
 		["rex_native", { op: "native", kind: "describe" }, /\/method missing/],
-		["rex_native", { op: "native", kind: "api", method: "m", query: "x" }, /\/query unknown field/],
-		["rex_native", { op: "native", kind: "api", method: "m", code: "x" }, /\/code unknown field/],
+		["rex_native", { op: "native", kind: "api", method: "m", query: "x" }, /query applies only to kind catalog$/],
+		["rex_native", { op: "native", kind: "api", method: "m", code: "x" }, /code applies only to kind lua$/],
 		["rex_native", { op: "native", kind: "lua" }, /\/code missing/],
 		["rex_native", { op: "native", kind: "lua", code: "x", args: [] }, /\/args/],
 		["rex_native", { op: "native", kind: "action", method: "m" }, /\/action missing/],
-		["rex_native", { op: "native", kind: "catalog", method: "m" }, /\/method unknown field/],
+		["rex_native", { op: "native", kind: "catalog", method: "m" }, /method applies only to kind describe, api$/],
 		["rex_native", { op: "native", kind: "catalog", limit: 101 }, /\/limit/],
 		["rex_owned", { op: "cleanup" }, /\/recordId missing/],
 		["rex_owned", { op: "cleanup", recordId: "" }, /\/recordId/],
-		["rex_owned", { op: "cleanup", recordId: "x", release: true }, /\/release unknown field/],
+		["rex_owned", { op: "cleanup", recordId: "x", release: true }, /release applies only to op reconcile$/],
+		["rex_owned", { op: "owned", forget: true }, /: forget applies only to op cleanup$/],
+		["rex_owned", { op: "reconcile", phase: "closed" }, /phase applies only to op owned, observe$/],
 		["rex_owned", { op: "owned", phase: "open" }, /\/phase/],
 		["rex_owned", { op: "reconcile", limit: 5 }, /\/limit/],
-		["rex_owned", { op: "observe", target: { session } }, /\/target unknown field/],
-		["rex_owned", { op: "observe", recover: true }, /\/recover unknown field/],
+		["rex_owned", { op: "observe", target: { session } }, /target applies only to op owned, reconcile, cleanup$/],
+		["rex_owned", { op: "observe", recover: true }, /recover applies only to op reconcile$/],
 		["rex_owned", { op: "observe", maxBytes: 16385 }, /\/maxBytes/],
 		["rex_owned", { op: "observe", limit: 5 }, /\/limit/],
 		["rex_owned", { op: "forget", recordId: "x" }, /op must be one of owned, observe, reconcile, cleanup/],
@@ -205,6 +221,94 @@ test("runtime validation enforces each operation shape", () => {
 		assert.deepEqual(validated.effects, { state: "none" });
 		assert.match(validated.coverage.note, /nothing was executed/);
 	}
+});
+
+test("a misplaced field names the operation that accepts it in one plain sentence", () => {
+	const forget = validateRequest("rex_owned", { op: "owned", forget: true });
+	assert.equal(forget.ok, false);
+	if (!forget.ok) assert.equal(forget.error, "Invalid rex_owned request: forget applies only to op cleanup");
+	const snapshots = validateRequest("rex_wait", { op: "wait", condition: "child_exit", maxSnapshots: 4 });
+	assert.equal(snapshots.ok, false);
+	if (!snapshots.ok)
+		assert.equal(snapshots.error, "Invalid rex_wait request: maxSnapshots applies only to condition text, status");
+});
+
+test("a rex_terminal request that names kind without op is prepared as a create without changing its input", () => {
+	const split = {
+		kind: "split",
+		direction: "right",
+		focus: false,
+		keepOpen: false,
+		label: "Reader",
+		command: ["reader", "/docs/report.md"],
+	};
+	const before = structuredClone(split);
+	const prepared = prepareRequest("rex_terminal", split);
+	assert.deepEqual(prepared, { op: "create", ...split });
+	assert.notEqual(prepared, split);
+	assert.deepEqual(split, before, "the stored arguments stay unchanged for a host that prepares them again");
+	assert.deepEqual(prepareRequest("rex_terminal", prepared), prepared);
+	assert.equal(prepareRequest("rex_terminal", prepared), prepared, "a prepared create is returned unchanged");
+	assert.deepEqual(prepareRequest("rex_terminal", { op: undefined, kind: "float", label: "x" }), {
+		op: "create",
+		kind: "float",
+		label: "x",
+	});
+	const validated = validateRequest("rex_terminal", prepared);
+	assert.equal(validated.ok, true);
+	if (validated.ok) assert.equal(validated.request, prepared);
+	const declaration = toolSpecs.find((spec) => spec.name === "rex_terminal")?.parameters;
+	assert.ok(declaration);
+	assert.ok(declaration.required.includes("op"), "the declared contract still requires op");
+	assert.equal(compile(declaration).check(split), false);
+	assert.equal(compile(declaration).check(prepared), true);
+	const unchanged: Array<[string, unknown]> = [
+		["rex_terminal", { op: "inspect", view: "capture" }],
+		["rex_terminal", { op: "input", kind: "split", text: "x" }],
+		["rex_terminal", { label: "no kind" }],
+		["rex_terminal", { kind: undefined, label: "no kind" }],
+		["rex_terminal", null],
+		["rex_terminal", "create"],
+		["rex_terminal", [{ kind: "split" }]],
+		[
+			"rex_terminal",
+			new (class Request {
+				kind = "split";
+			})(),
+		],
+		["rex_environment", { kind: "block" }],
+		["rex_native", { kind: "lua", code: "return 1" }],
+		["rex_owned", { kind: "split" }],
+		["rex_wait", { kind: "split" }],
+		["rex_status", { kind: "split" }],
+	];
+	for (const [tool, args] of unchanged)
+		assert.equal(prepareRequest(tool, args), args, `${tool} ${JSON.stringify(args)}`);
+});
+
+test("descriptions name the owning operation of fields that the flat declaration hides", () => {
+	const spec = (tool: string) => toolSpecs.find((entry) => entry.name === tool);
+	const field = (tool: string, name: string) =>
+		String((spec(tool)?.parameters.properties[name] as { description?: unknown } | undefined)?.description);
+	assert.match(field("rex_owned", "forget"), /^Op cleanup only: /);
+	assert.match(field("rex_owned", "recover"), /^Op reconcile with one recordId only: /);
+	assert.match(field("rex_owned", "release"), /^Op reconcile with one recordId and a note only: /);
+	assert.match(field("rex_owned", "note"), /^Op reconcile with release only: /);
+	assert.match(field("rex_owned", "phase"), /^Ops owned and observe only: .*open claims only/);
+	assert.match(field("rex_owned", "maxBytes"), /^Op observe only: /);
+	assert.match(field("rex_owned", "offset"), /^Ops owned, observe and reconcile only: /);
+	assert.match(field("rex_wait", "maxSnapshots"), /^Conditions text and status only: .*defaults to 24/);
+	assert.match(field("rex_terminal", "maxBytes"), /^Op inspect only: /);
+	assert.match(field("rex_terminal", "view"), /^Op inspect only: /);
+	assert.match(field("rex_terminal", "observe"), /^Op input only: /);
+	assert.match(
+		String(spec("rex_native")?.description),
+		/Lua reads its arguments from rex\.args; rex\.call\(method, params\) returns the result, or nil and an error string\./,
+	);
+	assert.match(
+		String(spec("rex_wait")?.description),
+		/Text waits match the most recent output at each snapshot, so output that scrolls further between snapshots is missed; on busy terminals wait for a final line, a status or child exit\./,
+	);
 });
 
 test("result validation keeps the envelope closed and nested result objects open", () => {

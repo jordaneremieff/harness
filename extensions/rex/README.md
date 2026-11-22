@@ -15,7 +15,7 @@ configuration only through [`/rex setup`](#set-up-palette-commands-in-rex).
 | `rex_terminal` | `create`, `inspect`, `input` | Establish persistent sessions, windows, splits or floating panes, optionally shown to the operator; inspect structure, the most recent output, process or program status; deliver application text and keys. |
 | `rex_wait` | `wait` | Observe direct child exit with its exit status and most recent output, literal text in the most recent output, or a reported status. Combine bounded live events with current snapshots. |
 | `rex_native` | `native` | Retrieve the installed method catalogue or one method's schema; call an API, execute Lua or invoke an existing action. |
-| `rex_owned` | `owned`, `observe`, `reconcile`, `cleanup` | Read stored claims or current child evidence and output for selected claims; reconcile uncertainty, close only recorded owned blocks, or forget closed records. |
+| `rex_owned` | `owned`, `observe`, `reconcile`, `cleanup` | Read stored claims or current child evidence and output for selected claims; reconcile uncertainty, close only recorded owned blocks that are still present, or forget finished records. |
 | `rex_status` | `snapshot`, `bind`, `unbind` | Inspect cooperating programs' reports beside actual current host activity. Optionally retain one verified inspection target per caller. |
 
 Each request includes a visible `op`. Native execution also exposes `kind`,
@@ -25,6 +25,15 @@ a read-only annotation. Policy remains the decision owner; terminal content and
 program reports never grant permission. The ownership classification of verified
 read-only methods changes only this extension's effect admission; policy sees the
 same arguments and supplies no read-only permission.
+
+One omission is accepted, because models that open a split for a published
+document send the `rex_terminal` create without `op`. Every Rex tool registers
+`prepareArguments`, which both hosts run before schema validation: a
+`rex_terminal` request that names `kind` but no `op` becomes `op: "create"`, and
+every other request of every tool passes unchanged. Pi validates the prepared
+request, policy sees it in the `tool_call` event, the tool card renders it, and
+the core executes it. The declared contract still requires `op`, and no other
+tool or operation infers one.
 
 Each tool's provider declaration is one plain object root whose `op` (and `kind`
 or `condition`) field enumerates the accepted values and whose other fields are
@@ -38,8 +47,13 @@ ownership or status access: a wrong `op` for the tool, a missing `kind`, `label`
 `recordId`, `method`, `code`, `action`, condition argument or input text/keys, an
 unknown or operation-incompatible field, a wrong type, an out-of-range value or an
 invalid nested target returns `outcome: "invalid_request"` with
-`effects.state: "none"`. `cleanup` never selects a claim without its exact
-`recordId`. The rejected arguments are the same arguments policy saw.
+`effects.state: "none"`. A field that the selected shape lacks but another shape
+of the same tool accepts names the selector values that accept it, such as
+`forget applies only to op cleanup` or
+`maxSnapshots applies only to condition text, status`. The flat declaration's
+field descriptions name the owning operation of such fields as well. `cleanup`
+never selects a claim without its exact `recordId`. The rejected arguments are the
+same arguments policy saw.
 
 Results share `ok`, `outcome`, optional `target`/`data`/`error`, `effects` and
 `coverage`. Inspect `ok` and `effects.state` in program callers. Ordinary results
@@ -87,16 +101,20 @@ channel.
 ## Ordinary tool cards
 
 A collapsed card leads with one line: the human subject and the precise outcome
-(`build pane · created`, `block · input delivered`, `wait for child exit ·
-timeout`). The subject is the resolved label when the result or request carries
+(`build pane · created`, `block · input delivered`, `wait for text ·
+not observed`). The subject is the resolved label when the result or request carries
 one, otherwise the plain resource kind (`new session`, `block`, `window`,
-`observation`, `status`), never an identifier. `UNKNOWN EFFECTS` stays on that
+`observation`, `status`), never an identifier. Cards render the prepared request,
+so a create sent without `op` reads as a create. A failed outcome leads in the
+error colour; a wait that did not observe its condition within its budget leads
+in the warning colour and adds that terminal work continues. `UNKNOWN EFFECTS` stays on that
 line; a confirmed or absent effect is routine and waits in Details. `rex_status`
 then leads with host activity, the program states reported inside the payload,
 and whether the caller is bound (`Binding: block bound` or `Binding: none`).
 `rex_owned observe` rows lead with the stored phase and the current child
 evidence (`#1 · stored confirmed · present · child exited · exit 7`), numbered
-when there is more than one; a call that names a record says `one record`. The
+when there is more than one, or `no owned resources` for a finished record without
+resources; a call that names a record says `one record`. The
 expanded view adds a Details block with the exact target (block, window, session
 or client identity, target source and server endpoint), the effect record, the
 bound target with its verification time and owner, each observed record
@@ -495,7 +513,10 @@ long output remains reachable through `rex_native` with the `format` and
 `blob_read` block methods.
 
 The `text` wait condition matches against the same most recent output, so a
-readiness line printed after a long build log still matches. A `child_exit`
+readiness line printed after a long build log still matches. Text waits match the
+most recent output at each snapshot, so output that scrolls further between
+snapshots is missed; on busy terminals wait for a final line, a status, or child
+exit. A `child_exit`
 completion result carries the exit status beside a best-effort `capture` of the
 most recent output, or `captureError` when that read failed; one wait therefore
 answers both whether a test run ended and what it printed last.
@@ -514,14 +535,29 @@ part of that allowance for process termination and state finalisation. Ownership
 use the `resolve` phase in both hosts; they do not perform an effect.
 
 At the deadline, Rex stops its CLI or observer process, not the independent terminal
-program. `timeout` means the deadline ended; `cancelled` means the caller or host
-cancelled the operation. Neither establishes child failure, child exit or service
-shutdown. `observation_failed` retains the CLI or event-source cause. A normal event-source
-end without the condition is `observer_ended`. An evidence cap is `snapshot_limit`.
-An unmet wait, an ended observer, and a nonzero child exit return `ok: false`
-and tool error status in both hosts. That status alone does not establish a
-transport fault. An unsuccessful wait directs the caller to inspect current
-state before another wait; it never authorises a terminal restart.
+program. A wait that ends within its own budget without the condition returns
+`ok: false` with `outcome: "not_observed"`: a text or status observation that reaches
+its work deadline or spends `maxSnapshots`, and a `child_exit` wait whose deadline
+passes without exit evidence. `data.ending` is `deadline` or `snapshot_limit`. The data
+keeps the observation (the condition, the last evaluated snapshot, the snapshot count,
+the retained events and event count, and the observer outcome), and `data.meaning`
+says that terminal work continues and that the ending establishes neither failure nor
+exit. The result carries no `error`, and neither host gives it tool error status: it is
+the normal end of a bounded wait. A deadline that interrupts a capture or status read
+also ends as `not_observed`, with the snapshots evaluated before that read; the
+interrupted read never matches. A read that uses the rest of the work window and times
+out counts as the deadline.
+
+`timeout` remains for a deadline during target resolution, before observation starts,
+and for a snapshot read that times out on its own request allowance while the wait's
+work window remains. `cancelled` means the caller or host cancelled the operation.
+`observation_failed` retains the CLI or event-source cause. A normal event-source end
+without the condition is `observer_ended`. These endings, `completion_unknown`, a missing
+target, an invalid request, CLI failures and a nonzero child exit return `ok: false` and
+tool error status in both hosts. That status alone does not establish a transport
+fault. No unsuccessful wait establishes child failure, child exit or service shutdown.
+It directs the caller to inspect current state before another wait, and it never
+authorises a terminal restart.
 
 Text and status observations resume on relevant events, event-process exit, cancellation
 or the deadline. Only the exact terminal block's `program_status_changed` and
@@ -542,7 +578,7 @@ The event source remains available through the work window; the same operation a
 includes its teardown. A budget-caused stop retains timeout or cancelled, not an event-source failure.
 A failed or interrupted capture, or an unverified end, does not match text. A valid EOF
 tail remains matchable when only its older prefix is omitted. Live events have no replay
-guarantee. A bounded timeout does not establish that the condition never occurred.
+guarantee. A `not_observed` ending does not establish that the condition never occurred.
 
 An already observed child exit remains visible if its optional tail fails or times out.
 The tail then carries its own error. After a mutation dispatch, incomplete acknowledgement
@@ -553,9 +589,9 @@ deadline metadata reports any overrun. The deadline is not a hard real-time guar
 synchronous JavaScript or disk operations.
 
 It does not observe an inner command typed into a live shell. A wait deadline is
-not a child exit, application failure or service shutdown. Child nonzero exit,
-observer timeout, observer cancellation and missing completion evidence remain
-separate outcomes.
+not a child exit, application failure or service shutdown. Child nonzero exit, a
+deadline without exit evidence, observer cancellation and missing completion evidence
+remain separate outcomes.
 
 ## Broad native capability
 
@@ -583,6 +619,8 @@ for conflict detection only. The method's required target IDs remain explicit JS
 arguments; the extension never injects them.
 
 Use `kind: "lua"` with `code` and JSON `args` for composed native workflows.
+The script reads its arguments from `rex.args`. `rex.call(method, params)` returns
+the result, or `nil` and an error string; it does not throw.
 Use `kind: "action"` for an existing configured action, not an arbitrary script
 path. For these two kinds, `source: "inherited"` and `source: "focus"` resolve even
 when the request names no IDs. The CLI then receives `-s`, `-b` and `--client` for
@@ -676,9 +714,16 @@ intervals. A native fork or an ordinary new session ID does not inherit cleanup 
 A byte-for-byte ordinary file copy with the same session header ID remains the
 same logical owner; this extension does not distinguish those copies. No external ownership database mirrors these documents.
 
+A record is finished when it is closed, released, or confirmed without resources.
+Pending and unknown records, and confirmed records with resources, are open claims.
+
 Use `owned` and `reconcile` after uncertainty. `owned` accepts an optional exact
 `recordId` and a stored `phase`: `pending`, `confirmed`, `unknown`, `closed` or
-`released`. Filters apply within this caller's claims before pagination. For example,
+`released`. Filters apply within this caller's claims before pagination. Without
+`recordId` or `phase`, `owned`, `observe` and `reconcile` pages select open claims
+only; `phase` selects exactly that stored phase, finished phases included, and
+`recordId` selects that record. Coverage counts describe the selected set, and a
+default page without open claims is empty. For example,
 `{"op":"owned","phase":"unknown","limit":1}` selects the first unknown claim;
 `{"op":"owned","recordId":"<full retained call ID>"}` retrieves one claim without
 contacting Rex or changing storage. An absent ID returns an empty page, not an error.
@@ -710,8 +755,11 @@ Each `data.reports` entry retains the exact `recordId` and unchanged stored
   or unknown presence; process, status and capture are unavailable in that case.
   A report-level `error` explains unresolved claims or server-read failure.
 
-A record with no acknowledged resources remains unresolved, including a pending
-claim. Observation never resolves that claim or changes its phase. It performs
+A pending or unknown record with no acknowledged resources remains unresolved.
+Observation never resolves that claim or changes its phase. A finished record
+without resources, such as an acknowledged input or native call, reports
+`complete: true` with no observations and a `note` that it holds no owned resources
+to observe. It performs
 no ownership writes, resource creation, application input, waits for child exit,
 cleanup or automatic polling. `complete` means that the requested current
 observations succeeded, not that the work completed. The page returns `observed`
@@ -762,16 +810,34 @@ A released record is eligible for explicit forgetting without replay.
 
 `cleanup` requires a retained record ID owned by this caller and the same server
 instance. Its preflight resolves each exact retained session/block ID without
-fetching the block's full API description. An absent, ambiguous or unavailable
-target stops cleanup before effect admission; reconcile the record before retrying.
-It closes exact owned blocks, not unrelated blocks in their parent session.
+fetching the block's full API description, and finds each owned block present,
+absent or unknown. An ambiguous, unavailable or mismatched lookup leaves presence
+unknown: cleanup stops before effect admission and says so; reconcile the record
+before retrying. When every owned block is already absent, cleanup closes the claim
+with no Rex effect and no record for the call, and returns `already_closed` with
+`data.absent` and `effects.state: "none"`. Otherwise it closes only the present
+blocks through the owned effect path, lists the absent ones in `data.absent`, and
+closes the claim. A closed record keeps returning `already_closed`.
+Cleanup closes exact owned blocks, not unrelated blocks in their parent session.
 Empty parent sessions/windows are not automatically closed. Unknown
-cleanup outcomes require inspection before another close. `forget: true` removes
-a closed or released record, or a confirmed record without resources. Ownership
-storage is bounded; a full store rejects new effects before execution rather
-than silently discarding open claims. That refusal names the `rex_owned` calls
-that list the retained records and forget the eligible ones. Regular effect
-admission reserves capacity for owned cleanup.
+cleanup outcomes require inspection before another close.
+
+`forget: true` removes a finished record at once. For a confirmed record with owned
+blocks it runs the cleanup above first. When that cleanup succeeds, one store update
+removes the claim and the call's own cleanup record; the result is `forgotten` with
+`data.closed` and `data.absent`, and its effects report the closed blocks, or none,
+without an effect record ID. A failed cleanup returns its failure and keeps both
+records. A pending or unknown record refuses: reconcile it with `recover: true`, or
+release it with a note, first.
+
+Ownership storage is bounded, and every effect adds a record: creation, input,
+native API calls other than verified reads, Lua and action calls, and cleanup.
+When a new effect finds the store full, it drops the oldest finished records
+first; it never drops an open claim. When only open claims remain, the effect is
+refused before execution, and the refusal names the paths that settle an open
+claim: cleanup with the exact `recordId`, reconciliation with `recover: true`, or
+release with a note. Regular effect admission reserves one record for owned
+cleanup.
 
 Tool cancellation, ordinary session change, shutdown or native host shutdown
 aborts the extension's active CLI work. Ordinary shutdown/reload and native host

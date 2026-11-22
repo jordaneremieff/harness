@@ -10,6 +10,7 @@ import {
 	type OwnershipStore,
 } from "./ownership.ts";
 
+/** A wait whose budget ended without the condition is a normal ending, not a tool error: terminal work continues. */
 export function resultChannels(result: RexResult): {
 	content: Array<{ type: "text"; text: string }>;
 	structuredContent: JsonValue;
@@ -19,7 +20,7 @@ export function resultChannels(result: RexResult): {
 	return {
 		content: [{ type: "text", text: JSON.stringify(result) }],
 		structuredContent: JSON.parse(JSON.stringify(result)) as JsonValue,
-		isError: !result.ok,
+		isError: !result.ok && result.outcome !== "not_observed",
 		details: { outcome: result.outcome, effects: result.effects.state },
 	};
 }

@@ -18,7 +18,14 @@ import {
 	type OwnershipState,
 	type OwnershipStore,
 } from "./ownership.ts";
-import { REX_GUIDANCE, ResultSchema, toolSpecs, validateRequest, type StatusRequest } from "./schema.ts";
+import {
+	prepareRequest,
+	REX_GUIDANCE,
+	ResultSchema,
+	toolSpecs,
+	validateRequest,
+	type StatusRequest,
+} from "./schema.ts";
 import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
 import { readSessionPane, processAlive } from "./session-pane.ts";
 import { rexStatus, validateStatusBinding, type HostActivity, type RexExecutor, type StatusStore } from "./status.ts";
@@ -317,6 +324,7 @@ export function rexContribution(
 						name: spec.name,
 						description: spec.description,
 						parameters: spec.parameters,
+						prepareArguments: (args) => prepareRequest(spec.name, args) as Record<string, unknown>,
 						replay: "unsafe",
 						structuredOutputSchema: ResultSchema,
 						outputLimits: { maxBytes: resultByteLimit(settings.maxOutputBytes), maxLines: 2000, retain: "head" },

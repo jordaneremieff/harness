@@ -6,11 +6,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRexBudget, type BudgetClock } from "./deadline.ts";
 import { validateRequest } from "./schema.ts";
+import { resultChannels } from "./config.ts";
 import { boundResult, resultByteLimit, RexCore } from "./core.ts";
 import { paneStackingCommand } from "./pane-stacking.ts";
 import type { RexCallContext, RexResult } from "./core.ts";
-import { changeOwnership, initialOwnershipState, validateOwnershipState } from "./ownership.ts";
-import type { OwnershipState, OwnershipStore } from "./ownership.ts";
+import { changeOwnership, initialOwnershipState, RECORD_LIMIT_MESSAGE, validateOwnershipState } from "./ownership.ts";
+import type { OwnershipRecord, OwnershipState, OwnershipStore, ResourceRef } from "./ownership.ts";
 import type { CliCall, CliResult, RexTransport } from "./transport.ts";
 
 const session = "session:11111111-1111-4111-8111-111111111111";
@@ -360,9 +361,8 @@ test("cleanup uses exact presence without fetching oversized block descriptions"
 	);
 });
 
-test("cleanup refuses absent, ambiguous, unavailable and mismatched exact targets before effect admission", async () => {
+test("cleanup refuses ambiguous, unavailable and mismatched exact targets as unknown presence before effect admission", async () => {
 	for (const observed of [
-		reply({ results: [{ status: "not_found" }] }),
 		reply({ results: [{ status: "ambiguous" }] }),
 		{ ...reply({}), outcome: "timeout" as const, exitCode: null },
 		reply({ results: [{ status: "resolved", target: { block_id: block, session_id: otherSession } }] }),
@@ -377,6 +377,8 @@ test("cleanup refuses absent, ambiguous, unavailable and mismatched exact target
 		f.transport.handler = (method) => (method === "target.resolve" ? observed : undefined);
 		const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
 		assert.equal(response.ok, false);
+		assert.match(response.error ?? "", /presence of owned block block:\S+ is unknown/);
+		assert.match(response.error ?? "", /Reconcile the record before cleanup; no block was closed\./);
 		assert.equal(response.effects.state, "none");
 		assert.equal(f.store.state.records.length, 1);
 		assert.equal(f.store.state.records[0]?.phase, "confirmed");
@@ -385,6 +387,226 @@ test("cleanup refuses absent, ambiguous, unavailable and mismatched exact target
 			false,
 		);
 	}
+});
+
+test("cleanup of owned blocks that are already absent closes the claim without a Rex effect or a record", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	f.transport.handler = (method) =>
+		method === "target.resolve" ? reply({ results: [{ status: "not_found" }] }) : undefined;
+	const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
+	assert.equal(response.ok, true);
+	assert.equal(response.outcome, "already_closed");
+	const created = f.store.state.records[0]?.resources ?? [];
+	assert.deepEqual(response.data, { recordId: "create", closed: [], absent: created });
+	assert.equal(response.effects.state, "none");
+	assert.equal(response.effects.recordId, undefined);
+	assert.match(response.effects.note ?? "", /already absent; no block was closed/);
+	assert.deepEqual(
+		f.store.state.records.map((record) => [record.callId, record.phase]),
+		[["create", "closed"]],
+		"the claim closes and this call keeps no record",
+	);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "block.close"),
+		false,
+	);
+	const repeated = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "again" });
+	assert.equal(repeated.outcome, "already_closed");
+	assert.equal(f.store.state.records.length, 1);
+	assert.equal(resultChannels(response).isError, false);
+});
+
+test("cleanup with forget closes a live claim's blocks, then removes the claim and its own cleanup record", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const created = f.store.state.records[0]?.resources;
+	assert.ok(created?.length);
+	const response = await f.core.execute(
+		{ op: "cleanup", recordId: "create", forget: true },
+		{ ...context, callId: "close-and-forget" },
+	);
+	assert.equal(response.ok, true, JSON.stringify(response));
+	assert.equal(response.outcome, "forgotten");
+	assert.deepEqual(response.data, {
+		recordId: "create",
+		closed: created,
+		absent: [],
+		note: "Cleanup closed the owned blocks that were still present; the claim and this call's cleanup record were removed. Empty parent resources remain.",
+	});
+	assert.equal(response.effects.state, "confirmed");
+	assert.deepEqual(response.effects.resources, created);
+	assert.equal("recordId" in response.effects, false, "the removed cleanup record is not named");
+	assert.deepEqual(f.store.state.records, []);
+	assert.deepEqual(
+		f.transport.calls.filter((call) => call.method === "block.close").map((call) => call.data),
+		[{ session_id: session, block_id: block }],
+	);
+	assert.equal(resultChannels(response).isError, false);
+});
+
+test("cleanup with forget removes a claim whose blocks are already absent without a Rex effect", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const created = f.store.state.records[0]?.resources;
+	f.transport.handler = (method) =>
+		method === "target.resolve" ? reply({ results: [{ status: "not_found" }] }) : undefined;
+	const response = await f.core.execute(
+		{ op: "cleanup", recordId: "create", forget: true },
+		{ ...context, callId: "forget-absent" },
+	);
+	assert.equal(response.ok, true);
+	assert.equal(response.outcome, "forgotten");
+	assert.deepEqual((response.data as { closed: unknown[] }).closed, []);
+	assert.deepEqual((response.data as { absent: unknown[] }).absent, created);
+	assert.match((response.data as { note: string }).note, /already absent; the claim was removed without a Rex effect/);
+	assert.equal(response.effects.state, "none");
+	assert.equal(response.effects.recordId, undefined);
+	assert.match(response.effects.note ?? "", /already absent; no block was closed/);
+	assert.deepEqual(f.store.state.records, []);
+	assert.equal(
+		f.transport.calls.some((call) => call.method === "block.close"),
+		false,
+	);
+});
+
+test("cleanup with forget reports its closed blocks when only the removal of its records fails", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const update = f.store.update.bind(f.store);
+	const phases: string[] = [];
+	f.store.update = async (owner, change, phase) => {
+		phases.push(phase);
+		if (phases.length === 3) throw new Error("removal unavailable");
+		return update(owner, change, phase);
+	};
+	const response = await f.core.execute(
+		{ op: "cleanup", recordId: "create", forget: true },
+		{ ...context, callId: "close-kept" },
+	);
+	assert.deepEqual(phases, ["work", "finalise", "work"]);
+	assert.equal(response.ok, true);
+	assert.equal(response.outcome, "cleanup_report");
+	assert.equal(response.effects.state, "confirmed");
+	assert.equal(response.effects.recordId, "close-kept");
+	assert.match(
+		response.effects.note ?? "",
+		/The closed records were kept, because forgetting them failed: removal unavailable/,
+	);
+	assert.deepEqual(
+		f.store.state.records.map((record) => [record.callId, record.phase]),
+		[
+			["create", "closed"],
+			["close-kept", "closed"],
+		],
+	);
+});
+
+test("a failed cleanup with forget keeps its records, and an unknown or pending claim refuses forgetting", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	f.transport.handler = (method) =>
+		method === "block.close" ? { ...reply({}), outcome: "timeout", exitCode: null } : undefined;
+	const failed = await f.core.execute(
+		{ op: "cleanup", recordId: "create", forget: true },
+		{ ...context, callId: "close-unsettled" },
+	);
+	assert.equal(failed.ok, false);
+	assert.equal(failed.outcome, "cleanup_unknown");
+	assert.equal(failed.effects.state, "unknown");
+	assert.equal(failed.effects.recordId, "close-unsettled");
+	assert.deepEqual(
+		f.store.state.records.map((record) => [record.callId, record.phase]),
+		[
+			["create", "unknown"],
+			["close-unsettled", "unknown"],
+		],
+	);
+	const before = structuredClone(f.store.state);
+	for (const phase of ["unknown", "pending"] as const) {
+		await f.store.update("owner", (state) => changeOwnership(state, "create", { phase }), "work");
+		const refused = await f.core.execute(
+			{ op: "cleanup", recordId: "create", forget: true },
+			{ ...context, callId: `forget-${phase}` },
+		);
+		assert.equal(refused.ok, false);
+		assert.equal(refused.effects.state, "none");
+		assert.match(
+			refused.error ?? "",
+			/A pending or unknown record has no settled outcome to forget\. Reconcile it with recover: true, or release it with a note, first\./,
+		);
+	}
+	assert.equal(f.store.state.records.length, before.records.length);
+	assert.equal(f.transport.calls.filter((call) => call.method === "block.close").length, 1);
+});
+
+test("effects drop the oldest finished records of a full store and never drop an open claim", async () => {
+	const f = fixture({ maxRecords: 3 });
+	const ids = () => f.store.state.records.map((record) => record.callId);
+	const create = (callId: string) =>
+		f.core.execute({ op: "create", kind: "session", label: callId }, { ...context, callId });
+	assert.equal((await create("a")).ok, true);
+	const lua = await f.core.execute({ op: "native", kind: "lua", code: "return 1" }, { ...context, callId: "lua" });
+	assert.equal(lua.ok, true);
+	assert.deepEqual(
+		f.store.state.records.map((record) => [record.callId, record.phase, record.resources.length]),
+		[
+			["a", "confirmed", 1],
+			["lua", "confirmed", 0],
+		],
+	);
+	assert.equal((await create("b")).ok, true);
+	assert.deepEqual(ids(), ["a", "b"], "the finished native record made room; the open claim stayed");
+	const refused = await create("c");
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error, RECORD_LIMIT_MESSAGE);
+	assert.equal(refused.effects.state, "none");
+	assert.equal(f.transport.calls.filter((call) => call.method === "session.create").length, 2);
+	const closed = await f.core.execute({ op: "cleanup", recordId: "a" }, { ...context, callId: "close-a" });
+	assert.equal(closed.ok, true, "cleanup keeps its reserved slot at the effect capacity");
+	assert.deepEqual(ids(), ["a", "b", "close-a"]);
+	assert.equal((await create("c")).ok, true);
+	assert.deepEqual(ids(), ["b", "c"]);
+});
+
+test("cleanup closes only the owned blocks that are still present and lists the absent ones", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const record = f.store.state.records[0];
+	assert.ok(record);
+	const gone = "block:44444444-4444-4444-8444-444444444444";
+	record.resources = [block, gone, "block:55555555-5555-4555-8555-555555555555"].map((blockId) => ({
+		kind: "block" as const,
+		sessionId: session,
+		blockId,
+	}));
+	f.transport.handler = (method, data) => {
+		if (method !== "target.resolve") return undefined;
+		const id = (data.queries as string[])[0];
+		return id === gone
+			? reply({ results: [{ status: "not_found" }] })
+			: reply({ results: [{ status: "resolved", target: { kind: "block", session_id: session, block_id: id } }] });
+	};
+	const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
+	assert.equal(response.ok, true);
+	assert.equal(response.outcome, "cleanup_report");
+	const [first, absent, third] = record.resources;
+	assert.deepEqual((response.data as { closed: unknown[]; absent: unknown[] }).closed, [first, third]);
+	assert.deepEqual((response.data as { absent: unknown[] }).absent, [absent]);
+	assert.equal(response.effects.state, "confirmed");
+	assert.equal(response.effects.recordId, "close");
+	assert.deepEqual(response.effects.resources, [first, third]);
+	assert.deepEqual(
+		f.transport.calls.filter((call) => call.method === "block.close").map((call) => call.data.block_id),
+		[first?.blockId, third?.blockId],
+	);
+	assert.deepEqual(
+		f.store.state.records.map((entry) => [entry.callId, entry.phase]),
+		[
+			["create", "closed"],
+			["close", "closed"],
+		],
+	);
 });
 
 test("cleanup refuses a changed server instance before target lookup or closure", async () => {
@@ -600,21 +822,103 @@ test("unmatched condition waits report no match and preserve observer diagnostic
 		assert.doesNotMatch(JSON.stringify(response.data), /status matched/);
 		assert.match(response.error ?? "", /Inspect the target's current state/);
 		assert.match(response.error ?? "", /did not stop terminal work/);
+		assert.equal(resultChannels(response).isError, true, "an ended or failed observer stays a tool error");
 		if (failed) assert.match(JSON.stringify(response.data), /event source unavailable/);
 	}
 });
 
-test("child observer timeouts stay distinct from cancellation and execution failure", async () => {
+test("child observer deadlines are not_observed and stay distinct from cancellation and execution failure", async () => {
 	const f = fixture({ maxOutputBytes: 4096 });
 	const run = f.transport.run.bind(f.transport);
 	for (const outcome of ["timeout", "cancelled", "spawn_error"] as const) {
 		f.transport.run = (args, call) =>
-			args.includes("wait") ? Promise.resolve({ ...reply({}), outcome, exitCode: null }) : run(args, call);
+			args.includes("wait")
+				? Promise.resolve({ ...reply({}), outcome, exitCode: null, stderr: "observer stopped" })
+				: run(args, call);
 		const response = await f.core.execute({ op: "wait", condition: "child_exit", target }, context);
-		assert.equal(response.outcome, outcome === "spawn_error" ? "observation_failed" : outcome);
+		assert.equal(response.ok, false);
+		assert.equal(
+			response.outcome,
+			outcome === "spawn_error" ? "observation_failed" : outcome === "timeout" ? "not_observed" : outcome,
+		);
 		assert.equal(response.effects.state, "none");
-		assert.match(response.error ?? "", /Inspect the target's current state/);
-		assert.match(response.error ?? "", /did not stop terminal work/);
+		const data = response.data as { condition: string; ending?: string; meaning?: string; observer?: unknown };
+		assert.equal(data.condition, "child_exit");
+		assert.ok(data.observer, "the observer's CLI result stays in the data");
+		if (outcome === "timeout") {
+			assert.equal(response.error, undefined);
+			assert.equal(data.ending, "deadline");
+			assert.match(data.meaning ?? "", /not observed within this wait's budget\. Terminal work continues/);
+			assert.match(data.meaning ?? "", /Inspect the target's current state, then wait again or act\./);
+			assert.equal(resultChannels(response).isError, false);
+		} else {
+			assert.match(response.error ?? "", /Inspect the target's current state/);
+			assert.match(response.error ?? "", /did not stop terminal work/);
+			assert.equal(resultChannels(response).isError, true);
+		}
+	}
+});
+
+test("a budget that ends inside the child observer or its first process read is not_observed, not a bare timeout", async () => {
+	for (const interrupted of ["wait", "process"] as const) {
+		const f = fixture();
+		const time = operationTime();
+		const run = f.transport.run.bind(f.transport);
+		f.transport.run = async (args, call) => {
+			const index = args.indexOf("call");
+			const method = index >= 0 ? args[index + 1] : undefined;
+			if (
+				(interrupted === "wait" && args.includes("wait")) ||
+				(interrupted === "process" && method?.endsWith(".process"))
+			) {
+				time.advance(time.budget.workEndsAt);
+				return { ...reply({}), outcome: "cancelled", exitCode: null };
+			}
+			return run(args, call);
+		};
+		try {
+			const response = await f.core.execute(
+				{ op: "wait", condition: "child_exit", timeoutMs: 1000, target },
+				{ ...context, budget: time.budget },
+			);
+			assert.equal(response.outcome, "not_observed", interrupted);
+			assert.equal(response.error, undefined);
+			assert.equal(response.target?.blockId, block);
+			assert.equal((response.data as { ending?: string }).ending, "deadline");
+			assert.equal((response.data as { condition?: string }).condition, "child_exit");
+			assert.equal(resultChannels(response).isError, false);
+		} finally {
+			time.budget.dispose();
+			f.core.dispose();
+		}
+	}
+});
+
+test("a budget stop during target resolution, before observation starts, stays a timeout error", async () => {
+	const f = fixture();
+	const time = operationTime();
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = async (args, call) => {
+		if (args.includes("whoami")) time.advance(time.budget.workEndsAt);
+		return run(args, call);
+	};
+	try {
+		for (const request of [
+			{ op: "wait" as const, condition: "text" as const, text: "ready", timeoutMs: 1000, target },
+			{ op: "wait" as const, condition: "child_exit" as const, timeoutMs: 1000, target },
+		]) {
+			const response = await f.core.execute(request, { ...context, budget: time.budget });
+			assert.equal(response.outcome, "timeout", request.condition);
+			assert.equal((response.data as { ending?: string } | undefined)?.ending, undefined);
+			assert.equal(resultChannels(response).isError, true);
+		}
+		assert.equal(
+			f.transport.calls.some((call) => call.args.includes("events") || call.method?.endsWith(".format")),
+			false,
+		);
+	} finally {
+		time.budget.dispose();
+		f.core.dispose();
 	}
 });
 
@@ -1846,6 +2150,111 @@ test("owned lookup filters this owner's stored claims before pagination without 
 	assert.deepEqual(f.store.state, before);
 });
 
+async function phaseFixture() {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const original = f.store.state.records[0];
+	assert.ok(original);
+	const records: Array<[string, OwnershipRecord["phase"], ResourceRef[]]> = [
+		["open-confirmed", "confirmed", original.resources],
+		["finished-closed", "closed", original.resources],
+		["finished-released", "released", []],
+		["finished-input", "confirmed", []],
+		["open-unknown", "unknown", []],
+		["open-pending", "pending", []],
+		["finished-cleanup", "closed", []],
+	];
+	f.store.state.records = records.map(([callId, phase, resources]) => ({ ...original, callId, phase, resources }));
+	f.store.update = async () => {
+		throw new Error("Selection and observation must not write ownership.");
+	};
+	f.transport.calls.length = 0;
+	return f;
+}
+
+test("pages without recordId or phase select open claims; a phase or record ID also selects finished records", async () => {
+	const f = await phaseFixture();
+	const open = ["open-confirmed", "open-unknown", "open-pending"];
+	for (const op of ["owned", "observe", "reconcile"] as const) {
+		const page = await f.core.execute({ op }, context);
+		assert.deepEqual(
+			page.records?.map((record) => record.recordId),
+			open,
+			op,
+		);
+		assert.equal(page.coverage.totalRecords, 3, `${op} counts the selected set`);
+		assert.equal(page.coverage.returnedRecords, 3);
+		assert.equal(page.coverage.omittedRecords, 0);
+		assert.equal(page.coverage.nextOffset, undefined);
+	}
+	const owned = await f.core.execute({ op: "owned" }, context);
+	assert.match((owned.data as { note: string }).note, /open claims only; select a phase to list finished records/);
+	const selections: Array<[Record<string, unknown>, string[]]> = [
+		[{ phase: "closed" }, ["finished-closed", "finished-cleanup"]],
+		[{ phase: "confirmed" }, ["open-confirmed", "finished-input"]],
+		[{ phase: "released" }, ["finished-released"]],
+		[{ recordId: "finished-input" }, ["finished-input"]],
+		[{ recordId: "finished-closed", phase: "closed" }, ["finished-closed"]],
+		[{ recordId: "finished-closed", phase: "confirmed" }, []],
+	];
+	for (const [selector, expected] of selections)
+		for (const op of ["owned", "observe"] as const) {
+			const page = await f.core.execute({ op, ...selector } as Parameters<typeof f.core.execute>[0], context);
+			assert.deepEqual(
+				page.records?.map((record) => record.recordId),
+				expected,
+				`${op} ${JSON.stringify(selector)}`,
+			);
+			assert.equal(page.coverage.totalRecords, expected.length);
+		}
+	const exact = await f.core.execute({ op: "reconcile", recordId: "finished-released" }, context);
+	assert.deepEqual(
+		exact.records?.map((record) => record.recordId),
+		["finished-released"],
+	);
+	f.store.state.records = f.store.state.records.filter((record) => !open.includes(record.callId));
+	for (const op of ["owned", "observe", "reconcile"] as const) {
+		const empty = await f.core.execute({ op }, context);
+		assert.equal(empty.ok, true, `${op} without open claims is an empty page, not an error`);
+		assert.deepEqual(empty.records, []);
+		assert.equal(empty.coverage.totalRecords, 0);
+	}
+});
+
+test("observing a finished record without resources is complete; pending and unknown ones stay unresolved", async () => {
+	const f = await phaseFixture();
+	for (const recordId of ["finished-input", "finished-released", "finished-cleanup"]) {
+		const response = await f.core.execute({ op: "observe", recordId }, context);
+		assert.equal(response.ok, true, recordId);
+		assert.equal(response.outcome, "observed");
+		const [report] = (response.data as WorkReports).reports;
+		assert.equal(report?.complete, true);
+		assert.deepEqual(report?.observations, []);
+		assert.equal(report?.error, undefined);
+		assert.equal(
+			(report as { note?: string } | undefined)?.note,
+			"This finished record holds no owned resources to observe.",
+		);
+	}
+	const finishedPage = await f.core.execute({ op: "observe", phase: "confirmed" }, context);
+	assert.deepEqual(
+		(finishedPage.data as WorkReports).reports.map((report) => [report.recordId, report.complete]),
+		[
+			["open-confirmed", true],
+			["finished-input", true],
+		],
+	);
+	assert.equal(finishedPage.outcome, "observed");
+	for (const recordId of ["open-unknown", "open-pending"]) {
+		const response = await f.core.execute({ op: "observe", recordId }, context);
+		assert.equal(response.ok, false, recordId);
+		assert.equal(response.outcome, "observation_incomplete");
+		const [report] = (response.data as WorkReports).reports;
+		assert.equal(report?.complete, false);
+		assert.match(report?.error ?? "", /No acknowledged resource IDs/);
+	}
+});
+
 function workProcess(index: number) {
 	return index === 0 ? { child: { pid: 42 }, last_exit: null } : { last_exit: { exit_code: index === 2 ? 7 : 0 } };
 }
@@ -2456,7 +2865,8 @@ test("text wait timeout keeps refresh snapshots within the deadline and count ca
 		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
 	const response = await pending;
-	assert.equal(response.outcome, "timeout");
+	assert.equal(response.outcome, "not_observed");
+	assert.equal((response.data as { ending?: string }).ending, "deadline");
 	assert.ok(captures >= 2 && captures <= 6, `captured ${captures} bounded snapshots`);
 	const settled = captures;
 	t.mock.timers.tick(10000);
@@ -2713,8 +3123,9 @@ for (const [total, eventAt] of [
 				const result = await pending;
 				assert.equal(
 					result.outcome,
-					mode === "event" ? "condition_observed" : mode === "deadline" ? "timeout" : "observation_failed",
+					mode === "event" ? "condition_observed" : mode === "deadline" ? "not_observed" : "observation_failed",
 				);
+				assert.equal(resultChannels(result).isError, mode === "source_error");
 				assert.ok(time.budget.elapsed() <= total);
 				assert.ok(f.transport.calls.filter((call) => call.method?.endsWith(".format")).length <= 2);
 			} finally {
@@ -2758,15 +3169,137 @@ test("a status deadline retains the exact block's last observed nonmatching stat
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		time.advance(time.budget.workEndsAt);
 		const response = await pending;
-		assert.equal(response.outcome, "timeout");
+		assert.equal(response.ok, false);
+		assert.equal(response.outcome, "not_observed");
+		assert.equal(response.error, undefined, "a budget ending carries no error");
 		assert.equal(response.target?.blockId, block);
-		assert.deepEqual((response.data as { snapshot?: unknown }).snapshot, snapshot);
-		assert.match(JSON.stringify(response.data), /condition was not observed/);
-		assert.match(response.error ?? "", /Inspect the target's current state/);
+		const data = response.data as Record<string, unknown>;
+		assert.deepEqual(data.snapshot, snapshot);
+		assert.equal(data.condition, "status");
+		assert.equal(data.ending, "deadline");
+		assert.equal(data.snapshots, 1);
+		assert.deepEqual(data.events, []);
+		assert.equal(data.eventCount, 0);
+		assert.equal(data.observer, "cancelled");
+		assert.equal(
+			data.meaning,
+			"The condition was not observed within this wait's budget. Terminal work continues; this does not establish failure or exit. Inspect the target's current state, then wait again or act.",
+		);
+		assert.equal(response.coverage.deadline?.effectiveMs, 120000);
+		assert.equal(resultChannels(response).isError, false);
 	} finally {
 		time.budget.dispose();
 		f.core.dispose();
 	}
+});
+
+/** An event source that stays open until the call stops it. */
+function holdEvents(f: ReturnType<typeof fixture>, onCall?: (call: CliCall) => void): void {
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => {
+		if (!args.includes("events")) return run(args, call);
+		onCall?.(call);
+		return new Promise((resolve) =>
+			call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", exitCode: null }), {
+				once: true,
+			}),
+		);
+	};
+}
+
+test("a wait that spends its snapshot limit without the condition is not_observed, not an error", async (t) => {
+	const f = fixture();
+	const caller = new AbortController();
+	let eventCall!: CliCall;
+	let snapshots = 0;
+	holdEvents(f, (call) => {
+		eventCall = call;
+	});
+	f.transport.handler = (method) => {
+		if (!method.endsWith(".program_status")) return undefined;
+		snapshots++;
+		return reply({ records: [{ id: "build", state: "working" }] });
+	};
+	const pending = f.core.execute(
+		{ op: "wait", condition: "status", state: "done", maxSnapshots: 2, timeoutMs: 15000, target },
+		{ ...context, signal: caller.signal },
+	);
+	t.after(async () => {
+		caller.abort();
+		await pending;
+		f.core.dispose();
+	});
+	const settle = async (count: number) => {
+		while (snapshots < count) await new Promise<void>((resolve) => setImmediate(resolve));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+	};
+	await settle(1);
+	eventCall.onLine?.(terminalEvent("program_status_changed"));
+	await settle(2);
+	eventCall.onLine?.(terminalEvent("program_status_changed"));
+	const response = await pending;
+	assert.equal(response.ok, false);
+	assert.equal(response.outcome, "not_observed");
+	assert.equal(response.error, undefined);
+	const data = response.data as Record<string, unknown>;
+	assert.equal(data.ending, "snapshot_limit");
+	assert.equal(data.snapshots, 2);
+	assert.equal(data.condition, "status");
+	assert.equal(data.eventCount, 2);
+	assert.match(String(data.meaning), /not observed within this wait's budget/);
+	assert.equal(snapshots, 2);
+	assert.equal(resultChannels(response).isError, false);
+});
+
+test("a snapshot read that runs out of the wait's remaining window ends the wait as not_observed", async () => {
+	for (const [timeoutMs, expected] of [
+		[1000, "not_observed"],
+		[60000, "timeout"],
+	] as const) {
+		const f = fixture({ maxWaitMs: 60000 });
+		holdEvents(f);
+		f.transport.handler = (method) =>
+			method.endsWith(".format")
+				? { ...reply({}), outcome: "timeout", exitCode: null, stderr: "read stopped" }
+				: undefined;
+		try {
+			const response = await f.core.execute(
+				{ op: "wait", condition: "text", text: "ready", timeoutMs, target },
+				context,
+			);
+			assert.equal(response.outcome, expected, `${timeoutMs} ms`);
+			if (expected === "not_observed") {
+				assert.equal((response.data as { ending?: string }).ending, "deadline");
+				assert.equal((response.data as { snapshots?: number }).snapshots, 0);
+				assert.equal(resultChannels(response).isError, false);
+			} else {
+				// A read that times out on its own allowance while the wait's window remains is a CLI failure.
+				assert.match(response.error ?? "", /read stopped/);
+				assert.equal(resultChannels(response).isError, true);
+			}
+		} finally {
+			f.core.dispose();
+		}
+	}
+});
+
+test("caller cancellation during a snapshot read stays a cancelled error", async () => {
+	const f = fixture();
+	const caller = new AbortController();
+	holdEvents(f);
+	f.transport.handler = (method) => {
+		if (!method.endsWith(".format")) return undefined;
+		caller.abort();
+		return { ...reply({}), outcome: "cancelled", exitCode: null };
+	};
+	const response = await f.core.execute(
+		{ op: "wait", condition: "text", text: "ready", timeoutMs: 5000, target },
+		{ ...context, signal: caller.signal },
+	);
+	assert.equal(response.outcome, "cancelled");
+	assert.match(response.error ?? "", /cancelled before the condition was established/);
+	assert.equal(resultChannels(response).isError, true);
+	f.core.dispose();
 });
 
 test("early cancellation bounds a non-cooperative event process with the same final signal", async () => {
@@ -2840,7 +3373,10 @@ test("escaped Unicode capture continuation cannot match after the shared work cu
 			{ op: "wait", condition: "text", text: "ready", timeoutMs: 1000, target },
 			{ ...context, budget: time.budget },
 		);
-		assert.equal(result.outcome, "timeout");
+		assert.equal(result.outcome, "not_observed", "a capture that the budget interrupts ends the wait with its data");
+		assert.equal((result.data as { ending?: string }).ending, "deadline");
+		assert.equal((result.data as { snapshots?: number }).snapshots, 0, "the interrupted capture is not evaluated");
+		assert.equal((result.data as { snapshot?: unknown }).snapshot, undefined);
 		assert.equal(blobs, 1);
 		assert.equal(time.budget.elapsed(), 900);
 	} finally {
