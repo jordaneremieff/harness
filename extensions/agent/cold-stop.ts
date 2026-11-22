@@ -12,6 +12,8 @@ type Reply = { busy: true } | { result: ColdStopResult };
 
 /** Only the winner opens storage. A busy lease requests attachment to its actual writer, never another launch. */
 export async function withColdWriter(metadata: HostMetadata, stop: () => Promise<ColdStopResult>): Promise<Reply> {
+	// The caller that reads these diagnostics can exit first. A closed pipe must not end the stop or hold its lease.
+	for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
 	const { claim } = hostPaths(metadata);
 	mkdirSync(dirname(claim), { recursive: true, mode: 0o700 });
 	const writer = tryNativeWriterLease(claim);
