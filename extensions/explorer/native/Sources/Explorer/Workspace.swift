@@ -43,6 +43,8 @@ let imageMedia: [String: String] = ["png": "image/png", "jpg": "image/jpeg", "jp
 final class Workspace: @unchecked Sendable {
     let root: URL
     let isGit: Bool
+    let containingGitRoot: URL?
+    let indexCache = WorkspaceIndexCache()
     private let assetLock = NSLock()
     private var assets: [String: (path: String, at: String?)] = [:]
     private var assetOrder: [String] = []
@@ -65,19 +67,28 @@ final class Workspace: @unchecked Sendable {
               details.st_mode & S_IFMT == S_IFDIR else { throw ExplorerError("invalid-root", "The root must be an existing absolute folder.") }
         root = URL(fileURLWithPath: real, isDirectory: true)
         let output = try? Self.invoke(root, ["rev-parse", "--show-toplevel"], limit: 8192, seconds: 2)
-        isGit = output.map { $0.status == 0 && !$0.truncated && canonical(String($0.string.dropLast())) == real } ?? false
+        let gitRoot = output.flatMap { result -> String? in
+            guard result.status == 0, !result.truncated else { return nil }
+            return canonical(String(result.string.dropLast()))
+        }
+        containingGitRoot = gitRoot.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        isGit = gitRoot == real
     }
 
-    private static func invoke(_ root: URL, _ args: [String], limit: Int, seconds: Double,
-                               onChunk: ((Data) -> Bool)? = nil) throws -> CommandResult {
+    static func invoke(_ root: URL, _ args: [String], input: Data? = nil, limit: Int, seconds: Double,
+                       inWorkTree: Bool = false, onChunk: ((Data) -> Bool)? = nil) throws -> CommandResult {
         let safe = ["--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat",
                     "-c", "core.precomposeUnicode=false", "-c", "core.quotePath=false", "-c", "diff.external=", "-c", "protocol.allow=never",
                     "-c", "submodule.recurse=false", "-c", "core.attributesFile=/dev/null"]
+        let deadline = uptime() + seconds
+        var environment = gitEnvironment
+        if inWorkTree { environment["GIT_WORK_TREE"] = root.path }
+        if args.first == "check-ignore" { environment.removeValue(forKey: "GIT_LITERAL_PATHSPECS") }
         var filters: [String] = []
         if ["diff", "status", "grep", "diff-files", "diff-index"].contains(args.first ?? "") {
             // Work-tree comparisons can otherwise run a clean/process converter from the repository's config.
             let configured = try command("/usr/bin/git", safe + ["config", "-z", "--name-only", "--get-regexp", #"^filter\..+\.(clean|smudge|process|required)$"#],
-                                         cwd: root, environment: gitEnvironment, limit: 16 * kib, seconds: 1)
+                                         cwd: root, environment: environment, limit: 16 * kib, seconds: min(1, seconds))
             guard !configured.truncated, configured.status == 0 || configured.status == 1 else {
                 throw ExplorerError("git", "The Git filter configuration could not be checked.")
             }
@@ -88,7 +99,10 @@ final class Workspace: @unchecked Sendable {
                 filters += ["-c", key + (key.hasSuffix(".required") ? "=false" : "=")]
             }
         }
-        return try command("/usr/bin/git", safe + filters + args, cwd: root, environment: gitEnvironment, limit: limit, seconds: seconds, onChunk: onChunk)
+        let remaining = deadline - uptime()
+        guard remaining > 0 else { throw ExplorerError("timeout", "The Git operation exceeded its time limit.") }
+        return try command("/usr/bin/git", safe + filters + args, cwd: root, environment: environment,
+                           input: input, limit: limit, seconds: remaining, onChunk: onChunk)
     }
 
     func git(_ args: [String], limit: Int = 32 * mib, seconds: Double = 6) throws -> CommandResult {
@@ -153,72 +167,6 @@ final class Workspace: @unchecked Sendable {
             if path.hasSuffix("/"), i + 1 < paths.count, paths[i + 1].hasPrefix(path) { return nil }
             return path
         }, output.truncated)
-    }
-
-    func files(maxPaths: Int = 200_000) throws -> (paths: [String], truncated: Bool) {
-        if isGit {
-            return try gitFiles(["--cached", "--others", "--exclude-standard", "--deduplicate"], maxPaths: maxPaths)
-        }
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey]
-        guard let scan = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys) else {
-            throw ExplorerError("io", "The folder could not be listed.")
-        }
-        let prefix = root.path == "/" ? 1 : root.path.count + 1
-        var names: [String] = [], visited = 0, bytes = 0
-        let deadline = ProcessInfo.processInfo.systemUptime + 4
-        for case let url as URL in scan {
-            if url.lastPathComponent.lowercased() == ".git" { scan.skipDescendants(); continue }
-            visited += 1
-            if visited > maxPaths * 4 || ProcessInfo.processInfo.systemUptime > deadline { return (names.sorted(), true) }
-            guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true || values.isSymbolicLink == true else { continue }
-            let path = String(url.path.dropFirst(prefix))
-            guard validPath(path) else { continue }
-            bytes += path.utf8.count
-            if names.count == maxPaths || bytes > 26 * mib { return (names.sorted(), true) }
-            names.append(path)
-        }
-        return (names.sorted(), false)
-    }
-
-    func folder(_ path: String, maxEntries: Int = 5000) throws -> (entries: [[String: String]], truncated: Bool) {
-        guard let (fd, _) = try openContained(root, path) else {
-            throw ExplorerError("not-found", "The folder no longer exists.")
-        }
-        guard let directory = fdopendir(fd) else {
-            Darwin.close(fd)
-            throw ExplorerError("io", "The folder could not be listed.")
-        }
-        defer { closedir(directory) }
-        let deadline = ProcessInfo.processInfo.systemUptime + 4
-        var entries: [[String: String]] = [], visited = 0, bytes = 0
-        while true {
-            errno = 0
-            guard let row = readdir(directory) else {
-                if errno != 0 { throw ExplorerError("io", "The folder could not be listed.") }
-                return (entries, false)
-            }
-            visited += 1
-            if visited > maxEntries * 4 + 2 || ProcessInfo.processInfo.systemUptime > deadline { return (entries, true) }
-            let name = withUnsafeBytes(of: &row.pointee.d_name) { raw in
-                String(bytes: raw.prefix(Int(row.pointee.d_namlen)), encoding: .utf8)
-            }
-            guard let name else { continue }
-            let relative = path + "/" + name
-            guard validPath(relative) else { continue }
-            var details = stat()
-            guard fstatat(fd, name, &details, AT_SYMLINK_NOFOLLOW) == 0 else { continue }
-            if details.st_mode & S_IFMT == S_IFLNK {
-                guard let (child, _) = try? openContained(root, relative) else { continue }
-                let status = fstat(child, &details)
-                Darwin.close(child)
-                guard status == 0 else { continue }
-            }
-            let kind = details.st_mode & S_IFMT
-            guard kind == S_IFDIR || kind == S_IFREG else { continue }
-            bytes += name.utf8.reduce(40) { count, byte in count + (byte < 32 ? 6 : byte == 34 || byte == 92 ? 2 : 1) }
-            if entries.count >= maxEntries || bytes > 3 * mib { return (entries, true) }
-            entries.append(["name": name, "kind": kind == S_IFDIR ? "folder" : "file"])
-        }
     }
 
     func checkedCommit(_ ref: String) -> String? {

@@ -7,6 +7,8 @@ extension Workspace {
             throw ExplorerError("invalid", "Search text must be a single line of at most 1024 bytes.")
         }
         let maxRows = min(2000, max(1, limit)), deadline = ProcessInfo.processInfo.systemUptime + 4
+        let matcher = try SearchMatcher(query, regex: regex, sensitive: caseSensitive)
+        var index = indexCache.current()
         var results: [[String: Any]] = [], bytes = 0, truncated = false
         func append(_ path: String, _ line: Int, _ column: Int, _ text: String) -> Bool {
             let preview = String(text.prefix(240))
@@ -15,44 +17,55 @@ extension Workspace {
             results.append(["path": path, "line": line, "column": column, "preview": preview]); bytes += cost
             return true
         }
-        if isGit {
-            var args = ["grep", "--no-textconv", "--no-recurse-submodules", "--threads=4", "-z", "-n", "--column", "-I", "-m", String(maxRows + 1)]
-            args.append(regex ? "-E" : "-F")
+        func grep(_ relative: String, threads: Int, seconds: Double) throws -> SearchGrepOutput {
+            let folder = relative.isEmpty ? root : root.appendingPathComponent(relative)
+            guard canonical(folder.path) == folder.path, relative.isEmpty || RepositoryMarker.read(folder.path) != nil else {
+                throw ExplorerError("git", "The repository is not available for search.")
+            }
+            let remaining = deadline - uptime()
+            guard remaining > 0 else { throw ExplorerError("timeout", "The search exceeded its time limit.") }
+            var args = ["grep", "--untracked", "--no-textconv", "--no-recurse-submodules", "--threads=\(threads)",
+                        "-z", "-n", "--column", "-I", "-m", String(maxRows + 1), regex ? "-E" : "-F"]
             if !caseSensitive { args.append("-i") }
             args += ["-e", query, "--"]
-            let output = try git(args, limit: 4 * mib, seconds: 2.5)
-            guard output.truncated || output.status == 0 || output.status == 1 else {
-                throw ExplorerError("invalid", regex ? "Git did not accept the regular expression." : "Git could not search the repository.")
+            return try SearchGrepOutput.collect { receive in
+                try Self.invoke(folder, args, limit: 4 * mib, seconds: min(seconds, remaining), inWorkTree: true, onChunk: receive)
             }
-            var i = output.data.startIndex
-            func next(_ delimiter: UInt8) -> Data.SubSequence? {
-                guard i < output.data.endIndex, let end = output.data[i...].firstIndex(of: delimiter) else { return nil }
-                let field = output.data[i..<end]; i = end + 1; return field
-            }
-            while let rawPath = next(0), let rawLine = next(0), let rawColumn = next(0), let rawText = next(10) {
-                guard let path = String(bytes: rawPath, encoding: .utf8), validPath(path),
-                      let line = Int(String(decoding: rawLine, as: UTF8.self)), let col = Int(String(decoding: rawColumn, as: UTF8.self)) else { continue }
-                // Git reports byte columns. Convert to JavaScript's UTF-16 positions.
-                let column = String(decoding: rawText.prefix(max(0, col - 1)), as: UTF8.self).utf16.count + 1
-                let text = previewText(rawText, byteColumn: col)
-                if !append(path, line, column, text) { break }
-            }
-            truncated = truncated || output.truncated
         }
-        if !truncated {
-            let candidates: (paths: [String], truncated: Bool)
-            if isGit {
-                let output = try git(["ls-files", "-z", "--others", "--exclude-standard"], limit: 2 * mib, seconds: 1)
-                let complete = output.data.last == 0 || output.data.isEmpty ? output.data : output.data.prefix(through: output.data.lastIndex(of: 0) ?? output.data.startIndex)
-                let names = complete.split(separator: 0).compactMap { String(bytes: $0, encoding: .utf8) }.filter(validPath)
-                candidates = (Array(names.prefix(10_000)), output.truncated || names.count > 10_000)
-            } else {
-                candidates = try files(maxPaths: 20_000)
+        var capped = false
+        func consume(_ result: Result<SearchGrepOutput, Error>, in repository: String) {
+            guard case .success(let output) = result else { truncated = true; return }
+            truncated = truncated || output.truncated
+            output.eachRecord { name, line, col, rawText in
+                let path = childPath(repository, name)
+                guard validPath(path) else { return true }
+                // Git reports byte columns. Convert to JavaScript's UTF-16 positions.
+                let column = String(decoding: rawText.prefix(col - 1), as: UTF8.self).utf16.count + 1
+                if append(path, line, column, previewText(rawText, byteColumn: col)) { return true }
+                capped = true
+                return false
             }
-            let matcher = try SearchMatcher(query, regex: regex, sensitive: caseSensitive)
-            truncated = candidates.truncated
+        }
+        if isGit { consume(Result { try grep("", threads: 4, seconds: 2.5) }, in: "") }
+        if !capped, index == nil {
+            let remaining = deadline - uptime()
+            if remaining > 0 { index = buildIndex(seconds: min(1.25, remaining), maxPaths: 20_000) }
+            else { truncated = true }
+        }
+        let repositories = index?.repositories.map(\.path) ?? []
+        for start in stride(from: 0, to: repositories.count, by: 4) {
+            guard !capped else { break }
+            guard uptime() < deadline else { truncated = true; break }
+            let batch = repositories[start..<min(start + 4, repositories.count)]
+            let outputs = repositoryBatch(batch) { relative in Result { try grep(relative, threads: 1, seconds: 1.5) } }
+            for (relative, result) in zip(batch, outputs) {
+                consume(result, in: relative)
+                if capped { break }
+            }
+        }
+        if !capped {
             var scannedBytes = 0
-            scan: for path in candidates.paths {
+            scan: for path in index?.plainPaths ?? [] {
                 guard ProcessInfo.processInfo.systemUptime < deadline, scannedBytes < 32 * mib else { truncated = true; break }
                 guard let (fd, _) = try? openContained(root, path) else { continue }
                 let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -71,7 +84,39 @@ extension Workspace {
                 }
             }
         }
-        return ["results": results, "truncated": truncated, "source": isGit ? "git" : "scan"]
+        return ["results": results, "truncated": truncated || index?.truncated == true, "source": index?.source ?? (isGit ? "git" : "scan")]
+    }
+}
+
+struct SearchGrepOutput {
+    let data: Data
+    let truncated: Bool
+
+    static func collect(_ run: (_ receive: @escaping (Data) -> Bool) throws -> CommandResult) throws -> SearchGrepOutput {
+        var data = Data()
+        do {
+            let output = try run { data.append($0); return true }
+            guard output.truncated || output.status == 0 || output.status == 1 else {
+                throw ExplorerError("git", "Git could not search the repository.")
+            }
+            return SearchGrepOutput(data: data, truncated: output.truncated)
+        } catch let error as ExplorerError where error.code == "timeout" {
+            return SearchGrepOutput(data: data, truncated: true)
+        }
+    }
+
+    func eachRecord(_ visit: (String, Int, Int, Data.SubSequence) -> Bool) {
+        var i = data.startIndex
+        func next(_ delimiter: UInt8) -> Data.SubSequence? {
+            guard i < data.endIndex, let end = data[i...].firstIndex(of: delimiter) else { return nil }
+            let field = data[i..<end]; i = end + 1; return field
+        }
+        while let rawPath = next(0), let rawLine = next(0), let rawColumn = next(0), let rawText = next(10) {
+            guard let path = String(bytes: rawPath, encoding: .utf8), validPath(path),
+                  let line = Int(String(decoding: rawLine, as: UTF8.self)), line > 0,
+                  let column = Int(String(decoding: rawColumn, as: UTF8.self)), column > 0 else { continue }
+            if !visit(path, line, column, rawText) { break }
+        }
     }
 }
 

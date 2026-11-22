@@ -62,6 +62,10 @@ enum ExplorerCheck {
         try Data("export const answer = 42;\n".utf8).write(to: file)
         try Data("# Preview\n\nA **rendered** paragraph.\n\n[Source](example.ts)\n".utf8).write(to: root.appendingPathComponent("guide.md"))
         try Data("one\r\n  two\r\n".utf8).write(to: root.appendingPathComponent("crlf.txt"))
+        let embedded = root.appendingPathComponent("embedded")
+        try FileManager.default.createDirectory(at: embedded, withIntermediateDirectories: false)
+        try git(["-C", embedded.path, "init", "--quiet", "--template=", "-b", "topic"])
+        try Data("answer from another repository\n".utf8).write(to: embedded.appendingPathComponent("text.txt"))
         let fake = try FakeLive()
         defer { fake.stop() }
         let config = LiveConfiguration(version: 1, endpoint: URL(string: "http://127.0.0.1:\(fake.port)")!, token: FakeLive.token)
@@ -76,14 +80,17 @@ enum ExplorerCheck {
               return result;
             }
             const hello = await accept('hello');
-            if (hello.root.kind !== 'git' || hello.root.branch !== 'main' || hello.launch.path !== 'example.ts') throw Error('hello location');
+            if (hello.root.kind !== 'git' || hello.root.branch !== 'main' || hello.launch.path !== 'example.ts' || hello.base.path !== hello.root.path || hello.base.name !== hello.root.name) throw Error('hello location');
             const draft = {mode:'ask', text:'Unsaved question', range:{side:'head',start:1,end:1}, commit:null};
             await accept('state.save', {path:'example.ts',draft});
             if ((await accept('hello')).launch.draft?.text !== draft.text) throw Error('draft not retained');
             await accept('state.save', {path:'example.ts',draft:null});
             if ((await accept('hello')).launch.draft !== undefined) throw Error('draft not cleared');
             const files = await accept('files.list');
-            if (!files.paths.includes('example.ts')) throw Error('file list');
+            if (!files.paths.includes('example.ts') || !files.paths.includes('embedded/text.txt') || files.source !== 'mixed' || files.repositories[0]?.path !== 'embedded') throw Error('file index');
+            const rootEntries = (await accept('files.folder', {path:''})).entries;
+            if (rootEntries[0]?.name !== 'cache' || rootEntries[0]?.ignored !== true || rootEntries[1]?.repo?.branch !== 'topic' || rootEntries.some(entry => entry.name === '.git')) throw Error('root folder listing');
+            if ((await accept('files.folder', {path:'cache'})).entries[0]?.ignored !== true) throw Error('folder ignore rules');
             if (files.paths.includes('private.log') || files.ignored.paths.join() !== 'cache/,private.log') throw Error('ignored file list');
             const filesTab = document.querySelector('[data-tab="files"]');
             filesTab.click();
@@ -112,7 +119,7 @@ enum ExplorerCheck {
             const diff = await accept('review.diff', {scope, path:'example.ts'});
             if (diff.hunks.length !== 1 || !diff.base.includes('41') || !diff.head.includes('42')) throw Error('review diff');
             const found = await accept('search', {query:'answer'});
-            if (!found.results.some(row => row.path === 'example.ts' && row.line === 1)) throw Error('search results');
+            if (found.source !== 'mixed' || !found.results.some(row => row.path === 'example.ts' && row.line === 1) || !found.results.some(row => row.path === 'embedded/text.txt')) throw Error('search results');
             const note = await accept('notes.write',{op:'create',note:{path:'example.ts',side:'head',start:1,end:1,commit:null,quote:'export const answer = 42;',text:'Notice',state:'open',author:'operator'}});
             if (!(await accept('notes.list')).notes.some(item => item.id === note.note.id)) throw Error('note not retained');
             const until = async (test, label) => {
@@ -156,6 +163,7 @@ enum ExplorerCheck {
             const threadId = '00000000-0000-4000-8000-000000000002';
             const original = globalThis.explorer.receive;
             globalThis.explorer.receive = event => {
+              if (event.type === 'files.changed' && event.paths.includes('cache/added.txt')) globalThis.__verifiedChange = event;
               if (event.type === 'promptState' && event.requestId === requestId && event.threadId === threadId && event.text === 'Verified reply' && event.status === 'answer') globalThis.__verifiedAnswer = true;
               return original(event);
             };
@@ -201,14 +209,32 @@ enum ExplorerCheck {
             const folder = document.querySelector('[data-path="cache"]');
             const added = document.querySelector('[data-path="cache/added.txt"]');
             if (folder?.ariaExpanded !== 'true' || !added?.classList.contains('is-ignored')) throw Error('ignored folder did not refresh in place');
+            const change = globalThis.__verifiedChange;
+            if (!change?.structural?.includes('cache/added.txt') || !change?.outside?.includes('cache/added.txt')) throw Error('file event subsets');
             return true;
             """, arguments: [:], in: nil, contentWorld: .page)
             guard refreshed as? Bool == true else { throw ExplorerError("verify", "The ignored folder did not refresh.") }
             try await verifyEditor(host.page.view)
+            _ = try await host.page.view.callAsyncJavaScript("""
+            const call = (type, fields) => globalThis.webkit.messageHandlers.explorer.postMessage({ v:1, type, ...fields });
+            const receive = globalThis.explorer.receive;
+            let opened;
+            globalThis.explorer.receive = event => {
+              if (event.type === 'open' && event.root) opened = event;
+              return receive(event);
+            };
+            const first = await call('root.open', {path: nested});
+            if (!first.ok || opened?.root.path !== nested || opened?.base.path !== base) throw Error('open nested root');
+            const hello = await call('hello');
+            if (hello.root.branch !== 'topic' || hello.base.path !== base) throw Error('retained base root');
+            if ((await call('root.open', {path: base + '/..'})).ok || (await call('root.open', {path: base + '/.git'})).ok) throw Error('root escape');
+            if (!(await call('root.open', {path: base})).ok || opened?.root.path !== base) throw Error('return to base');
+            return true;
+            """, arguments: ["base": canonical(root.path) ?? root.path, "nested": canonical(embedded.path) ?? embedded.path], in: nil, contentWorld: .page)
             try await verifyTextMenu(host.page.view)
             try await verifyZoom(host)
         }
-        print("Explorer verified: real page, ignored folders and file events, Markdown preview, Git review, search, note marks, card drafts, live prompt and answer, file create, save, edit drafts, conflict, and zoom.")
+        print("Explorer verified: real page, nested roots, folder listings and file events, Markdown preview, Git review, search, note marks, card drafts, live prompt and answer, file create, save, edit drafts, conflict, text field menus, and zoom.")
     }
 
     private static func verifyTextMenu(_ view: WKWebView) async throws {
@@ -294,6 +320,7 @@ enum ExplorerCheck {
         select('[aria-label="New file path"]').value = 'notes/todo.md';
         [...select('#overlay').querySelectorAll('button')].find(b => b.textContent === 'Create file').click();
         await until('new file did not open in edit mode', textarea);
+        await until('created file did not appear in Files', () => row('notes/todo.md'));
         if (!select('#preview-mode').hidden || select('#wrap-lines').hidden) throw Error('Markdown edit mode controls');
         type('# Tasks\n');
         (await until('Save did not appear', () => control('Save'))).click();
@@ -303,7 +330,7 @@ enum ExplorerCheck {
         type('# My draft\n');
         row('example.ts').click();
         await until('navigation away from draft', () => !textarea() && select('#file-title').textContent === 'example.ts');
-        if (!row('notes/todo.md')?.querySelector('.edited-mark')) throw Error('draft marker lost');
+        await until('draft marker lost', () => row('notes/todo.md')?.querySelector('.edited-mark'));
         row('notes/todo.md').click();
         await until('draft not restored', () => textarea()?.value === '# My draft\n');
         const { root } = await app.request('hello');

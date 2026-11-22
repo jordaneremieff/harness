@@ -8,6 +8,7 @@ final class ExplorerHost {
     let store: URL
     let resources: URL
     private var workspace: Workspace
+    private var baseRoot: URL
     private var launch: Launch
     private let version: [String: Any]
     private let terminal: PaneTerminal?
@@ -28,6 +29,7 @@ final class ExplorerHost {
     init(_ launch: Launch, workspace: Workspace, store: URL, resources: URL, terminal: PaneTerminal? = nil, showIgnored: Bool = true) {
         self.showIgnored = showIgnored
         self.launch = launch; self.workspace = workspace; self.store = store; self.resources = resources; self.terminal = terminal
+        baseRoot = workspace.root
         shownPath = launch.path
         let manifest = buildRecord(resources)
         let source = manifest["source"] as? [String: Any]
@@ -116,23 +118,30 @@ final class ExplorerHost {
         }
     }
 
-    private func open(_ target: Launch) async throws {
+    private var baseInfo: [String: String] {
+        ["path": baseRoot.path, "name": baseRoot.lastPathComponent.isEmpty ? baseRoot.path : baseRoot.lastPathComponent]
+    }
+
+    private func open(_ target: Launch, withinBase: Bool = false) async throws {
         guard !opening, !closing else { throw ExplorerError("busy", "Explorer is busy.") }
         opening = true; defer { opening = false }
+        let base = withinBase ? baseRoot.path : nil
         let (next, info) = try await Task.detached(priority: .userInitiated) {
-            let next = try prepareWorkspace(target)
+            let next = try prepareWorkspace(target, within: base)
             return (next, next.info())
         }.value
         guard !closing else { throw ExplorerError("unavailable", "Explorer is closing.") }
         await page.flushDraft()
         guard !closing else { throw ExplorerError("unavailable", "Explorer is closing.") }
         let previous = workspace, previousLaunch = launch, previousPath = shownPath
+        let previousBase = baseRoot
         workspace = next; launch = target; shownPath = target.path
+        if !withinBase { baseRoot = next.root }
         page.replaceWorkspace(next)
         if page.ready {
-            let fields = state.restore(root: next.root, launch: target.fields).merging(["root": info]) { value, _ in value }
+            let fields = state.restore(root: next.root, launch: target.fields).merging(["root": info, "base": baseInfo]) { value, _ in value }
             guard await page.send("open", fields) else {
-                workspace = previous; launch = previousLaunch; shownPath = previousPath
+                workspace = previous; launch = previousLaunch; shownPath = previousPath; baseRoot = previousBase
                 page.replaceWorkspace(previous)
                 throw ExplorerError("page", "The page did not accept the location.")
             }
@@ -204,10 +213,14 @@ final class ExplorerHost {
         let workspace = self.workspace
         switch type {
         case "hello":
-            let launch = self.launch, version = version, live = live?.info ?? ["connected": false, "reason": "No live Pi conversation is attached."]
+            let launch = self.launch, base = baseInfo, version = version, live = live?.info ?? ["connected": false, "reason": "No live Pi conversation is attached."]
             let info = await Task.detached(priority: .userInitiated) { workspace.info() }.value
-            return ["root": info, "launch": state.restore(root: workspace.root, launch: launch.fields), "settings": state.settings,
+            return ["root": info, "base": base, "launch": state.restore(root: workspace.root, launch: launch.fields), "settings": state.settings,
                     "live": live, "build": version]
+        case "root.open":
+            guard page.ready else { throw ExplorerError("busy", "The page is not ready.") }
+            let target = try Launch(target: ["root": fields["path"] ?? jsonNull])
+            try await open(target, withinBase: true)
         case "clipboard.write":
             guard let text = fields["text"] as? String else { throw ExplorerError("invalid", "Clipboard text is required.") }
             NSPasteboard.general.clearContents()
@@ -260,8 +273,21 @@ final class ExplorerHost {
     }
 }
 
-func prepareWorkspace(_ launch: Launch) throws -> Workspace {
-    let workspace = try Workspace(launch.root)
+func prepareWorkspace(_ launch: Launch, within base: String? = nil) throws -> Workspace {
+    let root: String
+    if let base {
+        guard let resolved = canonical(launch.root), let relative = relativePath(resolved, to: base),
+              relative.isEmpty || validPath(relative) else {
+            throw ExplorerError("invalid-root", "The folder is outside the pane’s base root or in Git metadata.")
+        }
+        root = resolved
+    } else { root = launch.root }
+    let workspace = try Workspace(root)
+    if let base {
+        guard let relative = relativePath(workspace.root.path, to: base), relative.isEmpty || validPath(relative) else {
+            throw ExplorerError("invalid-root", "The folder changed while Explorer opened it.")
+        }
+    }
     if let path = launch.path, let (fd, _) = try openContained(workspace.root, path) { Darwin.close(fd) }
     return workspace
 }

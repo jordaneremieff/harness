@@ -51,7 +51,7 @@ struct ExplorerServices {
         }
         switch type {
         case "files.list":
-            let found = try workspace.files()
+            let found = workspace.files()
             var ignored: [String: Any] = ["paths": [String](), "truncated": false]
             if showIgnored {
                 do {
@@ -61,11 +61,14 @@ struct ExplorerServices {
                     ignored["error"] = "Git could not list ignored paths."
                 }
             }
-            return ["paths": found.paths, "truncated": found.truncated,
-                    "ignored": ignored, "source": workspace.isGit ? "git" : "scan"]
+            var result: [String: Any] = ["paths": found.paths, "truncated": found.truncated, "ignored": ignored,
+                                         "source": found.source, "repositories": found.repositories.map(\.fields)]
+            if found.repositoriesTruncated { result["repositoriesTruncated"] = true }
+            return result
         case "files.folder":
-            let found = try workspace.folder(path())
-            return ["entries": found.entries, "truncated": found.truncated]
+            guard let folder = fields["path"] as? String else { throw ExplorerError("invalid-path", "A folder path is required.") }
+            let found = try workspace.folder(folder, showIgnored: showIgnored)
+            return ["entries": found.entries.map(\.fields), "truncated": found.truncated]
         case "file.read", "markdown.render":
             if let at = fields["at"], !(at is String) { throw ExplorerError("invalid", "The revision is invalid.") }
             let at = fields["at"] as? String
@@ -79,6 +82,7 @@ struct ExplorerServices {
         case "file.create":
             guard fields["root"] as? String == workspace.root.path else { throw ExplorerError("invalid-root", "The open folder changed.") }
             try workspace.createFile(path())
+            workspace.indexCache.invalidate()
             return [:]
         case "review.scopes": return try workspace.reviewScopes(marker: marker())
         case "review.files", "review.diff":
