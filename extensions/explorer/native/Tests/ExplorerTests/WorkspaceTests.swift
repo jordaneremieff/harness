@@ -58,6 +58,9 @@ struct WorkspaceTests {
         #expect(try workspace.folder("build").entries.filter(\.ignored).map(\.name) == ["child"])
         #expect(try workspace.folder("node_modules").entries.allSatisfy(\.ignored))
         #expect(try workspace.ignoredFiles().paths == ignored.paths)
+        // mixed/* ignores the folder's children, not the folder, so its re-included child stays visible.
+        #expect(try workspace.folder("").entries.filter(\.ignored).map(\.name) == ["node_modules", "private.log"])
+        #expect(try workspace.folder("mixed").entries.map { [$0.name, String($0.ignored)] } == [["ignored.txt", "true"], ["ordinary.txt", "false"]])
         let hidden = ExplorerServices(workspace: workspace, store: root, resources: root, showIgnored: false)
         let listing = try hidden.handle("files.list", [:])
         #expect(listing["paths"] as? [String] == workspace.files().paths)
@@ -148,7 +151,7 @@ struct WorkspaceTests {
         #expect(rootPaths.first == "file")
         #expect(rootPaths.contains("embedded/file"))
         #expect(rootResults["source"] as? String == "mixed")
-        #expect(gitRoot.outsideRootRepository(["embedded/file", "ignored/cache", "file", "sub/file"], directories: []) == ["embedded/file", "ignored/cache", "sub/file"])
+        #expect(gitRoot.outsideRootRepository(["embedded/file", "ignored/cache", "file", "sub/file"]) == ["embedded/file", "ignored/cache", "sub/file"])
         #expect(workspace.buildIndex(maxPaths: 1).truncated)
     }
 

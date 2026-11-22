@@ -75,7 +75,6 @@ struct ExplorerChangeBatch {
     let gitRoots: [String]
     private var paths = Set<String>()
     private var structural = Set<String>()
-    private var directories = Set<String>()
     private var indexChanged = false
     private var rootChanged = false
     private var gitChanged = false
@@ -87,12 +86,11 @@ struct ExplorerChangeBatch {
 
     var hasChanges: Bool { rootChanged || gitChanged || indexChanged || notesChanged || !paths.isEmpty }
 
-    private mutating func insert(_ path: String, structural isStructural: Bool, directory: Bool) {
+    private mutating func insert(_ path: String, structural isStructural: Bool) {
         guard validPath(path) else { return }
         guard paths.count < 512 || paths.contains(path) else { rootChanged = true; return }
         paths.insert(path)
         if isStructural { structural.insert(path) }
-        if directory { directories.insert(path) }
     }
 
     mutating func record(_ path: String, _ flags: FSEventStreamEventFlags) {
@@ -112,15 +110,14 @@ struct ExplorerChangeBatch {
             let components = local.split(separator: "/")
             if let dotGit = components.firstIndex(where: { $0.lowercased() == ".git" }), dotGit > 0 {
                 switch components.dropFirst(dotGit + 1).joined(separator: "/") {
-                case "", "HEAD": insert(components[..<dotGit].joined(separator: "/"), structural: true, directory: true)
+                case "", "HEAD": insert(components[..<dotGit].joined(separator: "/"), structural: true)
                 case "index": indexChanged = true
                 case "info/exclude": rootChanged = true
                 default: break
                 }
             } else if validPath(local) {
                 let shapeFlags = kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemRenamed
-                insert(local, structural: flags & FSEventStreamEventFlags(shapeFlags) != 0,
-                       directory: flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir) != 0)
+                insert(local, structural: flags & FSEventStreamEventFlags(shapeFlags) != 0)
                 // An ignore rule can change the index and annotations without changing the affected files.
                 if components.last == ".gitignore" { rootChanged = true }
             }
@@ -130,7 +127,7 @@ struct ExplorerChangeBatch {
     mutating func flush() -> [(String, [String: Any])] {
         defer {
             if rootChanged || gitChanged || indexChanged || !structural.isEmpty { workspace.indexCache.invalidate() }
-            paths.removeAll(keepingCapacity: true); structural.removeAll(keepingCapacity: true); directories.removeAll(keepingCapacity: true)
+            paths.removeAll(keepingCapacity: true); structural.removeAll(keepingCapacity: true)
             rootChanged = false; gitChanged = false; indexChanged = false; notesChanged = false
         }
         var events: [(String, [String: Any])] = []
@@ -141,7 +138,7 @@ struct ExplorerChangeBatch {
         var fields: [String: Any] = ["paths": local]
         if !local.isEmpty {
             fields["structural"] = structural.sorted()
-            if workspace.isGit { fields["outside"] = workspace.outsideRootRepository(local, directories: directories) }
+            if workspace.isGit { fields["outside"] = workspace.outsideRootRepository(local) }
         }
         if gitChanged {
             fields["head"] = ["branch": workspace.gitValue(["symbolic-ref", "--quiet", "--short", "HEAD"]) as Any? ?? jsonNull,

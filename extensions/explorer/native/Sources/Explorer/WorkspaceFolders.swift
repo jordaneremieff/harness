@@ -136,7 +136,7 @@ extension Workspace {
         return Set(output.data.split(separator: 0).compactMap { String(bytes: $0.dropFirst(2), encoding: .utf8) })
     }
 
-    func outsideRootRepository(_ paths: [String], directories: Set<String>) -> [String] {
+    func outsideRootRepository(_ paths: [String]) -> [String] {
         guard isGit else { return [] }
         let indexed = Set(indexCache.current()?.repositories.map(\.path) ?? [])
         var nested: [String: Bool] = [:]
@@ -148,14 +148,13 @@ extension Workspace {
             nested[folder] = value
             return value
         }
-        func gitName(_ path: String) -> String { directories.contains(path) ? path + "/" : path }
         let inside = Set(paths.filter { path in
             guard let slash = path.lastIndex(of: "/") else { return false }
             return insideNestedRepository(String(path[..<slash]))
         })
-        let candidates = paths.filter { !inside.contains($0) }.map(gitName)
+        let candidates = paths.filter { !inside.contains($0) }
         let ignores = (try? Self.ignored(candidates, in: root, seconds: 1)) ?? []
-        return paths.filter { inside.contains($0) || ignores.contains(gitName($0)) }
+        return paths.filter { inside.contains($0) || ignores.contains($0) }
     }
 
     func folder(_ path: String, showIgnored: Bool = true, maxEntries: Int = 10_000) throws -> (entries: [FolderEntry], truncated: Bool) {
@@ -185,12 +184,13 @@ extension Workspace {
             bytes += jsonStringCost(name) + 96 + (repo?.branch.map(jsonStringCost) ?? 0)
             guard rows.count < maxEntries, bytes < 3 * mib else { return false }
             rows.append(FolderEntry(name: name, isDirectory: kind == S_IFDIR, repo: repo))
-            if gitRoot != nil { ignoreNames.append(childPath(gitPath, name) + (originalKind == S_IFDIR && repo == nil ? "/" : "")) }
+            // Git resolves whether a path is a folder; a trailing slash would let a pattern such as dir/* match the folder itself.
+            if gitRoot != nil { ignoreNames.append(childPath(gitPath, name)) }
             return true
         }
         var truncated = !complete
         if let gitRoot {
-            let parent = gitPath.isEmpty ? [] : [gitPath + "/"]
+            let parent = gitPath.isEmpty ? [] : [gitPath]
             do {
                 let ignored = try Self.ignored(parent + ignoreNames, in: gitRoot, seconds: min(2, deadline - uptime()))
                 let wholeFolder = parent.first.map(ignored.contains) ?? false
