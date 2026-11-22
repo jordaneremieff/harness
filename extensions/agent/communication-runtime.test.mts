@@ -564,7 +564,13 @@ it("preserves user model bytes and keeps communication out of input metadata", a
 		const input = native.items.find((entry) => entry.id === outcome.entryId);
 		assert.equal(input?.model?.[0]?.role, "user");
 		assert.equal(input?.model?.[0]?.content, message);
-		assert.deepEqual(input?.data, { author: { role: "unknown" }, class: "report", sender, requestId: "active" });
+		assert.deepEqual(input?.data, {
+			author: { role: "unknown" },
+			class: "report",
+			sender,
+			requestId: "active",
+			preserveOnStop: true,
+		});
 		const snapshot = await readConversationSnapshotPage(host.harness, ROOT, {}, BACKGROUND_CONTEXT, storageId);
 		const view = parseCommunicationView(
 			snapshot.entries.find((entry) => entry.id === String(outcome.entryId))?.communication,

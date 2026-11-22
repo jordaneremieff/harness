@@ -698,11 +698,7 @@ it("states the declared open work of a context head in its note, unchanged by la
 	await declare(first, "input-1", one.submissionId, [
 		{ sessionId: "99999999-9999-4999-8999-999999999999", submissionId: 9, requestId: "peer-task" },
 	]);
-	assert.equal(
-		(await resetConversation(first.root(), { requestId: "reset-1", handoff: "Handoff with open work." }, context))
-			.status,
-		"placed",
-	);
+	await first.root().reset("Handoff with open work.", context);
 
 	await ask(first, "second input", "input-2");
 	const before = recorded.chain.at(-1) ?? [];

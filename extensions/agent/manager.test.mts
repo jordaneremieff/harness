@@ -399,7 +399,12 @@ it("stops a live target once and never acquires a serving host for a cold stop",
 		manager.control("abort", { sessionId }, caller, { launch: false }),
 		HostEndpointUnavailableError,
 	);
-	await assert.rejects(manager.control("release", { sessionId }, caller), HostEndpointUnavailableError);
+	const release = (await manager.control("release", { sessionId }, caller)) as {
+		aborted: { cold: boolean };
+		retiring: boolean;
+	};
+	assert.equal(release.aborted.cold, true);
+	assert.equal(release.retiring, true);
 	for (const background of [true, false]) {
 		const result = (await manager.control("abort", { sessionId, background }, caller)) as {
 			cold?: true;
@@ -408,7 +413,7 @@ it("stops a live target once and never acquires a serving host for a cold stop",
 		assert.equal(result.cold, true);
 		assert.equal(result.settled, true);
 	}
-	assert.deepEqual(cold, [true, false]);
+	assert.deepEqual(cold, [false, true, false]);
 	assert.deepEqual(wire, ["abort"]);
 	contender = true;
 	await manager.control("abort", { sessionId }, caller);
@@ -859,7 +864,7 @@ const noHost = async () => {
 };
 
 for (const writer of ["absent", "dead"] as const)
-	it(`preserves unavailable release without acquisition for ${writer} metadata`, async (t) => {
+	it(`releases through a stop writer without host acquisition for ${writer} metadata`, async (t) => {
 		const root = fixtureRoot(t);
 		let acquisitions = 0;
 		const manager = new AgentManager(
@@ -869,16 +874,21 @@ for (const writer of ["absent", "dead"] as const)
 					throw new Error("release acquisition is forbidden");
 				},
 				connect: noHost,
+				stopCold: async (_metadata, identity, background) => ({
+					result: { identity, conversationId: 1, background, settled: true },
+				}),
 			}),
 		);
 		t.after(() => manager.close());
 		const record = createRecord(manager, root);
 		manager.catalog.markRecoveryDue(record.storageId, true);
 		if (writer === "dead") writeClaim(record, claimFor(record, deadProcessId()));
-		await assert.rejects(
-			manager.control("release", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }),
-			/no live host/u,
-		);
+		const release = (await manager.control(
+			"release",
+			{ sessionId: record.storageId },
+			{ id: randomUUID(), cwd: root },
+		)) as { aborted: { cold: boolean } };
+		assert.equal(release.aborted.cold, true);
 		assert.equal(acquisitions, 0);
 		assert.equal(
 			manager.catalog.read(record.storageId).recoveryDue,
@@ -898,6 +908,7 @@ for (const writer of ["live", "unknown"] as const)
 					throw new Error("release acquisition is forbidden");
 				},
 				connect: noHost,
+				stopCold: async () => ({ busy: true }),
 			}),
 		);
 		t.after(() => manager.close());
