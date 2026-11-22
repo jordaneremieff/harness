@@ -1,6 +1,14 @@
 (() => {
 	const listeners: ((event: ExplorerEvent) => void)[] = [];
-	const eventTypes = new Set(["files.changed", "notes.changed", "live", "open", "promptState", "zoom"]);
+	const eventTypes = new Set([
+		"files.changed",
+		"notes.changed",
+		"live",
+		"open",
+		"promptState",
+		"zoom",
+		"index.changed",
+	]);
 	async function request<K extends keyof ExplorerRequests>(
 		type: K,
 		...args: undefined extends ExplorerRequests[K][0]

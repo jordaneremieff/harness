@@ -4,13 +4,13 @@ import Testing
 @testable import Explorer
 
 struct ExplorerWatchTests {
-    @Test func gitIndexEventsInvalidateTheCacheSilentlyUnlessAWorkTreePathChanged() throws {
+    @Test func gitIndexEventsMarkOnlyThePathIndexStale() throws {
         try withGitChanges { workspace, changes in
             for index in [".git/index", "nested/.git/index"] {
                 _ = workspace.files()
                 changes.record(workspace.root.path + "/" + index, FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed))
                 #expect(changes.hasChanges)
-                #expect(changes.flush().isEmpty)
+                #expect(changes.flush().map { $0.0 } == ["index.changed"])
                 #expect(workspace.indexCache.current() == nil)
                 #expect(!changes.hasChanges)
             }
@@ -18,9 +18,9 @@ struct ExplorerWatchTests {
             changes.record(workspace.root.path + "/nested/.git/index", 0)
             changes.record(workspace.root.path + "/edited.txt", FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified))
             let events = changes.flush()
-            #expect(events.map { $0.0 } == ["files.changed"])
-            #expect(events.first?.1["paths"] as? [String] == ["edited.txt"])
-            #expect(events.first?.1["structural"] as? [String] == [])
+            #expect(events.map { $0.0 } == ["index.changed", "files.changed"])
+            #expect(events.last?.1["paths"] as? [String] == ["edited.txt"])
+            #expect(events.last?.1["structural"] as? [String] == [])
             #expect(workspace.indexCache.current() == nil)
         }
     }
@@ -31,10 +31,10 @@ struct ExplorerWatchTests {
             changes.record(workspace.root.path + "/nested/.git/HEAD", FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified))
             changes.record(workspace.root.path + "/nested/.git/index", 0)
             let events = changes.flush()
-            #expect(events.map { $0.0 } == ["files.changed"])
-            #expect(events.first?.1["paths"] as? [String] == ["nested"])
-            #expect(events.first?.1["structural"] as? [String] == ["nested"])
-            #expect(events.first?.1["head"] == nil)
+            #expect(events.map { $0.0 } == ["index.changed", "files.changed"])
+            #expect(events.last?.1["paths"] as? [String] == ["nested"])
+            #expect(events.last?.1["structural"] as? [String] == ["nested"])
+            #expect(events.last?.1["head"] == nil)
             #expect(workspace.indexCache.current() == nil)
 
             _ = workspace.files()

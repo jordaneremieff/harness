@@ -2641,6 +2641,11 @@
 		if (stamp !== openStamp || !refreshFile || loadingFile || editor.active()) return;
 		await navigate({ path, view }, { refresh: true });
 	}
+	// A Git index change can add or remove indexed paths without a file event.
+	function indexChanged() {
+		indexVersion++;
+		if (indexInUse()) scheduleIndexRefresh();
+	}
 	app.listen((event) => {
 		switch (event.type) {
 			case "open":
@@ -2651,6 +2656,9 @@
 				break;
 			case "zoom":
 				zoomChanged(event.zoom);
+				break;
+			case "index.changed":
+				if (booted) indexChanged();
 				break;
 			case "live":
 				live = event;

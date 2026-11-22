@@ -132,6 +132,7 @@ struct ExplorerChangeBatch {
         }
         var events: [(String, [String: Any])] = []
         if notesChanged { events.append(("notes.changed", [:])) }
+        if indexChanged { events.append(("index.changed", [:])) }
         // The Git index can change without changing a folder row or a note.
         guard rootChanged || gitChanged || !paths.isEmpty else { return events }
         let local = rootChanged ? [] : paths.sorted()

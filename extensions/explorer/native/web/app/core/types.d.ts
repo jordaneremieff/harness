@@ -134,6 +134,7 @@ type ExplorerPromptState = {
 type ExplorerEvent = { v: 1 } & (
 	| { type: "files.changed"; paths: string[]; structural?: string[]; outside?: string[]; head?: ExplorerRepository }
 	| { type: "notes.changed" }
+	| { type: "index.changed" }
 	| { type: "zoom"; zoom: number }
 	| ({ type: "live" } & ExplorerLive)
 	| ({ type: "open" } & ({ root: ExplorerRoot; base: ExplorerBase } | { root?: never; base?: never }) & ExplorerLaunch)
