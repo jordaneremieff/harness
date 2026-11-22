@@ -3449,7 +3449,12 @@ a token request after close.
 
 `durable-runner.ts` starts the process and enables Node's compile cache before
 it imports the host modules, so a later host start reuses their compiled code;
-`NODE_DISABLE_COMPILE_CACHE=1` turns the cache off. `installation-binding.ts`
+`NODE_DISABLE_COMPILE_CACHE=1` turns the cache off. The runner does not install
+Pi's own HTTP dispatcher, which Pi's public exports do not offer, so Pi's
+`httpIdleTimeoutMs` and `httpProxy` settings do not configure a host's HTTP
+clients; `fetch` keeps Node's default 300-second header and body timeouts.
+The model boundary bounds each provider request itself (see
+[Stopping work](#stopping-work)). `installation-binding.ts`
 binds its Pi package imports, `durable-runtime.ts` assembles its
 capabilities, and `durable-host.ts` uses public Durable operations. Pi Durable
 owns generation, task checkpoints, submissions, replay decisions, native
