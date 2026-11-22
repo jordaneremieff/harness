@@ -8,6 +8,7 @@ import { ProviderDoc, type ConversationId } from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, isRetryableAssistantError } from "@earendil-works/pi-ai";
 import { DurableHost } from "./durable-host.ts";
 import {
+	deferred,
 	answerMessage,
 	fixtureModelId,
 	fixtureProvider,
@@ -119,4 +120,37 @@ it("makes no provider request after an abort that came before dispatch", async (
 	const result = await adapter.models.completeSimple(model, { messages: [] }, { sessionId, signal: controller.signal });
 	assert.equal(result.stopReason, "aborted");
 	assert.equal(calls, 0);
+});
+
+it("keeps a terminal-only provider answer when its commit outlasts the first-event deadline", async (t) => {
+	const { host, models, adapter, model, sessionId } = await fixture(t);
+	const held = heldStream();
+	const answer = answerMessage("answer before deadline");
+	const committing = deferred();
+	const resume = deferred();
+	const commit = host.harness.commit.bind(host.harness) as typeof host.harness.commit;
+	let dispatched = false;
+	models.streamSimple = () => {
+		dispatched = true;
+		held.stream.push({ type: "done", reason: "stop", message: answer });
+		held.stream.end();
+		return held.stream;
+	};
+	t.mock.method(
+		host.harness,
+		"commit",
+		async (change: Parameters<typeof commit>[0], context: Parameters<typeof commit>[1]) => {
+			if (dispatched) {
+				committing.resolve();
+				await resume.promise;
+			}
+			return commit(change, context);
+		},
+	);
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const result = adapter.models.streamSimple(model, { messages: [] }, { sessionId, timeoutMs: 100 }).result();
+	await committing.promise;
+	t.mock.timers.tick(101);
+	resume.resolve();
+	assert.deepEqual(await result, answer);
 });

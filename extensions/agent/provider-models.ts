@@ -67,7 +67,9 @@ function firstEventTimeout(ms: number): string {
 /** The single end of one request's output: later provider events, results, and state are dropped. */
 interface RequestEnd {
 	readonly ended: boolean;
-	/** Record one provider event; the first one meets the response deadline. */
+	/** The provider answered in time: any event, including a terminal one, meets the response deadline. */
+	responded(): void;
+	/** Record the partial message of one forwarded provider event. */
 	observe(event: AssistantMessageEvent): void;
 	finish(message: AssistantMessage): void;
 }
@@ -103,8 +105,8 @@ function requestEnd(
 		get ended() {
 			return ended;
 		},
+		responded: clearDeadline,
 		observe(event) {
-			clearDeadline();
 			if ("partial" in event) partial = event.partial;
 		},
 		finish: end,
@@ -354,6 +356,7 @@ export class ProviderModels {
 		while (!end.ended) {
 			const step = await this.step(iterator, model, stream, partial);
 			if (end.ended) return;
+			end.responded();
 			if ("message" in step) {
 				end.finish(await this.terminal(attempt, step.message));
 				return;
@@ -415,6 +418,7 @@ export class ProviderModels {
 		try {
 			stream = dispatch();
 		} catch (error) {
+			end.responded();
 			try {
 				end.finish(await this.terminal(attempt, failure(model, errorText(error), this.now())));
 			} catch {

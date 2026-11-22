@@ -26,6 +26,17 @@ export const fixtureProvider = testModel.provider;
 export const fixtureModelId = testModel.id;
 export const fixtureStorageId = "fixture-agent";
 
+/** A test-controlled boundary between two asynchronous operations. */
+export function deferred() {
+	let resolve!: () => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<void>((done, fail) => {
+		resolve = done;
+		reject = fail;
+	});
+	return { promise, resolve, reject };
+}
+
 const usage = {
 	input: 5,
 	output: 7,
