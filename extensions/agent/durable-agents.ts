@@ -479,7 +479,7 @@ const SteerParams = obj(
 	{},
 );
 
-import { InterruptSelection, interruptConflict } from "./interrupt-continue.ts";
+import { InterruptSelection, interruptConflict } from "./interrupt-schema.ts";
 const AbortParams = obj(
 	{
 		interrupt: opt(InterruptSelection),

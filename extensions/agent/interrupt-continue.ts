@@ -1,6 +1,6 @@
 /** Interrupt one exact generation and place only the explicitly selected queued cohort. */
 import { awaitWithContext, withAbortSignal, type Context } from "@earendil-works/chord/context";
-import { arr, int, obj, str, type Static } from "@earendil-works/pi-schema";
+import type { Selection } from "./interrupt-schema.ts";
 import {
 	defineDocFamily,
 	GenerationTask,
@@ -13,24 +13,7 @@ import {
 	type ConversationId,
 } from "@earendil-works/pi-durable";
 
-export const InterruptSelection = obj(
-	{
-		taskId: int({ minimum: 1 }),
-		queuedInputs: arr(int({ minimum: 1 }), { minItems: 1, maxItems: 200, uniqueItems: true }),
-		intentId: str({ minLength: 1, maxLength: 256 }),
-	},
-	{},
-);
-type Selection = Static<typeof InterruptSelection>;
 type Outcome = { state: "protected" | "pending" | "continued"; submissionId?: number };
-export function interruptConflict(input: {
-	interrupt?: Selection;
-	timerId?: number;
-	release?: boolean;
-	background?: boolean;
-}): boolean {
-	return !!input.interrupt && (!!input.release || !!input.background || input.timerId !== undefined);
-}
 function retain(intent: { outcome?: Outcome }, outcome: Outcome) {
 	intent.outcome = outcome;
 	return outcome;

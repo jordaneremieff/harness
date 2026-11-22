@@ -146,7 +146,7 @@ const StringEnum = <const T extends readonly string[]>(
 ): Schema<T[number]> => ({ type: "string", enum: [...values], ...options });
 const id = str({ minLength: 1, maxLength: 256 });
 const maybeTrust = opt(bool());
-import { InterruptSelection, interruptConflict } from "./interrupt-continue.ts";
+import { InterruptSelection, interruptConflict } from "./interrupt-schema.ts";
 const abort = obj(
 	{
 		interrupt: opt(InterruptSelection),
