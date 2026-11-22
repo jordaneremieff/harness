@@ -54,6 +54,8 @@ import {
 } from "./open-work.ts";
 import type { ConversationId, Harness, Tx } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
+import { foldContinuity } from "./continuity-facts.ts";
+import { ContinuityDoc } from "./continuity-native.ts";
 import {
 	acknowledgeReports,
 	type DeliveryOrigin,
@@ -582,8 +584,12 @@ function receiptUnusable(receipt: DeliveryReceipt): boolean {
 
 /** Requests of one answer group that the delivery text names one by one. */
 const RECEIPT_STATE_LINES = 16;
-/** One request of an answer group with its declared work, read from the producer's committed facts. */
-type ReceiptState = { readonly receipt: DeliveryReceipt; readonly work?: RequestWork };
+/**
+ * One request of an answer group with its declared work, read from the producer's committed facts. For an input that
+ * ended without an answer and without declared work, `delegated` counts the producer's own requests that have no
+ * delivered result yet: their results return to the producer, and nothing routes its later work to this recipient.
+ */
+type ReceiptState = { readonly receipt: DeliveryReceipt; readonly work?: RequestWork; readonly delegated?: number };
 
 function inspectCallText(call: FinalReportRead): string {
 	const { tool: _tool, ...args } = call;
@@ -596,11 +602,13 @@ function inspectCallText(call: FinalReportRead): string {
  * when its work closed before the run ended, the line also names the retained final report. Producer
  * prose never decides it.
  */
-function receiptStateLine(state: ReceiptState): string {
+export function receiptStateLine(state: ReceiptState): string {
 	const { receipt, work } = state;
 	const request = `Request ${receipt.requestId} (submission ${receipt.submissionId})`;
 	if (receipt.status !== "done") {
 		const outcome = `${request}: native input ${receiptOutcome(receipt)} without an answer`;
+		if (work === undefined && (state.delegated ?? 0) > 0)
+			return `${outcome}; no result arrived. Its conversation still waits for ${state.delegated} request(s) that it delegated: their results return to it, and none of its later work reports to you. Send it a follow-up to finish the work and report.`;
 		if (work?.work !== "closed") return `${outcome}; no result arrived.`;
 		const { finalReport } = work;
 		return `${outcome}; declared work completed${finalReport.status === undefined ? "" : ` (${finalReport.status})`} with final report ${finalReport.requestId}. The final report is the result of this request. Read the final report: ${inspectCallText(finalReport.read)}`;
@@ -1167,9 +1175,24 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 							submissionId: receipt.submissionId,
 							ownerId: receipt.ownerId,
 						});
-			states.push({ receipt, ...(work === undefined ? {} : { work }) });
+			const delegated =
+				index < RECEIPT_STATE_LINES && work === undefined && receipt.status !== "done"
+					? await openDelegations(receipt.conversationId)
+					: 0;
+			states.push({ receipt, ...(work === undefined ? {} : { work }), ...(delegated > 0 ? { delegated } : {}) });
 		}
 		return states;
+	};
+	/** The producer's own requests without a delivered result, from its retained admission facts. */
+	const openDelegations = async (conversationId: ConversationId): Promise<number> => {
+		try {
+			const state = await host.harness.snapshot(ContinuityDoc, conversationId, BACKGROUND_CONTEXT);
+			return state === undefined
+				? 0
+				: foldContinuity(state.events).filter((fact) => fact.phase === "requested" || fact.phase === "admitted").length;
+		} catch {
+			return 0;
+		}
 	};
 	/** Marks and final-report facts of one report delivery. */
 	const reportFacts = async (

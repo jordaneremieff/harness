@@ -35,7 +35,7 @@ import {
 	settleDeliveries,
 	undeliveredReports,
 } from "./durable-controls.ts";
-import { observeDeliveryEligibility, rowWakes, startDurableDelivery } from "./durable-delivery.ts";
+import { observeDeliveryEligibility, receiptStateLine, rowWakes, startDurableDelivery } from "./durable-delivery.ts";
 import { mutateCollaboration } from "./collaboration.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
 import { retainProviderRetryNotices } from "./provider-notices.ts";
@@ -5143,4 +5143,26 @@ it("wakes a model owner for a result, not for a receipt group of state notes", (
 		true,
 		"an input that ended without an answer is not a state note",
 	);
+});
+
+it("tells the requester of a failed input that results its producer delegated return to the producer", () => {
+	const receipt = {
+		submissionId: 737,
+		requestId: "lead-task",
+		ownerId: "owner",
+		conversationId: 2,
+		operationId: null,
+		origin: "model" as const,
+		status: "unanswered" as const,
+		entryId: 1,
+		answerEntryId: null,
+		answer: null,
+		reason: "model_error",
+		acknowledged: false,
+	};
+	const plain = receiptStateLine({ receipt } as never);
+	assert.match(plain, /native input failed without an answer; no result arrived\.$/u);
+	const delegated = receiptStateLine({ receipt, delegated: 2 } as never);
+	assert.match(delegated, /still waits for 2 request\(s\) that it delegated/u);
+	assert.match(delegated, /Send it a follow-up to finish the work and report\./u);
 });
