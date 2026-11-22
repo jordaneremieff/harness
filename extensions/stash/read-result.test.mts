@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { readStashResult } from "./read-result.ts";
+import { ACTIVE_EDIT_NOTE, readStashResult } from "./read-result.ts";
 
 function source(content: string) {
 	return {
@@ -22,6 +22,28 @@ test("complete reads expose the raw-file digest beside terminal-safe content", (
 	assert.ok(result.content[0].text.startsWith('---\ntitle: "Saved effort"'));
 	assert.match(result.content[0].text, /New\\tinformation\./);
 	assert.ok(result.content[0].text.endsWith(`[Artifact digest: ${input.digest}]`));
+});
+
+test("an active handover's read says that its first edit needs allowActive, beside the digest and after truncation", () => {
+	const header = '---\ntitle: "Saved effort"\nstate: "active"\n---\n\n# Saved effort\n\n';
+	const active = source(`${header}Resumed work.`);
+	assert.ok(
+		readStashResult(active).content[0].text.endsWith(`[Artifact digest: ${active.digest}]\n${ACTIVE_EDIT_NOTE}`),
+	);
+	const long = source(`${header}${"line\n".repeat(2500)}`);
+	const bounded = readStashResult(long);
+	assert.equal(bounded.details.truncated, true);
+	assert.ok(
+		bounded.content[0].text.includes(`Digest: ${long.digest}. ${ACTIVE_EDIT_NOTE} Full artifact: ${long.path}`),
+	);
+	for (const state of ["open", "closed"]) {
+		const other = source(header.replace('"active"', `"${state}"`));
+		assert.ok(readStashResult(other).content[0].text.endsWith(`[Artifact digest: ${other.digest}]`), state);
+	}
+	assert.ok(
+		!readStashResult(active, "checkpoints").content[0].text.includes(ACTIVE_EDIT_NOTE),
+		"checkpoints take no stash_edit",
+	);
 });
 
 test("byte and line bounded reads retain the digest and continuation path", () => {

@@ -947,7 +947,7 @@ export async function editStash(
 		}
 		if (state === "active" && input.allowActive !== true) {
 			throw new Error(
-				`stash ${located.id} is active; allowActive: true explicitly acknowledges an edit to the active handover`,
+				`stash ${located.id} is active; if this edit serves its effort, repeat the same call with allowActive: true. Nothing was written, so the digest still applies.`,
 			);
 		}
 		const { content, redactions } = replaceBody(source.content, input.edits);

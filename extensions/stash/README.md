@@ -14,7 +14,7 @@ The agent distills an effort into a durable Markdown handover. The extension own
 |---|---|---|
 | `stash_write` | tool | Persist a self-contained handover with project, branch, and session metadata; `checkpoint: true` saves provisional working material in the explicit checkpoints collection. |
 | `stash_list` | tool | List recent artifacts or search content in one collection with stateless continuation. Handovers are the default; checkpoints are explicit and provisional. |
-| `stash_read` | tool | Read by exact id or unique prefix in the selected collection without changing lifecycle state. Returns a digest for edits. Results are capped at 50 KiB or 2000 lines and include the path when truncated. |
+| `stash_read` | tool | Read by exact id or unique prefix in the selected collection without changing lifecycle state. Returns a digest for edits, and for an active handover says that an edit needs `allowActive: true`. Results are capped at 50 KiB or 2000 lines and include the path when truncated. |
 | `stash_edit` | tool | Correct or amend the saved body with revision-checked exact replacements; preserve the title, metadata, and lifecycle. |
 | `stash_complete` | tool | Close an open or active effort with a required concrete outcome. |
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
@@ -343,9 +343,13 @@ Lifecycle gates are explicit:
 
 - **Open:** a matching digest permits body edits.
 - **Active:** edits refuse unless `allowActive: true` accompanies the matching
-  digest. This acknowledges an authorized edit to an active effort; it neither
-  grants permission nor claims exclusive ownership. Pickup records activity,
-  not an owner lock. Do not add this flag merely to clear a refusal.
+  digest. The read of an active handover says so on the line after its digest,
+  and in the truncation notice, so the first edit that serves the effort
+  carries the flag. The refusal writes nothing; it asks for the same call with
+  the flag when the edit serves the effort, and the digest stays valid. The
+  flag acknowledges an authorized edit to an active effort; it neither grants
+  permission nor claims exclusive ownership. Pickup records activity, not an
+  owner lock. Do not add this flag merely to clear a refusal.
 - **Closed:** edits always refuse. Deliberate, operator-authorized
   `/stash reopen <id>` precedes another read and edit. The edit tool never
   reopens an effort or clears its recorded outcome itself.

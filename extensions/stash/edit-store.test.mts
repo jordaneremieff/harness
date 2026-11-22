@@ -202,8 +202,11 @@ describe("revision and lifecycle edit gates", () => {
 		const active = await transitionStash(source.dir, source.id, { action: "activate" });
 		await assert.rejects(
 			editStash(source.dir, source.id, { expectedDigest: sha(active.content), edits: replacement }),
-			/allowActive: true/,
+			{
+				message: `stash ${source.id} is active; if this edit serves its effort, repeat the same call with allowActive: true. Nothing was written, so the digest still applies.`,
+			},
 		);
+		assert.equal(await readFile(source.path, "utf8"), active.content, "the refusal writes nothing");
 		const edited = await editStash(source.dir, source.id, {
 			expectedDigest: sha(active.content),
 			edits: replacement,

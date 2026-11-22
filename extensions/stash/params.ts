@@ -126,7 +126,7 @@ export const EditParams = obj(
 		allowActive: opt(
 			bool({
 				description:
-					"Explicitly acknowledge an authorized edit to an active effort. Default refuses active stashes. Closed stashes always refuse.",
+					"Set true to edit an active handover when the edit serves its effort; stash_read reports that state. Without it, an active stash refuses. Closed stashes always refuse.",
 			}),
 		),
 	},
