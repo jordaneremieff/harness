@@ -205,9 +205,25 @@ enum ExplorerCheck {
             """, arguments: [:], in: nil, contentWorld: .page)
             guard refreshed as? Bool == true else { throw ExplorerError("verify", "The ignored folder did not refresh.") }
             try await verifyEditor(host.page.view)
+            try await verifyTextMenu(host.page.view)
             try await verifyZoom(host)
         }
         print("Explorer verified: real page, ignored folders and file events, Markdown preview, Git review, search, note marks, card drafts, live prompt and answer, file create, save, edit drafts, conflict, and zoom.")
+    }
+
+    private static func verifyTextMenu(_ view: WKWebView) async throws {
+        let result = try await view.callAsyncJavaScript("""
+        const field = document.querySelector('[aria-label="Filter files"]');
+        field.focus();
+        field.dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, cancelable: true, clientX: 40, clientY: 120}));
+        const labels = [...document.querySelectorAll('.context-menu:not([hidden]) .menu-item')].map(item => item.textContent);
+        document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+        document.querySelector('.context-menu .menu-item')?.closest('.context-menu')?.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+        return labels.join('|');
+        """, arguments: [:], in: nil, contentWorld: .page) as? String ?? ""
+        guard result.contains("Paste"), result.contains("Select All"), !result.contains("Ask") else {
+            throw ExplorerError("verify", "A text field's context menu showed \(result.debugDescription).")
+        }
     }
 
     private static func verifyZoom(_ host: ExplorerHost) async throws {

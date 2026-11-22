@@ -1588,7 +1588,14 @@
 				{ label: "Add note", key: "⌘⌥N", glyph: "bookmark", run: () => askAt(range, "note") },
 			);
 	}
-	function editorActions(input: HTMLTextAreaElement, text?: string): Action[] {
+	// Text fields keep the usual editing actions; review actions apply to code, not to typed text.
+	function textField(target: EventTarget | null) {
+		if (target instanceof HTMLTextAreaElement) return target;
+		if (target instanceof HTMLInputElement && ["text", "search", "url", "email", ""].includes(target.type))
+			return target;
+		return null;
+	}
+	function editorActions(input: HTMLTextAreaElement | HTMLInputElement, text?: string): Action[] {
 		return [
 			{
 				label: "Cut",
@@ -1597,8 +1604,8 @@
 				disabled: !text || input.readOnly,
 				run: () => {
 					const selected = text ?? "";
-					const start = input.selectionStart,
-						end = input.selectionEnd;
+					const start = input.selectionStart ?? 0,
+						end = input.selectionEnd ?? 0;
 					report(
 						request("clipboard.write", { text: selected }).then(() => {
 							if (
@@ -1636,6 +1643,17 @@
 								document.execCommand("insertText", false, value);
 						}),
 					);
+				},
+			},
+			{
+				label: "Select All",
+				key: "⌘A",
+				glyph: "list",
+				disabled: !input.value,
+				divide: true,
+				run: () => {
+					input.focus({ preventScroll: true });
+					input.select();
 				},
 			},
 		];
@@ -1745,8 +1763,8 @@
 		const folderPath = folder && list.contains(folder) ? folder.dataset.path : undefined;
 		if (folderPath)
 			return [{ label: "New file…", key: "", glyph: "new-file", run: () => command("new-file", folderPath) }];
-		if (editor.active() && target instanceof HTMLTextAreaElement && body.contains(target))
-			return editorActions(target, text);
+		const field = textField(target);
+		if (field) return editorActions(field, text);
 		return actions(range, text);
 	}
 	document.addEventListener(
