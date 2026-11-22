@@ -22,6 +22,7 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import { inputEntry } from "./input-entry.ts";
+import { clearStopped } from "./conversation-stop.ts";
 import {
 	defineDoc,
 	defineDocFamily,
@@ -201,6 +202,8 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 			const mode = task.input.mode;
 			let intent: DeliveryIntentState | undefined;
 			await runtime.commit(async (tx) => {
+				// A fired timer is answer-bearing input that its sender scheduled: it runs, and so ends a stop.
+				if (retained === undefined) await clearStopped(tx, conversationId);
 				intent = await recordDeliveryIntent(
 					tx,
 					conversationId,

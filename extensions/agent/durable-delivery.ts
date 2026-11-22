@@ -412,12 +412,22 @@ function deliverySender(row: DeliveryRow, host: DurableHost): string {
 	return row.kind === "receipt" ? host.identity(row.receipt.conversationId) : row.report.senderIdentity;
 }
 
-function rowWakes(row: DeliveryRow, recipient: string): boolean {
+/**
+ * A receipt wakes its model owner unless it carries only state notes: the answer of a request whose declared work
+ * continues is context, and its final report arrives as a separate report that wakes. `states` names the declared
+ * work of the receipts it covers; a receipt without a state there counts as a result.
+ */
+export function rowWakes(row: DeliveryRow, recipient: string, states: readonly ReceiptState[] = []): boolean {
 	if (row.kind === "report")
 		return row.report.passive !== true && (row.report.checkIn === undefined || row.report.checkIn.origin === "model");
 	const own = row.receipts.filter((receipt) => receipt.ownerId === recipient);
 	if (own.length === 0) return true;
-	return own.some((receipt) => receiptOrigin(receipt) === "model");
+	const stateNotes = new Set(
+		states
+			.filter((state) => state.work !== undefined && state.receipt.status === "done")
+			.map((state) => state.receipt.submissionId),
+	);
+	return own.some((receipt) => receiptOrigin(receipt) === "model" && !stateNotes.has(receipt.submissionId));
 }
 
 /** Plain outcome words for one settled receipt: an answer completes the native input, not declared work. */
@@ -1304,6 +1314,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		fallback: boolean,
 		status: SourceStatus | undefined,
 		body: { text: string; truncated: boolean },
+		states: readonly ReceiptState[],
 	): Record<string, unknown> => {
 		const actual = actualMetadata(status);
 		const sourceId = rowSourceId(metadata, row, fallback ? deliveryRecipient : undefined);
@@ -1321,7 +1332,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			deliveryRecipient,
 			liveOwner,
 			saved,
-			wake: fallback ? false : rowWakes(row, deliveryRecipient),
+			wake: fallback ? false : rowWakes(row, deliveryRecipient, states),
 			...(body.truncated ? { textTruncated: true } : {}),
 			...actual.fields,
 			...(actual.unknown ? { metadataUnknown: true } : {}),
@@ -1340,6 +1351,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		status: SourceStatus | undefined,
 	): Promise<JsonValue> => {
 		const body = row.kind === "receipt" ? boundedPeerText(row.receipt.answer ?? "") : boundedReportText(row.report);
+		const states = row.kind === "receipt" ? await receiptStates(row) : [];
 		const shared = sharedRowDetails(
 			row,
 			identity,
@@ -1349,10 +1361,11 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			fallback,
 			status,
 			body,
+			states,
 		);
 		if (row.kind === "receipt") {
 			const receipt = row.receipt;
-			const work = (await receiptStates({ ...row, receipts: [receipt] })).at(0)?.work;
+			const work = states.find((state) => state.receipt.submissionId === receipt.submissionId)?.work;
 			return {
 				...shared,
 				...receiptWorkDetails(receipt, work),

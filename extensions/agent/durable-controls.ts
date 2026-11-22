@@ -34,6 +34,7 @@ import {
 	writeDeliveryDraft,
 } from "./delivery-store.ts";
 import { inputEntry, isInputClass, sentInputClass, type InputClass, type InputLabel } from "./input-entry.ts";
+import { admissionQuietness, quietInputEntry } from "./conversation-stop.ts";
 import {
 	configureProviderRecovery,
 	captureProviderRecovery,
@@ -354,6 +355,11 @@ export interface DurableSubmitParams {
 	readonly inputSender?: string;
 	/** Host-authored metadata; base submit callers need not supply it. */
 	readonly requestContext?: RequestContext;
+	/**
+	 * Host-derived from the delivery's dependency marks: every result this input delivers is a state note, the answer
+	 * of a request whose declared work continues. Such an input is kept as context and starts no run.
+	 */
+	readonly stateNotesOnly?: boolean;
 	readonly providerRetry?: ProviderRetryNotice;
 	/** Trusted owner value, captured inside the existing post-admission bookkeeping commit. */
 	readonly communication?: {
@@ -407,6 +413,8 @@ export interface DurableSubmitResult {
 	readonly recipient?: string;
 	/** Committed state at admission: `unplaced` while the input waits in the recipient's inbox for the end of its current tool round. */
 	readonly placement: Placement;
+	/** A stopped conversation kept the input as context: it started no run and gets no answer. */
+	readonly quiet?: true;
 }
 
 /** Committed placement of one input that an earlier admission already recorded. */
@@ -880,11 +888,23 @@ async function admitConversation(
 		whenBusy: placementMode(whenBusy),
 		entry: inputEntry(origin, inputAuthor(params), label),
 	};
+	const quietness = {
+		inputClass: label.class,
+		expectsAnswer: ownerId !== undefined || params.requestContext !== undefined,
+		stateNotesOnly: params.stateNotesOnly === true,
+	};
 	let deduped = false;
+	let quiet = false;
 	// One commit admits the input with its delivery intent, request route, check-in and unplaced row; a refusal stores none of them.
 	const submissionId = await conversation.commit(async (tx) => {
 		const existing = await tx.submissionByRequest(conversation.id, requestId);
 		deduped = existing !== undefined;
+		const reason = deduped ? undefined : await admissionQuietness(tx, conversation.id, quietness);
+		if (reason !== undefined) {
+			quiet = true;
+			const entry = quietInputEntry(message, { ...label, requestId }, reason, now());
+			return conversation.submit(tx, { type: "write", requestId, entry });
+		}
 		const retain = await prepareQueuedInputs(tx, conversation.id, params.senderIdentity);
 		let admitted: SubmissionId | undefined;
 		const admit = async () => (admitted = await conversation.submit(tx, draft));
@@ -899,6 +919,13 @@ async function admitConversation(
 		await retain([{ submissionId: admitted, requestId, admittedAt: now(), label }]);
 		return admitted;
 	}, context);
+	if (quiet) {
+		const placement = await conversation.commit(
+			async (tx) => placementOf(await tx.submission(submissionId), conversation.id),
+			context,
+		);
+		return { submissionId, conversationId: conversation.id, deduped: false, placement, quiet: true };
+	}
 	await recordAdmittedInput(conversation, submissionId, provenance, context, params.communication, now, deduped);
 	const placement = await conversation.commit(
 		async (tx) => placementOf(await tx.submission(submissionId), conversation.id),
@@ -1013,15 +1040,6 @@ async function readNativeOutcome(
 		answer: assistantTextOf(entry.model),
 		usage,
 	};
-}
-
-/** Withdraw queued inputs and wait until the conversation's ownership scope is idle. */
-export async function abortConversation(
-	conversation: Conversation,
-	background: boolean,
-	context: Context,
-): Promise<void> {
-	await conversation.abort(context, background ? { background: true } : undefined);
 }
 
 /** True when the conversation has no live ordinary task and no admitted input waiting to run. */

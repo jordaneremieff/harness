@@ -35,7 +35,7 @@ import {
 	settleDeliveries,
 	undeliveredReports,
 } from "./durable-controls.ts";
-import { observeDeliveryEligibility, startDurableDelivery } from "./durable-delivery.ts";
+import { observeDeliveryEligibility, rowWakes, startDurableDelivery } from "./durable-delivery.ts";
 import { mutateCollaboration } from "./collaboration.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
 import { retainProviderRetryNotices } from "./provider-notices.ts";
@@ -5110,3 +5110,37 @@ for (const route of ["primary", "catalog"] as const)
 		assert.equal((await deliveryState(source))?.receipts[String(admitted.submissionId)]?.reason, "model_error");
 		assert.equal(provider.mock.callCount(), 1);
 	});
+
+it("wakes a model owner for a result, not for a receipt group of state notes", () => {
+	const receipt = (submissionId: number, origin: "model" | "operator" = "model") => ({
+		submissionId,
+		requestId: `request-${submissionId}`,
+		ownerId: "owner",
+		conversationId: 2,
+		operationId: null,
+		origin,
+		status: "done" as const,
+		entryId: 1,
+		answerEntryId: 2,
+		answer: "Still working.",
+		reason: null,
+		acknowledged: false,
+	});
+	const row = (...receipts: ReturnType<typeof receipt>[]) =>
+		({ kind: "receipt", receipt: receipts[0], receipts, deliveredTo: new Set<string>() }) as never;
+	const stateNote = (value: ReturnType<typeof receipt>) =>
+		({ receipt: value, work: { work: "open", label: "state note" } }) as never;
+	const first = receipt(1);
+	const second = receipt(2);
+	assert.equal(rowWakes(row(first), "owner"), true, "a result wakes its model owner");
+	assert.equal(rowWakes(row(first), "owner", [stateNote(first)]), false, "a state note waits for the final report");
+	assert.equal(rowWakes(row(first, second), "owner", [stateNote(first)]), true, "a result in the group still wakes");
+	assert.equal(rowWakes(row(receipt(3, "operator")), "owner"), false, "an operator admission never wakes");
+	assert.equal(
+		rowWakes(row({ ...first, status: "unanswered" as never, reason: "aborted" as never }), "owner", [
+			stateNote({ ...first, status: "unanswered" as never }),
+		]),
+		true,
+		"an input that ended without an answer is not a state note",
+	);
+});

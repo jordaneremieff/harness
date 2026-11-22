@@ -792,7 +792,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_abort",
-		"Abort the selected conversation without deleting retained evidence. With timerId, cancel only that input. With release, request host retirement; other work and timers remain.",
+		"Abort the selected conversation without deleting retained evidence. The answer arrives within 15 seconds; settled: false names tasks that are still ending, so do not repeat the abort. Stopped conversations stay quiet until explicit input. With timerId, cancel only that input. With release, request host retirement; other work and timers remain.",
 		abort,
 		(input, ctx, _callId, _admissionCaller, signal) => {
 			if (input.release === true && input.background === true)

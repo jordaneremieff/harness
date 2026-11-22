@@ -55,6 +55,7 @@ import {
 	storeDeliveryRow,
 } from "./delivery-store.ts";
 import { abortScopeConversations } from "./abort-scope.ts";
+import { stopScope } from "./conversation-stop.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -87,7 +88,6 @@ import {
 	acknowledgeReports,
 	AgentForkDoc,
 	AgentMetaDoc,
-	abortConversation,
 	compactConversation,
 	configureConversation,
 	forkConversation,
@@ -363,6 +363,8 @@ export class DurableHost {
 	private continuity?: ContinuityMirror;
 	private readonly continuityMismatches = new Map<ConversationId, number>();
 	private continuityDiagnostic: ((error: unknown) => void) | undefined;
+	/** The open options' report callback, for failures of work that continues after a request answered. */
+	private reportError: (error: unknown) => void = () => {};
 	private readonly storage: Storage;
 	private readonly storagePath: string;
 	private readonly lifecycle = new AbortController();
@@ -575,6 +577,7 @@ export class DurableHost {
 			host.providerModels = providerModels;
 			host.continuity = continuity;
 			host.continuityDiagnostic = report;
+			host.reportError = report;
 			opened = host;
 			host.hookReports = hookReports;
 			hookReports.bind(harness);
@@ -954,6 +957,12 @@ export class DurableHost {
 		const delivered = params?.deliveredResults;
 		if (delivered !== undefined) validateContinuityDelivered(delivered);
 		const marks = params?.dependencyMarks === undefined ? [] : parseDependencyMarks(params.dependencyMarks);
+		// The producer marks each delivered result; when every one is a state note, its work continues elsewhere.
+		const stateNotesOnly =
+			Array.isArray(delivered) &&
+			delivered.length > 0 &&
+			delivered.length === marks.length &&
+			marks.every((mark) => mark.state === "state-note");
 		// A replayed body admission is deduplicated, and a provider retry notice that the current inputs already
 		// showed is suppressed; in both cases the result reached this conversation, so its delivered facts complete.
 		const complete = async (): Promise<void> => {
@@ -978,6 +987,7 @@ export class DurableHost {
 				senderIdentity: this.identity(conversation.id),
 				...optionalParam("inputClass", this.inputClassParam(params)),
 				...optionalParam("inputSender", requestString(params, "inputSender")),
+				...(stateNotesOnly ? { stateNotesOnly: true } : {}),
 			},
 			context,
 			this.now,
@@ -1347,9 +1357,13 @@ export class DurableHost {
 		const background = requestBoolean(params, "background") ?? false;
 		// The scope is read before the abort ends the tasks that define it.
 		const scope = await this.harness.commit((tx) => abortScopeConversations(tx, conversation.id, background), context);
-		await abortConversation(conversation, background, context);
+		const stopped = await stopScope(this.harness, conversation, scope, background, context, {
+			now: this.now(),
+			report: this.reportError,
+		});
+		// The scope's open work closes now even when a marked task has not ended yet: its run cannot answer.
 		await this.closeStoppedWork(scope, context);
-		return { conversationId: conversation.id, identity: this.identity(conversation.id), background };
+		return { conversationId: conversation.id, identity: this.identity(conversation.id), background, ...stopped };
 	}
 
 	/**

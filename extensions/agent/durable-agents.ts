@@ -117,6 +117,7 @@ import {
 	type AgentControlToolName,
 } from "./control-guidance.ts";
 import { abortScopeContains, abortScopeConversations } from "./abort-scope.ts";
+import { clearStopped, stopScope } from "./conversation-stop.ts";
 import { retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
 import { TimerTask, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
@@ -1170,6 +1171,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		// One commit admits the input with its delivery intent, request route, check-in and unplaced row; a refusal stores none of them.
 		await api
 			.commit(async (tx) => {
+				// A sent task or steer is explicit input: it ends a stop of its recipient.
+				if (!deduped) await clearStopped(tx, input.conversationId);
 				const retain = await prepareQueuedInputs(tx, input.conversationId, identity(input.conversationId));
 				const admission = await tx.doc(LocalAdmission, reporterTaskId);
 				let admitted: Durable.SubmissionId | undefined;
@@ -2042,9 +2045,17 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			(tx) => abortScopeConversations(tx, conversationId, args.background === true),
 			context,
 		);
-		await conversation.abort(context, args.background === true ? { background: true } : undefined);
+		const stopped = await stopScope(api, conversation, scope, args.background === true, context, {
+			now: api.now(),
+			// The marks are committed; a wait that this tool call no longer holds has nothing left to report.
+			report: () => {},
+		});
 		await closeStoppedWork(api, context, scope);
-		return textResult(`Aborted ${args.sessionId}.`, { conversationId });
+		if (stopped.settled) return textResult(`Aborted ${args.sessionId}.`, { conversationId, settled: true });
+		return textResult(
+			`Abort requested for ${args.sessionId}: its queued inputs were withdrawn and its open work closed, but ${stopped.pendingTasks.length} marked task(s) had not ended when this answer returned. Each ends when its current call returns. Do not repeat the abort.`,
+			{ conversationId, ...stopped },
+		);
 	};
 
 	const resolveAbortTarget = async (sessionId: string, context: Context): Promise<string> => {
@@ -2074,7 +2085,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const abortTool = durable.defineTool({
 		name: "agent_abort",
 		description:
-			"Stop a conversation's current work without deleting its transcript. With timerId, cancel only that scheduled input. With release, request host retirement after stopping; other work and timers remain. Background work survives unless background is true.",
+			"Stop a conversation's current work without deleting its transcript. The answer arrives within 15 seconds; settled: false names tasks that are still ending, so do not repeat the abort. Stopped conversations stay quiet until explicit input. With timerId, cancel only that scheduled input. With release, request host retirement after stopping; other work and timers remain. Background work survives unless background is true.",
 		parameters: AbortParams,
 		replay: "unsafe",
 		execute: async (args: AbortInput, api, context) => {
