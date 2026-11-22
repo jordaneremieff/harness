@@ -52,7 +52,7 @@ struct RepositoryMarker: Equatable {
         let detached = value.flatMap { text in
             ([40, 64].contains(text.utf8.count) && text.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) ? text : nil
         }
-        return value != nil || details.st_mode & S_IFMT == S_IFREG ? RepositoryMarker(branch: nil, head: detached) : nil
+        return value != nil ? RepositoryMarker(branch: nil, head: detached) : nil
     }
 }
 
@@ -110,6 +110,7 @@ extension Workspace {
         }
         let fd = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         guard fd >= 0 else { throw ExplorerError("io", "The opened folder is no longer available.") }
+        do { try checkRoot(fd) } catch { Darwin.close(fd); throw error }
         return (fd, root)
     }
 

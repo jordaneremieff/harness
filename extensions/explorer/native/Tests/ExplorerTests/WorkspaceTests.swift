@@ -327,6 +327,44 @@ struct WorkspaceTests {
         #expect(restored?["text"] as? String == "Original")
     }
 
+    @Test func aRootThatNowResolvesElsewhereIsRefused() throws {
+        let scratch = try fixture()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let files = FileManager.default
+        let opened = scratch.appendingPathComponent("parent/root")
+        let elsewhere = scratch.appendingPathComponent("elsewhere/root")
+        try files.createDirectory(at: opened, withIntermediateDirectories: true)
+        try files.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        try Data().write(to: opened.appendingPathComponent("inside.txt"))
+        try Data().write(to: elsewhere.appendingPathComponent("outside.txt"))
+        #expect(try command("/usr/bin/git", ["init", "-q", "--template="], cwd: opened,
+                            environment: ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"],
+                            limit: 8192, seconds: 2).status == 0)
+        let workspace = try Workspace(opened.path)
+        #expect(try workspace.folder("").entries.map(\.name) == ["inside.txt"])
+        // An ancestor of the opened folder becomes a link to another folder with the same name below it.
+        try files.moveItem(at: scratch.appendingPathComponent("parent"), to: scratch.appendingPathComponent("moved"))
+        try files.createSymbolicLink(at: scratch.appendingPathComponent("parent"), withDestinationURL: scratch.appendingPathComponent("elsewhere"))
+        #expect(throws: ExplorerError.self) { try workspace.folder("") }
+        #expect(throws: ExplorerError.self) { try workspace.git(["status", "--porcelain"]) }
+        #expect(workspace.files().paths.isEmpty)
+    }
+
+    @Test func aGitFileWithoutReadableMetadataIsAPlainFolder() throws {
+        let root = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let broken = root.appendingPathComponent("broken")
+        try FileManager.default.createDirectory(at: broken, withIntermediateDirectories: false)
+        try Data("gitdir: ../missing/.git/worktrees/broken\n".utf8).write(to: broken.appendingPathComponent(".git"))
+        try Data().write(to: broken.appendingPathComponent("kept.txt"))
+        #expect(RepositoryMarker.read(broken.path) == nil)
+        let workspace = try Workspace(root.path)
+        #expect(try workspace.folder("").entries.first?.repo == nil)
+        let index = workspace.files()
+        #expect(index.paths == ["broken/kept.txt"])
+        #expect(index.repositories.isEmpty)
+    }
+
     private func fixture() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("explorer-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])

@@ -44,6 +44,7 @@ final class Workspace: @unchecked Sendable {
     let root: URL
     let isGit: Bool
     let containingGitRoot: URL?
+    private let rootIdentity: (device: dev_t, inode: ino_t)
     let indexCache = WorkspaceIndexCache()
     private let assetLock = NSLock()
     private var assets: [String: (path: String, at: String?)] = [:]
@@ -66,6 +67,7 @@ final class Workspace: @unchecked Sendable {
         guard path.hasPrefix("/"), let real = canonical(path), stat(real, &details) == 0,
               details.st_mode & S_IFMT == S_IFDIR else { throw ExplorerError("invalid-root", "The root must be an existing absolute folder.") }
         root = URL(fileURLWithPath: real, isDirectory: true)
+        rootIdentity = (details.st_dev, details.st_ino)
         let output = try? Self.invoke(root, ["rev-parse", "--show-toplevel"], limit: 8192, seconds: 2)
         let gitRoot = output.flatMap { result -> String? in
             guard result.status == 0, !result.truncated else { return nil }
@@ -105,8 +107,19 @@ final class Workspace: @unchecked Sendable {
                            input: input, limit: limit, seconds: remaining, onChunk: onChunk)
     }
 
+    /// The root path resolves through its ancestors on each use. When it names another folder than the one opened,
+    /// for example because an ancestor became a link, Explorer refuses the root instead of following it.
+    func checkRoot(_ descriptor: Int32? = nil) throws {
+        var details = stat()
+        let status = descriptor.map { fstat($0, &details) } ?? stat(root.path, &details)
+        guard status == 0, details.st_dev == rootIdentity.device, details.st_ino == rootIdentity.inode else {
+            throw ExplorerError("invalid-root", "The opened folder moved or changed. Open it again.")
+        }
+    }
+
     func git(_ args: [String], limit: Int = 32 * mib, seconds: Double = 6) throws -> CommandResult {
         guard isGit else { throw ExplorerError("not-git", "The opened folder is not a Git work tree.") }
+        try checkRoot()
         return try Self.invoke(root, args, limit: limit, seconds: seconds)
     }
 
