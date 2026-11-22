@@ -446,7 +446,7 @@ it("finishes the cold stop after the caller withdraws its wait", async (t) => {
 	await started.promise;
 	controller.abort();
 	try {
-		await assert.rejects(stop, { name: "AbortError" });
+		await assert.rejects(stop, { name: "AbortError", message: /can still be running.*Do not repeat/su });
 	} finally {
 		finish.resolve();
 	}
@@ -489,7 +489,10 @@ for (const [method, wireMethod] of [
 		const winner = await Promise.race([
 			waiting.then(
 				() => "answered",
-				(error: Error) => error.name,
+				(error: Error) => {
+					if (method === "release") assert.match(error.message, /outcome is unconfirmed.*Do not repeat/su);
+					return error.name;
+				},
 			),
 			new Promise((resolve) => setImmediate(() => resolve("still waits"))),
 		]);

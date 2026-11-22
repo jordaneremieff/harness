@@ -25,6 +25,7 @@ import {
 	type ListScanStep,
 } from "./profile-discovery.ts";
 import { stopColdStorage } from "./cold-stop.ts";
+import { unconfirmedStopText } from "./control-result.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -1074,7 +1075,15 @@ export class AgentManager {
 		options?: { readonly signal?: AbortSignal; readonly launch?: boolean },
 	): Promise<unknown> {
 		options?.signal?.throwIfAborted();
-		return abortable(this.resolveControl(method, input, caller, options), options?.signal);
+		const work = abortable(this.resolveControl(method, input, caller, options), options?.signal);
+		if (method !== "abort" && method !== "release") return work;
+		return work.catch((error: unknown) => {
+			if (options?.signal?.aborted !== true) throw error;
+			// Keep the abort identity for callers that classify cancellation; replace only the text the model reads.
+			const cancelled = new Error(unconfirmedStopText(String(input.sessionId ?? ""), "cancelled"), { cause: error });
+			cancelled.name = "AbortError";
+			throw cancelled;
+		});
 	}
 
 	private async resolveControl(

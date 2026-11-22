@@ -216,3 +216,13 @@ export function controlText(value: unknown): string {
 		return "Host control returned a result that cannot be printed.";
 	}
 }
+
+/**
+ * The answer of a stop whose caller stopped waiting. The stop can still be running and its outcome is unknown, so the
+ * text forbids a repeat: a second stop of the same target can withdraw input admitted after the first.
+ */
+export function unconfirmedStopText(target: string, reason: "expired" | "cancelled"): string {
+	const wait =
+		reason === "expired" ? "The local wait for this stop expired" : "The caller cancelled its wait for this stop";
+	return `${wait}. The stop of ${target} can still be running; its outcome is unconfirmed. Do not repeat the abort or release: a repeat can stop the target twice. Check the target with agent_status.`;
+}

@@ -54,7 +54,7 @@ export function stopColdStorage(metadata: HostMetadata, sessionId: string, backg
 			else
 				reject(
 					new Error(
-						`Cold stop outcome unconfirmed (exit ${code ?? signal}): ${diagnostic.trim() || "no confirmed stop result"}. Do not repeat automatically.`,
+						`Cold stop outcome unconfirmed (exit ${code ?? signal}): ${diagnostic.trim() || "no confirmed stop result"}. The stop can have marked part of the scope. Do not repeat the abort or release: a repeat can stop the target twice. Check the target with agent_status.`,
 					),
 				);
 		});

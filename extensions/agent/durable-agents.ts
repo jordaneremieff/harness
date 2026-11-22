@@ -81,7 +81,7 @@ import {
 } from "./brief.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { CollaborationParams } from "./collaboration-contract.ts";
-import { controlText, readableControlText, projectReportReceipt } from "./control-result.ts";
+import { controlText, readableControlText, projectReportReceipt, unconfirmedStopText } from "./control-result.ts";
 import { projectSelectedStatus, projectStorageStatus, validateStatusDetail } from "./status-overview.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { AgentCatalog } from "./catalog.ts";
@@ -656,6 +656,17 @@ const SECTION_PREAMBLE = [
 	"Every conversation has an external identity: the bare storage id for the root, storageId:conversationId otherwise. Use the identity from agent_status or agent_list as sessionId for agent_send, agent_steer, agent_abort, agent_configure, agent_compact, agent_rewind, and agent_command.",
 	"Final answers route to each request's reply recipient. Use agent_send mode: report for interim notices; the creating owner is provenance, not every request's recipient.",
 ];
+
+/** A failed stop answer after its local wait ended reports an unconfirmed outcome instead of inviting a repeat. */
+function unconfirmedWhenWaitEnded(
+	stopped: Durable.ToolExecutionResult<ControlDetails>,
+	target: string,
+	wait: Context,
+	deadline: AbortSignal,
+): Durable.ToolExecutionResult<ControlDetails> {
+	if (stopped.isError !== true || wait.abortSignal?.aborted !== true) return stopped;
+	return errorResult(unconfirmedStopText(target, deadline.aborted ? "expired" : "cancelled"));
+}
 
 /** Apply this slice's exposure table to one native registration. */
 function exposedControl<T extends Durable.ToolRegistration>(tool: T): T {
@@ -2012,13 +2023,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		} catch (error) {
 			return errorResult(`Target resolution failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		return dispatchControl(
+		const stopped = await dispatchControl(
 			args.release === true ? "release" : "abort",
 			{ sessionId: resolved, ...(args.background === true ? { background: true } : {}) },
 			`Abort of ${resolved} failed`,
 			undefined,
 			wait,
 		);
+		return unconfirmedWhenWaitEnded(stopped, resolved, wait, deadline);
 	};
 
 	const abortTool = durable.defineTool({
