@@ -526,12 +526,14 @@ function buildRegistry(
 	checkIns = true,
 	sourceStorageId = storageId,
 	catalogRoot?: string,
+	stopWaitMs?: number,
 ): { registry: Durable.Registry; extension: Durable.Extension } {
 	const registry = Durable.createRegistry();
 	if (checkIns)
 		registry.install(Durable.defineExtension({ name: "test.host", tasks: [CheckInTask, CheckInDeadlineTask] }));
 	const contribution = createAgentContribution({
 		configureSettings: () => {},
+		stopWaitMs,
 		source: "/abs/extensions/agent/index.ts",
 		...(dispatch === undefined ? {} : { dispatch }),
 	});
@@ -1916,6 +1918,33 @@ it("dispatches release to the resolved target and refuses a timer combination", 
 		["resolve-target", "abort"],
 	);
 	assert.equal(calls.at(-1)?.params.background, true);
+});
+
+it("reports an unconfirmed stop when its local deadline expires after dispatch", async (t) => {
+	const route = createRoute();
+	const { registry } = buildRegistry(
+		async (method, _params, call) => {
+			if (method === "resolve-target") return "canonical-remote";
+			assert.equal(method, "abort");
+			const signal = call?.abortSignal;
+			assert.ok(signal);
+			await new Promise<void>((_resolve, reject) => {
+				signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+				if (signal.aborted) reject(signal.reason);
+			});
+		},
+		true,
+		storageId,
+		undefined,
+		80,
+	);
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_abort", args: { sessionId: "alias" } });
+	await say(root, "Stop the remote task");
+	const outcome = (await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort");
+	assert.match(outcome?.text ?? "", /unconfirmed/iu);
+	assert.match(outcome?.text ?? "", /expired/iu);
 });
 
 it("reports unavailable native release without inferring global host absence", async (t) => {

@@ -19,7 +19,6 @@ import {
 } from "./durable-host-fixture.mts";
 import {
 	QUIET_INPUT_ENTRY_KIND,
-	STOPPED_LIMIT,
 	StoppedDoc,
 	noteExplicitInput,
 	isStopped,
@@ -30,11 +29,15 @@ import {
 
 /** A transaction stub that holds the stop document in memory. */
 function memoryStore() {
-	const state = { conversations: [] as Array<{ conversationId: number; stoppedAt: number }> };
+	const state = new Map<number, { stoppedAt: number | null; explicit: number | null }>();
 	const tx = {
-		doc: async (token: unknown) => {
-			assert.equal(token, StoppedDoc);
-			return state;
+		retireDoc: async (_token: unknown, id: number) => {
+			state.delete(id);
+		},
+		doc: async (token: unknown, id: number) => {
+			if (token !== StoppedDoc) return { items: [] };
+			if (!state.has(id)) state.set(id, { stoppedAt: null, explicit: null });
+			return state.get(id);
 		},
 		submission: async () => ({ status: "done" }),
 		scanTasks: async (query: { conversationId: number; status?: string }, limit: number) => ({
@@ -55,26 +58,29 @@ it("answers within its bound while a marked task ignores its abort, and names li
 	const conversation = {
 		id: 1 as ConversationId,
 		abort: async () => {
-			assert.deepEqual(
-				state.conversations.map((mark) => mark.conversationId),
-				[1, 2],
-				"the scope is marked stopped before the abort",
-			);
 			aborted = true;
 			return new Promise<void>(() => {});
 		},
 	};
 	const reports: unknown[] = [];
 	const started = performance.now();
-	const outcome = await stopScope(store, conversation, [1, 2] as ConversationId[], true, BACKGROUND_CONTEXT, {
-		now: 5,
-		answerWithinMs: 30,
-		openRequests: async () => [],
-		report: (error) => reports.push(error),
-	});
+	const outcome = await stopScope(
+		store,
+		conversation,
+		async () => [1, 2] as ConversationId[],
+		true,
+		BACKGROUND_CONTEXT,
+		{
+			now: 5,
+			answerWithinMs: 30,
+			openRequests: async () => [],
+			report: (error) => reports.push(error),
+		},
+	);
 	assert.ok(aborted);
+	assert.deepEqual([...state.keys()], [1, 2]);
 	assert.ok(performance.now() - started < 2000);
-	assert.deepEqual(outcome, { settled: false, pendingTasks: [10, 20], work: new Map() });
+	assert.deepEqual(outcome, { settled: false, pendingTasks: [10, 20], scope: [1, 2], work: new Map() });
 	assert.deepEqual(reports, []);
 });
 
@@ -83,25 +89,29 @@ it("answers settled when the scope becomes idle within the bound", async () => {
 	const outcome = await stopScope(
 		store,
 		{ id: 3 as ConversationId, abort: async () => {} },
-		[3] as ConversationId[],
+		async () => [3] as ConversationId[],
 		false,
 		BACKGROUND_CONTEXT,
 		{ now: 1, answerWithinMs: 10_000, openRequests: async () => [], report: () => {} },
 	);
-	assert.deepEqual(outcome, { settled: true, work: new Map() });
+	assert.deepEqual(outcome, { settled: true, scope: [3], work: new Map() });
 });
 
-it("keeps stop marks bounded and clears only the named conversation", async () => {
+it("keeps stop marks independent and clears only the named conversation", async () => {
 	const { state, store } = memoryStore();
 	await store.commit((tx) =>
 		markStopped(
 			tx,
-			Array.from({ length: STOPPED_LIMIT + 2 }, (_, index) => (index + 1) as ConversationId),
+			Array.from({ length: 514 }, (_, index) => (index + 1) as ConversationId),
 			7,
 		),
 	);
-	assert.equal(state.conversations.length, STOPPED_LIMIT);
-	assert.equal(await store.commit((tx) => isStopped(tx, 1 as ConversationId)), false, "the oldest mark left first");
+	assert.equal(state.size, 514);
+	assert.equal(
+		await store.commit((tx) => isStopped(tx, 1 as ConversationId)),
+		true,
+		"later stops do not evict a stopped conversation",
+	);
 	assert.equal(await store.commit((tx) => isStopped(tx, 5 as ConversationId)), true);
 	await store.commit((tx) => noteExplicitInput(tx, 5 as ConversationId, 1 as SubmissionId));
 	assert.equal(await store.commit((tx) => isStopped(tx, 5 as ConversationId)), false);
@@ -128,7 +138,7 @@ async function openHost(t: { after(fn: () => void | Promise<void>): void }, answ
 		await host.close();
 		rmSync(root, { recursive: true, force: true });
 	});
-	return { host, models };
+	return { host, models, root };
 }
 
 /** Live non-background tasks of the root conversation, read without a write. */
@@ -273,6 +283,44 @@ it("replays a quiet body and commits its delivered facts after the first acknowl
 		delivery.dependencyMarks,
 	);
 	assert.equal(await liveRun(host), false);
+});
+
+it("retains a withdrawn queued result across reopen without a new run", async (t) => {
+	const { host, models, root } = await openHost(t);
+	const started = deferred();
+	models.streamSimple = () => {
+		started.resolve();
+		return pending(answerMessage("in flight"));
+	};
+	await host.request("submit", { message: "Work", requestId: "before", origin: "operator" });
+	await started.promise;
+	await host.request("submit", {
+		message: "queued result body",
+		requestId: "queued-result",
+		provenance: { classification: "automatic" },
+		whenBusy: "followUp",
+	});
+	await host.request("abort", {});
+	await host.close();
+	const reopened = await DurableHost.open(
+		hostOptions(join(root, "run.sqlite"), models, fixtureRegistry()),
+		BACKGROUND_CONTEXT,
+	);
+	try {
+		await reopened.resume();
+		const entries = await reopened.harness.commit(
+			(tx) => tx.scanEntries({ conversationId: reopened.root().id }, 50),
+			BACKGROUND_CONTEXT,
+		);
+		assert.ok(
+			entries.items.some(
+				(e) => e.kind === QUIET_INPUT_ENTRY_KIND && JSON.stringify(e.model).includes("queued result body"),
+			),
+		);
+		assert.equal(await liveRun(reopened), false);
+	} finally {
+		await reopened.close();
+	}
 });
 
 it("keeps the stop if an in-flight abort withdraws the explicit input", async (t) => {

@@ -259,6 +259,7 @@ export interface AgentContribution {
 }
 
 export interface AgentContributionOptions {
+	readonly stopWaitMs?: number;
 	/** Rebind the factory publisher to the native host directory. */
 	readonly configureSettings: (host: AgentContributionHost) => void;
 	/** Absolute path of the emitting extension entrypoint, for example `fileURLToPath(import.meta.url)`. */
@@ -1242,7 +1243,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				classification: "explicit",
 				sender: request.requester,
 			});
-			await capture();
 			await fact(() =>
 				recordAdmitted(tx, api.conversationId, outgoing, {
 					sessionId: outgoing.sessionId,
@@ -1250,6 +1250,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					submissionId: submission.id,
 				}),
 			);
+			await capture();
 			return undefined;
 		}, context);
 		const status = await submission.status(context);
@@ -2012,7 +2013,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (args.sessionId === identity(api.conversationId))
 			return errorResult("The target's abort scope includes the calling conversation.");
 		// Resolution and remote controls share one local wait budget. An admitted stop outlives this wait.
-		const deadline = AbortSignal.timeout(60_000);
+		const deadline = AbortSignal.timeout(options.stopWaitMs ?? 60_000);
 		const wait = withAbortSignal(
 			context.abortSignal ? AbortSignal.any([context.abortSignal, deadline]) : deadline,
 			context,

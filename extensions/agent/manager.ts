@@ -1131,8 +1131,8 @@ export class AgentManager {
 		signal: AbortSignal | undefined,
 		launch: boolean,
 	): Promise<unknown> {
-		if (method === "release") return this.releaseControl(record, params, caller, signal);
-		if (method === "abort") return this.abortControl(record, params, caller, signal, launch);
+		if (method === "abort" || method === "release")
+			return this.abortControl(record, params, caller, signal, launch, method);
 		try {
 			return await this.controlClient(await this.connection(record, undefined, launch), method, params, caller, signal);
 		} catch (error) {
@@ -1141,16 +1141,6 @@ export class AgentManager {
 				cause: error,
 			});
 		}
-	}
-
-	private async releaseControl(
-		record: CatalogRecord,
-		params: Record<string, unknown>,
-		caller: AgentCaller,
-		signal: AbortSignal | undefined,
-	): Promise<unknown> {
-		const client = await this.connection(record, undefined, false);
-		return this.controlClient(client, "release", params, caller, signal);
 	}
 
 	/**
@@ -1162,9 +1152,12 @@ export class AgentManager {
 		caller: AgentCaller,
 		signal: AbortSignal | undefined,
 		launch: boolean,
+		method: "abort" | "release",
 	): Promise<unknown> {
+		if (method === "release" && params.background === true)
+			throw new Error("release cannot be combined with background");
 		const running = await this.observationConnection(target);
-		if (running !== undefined) return this.controlClient(running, "abort", params, caller, signal);
+		if (running !== undefined) return this.controlClient(running, method, params, caller, signal);
 		if (!launch) throw new HostEndpointUnavailableError(target.storageId, new Error("this abort may not start a host"));
 		signal?.throwIfAborted();
 		const reply = await (this.options.stopCold ?? stopColdStorage)(
@@ -1172,16 +1165,18 @@ export class AgentManager {
 			String(params.sessionId),
 			params.background === true,
 		);
-		if ("result" in reply)
-			return {
+		if ("result" in reply) {
+			const aborted = {
 				...reply.result,
 				cold: true,
 				started:
 					"A stop writer marked the retained work and exited. No host was started. Pending abort handlers settle on normal recovery.",
 			};
+			return method === "release" ? { aborted, retiring: true, blockers: [], writesPlaced: 0 } : aborted;
+		}
 		// A competing writer won the lease. Stop it in place; never launch or retire it on this evidence.
 		const owner = await this.connection(target, undefined, false);
-		return this.controlClient(owner, "abort", params, caller, signal);
+		return this.controlClient(owner, method, params, caller, signal);
 	}
 
 	private requestedOperation(method: string, params: Record<string, unknown>): string {

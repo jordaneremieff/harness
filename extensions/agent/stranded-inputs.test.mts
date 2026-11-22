@@ -244,7 +244,8 @@ it("keeps a mixed inbox after an unavailable model", { timeout: 10000 }, async (
 		);
 	assert.equal((await first.wait(context)).reason, "no_model");
 	await host.root().waitForIdle(context);
-	assert.equal((await host.harness.snapshot(InboxDoc, host.root().id, context))?.items.length, 2);
+	await host.request("passive-submit", { requestId: "passive-stranded", message: "Passive report" }, context);
+	assert.equal((await host.harness.snapshot(InboxDoc, host.root().id, context))?.items.length, 3);
 	assert.equal(
 		(await host.root().entries({}, 100, undefined, context)).items.some(
 			(entry) => entry.kind === "agent.inbox-boundary",
@@ -487,7 +488,7 @@ it("does not create a recovery loop when successive queued runs fail", { timeout
 	assert.equal(p.calls(), 3);
 });
 
-it("an abort between detection and passive admission cannot revive withdrawn inputs", { timeout: 10000 }, async (t) => {
+it("an abort ahead of atomic recovery leaves withdrawn inputs settled", { timeout: 10000 }, async (t) => {
 	const p = await provider();
 	const harness = await Harness.open(
 		await openNodeSqliteStorage(rootPath(t)),
@@ -504,19 +505,9 @@ it("an abort between detection and passive admission cannot revive withdrawn inp
 	p.release.resolve();
 	await original.wait(context);
 	await conversation.waitForIdle(context);
-	const wrapped = new Proxy(conversation, {
-		get(target, property) {
-			if (property === "submit")
-				return async (...args: Parameters<Conversation["submit"]>) => {
-					await target.abort(context);
-					return target.submit(...args);
-				};
-			const value = Reflect.get(target, property);
-			return typeof value === "function" ? value.bind(target) : value;
-		},
-	});
-	await recoverStrandedInputs(wrapped, context);
+	const abort = conversation.abort(context);
+	await Promise.all([abort, recoverStrandedInputs(conversation, context)]);
 	for (const input of queued) assert.equal((await input.wait(context)).reason, "aborted");
 	assert.equal(p.calls(), 1);
-	assert.equal((await recoveryEntries(conversation)).length, 1, "the passive notice creates no user run");
+	assert.equal((await recoveryEntries(conversation)).length, 0, "the withdrawn queue needs no recovery boundary");
 });

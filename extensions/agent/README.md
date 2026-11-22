@@ -2044,8 +2044,7 @@ an `agent.quiet-input` entry with reason `stopped` and starts no run, so the
 receipts of the children that an abort stopped cannot restart their stopped
 parent. A fired scheduled input always has an answer recipient. Like operator
 input, a steer, a follow-up or a task, it runs as usual. An explicit input permits wakes unless the abort itself withdraws or
-ends that input. A storage keeps at most 512 stop marks; the oldest
-leaves first.
+ends that input. Each conversation keeps its own stop mark. Stops elsewhere never evict it. A queued automatic wake that the stop withdraws keeps its body as passive context.
 
 For a cold storage, a temporary writer takes the normal writer lease. It opens
 the configured task registry against a read-only view. A separate paused writer withdraws eligible queued

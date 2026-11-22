@@ -70,6 +70,7 @@ import { matchesSchema } from "./schema-check.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import type { CatalogIntentClaims, CatalogViewRow } from "./catalog-view.ts";
+import { admitPassiveWrite } from "./stranded-inputs.ts";
 import type { Context } from "@earendil-works/chord/context";
 import { awaitWithContext, withAbortSignal, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -919,7 +920,12 @@ async function admitConversation(
 		content: message,
 		requestId,
 		whenBusy: placementMode(whenBusy),
-		entry: inputEntry(origin, inputAuthor(params), label),
+		entry: inputEntry(
+			origin,
+			inputAuthor(params),
+			label,
+			quietWhileStopped(label.class, ownerId !== undefined || params.requestContext !== undefined),
+		),
 	};
 	const quietness = {
 		inputClass: label.class,
@@ -941,7 +947,7 @@ async function admitConversation(
 		if (reason !== undefined) {
 			quiet = true;
 			const entry = quietInputEntry(message, { ...label, requestId }, reason, now());
-			return conversation.submit(tx, { type: "write", requestId, entry });
+			return admitPassiveWrite(tx, conversation, requestId, entry);
 		}
 		const retain = await prepareQueuedInputs(tx, conversation.id, params.senderIdentity);
 		let admitted: SubmissionId | undefined;

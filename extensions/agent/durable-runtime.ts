@@ -830,7 +830,7 @@ export async function createDurableRuntime(
 				const caller = { id: metadata.storageId, cwd: metadata.cwd };
 				try {
 					return await stopForeignReferences(
-						(method, input) => manager.control(method, input, caller),
+						(method, input) => manager.control(method, input, caller, { signal: context.abortSignal }),
 						references,
 						context,
 					);

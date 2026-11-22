@@ -13,12 +13,55 @@
 import type { Context } from "@earendil-works/chord/context";
 import {
 	ResetEntry,
+	defineDoc,
+	InboxDoc,
+	type Harness,
 	type Conversation,
 	type ConversationId,
 	type EntryId,
 	type SubmissionId,
 	type SubmissionRecord,
 } from "@earendil-works/pi-durable";
+
+import { closeOpenWork, OpenWorkDoc } from "./open-work.ts";
+
+const PendingResets = defineDoc<{ ids: number[] }>({
+	kind: "agent.pending-reset-closure",
+	version: 1,
+	scope: "session",
+	initial: () => ({ ids: [] }),
+	checkpointWhen: () => false,
+});
+
+/** A reset closes only requests from before its placed entry. Removing the marker and closing work share a commit. */
+export async function reconcileResetClosures(
+	harness: Harness,
+	storageId: string,
+	now: () => number,
+	context: Context,
+	selected?: readonly number[],
+): Promise<void> {
+	const pending = (await harness.snapshot(PendingResets, context))?.ids ?? [];
+	for (const id of pending) {
+		if (selected && !selected.includes(id)) continue;
+		await harness.commit(async (tx) => {
+			const state = await tx.doc(PendingResets);
+			if (!state.ids.includes(id)) return;
+			const record = await tx.submission(id as SubmissionId);
+			if (record?.type !== "write" || record.status === "queued") return;
+			if (record.status === "done" && (await tx.entry(record.entry))?.kind === ResetEntry.kind) {
+				const before: string[] = [];
+				for (const item of (await tx.doc(OpenWorkDoc, record.conversationId)).items) {
+					if (item.close) continue;
+					const input = await tx.submission(item.submissionId as SubmissionId);
+					if (input?.entry !== undefined && input.entry < record.entry) before.push(item.requestId);
+				}
+				if (before.length) await closeOpenWork(tx, storageId, record.conversationId, "reset", now(), before);
+			}
+			state.ids.splice(state.ids.indexOf(id), 1);
+		}, context);
+	}
+}
 
 export interface ResetRequest {
 	/** Operator-authored handoff text; absent starts the new context without a message. */
@@ -79,22 +122,30 @@ export async function resetConversation(
 	context: Context,
 ): Promise<ResetResult> {
 	const handoff = params.handoff !== undefined && params.handoff.trim() !== "" ? params.handoff : undefined;
-	const existing = await conversation.commit(
-		(tx) => tx.submissionByRequest(conversation.id, params.requestId),
-		context,
-	);
-	if (existing !== undefined) {
-		if (existing.type !== "write")
-			throw new Error(`request ${params.requestId} already identifies a non-write submission`);
-		return resetResult(conversation.id, params.requestId, existing, true);
-	}
 	const entry = {
 		kind: ResetEntry.kind,
 		head: "self" as const,
 		...(handoff === undefined ? {} : { model: [{ role: "user" as const, content: handoff, timestamp: Date.now() }] }),
 	};
-	const admitted = await conversation.submit({ type: "write", entry, requestId: params.requestId }, context);
-	const record = await admitted.status(context);
-	if (record.type !== "write") throw new Error(`request ${params.requestId} was admitted as a non-write submission`);
-	return resetResult(conversation.id, params.requestId, record, false);
+	const { id, deduped } = await conversation.commit(async (tx) => {
+		const existing = await tx.submissionByRequest(conversation.id, params.requestId);
+		const pending = await tx.doc(PendingResets);
+		if (existing) {
+			const kind =
+				existing.status === "queued"
+					? (await tx.doc(InboxDoc, conversation.id)).items.find((item) => item.id === existing.id)?.entry?.kind
+					: existing.entry === undefined
+						? undefined
+						: (await tx.entry(existing.entry))?.kind;
+			if (existing.type !== "write" || (kind !== ResetEntry.kind && !pending.ids.includes(existing.id)))
+				throw new Error(`request ${params.requestId} does not identify a reset write`);
+			return { id: existing.id, deduped: true };
+		}
+		const id = await conversation.submit(tx, { type: "write", entry, requestId: params.requestId });
+		pending.ids.push(id);
+		return { id, deduped: false };
+	}, context);
+	const record = await conversation.commit((tx) => tx.submission(id), context);
+	if (record?.type !== "write") throw new Error("Reset write not retained");
+	return resetResult(conversation.id, params.requestId, record, deduped);
 }

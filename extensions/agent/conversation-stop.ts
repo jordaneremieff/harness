@@ -5,23 +5,24 @@
  * answer and that arrives without the recipient's request (a result, report, check-in, thread notice or timer) is kept
  * as context and starts no run. A delivery that carries only state notes is kept the same way on any conversation.
  */
+import { copyJson } from "@earendil-works/chord/json";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Context } from "@earendil-works/chord/context";
+import { withAbortSignal, type Context } from "@earendil-works/chord/context";
 import {
 	defineDoc,
+	InboxDoc,
 	type ConversationHandle,
 	type ConversationId,
+	type JsonObject,
 	type SubmissionId,
 	type TaskState,
 	type Tx,
 	type UserInput,
 } from "@earendil-works/pi-durable";
-import type { InputClass } from "./input-entry.ts";
+import { inputLabel, type InputClass } from "./input-entry.ts";
 
 /** How long an abort request waits for the scope it marked to settle before it answers. */
 export const ABORT_ANSWER_MS = 15_000;
-/** Stop marks kept per storage; the oldest leaves first, and its conversation is quiet no longer. */
-export const STOPPED_LIMIT = 512;
 /** Unended task IDs that one abort answer names. */
 export const PENDING_TASKS_LIMIT = 64;
 const LIVE_STATUSES: readonly TaskState<unknown, unknown>["status"][] = [
@@ -38,53 +39,38 @@ export const QUIET_INPUT_ENTRY_KIND = "agent.quiet-input";
  * A stop mark. `explicit` is the latest explicit input admitted after the mark: it ends the stop unless the stop itself
  * ended it, which a native abort does for an input admitted before its marks commit.
  */
-type StopMark = { conversationId: number; stoppedAt: number; explicit?: number };
-type StoppedState = { conversations: StopMark[] };
-
-/** One session document, so that an admission reads the marks without creating a document per conversation. */
-export const StoppedDoc = defineDoc<StoppedState>({
-	kind: "agent.stopped",
+type StopMark = { stoppedAt: number | null; explicit: number | null };
+export const StoppedDoc = defineDoc<StopMark>({
+	kind: "agent.conversation-stop",
 	version: 1,
-	scope: "session",
-	initial: () => ({ conversations: [] }),
+	scope: "conversation",
+	fork: "initial",
+	history: "latest",
+	initial: () => ({ stoppedAt: null, explicit: null }),
 	checkpointWhen: () => false,
 });
-
 export async function markStopped(tx: Tx, conversations: readonly ConversationId[], at: number): Promise<void> {
-	if (conversations.length === 0) return;
-	const state = await tx.doc(StoppedDoc);
-	const marked = new Set<number>(conversations);
-	const kept = state.conversations.filter((mark) => !marked.has(mark.conversationId));
-	const added = conversations.map((conversationId) => ({ conversationId: conversationId as number, stoppedAt: at }));
-	state.conversations = [...kept, ...added].slice(-STOPPED_LIMIT);
+	for (const id of conversations) {
+		const mark = await tx.doc(StoppedDoc, id);
+		mark.stoppedAt = at;
+		mark.explicit = null;
+	}
 }
-
-/** Record an explicit input admitted to a stopped conversation; the next quiet decision reads how it ended. */
 export async function noteExplicitInput(
 	tx: Tx,
 	conversationId: ConversationId,
 	submissionId: SubmissionId,
 ): Promise<void> {
-	const state = await tx.doc(StoppedDoc);
-	const mark = state.conversations.find((candidate) => candidate.conversationId === conversationId);
-	if (mark !== undefined) mark.explicit = submissionId as number;
+	const mark = await tx.doc(StoppedDoc, conversationId);
+	if (mark.stoppedAt !== null) mark.explicit = submissionId;
 }
-
-/**
- * True while the conversation stays stopped. An explicit input recorded after the mark ends the stop unless it ended
- * `aborted`, as an input does that the same abort withdrew or whose run it stopped. Keep the mark until the input
- * settles so a quiet decision during the input cannot conceal a later withdrawal.
- */
 export async function isStopped(tx: Tx, conversationId: ConversationId): Promise<boolean> {
-	const state = await tx.doc(StoppedDoc);
-	const index = state.conversations.findIndex((mark) => mark.conversationId === conversationId);
-	if (index < 0) return false;
-	const explicit = state.conversations[index].explicit;
-	if (explicit === undefined) return true;
-	const record = await tx.submission(explicit as SubmissionId);
+	const mark = await tx.doc(StoppedDoc, conversationId);
+	if (mark.stoppedAt === null) return false;
+	if (mark.explicit === null) return true;
+	const record = await tx.submission(mark.explicit as SubmissionId);
 	if (record?.status === "unanswered" && record.reason === "aborted") return true;
-	if (record?.status === "queued" || record?.status === "placed") return false;
-	state.conversations.splice(index, 1);
+	if (record?.status !== "queued" && record?.status !== "placed") await tx.retireDoc(StoppedDoc, conversationId);
 	return false;
 }
 
@@ -165,6 +151,26 @@ export interface StopOptions {
 /** Open declared work at the stop boundary, by conversation: only these items close as stopped. */
 export type StoppedWork = ReadonlyMap<ConversationId, readonly string[]>;
 
+/** Replace each queued automatic wake with passive context before native withdrawal. */
+async function preserveWakeBodies(tx: Tx, scope: readonly ConversationId[], now: number): Promise<void> {
+	const queues = await Promise.all(scope.map(async (id) => ({ id, inbox: await tx.doc(InboxDoc, id) })));
+	for (const { id, inbox } of queues) {
+		for (let index = 0; index < inbox.items.length; index++) {
+			const item = inbox.items[index];
+			if (item.mode === "write" || !item.entry || item.onAbort === "keep") continue;
+			const data = item.entry.data;
+			if (typeof data !== "object" || data === null || !("preserveOnStop" in data) || data.preserveOnStop !== true)
+				continue;
+			const label = inputLabel(item.entry, "");
+			if (!label) continue;
+			const copy = await tx.createSubmission({ conversationId: id, type: "write", status: "queued" });
+			const entry = quietInputEntry(item.content, label, "stopped", now);
+			tx.settleSubmission(item.id, { status: "unanswered", reason: "aborted" });
+			inbox.items.splice(index, 1, { id: copy.id, mode: "write", entry: copyJson(entry) as JsonObject });
+		}
+	}
+}
+
 export async function captureStoppedWork(
 	tx: Tx,
 	scope: readonly ConversationId[],
@@ -176,6 +182,7 @@ export async function captureStoppedWork(
 		if (requests.length > 0) open.set(id, requests);
 	}
 	await markStopped(tx, scope, options.now);
+	await preserveWakeBodies(tx, scope, options.now);
 	return open;
 }
 
@@ -189,13 +196,28 @@ type Store = { commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): 
 export async function stopScope(
 	store: Store,
 	conversation: Pick<ConversationHandle, "id" | "abort">,
-	scope: readonly ConversationId[],
+	selectScope: (tx: Tx) => Promise<readonly ConversationId[]>,
 	background: boolean,
 	context: Context,
 	options: StopOptions,
-): Promise<StopOutcome & { readonly work: StoppedWork }> {
-	const work = await store.commit((tx) => captureStoppedWork(tx, scope, options), context);
-	const abort = conversation.abort(context, background ? { background: true } : undefined);
+): Promise<StopOutcome & { readonly work: StoppedWork; readonly scope: readonly ConversationId[] }> {
+	// Both calls enqueue on the native session line before this turn yields. No fork or admission can enter between them.
+	const veto = new AbortController();
+	const write = store.commit(async (tx) => {
+		try {
+			const scope = await selectScope(tx);
+			return { scope, work: await captureStoppedWork(tx, scope, options) };
+		} catch (error) {
+			veto.abort(error);
+			throw error;
+		}
+	}, context);
+	const abort = conversation.abort(
+		withAbortSignal(context.abortSignal ? AbortSignal.any([context.abortSignal, veto.signal]) : veto.signal, context),
+		background ? { background: true } : undefined,
+	);
+	void abort.catch(() => {});
+	const { scope, work } = await write;
 	const bound = new AbortController();
 	let settled: boolean;
 	try {
@@ -206,9 +228,9 @@ export async function stopScope(
 	} finally {
 		bound.abort();
 	}
-	if (settled) return { settled: true, work };
+	if (settled) return { settled: true, work, scope };
 	abort.catch(options.report);
-	return { settled: false, pendingTasks: await pendingTasks(store, scope, context), work };
+	return { settled: false, pendingTasks: await pendingTasks(store, scope, context), work, scope };
 }
 
 /** Live abort-marked tasks of the scope, by status so that ended tasks never fill the bound. */

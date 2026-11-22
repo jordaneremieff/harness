@@ -78,6 +78,7 @@ test("selected native run stops its grouped inputs without withdrawing unrelated
 	);
 	const stopped = (await host.request("run-stop", { runId: scope.runId })) as RunStop;
 	assert.equal(stopped.state, "stopped");
+	assert.deepEqual(stopped.queuedInputs, [queued.submissionId]);
 	assert.equal((await host.wait(input.submissionId)).status, "unanswered");
 	assert.equal((await host.wait(grouped)).status, "unanswered");
 	const pending = await host.harness.submission(queued.submissionId as SubmissionId, BACKGROUND_CONTEXT);

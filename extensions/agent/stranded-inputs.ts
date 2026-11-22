@@ -1,4 +1,5 @@
 /** Recover queued user inputs through native passive writes, without extending a failed run. */
+import { copyJson } from "@earendil-works/chord/json";
 import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import {
@@ -9,12 +10,39 @@ import {
 	type Harness,
 	type Cursor,
 	type EntryRecord,
+	type EntryDraft,
+	type Tx,
+	type SubmissionId,
+	type JsonObject,
 } from "@earendil-works/pi-durable";
 import { onStoredCommit } from "./commit-observation.ts";
 
+/** Retain passive context without providing the boundary that would place a stranded user input. */
+export async function admitPassiveWrite(
+	tx: Tx,
+	conversation: Conversation,
+	requestId: string,
+	entry: EntryDraft,
+): Promise<SubmissionId> {
+	const existing = await tx.submissionByRequest(conversation.id, requestId);
+	if (existing) return existing.id;
+	const inbox = await tx.doc(InboxDoc, conversation.id);
+	if (!(await tx.doc(LiveDoc, conversation.id)).run && inbox.items.some((item) => item.mode !== "write")) {
+		const retained = await tx.createSubmission({
+			type: "write",
+			status: "queued",
+			requestId,
+			conversationId: conversation.id,
+		});
+		inbox.items.push({ id: retained.id, mode: "write", entry: copyJson(entry) as JsonObject });
+		return retained.id;
+	}
+	return conversation.submit(tx, { type: "write", requestId, entry });
+}
+
 /** One failed generation identifies one replay-safe boundary write. */
 export async function recoverStrandedInputs(conversation: Conversation, context: Context): Promise<void> {
-	const candidate = await conversation.commit(async (tx) => {
+	await conversation.commit(async (tx) => {
 		const live = await tx.doc(LiveDoc, conversation.id);
 		const inbox = await tx.doc(InboxDoc, conversation.id);
 		if (live.run || !inbox.items.some((item) => item.mode !== "write")) return undefined;
@@ -33,16 +61,12 @@ export async function recoverStrandedInputs(conversation: Conversation, context:
 			(outcome.error.detail as { reason?: unknown } | undefined)?.reason !== "model_error"
 		)
 			return undefined;
-		return {
+		const candidate = {
 			requestId: `agent-recovery:${conversation.id}:${entry.byTaskId}`,
 			error: outcome.error.message,
 			timestamp: entry.model?.[0]?.timestamp ?? 0,
 		};
-	}, context);
-	if (!candidate) return;
-	// A passive write admits no user work if an intervening abort withdrew the queue.
-	await conversation.submit(
-		{
+		await conversation.submit(tx, {
 			type: "write",
 			requestId: candidate.requestId,
 			entry: {
@@ -55,29 +79,24 @@ export async function recoverStrandedInputs(conversation: Conversation, context:
 					},
 				],
 			},
-		},
-		context,
-	);
+		});
+	}, context);
 }
 
 /** Place a write-only inbox at an idle boundary without starting a run. */
 export async function placeLeftoverWrites(conversation: Conversation, context: Context): Promise<number> {
-	const newest = await conversation.commit(async (tx) => {
+	return conversation.commit(async (tx) => {
 		const live = await tx.doc(LiveDoc, conversation.id);
 		const inbox = await tx.doc(InboxDoc, conversation.id);
-		if (live.run || inbox.items.length === 0 || inbox.items.some((item) => item.mode !== "write")) return undefined;
-		return { id: inbox.items[inbox.items.length - 1].id, count: inbox.items.length };
-	}, context);
-	if (newest === undefined) return 0;
-	const boundary = await conversation.submit(
-		{
+		if (live.run || inbox.items.length === 0 || inbox.items.some((item) => item.mode !== "write")) return 0;
+		const newest = { id: inbox.items[inbox.items.length - 1].id, count: inbox.items.length };
+		await conversation.submit(tx, {
 			type: "write",
 			requestId: `agent-inbox-boundary:${conversation.id}:${newest.id}`,
 			entry: { kind: "agent.inbox-boundary", edits: [] },
-		},
-		context,
-	);
-	return (await boundary.status(context)).status === "done" ? newest.count : 0;
+		});
+		return newest.count;
+	}, context);
 }
 
 /** Commit-driven recovery; opening checks existing queued inputs once. */

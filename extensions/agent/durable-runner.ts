@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import { enableCompileCache } from "node:module";
 import { isAbsolute } from "node:path";
@@ -60,10 +61,15 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 		},
 	);
 	if (!host) return;
+	let grace: NodeJS.Timeout | undefined;
 	const stop = () => {
+		grace ??= setTimeout(() => {
+			writeSync(2, "Durable host: shutdown grace expired; the process will release its writer lease.\n");
+			process.exit(1);
+		}, 20_000);
 		void host.close().catch((error: unknown) => {
 			process.stderr.write(`${String(error)}\n`);
-			process.exitCode = 1;
+			process.exit(1);
 		});
 	};
 	process.once("SIGTERM", stop);
@@ -71,6 +77,7 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 	try {
 		await host.done;
 	} finally {
+		clearTimeout(grace);
 		process.off("SIGTERM", stop);
 		process.off("SIGINT", stop);
 	}

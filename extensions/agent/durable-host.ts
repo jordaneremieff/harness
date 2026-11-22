@@ -36,7 +36,7 @@ import type { ProviderRetryNotice } from "./provider-block.ts";
 import { readInputProviderBlock, initializeProviderControl, reconcileProviderControls } from "./provider-block.ts";
 import { storageStatusCoverage, storageStatusScanInput } from "./storage-status.ts";
 import { matchesSchema } from "./schema-check.ts";
-import { placeLeftoverWrites, StrandedInputRecovery } from "./stranded-inputs.ts";
+import { admitPassiveWrite, placeLeftoverWrites, StrandedInputRecovery } from "./stranded-inputs.ts";
 import { admittedResult } from "./result-reference.ts";
 import { ResultReferenceSchema, type ResultReference } from "./result-schema.ts";
 import type { InputProvenance } from "./awaited-results.ts";
@@ -134,7 +134,7 @@ import {
 } from "./durable-observation.ts";
 import { LiveObservationService, type ObservationScope } from "./live-observation.ts";
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
-import { resetConversation } from "./durable-reset.ts";
+import { reconcileResetClosures, resetConversation } from "./durable-reset.ts";
 import { closeOpenWork, openWorkItems, parseDependencyMarks, recordDependencyMarks } from "./open-work.ts";
 import { repairQueuedInputs, UnplacedWatchEnd } from "./unplaced-inputs.ts";
 import { TIMER_TASK_NAME, cancelTimer, listTimers, scheduleTimer, type TimerMode } from "./durable-timers.ts";
@@ -440,6 +440,18 @@ export class DurableHost {
 								this.communicationDiagnostic = "retention-unavailable";
 							});
 					});
+				const settledWrites = publication.changes.flatMap((change) =>
+					change.type === "submission" && change.value.type === "write" && change.value.status !== "queued"
+						? [change.value.id]
+						: [],
+				);
+				if (settledWrites.length)
+					queueMicrotask(() => {
+						if (!this.closed)
+							void reconcileResetClosures(harness, this.storageId, this.now, BACKGROUND_CONTEXT, settledWrites).catch(
+								(error) => this.reportError?.(error),
+							);
+					});
 				this.commitGeneration += 1;
 				this.idleDirty = true;
 				queueMicrotask(() => {
@@ -685,6 +697,7 @@ export class DurableHost {
 			} catch {
 				this.communicationDiagnostic = "retention-unavailable";
 			}
+			await reconcileResetClosures(this.harness, this.storageId, this.now, context);
 			this.harness.resume();
 			await reconcileDeliveries(this.harness, context);
 			await repairQueuedInputs(this.harness, context, this.now, async (conversationId) =>
@@ -1027,19 +1040,16 @@ export class DurableHost {
 				data = { format: "agent.communication-invalid/1", reason: "invalid" };
 			}
 		}
-		const submission = await conversation.submit(
-			{
-				type: "write",
-				requestId,
-				entry: {
+		const submissionId = await conversation.commit(
+			(tx) =>
+				admitPassiveWrite(tx, conversation, requestId, {
 					kind: communication?.kind === "report" ? "agent.passive-report" : THREAD_NOTICE_ENTRY_KIND,
 					model: [{ role: "user", content: message, timestamp: Date.now() }],
 					...(data === undefined ? {} : { data }),
-				},
-			},
+				}),
 			context,
 		);
-		return { submissionId: submission.id, conversationId: conversation.id, passive: true };
+		return { submissionId, conversationId: conversation.id, passive: true };
 	}
 
 	/** The sender's declared class of an input; absent leaves the class to the admission. */
@@ -1487,7 +1497,8 @@ export class DurableHost {
 			{ ...(handoff === undefined ? {} : { handoff }), requestId },
 			context,
 		);
-		await this.harness.commit((tx) => closeOpenWork(tx, this.storageId, conversation.id, "reset", this.now()), context);
+		if (result.status !== "queued")
+			await reconcileResetClosures(this.harness, this.storageId, this.now, context, [result.submissionId]);
 		return { ...result, identity: this.identity(conversation.id) };
 	}
 
@@ -1735,12 +1746,18 @@ export async function stopLiveConversation(
 	context: Context,
 ) {
 	// The scope is read before the abort ends the tasks that define it.
-	const scope = await harness.commit((tx) => abortScopeConversations(tx, conversation.id, background), context);
-	const { work, ...stopped } = await stopScope(harness, conversation, scope, background, context, {
-		now: now(),
-		openRequests: async (tx, id) => (await openWorkItems(tx, id)).map((item) => item.requestId),
-		report: report,
-	});
+	const { work, scope, ...stopped } = await stopScope(
+		harness,
+		conversation,
+		(tx) => abortScopeConversations(tx, conversation.id, background),
+		background,
+		context,
+		{
+			now: now(),
+			openRequests: async (tx, id) => (await openWorkItems(tx, id)).map((item) => item.requestId),
+			report: report,
+		},
+	);
 	// The work open at the stop closes now even when a marked task has not ended yet: its run cannot answer.
 	await closeStoppedWork(harness, storageId, now, scope, work, context);
 	return {

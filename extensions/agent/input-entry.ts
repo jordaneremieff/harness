@@ -47,11 +47,13 @@ export function inputEntry(
 	origin: "operator" | "model" | undefined,
 	identity?: string,
 	label?: InputLabel,
+	preserveOnStop = false,
 ): InputEntry | undefined {
 	if (origin === "operator") return undefined;
 	return {
 		kind: AGENT_INPUT_KIND,
 		data: {
+			...(preserveOnStop ? { preserveOnStop: true } : {}),
 			author: { role: origin === "model" ? "agent" : "unknown", ...(identity === undefined ? {} : { identity }) },
 			...(label === undefined
 				? {}

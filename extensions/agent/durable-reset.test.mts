@@ -9,7 +9,8 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ConversationId, EntryRecord, Harness, SubmissionRecord } from "@earendil-works/pi-durable";
-import type { ResetResult } from "./durable-reset.ts";
+import { OpenWorkDoc } from "./open-work.ts";
+import { reconcileResetClosures, type ResetResult } from "./durable-reset.ts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
 
 /** Event-based wait for a reset write to leave the queued state; the caller sees the placed record. */
@@ -105,6 +106,20 @@ it("queues a busy reset until the next boundary and then places it", { timeout: 
 	const conversation = await f.conversation();
 	const run = await conversation.submit({ type: "input", content: "BLOCKING_TASK" }, BACKGROUND_CONTEXT);
 	await f.waitForFirstRequest();
+	const declared = {
+		requestId: "before-reset",
+		submissionId: run.id,
+		requester: f.ownerId,
+		replyTo: f.ownerId,
+		origin: "model" as const,
+		results: [],
+		note: "await result",
+		declaredAt: 1,
+		updatedAt: 1,
+	};
+	await conversation.commit(async (tx) => {
+		(await tx.doc(OpenWorkDoc, conversation.id)).items.push(declared);
+	}, BACKGROUND_CONTEXT);
 	const result = (await f.host.request("reset", {
 		sessionId: f.storageId,
 		handoff: "AFTER_HANDOFF",
@@ -116,11 +131,37 @@ it("queues a busy reset until the next boundary and then places it", { timeout: 
 		BACKGROUND_CONTEXT,
 	);
 	assert.ok(queued?.type === "write" && queued.status === "queued");
+	assert.equal(
+		(await f.host.harness.snapshot(OpenWorkDoc, conversation.id, BACKGROUND_CONTEXT))?.items[0].close,
+		undefined,
+	);
 	f.releaseAnswer();
 	await run.wait(BACKGROUND_CONTEXT);
 	const placed = await waitForPlacedReset(f.host.harness, conversation.id, "reset-busy");
 	assert.equal(placed.status, "done");
 	assert.ok(placed.entry !== undefined);
+	await reconcileResetClosures(f.host.harness, f.storageId, Date.now, BACKGROUND_CONTEXT);
+	assert.equal(
+		(await f.host.harness.snapshot(OpenWorkDoc, conversation.id, BACKGROUND_CONTEXT))?.items[0].close?.status,
+		"reset",
+	);
+	const later = await conversation.submit(
+		{ type: "input", requestId: "after-reset", content: "New work" },
+		BACKGROUND_CONTEXT,
+	);
+	await later.wait(BACKGROUND_CONTEXT);
+	await conversation.commit(async (tx) => {
+		(await tx.doc(OpenWorkDoc, conversation.id)).items.push({
+			...declared,
+			requestId: "after-reset",
+			submissionId: later.id,
+		});
+	}, BACKGROUND_CONTEXT);
+	await f.host.request("reset", { sessionId: f.storageId, requestId: "reset-busy" });
+	assert.equal(
+		(await f.host.harness.snapshot(OpenWorkDoc, conversation.id, BACKGROUND_CONTEXT))?.items.at(-1)?.close,
+		undefined,
+	);
 	const after = await conversation.context(BACKGROUND_CONTEXT);
 	assert.ok(contextText(after.messages).includes("AFTER_HANDOFF"));
 	assert.ok(!contextText(after.messages).includes("BLOCKING_TASK"), "the old run leaves the active context");

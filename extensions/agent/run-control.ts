@@ -1,5 +1,5 @@
 import type { Context } from "@earendil-works/chord/context";
-import { withAbortSignal } from "@earendil-works/chord/context";
+import { awaitWithContext, withAbortSignal } from "@earendil-works/chord/context";
 import * as native from "@earendil-works/pi-durable";
 import type { CommitPublication, ConversationId, Harness, SubmissionId, TaskId, Tx } from "@earendil-works/pi-durable";
 import { matchesSchema } from "./schema-check.ts";
@@ -43,6 +43,7 @@ export type RunStop = {
 	delegations: StoppedDelegation[];
 	coverage: { complete: boolean; omitted: number };
 	effects: "partial-effects-possible";
+	queuedInputs?: number[];
 };
 export type ForeignStop = (results: readonly ResultReference[], context: Context) => Promise<StoppedDelegation>;
 type Control = (method: string, input: Record<string, unknown>) => Promise<unknown>;
@@ -88,12 +89,14 @@ function targetReferences(references: readonly ResultReference[]): string {
 }
 async function withdrawReferences(
 	references: readonly ResultReference[],
+	context: Context,
 	cancel: (reference: ResultReference) => Promise<{ state: string }>,
 ) {
 	let cancelled = false;
 	const remaining: ResultReference[] = [];
 	for (const reference of references) {
-		const receipt = await cancel(reference);
+		context.abortSignal?.throwIfAborted();
+		const receipt = await awaitWithContext(cancel(reference), context);
 		if (receipt.state === "aborted") cancelled = true;
 		else if (receipt.state === "already_placed" || receipt.state === "settled") remaining.push(reference);
 		else throw new Error("The exact delegated input did not confirm its cancellation state");
@@ -110,7 +113,7 @@ async function stopOwnedGroups(
 	for (const reference of references) {
 		if (covered.has(reference.submissionId)) continue;
 		context.abortSignal?.throwIfAborted();
-		const row = await stop(reference);
+		const row = await awaitWithContext(stop(reference), context);
 		rows.push(row);
 		covered.add(reference.submissionId);
 		for (const input of row.inputs) if (input.sessionId === reference.sessionId) covered.add(input.submissionId);
@@ -141,6 +144,7 @@ export async function stopForeignReferences(
 	const sessionId = targetReferences(references);
 	const withdrawn = await withdrawReferences(
 		references,
+		context,
 		async (result) => (await control("request-cancel", { sessionId, result })) as { state: string },
 	);
 	const rows = await stopOwnedGroups(
@@ -315,12 +319,19 @@ async function scopeInCommit(
 	conversationId: ConversationId,
 	selected?: SubmissionId,
 	inputCount?: { total: number },
+	cohort?: readonly ResultReference[],
 ): Promise<RunScope> {
 	const group = selectGroup(
 		await tx.doc(native.LiveDoc, conversationId),
 		canonicalIdentity(storageId, conversationId),
 		selected,
 	);
+	if (cohort)
+		includeRecordedInputs(
+			group,
+			cohort.map((item) => item.submissionId),
+			true,
+		);
 	const rows: ScopeRows = { delegations: [], omitted: 0 };
 	if (group.runId !== undefined) {
 		await collectDispatches(tx, conversationId, group, rows);
@@ -518,7 +529,7 @@ async function stopLocalDelegation(
 	const childId = (
 		sessionId === target.storageId ? native.ROOT_CONVERSATION_ID : Number(sessionId.slice(target.storageId.length + 1))
 	) as ConversationId;
-	const withdrawn = await withdrawReferences(references, (reference) =>
+	const withdrawn = await withdrawReferences(references, target.context, (reference) =>
 		cancelRequest(target.harness, target.storageId, reference, childId, target.context),
 	);
 	const rows = await stopOwnedGroups(withdrawn.remaining, target.context, (reference) =>
@@ -548,12 +559,15 @@ async function stopDelegatedTarget(
 }
 async function stopDelegations(target: Target, scope: RunScope, options: StopOptions): Promise<StoppedDelegation[]> {
 	for (const item of scope.delegations)
-		if (item.reporterTaskId !== undefined)
+		if (item.reporterTaskId !== undefined) {
+			target.context.abortSignal?.throwIfAborted();
 			await target.harness.abortTask(item.reporterTaskId as TaskId, target.context);
+		}
 	const grouped = new Map<string, Delegation[]>();
 	for (const item of scope.delegations) grouped.set(item.sessionId, [...(grouped.get(item.sessionId) ?? []), item]);
 	const stopped: StoppedDelegation[] = [];
 	for (const [sessionId, items] of grouped) {
+		target.context.abortSignal?.throwIfAborted();
 		for (const row of await stopDelegatedTarget(target, sessionId, items, options)) {
 			if (stopped.length < MAX_DELEGATIONS) stopped.push(row);
 			else scope.coverage.omitted++;
@@ -584,6 +598,26 @@ export async function stopRun(
 	context: Context,
 	options: StopOptions = {},
 ): Promise<RunStop> {
+	const deadline = AbortSignal.timeout(45_000);
+	context = withAbortSignal(context.abortSignal ? AbortSignal.any([context.abortSignal, deadline]) : deadline, context);
+	try {
+		return await awaitWithContext(stopRunWithin(harness, storageId, conversationId, runId, context, options), context);
+	} catch (error) {
+		if (deadline.aborted)
+			throw new Error("Exact stop observation expired; outcome unconfirmed. Inspect the run before another stop.", {
+				cause: error,
+			});
+		throw error;
+	}
+}
+async function stopRunWithin(
+	harness: Harness,
+	storageId: string,
+	conversationId: ConversationId,
+	runId: SubmissionId,
+	context: Context,
+	options: StopOptions,
+): Promise<RunStop> {
 	const target: Target = {
 		harness,
 		storageId,
@@ -611,9 +645,21 @@ export async function stopRun(
 	visited.add(key);
 	const attempt = await stopSelectedGroup(target, options);
 	if (attempt.kind === "protected") return stoppedResult(target, attempt.scope, "protected");
-	const scope = await harness.commit((tx) => scopeInCommit(tx, storageId, conversationId, runId), context);
+	const scope = await harness.commit(
+		(tx) => scopeInCommit(tx, storageId, conversationId, runId, undefined, attempt.inputs),
+		context,
+	);
+	const merged = { delegations: scope.delegations, omitted: 0 };
+	for (const item of attempt.scope.delegations) appendDelegation(merged, item);
+	scope.coverage.omitted += merged.omitted;
 	scope.coverage.omitted += attempt.omitted + (attempt.kind === "exhausted" ? 1 : 0);
 	if (attempt.inputs.length) scope.inputs = attempt.inputs;
 	const rows = await stopDelegations(target, scope, { ...options, visited });
-	return stoppedResult(target, scope, completionState(attempt, scope, rows), rows);
+	const result = stoppedResult(target, scope, completionState(attempt, scope, rows), rows);
+	const inbox = await harness.snapshot(native.InboxDoc, conversationId, context);
+	const queued = inbox?.items
+		.filter((item) => item.mode !== "write")
+		.slice(0, MAX_INPUTS)
+		.map((item) => item.id);
+	return queued?.length ? { ...result, queuedInputs: queued } : result;
 }
