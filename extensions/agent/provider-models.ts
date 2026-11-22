@@ -1,7 +1,8 @@
-/** A Models boundary that retains exhaustion before native error settlement. */
+/** A Models boundary that retains exhaustion before native error settlement and ends each request on its caller's abort or a silent first response. */
 import type {
 	Api,
 	AssistantMessage,
+	AssistantMessageEvent,
 	Model,
 	Models,
 	ModelsSimpleStreamOptions,
@@ -33,6 +34,82 @@ import { PROVIDER_BLOCK_ERROR, STALE_PROVIDER_ERROR, type ProviderBlockFact } fr
 import { processProviderBlockNotes } from "./provider-block-notes.ts";
 
 const STATE_ERROR = "Agent host: provider state failure; inspect retained state.";
+const ABORTED_ERROR = "Request was aborted";
+/** The longest delay a Node timer holds; a larger request timeout means no deadline. */
+const TIMER_MAX_MS = 2_147_483_647;
+
+/**
+ * What ends one request apart from the provider's own terminal message: the caller's abort signal, and a deadline for
+ * the provider's first event. Pi's `timeoutMs` bounds the wait for a response; the deadline enforces that bound here
+ * as well, because a provider can wait without one, for example on an authentication step that ignores the signal.
+ */
+type RequestBounds = { readonly signal?: AbortSignal; readonly firstEventMs?: number };
+
+function requestBounds(
+	options: { readonly signal?: AbortSignal; readonly timeoutMs?: number } | undefined,
+): RequestBounds {
+	const timeoutMs = options?.timeoutMs;
+	const firstEventMs =
+		typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0 && timeoutMs <= TIMER_MAX_MS
+			? timeoutMs
+			: undefined;
+	return {
+		...(options?.signal === undefined ? {} : { signal: options.signal }),
+		...(firstEventMs === undefined ? {} : { firstEventMs }),
+	};
+}
+
+/** The retry classifier treats this text as a transient failure, so the request runs again under the retry policy. */
+function firstEventTimeout(ms: number): string {
+	return `Provider request timed out after ${ms} ms without a response event`;
+}
+
+/** The single end of one request's output: later provider events, results, and state are dropped. */
+interface RequestEnd {
+	readonly ended: boolean;
+	/** Record one provider event; the first one meets the response deadline. */
+	observe(event: AssistantMessageEvent): void;
+	finish(message: AssistantMessage): void;
+}
+
+function requestEnd(
+	output: AssistantMessageEventStream,
+	model: Model<Api>,
+	bounds: RequestBounds,
+	now: () => number,
+): RequestEnd {
+	let ended = false;
+	let partial: AssistantMessage | undefined;
+	let deadline: ReturnType<typeof setTimeout> | undefined;
+	const clearDeadline = (): void => {
+		if (deadline !== undefined) clearTimeout(deadline);
+		deadline = undefined;
+	};
+	const end = (message: AssistantMessage): void => {
+		if (ended) return;
+		ended = true;
+		clearDeadline();
+		bounds.signal?.removeEventListener("abort", abort);
+		finish(output, message);
+	};
+	const abort = (): void =>
+		end({ ...(partial ?? failure(model, "", now())), stopReason: "aborted", errorMessage: ABORTED_ERROR });
+	const firstEventMs = bounds.firstEventMs;
+	if (firstEventMs !== undefined)
+		deadline = setTimeout(() => end(failure(model, firstEventTimeout(firstEventMs), now())), firstEventMs);
+	if (bounds.signal?.aborted) abort();
+	else bounds.signal?.addEventListener("abort", abort, { once: true });
+	return {
+		get ended() {
+			return ended;
+		},
+		observe(event) {
+			clearDeadline();
+			if ("partial" in event) partial = event.partial;
+		},
+		finish: end,
+	};
+}
 function failure(model: Model<Api>, errorMessage: string, timestamp: number): AssistantMessage {
 	return {
 		role: "assistant",
@@ -144,6 +221,7 @@ export class ProviderModels {
 			model,
 			() => this.capture(model, options?.sessionId),
 			() => this.delegate.streamSimple(model, context, options),
+			requestBounds(options),
 		);
 	}
 	private stream(
@@ -155,6 +233,7 @@ export class ProviderModels {
 			model,
 			() => this.capture(model, options?.sessionId),
 			() => this.delegate.stream(model, context, options),
+			requestBounds(options),
 		);
 	}
 	private streamDeferred(
@@ -166,6 +245,7 @@ export class ProviderModels {
 			model,
 			() => this.harness().commit((tx) => readDeferredAttempt(tx, model, handle), BACKGROUND_CONTEXT),
 			() => this.delegate.streamDeferred(model, handle, options),
+			requestBounds({ signal: options?.signal }),
 		);
 	}
 	private fetchDeferred(
@@ -186,6 +266,7 @@ export class ProviderModels {
 					);
 				return stream;
 			},
+			requestBounds({ signal: options?.signal }),
 		).result();
 	}
 	private async capture(model: Model<Api>, sessionId: string | undefined): Promise<ProviderAttempt> {
@@ -209,9 +290,10 @@ export class ProviderModels {
 		model: Model<Api>,
 		capture: () => Promise<ProviderAttempt>,
 		dispatch: () => AssistantMessageEventStream,
+		bounds: RequestBounds,
 	): AssistantMessageEventStream {
 		const output = createAssistantMessageEventStream();
-		void this.forward(output, model, capture, dispatch);
+		void this.forward(output, model, capture, dispatch, requestEnd(output, model, bounds, this.now));
 		return output;
 	}
 	private async blocked(model: Model<Api>, attempt: ProviderAttempt): Promise<string | undefined> {
@@ -264,36 +346,42 @@ export class ProviderModels {
 		model: Model<Api>,
 		attempt: ProviderAttempt,
 		stream: AssistantMessageEventStream,
+		end: RequestEnd,
 	): Promise<void> {
 		let partial: AssistantMessage | undefined;
 		const iterator = stream[Symbol.asyncIterator]();
-		while (true) {
-			let step: Awaited<ReturnType<typeof iterator.next>>;
-			try {
-				step = await iterator.next();
-			} catch (error) {
-				finish(
-					output,
-					await this.terminal(attempt, {
-						...(partial ?? failure(model, "", this.now())),
-						stopReason: "error",
-						errorMessage: errorText(error),
-					}),
-				);
+		// An output that its bounds ended drops what the provider still sends, and records no provider state for it.
+		while (!end.ended) {
+			const step = await this.step(iterator, model, stream, partial);
+			if (end.ended) return;
+			if ("message" in step) {
+				end.finish(await this.terminal(attempt, step.message));
 				return;
 			}
-			if (step.done) {
-				finish(output, await this.terminal(attempt, await this.providerResult(model, stream)));
-				return;
-			}
-			const event = step.value;
-			if (event.type === "done" || event.type === "error") {
-				finish(output, await this.terminal(attempt, event.type === "error" ? event.error : event.message));
-				return;
-			}
-			if ("partial" in event) partial = event.partial;
-			output.push(event);
+			end.observe(step.event);
+			if ("partial" in step.event) partial = step.event.partial;
+			output.push(step.event);
 		}
+	}
+	/** One provider step: an event to forward, or the provider's terminal message. */
+	private async step(
+		iterator: AsyncIterator<AssistantMessageEvent>,
+		model: Model<Api>,
+		stream: AssistantMessageEventStream,
+		partial: AssistantMessage | undefined,
+	): Promise<{ readonly event: AssistantMessageEvent } | { readonly message: AssistantMessage }> {
+		let next: IteratorResult<AssistantMessageEvent>;
+		try {
+			next = await iterator.next();
+		} catch (error) {
+			const base = partial ?? failure(model, "", this.now());
+			return { message: { ...base, stopReason: "error", errorMessage: errorText(error) } };
+		}
+		if (next.done) return { message: await this.providerResult(model, stream) };
+		const event = next.value;
+		if (event.type === "done") return { message: event.message };
+		if (event.type === "error") return { message: event.error };
+		return { event };
 	}
 	private async providerResult(model: Model<Api>, stream: AssistantMessageEventStream): Promise<AssistantMessage> {
 		try {
@@ -307,34 +395,37 @@ export class ProviderModels {
 		model: Model<Api>,
 		capture: () => Promise<ProviderAttempt>,
 		dispatch: () => AssistantMessageEventStream,
+		end: RequestEnd,
 	): Promise<void> {
 		let attempt: ProviderAttempt;
 		try {
 			attempt = await capture();
 			const error = await this.blocked(model, attempt);
 			if (error !== undefined) {
-				finish(output, failure(model, error, this.now()));
+				end.finish(failure(model, error, this.now()));
 				return;
 			}
 		} catch {
-			finish(output, failure(model, STATE_ERROR, this.now()));
+			end.finish(failure(model, STATE_ERROR, this.now()));
 			return;
 		}
+		// An abort or deadline before dispatch starts no provider request.
+		if (end.ended) return;
 		let stream: AssistantMessageEventStream;
 		try {
 			stream = dispatch();
 		} catch (error) {
 			try {
-				finish(output, await this.terminal(attempt, failure(model, errorText(error), this.now())));
+				end.finish(await this.terminal(attempt, failure(model, errorText(error), this.now())));
 			} catch {
-				finish(output, failure(model, STATE_ERROR, this.now()));
+				end.finish(failure(model, STATE_ERROR, this.now()));
 			}
 			return;
 		}
 		try {
-			await this.consume(output, model, attempt, stream);
+			await this.consume(output, model, attempt, stream, end);
 		} catch {
-			finish(output, failure(model, STATE_ERROR, this.now()));
+			end.finish(failure(model, STATE_ERROR, this.now()));
 		}
 	}
 }
