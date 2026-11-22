@@ -9,7 +9,7 @@ index: "At default-selection moments, test whether the origin context of an inhe
 
 Agents inherit familiar patterns, conventions, rubrics, and solution categories from examples produced in particular operating contexts. A default can be correct in its origin domain and wrong when its preconditions do not hold now.
 
-The failure is not pattern recognition itself. It is applying the recognized default without calibrating scale, stakeholders, maintenance model, consequences, and domain constraints.
+The failure is not pattern recognition itself. It is applying the recognized default without calibrating scale, affected parties, maintenance model, consequences, and domain constraints.
 
 ## Solution
 
@@ -74,7 +74,7 @@ Over-calibration can turn routine choices into essays and reflexively reject goo
 Invoke it when:
 
 - a high-cost pattern is defended by "best practice";
-- a convention names stakeholders who may not exist;
+- a convention assumes consumers or maintainers who may not exist;
 - evaluation axes assume a maintenance role not held here;
 - a problem phrase automatically activates one solution family; or
 - a reviewer could reasonably ask why this caliber or category was chosen.

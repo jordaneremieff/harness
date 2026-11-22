@@ -49,10 +49,10 @@ Role: verification target
 
 Claiming/interpretive layer: sources that claim, interpret, or summarize truth
 
-- Human statements about external facts
+- Reports by people or agents about external facts
 - Agent inferences
 - Summaries
-- Meeting notes
+- Conversation and handover notes
 - Derived dashboards
 - Search results
 
@@ -112,7 +112,7 @@ The timeout claim was verified.
 | Database / system API | Data state | Defining source | Snapshot scope and permissions matter |
 | Operator declaration | Declared preference, decision, or authorization | Defining within the operator's authority | Does not establish external facts or override higher constraints |
 | Firsthand account of a person's own experience | The person's perception, judgment and interaction experience under the conditions of use | Defining for that experiential facet | Access, conditions, recall and framing bound the account; it does not establish unobserved system state, cause or remedy |
-| Human or chat report about facts outside the speaker's own experience | Reported facts and interpretations | Claiming/interpretive source | Check the exact claim against its defining source |
+| Report by a person or agent about facts outside the reporter's own experience | Reported facts and interpretations | Claiming/interpretive source | Check the exact claim against its defining source |
 
 A communication medium does not determine authority. The source's role for the exact claim does. An operator declaration defines the declared choice within the operator's authority; it does not establish whether that choice was implemented or produced its intended result. A report from an agent or another party does not acquire operator authority by quoting or naming the operator.
 

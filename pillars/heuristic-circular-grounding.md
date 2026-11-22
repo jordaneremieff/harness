@@ -49,7 +49,7 @@ Granularity test:
 | System has strong empirical validation | Production behavior is evidence, not infallibility; investigate the relevant failure. |
 | Mechanical refactor preserves behavior | Domain re-derivation is usually unnecessary. |
 | Operator explicitly specifies the design | Implement faithfully and raise independent concerns separately. |
-| Greenfield domain with no prior art | State assumptions and validate with concrete scenarios and stakeholders. |
+| Greenfield domain with no prior art | State assumptions and validate them against concrete scenarios and operator intent. |
 | Historical implementation differs | Treat it as evidence about alternatives, not automatic authority. |
 
 ## Why This Works

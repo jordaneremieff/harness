@@ -11,7 +11,7 @@ Knowledge should be organized by what it describes, not by the consumer that hap
 
 ## Core
 
-Use an organizing label when it remains meaningful without knowing a particular project, dashboard, team, or application.
+Use an organizing label when it remains meaningful without knowing a particular project, dashboard, agent, or application.
 
 | Question | Decision |
 |---|---|
@@ -53,7 +53,7 @@ consumer C --/
 ```text
 store_claim(
     name="Session renewal policy",
-    tags=["project:<current>", "for:<current-view>", "team:<current-owner>"],
+    tags=["project:<current>", "for:<current-view>", "agent:<current-worker>"],
 )
 ```
 
@@ -84,7 +84,7 @@ Delivery systems may need consumer labels. Use them as routing or subscription m
 
 ### Effort-Specific Material
 
-If an item has no meaning outside one effort, it may belong in working memory rather than institutional memory. Do not force every draft into a global subject taxonomy.
+If an item has no meaning outside one effort, it may belong in working memory rather than durable memory. Do not force every draft into a global subject taxonomy.
 
 ### Subjects Also Change
 

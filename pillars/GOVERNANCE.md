@@ -182,6 +182,11 @@ A recorded application that contradicts a pillar's stated prediction is evidence
   README row byte-identical to `index` — the checker prints corrections when
   they diverge.
 - Generalize incidental products and services to their functional roles.
+- State recognition conditions, moves and rationale as moves in an agent's
+  reasoning and work, and use agent work as the main example domain. Keep a
+  human where the human is the agent's counterpart, such as the operator, a
+  requester or a reviewer of agent output. An originating incident's own
+  domain may remain only as one short secondary instance.
 - Keep raw private evidence outside this directory. Use relative links and
   stable section names, never personal paths or mutable line citations.
 - After adding, renaming, or removing an entry: update the filename,

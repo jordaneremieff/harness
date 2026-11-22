@@ -17,7 +17,7 @@ A local pass also need not settle the whole design. The arrangement must let obs
 
 ## Solution
 
-The pattern connects these functions. One participant may perform several functions, and no staffing roster is required.
+The pattern connects these functions. One participant may perform several functions, and no fixed roster is required.
 
 | Function | Contribution |
 |---|---|

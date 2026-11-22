@@ -7,7 +7,7 @@ index: "Truth is triangulated across facets rather than located in one source."
 
 ## Statement
 
-Institutional knowledge is distributed across complementary sources with different reliability profiles. Truth is triangulated across facets of reality, not located in any single source. Corroboration is evidence of facet convergence, not source count.
+Knowledge about a system and its work is distributed across complementary sources with different reliability profiles. Truth is triangulated across facets of reality, not located in any single source. Corroboration is evidence of facet convergence, not source count.
 
 ## Rationale
 

@@ -13,7 +13,7 @@ Typical conventions include preserving unused compatibility layers, retaining du
 
 Cues:
 
-- The justification names teams, consumers, release cycles, or maintenance obligations that cannot be identified.
+- The justification names other contributors, consumers, release cycles, or maintenance obligations that cannot be identified.
 - A breaking-change concern is raised without evidence of another active consumer.
 - Reimplementation is called expensive even though the local change is small and bounded.
 - The convention is defended by general industry practice rather than current coordination facts.

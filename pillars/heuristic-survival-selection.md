@@ -14,7 +14,7 @@ Cues:
 - The rebuild plan follows the previous architecture rather than present use.
 - Some small artifacts survived multiple transitions while ambitious subsystems were repeatedly replaced.
 - Planned importance and observed persistence point in different directions.
-- The team is recreating casualties because they once received substantial design effort.
+- The rebuild recreates casualties because they once received substantial design effort.
 
 ## Move
 
@@ -48,7 +48,7 @@ A useful table:
 
 Transitions act as filters. Optional structures must repeatedly justify the effort to migrate, relearn, or maintain them. Simple artifacts tied to recurring pain often survive because their value is continuously visible. Anticipatory systems can disappear because their imagined integration never became daily work.
 
-Survival is selection evidence, not proof. Inertia, contracts, hidden labor, and migration cost can also preserve a bad artifact. The mechanism check prevents the heuristic from becoming "old means good."
+Survival is selection evidence, not proof. Inertia, contracts, hidden upkeep, and migration cost can also preserve a bad artifact. The mechanism check prevents the heuristic from becoming "old means good."
 
 The key distinction is between **capability continuity** and **implementation continuity**. What survived may be a job, interface, or information shape rather than a codebase.
 
@@ -56,7 +56,7 @@ The key distinction is between **capability continuity** and **implementation co
 
 - There has been no meaningful transition or opportunity for selection.
 - Safety, legal, or contractual requirements override usage history.
-- Survivors were maintained through hidden coercion or uncounted labor.
+- Survivors were kept alive by a hidden obligation or uncounted upkeep.
 - The new environment has a genuinely new requirement with no historical analogue.
 - The surviving artifact is known to be insecure, corrupt, or obsolete.
 

@@ -27,7 +27,7 @@ For the claim, map required and reached facets:
 
 | Facet | Question | Typical source class |
 |---|---|---|
-| Decision | What was agreed or rejected? | Decision record, meeting record, conversation channel |
+| Decision | What was agreed or rejected? | Decision record, operator message, conversation record |
 | Intent | What was planned, assigned, or prioritized? | Work tracker, roadmap, task record |
 | Enactment | What was implemented or configured? | Repository, configuration record, migration history |
 | Documentation | What is described as the intended or supported behavior? | Knowledge base, specification, runbook |

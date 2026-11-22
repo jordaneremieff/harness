@@ -19,7 +19,7 @@ The opposite errors also matter: cheap checks replace the evidence layer that ow
 
 ## Solution
 
-Use these functions together. They are decisions, not mandatory phases, forms or staffing roles.
+Use these functions together. They are decisions, not mandatory phases, forms or assigned roles.
 
 | Purpose | Selection question | Lifetime |
 |---|---|---|

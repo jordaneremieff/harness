@@ -42,7 +42,7 @@ No single popularity metric answers these questions. Use multiple independent si
 
 | Operator position | Primary rubric |
 |---|---|
-| Direct daily maintainer | Ergonomics, debuggability, team skill, and local architecture can dominate. |
+| Direct daily maintainer | Ergonomics, debuggability, the maintainer's existing skill, and local architecture can dominate. |
 | Occasional human editor with agent assistance | Balance component fit with knowledge and tooling depth. |
 | Agent-mediated reviewer | Favor ecosystems agents can reason about and verify reliably. |
 | Pure consumer | Durability, recovery, and available support dominate local syntax preferences. |
@@ -56,11 +56,11 @@ As maintenance distance grows, ecosystem properties exert more gravity because t
 
 ## When NOT to Apply
 
-- The operator or team will actively maintain the internals.
+- The operator or another committed maintainer will actively maintain the internals.
 - A binding technical requirement leaves only one viable component.
 - The component is small, replaceable, and isolated behind a stable boundary.
 - Ecosystem evidence is too weak to discriminate; do not turn vague popularity into certainty.
-- A mature internal capability can responsibly absorb the maintenance risk.
+- An established maintenance path, such as a maintained fork, can responsibly absorb the maintenance risk.
 
 ## Relationship to Pillars
 
