@@ -129,8 +129,12 @@ uncertain outcomes remain distinct.
 
 The page sends a `prompt` with `requestId`, `threadId`, `generation` and either `text`
 with an optional `quote` and `quoteRange`, or `annotations`. A batch contains one to fifty
-annotations with nonblank `text` and optional `quote` and `quoteRange`. Ranges use UTF-16.
-The page envelope limit is 256 KiB. For a request at the current generation, native locates
+annotations with nonblank `text` and optional `quote` and `quoteRange`, and an optional
+`overall`: the person's nonblank comment on the whole batch, at most 64 KiB UTF-8. A single
+comment never carries `overall`. Ranges use UTF-16. The page envelope limit is 256 KiB. The
+batch message gives the overall comment exactly, after its instructions and before the
+numbered comments; the instructions say that it applies to every comment and ask for a reply
+to it before the numbered replies. For a request at the current generation, native locates
 each `quoteRange` in the mirror (`PassageExcerpt`): the message names the passage's lines
 (CR LF, CR and LF each end a line), the headings above it and its UTF-16 offsets at that
 generation, and shows a fenced excerpt of its source lines, at most 120 characters on each
@@ -141,23 +145,25 @@ JSON. A follow-up names the earlier request that gave the passage and does not r
 until such a request is confirmed, a follow-up gives the passage again. Each quote permits
 8 KiB UTF-8 and each located selection 16 KiB. The composed message permits 32 KiB for a
 single comment or follow-up and 128 KiB for a batch. The page's text, quote and range of
-each comment identify a request: the same request ID with other inputs is refused, and a
+each comment, and a batch's overall comment, identify a request: the same request ID with other inputs is refused, and a
 retry with the same inputs sends the message of its first submission, even when the text has
 changed since. The live bridge accepts up to the
 batch limit. A bridge with a smaller limit refuses a larger request without submitting it.
 
-The page holds pending comments by document in memory until the pane closes. It maintains
+The page holds pending comments, and each batch's overall comment, by document in memory
+until the pane closes. It maintains
 ranges through edits. On refresh it matches the saved Markdown source slice at its previous
 range or at its only occurrence. Without a match, the quote stays in the batch without a
 highlight, and the message carries the rendered quote. Pending comments and the passages
 of questions that the conversation did not refuse keep marks while their cards are closed.
 A plain click on a mark in Reading, or the mark's item in the page menu, opens its card
 again; where marks overlap, each further click opens the next card.
-A definite refusal restores the batch. For an unconfirmed request, native returns
+A definite refusal restores the batch with its overall comment. For an unconfirmed request, native returns
 `accepted: false`, `uncertain: true` and a `retryable` boolean. The page shows Retry only
 when `retryable` is true. Retry sends the original request ID and contents so the bridge
 can reconcile the receipt without repeating an accepted submission. A batch follow-up uses
-the single shape and identifies the batch as context.
+the single shape and identifies the batch, with its overall comment when it had one, as
+context.
 Each thread keeps its first request identity, while follow-ups receive new request identities.
 Native emits `promptState` with the question and thread identities and the route-reported answer text. A late send receipt cannot hide an answer already in the card. If a running host cannot identify the question, the card does not quote unscoped chat activity as an answer. An agent edit
 names a thread only when one document thread is admitted or active. The page draws the comment

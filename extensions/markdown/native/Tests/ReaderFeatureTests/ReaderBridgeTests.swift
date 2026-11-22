@@ -381,7 +381,14 @@ import Testing
         #expect(batch.type == .prompt)
         #expect((batch.fields["annotations"] as? [[String: Any]])?.first?["quote"] as? String == quote)
         #expect(try decode(["annotations": Array(repeating: annotation, count: 50)]).type == .prompt)
+        let overall = "Keep the tone direct.\n" + String(repeating: "é", count: 32757)
+        #expect(overall.utf8.count == 64 * 1024)
+        #expect(try decode(["annotations": [annotation], "overall": overall]).fields["overall"] as? String == overall)
         for fields: [String: Any] in [
+            ["annotations": [annotation], "overall": " \n"], ["annotations": [annotation], "overall": "\u{85}"],
+            ["annotations": [annotation], "overall": true],
+            ["annotations": [annotation], "overall": String(repeating: "é", count: 32769)],
+            ["text": "A single comment.", "overall": "Only batches carry one."],
             ["annotations": []], ["annotations": Array(repeating: annotation, count: 51)],
             ["annotations": [annotation], "text": "Both"], ["annotations": [annotation], "quote": quote],
             ["annotations": [["text": " \n"]]], ["annotations": [["text": true]]],

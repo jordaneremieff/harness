@@ -206,7 +206,8 @@ final class ReaderSurface: NSView {
                     let range = Self.range(record["quoteRange"])
                     return CollaborationClient.Annotation(text: text, quote: record["quote"] as? String, passage: passage(range), range: range)
                 }
-                result = await client.submitBatch(requestId: request, threadId: thread, annotations: annotations, generation: generation)
+                result = await client.submitBatch(requestId: request, threadId: thread, annotations: annotations,
+                                                  overall: message["overall"] as? String, generation: generation)
             } else {
                 guard let text = message["text"] as? String else { throw BridgeFailure.invalid }
                 let range = Self.range(message["quoteRange"])

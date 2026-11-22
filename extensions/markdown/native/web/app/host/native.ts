@@ -395,8 +395,13 @@
 	}
 	function prompt(m: Fields) {
 		ensure(string(m.requestId, 200) && string(m.threadId, 200) && integer(m.generation));
-		if (m.annotations === undefined) return annotation(m);
+		if (m.annotations === undefined) {
+			ensure(m.overall === undefined);
+			return annotation(m);
+		}
 		ensure(m.text === undefined && m.quote === undefined && m.quoteRange === undefined);
+		// Native refuses an overall comment over 64 KiB of UTF-8 or of white space alone, U+0085 included.
+		ensure(optional(m.overall, (v) => string(v) && /[^\s\u0085]/u.test(v) && encoder.encode(v).length <= 64 * 1024));
 		ensure(Array.isArray(m.annotations) && m.annotations.length > 0 && m.annotations.length <= 50);
 		for (const item of m.annotations) annotation(object(item), true);
 	}

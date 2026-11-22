@@ -169,6 +169,26 @@ import ReaderFeature
         #expect(!message.contains("JSON"))
     }
 
+    @Test func batchMessageGivesTheOverallCommentExactlyBeforeTheNumberedComments() throws {
+        typealias Item = CollaborationClient.Annotation
+        let overall = "  Keep the tone direct.\nThe readers are new contributors.  "
+        let items = [Item(text: "Shorten this.", quote: "A long passage"), Item(text: "Add an example.", quote: nil)]
+        let message = try CollaborationClient.batchMessage(items, overall: overall)
+        #expect(message.hasPrefix("The person sent 2 comments on this document together, with an overall comment for the whole batch. Follow the overall comment while you address every comment in one pass, and act on any request it makes."))
+        #expect(message.contains(" In your final message, reply to the overall comment, then to each comment by its number."))
+        #expect(message.contains("\n\nOverall comment:\n\(overall)\n\nComment 1, on a passage that the reader no longer locates, as it showed it:\n"))
+        #expect(message.hasSuffix("\n\nComment 2, on the whole document:\nAdd an example."))
+        let plain = try CollaborationClient.batchMessage(items)
+        #expect(!plain.contains("overall") && plain.contains(" reply to each comment by its number."))
+        for blank in [" \n", "\u{85}"] {
+            #expect(throws: CollaborationClient.PromptRefusal.self) { try CollaborationClient.batchMessage(items, overall: blank) }
+        }
+        #expect(try CollaborationClient.batchMessage(items, overall: String(repeating: "o", count: 64 * 1024)).contains("Overall comment:"))
+        #expect(throws: CollaborationClient.PromptRefusal.self) {
+            try CollaborationClient.batchMessage(items, overall: String(repeating: "o", count: 64 * 1024 + 1))
+        }
+    }
+
     @Test func batchMessageEnforcesByteAndCountLimits() throws {
         typealias Item = CollaborationClient.Annotation
         let quote = String(repeating: "😀", count: 2048)
@@ -214,6 +234,21 @@ import ReaderFeature
         #expect(prompts.map { $0["operationId"] } == [thread, followUp])
         #expect(try prompts.first?["text"] == CollaborationClient.batchMessage(batch))
         #expect(prompts.last?["text"] == "This follows the earlier request \(thread) in this document thread. Keep that request’s comments as context.\n\nFollow-up")
+    }
+
+    @Test func anOverallCommentTravelsWithItsBatchAndStaysFollowUpContext() async throws {
+        let server = try LiveTestBridge(mode: "ordinary"); defer { server.stop() }
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: UUID(), document: UUID()) { _ in LiveResult(status: "closed") }
+        defer { client.stop() }
+        client.start()
+        try await eventually { client.status == "Agent connected" }
+        let thread = UUID().uuidString, followUp = UUID().uuidString
+        let batch: [CollaborationClient.Annotation] = [.init(text: "First", quote: "A passage")]
+        #expect(await client.submitBatch(requestId: thread, threadId: thread, annotations: batch, overall: "Keep it short.") == .submitted)
+        #expect(await client.submitPrompt(requestId: followUp, threadId: thread, text: "And the title?"))
+        let prompts = try #require(try await server.request(["op": "state"])["prompts"] as? [[String: String]])
+        #expect(try prompts.first?["text"] == CollaborationClient.batchMessage(batch, overall: "Keep it short."))
+        #expect(prompts.last?["text"] == "This follows the earlier request \(thread) in this document thread. Keep that request’s overall comment and comments as context.\n\nAnd the title?")
     }
 
     @Test func ordinaryReplyReachesItsQuestionAndAllowsAFollowUp() async throws {
@@ -321,10 +356,15 @@ import ReaderFeature
         #expect(await client.submitBatch(requestId: batch, threadId: batch, annotations: [Item(text: "A\u{1F}B", quote: "C")]) == .submitted)
         #expect(await client.submitBatch(requestId: batch, threadId: batch, annotations: [Item(text: "A", quote: "B\u{1F}C")]) == changed)
         #expect(await client.submitBatch(requestId: batch, threadId: batch, annotations: [Item(text: "A\u{1F}B", quote: "C")]) == .submitted)
+        let withOverall = UUID().uuidString, items = [Item(text: "A", quote: nil)]
+        #expect(await client.submitBatch(requestId: withOverall, threadId: withOverall, annotations: items, overall: "Overall") == .submitted)
+        #expect(await client.submitBatch(requestId: withOverall, threadId: withOverall, annotations: items, overall: "Other") == changed)
+        #expect(await client.submitBatch(requestId: withOverall, threadId: withOverall, annotations: items) == changed)
+        #expect(await client.submitBatch(requestId: withOverall, threadId: withOverall, annotations: items, overall: "Overall") == .submitted)
         let single = UUID().uuidString, range = NSRange(location: 0, length: 4)
         #expect(await client.submitAnnotation(requestId: single, threadId: single, text: "Why?", quote: "word", range: range) == .submitted)
         #expect(await client.submitAnnotation(requestId: single, threadId: single, text: "Why?", quote: "other", range: range) == changed)
-        #expect(try await server.request(["op": "state"])["submissions"] as? Int == 2)
+        #expect(try await server.request(["op": "state"])["submissions"] as? Int == 3)
     }
 
     @Test func anAnswerBeforeALostReceiptConfirmsTheQuestionWithoutResubmission() async throws {

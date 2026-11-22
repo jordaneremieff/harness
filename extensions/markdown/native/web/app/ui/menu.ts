@@ -168,18 +168,33 @@
 			}
 			context = next;
 			active = -1;
+			// The top layer draws an open popover or dialog above the page, so the menu of a field in
+			// one opens inside it and closes with it.
+			const layer = next.input?.closest<HTMLElement>(":popover-open, dialog[open]") ?? null,
+				host = layer ?? app;
+			if (menu.parentElement !== host) host.append(menu);
+			if (layer) closeWith(layer);
 			draw();
 			menu.hidden = false;
-			const box = app.getBoundingClientRect();
+			const box = host.getBoundingClientRect();
 			const place = api.uiLogic.menuPlacement(
 				{ x: next.point.x - box.left, y: next.point.y - box.top },
 				{ width: menu.offsetWidth, height: menu.scrollHeight },
 				{ width: box.width, height: box.height },
 			);
 			menu.style.maxHeight = `${place.maxHeight}px`;
-			menu.style.left = `${place.left}px`;
-			menu.style.top = `${place.top}px`;
+			menu.style.left = `${place.left + host.scrollLeft}px`;
+			menu.style.top = `${place.top + host.scrollTop}px`;
 			ctx.onMenuOpen?.();
+		}
+		function closeWith(layer: HTMLElement) {
+			const kind = layer instanceof HTMLDialogElement ? "close" : "toggle";
+			const closed = () => {
+				if (layer.matches(":popover-open, dialog[open]")) return;
+				layer.removeEventListener(kind, closed);
+				if (menu.parentElement === layer) close();
+			};
+			layer.addEventListener(kind, closed);
 		}
 		function close() {
 			if (menu.hidden) return false;

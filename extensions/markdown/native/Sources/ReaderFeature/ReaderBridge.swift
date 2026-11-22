@@ -243,7 +243,7 @@ public enum ReaderBridgeCodec {
             try BridgeField.choice(fields, "lock", values: ["reading", "writing"])
             _ = try BridgeField.bool(fields, "copy")
         case .prompt:
-            try BridgeField.keys(fields, allowed: ["requestId", "threadId", "quote", "quoteRange", "text", "annotations", "generation"])
+            try BridgeField.keys(fields, allowed: ["requestId", "threadId", "quote", "quoteRange", "text", "annotations", "overall", "generation"])
             _ = try BridgeField.string(fields, "requestId", limit: 256)
             _ = try BridgeField.string(fields, "threadId", limit: 256)
             _ = try BridgeField.integer(fields, "generation")
@@ -256,7 +256,15 @@ public enum ReaderBridgeCodec {
                     try BridgeField.keys(annotation, allowed: ["text", "quote", "quoteRange"])
                     try validateAnnotation(annotation, nonblank: true)
                 }
-            } else { try validateAnnotation(fields) }
+                // The overall comment of a batch, when the page sends one, has text.
+                if let overall = try BridgeField.optionalString(fields, "overall", limit: 64 * 1024),
+                   overall.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    throw ReaderBridgeError.invalid("overall")
+                }
+            } else {
+                guard fields["overall"] == nil else { throw ReaderBridgeError.invalid("overall") }
+                try validateAnnotation(fields)
+            }
         case .command:
             try BridgeField.keys(fields, allowed: ["name", "args"])
             try validateCommand(fields)

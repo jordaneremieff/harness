@@ -49,6 +49,8 @@ declare global {
 		range?: ReaderRange;
 		pendingComment?: ReaderComment;
 		comments?: ReaderComment[];
+		/** The overall comment that a sent batch carried with its comments. */
+		overall?: string;
 		draft: string;
 		messages: ReaderAskMessage[];
 	}

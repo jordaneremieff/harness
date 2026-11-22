@@ -903,6 +903,33 @@ struct Context {
             card?.querySelector('.ask-primary')?.click();
             return focused && removeInFoot && headButtons === 1 && !card.hasAttribute('data-open');
             """, ["comment": comments[0]]) as? Bool == true
+            // The overall comment is written in the batch list, stays there and shows in the tray. The
+            // field's own menu opens above the list, and input after the list closed changes nothing.
+            let overall = "Keep the wording plain for new readers."
+            let overallKept = await js(model, """
+            document.getElementById('ask-batch-open')?.click();
+            const list = document.querySelector('#ask-batch-list:popover-open');
+            const field = list?.querySelector('textarea');
+            if (!field || field.value !== '') return false;
+            field.focus();
+            field.value = overall;
+            field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: overall }));
+            const tray = document.getElementById('ask-batch-open')?.textContent;
+            const box = field.getBoundingClientRect();
+            field.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.right - 4, clientY: box.top + 6 }));
+            const menu = document.querySelector('[data-role="context-menu"]:not([hidden])');
+            const item = menu?.querySelector('.item')?.getBoundingClientRect();
+            const hit = item && document.elementFromPoint(item.left + item.width / 2, item.top + item.height / 2);
+            const reachable = !!hit && menu.parentElement === list && menu.contains(hit);
+            window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+            list.hidePopover();
+            field.value = 'Late paste';
+            field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromPaste', data: 'Late paste' }));
+            document.getElementById('ask-batch-open')?.click();
+            const kept = document.querySelector('#ask-batch-list:popover-open textarea')?.value === overall;
+            document.getElementById('ask-batch-list')?.hidePopover();
+            return kept && reachable && tray === '2 comments + overall';
+            """, ["overall": overall]) as? Bool == true
             let deferred = !(await wait(seconds: 0.2) { !prompts.isEmpty })
             let sent = await js(model, """
             const send = document.getElementById('ask-batch-send');
@@ -913,7 +940,7 @@ struct Context {
             if sent { _ = await wait(seconds: 3) { !prompts.isEmpty } }
             let prompt = prompts.first ?? [:]
             let annotations = prompt["annotations"] as? [[String: Any]] ?? []
-            let exact = prompt["text"] == nil && annotations.count == quotes.count && quotes.indices.allSatisfy {
+            let exact = prompt["text"] == nil && prompt["overall"] as? String == overall && annotations.count == quotes.count && quotes.indices.allSatisfy {
                 annotations[$0]["quote"] as? String == quotes[$0] && annotations[$0]["text"] as? String == comments[$0]
             }
             let reply = "Both batch comments are addressed."
@@ -923,14 +950,15 @@ struct Context {
             let answered = await js(model, """
             const card = document.querySelector('.ask-card[data-open]');
             const numbers = Array.from(card?.querySelectorAll('.batch-sent .batch-number') ?? [], item => item.textContent);
-            return numbers.join(',') === '1,2' && card?.querySelector('.reply')?.textContent.endsWith(reply);
-            """, ["reply": reply]) as? Bool == true
+            const shown = card?.querySelector('.batch-request > .batch-overall-sent + .batch-sent')?.previousElementSibling;
+            return numbers.join(',') === '1,2' && !!shown?.textContent.endsWith(overall) && card?.querySelector('.reply')?.textContent.endsWith(reply);
+            """, ["reply": reply, "overall": overall]) as? Bool == true
             let sentOnce = prompts.count == 1
             let restored = await retryBatchCheck(model)
             let retriesExact = prompts.count == 3 && NSDictionary(dictionary: prompts[1].filter { $0.key != "id" }).isEqual(to: prompts[2].filter { $0.key != "id" })
             await model.close()
-            return .init(name: name, pass: added.allSatisfy { $0 } && highlights.sorted() == quotes.sorted() && reopenedWithFocus && deferred && sent && sentOnce && exact && answered && restored && retriesExact,
-                         detail: "added \(added); comment highlights \(highlights); reopened with focus \(reopenedWithFocus); deferred \(deferred); tray Send \(sent); one initial prompt \(sentOnce); exact annotations \(exact); batch reply \(answered); exact retry \(retriesExact); refusal restored batch \(restored)")
+            return .init(name: name, pass: added.allSatisfy { $0 } && highlights.sorted() == quotes.sorted() && reopenedWithFocus && overallKept && deferred && sent && sentOnce && exact && answered && restored && retriesExact,
+                         detail: "added \(added); comment highlights \(highlights); reopened with focus \(reopenedWithFocus); overall comment kept, its menu reachable and late input ignored \(overallKept); deferred \(deferred); tray Send \(sent); one initial prompt \(sentOnce); exact annotations and overall comment \(exact); batch reply \(answered); exact retry \(retriesExact); refusal restored batch \(restored)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
@@ -1140,7 +1168,12 @@ struct Context {
         field.value = 'Retry this comment.';
         field.dispatchEvent(new InputEvent('input', { bubbles: true }));
         card.querySelector('.ask-secondary')?.click();
-        document.getElementById('ask-batch-send').click();
+        document.getElementById('ask-batch-open').click();
+        const overall = document.querySelector('#ask-batch-list:popover-open textarea');
+        if (!overall) return false;
+        overall.value = 'Retry this overall comment.';
+        overall.dispatchEvent(new InputEvent('input', { bubbles: true }));
+        overall.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true }));
         const until = async (find) => {
           for (let step = 0; step < 60; step++) {
             const result = find();
@@ -1154,7 +1187,9 @@ struct Context {
         const tray = document.getElementById('ask-batch-tray');
         if (!(await until(() => !tray.hidden && !card.hasAttribute('data-open')))) return false;
         document.getElementById('ask-batch-open').click();
-        return document.querySelector('#ask-batch-list .batch-text')?.textContent === 'Retry this comment.';
+        const list = document.querySelector('#ask-batch-list:popover-open');
+        return list?.querySelector('.batch-text')?.textContent === 'Retry this comment.'
+          && list.querySelector('textarea')?.value === 'Retry this overall comment.';
         """) as? Bool == true
     }
 

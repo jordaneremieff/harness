@@ -66,7 +66,14 @@ test("the page sends a batch as one prompt and refuses mixed or invalid shapes",
 	assert.equal(receipt.accepted, false);
 	assert.equal(receipt.detail, "Batch too long.");
 	assert.equal((calls[0] as { annotations: unknown }).annotations, annotations);
+	await host.request("prompt", { ...header, annotations, overall: "Keep the tone direct." });
+	assert.equal((calls[1] as { overall: unknown }).overall, "Keep the tone direct.");
 	for (const fields of [
+		{ annotations, overall: " \n" },
+		{ annotations, overall: "\u0085" },
+		{ annotations, overall: "x".repeat(64 * 1024 + 1) },
+		{ annotations, overall: 3 },
+		{ text: "A single comment.", overall: "Only batches carry one." },
 		{ annotations: [] },
 		{ annotations, text: "Mixed" },
 		{ annotations: [{ text: " \n" }] },
@@ -75,7 +82,7 @@ test("the page sends a batch as one prompt and refuses mixed or invalid shapes",
 	]) {
 		await assert.rejects(host.request("prompt", { ...header, ...fields }));
 	}
-	assert.equal(calls.length, 1);
+	assert.equal(calls.length, 2);
 	host.dispose();
 });
 test("a long Ask reply reaches its thread with its final paragraph intact", () => {

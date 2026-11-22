@@ -9,9 +9,31 @@
 			batchList = get("#ask-batch-list");
 		const batches = new Map<string, ReaderComment[]>(),
 			localBatch: ReaderComment[] = [],
+			// The overall comment of each pending batch, kept by the batch's comment list.
+			overalls = new WeakMap<ReaderComment[], string>(),
 			batchLimit = 50,
 			utf8 = new TextEncoder();
 		let comments = localBatch;
+		function overallOf(batch = comments) {
+			return overalls.get(batch) ?? "";
+		}
+		// The native side counts U+0085 as white space, which JavaScript's trim keeps.
+		function hasText(text: string) {
+			return /[^\s\u0085]/u.test(text);
+		}
+		function setOverall(text: string, batch = comments) {
+			if (text) overalls.set(batch, text);
+			else overalls.delete(batch);
+		}
+		// Text returned to a batch joins the text written since, so no overall comment is lost.
+		function restoreOverall(text: string | undefined, batch: ReaderComment[]) {
+			const newer = overallOf(batch);
+			if (text && hasText(text)) setOverall(hasText(newer) && newer !== text ? `${text}\n\n${newer}` : text, batch);
+		}
+		function batchLabel() {
+			const count = commentCount(comments.length);
+			return hasText(overallOf()) ? `${count} + overall` : count;
+		}
 		const threads: ReaderThread[] = [],
 			payloads = new Map<string, Record<string, unknown>>();
 		const off: (() => void)[] = [];
@@ -221,7 +243,7 @@
 			if (comments.length)
 				activity.append(
 					button(
-						`Pending batch · ${commentCount(comments.length)}`,
+						`Pending batch · ${batchLabel()}`,
 						"ask",
 						() => {
 							activity.hidePopover();
@@ -357,8 +379,51 @@
 				el("span", { class: "batch-text" }, comment.text),
 			);
 		}
+		// The overall comment field stays in place while the list redraws, so a redraw never takes
+		// its focus or caret.
+		const overallField = el("textarea", {
+			class: "batch-overall-field",
+			placeholder: "Direction or a perspective for every comment (optional)",
+			rows: "2",
+		});
+		const listBody = el("ol", { class: "batch-list-body", role: "list" }),
+			listFoot = el("div", { class: "batch-list-foot" });
+		batchList.replaceChildren(
+			el("h2", {}, "Pending batch"),
+			el("label", { class: "batch-overall" }, el("span", {}, "Overall comment"), overallField),
+			listBody,
+			listFoot,
+		);
+		overallField.addEventListener("input", () => {
+			// Input that arrives while the list is closed, such as a late paste after a document
+			// switch, belongs to no visible batch.
+			if (!batchList.matches(":popover-open")) {
+				overallField.value = overallOf();
+				return;
+			}
+			setOverall(overallField.value);
+			refreshTray();
+		});
+		// Text returned ahead of the text being typed keeps the caret on the same characters.
+		function syncOverallField() {
+			const text = overallOf(),
+				before = overallField.value;
+			if (before === text) return;
+			const { selectionStart: start, selectionEnd: end } = overallField,
+				kept = document.activeElement === overallField && text.endsWith(before);
+			overallField.value = text;
+			if (kept) overallField.setSelectionRange(start + text.length - before.length, end + text.length - before.length);
+		}
+		overallField.addEventListener("keydown", (event) => {
+			if (event.key === "Enter" && event.metaKey && !event.altKey && !event.ctrlKey && !event.isComposing) {
+				event.preventDefault();
+				event.stopPropagation();
+				void sendBatch();
+			}
+		});
 		function drawBatchList() {
-			const body = el("ol", { class: "batch-list-body", role: "list" });
+			syncOverallField();
+			listBody.replaceChildren();
 			for (const [index, comment] of comments.entries()) {
 				const open = button(
 					"",
@@ -373,7 +438,7 @@
 				);
 				open.setAttribute("aria-label", `Edit comment ${index + 1}: ${comment.text}`);
 				open.replaceChildren(commentNumber(index), commentPreview(comment));
-				body.append(
+				listBody.append(
 					el(
 						"li",
 						{},
@@ -385,15 +450,9 @@
 					),
 				);
 			}
-			batchList.replaceChildren(
-				el("h2", {}, "Pending batch"),
-				body,
-				el(
-					"div",
-					{ class: "batch-list-foot" },
-					button("Remove all", "", removeAll, { className: "batch-secondary" }),
-					button(`Send ${commentCount(comments.length)}`, "", () => void sendBatch(), { className: "batch-primary" }),
-				),
+			listFoot.replaceChildren(
+				button("Remove all", "", removeAll, { className: "batch-secondary" }),
+				button(`Send ${commentCount(comments.length)}`, "", () => void sendBatch(), { className: "batch-primary" }),
 			);
 		}
 		function openBatchList() {
@@ -412,12 +471,16 @@
 		const traySend = button("Send", "send", () => void sendBatch(), { className: "batch-primary" });
 		traySend.id = "ask-batch-send";
 		tray.append(trayOpen, traySend);
+		function refreshTray() {
+			tray.hidden = !comments.length;
+			const count = commentCount(comments.length);
+			const described = hasText(overallOf()) ? `${count} and an overall comment` : count;
+			trayOpen.setAttribute("aria-label", `Pending batch: ${described}`);
+			trayCount.textContent = batchLabel();
+		}
 		function refreshBatch() {
 			if (!comments.length) batchList.hidePopover();
-			tray.hidden = !comments.length;
-			const label = commentCount(comments.length);
-			trayOpen.setAttribute("aria-label", `Pending batch: ${label}`);
-			trayCount.textContent = label;
+			refreshTray();
 			if (batchList.matches(":popover-open")) drawBatchList();
 		}
 		function discardEmptyComment() {
@@ -452,14 +515,17 @@
 		function removeAll() {
 			const batch = comments,
 				removed = batch.splice(0),
+				overall = overallOf(batch),
 				docAtRemoval = controller.doc;
 			const generation = docAtRemoval?.generation;
+			setOverall("", batch);
 			if (current?.pendingComment) {
 				current = null;
 				visible = false;
 			}
 			ask.refresh();
-			ctx.toast(`Removed ${commentCount(removed.length)}.`, {
+			const also = hasText(overall) ? " and the overall comment" : "";
+			ctx.toast(`Removed ${commentCount(removed.length)}${also}.`, {
 				label: "Undo",
 				run: () => {
 					if (!removed.length) return;
@@ -467,6 +533,7 @@
 					if (comments === batch && document && (docAtRemoval !== document || generation !== document.generation))
 						reanchor(removed, document.source);
 					batch.unshift(...removed.splice(0));
+					restoreOverall(overall, batch);
 					ask.refresh();
 				},
 			});
@@ -497,11 +564,12 @@
 			for (const comment of items)
 				comment.range = api.uiLogic.reanchorPassage(source, comment.sourceAnchor, comment.range);
 		}
-		function batchPacket(id: string, items: ReaderComment[]) {
+		function batchPacket(id: string, items: ReaderComment[], overall?: string) {
 			return {
 				requestId: id,
 				threadId: id,
 				generation: controller.doc?.generation ?? 0,
+				...(overall ? { overall } : {}),
 				annotations: items.map(({ text, quote, range }) => ({
 					text,
 					...(quote ? { quote } : {}),
@@ -518,6 +586,7 @@
 			const sourceNow = controller.doc;
 			if (batch === comments && sourceAtSend !== sourceNow && sourceNow) reanchor(items, sourceNow.source);
 			batch.unshift(...items);
+			restoreOverall(thread.overall, batch);
 			const index = threads.indexOf(thread);
 			if (index >= 0) threads.splice(index, 1);
 			if (current === thread) {
@@ -543,6 +612,10 @@
 			return batchTextFits();
 		}
 		function batchTextFits() {
+			if (utf8.encode(overallOf()).length > 64 * 1024) {
+				ctx.notice("Shorten the overall comment before sending the batch.", "warn");
+				return false;
+			}
 			const long = comments.findIndex(({ text }) => utf8.encode(text).length > 64 * 1024);
 			if (long < 0) return true;
 			ctx.notice(`Shorten comment ${long + 1} before sending the batch.`, "warn");
@@ -553,8 +626,9 @@
 			const batch = comments,
 				documentAtSend = controller.doc;
 			const additions = [...batch],
+				overall = hasText(overallOf(batch)) ? overallOf(batch) : undefined,
 				id = crypto.randomUUID(),
-				payload = batchPacket(id, additions);
+				payload = batchPacket(id, additions, overall);
 			if (utf8.encode(JSON.stringify(payload)).length > 256 * 1024 - 128) {
 				ctx.notice("The batch is too long. Shorten or remove comments before sending it.", "warn");
 				return;
@@ -564,8 +638,9 @@
 				text: `Batch of ${commentCount(additions.length)}`,
 				state: "sending",
 			};
-			const thread: ReaderThread = { threadId: id, comments: additions, draft: "", messages: [message] };
+			const thread: ReaderThread = { threadId: id, comments: additions, overall, draft: "", messages: [message] };
 			batch.length = 0;
+			setOverall("", batch);
 			threads.unshift(thread);
 			payloads.set(id, payload);
 			openThread(thread, false);
@@ -609,6 +684,22 @@
 				...items.map((item, index) => el("li", { class: "batch-entry" }, commentNumber(index), commentPreview(item))),
 			);
 		}
+		// A sent batch shows its overall comment above the numbered comments, in the order the agent reads them.
+		function sentBatch(thread: ReaderThread) {
+			const list = sentComments(thread.comments ?? []);
+			if (!thread.overall) return list;
+			return el(
+				"div",
+				{ class: "batch-request" },
+				el(
+					"div",
+					{ class: "ask-question batch-overall-sent" },
+					el("span", { class: "from" }, "Overall comment"),
+					thread.overall,
+				),
+				list,
+			);
+		}
 		function promptAnswer(message: ReaderAskMessage) {
 			if (!message.detail) return null;
 			if (message.state === "answered")
@@ -621,7 +712,7 @@
 			for (const [index, m] of thread.messages.entries()) {
 				const question =
 					index === 0 && thread.comments
-						? sentComments(thread.comments)
+						? sentBatch(thread)
 						: el("div", { class: "ask-question" }, el("span", { class: "from" }, "You"), m.text);
 				const answer = promptAnswer(m);
 				log.append(question);
@@ -1118,9 +1209,11 @@
 					batches.set(key, comments);
 				} else {
 					localBatch.length = 0;
+					overalls.delete(localBatch);
 					comments = localBatch;
 				}
 				reanchor(comments, controller.doc?.source ?? "");
+				syncOverallField();
 				refreshBatch();
 			}),
 		);
