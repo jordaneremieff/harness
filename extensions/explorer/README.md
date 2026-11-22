@@ -35,7 +35,13 @@ Relative links open files inside the current root. Links to headings scroll the 
 
 ## Files list
 
-The Files list shows Git-ignored files and folders with muted text and icons. Ignored folders start closed and list their immediate contents when you expand them. The Files filter matches all paths the list has read, including children of ignored folders you have expanded. Quick Open (⌘P) and content search still respect Git ignore rules. Plain folders keep their existing file list. Set `showIgnored` to `false` to hide ignored entries in panes opened afterwards; an open pane keeps the value it started with.
+The Files list reads one folder at a time, so a folder with many subfolders or repositories shows its complete top level at once, and a folder lists its contents when you expand it. Each listing holds up to 10,000 entries. The list draws only the rows in view and has no row limit. Use ↑ and ↓ to move, → to expand or enter a folder, ← to collapse it or go to its parent, and Enter to open.
+
+Git-ignored files and folders show muted text and icons. Each folder follows the ignore rules of the innermost repository that contains it, and ignored folders start closed. Set `showIgnored` to `false` to hide ignored entries in panes opened afterwards; an open pane keeps the value it started with.
+
+A folder that is a Git repository (an embedded repository, a submodule or a work tree) shows its branch, or its commit when detached. **Open as Root**, in a folder's context menu or beside a repository, makes that folder the pane's root, with its own Changes and notes. The names after **Explorer** in the top bar trace the path from the folder the pane opened with; select one to open that folder as the root again. In a folder that is not a repository, the Changes tab lists the repositories inside it.
+
+Quick Open (⌘P) and the Files filter search a path index that Explorer builds in the background: Git lists the files of each repository, ignored files left out, and a scan covers folders outside repositories. The index holds up to 200,000 paths and 2,000 repositories, and Explorer labels a partial index. Quick Open shows results from the current index while a newer one builds. The filter also matches every entry the Files list has read, including ignored ones. Content search (⌘⇧F) searches the root repository first, then the repositories inside it, then other files, for up to about four seconds, and labels incomplete results.
 
 ## Settings
 
