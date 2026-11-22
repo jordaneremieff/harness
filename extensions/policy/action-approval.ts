@@ -173,7 +173,11 @@ export class ActionApprovals {
 		if (Buffer.byteLength(JSON.stringify(entry)) > 32 * 1024)
 			return "[policy] The complete action and rule list exceed the inspection bound; no pending action was created.";
 		this.entries.set(entry.actionId, entry);
-		return `[policy] Operator approval required for one exact action. Inspect policy_control action-inspect with actionId ${entry.actionId}; revision ${entry.revision}. Rules: ${entry.rules.map((rule) => rule.id).join(", ")}.`;
+		const rules = entry.rules.map((rule) => rule.id).join(", ");
+		const state = current
+			? `Operator approval required: this exact action is still pending, so this unchanged retry was refused again (rules: ${rules}). Neither a retry nor an operator reply approves it.`
+			: `Operator approval required for one exact action (rules: ${rules}). The call did not run.`;
+		return `[policy] ${state} Next: inspect it with policy_control action-inspect, actionId ${entry.actionId}. If the operator's current direction clearly authorizes this exact action, call policy_control action-approve with actionId ${entry.actionId}, revision ${entry.revision}, and an authorization that states that decision, then retry the unchanged call once. Otherwise show the operator the complete action and ask. An unchanged retry before approval is refused.`;
 	}
 
 	/** Synchronous check-and-consume prevents two parallel retries from sharing one grant. */

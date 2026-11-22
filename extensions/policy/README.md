@@ -73,6 +73,10 @@ chat without a UI confirmation requirement:
    require their own approval. Use `action-reject` with the same mutation fields
    to reject or withdraw an armed action.
 
+The denial states these steps with the action ID and revision. An unchanged
+retry before approval is refused again with a denial that says the action is
+still pending: neither a retry nor an operator reply approves it.
+
 Existing exact authorization in context is sufficient; no fixed phrase or extra
 human turn is required. A broad task does not approve an agent-selected payload.
 The agent conveys the operator decision. Its authorization explanation is not

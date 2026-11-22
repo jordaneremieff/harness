@@ -63,6 +63,30 @@ test("all matching gates bind one complete action and one unchanged retry", () =
 	assert.notEqual(pending(book).actionId, entry.actionId);
 });
 
+test("each refusal names the next step, and an unchanged retry before approval is refused as a repeat", () => {
+	const book = new ActionApprovals();
+	const first = book.gate(plan(), "send", binding) ?? "";
+	const { actionId, revision } = pending(book);
+	for (const text of [first, book.gate(plan(), "send", binding) ?? ""]) {
+		assert.match(text, /^\[policy\] Operator approval required/);
+		assert.ok(text.includes(`policy_control action-inspect, actionId ${actionId}`), text);
+		assert.ok(text.includes(`policy_control action-approve with actionId ${actionId}, revision ${revision}`), text);
+		assert.match(
+			text,
+			/then retry the unchanged call once\. Otherwise show the operator the complete action and ask\./,
+		);
+		assert.match(text, /rules: machine\.target, machine\.write/);
+	}
+	assert.match(first, /The call did not run\./);
+	assert.doesNotMatch(first, /still pending/);
+	const repeat = book.gate(plan(), "send", binding) ?? "";
+	assert.match(repeat, /still pending, so this unchanged retry was refused again/);
+	assert.match(repeat, /Neither a retry nor an operator reply approves it\./);
+	assert.equal(pending(book).actionId, actionId);
+	approve(book);
+	assert.equal(book.gate(plan(), "send", binding), undefined);
+});
+
 test("canonical key order is equal, changed payload, target and tool are not", () => {
 	assert.equal(sameActionInput({ b: [1, { x: "A" }], a: true }, { a: true, b: [1, { x: "A" }] }), true);
 	const book = new ActionApprovals();
