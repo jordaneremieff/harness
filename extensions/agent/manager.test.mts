@@ -363,58 +363,140 @@ it("omits undefined control fields, which the host transport refuses, before the
 	assert.equal(Object.hasOwn(call.params as object, "instructions"), false);
 });
 
-it("aborts a running host in place, and starts and retires a storage that had none", async (t) => {
+it("stops a live target once and never acquires a serving host for a cold stop", async (t) => {
 	const root = fixtureRoot(t);
+	const cold: boolean[] = [];
+	const wire: string[] = [];
 	let running = true;
-	const seen: Array<{ method: string; launched: boolean; params: Record<string, unknown> }> = [];
-	const host = (metadata: HostMetadata, launched: boolean) =>
-		fakeConnection(metadata, async (method, params) => {
-			seen.push({ method, launched, params: params as Record<string, unknown> });
-			if (method === "abort") return { conversationId: 1, identity: metadata.storageId, settled: true };
-			return method === "release" ? { retiring: true, blockers: [] } : {};
-		});
+	let contender = false;
 	const manager = new AgentManager(
 		managerOptions(root, {
 			connect: async (metadata) => {
 				if (!running) throw new HostEndpointUnavailableError(metadata.storageId, new Error("no endpoint"));
-				return host(metadata, false);
+				return fakeConnection(metadata, async (method) => {
+					wire.push(method);
+					return { settled: true };
+				});
 			},
-			acquire: async (metadata) => host(metadata, true),
+			acquire: async () => assert.fail("abort must not launch a serving host"),
+			stopCold: async (_metadata, identity, background) => {
+				if (contender) {
+					running = true;
+					return { busy: true };
+				}
+				cold.push(background);
+				return { result: { identity, conversationId: 1, background, settled: true } };
+			},
 		}),
 	);
 	t.after(() => manager.close());
 	const caller = { id: "terminal", cwd: root };
-	const first = createRecord(manager, root, "owner").storageId;
-	const inPlace = (await manager.control("abort", { sessionId: first }, caller)) as Record<string, unknown>;
-	assert.deepEqual(
-		seen.map(({ method, launched }) => [method, launched]),
-		[["abort", false]],
-		"a running host is aborted without a launch or a retirement",
-	);
-	assert.equal(inPlace.started, undefined);
-
+	const live = createRecord(manager, root, "live").storageId;
+	await manager.control("abort", { sessionId: live }, caller);
 	running = false;
-	seen.length = 0;
-	const second = createRecord(manager, root, "owner-2").storageId;
-	const started = (await manager.control("abort", { sessionId: second, background: true }, caller)) as Record<
-		string,
-		unknown
-	>;
-	assert.deepEqual(
-		seen
-			.filter(({ method }) => method === "abort" || method === "release")
-			.map(({ method, launched }) => [method, launched]),
-		[
-			["abort", true],
-			["release", true],
-		],
+	const sessionId = createRecord(manager, root, "cold").storageId;
+	await assert.rejects(
+		manager.control("abort", { sessionId }, caller, { launch: false }),
+		HostEndpointUnavailableError,
 	);
-	assert.equal(seen.find(({ method }) => method === "abort")?.params.background, true);
-	assert.equal(Object.hasOwn(seen.find(({ method }) => method === "release")?.params ?? {}, "background"), false);
-	assert.equal(started.settled, true);
-	assert.equal(started.retiring, true);
-	assert.match(String(started.started), /No host was running/u);
+	await assert.rejects(manager.control("release", { sessionId }, caller), HostEndpointUnavailableError);
+	for (const background of [true, false]) {
+		const result = (await manager.control("abort", { sessionId, background }, caller)) as {
+			cold?: true;
+			settled: boolean;
+		};
+		assert.equal(result.cold, true);
+		assert.equal(result.settled, true);
+	}
+	assert.deepEqual(cold, [true, false]);
+	assert.deepEqual(wire, ["abort"]);
+	contender = true;
+	await manager.control("abort", { sessionId }, caller);
+	assert.deepEqual(wire, ["abort", "abort"], "the competing owner received one stop and no retirement");
 });
+
+it("finishes the cold stop after the caller withdraws its wait", async (t) => {
+	const root = fixtureRoot(t);
+	const started = deferred(),
+		finish = deferred(),
+		ended = deferred();
+	const manager = new AgentManager(
+		managerOptions(root, {
+			connect: async (metadata) => {
+				throw new HostEndpointUnavailableError(metadata.storageId, new Error("cold"));
+			},
+			acquire: async () => assert.fail("no serving host"),
+			stopCold: async (_metadata, identity, background) => {
+				started.resolve();
+				await finish.promise;
+				ended.resolve();
+				return { result: { identity, conversationId: 1, background, settled: true } };
+			},
+		}),
+	);
+	t.after(() => manager.close());
+	const { storageId } = createRecord(manager, root, "owner");
+	const controller = new AbortController();
+	const stop = manager.control(
+		"abort",
+		{ sessionId: storageId },
+		{ id: "caller", cwd: root },
+		{ signal: controller.signal },
+	);
+	await started.promise;
+	controller.abort();
+	try {
+		await assert.rejects(stop, { name: "AbortError" });
+	} finally {
+		finish.resolve();
+	}
+	await ended.promise;
+});
+
+for (const [method, wireMethod] of [
+	["release", "release"],
+	["submit", "task-submit"],
+] as const)
+	it(`ends the caller's wait for an outstanding ${method === "submit" ? "steer" : "release"} without resending`, async (t) => {
+		const root = fixtureRoot(t);
+		const sent = deferred();
+		const answer = deferred();
+		const requests: string[] = [];
+		const connect = async (metadata: HostMetadata) =>
+			fakeConnection(metadata, async (name, params) => {
+				requests.push(name);
+				if (name !== wireMethod) return {};
+				sent.resolve();
+				await answer.promise;
+				return method === "release" ? { retiring: true } : nativeAdmission(params);
+			});
+		const manager = new AgentManager(managerOptions(root, { connect, acquire: connect }));
+		t.after(() => {
+			answer.resolve();
+			manager.close();
+		});
+		const { storageId } = createRecord(manager, root, "owner");
+		const controller = new AbortController();
+		const params = method === "release" ? {} : { message: "Change course", whenBusy: "steer", requestId: "steer" };
+		const waiting = manager.control(
+			method,
+			{ sessionId: storageId, ...params },
+			{ id: "terminal", cwd: root },
+			{ signal: controller.signal },
+		);
+		await sent.promise;
+		controller.abort();
+		const winner = await Promise.race([
+			waiting.then(
+				() => "answered",
+				(error: Error) => error.name,
+			),
+			new Promise((resolve) => setImmediate(() => resolve("still waits"))),
+		]);
+		answer.resolve();
+		assert.equal(winner, "AbortError");
+		assert.equal(requests.filter((name) => name === wireMethod).length, 1);
+	});
 
 it("refuses a full place book before catalogue creation or host launch", async (t) => {
 	const root = fixtureRoot(t);

@@ -35,7 +35,13 @@ import {
 	settleDeliveries,
 	undeliveredReports,
 } from "./durable-controls.ts";
-import { observeDeliveryEligibility, receiptStateLine, rowWakes, startDurableDelivery } from "./durable-delivery.ts";
+import {
+	observeDeliveryEligibility,
+	receiptStateLine,
+	readReceiptStates,
+	rowWakes,
+	startDurableDelivery,
+} from "./durable-delivery.ts";
 import { mutateCollaboration } from "./collaboration.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
 import { retainProviderRetryNotices } from "./provider-notices.ts";
@@ -5111,7 +5117,7 @@ for (const route of ["primary", "catalog"] as const)
 		assert.equal(provider.mock.callCount(), 1);
 	});
 
-it("wakes a model owner for a result, not for a receipt group of state notes", () => {
+it("wakes a model owner for a result, not for a receipt group of state notes", async () => {
 	const receipt = (submissionId: number, origin: "model" | "operator" = "model") => ({
 		submissionId,
 		requestId: `request-${submissionId}`,
@@ -5132,6 +5138,17 @@ it("wakes a model owner for a result, not for a receipt group of state notes", (
 		({ receipt: value, work: { work: "open", label: "state note" } }) as never;
 	const first = receipt(1);
 	const second = receipt(2);
+	const group = row(...Array.from({ length: 17 }, (_, i) => receipt(i + 1)));
+	const allNotes = await readReceiptStates(
+		group,
+		async () => ({ work: "open", label: "state note" }),
+		async () => 0,
+	);
+	assert.equal(
+		rowWakes(group, "owner", allNotes),
+		false,
+		"the 17th state note is classified even though its line is omitted",
+	);
 	assert.equal(rowWakes(row(first), "owner"), true, "a result wakes its model owner");
 	assert.equal(rowWakes(row(first), "owner", [stateNote(first)]), false, "a state note waits for the final report");
 	assert.equal(rowWakes(row(first, second), "owner", [stateNote(first)]), true, "a result in the group still wakes");

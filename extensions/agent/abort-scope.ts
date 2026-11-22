@@ -1,6 +1,6 @@
 import type * as Durable from "@earendil-works/pi-durable";
 
-async function taskPathCrossesBackground(tx: Durable.Tx, first: Durable.TaskId): Promise<boolean | undefined> {
+export async function taskPathCrossesBackground(tx: Durable.Tx, first: Durable.TaskId): Promise<boolean | undefined> {
 	let taskId: Durable.TaskId | undefined = first;
 	const visited = new Set<Durable.TaskId>();
 	while (taskId !== undefined) {

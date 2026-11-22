@@ -54,8 +54,8 @@ import {
 	snapshotReceipt,
 	storeDeliveryRow,
 } from "./delivery-store.ts";
-import { abortScopeConversations } from "./abort-scope.ts";
-import { stopScope } from "./conversation-stop.ts";
+import { abortScopeConversations, taskPathCrossesBackground } from "./abort-scope.ts";
+import { captureStoppedWork, PENDING_TASKS_LIMIT, stopScope } from "./conversation-stop.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -65,6 +65,7 @@ import { ModelEvidenceCollector } from "./model-evidence.ts";
 import { isInputClass, isInputKind, type InputClass } from "./input-entry.ts";
 import {
 	Harness,
+	InboxDoc,
 	SessionFailed,
 	ROOT_CONVERSATION_ID,
 	UsageDoc,
@@ -80,6 +81,7 @@ import {
 	type SubmissionRecord,
 	type SubmissionId,
 	type TaskGraph,
+	type Tx,
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -133,7 +135,7 @@ import {
 import { LiveObservationService, type ObservationScope } from "./live-observation.ts";
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
 import { resetConversation } from "./durable-reset.ts";
-import { closeOpenWork, parseDependencyMarks, recordDependencyMarks } from "./open-work.ts";
+import { closeOpenWork, openWorkItems, parseDependencyMarks, recordDependencyMarks } from "./open-work.ts";
 import { repairQueuedInputs, UnplacedWatchEnd } from "./unplaced-inputs.ts";
 import { TIMER_TASK_NAME, cancelTimer, listTimers, scheduleTimer, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
@@ -957,12 +959,8 @@ export class DurableHost {
 		const delivered = params?.deliveredResults;
 		if (delivered !== undefined) validateContinuityDelivered(delivered);
 		const marks = params?.dependencyMarks === undefined ? [] : parseDependencyMarks(params.dependencyMarks);
-		// The producer marks each delivered result; when every one is a state note, its work continues elsewhere.
-		const stateNotesOnly =
-			Array.isArray(delivered) &&
-			delivered.length > 0 &&
-			delivered.length === marks.length &&
-			marks.every((mark) => mark.state === "state-note");
+		// The producer states that every delivered result is a state note: its declared work continues there.
+		const stateNotesOnly = requestBoolean(params, "stateNotesOnly") === true;
 		// A replayed body admission is deduplicated, and a provider retry notice that the current inputs already
 		// showed is suppressed; in both cases the result reached this conversation, so its delivered facts complete.
 		const complete = async (): Promise<void> => {
@@ -1355,43 +1353,15 @@ export class DurableHost {
 	private async abortRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
 		const background = requestBoolean(params, "background") ?? false;
-		// The scope is read before the abort ends the tasks that define it.
-		const scope = await this.harness.commit((tx) => abortScopeConversations(tx, conversation.id, background), context);
-		const stopped = await stopScope(this.harness, conversation, scope, background, context, {
-			now: this.now(),
-			report: this.reportError,
-		});
-		// The scope's open work closes now even when a marked task has not ended yet: its run cannot answer.
-		await this.closeStoppedWork(scope, context);
-		return { conversationId: conversation.id, identity: this.identity(conversation.id), background, ...stopped };
-	}
-
-	/**
-	 * Close the open work of each conversation that one abort stopped. A final report whose recipient the same abort
-	 * stopped becomes a terminal row: it stays readable and starts no run in the stopped recipient.
-	 */
-	private async closeStoppedWork(scope: readonly ConversationId[], context: Context): Promise<void> {
-		const stopped = new Set(scope);
-		const stoppedRecipient = (identity: string): boolean => {
-			try {
-				return stopped.has(resolveSessionConversationId(this.storageId, identity, undefined));
-			} catch {
-				return false;
-			}
-		};
-		for (const id of scope)
-			await this.harness.commit(async (tx) => {
-				for (const item of await closeOpenWork(tx, this.storageId, id, "stopped", this.now())) {
-					const requestId = item.close?.reportRequestId;
-					if (requestId === undefined || !stoppedRecipient(item.replyTo)) continue;
-					const row = await retainedReportRequest(tx, item.replyTo, requestId);
-					if (row !== undefined && !row.acknowledged)
-						await storeDeliveryRow(tx, "report", {
-							...row,
-							delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" },
-						});
-				}
-			}, context);
+		return stopLiveConversation(
+			this.harness,
+			this.storageId,
+			conversation,
+			background,
+			this.now,
+			this.reportError,
+			context,
+		);
 	}
 
 	private async releaseRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
@@ -1716,4 +1686,130 @@ export class DurableHost {
 		this.providerModels?.close();
 		await this.harness.close(BACKGROUND_CONTEXT);
 	}
+}
+
+/**
+ * Close the work that was open when one abort stopped its conversations; work declared after the stop stays open.
+ * A final report whose recipient the same abort stopped becomes a terminal row: it stays readable and starts no
+ * run in the stopped recipient.
+ */
+async function closeStoppedWork(
+	harness: Harness,
+	storageId: string,
+	now: () => number,
+	scope: readonly ConversationId[],
+	work: ReadonlyMap<ConversationId, readonly string[]>,
+	context: Context,
+): Promise<void> {
+	const stopped = new Set(scope);
+	const stoppedRecipient = (identity: string): boolean => {
+		try {
+			return stopped.has(resolveSessionConversationId(storageId, identity, undefined));
+		} catch {
+			return false;
+		}
+	};
+	for (const [id, requestIds] of work)
+		await harness.commit(async (tx) => {
+			for (const item of await closeOpenWork(tx, storageId, id, "stopped", now(), requestIds)) {
+				const requestId = item.close?.reportRequestId;
+				if (requestId === undefined || !stoppedRecipient(item.replyTo)) continue;
+				const row = await retainedReportRequest(tx, item.replyTo, requestId);
+				if (row !== undefined && !row.acknowledged)
+					await storeDeliveryRow(tx, "report", {
+						...row,
+						delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" },
+					});
+			}
+		}, context);
+}
+
+/** Stop one live scope independently of the transport or tool invocation that requested it. */
+export async function stopLiveConversation(
+	harness: Harness,
+	storageId: string,
+	conversation: Conversation,
+	background: boolean,
+	now: () => number,
+	report: (error: unknown) => void,
+	context: Context,
+) {
+	// The scope is read before the abort ends the tasks that define it.
+	const scope = await harness.commit((tx) => abortScopeConversations(tx, conversation.id, background), context);
+	const { work, ...stopped } = await stopScope(harness, conversation, scope, background, context, {
+		now: now(),
+		openRequests: async (tx, id) => (await openWorkItems(tx, id)).map((item) => item.requestId),
+		report: report,
+	});
+	// The work open at the stop closes now even when a marked task has not ended yet: its run cannot answer.
+	await closeStoppedWork(harness, storageId, now, scope, work, context);
+	return {
+		conversationId: conversation.id,
+		identity: conversation.id === ROOT_CONVERSATION_ID ? storageId : `${storageId}:${conversation.id}`,
+		background,
+		...stopped,
+	};
+}
+
+/** Match the native task walk: exclude a task below a background owner from an ordinary stop. */
+async function coldTasks(
+	tx: Tx,
+	inspection: HarnessInspection,
+	included: ReadonlySet<ConversationId>,
+	background: boolean,
+) {
+	const tasks = [];
+	for (const { record } of inspection.tasks) {
+		if (!included.has(record.conversationId)) continue;
+		if (!background) {
+			const crosses = await taskPathCrossesBackground(tx, record.id);
+			if (crosses === undefined) throw new Error("A retained task has an incomplete ownership chain");
+			if (crosses) continue;
+		}
+		tasks.push(record.id);
+	}
+	return tasks;
+}
+
+/** Apply a single stop under a cold writer lease. The scheduler and delivery driver must not start. */
+export async function stopBeforeResume(
+	harness: Harness,
+	storageId: string,
+	sessionId: string,
+	background: boolean,
+	context: Context,
+) {
+	const id = resolveSessionConversationId(storageId, sessionId, undefined);
+	const conversation = await harness.conversation(id, context);
+	if (!conversation) throw new Error(`Conversation ${sessionId} does not exist`);
+	const inspection = await harness.inspect(context);
+	if (inspection.scheduling !== "paused") throw new Error("A cold stop requires a paused scheduler");
+	const { scope, work, tasks, queued } = await harness.commit(async (tx) => {
+		const scope = await abortScopeConversations(tx, conversation.id, background);
+		const tasks = await coldTasks(tx, inspection, new Set(scope), background);
+		const queued = [];
+		for (const id of scope)
+			for (const item of (await tx.doc(InboxDoc, id)).items)
+				if (item.mode !== "write" && item.onAbort !== "keep") queued.push({ id: item.id, conversationId: id });
+		const work = await captureStoppedWork(tx, scope, {
+			now: Date.now(),
+			openRequests: async (tx, id) => (await openWorkItems(tx, id)).map((item) => item.requestId),
+		});
+		return { scope, tasks, queued, work };
+	}, context);
+	for (const { id, conversationId } of queued) await harness.abortSubmission(id, context, conversationId);
+	for (const id of tasks) await harness.abortTask(id, context);
+	await closeStoppedWork(harness, storageId, Date.now, scope, work, context);
+	const pendingTasks: number[] = [];
+	for (const id of tasks) {
+		const record = await harness.getTask(id, context);
+		if (record !== undefined && record.state.status !== "terminal") pendingTasks.push(id);
+		if (pendingTasks.length === PENDING_TASKS_LIMIT) break;
+	}
+	return {
+		identity: id === ROOT_CONVERSATION_ID ? storageId : `${storageId}:${id}`,
+		conversationId: Number(conversation.id),
+		background,
+		...(pendingTasks.length ? { settled: false as const, pendingTasks } : { settled: true as const }),
+	};
 }

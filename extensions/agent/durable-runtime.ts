@@ -38,13 +38,13 @@ import { boundCatalogView, withAttentionHints, withModelEvidence, type CatalogVi
 import { projectCatalogAttention } from "./catalog-attention.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import type { HostRuntime } from "./host-process.ts";
-import { DurableHost, readTaskGraph } from "./durable-host.ts";
+import { DurableHost, readTaskGraph, stopBeforeResume } from "./durable-host.ts";
 import { onStoredCommit } from "./commit-observation.ts";
 import { stopForeignReferences } from "./run-control.ts";
 import { createDurableServices, type DurableServices, type CreateDurableServicesOptions } from "./durable-services.ts";
 import { publishAgentControlDispatch, type AgentControlDispatch } from "./durable-agents.ts";
 import { projectConversationIntents } from "./durable-controls.ts";
-import { deliveryPendingCount } from "./delivery-store.ts";
+import { deliveryPendingCount, migrateDeliveryStore } from "./delivery-store.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import type { ModelChoicesSchema } from "./observation-schema.ts";
 import type { Static } from "@earendil-works/pi-schema";
@@ -75,7 +75,8 @@ import { projectProfiles } from "./profile.ts";
 import { requestContextHooks, requestContextSection } from "./request-context.ts";
 import { RequestRouteState } from "./request-route-state.ts";
 import { withProfileHints, withIntentClaims } from "./catalog-view.ts";
-import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
+import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { Harness, ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
 
 const ADMITTING_METHODS: ReadonlySet<string> = new Set([
 	"task-submit",
@@ -154,6 +155,56 @@ async function bootstrap(
 			: {}),
 	});
 }
+/** One writer invocation with the configured task definitions, but without execution, delivery or an endpoint. */
+export async function stopColdRuntime(metadata: HostMetadata, sessionId: string, background: boolean) {
+	const controller = new AbortController();
+	// The normal contributions supply task definitions. MCP and codemode add tools, not task kinds.
+	const services = await bootstrap(metadata, controller, false);
+	const open = async (readOnly: boolean) => {
+		const storage = await openNodeSqliteStorage(metadata.storagePath);
+		try {
+			return await Harness.open(
+				storage,
+				{
+					models: services.services.modelRuntime,
+					registry: services.registry,
+					settings: services.settings,
+					env: services.env,
+					readOnly,
+				},
+				BACKGROUND_CONTEXT,
+			);
+		} catch (error) {
+			await storage.close(BACKGROUND_CONTEXT);
+			throw error;
+		}
+	};
+	let reader: Harness | undefined;
+	try {
+		// A contribution gets only the actual storage's read-only Harness. Even an eager installer cannot resume it.
+		reader = await open(true);
+		await services.install(reader);
+		const writer = await open(false);
+		try {
+			await migrateDeliveryStore(writer, BACKGROUND_CONTEXT);
+			const stopped = await stopBeforeResume(writer, metadata.storageId, sessionId, background, BACKGROUND_CONTEXT);
+			// Work closure can produce a final report even when no task needed an abort.
+			if (!stopped.settled || (await deliveryPendingCount(writer, BACKGROUND_CONTEXT)) > 0)
+				new AgentCatalog(dirname(dirname(metadata.storagePath))).markRecoveryDue(metadata.storageId, true);
+			return stopped;
+		} finally {
+			await writer.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		controller.abort();
+		try {
+			await services.close();
+		} finally {
+			await reader?.close(BACKGROUND_CONTEXT);
+		}
+	}
+}
+
 function configuredModel(value: unknown): unknown {
 	if (typeof value !== "string") return value;
 	const split = value.indexOf("/");
@@ -523,12 +574,12 @@ export async function createDurableRuntime(
 				await manager.close();
 			}
 		}
+		if (method !== "submit") throw new Error("A registered primary accepts messages, not Durable session controls");
 		const channel = await connectPrimaryChannel({
 			id: sessionId,
 			sessionsRoot: dirname(dirname(metadata.storagePath)),
 		});
 		try {
-			if (method !== "submit") throw new Error("A registered primary accepts messages, not Durable session controls");
 			markRecoveryDue(true);
 			const report = (await host.request("report", { ...params, ownerId: sessionId })) as { sourceId: string };
 			return {
@@ -593,7 +644,7 @@ export async function createDurableRuntime(
 					throw new Error("The exact native target is not retained and no ordinary primary is registered");
 				return await primaryControl(method, params, sessionId);
 			}
-			if (FOREIGN_OBSERVATION_METHODS.has(method)) {
+			if (FOREIGN_OBSERVATION_METHODS.has(method) || method === "abort" || method === "release") {
 				const caller = {
 					id: typeof params.senderIdentity === "string" ? params.senderIdentity : metadata.storageId,
 					cwd: metadata.cwd,
@@ -656,7 +707,8 @@ export async function createDurableRuntime(
 	): Promise<unknown> {
 		if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
 		const observation = FOREIGN_OBSERVATION_METHODS.has(method);
-		if (observation) context?.abortSignal?.throwIfAborted();
+		const stopping = method === "abort" || method === "release";
+		if (observation || stopping) context?.abortSignal?.throwIfAborted();
 		activeRequests++;
 		activityGeneration++;
 		if (ADMITTING_METHODS.has(method)) {
@@ -672,7 +724,7 @@ export async function createDurableRuntime(
 				scheduleRecoveryMarker();
 				notifyActivity();
 			});
-		return observation ? awaitWithContext(work, context ?? BACKGROUND_CONTEXT) : work;
+		return observation || stopping ? awaitWithContext(work, context ?? BACKGROUND_CONTEXT) : work;
 	}
 	const readStoragePage = async (params: Record<string, unknown>, context: Context): Promise<unknown> => {
 		const input = storageStatusPageInput(params);
@@ -700,7 +752,10 @@ export async function createDurableRuntime(
 		if (typeof params.threadId === "string") params.sessionId = collaborationStorage(params.threadId);
 		const sessionId = typeof params.sessionId === "string" ? params.sessionId : metadata.storageId;
 		if (storageIdOf(sessionId) !== metadata.storageId) return dispatchForeign(method, params, sessionId, context);
-		return request(method, params, controlRequestId(params), context.abortSignal);
+		if (method !== "abort" && method !== "release")
+			return request(method, params, controlRequestId(params), context.abortSignal);
+		context.abortSignal?.throwIfAborted();
+		return awaitWithContext(request(method, params, controlRequestId(params)), context);
 	};
 	const dispatch: AgentControlDispatch = async (method, input, context = BACKGROUND_CONTEXT) => {
 		if (method === "resolve-target") {
@@ -710,7 +765,7 @@ export async function createDurableRuntime(
 				packageDir: metadata.packageDir,
 			});
 			try {
-				return await manager.resolveTarget(String(input.sessionId));
+				return await manager.resolveTarget(String(input.sessionId), context.abortSignal);
 			} finally {
 				await manager.close();
 			}

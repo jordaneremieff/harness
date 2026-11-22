@@ -44,14 +44,7 @@ import { forgetFailedAdmission, recordInputProvenance } from "./awaited-results.
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
 import { placementOf, prepareQueuedInputs, type Placement } from "./unplaced-inputs.ts";
-import {
-	AGENT_WORK_DESCRIPTION,
-	AgentWorkOutputSchema,
-	AgentWorkParams,
-	closeOpenWork,
-	executeAgentWork,
-	type OpenWorkView,
-} from "./open-work.ts";
+import { AGENT_WORK_DESCRIPTION, AgentWorkOutputSchema, AgentWorkParams, executeAgentWork } from "./open-work.ts";
 import {
 	AgentMetaDoc,
 	placementMode,
@@ -98,7 +91,7 @@ import { readFleetStatus, validateFleetSelection, type FleetSelection } from "./
 import { readEffortAwareness, formatEffortAwareness, nativeIntentSelf } from "./effort-awareness.ts";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
@@ -116,9 +109,8 @@ import {
 	agentControlGuidanceLines,
 	type AgentControlToolName,
 } from "./control-guidance.ts";
-import { abortScopeContains, abortScopeConversations } from "./abort-scope.ts";
-import { clearStopped, stopScope } from "./conversation-stop.ts";
-import { retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
+import { abortScopeContains } from "./abort-scope.ts";
+import { noteExplicitInput } from "./conversation-stop.ts";
 import { TimerTask, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
 import { CheckInTask, createCheckIn } from "./durable-checkins.ts";
@@ -665,22 +657,6 @@ const SECTION_PREAMBLE = [
 	"Final answers route to each request's reply recipient. Use agent_send mode: report for interim notices; the creating owner is provenance, not every request's recipient.",
 ];
 
-/** Store the final report of one stopped item as terminal when the same abort stopped its recipient. */
-async function withholdStoppedReport(
-	tx: Durable.Tx,
-	item: OpenWorkView,
-	stoppedRecipient: (recipient: string) => boolean,
-): Promise<void> {
-	const requestId = item.close?.reportRequestId;
-	if (requestId === undefined || !stoppedRecipient(item.replyTo)) return;
-	const row = await retainedReportRequest(tx, item.replyTo, requestId);
-	if (row !== undefined && !row.acknowledged)
-		await storeDeliveryRow(tx, "report", {
-			...row,
-			delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" },
-		});
-}
-
 /** Apply this slice's exposure table to one native registration. */
 function exposedControl<T extends Durable.ToolRegistration>(tool: T): T {
 	const exposure = AGENT_CONTROL_EXPOSURE[tool.name as AgentControlToolName];
@@ -982,11 +958,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		method: AgentControlMethod,
 		params: Readonly<Record<string, unknown>>,
 		capture?: DispatchCapture,
+		context?: Context,
 	): Promise<unknown> => {
 		const input = capture && isInputDispatch(method, params);
 		const outgoing = input ? await beginInputDispatch(capture, method, params) : undefined;
 		// A dispatch error does not prove that the target admitted nothing, so the request then stays listed as unconfirmed.
-		const value = await perform(method, params);
+		const value = await perform(method, params, context);
 		const placeArea = method === "place" ? (params.area as string) : undefined;
 		if (method === "submit" || method === "task-submit" || (input && method === "place"))
 			dispatchFacts(method, params, value);
@@ -1010,10 +987,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		params: Readonly<Record<string, unknown>>,
 		failure: string,
 		capture?: DispatchCapture,
+		context?: Context,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		if (dispatch === undefined) return errorResult(`${failure}: no dispatch callback.`);
 		try {
-			const raw = await dispatchValue(dispatch, method, params, capture);
+			const raw = await dispatchValue(dispatch, method, params, capture, context);
 			const value = method === "report" ? projectReportReceipt(raw) : raw;
 			const shown = controlText(value);
 			return textResult(
@@ -1171,8 +1149,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		// One commit admits the input with its delivery intent, request route, check-in and unplaced row; a refusal stores none of them.
 		await api
 			.commit(async (tx) => {
-				// A sent task or steer is explicit input: it ends a stop of its recipient.
-				if (!deduped) await clearStopped(tx, input.conversationId);
 				const retain = await prepareQueuedInputs(tx, input.conversationId, identity(input.conversationId));
 				const admission = await tx.doc(LocalAdmission, reporterTaskId);
 				let admitted: Durable.SubmissionId | undefined;
@@ -1194,6 +1170,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					async () => (admitted = await conversation.submit(tx, draft)),
 				);
 				if (admitted === undefined) throw new Error("The input admission did not run");
+				// A sent task or steer is explicit input: it ends a stop of its recipient unless the stop ends it.
+				if (!deduped) await noteExplicitInput(tx, input.conversationId, admitted);
 				await linkProviderRecovery(tx, admitted, recoveryOf);
 				await retain([
 					{
@@ -2002,90 +1980,51 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		},
 	});
 
-	/**
-	 * Close the declared work of every conversation that one abort stopped. A final report whose recipient the same
-	 * abort stopped is not delivered: it would start that conversation again.
-	 */
-	const closeStoppedWork = async (
+	const resolveAbortTarget = async (
+		args: AbortInput,
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		context: Context,
-		scope: readonly Durable.ConversationId[],
-	): Promise<void> => {
-		const stopped = new Set(scope);
-		const stoppedRecipient = (recipient: string): boolean => {
-			const local = localConversation(recipient, api.conversationId);
-			return local !== undefined && stopped.has(local);
-		};
-		for (const id of scope)
-			await api.commit(async (tx) => {
-				for (const item of await closeOpenWork(tx, host.storageId, id, "stopped", api.now()))
-					await withholdStoppedReport(tx, item, stoppedRecipient);
-				return undefined;
-			}, context);
-	};
-
-	const abortLocal = async (args: AbortInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
-		const conversationId = localConversation(args.sessionId, api.conversationId);
-		if (conversationId === undefined) return errorResult(`Cannot resolve session ${args.sessionId}.`);
-		const includesCaller = await api.commit(
-			(tx) => abortScopeContains(tx, api.conversationId, conversationId, args.background === true),
-			context,
-		);
-		if (includesCaller) return errorResult("The target's abort scope includes the calling conversation.");
-		if (args.release === true)
-			return dispatchControl(
-				"release",
-				{ sessionId: identity(conversationId), ...(args.background === true ? { background: true } : {}) },
-				`Release of ${args.sessionId} failed`,
-			);
-		const conversation = await api.conversation(conversationId, context);
-		if (conversation === undefined) return errorResult(`Conversation ${conversationId} is not retained.`);
-		// Read the scope before the abort, while the owning tasks are retained.
-		const scope = await api.commit(
-			(tx) => abortScopeConversations(tx, conversationId, args.background === true),
-			context,
-		);
-		const stopped = await stopScope(api, conversation, scope, args.background === true, context, {
-			now: api.now(),
-			// The marks are committed; a wait that this tool call no longer holds has nothing left to report.
-			report: () => {},
-		});
-		await closeStoppedWork(api, context, scope);
-		if (stopped.settled) return textResult(`Aborted ${args.sessionId}.`, { conversationId, settled: true });
-		return textResult(
-			`Abort requested for ${args.sessionId}: its queued inputs were withdrawn and its open work closed, but ${stopped.pendingTasks.length} marked task(s) had not ended when this answer returned. Each ends when its current call returns. Do not repeat the abort.`,
-			{ conversationId, ...stopped },
-		);
-	};
-
-	const resolveAbortTarget = async (sessionId: string, context: Context): Promise<string> => {
+	): Promise<string> => {
+		const { sessionId } = args;
 		if (!dispatch) throw new Error("Target resolution is unavailable.");
 		const resolved = await dispatch("resolve-target", { sessionId }, context);
 		if (typeof resolved !== "string") throw new Error("Target resolution returned an invalid identity.");
-		return resolved;
+		if (target(resolved).kind === "foreign") return resolved;
+		const id = localConversation(resolved, api.conversationId);
+		if (id === undefined) throw new Error(`Cannot resolve session ${resolved}.`);
+		if (await api.commit((tx) => abortScopeContains(tx, api.conversationId, id, args.background === true), context))
+			throw new Error("The target's abort scope includes the calling conversation.");
+		return identity(id);
 	};
 
 	const abortResolved = async (args: AbortInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
 		if (args.sessionId === identity(api.conversationId))
 			return errorResult("The target's abort scope includes the calling conversation.");
+		// Resolution and remote controls share one local wait budget. An admitted stop outlives this wait.
+		const deadline = AbortSignal.timeout(60_000);
+		const wait = withAbortSignal(
+			context.abortSignal ? AbortSignal.any([context.abortSignal, deadline]) : deadline,
+			context,
+		);
 		let resolved: string;
 		try {
-			resolved = await resolveAbortTarget(args.sessionId, context);
+			resolved = await resolveAbortTarget(args, api, wait);
 		} catch (error) {
 			return errorResult(`Target resolution failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		if (target(resolved).kind !== "foreign") return abortLocal({ ...args, sessionId: resolved }, api, context);
 		return dispatchControl(
 			args.release === true ? "release" : "abort",
 			{ sessionId: resolved, ...(args.background === true ? { background: true } : {}) },
 			`Abort of ${resolved} failed`,
+			undefined,
+			wait,
 		);
 	};
 
 	const abortTool = durable.defineTool({
 		name: "agent_abort",
 		description:
-			"Stop a conversation's current work without deleting its transcript. The answer arrives within 15 seconds; settled: false names tasks that are still ending, so do not repeat the abort. Stopped conversations stay quiet until explicit input. With timerId, cancel only that scheduled input. With release, request host retirement after stopping; other work and timers remain. Background work survives unless background is true.",
+			"Stop a conversation's current work without deleting its transcript. A live stop waits up to 15 seconds for settlement. A cold stop marks retained work without starting execution. settled: false names pending tasks; do not repeat the abort. Stopped conversations stay quiet until explicit input. With timerId, cancel only that scheduled input. With release, request host retirement after stopping; other work and timers remain. Background work survives unless background is true.",
 		parameters: AbortParams,
 		replay: "unsafe",
 		execute: async (args: AbortInput, api, context) => {

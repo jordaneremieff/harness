@@ -34,7 +34,13 @@ import {
 	writeDeliveryDraft,
 } from "./delivery-store.ts";
 import { inputEntry, isInputClass, sentInputClass, type InputClass, type InputLabel } from "./input-entry.ts";
-import { admissionQuietness, quietInputEntry } from "./conversation-stop.ts";
+import {
+	admissionQuietness,
+	quietWhileStopped,
+	noteExplicitInput,
+	quietInputEntry,
+	QUIET_INPUT_ENTRY_KIND,
+} from "./conversation-stop.ts";
 import {
 	configureProviderRecovery,
 	captureProviderRecovery,
@@ -69,6 +75,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	AssistantEntry,
+	InboxDoc,
 	CompactionEntry,
 	defineDoc,
 	defineDocFamily,
@@ -853,6 +860,32 @@ async function providerNoticeReplay(
 	return undefined;
 }
 
+/** A quiet replay must identify a write of the same input class, not a reset or another entry. */
+async function quietReplayId(
+	tx: Tx,
+	existing: SubmissionRecord | undefined,
+	inputClass: InputClass,
+	expectsAnswer: boolean,
+): Promise<SubmissionId | undefined> {
+	if (existing?.type !== "write" || !quietWhileStopped(inputClass, expectsAnswer)) return undefined;
+	const entry =
+		existing.status === "queued"
+			? (await tx.doc(InboxDoc, existing.conversationId)).items.find(
+					(item) => item.id === existing.id && item.mode === "write",
+				)?.entry
+			: existing.entry === undefined
+				? undefined
+				: await tx.entry(existing.entry);
+	const data = entry?.data;
+	return entry?.kind === QUIET_INPUT_ENTRY_KIND &&
+		data !== null &&
+		typeof data === "object" &&
+		"class" in data &&
+		data.class === inputClass
+		? existing.id
+		: undefined;
+}
+
 async function admitConversation(
 	conversation: Conversation,
 	params: DurableSubmitParams,
@@ -899,6 +932,11 @@ async function admitConversation(
 	const submissionId = await conversation.commit(async (tx) => {
 		const existing = await tx.submissionByRequest(conversation.id, requestId);
 		deduped = existing !== undefined;
+		const replay = await quietReplayId(tx, existing, label.class, quietness.expectsAnswer);
+		if (replay !== undefined) {
+			quiet = true;
+			return replay;
+		}
 		const reason = deduped ? undefined : await admissionQuietness(tx, conversation.id, quietness);
 		if (reason !== undefined) {
 			quiet = true;
@@ -915,6 +953,8 @@ async function admitConversation(
 			await recordAdmissionMeta(tx, conversation.id, message);
 		}
 		if (admitted === undefined) throw new Error("The input admission did not run");
+		if (!deduped && !quietWhileStopped(quietness.inputClass, quietness.expectsAnswer))
+			await noteExplicitInput(tx, conversation.id, admitted);
 		await linkProviderRecovery(tx, admitted, recoveryOf);
 		await retain([{ submissionId: admitted, requestId, admittedAt: now(), label }]);
 		return admitted;
@@ -924,7 +964,7 @@ async function admitConversation(
 			async (tx) => placementOf(await tx.submission(submissionId), conversation.id),
 			context,
 		);
-		return { submissionId, conversationId: conversation.id, deduped: false, placement, quiet: true };
+		return { submissionId, conversationId: conversation.id, deduped, placement, quiet: true };
 	}
 	await recordAdmittedInput(conversation, submissionId, provenance, context, params.communication, now, deduped);
 	const placement = await conversation.commit(

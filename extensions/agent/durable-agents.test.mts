@@ -75,7 +75,7 @@ import {
 } from "./durable-controls.ts";
 import { AwaitDoc } from "./awaited-results.ts";
 
-import { DurableHost } from "./durable-host.ts";
+import { DurableHost, stopLiveConversation } from "./durable-host.ts";
 import { fixtureRegistry } from "./durable-host-fixture.mts";
 import { ContinuityDoc } from "./continuity-native.ts";
 import { NATIVE_COMPACTION_SEED, REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
@@ -433,6 +433,19 @@ function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentCont
 				return statusObservation(params);
 			case "receipts":
 				return nativeDispatchResult(holder, params, callContext);
+			case "abort": {
+				assert.ok(holder.harness);
+				const target = await testConversation(holder, params.sessionId);
+				return stopLiveConversation(
+					holder.harness,
+					storageId,
+					target,
+					params.background === true,
+					Date.now,
+					(error) => assert.fail(String(error)),
+					context,
+				);
+			}
 			case "profile-list":
 				return listObservation();
 			case "profile-read": {
@@ -1860,9 +1873,15 @@ it("checks the resolved identity before an alias can abort the caller", async (t
 it("dispatches release to the resolved target and refuses a timer combination", async (t) => {
 	const route = createRoute();
 	const calls: Array<{ method: string; params: Readonly<Record<string, unknown>> }> = [];
-	const { registry } = buildRegistry(async (method, params) => {
+	let resolving: AbortSignal | undefined;
+	const { registry } = buildRegistry(async (method, params, invocation) => {
 		calls.push({ method, params });
-		if (method === "resolve-target") return "canonical-remote";
+		assert.ok(invocation?.abortSignal, "target resolution and stop carry a cancellable wait");
+		if (method === "resolve-target") {
+			resolving = invocation.abortSignal;
+			return "canonical-remote";
+		}
+		assert.equal(invocation.abortSignal, resolving);
 		if (method === "release") return { retiring: false, blockers: ["active work"], writesPlaced: 0 };
 		if (method === "abort") return { identity: "canonical-remote", background: true };
 		throw new Error(`unexpected ${method}`);

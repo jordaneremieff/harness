@@ -24,6 +24,7 @@ import {
 	type ListScanPlan,
 	type ListScanStep,
 } from "./profile-discovery.ts";
+import { stopColdStorage } from "./cold-stop.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -156,6 +157,7 @@ export interface AgentManagerOptions {
 	packageDir: string;
 	acquire?: typeof acquireHost;
 	connect?: typeof connectHost;
+	stopCold?: typeof stopColdStorage;
 	observe?: (metadata: HostMetadata, method: string, params: Record<string, unknown>) => Promise<unknown>;
 	/** Largest delivered-key memory; the oldest key evicts first. */
 	deliveredLimit?: number;
@@ -651,7 +653,8 @@ export class AgentManager {
 		return this.connection(this.nativeTarget(sessionId), undefined, launch);
 	}
 
-	async resolveTarget(selector: string): Promise<string> {
+	async resolveTarget(selector: string, signal?: AbortSignal): Promise<string> {
+		signal?.throwIfAborted();
 		if (!selector.startsWith("@")) return selector;
 		const id = handleStorageId(selector.slice(1), this.catalog.root);
 		const record = this.catalog.read(id);
@@ -660,7 +663,7 @@ export class AgentManager {
 			record.view?.profiles?.rows.some((row) => row.identity === id && row.handle === selector)
 		)
 			return id;
-		const profile = (await this.observe(record, "profile-read", { sessionId: id })) as AgentProfile;
+		const profile = (await this.observe(record, "profile-read", { sessionId: id }, undefined, signal)) as AgentProfile;
 		if (profile.handle !== selector) throw new Error("Handle address belongs to a different retained agent");
 		return id;
 	}
@@ -1070,9 +1073,21 @@ export class AgentManager {
 		caller: AgentCaller,
 		options?: { readonly signal?: AbortSignal; readonly launch?: boolean },
 	): Promise<unknown> {
+		options?.signal?.throwIfAborted();
+		return abortable(this.resolveControl(method, input, caller, options), options?.signal);
+	}
+
+	private async resolveControl(
+		method: string,
+		input: Record<string, unknown>,
+		caller: AgentCaller,
+		options?: { readonly signal?: AbortSignal; readonly launch?: boolean },
+	): Promise<unknown> {
 		const selector = String(input.sessionId ?? "");
-		const sessionId = await this.resolveTarget(selector);
-		if (typeof input.replyTo === "string") input = { ...input, replyTo: await this.resolveTarget(input.replyTo) };
+		const sessionId = await this.resolveTarget(selector, options?.signal);
+		if (typeof input.replyTo === "string")
+			input = { ...input, replyTo: await this.resolveTarget(input.replyTo, options?.signal) };
+		options?.signal?.throwIfAborted();
 		if (
 			sessionId === caller.id &&
 			["abort", "release", "fork", "rewind", "compact", "configure", "command"].includes(method)
@@ -1107,8 +1122,8 @@ export class AgentManager {
 		signal: AbortSignal | undefined,
 		launch: boolean,
 	): Promise<unknown> {
-		if (method === "release") return this.releaseControl(record, params, caller);
-		if (method === "abort") return this.abortControl(record, params, caller, signal);
+		if (method === "release") return this.releaseControl(record, params, caller, signal);
+		if (method === "abort") return this.abortControl(record, params, caller, signal, launch);
 		try {
 			return await this.controlClient(await this.connection(record, undefined, launch), method, params, caller, signal);
 		} catch (error) {
@@ -1123,36 +1138,41 @@ export class AgentManager {
 		record: CatalogRecord,
 		params: Record<string, unknown>,
 		caller: AgentCaller,
+		signal: AbortSignal | undefined,
 	): Promise<unknown> {
 		const client = await this.connection(record, undefined, false);
-		return this.controlClient(client, "release", params, caller);
+		return this.controlClient(client, "release", params, caller, signal);
 	}
 
 	/**
-	 * An abort acts on running work. A storage without a running host still holds retained unfinished work that would
-	 * resume at its next start, so the abort starts the host, stops that work, and asks the host to retire again: the
-	 * storage keeps no running host that it did not have.
+	 * Stop a live host in place. A cold storage gets only an exclusive stop writer, never an executing host.
 	 */
 	private async abortControl(
 		target: CatalogRecord,
 		params: Record<string, unknown>,
 		caller: AgentCaller,
 		signal: AbortSignal | undefined,
+		launch: boolean,
 	): Promise<unknown> {
 		const running = await this.observationConnection(target);
 		if (running !== undefined) return this.controlClient(running, "abort", params, caller, signal);
-		const client = await this.connection(target);
-		const aborted = record(await this.controlClient(client, "abort", params, caller, signal));
-		const { background: _background, ...release } = params;
-		const retirement = record(await this.controlClient(client, "release", release, caller, signal));
-		return {
-			...aborted,
-			started: "No host was running; the abort started one to stop the retained work, then requested its retirement.",
-			retiring: retirement.retiring === true,
-			...(Array.isArray(retirement.blockers) && retirement.blockers.length > 0
-				? { blockers: retirement.blockers }
-				: {}),
-		};
+		if (!launch) throw new HostEndpointUnavailableError(target.storageId, new Error("this abort may not start a host"));
+		signal?.throwIfAborted();
+		const reply = await (this.options.stopCold ?? stopColdStorage)(
+			hostMetadata(target, this.options.packageDir),
+			String(params.sessionId),
+			params.background === true,
+		);
+		if ("result" in reply)
+			return {
+				...reply.result,
+				cold: true,
+				started:
+					"A stop writer marked the retained work and exited. No host was started. Pending abort handlers settle on normal recovery.",
+			};
+		// A competing writer won the lease. Stop it in place; never launch or retire it on this evidence.
+		const owner = await this.connection(target, undefined, false);
+		return this.controlClient(owner, "abort", params, caller, signal);
 	}
 
 	private requestedOperation(method: string, params: Record<string, unknown>): string {

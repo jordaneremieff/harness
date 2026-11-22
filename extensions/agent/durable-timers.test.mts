@@ -6,7 +6,9 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ConversationId, TaskId } from "@earendil-works/pi-durable";
+import { defineExtension, defineTask, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
+import { stopBeforeResume } from "./durable-host.ts";
+import { isStopped } from "./conversation-stop.ts";
 import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
 import {
@@ -18,6 +20,8 @@ import {
 	TIMER_SETTLED_RECORD_LIMIT,
 	timerStatusRows,
 	type TimerInput,
+	type TimerState,
+	type TimerResult,
 	type ScheduleTimerResult,
 	type TimerListRow,
 } from "./durable-timers.ts";
@@ -53,6 +57,7 @@ async function schedule(
 
 it("fires one scheduled input at its deadline and records the fired timer", { timeout: 60000 }, async (t) => {
 	const f = await scheduleFixture(t, { agentExtension: true });
+	await f.host.request("abort", {});
 	const deadline = Date.now() + 500;
 	const scheduled = await schedule(f, {
 		message: "TIMER_ONE",
@@ -66,6 +71,7 @@ it("fires one scheduled input at its deadline and records the fired timer", { ti
 	const receipt = await f.waitForReceipt("timer-one-delivery");
 	assert.equal(receipt.status, "done");
 	assert.match(receipt.answer ?? "", /schedule fixture answer/u);
+	assert.equal(await f.host.harness.commit((tx) => isStopped(tx, f.host.root().id), BACKGROUND_CONTEXT), false);
 	assert.equal(await f.searchCount("TIMER_ONE"), 1, "the input is admitted once");
 	const page = (await f.host.request("timer-list", { sessionId: f.storageId })) as TimerListPage;
 	const row = page.timers.find((timer) => timer.timerId === scheduled.timerId);
@@ -90,6 +96,50 @@ it("fires one scheduled input at its deadline and records the fired timer", { ti
 	assert.equal(cancelled.status, "fired");
 	assert.ok(row.firedAt !== null && row.firedAt >= deadline, "the fire does not precede the deadline");
 	assert.ok((row.overdueMs ?? -1) >= 0, "the fire records its lateness");
+});
+
+it("ends a stop when abort must finish a timer already past its firing checkpoint", async (t) => {
+	const f = await scheduleFixture(t, { agentExtension: true, resume: false });
+	const conversationId = f.host.root().id;
+	const input = timerInput(f, "at-deadline");
+	const firing = defineTask<TimerInput, TimerState, TimerResult>({
+		...TimerTask.definition,
+		name: "fixture.firing-timer",
+		initial: () => ({ phase: "wait" as const, firing: true }),
+	});
+	f.services.registry.install(defineExtension({ name: "fixture.firing-timer", tasks: [firing] }));
+	const background = await f.host.harness.commit(
+		(tx) =>
+			tx.createTask(
+				TimerTask,
+				{ ...input, deadline: Number.MAX_SAFE_INTEGER },
+				{ conversationId, ownership: { kind: "conversation" }, background: true },
+			),
+		BACKGROUND_CONTEXT,
+	);
+	const id = await f.host.harness.commit(
+		(tx) => tx.createTask(firing, input, { conversationId, ownership: { kind: "conversation" } }),
+		BACKGROUND_CONTEXT,
+	);
+	const stopped = await stopBeforeResume(
+		f.host.harness,
+		f.storageId,
+		f.host.identity(conversationId),
+		false,
+		BACKGROUND_CONTEXT,
+	);
+	assert.equal(stopped.settled, false);
+	assert.deepEqual(stopped.pendingTasks, [id]);
+	assert.equal(
+		(await f.host.harness.getTask(background, BACKGROUND_CONTEXT))?.abortRequested,
+		false,
+		"the foreground stop left the background timer untouched",
+	);
+	const task = await f.host.harness.waitForTask(id, BACKGROUND_CONTEXT);
+	assert.equal(task.state.outcome.status, "completed");
+	const receipt = await f.waitForReceipt(input.requestId);
+	assert.equal(receipt.status, "done");
+	assert.equal(await f.host.harness.commit((tx) => isStopped(tx, conversationId), BACKGROUND_CONTEXT), false);
 });
 
 it("cancels a scheduled input before its deadline with no admission", { timeout: 60000 }, async (t) => {

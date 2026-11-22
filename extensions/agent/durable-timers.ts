@@ -22,15 +22,16 @@
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord/context";
 import { inputEntry } from "./input-entry.ts";
-import { clearStopped } from "./conversation-stop.ts";
+import { noteExplicitInput } from "./conversation-stop.ts";
 import {
 	defineDoc,
 	defineDocFamily,
 	defineTask,
+	type ConversationHandle,
 	type ConversationId,
 	type Cursor,
 	type Harness,
-	type SubmissionRecord,
+	type SubmissionId,
 	type TaskId,
 	type TaskRecord,
 	type TaskState,
@@ -45,7 +46,7 @@ import {
 	type DeliveryOrigin,
 } from "./durable-controls.ts";
 import { reconcileProfile } from "./profile.ts";
-import { recordUnplacedInput } from "./unplaced-inputs.ts";
+import { prepareQueuedInputs } from "./unplaced-inputs.ts";
 import { validateRequestContext, type RequestContext } from "./request-context.ts";
 import { parseDeliverAt } from "./timer-input.ts";
 
@@ -170,6 +171,32 @@ async function markTimerSettled(tx: Tx, timerId: number, settlement: TimerSettle
 	pruneTimerRecords(state);
 }
 
+/** Admit and record the same submission on both paths through the deadline. */
+async function admitFiredTimer(
+	tx: Tx,
+	conversation: ConversationHandle,
+	input: TimerInput,
+	admittedAt: number,
+): Promise<{ id: SubmissionId; deduped: boolean }> {
+	const prior = await tx.submissionByRequest(conversation.id, input.requestId);
+	const retain = await prepareQueuedInputs(tx, conversation.id, input.identity);
+	const label = {
+		class: "timer" as const,
+		sender: input.requestContext?.requester ?? input.ownerId,
+		requestId: input.requestId,
+	};
+	const id = await conversation.submit(tx, {
+		type: "input",
+		content: input.message,
+		requestId: input.requestId,
+		whenBusy: placementMode(input.mode),
+		entry: inputEntry(input.origin, input.requestContext?.requester, label),
+	});
+	if (prior === undefined) await noteExplicitInput(tx, conversation.id, id);
+	await retain([{ submissionId: id, requestId: input.requestId, admittedAt, label }]);
+	return { id, deduped: prior !== undefined };
+}
+
 /**
  * One scheduled input. The phase sleeps on the absolute input deadline, admits
  * the stored message through the delivery ledger, and settles in the commit
@@ -194,16 +221,9 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 			const conversation = await runtime.conversation(conversationId, context);
 			if (conversation === undefined) throw new Error(`scheduled input target ${task.input.identity} is not retained`);
 			await reconcileProfile(runtime, conversation.id, context, (error) => runtime.report(error));
-			let retained: SubmissionRecord | undefined;
-			await runtime.commit(async (tx) => {
-				retained = await tx.submissionByRequest(conversationId, task.input.requestId);
-				return undefined;
-			}, context);
 			const mode = task.input.mode;
 			let intent: DeliveryIntentState | undefined;
 			await runtime.commit(async (tx) => {
-				// A fired timer is answer-bearing input that its sender scheduled: it runs, and so ends a stop.
-				if (retained === undefined) await clearStopped(tx, conversationId);
 				intent = await recordDeliveryIntent(
 					tx,
 					conversationId,
@@ -222,31 +242,14 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				);
 				return undefined;
 			}, context);
-			const submission = await conversation.submit(
-				{
-					type: "input",
-					content: task.input.message,
-					requestId: task.input.requestId,
-					whenBusy: placementMode(mode),
-					entry: inputEntry(task.input.origin, task.input.requestContext?.requester, {
-						class: "timer",
-						sender: task.input.requestContext?.requester ?? task.input.ownerId,
-						requestId: task.input.requestId,
-					}),
-				},
-				context,
-			);
 			const firedAt = runtime.now();
+			let admitted: Awaited<ReturnType<typeof admitFiredTimer>> | undefined;
 			await runtime.commit(async (tx) => {
-				await recordUnplacedInput(tx, conversationId, {
-					submissionId: submission.id,
-					class: "timer",
-					sender: task.input.requestContext?.requester ?? "",
-					admittedAt: firedAt,
-					recipient: task.input.identity,
-				});
+				admitted = await admitFiredTimer(tx, conversation, task.input, firedAt);
 				return undefined;
 			}, context);
+			const submission = admitted;
+			if (submission === undefined) throw new Error("The timer admission did not run");
 			const result: TimerResult = {
 				deadline: task.input.deadline,
 				firedAt,
@@ -256,7 +259,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				requestId: task.input.requestId,
 				mode: task.input.mode,
 				origin: task.input.origin,
-				deduped: retained !== undefined || intent?.kind === "linked",
+				deduped: submission.deduped || intent?.kind === "linked",
 			};
 			await runtime.commit(async (tx) => {
 				await linkDeliveryIntent(tx, conversationId, task.input.requestId, submission.id);
@@ -282,11 +285,6 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 			const conversation = await runtime.conversation(conversationId, context);
 			if (conversation !== undefined) {
 				await reconcileProfile(runtime, conversation.id, context, (error) => runtime.report(error));
-				let retained: SubmissionRecord | undefined;
-				await runtime.commit(async (tx) => {
-					retained = await tx.submissionByRequest(conversationId, input.requestId);
-					return undefined;
-				}, context);
 				const mode = input.mode;
 				await runtime.commit(async (tx) => {
 					await recordDeliveryIntent(
@@ -307,30 +305,13 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					);
 					return undefined;
 				}, context);
-				const submission = await conversation.submit(
-					{
-						type: "input",
-						content: input.message,
-						requestId: input.requestId,
-						whenBusy: placementMode(mode),
-						entry: inputEntry(input.origin, input.requestContext?.requester, {
-							class: "timer",
-							sender: input.requestContext?.requester ?? input.ownerId,
-							requestId: input.requestId,
-						}),
-					},
-					context,
-				);
+				let admitted: Awaited<ReturnType<typeof admitFiredTimer>> | undefined;
 				await runtime.commit(async (tx) => {
-					await recordUnplacedInput(tx, conversationId, {
-						submissionId: submission.id,
-						class: "timer",
-						sender: input.requestContext?.requester ?? "",
-						admittedAt: settledAt,
-						recipient: input.identity,
-					});
+					admitted = await admitFiredTimer(tx, conversation, input, settledAt);
 					return undefined;
 				}, context);
+				const submission = admitted;
+				if (submission === undefined) throw new Error("The timer admission did not run");
 				const result: TimerResult = {
 					deadline: input.deadline,
 					firedAt: settledAt,
@@ -340,7 +321,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					requestId: input.requestId,
 					mode: input.mode,
 					origin: input.origin,
-					deduped: retained !== undefined,
+					deduped: submission.deduped,
 				};
 				await runtime.commit(async (tx) => {
 					await linkDeliveryIntent(tx, conversationId, input.requestId, submission.id);

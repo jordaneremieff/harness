@@ -38,12 +38,21 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 	EventEmitter.defaultMaxListeners = Math.max(EventEmitter.defaultMaxListeners, EXTENSION_BUS_LISTENER_LIMIT);
 	const input: unknown = JSON.parse(metadataJson);
 	bindInstallationPackages(callerInstallation(input), new URL("./", import.meta.url));
-	const [{ parseHostMetadata }, { runHost, HostClaimRefusedError }, { createDurableRuntime }] = await Promise.all([
-		import("./host-protocol.ts"),
-		import("./host-process.ts"),
-		import("./durable-runtime.ts"),
-	]);
+	const [{ parseHostMetadata }, { runHost, HostClaimRefusedError }, { createDurableRuntime, stopColdRuntime }] =
+		await Promise.all([import("./host-protocol.ts"), import("./host-process.ts"), import("./durable-runtime.ts")]);
 	const metadata = parseHostMetadata(input);
+	if (process.argv[3] === "stop") {
+		const sessionId = process.argv[4];
+		const background = process.argv[5];
+		if (!sessionId || (background !== "true" && background !== "false"))
+			throw new Error("Cold stop requires its exact target and background scope");
+		const { withColdWriter } = await import("./cold-stop.ts");
+		const reply = await withColdWriter(metadata, () => stopColdRuntime(metadata, sessionId, background === "true"));
+		// Finish even when the invoking process has gone. No scheduler or delivery stays in this process.
+		if (process.connected && process.send) process.send(reply, () => process.exit(0));
+		else process.exit(0);
+		return;
+	}
 	const host = await runHost(() => createDurableRuntime(metadata), { metadata, exit: () => process.exit(0) }).catch(
 		(error: unknown) => {
 			if (!(error instanceof HostClaimRefusedError) || error.observation !== "busy") throw error;

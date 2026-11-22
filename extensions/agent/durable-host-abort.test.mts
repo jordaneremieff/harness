@@ -12,8 +12,9 @@ import {
 	type TaskId,
 	type Tx,
 } from "@earendil-works/pi-durable";
+import { retainedReportRequest } from "./delivery-store.ts";
 import { DurableHost } from "./durable-host.ts";
-import { fixtureRegistry, fixtureRuntime, fixtureStorageId, hostOptions } from "./durable-host-fixture.mts";
+import { deferred, fixtureRegistry, fixtureRuntime, fixtureStorageId, hostOptions } from "./durable-host-fixture.mts";
 import { inputEntry } from "./input-entry.ts";
 import { declareOpenWork, openWorkStatus } from "./open-work.ts";
 import { recordRequestContext } from "./request-context.ts";
@@ -143,5 +144,48 @@ it("closes the open work of each conversation that an abort stops, and keeps a r
 		await all.work(all.background),
 		{ state: "closed", status: "stopped", delivery: "terminal" },
 		"an abort with background also stops the child below a background task",
+	);
+});
+
+it("closes only requests open at the stop, not work declared by a later input", async (t) => {
+	const { host } = await family(t);
+	const root = host.root();
+	const reached = deferred();
+	const release = deferred();
+	const nativeAbort = root.abort.bind(root);
+	t.mock.method(root, "abort", async (...args: Parameters<typeof nativeAbort>) => {
+		try {
+			await nativeAbort(...args);
+			reached.resolve();
+		} catch (error) {
+			reached.reject(error);
+			throw error;
+		}
+		await release.promise;
+	});
+	t.mock.method(host, "conversation", async () => root);
+	const abort = host.request("abort", {});
+	await reached.promise;
+	try {
+		await host.harness.commit((tx) => openItem(tx, root.id, "late-task", "late-requester"), BACKGROUND_CONTEXT);
+		const declared = await host.harness.commit(
+			(tx) =>
+				declareOpenWork(tx, fixtureStorageId, root.id, { request: "late-task", results: [], note: "late work" }, 11),
+			BACKGROUND_CONTEXT,
+		);
+		assert.ok(!("error" in declared), JSON.stringify(declared));
+	} finally {
+		release.resolve();
+	}
+	await abort;
+	const work = await host.harness.commit((tx) => openWorkStatus(tx, fixtureStorageId, root.id), BACKGROUND_CONTEXT);
+	assert.equal(work.find((item) => item.requestId === "root-task")?.state, "closed");
+	assert.equal(work.find((item) => item.requestId === "late-task")?.state, "open");
+	assert.equal(
+		await host.harness.commit(
+			(tx) => retainedReportRequest(tx, "late-requester", `work-final:${root.id}:late-task`),
+			BACKGROUND_CONTEXT,
+		),
+		undefined,
 	);
 });

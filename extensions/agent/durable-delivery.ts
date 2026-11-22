@@ -414,6 +414,19 @@ function deliverySender(row: DeliveryRow, host: DurableHost): string {
 	return row.kind === "receipt" ? host.identity(row.receipt.conversationId) : row.report.senderIdentity;
 }
 
+function stateNoteIds(states: readonly ReceiptState[]): Set<number> {
+	return new Set(
+		states
+			.filter(({ receipt, work }) => receipt.status === "done" && work !== undefined)
+			.map(({ receipt }) => receipt.submissionId),
+	);
+}
+
+function onlyStateNotes(row: ReceiptRow, states: readonly ReceiptState[]): boolean {
+	const notes = stateNoteIds(states);
+	return row.receipts.length > 0 && row.receipts.every((receipt) => notes.has(receipt.submissionId));
+}
+
 /**
  * A receipt wakes its model owner unless it carries only state notes: the answer of a request whose declared work
  * continues is context, and its final report arrives as a separate report that wakes. `states` names the declared
@@ -424,11 +437,7 @@ export function rowWakes(row: DeliveryRow, recipient: string, states: readonly R
 		return row.report.passive !== true && (row.report.checkIn === undefined || row.report.checkIn.origin === "model");
 	const own = row.receipts.filter((receipt) => receipt.ownerId === recipient);
 	if (own.length === 0) return true;
-	const stateNotes = new Set(
-		states
-			.filter((state) => state.work !== undefined && state.receipt.status === "done")
-			.map((state) => state.receipt.submissionId),
-	);
+	const stateNotes = stateNoteIds(states);
 	return own.some((receipt) => receiptOrigin(receipt) === "model" && !stateNotes.has(receipt.submissionId));
 }
 
@@ -590,6 +599,24 @@ const RECEIPT_STATE_LINES = 16;
  * delivered result yet: their results return to the producer, and nothing routes its later work to this recipient.
  */
 type ReceiptState = { readonly receipt: DeliveryReceipt; readonly work?: RequestWork; readonly delegated?: number };
+
+/** Classify every receipt for the wake decision, even when its explanation does not fit in the notice. */
+export async function readReceiptStates(
+	row: ReceiptRow,
+	readWork: (receipt: DeliveryReceipt) => Promise<RequestWork | undefined>,
+	openDelegations: (id: ConversationId) => Promise<number>,
+) {
+	const states: ReceiptState[] = [];
+	for (const receipt of row.receipts) {
+		const work = await readWork(receipt);
+		const delegated =
+			states.length < RECEIPT_STATE_LINES && !work && receipt.status !== "done"
+				? await openDelegations(receipt.conversationId)
+				: 0;
+		states.push({ receipt, ...(work ? { work } : {}), ...(delegated ? { delegated } : {}) });
+	}
+	return states;
+}
 
 function inspectCallText(call: FinalReportRead): string {
 	const { tool: _tool, ...args } = call;
@@ -1163,26 +1190,17 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		return dependencyMarks.length === 0 ? {} : { dependencyMarks };
 	};
 
-	/** Each request of an answer group with its declared work; the named lines read the producer's facts. */
-	const receiptStates = async (row: ReceiptRow): Promise<ReceiptState[]> => {
-		const states: ReceiptState[] = [];
-		for (const [index, receipt] of row.receipts.entries()) {
-			const work =
-				index >= RECEIPT_STATE_LINES
-					? undefined
-					: await requestWork(workReader, metadata.storageId, receipt.conversationId, {
-							requestId: receipt.requestId,
-							submissionId: receipt.submissionId,
-							ownerId: receipt.ownerId,
-						});
-			const delegated =
-				index < RECEIPT_STATE_LINES && work === undefined && receipt.status !== "done"
-					? await openDelegations(receipt.conversationId)
-					: 0;
-			states.push({ receipt, ...(work === undefined ? {} : { work }), ...(delegated > 0 ? { delegated } : {}) });
-		}
-		return states;
-	};
+	const receiptStates = (row: ReceiptRow) =>
+		readReceiptStates(
+			row,
+			(receipt) =>
+				requestWork(workReader, metadata.storageId, receipt.conversationId, {
+					requestId: receipt.requestId,
+					submissionId: receipt.submissionId,
+					ownerId: receipt.ownerId,
+				}),
+			openDelegations,
+		);
 	/** The producer's own requests without a delivered result, from its retained admission facts. */
 	const openDelegations = async (conversationId: ConversationId): Promise<number> => {
 		try {
@@ -1229,24 +1247,30 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}, BACKGROUND_CONTEXT);
 	};
 
+	/** A receipt carries the same wake and dependency evidence on local and foreign routes. */
+	const receiptSubmission = async (row: ReceiptRow, owner: string) => {
+		const requestId = receiptRequestId(metadata, row.receipt);
+		const communicationParams = deliveryCommunicationParams(row, host);
+		const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
+		const states = await receiptStates(row);
+		const dependencyMarks = await receiptDependencyMarks(workReader, metadata.storageId, row.receipts);
+		return {
+			sessionId: owner,
+			message: receiptFollowText(metadata, row, continuity, states),
+			requestId,
+			provenance: { classification: "automatic" },
+			...communicationParams,
+			deliveredResults: deliveredResults(metadata, row),
+			dependencyMarks,
+			...(onlyStateNotes(row, states) ? { stateNotesOnly: true } : {}),
+			whenBusy: "followUp",
+		};
+	};
+
 	/** Same-storage owners are agent conversations in this storage; their answer arrives as an in-storage follow-up. */
 	const deliverSameStorage = async (row: DeliveryRow, owner: string): Promise<void> => {
 		if (row.kind === "receipt") {
-			const requestId = receiptRequestId(metadata, row.receipt);
-			const communicationParams = deliveryCommunicationParams(row, host);
-			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
-			const states = await receiptStates(row);
-			const dependencyMarks = await receiptDependencyMarks(workReader, metadata.storageId, row.receipts);
-			await host.request("submit", {
-				sessionId: owner,
-				message: receiptFollowText(metadata, row, continuity, states),
-				requestId,
-				provenance: { classification: "automatic" },
-				...communicationParams,
-				deliveredResults: deliveredResults(metadata, row),
-				dependencyMarks,
-				whenBusy: "followUp",
-			});
+			await host.request("submit", await receiptSubmission(row, owner));
 			return;
 		}
 		if (!(await reportCurrent(row))) return;
@@ -1670,25 +1694,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const deliverCatalog = async (record: CatalogRecord, row: DeliveryRow, owner: string): Promise<void> => {
 		const connection = await targetConnection(record);
 		if (row.kind === "receipt") {
-			const requestId = receiptRequestId(metadata, row.receipt);
-			const communicationParams = deliveryCommunicationParams(row, host);
-			const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
-			const states = await receiptStates(row);
-			const dependencyMarks = await receiptDependencyMarks(workReader, metadata.storageId, row.receipts);
-			await connection.request(
-				"submit",
-				{
-					sessionId: owner,
-					provenance: { classification: "automatic" },
-					...communicationParams,
-					message: receiptFollowText(metadata, row, continuity, states),
-					deliveredResults: deliveredResults(metadata, row),
-					dependencyMarks,
-					requestId,
-					whenBusy: "followUp",
-				},
-				{ requestId, signal },
-			);
+			const params = await receiptSubmission(row, owner);
+			await connection.request("submit", params, { requestId: params.requestId, signal });
 		} else {
 			if (!(await reportCurrent(row))) return;
 			const requestId = reportRequestId(metadata, row.report);
