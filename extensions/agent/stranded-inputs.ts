@@ -85,18 +85,23 @@ export async function recoverStrandedInputs(conversation: Conversation, context:
 
 /** Place a write-only inbox at an idle boundary without starting a run. */
 export async function placeLeftoverWrites(conversation: Conversation, context: Context): Promise<number> {
-	return conversation.commit(async (tx) => {
+	const boundary = await conversation.commit(async (tx) => {
 		const live = await tx.doc(LiveDoc, conversation.id);
 		const inbox = await tx.doc(InboxDoc, conversation.id);
-		if (live.run || inbox.items.length === 0 || inbox.items.some((item) => item.mode !== "write")) return 0;
+		if (live.run || inbox.items.length === 0 || inbox.items.some((item) => item.mode !== "write")) return undefined;
 		const newest = { id: inbox.items[inbox.items.length - 1].id, count: inbox.items.length };
-		await conversation.submit(tx, {
+		const submitted = await conversation.submit(tx, {
 			type: "write",
 			requestId: `agent-inbox-boundary:${conversation.id}:${newest.id}`,
 			entry: { kind: "agent.inbox-boundary", edits: [] },
 		});
-		return newest.count;
+		return { submitted, count: newest.count };
 	}, context);
+	if (!boundary) return 0;
+	return conversation.commit(
+		async (tx) => ((await tx.submission(boundary.submitted))?.status === "done" ? boundary.count : 0),
+		context,
+	);
 }
 
 /** Commit-driven recovery; opening checks existing queued inputs once. */

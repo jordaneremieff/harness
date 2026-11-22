@@ -72,6 +72,7 @@ import {
 	receiptSourceIdentity,
 	receiptDeliveryRequestId,
 	receiptReferencePage,
+	snapshotReceipt,
 	checkInFallback,
 	currentCheckInReport,
 	deliveryPendingCount,
@@ -212,6 +213,7 @@ type ReceiptRow = {
 	readonly receipt: DeliveryReceipt;
 	readonly receipts: DeliveryReceipt[];
 	receiptGroup?: ReceiptReferencePage;
+	groupDecision?: { wake: boolean; onlyNotes: boolean };
 	displayReason?: string;
 	readonly deliveredTo: Set<string>;
 };
@@ -423,6 +425,7 @@ function stateNoteIds(states: readonly ReceiptState[]): Set<number> {
 }
 
 function onlyStateNotes(row: ReceiptRow, states: readonly ReceiptState[]): boolean {
+	if (row.groupDecision) return row.groupDecision.onlyNotes;
 	const notes = stateNoteIds(states);
 	return row.receipts.length > 0 && row.receipts.every((receipt) => notes.has(receipt.submissionId));
 }
@@ -435,10 +438,32 @@ function onlyStateNotes(row: ReceiptRow, states: readonly ReceiptState[]): boole
 export function rowWakes(row: DeliveryRow, recipient: string, states: readonly ReceiptState[] = []): boolean {
 	if (row.kind === "report")
 		return row.report.passive !== true && (row.report.checkIn === undefined || row.report.checkIn.origin === "model");
+	if (row.groupDecision && recipient === row.receipt.ownerId) return row.groupDecision.wake;
 	const own = row.receipts.filter((receipt) => receipt.ownerId === recipient);
 	if (own.length === 0) return true;
 	const stateNotes = stateNoteIds(states);
 	return own.some((receipt) => receiptOrigin(receipt) === "model" && !stateNotes.has(receipt.submissionId));
+}
+
+/** A delivery page shares one receiver key with all receipts of the same answer and recipient. */
+export async function groupWakeDecision(
+	first: ReceiptReferencePage,
+	next: (cursor: string) => Promise<ReceiptReferencePage>,
+	classify: (id: number) => Promise<{ note: boolean; model: boolean }>,
+) {
+	let page = first,
+		onlyNotes = true;
+	for (;;) {
+		for (const ref of page.results) {
+			const { note, model } = await classify(ref.submissionId);
+			if (!note) {
+				onlyNotes = false;
+				if (model) return { wake: true, onlyNotes: false };
+			}
+		}
+		if (page.next === null) return { wake: false, onlyNotes };
+		page = await next(page.next);
+	}
 }
 
 /** Plain outcome words for one settled receipt: an answer completes the native input, not declared work. */
@@ -1904,6 +1929,28 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			(tx) => receiptReferencePage(tx, metadata.storageId, row.receipt),
 			BACKGROUND_CONTEXT,
 		);
+		if (
+			!row.receiptGroup.complete ||
+			row.receiptGroup.results.some((ref) => !row.receipts.some((member) => member.submissionId === ref.submissionId))
+		) {
+			row.groupDecision = await groupWakeDecision(
+				row.receiptGroup,
+				(cursor) =>
+					host.harness.commit(
+						(tx) => receiptReferencePage(tx, metadata.storageId, row.receipt, cursor),
+						BACKGROUND_CONTEXT,
+					),
+				async (id) => {
+					const receipt = await snapshotReceipt(host.harness, id, BACKGROUND_CONTEXT);
+					if (!receipt) throw new Error("Answer group references an unavailable receipt");
+					const work =
+						receipt.status === "done"
+							? await requestWork(workReader, metadata.storageId, receipt.conversationId, receipt)
+							: undefined;
+					return { note: work !== undefined, model: receiptOrigin(receipt) === "model" };
+				},
+			);
+		}
 		if (row.receipt.status !== "unanswered") return;
 		const input = await host.harness.submission(row.receipt.submissionId, BACKGROUND_CONTEXT);
 		const native = await input?.status(BACKGROUND_CONTEXT);

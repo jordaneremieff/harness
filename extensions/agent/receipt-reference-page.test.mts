@@ -14,6 +14,7 @@ import {
 	receiptSourceIdentity,
 	storeDeliveryRow,
 } from "./delivery-store.ts";
+import { groupWakeDecision } from "./durable-delivery.ts";
 import type { DeliveryReceipt } from "./durable-controls.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 
@@ -53,6 +54,14 @@ it("pages one recipient across empty filtered pages and a captured append-only t
 			await storeDeliveryRow(tx, "receipt", receipt(index, index <= 64 ? "other" : recipient), true);
 	}, context);
 	const first = await harness.commit((tx) => receiptReferencePage(tx, storageId, selected), context);
+	assert.deepEqual(
+		await groupWakeDecision(
+			first,
+			(cursor) => harness.commit((tx) => receiptReferencePage(tx, storageId, selected, cursor), context),
+			async (id) => ({ note: id !== 81, model: true }),
+		),
+		{ wake: true, onlyNotes: false },
+	);
 	assert.deepEqual(first.results, []);
 	assert.equal(first.complete, false);
 	assert.ok(first.next);
