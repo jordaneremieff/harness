@@ -417,6 +417,7 @@
 			if (row.retry) {
 				const retry = button(row.message, () => void tree.load(row.folder), "folder-list-status");
 				retry.title = "Try again";
+				retry.dataset.retryFolder = row.folder;
 				node.append(retry);
 			} else node.append(el("p", "folder-list-status", row.message));
 			return { node };
@@ -553,6 +554,12 @@
 			(tool ?? row?.button)?.focus({ preventScroll: true });
 		}
 	}
+	function restoreRetryFocus(folder: string) {
+		const retry = treeCanvas.querySelector<HTMLElement>(`[data-retry-folder="${CSS.escape(folder)}"]`);
+		if (retry) retry.focus({ preventScroll: true });
+		else if (rowIndex(folder) >= 0) focusTreeRow(rowIndex(folder));
+		else filterInput.focus({ preventScroll: true });
+	}
 	function filterMessage() {
 		if (!filter) return "";
 		if (indexPending) return "Indexing paths…";
@@ -565,6 +572,9 @@
 		const focused = activeTreeButton();
 		const promote = focused !== document.activeElement;
 		const key = refocus ?? focused?.dataset.path ?? focusPath;
+		const active = document.activeElement;
+		const retrying =
+			active instanceof HTMLElement && treeCanvas.contains(active) ? active.dataset.retryFolder : undefined;
 		if (!list.contains(treeCanvas)) list.replaceChildren(treeCanvas);
 		const scroll = list.scrollTop;
 		filterStatus.textContent = filterMessage();
@@ -578,6 +588,7 @@
 		list.scrollTop = scroll;
 		paintTree(!!focused);
 		if (refocus || focused) restoreTreeFocus(!!refocus, promote);
+		else if (retrying !== undefined) restoreRetryFocus(retrying);
 	}
 	list.addEventListener(
 		"scroll",
@@ -2008,6 +2019,8 @@
 	}
 	function showMenu(x: number, y: number, range: ExplorerRange | null, items: Action[]) {
 		menuFocus = document.activeElement as HTMLElement | null;
+		const layer = overlay.hidden ? float : overlay;
+		if (menu.parentElement !== layer) layer.append(menu);
 		if (range) setAnchorLine(range.start);
 		menu.replaceChildren();
 		strip.hidden = true;
@@ -2064,7 +2077,13 @@
 		"contextmenu",
 		(event) => {
 			event.preventDefault();
-			if (!overlay.hidden) return;
+			if (!overlay.hidden) {
+				const field = textField(event.target);
+				if (!field || !overlay.contains(field)) return;
+				closeMenu(false);
+				showMenu(event.clientX, event.clientY, null, editorActions(field, menuText(field, undefined, null)));
+				return;
+			}
 			const selection = code.selection();
 			const clicked = code.rowAt(event.target instanceof Node ? event.target : null);
 			const chosen = selection && selectionAt(selection, clicked, event.clientX, event.clientY) ? selection : null;
@@ -2195,7 +2214,7 @@
 	}
 	function quickCaption(items: number) {
 		if (indexPending && !index) return "Indexing paths…";
-		if (!items) return indexError || "No matching paths.";
+		if (!items) return indexError || (index?.truncated ? "No matching paths · Partial index" : "No matching paths.");
 		let qualifier = "";
 		if (indexPending) qualifier = " · Updating index…";
 		else if (index?.truncated) qualifier = " · Partial index";

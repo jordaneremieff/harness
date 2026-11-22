@@ -135,7 +135,7 @@
 			}
 		}
 		function* entries() {
-			for (const folder of folders.values()) yield* folder.entries ?? [];
+			for (const folder of folders.values()) if (!folder.stale) yield* folder.entries ?? [];
 		}
 		function folderMessage(state: Folder) {
 			if (state.truncated) return "The host listed only the first entries.";

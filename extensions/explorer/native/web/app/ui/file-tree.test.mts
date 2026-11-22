@@ -182,3 +182,21 @@ test("reveal reads a listing again when a folder appeared after it was read", as
 	await tree.reveal("missing");
 	assert.deepEqual(requested, ["", "", "created", ""]);
 });
+
+test("entries of a collapsed folder that changed are left out until it is read again", async () => {
+	let children = [file("kept"), file("deleted")];
+	const tree = window.explorer.fileTree(
+		async (path) => (path ? reply(...children) : reply(folder("a"), file("top"))),
+		() => {},
+	);
+	await tree.load("");
+	await tree.setExpanded("a", true);
+	await tree.setExpanded("a", false);
+	const names = () => Array.from(tree.entries(), (entry) => entry.path).sort();
+	assert.deepEqual(names(), ["a", "a/deleted", "a/kept", "top"]);
+	children = [file("kept")];
+	tree.invalidate(["a/deleted"]);
+	assert.deepEqual(names(), ["a", "top"]);
+	await tree.setExpanded("a", true);
+	assert.deepEqual(names(), ["a", "a/kept", "top"]);
+});
