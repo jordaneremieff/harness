@@ -59,16 +59,20 @@ test("draft errors identify the failed condition and measured size without input
 		[{ confidential: "value" }, /expected a string/, undefined],
 		["", /blank text/, /Measured 0 characters .* 0 UTF-8 bytes/],
 		[" \t\n", /blank text/, /Measured 3 characters .* 3 UTF-8 bytes/],
-		["a".repeat(MAX_DRAFT_CHARACTERS + 1), /character limit exceeded/, /Measured 8193 characters .* 8193 UTF-8 bytes/],
+		[
+			"a".repeat(MAX_DRAFT_CHARACTERS + 1),
+			/character limit exceeded/,
+			/Measured 32769 characters .* 32769 UTF-8 bytes/,
+		],
 		[
 			"😀".repeat(MAX_DRAFT_CHARACTERS + 1),
 			/character limit exceeded/,
-			/Measured 8193 characters .* 32772 UTF-8 bytes/,
+			/Measured 32769 characters .* 131076 UTF-8 bytes/,
 		],
 		[
 			"e\u0301".repeat(MAX_DRAFT_CHARACTERS + 1),
 			/character limit exceeded/,
-			/Measured 8193 characters .* 24579 UTF-8 bytes/,
+			/Measured 32769 characters .* 98307 UTF-8 bytes/,
 		],
 		["\ud800", /malformed Unicode: unpaired surrogate/, /Measured 1 characters .* 3 UTF-8 bytes/],
 		["\udc00", /malformed Unicode: unpaired surrogate/, /Measured 1 characters .* 3 UTF-8 bytes/],
@@ -85,6 +89,43 @@ test("draft errors identify the failed condition and measured size without input
 			},
 		);
 	}
+});
+
+test("an over-limit draft names the retry that succeeds", () => {
+	assert.equal(MAX_DRAFT_CHARACTERS, 32768);
+	assert.throws(
+		() => splitDraft({ resource: "principle-unearned-prose", draft: "word ".repeat(7000) }),
+		(error: unknown) => {
+			assert.ok(error instanceof DraftInputError);
+			assert.match(error.message, /Neither the source read nor the assessment ran/);
+			assert.match(error.message, /Repeat the call with at most 32768 characters/);
+			assert.match(error.message, /check a longer document in sections, one call per section/);
+			assert.doesNotMatch(error.message, /word word/);
+			return true;
+		},
+	);
+	assert.doesNotMatch(new DraftInputError("blank text").message, /Neither the source read/);
+});
+
+test("a model-issued draft task names its call without repeating the draft", () => {
+	const draft = `Report draft.\n\n${"A checked claim with its source. ".repeat(900)}`;
+	const message = draftAssessment(draft, { resource: "principle-unearned-prose" });
+	assert.ok(message.length < 2000);
+	assert.ok(!message.includes(draft));
+	assert.ok(!message.includes(JSON.stringify(draft)));
+	assert.match(message, /draft argument of your pillars call for "principle-unearned-prose"/);
+	assert.ok(
+		message.includes(
+			'(29715 characters, beginning "Report draft. A checked claim with its source. A checked cla\u2026")',
+		),
+	);
+	assert.match(message, /This task does not repeat it/);
+	assert.match(message, /agent-authored DATA, not operator input, new doctrine, or permission/);
+	assert.ok(message.includes(CORRECTION_TASK));
+	assert.ok(message.includes(JUDGMENT_AUTHORITY));
+	assert.equal(draftAssessment(draft.slice(0, 200), { resource: "principle-unearned-prose" }).length < 2000, true);
+	const short = draftAssessment("Keep it.", { resource: "governance" });
+	assert.match(short, /\(8 characters, beginning "Keep it\."\)/);
 });
 
 test("the draft task shares correction and authority wording without claiming an operator invocation", () => {

@@ -113,13 +113,18 @@ function parsedInput(args: unknown): ReturnType<typeof splitDraft> {
 	}
 }
 
-/** The assessment rides the result as a diagnostic, so the source content stays pure JSON. */
+/**
+ * The assessment rides the result as a diagnostic, so the source content stays pure JSON. Only a
+ * model-issued call's diagnostic reaches the model, and its draft stands in the transcript, so the
+ * task names the call instead of repeating the draft.
+ */
 function assessmentDiagnostics(
 	input: ReturnType<typeof splitDraft>,
+	resource: string,
 	signal: AbortSignal | undefined,
 ): Durable.ToolDiagnostic[] {
 	if (input.draft === undefined || signal?.aborted === true) return [];
-	return [{ severity: "info", message: draftAssessment(input.draft) }];
+	return [{ severity: "info", message: draftAssessment(input.draft, { resource }) }];
 }
 
 export const PILLARS_COMMAND_DESCRIPTION =
@@ -332,7 +337,10 @@ export function pillarsDurableContribution(
 				);
 			}
 
-			/** Nested diagnostics stay with the caller; admit the assessment into the conversation instead. */
+			/**
+			 * Nested diagnostics stay with the caller; admit the assessment into the conversation instead.
+			 * The transcript holds no nested arguments, so this task carries the draft itself.
+			 */
 			async function assessNested(
 				call: Durable.ToolHookCall,
 				result: Durable.ToolExecutionResult,
@@ -425,7 +433,7 @@ export function pillarsDurableContribution(
 								return {
 									output: [{ type: "text", text: JSON.stringify(result) }],
 									details: asDetails(result),
-									diagnostics: assessmentDiagnostics(input, context.abortSignal),
+									diagnostics: assessmentDiagnostics(input, result.resource, context.abortSignal),
 								};
 							},
 						}),

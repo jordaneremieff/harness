@@ -242,7 +242,8 @@ The tool's description and prompt guidance ask the agent to submit a concrete
 proposal before a consequential decision, action, or answer without waiting for
 an operator cue. Routine execution and exact-output tasks need no added ceremony.
 Omitting `draft` keeps source-only behavior. A draft must be a nonblank,
-well-formed Unicode string of at most 8192 combined characters. Each unit starts
+well-formed Unicode string of at most 32768 combined characters, enough for a
+whole report or answer before delivery. Each unit starts
 with one code point and absorbs following marks in U+0300–U+036F,
 U+1AB0–U+1AFF, U+1DC0–U+1DFF and U+FE20–U+FE2F, plus variation selectors
 in U+FE00–U+FE0F. A following U+200D joins the next code point and its attached
@@ -258,7 +259,12 @@ This lets combined-character drafts reach the handler without a stricter host
 limit. The handler rejects blank text, malformed Unicode, and excessive character
 counts with specific diagnostics. This keeps provider-facing schemas simple and prevents
 schema-pattern errors from replacing the handler's messages. The extension preserves
-its text exactly and rejects invalid input without echoing it.
+its text exactly and rejects invalid input without echoing it. A rejected draft
+rejects the whole call: Pi settles it before execution, so neither the source read
+nor the assessment runs. The over-limit diagnostic says so and names the retry:
+the same call with at most 32768 characters, with a longer document checked in
+sections, one call per section, or reduced to the passages that carry the
+decision or claims.
 
 After a successful source read, the extension sends a native assessment task for
 the ordinary model continuation. Pi delivers that task after the tool results
@@ -269,6 +275,17 @@ as `/pillars check`. Existing consultation rules still apply, including use of
 relevant bodies already in context when sufficient. The task requests no separate
 verdict or doctrine recital unless the operator asks for one. It labels the draft
 as agent-authored data, not an operator request, new doctrine, or permission.
+
+The task does not repeat a draft that already stands in the transcript. For a
+model-issued call, it names the call's resource, the draft's size in the
+character unit above, and its opening words, at most 60 code points, and asks
+the agent to assess the draft in that call. A nested call, such as one from a
+Codemode script, keeps its arguments outside the transcript, so its task carries
+the draft as a JSON-escaped string. Pi gives a nested call the id
+`<calling id>/<n>`; an ordinary call whose id has that form also receives the
+copy, which costs context but loses nothing. In Durable sessions, the
+model-issued form rides the tool result and the nested form is a conversation
+entry, as [Durable agents](#durable-agents) describes.
 
 The task uses `sendMessage` with `triggerTurn:false`; the extension starts no
 additional model turn and owns no assessment queue, pending state, or context
@@ -287,8 +304,10 @@ retains no draft text, and its counts remain source-access evidence rather than
 assessment or application evidence.
 
 Context cost consists of the tool's static guidance plus an assessment task for
-each successful call that includes a draft. The task contains fixed instructions
-and a JSON-escaped copy of the draft; escaping can increase its byte size. The extension has no automatic retry or review loop. Agent selection
+each successful call that includes a draft. For a model-issued call the task's
+size does not grow with the draft, because the draft costs context once, in the
+call itself. For a nested call the task adds the JSON-escaped copy, at
+most the character limit plus its escapes. The extension has no automatic retry or review loop. Agent selection
 and the quality of the resulting correction remain model judgments, not a
 compliance verdict computed by the extension.
 
@@ -573,8 +592,9 @@ ordinary entrypoint.
 Documented differences from the ordinary entrypoint:
 
 - A draft assessment arrives as an `info` diagnostic attached to the tool
-  result for a model-issued call. For a nested call, `afterTool` submits a
-  `pillars-draft` entry with a user message through the public conversation
+  result for a model-issued call; it names the call and does not repeat the
+  draft. For a nested call, `afterTool` submits a `pillars-draft` entry with a
+  user message that carries the draft, through the public conversation
   write API. Native code mode does not forward successful nested diagnostics to
   the model. The write waits for the next boundary after the parent result,
   starts no additional turn, and uses the nested task ID as its deduplication

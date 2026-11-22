@@ -509,18 +509,12 @@ test("a draft returns one assessment diagnostic beside the unchanged source page
 	const opened = await openContribution(fixture);
 	t.after(() => opened.controller.abort());
 	const { faux, harness, root } = opened;
+	const draft = `Ship the change unchecked. ${"The report repeats this claim. ".repeat(300)}`;
 	try {
 		faux.setResponses([
-			fauxAssistantMessage(
-				[
-					fauxToolCall(
-						"pillars",
-						{ resource: "principle-one", draft: "Ship the change unchecked." },
-						{ id: "draft-call" },
-					),
-				],
-				{ stopReason: "toolUse" },
-			),
+			fauxAssistantMessage([fauxToolCall("pillars", { resource: "principle-one", draft }, { id: "draft-call" })], {
+				stopReason: "toolUse",
+			}),
 			fauxAssistantMessage("Corrected."),
 		]);
 		const settled = await (await root.submit({ type: "input", content: "Check this plan." }, BACKGROUND_CONTEXT)).wait(
@@ -531,7 +525,10 @@ test("a draft returns one assessment diagnostic beside the unchanged source page
 		assert.equal(result.isError, false);
 		assert.equal(JSON.parse(textOf(result).split("<harness>")[0]).schema, "pillars-source");
 		assert.match(textOf(result), /Pillars extension assessment task/u);
-		assert.match(textOf(result), /Ship the change unchecked/u);
+		assert.ok(textOf(result).includes(draftAssessment(draft, { resource: "principle-one" })));
+		assert.match(textOf(result), /draft argument of your pillars call for "principle-one"/u);
+		assert.match(textOf(result), /beginning "Ship the change unchecked\./u);
+		assert.ok(!textOf(result).includes(draft), "the model-issued call already holds the draft");
 		assert.equal(detailsSchema(result), "pillars-source");
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);

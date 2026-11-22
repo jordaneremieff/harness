@@ -62,7 +62,8 @@ test("draft limits preserve combined units without Unicode grapheme segmentation
 			(error: unknown) => {
 				assert.ok(error instanceof DraftInputError, name);
 				assert.match(error.message, /character limit exceeded/);
-				assert.match(error.message, /Measured 8193 characters/);
+				assert.ok(error.message.includes(`Measured ${MAX_DRAFT_CHARACTERS + 1} characters`), name);
+				assert.match(error.message, /Neither the source read nor the assessment ran/);
 				assert.ok(error.message.includes(`${Buffer.byteLength(above, "utf8")} UTF-8 bytes`), name);
 				return true;
 			},
@@ -83,7 +84,7 @@ test("draft limits preserve combined units without Unicode grapheme segmentation
 	}
 	assert.throws(
 		() => splitDraft({ draft: " ".repeat(MAX_DRAFT_CHARACTERS + 1) }),
-		/blank text.*Measured 8193 characters/,
+		new RegExp(`blank text.*Measured ${MAX_DRAFT_CHARACTERS + 1} characters`),
 	);
 	assert.throws(() => splitDraft({ draft: "\r\n" }), /blank text.*Measured 2 characters/);
 });
@@ -136,6 +137,7 @@ test("native draft assessment follows source results without a context transform
 				noContextFiles: true,
 				additionalExtensionPaths: [entry],
 				extensionFactories: [
+					sdk.createCodemodeExtension({ models: false }),
 					(pi) => {
 						pi.registerTool({
 							name: "fixture_echo",
@@ -159,7 +161,7 @@ test("native draft assessment follows source results without a context transform
 				settingsManager,
 				resourceLoader: loader,
 				sessionManager: manager,
-				tools: ["pillars", "fixture_echo"],
+				tools: ["pillars", "fixture_echo", "codemode"],
 			});
 			await result.session.bindExtensions({ mode: "json", onError: (error) => errors.push(error.error) });
 			assert.equal(result.session.extensionRunner.hasHandlers("context"), false);
@@ -243,9 +245,10 @@ test("native draft assessment follows source results without a context transform
 						const result = JSON.parse(error.message);
 						assert.equal(result.schema, "pillars-source-error");
 						assert.equal(result.code, "invalid_input");
-						assert.match(
-							result.message,
-							/8192 characters \(base code points with attached marks, selectors, joiner sequences and paired flag indicators\)/,
+						assert.ok(
+							result.message.includes(
+								`${MAX_DRAFT_CHARACTERS} characters (base code points with attached marks, selectors, joiner sequences and paired flag indicators)`,
+							),
 						);
 						if (draft === " \n") assert.match(result.message, /blank text/);
 						if (draft === "\ud800") assert.match(result.message, /malformed Unicode: unpaired surrogate/);
@@ -305,7 +308,7 @@ test("native draft assessment follows source results without a context transform
 					);
 					assert.equal(text(tail[0]), sourceJSON);
 					assert.equal(text(tail[1]), "Other result.");
-					assert.equal(text(tail[2]), draftAssessment(proposal));
+					assert.equal(text(tail[2]), draftAssessment(proposal, { resource: "principle-example" }));
 					return ai.fauxAssistantMessage("The corrected work is the answer.");
 				},
 			);
@@ -328,11 +331,37 @@ test("native draft assessment follows source results without a context transform
 					const result = context.messages.at(-2);
 					assert.ok(result?.role === "toolResult" && !result.isError);
 					assert.equal(text(result), sourceJSON);
-					assert.equal(text(context.messages.at(-1) as { content: unknown }), draftAssessment(draft));
+					const task = text(context.messages.at(-1) as { content: unknown });
+					assert.equal(task, draftAssessment(draft, { resource: "principle-example" }));
+					assert.ok(task.length < 2000, "the task names the call instead of repeating the draft");
 					return ai.fauxAssistantMessage("The combined-character draft is intact.");
 				},
 			);
 			await active().prompt("Check a draft with combined characters.");
+			done();
+			assert.equal(assessments().length, before + 1);
+		});
+		await t.test("a nested draft from a script carries its text in the task", async () => {
+			const nested = "A draft that a script assembled outside the transcript, so the task must carry it.";
+			const before = assessments().length;
+			const done = responses(
+				ai.fauxAssistantMessage(
+					ai.fauxToolCall(
+						"codemode",
+						{
+							code: `await tools.pillars({ resource: "principle-example", draft: ${JSON.stringify(nested)} }); return "checked";`,
+						},
+						{ id: "script-draft" },
+					),
+				),
+				(context) => {
+					const result = context.messages.at(-2);
+					assert.ok(result?.role === "toolResult" && !result.isError);
+					assert.equal(text(context.messages.at(-1) as { content: unknown }), draftAssessment(nested));
+					return ai.fauxAssistantMessage("The script draft was checked.");
+				},
+			);
+			await active().prompt("Check a draft from a script.");
 			done();
 			assert.equal(assessments().length, before + 1);
 		});
@@ -414,7 +443,11 @@ test("native draft assessment follows source results without a context transform
 			assert.equal(faux.state.callCount, before);
 			assert.equal(assessments().length, count);
 			const done = responses((context) => {
-				assert.ok(context.messages.some((message) => text(message) === draftAssessment(proposal)));
+				assert.ok(
+					context.messages.some(
+						(message) => text(message) === draftAssessment(proposal, { resource: "principle-example" }),
+					),
+				);
 				return ai.fauxAssistantMessage("Resume completed.");
 			});
 			await active().prompt("Continue the reopened task.");

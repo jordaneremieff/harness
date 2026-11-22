@@ -63,6 +63,14 @@ const PillarsParameters = obj(
 	{ open: false },
 );
 
+/**
+ * Pi gives a call that another tool makes the id `<calling id>/<n>` and keeps its arguments out
+ * of the transcript. A model-issued id of that form only restores the copied draft.
+ */
+function nestedCall(toolCallId: string): boolean {
+	return /\/\d+$/.test(toolCallId);
+}
+
 const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({
 	type: "string",
 	enum: [...values],
@@ -242,6 +250,16 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			diagnostic(ctx, "Pillars observation was unavailable. Unpersisted loss remains unknown.");
 		}
 	}
+	function sendAssessment(toolCallId: string, draft: string, resource: string): void {
+		pi.sendMessage(
+			{
+				customType: "pillars-draft",
+				content: draftAssessment(draft, nestedCall(toolCallId) ? undefined : { resource }),
+				display: false,
+			},
+			{ triggerTurn: false },
+		);
+	}
 	pi.on("tool_call", async (event, ctx) => {
 		await observe(event, ctx, "tool_request");
 	});
@@ -292,11 +310,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 				delivered.set(id, { resource, offset, endOffset, bodyBytes, referenceBodyDigest });
 			}
 			if (result.schema === "pillars-source-error") throw new Error(JSON.stringify(result));
-			if (input.draft !== undefined && !signal?.aborted)
-				pi.sendMessage(
-					{ customType: "pillars-draft", content: draftAssessment(input.draft), display: false },
-					{ triggerTurn: false },
-				);
+			if (input.draft !== undefined && !signal?.aborted) sendAssessment(id, input.draft, result.resource);
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 		},
 	});
