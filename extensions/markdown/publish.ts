@@ -145,6 +145,7 @@ const FindingsSchema = arr(
 		count: num(),
 		limit: num(),
 		examples: arr(obj({ line: int(), text: str() })),
+		unlisted: opt(int()),
 	}),
 );
 export const PublishOutcomeSchema = union([

@@ -22,7 +22,7 @@ export const RULES = {
 	escapedBreaks: { limit: 0 },
 	phrases: { limit: 0, phrases: DEFAULT_PHRASES },
 	labelLines: { limit: 8 },
-	coinages: { limit: 14, allow: [] as readonly string[] },
+	coinages: { limit: 11, allow: [] as readonly string[] },
 	identifiers: { limit: 8 },
 	codeSpans: { perHundred: 12, minWords: 150 },
 	processNarration: { limit: 2, share: 0.1 },
@@ -140,8 +140,10 @@ export function describeRules(mode: "off" | "warn" | "block", config: CheckOverr
 		escapedBreaks: "Send real line breaks and tabs.",
 		phrases: "State each point in your own words, without stock phrases or labels that announce candour.",
 		labelLines: "Write each point as a sentence instead of opening lines with a label.",
-		coinages: "Name things in ordinary words instead of hyphenated terms made up for the occasion.",
-		identifiers: "Keep a path, hash or identifier only when the reader needs it to act, and say what it is.",
+		coinages:
+			"Name things in ordinary words instead of hyphenated terms made up for the occasion. When the reader needs an exact name that exists outside the document, such as a command, package, header or file, put it in backticks.",
+		identifiers:
+			"Keep a path, hash or identifier only when the reader needs it to act, put it in backticks, and say what it is.",
 		codeSpans: "Use inline code only for text the reader must type or match exactly.",
 		processNarration:
 			"Say what you found and why it matters. Mention a step or a check only when the reader needs it to trust the result.",

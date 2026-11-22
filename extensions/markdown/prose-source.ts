@@ -1,4 +1,8 @@
-export type ProseLine = { line: number; raw: string; text: string };
+/**
+ * One source line in three views with the same columns: `raw` as written, `text` with code spans, comments
+ * and link destinations blanked, and `shown` with only comments and link destinations blanked.
+ */
+export type ProseLine = { line: number; raw: string; text: string; shown: string };
 export type ProseBlock = {
 	lines: ProseLine[];
 	kind: "paragraph" | "heading" | "list" | "table";
@@ -72,9 +76,9 @@ function project(
 		offset += raw.length + 1;
 	}
 	const codeSpans: ProseBlock["codeSpans"] = [];
-	const ranges: { from: number; to: number }[] = [];
-	const hide = (from: number, to: number) => {
-		ranges.push({ from, to });
+	const ranges: { from: number; to: number; code?: boolean }[] = [];
+	const hide = (from: number, to: number, code?: boolean) => {
+		ranges.push({ from, to, ...(code ? { code } : {}) });
 	};
 	const runs = text.includes("`") ? nextRun(text) : undefined;
 	const parens = text.includes("](") ? balancedParens(text) : undefined;
@@ -101,7 +105,7 @@ function project(
 			const end = close + token.length;
 			while (lineIndex + 1 < starts.length && starts[lineIndex + 1] <= index) lineIndex++;
 			codeSpans.push({ line: segments[lineIndex].line, text: text.slice(index, Math.min(end, index + 240)) });
-			hide(index, end);
+			hide(index, end, true);
 			inlineToken.lastIndex = end;
 		} else if (token === "[") labels++;
 		else if (token === "]" && labels) {
@@ -121,30 +125,38 @@ function project(
 			}
 		} else if (token.startsWith("<")) hide(index, inlineToken.lastIndex);
 	}
-	let range = 0;
-	const lines = segments.map(({ line, raw, prefix }, i) => {
-		const at = starts[i],
-			end = at + raw.length;
-		let cursor = at + prefix,
-			visible = " ".repeat(prefix);
-		while (range < ranges.length && ranges[range].from < end) {
-			const { from, to } = ranges[range];
-			if (to > cursor) {
-				const next = Math.min(end, to);
-				visible += text.slice(cursor, Math.max(cursor, from)) + " ".repeat(next - Math.max(cursor, from));
-				cursor = next;
+	const view = (hidden: { from: number; to: number }[]) => {
+		let range = 0;
+		return segments.map(({ raw, prefix }, i) => {
+			const at = starts[i],
+				end = at + raw.length;
+			let cursor = at + prefix,
+				visible = " ".repeat(prefix);
+			while (range < hidden.length && hidden[range].from < end) {
+				const { from, to } = hidden[range];
+				if (to > cursor) {
+					const next = Math.min(end, to);
+					visible += text.slice(cursor, Math.max(cursor, from)) + " ".repeat(next - Math.max(cursor, from));
+					cursor = next;
+				}
+				if (to > end) break;
+				range++;
 			}
-			if (to > end) break;
-			range++;
-		}
-		return { line, raw, text: visible + text.slice(cursor, end) };
-	});
+			return visible + text.slice(cursor, end);
+		});
+	};
+	const prose = view(ranges);
+	const shown = view(ranges.filter((range) => !range.code));
+	const lines = segments.map(({ line, raw }, i) => ({ line, raw, text: prose[i], shown: shown[i] }));
 	return { lines, codeSpans, kind, openComment };
 }
 
-/** Recognises common source forms for the prose heuristics without altering the Markdown or requiring the reader app. */
+/**
+ * Recognises common source forms for the prose heuristics without altering the Markdown or requiring the reader app.
+ * The optional sink receives each line of fenced or indented code, which the blocks leave out.
+ */
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The ordered block transitions own fence, quote and comment precedence.
-export function* proseBlocks(source: string): Iterable<ProseBlock> {
+export function* proseBlocks(source: string, code?: (line: string) => void): Iterable<ProseBlock> {
 	const lines = source.replace(/^\uFEFF/u, "").split(/\r\n?|\n/u);
 	let start = 0;
 	if (lines[0]?.trimEnd() === "---") {
@@ -172,6 +184,7 @@ export function* proseBlocks(source: string): Iterable<ProseBlock> {
 		if (fence) {
 			const close = fenceEnd.exec(view)?.[1];
 			if (close?.startsWith(fence[0]) && close.length >= fence.length) fence = undefined;
+			else code?.(view);
 			continue;
 		}
 		if (comment) {
@@ -215,7 +228,10 @@ export function* proseBlocks(source: string): Iterable<ProseBlock> {
 			yield* flush();
 			continue;
 		}
-		if (!segments.length && /^(?: {4}| {0,3}\t)/u.test(view)) continue;
+		if (!segments.length && /^(?: {4}| {0,3}\t)/u.test(view)) {
+			code?.(view);
+			continue;
+		}
 		if (item) {
 			yield* flush();
 			kind = "list";
