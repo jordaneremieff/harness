@@ -85,6 +85,11 @@ README and defining source under the owning repository's `extensions/<name>/`
   every cursor, then filter UTC days. Request and result stages are separate
   observations. Preserve folded dimensions and capture/retention limits.
   Corrupt or unavailable storage is not zero use. Counts do not prove application.
+  A request counts an executed `pillars` call or a `read` of a corpus file,
+  nested Codemode calls included; rows do not name the tool. Calls that Pi
+  rejects before execution, such as invalid arguments or an over-limit draft,
+  never reach the observer. Compare session-store calls on those terms, and
+  read the extension README's observation section for its other boundaries.
 - **Agent and native history:** `agent_list` discovers metadata;
   `agent_inspect` reads bounded retained evidence without opening a writer.
   `history_search` and `history_read` cover the current session's selected
