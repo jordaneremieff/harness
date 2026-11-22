@@ -1108,6 +1108,7 @@ export class AgentManager {
 		launch: boolean,
 	): Promise<unknown> {
 		if (method === "release") return this.releaseControl(record, params, caller);
+		if (method === "abort") return this.abortControl(record, params, caller, signal);
 		try {
 			return await this.controlClient(await this.connection(record, undefined, launch), method, params, caller, signal);
 		} catch (error) {
@@ -1125,6 +1126,33 @@ export class AgentManager {
 	): Promise<unknown> {
 		const client = await this.connection(record, undefined, false);
 		return this.controlClient(client, "release", params, caller);
+	}
+
+	/**
+	 * An abort acts on running work. A storage without a running host still holds retained unfinished work that would
+	 * resume at its next start, so the abort starts the host, stops that work, and asks the host to retire again: the
+	 * storage keeps no running host that it did not have.
+	 */
+	private async abortControl(
+		target: CatalogRecord,
+		params: Record<string, unknown>,
+		caller: AgentCaller,
+		signal: AbortSignal | undefined,
+	): Promise<unknown> {
+		const running = await this.observationConnection(target);
+		if (running !== undefined) return this.controlClient(running, "abort", params, caller, signal);
+		const client = await this.connection(target);
+		const aborted = record(await this.controlClient(client, "abort", params, caller, signal));
+		const { background: _background, ...release } = params;
+		const retirement = record(await this.controlClient(client, "release", release, caller, signal));
+		return {
+			...aborted,
+			started: "No host was running; the abort started one to stop the retained work, then requested its retirement.",
+			retiring: retirement.retiring === true,
+			...(Array.isArray(retirement.blockers) && retirement.blockers.length > 0
+				? { blockers: retirement.blockers }
+				: {}),
+		};
 	}
 
 	private requestedOperation(method: string, params: Record<string, unknown>): string {

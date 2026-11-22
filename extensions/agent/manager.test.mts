@@ -20,6 +20,7 @@ import { dashboardText } from "./dashboard-roster.ts";
 import {
 	connectHost,
 	HostBusyEndpointUnavailableError,
+	HostEndpointUnavailableError,
 	HostReadinessUnavailableError,
 	type HostConnection,
 	type OwnedHostExit,
@@ -360,6 +361,59 @@ it("omits undefined control fields, which the host transport refuses, before the
 	assert.ok(call);
 	assert.equal(isJsonValue(call.params), true);
 	assert.equal(Object.hasOwn(call.params as object, "instructions"), false);
+});
+
+it("aborts a running host in place, and starts and retires a storage that had none", async (t) => {
+	const root = fixtureRoot(t);
+	let running = true;
+	const seen: Array<{ method: string; launched: boolean; params: Record<string, unknown> }> = [];
+	const host = (metadata: HostMetadata, launched: boolean) =>
+		fakeConnection(metadata, async (method, params) => {
+			seen.push({ method, launched, params: params as Record<string, unknown> });
+			if (method === "abort") return { conversationId: 1, identity: metadata.storageId, settled: true };
+			return method === "release" ? { retiring: true, blockers: [] } : {};
+		});
+	const manager = new AgentManager(
+		managerOptions(root, {
+			connect: async (metadata) => {
+				if (!running) throw new HostEndpointUnavailableError(metadata.storageId, new Error("no endpoint"));
+				return host(metadata, false);
+			},
+			acquire: async (metadata) => host(metadata, true),
+		}),
+	);
+	t.after(() => manager.close());
+	const caller = { id: "terminal", cwd: root };
+	const first = createRecord(manager, root, "owner").storageId;
+	const inPlace = (await manager.control("abort", { sessionId: first }, caller)) as Record<string, unknown>;
+	assert.deepEqual(
+		seen.map(({ method, launched }) => [method, launched]),
+		[["abort", false]],
+		"a running host is aborted without a launch or a retirement",
+	);
+	assert.equal(inPlace.started, undefined);
+
+	running = false;
+	seen.length = 0;
+	const second = createRecord(manager, root, "owner-2").storageId;
+	const started = (await manager.control("abort", { sessionId: second, background: true }, caller)) as Record<
+		string,
+		unknown
+	>;
+	assert.deepEqual(
+		seen
+			.filter(({ method }) => method === "abort" || method === "release")
+			.map(({ method, launched }) => [method, launched]),
+		[
+			["abort", true],
+			["release", true],
+		],
+	);
+	assert.equal(seen.find(({ method }) => method === "abort")?.params.background, true);
+	assert.equal(Object.hasOwn(seen.find(({ method }) => method === "release")?.params ?? {}, "background"), false);
+	assert.equal(started.settled, true);
+	assert.equal(started.retiring, true);
+	assert.match(String(started.started), /No host was running/u);
 });
 
 it("refuses a full place book before catalogue creation or host launch", async (t) => {

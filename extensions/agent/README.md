@@ -101,7 +101,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_yield` | In an ordinary session, end the turn with one state note for the operator while work that the session sent to agents is still open; an agent result, a message or the operator's input starts the next turn. See [state note of an ordinary session](#state-note-of-an-ordinary-session). |
 | `agent_send` | Admit a task or correction. Omitted `mode` means `followUp`, new work, on every path. `mode: "steer"` corrects current work; both reach the same tool-round boundary. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. A busy Durable recipient receives each active input at its next tool boundary, for `steer` and for `followUp`; no input waits for the end of the run. These inputs do not promise separate answers. See [input placement](#input-placement-and-unplaced-notices). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
-| `agent_abort` | Abort the selected conversation without deleting its retained evidence. The answer arrives within 15 seconds; `settled: false` names the marked tasks that had not ended, and their abort stays committed. The stopped conversations stay quiet until explicit input (see [Stopping work](#stopping-work)). With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. Aborting the tool call withdraws only the caller's wait. |
+| `agent_abort` | Abort the selected conversation without deleting its retained evidence. The answer arrives within 15 seconds; `settled: false` names the marked tasks that had not ended, and their abort stays committed. The stopped conversations stay quiet until explicit input (see [Stopping work](#stopping-work)). A storage without a running host is started only to stop its retained work and is then asked to retire. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. Aborting the tool call withdraws only the caller's wait. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
 | `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
 | `agent_configure` | Change the name, model, preset or reasoning of an idle conversation. |
@@ -2045,9 +2045,14 @@ parent. Operator input, a steer, a follow-up, a task, and a fired timer run as
 usual and end the stop. A storage keeps at most 512 stop marks; the oldest
 leaves first.
 
+`agent_abort` on a storage without a running host starts the host, stops its
+retained unfinished work, and requests its retirement, so the storage keeps no
+running host that it did not have. Retained work runs for at most the moment
+between the host's start and the abort; an aborted provider request ends at once.
+
 Sources: `conversation-stop.ts`, `provider-models.ts` (`requestEnd`),
 `durable-host.ts` (`abortRequest`), `durable-agents.ts` (`abortLocal`),
-`durable-controls.ts` (`admitConversation`).
+`durable-controls.ts` (`admitConversation`), `manager.ts` (`abortControl`).
 
 Sources: `open-work.ts` (`AgentWorkParams`, `declareOpenWork`,
 `continueWork`, `completeOpenWork`, `finalReport`, `OpenWorkDoc`,
