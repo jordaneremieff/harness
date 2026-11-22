@@ -3669,8 +3669,10 @@ session entries of kind `agent.admitted-request`: `requested` before the host
 call, `admitted` with the submission ID, and `refused` only when the host
 answers `invalid`. Each other failure leaves the request listed as unconfirmed.
 Reports, messages to an ordinary primary, scheduled sends and rewinds are not
-recorded. A scheduled send is therefore absent from the note, and the note says
-`Scheduled inputs: none` also when one exists.
+recorded in this note. A scheduled send is therefore absent from the note, and
+the note says `Scheduled inputs: none` also when one exists. The receiving
+primary keeps a separate inbox for direct messages. Its admission is not an
+answer-bearing task receipt.
 
 A result notice that the session file retains closes each request that its
 `deliveredResults` references name, when the submission agrees. A notice
@@ -4520,12 +4522,9 @@ with or without a live fallback recipient. Source-ledger deliveries explicitly
 set `requireRetained:true` for both owning and fallback primary routes. The
 channel defaults to that strong acceptance mode: a live ordinary primary
 acknowledges only after its actual session JSONL file contains the matching
-`agent.peer` entry and transport source identity. Direct ordinary-primary
-submit/report routes have no source ledger and explicitly use
-`requireRetained:false`; their success means queued admission, not retention,
-action, or task acceptance. Queued deduplication never satisfies a later retained
-acceptance request. Pi's in-memory queue and `sendMessage`
-return do not prove retention. Pending confirmation refuses transiently, leaving
+`agent.peer` entry and transport source identity. Inbox admission never satisfies
+this check. Pi's in-memory queue and `sendMessage` return do not prove transcript
+retention. Pending confirmation refuses transiently, leaving
 the source ledger responsible for retry while other owners still receive their
 rows. In-memory attempt markers prevent repeated steering while a notice is
 queued; settled or failed attempts remain retryable. A new custom-only session
@@ -4534,9 +4533,34 @@ scan with bounded continuation. It streams past unrelated records without
 buffering or parsing their bodies, so large image/tool records impose no new
 record-size limit. Only exact serialized candidate notice lines confirm
 retention. Invalid header identity, incomplete tails, file replacement, and
-truncation refuse confirmation. No second persistent delivery queue or
-exactly-once historical ledger exists. A crash after retention but before source
-acknowledgment still permits replay.
+truncation refuse confirmation. This path has no recipient inbox; a crash after
+retention but before source acknowledgment still permits a source retry.
+
+Direct submit and report, including `agent_send`, `agent_steer`, and `agent_brief`
+when they target a registered ordinary primary, use a separate `admit` operation.
+The recipient atomically stores the message before it responds. Admission means
+that the inbox or session transcript retains the message. It does not prove
+transcript placement, model action, or task acceptance. A recipient that lacks
+`admit` does not acknowledge a volatile queue in its place.
+
+Each saved session has at most one inbox snapshot beside its JSONL file, at
+`<session-file>.agent-inbox`, and one staging file with the `.new` suffix. The
+snapshot stores `{ version, sessionId, rows }` as UTF-8 JSON. Each row holds its
+transport `sourceId`, text, and details, in admission order. The queue holds at
+most 128 rows and one MiB, including the envelope. An unsaved session or a new
+session without a Pi session file refuses direct admission. A full or unwritable
+inbox also refuses instead of dropping admitted rows. The inbox applies to the
+same saved session, not a fork or copy.
+
+An idle primary places passive messages without a model turn. A waking message
+starts a custom-message run. A busy primary places inbox entries at Pi's turn or
+settlement boundary, after the assistant message and its tool results. A waking
+entry requests a continuation. If the run aborts, settlement places remaining
+entries without starting another run. The primary removes rows only after Pi
+retains the corresponding `agent.peer` entries. It removes the snapshot when no
+rows remain. Direct retries use the transport source ID to avoid a second
+placement, including after reopen.
+
 Any primary registration runs the existing bounded scan of runnable recovery
 and wakes parked sources whose sidecar names that exact primary. Unrelated
 registration leaves those sources cold. Catalogue-change scans also
@@ -4881,6 +4905,15 @@ If an earlier process replacement left an endpoint registered under the still-li
 PID, another `/restart` does not recover it. Fully quit that Pi process, then start
 a new process with the same saved session. Registration replaces only a proven-dead
 local owner; a connection failure alone never permits endpoint replacement.
+
+The same saved session replays its direct inbox on registration. The primary
+first checks retained `agent.peer` source IDs across the session, including
+inactive branches. An exit between placement and inbox cleanup therefore does
+not cause another notice. An exit before placement leaves the row available for
+replay. This protects against Pi process exit, not loss or external replacement
+of the session files or a machine power failure. An interrupted admission whose
+reply did not arrive remains uncertain. A retry with the same source ID does not
+create another notice; a new source ID represents a new message.
 
 Primary `agent_compact` requires an agent-authored summary and retains the whole
 requesting tool batch. It uses the ordinary `turn_end` boundary. A native Durable

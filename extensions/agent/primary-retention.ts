@@ -4,7 +4,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 const READ_BYTES = 1024 * 1024;
 type FilePin = { path: string; dev: number; ino: number; size: number; mtimeMs: number };
 type Scan = { offset: number; lineOffset: number; possible?: Buffer[]; startAtEnd?: boolean; file?: FilePin };
-type Attempt = { scan: Scan; queued: boolean; requireRetained: boolean };
+type Attempt = { scan: Scan; queued: boolean };
 type Observation = { found: boolean; complete: boolean; exists: boolean };
 function object(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -148,31 +148,20 @@ export class PrimaryRetention {
 		}
 	}
 
-	/** Direct sends accept only queued admission; they have no durable source ledger to retry refusals. */
-	private admit(attempt: Attempt, sourceId: string, text: string, details: unknown, ids: Map<string, string>): void {
-		if (!attempt.queued && ids.size === 0) this.transmit(attempt, sourceId, text, details);
-		if (!attempt.requireRetained && this.entries(sourceId).size > 0) this.attempts.delete(sourceId);
+	hasQueued(sourceId: string): boolean {
+		return this.attempts.get(sourceId)?.queued === true && this.entries(sourceId).size === 0;
 	}
 
 	/** A transient refusal lets the source keep its ledger and continue with other owners. */
-	deliver(sourceId: string, text: string, details: unknown, requireRetained = true): void {
+	deliver(sourceId: string, text: string, details: unknown): void {
 		if (typeof sourceId !== "string" || sourceId === "")
 			throw new Error("Primary delivery requires its transport source identity");
 		const ids = this.entries(sourceId);
 		let attempt = this.attempts.get(sourceId);
 		// Pi's full memory view locates old attempts; only the file read proves positive retention.
 		if (attempt === undefined) {
-			attempt = {
-				scan: { offset: 0, lineOffset: 0, startAtEnd: requireRetained && ids.size === 0 },
-				queued: false,
-				requireRetained,
-			};
+			attempt = { scan: { offset: 0, lineOffset: 0, startAtEnd: ids.size === 0 }, queued: false };
 			this.attempts.set(sourceId, attempt);
-		}
-		attempt.requireRetained ||= requireRetained;
-		if (!requireRetained) {
-			this.admit(attempt, sourceId, text, details, ids);
-			return;
 		}
 		const observed = this.scan(attempt.scan, ids);
 		if (observed.found) {
@@ -196,8 +185,7 @@ export class PrimaryRetention {
 	/** Settlement permits dropped attempts to retry without discarding unconfirmed retained entries. */
 	settled(): void {
 		for (const [sourceId, attempt] of this.attempts) {
-			if (!attempt.requireRetained) this.attempts.delete(sourceId);
-			else if (this.entries(sourceId).size === 0) attempt.queued = false;
+			if (this.entries(sourceId).size === 0) attempt.queued = false;
 		}
 	}
 	clear(): void {

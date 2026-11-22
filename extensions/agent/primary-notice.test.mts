@@ -239,6 +239,7 @@ async function noticeFixture(
 	});
 
 	sessionManager = SessionManager.create(cwd, sessionsRoot);
+	sessionManager.appendMessage({ role: "user", content: "Retained seed", timestamp: Date.now() });
 	const runtime = await createTestRuntime();
 	let firstRequest = true;
 	const stream = (_model: unknown, context: TranscriptContext) => {

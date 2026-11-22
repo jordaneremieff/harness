@@ -1,5 +1,6 @@
-/** Isolated SDK primary and durable source; the parent exits this process while a notice is only queued. */
+/** Isolated SDK primary for tests that terminate the recipient before the next boundary. */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
@@ -16,7 +17,7 @@ import { recordReport } from "./durable-controls.ts";
 import { deliveryState } from "./delivery-store.ts";
 import { startDurableDelivery } from "./durable-delivery.ts";
 
-const [cwd, agentDir, sessionsRoot] = process.argv.slice(2);
+const [cwd, agentDir, sessionsRoot, mode] = process.argv.slice(2);
 if (!cwd || !agentDir || !sessionsRoot || !process.send)
 	throw new Error("The retention fixture requires isolated paths and IPC");
 const settingsManager = SettingsManager.create(cwd, agentDir),
@@ -37,19 +38,36 @@ const loader = new DefaultResourceLoader({
 	extensionFactories: [
 		async (pi) => {
 			await register(pi);
-			pi.on("before_agent_start", async () => {
-				started();
-				await new Promise<void>(() => {});
-			});
+			if (mode !== "inbox") {
+				pi.on("before_agent_start", async () => {
+					started();
+					await new Promise<void>(() => {});
+				});
+			}
 		},
 	],
 });
 await loader.reload();
+const runtime = await createTestRuntime();
+if (mode === "inbox") {
+	const stream = () => {
+		started();
+		return createAssistantMessageEventStream();
+	};
+	runtime.registerNativeProvider({
+		id: testModel.provider,
+		name: "Held provider stream",
+		getModels: () => [testModel],
+		auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } },
+		stream,
+		streamSimple: stream,
+	});
+}
 const session = (
 	await createAgentSession({
 		cwd,
 		agentDir,
-		modelRuntime: await createTestRuntime(),
+		modelRuntime: runtime,
 		settingsManager,
 		sessionManager,
 		model: testModel,
@@ -59,8 +77,12 @@ const session = (
 ).session;
 await session.bindExtensions({});
 sessionManager.appendMessage({ role: "user", content: "Retained seed", timestamp: Date.now() });
-void session.prompt("Hold startup");
+void session.prompt("Start the held run");
 await entered;
+if (mode === "inbox") {
+	process.send({ ownerId: sessionManager.getSessionId(), sessionFile: sessionManager.getSessionFile() });
+	await new Promise<void>(() => {});
+}
 const catalog = new AgentCatalog(sessionsRoot);
 const record = catalog.create({
 	cwd,

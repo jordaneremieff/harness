@@ -173,6 +173,7 @@ interface PrimaryClient {
 	retainSentWork?(sessionId: string): void;
 	retainContinuity?(fact: ContinuityFact): void;
 	send(text: string, details: unknown, sourceId: string, requireRetained: boolean): void;
+	resumeInbox?(): void;
 	status?(text: string | undefined): void;
 	signal: AbortSignal;
 	cwd?: string;
@@ -1324,7 +1325,8 @@ export class AgentManager {
 				sessionId,
 				admitted: true,
 				sourceId,
-				boundary: "Queued admission does not prove retention, action, or task acceptance",
+				boundary:
+					"The recipient retained the message for delivery. Admission does not prove placement, action, or task acceptance.",
 			};
 		} finally {
 			await channel.close();
@@ -1823,10 +1825,13 @@ export class AgentManager {
 			deliver: (message) => {
 				if (this.stopping(primary) || this.primaries.get(ownerId) !== primary)
 					throw new Error("Primary session is closed");
-				const requireRetained = message.requireRetained !== false;
-				const key = `${ownerId}:${requireRetained ? "retained" : "queued"}:${message.sourceId}`;
+				if (message.requireRetained === false) {
+					primary.send(message.text, message.details, message.sourceId, false);
+					return;
+				}
+				const key = `${ownerId}:retained:${message.sourceId}`;
 				if (this.delivered.has(key)) return;
-				primary.send(message.text, message.details, message.sourceId, requireRetained);
+				primary.send(message.text, message.details, message.sourceId, true);
 				this.delivered.set(key, true);
 			},
 		});
@@ -1854,6 +1859,7 @@ export class AgentManager {
 			);
 		}
 		this.rosterChanged();
+		primary.resumeInbox?.();
 		await this.refreshFooter();
 		await this.scanRecovery(primary, ownerId);
 	}

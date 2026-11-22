@@ -72,7 +72,7 @@ export interface PrimaryDelivery {
 	readonly text: string;
 	readonly details?: JsonValue;
 	readonly replyTo?: string;
-	/** Defaults true. False accepts only queued admission for direct routes without a source ledger. */
+	/** Defaults true. False requires the recipient's durable inbox instead of immediate transcript retention. */
 	readonly requireRetained?: boolean;
 }
 
@@ -662,7 +662,9 @@ class PrimaryChannelHost {
 			case "info":
 				return this.info() as unknown as JsonValue;
 			case "deliver":
-				return this.deliver(request.params);
+				return this.deliver(request.params, true);
+			case "admit":
+				return this.deliver(request.params, false);
 			case "trustPrompt":
 				return this.trustPrompt(request.params);
 			default:
@@ -670,8 +672,8 @@ class PrimaryChannelHost {
 		}
 	}
 
-	/** Display one validated message in the primary session. */
-	private async deliver(raw: unknown): Promise<JsonValue> {
+	/** Route one validated message to transcript confirmation or inbox admission. */
+	private async deliver(raw: unknown, requireRetained: boolean): Promise<JsonValue> {
 		if (raw === null || typeof raw !== "object" || Array.isArray(raw))
 			throw invalid("params", "deliver requires a message object");
 		const message = raw as Record<string, unknown>;
@@ -679,10 +681,10 @@ class PrimaryChannelHost {
 			throw invalid("params", "deliver requires sourceId and text");
 		if (message.replyTo !== undefined && typeof message.replyTo !== "string")
 			throw invalid("params", "deliver replyTo must be a string");
-		if (message.requireRetained !== undefined && typeof message.requireRetained !== "boolean")
-			throw invalid("params", "deliver requireRetained must be a boolean");
+		if (message.requireRetained !== undefined && message.requireRetained !== requireRetained)
+			throw invalid("params", "requireRetained does not match the primary message operation");
 		await this.options.deliver({
-			requireRetained: message.requireRetained !== false,
+			requireRetained,
 			sourceId: message.sourceId,
 			text: message.text,
 			...(message.details === undefined ? {} : { details: message.details as JsonValue }),
@@ -840,14 +842,15 @@ export async function connectPrimaryChannel(options: {
 			id: endpoint.id,
 			info: async () => (await invoke("info", undefined, timeoutMs)) as PrimaryInfo,
 			deliver: async (message) => {
+				if (message.requireRetained !== undefined && typeof message.requireRetained !== "boolean")
+					throw new TypeError("deliver requireRetained must be a boolean");
 				await invoke(
-					"deliver",
+					message.requireRetained === false ? "admit" : "deliver",
 					{
 						sourceId: message.sourceId,
 						text: message.text,
 						...(message.details === undefined ? {} : { details: message.details }),
 						...(message.replyTo === undefined ? {} : { replyTo: message.replyTo }),
-						...(message.requireRetained === undefined ? {} : { requireRetained: message.requireRetained }),
 					},
 					timeoutMs,
 				);

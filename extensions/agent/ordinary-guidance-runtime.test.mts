@@ -236,12 +236,18 @@ async function guidanceFixture(t: TestContext, holdStartup = false) {
 			).session;
 			await session.bindExtensions({});
 		},
-		async direct(method: "submit" | "report", sourceId: string, origin: "operator" | "model" = "model") {
+		async direct(
+			method: "submit" | "report",
+			sourceId: string,
+			origin: "operator" | "model" = "model",
+			target = sessionManager.getSessionId(),
+			text = "DIRECT_NOTICE",
+		) {
 			const manager = new AgentManager({ root: sessionsRoot, agentDir, packageDir: getPackageDir() });
 			try {
 				return (await manager.control(
 					method,
-					{ sessionId: sessionManager.getSessionId(), message: "DIRECT_NOTICE", requestId: sourceId, origin },
+					{ sessionId: target, message: text, requestId: sourceId, origin, whenBusy: "steer" },
 					{ id: "00000000-0000-4000-8000-000000000001", cwd },
 				)) as { admitted: boolean; boundary: string };
 			} finally {
@@ -496,25 +502,21 @@ for (const method of ["submit", "report"] as const)
 			timeout: 20000,
 		}, async (t) => {
 			const fixture = await guidanceFixture(t, busy);
+			fixture.sessionManager.appendMessage({ role: "user", content: "Retained seed", timestamp: Date.now() });
 			const work = busy ? fixture.session.prompt("Hold startup") : Promise.resolve();
 			if (busy) await fixture.entered;
 			const result = await fixture.direct(method, `direct:${method}`);
 			assert.equal(result.admitted, true);
-			assert.match(result.boundary, /Queued admission.*retention/u);
+			assert.match(result.boundary, /retained the message for delivery.*does not prove placement/u);
 			if (busy) {
 				assert.equal(fixture.retained(`direct:${method}`).length, 0);
-				assert.equal(fixture.session.agent.peekQueuedMessages().length, 1);
 				assert.equal((await fixture.direct(method, `direct:${method}`)).admitted, true);
 				assert.equal(
 					await fixture.deliver(`direct:${method}`, "DIRECT_NOTICE"),
 					false,
-					"queued dedup is not retained acceptance",
+					"inbox admission is not transcript retention",
 				);
-				assert.equal(
-					fixture.session.agent.peekQueuedMessages().length,
-					1,
-					"an upgraded retention request reuses the admitted attempt",
-				);
+				assert.equal(fixture.session.agent.peekQueuedMessages().length, 0, "the inbox owns the pending notice");
 			}
 			fixture.release();
 			await work;
@@ -523,17 +525,79 @@ for (const method of ["submit", "report"] as const)
 			assert.equal(await fixture.deliver(`direct:${method}`, "DIRECT_NOTICE"), true);
 		});
 
-it("admits a passive direct message to a custom-only primary without claiming retention", {
-	timeout: 20000,
-}, async (t) => {
+it("refuses direct admission before Pi creates a resumable session file", { timeout: 20000 }, async (t) => {
 	const fixture = await guidanceFixture(t);
-	assert.equal((await fixture.direct("submit", "direct:passive", "operator")).admitted, true);
-	assert.equal(fixture.retained("direct:passive").length, 0);
-	assert.equal(await fixture.deliver("direct:passive", "DIRECT_NOTICE", false), false);
-	assert.equal(fixture.sessionManager.getEntries().filter((entry) => entry.type === "custom_message").length, 1);
+	await assert.rejects(fixture.direct("submit", "direct:passive", "operator"), /requires a saved session file/u);
+	assert.equal(fixture.sessionManager.getEntries().filter((entry) => entry.type === "custom_message").length, 0);
 	await fixture.session.prompt("Flush first conversation");
+	assert.equal((await fixture.direct("submit", "direct:passive", "operator")).admitted, true);
 	assert.equal(await fixture.deliver("direct:passive", "DIRECT_NOTICE", false), true);
 	assert.equal(fixture.retained("direct:passive").length, 1);
+});
+
+it("replays admitted steers in order after the busy primary process exits", { timeout: 20000 }, async (t) => {
+	const fixture = await guidanceFixture(t);
+	const child = spawn(
+		process.execPath,
+		[
+			fileURLToPath(new URL("./primary-retention-fixture.mts", import.meta.url)),
+			fixture.cwd,
+			fixture.agentDir,
+			fixture.sessionsRoot,
+			"inbox",
+		],
+		{ stdio: ["ignore", "ignore", "inherit", "ipc"] },
+	);
+	t.after(async () => {
+		if (child.exitCode === null && child.signalCode === null) {
+			child.kill("SIGKILL");
+			await waitForProcessExit(child);
+		}
+	});
+	const [message] = await once(child, "message", { signal: AbortSignal.timeout(10000) });
+	const { ownerId, sessionFile } = message as { ownerId: string; sessionFile: string };
+	const ids = ["direct:steer-first", "direct:passive", "direct:steer-last"] as const;
+	for (const [index, id] of ids.entries()) {
+		const result = await fixture.direct("submit", id, index === 1 ? "operator" : "model", ownerId, id);
+		assert.equal(result.admitted, true);
+	}
+	assert.equal((await fixture.direct("submit", ids[0], "model", ownerId)).admitted, true);
+	const beforeExit = readFileSync(sessionFile, "utf8");
+	for (const id of ids) assert.ok(!beforeExit.includes(id), "the frozen turn placed no notice");
+	const inboxFile = `${sessionFile}.agent-inbox`;
+	const admitted = readFileSync(inboxFile);
+	const snapshot = JSON.parse(admitted.toString()) as { rows: { sourceId: string }[] };
+	assert.deepEqual(
+		snapshot.rows.map((row) => row.sourceId),
+		ids,
+	);
+	child.kill("SIGKILL");
+	await waitForProcessExit(child);
+	await fixture.restart(sessionFile);
+	await fixture.session.waitForIdle();
+	const checkOrder = () =>
+		assert.deepEqual(
+			fixture.sessionManager
+				.getEntries()
+				.flatMap((entry) =>
+					entry.type === "custom_message" && entry.customType === "agent.peer"
+						? [(entry.details as { sourceId: string }).sourceId]
+						: [],
+				),
+			ids,
+		);
+	checkOrder();
+	for (const id of ids) assert.equal(fixture.retained(id).length, 1);
+	assert.ok(fixture.requests.some((request) => ids.every((id) => JSON.stringify(request.messages).includes(id))));
+	assert.ok(!existsSync(inboxFile));
+	// Simulate an exit after transcript placement but before the inbox rewrite.
+	writeFileSync(inboxFile, admitted);
+	await fixture.restart();
+	await fixture.session.waitForIdle();
+	checkOrder();
+	assert.ok(!existsSync(inboxFile));
+	assert.equal((await fixture.direct("submit", ids[0])).admitted, true);
+	checkOrder();
 });
 
 it("refuses an append-before-persist failure and retries after the write becomes available", {

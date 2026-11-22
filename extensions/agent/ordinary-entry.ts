@@ -75,6 +75,7 @@ import type { PrimaryIntentClaim } from "./primary-channel.ts";
 import { ORDINARY_CONTINUITY_ENTRY } from "./continuity-facts.ts";
 import { OrdinaryContinuity, PLANNING_BUDGET_NOTICE, deliveredResults } from "./ordinary-continuity.ts";
 import { formatPrimaryObservation } from "./primary-observation.ts";
+import { PrimaryInbox } from "./primary-inbox.ts";
 import { PrimaryRetention } from "./primary-retention.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { HandleSchema, ProfileOutputSchema, ProfileParams } from "./profile-schema.ts";
@@ -449,7 +450,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		Object.entries(cards).map(([name, presentation]) => ({ name, ...presentation })),
 	);
 	const primaries = new Map<string, AbortController>();
-	const primaryRetentions = new Map<string, PrimaryRetention>();
+	const primaryDeliveries = new Map<
+		string,
+		{ retention: PrimaryRetention; inbox: PrimaryInbox; flush(wake?: boolean): void }
+	>();
 	let threadNoticeLifecycle = 0;
 	let threadNoticeSnapshots: ThreadRangeSnapshot[] = [];
 	const resetThreadNotices = () => {
@@ -1257,23 +1261,36 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		const abort = new AbortController();
 		primaries.set(sessionId, abort);
 		const purpose = retainedPurpose(ctx.sessionManager, _event.reason);
+		const sendPeer = (text: string, details: unknown, wake: boolean) => {
+			refreshPreferences(ctx);
+			pi.sendMessage(
+				{ customType: "agent.peer", content: text, details, display: true },
+				wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false },
+			);
+		};
 		const retention = new PrimaryRetention(
 			ctx.sessionManager,
 			() => ctx.isIdle(),
 			(text, details) => {
-				refreshPreferences(ctx);
 				const wake = !(
 					details !== null &&
 					typeof details === "object" &&
 					(details as { wake?: unknown }).wake === false
 				);
-				pi.sendMessage(
-					{ customType: "agent.peer", content: text, details, display: true },
-					wake ? { triggerTurn: true, deliverAs: "steer" } : { triggerTurn: false },
-				);
+				sendPeer(text, details, wake);
 			},
 		);
-		primaryRetentions.set(sessionId, retention);
+		const inbox = new PrimaryInbox(ctx.sessionManager);
+		const flush = (wake = true) => {
+			if (abort.signal.aborted) return;
+			try {
+				if (!inbox.hasRows() || !ctx.isIdle()) return;
+				inbox.flush((row, trigger) => sendPeer(row.text, row.details, trigger), wake);
+			} catch (error) {
+				ctx.ui.notify(`Primary inbox delivery paused: ${String(error)}`, "error");
+			}
+		};
+		primaryDeliveries.set(sessionId, { retention, inbox, flush });
 		const retained = ctx.sessionManager.getEntries();
 		continuity.start(sessionId, retained);
 		await getManager().registerPrimary(sessionId, {
@@ -1289,11 +1306,19 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			observedInputCanCapture: purpose.canCapture,
 			model: ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined,
 			thinkingLevel: pi.getThinkingLevel(),
+			resumeInbox: flush,
 			send: (text, details, sourceId, requireRetained) => {
+				if (!requireRetained) {
+					if (retention.hasQueued(sourceId)) throw new Error("Primary delivery awaits its queued source-ledger notice");
+					inbox.admit(sourceId, text, details);
+					flush();
+					return;
+				}
+				if (inbox.hasPending(sourceId)) throw new Error("Primary delivery awaits its inbox notice");
 				// Only a result that the session file retains settles the requests that its tuples name.
-				const results = requireRetained ? deliveredResults(details) : [];
+				const results = deliveredResults(details);
 				providerBlocks.observe(details);
-				retention.deliver(sourceId, text, details, requireRetained);
+				retention.deliver(sourceId, text, details);
 				continuity.delivered(sessionId, results);
 			},
 			status: (text) => {
@@ -1350,6 +1375,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	});
 	pi.on("context", (event, ctx) => continuity.context(event, ctx));
 	pi.on("turn_end", (event, ctx) => continuity.turnEnd(event, ctx, selfCompaction.requested));
+	const inboxBoundary = (_event: unknown, ctx: ExtensionContext) =>
+		primaryDeliveries.get(ctx.sessionManager.getSessionId())?.inbox.boundary();
+	pi.on("turn_end", inboxBoundary);
+	pi.on("agent_before_settle", inboxBoundary);
 	pi.on("tool_execution_end", (_event, ctx) => {
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
@@ -1357,16 +1386,18 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		selfCompaction.clear();
 		getManager().touchPrimary(ctx.sessionManager.getSessionId());
 	});
-	pi.on("agent_settled", (_event, ctx) => {
-		primaryRetentions.get(ctx.sessionManager.getSessionId())?.settled();
+	pi.on("agent_settled", (event, ctx) => {
+		const delivery = primaryDeliveries.get(ctx.sessionManager.getSessionId());
+		delivery?.retention.settled();
+		delivery?.flush(!event.aborted);
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		resetThreadNotices();
 		disposeFactorySettings();
 		selfCompaction.clear();
 		const id = ctx.sessionManager.getSessionId();
-		primaryRetentions.get(id)?.clear();
-		primaryRetentions.delete(id);
+		primaryDeliveries.get(id)?.retention.clear();
+		primaryDeliveries.delete(id);
 		continuity.end(id);
 		const abort = primaries.get(id);
 		if (!abort) return;
