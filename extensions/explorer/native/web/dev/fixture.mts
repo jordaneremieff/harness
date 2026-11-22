@@ -1,18 +1,20 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
-	type Dir,
+	closeSync,
 	chmodSync,
 	lstatSync,
 	mkdirSync,
-	opendirSync,
+	openSync,
+	readdirSync,
+	readSync,
 	readFileSync,
 	realpathSync,
 	renameSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, extname, join, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const defaultPath = "src/router.ts";
 const imageTypes = new Map([
@@ -39,16 +41,62 @@ export const validFixturePath = (path: unknown): path is string =>
 	!path.includes("\0") &&
 	path.split("/").every((part) => part && part !== "." && part !== ".." && part.toLowerCase() !== ".git");
 
-function readFolderEntries(scan: Dir) {
-	const entries: ExplorerRequests["files.folder"][1]["entries"] = [];
-	for (let i = 0; i < 20_002; i++) {
-		const row = scan.readSync();
-		if (!row) return { entries, truncated: false };
-		if (!validFixturePath(row.name) || !(row.isDirectory() || row.isFile())) continue;
-		if (entries.length >= 5000) break;
-		entries.push({ name: row.name, kind: row.isDirectory() ? "folder" : "file" });
+type Index = ExplorerRequests["files.list"][1];
+type IndexFolder = { directory: string; path: string; repo?: ExplorerRepository };
+type IndexEntry = { kind: "file"; path: string } | ({ kind: "folder" } & IndexFolder);
+type IndexState = {
+	queue: IndexFolder[];
+	paths: Set<string>;
+	repositories: Index["repositories"];
+	repositoriesTruncated: boolean;
+	bytes: number;
+	deadline: number;
+};
+type FolderEntry = ExplorerRequests["files.folder"][1]["entries"][number];
+const folderLimit = 10_000;
+const collator = new Intl.Collator("en", { numeric: true });
+
+function inside(root: string, target: string) {
+	const path = relative(root, target);
+	return !path || validFixturePath(path);
+}
+
+function smallText(path: string) {
+	try {
+		const fd = openSync(path, "r");
+		try {
+			const bytes = Buffer.alloc(4096);
+			return bytes.subarray(0, readSync(fd, bytes)).toString("utf8");
+		} finally {
+			closeSync(fd);
+		}
+	} catch {
+		return "";
 	}
-	return { entries, truncated: true };
+}
+
+function repository(directory: string, base: string): ExplorerRepository | undefined {
+	const marker = join(directory, ".git");
+	const stat = lstatSync(marker, { throwIfNoEntry: false });
+	if (!stat) return undefined;
+	const pointer = stat.isFile() ? /^gitdir: *(.*)$/m.exec(smallText(marker))?.[1]?.trim() : undefined;
+	const git = stat.isDirectory() ? marker : pointer ? resolve(directory, pointer) : undefined;
+	if (!git || !lstatSync(git, { throwIfNoEntry: false })?.isDirectory()) return undefined;
+	const canonical = realpathSync(git);
+	if (!canonical.startsWith(base + sep)) return undefined;
+	const head = smallText(join(canonical, "HEAD")).trim();
+	if (!head) return undefined;
+	return {
+		branch: /^ref: refs\/heads\/(.+)$/.exec(head)?.[1] ?? null,
+		head: /^(?:[\da-f]{40}|[\da-f]{64})$/i.test(head) ? head : null,
+	};
+}
+
+function containingRepository(directory: string, base: string): string | undefined {
+	for (let at = directory; ; at = dirname(at)) {
+		if (repository(at, base)) return at;
+		if (at === base) return undefined;
+	}
 }
 
 function router(delay: number, fallback: string) {
@@ -96,31 +144,34 @@ register({ path: fallbackRoute, method: 'GET', priority: 2 });
 `;
 }
 
+function gitAt(root: string, args: string[], accepted: number[] = [0], input?: string): Buffer {
+	try {
+		const literal = args[0] === "check-ignore" ? [] : ["--literal-pathspecs"];
+		return execFileSync("git", ["--no-pager", ...literal, ...args], {
+			cwd: root,
+			timeout: 3000,
+			maxBuffer: 32 * 1024 * 1024,
+			stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+			input,
+			env: {
+				PATH: process.env.PATH,
+				HOME: root,
+				XDG_CONFIG_HOME: root,
+				GIT_CONFIG_NOSYSTEM: "1",
+				GIT_OPTIONAL_LOCKS: "0",
+				LC_ALL: "C",
+			},
+		});
+	} catch (error) {
+		const gitError = error as { status?: number; stdout?: Buffer };
+		if (gitError.status !== undefined && accepted.includes(gitError.status) && gitError.stdout) return gitError.stdout;
+		throw error;
+	}
+}
+
 export function createFixture(directory: string) {
 	const root = realpathSync(directory);
-	const git = (args: string[], accepted: number[] = [0]): Buffer => {
-		try {
-			return execFileSync("git", ["--no-pager", "--literal-pathspecs", ...args], {
-				cwd: root,
-				timeout: 3000,
-				maxBuffer: 32 * 1024 * 1024,
-				stdio: ["ignore", "pipe", "pipe"],
-				env: {
-					PATH: process.env.PATH,
-					HOME: root,
-					XDG_CONFIG_HOME: root,
-					GIT_CONFIG_NOSYSTEM: "1",
-					GIT_OPTIONAL_LOCKS: "0",
-					LC_ALL: "C",
-				},
-			});
-		} catch (error) {
-			const gitError = error as { status?: number; stdout?: Buffer };
-			if (gitError.status !== undefined && accepted.includes(gitError.status) && gitError.stdout)
-				return gitError.stdout;
-			throw error;
-		}
-	};
+	const git = (args: string[]) => gitAt(root, args);
 	const write = (path: string, text: string) => {
 		const target = join(root, path);
 		mkdirSync(dirname(target), { recursive: true });
@@ -133,7 +184,7 @@ export function createFixture(directory: string) {
 		git(["add", "--all"]);
 		git(["commit", "-qm", subject]);
 	};
-	write(".gitignore", "dist/\n*.local\n");
+	write(".gitignore", "dist/\n*.local\n/workshop/bulk/\n");
 	write("dist/assets/routes.txt", "/health\n");
 	write("dist/worker.js", "export const worker = true;\n");
 	write("routes.local", "/dev\n");
@@ -158,7 +209,50 @@ export function createFixture(directory: string) {
 	write("config/routes.json", '{\n  "maxAttempts": 4,\n  "region": "local"\n}\n');
 	write("docs/retry.md", "# Retry policy\n\nThe router delays retries according to priority.\n");
 	unlinkSync(join(root, "config/legacy.json"));
+	const catalog = join(root, "workshop/catalog");
+	mkdirSync(catalog, { recursive: true });
+	gitAt(catalog, ["init", "-q", "-b", "main", "--template="]);
+	write("workshop/catalog/.gitignore", "cache/\n");
+	write("workshop/catalog/inventory.txt", "Inventory for the workshop.\n");
+	write("workshop/catalog/cache/index.log", "Local cache.\n");
+	write("workshop/guide.txt", "The workbench has a manual.\n");
+	gitAt(catalog, ["add", "--all"]);
+	gitAt(catalog, [
+		"-c",
+		"user.name=Fixture Author",
+		"-c",
+		"user.email=fixture@example.invalid",
+		"commit",
+		"-qm",
+		"Add the workshop catalog",
+	]);
+	gitAt(catalog, ["checkout", "-qb", "feature/catalog"]);
+	for (const bucket of ["part-a", "part-b"]) {
+		const target = join(root, "workshop/bulk", bucket);
+		mkdirSync(target, { recursive: true });
+		for (let i = 0; i < 9000; i++) writeFileSync(join(target, `item-${String(i).padStart(5, "0")}.txt`), "");
+	}
+	return openFixtureRoot(root, root);
+}
 
+export function openFixtureRoot(base: string, path: string) {
+	if (typeof path !== "string" || !isAbsolute(path)) throw new Error("Use an absolute fixture folder path.");
+	const root = realpathSync(path);
+	if (!inside(base, root) || !lstatSync(root).isDirectory()) throw new Error("The folder leaves the fixture.");
+	const git = (args: string[], accepted?: number[]) => gitAt(root, args, accepted);
+	const info = repository(root, base);
+	const rootInfo = (): ExplorerRoot => {
+		const branch = info ? output(["rev-parse", "--abbrev-ref", "HEAD"]).trim() : null;
+		return {
+			path: root,
+			name: root === base ? "Waypoint" : basename(root),
+			kind: info ? "git" : "folder",
+			branch: branch === "HEAD" ? null : branch,
+			head: info ? head() : null,
+			defaultBranch: info ? "main" : null,
+			onDefaultBranch: branch === "main",
+		};
+	};
 	const output = (args: string[], accepted?: number[]) => git(args, accepted).toString("utf8");
 	const head = () => output(["rev-parse", "HEAD"]).trim();
 	const branch = () => output(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
@@ -169,30 +263,158 @@ export function createFixture(directory: string) {
 	};
 	const parent = (value: string) => output(["rev-list", "--parents", "-n1", value]).trim().split(" ")[1] ?? null;
 	// Hash the empty tree locally so root commits use the same diff path as other commits.
-	const empty = output(["hash-object", "-w", "-t", "tree", "--stdin"]).trim();
-	const paths = () =>
-		[
-			...new Set(
-				output(["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).split("\0").filter(validFixturePath),
-			),
-		].sort();
-	function ignoredPaths() {
-		const paths = output(["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"])
-			.split("\0")
-			.filter((path) => validFixturePath(path.endsWith("/") ? path.slice(0, -1) : path))
-			.sort();
-		const actual = paths.filter((path, index) => !path.endsWith("/") || !paths[index + 1]?.startsWith(path));
-		return { paths: actual.slice(0, 200_000), truncated: actual.length > 200_000 };
+	const empty = info ? output(["hash-object", "-w", "-t", "tree", "--stdin"]).trim() : "";
+	function ignoredIn(gitRoot: string | undefined, paths: string[]) {
+		if (!gitRoot || !paths.length) return new Set<string>();
+		return new Set(
+			gitAt(gitRoot, ["check-ignore", "-z", "--stdin"], [0, 1], `${paths.join("\0")}\0`)
+				.toString("utf8")
+				.split("\0"),
+		);
+	}
+	function targetKind(path: string) {
+		const stat = lstatSync(path, { throwIfNoEntry: false });
+		if (stat?.isFile()) return "file";
+		if (stat?.isDirectory()) return "folder";
+		if (stat?.isSymbolicLink()) {
+			try {
+				const target = realpathSync(path);
+				if (inside(root, target)) return targetKind(target);
+			} catch {
+				// Broken and out-of-root links are not listed.
+			}
+		}
+	}
+	function listedEntry(target: string, child: import("node:fs").Dirent): FolderEntry | undefined {
+		const childPath = join(target, child.name);
+		const kind = child.isDirectory() ? "folder" : child.isFile() ? "file" : targetKind(childPath);
+		if (!kind) return;
+		return { name: child.name, kind, repo: kind === "folder" ? repository(childPath, base) : undefined };
+	}
+	function unorderedFolderEntries(target: string) {
+		const entries: FolderEntry[] = [];
+		for (const child of readdirSync(target, { withFileTypes: true })) {
+			if (!validFixturePath(child.name)) continue;
+			const entry = listedEntry(target, child);
+			if (entry) entries.push(entry);
+		}
+		return entries;
+	}
+	function sortFolder(a: FolderEntry, b: FolderEntry) {
+		if (a.kind === b.kind) return collator.compare(a.name, b.name);
+		return a.kind === "folder" ? -1 : 1;
+	}
+	function annotateIgnored(target: string, entries: FolderEntry[]) {
+		const gitRoot = containingRepository(target, base);
+		if (!gitRoot) return;
+		const names = entries.map(({ name }) => relative(gitRoot, join(target, name)));
+		const ignored = ignoredIn(gitRoot, names);
+		entries.forEach((entry, i) => {
+			if (ignored.has(names[i])) entry.ignored = true;
+		});
 	}
 	function folder(path: string) {
-		const target = join(root, path);
-		if (!validFixturePath(path) || realpathSync(target) !== target) throw new Error("Invalid folder path.");
-		const scan = opendirSync(target);
-		try {
-			return readFolderEntries(scan);
-		} finally {
-			scan.closeSync();
+		if (path !== "" && !validFixturePath(path)) throw new Error("Invalid folder path.");
+		const target = realpathSync(join(root, path));
+		if (!inside(root, target)) throw new Error("Invalid folder path.");
+		const entries = unorderedFolderEntries(target).sort(sortFolder);
+		const selected = entries.slice(0, folderLimit);
+		annotateIgnored(target, selected);
+		return { entries: selected, truncated: entries.length > selected.length };
+	}
+	function outside(paths: string[]) {
+		if (!info) return undefined;
+		const local = paths.filter((path) => containingRepository(dirname(join(root, path)), base) === root);
+		const localPaths = new Set(local);
+		const ignored = ignoredIn(root, local);
+		return paths.filter((path) => ignored.has(path) || !localPaths.has(path));
+	}
+	function* gitEntries(item: IndexFolder, prefix: string): Iterable<IndexEntry> {
+		const names = gitAt(item.directory, [
+			"ls-files",
+			"-z",
+			"--cached",
+			"--others",
+			"--exclude-standard",
+			"--deduplicate",
+		])
+			.toString("utf8")
+			.split("\0");
+		for (const name of new Set(names.map((part) => part.replace(/\/$/, "")))) {
+			if (!validFixturePath(name)) continue;
+			const directory = join(item.directory, name);
+			const path = prefix + name;
+			const kind = targetKind(directory);
+			if (kind === "file") yield { kind, path };
+			else if (kind === "folder") {
+				const repo = repository(directory, base);
+				if (repo) yield { kind, directory, path, repo };
+			}
 		}
+	}
+	function* plainEntries(item: IndexFolder, prefix: string): Iterable<IndexEntry> {
+		for (const child of readdirSync(item.directory, { withFileTypes: true })) {
+			if (!validFixturePath(child.name)) continue;
+			const path = prefix + child.name;
+			const directory = join(item.directory, child.name);
+			if (child.isDirectory()) yield { kind: "folder", directory, path, repo: repository(directory, base) };
+			else if (child.isFile() || targetKind(directory) === "file") yield { kind: "file", path };
+		}
+	}
+	function addIndexPath(state: IndexState, path: string) {
+		if (state.paths.has(path)) return true;
+		state.bytes += Buffer.byteLength(JSON.stringify(path)) + 1;
+		if (state.paths.size >= 200_000 || state.bytes > 26 * 1024 * 1024) return false;
+		state.paths.add(path);
+		return true;
+	}
+	function collectIndex(state: IndexState, item: IndexFolder) {
+		const prefix = item.path ? `${item.path}/` : "";
+		const entries = item.repo ? gitEntries(item, prefix) : plainEntries(item, prefix);
+		for (const entry of entries) {
+			if (Date.now() >= state.deadline) return false;
+			if (!addIndexEntry(state, entry)) return false;
+		}
+		return true;
+	}
+	function addIndexEntry(state: IndexState, entry: IndexEntry) {
+		return entry.kind === "file" ? addIndexPath(state, entry.path) : addIndexFolder(state, entry);
+	}
+	function addIndexFolder(state: IndexState, item: IndexFolder) {
+		if (item.repo) {
+			if (state.repositories.length >= 2000) {
+				state.repositoriesTruncated = true;
+				return false;
+			}
+			state.repositories.push({ path: item.path, ...item.repo });
+		}
+		state.queue.push(item);
+		return true;
+	}
+	function index(): Index {
+		const state: IndexState = {
+			queue: [{ directory: root, path: "", repo: info }],
+			paths: new Set(),
+			repositories: [],
+			repositoriesTruncated: false,
+			bytes: 0,
+			deadline: Date.now() + 8000,
+		};
+		let truncated = false;
+		for (const item of state.queue) {
+			if (Date.now() >= state.deadline || !collectIndex(state, item)) {
+				truncated = true;
+				break;
+			}
+		}
+		const source = state.repositories.length ? "mixed" : info ? "git" : "scan";
+		return {
+			paths: [...state.paths],
+			truncated,
+			source,
+			repositories: state.repositories,
+			repositoriesTruncated: state.repositoriesTruncated,
+		};
 	}
 	const absent = (path: string, kind: FixtureFile["kind"]): FixtureFile => ({ path, kind, size: 0 });
 	function committed(path: string, at: string) {
@@ -328,8 +550,9 @@ export function createFixture(directory: string) {
 		rev,
 		parent,
 		empty,
-		paths,
-		ignoredPaths,
+		rootInfo,
+		index,
+		outside,
 		folder,
 		read,
 		log,
@@ -339,4 +562,4 @@ export function createFixture(directory: string) {
 	};
 }
 
-export type Fixture = ReturnType<typeof createFixture>;
+export type Fixture = ReturnType<typeof openFixtureRoot>;

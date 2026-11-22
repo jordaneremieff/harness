@@ -19,14 +19,14 @@
 <script defer src="app/ui/code.js"></script>
 <script defer src="app/ui/preview.js"></script>
 <script defer src="app/ui/review.js"></script>
-<script defer src="app/ui/ignored-folders.js"></script>
+<script defer src="app/ui/file-tree.js"></script>
 <script defer src="app/ui/editor.js"></script>
 <script defer src="app/ui/main.js"></script>
 </head>
 <body>
 <div id="app">
  <header id="topbar">
-  <div class="identity"><button id="sidebar-toggle" class="icon-button" aria-label="Toggle sidebar" title="Toggle sidebar (⌘B)"></button><strong>Explorer</strong><span class="slash">/</span><span id="repo-name" class="repo-name">Repository</span><code id="head-sha"></code></div>
+  <div class="identity"><button id="sidebar-toggle" class="icon-button" aria-label="Toggle sidebar" title="Toggle sidebar (⌘B)"></button><strong>Explorer</strong><span class="slash">/</span><nav id="repo-name" class="repo-name" aria-label="Root trail"></nav><code id="head-sha"></code></div>
   <div class="tools"><button id="zoom-level" class="tool-button" title="Actual size (⌘0)" aria-label="Zoom level. Select to return to actual size." hidden></button><div class="history-actions"><button id="back" class="icon-button" aria-label="Back" title="Back (⌘[)" disabled></button><button id="forward" class="icon-button" aria-label="Forward" title="Forward (⌘])" disabled></button></div><button id="quick-open" class="tool-button"><span>Quick open</span><kbd>⌘ P</kbd></button><button id="search" class="icon-button" title="Search repository (⌘⇧F)" aria-label="Search repository"></button></div>
  </header>
  <div id="workspace">

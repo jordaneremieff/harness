@@ -496,6 +496,11 @@ kbd {
   width: 14px;
   height: 14px;
 }
+.filter-status {
+  margin: 0 7px 6px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
 .list-row {
   min-height: 29px;
   width: 100%;
@@ -514,6 +519,51 @@ kbd {
   width: 15px;
   height: 15px;
 }
+.tree-canvas {
+  position: relative;
+  overflow-anchor: none;
+}
+.tree-slot {
+  position: absolute;
+  inset-inline: 0;
+  height: var(--tree-row-height);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.tree-slot .list-row {
+  height: 100%;
+  min-width: 0;
+  flex: 1;
+}
+.tree-slot .promote-root {
+  width: 25px;
+  height: 25px;
+  min-height: 0;
+  flex: none;
+  color: var(--ink-3);
+}
+.tree-slot .promote-root .ico {
+  width: 14px;
+  height: 14px;
+}
+.branch-pill {
+  flex: 0 1 auto;
+  max-width: 55%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 8px;
+  padding: 1px 6px;
+  color: var(--ink-3);
+  background: var(--paper);
+  font: 500 10px var(--mono);
+}
+.repository-open .ico:last-child {
+  margin-left: auto;
+  flex: none;
+}
 .list-row.is-ignored .row-title {
   color: var(--ink-3);
 }
@@ -522,9 +572,16 @@ kbd {
   color: color-mix(in srgb, var(--ink-3) 80%, var(--paper));
 }
 .folder-list-status {
-  margin: 3px 5px 5px calc(6px + 10px * min(var(--depth, 0), 9));
+  margin: 0 5px 0 calc(6px + 10px * min(var(--depth, 0), 9));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--ink-3);
   font-size: 12px;
+}
+button.folder-list-status {
+  text-align: left;
+  text-decoration: underline;
 }
 .row-title {
   min-width: 0;
@@ -1202,9 +1259,21 @@ select {
 }
 
 .identity .repo-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+  overflow: auto hidden;
+  scrollbar-width: none;
   white-space: nowrap;
+}
+.root-segment {
+  flex: none;
+  padding: 3px 1px;
+}
+button.root-segment {
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 #capture-short {
   overflow: hidden;

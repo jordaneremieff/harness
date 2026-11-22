@@ -83,9 +83,16 @@ async function handlePost(
 	}
 	const result = bridge.handle(packet);
 	const reply = JSON.stringify(result);
-	const large = ["files.list", "file.read", "review.diff", "edit.draft", "edit.paths", "clipboard.read"].includes(
-		packet?.type,
-	);
+	const large = [
+		"files.list",
+		"files.folder",
+		"search",
+		"file.read",
+		"review.diff",
+		"edit.draft",
+		"edit.paths",
+		"clipboard.read",
+	].includes(packet?.type);
 	if (Buffer.byteLength(reply) > (large ? 32 * MiB : 256 * KiB))
 		json(413, error("invalid", "Bridge reply exceeds the size limit."));
 	else json(200, result);
@@ -135,27 +142,32 @@ export async function startDevHost(port = 0) {
 		};
 		const bridge = createBridge(repo, emit, schedule);
 		const changed = new Set<string>();
-		let lastHead = repo.head();
-		let lastBranch = repo.branch();
+		const structural = new Set<string>();
+		let unknown = false;
 		const flush = () => {
 			try {
-				const head = repo.head();
-				const branch = repo.branch();
-				const next = head !== lastHead || branch !== lastBranch ? { head, branch } : undefined;
-				if (changed.size || next)
-					emit({ type: "files.changed", paths: [...changed].sort(), ...(next ? { head: next } : {}) });
-				lastHead = head;
-				lastBranch = branch;
+				bridge.changed([...changed].sort(), structural, unknown);
 			} catch (watchError) {
 				console.error("Could not read fixture changes:", watchError);
 			} finally {
 				changed.clear();
+				structural.clear();
+				unknown = false;
 			}
 		};
-		watcher = watch(repo.root, { recursive: true }, (_event, name) => {
-			if (!name || name === ".git") return;
-			if (!name.startsWith(".git/")) changed.add(name);
-			else if (name !== ".git/HEAD" && !name.startsWith(".git/refs/")) return;
+		function markChanged(event: string, name: string) {
+			if (unknown) return;
+			changed.add(name);
+			if (event === "rename") structural.add(name);
+			if (changed.size > 512) unknown = true;
+		}
+		function gitMetadata(name: string) {
+			return name.endsWith("/.git/HEAD") || name === ".git/HEAD" || name.includes(".git/refs/");
+		}
+		watcher = watch(repo.root, { recursive: true }, (event, name) => {
+			if (!name) unknown = true;
+			else if (!name.split("/").includes(".git")) markChanged(event, name);
+			else if (!gitMetadata(name)) return;
 			clearTimeout(debounce);
 			debounce = setTimeout(flush, 100);
 		});

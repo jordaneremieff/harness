@@ -45,6 +45,23 @@ type ExplorerRoot = {
 	defaultBranch: string | null;
 	onDefaultBranch: boolean;
 };
+type ExplorerBase = Pick<ExplorerRoot, "path" | "name">;
+type ExplorerRepository = Pick<ExplorerRoot, "branch" | "head">;
+type ExplorerFolderEntry = { name: string; kind: "file" | "folder"; ignored?: true; repo?: ExplorerRepository };
+type ExplorerTreeEntry = ExplorerFolderEntry & { path: string; lower: string };
+type ExplorerTreeRow =
+	| { kind: "entry"; entry: ExplorerTreeEntry; depth: number }
+	| { kind: "status"; folder: string; message: string; depth: number; retry?: true };
+type ExplorerTree = {
+	reset(): void;
+	load(path: string): Promise<void>;
+	isExpanded(path: string): boolean;
+	setExpanded(path: string, expand: boolean): Promise<void>;
+	reveal(path: string): Promise<void>;
+	invalidate(structural: Iterable<string> | null): void;
+	entries(): Iterable<ExplorerTreeEntry>;
+	rows(): ExplorerTreeRow[];
+};
 type ExplorerResolved = { scope: ExplorerScope; base: string | null; head: string; label: string; key: string };
 type ExplorerChange = {
 	path: string;
@@ -115,11 +132,11 @@ type ExplorerPromptState = {
 	truncated: boolean;
 };
 type ExplorerEvent = { v: 1 } & (
-	| { type: "files.changed"; paths: string[]; head?: Pick<ExplorerRoot, "branch" | "head"> }
+	| { type: "files.changed"; paths: string[]; structural?: string[]; outside?: string[]; head?: ExplorerRepository }
 	| { type: "notes.changed" }
 	| { type: "zoom"; zoom: number }
 	| ({ type: "live" } & ExplorerLive)
-	| ({ type: "open"; root?: ExplorerRoot } & ExplorerLaunch)
+	| ({ type: "open" } & ({ root: ExplorerRoot; base: ExplorerBase } | { root?: never; base?: never }) & ExplorerLaunch)
 	| ExplorerPromptState
 );
 type ExplorerCreateNote = Pick<ExplorerNote, "path" | "side" | "start" | "end" | "author" | "text" | "title"> & {
@@ -138,6 +155,7 @@ type ExplorerRequests = {
 		undefined,
 		{
 			root: ExplorerRoot;
+			base: ExplorerBase;
 			launch: ExplorerLaunch;
 			settings: ExplorerSettings;
 			live: ExplorerLive;
@@ -149,11 +167,13 @@ type ExplorerRequests = {
 		{
 			paths: string[];
 			truncated: boolean;
-			ignored: { paths: string[]; truncated: boolean; error?: string };
-			source: string;
+			source: "git" | "scan" | "mixed";
+			repositories: ({ path: string } & ExplorerRepository)[];
+			repositoriesTruncated?: boolean;
 		},
 	];
-	"files.folder": [{ path: string }, { entries: { name: string; kind: "file" | "folder" }[]; truncated: boolean }];
+	"files.folder": [{ path: string }, { entries: ExplorerFolderEntry[]; truncated: boolean }];
+	"root.open": [{ path: string }, object];
 	"file.read": [{ path: string; at?: string }, ExplorerFile];
 	"markdown.render": [{ path: string; at?: string }, { file: ExplorerFile; html?: string }];
 	"link.open": [{ url: string }, object];
@@ -206,6 +226,7 @@ type ExplorerCodeRow =
 	| { type: "fold"; key: string; base: number; head: number; count: number };
 type ExplorerLanguage = { id: string; label: string; mark: string };
 type ExplorerHit = { path: string; score: number };
+type ExplorerIndexedPath = string | { path: string; lower: string };
 type ExplorerMatch = { side: ExplorerSide; line: number; start: number; end: number };
 type ExplorerCodeOptions = {
 	path: string;
@@ -246,7 +267,7 @@ type ExplorerCodeView = {
 interface ExplorerModel {
 	lines(text: string | null | undefined): string[];
 	language(path: string, firstLine?: string): ExplorerLanguage;
-	fuzzy(paths: string[], query: string, limit?: number): ExplorerHit[];
+	fuzzy(paths: Iterable<ExplorerIndexedPath>, query: string, limit?: number): ExplorerHit[];
 	find(lines: string[], query: string, side: ExplorerSide, limit?: number): ExplorerMatch[];
 	project(base: string[], head: string[], hunks: ExplorerHunk[], split: boolean): ExplorerCodeRow[];
 	word(a: string, b: string): { base: [number, number]; head: [number, number] } | undefined;
@@ -295,17 +316,7 @@ type ExplorerEditor = {
 	focus(): void;
 };
 interface ExplorerApp {
-	ignoredFolders(
-		list: (path: string) => Promise<ExplorerRequests["files.folder"][1]>,
-		changed: () => void,
-	): {
-		replace(paths: string[]): void;
-		contains(path: string, includeSelf?: boolean): boolean;
-		invalidate(paths: string[]): string[];
-		get(path: string): { data?: ExplorerRequests["files.folder"][1]; error?: string; pending: boolean };
-		retryOnOpen(path: string): void;
-		loaded(): string[];
-	};
+	fileTree(list: (path: string) => Promise<ExplorerRequests["files.folder"][1]>, changed: () => void): ExplorerTree;
 	editing: ExplorerEditing;
 	editor(body: HTMLElement, toolbar: HTMLElement, context: ExplorerEditorContext): ExplorerEditor;
 	request<K extends keyof ExplorerRequests>(

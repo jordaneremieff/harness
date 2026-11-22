@@ -24,7 +24,7 @@ struct WorkspaceTests {
         #expect(throws: ExplorerError.self) { try Launch(target: ["root": "/", "ignored": "hide"]) }
     }
 
-    @Test func gitListsIgnoredEntriesSeparatelyAndCollapsesWhollyIgnoredFolders() throws {
+    @Test func indexOmitsIgnoredPathsAndFolderListingsMarkThem() throws {
         let root = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let git = { (args: [String]) in
@@ -39,32 +39,26 @@ struct WorkspaceTests {
             try Data().write(to: root.appendingPathComponent(name))
         }
         let plain = try Workspace(root.path)
-        #expect(try plain.ignoredFiles().paths.isEmpty)
         #expect(plain.files().paths.contains("node_modules/child/local"))
         #expect(try git(["init", "--quiet", "--template="]).status == 0)
         #expect(try git(["add", "-f", "--", "build/tracked"]).status == 0)
         let workspace = try Workspace(root.path)
         let paths = workspace.files()
-        let ignored = try workspace.ignoredFiles()
         #expect(paths.paths == [".gitignore", "build/tracked", "src.ts"])
-        #expect(ignored.paths == ["build/child/", "mixed/ignored.txt", "node_modules/", "private.log"])
-        #expect(!ignored.truncated)
-        #expect(try workspace.ignoredFiles(maxPaths: 1).truncated)
-        #expect(try workspace.ignoredFiles(maxPaths: 1).paths.count == 1)
         try Data().write(to: root.appendingPathComponent("mixed/ordinary.txt"))
         #expect(!workspace.files().paths.contains("mixed/ordinary.txt"))
         workspace.indexCache.invalidate()
         #expect(workspace.files().paths.contains("mixed/ordinary.txt"))
         #expect(try workspace.folder("build").entries.filter(\.ignored).map(\.name) == ["child"])
         #expect(try workspace.folder("node_modules").entries.allSatisfy(\.ignored))
-        #expect(try workspace.ignoredFiles().paths == ignored.paths)
-        // mixed/* ignores the folder's children, not the folder, so its re-included child stays visible.
         #expect(try workspace.folder("").entries.filter(\.ignored).map(\.name) == ["node_modules", "private.log"])
         #expect(try workspace.folder("mixed").entries.map { [$0.name, String($0.ignored)] } == [["ignored.txt", "true"], ["ordinary.txt", "false"]])
         let hidden = ExplorerServices(workspace: workspace, store: root, resources: root, showIgnored: false)
         let listing = try hidden.handle("files.list", [:])
         #expect(listing["paths"] as? [String] == workspace.files().paths)
-        #expect((listing["ignored"] as? [String: Any])?["paths"] as? [String] == [])
+        #expect(listing["ignored"] == nil)
+        let visible = try hidden.handle("files.folder", ["path": ""])["entries"] as? [[String: Any]]
+        #expect(visible?.compactMap { $0["name"] as? String } == ["build", "mixed", ".gitignore", "src.ts"])
         #expect(try hidden.handle("file.read", ["path": "private.log"])["kind"] as? String == "text")
     }
 

@@ -127,47 +127,6 @@ final class Workspace: @unchecked Sendable {
                 "defaultBranch": defaultBranch as Any? ?? jsonNull, "onDefaultBranch": branch != nil && branch == defaultBranch]
     }
 
-    private func gitFiles(_ args: [String], maxPaths: Int, includeDirectories: Bool = false) throws -> (paths: [String], truncated: Bool) {
-        var names = Set<String>(), jsonBytes = 0
-        let nameLimit = includeDirectories ? 4097 : 4096
-        var pending = Data(), skipOversize = false
-        let output = try Self.invoke(root, ["ls-files", "-z"] + args, limit: 31 * mib, seconds: 6) { chunk in
-            var start = chunk.startIndex
-            while let end = chunk[start...].firstIndex(of: 0) {
-                let part = chunk[start..<end]
-                start = end + 1
-                defer { pending.removeAll(keepingCapacity: true); skipOversize = false }
-                guard !skipOversize, pending.count + part.count <= nameLimit else { continue }
-                let record: Data
-                if pending.isEmpty { record = part } else { pending.append(part); record = pending }
-                guard let path = String(data: record, encoding: .utf8), !names.contains(path) else { continue }
-                guard validPath(includeDirectories && path.hasSuffix("/") ? String(path.dropLast()) : path) else { continue }
-                let escaped = record.reduce(3) { count, byte in count + (byte < 32 ? 6 : byte == 34 || byte == 92 ? 2 : 1) }
-                guard names.count < maxPaths, jsonBytes + escaped < 31 * mib else { return false }
-                jsonBytes += escaped
-                names.insert(path)
-            }
-            if !skipOversize {
-                if pending.count + chunk.count - start > nameLimit { skipOversize = true }
-                else { pending.append(chunk[start...]) }
-            }
-            return true
-        }
-        guard output.status == 0 || output.truncated else { throw ExplorerError("git", "Git could not list files.") }
-        return (names.sorted(), output.truncated)
-    }
-
-    func ignoredFiles(maxPaths: Int = 200_000) throws -> (paths: [String], truncated: Bool) {
-        guard isGit else { return ([], false) }
-        let output = try gitFiles(["--others", "--ignored", "--exclude-standard", "--directory"], maxPaths: maxPaths, includeDirectories: true)
-        // Git may emit a summary for an unignored folder alongside its ignored descendants.
-        let paths = output.paths
-        return (paths.indices.compactMap { i in
-            let path = paths[i]
-            if path.hasSuffix("/"), i + 1 < paths.count, paths[i + 1].hasPrefix(path) { return nil }
-            return path
-        }, output.truncated)
-    }
 
     func checkedCommit(_ ref: String) -> String? {
         guard ref.utf8.count <= 255, !ref.hasPrefix("-"),

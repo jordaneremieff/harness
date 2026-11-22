@@ -180,12 +180,24 @@
 		return sequenceScore(value, needle, leaf);
 	}
 
-	function fuzzy(paths: string[], query: string, limit = 100): ExplorerHit[] {
-		const needle = query.trim().toLowerCase();
-		if (!needle) return paths.slice(0, limit).map((path) => ({ path, score: 0 }));
+	function indexedPath(entry: ExplorerIndexedPath) {
+		return typeof entry === "string" ? { path: entry, lower: entry.toLowerCase() } : entry;
+	}
+	function leadingPaths(paths: Iterable<ExplorerIndexedPath>, limit: number) {
 		const matches: ExplorerHit[] = [];
-		for (const path of paths) {
-			const score = fuzzyScore(path.toLowerCase(), needle);
+		for (const entry of paths) {
+			if (matches.length >= limit) break;
+			matches.push({ path: typeof entry === "string" ? entry : entry.path, score: 0 });
+		}
+		return matches;
+	}
+	function fuzzy(paths: Iterable<ExplorerIndexedPath>, query: string, limit = 100): ExplorerHit[] {
+		const needle = query.trim().toLowerCase();
+		if (!needle) return leadingPaths(paths, limit);
+		const matches: ExplorerHit[] = [];
+		for (const entry of paths) {
+			const { path, lower } = indexedPath(entry);
+			const score = fuzzyScore(lower, needle);
 			if (score !== undefined) matches.push({ path, score });
 		}
 		return matches.sort(byScore).slice(0, limit);

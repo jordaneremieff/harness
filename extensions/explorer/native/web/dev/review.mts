@@ -1,4 +1,4 @@
-import type { Fixture } from "./fixture.mts";
+import { type Fixture, validFixturePath } from "./fixture.mts";
 
 const statuses: Record<string, ExplorerChange["status"] | undefined> = {
 	A: "added",
@@ -95,7 +95,7 @@ export function createReview(repo: Fixture) {
 			for (const path of repo
 				.output(["ls-files", "--others", "--exclude-standard", "-z"])
 				.split("\0")
-				.filter(Boolean)) {
+				.filter(validFixturePath)) {
 				const file = repo.read(path);
 				changes.push({
 					path,

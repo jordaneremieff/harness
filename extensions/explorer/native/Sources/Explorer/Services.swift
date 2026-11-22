@@ -52,16 +52,7 @@ struct ExplorerServices {
         switch type {
         case "files.list":
             let found = workspace.files()
-            var ignored: [String: Any] = ["paths": [String](), "truncated": false]
-            if showIgnored {
-                do {
-                    let matches = try workspace.ignoredFiles()
-                    ignored = ["paths": matches.paths, "truncated": matches.truncated]
-                } catch {
-                    ignored["error"] = "Git could not list ignored paths."
-                }
-            }
-            var result: [String: Any] = ["paths": found.paths, "truncated": found.truncated, "ignored": ignored,
+            var result: [String: Any] = ["paths": found.paths, "truncated": found.truncated,
                                          "source": found.source, "repositories": found.repositories.map(\.fields)]
             if found.repositoriesTruncated { result["repositoriesTruncated"] = true }
             return result

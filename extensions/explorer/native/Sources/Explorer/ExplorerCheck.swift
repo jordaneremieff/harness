@@ -91,7 +91,9 @@ enum ExplorerCheck {
             const rootEntries = (await accept('files.folder', {path:''})).entries;
             if (rootEntries[0]?.name !== 'cache' || rootEntries[0]?.ignored !== true || rootEntries[1]?.repo?.branch !== 'topic' || rootEntries.some(entry => entry.name === '.git')) throw Error('root folder listing');
             if ((await accept('files.folder', {path:'cache'})).entries[0]?.ignored !== true) throw Error('folder ignore rules');
-            if (files.paths.includes('private.log') || files.ignored.paths.join() !== 'cache/,private.log') throw Error('ignored file list');
+            if (files.paths.includes('private.log') || 'ignored' in files) throw Error('path index includes ignored paths');
+            const top = await accept('files.folder', {path:''});
+            if (top.entries.filter(entry => entry.ignored).map(entry => entry.name).join() !== 'cache,private.log') throw Error('ignored root entries');
             const filesTab = document.querySelector('[data-tab="files"]');
             filesTab.click();
             const row = path => Array.from(document.querySelectorAll('#sidebar-list [data-path]')).find(node => node.dataset.path === path);

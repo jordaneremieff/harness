@@ -26,6 +26,7 @@
 		defaultBranch: null,
 		onDefaultBranch: false,
 	};
+	let base: ExplorerBase;
 	let settings: ExplorerSettings = {
 		textSize: 16,
 		wrap: false,
@@ -53,11 +54,15 @@
 	let notes: ExplorerNote[] = [],
 		tours: ExplorerTour[] = [];
 	let editedPaths = new Set<string>();
-	let paths: string[] = [],
-		filesError = "",
-		treeTruncated = false,
-		filter = "";
-	let ignored: ExplorerRequests["files.list"][1]["ignored"] = { paths: [], truncated: false };
+	type PathIndex = ExplorerRequests["files.list"][1];
+	let index: PathIndex | undefined;
+	let indexedPaths: { path: string; lower: string }[] = [];
+	let indexPending: Promise<void> | undefined;
+	let indexVersion = 0;
+	let loadedIndexVersion = -1;
+	let indexError = "";
+	let updateQuickOpen: (() => void) | undefined;
+	let filter = "";
 	let path = "",
 		view: "file" | "changes" = "file",
 		file: ExplorerFile | null = null,
@@ -71,7 +76,6 @@
 		openStamp = 0,
 		reviewStamp = 0,
 		notesStamp = 0,
-		filesStamp = 0,
 		rootStamp = 0;
 	let lineRange: ExplorerRange | null = null,
 		latestLine = 1;
@@ -81,7 +85,7 @@
 		noticeTimer = 0;
 	let mode: "quick" | "search" | "line" | "scope" | "new-file" | null = null;
 	let previousFocus: HTMLElement | null = null;
-	let pendingOpen: ({ type: "open"; root?: ExplorerRoot } & ExplorerLaunch) | undefined;
+	let pendingOpen: Extract<ExplorerEvent, { type: "open" }> | undefined;
 	let booted = false;
 	const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 	const pressed = (node: HTMLElement, value: boolean) => node.setAttribute("aria-pressed", String(value));
@@ -237,8 +241,6 @@
 				headLines = model.lines(text);
 				renderFileFacts();
 			}
-			report(refreshNotes());
-			if (review) report(refreshReview());
 			notice("File saved");
 		},
 		closed(identity) {
@@ -300,8 +302,43 @@
 		sidebar.classList.toggle("disconnected", !live.connected);
 		reviewUI.refresh();
 	}
+	function openAbsoluteRoot(path: string) {
+		const origin = rootStamp;
+		report(
+			app.flushDraft().then(() => {
+				if (origin === rootStamp) return request("root.open", { path });
+			}),
+		);
+	}
+	function openRelativeRoot(path: string) {
+		openAbsoluteRoot(root.path === "/" ? `${root.path}${path}` : `${root.path}/${path}`);
+	}
+	function appendTrailSegment(trail: HTMLElement, path: string, name: string) {
+		if (path === root.path) {
+			const item = el("span", "root-segment", root.name);
+			item.title = path;
+			item.setAttribute("aria-current", "location");
+			trail.append(item);
+		} else {
+			const item = button(name, () => openAbsoluteRoot(path), "root-segment");
+			item.title = path;
+			const divider = el("span", "slash", "/");
+			divider.setAttribute("aria-hidden", "true");
+			trail.append(item, divider);
+		}
+	}
+	function rootTrail() {
+		const trail = get("repo-name");
+		const prefix = base.path.endsWith("/") ? base.path : `${base.path}/`;
+		const parts = root.path.startsWith(prefix) ? root.path.slice(prefix.length).split("/").filter(Boolean) : [];
+		trail.replaceChildren();
+		appendTrailSegment(trail, parts.length ? base.path : root.path, base.name);
+		for (const [index, part] of parts.entries()) {
+			appendTrailSegment(trail, prefix + parts.slice(0, index + 1).join("/"), part);
+		}
+		trail.scrollLeft = trail.scrollWidth;
+	}
 	function rootChrome() {
-		get("repo-name").textContent = root.name;
 		get("head-sha").textContent = sha(root.head);
 		get("head-sha").hidden = !root.head;
 		get("capture-short").textContent = root.branch ?? "";
@@ -314,172 +351,318 @@
 		body.replaceChildren(node);
 	}
 
-	type Tree = { folders: Map<string, Tree>; files: { path: string; ignored: boolean }[]; ignored?: boolean };
-	let tree: Tree = { folders: new Map(), files: [] };
-	const folders = new Set<string>();
-	let ignoredPaint = 0;
-	const ignoredFolders = app.ignoredFolders(
-		(path) => request("files.folder", { path }),
-		() => {
-			if (ignoredPaint) return;
-			ignoredPaint = requestAnimationFrame(() => {
-				ignoredPaint = 0;
-				if (settings.tab === "files") renderSidebar();
-			});
-		},
-	);
-	function makeTree() {
-		tree = { folders: new Map(), files: [] };
-		const ordinary = paths.map((path) => ({ path, ignored: false }));
-		const hidden = ignored.paths.map((path) => ({ path, ignored: true }));
-		const entries = hidden.length ? ordinary.concat(hidden).sort((a, b) => a.path.localeCompare(b.path)) : ordinary;
-		for (const entry of entries) {
-			const isFolder = entry.path.endsWith("/");
-			let at = tree;
-			for (const part of entry.path.split("/").slice(0, -1)) {
-				let child = at.folders.get(part);
-				if (!child) {
-					child = { folders: new Map(), files: [] };
-					at.folders.set(part, child);
-				}
-				at = child;
-			}
-			if (isFolder) at.ignored = true;
-			else at.files.push(entry);
-		}
+	const tree = app.fileTree((path) => request("files.folder", { path }), scheduleTree);
+	const treeCanvas = el("div", "tree-canvas");
+	const rowHeight = 29;
+	const pathQueryDelay = 80;
+	treeCanvas.style.setProperty("--tree-row-height", `${rowHeight}px`);
+	let treeFrame = 0;
+	let scrollFrame = 0;
+	let filterTimer = 0;
+	let filteredRows: ExplorerTreeRow[] | undefined;
+	let displayedRows: ExplorerTreeRow[] = [];
+	const pathIndices = new Map<string, number>();
+	let focusPath: string | undefined;
+	let focusIndex = -1;
+	const mountedRows = new Map<number, { node: HTMLElement; button?: HTMLButtonElement }>();
+
+	function scheduleTree() {
+		filteredRows = undefined;
+		if (settings.tab !== "files" || treeFrame) return;
+		treeFrame = requestAnimationFrame(() => {
+			treeFrame = 0;
+			if (settings.tab === "files") renderTree();
+		});
 	}
 	function revealPath(value: string, self = false) {
-		const pieces = (self ? value : dirname(value)).split("/");
-		for (let index = 1; index <= pieces.length; index++) folders.add(pieces.slice(0, index).join("/"));
+		const target = self ? value : dirname(value);
+		return target ? tree.reveal(target) : Promise.resolve();
 	}
-	function fileRowIcon(item: string, language: ReturnType<typeof model.language>, folder?: boolean) {
-		if (folder) return icon(folders.has(item) ? "open" : "folder");
+	function fileRowIcon(item: string, folder: boolean) {
+		if (folder) return icon(tree.isExpanded(item) ? "open" : "folder");
+		const language = model.language(item);
 		if (!language.mark) return icon("file");
 		return el("span", `language-mark lang-${language.id}`, language.mark);
 	}
 	function toggleFolder(item: string) {
 		if (filter) {
+			const origin = rootStamp;
+			clearTimeout(filterTimer);
 			filter = filterInput.value = "";
-			revealPath(item, true);
-		} else if (folders.has(item)) folders.delete(item);
-		else folders.add(item);
-		if (folders.has(item)) ignoredFolders.retryOnOpen(item);
-		renderSidebar(item);
+			filteredRows = undefined;
+			report(
+				tree.reveal(item).then(() => {
+					if (origin === rootStamp && settings.tab === "files" && !filter) renderTree(item);
+				}),
+			);
+			return;
+		}
+		void tree.setExpanded(item, !tree.isExpanded(item));
+		renderTree(item);
 	}
 	function markEdited(row: HTMLElement, dirty: boolean) {
 		row.querySelector(".edited-mark")?.remove();
 		if (dirty) row.append(el("span", "edited-mark", "Edited"));
 	}
-	function fileRow(item: string, depth: number, folder = false, isIgnored = false) {
-		const node = button(
+	function branchPill(repo: ExplorerRepository) {
+		const name = repo.branch ?? sha(repo.head);
+		const pill = el("span", "branch-pill", name || "Git");
+		pill.title = repo.branch ?? (repo.head ? `Detached HEAD at ${repo.head}` : "Git repository");
+		return pill;
+	}
+	function treeRow(row: ExplorerTreeRow) {
+		const node = el("div", "tree-slot");
+		node.style.setProperty("--depth", String(row.depth));
+		if (row.kind === "status") {
+			if (row.retry) {
+				const retry = button(row.message, () => void tree.load(row.folder), "folder-list-status");
+				retry.title = "Try again";
+				node.append(retry);
+			} else node.append(el("p", "folder-list-status", row.message));
+			return { node };
+		}
+		const entry = row.entry;
+		const item = entry.path;
+		const folder = entry.kind === "folder";
+		const open = button(
 			"",
-			folder ? () => toggleFolder(item) : () => report(navigate({ path: item, view: "file" })),
-			isIgnored ? "list-row is-ignored" : "list-row",
+			() => {
+				if (folder) toggleFolder(item);
+				else report(navigate({ path: item, view: "file" }));
+			},
+			entry.ignored ? "list-row is-ignored" : "list-row",
 		);
-		const language = model.language(item);
-		node.style.setProperty("--depth", String(depth));
-		node.dataset.path = item;
-		if (folder) node.setAttribute("aria-expanded", String(folders.has(item)));
-		else if (item === path && view === "file") node.setAttribute("aria-current", "true");
-		node.append(fileRowIcon(item, language, folder), el("span", "row-title", basename(item)));
-		if (!folder && editedPaths.has(item)) markEdited(node, true);
-		return node;
+		open.dataset.path = item;
+		open.title = item;
+		if (folder) open.setAttribute("aria-expanded", String(tree.isExpanded(item)));
+		else if (item === path && view === "file") open.setAttribute("aria-current", "true");
+		open.append(fileRowIcon(item, folder), el("span", "row-title", entry.name));
+		if (entry.repo) open.append(branchPill(entry.repo));
+		if (!folder && editedPaths.has(item)) markEdited(open, true);
+		node.append(open);
+		if (entry.repo) {
+			const promote = iconButton("promote-root", "Open as Root", () => openRelativeRoot(item));
+			promote.classList.add("promote-root");
+			node.append(promote);
+		}
+		return { node, button: open };
 	}
-	function folderStatus(message: string, depth: number) {
-		const row = el("p", "folder-list-status", message);
-		row.style.setProperty("--depth", String(depth));
-		return row;
+	function filterRows() {
+		if (filteredRows) return filteredRows;
+		const loaded = new Map(Array.from(tree.entries(), (entry) => [entry.path, entry]));
+		function* candidates() {
+			yield* loaded.values();
+			for (const entry of indexedPaths) if (!loaded.has(entry.path)) yield entry;
+		}
+		const rows: ExplorerTreeRow[] = model.fuzzy(candidates(), filter, Infinity).map(({ path }) => ({
+			kind: "entry",
+			depth: 0,
+			entry: loaded.get(path) ?? { path, name: basename(path), kind: "file", lower: "" },
+		}));
+		if (!rows.length && !indexPending && !indexError)
+			rows.push({ kind: "status", folder: "", depth: 0, message: "No paths match this filter." });
+		filteredRows = rows;
+		return rows;
 	}
-	function* ignoredChildren(
-		folder: string,
-		entries: ExplorerRequests["files.folder"][1]["entries"],
-		depth: number,
-	): Generator<HTMLElement> {
-		for (const { name, kind } of entries) {
-			const item = `${folder}/${name}`;
-			yield fileRow(item, depth, kind === "folder", true);
-			if (kind === "folder" && folders.has(item)) yield* ignoredRows(item, depth + 1);
+	function activeTreeButton() {
+		const active = document.activeElement;
+		return active instanceof HTMLElement && treeCanvas.contains(active)
+			? active.closest<HTMLElement>(".tree-slot")?.querySelector<HTMLButtonElement>("[data-path]")
+			: undefined;
+	}
+	function treeWindow(pin: boolean) {
+		const first = Math.max(0, Math.floor(list.scrollTop / rowHeight) - 8);
+		const end = Math.min(displayedRows.length, Math.ceil((list.scrollTop + list.clientHeight) / rowHeight) + 8);
+		const wanted = new Set<number>();
+		for (let i = first; i < end; i++) wanted.add(i);
+		if (pin && focusIndex >= 0) wanted.add(focusIndex);
+		return wanted;
+	}
+	function treeTabStop(wanted: Set<number>) {
+		if (wanted.has(focusIndex)) return focusIndex;
+		for (const i of wanted) if (pathAt(i) !== undefined) return i;
+		return -1;
+	}
+	function mountTreeRows(wanted: Set<number>, tabStop: number) {
+		for (const [index, row] of mountedRows) {
+			if (wanted.has(index)) continue;
+			row.node.remove();
+			mountedRows.delete(index);
+		}
+		let before: HTMLElement | null = null;
+		for (const index of [...wanted].sort((a, b) => b - a)) {
+			let row = mountedRows.get(index);
+			if (!row) {
+				row = treeRow(displayedRows[index]);
+				row.node.style.top = `${index * rowHeight}px`;
+				mountedRows.set(index, row);
+				treeCanvas.insertBefore(row.node, before);
+			}
+			if (row.button) row.button.tabIndex = Number(index === tabStop) - 1;
+			before = row.node;
 		}
 	}
-	function* ignoredRows(folder: string, depth: number): Generator<HTMLElement> {
-		const { pending, data, error } = ignoredFolders.get(folder);
-		if (error) yield folderStatus(error, depth);
-		if (!data) {
-			if (pending) yield folderStatus("Loading…", depth);
-			return;
-		}
-		yield* ignoredChildren(folder, data.entries, depth);
-		if (data.truncated) yield folderStatus("The host listed only the first entries.", depth);
-		else if (!data.entries.length && !error) yield folderStatus("Empty folder", depth);
+	function paintTree(keepFocus = false) {
+		if (!treeCanvas.isConnected) return;
+		const wanted = treeWindow(keepFocus || !!activeTreeButton());
+		mountTreeRows(wanted, treeTabStop(wanted));
 	}
-	function* treeRows(branch: Tree, prefix = "", depth = 0): Generator<HTMLElement> {
-		for (const [name, child] of branch.folders) {
-			const key = prefix + name;
-			yield fileRow(key, depth, true, child.ignored);
-			if (!folders.has(key)) continue;
-			yield* child.ignored ? ignoredRows(key, depth + 1) : treeRows(child, `${key}/`, depth + 1);
-		}
-		for (const entry of branch.files) yield fileRow(entry.path, depth, false, entry.ignored);
+	function pathAt(index: number) {
+		const row = displayedRows[index];
+		return row?.kind === "entry" ? row.entry.path : undefined;
 	}
-	function* filterRows(): Generator<HTMLElement> {
-		const hidden = new Set([...ignored.paths, ...ignoredFolders.loaded()]);
-		for (const { path: item } of model.fuzzy(paths.concat([...hidden]), filter, 250)) {
-			const folder = item.endsWith("/");
-			yield fileRow(folder ? item.slice(0, -1) : item, 0, folder, hidden.has(item));
+	function rowIndex(item?: string) {
+		return item ? (pathIndices.get(item) ?? -1) : -1;
+	}
+	function scrollTreeRow(index: number) {
+		const top = index * rowHeight;
+		if (top < list.scrollTop) list.scrollTop = top;
+		else if (top + rowHeight > list.scrollTop + list.clientHeight) list.scrollTop = top + rowHeight - list.clientHeight;
+	}
+	function focusTreeRow(index: number) {
+		if (pathAt(index) === undefined) return;
+		focusIndex = index;
+		focusPath = pathAt(index);
+		scrollTreeRow(index);
+		paintTree(true);
+		mountedRows.get(index)?.button?.focus({ preventScroll: true });
+	}
+	function updateDisplayedRows(rows: ExplorerTreeRow[]) {
+		if (rows === displayedRows) return;
+		displayedRows = rows;
+		pathIndices.clear();
+		for (const [index, row] of rows.entries()) if (row.kind === "entry") pathIndices.set(row.entry.path, index);
+	}
+	function nextFocusIndex(key: string | undefined, preserve: boolean) {
+		for (let item = key; item; item = dirname(item)) {
+			const index = rowIndex(item);
+			if (index >= 0) return index;
+		}
+		if (!preserve) return -1;
+		for (let i = Math.max(0, Math.min(focusIndex, displayedRows.length - 1)); i >= 0; i--) {
+			if (pathAt(i) !== undefined) return i;
+		}
+		return -1;
+	}
+	function restoreTreeFocus(refocus: boolean, promote: boolean) {
+		if (focusIndex < 0) filterInput.focus({ preventScroll: true });
+		else if (refocus) focusTreeRow(focusIndex);
+		else {
+			const row = mountedRows.get(focusIndex);
+			const tool = promote ? row?.node.querySelector<HTMLButtonElement>(".promote-root") : null;
+			(tool ?? row?.button)?.focus({ preventScroll: true });
 		}
 	}
-	let treeLimit = 1500;
-	function finishTree(output: DocumentFragment, hasMore: boolean) {
-		if (!output.childNodes.length)
-			output.append(el("p", "empty-list", filter ? "No paths match this filter." : "No files to show."));
-		if (hasMore)
-			output.append(
-				button(
-					"Show more paths",
-					() => {
-						treeLimit += 1500;
-						renderSidebar();
-					},
-					"quiet",
-				),
-			);
-		if (treeTruncated) output.append(el("p", "empty-list", "The host listed only the first paths."));
-		if (ignored.truncated) output.append(el("p", "empty-list", "The host listed only the first ignored paths."));
-		if (ignored.error) output.append(el("p", "empty-list", ignored.error));
+	function filterMessage() {
+		if (!filter) return "";
+		if (indexPending) return "Indexing paths…";
+		if (indexError) return indexError;
+		return index?.truncated ? "The path index is partial." : "";
 	}
-	function renderTree() {
-		if (filesError) {
-			list.append(
-				el("p", "empty-list", filesError),
-				button("Try again", () => report(refreshFiles()), "quiet"),
-			);
-			return;
-		}
-		const output = document.createDocumentFragment();
-		let remaining = treeLimit;
-		for (const row of filter ? filterRows() : treeRows(tree)) {
-			if (remaining-- <= 0) break;
-			output.append(row);
-		}
-		finishTree(output, remaining < 0);
-		list.append(output);
+	function renderTree(refocus?: string) {
+		cancelAnimationFrame(treeFrame);
+		treeFrame = 0;
+		const focused = activeTreeButton();
+		const promote = focused !== document.activeElement;
+		const key = refocus ?? focused?.dataset.path ?? focusPath;
+		if (!list.contains(treeCanvas)) list.replaceChildren(treeCanvas);
+		const scroll = list.scrollTop;
+		filterStatus.textContent = filterMessage();
+		filterStatus.hidden = !filterStatus.textContent;
+		updateDisplayedRows(filter ? filterRows() : tree.rows());
+		focusIndex = nextFocusIndex(key, !!focused);
+		focusPath = pathAt(focusIndex);
+		mountedRows.clear();
+		treeCanvas.replaceChildren();
+		treeCanvas.style.height = `${displayedRows.length * rowHeight}px`;
+		list.scrollTop = scroll;
+		paintTree(!!focused);
+		if (refocus || focused) restoreTreeFocus(!!refocus, promote);
 	}
+	list.addEventListener(
+		"scroll",
+		() => {
+			if (scrollFrame || settings.tab !== "files") return;
+			scrollFrame = requestAnimationFrame(() => {
+				scrollFrame = 0;
+				if (settings.tab === "files") paintTree();
+			});
+		},
+		{ passive: true },
+	);
+	new ResizeObserver(() => {
+		if (settings.tab === "files") paintTree();
+	}).observe(list);
+	treeCanvas.addEventListener("focusin", () => {
+		const item = activeTreeButton()?.dataset.path;
+		if (item && item !== focusPath) {
+			focusPath = item;
+			focusIndex = rowIndex(item);
+			paintTree();
+		}
+	});
+	function stepTreeRow(start: number, step: number) {
+		for (let i = start; i >= 0 && i < displayedRows.length; i += step) {
+			if (pathAt(i) === undefined) continue;
+			focusTreeRow(i);
+			break;
+		}
+	}
+	function expandOrEnter(row: ExplorerTreeEntry) {
+		if (row.kind !== "folder") return;
+		const item = row.path;
+		if (filter || !tree.isExpanded(item)) toggleFolder(item);
+		else if (pathAt(focusIndex + 1)?.startsWith(`${item}/`)) focusTreeRow(focusIndex + 1);
+	}
+	function collapseOrLeave(row: ExplorerTreeEntry) {
+		if (row.kind === "folder" && !filter && tree.isExpanded(row.path)) toggleFolder(row.path);
+		else focusTreeRow(rowIndex(dirname(row.path)));
+	}
+	const treeKeys: Record<string, (row: ExplorerTreeEntry) => void> = {
+		ArrowUp: () => stepTreeRow(focusIndex - 1, -1),
+		ArrowDown: () => stepTreeRow(focusIndex + 1, 1),
+		Home: () => stepTreeRow(0, 1),
+		End: () => stepTreeRow(displayedRows.length - 1, -1),
+		Enter: () => mountedRows.get(focusIndex)?.button?.click(),
+		ArrowRight: expandOrEnter,
+		ArrowLeft: collapseOrLeave,
+	};
+	treeCanvas.addEventListener("keydown", (event) => {
+		if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+		if (!(event.target instanceof HTMLButtonElement)) return;
+		const row = displayedRows[focusIndex];
+		if (row?.kind !== "entry" || row.entry.path !== event.target.dataset.path) return;
+		if (!Object.hasOwn(treeKeys, event.key)) return;
+		event.preventDefault();
+		treeKeys[event.key](row.entry);
+	});
 	const filterLabel = el("label", "filter");
 	const filterInput = el("input");
 	filterInput.type = "search";
 	filterInput.placeholder = "Filter files";
 	filterInput.setAttribute("aria-label", "Filter files");
 	filterInput.addEventListener("input", () => {
-		filter = filterInput.value;
-		list.replaceChildren();
-		renderTree();
+		clearTimeout(filterTimer);
+		filterTimer = window.setTimeout(() => {
+			filter = filterInput.value.trim();
+			filteredRows = undefined;
+			list.scrollTop = 0;
+			if (settings.tab !== "files") return;
+			if (filter) void ensureIndex();
+			renderTree();
+		}, pathQueryDelay);
 	});
 	filterLabel.append(icon("search"), filterInput);
+	const filterStatus = el("p", "filter-status");
+	filterStatus.setAttribute("role", "status");
+	filterStatus.hidden = true;
+	const filesHead = el("div");
 	const filesTools = el("div", "files-tools");
 	const newFileButton = iconButton("new-file", "New file", () =>
 		command("new-file", file?.kind === "directory" ? path : dirname(path)),
 	);
 	filesTools.append(filterLabel, newFileButton);
+	filesHead.append(filesTools, filterStatus);
 
 	function appendScopeOptions(choices: HTMLSelectElement) {
 		for (const [position, item] of scopes.entries()) {
@@ -595,9 +778,27 @@
 		}
 		if (review && !review.files.length) list.append(el("p", "empty-list", "No files changed in this scope."));
 	}
+	function repositoryListStatus() {
+		if (indexPending || (!index && !indexError)) return "Indexing repositories…";
+		if (indexError) return indexError;
+		if (index?.repositoriesTruncated) return "The repository list is partial.";
+		return index?.repositories.length ? "" : "No nested repositories found.";
+	}
+	function renderRepositories() {
+		list.append(el("div", "list-label", "REPOSITORIES"));
+		for (const repo of index?.repositories ?? []) {
+			const item = button("", () => openRelativeRoot(repo.path), "list-row repository-open");
+			item.title = repo.path;
+			item.setAttribute("aria-label", `Open ${repo.path} as Root`);
+			item.append(icon("branch"), el("span", "row-title", repo.path), branchPill(repo), icon("promote-root"));
+			list.append(item);
+		}
+		const message = repositoryListStatus();
+		if (message) list.append(el("p", "empty-list", message));
+	}
 	function renderChanges() {
 		if (root.kind !== "git") {
-			list.append(el("p", "empty-list", "Changes are available in Git repositories."));
+			renderRepositories();
 			return;
 		}
 		const summary = el("div", "range-box");
@@ -678,33 +879,61 @@
 	}
 	function prepareSidebarHeading() {
 		if (settings.tab === "files") {
-			if (!heading.contains(filesTools)) heading.replaceChildren(filesTools);
+			if (!heading.contains(filesHead)) heading.replaceChildren(filesHead);
 		} else heading.replaceChildren();
 	}
 	function focusedPath(active: HTMLElement | null) {
 		return active && list.contains(active) ? active.dataset.path : undefined;
 	}
-	function renderSidebar(refocus?: string) {
+	let sidebarTab: ExplorerTab | undefined;
+	function renderSidebar() {
+		sidebarTab = settings.tab;
 		const active = document.activeElement as HTMLElement | null;
-		const key = refocus ?? focusedPath(active);
+		const key = focusedPath(active);
 		const scroll = list.scrollTop;
 		prepareSidebarHeading();
-		list.replaceChildren();
+		if (settings.tab !== "files") list.replaceChildren();
 		const tabs = get("note-tabs");
 		for (const tab of tabs.querySelectorAll<HTMLElement>("[data-tab]")) pressed(tab, tab.dataset.tab === settings.tab);
 		get("change-count").textContent = review ? String(review.files.length) : "";
 		get("note-count").textContent = notes.length ? String(notes.length) : "";
-		if (settings.tab === "files") renderTree();
-		else if (settings.tab === "changes") renderChanges();
+		if (settings.tab === "files") {
+			renderTree();
+			return;
+		}
+		if (settings.tab === "changes") renderChanges();
 		else renderNotes();
-		if (key)
-			[...list.querySelectorAll<HTMLElement>("[data-path]")]
-				.find((item) => item.dataset.path === key)
-				?.focus({ preventScroll: true });
+		if (key) list.querySelector<HTMLElement>(`[data-path="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
 		list.scrollTop = scroll;
+	}
+	function markCurrentFile(item: string) {
+		const row = mountedRows.get(rowIndex(item))?.button;
+		if (!row || row.hasAttribute("aria-expanded")) return;
+		if (item === path && view === "file") row.setAttribute("aria-current", "true");
+		else row.removeAttribute("aria-current");
+	}
+	function markCurrentChange(item: string) {
+		const row = list.querySelector(`.changed-open[data-path="${CSS.escape(item)}"]`);
+		if (item === path) row?.setAttribute("aria-current", "true");
+		else row?.removeAttribute("aria-current");
+		row?.parentElement?.classList.toggle("current", item === path);
+	}
+	function syncNavigationSidebar(previous: string) {
+		if (sidebarTab !== settings.tab) {
+			renderSidebar();
+			return;
+		}
+		const mark =
+			settings.tab === "files" ? markCurrentFile : settings.tab === "changes" ? markCurrentChange : undefined;
+		mark?.(previous);
+		if (path !== previous) mark?.(path);
+	}
+	function tabUsesIndex(tab: ExplorerTab) {
+		return (tab === "files" && !!filter) || (tab === "changes" && root.kind === "folder");
 	}
 	async function setTab(tab: ExplorerTab, switchView = false) {
 		settings.tab = tab;
+		if (tabUsesIndex(tab)) void ensureIndex();
 		renderSidebar();
 		saveSettings();
 		savePosition();
@@ -718,21 +947,48 @@
 			else renderHeader();
 		}
 	}
-	async function refreshFiles() {
-		const stamp = ++filesStamp;
-		try {
-			const data = await request("files.list");
-			if (stamp !== filesStamp) return;
-			paths = [...data.paths].sort((a, b) => a.localeCompare(b));
-			treeTruncated = data.truncated;
-			ignored = data.ignored;
-			ignoredFolders.replace(ignored.paths);
-			filesError = "";
-			makeTree();
-		} catch (error) {
-			if (stamp === filesStamp) filesError = errorText(error);
-		}
-		if (stamp === filesStamp && settings.tab === "files") renderSidebar();
+	function indexInUse() {
+		return mode === "quick" || tabUsesIndex(settings.tab);
+	}
+	function indexUpdated() {
+		updateQuickOpen?.();
+		if (settings.tab === "files" && filter) scheduleTree();
+		else if (settings.tab === "changes" && root.kind === "folder") renderSidebar();
+	}
+	function ensureIndex() {
+		if (indexPending || loadedIndexVersion === indexVersion) return indexPending;
+		const origin = rootStamp;
+		const version = indexVersion;
+		indexError = "";
+		indexPending = request("files.list")
+			.then((result) => {
+				if (origin !== rootStamp) return;
+				index = result;
+				indexedPaths = result.paths.map((path) => ({ path, lower: path.toLowerCase() }));
+				loadedIndexVersion = version;
+			})
+			.catch((error) => {
+				if (origin === rootStamp) indexError = errorText(error);
+			})
+			.finally(() => {
+				if (origin !== rootStamp) return;
+				indexPending = undefined;
+				if (version !== indexVersion && indexInUse()) void ensureIndex();
+				else indexUpdated();
+			});
+		indexUpdated();
+		return indexPending;
+	}
+	async function loadRootListing() {
+		const origin = rootStamp;
+		await tree.load("");
+		if (origin !== rootStamp) return;
+		if (settings.tab === "files") renderTree();
+		requestAnimationFrame(() =>
+			requestAnimationFrame(() => {
+				if (origin === rootStamp) void ensureIndex();
+			}),
+		);
 	}
 	async function refreshNotes() {
 		const stamp = ++notesStamp;
@@ -1118,13 +1374,11 @@
 		if (leavesView(target, options, candidatePath, requestedView)) clearNavigationSelection();
 		if (!options.keepSheet) narrowClose();
 		if (!options.keepTab && target.view) settings.tab = target.view === "file" ? "files" : target.view;
-		revealPath(candidatePath);
 		path = candidatePath;
 		view = requestedView;
 		if (!options.noHistory) recordNavigation(target, options.replace);
 		disabled("back", historyAt <= 0);
 		disabled("forward", historyAt >= history.length - 1);
-		renderSidebar();
 	}
 	function showTargetLines(line: number, last: number | undefined, preferred?: ExplorerSide) {
 		const side = preferred ?? (view === "changes" && !headLines.length ? "base" : "head");
@@ -1139,7 +1393,7 @@
 		setAnchorLine(start);
 	}
 	function showDirectory(keepSheet?: boolean) {
-		revealPath(path, true);
+		void revealPath(path, true);
 		if (isNarrow.matches && keepSheet) sheet = true;
 		renderSidebarState();
 	}
@@ -1199,7 +1453,10 @@
 		previous: ReturnType<ExplorerCodeView["place"]>,
 	) {
 		loadingFile = false;
-		renderSidebar();
+		if (!options.refresh && settings.tab === "files" && !filter && !activeTreeButton()) {
+			const index = rowIndex(path);
+			if (index >= 0) scrollTreeRow(index);
+		}
 		renderHeader();
 		renderCode(options.refresh ? previous : undefined);
 		if (!options.refresh && target.line !== undefined) showTargetLines(target.line, target.end, options.side);
@@ -1240,17 +1497,29 @@
 		await applyFileRead(stamp, options.keepSheet);
 		return draft;
 	}
+	function navigationKeepsEditor(candidate: string, requested: typeof view) {
+		return editor.active() && candidate === path && requested === view;
+	}
+	function revealOnNavigate(options: NavigationOptions) {
+		if (!options.refresh && view === "file") return revealPath(path);
+	}
 	async function navigate(target: ExplorerLaunch, options: NavigationOptions = {}) {
 		const candidatePath = target.path ?? path;
 		const requestedView = target.view === "changes" ? "changes" : "file";
-		if (editor.active() && candidatePath === path && requestedView === view) return;
+		if (navigationKeepsEditor(candidatePath, requestedView)) return;
 		editor.detach();
 		const stamp = ++openStamp;
 		const previous = code.place();
-		if (!options.refresh) prepareNavigation(target, options, candidatePath, requestedView);
+		if (!options.refresh) {
+			const previousPath = path;
+			prepareNavigation(target, options, candidatePath, requestedView);
+			syncNavigationSidebar(previousPath);
+		}
 		fileError = "";
 		if (!prepareFileRead(options.refresh, target.line)) return;
+		const reveal = revealOnNavigate(options);
 		const result = await navigationRead(stamp, options);
+		await reveal;
 		if (stamp !== openStamp) return;
 		finishNavigation(target, options, previous);
 		if (result?.draft) openEditor(result.draft);
@@ -1762,7 +2031,10 @@
 		const folder = target instanceof Element && target.closest<HTMLElement>("[aria-expanded][data-path]");
 		const folderPath = folder && list.contains(folder) ? folder.dataset.path : undefined;
 		if (folderPath)
-			return [{ label: "New file…", key: "", glyph: "new-file", run: () => command("new-file", folderPath) }];
+			return [
+				{ label: "Open as Root", key: "", glyph: "promote-root", run: () => openRelativeRoot(folderPath) },
+				{ label: "New file…", key: "", glyph: "new-file", run: () => command("new-file", folderPath) },
+			];
 		const field = textField(target);
 		if (field) return editorActions(field, text);
 		return actions(range, text);
@@ -1805,10 +2077,14 @@
 	});
 
 	let commandStamp = 0,
-		searchTimer = 0;
+		searchTimer = 0,
+		quickTimer = 0;
 	function closeCommand() {
 		commandStamp++;
 		clearTimeout(searchTimer);
+		clearTimeout(quickTimer);
+		quickTimer = 0;
+		updateQuickOpen = undefined;
 		mode = null;
 		overlay.hidden = true;
 		overlay.replaceChildren();
@@ -1837,7 +2113,10 @@
 			throw new Error("Enter a relative text file path without empty components, parent references or .git.");
 		if (editedPaths.size >= 32 && !editedPaths.has(destination))
 			throw new Error("Save or discard one of your 32 edited files first.");
-		if (paths.includes(destination) && (await request("file.read", { path: destination })).kind !== "missing")
+		if (
+			indexedPaths.some((entry) => entry.path === destination) &&
+			(await request("file.read", { path: destination })).kind !== "missing"
+		)
 			throw new Error("That path already exists.");
 	}
 	async function createInRoot(destination: string, dialog: HTMLElement, origin: number) {
@@ -1845,9 +2124,9 @@
 		if (!dialog.isConnected || origin !== rootStamp) return;
 		await request("file.create", { root: root.path, path: destination });
 		if (origin !== rootStamp) return;
-		ignoredFolders.invalidate([destination]);
+		tree.invalidate([destination]);
+		indexVersion++;
 		if (dialog.isConnected) await openNewFile(destination);
-		await refreshFiles();
 	}
 	function newFileCommand(dialog: HTMLElement, folder: string) {
 		const input = el("input");
@@ -1892,6 +2171,41 @@
 		overlay.hidden = false;
 		input.focus({ preventScroll: true });
 		input.setSelectionRange(input.value.length, input.value.length);
+	}
+	function quickCaption(items: number) {
+		if (indexPending && !index) return "Indexing paths…";
+		if (!items) return indexError || "No matching paths.";
+		let qualifier = "";
+		if (indexPending) qualifier = " · Updating index…";
+		else if (index?.truncated) qualifier = " · Partial index";
+		return `${indexedPaths.length.toLocaleString()} indexed paths${qualifier} · ↑ ↓ to move · ↩ to open`;
+	}
+	function queueQuickQuery(query: () => void) {
+		clearTimeout(quickTimer);
+		quickTimer = window.setTimeout(() => {
+			quickTimer = 0;
+			query();
+		}, pathQueryDelay);
+	}
+	function flushQuickQuery(query: () => void) {
+		if (!quickTimer) return;
+		clearTimeout(quickTimer);
+		quickTimer = 0;
+		query();
+	}
+	function appendCommandActions(dialog: HTMLElement, next: NonNullable<typeof mode>, submit: () => void) {
+		if (next !== "line" && next !== "scope") return;
+		const controls = el("div", "card-actions");
+		controls.append(
+			button("Cancel", closeCommand, "quiet"),
+			button(next === "line" ? "Go to line" : "Open review", submit, "primary"),
+		);
+		dialog.append(controls);
+	}
+	function openQuickIndex(next: NonNullable<typeof mode>, update: () => void) {
+		if (next !== "quick") return;
+		updateQuickOpen = update;
+		void ensureIndex();
 	}
 	function command(next: NonNullable<typeof mode>, detail?: string) {
 		clearTimeout(searchTimer);
@@ -1964,14 +2278,16 @@
 		}
 		const regex = flag("Regular expression"),
 			sensitive = flag("Match case");
-		function queryPaths(value: string) {
-			showResult(
-				model
-					.fuzzy(paths, value)
-					.map(({ path }) => ({ title: basename(path), hint: dirname(path) || root.name, path })),
-				value ? `${paths.length.toLocaleString()} indexed paths · ↑ ↓ to move · ↩ to open` : "↑ ↓ to move · ↩ to open",
-			);
-			if (!entries.length) summary.textContent = filesError || "No matching paths.";
+		function queryPaths(value: string, preservePick = false) {
+			const current = preservePick ? entries[picked]?.path : undefined;
+			const items = model.fuzzy(indexedPaths, value).map(({ path }) => ({
+				title: basename(path),
+				hint: dirname(path) || root.name,
+				path,
+			}));
+			showResult(items, quickCaption(items.length));
+			const selected = items.findIndex((item) => item.path === current);
+			if (selected > 0) selectPicked(selected);
 		}
 		function showSearchResult(data: ExplorerRequests["search"][1]) {
 			showResult(
@@ -2045,7 +2361,7 @@
 			else if (next === "scope") submitScope();
 			else openPicked(picked);
 		}
-		input.oninput = query;
+		input.oninput = next === "quick" ? () => queueQuickQuery(query) : query;
 		regex.onchange = sensitive.onchange = query;
 		dialog.onkeydown = (event) => {
 			if (event.isComposing) return;
@@ -2057,6 +2373,7 @@
 			}
 			if (event.target === input && event.key === "Enter") {
 				event.preventDefault();
+				flushQuickQuery(query);
 				submit();
 				return;
 			}
@@ -2067,17 +2384,11 @@
 		};
 		if (next === "search") dialog.append(flags);
 		dialog.append(summary, results);
-		if (next === "line" || next === "scope") {
-			const controls = el("div", "card-actions");
-			controls.append(
-				button("Cancel", closeCommand, "quiet"),
-				button(next === "line" ? "Go to line" : "Open review", submit, "primary"),
-			);
-			dialog.append(controls);
-		}
+		appendCommandActions(dialog, next, submit);
 		overlay.replaceChildren(dialog);
 		overlay.hidden = false;
 		input.focus({ preventScroll: true });
+		openQuickIndex(next, () => queryPaths(input.value.trim(), true));
 		query();
 	}
 	overlay.onclick = (event) => {
@@ -2153,7 +2464,6 @@
 		openStamp++;
 		reviewStamp++;
 		notesStamp++;
-		filesStamp++;
 		rootStamp++;
 		root = next;
 		scope = undefined;
@@ -2161,12 +2471,19 @@
 		review = null;
 		notes = [];
 		tours = [];
-		paths = [];
-		ignored = { paths: [], truncated: false };
-		ignoredFolders.replace([]);
+		index = undefined;
+		indexedPaths = [];
+		indexPending = undefined;
+		indexVersion = 0;
+		loadedIndexVersion = -1;
+		indexError = "";
+		tree.reset();
+		focusPath = undefined;
+		focusIndex = -1;
 		queuedFileChanges = undefined;
+		clearTimeout(fileChangeTimer);
+		fileChangeTimer = undefined;
 		viewed.clear();
-		folders.clear();
 		path = "";
 		lineRange = null;
 		file = null;
@@ -2174,7 +2491,6 @@
 		baseLines = [];
 		headLines = [];
 		fileError = "";
-		filesError = "";
 		reviewError = "";
 		notesError = "";
 		sentReviews.clear();
@@ -2182,14 +2498,16 @@
 		anchoredLine = null;
 		history = [];
 		historyAt = -1;
-		filter = "";
-		filterInput.value = "";
-		makeTree();
+		clearTimeout(filterTimer);
+		filter = filterInput.value = "";
+		filteredRows = undefined;
+		list.scrollTop = 0;
 		code.clear();
 		rootChrome();
+		renderSidebar();
 		reviewUI.refresh();
 		report(refreshEditedPaths());
-		report(refreshFiles());
+		report(loadRootListing());
 		report(refreshNotes());
 		report(refreshScopes());
 	}
@@ -2198,15 +2516,22 @@
 			pendingOpen = event;
 			return;
 		}
+		if (event.root) base = event.base;
 		if (event.root && root.path !== event.root.path) resetRoot(event.root);
 		else if (event.root) {
 			root = event.root;
 			rootChrome();
 		}
+		if (event.root) rootTrail();
 		report(open(event));
 	}
 	type FileChanges = Extract<ExplorerEvent, { type: "files.changed" }>;
-	type QueuedFileChanges = { paths: Set<string> | null; head?: FileChanges["head"] };
+	type QueuedFileChanges = {
+		paths: Set<string> | null;
+		structural: Set<string>;
+		review: boolean;
+		head?: FileChanges["head"];
+	};
 	let queuedFileChanges: QueuedFileChanges | undefined;
 	let fileChangeTimer: number | undefined;
 	let refreshingFileChanges = false;
@@ -2217,20 +2542,27 @@
 			report(flushFileChanges());
 		}, 500);
 	}
+	function collectPaths(pending: QueuedFileChanges, paths: string[], structural: string[]) {
+		if (!pending.paths) return;
+		for (const item of paths) {
+			pending.paths.add(item);
+			if (pending.paths.size > 512) break;
+		}
+		if (!paths.length || pending.paths.size > 512) {
+			pending.paths = null;
+			pending.structural.clear();
+		} else {
+			for (const item of structural) pending.structural.add(item);
+		}
+	}
 	function filesChanged(event: FileChanges) {
-		queuedFileChanges ??= { paths: new Set<string>() };
+		queuedFileChanges ??= { paths: new Set<string>(), structural: new Set<string>(), review: false };
 		const pending = queuedFileChanges;
 		if (event.head) pending.head = event.head;
-		if (!event.paths.length) pending.paths = null;
-		if (pending.paths) {
-			for (const path of event.paths) {
-				pending.paths.add(path);
-				if (pending.paths.size > 512) {
-					pending.paths = null;
-					break;
-				}
-			}
-		}
+		const outside = new Set(event.outside);
+		pending.review ||= !event.paths.length || event.paths.some((path) => !outside.has(path));
+		collectPaths(pending, event.paths, event.structural ?? []);
+		if (!event.paths.length || event.structural?.length) indexVersion++;
 		scheduleFileChanges();
 	}
 	async function flushFileChanges() {
@@ -2245,52 +2577,45 @@
 			scheduleFileChanges();
 		}
 	}
-	async function refreshIgnoredChanges(changed: string[], stale: string[]) {
-		if (settings.tab === "files" && stale.some((folder) => folders.has(folder))) renderSidebar();
-		if (view === "file" && changed.includes(path) && !loadingFile) await navigate({ path, view }, { refresh: true });
-	}
 	function checkEditedPath(changed: string[]) {
 		if (editor.active() && (!changed.length || changed.some((item) => item === path || path.startsWith(`${item}/`))))
 			report(editor.checkDisk());
 	}
+	function updateHead(head: FileChanges["head"]) {
+		if (!head) return false;
+		const changed = root.head !== head.head;
+		root = { ...root, ...head, onDefaultBranch: !!head.branch && head.branch === root.defaultBranch };
+		rootChrome();
+		return changed;
+	}
+	function affectsWorkingDiff(refreshGit: boolean) {
+		return refreshGit && view === "changes" && scope?.kind === "uncommitted";
+	}
 	async function applyFileChanges(event: QueuedFileChanges) {
 		const changed = event.paths ? [...event.paths] : [];
 		checkEditedPath(changed);
-		const stale = ignoredFolders.invalidate(changed);
-		const knownIgnored =
-			!ignored.truncated && changed.length && changed.every((path) => ignoredFolders.contains(path, false));
-		if (!event.head && knownIgnored) return refreshIgnoredChanges(changed, stale);
-		const oldHead = root.head;
-		if (event.head) {
-			root = {
-				...root,
-				...event.head,
-				onDefaultBranch: !!event.head.branch && event.head.branch === root.defaultBranch,
-			};
-			rootChrome();
-		}
-		const results = await Promise.allSettled([
-			refreshFiles(),
-			refreshNotes(),
-			refreshChangedView(openStamp, oldHead, changed),
+		tree.invalidate(event.paths ? event.structural : null);
+		if (indexInUse()) void ensureIndex();
+		const headChanged = updateHead(event.head);
+		const relevant = (candidate: string) =>
+			changed.some((item) => item === candidate || candidate.startsWith(`${item}/`));
+		const refreshThread = headChanged || !event.paths || notes.some((note) => relevant(note.path));
+		const refreshGit = root.kind === "git" && event.review;
+		const refreshFile = headChanged || !event.paths || relevant(path) || affectsWorkingDiff(refreshGit);
+		await Promise.all([
+			refreshThread ? refreshNotes() : undefined,
+			refreshChangedView(openStamp, refreshGit, !!path && refreshFile),
 		]);
-		for (const result of results) if (result.status === "rejected") throw result.reason;
 	}
-	function touchesOpenFile(oldHead: ExplorerRoot["head"], paths: string[]) {
-		return (
-			oldHead !== root.head ||
-			!paths.length ||
-			paths.includes(path) ||
-			(view === "changes" && scope?.kind === "uncommitted")
-		);
-	}
-	async function refreshChangedView(stamp: number, oldHead: ExplorerRoot["head"], paths: string[]) {
-		if (root.kind === "git") {
+	async function refreshChangedView(stamp: number, refreshGit: boolean, refreshFile: boolean) {
+		if (refreshGit) {
+			const origin = rootStamp;
 			await refreshScopes();
+			if (origin !== rootStamp) return;
 			if (view === "changes" || review) await refreshReview();
 		}
-		if (stamp !== openStamp || !path || loadingFile || editor.active()) return;
-		if (touchesOpenFile(oldHead, paths)) await navigate({ path, view }, { refresh: true });
+		if (stamp !== openStamp || !refreshFile || loadingFile || editor.active()) return;
+		await navigate({ path, view }, { refresh: true });
 	}
 	app.listen((event) => {
 		switch (event.type) {
@@ -2319,6 +2644,8 @@
 		try {
 			const result = await request("hello");
 			root = result.root;
+			base = result.base;
+			rootTrail();
 			settings = result.settings;
 			live = result.live;
 			settings.textSize = Number.isFinite(settings.textSize) ? Math.max(10, Math.min(32, settings.textSize)) : 16;
@@ -2331,7 +2658,7 @@
 			renderSidebarState();
 			renderSidebar();
 			const initial = Promise.all([
-				refreshFiles(),
+				loadRootListing(),
 				refreshNotes(),
 				refreshScopes(),
 				refreshEditedPaths().catch((error) => notice(errorText(error))),
@@ -2339,7 +2666,13 @@
 			const deferred = pendingOpen;
 			pendingOpen = undefined;
 			booted = true;
-			if (deferred?.root && deferred.root.path !== root.path) resetRoot(deferred.root);
+			if (deferred?.root) {
+				base = deferred.base;
+				if (deferred.root.path !== root.path) resetRoot(deferred.root);
+				else root = deferred.root;
+				rootTrail();
+				rootChrome();
+			}
 			await initial;
 			await open(deferred ?? result.launch);
 			if (root.kind === "git" && !review) report(refreshReview());
