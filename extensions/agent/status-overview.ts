@@ -158,20 +158,13 @@ function hasOpenWork(row: AgentConversationSummary): boolean {
 	return (row.openWorkCount ?? 0) > 0;
 }
 
-/** Coordination state survives sampling even when fault evidence changes the summary group. */
-function protectedFromSampling(row: AgentConversationSummary): boolean {
-	return (
-		Boolean(row.rosterOrder?.priority) ||
-		hasOpenWork(row) ||
-		(row.unplaced ?? 0) > 0 ||
-		row.state === "starting" ||
-		row.state === "working"
-	);
+/** Coordination state is independent of the summary group and the catalogue rank. */
+function hasCoordinationWork(row: AgentConversationSummary): boolean {
+	return hasOpenWork(row) || (row.unplaced ?? 0) > 0 || row.state === "starting" || row.state === "working";
 }
 
-function oldTerminalAttention(row: AgentConversationSummary, observedAt: number): boolean {
+function oldTerminal(row: AgentConversationSummary, observedAt: number): boolean {
 	return (
-		group(row) === "attention" &&
 		["failed", "stopped", "done", "interrupted"].includes(row.state) &&
 		Number.isFinite(observedAt) &&
 		Number.isFinite(row.modifiedAt) &&
@@ -201,9 +194,9 @@ function initialOverview(
 	const selected = ordered.filter((row) => {
 		const category = group(row);
 		totals[category]++;
-		if (protectedFromSampling(row) || category === "working") return true;
-		if (category === "attention")
-			return !oldTerminalAttention(row, observedAt) || sampled.attention++ < OLD_ATTENTION_SAMPLE;
+		if (row.rosterOrder.priority || category === "working" || hasCoordinationWork(row)) return true;
+		if (category === "attention") return !oldTerminal(row, observedAt) || sampled.attention++ < OLD_ATTENTION_SAMPLE;
+		if (row.state === "failed" && !oldTerminal(row, observedAt)) return true;
 		return sampled[category]++ < (category === "quiet" ? QUIET_SAMPLE : UNAVAILABLE_SAMPLE);
 	});
 	const sessions = selected.map(compact);
@@ -329,17 +322,19 @@ function excludeRow(
 	value: MutableOverview,
 	dropped: ByteOmissions,
 	priorityIds: ReadonlySet<string>,
-	protectedIds: ReadonlySet<string>,
-	historicalIds: ReadonlySet<string>,
+	observedAt: number,
 ): void {
 	const rowBudget =
 		STATUS_OVERVIEW_BYTE_LIMIT - measure({ ...value, sessions: [], primaries: [], failures: [], awareness: undefined });
 	const oversized = value.sessions.findIndex((row) => measure(row) > rowBudget);
-	const sample = value.sessions.findLastIndex(
-		(row) => !protectedIds.has(row.id) && (["quiet", "unavailable"].includes(group(row)) || historicalIds.has(row.id)),
+	// Evict by urgency first. Reverse catalogue order breaks ties without changing display order.
+	const inactive = value.sessions.findLastIndex(
+		(row) => !hasCoordinationWork(row) && row.state !== "failed" && group(row) !== "attention",
 	);
-	if (oversized >= 0 || sample >= 0) {
-		excludeSession(value, oversized >= 0 ? oversized : sample, dropped, priorityIds);
+	const historical = value.sessions.findLastIndex((row) => !hasCoordinationWork(row) && oldTerminal(row, observedAt));
+	const first = oversized >= 0 ? oversized : inactive >= 0 ? inactive : historical;
+	if (first >= 0) {
+		excludeSession(value, first, dropped, priorityIds);
 	} else if (value.primaries.length > 0) {
 		value.primaries.pop();
 		value.summary.primaries.summarized++;
@@ -352,14 +347,8 @@ function excludeRow(
 		dropped.rows++;
 		return;
 	} else if (value.sessions.length > 0) {
-		const ordinary = value.sessions.findLastIndex((row) => !priorityIds.has(row.id) && !hasOpenWork(row));
-		const open = value.sessions.findLastIndex((row) => !priorityIds.has(row.id));
-		excludeSession(
-			value,
-			ordinary >= 0 ? ordinary : open >= 0 ? open : value.sessions.length - 1,
-			dropped,
-			priorityIds,
-		);
+		const withoutOpenWork = value.sessions.findLastIndex((row) => !hasOpenWork(row));
+		excludeSession(value, withoutOpenWork >= 0 ? withoutOpenWork : value.sessions.length - 1, dropped, priorityIds);
 	} else {
 		throw new Error("Status overview metadata exceeds the byte limit after every row was summarized or omitted.");
 	}
@@ -385,10 +374,7 @@ export function buildStatusOverview(
 		openWork: 0,
 	};
 	const priorityIds = new Set(page.rows.filter((row) => row.rosterOrder.priority).map((row) => row.id));
-	const protectedIds = new Set(page.rows.filter(protectedFromSampling).map((row) => row.id));
-	const historicalIds = new Set(
-		page.rows.filter((row) => oldTerminalAttention(row, Date.parse(page.observedAt))).map((row) => row.id),
-	);
+	const observedAt = Date.parse(page.observedAt);
 	const summarizedAttention =
 		value.summary.sessions.attention - value.sessions.filter((row) => group(row) === "attention").length;
 	const samplingReasons =
@@ -430,7 +416,7 @@ export function buildStatusOverview(
 		value.coverage.reasons.push(...samplingReasons);
 		if (fixedPointBytes(value) <= STATUS_OVERVIEW_BYTE_LIMIT) return value;
 		value.coverage.byteLimitReached = true;
-		excludeRow(value, dropped, priorityIds, protectedIds, historicalIds);
+		excludeRow(value, dropped, priorityIds, observedAt);
 	}
 }
 

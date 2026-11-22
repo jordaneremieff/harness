@@ -1287,10 +1287,13 @@ fabricated cost field. The dashboard passes these details to Pi's codemode
 renderer. Missing arguments stay absent. For nonpartial results, remaining
 `running` rows display as `cancelled`; partial results stay unchanged. Stored
 snapshots are never mutated.
-The primary's no-target `agent_status` is a compact fleet overview. Live hosts
-and records created by the caller come first, including idle conversations.
-Other records follow catalog metadata recency. Summary counts form disjoint groups,
-not state totals. Explicit catalogue intervention hints, host or recovery faults,
+The primary's no-target `agent_status` is a compact fleet overview.
+Each `sessions` row uses `id` for the conversation identity and `state` for
+its catalogue lifecycle state. Live hosts and records created by the caller
+appear first, including idle conversations, then other records. Within each
+set, display order uses catalogue metadata recency and identity. Summary counts
+form disjoint groups, not state totals. Explicit catalogue intervention hints,
+host or recovery faults,
 and failed turns with errors count as `attention`, even when observation is also
 unavailable. Without independent fault evidence, an unavailable owner or state
 counts as `unavailable`. These observations are unknown, not healthy. `working`
@@ -1302,20 +1305,26 @@ Each overview row keeps the catalogue's optional `attention` hint
 identity, cwd, ownership, model, update time, state, cost, partial-cost flag,
 current tool, tool count, duration, latest reply, errors, and recovery health
 when those fields exist. Live or caller-owned rows, starting or working rows, and rows with declared open
-work or unplaced input are never restricted by sampling. Attention rows whose
-published update is within the last 24 hours also stay outside sampling. Other
-terminal attention rows (`failed`, `stopped`, `done`, or `interrupted`) have a
-sample of at most three rows in catalogue order. Nonterminal attention stays
-outside sampling. The window uses each row's published update time against the
-page's observation time, not the catalogue file's modification time. Other
-unavailable and quiet rows have separate bounded samples; connected primaries
-and failures also have bounded samples. `summary.sessions.summarizedUnavailable` and
-`summarizedQuiet` count each group's rows absent from the response, including byte
-exclusions. All rows remain subject to the overview byte limit. Byte reduction
-removes unprotected unavailable, quiet, and old terminal attention samples before
-work, recent faults, or effort awareness, then preserves declared-open-work and
-source-priority rows ahead of ordinary rows.
-The collapsed card reports supplied-page totals, not sampled-row totals or costs.
+work or unplaced input are never restricted by sampling. Failed and attention
+rows whose published update is within the last 24 hours also stay outside
+sampling. Other terminal attention rows (`failed`, `stopped`, `done`, or
+`interrupted`) have a sample of at most three rows in catalogue order.
+Nonterminal attention stays outside sampling. The window uses each row's
+published update time against the page's observation time, not the catalogue
+file's modification time. Other unavailable and quiet rows have separate bounded
+samples; connected primaries and failures also have bounded samples.
+`summary.sessions.summarizedUnavailable` and `summarizedQuiet` count each group's
+rows absent from the response, including byte exclusions.
+
+All rows remain subject to the overview byte limit. The tool first excludes any
+session row too large to fit alone. It then removes inactive rows without faults,
+followed by older terminal faults without open work or unplaced inputs. This
+applies even to live or caller-owned records. Next it reduces primary and failure
+samples and effort awareness. Starting or working rows, unplaced inputs, recent
+failures, and other current attention outlast those reductions. Declared open work
+is last to go. Within each session tier, eviction starts at the end of the
+catalogue display order. The collapsed card reports supplied-page totals, not
+sampled-row totals or costs.
 
 `coverage` states source inspections, skipped views, excluded rows, byte omissions,
 and the exact serialized byte size. Its `inventory` reports the priority scan
@@ -3703,9 +3712,13 @@ with the remaining fields unchanged. The cursor continues the same unfiltered
 native scan; callers do not interpret its fields. A conversation-qualified
 identity, a string cursor, or mixed fleet/session selectors is invalid here.
 
-A storage page returns compact rows with the backend coverage and `next`
-unchanged, for ordinary and Durable callers. When the compact form of a page exceeds the
-output byte limit, the tool reads again from the same cursor with half the
+A storage page returns compact `conversations` rows with the backend coverage
+and `next` unchanged, for ordinary and Durable callers. The row's `identity`
+is the same conversation identifier as `id` in the ordinary global overview.
+Use it as `sessionId` for targeted status. `busy` reports native run activity at
+observation, not the overview's catalogue `state`. `busy: false` does not mean
+a conversation is done or has no declared open work. When the compact form of a
+page exceeds the output byte limit, the tool reads again from the same cursor with half the
 limit, rounded up, until the page fits or the limit is one row. A smaller page
 returns fewer rows and its own backend `next`; no identity is cut and no
 continuation is invented. A refusal at one row, a refusal for an unavailable

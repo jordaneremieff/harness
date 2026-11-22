@@ -364,8 +364,8 @@ it("removes newer unavailable samples before older work under byte pressure", ()
 	check(result);
 });
 
-it("retains old priority and declared-work rows ahead of ordinary work at the byte bound", () => {
-	const priority = summary(-2, { state: "unavailable", rosterOrder: { priority: true, modifiedAt: 0 } });
+it("retains old priority work and declared work ahead of ordinary work at the byte bound", () => {
+	const priority = summary(-2, { state: "working", rosterOrder: { priority: true, modifiedAt: 0 } });
 	const open = summary(-1, { openWorkCount: 3 });
 	const ordinary = Array.from({ length: 100 }, (_, index) =>
 		summary(index + 1, { state: "working", cwd: "x".repeat(600) }),
@@ -376,6 +376,54 @@ it("retains old priority and declared-work rows ahead of ordinary work at the by
 	assert.equal(result.coverage.omittedPriorityRows, 0);
 	assert.equal(result.coverage.omittedOpenWorkRows, 0);
 	assert.equal(result.sessions.length + result.coverage.omitted, 102);
+	check(result);
+});
+
+it("keeps coordination and fault rows ahead of newer done or idle rows in either priority group", () => {
+	const now = Date.parse(page([]).observedAt);
+	const urgent = [true, false].flatMap((priority, group) =>
+		(
+			[
+				{ state: "working" },
+				{ state: "starting" },
+				{ state: "done", openWorkCount: 1 },
+				{ state: "idle", unplaced: 1 },
+				{ state: "failed" },
+				{ state: "done", attention: "task-blocked" },
+				{ state: "failed", error: "failed turn", modifiedAt: now - 48 * 60 * 60 * 1000 },
+			] satisfies Partial<AgentPrioritySummary>[]
+		).map((fields, index) =>
+			summary(group * 10 + index, {
+				modifiedAt: now - 100,
+				rosterOrder: { priority, modifiedAt: index },
+				...fields,
+			}),
+		),
+	);
+	const quiet = Array.from({ length: 36 }, (_, index) =>
+		summary(index + 100, {
+			state: index % 2 ? "done" : "idle",
+			openWorkCount: 0,
+			modifiedAt: now,
+			rosterOrder: { priority: index < 18, modifiedAt: index + 100 },
+			cwd: `/${"p".repeat(3200)}`,
+		}),
+	);
+	const failure = { storageId: "storage-without-a-row", error: "host failed" };
+	const result = buildStatusOverview(page([...quiet, ...urgent]), [], [failure]);
+	assert.equal(result.coverage.byteLimitReached, true);
+	const retained = new Set(result.sessions.map((row) => row.id));
+	assert.ok(
+		quiet.some((row) => retained.has(row.id)),
+		"the budget still admits some quiet rows",
+	);
+	assert.deepEqual(
+		urgent.filter((row) => !retained.has(row.id)).map((row) => row.id),
+		[],
+	);
+	assert.deepEqual(result.failures, [failure]);
+	assert.ok(result.coverage.omittedPriorityRows > 0);
+	assert.equal(result.coverage.omittedOpenWorkRows, 0);
 	check(result);
 });
 
