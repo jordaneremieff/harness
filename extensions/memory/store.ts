@@ -17,6 +17,7 @@ import {
 import { basename, isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { anchorMismatch } from "./anchor.ts";
 import { findMarkdownHeading } from "./headings.ts";
 import { HISTORY_DIRECTORY, historyDirectory, newRevision, revisionIdentity } from "./history.ts";
 import { memorySourceCache } from "./source-cache.ts";
@@ -609,9 +610,14 @@ function editedBody(source: Existing, edits: MemoryEdit["edits"]): string {
 	const matches = edits
 		.map((edit, index) => {
 			const start = body.indexOf(edit.oldText);
-			if (start < 0) throw new Error(`edits[${index}].oldText does not match the original body`);
-			if (body.indexOf(edit.oldText, start + 1) !== -1)
-				throw new Error(`edits[${index}].oldText is ambiguous in the original body`);
+			if (start < 0) throw new Error(anchorMismatch(source.text, source.end, edit.oldText, index));
+			const again = body.indexOf(edit.oldText, start + 1);
+			if (again !== -1) {
+				const line = (offset: number) => source.text.slice(0, source.end + offset).split("\n").length;
+				throw new Error(
+					`edits[${index}].oldText is ambiguous in the original body: it matches at line ${line(start)} and at line ${line(again)}. Add surrounding text so that it matches once.`,
+				);
+			}
 			const end = start + edit.oldText.length;
 			if (start < heading.end && end > heading.start) throw new Error("The title heading cannot be edited");
 			return { start, end, newText: edit.newText };

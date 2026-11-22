@@ -803,7 +803,7 @@ test("body validation refusal reports zero live writes and preserves every sourc
 		}),
 	);
 	assert.match(error.message, /^Memory write stopped; no live files were written:/);
-	assert.match(error.message, /oldText does not match the original body/);
+	assert.match(error.message, /oldText does not match the body/);
 	assert.doesNotMatch(error.message, /incomplete|partially/);
 	assert.deepEqual(error.receipt.written, []);
 	assert.deepEqual(error.receipt.captured, []);

@@ -424,6 +424,16 @@ Missing, ambiguous, overlapping, nested, and collectively unchanged edits refuse
 Adjacent disjoint matches are valid. No fuzzy matching, whitespace normalization,
 or line-ending conversion occurs. Include the source's exact line endings.
 
+A refusal for an `oldText` that occurs nowhere in the body says why, so the next
+attempt can copy the right text. It names a match in the frontmatter, or one that
+starts there and ends in the body. When the text matches once after whitespace runs
+collapse and typographic quotes and dashes become their ASCII forms, the refusal
+quotes the body's exact text, as a JSON string with its line number, to copy
+unchanged. Otherwise it gives the number of leading or trailing characters that do
+match, the line where the match stops, and short excerpts of the body and of
+`oldText` at that point. An ambiguous `oldText` names the lines of its first two
+matches. The edit itself stays literal: the refusal never applies a folded match.
+
 **An existing matching `# Title` heading is required.** The first level-one ATX title
 heading outside backtick or tilde fences must match the frontmatter `title` and
 remain unchanged. A missing or divergent heading refuses with an actionable error;

@@ -186,7 +186,7 @@ test("missing, ambiguous, overlapping, nested and no-op replacements refuse atom
 			],
 			error: /does not match/,
 		},
-		{ edits: [{ oldText: 'status: "active"', newText: "status: superseded" }], error: /does not match/ },
+		{ edits: [{ oldText: 'status: "active"', newText: "status: superseded" }], error: /is in the frontmatter/ },
 	];
 	for (const { edits, error } of cases) {
 		const refused = failure(() => editMemory(f.root, { ...f.input, edits }));
@@ -225,17 +225,20 @@ test("matches are literal without fuzzy text or line-ending normalization", (t) 
 	const f = fixture(t);
 	const source = f.source.replace("Use editor A.", "Use ‘editor’ A.").replaceAll("\n", "\r\n");
 	writeFileSync(f.path, source);
-	for (const oldText of ["Use 'editor' A.", "## Summary\n\nUse ‘editor’ A."]) {
-		assert.match(
-			failure(() =>
-				editMemory(f.root, {
-					...f.input,
-					expectedDigest: sourceDigest(source),
-					edits: [{ oldText, newText: "Changed" }],
-				}),
-			).message,
-			/does not match/,
+	for (const [oldText, exact] of [
+		["Use 'editor' A.", '"Use ‘editor’ A."'],
+		["## Summary\n\nUse ‘editor’ A.", String.raw`"## Summary\r\n\r\nUse ‘editor’ A."`],
+	]) {
+		const refused = failure(() =>
+			editMemory(f.root, {
+				...f.input,
+				expectedDigest: sourceDigest(source),
+				edits: [{ oldText, newText: "Changed" }],
+			}),
 		);
+		const error = refused.receipt.error ?? "";
+		assert.match(error, /matches the body only when whitespace and quote or dash forms are ignored/);
+		assert.ok(error.endsWith(`copy it exactly: ${exact}`), error);
 	}
 	assert.equal(readFileSync(f.path, "utf8"), source);
 });
