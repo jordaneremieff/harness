@@ -274,35 +274,58 @@ message above carries the outcome.
 A completion is a follow-up: an ordinary session receives it only once the
 agent stops calling tools, and an agent conversation only once its current run
 ends. A status or logs read therefore never brings the completion sooner, and
-repeated reads hold the turn open as a timed wait. The model-visible text of
-these results says so and names the next step:
+reads in a row hold the turn open as a timed wait. The model-visible text of
+these results says so and names the next step, and the third check of the same
+job in a row is refused.
+
+A check is a `status` read of a job whose completion is still to come, or a
+`logs` read of such a job that reached the end of the readable output (`more`
+is false). A `logs` page with more output to read is reading, not a check.
+Checks count per job within a streak. A call of any other tool that runs ends
+the streak, cancellation included, as does a model reply that calls no tool;
+`jobs` status, logs and list reads do not end it. An ordinary session also
+ends it when a run starts. A call
+that never runs, because it was blocked, invalid or unknown, is no work, so a
+blocked `sleep` between checks leaves the streak as it was. The calls of one
+round run before their results arrive, so a check in the same round as other
+work still counts. Calls that a tool such as codemode makes count the same way,
+so a script that loops on checks is refused too.
 
 - The `bash` admission of a background job adds one paragraph after its JSON:
   the completion arrives after the turn (or run) ends, so do not check the job
   to wait for it; continue other ready work, or end the turn.
-- A `status` read of a job whose completion is still to come, and a `logs` read
-  that reached the end of the readable output (`more` is false), add a
-  paragraph that says the job still runs and that another check only postpones
-  the completion. From the second such read of the same job, the paragraph
-  counts the reads (`This is check 3 of job …`) and says to stop checking. A
-  `logs` page with more output to read is reading, not a check, so it gets no
-  paragraph and does not count. In a `logs` result the paragraph precedes the
-  untrusted command output.
-- In an ordinary session the step is: continue other ready work, or call
+- The first check adds a paragraph that says the job still runs and that
+  another check only postpones the completion. The second check in a row says
+  to stop checking and that check 3 in a row is refused. In a `logs` result
+  the paragraph precedes the untrusted command output.
+- The third and every later check in a row fails with an error and returns no
+  record: `Refused: this would be check 3 of job … in a row`. The error names
+  the same next step. It adds that a job that never exits, such as a server,
+  sends no completion, so waiting for a condition such as its readiness takes
+  a finite job that exits once the condition holds.
+- In an ordinary session the next step is: continue other ready work, or call
   `jobs_yield`, and the completion starts the next turn. In an agent
   conversation it is: continue other ready work, or end this run, and the
   completion starts the next run.
-- Each paragraph is conditional on waiting for the job to finish. A service
-  that never exits sends no completion; reading its logs for readiness remains
-  ordinary use.
 
-No paragraph follows a job that settled, one whose cancellation was requested
-through `jobs` (it sends no completion), or any result in print and JSON runs:
-those runs offer no `jobs_yield` and stop unfinished jobs when they answer.
-`details` and `structuredContent` stay the job record or log page alone, so
-cards and scripts see no change. The ordinary session keeps the read count per
-job until the job settles or is cancelled; the agent host keeps it per job until
-the outcome is retained or a read sees the job settled.
+The guard holds nothing and waits for nothing: a refused call returns at once,
+and every other tool stays available. No paragraph or refusal applies to a job
+that settled, one whose cancellation was requested through `jobs` (it sends
+no completion), or any result in print and JSON runs: those runs offer no
+`jobs_yield` and stop unfinished jobs when they answer. `details` and
+`structuredContent` of an allowed read stay the job record or log page alone,
+so cards and scripts see no change. An ordinary session keeps the streak in its
+extension runtime and ends it on `agent_start`, on an assistant
+`message_end` that calls no tool, and on a `tool_result` of any other tool;
+Pi emits `tool_result` only for calls that ran, nested calls included. An
+agent conversation keeps one streak per conversation in its host and ends it
+through the generation task's `afterResponse` hook, for a reply without tool
+calls, and the tool task's `afterTool` hook, which runs for model-issued and
+nested calls. A result that the Harness writes for a call that never ran
+(`tool_unavailable`, `invalid_arguments`, `blocked`) does not end it. No
+Durable hook marks the start of a run, so a run that stops without a reply that
+calls no tool, for example one aborted during its checks, leaves its streak to
+the next run of the conversation.
 
 Omit `background`, or set it to false, for ordinary foreground Bash behavior.
 Foreground output truncation, timeout errors, and nonzero-exit errors remain
@@ -531,8 +554,8 @@ node scripts/extension-load-check.mts extensions/jobs/index.ts
 The Durable test opens a real `Harness` with the native `bash` tool, a Node
 execution environment, and the faux provider. It checks admission, independent
 foreground work during a job, the single completion input and its continuation
-run, log reads, the next step of reads while a job runs and that no completion
-arrives during the run, quiet cancellation with the process gone, isolation between
+run, log reads, the next step of reads while a job runs, the refused third check
+in a row past a call that never ran, the new streak after a call that ran, quiet cancellation with the process gone, isolation between
 conversations, and host restarts before result retention, before delivery, and after submission.
 It checks safe loss before retention, exact bounded outcome recovery after
 retention, idempotent delivery, quiet cancellation, and no command replay.
@@ -543,7 +566,13 @@ contextual environment, shell settings, turn-abort ownership, shutdown, and
 completion delivery: one bounded message per finite job, none for
 cancellation or shutdown, and the quiet append after an aborted run. They also
 cover which jobs let `jobs_yield` end the turn, and the next step that admission,
-status and logs results give while a job runs, with none in print and JSON runs. The yield test covers the tool's
+status and logs results give while a job runs, the refused third check in a row
+and each event that ends a streak or leaves it, with none in print and JSON
+runs. The check guard test runs a real ordinary `AgentSession` in RPC mode with
+synthetic model rounds, native codemode and a handler that blocks `sleep`: it
+checks that a blocked call between checks leaves the streak, that the third
+check in a row is refused, that a call of another tool that ran starts a new
+streak, and that a codemode loop of checks is refused at its third check. The yield test covers the tool's
 result, refusal, card and print-mode handling; the print answer test runs real
 `pi -p` and `pi --mode json` processes against a scripted provider and checks
 the printed complete answer after a late completion and the absence of

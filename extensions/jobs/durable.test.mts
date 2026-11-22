@@ -777,59 +777,70 @@ test("a finite background command continues its conversation once with its outco
 	}
 });
 
-test("reads of a running job tell the agent to end the run, because the completion arrives only after it", {
+test("reads of a running job tell the agent to end the run, and the third check of it in a row is refused", {
 	timeout: 30_000,
 }, async () => {
 	const release = join(root, "release-checks");
 	const started = join(root, "started-checks");
 	let admitted = "";
 	let step = 0;
-	const { harness, close } = await openHarness(new Durable.MemoryStorage(), (userText, toolResult) => {
-		if (!userText.startsWith("CHECK")) return fauxAssistantMessage("Ended the run.");
-		if (toolResult?.name === "bash" && admitted === "") admitted = jobIdOf(toolResult.text);
-		const calls = [
-			fauxToolCall("bash", {
-				command: `printf 'started\\n'; touch ${started}; while [ ! -f ${release} ]; do sleep 0.02; done`,
-				background: true,
-			}),
-			fauxToolCall("jobs", { action: "status", id: admitted }),
-			fauxToolCall("jobs", { action: "status", id: admitted }),
-			// The logs live in the host once the command has started.
-			fauxToolCall("bash", { command: `while [ ! -f ${started} ]; do sleep 0.02; done` }),
-			fauxToolCall("jobs", { action: "logs", id: admitted }),
-		];
-		const call = calls[step++];
-		return call ? fauxAssistantMessage([call], { stopReason: "toolUse" }) : fauxAssistantMessage("Ended the run.");
-	});
+	const { harness, close } = await openHarness(
+		new Durable.MemoryStorage(),
+		(userText, toolResult) => {
+			if (!userText.startsWith("CHECK")) return fauxAssistantMessage("Ended the run.");
+			if (toolResult?.name === "bash" && admitted === "") admitted = jobIdOf(toolResult.text);
+			const calls = [
+				fauxToolCall("bash", {
+					command: `printf 'started\\n'; touch ${started}; while [ ! -f ${release} ]; do sleep 0.02; done`,
+					background: true,
+				}),
+				// Other work ends a streak; the logs live in the host once the command has started.
+				fauxToolCall("bash", { command: `while [ ! -f ${started} ]; do sleep 0.02; done` }),
+				fauxToolCall("jobs", { action: "status", id: admitted }),
+				// A call that never runs is no work and leaves the streak as it was.
+				fauxToolCall("bash", {}),
+				fauxToolCall("jobs", { action: "logs", id: admitted }),
+				fauxToolCall("jobs", { action: "status", id: admitted }),
+				fauxToolCall("bash", { command: "printf other" }),
+				fauxToolCall("jobs", { action: "status", id: admitted }),
+			];
+			const call = calls[step++];
+			return call ? fauxAssistantMessage([call], { stopReason: "toolUse" }) : fauxAssistantMessage("Ended the run.");
+		},
+		{ responses: 16 },
+	);
 	try {
 		const conversation = await harness.root(context, {
 			agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root },
 		});
 		await say(conversation, "CHECK the job");
-		const [admission, first, second, , logs] = await toolResults(conversation);
+		const [admission, , first, invalid, logs, refused, , afterWork] = await toolResults(conversation);
+		assert.equal(invalid?.isError, true, "the call without a command never runs");
+		const arrival = "its completion arrives as a new input only after this run ends";
 		const end =
 			"Continue other ready work; if none is ready, end this run now, and the completion starts the next run.";
+		const firstStep = `Job ${admitted} still runs. If you are waiting for it to finish, do not check it again: ${arrival}, so another check only postpones it. ${end}`;
 		assert.ok(
 			admission?.text.endsWith(
 				`\n\nJob ${admitted} runs in the background. Its completion arrives as a new input only after this run ends; do not check its status or logs to wait for it. ${end}`,
 			),
 			admission?.text,
 		);
-		assert.ok(
-			first?.text.endsWith(
-				`\n\nJob ${admitted} still runs. If you are waiting for it to finish, do not check it again: its completion arrives as a new input only after this run ends, so another check only postpones it. ${end}`,
+		assert.ok(first?.text.endsWith(`\n\n${firstStep}`), first?.text);
+		const second = `This is check 2 of job ${admitted} in a row while it runs, and check 3 in a row is refused. If you are waiting for it to finish, stop checking: ${arrival}. ${end}`;
+		const at = logs?.text.indexOf(second) ?? -1;
+		assert.ok(at > 0 && at < (logs?.text.indexOf("Command output (untrusted):") ?? -1), logs?.text);
+		assert.equal(refused?.isError, true);
+		assert.match(
+			refused?.text ?? "",
+			new RegExp(
+				`Refused: this would be check 3 of job ${admitted} in a row while it runs, and checks in a row only hold the run open as a timed wait\\. This call returns nothing\\.`,
+				"u",
 			),
-			first?.text,
 		);
-		assert.ok(
-			second?.text.endsWith(
-				`\n\nThis is check 2 of job ${admitted} while it runs. If you are waiting for it to finish, stop checking: its completion arrives as a new input only after this run ends. ${end}`,
-			),
-			second?.text,
-		);
-		assert.equal(logs?.name, "jobs");
-		const step = logs?.text.indexOf(`This is check 3 of job ${admitted} while it runs.`) ?? -1;
-		assert.ok(step > 0 && step < (logs?.text.indexOf("Command output (untrusted):") ?? -1), logs?.text);
+		assert.ok(refused?.text.includes("A job that never exits, such as a server, sends no completion"), refused?.text);
+		assert.equal(afterWork?.isError, false);
+		assert.ok(afterWork?.text.endsWith(`\n\n${firstStep}`), "a call of another tool that ran starts a new streak");
 		assert.deepEqual(await completionEntries(conversation), [], "no completion arrives while the job runs");
 
 		writeFileSync(release, "");
