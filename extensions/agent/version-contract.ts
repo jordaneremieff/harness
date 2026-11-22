@@ -81,7 +81,7 @@ for (const method of ["profile-read", "profile-update", "profile-list", "resolve
 operations["task-submit"] = { request: "task-submit/1.1.0", response: "task-submit/1.4.0" };
 operations.configure = { request: "configure/1.3.0", response: "configure/1.3.0" };
 operations.compact = { request: "compact/2.0.0", response: "compact/2.0.0" };
-for (const method of ["run-scope", "run-stop", "request-cancel"])
+for (const method of ["run-scope", "run-stop", "request-cancel", "interrupt-continue"])
 	operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 operations.submit = { request: "submit/1.7.0", response: "submit/1.4.0" };
 operations.report = { request: "report/2.0.0", response: "report/1.2.0" };

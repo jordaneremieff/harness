@@ -143,6 +143,7 @@ export type AgentControlMethod =
 	| "fork"
 	| "rewind"
 	| "abort"
+	| "interrupt-continue"
 	| "release"
 	| "resolve-target"
 	| "compact"
@@ -478,8 +479,10 @@ const SteerParams = obj(
 	{},
 );
 
+import { InterruptSelection } from "./interrupt-continue.ts";
 const AbortParams = obj(
 	{
+		interrupt: opt(InterruptSelection),
 		sessionId: str({ minLength: 1 }),
 		background: opt(bool({ description: "Also stop background work such as anchors and reporters." })),
 		timerId: opt(int({ minimum: 1, description: "Timer ID from agent_status; cancels only that scheduled input." })),
@@ -2025,8 +2028,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			return errorResult(`Target resolution failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		const stopped = await dispatchControl(
-			args.release === true ? "release" : "abort",
-			{ sessionId: resolved, ...(args.background === true ? { background: true } : {}) },
+			args.interrupt ? "interrupt-continue" : args.release === true ? "release" : "abort",
+			{
+				sessionId: resolved,
+				...(args.interrupt ? { interrupt: args.interrupt } : {}),
+				...(args.background === true ? { background: true } : {}),
+			},
 			`Abort of ${resolved} failed`,
 			undefined,
 			wait,
@@ -2037,10 +2044,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const abortTool = durable.defineTool({
 		name: "agent_abort",
 		description:
-			"Stop a conversation's current work without deleting its transcript. A live stop waits up to 15 seconds for settlement. A cold stop marks retained work without starting execution. settled: false names pending tasks; do not repeat the abort. Stopped conversations stay quiet until explicit input. With timerId, cancel only that scheduled input. With release, request host retirement after stopping; other work and timers remain. Background work survives unless background is true.",
+			"Stop a conversation's current work without deleting its transcript. A live stop waits up to 15 seconds for settlement. A cold stop marks retained work without starting execution. settled: false names pending tasks; do not repeat the abort. Stopped conversations stay quiet until explicit input. With interrupt, stop only the expected generation and continue the exact ordered queue under a stable intent ID. With timerId, cancel only that scheduled input. With release, request host retirement after stopping; other work and timers remain. Background work survives unless background is true.",
 		parameters: AbortParams,
 		replay: "unsafe",
 		execute: async (args: AbortInput, api, context) => {
+			if (args.interrupt && (args.release || args.background || args.timerId !== undefined))
+				return errorResult("interrupt cannot be combined with release, background or timerId");
 			if (args.release === true && args.background === true)
 				return errorResult("release cannot be combined with background; abort with background first, then release");
 			if (args.timerId !== undefined && args.release === true)

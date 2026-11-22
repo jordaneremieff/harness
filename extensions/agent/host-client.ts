@@ -55,6 +55,7 @@ export function hostRequestBudget(method: string): number {
 			return TRUST_LAUNCH_TIMEOUT_MS + 90_000;
 		case "abort":
 		case "release":
+		case "interrupt-continue":
 		case "run-stop":
 		case "timer-cancel":
 		case "compact":

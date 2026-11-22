@@ -644,7 +644,12 @@ export async function createDurableRuntime(
 					throw new Error("The exact native target is not retained and no ordinary primary is registered");
 				return await primaryControl(method, params, sessionId);
 			}
-			if (FOREIGN_OBSERVATION_METHODS.has(method) || method === "abort" || method === "release") {
+			if (
+				FOREIGN_OBSERVATION_METHODS.has(method) ||
+				method === "abort" ||
+				method === "release" ||
+				method === "interrupt-continue"
+			) {
 				const caller = {
 					id: typeof params.senderIdentity === "string" ? params.senderIdentity : metadata.storageId,
 					cwd: metadata.cwd,
@@ -707,7 +712,7 @@ export async function createDurableRuntime(
 	): Promise<unknown> {
 		if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
 		const observation = FOREIGN_OBSERVATION_METHODS.has(method);
-		const stopping = method === "abort" || method === "release";
+		const stopping = method === "abort" || method === "release" || method === "interrupt-continue";
 		if (observation || stopping) context?.abortSignal?.throwIfAborted();
 		activeRequests++;
 		activityGeneration++;

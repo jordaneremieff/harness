@@ -146,8 +146,10 @@ const StringEnum = <const T extends readonly string[]>(
 ): Schema<T[number]> => ({ type: "string", enum: [...values], ...options });
 const id = str({ minLength: 1, maxLength: 256 });
 const maybeTrust = opt(bool());
+import { InterruptSelection } from "./interrupt-continue.ts";
 const abort = obj(
 	{
+		interrupt: opt(InterruptSelection),
 		sessionId: id,
 		trust: maybeTrust,
 		background: opt(bool()),
@@ -792,9 +794,14 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_abort",
-		"Abort the selected conversation without deleting retained evidence. A live stop waits up to 15 seconds for settlement. A cold stop marks retained work without starting execution. settled: false names pending tasks; do not repeat the abort. Stopped conversations stay quiet until explicit input. With timerId, cancel only that input. With release, request host retirement; other work and timers remain.",
+		"Abort the selected conversation without deleting retained evidence. A live stop waits up to 15 seconds for settlement. A cold stop marks retained work without starting execution. settled: false names pending tasks; do not repeat the abort. Stopped conversations stay quiet until explicit input. With interrupt, stop only the expected generation and continue the exact ordered queue under a stable intent ID. With timerId, cancel only that input. With release, request host retirement; other work and timers remain.",
 		abort,
 		(input, ctx, _callId, _admissionCaller, signal) => {
+			if (input.interrupt) {
+				if (input.background || input.release || input.timerId !== undefined)
+					throw new Error("interrupt cannot be combined with release, background or timerId");
+				return control("interrupt-continue", { sessionId: input.sessionId, interrupt: input.interrupt }, ctx, signal);
+			}
 			if (input.release === true && input.background === true)
 				throw new Error("release cannot be combined with background; abort with background first, then release");
 			if (input.timerId !== undefined && input.release === true)

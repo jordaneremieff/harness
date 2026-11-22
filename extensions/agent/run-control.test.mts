@@ -175,3 +175,20 @@ test("queued cancellation reports partial effects when native placement wins the
 	assert.equal(result.state, "already_placed");
 	assert.equal(result.effects, "partial-effects-possible");
 });
+
+test("interrupt continues only the exact queued cohort and replays the same boundary", async (t) => {
+	const { host } = await fixture(t);
+	const scope = (await host.request("run-scope")) as RunScope;
+	const queued = await host.submit({ message: "correction", requestId: "correction", whenBusy: "followUp" });
+	const interrupt = { taskId: scope.taskId, queuedInputs: [queued.submissionId], intentId: "exact" };
+	const call = (s: typeof interrupt) =>
+		host.request("interrupt-continue", { interrupt: s }) as Promise<{ state: string; submissionId?: number }>;
+	assert.equal(
+		(await call({ ...interrupt, intentId: "wrong", queuedInputs: [(queued.submissionId + 1) as SubmissionId] })).state,
+		"protected",
+	);
+	const answer = await call(interrupt);
+	assert.equal(answer.state, "continued");
+	assert.deepEqual(await call(interrupt), answer);
+	assert.equal((await host.wait(queued.submissionId)).status, "done");
+});

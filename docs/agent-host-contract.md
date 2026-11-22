@@ -532,6 +532,7 @@ Overrides and remaining members:
 | rewind | rewind/2.0.0 | rewind/2.0.0 | D |
 | compact | compact/2.0.0 | compact/2.0.0 | D |
 | run-scope | run-scope/1.0.0 | run-scope/1.0.0 | absent |
+| interrupt-continue | interrupt-continue/1.0.0 | interrupt-continue/1.0.0 | absent |
 | run-stop | run-stop/1.0.0 | run-stop/1.0.0 | absent |
 | request-cancel | request-cancel/1.0.0 | request-cancel/1.0.0 | absent |
 | configure | configure/1.3.0 | configure/1.3.0 | absent |
@@ -1246,6 +1247,10 @@ An exact stop bounds its observation and cascade at 45 seconds. Expiry does not 
 Stop follows native generations only while the exact selected input remains in their admitted group. A later independent group remains untouched. An optional `inputs` list requires every observed input in the selected group to belong to that exact owned set. Delegated Stop uses this guard for both active and retired groups to preserve shared work in reused agents. A synchronous native commit observer cancels a guarded abort before admission if unrelated input joins. Generation handovers trigger bounded re-observation of the same input group, never a conversation-wide abort fallback.
 
 Stop withdraws each exact owned queued delegation before it considers active work. It then traverses each original admitted input's local or foreign group, including surviving descendants after that input answers. Retained native input/task links recover the observed cohort of a retired group. A newer unrelated group is neither selected nor aborted. Several owned references for one cohort share one guarded traversal. A settled submission alone does not establish that its descendants stopped. Native background reporters associated with the selected group stop separately. A creator label or a result reference alone does not establish ownership. Unknown ownership, unavailable host contracts, in-flight dispatch without a confirmed result, or a traversal limit produces an explicit protected, unavailable or partial boundary. `coverage.omitted` counts known omitted source rows and incomplete capture/scan markers. It is not a total of unseen tasks. Cancellation does not undo external effects.
+
+### interrupt-continue
+
+`{sessionId, interrupt:{taskId,queuedInputs,intentId}}` selects one live generation and every queued input in order. A nonempty queue of up to 200 inputs must match exactly; a mixed queue with a write is protected. The host retains the selection under the intent ID before stopping that task. It waits up to 15 seconds. `pending` permits observation with the same intent. An idle conversation with no successor generation and the same queue receives one native continuation; `continued` names its submission. `protected` means the continuation did not run. An unsupported or cold host refuses without falling back to abort. No result implies rollback of external effects.
 
 ### request-cancel
 

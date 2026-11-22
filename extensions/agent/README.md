@@ -5077,3 +5077,5 @@ node --test extensions/agent/host-continuity.test.mts
 The fixture sets isolated `PI_AGENT_DIR` and `PI_AGENT_SESSIONS_DIR` values and
 removes its temporary stores. The command uses existing installations; it does
 not install or copy a package.
+
+The optional `interrupt` object on `agent_abort` selects an exact live generation (`taskId`) and its complete ordered queue (`queuedInputs`). Give it a stable `intentId`. It refuses a cold or unsupported host. Use the same intent after `pending`; `continued` identifies one admitted continuation, not its answer. It never repeats tool effects or undoes them. Do not combine `interrupt` with release, background stop, or timer cancellation.

@@ -1099,7 +1099,7 @@ export class AgentManager {
 		options?.signal?.throwIfAborted();
 		if (
 			sessionId === caller.id &&
-			["abort", "release", "fork", "rewind", "compact", "configure", "command"].includes(method)
+			["abort", "release", "interrupt-continue", "fork", "rewind", "compact", "configure", "command"].includes(method)
 		)
 			throw new Error("This control cannot target the calling primary session");
 		let record: CatalogRecord;
@@ -1131,6 +1131,11 @@ export class AgentManager {
 		signal: AbortSignal | undefined,
 		launch: boolean,
 	): Promise<unknown> {
+		if (method === "interrupt-continue") {
+			const client = await this.observationConnection(record);
+			if (!client) throw new Error("Interrupt requires a running host; no work was stopped");
+			return this.controlClient(client, method, params, caller, signal);
+		}
 		if (method === "abort" || method === "release")
 			return this.abortControl(record, params, caller, signal, launch, method);
 		try {

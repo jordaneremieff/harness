@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import { reconcileInputCommunications } from "./communication-retention.ts";
 import { parseCommunication, parseCommunicationPassive } from "./communication.ts";
 import { taskInputSender } from "./task-senders.ts";
+import { InterruptSelection, interruptContinue } from "./interrupt-continue.ts";
 import { cancelRequest, readRunScope, stopRun, type ForeignStop } from "./run-control.ts";
 import { ProviderModels } from "./provider-models.ts";
 import { ProviderRetryNotices, ProviderRetryNoticeSchema } from "./provider-notices.ts";
@@ -786,6 +787,11 @@ export class DurableHost {
 			case "run-scope": {
 				const conversation = await this.target(params, requestContext);
 				return readRunScope(this.harness, this.storageId, conversation.id, requestContext);
+			}
+			case "interrupt-continue": {
+				const selection = params?.interrupt;
+				if (!matchesSchema(InterruptSelection, selection)) throw new Error("Invalid exact interrupt selection");
+				return interruptContinue(this.harness, await this.target(params, requestContext), selection, requestContext);
 			}
 			case "run-stop": {
 				const conversation = await this.target(params, requestContext);
