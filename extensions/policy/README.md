@@ -1498,10 +1498,58 @@ The parser recognises a plain `for NAME in WORDS; do SIMPLE_LIST; done` loop wit
 simple commands and pipelines. It reads the body with the same rules as top-level
 commands and retains command substitutions as separate evidence. Quoted or escaped
 keywords, arithmetic loops, nested control forms, redirects on the header, words
-after `done`, and control operators inside the loop or after `done` leave evidence
-unavailable; a loop after `&&` or `||` is admitted. A known command
-position is not proof that the command terminates or that its executable has no
-further effects.
+after `done`, and control operators inside the loop or after `done` leave the
+loop's control flow unavailable (`unsupported-for-syntax`, `malformed-for-syntax`);
+a loop after `&&` or `||` is admitted. These forms move no command word, so a CLI
+rule decides them from the extracted stages, as it does `if`, `while`, `case` and
+subshell bodies. Three forms do hide command words. An arithmetic loop header
+`for ((...))` is arithmetic, which stays unavailable as described below. A `for` or
+`select` stage that holds `do`, as in `for x do ...`, leaves command meaning
+unavailable (`unresolved-command`). A `function` keyword stage stays unknown,
+because its body can be a compound command that the reader does not split. A known
+command position is not proof that the command terminates or that its executable
+has no further effects.
+
+A CLI rule therefore reports unknown only where its command could run without a
+literal stage of its own: a command word that expands (`$GIT`, `$(...)`, a pattern,
+a tilde path), a command that runs shell text or data (`eval`, `source`, `.`, `sh`,
+`bash`, `zsh`, `dash`, `ksh`, `csh`, `tcsh`, `fish`, `xargs`), a command-operand
+wrapper, an unresolved `env` or `trap` form, an alias definition, arithmetic, syntax
+that the reader cannot split into words as the shell does, and exhausted bounds.
+Shells and `eval` stay unknown even when their text holds no such command, because
+startup files, other shell grammars and the limits of this reader can run text that
+the stage does not show. A Git stage behind `sudo`, `env`, `time`, `nice`, `nohup`
+or `coproc`, or after an expanded assignment such as `NAME=$value git ...`, also
+stays unknown, because Git reads commands and configuration from its environment.
+The reader reads `NAME=value` and `NAME+=value` words before the command word as
+assignments.
+
+A lone `[` is the literal test command. Its `-v` test of a subscript or of an
+expanded name stays unknown (`unresolved-command`), because the subscript can run a
+command substitution. An expanded word can be `-v`, and an unquoted expansion can
+form both words, so a `[` or `test` stage also stays unknown when any operand is an
+unquoted expansion, or when an expanded word comes before an expanded operand or
+one with a subscript. `[[` stays unknown, because its arithmetic operators evaluate
+their operands. Every arithmetic form, `$((...))`, `$[...]`, `((...))`,
+`for ((...))` and `let`, leaves arithmetic unavailable (`unexpanded-arithmetic`):
+bash evaluates names, command output and array subscripts there, and a subscript
+can run a command substitution.
+
+A Git `-C`, `--git-dir` or `--work-tree` value that the shell cannot split, such as
+`-C "$repo"` or `-C ~/repo`, keeps the subcommand in place, because Git reads that
+location's configuration whatever the spelling of its path. An unquoted expansion, a
+pattern, `"$@"`, an `@` subscript, an indirect expansion such as `${!name}` (also
+inside a default value), or a name reference that `declare`, `typeset` or `local`
+can create can split it, so it stays unknown. Other global option values, such as
+`-c` settings, can define an alias, so they stay unknown unless literal.
+
+Command evidence does not cover data that bash or Git evaluates as code outside
+these forms: array subscripts and substring offsets in parameter expansions, the
+variable that an indirect expansion names, names given to builtins such as `unset`,
+`read` and `declare`, literal Git configuration such as a `-c` alias, Git
+environment variables such as `GIT_PAGER`, and programs that run commands from
+their own arguments or files. A command whose only uncertain part is one of these
+gives false.
 
 Each denying rule has its own labelled diagnostic and evidence. Several matched
 rules do not establish one combined correction. A cap before global sorting or
@@ -1522,10 +1570,12 @@ spelling, including a lower-case name, leaves command meaning unavailable
 (`unresolved-command`). An installation-expanded action or an alias definition
 leaves command meaning unavailable
 (`unresolved-command`). A continuation directly after an unescaped `$`, a split
-arithmetic expansion opener, or an ANSI-C escaped closing quote leaves syntax
-unavailable (`unsupported-shell`). A `$[` or arithmetic-command `((` opener with
-physical `<<` later in its raw text leaves arithmetic unavailable
-(`unexpanded-arithmetic`).
+arithmetic expansion opener, an ANSI-C escaped closing quote, a word directly
+before `(`, `{` or `}` (a function definition, an array, a pattern or a brace
+expansion), or a brace with other text directly after it, such as `{#`, leaves
+syntax unavailable (`unsupported-shell`). A brace starts or ends a group only as a
+word of its own; the reader reads `{}` as an empty group. `)` ends the word before
+it.
 
 The reader marks a here-document delimiter as quoted when it encounters a single
 quote, double quote, or non-continuation backslash while it expects the delimiter.
@@ -1625,8 +1675,10 @@ and global clusters are unavailable evidence.
 
 CLI proposals must explicitly declare top-level `onUnavailable:"skip"` or
 `"deny"`. That choice is stored with the matcher and included in the approved
-revision. Unknown expansion, malformed syntax, unsupported grammar, and exhausted
-parse bounds stay unknown rather than proving a flag absent. A selected `steer`
+revision. Expansion that can change a command word or a Git argument, commands
+that run shell text, arithmetic, unsupported shell syntax, and exhausted parse
+bounds stay unknown rather than proving a flag absent; loop and control grammar
+alone does not. A selected `steer`
 effect never denies. False scope or false/unavailable applicability never acquires
 unknown-denial authority. Literal proposals retain `skip` when omitted.
 

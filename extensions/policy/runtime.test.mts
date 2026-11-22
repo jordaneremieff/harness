@@ -555,7 +555,7 @@ describe("integrated catalogue guidance", () => {
 });
 
 describe("separate denial evidence", () => {
-	it("explains an unreadable group before the rule note and admits readable harmless control", async (t) => {
+	it("explains unreadable shell syntax before the rule note and admits readable harmless control", async (t) => {
 		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
 		gate.definition.note = "Synthetic restriction: leave repository publication unchanged.";
 		gate.matcher = {
@@ -567,11 +567,12 @@ describe("separate denial evidence", () => {
 		const f = fixture([gate], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		assert.equal(
-			(await f.call("group", { command: "(true)" }))?.reason,
+			(await f.call("brace", { command: "echo a{b,c}" }))?.reason,
 			"[policy] Rule synthetic.git: Policy could not determine whether this command matches the rule. Evidence unavailable: unsupported-shell. The rule denies unavailable evidence. No matching command was established. Use plain literal commands joined with && or ; when that preserves the task. Rule note: Synthetic restriction: leave repository publication unchanged.",
 		);
 		assert.equal(await f.call("harmless-loop", { command: "for f in a b; do echo $f; done" }), undefined);
 		assert.equal(await f.call("harmless-substitution", { command: "echo $(date)" }), undefined);
+		assert.equal(await f.call("harmless-group", { command: "(true)" }), undefined);
 		assert.equal(
 			(await f.call("push", { command: "git push" }))?.reason,
 			"[policy] Rule synthetic.git: Synthetic restriction: leave repository publication unchanged. Matched command: git push",
@@ -649,11 +650,19 @@ describe("separate denial evidence", () => {
 			undefined,
 		);
 		assert.equal(await f.call("newline-loop", { command: "for x in a; do\necho safe; done" }), undefined);
+		for (const command of [
+			"for x in a; do echo safe;; done",
+			"for x in a; do echo safe |; done",
+			'for f in a b; do if [ -f "$f" ]; then echo "$f"; fi; done',
+			"(cd src && echo safe)",
+		])
+			assert.equal(await f.call(command, { command }), undefined, command);
 		for (const [id, command, reason] of [
 			["wrapper", "timeout 1 echo safe", "opaque-command-operand"],
 			["dynamic", "$command", "unresolved-command"],
-			["empty-list", "for x in a; do echo safe;; done", "malformed-for-syntax"],
-			["empty-pipe", "for x in a; do echo safe |; done", "malformed-for-syntax"],
+			["indirect", "bash -c 'echo safe'", "unresolved-command"],
+			["arithmetic", "echo $((1 + 2))", "unexpanded-arithmetic"],
+			["brace", "echo a{b,c}", "unsupported-shell"],
 		]) {
 			const denied = await f.call(id, { command });
 			assert.ok(denied);
@@ -704,7 +713,7 @@ describe("separate denial evidence", () => {
 		};
 		const f = fixture([gate], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
-		for (const command of ["echo a{b,c}", "mv file.{txt,md}", "arr=(a b)", "(true)"]) {
+		for (const command of ["echo a{b,c}", "mv file.{txt,md}", "arr=(a b)", "f() { true; }"]) {
 			const reason = (await f.call(command, { command }))?.reason ?? "";
 			assert.match(reason, /Evidence unavailable: unsupported-shell/);
 			assert.doesNotMatch(reason, /shell group/);

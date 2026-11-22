@@ -101,6 +101,7 @@ function decodeGlobalWord(
 	args: readonly string[],
 	index: number,
 	literal: (index: number) => boolean,
+	oneWord: (index: number) => boolean,
 ): { advance: number; options: OptionOccurrence[] } | CliEvidence {
 	const arg = args[index];
 	if (!literal(index)) return { status: "unknown", reason: "dynamic-word" };
@@ -118,23 +119,32 @@ function decodeGlobalWord(
 	}
 	if (globalFlags.has(arg))
 		return { advance: 1, options: [{ spelling: arg, canonical: arg, argumentIndex: index, polarity: "set" }] };
-	if (globalValues.has(name)) return decodeGlobalValue(name, attached, args, index, literal);
+	if (globalValues.has(name))
+		return decodeGlobalValue(name, attached, args, index, PATH_OPTIONS.has(name) ? oneWord : literal);
 	return { status: "unknown", reason: "unsupported-global-option" };
 }
+
+/**
+ * Options that name a repository or work tree. Git reads that location's configuration
+ * whether its path is literal or expanded, so a value that the shell cannot split keeps
+ * the subcommand in place without hiding configuration text. Other option values, such
+ * as `-c` settings, can define an alias, so they stay unknown unless literal.
+ */
+const PATH_OPTIONS = new Set(["-C", "--git-dir", "--work-tree"]);
 
 function decodeGlobalValue(
 	name: string,
 	attached: string | undefined,
 	args: readonly string[],
 	index: number,
-	literal: (index: number) => boolean,
+	certain: (index: number) => boolean,
 ): { advance: number; options: OptionOccurrence[] } | CliEvidence {
 	if (attached !== undefined && (!name.startsWith("--") || name === "--shallow-file"))
 		return { status: "unknown", reason: "invalid-option-form" };
 	const nextIndex = attached === undefined ? index + 1 : index;
 	const value = attached ?? args[nextIndex];
 	if (value === undefined) return { status: "unknown", reason: "missing-value" };
-	if (!literal(nextIndex)) return { status: "unknown", reason: "dynamic-word" };
+	if (!certain(nextIndex)) return { status: "unknown", reason: "dynamic-word" };
 	return {
 		advance: nextIndex - index + 1,
 		options: [{ spelling: name, canonical: name, value, argumentIndex: index, polarity: "set" }],
@@ -145,11 +155,12 @@ function decodeGlobalValue(
 function decodeGlobalArgs(
 	args: readonly string[],
 	literal: (index: number) => boolean,
+	oneWord: (index: number) => boolean,
 ): { globals: OptionOccurrence[]; nextIndex: number } | CliEvidence {
 	const globals: OptionOccurrence[] = [];
 	let index = 0;
 	for (; index < args.length; index++) {
-		const decoded = decodeGlobalWord(args, index, literal);
+		const decoded = decodeGlobalWord(args, index, literal, oneWord);
 		if ("status" in decoded) return decoded;
 		if (decoded.advance === 0) break;
 		globals.push(...decoded.options);
@@ -274,10 +285,11 @@ export function decodeGitPush(stage: Stage): CliEvidence {
 	if (stage.command !== "git") return { status: "unrelated" };
 	const args = stage.args;
 	const literal = (index: number) => stage.argLiterals?.[index] !== false;
+	const oneWord = (index: number) => literal(index) || stage.argSplits?.[index] === false;
 	const unknown = (reason: string): CliEvidence => ({ status: "unknown", reason });
 	if (stage.shellReasons?.length) return unknown(stage.shellReasons[0]);
 	if (args.length > PUSH_WORD_BUDGET) return unknown("word-limit");
-	const leading = decodeGlobalArgs(args, literal);
+	const leading = decodeGlobalArgs(args, literal, oneWord);
 	if ("status" in leading) return leading;
 	const index = leading.nextIndex;
 	if (index === args.length) return unknown("missing-subcommand");

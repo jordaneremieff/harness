@@ -67,7 +67,9 @@ remain unavailable; checks never fabricate them.
 - **`match`**: use a command shape for literal command/flag/operand/pipe evidence.
   `flags` means all, `anyFlags` means any, and `absentFlags` means none. The Git
   profile supports only `git push`; it requires explicit top-level
-  `onUnavailable`. Shell expansion, aliases, and unsupported syntax stay unknown.
+  `onUnavailable`. Expansion that can change a command word or a Git argument,
+  commands that run shell text, wrappers, arithmetic, aliases, and unsupported
+  syntax stay unknown; loop and control grammar alone does not.
 - **`language:"facts/v1", program`**: use typed conditions for tool arguments,
   result contracts, corrections, or completed-observation state.
 

@@ -227,7 +227,7 @@ const deferredCases: {
 	},
 	{ name: "ANSI-C escaped quote", command: "echo $'a\\'b'\ngit push\n: '\n", executes: true, truth: "unknown" },
 	{ name: "ANSI-C colour operand", command: "printf '%s' $'\\e[31m'", executes: false, truth: false },
-	{ name: "arithmetic without shift", command: "echo $[1+2]", executes: false, truth: false },
+	{ name: "bracket arithmetic expansion", command: "echo $[1+2]", executes: false, truth: "unknown" },
 	{
 		name: "continued document operator",
 		command: "cat <<\\\n-'EOF'\nx\nEOF\ngit push\n-EOF\n",

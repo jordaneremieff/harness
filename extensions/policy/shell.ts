@@ -16,6 +16,8 @@ export interface Stage {
 	/** Certainty belongs to shell words, not their rendered strings. */
 	commandLiteral?: boolean;
 	argLiterals?: boolean[];
+	/** Whether an unquoted expansion or pathname pattern can change each operand's field count. */
+	argSplits?: boolean[];
 	/** Fixed reason codes only; no command contents. */
 	shellReasons?: string[];
 	/** A pipe feeds this stage's standard input. */
@@ -31,10 +33,10 @@ export interface Stage {
 /** One statement: pipeline stages separated by `|`. */
 export type Statement = Stage[];
 
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 const MAX_NESTED_DEPTH = 8;
 const SHELL_PREFIXES = new Set(["!", "if", "then", "elif", "else", "do", "while", "until"]);
-const SIMPLE_PREFIXES = new Set(["builtin", "nohup"]);
+const SIMPLE_PREFIXES = new Set(["builtin", "nohup", "coproc"]);
 
 function isBlank(char: string): boolean {
 	return char === " " || char === "\t";
@@ -191,6 +193,8 @@ interface Word {
 	literal: boolean;
 	/** Only unquoted, unescaped literal words are reserved-word candidates. */
 	keyword: boolean;
+	/** An unquoted expansion or pathname pattern can split or remove the word. */
+	split?: boolean;
 	/** The word carries a redirect operator rather than an operand. */
 	redirect?: "in" | "out";
 	/** The word opened a heredoc; its text is the delimiter. */
@@ -200,8 +204,6 @@ interface Word {
 }
 
 interface ParseFrame {
-	/** Last physical shift token, shared by non-advancing arithmetic checks. */
-	lastShift: number;
 	groups: string[];
 	loop?: { phase: "do" | "body"; body: boolean };
 }
@@ -248,6 +250,7 @@ interface ReaderState {
 	index: number;
 	current: string;
 	literal: boolean;
+	split: boolean;
 	quoted: boolean;
 	/** Quotes on a descriptor do not establish a quoted delimiter. */
 	heredocQuoted: boolean;
@@ -300,7 +303,7 @@ function inspectDollarReasons(state: ReaderState, index: number, doubleQuoted: b
 		state.budget.reasons.add("unsupported-shell");
 		state.budget.continuedDollar = true;
 	}
-	if (next === "[" && state.frame.lastShift > index + 1) state.budget.reasons.add("unexpanded-arithmetic");
+	if (next === "[") state.budget.reasons.add("unexpanded-arithmetic");
 	if (doubleQuoted) return;
 	if (state.pendingHeredoc && (next === "'" || next === '"')) state.budget.reasons.add("unexpanded-heredoc");
 	if (next !== "'") return;
@@ -390,13 +393,20 @@ function keywordEligible(state: ReaderState): boolean {
 	return state.literal && !state.quoted && !state.escaped && !state.pendingRedirect && !state.pendingHeredoc;
 }
 
+/** The word just read. A lone `[` has no closing bracket, so the shell keeps it as the test command name. */
+function currentWord(state: ReaderState): Word {
+	const bracket = !state.quoted && !state.escaped && state.current === "[";
+	return {
+		text: state.current,
+		literal: state.literal || bracket,
+		keyword: keywordEligible(state),
+		...(state.split && !bracket ? { split: true } : {}),
+	};
+}
+
 function flushWord(state: ReaderState): void {
 	if (!state.started) return;
-	const word: Word = {
-		text: state.current,
-		literal: state.literal,
-		keyword: keywordEligible(state),
-	};
+	const word = currentWord(state);
 	state.budget.words++;
 	if (state.budget.words > 4096) state.budget.reasons.add("word-limit");
 	if ((state.pendingRedirect || state.pendingHeredoc) && !state.current) state.budget.reasons.add("malformed-shell");
@@ -415,6 +425,7 @@ function flushWord(state: ReaderState): void {
 	state.words.push(word);
 	state.current = "";
 	state.literal = true;
+	state.split = false;
 	state.quoted = false;
 	state.heredocQuoted = false;
 	state.escaped = false;
@@ -495,6 +506,10 @@ function doubleQuoteDollar(state: ReaderState, scan: number): number {
 	if (state.text[scan + 1] === "{") {
 		const end = readerBalanced(state, scan + 1, "{", "}", true);
 		if (/\$\(|`/.test(state.text.slice(scan, end))) state.budget.reasons.add("unexpanded-parameter");
+		// Quoted `@` expansions such as "${list[@]}" still give one word per element, and an
+		// indirect expansion such as "${!name}", also inside a default value, can name one.
+		const body = state.text.slice(scan, end);
+		if (body.includes("@") || body.includes("!")) state.split = true;
 		state.current += state.text.slice(scan, end);
 		return end;
 	}
@@ -516,6 +531,7 @@ function doubleQuoteStep(state: ReaderState, scan: number): QuoteStep {
 	const char = state.text[scan];
 	if (char === "$") inspectDollarReasons(state, scan, true);
 	if (dynamicChar(char, state.text[scan + 1])) state.literal = false;
+	if (char === "$" && state.text[scan + 1] === "@") state.split = true;
 	if (char === '"') return { scan: scan + 1, done: true };
 	if (char === "\\") return { scan: doubleQuoteBackslash(state, scan) };
 	if (char === "$") return { scan: doubleQuoteDollar(state, scan) };
@@ -732,14 +748,24 @@ function backtickAction(state: ReaderState): ReaderAction {
 	return { kind: "continue" };
 }
 
+/**
+ * A brace is a reserved word only when a blank or an operator follows it. The reader keeps
+ * reading `{}`, as in `find -exec`, as an empty group, which adds no command word.
+ */
+function attachedBrace(state: ReaderState, char: string): boolean {
+	const after = state.text[state.index + 1];
+	if (char === "{" && after === "}") return false;
+	return (char === "{" || char === "}") && after !== undefined && !/[\s;&|()<>]/.test(after);
+}
+
 function groupAction(state: ReaderState, char: string): ReaderAction {
-	if (
-		char === "(" &&
-		state.text[afterContinuations(state.text, state.index + 1)] === "(" &&
-		state.frame.lastShift > afterContinuations(state.text, state.index + 1)
-	)
+	// Bash evaluates names, command output and subscripts in arithmetic text, which can run commands.
+	if (char === "(" && state.text[afterContinuations(state.text, state.index + 1)] === "(")
 		state.budget.reasons.add("unexpanded-arithmetic");
-	if (state.started) state.budget.reasons.add("unsupported-shell");
+	// `)` ends the word before it. A word directly before `(`, `{` or `}` belongs to a function
+	// definition, an array, a pattern or a brace expansion, and a brace with text directly after
+	// it is part of a word, not a group; the reader models none of these.
+	if ((state.started && char !== ")") || attachedBrace(state, char)) state.budget.reasons.add("unsupported-shell");
 	if (char === "(" || char === "{") state.frame.groups.push(char);
 	else if (state.frame.groups.pop() !== (char === ")" ? "(" : "{")) state.budget.reasons.add("malformed-shell");
 	flushWord(state);
@@ -802,6 +828,7 @@ function readWords(
 		index: start,
 		current: "",
 		literal: true,
+		split: false,
 		quoted: false,
 		heredocQuoted: false,
 		escaped: false,
@@ -818,7 +845,11 @@ function readWords(
 	while (state.index < state.text.length) {
 		if (state.budget.words > 4096) return { split: { words: state.words, end: "eof" }, next: state.text.length };
 		const char = state.text[state.index];
-		if (dynamicChar(char, state.text[state.index + 1]) || "*?[~".includes(char)) state.literal = false;
+		const next = state.text[state.index + 1];
+		if (dynamicChar(char, next) || "*?[~".includes(char)) state.literal = false;
+		// Dollar quoting and tilde expansion keep one field; other unquoted expansions and patterns need not.
+		const expands = dynamicChar(char, next) && !(char === "$" && (next === "'" || next === '"'));
+		if (expands || "*?[".includes(char)) state.split = true;
 		const action = readerAction(state, char);
 		if (action.kind === "split") return { split: action.split, next: action.next };
 	}
@@ -941,7 +972,7 @@ function toStage(words: Word[], fromPipe: boolean, toPipe: boolean): Stage {
 	while (index < operands.length && ASSIGNMENT.test(operands[index].text)) index++;
 	const prefix = operands.slice(0, index);
 	if (prefix.some((word) => !word.literal)) shellReasons.push("dynamic-prefix");
-	if (prefix.some((word) => ["sudo", "env", "time", "nice", "nohup"].includes(basename(word.text))))
+	if (prefix.some((word) => ["sudo", "env", "time", "nice", "nohup", "coproc"].includes(basename(word.text))))
 		shellReasons.push("unsupported-prefix");
 	operands = operands.slice(index);
 	const head = operands[0]?.text ?? "";
@@ -950,6 +981,7 @@ function toStage(words: Word[], fromPipe: boolean, toPipe: boolean): Stage {
 		args: operands.slice(1).map((word) => word.text),
 		commandLiteral: operands[0]?.literal ?? true,
 		argLiterals: operands.slice(1).map((word) => word.literal),
+		argSplits: operands.slice(1).map((word) => word.split === true),
 		...(shellReasons.length ? { shellReasons } : {}),
 		fromPipe,
 		toPipe,
@@ -1001,11 +1033,39 @@ function aliasReasons(stage: Stage, budget: ParseBudget): void {
 		budget.reasons.add("unresolved-command");
 }
 
+/**
+ * A `-v` test of an array element expands its subscript, which can run a command
+ * substitution. An expanded operator word can be `-v`, and an unquoted expansion can
+ * become both words, so only literal operands without a subscript follow either.
+ */
+function variableTestReasons(stage: Stage, budget: ParseBudget): void {
+	const literal = (index: number) => stage.argLiterals?.[index] !== false;
+	for (let index = 0; index < stage.args.length; index++) {
+		const operand = stage.args[index + 1];
+		const operator = stage.args[index] === "-v" || !literal(index);
+		if (
+			stage.argSplits?.[index] ||
+			(operator && operand !== undefined && (!literal(index + 1) || operand.includes("[")))
+		) {
+			budget.reasons.add("unresolved-command");
+			return;
+		}
+	}
+}
+
+/** A `for` or `select` stage holds `do` only when its list runs on the same line as the header. */
+function loopHeaderReasons(stage: Stage, budget: ParseBudget): void {
+	if (stage.args.includes("do")) budget.reasons.add("unresolved-command");
+}
+
 function collectActionEvidence(statements: Statement[], depth: number, budget: ParseBudget): void {
 	for (const stage of statements.flat()) {
 		if (stage.commandLiteral === false) continue;
 		if (stage.command === "trap") trapAction(stage, depth, budget);
 		if (stage.command === "alias") aliasReasons(stage, budget);
+		if (stage.command === "[" || stage.command === "test") variableTestReasons(stage, budget);
+		if (stage.command === "for" || stage.command === "select") loopHeaderReasons(stage, budget);
+		if (stage.command === "let") budget.reasons.add("unexpanded-arithmetic");
 	}
 }
 
@@ -1174,7 +1234,7 @@ function parse(command: string, depth: number, budget: ParseBudget): Statement[]
 	const statements: Statement[] = [];
 	const heredocs: Heredoc[] = [];
 	const nestedCommands: string[] = [];
-	const frame: ParseFrame = { groups: [], lastShift: command.lastIndexOf("<<") };
+	const frame: ParseFrame = { groups: [] };
 	const stages: Word[][] = [];
 	let index = 0;
 	while (index <= command.length) {

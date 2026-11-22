@@ -490,8 +490,6 @@ describe("supplemental shell evidence", () => {
 			"alias -p",
 			"alias -p p='git push'",
 			"alias p",
-			"echo $[1+2]",
-			"(( x=1+2 ))",
 			"printf '%s' $'line\\n'",
 			"printf '%s' $'\\e[31m'",
 			"printf '%s' $'a\\\\'",
@@ -509,5 +507,87 @@ describe("supplemental shell evidence", () => {
 		}
 		for (const opener of ["echo $[1+2]", "(( x=1+2 ))"])
 			assert.ok(parseShellEvidence(`${opener}; cat <<'EOF'\nsafe\nEOF\n`).reasons.includes("unexpanded-arithmetic"));
+	});
+});
+
+describe("word certainty and command positions", () => {
+	it("keeps a lone bracket command literal and other pattern words dynamic", () => {
+		const stage = parseShellEvidence("[ -f a ]").statements[0][0];
+		assert.equal(stage.commandLiteral, true);
+		assert.deepEqual(stage.argSplits, [false, false, false]);
+		for (const command of ["[[ -n $x ]]", "gi[t] push", "[a] push", "[$x push", "*[ push"])
+			assert.equal(parseShellEvidence(command).statements[0][0].commandLiteral, false, command);
+	});
+	it("marks operands that unquoted expansions or patterns can split", () => {
+		const lists = parseShellEvidence(['echo "$@" "$', '{a[@]}" "$*" "$', '{a[*]}" "x$@y" "$', '{!r}"'].join(""))
+			.statements[0][0];
+		assert.deepEqual(lists.argSplits, [true, true, false, false, true, true]);
+		const stage = parseShellEvidence(`git -C "$d" ~/x $y a* $'b c' <(true) "$e"$f '$g'`).statements[0][0];
+		assert.deepEqual(stage.argLiterals, [true, false, false, false, false, false, false, false, true]);
+		assert.deepEqual(stage.argSplits, [false, false, false, true, true, false, false, true, false]);
+	});
+	it("ends a word at a closing parenthesis and reads a brace as a group only on its own", () => {
+		for (const command of [
+			"(cd x && npm ci)",
+			"(echo a) | cat",
+			"echo $(cd x; (make))",
+			"{ echo a; }",
+			"find . -name x -exec echo {} +",
+		])
+			assert.equal(parseShellEvidence(command).complete, true, command);
+		for (const command of [
+			"f() { :; }",
+			"echo a{b,c}",
+			"arr=(a b)",
+			"git rev-parse @{u}",
+			"{#; git push\n}",
+			"{ :; }#; git push; }",
+			"{echo a; }",
+		])
+			assert.ok(parseShellEvidence(command).reasons.includes("unsupported-shell"), command);
+		assert.ok(parseShellEvidence("echo x)").reasons.includes("malformed-shell"));
+	});
+	it("keeps every arithmetic form unavailable", () => {
+		for (const command of [
+			"echo $((1 + 2))",
+			"echo $[1 + 2]",
+			"(( x ))",
+			"(( '$(git push)' ))",
+			"(( 1 # $(git push)\n))",
+			"let x=1",
+			"for ((i = 0; i < 3; i++)); do echo $i; done",
+			"while true; do for ((;;)); do :; done; done",
+		])
+			assert.ok(parseShellEvidence(command).reasons.includes("unexpanded-arithmetic"), command);
+	});
+	it("reads an append assignment and a coprocess prefix before the command word", () => {
+		const append = parseShellEvidence("X+=1 git push").statements[0][0];
+		assert.deepEqual([append.command, append.args, append.shellReasons], ["git", ["push"], undefined]);
+		const coprocess = parseShellEvidence("coproc git push").statements[0][0];
+		assert.deepEqual([coprocess.command, coprocess.shellReasons], ["git", ["unsupported-prefix"]]);
+	});
+	it("leaves a subscript test and a loop list on its header line unresolved", () => {
+		for (const command of [
+			"[ -v 'a[$(git push)]' ]",
+			'[ -v "$name" ]',
+			"test -v 'a[1]'",
+			'[ "$op" "a[1]" ]',
+			'test "$op" "$name"',
+			"[ $x ]",
+			"for x do git push; done",
+			"select x do git push; done",
+		])
+			assert.ok(parseShellEvidence(command).reasons.includes("unresolved-command"), command);
+		for (const command of [
+			"[ -v HOME ]",
+			"test -v PATH",
+			"test -v",
+			'[ -f "$f" ]',
+			'[ "$a" = "$b" ]',
+			'[ -n "$x" -a -d "$HOME/x" ]',
+			"for x; do echo $x; done",
+			"select x in a; do echo; done",
+		])
+			assert.ok(!parseShellEvidence(command).reasons.includes("unresolved-command"), command);
 	});
 });

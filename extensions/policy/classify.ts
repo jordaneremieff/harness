@@ -71,7 +71,11 @@ export function ruleScopeVisibility(record: Pick<RuleRecord, "definition">, cont
 	return `scope matches this session: ${excludingField ? `no (${excludingField})` : "yes"}`;
 }
 
-/** Fixed indirect commands whose declared evidence cannot prove a literal Git push. */
+/**
+ * Fixed commands that run shell text or data as commands, which their declared
+ * evidence cannot prove. A `function` keyword stage can also hold a compound body
+ * that the reader does not split into stages.
+ */
 const INDIRECT_COMMANDS = new Set([
 	"eval",
 	"source",
@@ -85,11 +89,23 @@ const INDIRECT_COMMANDS = new Set([
 	"tcsh",
 	"fish",
 	"xargs",
-	"for",
-	"select",
-	"case",
 	"function",
 ]);
+
+/**
+ * Control grammar outside the plain `for` form leaves control flow unproved, not
+ * command words: the reader still extracts every command position, so a CLI rule
+ * decides these commands from their stages.
+ */
+const CONTROL_GRAMMAR_REASONS = new Set(["unsupported-for-syntax", "malformed-for-syntax"]);
+
+/** Declarations that can make a variable a name reference, including to every element of an array. */
+const DECLARATIONS = new Set(["declare", "typeset", "local"]);
+
+function namerefPossible(stage: Stage): boolean {
+	if (!DECLARATIONS.has(stage.command)) return false;
+	return stage.args.some((arg, index) => stage.argLiterals?.[index] === false || /^-[A-Za-z]*n/.test(arg));
+}
 
 const COMMAND_OPERAND_WRAPPERS = new Set(["timeout", "setsid", "flock", "parallel", "xargs"]);
 const FIND_EXEC_ACTIONS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
@@ -159,10 +175,12 @@ function decodeStatementOptions(
 	parsed: ShellEvidence,
 ): void {
 	if (!needed) return;
+	// A name reference can turn a quoted variable into one word per array element.
+	const namerefs = statements.some((statement) => statement.some(namerefPossible));
 	let options = 0;
 	for (const statement of statements) {
 		for (const stage of statement) {
-			const cli = decodeGitPush(stage);
+			const cli = decodeGitPush(namerefs ? { ...stage, argSplits: undefined } : stage);
 			decoded.set(stage, cli);
 			if (cli.status === "known") options += cli.globals.length + cli.options.length;
 		}
@@ -323,12 +341,8 @@ function evaluateDeclarativeRecord(
 			? record.matcher.spec
 			: undefined;
 	if (!spec) return { applies: false, reasons: [] };
-	const reasons = new Set<string>();
-	let applies: Truth = false;
-	if (spec.cli && !parsed.complete) {
-		applies = "unknown";
-		for (const reason of parsed.reasons) reasons.add(reason);
-	}
+	const reasons = new Set(spec.cli ? parsed.reasons.filter((reason) => !CONTROL_GRAMMAR_REASONS.has(reason)) : []);
+	let applies: Truth = reasons.size ? "unknown" : false;
 	for (const statement of statements) {
 		const statementTruth = declarativeStatementApplies(spec, statement, decoded, reasons, onMatch);
 		if (statementTruth === true) return { applies: true, reasons: [] };

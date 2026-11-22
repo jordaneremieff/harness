@@ -188,6 +188,9 @@ test("unknown forms, missing values and dynamic shell data never prove option ab
 		["echo $", "{VALUE:-$(git push --force)}"].join(""),
 		['echo "$', '{VALUE:-$(git push --force)}"'].join(""),
 		"echo $((value))",
+		"git -C $repo push --force",
+		"git -C repo* push --force",
+		"git -c $setting push --force",
 		"$TOOL push --force",
 		"bash -c 'git push --force'",
 		"env -S 'git push --force'",
@@ -218,6 +221,33 @@ test("literal mode and CLI mode have distinct operand and flag contracts", () =>
 	const operands = record({ operands: { min: 2, max: 2, any: ["main"], at: { "0": ["origin"], "1": ["main"] } } });
 	assert.equal(truth("git -C path push -o value origin main --force", operands), true);
 	assert.equal(truth("git push --force origin other", operands), false);
+});
+
+test("a repository path that the shell cannot split keeps the subcommand in place", () => {
+	for (const command of [
+		'git -C "$repo" push --force',
+		"git -C ~/repo push --force",
+		'git --git-dir "$(pwd)/.git" push --force',
+		'git --work-tree "$tree" push -f',
+		"git -C $'a b' push --force",
+	])
+		assert.equal(truth(command), true, command);
+	for (const command of ['git -C "$repo" status', "git -C ~/repo log"]) assert.equal(truth(command), false, command);
+	for (const command of [
+		'git -C "$repo"$suffix push --force',
+		'git "$option" status',
+		'git -C "$@" status',
+		['git -C "$', '{list[@]}" status'].join(""),
+		['git -C "$', '{!name}" status'].join(""),
+		'git -c "$setting" zz',
+		'git --config-env "$name" zz',
+		'git --namespace "$space" status',
+	])
+		assert.deepEqual(decode(command), { status: "unknown", reason: "dynamic-word" }, command);
+	for (const command of ['declare -n repo=list; git -C "$repo" status', 'local -rn r=a; git -C "$r" log'])
+		assert.equal(truth(command), "unknown", command);
+	for (const command of ["sudo -u $user git status", "env X=$value git status", 'GIT_DIR="$dir" git status'])
+		assert.deepEqual(decode(command), { status: "unknown", reason: "dynamic-prefix" }, command);
 });
 
 test("one true stage wins while unresolved candidates prevent false absence", () => {

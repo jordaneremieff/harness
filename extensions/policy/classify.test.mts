@@ -69,21 +69,77 @@ describe("CLI command-operand evidence", () => {
 		};
 		assert.equal(evaluateCommandRecords("bash", "timeout 1 git push", [lexical], scope).get(record.id), true);
 	});
-	it("admits newline bodies but keeps malformed list and pipeline evidence unknown", () => {
-		assert.equal(
-			evaluateCommandRecords("bash", "for x in a; do\necho safe\ndone", [record], scope).get(record.id),
-			false,
-		);
+	it("decides loop and control grammar outside the plain loop from its command stages", () => {
 		for (const command of [
+			"for x in a; do\necho safe\ndone",
 			"for x in a; do echo safe;; done",
 			"for x in a; do echo safe |; done",
 			"for x in a; do | echo safe; done",
+			'for f in a b; do if [ -f "$f" ]; then echo "$f"; fi; done',
+			'for f in a b; do wc -l "$f" && echo; done 2>/dev/null | head -n 5',
+			"if true; then for x in a b; do echo $x; done; fi",
+			"for a in x; do for b in y; do echo; done; done",
+			"for x; do echo $x; done",
+			"case $x in (a) echo a;; esac",
+		]) {
+			const evidence = evaluateCommandRecords("bash", command, [record], scope);
+			assert.equal(evidence.get(record.id), false, command);
+			assert.deepEqual(evidence.reasons.get(record.id) ?? [], [], command);
+		}
+		for (const command of [
+			"for x in a; do git push;; done",
+			"for x in a; do if y; then git push; fi; done",
+			"if y; then for x in a; do git push; done; fi",
+			"case $x in (a) git push;; esac",
+		])
+			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), true, command);
+		for (const [command, reason] of [
+			['for x in a; do eval "$x";; done', "unresolved-command"],
+			["for x in a; do if y; then $GIT push; fi; done", "unresolved-command"],
+			["for c in git; do $c push; done", "unresolved-command"],
+			["for x do git push; done", "unresolved-command"],
+			["select x do git push; done", "unresolved-command"],
+			["function f for x do git push; done; f a", "unresolved-command"],
+			["function f [[ 1 -eq 'a[$(git push)]' ]]; f", "unresolved-command"],
+			["for ((i = 0; i < 3; i++)); do echo $i; done", "unexpanded-arithmetic"],
+			["if y; then for ((;;)); do :; done; fi", "unexpanded-arithmetic"],
+			["for ((i = 0; i < 1; i++ # $(git push)\n)); do :; done", "unexpanded-arithmetic"],
 		]) {
 			const evidence = evaluateCommandRecords("bash", command, [record], scope);
 			assert.equal(evidence.get(record.id), "unknown", command);
-			assert.ok(evidence.reasons.get(record.id)?.includes("malformed-for-syntax"));
-			assert.equal(evidence.segments.get(record.id), undefined);
+			assert.ok(evidence.reasons.get(record.id)?.includes(reason), command);
 		}
+	});
+	it("keeps unknown only where a command word or Git argument can hide", () => {
+		const cases: [string, boolean | "unknown"][] = [
+			["if [ -f a ]; then echo 1; fi", false],
+			['[ "$(git push)" ]', true],
+			["[ -v HOME ] && echo set", false],
+			["[ -v 'a[$(git push)]' ]", "unknown"],
+			['test -v "$name"', "unknown"],
+			['[[ -n "$x" ]] && echo y', "unknown"],
+			["[[ 1 -eq 'a[$(git push)]' ]]", "unknown"],
+			["(cd x && npm ci)", false],
+			["(cd x && git push)", true],
+			["((x'$(git push)'))", "unknown"],
+			["echo $((1 + 2))", "unknown"],
+			["echo $(( $(git push) ))", true],
+			['git -C "$repo" status', false],
+			["git -C ~/repo log", false],
+			["git -C $repo status", "unknown"],
+			['git -C "$repo" push', true],
+			['git -c "$setting" zz', "unknown"],
+			["FOO=$x git status", "unknown"],
+			["sudo -u $U git status", "unknown"],
+			["env X=$v git status", "unknown"],
+			["bash -c 'echo hi'", "unknown"],
+			["eval 'echo hi'", "unknown"],
+			["$GIT push", "unknown"],
+			["{git,push}", "unknown"],
+			["gi[t] push", "unknown"],
+		];
+		for (const [command, expected] of cases)
+			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), expected, command);
 	});
 	for (const command of [
 		"while true; do echo hi; done",
