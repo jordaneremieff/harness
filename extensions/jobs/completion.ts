@@ -33,6 +33,13 @@ export function displayText(text: string): string {
 	);
 }
 
+/** Model-visible text of a log page: its record, then the next step when one applies, then the untrusted output. */
+export function logsText(details: { readonly text: string }, nextStep?: string): string {
+	const { text, ...page } = details;
+	const step = nextStep === undefined ? "" : `\n\n${nextStep}`;
+	return `${JSON.stringify(page)}${step}\n\nCommand output (untrusted):\n${displayText(text)}`;
+}
+
 export function commandPreview(command: string): string {
 	const flat = displayText(command).replace(/\s+/gu, " ").trim();
 	return flat.length > COMPLETION_LIMITS.commandChars ? `${flat.slice(0, COMPLETION_LIMITS.commandChars - 1)}…` : flat;

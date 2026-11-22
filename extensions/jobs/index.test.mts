@@ -139,6 +139,7 @@ function setup(
 	cwd = root,
 	trusted = false,
 	terminal?: { writes: string[]; statuses: Array<[string, string | undefined]>; notices?: string[] },
+	mode: ExtensionContext["mode"] = terminal ? "tui" : "print",
 ) {
 	const pi = new TestPi();
 	const activity = terminal
@@ -148,7 +149,7 @@ function setup(
 	const base = {
 		cwd,
 		isProjectTrusted: () => trusted,
-		mode: terminal ? "tui" : "print",
+		mode,
 		hasUI: terminal !== undefined,
 		ui: {
 			setStatus: (key: string, text: string | undefined) => terminal?.statuses.push([key, text]),
@@ -526,6 +527,86 @@ describe("Command Jobs adapter", () => {
 			);
 		} finally {
 			await pi.shutdown();
+		}
+	});
+
+	it("tells an agent that checks a running job to continue other work or end the turn instead of checking again", async () => {
+		const { pi, call } = setup(root, false, undefined, "rpc");
+		try {
+			const started = await call("bash", {
+				command: "for index in $(seq 1 300); do echo line $index; done; sleep 30",
+				background: true,
+			});
+			const id = jobOf(started).id;
+			assert.equal(
+				textOf(started),
+				`${JSON.stringify(started.details, null, 2)}\n\nJob ${id} runs in the background. Its completion message arrives only after your turn ends; do not check its status or logs to wait for it. Continue other ready work; if none is ready, call jobs_yield now, and the completion starts your next turn.`,
+			);
+			assert.deepEqual(started.structuredContent, started.details, "the next step stays out of the structured result");
+
+			const first = await call("jobs", { action: "status", id });
+			assert.equal(
+				textOf(first),
+				`${JSON.stringify(first.details, null, 2)}\n\nJob ${id} still runs. If you are waiting for it to finish, do not check it again: its completion message arrives only after your turn ends, so another check only postpones it. Continue other ready work; if none is ready, call jobs_yield now, and the completion starts your next turn.`,
+			);
+			assert.deepEqual(first.structuredContent, first.details);
+			assert.match(
+				textOf(await call("jobs", { action: "status", id })),
+				/\n\nThis is check 2 of job \S+ while it runs\. If you are waiting for it to finish, stop checking: its completion message arrives only after your turn ends\. Continue other ready work; if none is ready, call jobs_yield now, and the completion starts your next turn\.$/u,
+			);
+
+			const deadline = Date.now() + 5000;
+			let page = await call("jobs", { action: "logs", id });
+			while (!detailsOf(page).more) {
+				assert.ok(Date.now() < deadline, "the output fills more than one page within the deadline");
+				await delay(10);
+				page = await call("jobs", { action: "logs", id });
+			}
+			assert.doesNotMatch(
+				textOf(page),
+				/still runs|This is check/u,
+				"a page with more output to read is reading, not a check",
+			);
+			const last = await call("jobs", { action: "logs", id, cursor: detailsOf(page).next });
+			assert.equal(detailsOf(last).more, false);
+			const text = textOf(last);
+			const step = text.indexOf("This is check ");
+			assert.ok(
+				step > 0 && step < text.indexOf("Command output (untrusted):"),
+				"the next step precedes the untrusted output",
+			);
+
+			await call("jobs", { action: "cancel", id });
+			const cancelling = await call("jobs", { action: "status", id });
+			assert.equal(
+				textOf(cancelling),
+				JSON.stringify(cancelling.details, null, 2),
+				"a cancelled job sends no completion",
+			);
+			const final = await settled(call, id);
+			assert.equal(final.status, "cancelled");
+
+			const quick = jobOf(await call("bash", { command: "printf done", background: true }));
+			const done = await settled(call, quick.id);
+			assert.equal(done.status, "succeeded");
+			const read = await call("jobs", { action: "status", id: quick.id });
+			assert.equal(textOf(read), JSON.stringify(read.details, null, 2), "a settled job needs no next step");
+		} finally {
+			await pi.shutdown();
+		}
+	});
+
+	it("keeps print and JSON results to the record, because those runs stop unfinished jobs when they answer", async () => {
+		for (const mode of ["print", "json"] as const) {
+			const { pi, call } = setup(root, false, undefined, mode);
+			try {
+				const started = await call("bash", { command: "sleep 30", background: true });
+				assert.equal(textOf(started), JSON.stringify(started.details, null, 2));
+				const status = await call("jobs", { action: "status", id: jobOf(started).id });
+				assert.equal(textOf(status), JSON.stringify(status.details, null, 2));
+			} finally {
+				await pi.shutdown();
+			}
 		}
 	});
 

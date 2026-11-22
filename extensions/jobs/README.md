@@ -269,6 +269,41 @@ check whether another page is available. Use these requests for logs and
 cancellation while a job runs, not to poll for completion; the completion
 message above carries the outcome.
 
+### Next step while a job runs
+
+A completion is a follow-up: an ordinary session receives it only once the
+agent stops calling tools, and an agent conversation only once its current run
+ends. A status or logs read therefore never brings the completion sooner, and
+repeated reads hold the turn open as a timed wait. The model-visible text of
+these results says so and names the next step:
+
+- The `bash` admission of a background job adds one paragraph after its JSON:
+  the completion arrives after the turn (or run) ends, so do not check the job
+  to wait for it; continue other ready work, or end the turn.
+- A `status` read of a job whose completion is still to come, and a `logs` read
+  that reached the end of the readable output (`more` is false), add a
+  paragraph that says the job still runs and that another check only postpones
+  the completion. From the second such read of the same job, the paragraph
+  counts the reads (`This is check 3 of job …`) and says to stop checking. A
+  `logs` page with more output to read is reading, not a check, so it gets no
+  paragraph and does not count. In a `logs` result the paragraph precedes the
+  untrusted command output.
+- In an ordinary session the step is: continue other ready work, or call
+  `jobs_yield`, and the completion starts the next turn. In an agent
+  conversation it is: continue other ready work, or end this run, and the
+  completion starts the next run.
+- Each paragraph is conditional on waiting for the job to finish. A service
+  that never exits sends no completion; reading its logs for readiness remains
+  ordinary use.
+
+No paragraph follows a job that settled, one whose cancellation was requested
+through `jobs` (it sends no completion), or any result in print and JSON runs:
+those runs offer no `jobs_yield` and stop unfinished jobs when they answer.
+`details` and `structuredContent` stay the job record or log page alone, so
+cards and scripts see no change. The ordinary session keeps the read count per
+job until the job settles or is cancelled; the agent host keeps it per job until
+the outcome is retained or a read sees the job settled.
+
 Omit `background`, or set it to false, for ordinary foreground Bash behavior.
 Foreground output truncation, timeout errors, and nonzero-exit errors remain
 Pi's native behavior. Background timeout is optional and uses seconds. The job
@@ -496,7 +531,8 @@ node scripts/extension-load-check.mts extensions/jobs/index.ts
 The Durable test opens a real `Harness` with the native `bash` tool, a Node
 execution environment, and the faux provider. It checks admission, independent
 foreground work during a job, the single completion input and its continuation
-run, log reads, quiet cancellation with the process gone, isolation between
+run, log reads, the next step of reads while a job runs and that no completion
+arrives during the run, quiet cancellation with the process gone, isolation between
 conversations, and host restarts before result retention, before delivery, and after submission.
 It checks safe loss before retention, exact bounded outcome recovery after
 retention, idempotent delivery, quiet cancellation, and no command replay.
@@ -506,7 +542,8 @@ The adapter tests cover foreground behavior, output-schema conformance,
 contextual environment, shell settings, turn-abort ownership, shutdown, and
 completion delivery: one bounded message per finite job, none for
 cancellation or shutdown, and the quiet append after an aborted run. They also
-cover which jobs let `jobs_yield` end the turn. The yield test covers the tool's
+cover which jobs let `jobs_yield` end the turn, and the next step that admission,
+status and logs results give while a job runs, with none in print and JSON runs. The yield test covers the tool's
 result, refusal, card and print-mode handling; the print answer test runs real
 `pi -p` and `pi --mode json` processes against a scripted provider and checks
 the printed complete answer after a late completion and the absence of

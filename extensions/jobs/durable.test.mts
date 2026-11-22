@@ -777,6 +777,72 @@ test("a finite background command continues its conversation once with its outco
 	}
 });
 
+test("reads of a running job tell the agent to end the run, because the completion arrives only after it", {
+	timeout: 30_000,
+}, async () => {
+	const release = join(root, "release-checks");
+	const started = join(root, "started-checks");
+	let admitted = "";
+	let step = 0;
+	const { harness, close } = await openHarness(new Durable.MemoryStorage(), (userText, toolResult) => {
+		if (!userText.startsWith("CHECK")) return fauxAssistantMessage("Ended the run.");
+		if (toolResult?.name === "bash" && admitted === "") admitted = jobIdOf(toolResult.text);
+		const calls = [
+			fauxToolCall("bash", {
+				command: `printf 'started\\n'; touch ${started}; while [ ! -f ${release} ]; do sleep 0.02; done`,
+				background: true,
+			}),
+			fauxToolCall("jobs", { action: "status", id: admitted }),
+			fauxToolCall("jobs", { action: "status", id: admitted }),
+			// The logs live in the host once the command has started.
+			fauxToolCall("bash", { command: `while [ ! -f ${started} ]; do sleep 0.02; done` }),
+			fauxToolCall("jobs", { action: "logs", id: admitted }),
+		];
+		const call = calls[step++];
+		return call ? fauxAssistantMessage([call], { stopReason: "toolUse" }) : fauxAssistantMessage("Ended the run.");
+	});
+	try {
+		const conversation = await harness.root(context, {
+			agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root },
+		});
+		await say(conversation, "CHECK the job");
+		const [admission, first, second, , logs] = await toolResults(conversation);
+		const end =
+			"Continue other ready work; if none is ready, end this run now, and the completion starts the next run.";
+		assert.ok(
+			admission?.text.endsWith(
+				`\n\nJob ${admitted} runs in the background. Its completion arrives as a new input only after this run ends; do not check its status or logs to wait for it. ${end}`,
+			),
+			admission?.text,
+		);
+		assert.ok(
+			first?.text.endsWith(
+				`\n\nJob ${admitted} still runs. If you are waiting for it to finish, do not check it again: its completion arrives as a new input only after this run ends, so another check only postpones it. ${end}`,
+			),
+			first?.text,
+		);
+		assert.ok(
+			second?.text.endsWith(
+				`\n\nThis is check 2 of job ${admitted} while it runs. If you are waiting for it to finish, stop checking: its completion arrives as a new input only after this run ends. ${end}`,
+			),
+			second?.text,
+		);
+		assert.equal(logs?.name, "jobs");
+		const step = logs?.text.indexOf(`This is check 3 of job ${admitted} while it runs.`) ?? -1;
+		assert.ok(step > 0 && step < (logs?.text.indexOf("Command output (untrusted):") ?? -1), logs?.text);
+		assert.deepEqual(await completionEntries(conversation), [], "no completion arrives while the job runs");
+
+		writeFileSync(release, "");
+		await until(
+			async () => (await completionEntries(conversation)).length === 1,
+			"the settled job admits its completion after the run ended",
+		);
+		await harness.waitForIdle(context);
+	} finally {
+		await close();
+	}
+});
+
 test("a timed-out background command retains its backend diagnostic in status and completion", {
 	timeout: 30_000,
 }, async () => {
