@@ -419,7 +419,7 @@ function deliverySender(row: DeliveryRow, host: DurableHost): string {
 function stateNoteIds(states: readonly ReceiptState[]): Set<number> {
 	return new Set(
 		states
-			.filter(({ receipt, work }) => receipt.status === "done" && work !== undefined)
+			.filter(({ receipt, work }) => work !== undefined && (receipt.status === "done" || receipt.recoveredWork))
 			.map(({ receipt }) => receipt.submissionId),
 	);
 }
@@ -661,6 +661,8 @@ export function receiptStateLine(state: ReceiptState): string {
 		const outcome = `${request}: native input ${receiptOutcome(receipt)} without an answer`;
 		if (work === undefined && (state.delegated ?? 0) > 0)
 			return `${outcome}; no result arrived. Its conversation still waits for ${state.delegated} request(s) that it delegated: their results return to it, and none of its later work reports to you. Send it a follow-up to finish the work and report.`;
+		if (work?.work === "open")
+			return `${outcome}; the host recovered its delegated work. The integrator owes you a separate final report.`;
 		if (work?.work !== "closed") return `${outcome}; no result arrived.`;
 		const { finalReport } = work;
 		return `${outcome}; declared work completed${finalReport.status === undefined ? "" : ` (${finalReport.status})`} with final report ${finalReport.requestId}. The final report is the result of this request. Read the final report: ${inspectCallText(finalReport.read)}`;
@@ -1253,13 +1255,22 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	};
 
 	const reportCurrent = async (row: DeliveryRow): Promise<boolean> => {
-		if (row.kind !== "report" || (row.report.checkIn === undefined && row.report.providerRetry === undefined))
+		if (
+			row.kind !== "report" ||
+			(row.report.checkIn === undefined &&
+				row.report.providerRetry === undefined &&
+				row.report.recoveryWork === undefined)
+		)
 			return true;
 		const report = row.report;
 		return host.harness.commit(async (tx) => {
 			const current = await retainedReport(tx, report.ownerId, report.sourceId);
 			if (current === undefined || current.acknowledged) return false;
-			if (await providerRetryReportSettled(tx, current)) {
+			if (
+				(current.recoveryWork &&
+					!(await requestHasOpenWork(tx, current.recoveryWork.conversationId, current.recoveryWork.requestId))) ||
+				(await providerRetryReportSettled(tx, current))
+			) {
 				await storeDeliveryRow(tx, "report", { ...current, acknowledged: true });
 				return false;
 			}

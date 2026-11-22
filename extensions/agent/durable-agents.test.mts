@@ -44,7 +44,7 @@ import {
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
-import { declareOpenWork, openWorkStatus } from "./open-work.ts";
+import { declareOpenWork, openWorkStatus, openWorkItems, completeOpenWork } from "./open-work.ts";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { compile, obj } from "@earendil-works/pi-schema";
 import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution } from "./durable-agents.ts";
@@ -1065,6 +1065,54 @@ for (const tool of ["agent_spawn", "agent_send"])
 		assert.equal(request?.requester, storageId);
 		assert.equal(request?.replyTo, storageId);
 	});
+
+it("recovers one routed delegation after the integrator fails without forwarding the child answer", {
+	timeout: 10000,
+}, async (t) => {
+	const route = createRoute();
+	route.script.push({ tool: "agent_spawn", args: { prompt: "CONTRACT: reply PRIVATE" } });
+	const models = createTestModels((...args) =>
+		args[0].messages.at(-1)?.role === "toolResult"
+			? fauxAssistantMessage([], { stopReason: "error", errorMessage: "model refused" })
+			: route.route(...args),
+	);
+	const { registry } = buildRegistry();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models);
+	t.after(() => harness.close(context));
+	const parent = await richSubmitConversation(
+		root,
+		{
+			message: "Dispatch background work",
+			requestId: "routed",
+			requester: "caller",
+			replyTo: "recipient",
+			origin: "model",
+		},
+		context,
+	);
+	const status = await (await harness.submission(parent.submissionId, context))?.wait(context);
+	assert.equal(status?.status, "unanswered");
+	await settleDeliveries(harness, context);
+	const [item] = await openWorkItems({ harness, context }, root.id);
+	assert.ok(item);
+	const outcome = (await toolOutcomes(harness, root.id)).find((r) => r.name === "agent_spawn");
+	assert.deepEqual(item.results, [(outcome?.details as { result?: unknown } | undefined)?.result]);
+	assert.equal(item.requester, "caller");
+	assert.equal(item.replyTo, "recipient");
+	const receipt = await harness.commit((tx) => retainedReceipt(tx, parent.submissionId), context);
+	assert.equal(receipt?.recoveredWork, true);
+	assert.equal(receipt.answer, null);
+	await harness.commit(
+		(tx) => completeOpenWork(tx, storageId, root.id, { request: "routed", status: "done", message: "synthesis" }, 123),
+		context,
+	);
+	await settleDeliveries(harness, context);
+	const after = await readRetainedDelivery(harness, context, true);
+	const reports = after.reports.filter((r) => r.ownerId === "recipient");
+	assert.equal(reports.length, 1);
+	assert.match(reports[0].message, /synthesis/u);
+	assert.doesNotMatch(reports[0].message, /PRIVATE/u);
+});
 
 it("arms no check-in for a model task that names no interval", async (t) => {
 	const route = createRoute();

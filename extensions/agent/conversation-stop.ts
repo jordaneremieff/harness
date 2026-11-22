@@ -5,6 +5,7 @@
  * answer and that arrives without the recipient's request (a result, report, check-in, thread notice or timer) is kept
  * as context and starts no run. A delivery that carries only state notes is kept the same way on any conversation.
  */
+import { discardDispatches } from "./delegated-recovery.ts";
 import { copyJson } from "@earendil-works/chord/json";
 import { setTimeout as delay } from "node:timers/promises";
 import { withAbortSignal, type Context } from "@earendil-works/chord/context";
@@ -52,6 +53,7 @@ export const StoppedDoc = defineDoc<StopMark>({
 export async function markStopped(tx: Tx, conversations: readonly ConversationId[], at: number): Promise<void> {
 	for (const id of conversations) {
 		const mark = await tx.doc(StoppedDoc, id);
+		await discardDispatches(tx, id);
 		mark.stoppedAt = at;
 		mark.explicit = null;
 	}

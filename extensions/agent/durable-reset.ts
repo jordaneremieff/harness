@@ -24,6 +24,7 @@ import {
 	type SubmissionRecord,
 } from "@earendil-works/pi-durable";
 
+import { discardDispatches } from "./delegated-recovery.ts";
 import { closeOpenWork, OpenWorkDoc } from "./open-work.ts";
 
 const PendingResets = defineDoc<{ ids: number[] }>({
@@ -61,6 +62,7 @@ export async function reconcileResetClosures(
 			const record = await tx.submission(id as SubmissionId);
 			if (record?.type !== "write" || record.status === "queued") return;
 			if (record.status === "done" && (await tx.entry(record.entry))?.kind === ResetEntry.kind) {
+				await discardDispatches(tx, record.conversationId, { before: record.entry });
 				const before = await workBefore(tx, record.conversationId, record.entry);
 				if (before.length) await closeOpenWork(tx, storageId, record.conversationId, "reset", now(), before);
 			}

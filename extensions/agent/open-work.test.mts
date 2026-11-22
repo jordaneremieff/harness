@@ -11,6 +11,12 @@ import {
 	type TaskId,
 	type Tx,
 } from "@earendil-works/pi-durable";
+import {
+	bindDispatch,
+	receivedDelegations,
+	recoverFailedDelegations,
+	discardDispatches,
+} from "./delegated-recovery.ts";
 import { onStoredCommit } from "./commit-observation.ts";
 import { deliveryPendingCount, retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
 import { acknowledgeReports } from "./durable-controls.ts";
@@ -327,6 +333,39 @@ async function answered(tx: Tx, conversationId: ConversationId, id: SubmissionId
 	tx.settleSubmission(id, { status: "done", answer: answer.id });
 	delete (await tx.doc(LiveDoc, conversationId)).run;
 }
+
+it("confirms uncertain child admissions only from the exact routed delivery and wakes for a result that already arrived", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	const id = conversation.id;
+	const parent = await harness.commit((tx) => placed(tx, id, route()), context);
+	const ref = { sessionId: "foreign", requestId: "child", submissionId: 17 };
+	await harness.commit(async (tx) => {
+		const input = await tx.submission(parent);
+		assert.ok(input?.type === "input" && input.status === "placed");
+		const binding = { ...route(), submissionId: parent, entry: input.entry, self: STORAGE };
+		await bindDispatch(tx, id, "first", binding, ref.sessionId, ref.requestId);
+		await bindDispatch(tx, id, "second", binding, "elsewhere", "later");
+		await receivedDelegations(tx, id, [{ ...ref, sessionId: "other" }], 1);
+		await receivedDelegations(tx, id, [ref], 2);
+		await recordDependencyMarks(tx, id, [{ ...ref, state: "arrived" }]);
+		tx.settleSubmission(parent, { status: "unanswered", reason: "model_error" });
+	}, context);
+	await harness.commit(async (tx) => {
+		const input = await tx.submission(parent);
+		assert.ok(input);
+		await recoverFailedDelegations(tx, input, 3);
+		const wake = await retainedReportRequest(tx, STORAGE, `delegation-recovery:${parent}`);
+		assert.equal(wake?.ownerId, STORAGE);
+		assert.equal(wake.recoveryWork?.requestId, route().requestId);
+		assert.deepEqual((await tx.doc(OpenWorkDoc, id)).items[0].results, [ref]);
+		await discardDispatches(tx, id);
+		assert.deepEqual(
+			await receivedDelegations(tx, id, [{ sessionId: "elsewhere", requestId: "later", submissionId: 19 }], 4),
+			[],
+		);
+		assert.deepEqual((await tx.doc(OpenWorkDoc, id)).items[0].results, [ref]);
+	}, context);
+});
 
 it("keeps the request route, reads dependency states and completes with one final report", async (t) => {
 	const { harness, conversation, producer } = await fixture(t);

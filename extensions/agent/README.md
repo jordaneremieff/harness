@@ -2017,12 +2017,14 @@ Closure itself stops no producer. Stopping one input group does not invoke
 this declared-work closure.
 
 Receipts that share an answer and recipient make one wake decision across all pages.
+If one routed input sends child work back to its own conversation, the host retains the parent route before dispatch. A model failure before a work declaration converts confirmed child admissions into open work for that route. The child result wakes its immediate recipient, who synthesises the final report with `agent_work complete`. A result that arrived before the failure gets a separate recovery notice. The host does not forward child content to the requester. Multiple active inputs, an alternate child recipient, or no confirmed admission at failure settlement leave the request unbound. Stop and placed reset discard outstanding links. Recovery never reopens closed work.
+
 A state note does not wake its recipient. When every result of a receipt group
 is the answer of a request whose declared work continues, a primary receives it
 with `wake: false`, and a Durable recipient keeps it as an `agent.quiet-input`
 entry with reason `state-note`: it joins the context of the next run and starts
 none. The final report arrives as a separate report and wakes the recipient.
-A receipt of an input that ended without an answer still wakes.
+An unanswered receipt still wakes unless the host recovered open work for its request.
 
 ### Stopping work
 

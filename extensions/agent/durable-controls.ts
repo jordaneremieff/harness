@@ -61,6 +61,7 @@ import {
 	RequestContextDoc,
 	type RequestContext,
 } from "./request-context.ts";
+import { recoverFailedDelegations } from "./delegated-recovery.ts";
 import { requestHasOpenWork } from "./open-work.ts";
 import { ProfileDoc, refreshManagedInstructions } from "./profile.ts";
 import { existsSync } from "node:fs";
@@ -231,6 +232,7 @@ export type DeliveryIntent = {
 
 /** One settled result waiting for its owner to acknowledge it. */
 export type DeliveryReceipt = {
+	readonly recoveredWork?: true;
 	readonly delivery?: DeliveryDisposition;
 	readonly submissionId: SubmissionId;
 	readonly requestId: string;
@@ -255,6 +257,7 @@ export type DeliveryReceipt = {
 
 /** One recorded outbound report from a Durable agent to an owner session. */
 export type DeliveryReport = {
+	readonly recoveryWork?: { conversationId: ConversationId; requestId: string };
 	readonly delivery?: DeliveryDisposition;
 	/** Stable source identity: `report:<requestId>`. */
 	readonly sourceId: string;
@@ -1737,11 +1740,13 @@ async function finalizeReceipt(
 		state.receipts[String(record.id)] = retained;
 		return;
 	}
+	const recoveredWork = await recoverFailedDelegations(tx, record, Date.now());
 	const answer = await receiptAnswer(tx, record);
 	const providerBlock = record.status === "unanswered" ? await readInputProviderBlock(tx, record.id) : undefined;
 	const recoveryOf = await readInputRecovery(tx, record.id);
 	state.receipts[String(record.id)] = {
 		...receiptRow(intent, record, answer),
+		...(recoveredWork ? { recoveredWork: true } : {}),
 		...(providerBlock === undefined ? {} : { providerBlock }),
 		...(recoveryOf === undefined ? {} : { recoveryOf }),
 	};

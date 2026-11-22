@@ -40,6 +40,7 @@ import {
 	type PreferenceSnapshot,
 	type ExecutionSelection,
 } from "./agent-preferences.ts";
+import { bindDispatch, confirmDispatch, dispatchParent } from "./delegated-recovery.ts";
 import { forgetFailedAdmission, recordInputProvenance } from "./awaited-results.ts";
 import { readCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
@@ -846,15 +847,36 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			}
 			return undefined;
 		}, context);
+	const promptParent = (tx: Durable.Tx, api: Durable.ToolExecutionApi<ControlDetails>, prompt: string | undefined) =>
+		prompt === undefined ? undefined : dispatchParent(tx, api.conversationId, api.taskId, identity(api.conversationId));
+	const retainDelegation = async (
+		tx: Durable.Tx,
+		api: Durable.ToolExecutionApi<ControlDetails>,
+		result?: ResultReference | null,
+		outgoing?: OutgoingRequest,
+	) => {
+		if (result === undefined && (!outgoing || outgoing.replyTo === identity(api.conversationId)))
+			await bindDispatch(
+				tx,
+				api.conversationId,
+				String(api.taskId),
+				await dispatchParent(tx, api.conversationId, api.taskId, identity(api.conversationId)),
+				outgoing ? targetIdentity(outgoing.sessionId, host.catalogRoot) : undefined,
+				outgoing?.requestId,
+			);
+		if (result) await confirmDispatch(tx, api.conversationId, String(api.taskId), result);
+	};
 	const retainDispatch = (
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		context: Context,
 		result?: ResultReference | null,
 		response?: Record<string, JsonValue>,
 		placeArea?: string,
+		outgoing?: OutgoingRequest,
 	) =>
 		api.commit(async (tx) => {
 			const state = await tx.doc(RunControl, api.conversationId, String(api.taskId), null);
+			await retainDelegation(tx, api, result, outgoing);
 			state.dispatch = result === undefined ? "pending" : "confirmed";
 			if (result !== undefined) state.result = result;
 			if (response !== undefined) state.response = response;
@@ -941,7 +963,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	): Promise<OutgoingRequest | undefined> => {
 		const outgoing = outgoingRequest(capture.api, method, params);
 		await rememberRunInputs(capture.api, capture.context);
-		await retainDispatch(capture.api, capture.context);
+		await retainDispatch(capture.api, capture.context, undefined, undefined, undefined, outgoing);
 		if (outgoing !== undefined)
 			await continuityFact(capture.api, capture.context, (tx) =>
 				recordRequested(tx, capture.api.conversationId, outgoing),
@@ -1185,6 +1207,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					async () => (admitted = await conversation.submit(tx, draft)),
 				);
 				if (admitted === undefined) throw new Error("The input admission did not run");
+				await confirmDispatch(tx, api.conversationId, request.requestId, {
+					sessionId: outgoing.sessionId,
+					requestId: request.requestId,
+					submissionId: admitted,
+				});
 				// A sent task or steer is explicit input: it ends a stop of its recipient unless the stop ends it.
 				if (!deduped) await noteExplicitInput(tx, input.conversationId, admitted);
 				await linkProviderRecovery(tx, admitted, recoveryOf);
@@ -1381,6 +1408,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				deduped: true,
 			};
 		}
+		const binding = await promptParent(tx, api, args.prompt);
 		const change: Durable.AgentChange = {
 			model: parent.model,
 			thinkingLevel: parent.thinkingLevel,
@@ -1408,6 +1436,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					checkInMinutes(child.selection?.values.checkInMinutes ?? args.checkInMinutes, "model", host.agentDir),
 				),
 				{ ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true },
+			);
+			await bindDispatch(
+				tx,
+				api.conversationId,
+				`agent-deliver:${reporter}`,
+				binding,
+				identity(child.conversationId),
+				`agent-deliver:${reporter}`,
 			);
 			registry.reporters[String(api.taskId)] = reporter;
 		}
@@ -1724,6 +1760,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			const key = String(api.taskId);
 			const existing = registry.reporters[key];
 			if (existing !== undefined) return { reporterTaskId: existing };
+			const binding =
+				reportTo === undefined || reportTo === api.conversationId
+					? await dispatchParent(tx, api.conversationId, api.taskId, identity(api.conversationId))
+					: undefined;
 			const reporter = await tx.createTask(
 				Reporter,
 				reporterInput(name, conversationId, message, whenBusy, reportTo, minutes),
@@ -1732,6 +1772,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					conversationId: api.conversationId,
 					background: true,
 				},
+			);
+			await bindDispatch(
+				tx,
+				api.conversationId,
+				`agent-deliver:${reporter}`,
+				binding,
+				identity(conversationId),
+				`agent-deliver:${reporter}`,
 			);
 			registry.reporters[key] = reporter;
 			return { reporterTaskId: reporter };
@@ -2094,6 +2142,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				deduped: true,
 			};
 		}
+		const binding = await promptParent(tx, api, prompt);
 		const anchor = await tx.createTask(Anchor, null, {
 			ownership: { kind: "conversation" },
 			conversationId: api.conversationId,
@@ -2121,6 +2170,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				conversationId: api.conversationId,
 				background: true,
 			});
+			await bindDispatch(
+				tx,
+				api.conversationId,
+				`agent-deliver:${reporter}`,
+				binding,
+				identity(child.conversationId),
+				`agent-deliver:${reporter}`,
+			);
 			registry.reporters[String(api.taskId)] = reporter;
 		}
 		return { kind: "child", child, deduped: false };

@@ -24,6 +24,7 @@ import { ProviderModels } from "./provider-models.ts";
 import { ProviderRetryNotices, ProviderRetryNoticeSchema } from "./provider-notices.ts";
 import { validateContinuityDelivered } from "./continuity-facts.ts";
 import { ContinuityMirror } from "./continuity-mirror.ts";
+import { receivedDelegations, recoveryRecipients, recoveryHint, noticeEarlyResult } from "./delegated-recovery.ts";
 import { recordContinuityDelivered } from "./continuity-native.ts";
 import { continuityRequestHooks } from "./continuity-request.ts";
 import { TaskHookReports } from "./task-hook-reports.ts";
@@ -137,7 +138,7 @@ import {
 import { LiveObservationService, type ObservationScope } from "./live-observation.ts";
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
 import { reconcileResetClosures, resetConversation } from "./durable-reset.ts";
-import { closeOpenWork, openWorkItems, parseDependencyMarks, recordDependencyMarks } from "./open-work.ts";
+import { OpenWorkDoc, closeOpenWork, openWorkItems, parseDependencyMarks, recordDependencyMarks } from "./open-work.ts";
 import { repairQueuedInputs, UnplacedWatchEnd } from "./unplaced-inputs.ts";
 import { TIMER_TASK_NAME, cancelTimer, listTimers, scheduleTimer, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
@@ -968,6 +969,22 @@ export class DurableHost {
 		};
 	}
 
+	private async recoveryMessage(
+		id: ConversationId,
+		message: DurableSubmitParams["message"],
+		arrived: ReturnType<typeof parseDependencyMarks>,
+		context: Context,
+	) {
+		const recoveryRequests =
+			arrived.length && typeof message === "string"
+				? recoveryRecipients((await this.harness.snapshot(OpenWorkDoc, id, context))?.items ?? [], arrived)
+				: [];
+		const annotated =
+			typeof message === "string" && recoveryRequests.length > 0
+				? `${message}\n\n${recoveryHint(recoveryRequests)}`
+				: message;
+		return { annotated, recoveryRequests };
+	}
 	private async submitRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const communication =
 			params?.communication === undefined ? undefined : (parseCommunication(params.communication) ?? null);
@@ -990,18 +1007,32 @@ export class DurableHost {
 		const marks = params?.dependencyMarks === undefined ? [] : parseDependencyMarks(params.dependencyMarks);
 		// The producer states that every delivered result is a state note: its declared work continues there.
 		const stateNotesOnly = requestBoolean(params, "stateNotesOnly") === true;
+		const arrived = marks.filter((mark) => mark.state === "arrived");
+		const { annotated, recoveryRequests } = await this.recoveryMessage(conversation.id, message, arrived, context);
 		// A replayed body admission is deduplicated, and a provider retry notice that the current inputs already
 		// showed is suppressed; in both cases the result reached this conversation, so its delivered facts complete.
 		const complete = async (): Promise<void> => {
 			if (delivered !== undefined)
 				await this.harness.commit((tx) => recordContinuityDelivered(tx, conversation.id, delivered), context);
 			if (marks.length > 0)
-				await this.harness.commit((tx) => recordDependencyMarks(tx, conversation.id, marks), context);
+				await this.harness.commit(async (tx) => {
+					await recordDependencyMarks(tx, conversation.id, marks);
+					const ids = await receivedDelegations(tx, conversation.id, marks, this.now());
+					if (!arrived.length || !ids.length) return;
+					for (const item of (await tx.doc(OpenWorkDoc, conversation.id)).items) {
+						if (
+							ids.includes(item.requestId) &&
+							!recoveryRequests.includes(item.requestId) &&
+							recoveryRecipients([item], arrived).length
+						)
+							await noticeEarlyResult(tx, conversation.id, this.identity(conversation.id), item, this.now());
+					}
+				}, context);
 		};
 		const submitted = await submitConversation(
 			conversation,
 			{
-				message,
+				message: annotated,
 				requestId,
 				communication: { storageId: this.storageId, value: communication },
 				...(provenance === undefined ? {} : { provenance }),

@@ -29,6 +29,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { DeliveryRowDoc, reportKey, retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
 import { recordReportInTransaction, type DeliveryReceipt, type DeliveryReport } from "./durable-controls.ts";
+import { discardDispatches } from "./delegated-recovery.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import { RequestContextDoc, type RequestContext } from "./request-context.ts";
 import {
@@ -57,6 +58,7 @@ export type WorkCloseStatus = "done" | "failed" | "stopped" | "reset";
 export type OpenWorkClose = { status: WorkCloseStatus; at: number; message: string; reportRequestId: string };
 /** The route is the request's own, copied while its input was placed; later routes never replace it. */
 export type OpenWorkItem = {
+	recovered?: boolean;
 	requestId: string;
 	submissionId: number;
 	requester: string;
@@ -159,7 +161,7 @@ export function withoutVoidItems(
 	items: readonly OpenWorkItem[],
 	statusOf: (item: OpenWorkItem) => InputStatus | undefined,
 ): OpenWorkItem[] {
-	return items.filter((item) => !isOpen(item) || statusOf(item) !== "unanswered");
+	return items.filter((item) => !isOpen(item) || item.recovered === true || statusOf(item) !== "unanswered");
 }
 
 /** Every open item stays; the newest closed items stay up to the bound. */
@@ -511,9 +513,11 @@ export async function dependencyFact(
 	if (typeof record === "string") return { input: "pending", work: "none", unavailable: record };
 	if (record.status !== "done" && record.status !== "unanswered") return { input: "pending", work: "none" };
 	const work =
-		record.status === "unanswered" || record.requestId === undefined
+		record.requestId === undefined
 			? undefined
-			: (await readItems(reader, conversationId)).find((item) => item.requestId === record.requestId);
+			: (await readItems(reader, conversationId)).find(
+					(item) => item.requestId === record.requestId && (record.status === "done" || item.recovered || item.close),
+				);
 	return { input: "settled", work: work === undefined ? "none" : work.close === undefined ? "open" : "closed" };
 }
 
@@ -823,6 +827,7 @@ export async function declareOpenWork(
 		now,
 	});
 	if ("error" in outcome) return outcome;
+	await discardDispatches(tx, conversationId, { request: outcome.item.requestId });
 	state.items = outcome.items;
 	return {
 		change: outcome.change,

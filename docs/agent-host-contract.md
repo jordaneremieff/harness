@@ -623,6 +623,8 @@ The request ID selects the work item, not an arbitrary recipient. An omitted
 request for `continue` resolves only the single routed current input or,
 when the run has no such input, the single open item.
 
+A Durable integrator retains a prospective link only for a tool of one placed, routed input. Its child must report back to that integrator. A confirmed result tuple and an unanswered `model_error` before declaration create a recovery item with the original request and reply recipient. A matching delivery can confirm an uncertain dispatch to a known target by its exact request ID. If the host settles the failure receipt without any confirmed child, the ordinary unanswered outcome stands. Retained links do not cross forks, stops or placed resets. A child result wakes the integrator for synthesis, never the original requester directly. If a result arrived early, the host retains a separate notice for the integrator. The recovered item's unanswered receipt carries `recoveredWork:true`; it starts no run in the original requester. Only the integrator's final report completes the work.
+
 `agent.open-work` is a conversation-scoped, version 1 document. Each item keeps
 `requestId`, `submissionId`, `requester`, `replyTo`, `origin`, `results`, `note`,
 `declaredAt`, `updatedAt`, and an optional `close`. A new declaration requires
