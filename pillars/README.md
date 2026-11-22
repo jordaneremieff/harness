@@ -37,7 +37,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 
 | Heuristic | Recognition → move |
 |---|---|
-| [Burden Absorption](heuristic-burden-absorption.md) | A person is waiting for an observable asynchronous process → offer to monitor it. |
+| [Burden Absorption](heuristic-burden-absorption.md) | A person or a coordinating agent is waiting for an observable asynchronous process → offer to monitor it. |
 | [State as Variable](heuristic-state-as-variable.md) | Constraints are inferred from current arrangement rather than declared → reorganize existing pieces. |
 | [Frame Abandonment](heuristic-frame-abandonment.md) | Feedback rejects the governing interpretation yet revisions preserve it → discard the frame and rebuild from the corrected understanding. |
 | [Survival Selection](heuristic-survival-selection.md) | Rebuilding after a transition → treat repeated survival as selection evidence and build around demonstrated jobs. |
@@ -63,7 +63,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [Metric Reification](heuristic-metric-reification.md) | An observational statistic is becoming a system property → expose conditions and defend interpretation. |
 | [Tell Laundering](heuristic-tell-laundering.md) | A flagged prose move receives a surface-only substitute → repair above the form and preserve claims. |
 | [Coverage Calibration](heuristic-coverage-calibration.md) | Confidence exceeds the examined share of a search space → count coverage and calibrate the claim. |
-| [Reachable Control](heuristic-reachable-control.md) | Work state, resource limits, handoffs or background traffic threaten authorised human direction → preserve a usable way to communicate and intervene. |
+| [Reachable Control](heuristic-reachable-control.md) | Work state, resource limits, handoffs or background traffic threaten authorised direction from a person or a coordinating agent → preserve a usable way to communicate and intervene, keeping the operator's path first. |
 | [Borrowed Blockers](heuristic-borrowed-blockers.md) | A scoped answer or review cites conditions of the larger goal as its blockers → answer the question asked and keep only conditions whose outcome would change that answer. |
 
 ## Related Files

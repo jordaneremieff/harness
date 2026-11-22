@@ -95,7 +95,7 @@ Opaque mechanism can frustrate debugging. Provide logs, metadata, traces, and ad
 
 Exceptional cases need control. Offer bounded options such as force-refresh or bypass-cache while keeping normal operation autonomous.
 
-Autonomous execution must not remove the usable path for authorised direction about that execution. Preserve safe communication, inspection and intervention through running, waiting, constrained and changing states. Receiving direction is distinct from executing it. This preserves the ability to intervene, not an obligation to supervise every step. Reachable Control supplies the concrete cues and checks for the person's path.
+Autonomous execution must not remove the usable path for authorised direction about that execution. Preserve safe communication, inspection and intervention through running, waiting, constrained and changing states. Receiving direction is distinct from executing it. This preserves the ability to intervene, not an obligation to supervise every step. Reachable Control supplies the concrete cues and checks for the path of the person or coordinating agent who directs the work.
 
 ### Latency vs. Correctness
 
@@ -118,7 +118,7 @@ A system can overreach by making value-laden choices appear deterministic. Keep 
 - **Compositional Simplicity:** autonomous absorption is valuable only when it reduces total system complexity.
 - **Harness Over Architecture:** begin with the lowest layer that can reliably absorb the observed mechanism.
 - **Burden Absorption:** applies the same intent/mechanism split to observable waiting.
-- **Reachable Control:** preserves the person's usable path to direct autonomous work through the mechanism's own states.
+- **Reachable Control:** preserves the usable path by which a person or a coordinating agent directs autonomous work through the mechanism's own states.
 - **[Concurrent Work Discovery](heuristic-concurrent-work-discovery.md):** uses system-supplied presence and freshness while reserving relevance and coordination choices for agent judgment.
 - **Committed Contribution:** keeps the agent responsible for judgments even when mechanism is automated.
 

@@ -67,4 +67,4 @@ Intrinsic Organization gives knowledge an identity independent of its consumers.
 
 System Autonomy separates intent from deterministic mechanism. Compositional Simplicity counts the cost of the whole arrangement. Neither alone supplies the interface-replacement and recovery tests.
 
-Harness Over Architecture governs construction and its scale. Live Substrate Exposure governs safe changes to running consumers. Reachable Control tests whether the authorised person can actually find and use the resulting direction path.
+Harness Over Architecture governs construction and its scale. Live Substrate Exposure governs safe changes to running consumers. Reachable Control tests whether the authorised person or coordinating agent can actually find and use the resulting direction path.
