@@ -13,7 +13,7 @@ import { Deduplicator } from "./observation.ts";
 type ContextFields = Pick<ExtensionContext, "cwd" | "hasUI" | "signal" | "model" | "thinkingLevel">;
 type Emit = (name: string, event: unknown) => Promise<void>;
 
-function observationHost(ctx: ContextFields): Emit {
+function observationHost(ctx: ContextFields, otherTools = 0): Emit {
 	const handlers = new Map<string, unknown>();
 	const api: Pick<
 		ExtensionAPI,
@@ -37,6 +37,18 @@ function observationHost(ctx: ContextFields): Emit {
 		registerEntryRenderer() {},
 		registerMessageRenderer() {},
 		getAllTools: () => [
+			...Array.from({ length: otherTools }, (_, index) => ({
+				name: `other_${index}`,
+				exposure: "deferred" as const,
+				description: "Synthetic catalog entry",
+				parameters: obj({}, { open: true }),
+				sourceInfo: {
+					path: "builtin:mcp",
+					source: "builtin",
+					scope: "temporary" as const,
+					origin: "top-level" as const,
+				},
+			})),
 			{
 				name: "pillars",
 				exposure: "direct",
@@ -59,7 +71,7 @@ function observationHost(ctx: ContextFields): Emit {
 	};
 }
 
-async function withObservationHost(run: (emit: Emit) => Promise<void>): Promise<void> {
+async function withObservationHost(run: (emit: Emit) => Promise<void>, otherTools = 0): Promise<void> {
 	const root = await mkdtemp(join(tmpdir(), "pillars-observation-order-"));
 	const corpus = join(root, "corpus");
 	const previous = {
@@ -75,13 +87,16 @@ async function withObservationHost(run: (emit: Emit) => Promise<void>): Promise<
 		process.env.PI_PILLARS_DIR = join(root, "store");
 		process.env.PI_PILLARS_COLLECT = "1";
 		process.env.PI_PILLARS_CORPUS = corpus;
-		const emit = observationHost({
-			cwd: root,
-			hasUI: false,
-			signal: new AbortController().signal,
-			model: undefined,
-			thinkingLevel: "off",
-		});
+		const emit = observationHost(
+			{
+				cwd: root,
+				hasUI: false,
+				signal: new AbortController().signal,
+				model: undefined,
+				thinkingLevel: "off",
+			},
+			otherTools,
+		);
 		await emit("session_start", { reason: "startup" });
 		await run(emit);
 	} finally {
@@ -110,6 +125,19 @@ test("own-tool deduplication precedes the first source-read await", async (t) =>
 			await pending;
 		}
 	});
+});
+
+test("a tool catalog larger than 256 entries still attributes the own source tool", async (t) => {
+	const stages: string[] = [];
+	t.mock.method(Collector.prototype, "admit", (cell: { observationStage: string }) => {
+		stages.push(cell.observationStage);
+		return false;
+	});
+	await withObservationHost(async (emit) => {
+		await emit("tool_call", request);
+		await emit("tool_result", { ...request, content: [], isError: false });
+	}, 300);
+	assert.deepEqual(stages, ["tool_request", "tool_result"]);
 });
 
 test("an observation uses the current collector after its source read", async (t) => {

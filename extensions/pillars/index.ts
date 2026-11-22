@@ -161,11 +161,10 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		content?: unknown;
 		isError?: boolean;
 	}
+	/** Attribution follows the registered source of the `pillars` name, whatever the size of the tool catalog. */
 	function ownsPillarsTool(event: ObservedToolEvent): boolean {
 		if (event.toolName !== "pillars") return true;
-		const tools = pi.getAllTools();
-		if (tools.length > 256) return false;
-		const source = tools.find((tool) => tool.name === "pillars")?.sourceInfo;
+		const source = pi.getAllTools().find((tool) => tool.name === "pillars")?.sourceInfo;
 		if (!source) return false;
 		return resolve(source.path) === fileURLToPath(import.meta.url);
 	}

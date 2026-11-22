@@ -335,7 +335,9 @@ Cursor errors distinguish invalid encoding, an unknown capture, an expired or
 replaced capture, and a page outside the capture range. Their messages tell the
 caller to copy `nextCursor` unchanged with `cursor` alone, or start a fresh view
 without `cursor`. `cursor_invalid` and `cursor_expired` permit bounded
-cause-specific messages; other non-input error codes retain their fixed messages.
+cause-specific messages. `store_corrupt` names the slot file when one stored
+shard failed validation; see [Storage and lifecycle](#storage-and-lifecycle).
+Other non-input error codes retain their fixed messages.
 A fresh capture that expires or is replaced uses `cursor_expired` without claiming
 that the request contained a cursor. The response schema
 validates these error forms along with successful pages.
@@ -399,12 +401,20 @@ invent stock-adapter certainty from that label.
 
 For its own source tool, the extension retains bounded memory-only execution
 and range evidence. Foreign registrations and altered range frames do not gain
-source-specific attribution. Assessed complete outputs are verified or
+source-specific attribution. The ownership check reads the registered source of
+`pillars` from Pi's tool catalog at each callback, whatever the catalog's size.
+Nested calls, such as those from Codemode scripts, pass through the same
+`tool_call` and `tool_result` handlers as model-issued calls and count the same
+way. Assessed complete outputs are verified or
 mismatched against reference bytes at that callback; partial, unknown, and
 error outputs remain unverifiable. No mismatched-body fingerprint persists.
 
 Operator command reads, registry excerpts, shell reads, and unobserved
-callbacks do not enter this metric. Invoking `check`, `derive`, or `review` is not itself
+callbacks do not enter this metric. Neither do calls that Pi settles before
+execution: invalid arguments, an unknown resource or an over-limit draft fail
+in argument preparation, before the `tool_call` handler, and produce no
+`tool_result`, so session stores record them while this metric does not.
+Invoking `check`, `derive`, or `review` is not itself
 a read event; eligible source tool calls during the resulting agent turn are
 observed normally. These are scope boundaries, not proof of
 non-use. Per-turn deduplication admits at most 4,096
@@ -446,7 +456,11 @@ Reads remain lock-free and create no storage. A safe lock file does not block a
 read. Unresolved `pending.tmp` makes a capture unavailable until a writer performs
 pending-publication recovery. The store ignores the exact `.DS_Store` metadata
 name and validates every managed entry. It does not ignore unknown shard files
-or repair corrupt shards.
+or repair corrupt shards. Retention needs only a shard's `day` and
+`retentionThroughDay`: a slot whose day lies before the 30-day window and whose
+watermark is not after today has expired, whatever else it holds. Reads skip an
+expired slot without validating it, and the next publication removes it with
+the other expired slots.
 
 Before publication and retention changes, the writer checks that the lock path
 still names its held inode. Missing or changed identity stops publication and
@@ -466,11 +480,20 @@ persistent lock file. See the
 The store assumes a local filesystem. It does not admit or detect filesystem
 types, so a network filesystem is unsupported but not detected. Schema
 validation rejects invalid shards, counter partitions, and clock rollback.
-The store does not repair or migrate corrupt state. A shard that carries a
-retired resource class fails validation as corrupt, which blocks both readback
-and publication for the whole directory until the operator clears it; the
-collector counts those failed publications as write incidents. Storage
-unavailability does not prevent corpus retrieval.
+The store does not repair or migrate corrupt state. A shard inside the window
+that carries a retired resource class, or that fails validation in any other
+way, is corrupt. It blocks both readback and publication for the whole
+directory until the operator moves it out or its day leaves the window, so a
+format change blocks recording for at most the 30 retained days. A shard whose
+watermark lies after today never expires: a valid one reports a clock rollback,
+and an invalid one stays corrupt. The
+`pillars_usage` error names the invalid slot file, and each collector reports
+the blocked recording once: `Pillars access evidence is not recorded: the
+aggregate store is invalid (day-NN.json fails validation). Recording resumes
+when the invalid file leaves the aggregate directory.` The collector also counts
+those failed publications as write incidents in memory; they cannot persist
+while the store is blocked. Storage unavailability does not prevent corpus
+retrieval.
 
 Storage uses 30 fixed daily slots, each at most 2 MiB, with 2,048 concrete
 cells, reserved per-stage overflow, and 4,096 private owner/day receipts.

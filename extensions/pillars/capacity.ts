@@ -177,6 +177,25 @@ export function inWindow(day: string, today: string): boolean {
 	const difference = dayNumber(today) - dayNumber(day);
 	return difference >= 0 && difference < LIMITS.days;
 }
+/**
+ * Retention reads only a shard's day and watermark: a slot whose day lies before the
+ * retained window, with no watermark after today, expires whatever else it holds.
+ * A watermark after today stays a clock rollback.
+ */
+export function expiredShard(value: unknown, slot: string, today: string): boolean {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+	const { day, retentionThroughDay } = value as Record<string, unknown>;
+	try {
+		return (
+			slot === slotFor(day as string) &&
+			dayNumber(day) <= dayNumber(retentionThroughDay) &&
+			dayNumber(retentionThroughDay) <= dayNumber(today) &&
+			!inWindow(day as string, today)
+		);
+	} catch {
+		return false;
+	}
+}
 export function slotFor(day: string): string {
 	return `day-${String(dayNumber(day) % LIMITS.days).padStart(2, "0")}.json`;
 }

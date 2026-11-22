@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getHeapStatistics } from "node:v8";
 import {
 	dayNumber,
+	expiredShard,
 	inWindow,
 	LIMITS,
 	planCommit,
@@ -41,6 +42,15 @@ export class StoreLockIdentityError extends StoreUnavailableError {
 		this.name = "StoreLockIdentityError";
 	}
 }
+/** An invalid shard blocks readback and publication; `slot` names the file when one shard failed validation. */
+export class StoreCorruptError extends Error {
+	readonly slot: string | undefined;
+	constructor(slot?: string) {
+		super("store_corrupt");
+		this.name = "StoreCorruptError";
+		this.slot = slot;
+	}
+}
 export class StorePlatformError extends StoreUnavailableError {
 	constructor() {
 		super("Pillars aggregate writes require macOS.");
@@ -67,11 +77,17 @@ interface Scan {
 	pending: boolean;
 }
 
+/** Expired slots are outside the retained window; the next publication removes them unvalidated. */
+interface Loaded {
+	snapshot: Snapshot;
+	expired: string[];
+}
+
 function aborted(): Error {
 	return new DOMException("The operation was aborted", "AbortError");
 }
-function corrupt(): Error {
-	return new Error("store_corrupt");
+function corrupt(slot?: string): Error {
+	return new StoreCorruptError(slot);
 }
 function code(error: unknown): string | undefined {
 	return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : undefined;
@@ -195,7 +211,7 @@ export class PillarsStore {
 		const scan = await this.scan();
 		// Only a writer can resolve an interrupted publication.
 		if (scan.pending) throw new StoreUnavailableError();
-		const snapshot = await this.load(scan, start);
+		const { snapshot } = await this.load(scan, start, today);
 		try {
 			validateSnapshot(snapshot, today);
 		} catch (error) {
@@ -236,7 +252,7 @@ export class PillarsStore {
 				scan = await this.scan();
 			}
 			if (signal?.aborted) throw aborted();
-			const snapshot = await this.load(scan, start);
+			const { snapshot, expired } = await this.load(scan, start, today);
 			try {
 				validateSnapshot(snapshot);
 			} catch {
@@ -250,7 +266,8 @@ export class PillarsStore {
 				return status;
 			}
 			if (signal?.aborted) throw aborted();
-			const published = await this.publish(this.encode(plan.candidate, scan), plan.slot, plan.expiredSlots);
+			const expiredSlots = [...plan.expiredSlots, ...expired.filter((slot) => slot !== plan.slot)];
+			const published = await this.publish(this.encode(plan.candidate, scan), plan.slot, expiredSlots);
 			this.heldLock.assertNamed();
 			if (signal?.aborted) throw aborted();
 			return published ? plan.status : "publication_failed";
@@ -367,17 +384,23 @@ export class PillarsStore {
 		return scan;
 	}
 
-	private async load(scan: Scan, start: NodeJS.MemoryUsage): Promise<Snapshot> {
+	private async load(scan: Scan, start: NodeJS.MemoryUsage, today: string): Promise<Loaded> {
 		const shards: Record<string, Shard> = {};
+		const expired: string[] = [];
 		for (const slot of scan.slots.keys()) {
-			const shard = await this.readShard(slot, start);
+			const shard = await this.readShard(slot, start, today);
+			if (shard === undefined) {
+				expired.push(slot);
+				continue;
+			}
 			if (Object.hasOwn(shards, shard.day)) throw new StoreUnavailableError();
 			shards[shard.day] = shard;
 		}
-		return { shards };
+		return { snapshot: { shards }, expired };
 	}
 
-	private async readShard(slot: string, start: NodeJS.MemoryUsage): Promise<Shard> {
+	/** Returns undefined for an expired slot, which needs no validation because retention removes it. */
+	private async readShard(slot: string, start: NodeJS.MemoryUsage, today: string): Promise<Shard | undefined> {
 		const handle = await open(join(this.root, slot), constants.O_RDONLY | NO_FOLLOW | constants.O_NONBLOCK);
 		let raw: Buffer;
 		try {
@@ -396,14 +419,16 @@ export class PillarsStore {
 		try {
 			value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
 		} catch (error) {
-			if (error instanceof SyntaxError || error instanceof RangeError || error instanceof TypeError) throw corrupt();
+			if (error instanceof SyntaxError || error instanceof RangeError || error instanceof TypeError)
+				throw corrupt(slot);
 			throw error;
 		}
 		memoryGuard(start);
+		if (expiredShard(value, slot, today)) return undefined;
 		try {
 			validateShard(value, slot);
 		} catch {
-			throw corrupt();
+			throw corrupt(slot);
 		}
 		return value;
 	}

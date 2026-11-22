@@ -9,7 +9,13 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { dayNumber, emptyShard, LIMITS, overflowCell, slotFor, zero, type Batch } from "./capacity.ts";
-import { PillarsStore, StoreBusyError, StoreLockIdentityError, StorePlatformError } from "./store.ts";
+import {
+	PillarsStore,
+	StoreBusyError,
+	StoreCorruptError,
+	StoreLockIdentityError,
+	StorePlatformError,
+} from "./store.ts";
 import { Collector } from "./collector.ts";
 
 const TODAY = "2026-09-07";
@@ -376,6 +382,37 @@ test("retention publication removes expired slots only after a committed waterma
 	assert.equal(await f.store.commit(batch(2, 1, old), TODAY), "outside_window");
 	assert.equal(await f.store.commit(batch(2, 1, "2026-09-06"), "2026-09-06"), "clock_rollback");
 	await assert.rejects(f.store.capture("2026-09-06"), /clock_rollback/);
+});
+
+test("an expired shard of another shape blocks nothing and leaves at the next publication", async () => {
+	await using f = await fixture();
+	const old = "2026-08-07";
+	assert.equal(await f.store.commit(batch(1, 1, old), old), "committed");
+	const file = join(f.root, slotFor(old));
+	const shard = JSON.parse(await readFile(file, "utf8"));
+	shard.cells[0].resourceClass = "retired";
+	shard.schemaVersion = 0;
+	await writeFile(file, JSON.stringify(shard));
+	assert.deepEqual(await f.store.capture(TODAY), { shards: {} });
+	assert.ok((await readdir(f.root)).includes(slotFor(old)));
+	assert.equal(await f.store.commit(batch(), TODAY), "committed");
+	assert.ok(!(await readdir(f.root)).includes(slotFor(old)));
+	assert.equal((await f.store.capture(TODAY)).shards[TODAY].revision, 1);
+});
+
+test("an invalid shard inside the window or with a later watermark blocks the store and names its slot", async () => {
+	await using f = await fixture();
+	assert.equal(await f.store.commit(batch(), TODAY), "committed");
+	const file = join(f.root, slotFor(TODAY));
+	const shard = JSON.parse(await readFile(file, "utf8"));
+	shard.cells[0].resourceClass = "retired";
+	await writeFile(file, JSON.stringify(shard));
+	const named = (error: unknown) => error instanceof StoreCorruptError && error.slot === slotFor(TODAY);
+	await assert.rejects(f.store.capture(TODAY), named);
+	await assert.rejects(f.store.commit(batch(2, 1), TODAY), named);
+	assert.deepEqual(await f.store.capture("2026-10-07"), { shards: {} });
+	await writeFile(file, JSON.stringify({ ...shard, retentionThroughDay: "2026-12-07" }));
+	await assert.rejects(f.store.capture("2026-11-07"), named);
 });
 
 test("untrusted files fail the complete capture instead of a partial overview", async () => {
@@ -769,6 +806,25 @@ test("unsupported publication emits one diagnostic per collector", async () => {
 	await collector.flush(true);
 	await collector.shutdown();
 	assert.deepEqual(warnings, ["Pillars aggregate writes require macOS."]);
+});
+
+test("an invalid store emits one diagnostic per collector that names the invalid slot", async () => {
+	await using f = await fixture();
+	assert.equal(await f.store.commit(batch(), TODAY), "committed");
+	const file = join(f.root, slotFor(TODAY));
+	await writeFile(file, "{");
+	const warnings: string[] = [];
+	const collector = new Collector(f.store, {
+		now: () => Date.parse(TODAY),
+		diagnostic: (message) => warnings.push(message),
+	});
+	collector.admit(batch(2, 1).cells[0]);
+	await collector.flush(true);
+	await collector.flush(true);
+	await collector.shutdown();
+	assert.deepEqual(warnings, [
+		`Pillars access evidence is not recorded: the aggregate store is invalid (${slotFor(TODAY)} fails validation). Recording resumes when the invalid file leaves the aggregate directory.`,
+	]);
 });
 
 test("identity loss during scan blocks collector retries without recreating the lock", async (t) => {

@@ -13,7 +13,7 @@ import {
 	zero,
 } from "./capacity.ts";
 
-import { StoreBusyError, StoreLockIdentityError, StorePlatformError } from "./store.ts";
+import { StoreBusyError, StoreCorruptError, StoreLockIdentityError, StorePlatformError } from "./store.ts";
 
 export interface Publisher {
 	commit(batch: Batch, today: string, signal?: AbortSignal): Promise<CommitStatus>;
@@ -65,6 +65,7 @@ export class Collector {
 	private publicationBlocked = false;
 	private busyAttempts = 0;
 	private platformWarned = false;
+	private corruptWarned = false;
 	private shuttingDown = false;
 	private lastAttempt = -Infinity;
 	private first = true;
@@ -221,6 +222,12 @@ export class Collector {
 		} else if (error instanceof StorePlatformError && !this.platformWarned) {
 			this.platformWarned = true;
 			this.diagnostic(error.message);
+		} else if (error instanceof Error && error.message === "store_corrupt" && !this.corruptWarned) {
+			this.corruptWarned = true;
+			const slot = error instanceof StoreCorruptError ? error.slot : undefined;
+			this.diagnostic(
+				`Pillars access evidence is not recorded: the aggregate store is invalid${slot ? ` (${slot} fails validation)` : ""}. Recording resumes when the invalid file leaves the aggregate directory.`,
+			);
 		}
 	}
 

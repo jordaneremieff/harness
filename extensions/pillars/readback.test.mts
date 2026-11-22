@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { type Cell, emptyShard, overflowCell, type Snapshot, zero } from "./capacity.ts";
+import { StoreCorruptError } from "./store.ts";
 import {
+	corruptSlotMessage,
 	createReader,
 	MEANING,
 	PAGE_BYTES,
@@ -240,6 +242,22 @@ test("retained health has detection-day scope independent of the selected event 
 	store.shards[old].health.forkResets = 1;
 	assert.equal(page(await reader(store).read()).storageEvidence.assessment, "recorded_incidents");
 });
+test("an invalid stored shard names its slot without becoming retryable", async () => {
+	const response = await createReader(
+		() => {
+			throw new StoreCorruptError("day-03.json");
+		},
+		{ now: () => NOW },
+	).read();
+	validateResponse(response);
+	assert.equal(response.kind, "error");
+	if (response.kind !== "error") return;
+	assert.equal(response.code, "store_corrupt");
+	assert.equal(response.retryable, false);
+	assert.equal(response.message, corruptSlotMessage("day-03.json"));
+	assert.match(response.message, /day-03\.json fails validation/);
+});
+
 test("malformed shards never become empty or partial success", async () => {
 	const mutations: ((s: Snapshot) => void)[] = [
 		(s) => s.shards[DAY].cells.push(cell(0)),

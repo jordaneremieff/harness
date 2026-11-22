@@ -67,6 +67,14 @@ const MESSAGES: Record<ErrorCode, string> = {
 		"cursor: received a cursor outside the capture page range (value withheld). Copy nextCursor unchanged and send cursor alone, or send {} for a fresh overview.",
 	response_overflow: "The bounded capture exceeded its row, byte, or memory limit.",
 };
+/** The slot name comes from the store's own directory scan, which admits only `day-NN.json`. */
+function invalidSlot(error: unknown): string | undefined {
+	if (!(error instanceof Error) || error.message !== "store_corrupt" || !("slot" in error)) return undefined;
+	return typeof error.slot === "string" && /^day-[0-2][0-9]\.json$/.test(error.slot) ? error.slot : undefined;
+}
+export function corruptSlotMessage(slot: string): string {
+	return `The retained aggregate store is invalid: ${slot} fails validation. No access evidence is recorded or read until that file leaves the aggregate directory.`;
+}
 export function errorResponse(code: ErrorCode, message = MESSAGES[code]) {
 	return {
 		schema: "pillars-usage-response" as const,
@@ -441,7 +449,7 @@ type RevisionPage = Extract<Page, { view: "revisions" }>;
 type ResourcePage = Extract<Page, { view: "overview" }>;
 function validateErrorResponse(response: ErrorResponse): void {
 	if (
-		(!["invalid_input", "cursor_invalid", "cursor_expired"].includes(response.code) &&
+		(!["invalid_input", "cursor_invalid", "cursor_expired", "store_corrupt"].includes(response.code) &&
 			response.message !== MESSAGES[response.code]) ||
 		response.retryable !== (response.code !== "store_corrupt")
 	)
@@ -603,6 +611,8 @@ export function createReader(
 	}
 	function failure(error: unknown): ErrorResponse {
 		const code = error instanceof Error ? error.message : "";
+		const slot = invalidSlot(error);
+		if (slot !== undefined) return errorResponse("store_corrupt", corruptSlotMessage(slot));
 		return errorResponse(
 			code === "response_overflow"
 				? code
