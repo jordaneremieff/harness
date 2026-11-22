@@ -23,6 +23,18 @@ export const InterruptSelection = obj(
 );
 type Selection = Static<typeof InterruptSelection>;
 type Outcome = { state: "protected" | "pending" | "continued"; submissionId?: number };
+export function interruptConflict(input: {
+	interrupt?: Selection;
+	timerId?: number;
+	release?: boolean;
+	background?: boolean;
+}): boolean {
+	return !!input.interrupt && (!!input.release || !!input.background || input.timerId !== undefined);
+}
+function retain(intent: { outcome?: Outcome }, outcome: Outcome) {
+	intent.outcome = outcome;
+	return outcome;
+}
 const Intent = defineDocFamily<{ taskId?: number; inputs?: number[]; outcome?: Outcome }, null>({
 	kind: "agent.interrupt-intent",
 	version: 1,
@@ -52,7 +64,7 @@ async function begin(conversation: Conversation, selection: Selection, context: 
 		intent.taskId = selection.taskId;
 		intent.inputs = selection.queuedInputs;
 		if (live.run?.taskId !== selection.taskId || !(await matchesQueue(tx, conversation.id, selection.queuedInputs)))
-			return (intent.outcome = { state: "protected" });
+			return retain(intent, { state: "protected" });
 		return undefined;
 	}, context);
 }
@@ -94,8 +106,8 @@ export async function interruptContinue(
 			latest.state.outcome?.status !== "aborted" ||
 			!(await matchesQueue(tx, conversation.id, selection.queuedInputs))
 		)
-			return (intent.outcome = { state: "protected" });
+			return retain(intent, { state: "protected" });
 		const submissionId = await conversation.submit(tx, { type: "continue" });
-		return (intent.outcome = { state: "continued", submissionId });
+		return retain(intent, { state: "continued", submissionId });
 	}, context);
 }

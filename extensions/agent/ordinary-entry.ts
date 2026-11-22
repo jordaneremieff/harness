@@ -146,7 +146,7 @@ const StringEnum = <const T extends readonly string[]>(
 ): Schema<T[number]> => ({ type: "string", enum: [...values], ...options });
 const id = str({ minLength: 1, maxLength: 256 });
 const maybeTrust = opt(bool());
-import { InterruptSelection } from "./interrupt-continue.ts";
+import { InterruptSelection, interruptConflict } from "./interrupt-continue.ts";
 const abort = obj(
 	{
 		interrupt: opt(InterruptSelection),
@@ -798,7 +798,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		abort,
 		(input, ctx, _callId, _admissionCaller, signal) => {
 			if (input.interrupt) {
-				if (input.background || input.release || input.timerId !== undefined)
+				if (interruptConflict(input))
 					throw new Error("interrupt cannot be combined with release, background or timerId");
 				return control("interrupt-continue", { sessionId: input.sessionId, interrupt: input.interrupt }, ctx, signal);
 			}

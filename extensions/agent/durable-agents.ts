@@ -479,7 +479,7 @@ const SteerParams = obj(
 	{},
 );
 
-import { InterruptSelection } from "./interrupt-continue.ts";
+import { InterruptSelection, interruptConflict } from "./interrupt-continue.ts";
 const AbortParams = obj(
 	{
 		interrupt: opt(InterruptSelection),
@@ -2012,6 +2012,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return identity(id);
 	};
 
+	const stopOperation = (args: AbortInput): AgentControlMethod =>
+		args.interrupt ? "interrupt-continue" : args.release ? "release" : "abort";
 	const abortResolved = async (args: AbortInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
 		if (args.sessionId === identity(api.conversationId))
 			return errorResult("The target's abort scope includes the calling conversation.");
@@ -2028,10 +2030,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			return errorResult(`Target resolution failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		const stopped = await dispatchControl(
-			args.interrupt ? "interrupt-continue" : args.release === true ? "release" : "abort",
+			stopOperation(args),
 			{
 				sessionId: resolved,
-				...(args.interrupt ? { interrupt: args.interrupt } : {}),
+				interrupt: args.interrupt,
 				...(args.background === true ? { background: true } : {}),
 			},
 			`Abort of ${resolved} failed`,
@@ -2048,7 +2050,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		parameters: AbortParams,
 		replay: "unsafe",
 		execute: async (args: AbortInput, api, context) => {
-			if (args.interrupt && (args.release || args.background || args.timerId !== undefined))
+			if (interruptConflict(args))
 				return errorResult("interrupt cannot be combined with release, background or timerId");
 			if (args.release === true && args.background === true)
 				return errorResult("release cannot be combined with background; abort with background first, then release");
