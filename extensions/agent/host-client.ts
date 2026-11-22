@@ -45,6 +45,24 @@ const DEFAULT_LAUNCH_TIMEOUT_MS = 30_000;
 // An unresolved project trust decision includes time for the primary UI answer.
 const TRUST_LAUNCH_TIMEOUT_MS = 330_000;
 const DEFAULT_RETRY_ATTEMPTS = 1;
+/** Observation budgets leave room for native control answers and nested host acquisition. */
+export function hostRequestBudget(method: string): number {
+	switch (method) {
+		case "spawn":
+		case "resolve-agent":
+		case "place":
+		case "command":
+			return TRUST_LAUNCH_TIMEOUT_MS + 90_000;
+		case "abort":
+		case "release":
+		case "run-stop":
+		case "timer-cancel":
+		case "compact":
+			return 90_000;
+		default:
+			return 60_000;
+	}
+}
 const STDIO_CAPTURE_LIMIT = 64 * 1024;
 const CONNECT_WAIT_LIMIT_MS = 5000;
 const EXIT_HISTORY_LIMIT = 64;
@@ -850,7 +868,10 @@ class HostConnectionImpl implements HostConnection {
 		// Caller cancellation stays local and never cancels admitted Durable work.
 		const client = this.client;
 		const ownedExit = this.ownedExitValue;
-		void hostAttempt((deadline) => client.request(call.call, deadline), this.launchOptions.requestTimeoutMs).then(
+		void hostAttempt(
+			(deadline) => client.request(call.call, deadline),
+			this.launchOptions.requestTimeoutMs ?? hostRequestBudget(call.method),
+		).then(
 			(result) => {
 				if (call.method === "close") {
 					if (client === this.client) {

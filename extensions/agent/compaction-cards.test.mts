@@ -152,6 +152,20 @@ it("shows only observed other-agent configuration, context facts and retained su
 	assert.doesNotMatch(missing, /unknown|unavailable|Before:|After:|completed/u);
 });
 
+it("returns the live compaction task when the summariser outlasts its observer", async () => {
+	const harness = { waitForTask: () => new Promise(() => {}) } as unknown as Harness;
+	const conversation = { compact: async () => 9 } as unknown as Conversation;
+	const keeper = setInterval(() => {}, 1000);
+	try {
+		assert.deepEqual(await compactConversation(harness, conversation, undefined, true, BACKGROUND_CONTEXT, 10), {
+			taskId: 9,
+			status: "task",
+		});
+	} finally {
+		clearInterval(keeper);
+	}
+});
+
 it("retains a completed compaction outcome when its optional summary-size read fails", async () => {
 	const harness = {
 		waitForTask: async () => ({ state: { outcome: { status: "completed", result: { entryId: 7 } } } }),

@@ -71,7 +71,7 @@ import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import type { CatalogIntentClaims, CatalogViewRow } from "./catalog-view.ts";
 import type { Context } from "@earendil-works/chord/context";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { awaitWithContext, withAbortSignal, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	AssistantEntry,
@@ -1260,40 +1260,45 @@ export async function rewindConversation(
 	};
 }
 
-/** Retained text includes the native wrapper; queued writes have no observed size. */
-async function compactionSummarySize(
-	harness: Harness,
-	result: { entryId?: EntryId; submissionId?: SubmissionId },
-	context: Context,
-): Promise<number | undefined> {
-	let entryId = result.entryId;
-	if (entryId === undefined && result.submissionId !== undefined) {
-		const submission = await harness.submission(result.submissionId, context);
-		const record = await submission?.status(context);
-		if (record?.type === "write" && record.status === "done") entryId = record.entry;
-	}
-	if (entryId === undefined) return undefined;
-	const summary = await harness.commit((tx) => tx.entry(CompactionEntry, entryId), context);
-	return summary?.model?.reduce(
-		(size, message) =>
-			size +
-			(typeof message.content === "string"
-				? message.content.length
-				: message.content.reduce((chars, part) => chars + (part.type === "text" ? part.text.length : 0), 0)),
-		0,
-	);
-}
+type SummaryFacts = {
+	summaryPlacement: "placed" | "queued" | "unanswered" | "none" | "unknown";
+	summaryReason?: string;
+	summaryChars?: number;
+	summarySizeError?: string;
+};
 
+/** Task completion and placement of its exact summary are separate observations. */
 async function compactionSummaryFacts(
 	harness: Harness,
 	result: { entryId?: EntryId; submissionId?: SubmissionId },
 	context: Context,
-): Promise<{ summaryChars?: number; summarySizeError?: string }> {
+): Promise<SummaryFacts> {
+	let entryId = result.entryId;
 	try {
-		const summaryChars = await compactionSummarySize(harness, result, context);
-		return summaryChars === undefined ? {} : { summaryChars };
+		if (result.submissionId !== undefined) {
+			const record = await (await harness.submission(result.submissionId, context))?.status(context);
+			if (record?.type !== "write") return { summaryPlacement: "unknown" };
+			if (record.status === "unanswered") return { summaryPlacement: "unanswered", summaryReason: record.reason };
+			if (record.status === "queued") return { summaryPlacement: "queued" };
+			entryId = record.entry;
+		}
+		if (entryId === undefined) return { summaryPlacement: "none" };
+		const placed = entryId;
+		const summary = await harness.commit((tx) => tx.entry(CompactionEntry, placed), context);
+		const summaryChars = summary?.model?.reduce(
+			(size, message) =>
+				size +
+				(typeof message.content === "string"
+					? message.content.length
+					: message.content.reduce((chars, part) => chars + (part.type === "text" ? part.text.length : 0), 0)),
+			0,
+		);
+		return { summaryPlacement: "placed", ...(summaryChars === undefined ? {} : { summaryChars }) };
 	} catch (error) {
-		return { summarySizeError: error instanceof Error ? error.message : String(error) };
+		return {
+			summaryPlacement: entryId === undefined ? "unknown" : "placed",
+			summarySizeError: error instanceof Error ? error.message : String(error),
+		};
 	}
 }
 
@@ -1309,9 +1314,12 @@ export async function compactConversation(
 	instructions: string | undefined,
 	wait: boolean,
 	context: Context,
+	waitMs = 45_000,
 ): Promise<{
 	readonly taskId: TaskId<{ entryId?: EntryId; submissionId?: SubmissionId }>;
 	readonly status: "task" | "completed" | "aborted" | "failed" | "orphaned" | "faulted";
+	readonly summaryPlacement?: SummaryFacts["summaryPlacement"];
+	readonly summaryReason?: string;
 	readonly summaryChars?: number;
 	readonly summarySizeError?: string;
 	readonly entryId?: EntryId;
@@ -1320,7 +1328,19 @@ export async function compactConversation(
 }> {
 	const taskId = await conversation.compact(seededCompactionInstructions(instructions), context);
 	if (!wait) return { taskId, status: "task" };
-	const settled = await harness.waitForTask(taskId, context);
+	const budget = AbortSignal.timeout(waitMs);
+	const waitContext = withAbortSignal(
+		context.abortSignal ? AbortSignal.any([context.abortSignal, budget]) : budget,
+		context,
+	);
+	const settled = await awaitWithContext(harness.waitForTask(taskId, waitContext), waitContext).catch(
+		(error: unknown) => {
+			context.abortSignal?.throwIfAborted();
+			if (budget.aborted) return undefined;
+			throw error;
+		},
+	);
+	if (!settled) return { taskId, status: "task" };
 	const outcome = settled.state.outcome;
 	if (outcome.status === "completed") {
 		return {

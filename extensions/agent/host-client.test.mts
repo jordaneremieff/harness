@@ -13,6 +13,7 @@ import {
 	connectHost,
 	HostBusyEndpointUnavailableError,
 	HostReadinessUnavailableError,
+	hostRequestBudget,
 	observeOwnedHostExit,
 	snapshotHost,
 	waitForHostRelease,
@@ -411,6 +412,13 @@ it("aborting a private gated read leaves host work running", { timeout: 30000 },
 	assert.equal(readFixtureState(statePath).waitsCancelled ?? 0, 0, "no cancel was sent for a plain read");
 	assert.deepEqual(await connection.request("timer-list", { alive: true }), { alive: true });
 	await connection.close();
+});
+
+it("leaves time for native stop and compaction answers and for a nested trust prompt", () => {
+	assert.ok(hostRequestBudget("abort") > 60_000);
+	assert.ok(hostRequestBudget("compact") > 45_000);
+	assert.ok(hostRequestBudget("spawn") > 330_000);
+	assert.equal(hostRequestBudget("submit"), 60_000);
 });
 
 it("a silent connected host leaves a mutation unconfirmed without a resend", async (t) => {

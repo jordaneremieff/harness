@@ -354,7 +354,7 @@ bound. The transport identifier is independent of Chord's protocol number:
 a matching Chord protocol number does not establish adapter compatibility.
 There is no old codec, fallback, or automatic protocol negotiation. The
 connection deadline applies to the initial endpoint get, not subsequent feed
-hydration. The Agent client separately bounds each connected request and feed setup at 60 seconds. Expiry ends the wait, not admitted native work. A mutation whose reply did not arrive has an unconfirmed outcome. A hydrated feed has no age limit. Client protocol-error
+hydration. The Agent client separately bounds feed setup and most connected requests at 60 seconds. Stop, release, timer cancellation, exact run-stop and compaction waits have 90 seconds. A command or a request that creates or resolves a new agent has seven minutes, to allow nested setup and project trust. Expiry ends the wait, not admitted native work. A mutation whose reply did not arrive has an unconfirmed outcome. A hydrated feed has no age limit. Client protocol-error
 reports retain their reason in connection failures and close notifications.
 
 After identity admission, each socket record is a four-byte unsigned
@@ -1212,7 +1212,7 @@ Source: `extensions/agent/durable-host.ts` (`rewindRequest`).
 
 ### compact
 
-Params: `{sessionId,instructions?}`. `compact/2.0.0` requests native compaction without first aborting foreground work, background work or queued input. Native work continues while compaction prepares its result. The summary enters context at a native boundary. The response retains the native compaction observation and therefore compares the exact Durable identity `D`. Explicit Stop remains a separate operation. Self-compaction retains its native completed-tool boundary.
+Params: `{sessionId,instructions?}`. `compact/2.0.0` requests native compaction without first aborting foreground work, background work or queued input. Native work continues while compaction prepares its result. A synchronous compact returns its task ID with `status: "task"` after 45 seconds if the summariser has not settled. After completion, `summaryPlacement` identifies the summary as placed, queued, unanswered, absent (`none`) or unknown. An unanswered write includes its native reason. The summary enters context only after placement at a native boundary. The response retains the native compaction observation and therefore compares the exact Durable identity `D`. Explicit Stop remains a separate operation. Self-compaction retains its native completed-tool boundary.
 
 ### run-scope and run-stop
 
