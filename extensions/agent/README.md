@@ -2016,6 +2016,7 @@ to a recipient stopped by the same abort remains terminal and starts no run.
 Closure itself stops no producer. Stopping one input group does not invoke
 this declared-work closure.
 
+Receipts that share an answer and recipient make one wake decision across all pages.
 A state note does not wake its recipient. When every result of a receipt group
 is the answer of a request whose declared work continues, a primary receives it
 with `wake: false`, and a Durable recipient keeps it as an `agent.quiet-input`
@@ -2024,6 +2025,8 @@ none. The final report arrives as a separate report and wakes the recipient.
 A receipt of an input that ended without an answer still wakes.
 
 ### Stopping work
+
+The optional `interrupt` object on `agent_abort` selects an exact live generation (`taskId`) and its complete ordered queue (`queuedInputs`). Give it a stable `intentId`. It refuses a cold or unsupported host. Use the same intent after `pending`; `continued` identifies one admitted continuation, not its answer. It never repeats tool effects or undoes them. Do not combine `interrupt` with release, background stop, or timer cancellation.
 
 A live abort marks every conversation of its scope stopped, then commits the abort
 marks of the scope's live tasks and withdraws its queued inputs in one native
@@ -2325,6 +2328,10 @@ Sources: `durable-observation.ts` (`readResult`, `finalReportPage`,
 Normal delivery stays independent. It keeps its recipient-scoped identity and
 retained receipt. A late or already-placed copy remains possible and costs an
 additional model turn. There is no exactly-once contextual-delivery guarantee.
+
+### Provider event deadlines
+
+A provider attempt receives its own abort signal. The first-event deadline uses the stream request timeout. After a response event, `agent.providerProgressIdleMs` limits the wait for more provider events. Its default is zero (disabled): transport activity need not produce model events during reasoning. This setting is independent of Pi’s HTTP idle timeout. A stall after partial content keeps the partial response without automatic retry. A provider that ignores abort can continue outside the host. Deferred reads and cancellation also use a request deadline.
 
 ### Provider content refusals
 
@@ -5078,7 +5085,3 @@ node --test extensions/agent/host-continuity.test.mts
 The fixture sets isolated `PI_AGENT_DIR` and `PI_AGENT_SESSIONS_DIR` values and
 removes its temporary stores. The command uses existing installations; it does
 not install or copy a package.
-
-The optional `interrupt` object on `agent_abort` selects an exact live generation (`taskId`) and its complete ordered queue (`queuedInputs`). Give it a stable `intentId`. It refuses a cold or unsupported host. Use the same intent after `pending`; `continued` identifies one admitted continuation, not its answer. It never repeats tool effects or undoes them. Do not combine `interrupt` with release, background stop, or timer cancellation.
-
-A provider attempt receives its own abort signal. The first-event deadline uses the stream request timeout. After a response event, `agent.providerProgressIdleMs` limits the wait for more provider events. Its default is zero (disabled): transport activity need not produce model events during reasoning. This setting is independent of Pi’s HTTP idle timeout. A stall after partial content keeps the partial response without automatic retry. A provider that ignores abort can continue outside the host. Deferred reads and cancellation also use a request deadline. Receipts that share an answer and recipient make one wake decision across all pages.

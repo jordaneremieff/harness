@@ -668,6 +668,8 @@ in pages) and, when readable, final-report `delivery` (`active`,
 `parked`, `fallback`, `terminal`, `delivered`, `absent` or `retained`). A delivery state does
 not change the declared-work state.
 
+A passive report or state note that reaches an idle mixed inbox stays queued until an independent boundary.
+
 Delivered state-note receipts retain the normal result identity. Their native
 follow-up text labels the answer as a state note; ordinary-primary details add
 `work:"open"|"closed"` and `workLabel`. Check-ins configured for that request
@@ -678,6 +680,8 @@ unless the abort requests them too. A final report to a recipient stopped by
 that abort is retained as terminal and starts no new run. Item closure itself
 cancels no producer. An input-group stop has no declared-work closure
 call site.
+
+A reset closes declared work once, after its exact write reaches the transcript. Replaying its request does not close newer work.
 
 Source: `extensions/agent/open-work.ts` (`OpenWorkDoc`, `AgentWorkParams`,
 `declareOpenWork`, `completeOpenWork`, `finalReportRequestId`, `withoutVoidItems`),
@@ -1395,5 +1399,3 @@ These examples contain fabricated identities and data. They are valid-shape exam
 ```
 
 Fixture shape sources: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-observation.ts:1133-1143`; `extensions/agent/catalog-view.ts:48-65`; `extensions/agent/host-process.ts:387-399`.
-
-A reset closes declared work once, after its exact write reaches the transcript. Replaying its request does not close newer work. A passive report or state note that reaches an idle mixed inbox stays queued until an independent boundary.
