@@ -19,6 +19,7 @@ import {
 	type Conversation,
 	type ConversationId,
 	type EntryId,
+	type Tx,
 	type SubmissionId,
 	type SubmissionRecord,
 } from "@earendil-works/pi-durable";
@@ -32,6 +33,16 @@ const PendingResets = defineDoc<{ ids: number[] }>({
 	initial: () => ({ ids: [] }),
 	checkpointWhen: () => false,
 });
+
+async function workBefore(tx: Tx, conversationId: ConversationId, entry: EntryId): Promise<string[]> {
+	const before: string[] = [];
+	for (const item of (await tx.doc(OpenWorkDoc, conversationId)).items) {
+		if (item.close) continue;
+		const input = await tx.submission(item.submissionId as SubmissionId);
+		if (input?.entry !== undefined && input.entry < entry) before.push(item.requestId);
+	}
+	return before;
+}
 
 /** A reset closes only requests from before its placed entry. Removing the marker and closing work share a commit. */
 export async function reconcileResetClosures(
@@ -50,12 +61,7 @@ export async function reconcileResetClosures(
 			const record = await tx.submission(id as SubmissionId);
 			if (record?.type !== "write" || record.status === "queued") return;
 			if (record.status === "done" && (await tx.entry(record.entry))?.kind === ResetEntry.kind) {
-				const before: string[] = [];
-				for (const item of (await tx.doc(OpenWorkDoc, record.conversationId)).items) {
-					if (item.close) continue;
-					const input = await tx.submission(item.submissionId as SubmissionId);
-					if (input?.entry !== undefined && input.entry < record.entry) before.push(item.requestId);
-				}
+				const before = await workBefore(tx, record.conversationId, record.entry);
 				if (before.length) await closeOpenWork(tx, storageId, record.conversationId, "reset", now(), before);
 			}
 			state.ids.splice(state.ids.indexOf(id), 1);
