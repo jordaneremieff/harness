@@ -142,6 +142,8 @@ The check is already identified, and the operator authorizes the run. No distinc
 
 **Verification Reach** checks what tool evidence establishes. **External Verification** applies when a conclusion depends on a changeable external dependency's behavior.
 
+**[Borrowed Blockers](heuristic-borrowed-blockers.md)** tests which conditions of a larger goal belong in the answer to a narrower question. Message Role Mapping establishes that question from the actual request.
+
 ## Summary
 
 Keep the operator's request above the roles inside the material. Separate assertions, declarations, and interpretations, hold each to its own evidence and authority, keep unestablished states unestablished, and let those distinctions select the work that gets done without changing the artifact the request asked for.

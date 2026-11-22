@@ -55,6 +55,7 @@ Operator reports are evidence of reported experience, not proof of every explana
 - **Investigation Persistence:** pursues obtainable facts without endless inquiry; this heuristic examines which proof conditions are necessary.
 - **Committed Contribution:** requires a bounded contribution; this heuristic catches a bad condition attached to an otherwise clear recommendation.
 - **Compositional Simplicity:** counts work wherever it falls, including evidence work transferred to another person.
+- **[Borrowed Blockers](heuristic-borrowed-blockers.md):** asks the same question, whether any outcome would change the decision, of binding conditions that belong to a larger goal. It keeps them binding and places each with the question it can change.
 
 ## Summary
 

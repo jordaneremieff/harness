@@ -87,6 +87,7 @@ The heuristic does not require preserving an entire conversation. It requires pr
 - **[Concurrent Work Discovery](heuristic-concurrent-work-discovery.md):** reveals relevant concurrent activity; this heuristic preserves the frame when the efforts are interdependent.
 - **[Message Role Mapping](pattern-message-role-mapping.md):** preserves the scope and authority of carried restrictions and commitments within the exchanged frame.
 - **Redundant Corroboration:** sibling outputs sharing one frame should not be mistaken for independent facets.
+- **[Borrowed Blockers](heuristic-borrowed-blockers.md):** dual heuristic. It leaves out of a scoped answer the conditions whose outcomes would change nothing in it; this heuristic carries the frame when an outcome does change the next decision.
 
 ## Summary
 

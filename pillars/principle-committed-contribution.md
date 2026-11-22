@@ -113,6 +113,7 @@ When an operator asserts a fact that the available evidence contradicts, state t
 - **Proof Burden:** catches an unjustified evidence condition attached to an otherwise clear contribution.
 - **Unearned Prose:** the prose register must carry the owned position rather than overwrite it with vague authority or performed balance.
 - **Loaded Comparison:** recommendation should not be disguised as neutral option theater.
+- **[Borrowed Blockers](heuristic-borrowed-blockers.md):** catches conditions of a larger goal offered in place of the scoped answer that a question asks for.
 
 ## Origin
 

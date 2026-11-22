@@ -22,7 +22,7 @@ At a matching commitment moment:
 
 1. **Name the frame.** State the axes, shared premise, solution category, or mental model in one sentence.
 2. **Identify its provenance.** Was it self-constructed, inherited, or imposed by a binding external constraint?
-3. **Test whether it binds.** Find a domain reason independent of the act of constructing or receiving it.
+3. **Test whether it binds.** Find a domain reason independent of the act of constructing or receiving it. The assigned scope of a question is such a reason: options within that scope stay open to inspection, but a condition of a larger goal does not void the question ([Borrowed Blockers](heuristic-borrowed-blockers.md)).
 4. **Step outside if it does not.** Use the move appropriate to the moment.
 
 | Moment | Frame element | Step-outside move |

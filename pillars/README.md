@@ -64,6 +64,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [Tell Laundering](heuristic-tell-laundering.md) | A flagged prose move receives a surface-only substitute → repair above the form and preserve claims. |
 | [Coverage Calibration](heuristic-coverage-calibration.md) | Confidence exceeds the examined share of a search space → count coverage and calibrate the claim. |
 | [Reachable Control](heuristic-reachable-control.md) | Work state, resource limits, handoffs or background traffic threaten authorised human direction → preserve a usable way to communicate and intervene. |
+| [Borrowed Blockers](heuristic-borrowed-blockers.md) | A scoped answer or review cites conditions of the larger goal as its blockers → answer the question asked and keep only conditions whose outcome would change that answer. |
 
 ## Related Files
 
