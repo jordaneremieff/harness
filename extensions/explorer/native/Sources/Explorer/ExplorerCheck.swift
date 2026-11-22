@@ -11,21 +11,24 @@ enum ExplorerCheck {
         override var occlusionState: NSWindow.OcclusionState { isVisible ? [.visible] : super.occlusionState }
     }
     static func export(_ argv: [String], resources: URL) throws {
-        let raw = try options(argv, allowed: ["out", "width", "height", "appearance", "root", "path", "line", "script", "ignored"])
+        let raw = try options(argv, allowed: ["out", "width", "height", "appearance", "root", "path", "line", "script", "ignored", "zoom"])
+        let zoom = raw["zoom"].map { Int($0).map { Double($0) / 100 } ?? 0 }
         guard let out = raw["out"], let width = raw["width"].flatMap(Int.init), let height = raw["height"].flatMap(Int.init),
-              (320...4096).contains(width), (240...4096).contains(height), (raw["appearance"].map { ["dark", "light"].contains($0) } ?? true) else {
-            throw ExplorerError("arguments", "Use --export-image --out <png> --width <n> --height <n> --root <dir> [--appearance dark|light] [--path <path>] [--line <n>] [--script <file>] [--ignored show|hide].")
+              (320...4096).contains(width), (240...4096).contains(height), (raw["appearance"].map { ["dark", "light"].contains($0) } ?? true),
+              zoom.map(ExplorerZoom.range.contains) ?? true else {
+            throw ExplorerError("arguments", "Use --export-image --out <png> --width <n> --height <n> --root <dir> [--appearance dark|light] [--path <path>] [--line <n>] [--script <file>] [--ignored show|hide] [--zoom <percent>].")
         }
         let target = try Launch(arguments: ["root", "path", "line"].flatMap { key in raw[key].map { ["--\(key)", $0] } ?? [] })
         let scratch = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
-        try execute(target: target, resources: resources, store: scratch, width: width, height: height, appearance: raw["appearance"],
+        try execute(target: target, resources: resources, store: scratch, width: width, height: height, appearance: raw["appearance"], zoom: zoom,
                     showIgnored: try ignoredOption(raw["ignored"])) { host, _ in
             if let file = raw["script"] {
                 let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: file))
                 let data = try handle.read(upToCount: mib + 1) ?? Data()
                 guard data.count <= mib, let code = String(data: data, encoding: .utf8) else { throw ExplorerError("invalid", "The snapshot script is invalid or too large.") }
-                _ = try await host.page.view.evaluateJavaScript(code)
+                // The script runs as an async function body, so the snapshot waits for the work it awaits.
+                _ = try await host.page.view.callAsyncJavaScript(code, arguments: [:], in: nil, contentWorld: .page)
             }
             try await paint(host.page.view)
             let image = try await host.page.view.takeSnapshot(configuration: nil)
@@ -202,8 +205,52 @@ enum ExplorerCheck {
             """, arguments: [:], in: nil, contentWorld: .page)
             guard refreshed as? Bool == true else { throw ExplorerError("verify", "The ignored folder did not refresh.") }
             try await verifyEditor(host.page.view)
+            try await verifyZoom(host)
         }
-        print("Explorer verified: real page, ignored folders and file events, Markdown preview, Git review, search, note marks, card drafts, live prompt and answer, file create, save, edit drafts, and conflict.")
+        print("Explorer verified: real page, ignored folders and file events, Markdown preview, Git review, search, note marks, card drafts, live prompt and answer, file create, save, edit drafts, conflict, and zoom.")
+    }
+
+    private static func verifyZoom(_ host: ExplorerHost) async throws {
+        func key(_ characters: String, _ code: UInt16, _ flags: NSEvent.ModifierFlags = .command) throws -> Bool {
+            guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0, context: nil,
+                                               characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code) else {
+                throw ExplorerError("verify", "A zoom key event could not be created.")
+            }
+            return host.page.view.performKeyEquivalent(with: event)
+        }
+        // The check window is 898 points wide, a usual split: zooming to 125% keeps the sidebar beside the code.
+        func expect(_ level: Double, _ label: String) async throws {
+            guard host.zoom == level else { throw ExplorerError("verify", "Zoom \(label): \(host.zoom).") }
+            let shown = try await host.page.view.callAsyncJavaScript("""
+            const node = document.getElementById('zoom-level');
+            const settled = () => (node.hidden ? '' : node.textContent) === expected && Math.abs(innerWidth * level - 898) < 2;
+            for (let i = 0; i < 120 && !settled(); i++) await new Promise(requestAnimationFrame);
+            if (!settled() || document.getElementById('app').classList.contains('narrow') || getComputedStyle(document.getElementById('sidebar')).display === 'none') return false;
+            return (node.hidden ? '' : node.textContent) === expected && (await globalThis.explorer.request('hello')).settings.zoom === level;
+            """, arguments: ["expected": level == 1 ? "" : "\(Int((level * 100).rounded()))%", "level": level], in: nil, contentWorld: .page)
+            guard shown as? Bool == true else { throw ExplorerError("verify", "The page did not show or keep zoom \(label).") }
+            guard host.page.view.pageZoom == CGFloat(level) else { throw ExplorerError("verify", "WebKit did not apply zoom \(label).") }
+        }
+        guard try key("=", 24) else { throw ExplorerError("verify", "Command-= was not handled.") }
+        try await expect(1.1, "after Command-=")
+        guard try key("+", 24, [.command, .shift]) else { throw ExplorerError("verify", "Command-+ was not handled.") }
+        try await expect(1.25, "after Command-+")
+        guard try key("-", 27), try key("-", 27), try key("-", 27) else { throw ExplorerError("verify", "Command-- was not handled.") }
+        try await expect(0.9, "after Command--")
+        _ = try key("=", 24, [.command, .option])
+        guard host.zoom == 0.9 else { throw ExplorerError("verify", "Command-Option-= changed the zoom.") }
+        guard try key("0", 29) else { throw ExplorerError("verify", "Command-0 was not handled.") }
+        try await expect(1, "after Command-0")
+        let reset = try await host.page.view.callAsyncJavaScript("""
+        const level = (await globalThis.explorer.request('zoom', {step: 'in'})).zoom;
+        const node = document.getElementById('zoom-level');
+        for (let i = 0; i < 120 && node.hidden; i++) await new Promise(requestAnimationFrame);
+        node.click();
+        for (let i = 0; i < 120 && !node.hidden; i++) await new Promise(requestAnimationFrame);
+        return level === 1.1 && node.hidden;
+        """, arguments: [:], in: nil, contentWorld: .page)
+        guard reset as? Bool == true else { throw ExplorerError("verify", "The zoom indicator did not reset the zoom.") }
+        try await expect(1, "after the indicator reset")
     }
 
     private static func verifyEditor(_ view: WKWebView) async throws {
@@ -301,8 +348,9 @@ enum ExplorerCheck {
         _ = try await view.callAsyncJavaScript("await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); return true;", arguments: [:], in: nil, contentWorld: .page)
     }
 
-    private static func execute(target: Launch, resources: URL, store: URL, width: Int, height: Int, appearance: String?, live: LiveConfiguration? = nil,
-                                showIgnored: Bool = true, body: @escaping (ExplorerHost, NSWindow) async throws -> Void) throws {
+    private static func execute(target: Launch, resources: URL, store: URL, width: Int, height: Int, appearance: String?, zoom: Double? = nil,
+                                live: LiveConfiguration? = nil, showIgnored: Bool = true,
+                                body: @escaping (ExplorerHost, NSWindow) async throws -> Void) throws {
         let workspace = try prepareWorkspace(target)
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
@@ -316,6 +364,7 @@ enum ExplorerCheck {
         window.isExcludedFromWindowsMenu = true
         if let appearance { window.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua) }
         let host = ExplorerHost(target, workspace: workspace, store: store, resources: resources, showIgnored: showIgnored)
+        if let zoom { host.setZoom(zoom) }
         window.contentView = host.page.view
         host.page.view.frame = CGRect(x: 0, y: 0, width: width, height: height)
         host.page.view.autoresizingMask = [.width, .height]

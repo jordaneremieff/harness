@@ -31,6 +31,7 @@ export function createBridge(
 		diff: "auto",
 		sidebar: { open: true, width: 270 },
 		tab: "changes",
+		zoom: 1,
 	};
 	let clipboard = "";
 	const prompts = new Set();
@@ -404,6 +405,7 @@ export function createBridge(
 				case "link.open":
 				case "finder.reveal":
 				case "focus.return":
+				case "zoom":
 					return fail("unavailable", "This action requires the native host.");
 				case "prompt":
 					return prompt(message);

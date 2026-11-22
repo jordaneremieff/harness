@@ -32,6 +32,8 @@ type ExplorerSettings = {
 	diff: ExplorerMode;
 	sidebar: { open: boolean; width: number };
 	tab: ExplorerTab;
+	/** Page zoom level; the host owns and applies it. */
+	zoom: number;
 };
 type ExplorerLive = { connected: boolean; label?: string; reason?: string };
 type ExplorerRoot = {
@@ -115,6 +117,7 @@ type ExplorerPromptState = {
 type ExplorerEvent = { v: 1 } & (
 	| { type: "files.changed"; paths: string[]; head?: Pick<ExplorerRoot, "branch" | "head"> }
 	| { type: "notes.changed" }
+	| { type: "zoom"; zoom: number }
 	| ({ type: "live" } & ExplorerLive)
 	| ({ type: "open"; root?: ExplorerRoot } & ExplorerLaunch)
 	| ExplorerPromptState
@@ -178,6 +181,7 @@ type ExplorerRequests = {
 	"settings.save": [{ settings: ExplorerSettings }, object];
 	"state.save": [Omit<ExplorerLaunch, "draft"> & { draft?: ExplorerCardDraft | null }, object];
 	"focus.return": [undefined, object];
+	zoom: [{ step: "in" | "out" | "reset" }, { zoom: number }];
 };
 type ExplorerSpan = { start: number; end: number; role: string };
 type ExplorerRange = { side: ExplorerSide; start: number; end: number };

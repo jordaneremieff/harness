@@ -23,6 +23,7 @@ final class ExplorerHost {
     private var watchJob: Task<Void, Never>?
     private let state: ExplorerState
     private let showIgnored: Bool
+    private(set) var zoom = 1.0
 
     init(_ launch: Launch, workspace: Workspace, store: URL, resources: URL, terminal: PaneTerminal? = nil, showIgnored: Bool = true) {
         self.showIgnored = showIgnored
@@ -40,6 +41,9 @@ final class ExplorerHost {
             } }, logger: Logger(subsystem: "local.harness.explorer", category: "pane"), tracksWindowContent: true, eventDriven: true)
         }
         state = ExplorerState(store: store)
+        zoom = state.zoom
+        page.view.pageZoom = CGFloat(zoom)
+        page.onZoom = { [weak self] step in self?.applyZoom(step) }
         page.receive = { [weak self] kind, fields in
             guard let self else { throw ExplorerError("unavailable", "Explorer is closed.") }
             return try await self.handle(kind, fields)
@@ -136,6 +140,24 @@ final class ExplorerHost {
         watch(); remember(); status = ""; draw()
     }
 
+    func applyZoom(_ step: ExplorerZoom.Step) { setZoom(ExplorerZoom.next(zoom, step)) }
+
+    /// Stores a zoom level, tells the page, and then applies the latest level, so the page knows it before the
+    /// resize that the new level causes. A request at a limit still reports the level so the person sees why
+    /// nothing changed.
+    func setZoom(_ value: Double) {
+        guard ExplorerZoom.range.contains(value) else { return }
+        if value != zoom {
+            zoom = value
+            do { try state.saveZoom(value) } catch { status = error.localizedDescription; draw() }
+        }
+        guard page.ready else { page.view.pageZoom = CGFloat(zoom); return }
+        Task {
+            _ = await page.send("zoom", ["zoom": value])
+            page.view.pageZoom = CGFloat(zoom)
+        }
+    }
+
     private func input(_ events: [PaneInput.Event]) {
         for event in events {
             switch event {
@@ -205,6 +227,12 @@ final class ExplorerHost {
             }
             guard NSWorkspace.shared.open(url) else { throw ExplorerError("io", "The link could not be opened.") }
         case "focus.return": overlay?.releaseFocus()
+        case "zoom":
+            guard let raw = fields["step"] as? String, let step = ExplorerZoom.Step(rawValue: raw) else {
+                throw ExplorerError("invalid", "The zoom step is invalid.")
+            }
+            applyZoom(step)
+            return ["zoom": zoom]
         case "settings.save": try state.saveSettings(fields["settings"])
         case "state.save":
             if try state.save(root: workspace.root, fields: fields) {

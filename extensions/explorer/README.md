@@ -9,7 +9,9 @@ Explorer opens a repository, folder or file in a native window over a Rex pane. 
 - `/explorer notes` opens the Notes list. `/explorer help [topic]` describes the command forms. `/explorer update` installs the app in the background on macOS. Interactive starts and reloads check the installed build against the loaded checkout. If the checkout cannot order the two builds, it leaves the installed app in place. Already open panes keep their build.
 - **Explore a Folder…** in the Rex command palette lists recent roots and opens the selected root beside the invoking pane. This route has no live conversation. You can keep notes or copy a review, but cannot send a review to an agent from that pane.
 
-In the file view, use ⌘P for files, ⌘⇧F for repository search, ⌘F for the current file and ⌃G for a line. In the terminal placeholder, `q` closes Explorer. On compatible builds, `:open --root …` navigates the current pane without changing its placement.
+In the file view, use ⌘P for files, ⌘⇧F for repository search, ⌘F for the current file and ⌃G for a line.
+
+⌘= (or ⌘+) zooms in, ⌘− zooms out and ⌘0 returns to actual size; a trackpad pinch also zooms. Zoom scales the whole pane in steps from 50% to 300%. Explorer stores the level, so panes opened later use it; other open panes keep their level. Any level other than 100% shows beside Quick open; select it to return to actual size. A pane narrower than 760 points shows the sidebar as a sheet; zooming in keeps the sidebar until the page itself is too narrow for it. In the terminal placeholder, `q` closes Explorer. On compatible builds, `:open --root …` navigates the current pane without changing its placement.
 
 ## Notes, review comments and questions
 

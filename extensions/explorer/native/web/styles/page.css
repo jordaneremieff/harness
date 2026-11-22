@@ -184,6 +184,16 @@ kbd {
 #quick-open:hover {
   background: var(--hover);
 }
+#zoom-level {
+  padding: 0 8px;
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+#zoom-level:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
 #workspace {
   flex: 1;
   min-height: 0;
@@ -1087,34 +1097,31 @@ kbd {
   color: var(--agent-text);
   font-size: 12px;
 }
-@media (max-width: 759px) {
-  #sidebar {
-    display: none;
-    z-index: 4;
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: min(84vw, 285px);
-    box-shadow: var(--shadow-l);
-  }
-  .sb-open-mobile #sidebar {
-    display: flex;
-  }
-  #resize {
-    display: none;
-  }
-  #sheet-shade:not([hidden]) {
-    position: absolute;
-    inset: 0;
-    background: rgb(20 22 31 / 0.45);
-    border-radius: 0;
-    z-index: 3;
-  }
-  #file-header {
-    padding-inline: 12px;
-  }
-  #diff-header {
-    padding-inline: 12px;
-  }
+/* The page sets .narrow from the pane width and zoom level. */
+#app.narrow #sidebar {
+  display: none;
+  z-index: 4;
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: min(84vw, 285px);
+  box-shadow: var(--shadow-l);
+}
+#app.narrow.sb-open-mobile #sidebar {
+  display: flex;
+}
+#app.narrow #resize {
+  display: none;
+}
+#app.narrow #sheet-shade:not([hidden]) {
+  position: absolute;
+  inset: 0;
+  background: rgb(20 22 31 / 0.45);
+  border-radius: 0;
+  z-index: 3;
+}
+#app.narrow #file-header,
+#app.narrow #diff-header {
+  padding-inline: 12px;
 }
 select {
   font: inherit;

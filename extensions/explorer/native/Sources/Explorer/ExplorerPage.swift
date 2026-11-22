@@ -10,6 +10,8 @@ final class ExplorerPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler
     var receive: ((String, [String: Any]) async throws -> [String: Any])?
     var onReady: (() -> Void)?
     var onFailure: ((Error) -> Void)?
+    /// Zoom key equivalents and trackpad pinches; the host owns the level.
+    var onZoom: ((ExplorerZoom.Step) -> Void)?
 
     init(resources: URL, workspace: Workspace) {
         let configuration = WKWebViewConfiguration()
@@ -17,8 +19,10 @@ final class ExplorerPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler
         scheme = ExplorerScheme(web: resources.appendingPathComponent("web"), workspace: workspace)
         configuration.setURLSchemeHandler(scheme, forURLScheme: "explorer-app")
         configuration.setURLSchemeHandler(scheme, forURLScheme: "explorer-asset")
-        view = ExplorerWebView(frame: .zero, configuration: configuration)
+        let web = ExplorerWebView(frame: .zero, configuration: configuration)
+        view = web
         super.init()
+        web.onZoom = { [weak self] step in self?.onZoom?(step) }
         configuration.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "explorer")
         view.navigationDelegate = self
         view.setValue(false, forKey: "drawsBackground")
@@ -105,7 +109,25 @@ final class ExplorerPage: NSObject, WKNavigationDelegate, WKScriptMessageHandler
 }
 
 private final class ExplorerWebView: WKWebView {
+    var onZoom: ((ExplorerZoom.Step) -> Void)?
+    private var pinch = ExplorerZoom.Pinch()
+
     override func willOpenMenu(_ menu: NSMenu, with event: NSEvent) { menu.removeAllItems() }
+
+    // The pane app has no menu bar, so the zoom key equivalents stop here before the page sees them.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if let step = ExplorerZoom.step(for: event), let onZoom {
+            onZoom(step)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    // A pinch changes the page zoom level, which reflows the page, instead of magnifying a snapshot of it.
+    override func magnify(with event: NSEvent) {
+        guard let onZoom else { return }
+        for step in pinch.steps(Double(event.magnification), phase: event.phase) { onZoom(step) }
+    }
 }
 
 @MainActor

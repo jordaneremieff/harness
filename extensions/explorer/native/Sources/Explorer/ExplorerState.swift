@@ -4,14 +4,26 @@ import Foundation
 struct ExplorerState {
     let store: URL
     private var dir: URL { store.appendingPathComponent("pane-v1", isDirectory: true) }
-    static let defaults: [String: Any] = ["textSize": 16, "wrap": false, "preview": true, "diff": "auto", "sidebar": ["open": true, "width": 244], "tab": "files"]
+    static let defaults: [String: Any] = ["textSize": 16, "wrap": false, "preview": true, "diff": "auto", "sidebar": ["open": true, "width": 244], "tab": "files", "zoom": 1.0]
 
     var settings: [String: Any] {
         (try? Self.validSettings(load(dir.appendingPathComponent("settings.json")))) ?? Self.defaults
     }
 
+    var zoom: Double { settings["zoom"] as? Double ?? 1 }
+
+    /// The page saves its settings; the host owns the zoom level, so the stored level survives a page save.
     func saveSettings(_ value: Any?) throws {
-        try write(Self.validSettings(value), to: dir.appendingPathComponent("settings.json"))
+        var next = try Self.validSettings(value)
+        next["zoom"] = zoom
+        try write(next, to: dir.appendingPathComponent("settings.json"))
+    }
+
+    func saveZoom(_ value: Double) throws {
+        guard ExplorerZoom.range.contains(value) else { throw ExplorerError("invalid", "The zoom level is out of range.") }
+        var next = settings
+        next["zoom"] = value
+        try write(next, to: dir.appendingPathComponent("settings.json"))
     }
 
     static func validSettings(_ value: Any?) throws -> [String: Any] {
@@ -25,7 +37,14 @@ struct ExplorerState {
         guard value["preview"] == nil || value["preview"] is Bool else {
             throw ExplorerError("invalid", "The Markdown preview setting is invalid.")
         }
-        return ["textSize": textSize, "wrap": wrap, "preview": value["preview"] as? Bool ?? true, "diff": diff, "sidebar": ["open": open, "width": width], "tab": tab]
+        var zoom = 1.0
+        if let raw = value["zoom"] {
+            guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  ExplorerZoom.range.contains(number.doubleValue) else { throw ExplorerError("invalid", "The zoom level is invalid.") }
+            zoom = number.doubleValue
+        }
+        return ["textSize": textSize, "wrap": wrap, "preview": value["preview"] as? Bool ?? true, "diff": diff, "sidebar": ["open": open, "width": width], "tab": tab,
+                "zoom": zoom]
     }
 
     private func location(_ key: String, record: String = "position") -> URL {

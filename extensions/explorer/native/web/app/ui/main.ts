@@ -10,8 +10,10 @@
 	const float = get("floating"),
 		overlay = get("overlay"),
 		status = get("notice");
-	const isNarrow = matchMedia("(max-width: 759px)"),
-		isWide = matchMedia("(min-width: 1200px)");
+	const isWide = matchMedia("(min-width: 1200px)");
+	// A pane narrower than 760 points shows the sidebar as a sheet. Zooming in keeps the sidebar until the page
+	// itself is too narrow for it and the code beside it.
+	const isNarrow = { matches: false };
 	const source = app.code(body);
 	const preview = app.preview(body, followMarkdownLink);
 	let code: ExplorerCodeView = source;
@@ -31,6 +33,7 @@
 		diff: "auto",
 		sidebar: { width: 245, open: true },
 		tab: "files",
+		zoom: 1,
 	};
 	let live: ExplorerLive = { connected: false };
 	let scope: ExplorerScope | undefined,
@@ -133,6 +136,28 @@
 	}
 	function saveSettings() {
 		report(request("settings.save", { settings }));
+	}
+	// The host applies the zoom; the page shows a level other than actual size and offers the reset.
+	function renderZoom() {
+		const node = get("zoom-level");
+		const percent = Math.round(settings.zoom * 100);
+		node.hidden = percent === 100;
+		node.textContent = `${percent}%`;
+	}
+	// The host sends the level before it applies it; the resize that follows re-measures the layout.
+	function zoomChanged(level: number) {
+		settings.zoom = level;
+		renderZoom();
+		notice(`Zoom ${Math.round(level * 100)}%`);
+	}
+	function updateNarrow() {
+		const narrow = innerWidth * settings.zoom < 760 || innerWidth < 625;
+		shell.classList.toggle("narrow", narrow);
+		if (narrow === isNarrow.matches) return;
+		isNarrow.matches = narrow;
+		sheet = false;
+		renderSidebarState();
+		reviewUI.reposition();
 	}
 	function savePosition(immediately = false) {
 		clearTimeout(stateTimer);
@@ -2257,6 +2282,9 @@
 			case "notes.changed":
 				if (booted) report(refreshNotes());
 				break;
+			case "zoom":
+				zoomChanged(event.zoom);
+				break;
 			case "live":
 				live = event;
 				if (booted) liveChrome();
@@ -2277,6 +2305,9 @@
 			live = result.live;
 			settings.textSize = Number.isFinite(settings.textSize) ? Math.max(10, Math.min(32, settings.textSize)) : 16;
 			settings.sidebar.width = Math.max(215, Math.min(430, settings.sidebar.width));
+			settings.zoom = Number.isFinite(settings.zoom) ? settings.zoom : 1;
+			renderZoom();
+			updateNarrow();
 			rootChrome();
 			liveChrome();
 			renderSidebarState();
@@ -2316,6 +2347,7 @@
 	click("back", () => report(moveHistory(-1)), "back");
 	click("forward", () => report(moveHistory(1)), "forward");
 	click("quick-open", () => command("quick"));
+	click("zoom-level", () => report(request("zoom", { step: "reset" })));
 	click("search", () => command("search"), "search");
 	click("wrap-lines", toggleWrap);
 	click("preview-mode", togglePreview);
@@ -2370,18 +2402,15 @@
 		event.preventDefault();
 		items[next].focus();
 	});
-	isNarrow.addEventListener("change", () => {
-		sheet = false;
-		renderSidebarState();
-		reviewUI.reposition();
-	});
 	isWide.addEventListener("change", () => {
 		if (view === "changes" && settings.diff === "auto") renderCode(code.place());
 	});
 	window.addEventListener("resize", () => {
+		updateNarrow();
 		placeStrip();
 		reviewUI.reposition();
 	});
+	updateNarrow();
 	window.addEventListener("pagehide", () => {
 		if (booted) {
 			void editor.flush();

@@ -3,8 +3,7 @@
 @layer tokens {
   :root {
     color-scheme: light dark;
-    --zoom: 1;
-    font-size: calc(16px * var(--zoom));
+    font-size: 16px;
 
     --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
     --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
