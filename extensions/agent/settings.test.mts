@@ -86,7 +86,7 @@ it("selects each agent field from injected environment, document, or default wit
 	assert.equal(selection.origins.model, "defaultPreset");
 	assert.deepEqual(
 		snapshot.records.map((record) => record.key),
-		["idleMinutes", "checkInMinutes", "presets", "preferences"],
+		["idleMinutes", "providerProgressIdleMs", "checkInMinutes", "presets", "preferences"],
 	);
 });
 

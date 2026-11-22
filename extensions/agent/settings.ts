@@ -22,6 +22,15 @@ export const settings = {
 			min: 0,
 			max: 35791,
 		},
+		providerProgressIdleMs: {
+			apply: "reload",
+			type: "number",
+			env: "PI_AGENT_PROVIDER_PROGRESS_IDLE_MS",
+			description: "Maximum silence between provider events in milliseconds; zero disables.",
+			default: 0,
+			min: 0,
+			max: 2147483647,
+		},
 		checkInMinutes: {
 			apply: "use",
 			type: "number",
@@ -85,6 +94,7 @@ export type SettingsPublication = {
 };
 type SettingsValues = {
 	idleMinutes: number;
+	providerProgressIdleMs: number;
 	checkInMinutes: number;
 	presets: ExecutionPresets;
 	preferences: DelegationPreferences;

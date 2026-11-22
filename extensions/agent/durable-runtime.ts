@@ -1,3 +1,4 @@
+import { readSettings } from "./settings.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
@@ -807,7 +808,7 @@ export async function createDurableRuntime(
 			registry: services.registry,
 			settings: services.settings,
 			env: services.env,
-			providerIdleMs: services.services.settingsManager.getHttpIdleTimeoutMs(),
+			providerIdleMs: readSettings({ agentDir: metadata.agentDir }).values.providerProgressIdleMs,
 			deferredRequestMs:
 				services.services.settingsManager.getProviderRetrySettings().timeoutMs ??
 				services.services.settingsManager.getHttpIdleTimeoutMs(),

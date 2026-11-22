@@ -4680,7 +4680,7 @@ on `agent_profile` and the native `agent.profile` document.
 ### Machine document schema
 
 The file is strict JSON with a `version: 1` envelope and an optional `agent`
-section. Its fields are `idleMinutes`, `checkInMinutes`, `presets`, and
+section. Its fields are `idleMinutes`, `providerProgressIdleMs`, `checkInMinutes`, `presets`, and
 `preferences`. All fields are optional. Each field selects a present environment
 value, then its document value, then its safe default. Structured environment
 values use JSON. An invalid selected field uses its default, not a lower-priority
@@ -4880,6 +4880,7 @@ facts. No new command is required.
 | Key | Environment | Type | Default | Applies | Constraints | Description |
 |---|---|---|---|---|---|---|
 | idleMinutes | `PI_AGENT_IDLE_MINUTES` | number | 5 | reload | min 0; max 35791 | Idle host retirement interval in minutes; zero disables. |
+| providerProgressIdleMs | `PI_AGENT_PROVIDER_PROGRESS_IDLE_MS` | number | 0 | reload | min 0; max 2147483647 | Maximum silence between provider events in milliseconds; zero disables. |
 | checkInMinutes | `PI_AGENT_CHECK_IN_MINUTES` | number | 0 | next use | min 0; max 35791 | Automatic owner check-in interval for model tasks in minutes; zero, the default, arms none. |
 | presets | `PI_AGENT_PRESETS` | json | {} | next use | declared schema | Named execution presets with exact model identities and optional creation fields. |
 | preferences | `PI_AGENT_PREFERENCES` | json | {} | next use | declared schema | Delegation preferences, default preset, exclusions, planning budgets, and reporting guidance. |
@@ -5080,4 +5081,4 @@ not install or copy a package.
 
 The optional `interrupt` object on `agent_abort` selects an exact live generation (`taskId`) and its complete ordered queue (`queuedInputs`). Give it a stable `intentId`. It refuses a cold or unsupported host. Use the same intent after `pending`; `continued` identifies one admitted continuation, not its answer. It never repeats tool effects or undoes them. Do not combine `interrupt` with release, background stop, or timer cancellation.
 
-A provider attempt receives its own abort signal. The first-event deadline uses the stream request timeout. After a response event, `httpIdleTimeoutMs` limits the wait for more provider events; zero disables this idle bound. Use a larger idle limit for silent reasoning. A stall after partial content keeps the partial response without automatic retry. A provider that ignores abort can continue outside the host. Deferred reads and cancellation also use a request deadline. Receipts that share an answer and recipient make one wake decision across all pages.
+A provider attempt receives its own abort signal. The first-event deadline uses the stream request timeout. After a response event, `agent.providerProgressIdleMs` limits the wait for more provider events. Its default is zero (disabled): transport activity need not produce model events during reasoning. This setting is independent of Pi’s HTTP idle timeout. A stall after partial content keeps the partial response without automatic retry. A provider that ignores abort can continue outside the host. Deferred reads and cancellation also use a request deadline. Receipts that share an answer and recipient make one wake decision across all pages.

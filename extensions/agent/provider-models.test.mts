@@ -103,7 +103,8 @@ it("aborts the provider on lost progress and preserves partial output without a 
 	};
 	const final = await adapter.models.streamSimple(model, { messages: [] }, { sessionId, timeoutMs: 1000 }).result();
 	assert.equal(signal?.aborted, true);
-	assert.equal(final.stopReason, "aborted");
+	assert.equal(final.stopReason, "error");
+	assert.match(final.errorMessage ?? "", /Provider stopped making progress after partial output/u);
 	assert.deepEqual(final.content, held.partial.content);
 	assert.equal(isRetryableAssistantError(final), false);
 });

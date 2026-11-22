@@ -128,7 +128,7 @@ function requestEnd(
 					const message = partial ? structuredClone(partial) : failure(model, "", now());
 					end({
 						...message,
-						stopReason: hasOutput ? "aborted" : "error",
+						stopReason: "error",
 						errorMessage: hasOutput
 							? "Provider stopped making progress after partial output; inspect before retry."
 							: firstEventTimeout(idle),
