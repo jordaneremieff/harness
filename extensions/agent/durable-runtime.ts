@@ -807,6 +807,10 @@ export async function createDurableRuntime(
 			registry: services.registry,
 			settings: services.settings,
 			env: services.env,
+			providerIdleMs: services.services.settingsManager.getHttpIdleTimeoutMs(),
+			deferredRequestMs:
+				services.services.settingsManager.getProviderRetrySettings().timeoutMs ??
+				services.services.settingsManager.getHttpIdleTimeoutMs(),
 			retryMaxAttempts: services.services.settingsManager.getRetrySettings().enabled
 				? services.services.settingsManager.getRetrySettings().maxRetries + 1
 				: 1,

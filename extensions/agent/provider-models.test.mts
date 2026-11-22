@@ -19,7 +19,7 @@ import {
 import { ProviderModels } from "./provider-models.ts";
 import { readProviderBlock } from "./provider-block.ts";
 
-async function fixture(t: { after(fn: () => Promise<void>): void }) {
+async function fixture(t: { after(fn: () => Promise<void>): void }, idleMs = 0) {
 	const root = await mkdtemp(join(tmpdir(), "provider-models-"));
 	const models = await scriptedRuntime([answerMessage()]);
 	const host = await DurableHost.open({
@@ -30,7 +30,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
 		await host.close();
 		await rm(root, { recursive: true, force: true });
 	});
-	const adapter = new ProviderModels(models, () => host.harness, host.storageId);
+	const adapter = new ProviderModels(models, () => host.harness, host.storageId, Date.now, idleMs);
 	adapter.bind();
 	t.after(async () => adapter.close());
 	const model = adapter.models.getModel(fixtureProvider, fixtureModelId);
@@ -92,6 +92,21 @@ it("fails a request whose provider sends no event before timeoutMs with a retrya
 	);
 });
 
+it("aborts the provider on lost progress and preserves partial output without a retry", async (t) => {
+	const { models, adapter, model, sessionId } = await fixture(t, 30);
+	const held = heldStream();
+	let signal: AbortSignal | undefined;
+	models.streamSimple = (_m, _c, options) => {
+		signal = options?.signal;
+		held.stream.push({ type: "text_start", contentIndex: 0, partial: held.partial });
+		return held.stream;
+	};
+	const final = await adapter.models.streamSimple(model, { messages: [] }, { sessionId, timeoutMs: 1000 }).result();
+	assert.equal(signal?.aborted, true);
+	assert.equal(final.stopReason, "aborted");
+	assert.deepEqual(final.content, held.partial.content);
+	assert.equal(isRetryableAssistantError(final), false);
+});
 it("keeps a request whose first event arrives before timeoutMs, however long the rest takes", async (t) => {
 	const { models, adapter, model, sessionId } = await fixture(t);
 	const held = heldStream();

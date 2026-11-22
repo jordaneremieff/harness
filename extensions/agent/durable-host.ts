@@ -207,6 +207,8 @@ export interface DurableHostOptions {
 	readonly resume?: boolean;
 	/** Resolved generation retry ceiling (`maxRetries + 1`) for dashboard auto-retry health. */
 	readonly retryMaxAttempts?: number;
+	readonly providerIdleMs?: number;
+	readonly deferredRequestMs?: number;
 	/** Planning budget in context tokens for one exact model, when the operator configured one. A preference, never a limit. */
 	readonly planningBudget?: PlanningBudgetLookup;
 	readonly onReport?: HarnessOptions["onReport"];
@@ -527,7 +529,14 @@ export class DurableHost {
 		}, now);
 		let continuity: ContinuityMirror | undefined;
 		let harness: Harness;
-		const providerModels = new ProviderModels(options.models, () => harness, options.storageId, now);
+		const providerModels = new ProviderModels(
+			options.models,
+			() => harness,
+			options.storageId,
+			now,
+			options.providerIdleMs,
+			options.deferredRequestMs,
+		);
 		try {
 			harness = await Harness.open(
 				storage,

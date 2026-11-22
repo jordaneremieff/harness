@@ -8,6 +8,7 @@ import type {
 	ModelsSimpleStreamOptions,
 	ModelsApiStreamOptions,
 	ModelsDeferredFetchOptions,
+	ModelsDeferredCancelOptions,
 	DeferredHandle,
 	Context as ModelContext,
 } from "@earendil-works/pi-ai";
@@ -17,7 +18,7 @@ import {
 } from "@earendil-works/pi-ai/utils/event-stream";
 import { onStoredCommit } from "./commit-observation.ts";
 import { canonicalIdentity } from "./native-identity.ts";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { awaitWithContext, withAbortSignal, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import {
 	associateProviderBlock,
@@ -43,7 +44,7 @@ const TIMER_MAX_MS = 2_147_483_647;
  * the provider's first event. Pi's `timeoutMs` bounds the wait for a response; the deadline enforces that bound here
  * as well, because a provider can wait without one, for example on an authentication step that ignores the signal.
  */
-type RequestBounds = { readonly signal?: AbortSignal; readonly firstEventMs?: number };
+type RequestBounds = { readonly signal?: AbortSignal; readonly firstEventMs?: number; readonly idleMs?: number };
 
 function requestBounds(
 	options: { readonly signal?: AbortSignal; readonly timeoutMs?: number } | undefined,
@@ -78,6 +79,7 @@ function requestEnd(
 	output: AssistantMessageEventStream,
 	model: Model<Api>,
 	bounds: RequestBounds,
+	controller: AbortController,
 	now: () => number,
 ): RequestEnd {
 	let ended = false;
@@ -94,11 +96,20 @@ function requestEnd(
 		bounds.signal?.removeEventListener("abort", abort);
 		finish(output, message);
 	};
-	const abort = (): void =>
-		end({ ...(partial ?? failure(model, "", now())), stopReason: "aborted", errorMessage: ABORTED_ERROR });
+	const abort = (): void => {
+		controller.abort();
+		end({
+			...(partial ? structuredClone(partial) : failure(model, "", now())),
+			stopReason: "aborted",
+			errorMessage: ABORTED_ERROR,
+		});
+	};
 	const firstEventMs = bounds.firstEventMs;
 	if (firstEventMs !== undefined)
-		deadline = setTimeout(() => end(failure(model, firstEventTimeout(firstEventMs), now())), firstEventMs);
+		deadline = setTimeout(() => {
+			end(failure(model, firstEventTimeout(firstEventMs), now()));
+			controller.abort();
+		}, firstEventMs);
 	if (bounds.signal?.aborted) abort();
 	else bounds.signal?.addEventListener("abort", abort, { once: true });
 	return {
@@ -108,6 +119,22 @@ function requestEnd(
 		responded: clearDeadline,
 		observe(event) {
 			if ("partial" in event) partial = event.partial;
+			const idle = bounds.idleMs;
+			if (idle && idle > 0 && idle <= TIMER_MAX_MS)
+				deadline = setTimeout(() => {
+					const hasOutput = partial?.content.some((part) =>
+						part.type === "text" ? part.text !== "" : part.type === "thinking" ? part.thinking !== "" : true,
+					);
+					const message = partial ? structuredClone(partial) : failure(model, "", now());
+					end({
+						...message,
+						stopReason: hasOutput ? "aborted" : "error",
+						errorMessage: hasOutput
+							? "Provider stopped making progress after partial output; inspect before retry."
+							: firstEventTimeout(idle),
+					});
+					controller.abort();
+				}, idle);
 		},
 		finish: end,
 	};
@@ -163,7 +190,18 @@ export class ProviderModels {
 	private readonly harness: () => Harness;
 	private readonly storageId: string;
 	private readonly now: () => number;
-	constructor(delegate: Models, harness: () => Harness, storageId: string, now: () => number = Date.now) {
+	private readonly idleMs: number;
+	private readonly deferredMs: number;
+	constructor(
+		delegate: Models,
+		harness: () => Harness,
+		storageId: string,
+		now: () => number = Date.now,
+		idleMs = 0,
+		deferredMs = 300_000,
+	) {
+		this.idleMs = idleMs;
+		this.deferredMs = deferredMs;
 		this.delegate = delegate;
 		this.harness = harness;
 		this.storageId = storageId;
@@ -181,6 +219,7 @@ export class ProviderModels {
 			return (model: Model<Api>, context: ModelContext, options?: ModelsApiStreamOptions<Api>) =>
 				this.stream(model, context, options).result();
 		if (property === "streamDeferred") return this.streamDeferred.bind(this);
+		if (property === "cancelDeferred") return this.cancelDeferred.bind(this);
 		if (property === "fetchDeferred") return this.fetchDeferred.bind(this);
 		const value = Reflect.get(target, property, target);
 		return typeof value === "function" ? value.bind(target) : value;
@@ -222,7 +261,7 @@ export class ProviderModels {
 		return this.request(
 			model,
 			() => this.capture(model, options?.sessionId),
-			() => this.delegate.streamSimple(model, context, options),
+			(signal) => this.delegate.streamSimple(model, context, { ...options, signal }),
 			requestBounds(options),
 		);
 	}
@@ -234,7 +273,7 @@ export class ProviderModels {
 		return this.request(
 			model,
 			() => this.capture(model, options?.sessionId),
-			() => this.delegate.stream(model, context, options),
+			(signal) => this.delegate.stream(model, context, { ...options, signal }),
 			requestBounds(options),
 		);
 	}
@@ -246,8 +285,8 @@ export class ProviderModels {
 		return this.request(
 			model,
 			() => this.harness().commit((tx) => readDeferredAttempt(tx, model, handle), BACKGROUND_CONTEXT),
-			() => this.delegate.streamDeferred(model, handle, options),
-			requestBounds({ signal: options?.signal }),
+			(signal) => this.delegate.streamDeferred(model, handle, { ...options, signal }),
+			requestBounds({ signal: options?.signal, timeoutMs: this.deferredMs }),
 		);
 	}
 	private fetchDeferred(
@@ -258,18 +297,33 @@ export class ProviderModels {
 		return this.request(
 			model,
 			() => this.harness().commit((tx) => readDeferredAttempt(tx, model, handle), BACKGROUND_CONTEXT),
-			() => {
+			(signal) => {
 				const stream = createAssistantMessageEventStream();
 				void Promise.resolve()
-					.then(() => this.delegate.fetchDeferred(model, handle, options))
+					.then(() => this.delegate.fetchDeferred(model, handle, { ...options, signal }))
 					.then(
 						(message) => finish(stream, message),
 						(error) => finish(stream, failure(model, errorText(error), this.now())),
 					);
 				return stream;
 			},
-			requestBounds({ signal: options?.signal }),
+			requestBounds({ signal: options?.signal, timeoutMs: this.deferredMs }),
 		).result();
+	}
+	private async cancelDeferred(
+		model: Model<Api>,
+		handle: DeferredHandle,
+		options?: ModelsDeferredCancelOptions,
+	): Promise<void> {
+		const ms = this.deferredMs;
+		if (!(ms > 0 && ms <= TIMER_MAX_MS)) return this.delegate.cancelDeferred(model, handle, options);
+		const deadline = AbortSignal.timeout(ms);
+		const signal = options?.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+		signal.throwIfAborted();
+		await awaitWithContext(
+			this.delegate.cancelDeferred(model, handle, { ...options, signal }),
+			withAbortSignal(signal, BACKGROUND_CONTEXT),
+		);
 	}
 	private async capture(model: Model<Api>, sessionId: string | undefined): Promise<ProviderAttempt> {
 		if (sessionId === undefined) throw new Error("The provider request has no native session identity.");
@@ -291,11 +345,18 @@ export class ProviderModels {
 	private request(
 		model: Model<Api>,
 		capture: () => Promise<ProviderAttempt>,
-		dispatch: () => AssistantMessageEventStream,
+		dispatch: (signal: AbortSignal) => AssistantMessageEventStream,
 		bounds: RequestBounds,
 	): AssistantMessageEventStream {
 		const output = createAssistantMessageEventStream();
-		void this.forward(output, model, capture, dispatch, requestEnd(output, model, bounds, this.now));
+		const controller = new AbortController();
+		void this.forward(
+			output,
+			model,
+			capture,
+			() => dispatch(controller.signal),
+			requestEnd(output, model, { ...bounds, idleMs: this.idleMs }, controller, this.now),
+		);
 		return output;
 	}
 	private async blocked(model: Model<Api>, attempt: ProviderAttempt): Promise<string | undefined> {
