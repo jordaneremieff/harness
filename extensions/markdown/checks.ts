@@ -37,7 +37,7 @@ function phrasalVerb(word: string): boolean {
 // word-for-word claims exactness like the stock phrase byte-for-byte, so it counts.
 const phraseCompound = /^(?:(\p{L}+)-(?:after|and|by|in|on|or|over|to)-\1|out-of-\p{L}+)$/u;
 // A token with a path root, extension, underscore or similar mark, or with a digit inside a word or after a
-// separator, is an identifier such as a model, package or rule name: gemini-4-neon, php-fpm:8.2, k8s.
+// separator, is an identifier such as a model, package or rule name: model-4-mini, php-fpm:8.2, k8s.
 const identifierToken = /\p{L}\d|\d\p{L}|[-.:_]\d|\d[-.:_]|[_@\\=#]|[.:][\p{L}\p{N}]|^(?:~|\.{1,2})?\//u;
 const tokenMarks = /^[([{"'‘“*_~]+|\[\^[^\]]*\]|[)\]}"'’”*_~.,;:!?]+$/gu;
 const codeCompound = /[\p{L}\p{N}_]+(?:-[\p{L}\p{N}_]+)+/gu;

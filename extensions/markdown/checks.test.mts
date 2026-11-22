@@ -209,7 +209,7 @@ test("coinages leave out prefixed words, phrasal and set phrases, established co
 	);
 	assert.deepEqual(
 		coined(
-			"The gateway forwards x-origin-path and x-request-id to google-vertex/gemini-4-neon. The bounds.rg-search-uncapped rule, php-fpm.conf and Command-K stay.",
+			"The gateway forwards x-forwarded-host and x-request-id to example-cloud/model-4-mini. The limits.search-unbounded rule, php-fpm.conf and Command-K stay.",
 		),
 		[],
 	);
@@ -246,7 +246,7 @@ test("coinages count coined, capitalised and buzzword compounds, even beside one
 			"doctrine-out",
 		],
 	);
-	assert.deepEqual(coined("The thought-engine/2 split runs on google-vertex/gemini-4-neon and php-fpm:8.2."), [
+	assert.deepEqual(coined("The thought-engine/2 split runs on example-cloud/model-4-mini and php-fpm:8.2."), [
 		"thought-engine",
 	]);
 	assert.deepEqual(coined("We dropped the ~~thought-engine~~ idea. The reason-meter[^1] feeds it."), [
