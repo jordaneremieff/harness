@@ -167,7 +167,7 @@ No warrant is needed for a fixed repair, an operator-selected outcome or archite
 
 Use the selected lane's procedure. Change only owned files. Keep temporary probes and evaluation artifacts outside tracked repository paths. Preserve supported public contracts and make lifecycle, cancellation, state, absence, failure, and delivery behavior explicit where they apply.
 
-Use the delegate skill (`skills/delegate/SKILL.md` under the package root) to divide work under the task's instructions and the session's delegation mode. When work crosses sessions, use [collaborative-work.md](references/collaborative-work.md) for harness-specific source and delivery boundaries.
+Divide work under the task's instructions, then the session's. When work crosses sessions, use [collaborative-work.md](references/collaborative-work.md) for harness-specific source and delivery boundaries.
 
 **Complete when:** one reviewable capability reaches the requested outcome without unrelated governance layers or compatibility machinery.
 

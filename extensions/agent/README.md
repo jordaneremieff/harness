@@ -4667,9 +4667,8 @@ Intentional disconnects and unmarked storage do not relaunch.
 
 ## Execution presets and delegation preferences
 
-Use the [delegate skill](../../skills/delegate/SKILL.md) to divide work, brief agents,
-supervise them and report their progress. See the [Codemode recipes](codemode.md)
-for how to combine Agent tool calls and retain exact result references.
+See the [Codemode recipes](codemode.md) for how to combine Agent tool calls and
+retain exact result references.
 
 The agent section of the optional `<agentDir>/harness.json` machine document
 contains execution presets and delegation preferences. The package-level

@@ -441,7 +441,6 @@ export function renderPreferenceStatus(snapshot: PreferenceSnapshot): string[] {
 /** Compact current facts, with explicit omitted coverage rather than silent clipping. */
 export function renderAgentPreferences(snapshot: PreferenceSnapshot): string {
 	const lines = [
-		"To divide work, brief agents, supervise them and report their progress, use the delegate skill.",
 		"Operator machine configuration for agent delegation. Catalog check results are local evidence.",
 		`Source: ${JSON.stringify(snapshot.source.path)}; ${snapshot.source.status}; digest ${snapshot.source.digest ?? "none"}.`,
 	];

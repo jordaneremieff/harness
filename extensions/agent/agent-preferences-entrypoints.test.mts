@@ -334,11 +334,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 		assert.equal(otherProvider.state.callCount, 0);
 		const nativePrompt = getCurrentSystemPrompt(requests[0]);
 		for (const prompt of [first.systemPromptOptions.sections["agent-preferences"], nativePrompt]) {
-			assert.ok(
-				prompt.includes(
-					"To divide work, brief agents, supervise them and report their progress, use the delegate skill.",
-				),
-			);
+			assert.ok(prompt.includes("Operator machine configuration for agent delegation."));
 			assert.match(prompt, /Excluded provider preference: "acme"/u);
 			assert.match(prompt, /Quota substitution order: \["alternate","review"\]/u);
 			assert.match(prompt, /other\/model-y/u);

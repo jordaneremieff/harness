@@ -245,8 +245,8 @@ The command itself never writes the marker.
 
 When earlier operator directions or session evidence matter, use the
 [delivery workflow](../../docs/agent-delivery.md#orient-to-the-operators-work)
-to choose a bounded direct read or specialist help under the task's instructions
-and the session's delegation mode. When the work calls for `@session-history`, follow the
+to choose a bounded direct read or specialist help under the task's and the
+session's instructions. When the work calls for `@session-history`, follow the
 [corpus reference](../../docs/session-history.md) to resolve and brief it. Supply
 the current question and restrictions instead of repeating the corpus brief. Relevant expertise supports reuse; unrelated work,
 independent judgment, or conflicting ownership can require a fresh session.

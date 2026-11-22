@@ -572,7 +572,7 @@ test("history orientation uses retained expertise without making history a manda
 	assertContracts(deliveryWorkflow, [
 		[
 			"conditional expert",
-			/choose a bounded direct read or specialist help under the task's instructions and the session's delegation mode. If the work calls for a specialist, use the standing/,
+			/choose a bounded direct read or specialist help under the task's and the session's instructions. If the work calls for a specialist, use the standing/,
 		],
 		["corpus contract reference", /\[session-history expert\]\(session-history\.md\)/],
 		["owner directs tasking", /Follow that reference to resolve, check and task it/],
@@ -626,7 +626,7 @@ test("collaboration preserves the use path and accepts observed task improvement
 		],
 		[
 			"arrangement remains a judgment",
-			/Follow the task's instructions for dividing work first, then the session's delegation mode. With neither, choose the arrangement by the task. The invoking session can investigate, implement, and verify substantive work itself, collaborate, delegate, or use a dedicated coordinator/,
+			/Follow the task's instructions for dividing work first, then the session's instructions. With neither, choose the arrangement by the task. The invoking session can investigate, implement, and verify substantive work itself, collaborate, delegate, or use a dedicated coordinator/,
 		],
 		[
 			"full implementation sessions",

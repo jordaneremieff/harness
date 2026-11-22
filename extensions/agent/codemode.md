@@ -97,8 +97,7 @@ return sent.map((s) => (s.ref ? { name: s.name, ref: s.ref } : { name: s.name, f
 ```
 
 Point to source material in `sources` rather than copying it into each brief.
-A receipt does not settle the task. Follow
-[the delegate skill](../../skills/delegate/SKILL.md) for results and open work.
+A receipt does not settle the task.
 
 ## Fleet sweep
 

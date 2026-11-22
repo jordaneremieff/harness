@@ -62,7 +62,7 @@ The normal audit path is read-only:
   the findings. A plain audit request ends with findings and at most one
   bounded next action.
 - Follow the task's instructions for dividing work, then the session's
-  delegation mode. With neither, choose by the audit's evidence needs and cost.
+  instructions. With neither, choose by the audit's evidence needs and cost.
   Keep collaboration proportionate. Honor no-worker, named participant, and
   model restrictions. Do not require a worker fleet.
 - Report unavailable choices; never substitute silently.

@@ -120,9 +120,8 @@ skip, or a stated limit, and every lead is attached to the facet it affects.
 
 ## 3. Choose the arrangement and split into facets
 
-After cheap orientation and before broad or deep reading, use the
-delegate skill (`skills/delegate/SKILL.md` under the package root) to divide work
-under the task's instructions and the session's delegation mode. With neither, choose by
+After cheap orientation and before broad or deep reading, divide work under
+the task's instructions, then the session's. With neither, choose by
 the question. Consider evidence coverage, caller-only access, independence of
 checks, cost and whether the inquiries depend on each other. Counts of facets
 and source sizes inform cost; they do not set the arrangement. Reassess if
@@ -144,7 +143,7 @@ If delegation is unavailable, investigate directly within the task's limits.
 For a facet that requires independent evidence or unavailable access, name the
 gap. Do not substitute a reduced backend for a full agent session.
 
-Use the guide for briefing and add these investigation details for each assigned facet:
+Brief each assigned facet with these investigation details:
 
 1. **Objective and boundaries:** the bounded facet question, starting sources
    and the leads from section 2 that bear on it with their qualifications,
@@ -168,8 +167,8 @@ Use the guide for briefing and add these investigation details for each assigned
    results with scope, errors and authorization blocks, and unfinished work.
    Large output goes to a file in the scratch directory and is cited by path.
 
-When you delegate, retain each admitted result reference and use the guide's
-“Supervise without polling” section.
+When you delegate, retain each admitted result reference. Results arrive as
+events; do not poll.
 
 **Complete when:** each facet has an owner, each delegated facet has a brief
 and a result reference, and no facet duplicates another.

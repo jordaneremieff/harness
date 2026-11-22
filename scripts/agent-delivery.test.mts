@@ -34,15 +34,10 @@ test("the delivery workflow routes detailed mechanisms to reachable owners", () 
 	}
 	assertContracts(deliveryWorkflow, [
 		[
-			"delegation method owner",
-			/\[delegate skill\]\(\.\.\/skills\/delegate\/SKILL\.md\) for delegation modes, briefs, collaboration and supervision/,
-		],
-		[
 			"declared work owner",
 			/A native agent uses \[declared background work\]\(\.\.\/extensions\/agent\/README\.md#declared-background-work\)/,
 		],
 		["result owner", /\[result contract\]\(\.\.\/extensions\/agent\/README\.md#read-peer-results\)/],
-		["supervision owner", /\[supervision guidance\]\(\.\.\/skills\/delegate\/SKILL\.md#supervise-without-polling\)/],
 		[
 			"native work declaration",
 			/when its routed task remains incomplete after the current run.*state note is not the result; only completion of the declared work sends the final report/,
