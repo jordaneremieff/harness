@@ -87,11 +87,26 @@ test("stateless visit continuations stay on the selected ancestry after a branch
 		[left, root],
 	);
 	assert.equal(rest.currentLeafId, sm.getLeafId());
-	assert.throws(() => searchHistory(SessionManager.inMemory(), { query: "choice", ...next(first) }), /Session changed/);
-	assert.throws(
-		() => readHistory(SessionManager.inMemory(), { entryId: root, sessionId: sm.getSessionId() }),
-		/Session changed/,
-	);
+	const other = SessionManager.inMemory();
+	const stale = sm.getSessionId();
+	const current = other.getSessionId();
+	assert.throws(() => searchHistory(other, { query: "choice", ...next(first) }), {
+		message: `Session changed: sessionId ${stale} names a session other than the current one, ${current}. Its continuation fields do not apply here: start a new history_search with sessionId ${current} or without sessionId.`,
+	});
+	assert.throws(() => readHistory(other, { entryId: root, sessionId: stale }), {
+		message: `Session changed: sessionId ${stale} names a session other than the current one, ${current}. Its entry IDs do not apply here: find the entry again with history_search, then read it with sessionId ${current} or without sessionId.`,
+	});
+});
+
+test("bound refusals name the argument and its range", () => {
+	const sm = SessionManager.inMemory();
+	const entryId = user(sm, "bounded choice");
+	assert.throws(() => readHistory(sm, { entryId, maxOutputBytes: 2000 }), {
+		message: `maxOutputBytes must be an integer from 4096 to ${LIMITS.outputBytes}.`,
+	});
+	assert.throws(() => searchHistory(sm, { query: "choice", offset: -1 }), {
+		message: "offset must be an integer of at least 0.",
+	});
 });
 
 test("absence, unknown IDs, broken parents, cycles and malformed identities remain distinct", () => {

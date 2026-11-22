@@ -766,7 +766,7 @@ test("native argument search reports skips, leaves out the calling call and vali
 		[{ mode: "arguments" }, /requires a query/],
 		[{ ...base, filter: { source: "user" } }, /omit filter/],
 		[{ query: "needle", fromId: 1, position: { message: 0, block: 1, path: [0] } }, /retain mode/],
-		[{ ...base, position: { message: 0, block: -1 } }, /outside its integer bounds/],
+		[{ ...base, position: { message: 0, block: -1 } }, /position\.block must be an integer of at least 0\./],
 		[{ ...base, position: { message: 0, block: 0, path: [0] } }, /does not select a tool call/],
 		[{ ...base, position: { message: 0, block: 1, path: [9] } }, /does not select an argument value/],
 		[{ ...base, position: { message: 0, block: 4 } }, /does not select a content block/],

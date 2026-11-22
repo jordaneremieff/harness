@@ -27,6 +27,7 @@ import {
 	searchMode,
 	searchedCall,
 	select,
+	sessionChanged,
 	shortString,
 	toolResult,
 } from "./reading.ts";
@@ -40,13 +41,12 @@ const COVERAGE =
 	"Selected ancestry only. Search covers summaries, string content, text/thinking blocks, bash command/output, message errors, names and labels. Structured data, tool arguments, images and other fields are not searched; use history_read with an entry ID and JSON pointer. No current-context or branch-membership claim.";
 const ARGUMENT_COVERAGE = `Selected ancestry only. Argument search covers string values inside tool-call content blocks at /message/content/<block>/arguments, at most ${LIMITS.argumentDepth} levels below arguments and only at pointers that history_read accepts; skipped counts values left unexamined. The calling tool call is not searched. Text fields, tool results, numbers, booleans and other structured fields are not searched in this mode. No current-context or branch-membership claim.`;
 
-function snapshot(source: HistorySource, args: RecordValue) {
+function snapshot(source: HistorySource, args: RecordValue, tool: "search" | "read") {
 	const sessionId = shortString(source.getSessionId(), "sessionId", true) as string;
 	const currentLeafId = source.getLeafId();
 	if (currentLeafId !== null) shortString(currentLeafId, "currentLeafId", true);
 	const expected = shortString(own(args, "sessionId"), "sessionId");
-	if (expected !== undefined && expected !== sessionId)
-		throw new Error("Session changed. Start a new search in the current session.");
+	if (expected !== undefined && expected !== sessionId) throw sessionChanged(expected, sessionId, tool);
 	return { sessionId, currentLeafId };
 }
 function entryAt(source: HistorySource, id: string): SessionEntry | undefined {
@@ -183,7 +183,7 @@ class HistorySearch {
 		this.#query = query;
 		this.#filter = searchFilter(own(args, "filter"));
 		this.#mode = searchMode(own(args, "mode"));
-		this.#snap = snapshot(source, args);
+		this.#snap = snapshot(source, args, "search");
 		this.#fromId = shortString(own(args, "fromId"), "fromId");
 		this.#id = this.#fromId ?? this.#snap.currentLeafId;
 		this.#slot = integer(own(args, "slot"), 0, 0, Number.MAX_SAFE_INTEGER, "slot");
@@ -605,7 +605,7 @@ class HistoryRead {
 		const entryId = shortString(own(args, "entryId"), "entryId", true) as string;
 		this.#source = source;
 		this.#signal = signal;
-		this.#snap = snapshot(source, args);
+		this.#snap = snapshot(source, args, "read");
 		const rawPointer = own(args, "pointer");
 		if (rawPointer !== undefined && (typeof rawPointer !== "string" || rawPointer.length > LIMITS.pointerUnits))
 			throw new Error(`pointer must be a string of at most ${LIMITS.pointerUnits} code units.`);

@@ -29,8 +29,23 @@ export function input(value: unknown): RecordValue {
 export function integer(value: unknown, fallback: number, min: number, max: number, name: string): number {
 	if (value === undefined) return fallback;
 	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < min || value > max)
-		throw new Error(`${name} is outside its integer bounds.`);
+		throw new Error(
+			`${name} must be an integer ${max === Number.MAX_SAFE_INTEGER ? `of at least ${min}` : `from ${min} to ${max}`}.`,
+		);
 	return value;
+}
+/**
+ * The refusal for a `sessionId` copied from another session. Entry IDs and continuations of that session do not
+ * apply here, so the next step is a fresh search in the current one.
+ */
+export function sessionChanged(expected: string, current: string, tool: "search" | "read"): Error {
+	const next =
+		tool === "search"
+			? "Its continuation fields do not apply here: start a new history_search"
+			: "Its entry IDs do not apply here: find the entry again with history_search, then read it";
+	return new Error(
+		`Session changed: sessionId ${expected} names a session other than the current one, ${current}. ${next} with sessionId ${current} or without sessionId.`,
+	);
 }
 export function shortString(value: unknown, name: string, required = false, max = 256): string | undefined {
 	if (value === undefined && !required) return undefined;

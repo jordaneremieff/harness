@@ -29,6 +29,7 @@ import {
 	searchMode,
 	searchedCall,
 	select,
+	sessionChanged,
 	shortString,
 	toolResult,
 } from "./reading.ts";
@@ -174,7 +175,7 @@ const OUTPUT_BYTES = opt(
 	int({
 		minimum: 4096,
 		maximum: LIMITS.outputBytes,
-		description: "Maximum UTF-8 bytes of the serialized tool result, including JSON escaping and the result wrapper.",
+		description: `Maximum UTF-8 bytes of the serialized tool result, including JSON escaping and the result wrapper: 4096 to ${LIMITS.outputBytes}.`,
 	}),
 );
 const MODE = opt(
@@ -207,7 +208,11 @@ const SEARCH_PARAMETERS = obj(
 );
 const READ_PARAMETERS = obj(
 	{
-		entryId: int({ minimum: 1, description: "Durable entry ID from history_search or a prior read." }),
+		entryId: int({
+			minimum: 1,
+			description:
+				"Durable entry ID from a history_search match or listing (omit query to list entries), or from a prior read.",
+		}),
 		sessionId: SESSION_ID,
 		pointer: opt(
 			str({
@@ -341,8 +346,7 @@ class DurableHistorySearch {
 		check(signal);
 		const args = input(value);
 		const expected = shortString(own(args, "sessionId"), "sessionId");
-		if (expected !== undefined && expected !== sessionId)
-			throw new Error("Session changed. Start a new search in the current session.");
+		if (expected !== undefined && expected !== sessionId) throw sessionChanged(expected, sessionId, "search");
 		this.#callId = callId;
 		const query = shortString(own(args, "query"), "query");
 		if (query !== undefined && /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(query))
@@ -819,8 +823,7 @@ class DurableHistoryRead {
 		check(signal);
 		const args = input(value);
 		const expected = shortString(own(args, "sessionId"), "sessionId");
-		if (expected !== undefined && expected !== sessionId)
-			throw new Error("Session changed. Start a new read in the current session.");
+		if (expected !== undefined && expected !== sessionId) throw sessionChanged(expected, sessionId, "read");
 		this.#sessionId = sessionId;
 		this.#signal = signal;
 		this.#entryId = entryId(own(args, "entryId"), "entryId");

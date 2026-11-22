@@ -48,7 +48,7 @@ const outputBytes = opt(
 	int({
 		minimum: 4096,
 		maximum: LIMITS.outputBytes,
-		description: "Maximum UTF-8 bytes of the serialized tool result, including JSON escaping and the result wrapper.",
+		description: `Maximum UTF-8 bytes of the serialized tool result, including JSON escaping and the result wrapper: 4096 to ${LIMITS.outputBytes}.`,
 	}),
 );
 
@@ -90,7 +90,12 @@ const HistorySearchParameters = obj(
 
 const HistoryReadParameters = obj(
 	{
-		entryId: str({ minLength: 1, maxLength: 256 }),
+		entryId: str({
+			minLength: 1,
+			maxLength: 256,
+			description:
+				"Entry ID from a history_search match or listing (omit query to list entries), or from a prior read.",
+		}),
 		sessionId,
 		pointer: opt(
 			str({

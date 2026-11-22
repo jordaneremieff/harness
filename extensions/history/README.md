@@ -29,7 +29,13 @@ schemas, and visibility differences.
    call, including the returned `filter`. Retain the original query, filter,
    and limit choices for a search. Read
    continuations retain the same source field. Include the returned `sessionId`
-   to reject a continuation after session replacement.
+   to reject a continuation after session replacement. That refusal names the
+   stale and the current session IDs and the next step: a new search in the
+   current session, then a read with its entry IDs.
+
+An out-of-range integer argument refuses with its name and its allowed range.
+The `entryId` description names its sources: a search match, a listing (a
+search without `query`), or a prior read.
 
 For example, a search result's `entry.id` and `pointer` select an exact text
 field. A user message often has `/message/content`; a text block has
