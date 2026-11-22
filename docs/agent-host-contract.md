@@ -354,7 +354,7 @@ bound. The transport identifier is independent of Chord's protocol number:
 a matching Chord protocol number does not establish adapter compatibility.
 There is no old codec, fallback, or automatic protocol negotiation. The
 connection deadline applies to the initial endpoint get, not subsequent feed
-hydration, which uses Chord's default readiness bound. Client protocol-error
+hydration. The Agent client separately bounds each connected request and feed setup at 60 seconds. Expiry ends the wait, not admitted native work. A mutation whose reply did not arrive has an unconfirmed outcome. A hydrated feed has no age limit. Client protocol-error
 reports retain their reason in connection failures and close notifications.
 
 After identity admission, each socket record is a four-byte unsigned

@@ -88,7 +88,7 @@ import {
 	storeDeliveryRow,
 } from "./delivery-store.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
-import { acquireHost, type HostConnection } from "./host-client.ts";
+import { acquireHost, hostAttempt, type HostConnection } from "./host-client.ts";
 import { HostError, HostLeaseBusyError, type HostMetadata } from "./host-protocol.ts";
 import { isChordError } from "@earendil-works/chord";
 import { DELIVERY_WAKE_RECIPIENT_LIMIT, nativeRecipientAvailability } from "./delivery-wake.ts";
@@ -1050,6 +1050,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	);
 	const retryDelayMs = Math.max(1, options.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS);
 	const targets = new Map<string, HostConnection>();
+	const failedLinks = new Map<string, HostConnection>();
 	let closed = false;
 	let running = false;
 	let dirty = false;
@@ -1270,23 +1271,29 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	/** Same-storage owners are agent conversations in this storage; their answer arrives as an in-storage follow-up. */
 	const deliverSameStorage = async (row: DeliveryRow, owner: string): Promise<void> => {
 		if (row.kind === "receipt") {
-			await host.request("submit", await receiptSubmission(row, owner));
+			const params = await receiptSubmission(row, owner);
+			await hostAttempt(() => host.request("submit", params), undefined, signal);
 			return;
 		}
 		if (!(await reportCurrent(row))) return;
 		const requestId = reportRequestId(metadata, row.report);
 		const communicationParams = deliveryCommunicationParams(row, host);
 		const facts = await reportFacts(row.report);
-		await host.request(row.report.passive ? "passive-submit" : "submit", {
-			sessionId: row.report.ownerId,
-			message: reportFollowText(row.report, facts.finalReport),
-			requestId,
-			...communicationParams,
-			...facts.marks,
-			provenance: reportProvenance(row.report),
-			...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }),
-			whenBusy: row.report.steer ? "steer" : "followUp",
-		});
+		await hostAttempt(
+			() =>
+				host.request(row.report.passive ? "passive-submit" : "submit", {
+					sessionId: row.report.ownerId,
+					message: reportFollowText(row.report, facts.finalReport),
+					requestId,
+					...communicationParams,
+					...facts.marks,
+					provenance: reportProvenance(row.report),
+					...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }),
+					whenBusy: row.report.steer ? "steer" : "followUp",
+				}),
+			undefined,
+			signal,
+		);
 	};
 
 	const acknowledgeRow = async (row: DeliveryRow, owners: readonly string[]): Promise<void> => {
@@ -1314,7 +1321,11 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const retained = retainedSourceStatus(catalog, identity);
 		if (ownerStorageId(identity) !== metadata.storageId) return retained ?? primarySourceStatus(sessionsRoot, identity);
 		try {
-			const response = (await host.request("status", { sessionId: identity })) as { conversation?: SourceStatus };
+			const response = (await hostAttempt(
+				() => host.request("status", { sessionId: identity }),
+				undefined,
+				signal,
+			)) as { conversation?: SourceStatus };
 			return response?.conversation === undefined
 				? retained
 				: {
@@ -1718,6 +1729,25 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 	};
 
+	const deliverNative = async (record: CatalogRecord, row: DeliveryRow, owner: string): Promise<void> => {
+		try {
+			await deliverCatalog(record, row, owner);
+			failedLinks.delete(record.storageId);
+		} catch (error) {
+			const lost = targets.get(record.storageId);
+			if (lost?.closed) {
+				const previous = failedLinks.get(record.storageId);
+				if (previous && previous !== lost)
+					unavailableTargets.set(record.storageId, {
+						reason: "native host repeatedly disconnected before acknowledgement",
+						availability: nativeRecipientAvailability(record, metadata.packageDir),
+					});
+				failedLinks.set(record.storageId, lost);
+			}
+			throw error;
+		}
+	};
+
 	const routeOwner = async (row: DeliveryRow, owner: string): Promise<boolean> => {
 		if (!(await reportCurrent(row))) return false;
 		if (ownerStorageId(owner) === metadata.storageId) {
@@ -1734,7 +1764,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}
 		const record = ownerRecord(owner);
 		if (record !== undefined) {
-			await deliverCatalog(record, row, owner);
+			await deliverNative(record, row, owner);
 			return true;
 		}
 		return deliverPrimary(row, owner);
@@ -2057,6 +2087,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		summary,
 		refresh: () => {
 			unavailableTargets.clear();
+			failedLinks.clear();
 			schedule(0, true);
 		},
 		sealAdmission,

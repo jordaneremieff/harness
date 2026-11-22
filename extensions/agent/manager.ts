@@ -1943,7 +1943,7 @@ export class AgentManager {
 					.digest("hex");
 	}
 
-	private parkedWakeDue(record: CatalogRecord, registeringPrimary?: string): boolean {
+	private parkedWakeDue(record: CatalogRecord, registeringPrimary?: string, recheck = false): boolean {
 		const wake = readDeliveryWake(this.options.root, record.storageId);
 		if (wake === undefined) {
 			this.wakeAttempts.delete(record.storageId);
@@ -1962,6 +1962,7 @@ export class AgentManager {
 			if (fingerprint !== undefined && fingerprint !== wake.failedAvailability[recipient])
 				available.set(recipient, fingerprint);
 		}
+		if (recheck) return available.size > 0;
 		this.wakeAttempts.set(record.storageId, available);
 		return [...available].some(([recipient, fingerprint]) => previous?.get(recipient) !== fingerprint);
 	}
@@ -2024,7 +2025,7 @@ export class AgentManager {
 				"startup",
 				"Startup recovery reached its inventory bound or unreadable metadata; use agent_list for the remaining storage",
 			);
-		await this.enqueueRecovery(due, owner, registeringPrimary !== undefined);
+		await this.enqueueRecovery(due, owner, registeringPrimary);
 	}
 
 	/** Await only this registration's teardown, including endpoint removal before process replacement. */
@@ -2176,14 +2177,18 @@ export class AgentManager {
 		}
 	}
 
-	private async enqueueRecovery(due: CatalogRecord[], primary: RecoveryOwner, fromRegistration = false): Promise<void> {
+	private async enqueueRecovery(
+		due: CatalogRecord[],
+		primary: RecoveryOwner,
+		registeringPrimary?: string,
+	): Promise<void> {
 		let next = 0;
 		const recover = async () => {
 			while (!this.stopping(primary) && next < due.length) {
 				const record = due[next++];
 				if (record) {
 					this.queuedRecovery.delete(record.storageId);
-					await this.recover(record, primary, fromRegistration);
+					await this.recover(record, primary, registeringPrimary);
 				}
 			}
 		};
@@ -2195,31 +2200,50 @@ export class AgentManager {
 		for (const record of due.slice(next)) this.queuedRecovery.delete(record.storageId);
 	}
 
-	private async recover(record: CatalogRecord, primary: RecoveryOwner, fromRegistration: boolean): Promise<void> {
-		if (this.crashes.get(record.storageId)?.stopped) return;
-		const cached = this.clients.get(record.storageId);
+	private async refreshRecoveryClient(storageId: string): Promise<boolean> {
+		const cached = this.clients.get(storageId);
 		if (cached) {
 			try {
-				await this.readRecoveryState(record.storageId, cached);
+				await this.readRecoveryState(storageId, cached);
 			} catch (error) {
-				this.recordRecoveryError(record.storageId, errorText(error));
+				this.recordRecoveryError(storageId, errorText(error));
 			}
-			return;
+			return true;
 		}
-		const recovering = this.recoveryClients.get(record.storageId);
+		const recovering = this.recoveryClients.get(storageId);
 		if (recovering) {
 			await recovering.refresh();
-			return;
+			return true;
 		}
+		return false;
+	}
+
+	private recoveryLaunchNeeded(storageId: string, primary: RecoveryOwner, registeringPrimary?: string): boolean {
+		if (this.stopping(primary) || this.crashes.get(storageId)?.stopped) return false;
+		const current = this.catalog.read(storageId);
+		return current.recoveryDue === true || this.parkedWakeDue(current, registeringPrimary, true);
+	}
+
+	private async recover(record: CatalogRecord, primary: RecoveryOwner, registeringPrimary?: string): Promise<void> {
+		if (this.crashes.get(record.storageId)?.stopped) return;
+		if (await this.refreshRecoveryClient(record.storageId)) return;
 		if (this.recovering.has(record.storageId)) return;
 		if (record.recoveryDue === true && this.recoveryHolds.has(record.storageId)) {
-			if (!fromRegistration) return;
+			if (registeringPrimary === undefined) return;
 			this.recoveryHolds.set(record.storageId, Symbol());
 		}
 		this.recovering.add(record.storageId);
 		try {
 			const open = this.options.acquire ?? acquireHost;
-			const client = await open(hostMetadata(record, this.options.packageDir), MANAGED_LINK);
+			const launchNeeded = () => this.recoveryLaunchNeeded(record.storageId, primary, registeringPrimary);
+			if (!launchNeeded()) {
+				this.recovering.delete(record.storageId);
+				return;
+			}
+			const client = await open(hostMetadata(this.catalog.read(record.storageId), this.options.packageDir), {
+				...MANAGED_LINK,
+				launchNeeded,
+			});
 			if (this.stopping(primary)) {
 				await client.close();
 				this.recovering.delete(record.storageId);

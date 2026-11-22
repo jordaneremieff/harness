@@ -413,6 +413,15 @@ it("aborting a private gated read leaves host work running", { timeout: 30000 },
 	await connection.close();
 });
 
+it("a silent connected host leaves a mutation unconfirmed without a resend", async (t) => {
+	const root = fixtureRoot(t);
+	const connection = await openHost(t, root, launch({ requestTimeoutMs: 300 }));
+	t.after(() => connection.close());
+	await assert.rejects(connection.request("abort"), /outcome unconfirmed/u);
+	assert.equal(readFixtureState(join(root, "state.json")).hangsStarted, 1);
+	assert.equal(connection.closed, false);
+});
+
 it("aborting an unsafe call never cancels host work", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");

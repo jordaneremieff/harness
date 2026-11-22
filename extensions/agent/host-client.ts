@@ -12,6 +12,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { awaitWithContext, withAbortSignal, BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PluginError, isChordError } from "@earendil-works/chord";
 import {
 	connectTransport,
@@ -87,6 +88,10 @@ export interface HostLaunchOptions {
 	readonly launchTimeoutMs?: number;
 	/** Safe-method resend attempts after link loss. Default 1. */
 	readonly retryAttempts?: number;
+	/** Maximum observation time for one connected request or feed setup. */
+	readonly requestTimeoutMs?: number;
+	/** Revalidate demand immediately before a new runner starts. */
+	readonly launchNeeded?: () => boolean;
 	/** Ends local launch/attach observation only; never signals the native owner. */
 	readonly signal?: AbortSignal;
 }
@@ -259,6 +264,29 @@ function remaining(deadline: number): number {
 	if (value <= 0)
 		throw new HostError("Host observation deadline reached; native work remains independent", "unavailable");
 	return value;
+}
+
+/** The deadline belongs to setup or observation, not to admitted native work or a hydrated feed. */
+export async function hostAttempt<T>(
+	start: (signal: AbortSignal) => Promise<T>,
+	timeoutMs = 60_000,
+	caller?: AbortSignal,
+): Promise<T> {
+	const controller = new AbortController();
+	const signal = caller ? AbortSignal.any([caller, controller.signal]) : controller.signal;
+	signal.throwIfAborted();
+	const timer = setTimeout(
+		() => controller.abort(new HostError("Host request deadline reached; outcome unconfirmed", "unavailable")),
+		timeoutMs,
+	);
+	try {
+		return await awaitWithContext(start(signal), withAbortSignal(signal, BACKGROUND_CONTEXT));
+	} catch (error) {
+		signal.throwIfAborted();
+		throw error;
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /** Withdrawal affects this observation; a late transport is disposed, never its owner. */
@@ -487,8 +515,10 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions, 
 	let attempt = ownedLaunches.get(paths.serverId);
 	if (attempt?.state === "uncertain")
 		throw new HostReadinessUnavailableError(new Error("The previous launch has no terminal child-exit event"));
-	if (!attempt || attempt.state === "exited" || attempt.writerReleased)
+	if (!attempt || attempt.state === "exited" || attempt.writerReleased) {
+		if (options.launchNeeded?.() === false) throw new HostError("Host launch demand ended", "unavailable");
 		attempt = startOwnedLaunch(metadata, options, deadline);
+	}
 	try {
 		await withinBudget(attempt.ready, deadline, options.signal);
 	} catch (error) {
@@ -820,7 +850,7 @@ class HostConnectionImpl implements HostConnection {
 		// Caller cancellation stays local and never cancels admitted Durable work.
 		const client = this.client;
 		const ownedExit = this.ownedExitValue;
-		void client.request(call.call).then(
+		void hostAttempt((deadline) => client.request(call.call, deadline), this.launchOptions.requestTimeoutMs).then(
 			(result) => {
 				if (call.method === "close") {
 					if (client === this.client) {
@@ -902,16 +932,21 @@ class HostConnectionImpl implements HostConnection {
 		};
 		let subscription: TransportSubscription;
 		try {
-			subscription = await client.subscribe(
-				"changes",
-				undefined,
-				(value) => {
-					try {
-						retain(value);
-					} catch (error) {
-						if (current()) this.clearPublication(`changes: ${toError(error).message}`, false);
-					}
-				},
+			subscription = await hostAttempt(
+				(setup) =>
+					client.subscribe(
+						"changes",
+						undefined,
+						(value) => {
+							try {
+								retain(value);
+							} catch (error) {
+								if (current()) this.clearPublication(`changes: ${toError(error).message}`, false);
+							}
+						},
+						setup,
+					),
+				this.launchOptions.requestTimeoutMs,
 				entry.signal,
 			);
 		} catch (error) {
@@ -1054,28 +1089,33 @@ class HostConnectionImpl implements HostConnection {
 	private async bindObservation(entry: ObservationEntry): Promise<void> {
 		if (this.closedValue || entry.disposed) return;
 		const token = randomUUID();
-		const opened = (await this.client.request({
-			method: "observe-open",
-			params: observationParams(entry.scope, token),
-			requestId: token,
-			contract: HOST_CONTRACT.operations["observe-open"],
-		})) as { frame?: unknown } | undefined;
+		const opened = (await this.request("observe-open", observationParams(entry.scope, token), { requestId: token })) as
+			| { frame?: unknown }
+			| undefined;
+
 		if (this.closedValue || entry.disposed) {
 			void this.closeObservationToken(token);
 			return;
 		}
-		const subscription = await this.client
-			.subscribe("observation", token, (value) => {
-				if (value === null) {
-					this.failObservation(entry);
-					return;
-				}
-				if (isObservationFrame(value)) this.deliverObservation(entry, value, false);
-			})
-			.catch((error: unknown) => {
-				void this.closeObservationToken(token);
-				throw error;
-			});
+		const subscription = await hostAttempt(
+			(setup) =>
+				this.client.subscribe(
+					"observation",
+					token,
+					(value) => {
+						if (value === null) {
+							this.failObservation(entry);
+							return;
+						}
+						if (isObservationFrame(value)) this.deliverObservation(entry, value, false);
+					},
+					setup,
+				),
+			this.launchOptions.requestTimeoutMs,
+		).catch((error: unknown) => {
+			void this.closeObservationToken(token);
+			throw error;
+		});
 		if (this.closedValue || entry.disposed) {
 			await subscription.dispose().catch(() => undefined);
 			void this.closeObservationToken(token);
@@ -1126,14 +1166,7 @@ class HostConnectionImpl implements HostConnection {
 	private async closeObservationToken(token: string): Promise<void> {
 		if (this.closedValue) return;
 		if (hostRequestVersionError("observe-close", this.runtimeContractValue)) return;
-		await this.client
-			.request({
-				method: "observe-close",
-				params: { token },
-				requestId: randomUUID(),
-				contract: HOST_CONTRACT.operations["observe-close"],
-			})
-			.catch(() => undefined);
+		await this.request("observe-close", { token }).catch(() => undefined);
 	}
 
 	private markObservationUnavailable(entry: ObservationEntry): void {
@@ -1239,8 +1272,12 @@ class HostConnectionImpl implements HostConnection {
 		});
 	}
 
-	private async recoveryLink(hasRetryable: boolean): Promise<Link> {
-		const options = { ...this.launchOptions, signal: this.lifetime.signal };
+	private async recoveryLink(demand: () => boolean): Promise<Link> {
+		const options = {
+			...this.launchOptions,
+			signal: this.lifetime.signal,
+			launchNeeded: () => demand() && this.launchOptions.launchNeeded?.() !== false,
+		};
 		const deadline = launchDeadline(this.metadata, options);
 		try {
 			return await attachLink(
@@ -1249,8 +1286,7 @@ class HostConnectionImpl implements HostConnection {
 				this.lifetime.signal,
 			);
 		} catch (error) {
-			if (this.linkPolicy !== "acquire" || !hasRetryable || this.ownerReleasedValue || !this.ownedExitValue)
-				throw error;
+			if (this.linkPolicy !== "acquire" || !demand() || this.ownerReleasedValue || !this.ownedExitValue) throw error;
 			const outcome = await withinBudget(this.ownedExitValue, deadline, this.lifetime.signal);
 			if (!outcome.failed)
 				throw new HostError("The owned host exited cleanly; automatic replacement was not started", "unavailable");
@@ -1267,7 +1303,7 @@ class HostConnectionImpl implements HostConnection {
 		}
 		let link: Link;
 		try {
-			link = await this.recoveryLink(retryable.length > 0);
+			link = await this.recoveryLink(() => retryable.some((call) => this.pending.has(call)));
 		} catch (error) {
 			this.shutdownLocal(toError(error));
 			return;
