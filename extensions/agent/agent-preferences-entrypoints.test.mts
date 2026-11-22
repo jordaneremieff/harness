@@ -20,6 +20,7 @@ import type { ExecutionSelection, PreferenceSnapshot } from "./agent-preferences
 import * as Durable from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { isJsonValue } from "@earendil-works/chord/json";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { getCurrentSystemPrompt, type Message } from "@earendil-works/pi-ai";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -37,7 +38,7 @@ type RegisteredTool = {
 	execute(
 		id: string,
 		input: Record<string, unknown>,
-		signal: undefined,
+		signal: AbortSignal | undefined,
 		update: undefined,
 		ctx: ExtensionContext,
 	): Promise<unknown>;
@@ -64,7 +65,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 		else process.env.PI_AGENT_SESSIONS_DIR = previous.sessions;
 		rmSync(directory, { recursive: true, force: true });
 	});
-	const seen: Array<{ method: string; input: unknown }> = [];
+	const seen: Array<{ method: string; input: unknown; signal?: AbortSignal }> = [];
 	const receipt = { result: { sessionId: "target", submissionId: 7, requestId: "test:7" }, placement: "placed" };
 	manager.spawn = async (input) => {
 		seen.push({ method: "spawn", input });
@@ -74,8 +75,8 @@ it("ordinary and native callers share machine preferences and receive advisory s
 		seen.push({ method: "place", input });
 		return {};
 	};
-	manager.control = async (method, input) => {
-		seen.push({ method, input });
+	manager.control = async (method, input, _caller, options) => {
+		seen.push({ method, input, ...(options?.signal === undefined ? {} : { signal: options.signal }) });
 		return method === "submit" ? receipt : {};
 	};
 	const tools = new Map<string, RegisteredTool>();
@@ -167,6 +168,24 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	const admitted = seen.at(-1);
 	assert.ok(admitted);
 	const ordinarySnapshot = (admitted.input as { preferenceSnapshot: PreferenceSnapshot }).preferenceSnapshot;
+	await t.test("carries each tool call's signal to the agent control it dispatches", async () => {
+		const calls: Array<[string, Record<string, unknown>, string]> = [
+			["agent_abort", { sessionId: "target" }, "abort"],
+			["agent_abort", { sessionId: "target", release: true }, "release"],
+			["agent_steer", { sessionId: "target", message: "Stop." }, "submit"],
+			["agent_send", { sessionId: "target", message: "Next." }, "submit"],
+			["agent_attach", { sessionId: "target" }, "attach"],
+		];
+		for (const [name, input, method] of calls) {
+			const tool = tools.get(name);
+			assert.ok(tool);
+			const signal = new AbortController().signal;
+			await tool.execute(`${name}-signal`, input, signal, undefined, ctx);
+			const dispatched = seen.at(-1);
+			assert.equal(dispatched?.method, method);
+			assert.equal(dispatched?.signal, signal, `${name} withdraws its wait when its tool call is aborted`);
+		}
+	});
 	await t.test("checks and dispatches ordinary briefs with retained preset admission", async () => {
 		const brief = tools.get("agent_brief");
 		assert.ok(brief);
@@ -226,6 +245,8 @@ it("ordinary and native callers share machine preferences and receive advisory s
 			assert.equal(submission.method, "submit");
 			assert.equal((submission.input as Record<string, unknown>).message, renderBrief(fields).text);
 			assert.equal((submission.input as Record<string, unknown>).whenBusy, mode ?? "followUp");
+			assert.equal(isJsonValue(submission.input), true, "an omitted mode or interval reaches the host as absent");
+			if (mode === undefined) assert.equal(Object.hasOwn(submission.input as object, "mode"), false);
 			if (interval !== undefined) assert.equal((submission.input as Record<string, unknown>).checkInMinutes, interval);
 			else if (mode === "steer") assert.equal(Object.hasOwn(submission.input as object, "checkInMinutes"), false);
 		}

@@ -298,6 +298,11 @@ class BoundedMap<V> {
 	}
 }
 
+/** An omitted field and an undefined one mean the same to a control; the host transport accepts only strict JSON. */
+function definedFields(input: Record<string, unknown>): Record<string, unknown> {
+	return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
 /** The caller's wait ends when `signal` aborts; the work itself settles on its own with its outcome handled. */
 function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
 	if (signal === undefined) return work;
@@ -1040,7 +1045,7 @@ export class AgentManager {
 		sessionId: string,
 		callerId: string,
 	): Record<string, unknown> {
-		const params: Record<string, unknown> = { ...input, sessionId, ownerId: callerId };
+		const params: Record<string, unknown> = { ...definedFields(input), sessionId, ownerId: callerId };
 		if (method === "task-submit") {
 			params.requester = callerId;
 			params.origin ??= "operator";

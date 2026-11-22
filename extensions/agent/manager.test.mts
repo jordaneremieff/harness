@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync 
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, it } from "node:test";
+import { isJsonValue } from "@earendil-works/chord/json";
 
 const preferenceOverride = process.env.PI_HARNESS_FILE;
 delete process.env.PI_HARNESS_FILE;
@@ -338,6 +339,27 @@ it("a withdrawn command carries its signal to the host connection and settles wi
 	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
 	assert.equal(answers, 0, "the caller settled before any host answer");
 	assert.equal(seen.filter((call) => call.method === "command").length, 1, "the withdrawn command is not resent");
+});
+
+it("omits undefined control fields, which the host transport refuses, before the host request", async (t) => {
+	const root = fixtureRoot(t);
+	const seen: Array<{ method: string; params: unknown }> = [];
+	const manager = new AgentManager(
+		managerOptions(root, {
+			acquire: async (metadata) =>
+				fakeConnection(metadata, async (method, params) => {
+					seen.push({ method, params });
+					return {};
+				}),
+		}),
+	);
+	t.after(() => manager.close());
+	const target = createRecord(manager, root, "owner").storageId;
+	await manager.control("compact", { sessionId: target, instructions: undefined }, { id: "terminal", cwd: root });
+	const call = seen.find((entry) => entry.method === "compact");
+	assert.ok(call);
+	assert.equal(isJsonValue(call.params), true);
+	assert.equal(Object.hasOwn(call.params as object, "instructions"), false);
 });
 
 it("refuses a full place book before catalogue creation or host launch", async (t) => {

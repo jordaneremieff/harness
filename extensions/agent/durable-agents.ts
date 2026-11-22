@@ -1964,7 +1964,16 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		}
 		const target = { sessionId: args.sessionId, message };
 		if (args.mode === "steer" && args.checkInMinutes === undefined) return steerTool.execute(target, api, context);
-		return sendTool.execute({ ...target, mode: args.mode, checkInMinutes: args.checkInMinutes }, api, context);
+		// An omitted mode or interval stays absent: tool records and the host transport hold strict JSON only.
+		return sendTool.execute(
+			{
+				...target,
+				...(args.mode === undefined ? {} : { mode: args.mode }),
+				...(args.checkInMinutes === undefined ? {} : { checkInMinutes: args.checkInMinutes }),
+			},
+			api,
+			context,
+		);
 	};
 	const briefTool = durable.defineTool<typeof BriefParams, ControlDetails>({
 		name: "agent_brief",

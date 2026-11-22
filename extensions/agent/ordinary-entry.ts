@@ -534,7 +534,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			{ ...input, origin: "model", requestId: `spawn:${ctx.sessionManager.getSessionId()}:${callId}` },
 			admissionCaller ?? caller(ctx, pi),
 		);
-	const sendImmediate = (input: Record<string, unknown>, ctx: ExtensionContext) =>
+	const sendImmediate = (input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) =>
 		control(
 			"submit",
 			{
@@ -544,9 +544,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				origin: "model",
 			},
 			ctx,
+			signal,
 		);
-	const steer = (input: Record<string, unknown>, ctx: ExtensionContext) =>
-		control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx);
+	const steer = (input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal) =>
+		control("submit", { ...input, whenBusy: "steer", origin: "model" }, ctx, signal);
 	const register = (
 		name: AgentControlToolName,
 		description: string,
@@ -555,7 +556,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			input: Record<string, unknown>,
 			ctx: ExtensionContext,
 			callId: string,
-			admissionCaller?: AgentCaller,
+			admissionCaller: AgentCaller | undefined,
+			signal: AbortSignal | undefined,
 		) => Promise<unknown>,
 	): void => {
 		const guidance = agentControlGuidance(name, "ordinary");
@@ -581,11 +583,12 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					: parameters,
 				outputSchema: schema ?? unknown(),
 				...(exposure === "direct" ? {} : { exposure }),
-				async execute(callId, input: Static<typeof parameters>, _signal, _update, ctx) {
+				async execute(callId, input: Static<typeof parameters>, signal, _update, ctx) {
 					const { admitted, admissionCaller } = admitsPreset
 						? prepareInput(name, input, ctx, callId)
 						: { admitted: input, admissionCaller: undefined };
-					const value = await execute(admitted, ctx, callId, admissionCaller);
+					// The signal withdraws only this caller's wait; work that a host admitted keeps running.
+					const value = await execute(admitted, ctx, callId, admissionCaller, signal);
 					const output = controlToolResult(name, input, value, schema);
 					appendProviderBlockReceipt(name, output.content, value, providerBlocks, Date.now());
 					return output;
@@ -635,12 +638,13 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		"agent_profile",
 		"Read or revision-check an agent's durable role and sourced expertise. Saved expertise is evidence, not fresh authority. Profile edits start no model turn.",
 		ProfileParams,
-		(input, ctx, callId) => {
+		(input, ctx, callId, _admissionCaller, signal) => {
 			if (typeof input.sessionId !== "string") throw new Error("A primary profile control requires an agent sessionId");
 			return control(
 				input.action === "read" ? "profile-read" : "profile-update",
 				{ ...input, requestId: `profile:${ctx.sessionManager.getSessionId()}:${callId}` },
 				ctx,
+				signal,
 			);
 		},
 	);
@@ -650,7 +654,23 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		spawn,
 		executeSpawn,
 	);
-	register("agent_brief", BRIEF_DESCRIPTION, brief, async (input, ctx, callId) => {
+	/** Admit a rendered brief to an existing agent. An omitted mode or interval stays absent: the host transport refuses undefined fields. */
+	const briefExisting = (
+		input: Record<string, unknown>,
+		message: string,
+		ctx: ExtensionContext,
+		signal: AbortSignal | undefined,
+	) => {
+		const target = { sessionId: input.sessionId, message };
+		if (input.mode === "steer" && input.checkInMinutes === undefined) return steer(target, ctx, signal);
+		const fields = {
+			...target,
+			...(input.mode === undefined ? {} : { mode: input.mode }),
+			...(input.checkInMinutes === undefined ? {} : { checkInMinutes: input.checkInMinutes }),
+		};
+		return sendImmediate(fields, ctx, signal);
+	};
+	register("agent_brief", BRIEF_DESCRIPTION, brief, async (input, ctx, callId, _admissionCaller, signal) => {
 		const inputProblems = briefInputProblems(input, creationKeys);
 		const sourceProblems = briefSourceProblems(input, ctx.cwd);
 		const rendered = renderBrief(input);
@@ -666,13 +686,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			};
 			const { admitted, admissionCaller } = prepareInput("agent_brief", dispatch, ctx, callId);
 			value = await executeSpawn(admitted, ctx, callId, admissionCaller);
-		} else {
-			const target = { sessionId: input.sessionId, message: rendered.text };
-			value =
-				input.mode === "steer" && input.checkInMinutes === undefined
-					? await steer(target, ctx)
-					: await sendImmediate({ ...target, mode: input.mode, checkInMinutes: input.checkInMinutes }, ctx);
-		}
+		} else value = await briefExisting(input, rendered.text, ctx, signal);
 		return { ...(value as Record<string, unknown>), brief: rendered.brief };
 	});
 	register(
@@ -726,21 +740,21 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		"agent_inspect",
 		"Read compact history or activity. Ordinary primary targets support activity/history over bounded latest-retained ancestry, not the live selected branch; pass a clipped entry's textCursor as cursor to page its complete allowed text. Durable targets include role/kind, readable text, named tool calls with argument summaries, and tool result excerpts. Truncation is marked. Use exact with entryId and offset 0 for retained redacted JSON; nextOffset continues it. Pass nextCursor as cursor. Branch remains raw. Result uses submissionId, a conversation-qualified native requestId, or the separate retained operationId. Missing results return unavailable; supplied selectors must agree. Result answerContinuation pages readable answer text; receiptGroup.next pages recipient references with receiptCursor. When the request declared work, the answer is a state note: work.finalReport.read pages its final report with finalReport true. Images, signatures, and redacted thinking stay omitted.",
 		inspect,
-		(input, ctx) => {
+		(input, ctx, _callId, _admissionCaller, signal) => {
 			if (input.requestId !== undefined && input.view !== "result")
 				throw new Error("requestId selects only the result view");
 			if (input.receiptCursor !== undefined && input.view !== "result")
 				throw new Error("receiptCursor requires result view");
 			if (input.finalReport !== undefined && input.view !== "result")
 				throw new Error("finalReport requires result view");
-			return control("inspect", input, ctx);
+			return control("inspect", input, ctx, signal);
 		},
 	);
 	register(
 		"agent_send",
 		`Admit a task, report, or correction to an agent or a live effort primary from agent_status. A primary accepts immediate messages, not Durable controls or schedules. Coordinate with one concise proposal containing its conditions and one answer, not repeated acknowledgments. Put agreements that others must see in a thread when a participant storage exists. Idle agents start; a busy agent reads each input at its next tool boundary. mode names the class of the input, not a placement time. ${FOLLOW_UP_DELIVERY_BOUNDARY} ${REPORT_DELIVERY_BOUNDARY} Model-origin messages to ordinary primaries use steer. Task check-ins run only when checkInMinutes or agent.checkInMinutes sets a nonzero interval. Assess progress and decide whether to let work continue, steer a wrap-up, or abort a hung tool. checkInMinutes 0 disables. A receipt does not prove action. With deliverAt, schedule the input at an absolute time.`,
 		send,
-		(input, ctx, callId) => {
+		(input, ctx, callId, _admissionCaller, signal) => {
 			if (input.mode === "report") {
 				if (input.deliverAt !== undefined || input.replyTo !== undefined || input.checkInMinutes !== undefined)
 					throw new Error("Report mode takes a recipient and message, not scheduling, replyTo, or check-ins");
@@ -748,9 +762,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					"report",
 					{ ...input, requestId: `report:${ctx.sessionManager.getSessionId()}:${callId}`, origin: "model" },
 					ctx,
+					signal,
 				);
 			}
-			if (input.deliverAt === undefined) return sendImmediate(input, ctx);
+			if (input.deliverAt === undefined) return sendImmediate(input, ctx, signal);
 			if (input.replyTo !== undefined) throw new Error("replyTo cannot be combined with deliverAt");
 			return control(
 				"timer-schedule",
@@ -765,6 +780,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					requestId: `timer-delivery:send:${ctx.sessionManager.getSessionId()}:${callId}`,
 				},
 				ctx,
+				signal,
 			);
 		},
 	);
@@ -772,40 +788,40 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		"agent_steer",
 		"Steer live or retained work through its Durable owner. Admitted steering survives process loss. Carried operator decisions retain their original scope; agent claims remain claims.",
 		message,
-		steer,
+		(input, ctx, _callId, _admissionCaller, signal) => steer(input, ctx, signal),
 	);
 	register(
 		"agent_abort",
 		"Abort the selected conversation without deleting retained evidence. With timerId, cancel only that input. With release, request host retirement; other work and timers remain.",
 		abort,
-		(input, ctx) => {
+		(input, ctx, _callId, _admissionCaller, signal) => {
 			if (input.release === true && input.background === true)
 				throw new Error("release cannot be combined with background; abort with background first, then release");
 			if (input.timerId !== undefined && input.release === true)
 				throw new Error("release cannot be combined with timerId");
 			if (input.timerId !== undefined)
-				return control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx);
+				return control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx, signal);
 			const { release, ...params } = input;
-			return control(release === true ? "release" : "abort", params, ctx);
+			return control(release === true ? "release" : "abort", params, ctx, signal);
 		},
 	);
 	register(
 		"agent_attach",
 		"Connect to a Durable storage host without new input. Retained unfinished work resumes automatically.",
 		obj({ sessionId: id, model: opt(str()), trust: maybeTrust }, {}),
-		(input, ctx) => control("attach", input, ctx),
+		(input, ctx, _callId, _admissionCaller, signal) => control("attach", input, ctx, signal),
 	);
 	register(
 		"agent_fork",
 		"Create an idle native conversation branch in the same storage. The source remains unchanged.",
 		obj({ sessionId: id, entryId: opt(id), trust: maybeTrust }, {}),
-		(input, ctx) => control("fork", input, ctx),
+		(input, ctx, _callId, _admissionCaller, signal) => control("fork", input, ctx, signal),
 	);
 	register(
 		"agent_rewind",
 		"Fork before a mistaken entry and redo the work under your correction. The source stays unchanged. Files remain current.",
 		obj({ sessionId: id, entryId: id, correction: str({ minLength: 1 }), trust: maybeTrust }, {}),
-		(input, ctx) => control("rewind", { ...input, origin: "model" }, ctx),
+		(input, ctx, _callId, _admissionCaller, signal) => control("rewind", { ...input, origin: "model" }, ctx, signal),
 	);
 	register(
 		"agent_configure",
@@ -822,7 +838,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		"agent_command",
 		"Invoke a native contribution command, reload registrations, or fork to a tree entry through its Durable owner.",
 		obj({ sessionId: id, name: str({ minLength: 1 }), args: opt(str()) }, {}),
-		(input, ctx) => control("command", { ...input, origin: "model" }, ctx),
+		(input, ctx, _callId, _admissionCaller, signal) => control("command", { ...input, origin: "model" }, ctx, signal),
 	);
 	register(
 		"agent_place",
@@ -850,7 +866,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		"agent_compact",
 		"Compact without stopping active work. For primary self-compaction, supply a complete continuity summary; it applies after this tool batch.",
 		compact,
-		async (input, ctx, callId) => {
+		async (input, ctx, callId, _admissionCaller, signal) => {
 			if (input.sessionId === ctx.sessionManager.getSessionId()) {
 				if (input.instructions !== undefined)
 					throw new Error("Primary self-compaction accepts summary, not instructions");
@@ -871,7 +887,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				return { text: "Continuity summary queued for this completed tool batch.", status: "queued", compaction };
 			}
 			if (input.summary !== undefined) throw new Error("Another agent's compaction accepts instructions, not summary");
-			return control("compact", input, ctx);
+			return control("compact", input, ctx, signal);
 		},
 	);
 
