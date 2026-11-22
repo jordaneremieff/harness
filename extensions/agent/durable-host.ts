@@ -1011,7 +1011,7 @@ export class DurableHost {
 		const { annotated, recoveryRequests } = await this.recoveryMessage(conversation.id, message, arrived, context);
 		// A replayed body admission is deduplicated, and a provider retry notice that the current inputs already
 		// showed is suppressed; in both cases the result reached this conversation, so its delivered facts complete.
-		const complete = async (): Promise<void> => {
+		const complete = async (addedHints: readonly string[]): Promise<void> => {
 			if (delivered !== undefined)
 				await this.harness.commit((tx) => recordContinuityDelivered(tx, conversation.id, delivered), context);
 			if (marks.length > 0)
@@ -1022,7 +1022,7 @@ export class DurableHost {
 					for (const item of (await tx.doc(OpenWorkDoc, conversation.id)).items) {
 						if (
 							ids.includes(item.requestId) &&
-							!recoveryRequests.includes(item.requestId) &&
+							!addedHints.includes(item.requestId) &&
 							recoveryRecipients([item], arrived).length
 						)
 							await noticeEarlyResult(tx, conversation.id, this.identity(conversation.id), item, this.now());
@@ -1050,10 +1050,10 @@ export class DurableHost {
 			context,
 			this.now,
 		).catch(async (error) => {
-			if (error instanceof AwaitInputSuppressed) await complete();
+			if (error instanceof AwaitInputSuppressed) await complete([]);
 			throw error;
 		});
-		await complete();
+		await complete(submitted.deduped ? [] : recoveryRequests);
 		return { ...submitted, identity: this.identity(conversation.id) };
 	}
 

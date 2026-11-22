@@ -31,8 +31,8 @@ import {
 function memoryStore() {
 	const state = new Map<number, { stoppedAt: number | null; explicit: number | null }>();
 	const tx = {
-		retireDoc: async (_token: unknown, id: number) => {
-			state.delete(id);
+		retireDoc: async (token: unknown, id: number) => {
+			if (token === StoppedDoc) state.delete(id);
 		},
 		doc: async (token: unknown, id: number) => {
 			if (token !== StoppedDoc) return { items: [] };

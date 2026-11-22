@@ -91,10 +91,14 @@ export async function confirmDispatch(tx: Tx, id: ConversationId, key: string, r
 	edge.result = { sessionId: result.sessionId, submissionId: result.submissionId, requestId: result.requestId };
 }
 export async function discardDispatches(tx: Tx, id: ConversationId, scope?: { before: EntryId } | { request: string }) {
+	if (!scope) {
+		await tx.retireDoc(Edges, id);
+		return;
+	}
 	const state = await tx.doc(Edges, id);
 	if (!state.edges.length) return;
-	state.edges = state.edges.filter(
-		(e) => scope && ("before" in scope ? e.parent.entry >= scope.before : e.parent.requestId !== scope.request),
+	state.edges = state.edges.filter((e) =>
+		"before" in scope ? e.parent.entry >= scope.before : e.parent.requestId !== scope.request,
 	);
 }
 /** Materialise confirmed edges before the unanswered receipt. Unknown admissions stay provisional until exact evidence arrives. */
