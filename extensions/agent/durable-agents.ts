@@ -2033,7 +2033,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			stopOperation(args),
 			{
 				sessionId: resolved,
-				interrupt: args.interrupt,
+				...(args.interrupt === undefined ? {} : { interrupt: args.interrupt }),
 				...(args.background === true ? { background: true } : {}),
 			},
 			`Abort of ${resolved} failed`,
