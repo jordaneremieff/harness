@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { setImmediate } from "node:timers/promises";
-import { ComposerApp } from "./app-update.ts";
+import { type AppNoticeLevel, ComposerApp } from "./app-update.ts";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const commit = "b".repeat(40);
@@ -48,7 +48,7 @@ function fixture(t: TestContext) {
 			return install;
 		},
 	};
-	const notices: string[] = [];
+	const notices: { text: string; level: AppNoticeLevel }[] = [];
 	return {
 		app,
 		write,
@@ -57,8 +57,8 @@ function fixture(t: TestContext) {
 		updater: new ComposerApp(runtime),
 		starts: () => starts,
 		notices,
-		notify: (message: string) => {
-			notices.push(message);
+		notify: (text: string, level: AppNoticeLevel) => {
+			notices.push({ text, level });
 		},
 	};
 }
@@ -66,12 +66,18 @@ function fixture(t: TestContext) {
 test("missing app starts one background install and opens after the manifest is ready", async (t) => {
 	const f = fixture(t);
 	const checks = await Promise.all([f.updater.check(f.app, f.notify), f.updater.check(f.app, f.notify)]);
-	assert.deepEqual(checks, Array(2).fill("The composer app is being installed."));
+	assert.deepEqual(checks, [
+		{ state: "started" },
+		{ state: "blocked", message: "A Composer app build is already in progress.", level: "info" },
+	]);
 	assert.equal(f.starts(), 1);
-	assert.equal(f.notices.length, 1);
+	assert.deepEqual(f.notices, [
+		{ text: `The Composer app build started in the background (log: ${f.app}.update.log).`, level: "info" },
+	]);
 	f.write();
 	f.settle("installed");
 	await setImmediate();
+	assert.deepEqual(f.notices.at(-1), { text: "The Composer app build completed.", level: "info" });
 	assert.equal(await f.updater.check(f.app, f.notify), undefined);
 });
 
@@ -83,13 +89,13 @@ test("older or incompatible builds update, but current or newer builds open", as
 	f.write({ sourceDigest: differing, source: { commit: newer, modified: false } });
 	assert.equal(await f.updater.check(f.app, f.notify), undefined);
 	f.write({ sourceDigest: differing, source: { commit: older, modified: false } });
-	assert.match((await f.updater.check(f.app, f.notify)) ?? "", /being installed/u);
+	assert.deepEqual(await f.updater.check(f.app, f.notify), { state: "started" });
 	f.settle("busy");
 	await setImmediate();
-	assert.match(f.notices.at(-1) ?? "", /Another composer app install/u);
+	assert.deepEqual(f.notices.at(-1), { text: "A Composer app build is already in progress.", level: "info" });
 	assert.equal(existsSync(`${f.app}.update-failure.json`), false);
 	f.write({ composer: undefined });
-	assert.match((await new ComposerApp(f.runtime).check(f.app, f.notify)) ?? "", /being installed/u);
+	assert.deepEqual(await new ComposerApp(f.runtime).check(f.app, f.notify), { state: "started" });
 	await setImmediate();
 	assert.equal(f.starts(), 2);
 });
@@ -99,10 +105,18 @@ test("failure survives a new loader and explicit update bypasses the failure rec
 	await f.updater.check(f.app, f.notify);
 	f.settle("failed");
 	await setImmediate();
+	assert.deepEqual(f.notices.at(-1), {
+		text: `The Composer app build failed; see ${f.app}.update.log and retry with /composer update.`,
+		level: "error",
+	});
 	const next = new ComposerApp(f.runtime);
-	assert.match((await next.check(f.app, f.notify)) ?? "", /last composer app build failed/u);
+	assert.deepEqual(await next.check(f.app, f.notify), {
+		state: "blocked",
+		message: "The previous Composer app build failed; retry with /composer update.",
+		level: "warning",
+	});
 	assert.equal(f.starts(), 1);
-	assert.match((await next.check(f.app, f.notify, true)) ?? "", /being installed/u);
+	assert.deepEqual(await next.check(f.app, f.notify, true), { state: "started" });
 	await setImmediate();
 	assert.equal(f.starts(), 2);
 });
@@ -110,7 +124,7 @@ test("failure survives a new loader and explicit update bypasses the failure rec
 test("an already current app stays usable during an explicit update", async (t) => {
 	const f = fixture(t);
 	f.write();
-	assert.match((await f.updater.check(f.app, f.notify, true)) ?? "", /being installed/u);
+	assert.deepEqual(await f.updater.check(f.app, f.notify, true), { state: "started" });
 	assert.equal(await f.updater.check(f.app, f.notify), undefined);
 	f.settle("installed");
 	await setImmediate();

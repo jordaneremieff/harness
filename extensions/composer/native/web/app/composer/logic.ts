@@ -47,6 +47,12 @@
 		disabled: boolean;
 	}
 	interface ComposerLogic {
+		contextDisplay(percent: number): {
+			percent: number;
+			clamped: number;
+			cells: number;
+			tone: "ok" | "warning" | "error";
+		};
 		statusView(status?: ComposerStatus): StatusView;
 		keyDecision(event: ComposerKey, context: KeyContext): KeyDecision;
 		submitBehavior(state?: string, delivery?: "steer" | "queue"): Behavior;
@@ -137,10 +143,19 @@
 		return /\S/u.test(text);
 	}
 
+	// Match the terminal statusline: round before assigning the display band and fill.
+	function contextDisplay(percent: number) {
+		const rounded = Math.max(0, Math.round(percent));
+		const clamped = Math.min(100, rounded);
+		const tone = clamped > 80 ? "error" : clamped > 60 ? "warning" : "ok";
+		return { percent: rounded, clamped, cells: Math.round(clamped / 10), tone } as const;
+	}
+
 	const root = globalThis as typeof globalThis & { composer?: ComposerRoot };
 	root.composer ??= {};
 	const composer = root.composer;
 	composer.logic = {
+		contextDisplay,
 		statusView,
 		keyDecision,
 		submitBehavior,

@@ -16,9 +16,16 @@ import { fileURLToPath } from "node:url";
 
 const BUILD_SCRIPT = new URL("./native/build.mts", import.meta.url);
 const MANIFEST_LIMIT = 8192;
-const INSTALLING = "The composer app is being installed.";
-const OLD_FAILURE = "The last composer app build failed. Use /composer update to try again.";
-type Notify = (message: string, error?: boolean) => void;
+const ALREADY_BUILDING = "A Composer app build is already in progress.";
+const OLD_FAILURE = "The previous Composer app build failed; retry with /composer update.";
+export type AppNoticeLevel = "info" | "warning" | "error";
+type Notify = (message: string, level: AppNoticeLevel) => void;
+export type AppCheck = { state: "started" } | { state: "blocked"; message: string; level: "info" | "warning" };
+const blocked = (message: string, level: "info" | "warning" = "warning"): AppCheck => ({
+	state: "blocked",
+	message,
+	level,
+});
 type Source = { commit: string; modified: boolean };
 type BuildInputs = { digest: string; source?: Source };
 type InstallOutcome = "installed" | "busy" | "failed";
@@ -144,16 +151,16 @@ export class ComposerApp {
 			}))
 			.catch(() => {
 				this.inputs = undefined;
-				throw new Error("The composer app build is unavailable in this checkout.");
+				throw new Error("This checkout does not include the app builder.");
 			});
 		return this.inputs;
 	}
 
-	/** Returns a refusal message, or undefined if Pi can use the installed app. */
-	async check(app: string, notify: Notify, explicit = false): Promise<string | undefined> {
+	/** No receipt means the installed app is ready. A started build reports its own progress. */
+	async check(app: string, notify: Notify, explicit = false): Promise<AppCheck | undefined> {
 		const { loaded, busyCode } = await this.loaded();
 		if (!explicit && !needsInstall(readBuild(app), loaded, this.build.ancestor)) return undefined;
-		if (this.running.has(app)) return INSTALLING;
+		if (this.running.has(app)) return blocked(ALREADY_BUILDING, "info");
 		const failure = `${app}.update-failure.json`;
 		const attempt = this.attempted.get(app);
 		if (!explicit) {
@@ -161,16 +168,16 @@ export class ComposerApp {
 				readRecord(failure)?.digest === loaded.digest ||
 				(attempt?.digest === loaded.digest && attempt.outcome === "failed")
 			)
-				return OLD_FAILURE;
+				return blocked(OLD_FAILURE);
 			if (attempt?.digest === loaded.digest)
 				return attempt.outcome === "busy"
-					? INSTALLING
-					: "The composer app is not current. Use /composer update to rebuild it.";
+					? blocked(ALREADY_BUILDING, "info")
+					: blocked("The Composer app is not current; rebuild it with /composer update.");
 		}
 		const next: { digest: string; outcome?: InstallOutcome } = { digest: loaded.digest };
 		this.attempted.set(app, next);
 		this.running.add(app);
-		notify(`The composer app is being installed in the background. Log: ${app}.update.log`);
+		notify(`The Composer app build started in the background (log: ${app}.update.log).`, "info");
 		void this.build
 			.install(app, busyCode)
 			.catch((): InstallOutcome => "failed")
@@ -178,7 +185,7 @@ export class ComposerApp {
 				next.outcome = outcome;
 				this.running.delete(app);
 				if (outcome === "busy") {
-					notify("Another composer app install is in progress.");
+					notify(ALREADY_BUILDING, "info");
 					return;
 				}
 				if (outcome === "installed" && readBuild(app)) {
@@ -187,6 +194,7 @@ export class ComposerApp {
 					} catch {
 						/* The valid app remains usable. */
 					}
+					notify("The Composer app build completed.", "info");
 					return;
 				}
 				next.outcome = "failed";
@@ -203,8 +211,8 @@ export class ComposerApp {
 						/* Best effort. */
 					}
 				}
-				notify(`The composer app build failed. Log: ${app}.update.log. Use /composer update to try again.`, true);
+				notify(`The Composer app build failed; see ${app}.update.log and retry with /composer update.`, "error");
 			});
-		return INSTALLING;
+		return { state: "started" };
 	}
 }

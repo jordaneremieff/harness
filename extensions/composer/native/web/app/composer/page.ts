@@ -30,6 +30,12 @@
 		behavior?: Behavior;
 	}
 	interface ComposerLogic {
+		contextDisplay(percent: number): {
+			percent: number;
+			clamped: number;
+			cells: number;
+			tone: "ok" | "warning" | "error";
+		};
 		statusView(status?: ComposerStatus): StatusView;
 		keyDecision(
 			event: {
@@ -381,7 +387,7 @@
 		applying = true;
 		try {
 			if (accepted) {
-				hideNotice();
+				clearTransientNotice();
 				clearUndoably();
 			}
 			for (const edit of queued.splice(0)) applyEdit(edit);
@@ -439,19 +445,27 @@
 		render();
 		sendDraft();
 	}
+	function failureVisible() {
+		return !notice.hidden && notice.dataset.tone === "failure";
+	}
+	function clearTransientNotice() {
+		if (!failureVisible()) hideNotice();
+	}
 	function hideNotice() {
 		clearTimeout(noticeTimer);
+		noticeTimer = undefined;
 		notice.hidden = true;
 		get("dismiss-notice").hidden = true;
 		paintStatusIcon();
 	}
 	function showNotice(text: string, tone: string): void {
-		if (!text) return;
+		if (!text || (tone !== "failure" && failureVisible())) return;
+		clearTimeout(noticeTimer);
+		noticeTimer = undefined;
 		notice.textContent = text;
 		notice.dataset.tone = tone;
 		notice.hidden = false;
 		paintStatusIcon();
-		if (noticeTimer !== undefined) clearTimeout(noticeTimer);
 		get("dismiss-notice").hidden = tone !== "failure";
 		if (tone !== "failure") noticeTimer = setTimeout(hideNotice, 6000);
 	}
@@ -552,14 +566,16 @@
 	function number(value: unknown): number | undefined {
 		return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 	}
-	function paintCells(fraction: number | undefined) {
-		contextMeter.hidden = fraction === undefined;
-		const pct = Math.min(100, fraction ?? 0);
-		contextMeter.setAttribute("aria-valuenow", String(pct));
-		contextMeter.dataset.tone = pct >= 90 ? "error" : pct >= 75 ? "warning" : "ok";
+	function paintCells(display: ReturnType<typeof logic.contextDisplay> | undefined) {
+		contextMeter.hidden = display === undefined;
+		contextMeter.setAttribute("aria-valuenow", String(display?.clamped ?? 0));
+		contextMeter.dataset.tone = display?.tone ?? "ok";
 		Array.from(contextMeter.children).forEach((cell, i) => {
-			cell.toggleAttribute("data-used", i < Math.round(pct / 10));
+			cell.toggleAttribute("data-used", i < (display?.cells ?? 0));
 		});
+	}
+	function tokenRatio(used: number | undefined, windowSize: number | undefined): string {
+		return windowSize === undefined ? "" : `${used === undefined ? "–" : tokenCount(used)}/${tokenCount(windowSize)}`;
 	}
 	function paintContext(value: unknown) {
 		const usage = isRecord(value) ? value : {};
@@ -568,10 +584,10 @@
 			percentage = number(usage.percent);
 		const fraction = percentage ?? (used !== undefined && windowSize ? (used / windowSize) * 100 : undefined);
 		context.hidden = fraction === undefined && windowSize === undefined;
-		paintCells(fraction);
-		percent.textContent = fraction === undefined ? "" : `${Math.round(fraction)}%`;
-		tokens.textContent =
-			windowSize === undefined ? "" : `${used === undefined ? "–" : tokenCount(used)}/${tokenCount(windowSize)}`;
+		const display = fraction === undefined ? undefined : logic.contextDisplay(fraction);
+		paintCells(display);
+		percent.textContent = display === undefined ? "" : `${display.percent}%`;
+		tokens.textContent = tokenRatio(used, windowSize);
 		tokens.hidden = !tokens.textContent;
 	}
 	function paintMetrics(state: Record<string, unknown>) {

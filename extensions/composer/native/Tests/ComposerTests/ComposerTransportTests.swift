@@ -5,6 +5,14 @@ import Testing
 @Suite struct ComposerTransportTests {
     private let composer = "ABCDEF01-2345-6789-ABCD-EF0123456789"
 
+    @Test func noticeFieldsCarryBridgeSeverityToThePage() {
+        #expect(composerNoticeFields(["level": "error", "text": "Pi rejected the submission."])
+                == ["tone": "failure", "text": "Pi rejected the submission."])
+        #expect(composerNoticeFields(["level": "warning", "text": "Retry later."])?["tone"] == "warn")
+        #expect(composerNoticeFields(["level": "info", "text": "Saved."])?["tone"] == "info")
+        #expect(composerNoticeFields(["level": "error", "text": ""]) == nil)
+    }
+
     private func directory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("composer-transport-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

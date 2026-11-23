@@ -42,7 +42,7 @@ function host(env: ComposerEnvironment, initial = "") {
 		{ provider: "fixture", id: "a", name: "Model A", reasoning: false },
 		{ provider: "fixture", id: "b", name: "Model B", reasoning: false },
 	];
-	const notices: string[] = [];
+	const notices: { text: string; level: string }[] = [];
 	const branch: object[] = [];
 	const workingVisible: boolean[] = [];
 	const presence: unknown[] = [];
@@ -84,8 +84,8 @@ function host(env: ComposerEnvironment, initial = "") {
 					editor.focused = true;
 				}
 			},
-			notify(message: string) {
-				notices.push(message);
+			notify(text: string, level: string) {
+				notices.push({ text, level });
 			},
 			setWorkingVisible(visible: boolean) {
 				workingVisible.push(visible);
@@ -183,7 +183,7 @@ function client(config: ComposerConfig) {
 				text?: string;
 				sequence: number;
 				message?: string;
-				events?: { type: string; text?: string }[];
+				events?: { type: string; text?: string; level?: string }[];
 				state?: ComposerState;
 				reset?: boolean;
 				stopped?: boolean;
@@ -204,6 +204,40 @@ async function consume(path: string): Promise<ComposerConfig & { share: number }
 	await unlink(path);
 	return cfg;
 }
+
+test("manual Composer open and update report a new or active app build only once", async (t) => {
+	const { env } = await setup(t);
+	let starting = true;
+	env.checkApp = async (notify) => {
+		if (!starting) return { state: "blocked", message: "A Composer app build is already in progress.", level: "info" };
+		starting = false;
+		notify("The Composer app build started in the background.", "info");
+		return { state: "started" };
+	};
+	const pi = host(env);
+	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
+	await pi.command();
+	assert.deepEqual(pi.notices, [{ text: "The Composer app build started in the background.", level: "info" }]);
+	await pi.command("update");
+	assert.deepEqual(pi.notices.slice(1), [{ text: "A Composer app build is already in progress.", level: "info" }]);
+});
+
+test("an asynchronous Pi submit rejection reaches the Composer bridge as an error notice", async (t) => {
+	const files = await setup(t);
+	const pi = host(files.env);
+	t.after(() => pi.event("session_shutdown", "quit") as Promise<void>);
+	await pi.command();
+	const ask = client(await consume(files.launch()));
+	const hello = await ask("/hello", { pid: 100, draft: { text: "" } });
+	pi.onSubmit(async () => {
+		throw new Error("Pi rejected the submission.");
+	});
+	assert.equal((await ask("/submit", { id: randomUUID(), behavior: "send", text: "test" })).outcome, "accepted");
+	const poll = await ask("/events", { after: hello.sequence });
+	const notice = poll.events?.find((event) => event.type === "notice");
+	assert.equal(notice?.level, "error");
+	assert.equal(notice?.text, "Pi rejected the submission.");
+});
 
 test("authenticates one composer, validates requests, and delivers bounded long polls", {
 	timeout: 6000,

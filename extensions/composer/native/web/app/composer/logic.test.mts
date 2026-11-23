@@ -21,6 +21,7 @@ interface Context {
 const scope = {} as {
 	composer: {
 		logic: {
+			contextDisplay(percent: number): { percent: number; clamped: number; cells: number; tone: string };
 			keyDecision(key: Key, context: Context): { kind: string; behavior?: string };
 			actionFor(state: string, options: Partial<Context>): { kind: string; label: string; disabled: boolean };
 			statusView(status: { connection: string; state?: string; command?: string }): {
@@ -31,7 +32,24 @@ const scope = {} as {
 	};
 };
 runInNewContext(stripTypeScriptTypes(readFileSync(new URL("./logic.ts", import.meta.url), "utf8")), scope);
-const { keyDecision, actionFor, statusView } = scope.composer.logic;
+const { keyDecision, actionFor, statusView, contextDisplay } = scope.composer.logic;
+
+test("context bands and cell fill use the rounded percentage", () => {
+	for (const [input, percent, cells, tone] of [
+		[60.49, 60, 6, "ok"],
+		[60.5, 61, 6, "warning"],
+		[64.5, 65, 7, "warning"],
+		[80.49, 80, 8, "warning"],
+		[80.5, 81, 8, "error"],
+		[120.5, 121, 10, "error"],
+	] as const) {
+		const value = contextDisplay(input);
+		assert.deepEqual(
+			[value.percent, value.clamped, value.cells, value.tone],
+			[percent, Math.min(100, percent), cells, tone],
+		);
+	}
+});
 const choose = (key: Partial<Key> = {}, context: Partial<Context> = {}) =>
 	keyDecision({ key: "Enter", ...key }, { sendKey: "return", connection: "connected", hasDraft: true, ...context });
 

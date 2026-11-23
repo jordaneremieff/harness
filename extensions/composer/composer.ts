@@ -21,7 +21,7 @@ import {
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import { ComposerCompletion } from "./composer-completion.ts";
 import { ComposerEditor } from "./composer-editor.ts";
-import { ComposerApp } from "./app-update.ts";
+import { type AppCheck, type AppNoticeLevel, ComposerApp } from "./app-update.ts";
 import { readSettings } from "./settings.ts";
 
 type Message = import("@earendil-works/pi-coding-agent").MessageEndEvent["message"];
@@ -157,7 +157,10 @@ export interface ComposerEnvironment {
 	resize?(receipt: unknown, share: number, signal: AbortSignal): Promise<ResizeResult>;
 	/** Give Rex focus to Pi's own pane, so keys that the terminal receives reach Pi. */
 	focus?(receipt: unknown, signal: AbortSignal): Promise<FocusResult>;
-	checkApp?(notify: (message: string, error?: boolean) => void, explicit?: boolean): Promise<string | undefined>;
+	checkApp?(
+		notify: (message: string, level: AppNoticeLevel) => void,
+		explicit?: boolean,
+	): Promise<AppCheck | undefined>;
 	alive(pid: number): boolean;
 	helloMs?: number;
 	gapMs?: number;
@@ -249,7 +252,8 @@ function environment(): ComposerEnvironment {
 		resize: resizeComposer,
 		focus: focusPiPane,
 		async checkApp(notify, explicit) {
-			if (process.platform !== "darwin") return "The composer requires macOS.";
+			if (process.platform !== "darwin")
+				return { state: "blocked", message: "Composer requires macOS.", level: "warning" };
 			return app.check(appPath, notify, explicit);
 		},
 		async launch(file, cwd, signal) {
@@ -371,10 +375,7 @@ class Connection {
 		}
 		if (!this.attached)
 			this.helloTimer = setTimeout(() => {
-				this.ctx.ui.notify(
-					this.uncertain ?? "The composer did not connect within 10 seconds. Use Pi's editor.",
-					"warning",
-				);
+				this.ctx.ui.notify(this.uncertain ?? "Composer did not connect within 10 seconds; use Pi's editor.", "warning");
 				void this.finish(undefined);
 			}, this.env.helloMs ?? 10_000);
 		return file;
@@ -820,13 +821,14 @@ export function registerComposer(pi: ExtensionAPI, env = environment()): void {
 		)
 			reportPresence();
 	});
-	const notifyFor = (ctx: ExtensionContext) => (message: string, error?: boolean) => {
-		if (!stopping) ctx.ui.notify(message, error ? "error" : "info");
+	const notifyFor = (ctx: ExtensionContext) => (message: string, level: AppNoticeLevel) => {
+		if (!stopping) ctx.ui.notify(message, level);
 	};
 	const ready = async (ctx: ExtensionContext, automatic: boolean) => {
-		const refusal = await env.checkApp?.(notifyFor(ctx));
-		if (refusal && !automatic) throw new Error(refusal);
-		return !refusal;
+		const announce = notifyFor(ctx);
+		const check = await env.checkApp?.(announce);
+		if (check?.state === "blocked" && !automatic) announce(check.message, check.level);
+		return !check;
 	};
 	const open = async (ctx: ExtensionContext, resumed?: RetainedComposer, automatic = false): Promise<void> => {
 		if (stopping) return;
@@ -854,7 +856,16 @@ export function registerComposer(pi: ExtensionAPI, env = environment()): void {
 		} catch (error) {
 			const report = connection === current;
 			await current.finish(undefined);
-			if (report) ctx.ui.notify(oneLine(error), "warning");
+			if (report) notifyFor(ctx)(`Composer could not open: ${oneLine(error)}`, "error");
+		}
+	};
+	const updateApp = async (ctx: ExtensionContext) => {
+		const announce = notifyFor(ctx);
+		try {
+			const check = await env.checkApp?.(announce, true);
+			if (check?.state === "blocked") announce(check.message, check.level);
+		} catch (error) {
+			announce(`The Composer app update could not start: ${oneLine(error)}`, "error");
 		}
 	};
 	pi.registerCommand("composer", {
@@ -862,8 +873,9 @@ export function registerComposer(pi: ExtensionAPI, env = environment()): void {
 		getArgumentCompletions: (prefix) =>
 			["close", "update"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
-			if (ctx.mode !== "tui" || !ctx.hasUI) {
-				ctx.ui.notify("The composer requires an interactive Pi TUI in a Rex pane.", "warning");
+			if (!ctx.hasUI) return;
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("Composer requires an interactive Pi terminal in a Rex pane.", "warning");
 				return;
 			}
 			switch (args.trim()) {
@@ -873,22 +885,11 @@ export function registerComposer(pi: ExtensionAPI, env = environment()): void {
 				case "close":
 					if (connection) await connection.finish("command");
 					break;
-				case "update": {
-					try {
-						const announce = notifyFor(ctx);
-						let announced = false;
-						const refusal = await env.checkApp?.((message, error) => {
-							announced = true;
-							announce(message, error);
-						}, true);
-						if (refusal && !announced) ctx.ui.notify(refusal, "warning");
-					} catch (error) {
-						ctx.ui.notify(oneLine(error), "warning");
-					}
+				case "update":
+					await updateApp(ctx);
 					break;
-				}
 				default:
-					ctx.ui.notify("Use /composer, /composer close, or /composer update.", "warning");
+					ctx.ui.notify("Composer accepts /composer, /composer close, or /composer update.", "warning");
 			}
 		},
 	});
@@ -897,7 +898,9 @@ export function registerComposer(pi: ExtensionAPI, env = environment()): void {
 		if (event.reason === "startup") {
 			if (env.auto?.()) void open(ctx, undefined, true);
 			else if (process.platform === "darwin")
-				void env.checkApp?.(notifyFor(ctx)).catch((error) => notifyFor(ctx)(oneLine(error), true));
+				void env
+					.checkApp?.(notifyFor(ctx))
+					.catch((error) => notifyFor(ctx)(`The Composer app update check failed: ${oneLine(error)}`, "error"));
 			return;
 		}
 		const record = processState[retained];

@@ -5,6 +5,17 @@ import NativePane
 import OSLog
 import WebKit
 
+func composerNoticeFields(_ event: [String: Any]) -> [String: String]? {
+    guard let text = event["text"] as? String, !text.isEmpty else { return nil }
+    let tone: String
+    switch event["level"] as? String {
+    case "error": tone = "failure"
+    case "warning": tone = "warn"
+    default: tone = "info"
+    }
+    return ["text": text, "tone": tone]
+}
+
 @MainActor
 final class ComposerHost {
     static let perf = Logger(subsystem: "local.harness.composer", category: "perf")
@@ -434,7 +445,8 @@ final class ComposerHost {
                         if let text = event["text"] as? String, !text.isEmpty { focus(); await deliver("insert", text) }
                     case "focus": focus()
                     case "history": history = event["entries"] as? [String] ?? history; post("history", ["entries": history])
-                    case "notice": post("notice", ["text": event["text"] as? String ?? ""])
+                    case "notice":
+                        if let fields = composerNoticeFields(event) { post("notice", fields) }
                     case "detach": return true
                     case "close": close(notifyPi: false); return false
                     default: continue
