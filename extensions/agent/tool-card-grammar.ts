@@ -27,6 +27,8 @@ export interface ToolCallPresentation {
 	facts?: readonly string[];
 	/** Actual supplied arguments. Substitute a size description for anything the card must withhold. */
 	args: Readonly<Record<string, unknown>>;
+	/** Argument values that the subject or facts line already identifies. */
+	shownArgs?: readonly string[];
 	/** A prose/code argument shown on the call in addition to its labelled form in expansion. */
 	body?: { key: string; text: string };
 	/** Additional observed facts, distinct from supplied arguments. */
@@ -167,9 +169,13 @@ export function toolCallCard(call: ToolCallPresentation, theme: Theme, context: 
 	const body = bounded(call.body ? argumentText(call.args[call.body.key] ?? call.body.text) : "");
 	const args = bounded(argumentsText(call.args));
 	const extra = bounded(call.expanded ?? "");
+	const shown = new Set(call.shownArgs);
+	if (call.body) shown.add(call.body.key);
+	const hiddenArgs = Object.entries(call.args).some(([key, value]) => value !== undefined && !shown.has(key));
 	const disclosure = (width: number): Disclosure => ({
 		extra:
-			args.text !== "" ||
+			hiddenArgs ||
+			Boolean(body.limit) ||
 			extra.text !== "" ||
 			visibleWidth(name + (subject ? ` ${subject}` : "")) > width ||
 			visibleWidth(facts) > width,

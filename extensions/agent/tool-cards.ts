@@ -635,6 +635,14 @@ function renderStatusCall(
 			name,
 			subject,
 			args,
+			shownArgs: [
+				...(sessionId && subject === sessionId ? ["sessionId"] : []),
+				...(!sessionId && key ? [key] : []),
+				...(args.view === "fleet" || args.view === "storage-page" ? ["view"] : []),
+				...(args.view === "fleet" && args.model && args.provider ? ["provider"] : []),
+				...(args.detail === true && !args.view ? ["detail"] : []),
+				...(limit === undefined ? [] : ["limit"]),
+			],
 			facts: [
 				targetConfiguration(sessionId, context),
 				statusCallMode(args, sessionId),
@@ -730,10 +738,18 @@ export function renderSendCall(value: unknown, theme: Theme, context: AgentCardC
 	const args = record(value);
 	const deadline = localToolTime(Date.parse(text(args.deliverAt)));
 	const checkIn = count(args.checkInMinutes);
+	const subject = targetLabel(text(args.sessionId), context);
 	return toolCallCard(
 		{
 			name: "agent_send",
-			subject: targetLabel(text(args.sessionId), context),
+			subject,
+			shownArgs: [
+				...(subject === args.sessionId ? ["sessionId"] : []),
+				...(targetLabel(text(args.replyTo), context) === args.replyTo ? ["replyTo"] : []),
+				...(text(args.mode) ? ["mode"] : []),
+				...(args.passive === true ? ["passive"] : []),
+				...(checkIn === undefined ? [] : ["checkInMinutes"]),
+			],
 			facts: [
 				...messageMetadata(args, context),
 				args.passive === true ? "passive" : "",

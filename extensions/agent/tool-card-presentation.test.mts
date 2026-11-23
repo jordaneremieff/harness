@@ -150,6 +150,12 @@ it("send hands off its measured call hint without a collapsed Dispatch result bo
 		),
 	);
 	t.after(() => nativeTui.setKeybindings(previousKeys));
+	const visibleArgs = nativeRow("agent_send", { sessionId: "@reviewer", message: "Review" }, undefined, []);
+	assert.match(screen(visibleArgs), /agent_send @reviewer\nReview/u);
+	assert.deepEqual(hints(screen(visibleArgs)), []);
+	const visibleStatus = nativeRow("agent_status", { view: "storage-page", storageId: targetId, limit: 7 }, undefined);
+	assert.deepEqual(hints(screen(visibleStatus)), []);
+	assert.equal(hints(screen(visibleStatus, 35)).length, 1, "expansion restores the clipped storage ID");
 	const args = {
 		sessionId: targetId,
 		message: `${"alpha ".repeat(12).trim()}\nrow 3\nrow 4\nrow 5\n\x1b]52;c;private\x07row 6\nrow 7`,
