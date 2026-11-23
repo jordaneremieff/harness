@@ -13,13 +13,14 @@ import { isAbsolute, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { type JsonObject, type Tool, validateToolArguments } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { toolDisplay } from "./display.ts";
 import registerBrowser from "./index.ts";
 
 const source = fileURLToPath(new URL("./index.ts", import.meta.url));
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 
-interface RegisteredTool {
+interface RegisteredTool extends Pick<ToolDefinition, "renderCall" | "renderResult"> {
 	name: string;
 	description: string;
 	exposure?: string;
@@ -120,6 +121,35 @@ afterEach(() => {
 });
 
 describe("browser extension entrypoint", () => {
+	it("publishes inert display records for every renderer and withdraws the listener at shutdown", async () => {
+		process.env.PI_BROWSER_ACCESS = JSON.stringify({ chrome: "interact" });
+		const { api, tools, emitted, shutdown } = fixture();
+		registerBrowser(api as unknown as ExtensionAPI);
+		const display = () =>
+			emitted.filter((entry) => entry.channel === "harness:tool-display:publish").map((entry) => entry.data);
+		assert.deepEqual(display(), [toolDisplay()]);
+		for (const record of toolDisplay().tools) {
+			assert.deepEqual(Object.keys(record).sort(), ["name", "renderCall", "renderResult"]);
+			assert.equal(tools.get(record.name)?.renderCall, record.renderCall);
+			assert.equal(tools.get(record.name)?.renderResult, record.renderResult);
+		}
+		const contribution = emitted.find((entry) => entry.channel === "durable:contribution")?.data as {
+			display: { version: number; entry: string; export: "toolDisplay" };
+		};
+		assert.deepEqual(contribution.display, { version: 1, entry: "./display.ts", export: "toolDisplay" });
+		const entry: typeof import("./display.ts") = await import(
+			new URL(contribution.display.entry, import.meta.url).href
+		);
+		assert.deepEqual(entry[contribution.display.export](), toolDisplay());
+		api.events.emit("harness:tool-display:request", { version: 2 });
+		assert.equal(display().length, 1);
+		api.events.emit("harness:tool-display:request", { version: 1 });
+		assert.deepEqual(display(), [toolDisplay(), toolDisplay()]);
+		shutdown();
+		api.events.emit("harness:tool-display:request", { version: 1 });
+		assert.equal(display().length, 2);
+	});
+
 	it("registers no tool while no browser has access, and still publishes settings and the contribution", () => {
 		delete process.env.PI_BROWSER_ACCESS;
 		const { api, order, emitted } = fixture();

@@ -14,6 +14,7 @@ import {
 	TOOL_TEXT,
 	type ToolName,
 } from "./capability.ts";
+import { toolDisplay } from "./display.ts";
 import { browserDurableContribution } from "./durable.ts";
 import {
 	type ActParams,
@@ -39,10 +40,21 @@ export default function registerBrowser(pi: ExtensionAPI) {
 	);
 	const deps = productionDeps(agentDir);
 	const offered = offeredTools(deps.readAccess());
+	const display = toolDisplay();
+	const renderers = new Map(display.tools.map((record) => [record.name, record]));
+	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", display);
+	const disposeDisplay = pi.events.on("harness:tool-display:request", (request) => {
+		if (typeof request === "object" && request !== null && "version" in request && request.version === 1) {
+			publishDisplay();
+		}
+	});
+	pi.on("session_shutdown", disposeDisplay);
+	publishDisplay();
 	// Every offered tool carries the shared guidance, so whichever one a request
 	// loads brings the handling constraints with it. Pi renders one copy of an
 	// identical guideline, so several active browser tools add no repetition.
 	const text = (name: ToolName) => ({
+		...renderers.get(name),
 		name,
 		label: TOOL_TEXT[name].label,
 		description: TOOL_TEXT[name].description,

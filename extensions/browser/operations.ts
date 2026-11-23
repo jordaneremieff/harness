@@ -922,6 +922,7 @@ function actStatus(sent: Dispatched, state: Observation, postcondition: Facts): 
 	if (withheld(state)) return "stale-reference";
 	if (state.cancelled) return "cancelled";
 	if (state.failedRead) return state.failedRead.kind === "unavailable" ? "observation-failed" : "target-closed";
+	if (state.dispatch.status === "failed") return "dispatch-failed";
 	if (unsettledLostReply(sent, state, postcondition))
 		return sent.lostReply?.transport.status === "failed" ? "transport-failed" : "observation-failed";
 	return postcondition.status === "failed" ? "postcondition-failed" : "ok";
@@ -987,7 +988,11 @@ function actResult(
 		actStatus(sent, state, postcondition),
 		headline,
 		report,
-		withheld(state) || state.cancelled || Boolean(state.failedRead) || unsettledLostReply(sent, state, postcondition),
+		withheld(state) ||
+			state.cancelled ||
+			state.dispatch.status === "failed" ||
+			Boolean(state.failedRead) ||
+			unsettledLostReply(sent, state, postcondition),
 	);
 }
 

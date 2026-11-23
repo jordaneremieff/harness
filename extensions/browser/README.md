@@ -57,6 +57,16 @@ the tools the request offers. Results are text: a headline, then a JSON report.
 Text and HTML views put the page content after the report, marked as untrusted.
 The capture result adds the image.
 
+Browser cards follow the [emission grammar](../../docs/conventions/emissions.md)
+across ordinary Pi, the agent dashboard, and the attached terminal. Tab cards
+lead with availability or matching tabs. Inspection cards lead with page
+content or matching elements and show the next call for a paged view in the
+expanded card. Action cards distinguish dispatch, observation and the requested
+condition; they show the length of filled or selected text, not its value.
+Evaluation cards show the expression as call input and report its settlement
+separately. Capture cards keep the native inline image and distinguish a failed
+optional save from a failed capture.
+
 ## Setup
 
 The operator controls four separate gates. The tools report which one is
@@ -262,6 +272,11 @@ disallowed), it still navigates and reports `dispatch.status: dispatched` with
 the unavailable observation and an unknown postcondition. The element actions
 and `browser_evaluate` need page JavaScript; when it is unavailable they refuse
 before anything runs.
+
+An exception from the page-side action marks the tool result as an error. Its
+receipt reports `dispatch-failed` unless cancellation or a failed observation
+also accounts for the result. An unmet `waitFor` condition alone does not mark
+the tool result as an error.
 
 The tool sends each action once. After a transport failure, timeout,
 cancellation, or a failed read after the dispatch it reports the dispatch as
