@@ -9,8 +9,8 @@ import Testing
         weak var client: CollaborationClient?
     }
 
-    private func eventually(_ condition: () async throws -> Bool) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+    private func eventually(within budget: Duration = .seconds(8), _ condition: () async throws -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: budget)
         while try await !condition() {
             guard ContinuousClock.now < deadline else { throw LiveTestBridge.Failure.deadline }
             try await Task.sleep(for: .milliseconds(20))
@@ -46,6 +46,54 @@ import Testing
         let serials = bodies.compactMap { $0["serial"] as? Int }
         #expect(serials.count == 4 && serials == serials.sorted() && Set(serials).count == 4)
         #expect(bodies.compactMap { $0["document"] as? String } == [original.uuidString, original.uuidString, original.uuidString, target.uuidString])
+    }
+
+    enum Navigation: CaseIterable { case confirmed, refused, reselected, invalidReceipt }
+
+    @Test(arguments: Navigation.allCases) func destinationSendWaitsForItsOwnNavigation(navigation: Navigation) async throws {
+        let server = try LiveTestBridge(mode: "transport"); defer { server.stop() }
+        let page = Page(), workspace = UUID(), original = UUID(), destination = UUID(), request = UUID().uuidString
+        let text = "Why did this paragraph change?"
+        var submission: CollaborationClient.PromptSubmission?
+        let client = CollaborationClient(configuration: try await server.configuration(), workspace: workspace, document: original, view: { page.view }) { command in
+            guard command.op == "navigate", let client = page.client else { return LiveResult(status: "closed") }
+            page.view = LivePaneView(kind: "published", title: "Destination", mode: "reading", dirty: false, conflict: false,
+                storeId: command.storeId, documentId: command.documentId, revision: 1, digest: "sha256:" + String(repeating: "a", count: 64))
+            client.bind(document: destination)
+            Task { @MainActor in submission = await client.submitAnnotation(requestId: request, threadId: request, text: text, quote: nil) }
+            do {
+                try await eventually(within: .seconds(1)) { submission != nil || !client.isFreshPrompt(requestId: request) }
+            } catch { Issue.record("The destination send never entered preparation") }
+            #expect(submission == nil && !client.isFreshPrompt(requestId: request) && !client.knowsPrompt(requestId: request, threadId: request))
+            if navigation == .refused { return LiveResult(status: "busy", message: "The destination did not confirm its page.") }
+            if navigation == .reselected { client.bind(document: original); client.bind(document: destination) }
+            var receiptView = page.view
+            if navigation == .invalidReceipt { receiptView.revision = nil }
+            return LiveResult(status: "navigated", workspace: workspace.uuidString, document: destination.uuidString,
+                handle: workspace.uuidString + ":" + destination.uuidString, view: receiptView)
+        }
+        page.client = client; client.start(); defer { client.stop() }
+        try await eventually { client.status == "Agent connected" }
+        let receipt = try await server.request(["op": "navigate", "storeId": String(repeating: "a", count: 32), "documentId": "md-" + String(repeating: "b", count: 20)])
+        if navigation == .invalidReceipt {
+            #expect(receipt["status"] as? String == "uncertain")
+            #expect((receipt["message"] as? String)?.contains("revision") == true)
+        } else { #expect(receipt["status"] as? String == (navigation == .refused ? "busy" : "navigated")) }
+        try await eventually {
+            let state = try await server.request(["op": "state"])
+            let events = state["transport"] as? [[String: Any]] ?? []
+            return submission != nil && state["document"] as? String == destination.uuidString && events.contains {
+                $0["path"] as? String == "/connect" && ($0["body"] as? [String: Any])?["document"] as? String == destination.uuidString
+            }
+        }
+        let prompts = try #require(try await server.request(["op": "state"])["prompts"] as? [[String: String]])
+        if navigation == .confirmed {
+            #expect(submission == .submitted)
+            #expect(prompts == [["workspace": workspace.uuidString, "document": destination.uuidString, "operationId": request, "text": text]])
+        } else {
+            guard case .refused = submission else { Issue.record("An invalidated destination send was not refused"); return }
+            #expect(prompts.isEmpty && client.isFreshPrompt(requestId: request))
+        }
     }
 
     @Test func unresolvedReceiptKeepsItsOriginalTransportAndHiddenAnswerKeepsItsLogicalDocument() async throws {

@@ -31,12 +31,18 @@ test("comment pages keep origin and state, not the reader's source anchor or pri
 		readCommentResult({ ...page, comments: [{ ...item, sourceAnchor: "**milk**", draft: "not sent" }] }, action),
 		page,
 	);
-	assert.throws(() => readCommentResult({ ...page, comments: [{ ...item, commentId: `${threadId}:2` }] }, action));
-	assert.throws(() => readCommentResult({ ...page, comments: [] }, action));
-	assert.throws(() => readCommentResult({ ...page, nextOffset: 2 }, action));
+	assert.throws(
+		() => readCommentResult({ ...page, comments: [{ ...item, commentId: `${threadId}:2` }] }, action),
+		/comments\[0\]\.commentId/u,
+	);
+	assert.throws(() => readCommentResult({ ...page, comments: [] }, action), /comments/u);
+	assert.throws(() => readCommentResult({ ...page, nextOffset: 2 }, action), /nextOffset/u);
 	assert.throws(() => readCommentAction({ op: "comments", offset: 1 }));
 	const next = readCommentAction({ op: "comments", offset: 1, expectedVersion: 4 });
-	assert.throws(() => readCommentResult({ ...page, offset: 1, total: 2, nextOffset: undefined, version: 5 }, next));
+	assert.throws(
+		() => readCommentResult({ ...page, offset: 1, total: 2, nextOffset: undefined, version: 5 }, next),
+		/version/u,
+	);
 });
 
 test("an addressed receipt confirms only the requested item, version and state", () => {
@@ -48,7 +54,7 @@ test("an addressed receipt confirms only the requested item, version and state",
 	});
 	const receipt = { status: "commentSet", commentId: item.commentId, commentState: "closed", version: 3 };
 	assert.deepEqual(readCommentResult(receipt, close), receipt);
-	assert.throws(() => readCommentResult({ ...receipt, version: 4 }, close));
-	assert.throws(() => readCommentResult({ ...receipt, commentState: "open" }, close));
+	assert.throws(() => readCommentResult({ ...receipt, version: 4 }, close), /version/u);
+	assert.throws(() => readCommentResult({ ...receipt, commentState: "open" }, close), /commentState/u);
 	assert.throws(() => readCommentAction({ ...close, commentId: `${threadId}:51` }));
 });

@@ -68,30 +68,40 @@ export function readCommentAction(record: Record<string, unknown>): CommentActio
 	};
 }
 
-function readRow(value: unknown, commentState: CommentState): SentComment {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid comment row.");
-	const r = value as Record<string, unknown>;
+function invalid(field: string): never {
+	throw new Error(`Invalid ${field} in the comment result.`);
+}
+
+function rowIdentity(
+	r: Record<string, unknown>,
+	row: string,
+): Pick<SentComment, "commentId" | "threadId" | "kind" | "ordinal"> {
+	if (!id(r.commentId)) invalid(`${row}.commentId`);
+	if (!count(r.ordinal)) invalid(`${row}.ordinal`);
+	if (typeof r.threadId !== "string") invalid(`${row}.threadId`);
+	if (r.commentId !== `${r.threadId}:${r.ordinal}`) invalid(`${row}.commentId`);
 	if (
-		!id(r.commentId) ||
-		!count(r.ordinal) ||
-		typeof r.threadId !== "string" ||
-		r.commentId !== `${r.threadId}:${r.ordinal}` ||
 		!(
 			((r.kind === "question" || r.kind === "overall") && r.ordinal === 0) ||
 			(r.kind === "annotation" && r.ordinal > 0)
-		) ||
-		r.commentState !== commentState ||
-		!count(r.version, 1) ||
-		!text(r.text, 128 * 1024) ||
-		(r.quote !== undefined && !text(r.quote, 8192)) ||
-		(r.madeOnRevision !== undefined && !count(r.madeOnRevision, 1))
+		)
 	)
-		throw new Error("Invalid comment identity, version or content.");
+		invalid(`${row}.kind`);
+	return { commentId: r.commentId, threadId: r.threadId, kind: r.kind, ordinal: r.ordinal };
+}
+
+function readRow(value: unknown, commentState: CommentState, index: number): SentComment {
+	const row = `comments[${index}]`;
+	if (!value || typeof value !== "object" || Array.isArray(value)) invalid(row);
+	const r = value as Record<string, unknown>;
+	const identity = rowIdentity(r, row);
+	if (r.commentState !== commentState) invalid(`${row}.commentState`);
+	if (!count(r.version, 1)) invalid(`${row}.version`);
+	if (!text(r.text, 128 * 1024)) invalid(`${row}.text`);
+	if (r.quote !== undefined && !text(r.quote, 8192)) invalid(`${row}.quote`);
+	if (r.madeOnRevision !== undefined && !count(r.madeOnRevision, 1)) invalid(`${row}.madeOnRevision`);
 	return {
-		commentId: r.commentId,
-		threadId: r.threadId,
-		kind: r.kind,
-		ordinal: r.ordinal,
+		...identity,
 		text: r.text,
 		...(r.quote !== undefined ? { quote: r.quote } : {}),
 		...(r.madeOnRevision !== undefined ? { madeOnRevision: r.madeOnRevision } : {}),
@@ -101,56 +111,53 @@ function readRow(value: unknown, commentState: CommentState): SentComment {
 }
 
 export function readCommentResult(r: Record<string, unknown>, action: CommentAction): CommentResult {
+	if (action.op === "comments") return readCommentPage(r, action);
+	if (r.status !== "commentSet") invalid("status");
+	if (r.commentId !== action.commentId) invalid("commentId");
+	if (r.commentState !== action.commentState) invalid("commentState");
+	if (!count(r.version, 1) || (r.version !== action.expectedVersion && r.version !== action.expectedVersion + 1))
+		invalid("version");
+	return { status: "commentSet", commentId: action.commentId, commentState: action.commentState, version: r.version };
+}
+
+function pageEnd(comments: SentComment[], offset: number, total: number, nextOffset: unknown): number {
+	const end = offset + comments.length;
+	if (end > total) invalid("total");
+	if (end !== total && !comments.length) invalid("comments");
+	if (end === total ? nextOffset !== undefined : nextOffset !== end) invalid("nextOffset");
+	const ids = new Set<string>();
+	for (const [index, item] of comments.entries()) {
+		if (ids.has(item.commentId)) invalid(`comments[${index}].commentId`);
+		ids.add(item.commentId);
+	}
 	if (
-		action.op === "setComment" &&
-		r.status === "commentSet" &&
-		r.commentId === action.commentId &&
-		r.commentState === action.commentState &&
-		count(r.version, 1) &&
-		(r.version === action.expectedVersion || r.version === action.expectedVersion + 1)
+		comments.length > 1 &&
+		comments.reduce((n, c) => n + Buffer.byteLength(c.text) + Buffer.byteLength(c.quote ?? ""), 0) > 64 * 1024
 	)
-		return { status: "commentSet", commentId: action.commentId, commentState: action.commentState, version: r.version };
-	if (action.op !== "comments") throw new Error("The reader did not confirm the requested comment change.");
-	return readCommentPage(r, action);
+		invalid("comments");
+	return end;
 }
 
 function readCommentPage(
 	r: Record<string, unknown>,
 	action: Extract<CommentAction, { op: "comments" }>,
 ): CommentResult {
-	if (
-		r.status === "comments" &&
-		r.commentState === action.commentState &&
-		r.offset === action.offset &&
-		count(r.total) &&
-		count(r.version) &&
-		(action.expectedVersion === undefined || r.version === action.expectedVersion) &&
-		Array.isArray(r.comments) &&
-		r.comments.length <= 20
-	) {
-		const comments = r.comments.map((entry) => readRow(entry, action.commentState));
-		const end = action.offset + comments.length;
-		if (
-			end > r.total ||
-			(end !== r.total && !comments.length) ||
-			(end === r.total ? r.nextOffset !== undefined : r.nextOffset !== end) ||
-			new Set(comments.map((c) => c.commentId)).size !== comments.length
-		)
-			throw new Error("Invalid comment page coverage.");
-		if (
-			comments.length > 1 &&
-			comments.reduce((n, c) => n + Buffer.byteLength(c.text) + Buffer.byteLength(c.quote ?? ""), 0) > 64 * 1024
-		)
-			throw new Error("Comment page exceeds its text limit.");
-		return {
-			status: "comments",
-			commentState: action.commentState,
-			version: r.version,
-			comments,
-			total: r.total,
-			offset: action.offset,
-			...(end !== r.total ? { nextOffset: end } : {}),
-		};
-	}
-	throw new Error("The reader did not confirm the requested comment operation.");
+	if (r.status !== "comments") invalid("status");
+	if (r.commentState !== action.commentState) invalid("commentState");
+	if (r.offset !== action.offset) invalid("offset");
+	if (!count(r.total)) invalid("total");
+	if (!count(r.version) || (action.expectedVersion !== undefined && r.version !== action.expectedVersion))
+		invalid("version");
+	if (!Array.isArray(r.comments) || r.comments.length > 20) invalid("comments");
+	const comments = r.comments.map((entry, index) => readRow(entry, action.commentState, index));
+	const end = pageEnd(comments, action.offset, r.total, r.nextOffset);
+	return {
+		status: "comments",
+		commentState: action.commentState,
+		version: r.version,
+		comments,
+		total: r.total,
+		offset: action.offset,
+		...(end !== r.total ? { nextOffset: end } : {}),
+	};
 }

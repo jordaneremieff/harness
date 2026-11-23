@@ -79,7 +79,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     struct AgentState: Decodable { var sequence: Int; var status: String; var text: String; var truncated: Bool; var operationId: String?; var document: String? }
     private struct Poll: Decodable { var ok: Bool; var command: LiveCommand?; var state: AgentState }
     private struct PromptReceipt: Decodable { var ok: Bool; var status: String; var message: String?; var retryable: Bool? }
-    private struct Acknowledgement: Decodable { var ok: Bool }
+    private struct Acknowledgement: Decodable { var ok: Bool; var accepted: Bool? }
     private enum Failure: Error { case refused, version, stale, oversized, response, handoff }
     private let configuration: CollaborationConfiguration
     private let workspace: UUID
@@ -93,6 +93,8 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
     private var connectedDocument: UUID?
     private var connectedOnce = false
     private var holdsNavigation = false
+    /// An exact selection or its navigation proof changed. Reconnecting the same buffer is not a change.
+    private var admissionGeneration = 0
     private var reportTask: Task<Void, Never>?
     private var serial = 0
     private var epoch = 0
@@ -292,16 +294,17 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         }
         // Capture the author's message before waiting. Register it only when its exact buffer is connected.
         if connectedDocument != document {
-            let selected = document, token = epoch
+            let selected = document, generation = admissionGeneration
             preparing[selected] = requestId
             defer { preparing[selected] = nil }
             let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-            while connectedDocument != selected, document == selected, epoch == token, !holdsNavigation, !closed,
-                  !Task.isCancelled, ContinuousClock.now < deadline {
+            while connectedDocument != selected, admissionGeneration == generation, !closed, !Task.isCancelled,
+                  ContinuousClock.now < deadline {
                 try? await Task.sleep(for: .milliseconds(30))
             }
             if bridgePromptResults[key] != nil { return promptSubmission(key, requestId: requestId) }
-            guard connectedDocument == selected, epoch == token, document == selected, !closed, !Task.isCancelled else {
+            guard connectedDocument == selected, admissionGeneration == generation, !closed, !Task.isCancelled,
+                  ContinuousClock.now < deadline else {
                 if !composed { return promptSubmission(key, requestId: requestId) }
                 return .refused(closed ? connectionStatus : "The selected document did not connect. Your comment was not sent.")
             }
@@ -564,7 +567,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
         if !prompt.isEmpty || pendingPrompt != nil {
             commentDrafts[logicalDocument] = CommentDraft(text: prompt, quote: annotationQuote, pending: pendingPrompt)
         } else { commentDrafts[logicalDocument] = nil }
-        self.document = document; logicalDocument = key
+        self.document = document; logicalDocument = key; admissionGeneration += 1
         let draft = commentDrafts.removeValue(forKey: key)
         prompt = draft?.text ?? ""; annotationQuote = draft?.quote; pendingPrompt = draft?.pending
         selectionQuote = ""; selectionTooLarge = false; annotationPresented = false; promptIssue = nil
@@ -591,7 +594,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
             await previous?.value
             guard let self, !Task.isCancelled, self.epoch == token else { return }
             var connected = false, sequence = 0
-            var pending: (request: String, result: LiveResult, serial: Int?)?
+            var pending: (request: String, result: LiveResult, serial: Int?, destinationGeneration: Int?)?
             var failures = 0
             while !Task.isCancelled, !self.closed, self.epoch == token {
                 do {
@@ -616,7 +619,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
                         guard ack.ok else { throw Failure.response }
                         self.retiring.remove(retired)
                     }
-                    if let (request, result, serial) = pending {
+                    if let (request, result, serial, destinationGeneration) = pending {
                         var body = self.identity(selected)
                         body["requestId"] = request
                         body["result"] = try self.json(result)
@@ -626,6 +629,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
                         guard ack.ok else { throw Failure.response }
                         pending = nil
                         if self.holdsNavigation {
+                            if ack.accepted == false || destinationGeneration != self.admissionGeneration { self.admissionGeneration += 1 }
                             self.holdsNavigation = false
                             self.reconnect(); return
                         }
@@ -646,7 +650,9 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
                         }
                         let result = await self.handle(command)
                         guard self.epoch == token, !Task.isCancelled, !self.closed else { return }
-                        pending = (command.requestId, result, result.status == "navigated" ? self.nextSerial() : nil)
+                        let navigated = result.status == "navigated"
+                        let destination = navigated && result.document == self.document.uuidString ? self.admissionGeneration : nil
+                        pending = (command.requestId, result, navigated ? self.nextSerial() : nil, destination)
                     }
                     failures = 0
                 } catch is CancellationError { return }
@@ -656,7 +662,7 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sen
                     self.connectedDocument = nil; self.reportTask?.cancel()
                     if case Failure.stale = error {
                         if self.holdsNavigation {
-                            self.holdsNavigation = false; self.reconnect(); return
+                            self.admissionGeneration += 1; self.holdsNavigation = false; self.reconnect(); return
                         }
                         pending = nil
                     }

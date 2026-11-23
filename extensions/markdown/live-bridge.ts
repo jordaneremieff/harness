@@ -49,6 +49,7 @@ interface Pending {
 	command: LiveCommand;
 	waiters: Set<(result: LiveResult) => void>;
 	result?: LiveResult;
+	rejected?: true;
 	delivered: boolean;
 	cancelled: boolean;
 }
@@ -65,9 +66,9 @@ interface Reader {
 	launchId: string;
 	serial: number;
 	lastContact: number;
-	navigation?: { command: Extract<LiveCommand, { op: "navigate" }>; result?: LiveResult };
+	navigation?: { command: Extract<LiveCommand, { op: "navigate" }>; result?: LiveResult; rejected?: true };
 }
-type SavedEdit = Omit<EditReceipt, "pending"> & { command: LiveCommand; delivered: boolean; result?: LiveResult };
+type SavedEdit = Omit<EditReceipt, "pending"> & Pick<Pending, "command" | "delivered" | "result" | "rejected">;
 type SavedPrompt = { handle: string; fingerprint: string; result: LivePromptReceipt };
 interface SavedState {
 	version: 1;
@@ -118,6 +119,14 @@ function processAlive(pid: number): boolean {
 }
 const failure = (status: "closed" | "uncertain", message: string): LiveResult => ({ status, message });
 const queryOnly = (op: string): boolean => op === "read" || op === "comments";
+function invalidReceipt(op: LiveAction["op"], error: unknown): LiveResult {
+	const detail = error instanceof Error ? error.message : "Invalid result.";
+	const uncertain = op === "apply" || op === "navigate" || op === "setComment";
+	return {
+		status: uncertain ? "uncertain" : "error",
+		message: `Reader protocol error: ${detail}${queryOnly(op) ? "" : " The effect is unconfirmed. Inspect the pane before another change."}`,
+	};
+}
 function missingReceipt(op: string): LiveResult {
 	switch (op) {
 		case "setComment":
@@ -377,6 +386,7 @@ export class LiveBridge {
 	private inactiveResult(handle: string, action: LiveAction, anchor?: AnchorIdentity): LiveResult {
 		if (action.op === "apply" && !this.closed && this.edits.has(action.operationId)) {
 			const prior = this.priorEdit(handle, action, anchor);
+			if (prior?.rejected && prior.result) return prior.result;
 			if (prior?.delivered && !prior.result) return disconnectedEdit();
 		}
 		return failure(
@@ -410,7 +420,10 @@ export class LiveBridge {
 		if (!prior && this.edits.size + this.fencedEdits.size >= 128)
 			throw new Error("The live edit receipt limit is reached. Existing receipts remain valid.");
 		const pending = prior?.pending;
-		return pending?.result && pending.result.status !== "applied" && !(anchor && pending.result.status === "stale")
+		return pending?.result &&
+			!pending.rejected &&
+			pending.result.status !== "applied" &&
+			!(anchor && pending.result.status === "stale")
 			? undefined
 			: pending;
 	}
@@ -600,9 +613,9 @@ export class LiveBridge {
 						{
 							fingerprint,
 							anchor,
-							pending: { command, delivered, result },
+							pending: { command, delivered, result, rejected },
 						},
-					]) => [id, { fingerprint, anchor, command, delivered, result }],
+					]) => [id, { fingerprint, anchor, command, delivered, result, rejected }],
 				),
 				states: [...this.states].map(([key, states]) => [key, [...states]]),
 				launches: this.launches.suspend(),
@@ -654,11 +667,11 @@ export class LiveBridge {
 		for (const [id, saved] of state.prompts) {
 			this.prompts.set(id, { ...saved, promise: Promise.resolve(saved.result) });
 		}
-		for (const [id, { fingerprint, anchor, command, delivered, result }] of state.edits) {
+		for (const [id, { fingerprint, anchor, command, delivered, result, rejected }] of state.edits) {
 			this.edits.set(id, {
 				fingerprint,
 				anchor,
-				pending: { command, delivered, result, waiters: new Set(), cancelled: false },
+				pending: { command, delivered, result, rejected, waiters: new Set(), cancelled: false },
 			});
 		}
 		for (const [workspace, navigation] of state.navigations) {
@@ -851,22 +864,29 @@ export class LiveBridge {
 		const command = navigation.command;
 		if (liveHandle(binding) !== liveHandle(command))
 			throw new Error("The navigation receipt came from another source handle.");
-		const result = readLiveResult(body.result, command);
+		if (navigation.rejected) return { ok: true, accepted: false };
 		if (navigation.result) {
-			if (JSON.stringify(navigation.result) !== JSON.stringify(result))
+			const replay = readLiveResult(body.result, command);
+			if (JSON.stringify(navigation.result) !== JSON.stringify(replay))
 				throw new Error("The navigation receipt changed after acknowledgement.");
 			return { ok: true };
 		}
 		this.binding(binding);
 		const pending = this.pending.get(command.requestId);
-		if (result.status === "navigated") {
-			if (result.workspace !== binding.workspace)
-				throw new Error("The navigation receipt belongs to a different pane.");
-			this.installView(readLiveBinding(result), reader, serialNumber(body.serial), result.view, pending);
+		let result: LiveResult;
+		try {
+			result = readLiveResult(body.result, command);
+			if (result.status === "navigated") {
+				if (result.workspace !== binding.workspace) throw new Error("Invalid workspace in the navigation result.");
+				this.installView(readLiveBinding(result), reader, serialNumber(body.serial), result.view, pending);
+			}
+		} catch (error) {
+			navigation.rejected = true;
+			result = invalidReceipt(command.op, error);
 		}
 		navigation.result = result;
 		if (pending) this.complete(pending, result);
-		return { ok: true };
+		return navigation.rejected ? { ok: true, accepted: false } : { ok: true };
 	}
 	private result(binding: LiveBinding, body: Record<string, unknown>): object {
 		if (!liveId(body.requestId)) throw new Error("Invalid native result identity.");
@@ -877,11 +897,20 @@ export class LiveBridge {
 		const pending =
 			this.pending.get(body.requestId) ??
 			[...this.edits.values()].find((entry) => entry.pending.command.requestId === body.requestId)?.pending;
-		if (!pending) return { ok: true };
+		if (!pending) return { ok: true, accepted: false };
 		if (liveHandle(pending.command) !== liveHandle(binding))
 			throw new Error("The receipt belongs to a different native document.");
 		if (!pending.delivered) throw new Error("The native command was not delivered.");
-		const result = readLiveResult(body.result, pending.command);
+		if (pending.rejected) return { ok: true, accepted: false };
+		let result: LiveResult;
+		try {
+			result = readLiveResult(body.result, pending.command);
+		} catch (error) {
+			if (pending.result) throw error;
+			pending.rejected = true;
+			this.complete(pending, invalidReceipt(pending.command.op, error));
+			return { ok: true, accepted: false };
+		}
 		if (pending.result && JSON.stringify(pending.result) !== JSON.stringify(result))
 			throw new Error("The native receipt changed after acknowledgement.");
 		this.complete(pending, result);

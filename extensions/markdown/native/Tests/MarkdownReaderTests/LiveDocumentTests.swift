@@ -41,7 +41,8 @@ import ReaderFeature
         const transport = []; let currentConnect, pollFailure;
         const proxy = createServer(async (request, response) => {
           const chunks = [];
-          for await (const chunk of request) chunks.push(chunk);
+          try { for await (const chunk of request) chunks.push(chunk); }
+          catch (error) { if (request.aborted && error.code === 'ECONNRESET') return; throw error; }
           let body = Buffer.concat(chunks).toString();
           if (request.url === '/starting' && mode === 'reset-start') { response.destroy(); return; }
           if (request.url === '/connect') {

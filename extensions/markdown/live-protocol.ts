@@ -97,17 +97,26 @@ const oneLine = (value: unknown, max: number): value is string =>
 	value.length <= max &&
 	validUnicode(value) &&
 	!/[\p{Cc}\p{Zl}\p{Zp}]/u.test(value);
+function invalidField(field: string, requirement?: string): never {
+	throw new Error(`Invalid native field ${field}${requirement ? `: ${requirement}` : ""}.`);
+}
+function requireStoredParents(value: Record<string, unknown>): void {
+	if (value.documentId !== undefined && value.storeId === undefined)
+		invalidField("view.storeId", "required with view.documentId");
+	if (value.revision !== undefined && value.documentId === undefined)
+		invalidField("view.documentId", "required with view.revision");
+	if (value.digest !== undefined && value.revision === undefined)
+		invalidField("view.revision", "required with view.digest");
+}
 function readStoredView(
 	value: Record<string, unknown>,
 ): Pick<LivePaneView, "storeId" | "documentId" | "revision" | "digest"> {
-	if (
-		(value.storeId !== undefined && !storeId(value.storeId)) ||
-		(value.documentId !== undefined && (!documentId(value.documentId) || !storeId(value.storeId))) ||
-		(value.revision !== undefined &&
-			(!generation(value.revision) || value.revision < 1 || !documentId(value.documentId))) ||
-		(value.digest !== undefined && (!liveDigest(value.digest) || value.revision === undefined))
-	)
-		throw new Error("Invalid stored revision in the native pane view.");
+	requireStoredParents(value);
+	if (value.storeId !== undefined && !storeId(value.storeId)) invalidField("view.storeId");
+	if (value.documentId !== undefined && !documentId(value.documentId)) invalidField("view.documentId");
+	if (value.revision !== undefined && (!generation(value.revision) || value.revision < 1))
+		invalidField("view.revision");
+	if (value.digest !== undefined && !liveDigest(value.digest)) invalidField("view.digest");
 	return {
 		...(value.storeId !== undefined && { storeId: value.storeId as string }),
 		...(value.documentId !== undefined && { documentId: value.documentId as string }),
@@ -116,16 +125,17 @@ function readStoredView(
 	};
 }
 export function readLiveView(value: unknown): LivePaneView {
+	if (!isRecord(value)) invalidField("view");
 	if (
-		!isRecord(value) ||
-		!["published", "response", "file", "scratchpad", "copy", "local-file", "loading"].includes(String(value.kind)) ||
-		!oneLine(value.title, 1024) ||
-		(value.mode !== "reading" && value.mode !== "writing") ||
-		typeof value.dirty !== "boolean" ||
-		typeof value.conflict !== "boolean" ||
-		(value.follows !== undefined && typeof value.follows !== "boolean")
+		typeof value.kind !== "string" ||
+		!["published", "response", "file", "scratchpad", "copy", "local-file", "loading"].includes(value.kind)
 	)
-		throw new Error("Invalid native pane view.");
+		invalidField("view.kind");
+	if (!oneLine(value.title, 1024)) invalidField("view.title");
+	if (value.mode !== "reading" && value.mode !== "writing") invalidField("view.mode");
+	if (typeof value.dirty !== "boolean") invalidField("view.dirty");
+	if (typeof value.conflict !== "boolean") invalidField("view.conflict");
+	if (value.follows !== undefined && typeof value.follows !== "boolean") invalidField("view.follows");
 	return {
 		kind: value.kind as LivePaneView["kind"],
 		title: value.title,
@@ -154,8 +164,9 @@ export function readLiveConfig(value: unknown): LiveConfig {
 	return { ...base, live: PANE_PROTOCOL, conversation: value.conversation, hostPid: value.hostPid };
 }
 export function readLiveBinding(value: unknown): LiveBinding {
-	if (!isRecord(value) || !liveId(value.workspace) || !liveId(value.document))
-		throw new Error("Invalid live Markdown workspace or document.");
+	if (!isRecord(value)) throw new Error("Invalid native pane binding.");
+	if (!liveId(value.workspace)) throw new Error("Invalid workspace in the native pane binding.");
+	if (!liveId(value.document)) throw new Error("Invalid document in the native pane binding.");
 	return { workspace: value.workspace, document: value.document };
 }
 export const liveHandle = ({ workspace, document }: LiveBinding): string => `${workspace}:${document}`;
@@ -267,80 +278,93 @@ function readNavigationResult(
 ): LiveResult {
 	const binding = readLiveBinding(value);
 	const view = readLiveView(value.view);
-	if (
-		value.handle !== liveHandle(binding) ||
-		!["published", "response", "file"].includes(view.kind) ||
-		view.mode !== "reading" ||
-		view.dirty ||
-		view.conflict ||
-		view.storeId !== action.storeId ||
-		view.documentId !== action.documentId ||
-		!view.revision ||
-		!view.digest ||
-		(action.revision !== undefined && (action.revision !== view.revision || action.digest !== view.digest))
-	)
-		throw new Error("The reader did not confirm the requested document and revision.");
+	if (value.handle !== liveHandle(binding)) invalidField("handle");
+	if (!["published", "response", "file"].includes(view.kind)) invalidField("view.kind", "expected a stored document");
+	if (view.mode !== "reading") invalidField("view.mode", "expected reading");
+	if (view.dirty) invalidField("view.dirty", "expected a clean buffer");
+	if (view.conflict) invalidField("view.conflict", "expected no conflict");
+	if (view.storeId !== action.storeId) invalidField("view.storeId");
+	if (view.documentId !== action.documentId) invalidField("view.documentId");
+	if (!view.revision || (action.revision !== undefined && action.revision !== view.revision))
+		invalidField("view.revision");
+	if (!view.digest || (action.revision !== undefined && action.digest !== view.digest)) invalidField("view.digest");
 	return { status: "navigated", ...binding, handle: value.handle, view };
 }
+function readClaimResult(value: Record<string, unknown>): LiveResult {
+	if (!liveId(value.claimId)) invalidField("claimId");
+	if (!generation(value.expiresAt) || value.expiresAt <= 0)
+		invalidField("expiresAt", "expected a positive whole number of Unix milliseconds");
+	return { status: "claimed", claimId: value.claimId, expiresAt: value.expiresAt };
+}
+function readReleaseResult(value: Record<string, unknown>, action: Extract<LiveAction, { op: "release" }>): LiveResult {
+	if (value.claimId !== action.claimId) invalidField("claimId");
+	return { status: "released", claimId: action.claimId };
+}
+function readAppliedResult(value: Record<string, unknown>, action: Extract<LiveAction, { op: "apply" }>): LiveResult {
+	if (value.operationId !== action.operationId) invalidField("operationId");
+	if (!generation(value.generation)) invalidField("generation");
+	if (!liveDigest(value.digest)) invalidField("digest");
+	if (value.retained !== true) invalidField("retained");
+	return {
+		status: "applied",
+		operationId: action.operationId,
+		generation: value.generation,
+		digest: value.digest,
+		retained: true,
+	};
+}
+function readAssets(value: unknown): { reference: string; digest: string }[] {
+	if (!Array.isArray(value) || value.length > 256) invalidField("assets");
+	for (const [index, asset] of value.entries()) {
+		if (!isRecord(asset)) invalidField(`assets[${index}]`);
+		if (typeof asset.reference !== "string" || asset.reference.length > 4096)
+			invalidField(`assets[${index}].reference`);
+		if (!liveDigest(asset.digest)) invalidField(`assets[${index}].digest`);
+	}
+	return value as { reference: string; digest: string }[];
+}
+function readSourceResult(value: Record<string, unknown>): LiveResult {
+	if (typeof value.source !== "string" || !validUnicode(value.source) || Buffer.byteLength(value.source) > SOURCE_BYTES)
+		invalidField("source");
+	if (!generation(value.generation)) invalidField("generation");
+	if (value.digest !== responseDigest(value.source)) invalidField("digest");
+	return {
+		status: "ok",
+		source: value.source,
+		generation: value.generation,
+		digest: value.digest,
+		assets: readAssets(value.assets),
+	};
+}
 export function readLiveResult(value: unknown, action: LiveAction): LiveResult {
-	if (!isRecord(value)) throw new Error("Invalid native live result.");
-	if (
-		["stale", "busy", "closed", "error", "uncertain"].includes(String(value.status)) &&
-		typeof value.message === "string" &&
-		value.message.length <= 1000
-	)
+	if (!isRecord(value)) invalidField("result", "expected an object");
+	if (typeof value.status !== "string") invalidField("status");
+	if (["stale", "busy", "closed", "error", "uncertain"].includes(value.status)) {
+		if (typeof value.message !== "string" || value.message.length > 1000) invalidField("message");
 		return { status: value.status as "error", message: value.message };
-	if (action.op === "navigate" && value.status === "navigated") return readNavigationResult(value, action);
-	if (action.op === "comments" || action.op === "setComment") return readCommentResult(value, action);
-	if (
-		action.op === "claim" &&
-		value.status === "claimed" &&
-		liveId(value.claimId) &&
-		generation(value.expiresAt) &&
-		value.expiresAt > 0
-	)
-		return { status: "claimed", claimId: value.claimId, expiresAt: value.expiresAt };
-	if (action.op === "release" && value.status === "released" && value.claimId === action.claimId)
-		return { status: "released", claimId: action.claimId };
-	if (
-		action.op === "apply" &&
-		value.status === "applied" &&
-		value.operationId === action.operationId &&
-		generation(value.generation) &&
-		liveDigest(value.digest) &&
-		value.retained === true
-	)
-		return {
-			status: "applied",
-			operationId: action.operationId,
-			generation: value.generation,
-			digest: value.digest,
-			retained: true,
-		};
-	if (
-		action.op === "read" &&
-		value.status === "ok" &&
-		typeof value.source === "string" &&
-		validUnicode(value.source) &&
-		Buffer.byteLength(value.source) <= SOURCE_BYTES &&
-		generation(value.generation) &&
-		value.digest === responseDigest(value.source) &&
-		Array.isArray(value.assets) &&
-		value.assets.length <= 256 &&
-		value.assets.every(
-			(asset) =>
-				isRecord(asset) &&
-				typeof asset.reference === "string" &&
-				asset.reference.length <= 4096 &&
-				liveDigest(asset.digest),
-		)
-	)
-		return {
-			status: "ok",
-			source: value.source,
-			generation: value.generation,
-			digest: value.digest,
-			assets: value.assets as { reference: string; digest: string }[],
-		};
-	throw new Error("The native live result failed its identity, source or retention check.");
+	}
+	return readCommandResult(value, action);
+}
+function readCommandResult(value: Record<string, unknown>, action: LiveAction): LiveResult {
+	switch (action.op) {
+		case "comments":
+		case "setComment":
+			return readCommentResult(value, action);
+		case "navigate":
+			if (value.status === "navigated") return readNavigationResult(value, action);
+			break;
+		case "claim":
+			if (value.status === "claimed") return readClaimResult(value);
+			break;
+		case "release":
+			if (value.status === "released") return readReleaseResult(value, action);
+			break;
+		case "apply":
+			if (value.status === "applied") return readAppliedResult(value, action);
+			break;
+		case "read":
+			if (value.status === "ok") return readSourceResult(value);
+			break;
+	}
+	return invalidField("status", "not a result for this command");
 }

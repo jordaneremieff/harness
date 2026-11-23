@@ -454,7 +454,7 @@ test("native source integrity, retention and edit bounds fail without truncation
 				{ status: "ok", source: `${source}x`, generation: 0, digest: responseDigest(`${source}x`), assets: [] },
 				{ op: "read" },
 			),
-		/failed/u,
+		/source/u,
 	);
 	assert.throws(
 		() =>
@@ -462,7 +462,7 @@ test("native source integrity, retention and edit bounds fail without truncation
 				{ status: "ok", source: "wrong", generation: 0, digest: responseDigest("other"), assets: [] },
 				{ op: "read" },
 			),
-		/failed/u,
+		/digest/u,
 	);
 	const action = {
 		op: "apply",
@@ -512,18 +512,68 @@ test("the host refuses older pane versions and preserves exact claim and release
 		const command = (await post(config, "/poll", { ...pane, after: 0 })).data.command;
 		assert.equal(command.op, "release");
 		assert.ok(command.op === "release" && command.claimId === claimId);
-		assert.equal(
-			(
-				await post(config, "/result", {
-					...pane,
-					requestId: command.requestId,
-					result: { status: "released", claimId: randomUUID() },
-				})
-			).status,
-			409,
-		);
+
 		await post(config, "/result", { ...pane, requestId: command.requestId, result: { status: "released", claimId } });
 		assert.deepEqual(await release, { status: "released", claimId });
+	} finally {
+		bridge.close();
+	}
+});
+test("a malformed claim expiry settles the command and the same reader can read again", { timeout: 5000 }, async () => {
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
+	const config = await bridge.start(),
+		pane = binding();
+	try {
+		const handle = (await connect(config, pane)).data.handle;
+		const claim = bridge.execute(handle, {
+			op: "claim",
+			baseGeneration: 0,
+			baseDigest: responseDigest("x"),
+			ranges: [{ start: 0, end: 1 }],
+		});
+		const { requestId } = (await post(config, "/poll", { ...pane, after: 0 })).data.command;
+		const receipt = {
+			...pane,
+			requestId,
+			result: { status: "claimed", claimId: randomUUID(), expiresAt: Date.now() + 0.5 },
+		};
+		assert.deepEqual((await post(config, "/result", receipt)).data, { ok: true, accepted: false });
+		const rejected = await claim;
+		assert.ok(rejected.status === "error" && /protocol error:.*expiresAt.*whole/u.test(rejected.message));
+		const waiting = bridge.execute(handle, { op: "read" });
+		const next = (await post(config, "/poll", { ...pane, after: 0 })).data.command;
+		assert.equal(next.op, "read");
+		const read = { status: "ok", source: "x", generation: 0, digest: responseDigest("x"), assets: [] };
+		assert.deepEqual((await post(config, "/result", { ...pane, requestId: next.requestId, result: read })).data, {
+			ok: true,
+		});
+		assert.deepEqual(await waiting, read);
+	} finally {
+		bridge.close();
+	}
+});
+
+test("a malformed edit receipt never releases the operation identity for replay", { timeout: 5000 }, async () => {
+	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
+	const config = await bridge.start(),
+		pane = binding();
+	try {
+		const handle = (await connect(config, pane)).data.handle;
+		const action = {
+			op: "apply" as const,
+			operationId: randomUUID(),
+			baseGeneration: 0,
+			baseDigest: responseDigest("x"),
+			edits: [{ start: 0, end: 1, expected: "x", replacement: "y" }],
+		};
+		const waiting = bridge.execute(handle, action);
+		const { requestId } = (await post(config, "/poll", { ...pane, after: 0 })).data.command;
+		const receipt = { ...pane, requestId, result: { status: "unexpected" } };
+		assert.deepEqual((await post(config, "/result", receipt)).data, { ok: true, accepted: false });
+		const outcome = await waiting;
+		assert.ok(outcome.status === "uncertain" && /protocol error:.*status/u.test(outcome.message));
+		assert.deepEqual(await bridge.execute(handle, action), outcome);
+		assert.deepEqual((await post(config, "/result", receipt)).data, { ok: true, accepted: false });
 	} finally {
 		bridge.close();
 	}
@@ -877,15 +927,18 @@ test("only the original agent pane and exact target receipt confirm navigation",
 		const receipt = { requestId: command.requestId, serial: 5, result };
 		await post(config, "/result", { ...operator, ...receipt });
 		assert.ok(bridge.list().some((pane) => pane.handle === original));
-		assert.equal(
-			(await post(config, "/result", { ...source, ...receipt, result: { ...result, view: { ...shown, revision: 1 } } }))
-				.status,
-			409,
-		);
+		const malformed = { ...source, ...receipt, result: { ...result, view: { ...shown, revision: 1 } } };
+		for (const reply of [malformed, malformed, { ...source, ...receipt }])
+			assert.deepEqual((await post(config, "/result", reply)).data, { ok: true, accepted: false });
+		const rejected = await pending;
+		assert.ok(rejected.status === "uncertain" && /revision/u.test(rejected.message));
 		assert.ok(bridge.list().some((pane) => pane.handle === original));
-		assert.equal((await post(config, "/result", { ...source, ...receipt })).status, 200);
-		assert.deepEqual(await pending, result);
-		assert.equal((await post(config, "/result", { ...source, ...receipt })).status, 200);
+		const fresh = bridge.execute(original, navigate);
+		const next = (await post(config, "/poll", { ...source, after: 0 })).data.command;
+		const valid = { ...source, ...receipt, requestId: next.requestId };
+		assert.deepEqual((await post(config, "/result", valid)).data, { ok: true });
+		assert.deepEqual(await fresh, result);
+		assert.deepEqual((await post(config, "/result", valid)).data, { ok: true });
 		assert.equal((await post(config, "/state", { ...source, view: draft, serial: 6 })).status, 409);
 		await post(config, "/connect", reconnect);
 		const installed = bridge.list().find((pane) => pane.workspace === source.workspace);
