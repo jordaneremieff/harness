@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildBrief, formatBrief, BRIEF_SCAN_BYTES } from "./brief.ts";
-import { transcriptMessage } from "./brief-tool.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import * as Durable from "@earendil-works/pi-durable";
+import { nativeBrief, transcriptMessage } from "./brief-tool.ts";
 
 const user = (text: string) => ({ role: "user" as const, text });
 const assistant = (text: string) => ({ role: "assistant" as const, text });
@@ -28,8 +30,55 @@ test("three typed requests use the current branch order and skip likely injected
 	assert.equal(brief.skipped, 5);
 	const text = formatBrief(brief);
 	assert.match(text, /Writing brief for "Roof"/u);
-	assert.match(text, /latest requests in this conversation, oldest first/u);
+	assert.match(text, /Earlier requests for reference, oldest first/u);
 	assert.match(text, /Check text\.$/u);
+});
+
+test("a withheld newest request ends term collection without replacing the current audience", () => {
+	const earlier = "Write the previous report for technicians.";
+	const withheld = "Read notes/example.md and write this report for visitors.";
+	const brief = buildBrief({
+		checks: [],
+		messages: [assistant("currentName"), user(withheld), assistant("previousName"), user(earlier)],
+	});
+	assert.deepEqual(brief.terms, ["currentName"]);
+	assert.deepEqual(brief.requests, [earlier]);
+	assert.equal(brief.latestRequestWithheld, true);
+	assert.doesNotMatch(JSON.stringify(brief), /notes\/example/u);
+	const text = formatBrief(brief);
+	assert.match(text, /withheld the newest request/iu);
+	assert.match(text, /earlier requests/iu);
+	assert.doesNotMatch(text, /notes\/example|latest requests/iu);
+});
+
+test("a user message with no visible text still marks the newest request", () => {
+	const imageOnly = transcriptMessage({ role: "user", content: [{ type: "image" }] });
+	assert.ok(imageOnly);
+	const brief = buildBrief({ checks: [], messages: [imageOnly, assistant("previousName")] });
+	assert.equal(brief.latestRequestWithheld, true);
+	assert.deepEqual(brief.requests, []);
+	assert.deepEqual(brief.terms, []);
+	assert.match(formatBrief(brief), /withheld the newest request/iu);
+});
+
+test("the native transcript never turns a partial oversized request into a quotable one", async () => {
+	const entries = [
+		user(`Do not excerpt.${" ".repeat(6100)}End.`),
+		assistant("previousName"),
+		user("Earlier question."),
+	].map(({ role, text }, i) => ({ id: 3 - i, kind: `pi.${role}`, model: [{ role, content: text }] }));
+	const brief = await nativeBrief(
+		{
+			durable: Durable,
+			harness: { conversation: async () => ({ entries: async () => ({ items: entries }) }) } as never,
+		},
+		{ mode: "off" },
+		1 as Durable.ConversationId,
+		BACKGROUND_CONTEXT,
+	)();
+	assert.equal(brief.latestRequestWithheld, true);
+	assert.deepEqual(brief.requests, ["Earlier question."]);
+	assert.deepEqual(brief.terms, []);
 });
 
 test("the default reader does not have the work history and the brief reports unavailable transcripts", () => {
@@ -52,6 +101,8 @@ test("only names in assistant prose count, ranked by use and filtered against re
 		user("Earlier question."),
 	];
 	const brief = buildBrief({ checks: [], messages });
+	assert.notEqual(brief.latestRequestWithheld, true);
+	assert.equal(brief.requests?.at(-1), "Explain knownThing and used_name. Also explain the exact name.");
 	assert.deepEqual(brief.terms, ["freshPath", "backup-path", "module.entry"]);
 	const configured = buildBrief({
 		checks: [],

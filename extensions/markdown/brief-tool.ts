@@ -2,7 +2,14 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord/context";
 import { arr, bool, int, obj, opt, str } from "@earendil-works/pi-schema";
-import { BRIEF_SCAN_BYTES, buildBrief, formatBrief, type BriefMessage, type WritingBrief } from "./brief.ts";
+import {
+	BRIEF_SCAN_BYTES,
+	MAX_REQUEST_CHARS,
+	buildBrief,
+	formatBrief,
+	type BriefMessage,
+	type WritingBrief,
+} from "./brief.ts";
 import { describeRules } from "./check-rules.ts";
 import { loadLexicon, loadReader, WritingConfigError, type WritingOptions } from "./writing-config.ts";
 
@@ -12,7 +19,13 @@ const Parameters = obj({ title: opt(str({ maxLength: 200 })) }, { open: false })
 export const WritingBriefSchema = obj({
 	title: opt(str()),
 	reader: str(),
-	requests: opt(arr(str())),
+	requests: opt(
+		arr(str(), {
+			description:
+				"Request excerpts for reference, oldest first. All are earlier requests if latestRequestWithheld is true.",
+		}),
+	),
+	latestRequestWithheld: opt(bool({ description: "The brief omitted the newest user message." })),
 	skipped: opt(int()),
 	opening: str(),
 	terms: opt(arr(str())),
@@ -44,7 +57,7 @@ export function transcriptMessage(message: { role: string; content?: unknown }):
 						return [part.text];
 					})
 				: [];
-	return parts.length ? { role: message.role, text: parts.join("\n\n") } : undefined;
+	return parts.length || message.role === "user" ? { role: message.role, text: parts.join("\n\n") } : undefined;
 }
 export function* ordinaryBriefMessages(source: Source): Iterable<BriefMessage> {
 	let id = source.getLeafId();
@@ -87,7 +100,9 @@ async function nativeMessages(
 				const message = transcriptMessage(value);
 				if (!message) continue;
 				if (message.role === "user") {
-					messages.push({ ...message, text: message.text.slice(0, 6002) });
+					const request = message.text.trim();
+					// A prefix of an oversized request must not pass as a complete request.
+					messages.push({ ...message, text: request.length > MAX_REQUEST_CHARS * 2 ? "" : request });
 				} else {
 					const bytesLeft = BRIEF_SCAN_BYTES - bytes;
 					const text = message.text.slice(-Math.max(1, bytesLeft + 1));

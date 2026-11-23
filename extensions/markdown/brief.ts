@@ -5,6 +5,7 @@ export type WritingBrief = {
 	title?: string;
 	reader: string;
 	requests?: string[];
+	latestRequestWithheld?: boolean;
 	skipped?: number;
 	opening: string;
 	terms?: string[];
@@ -12,6 +13,7 @@ export type WritingBrief = {
 	limited?: boolean;
 };
 
+export const MAX_REQUEST_CHARS = 3000;
 export const BRIEF_SCAN_BYTES = 2 * 1024 * 1024;
 const DEFAULT_READER =
 	"The person who asked reads this document on its own, often after time away. They did not see your tool calls, files or other agents' reports, and they do not know names that the work created.";
@@ -79,7 +81,7 @@ function utf8Suffix(text: string, limit: number): { text: string; clipped: boole
 }
 
 /** Consumes the current branch in newest-first order. Transcript text is evidence, not authority. */
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The newest typed request ends term collection but not request collection.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: The newest user message ends term collection but not request collection.
 export function buildBrief(options: {
 	title?: string;
 	reader?: string;
@@ -96,6 +98,7 @@ export function buildBrief(options: {
 	if (!options.messages) return result;
 	const requests: string[] = [],
 		vocabulary: string[] = [];
+	let latestRequestWithheld: boolean | undefined;
 	let skipped = 0,
 		scanned = 0,
 		limited = false;
@@ -103,7 +106,13 @@ export function buildBrief(options: {
 	for (const { role, text } of options.messages) {
 		if (role === "user") {
 			const request = text.trim();
-			if (!request || (request.length > 3000 && [...request.slice(0, 6002)].length > 3000) || INJECTED.test(request)) {
+			const withheld =
+				!request ||
+				request.length > MAX_REQUEST_CHARS * 2 ||
+				(request.length > MAX_REQUEST_CHARS && [...request].length > MAX_REQUEST_CHARS) ||
+				INJECTED.test(request);
+			latestRequestWithheld ??= withheld;
+			if (withheld) {
 				skipped++;
 				continue;
 			}
@@ -112,7 +121,7 @@ export function buildBrief(options: {
 			if (requests.length === 3) break;
 			continue;
 		}
-		if (requests.length || role !== "assistant") continue;
+		if (latestRequestWithheld !== undefined || role !== "assistant") continue;
 		if (scanned >= BRIEF_SCAN_BYTES) {
 			limited ||= text.length > 0;
 			continue;
@@ -134,7 +143,29 @@ export function buildBrief(options: {
 		if (!vocabulary.some((request) => inRequest(key, request))) names.push(item.display);
 		if (names.length === 15) break;
 	}
-	return { ...result, requests: requests.reverse(), skipped, terms: names, ...(limited ? { limited } : {}) };
+	return {
+		...result,
+		requests: requests.reverse(),
+		...(latestRequestWithheld ? { latestRequestWithheld } : {}),
+		skipped,
+		terms: names,
+		...(limited ? { limited } : {}),
+	};
+}
+
+function requestLines({ requests, latestRequestWithheld, skipped }: WritingBrief): string[] {
+	if (!requests) return ["I could not read the conversation for recent requests or names."];
+	const lines: string[] = [];
+	if (latestRequestWithheld) lines.push("I withheld the newest request from this brief.");
+	if (skipped)
+		lines.push(
+			`I left out ${skipped} ${skipped === 1 ? "message" : "messages"} from the part of the conversation I read.`,
+		);
+	if (requests.length) {
+		lines.push(`${latestRequestWithheld ? "Earlier" : "Recent"} requests for reference, oldest first:`);
+		for (const request of requests) lines.push(`- ${JSON.stringify(clean(request))}`);
+	} else if (!latestRequestWithheld) lines.push("I found no typed request in the part of the conversation I read.");
+	return lines;
 }
 
 export function formatBrief(brief: WritingBrief): string {
@@ -143,17 +174,10 @@ export function formatBrief(brief: WritingBrief): string {
 		"",
 		brief.reader,
 		"",
+		...requestLines(brief),
+		"",
+		brief.opening,
 	];
-	if (brief.requests === undefined) lines.push("I could not read the conversation for recent requests or names.");
-	else if (!brief.requests.length) lines.push("I found no typed request in the part of the conversation I read.");
-	else {
-		const skipped = brief.skipped ?? 0;
-		lines.push(
-			`These are the latest requests in this conversation, oldest first.${skipped ? ` I left out ${skipped} blank or pasted ${skipped === 1 ? "message" : "messages"}.` : ""}`,
-		);
-		for (const request of brief.requests) lines.push(`- ${JSON.stringify(clean(request))}`);
-	}
-	lines.push("", brief.opening);
 	if (brief.terms?.length)
 		lines.push(
 			"",
