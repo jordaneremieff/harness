@@ -115,6 +115,14 @@ test("ordinary Pi registers direct tools, publishes cards and flags only on expl
 			["slop_record", undefined],
 		],
 	);
+	const record = registered.find((tool) => tool.name === "slop_record");
+	assert.ok(
+		registered.every((tool) => tool.promptSnippet),
+		"each tool has a line in the tool list",
+	);
+	assert.ok(record?.promptGuidelines?.length, "the record tool carries prompt rules");
+	for (const rule of record?.promptGuidelines ?? []) assert.match(rule, /\bslop_record\b/, "each rule names its tool");
+	assert.match(record?.promptGuidelines?.[0] ?? "", /in other words/);
 	assert.deepEqual([...hooks.keys()].sort(), ["before_agent_start", "session_shutdown"]);
 	events.emit("harness:tool-display:request", { version: 1 });
 	assert.equal(seen.length, 2);

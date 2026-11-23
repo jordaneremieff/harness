@@ -11,8 +11,10 @@ import {
 	inspectCatalog,
 	record,
 	RECORD_DESCRIPTION,
+	RECORD_GUIDELINES,
 	type RecordArgs,
 	RecordParams,
+	SNIPPETS,
 	VIEW_DESCRIPTION,
 	type ViewArgs,
 	ViewParams,
@@ -45,7 +47,7 @@ function flagReply(pi: ExtensionAPI, ctx: ExtensionContext, root: string, note: 
 	if (!reply) throw new Error("There is no assistant reply to flag in this session.");
 	saveFlag(root, reply.text, note, { ...identity(ctx), model: reply.model });
 	pi.sendUserMessage(
-		`I flagged your last assistant reply as slop. Name the tells in plain words. Read the catalog and use slop_record for each tell it does not cover, with the flagged passage as a Slop example and your repair as a Better example. Add a detector when the tell has a fixed wording or form that a phrase list or pattern finds without matching the repair. ${note ? `Then act on this note. If it has no other request, give the corrected reply.\n\n${note}` : "Then give the corrected reply."}`,
+		`I flagged your last assistant reply as slop. Name the tells in plain words. Record each tell with slop_record as its own local entry, even when a shipped entry covers it, and update the local entry of a habit that comes back. Use the flagged passage as a Slop example and your repair as a Better example. Add a detector when the tell has a fixed wording or form that a phrase list or pattern finds without matching the repair. ${note ? `Then act on this note. If it has no other request, give the corrected reply.\n\n${note}` : "Then give the corrected reply."}`,
 		{ deliverAs: "followUp" },
 	);
 }
@@ -71,6 +73,7 @@ export default function slopExtension(pi: ExtensionAPI) {
 		name: "slop",
 		label: "Slop catalog",
 		description: VIEW_DESCRIPTION,
+		promptSnippet: SNIPPETS.slop,
 		parameters: ViewParams,
 		execute: async (_id, args: ViewArgs) => inspectCatalog(options, args),
 	});
@@ -79,6 +82,7 @@ export default function slopExtension(pi: ExtensionAPI) {
 		name: "slop_check",
 		label: "Slop check",
 		description: CHECK_DESCRIPTION,
+		promptSnippet: SNIPPETS.check,
 		parameters: CheckParams,
 		execute: async (_id, args: CheckArgs, signal, _update, ctx) => check(options, ctx.cwd, args, signal),
 	});
@@ -87,6 +91,8 @@ export default function slopExtension(pi: ExtensionAPI) {
 		name: "slop_record",
 		label: "Slop record",
 		description: RECORD_DESCRIPTION,
+		promptSnippet: SNIPPETS.record,
+		promptGuidelines: RECORD_GUIDELINES,
 		parameters: RecordParams,
 		execute: async (_id, args: RecordArgs, signal, _update, ctx) => {
 			signal?.throwIfAborted();

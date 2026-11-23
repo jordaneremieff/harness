@@ -15,7 +15,6 @@ import {
 
 const Id = str({ pattern: idPattern, maxLength: 128 });
 const scope = union(scopes.map((name) => lit(name)));
-const domain = union(domains.map((name) => lit(name)));
 const kind = union(proseKinds.map((name) => lit(name)));
 const nonempty = str({ minLength: 1 });
 const stringList = arr(nonempty, { minItems: 1 });
@@ -43,22 +42,57 @@ const DetectorParams = obj({
 	distinct: opt(bool()),
 	paths: opt(stringList),
 });
+const saveField = (text: string) => opt(str({ minLength: 1, description: `Required for save: ${text}` }));
 export const RecordParams = obj({
-	action: union([lit("save"), lit("disable"), lit("enable")]),
-	id: Id,
-	title: opt(nonempty),
-	domain: opt(domain),
-	applies: opt(scopesList),
-	recognition: opt(nonempty),
-	cost: opt(nonempty),
-	repair: opt(nonempty),
-	operator: opt(nonempty),
-	prompt: opt(bool()),
-	excerpt: opt(str()),
+	action: union([lit("save"), lit("disable"), lit("enable")], {
+		description: "save creates or replaces a local entry; disable and enable change the state of any entry.",
+	}),
+	id: str({
+		pattern: idPattern,
+		maxLength: 128,
+		description: "Entry id in kebab-case, named after the habit. Saving an existing local id replaces that entry.",
+	}),
+	title: saveField("a short name for the habit itself, not for the topic of the reply."),
+	domain: opt(
+		union(
+			domains.map((name) => lit(name)),
+			{ description: "Required for save: prose, code or ui." },
+		),
+	),
+	applies: opt(
+		arr(scope, {
+			minItems: 1,
+			description: "Required for save: where the habit occurs: reply, document, commit, comment or code.",
+		}),
+	),
+	recognition: saveField("how to spot the habit."),
+	cost: saveField("what the habit costs the reader."),
+	repair: saveField("how to fix the move behind the habit; the first sentence joins later prompts."),
+	operator: saveField("the operator's own words that flagged the habit or asked for the entry."),
+	prompt: opt(bool({ description: "Show the repair in later system prompts. Local entries default to true." })),
+	excerpt: opt(str({ description: "The flagged passage, when there is one." })),
 	note: opt(str()),
-	detectors: opt(arr(DetectorParams)),
-	reason: opt(str()),
-	examples: opt(arr(obj({ kind: nonempty, verdict: union([lit("slop"), lit("better")]), text: str() }))),
+	detectors: opt(
+		arr(DetectorParams, {
+			description:
+				"Optional checks for a fixed wording or form. Every Slop example must match one, and no Better example may match.",
+		}),
+	),
+	reason: opt(str({ description: "Only with disable or enable: why the state changes." })),
+	examples: opt(
+		arr(
+			obj({
+				kind: str({
+					minLength: 1,
+					description: "reply, document or commit for prose, or a file extension such as ts for code.",
+				}),
+				verdict: union([lit("slop"), lit("better")], {
+					description: "slop for the flagged passage, better for your repair.",
+				}),
+				text: str(),
+			}),
+		),
+	),
 });
 
 export const VIEW_DESCRIPTION =
@@ -66,7 +100,23 @@ export const VIEW_DESCRIPTION =
 export const CHECK_DESCRIPTION =
 	"Run the slop catalog's detectors on text, one file or a Git diff: uncommitted, staged, or a range with its commit messages. Run it on the staged diff before each commit, and on documents and messages written for someone else. Do not run it on ordinary chat replies. Repair the move a finding names, not its token.";
 export const RECORD_DESCRIPTION =
-	"Save a local slop entry, or disable or enable an entry. When the operator flags a passage or habit as slop, save it with the flagged passage as a Slop example and your repair as a Better example.";
+	"Save a local slop entry, or disable or enable an entry. When the operator calls something slop or objects to a writing or code habit, in any words, save the habit as its own local entry, even when a shipped entry covers it, with the flagged passage as a Slop example and your repair as a Better example.";
+
+/** One-line entries for the tool list of an ordinary session's system prompt. */
+export const SNIPPETS = {
+	slop: "Read the catalog of prose, code and interface habits that read as generated",
+	check: "Check text, a file or a Git diff against the slop catalog",
+	record: "Record a writing or code habit that the operator flags as slop",
+} as const;
+
+/**
+ * Rules for an ordinary session's system prompt. The operator's flags arrive in ordinary chat, where no hook sees
+ * the moment, so the rule that turns a flag into an entry must be in every prompt.
+ */
+export const RECORD_GUIDELINES = [
+	"When the operator calls a reply, passage or piece of code slop, or objects to a writing or code habit in other words, record the habit with slop_record before you fix it. He does not need to type /slop flag.",
+	"Save each habit the operator flags as a local entry with slop_record under a new id, even when a shipped entry covers the habit, because only local entries reach later prompts and a local entry with a shipped id replaces that entry and its detectors. When the same habit comes back, read its local entry with slop and save it again with slop_record under that id, adding the new example.",
+];
 
 export function catalogSection(options: ReadOptions): string | undefined {
 	const { values } = readSettings(options);

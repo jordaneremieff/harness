@@ -58,7 +58,17 @@ Checks also skip binary files and files with unsupported encodings.
 
 ## Record a tell
 
-Use `/slop flag` when the last reply contains a problem that deserves a repair.
+The operator flags slop in ordinary words, such as calling a reply slop or
+objecting to a habit. In an ordinary session, the `slop_record` rules in the
+system prompt ask the agent to record the habit before it repairs the text.
+Each flagged habit gets a local entry under a new ID, even when a shipped entry
+covers it, because only local entries reach later prompts and a local entry
+with a shipped ID replaces that entry and its detectors. A habit that comes back
+updates its local entry with the new example. The ordinary tool list also gives
+each slop tool one line. Durable sessions receive the same instruction through
+the `slop_record` description.
+
+`/slop flag` is the explicit form for the last reply.
 With a note, the agent also acts on that note. The flag keeps a copy of the
 reply, note, and session metadata under the private store's `flags/` directory.
 The ordinary browser opens in the editor slot. Use **Enter** or **Right** to
