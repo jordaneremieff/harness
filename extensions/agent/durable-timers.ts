@@ -43,9 +43,9 @@ import { reconcileProfile } from "./profile.ts";
 import { prepareQueuedInputs } from "./unplaced-inputs.ts";
 import { validateRequestContext, type RequestContext } from "./request-context.ts";
 import { parseDeliverAt } from "./timer-input.ts";
+import { TIMER_TASK_NAME } from "./firing-timer.ts";
 
-/** Registered task kind of one scheduled input. */
-export const TIMER_TASK_NAME = "agent.timer";
+export { TIMER_TASK_NAME };
 /** Stored preview length of one scheduled message. The task input keeps the full text. */
 export const TIMER_MESSAGE_PREVIEW_LIMIT = 512;
 /** Settled records kept for listing after pruning; pending records are always kept. */

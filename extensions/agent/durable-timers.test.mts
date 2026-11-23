@@ -9,7 +9,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, defineTask, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import { stopBeforeResume } from "./durable-host.ts";
 import { onStoredCommit } from "./commit-observation.ts";
-import { isStopped } from "./conversation-stop.ts";
+import { recordDeliveryIntent, reconcileDeliveries } from "./durable-controls.ts";
+import { isStopped, markStopped } from "./conversation-stop.ts";
 import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
 import {
@@ -130,6 +131,56 @@ it("admits the timer input before its check-in can claim that request", { timeou
 	assert.equal((entry?.data as { class?: string })?.class, "timer");
 	assert.equal(atomic, true, "no committed check-in can race to admit the input before the timer");
 });
+
+for (const admitted of [false, true]) {
+	it(`recovers a firing timer and its watcher with a ${admitted ? "present" : "missing"} native input`, {
+		timeout: 10000,
+	}, async (t) => {
+		const f = await scheduleFixture(t, { agentExtension: true, resume: false });
+		const id = f.host.root().id;
+		const input = { ...timerInput(f, "firing"), origin: "model" as const, checkInMinutes: 1 };
+		const firing = defineTask<TimerInput, TimerState, TimerResult>({
+			...TimerTask.definition,
+			initial: () => ({ phase: "wait", firing: true }),
+		});
+		const harness = f.host.harness;
+		await harness.commit(
+			(tx) => recordDeliveryIntent(tx, id, { ...input, whenBusy: input.mode, senderIdentity: f.storageId }),
+			BACKGROUND_CONTEXT,
+		);
+		await harness.commit(
+			(tx) =>
+				tx.createTask(firing, input, { conversationId: id, ownership: { kind: "conversation" }, background: true }),
+			BACKGROUND_CONTEXT,
+		);
+		if (admitted)
+			await harness.commit(
+				(tx) =>
+					f.host.root().submit(tx, {
+						type: "input",
+						requestId: input.requestId,
+						content: input.message,
+						entry: { kind: "fixture.timer", data: { class: "timer" } },
+					}),
+				BACKGROUND_CONTEXT,
+			);
+		await harness.commit((tx) => markStopped(tx, [id], 1), BACKGROUND_CONTEXT);
+		await reconcileDeliveries(harness, BACKGROUND_CONTEXT);
+		const read = () => harness.commit((tx) => tx.submissionByRequest(id, input.requestId), BACKGROUND_CONTEXT);
+		const before = await read();
+		assert.equal(before !== undefined, admitted, "reconciliation leaves a missing timer input to its owner");
+		harness.resume();
+		const receipt = await f.waitForReceipt(input.requestId);
+		assert.equal(receipt.status, "done");
+		if (before) assert.equal(receipt.submissionId, before.id);
+		assert.equal(f.modelRequestCount(), 1);
+		const entryId = receipt.entryId;
+		assert.ok(entryId);
+		const entry = await harness.commit((tx) => tx.entry(entryId), BACKGROUND_CONTEXT);
+		assert.equal((entry?.data as { class?: string })?.class, "timer");
+		assert.equal(await harness.commit((tx) => isStopped(tx, id), BACKGROUND_CONTEXT), admitted);
+	});
+}
 
 it("ends a stop when abort must finish a timer already past its firing checkpoint", async (t) => {
 	const f = await scheduleFixture(t, { agentExtension: true, resume: false });

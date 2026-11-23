@@ -1,4 +1,6 @@
 /** Durable owner check-ins for unanswered tool admissions. */
+import type { Context } from "@earendil-works/chord/context";
+import { admissionSource } from "./firing-timer.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { inputEntry, sentInputClass } from "./input-entry.ts";
 import {
@@ -7,6 +9,8 @@ import {
 	UsageDoc,
 	type ConversationId,
 	type Tx,
+	type TaskId,
+	type TaskRuntime,
 	type UsageState,
 	type ToolSlot,
 	type LiveState,
@@ -209,6 +213,25 @@ export const CheckInDeadlineTask = defineTask<CheckInInput & { next: number }, C
 		runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
 });
 
+/** Leave a refused request alone and let a firing timer admit its input before the watcher reacquires it. */
+async function watchableAdmission(
+	runtime: Pick<TaskRuntime<CheckInInput, CheckInState, null, object>, "commit" | "waitForTask">,
+	input: CheckInInput,
+	context: Context,
+) {
+	let timer: TaskId | undefined,
+		refused = false;
+	await runtime.commit(async (tx) => {
+		const source = await admissionSource(tx, input);
+		timer = source.timerId;
+		refused = source.submissionId === undefined && input.whenBusy === "reject";
+		return refused ? { status: "terminal", outcome: { status: "completed", result: null } } : undefined;
+	}, context);
+	if (timer !== undefined && (await runtime.waitForTask(timer, context)).state.outcome.status !== "completed")
+		throw new Error("Firing timer did not complete the watched admission");
+	return !refused;
+}
+
 /** The submission wait owns the deadline task, so settlement without open declared work stops it without waiting for its deadline. */
 export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 	name: "agent.check-in",
@@ -227,16 +250,7 @@ export const CheckInTask = defineTask<CheckInInput, CheckInState, null>({
 								? { type: "image" as const, data: part.data, mimeType: part.mimeType }
 								: { type: "text" as const, text: part.text },
 						);
-			// A busy-reject input that was never admitted stays refused; the check-in never admits it later.
-			if (input.whenBusy === "reject") {
-				let refused = false;
-				await runtime.commit(async (tx) => {
-					refused =
-						(await tx.submissionByRequest(input.conversationId as ConversationId, input.requestId)) === undefined;
-					return refused ? { status: "terminal", outcome: { status: "completed", result: null } } : undefined;
-				}, context);
-				if (refused) return;
-			}
+			if (!(await watchableAdmission(runtime, input, context))) return;
 			const submission = await conversation.submit(
 				{
 					type: "input",

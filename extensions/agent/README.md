@@ -4378,7 +4378,7 @@ waits on Durable's `sleepUntil`. Replay never recomputes the
 deadline. Once the deadline wins, the firing checkpoint survives a restart or
 clock correction. One commit admits the labelled input, links its answer route,
 arms its check-in if requested, ends any previous stop, and settles the timer.
-A replay keeps the same native submission and never clears a later stop.
+If a check-in and answer route exist without the native input, both the watcher and delivery recovery leave admission to the matching firing timer. A replay keeps the same native submission and never clears a later stop.
 The answer follows the notice and wake rule of its origin. A timer that
 was due while its host was down fires once after the host reopens and records
 that it ran overdue. A pending timer is live work, so the host does not retire
