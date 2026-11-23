@@ -940,64 +940,6 @@ function receiptPlacement(details: Record<string, unknown>): "placed" | "unplace
 const UNPLACED_INPUT_LINE = "The input is placed at the recipient's next tool boundary";
 const WITHDRAWN_INPUT_LINE = "The input is not in the recipient's inbox or transcript";
 
-function controlReceiptLines(
-	details: Record<string, unknown>,
-	theme: Theme,
-	subject: string,
-	context: AgentCardContext,
-): string[] | undefined {
-	const identity = text(details.identity);
-	const conversationId = count(details.conversationId);
-	if (!identity && conversationId === undefined) return undefined;
-	const lines = [
-		theme.fg(
-			"toolOutput",
-			`${subject}${identity ? targetSuffix(identity, context) : conversationId !== undefined ? ` · conversation ${conversationId}` : ""}`,
-		),
-	];
-	const submission = count(details.submissionId);
-	if (submission !== undefined) lines[0] += muted(theme, ` · submission ${submission}`);
-	const placement = receiptPlacement(details);
-	if (placement !== undefined) lines[0] += muted(theme, ` · ${placement}`);
-	if (details.deduped === true) lines.push(muted(theme, "Already admitted"));
-	if (placement === "unplaced") lines.push(muted(theme, UNPLACED_INPUT_LINE));
-	if (placement === "withdrawn") lines.push(muted(theme, WITHDRAWN_INPUT_LINE));
-	return lines;
-}
-
-function receiptLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
-	if (count(details.submissionId) === undefined || text(details.identity) === "") return undefined;
-	return controlReceiptLines(details, theme, "Admitted", context);
-}
-
-function forkLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
-	if (
-		text(details.identity) === "" ||
-		details.deduped === undefined ||
-		count(details.conversationId) === undefined ||
-		count(details.submissionId) !== undefined
-	)
-		return undefined;
-	return controlReceiptLines(details, theme, "Fork created", context);
-}
-
-function rewindLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
-	if (count(details.predecessorEntryId) === undefined || text(details.identity) === "") return undefined;
-	const lines = controlReceiptLines(details, theme, "Rewind submitted", context) ?? [];
-	const predecessor = count(details.predecessorEntryId);
-	if (predecessor !== undefined) lines.push(muted(theme, `forked before entry ${predecessor}`));
-	return lines;
-}
-
-function configureLines(
-	details: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-): string[] | undefined {
-	if (text(details.identity) === "" || count(details.conversationId) === undefined) return undefined;
-	return [theme.fg("toolOutput", `Configuration applied${targetSuffix(text(details.identity), context)}`)];
-}
-
 function timerLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	const timer = count(details.timerId);
 	if (timer === undefined) return undefined;
@@ -1024,7 +966,7 @@ function pendingStopLines(details: Record<string, unknown>, theme: Theme): strin
 	if (details.settled !== false) return [];
 	const ids = array(details.pendingTasks).filter((id) => typeof id === "number");
 	const shown = ids.slice(0, 4).join(", ");
-	const tasks = shown ? ` · pending tasks: ${shown}${ids.length > 4 ? ", …" : ""}` : "";
+	const tasks = shown ? ` · pending tasks ${shown}${ids.length > 4 ? ", …" : ""}` : "";
 	return [theme.fg("warning", `Stop not settled; do not repeat${tasks}`)];
 }
 
@@ -1067,25 +1009,38 @@ function abortLines(details: Record<string, unknown>, theme: Theme, context: Age
 	return lines;
 }
 
-function commandLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
-	const reloaded = details.reloaded === true;
-	const textValue = text(details.text);
-	const identity = text(details.identity);
+function commandPresentation(details: Record<string, unknown>, context: AgentCardContext): ToolResultPresentation {
+	const identity = text(details.identity) || text(details.sessionId);
 	const name = text(details.name);
-	if (!reloaded && !textValue && !identity && !name) return undefined;
-	const lines = [
-		theme.fg(
-			"toolOutput",
-			reloaded ? "Host registrations reloaded" : resultPreview(textValue || "(no command output text)", 240),
-		),
-	];
-	const inventory = record(details.inventory);
-	const capabilities = array(inventory.contributions).length;
-	if (reloaded && capabilities > 0)
-		lines.push(muted(theme, `${capabilities} native contribution${capabilities === 1 ? "" : "s"} installed`));
-	if (name && name !== record(context.args).name) lines.push(muted(theme, `command ${displayPreview(name, 120)}`));
-	if (identity && !sameTarget(identity, context)) lines.push(muted(theme, targetLabel(identity, context)));
-	return lines;
+	const facts = [
+		name && name !== record(context.args).name ? `Command ${name}` : "",
+		identity && !sameTarget(identity, context) ? targetLabel(identity, context) : "",
+	]
+		.filter(Boolean)
+		.join("\n");
+	if (details.reloaded === true) {
+		const countInstalled = count(details.contributionCount) ?? array(record(details.inventory).contributions).length;
+		return {
+			outcome: "Host registrations reloaded",
+			body: countInstalled ? `${cardinal(countInstalled, "native contribution")} installed` : "",
+			expanded: facts,
+		};
+	}
+	const fork =
+		text(details.forkedIdentity) ||
+		(record(context.args).name === "tree" && typeof details.deduped === "boolean" ? identity : "");
+	if (fork)
+		return {
+			outcome: `${details.deduped === true ? "Existing tree fork" : "Tree fork created"} · ${targetLabel(fork, context)}`,
+			expanded: facts,
+		};
+	if (typeof details.text !== "string") return {};
+	return {
+		outcome: details.text.trim() ? "Command completed" : "Command completed with no output",
+		body: details.text,
+		expanded: facts,
+		keep: "end",
+	};
 }
 
 function cardinal(value: number, singular: string, plural = `${singular}s`): string {
@@ -1281,22 +1236,6 @@ function statusOverview(details: Record<string, unknown>): ToolResultPresentatio
 	};
 }
 
-function summarizeGeneric(
-	details: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-): string[] | undefined {
-	return (
-		resolveProfileLines(details, theme, context) ??
-		rewindLines(details, theme, context) ??
-		forkLines(details, theme, context) ??
-		receiptLines(details, theme, context) ??
-		abortLines(details, theme, context) ??
-		configureLines(details, theme, context) ??
-		commandLines(details, theme, context)
-	);
-}
-
 function snapshotStatus(details: Record<string, unknown>): Record<string, unknown> | undefined {
 	const direct = record(details.conversation);
 	if (Object.keys(direct).length > 0) return direct;
@@ -1474,53 +1413,6 @@ function snapshotIdentityLines(
 	return lines;
 }
 
-function durableStatusSourceLines(
-	status: Record<string, unknown>,
-	details: Record<string, unknown>,
-	theme: Theme,
-): string[] {
-	if (details.conversation !== status || count(status.conversationId) === undefined) return [];
-	const liveHost = details.live !== false && (details.pid !== undefined || details.inventory !== undefined);
-	const lines = [theme.fg("toolOutput", liveHost ? "Durable agent · live host observation" : "Durable agent")];
-	const timer = record(array(status.timers)[0]);
-	const deadline = count(timer.deadline);
-	if (count(timer.id) === undefined || deadline === undefined) return lines;
-	const when = new Date(deadline);
-	if (Number.isFinite(when.getTime()))
-		lines.push(
-			muted(
-				theme,
-				`Earliest timer ${timer.id} · ${when.toISOString()} · ${text(timer.status)}${timer.overdue === true ? " · overdue" : ""}`,
-			),
-		);
-	return lines;
-}
-
-function snapshotLines(
-	status: Record<string, unknown>,
-	details: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-	namedByReceipt = false,
-): string[] {
-	if (details.format === "compact") return compactStatusLines(status, details, theme, context);
-	const lines = snapshotIdentityLines(status, theme, context, namedByReceipt);
-	lines.push(...durableStatusSourceLines(status, details, theme));
-	if (status.live === undefined && typeof status.state === "string")
-		lines.push(muted(theme, `State: ${displayPreview(status.state, 40)}`));
-	else lines.push(...activityLines(status, readOnlySnapshot(details), theme));
-	const limits = record(details.inventory ?? record(details.status).inventory ?? record(status.limits));
-	const ordinaryOnly = array(limits.ordinaryOnly).length;
-	if (ordinaryOnly)
-		lines.push(
-			muted(
-				theme,
-				`Capability limits: ${ordinaryOnly} configured extension${ordinaryOnly === 1 ? "" : "s"} without a native form`,
-			),
-		);
-	return lines;
-}
-
 function compactRecoveryLines(
 	status: Record<string, unknown>,
 	details: Record<string, unknown>,
@@ -1557,87 +1449,6 @@ function compactActivityFacts(status: Record<string, unknown>): string[] {
 	].filter(Boolean);
 }
 
-function compactStatusLines(
-	status: Record<string, unknown>,
-	details: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-): string[] {
-	const model = record(status.model);
-	const lines = snapshotIdentityLines(
-		{ ...status, agent: { model, thinkingLevel: status.thinkingLevel } },
-		theme,
-		context,
-		false,
-	);
-	const live = status.availability === "live";
-	const retained = status.availability === "retained";
-	const ordinary = count(status.conversationId) === undefined;
-	const source = ordinary ? "Ordinary primary" : "Durable agent";
-	const reach = live ? "live host observation" : "live session activity not observed";
-	lines.push(theme.fg("toolOutput", `${source} · ${retained ? "retained snapshot; " : ""}${reach}`));
-	const activity = compactActivityFacts(status);
-	if (activity.length) lines.push(muted(theme, `${live ? "Activity" : "Snapshot facts"}: ${activity.join(" · ")}`));
-	lines.push(...compactRecoveryLines(status, details, theme));
-	const block = record(status.providerBlock);
-	if (text(block.blockId))
-		lines.push(theme.fg("warning", `Provider block ${text(block.blockId)} · ${text(block.recovery)}`));
-	if (context.expanded && array(status.omitted).length)
-		lines.push(muted(theme, `Omitted: ${array(status.omitted).join(", ")}`));
-	if (context.expanded && array(details.omitted).length)
-		lines.push(muted(theme, `Omitted envelope fields: ${array(details.omitted).join(", ")}`));
-	const detail = record(status.detail);
-	if (context.expanded && detail.tool === "agent_status" && typeof detail.sessionId === "string")
-		lines.push(
-			muted(theme, `Full detail: agent_status(${JSON.stringify({ sessionId: detail.sessionId, detail: true })})`),
-		);
-	return lines;
-}
-
-/** Snapshot and control result card for spawn, attach, place, status, fork, rewind, and configure. */
-function nestedReceiptLines(
-	details: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-): string[] | undefined {
-	const admission = record(details.admission);
-	if (count(admission.submissionId) === undefined) return undefined;
-	const snapshot = snapshotStatus(details);
-	const identity = text(admission.identity) || text(details.sessionId) || text(snapshot?.identity);
-	const receiptContext =
-		identity === text(snapshot?.identity)
-			? { ...context, args: { ...record(context.args), sessionId: identity } }
-			: context;
-	return controlReceiptLines(
-		{ placement: details.placement, ...admission, identity },
-		theme,
-		"Admitted",
-		receiptContext,
-	);
-}
-
-function collapsedAgentLines(
-	details: Record<string, unknown>,
-	output: string,
-	theme: Theme,
-	context: AgentCardContext,
-): string[] {
-	const snapshot = snapshotStatus(details);
-	const observed = snapshotFacts(context, snapshot);
-	const summary = summarizeGeneric(details, theme, observed) ?? nestedReceiptLines(details, theme, observed);
-	const identity = text(details.identity);
-	const snapshotIdentity = text(snapshot?.identity) || text(snapshot?.sessionId);
-	const namedByReceipt =
-		summary !== undefined &&
-		identity !== "" &&
-		identity === snapshotIdentity &&
-		!sameTarget(identity, context) &&
-		!headerHasName(identity, text(snapshot?.name), context);
-	const lines = snapshot ? snapshotLines(snapshot, details, theme, context, namedByReceipt) : [];
-	if (summary) lines.push(...summary);
-	else if (!snapshot) lines.push(theme.fg(context.isError === true ? "error" : "toolOutput", resultPreview(output)));
-	return lines;
-}
 function statusTimerFact(status: Record<string, unknown>): string {
 	const timer = record(array(status.timers)[0]);
 	if (count(timer.id) === undefined) return "";
@@ -1835,118 +1646,192 @@ function renderStatusResult(
 	return toolResultCard(result, options, theme, context, { ...presentation, body, partial: "Status read in progress" });
 }
 
-export function renderAgentResult(
+function controlResultCard(
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	context: AgentCardContext,
+	presentation: ToolResultPresentation,
 ): Component {
+	const source = resultText(result);
 	const details = resultDetails(result);
-	const output = resultText(result);
-	const lines: string[] = [];
-	if (context.isError === true) lines.push(theme.fg("error", "Tool error"));
-	else if (options.isPartial) lines.push(theme.fg("muted", "Partial result"));
-	const snapshot = snapshotStatus(details);
-	const snapshotError = text(details.snapshotError);
-	if (snapshotError) lines.push(theme.fg("warning", `Snapshot unavailable: ${displayPreview(snapshotError, 240)}`));
-	const deliveryError = text(details.deliveryError) || text(record(details.status).deliveryError);
-	if (deliveryError && details.format !== "compact")
-		lines.push(theme.fg("warning", `Delivery paused: ${displayPreview(deliveryError, 240)}`));
-	if (options.expanded) {
-		if (snapshot) lines.push(...snapshotLines(snapshot, details, theme, { ...context, expanded: true }));
-		lines.push(theme.fg("toolOutput", boundedSource(output)));
-		if (snapshot) lines.push(theme.fg("dim", boundedSource(JSON.stringify(snapshot, null, 2))));
-		return cardLayout({ body: lines }, theme, { expanded: true, previous: context.lastComponent });
-	}
-	lines.push(...collapsedAgentLines(details, output, theme, context));
-	return cardLayout({ body: lines, hint: cardHint(context, "result", "details") }, theme, {
-		expanded: false,
-		previous: context.lastComponent,
+	const { text: output, ...rest } = details;
+	const evidence = output === source || output === presentation.body ? rest : details;
+	const sourceHasDetails = source === JSON.stringify(details) || source === JSON.stringify(details, null, 2);
+	const extra = !sourceHasDetails && Object.keys(evidence).length ? JSON.stringify(evidence, null, 2) : "";
+	return toolResultCard(result, options, theme, context, {
+		...presentation,
+		expanded: [presentation.expanded, extra].filter(Boolean).join("\n"),
 	});
 }
 
-function primaryMessageLines(
+type MutationTool = "agent_spawn" | "agent_attach" | "agent_place" | "agent_fork" | "agent_rewind" | "agent_configure";
+type ControlTool = MutationTool | "agent_abort" | "agent_command" | "agent_reset";
+
+function mutationAdmission(details: Record<string, unknown>): Record<string, unknown> {
+	const admission = record(details.admission);
+	return { ...details, ...record(details.result), ...admission, placement: admission.placement ?? details.placement };
+}
+
+function mutationReceipt(outcome: string, admission: Record<string, unknown>): string {
+	const submission = count(admission.submissionId);
+	return [outcome, submission === undefined ? "" : `submission ${submission}`, receiptPlacement(admission)]
+		.filter(Boolean)
+		.join(" · ");
+}
+
+function mutationPlacement(admission: Record<string, unknown>): string {
+	return receiptPlacement(admission) === "withdrawn"
+		? WITHDRAWN_INPUT_LINE
+		: receiptPlacement(admission) === "unplaced"
+			? UNPLACED_INPUT_LINE
+			: "";
+}
+
+function configurationFacts(details: Record<string, unknown>, identity: string, context: AgentCardContext): string[] {
+	const before = record(details.before);
+	const after = record(details.after);
+	const reasoning = record(details.reasoning);
+	const model = [text(after.model), text(after.thinkingLevel)].filter(Boolean).join(" · ");
+	return [
+		text(after.name) && after.name !== before.name && !headerHasName(identity, text(after.name), context)
+			? `Renamed to ${after.name}`
+			: "",
+		(after.model !== before.model || after.thinkingLevel !== before.thinkingLevel) &&
+		(!sameTarget(identity, context) || targetConfiguration(identity, context) !== model)
+			? model
+			: "",
+		reasoning.clamped === true && text(reasoning.effective) ? `Reasoning adjusted to ${reasoning.effective}` : "",
+	].filter(Boolean);
+}
+
+function mutationSnapshotFacts(
+	snapshot: Record<string, unknown>,
 	details: Record<string, unknown>,
 	theme: Theme,
 	context: AgentCardContext,
-): string[] | undefined {
-	if (details.admitted !== true || !text(details.sessionId)) return undefined;
-	const kind = record(context.args).mode === "report" ? "Report" : "Message";
-	if (receiptPlacement(details) === "withdrawn")
-		return [
-			theme.fg("toolOutput", `${kind} withdrawn for ${targetLabel(text(details.sessionId), context)}`),
-			muted(theme, WITHDRAWN_INPUT_LINE),
-		];
+	namedByReceipt: boolean,
+): string[] {
+	const ordinaryOnly = array(
+		record(details.inventory ?? record(details.status).inventory ?? snapshot.limits).ordinaryOnly,
+	).length;
 	return [
-		theme.fg(
-			"toolOutput",
-			`${kind} ${kind === "Report" ? "queued for" : "delivered to"} ${targetLabel(text(details.sessionId), context)}`,
-		),
+		...snapshotIdentityLines(snapshot, theme, context, namedByReceipt).map(displayText),
+		readOnlySnapshot(details) ? "Live activity not observed" : text(snapshot.state),
+		ordinaryOnly ? `${cardinal(ordinaryOnly, "configured extension")} without a native form` : "",
 	];
 }
 
-function reportPlacementLines(details: Record<string, unknown>, theme: Theme): string[] {
-	const placement = receiptPlacement(details);
-	if (placement === "withdrawn") return [muted(theme, WITHDRAWN_INPUT_LINE)];
-	// A parked or terminal delivery does not reach the recipient's next tool boundary.
-	if (details.delivery === "parked" || details.delivery === "terminal")
-		return [
-			theme.fg(
-				details.delivery === "terminal" ? "warning" : "muted",
-				`Delivery ${details.delivery}; the report is not placed`,
-			),
-		];
-	return placement === "unplaced" ? [muted(theme, UNPLACED_INPUT_LINE)] : [];
-}
-
-function reportReceiptLines(
+function mutationPresentation(
+	name: MutationTool,
 	details: Record<string, unknown>,
 	theme: Theme,
 	context: AgentCardContext,
-): string[] | undefined {
-	if (!text(details.sourceId) || typeof details.acknowledged !== "boolean") return undefined;
-	const placement = receiptPlacement(details);
-	return [
-		theme.fg(
-			"toolOutput",
-			`Report retained${text(details.ownerId) ? targetSuffix(text(details.ownerId), context) : ""} · ${details.acknowledged ? "Acknowledged" : "Acknowledgement pending"}${details.passive === true ? " · passive" : ""}${placement === undefined ? "" : ` · ${placement}`}`,
-		),
-		...reportPlacementLines(details, theme),
-	];
-}
-
-function messageResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: AgentCardContext,
-	labels: { error: string; partial: string; receipt: string },
-): Component {
-	const details = resultDetails(result);
-	const output = resultText(result);
-	const lines: string[] = [];
-	if (context.isError === true) lines.push(theme.fg("error", labels.error));
-	else if (options.isPartial) lines.push(theme.fg("muted", labels.partial));
-	const summary =
-		reportReceiptLines(details, theme, context) ??
-		primaryMessageLines(details, theme, context) ??
-		timerLines(details, theme, context) ??
-		controlReceiptLines(details, theme, labels.receipt, context);
-	if (summary) lines.push(...summary);
-	if (options.expanded) lines.push(theme.fg("toolOutput", boundedSource(output)));
-	else {
-		if (!summary) lines.push(theme.fg("toolOutput", resultPreview(output, 300)));
+): ToolResultPresentation {
+	const snapshot = snapshotStatus(details);
+	const identity = text(details.identity) || text(details.sessionId) || text(snapshot?.identity);
+	const nameFromResult =
+		text(details.name) || text(record(details.profile).name) || text(record(details.creation).name);
+	const suffix = identity
+		? headerHasName(identity, nameFromResult, context) || sameTarget(identity, context)
+			? ""
+			: nameFromResult && targetLabel(identity, context) === displayIdentity(identity)
+				? ` · ${nameFromResult}`
+				: targetSuffix(identity, context)
+		: "";
+	const snapshotError = text(details.snapshotError);
+	const deliveryError = text(details.deliveryError) || text(record(details.status).deliveryError);
+	const facts = [
+		snapshotError ? `Snapshot unavailable: ${snapshotError}` : "",
+		deliveryError ? `Delivery paused: ${deliveryError}` : "",
+		...(snapshot ? mutationSnapshotFacts(snapshot, details, theme, context, suffix !== "") : []),
+		...(details.availability === "initializing" ? ["Agent initialization in progress"] : []),
+	].filter(Boolean);
+	const admission = mutationAdmission(details);
+	const dispatched = count(admission.submissionId) !== undefined || admission.admitted === true;
+	if (name === "agent_spawn" || name === "agent_place") {
+		const action =
+			name === "agent_place"
+				? "Directory owner resolved"
+				: details.created === true
+					? "Agent created"
+					: details.created === false
+						? "Agent reused"
+						: "Agent resolved";
+		if (!dispatched) return { outcome: identity ? action + suffix : undefined, body: facts.join("\n") };
+		const disposition =
+			receiptPlacement(admission) === "withdrawn"
+				? "Dispatch withdrawn"
+				: admission.deduped === true
+					? "Already admitted"
+					: "Admitted";
+		const configuration = !callIdentity(context) ? targetConfiguration(identity, context) : "";
+		return {
+			outcome: [mutationReceipt(disposition + suffix, admission), configuration].filter(Boolean).join(" · "),
+			expanded: [action, mutationPlacement(admission), ...facts.filter((fact) => fact !== configuration)]
+				.filter(Boolean)
+				.join("\n"),
+		};
 	}
-	const identity = text(details.identity) || text(details.sessionId);
-	return cardLayout(
-		{
-			metadata: [sameTarget(identity, context) ? "" : targetConfiguration(identity, context)],
-			outcome: lines,
-			hint: options.expanded ? "" : cardHint(context, "result", "result"),
-		},
-		theme,
-		{ expanded: options.expanded, previous: context.lastComponent },
-	);
+	if (name === "agent_attach") {
+		return {
+			outcome: identity || snapshot ? `Agent attached${suffix}` : undefined,
+			body: [...facts, text(details.recovery)].filter(Boolean).join("\n"),
+		};
+	}
+	if (name === "agent_configure") {
+		return {
+			outcome: details.outcome === "applied" ? `Configuration applied${suffix}` : undefined,
+			body: [...new Set([...configurationFacts(details, identity, context), ...facts])].join("\n"),
+		};
+	}
+	const conversation = count(details.conversationId);
+	if (conversation === undefined) return {};
+	const branch =
+		suffix ||
+		(!identity ? ` · ${[text(details.name), `conversation ${conversation}`].filter(Boolean).join(" · ")}` : "");
+	const action =
+		name === "agent_rewind"
+			? details.deduped === true
+				? "Rewind already submitted"
+				: "Rewind submitted"
+			: details.deduped === true
+				? "Existing fork reused"
+				: "Fork created";
+	const predecessor = count(details.predecessorEntryId);
+	const outcome = mutationReceipt(action + branch, admission);
+	const evidence = [
+		predecessor === undefined ? "" : `Forked before entry ${predecessor}`,
+		mutationPlacement(admission),
+		...facts,
+	]
+		.filter(Boolean)
+		.join("\n");
+	return name === "agent_rewind" || dispatched ? { outcome, expanded: evidence } : { outcome, body: evidence };
+}
+
+function renderAgentResult(name: ControlTool): AgentToolCard["renderResult"] {
+	return (result, options, theme, context) => {
+		const details = resultDetails(result);
+		const diagnostic = diagnosticPresentation(details);
+		const view = { ...context, expanded: false };
+		let presentation: ToolResultPresentation;
+		if (details.cancelled === true) presentation = { outcome: "Cancelled" };
+		else if (context.isError || details.outcome === "failed" || details.format === "refused") presentation = diagnostic;
+		else if (name === "agent_abort") {
+			const [outcome, ...facts] = (abortLines(details, theme, view) ?? []).map(displayText);
+			const writes = count(details.writesPlaced);
+			if (writes) facts.push(`Placed ${cardinal(writes, "leftover write")}`);
+			presentation = { outcome, body: facts.join("\n") };
+		} else if (name === "agent_command") presentation = commandPresentation(details, view);
+		else if (name === "agent_reset") presentation = resetPresentation(details, view);
+		else presentation = mutationPresentation(name, details, theme, view);
+		return controlResultCard(result, options, theme, context, {
+			...presentation,
+			outcome: presentation.outcome ?? diagnostic.outcome,
+			partial: "Partial result",
+		});
+	};
 }
 
 function sendRecipient(identity: string, context: AgentCardContext): string {
@@ -1984,13 +1869,14 @@ function admissionSendOutcome(
 	identity: string,
 	recipient: string,
 	context: AgentCardContext,
+	label?: string,
 ): string | undefined {
 	if (details.admitted === false) return "Admission refused";
 	const submission = count(details.submissionId);
 	if (details.admitted !== true && submission === undefined) return undefined;
 	const conversation = count(details.conversationId);
 	const placement = receiptPlacement(details);
-	const kind = record(context.args).mode === "report" ? "Report" : "Message";
+	const kind = label ?? (record(context.args).mode === "report" ? "Report" : "Message");
 	const state = placement === "withdrawn" ? "withdrawn" : details.deduped === true ? "already admitted" : "admitted";
 	return [
 		`${kind} ${state}${recipient}`,
@@ -2002,13 +1888,13 @@ function admissionSendOutcome(
 		.join(" · ");
 }
 
-function sendOutcome(details: Record<string, unknown>, context: AgentCardContext): string | undefined {
+function sendOutcome(details: Record<string, unknown>, context: AgentCardContext, label?: string): string | undefined {
 	const identity = text(details.ownerId) || text(details.identity) || text(details.sessionId);
 	const recipient = sendRecipient(identity, context);
 	return (
 		reportSendOutcome(details, recipient) ??
 		scheduleSendOutcome(details, recipient) ??
-		admissionSendOutcome(details, identity, recipient, context)
+		admissionSendOutcome(details, identity, recipient, context, label)
 	);
 }
 
@@ -2019,13 +1905,17 @@ function diagnosticPresentation(details: Record<string, unknown>): ToolResultPre
 	return { outcome: outcome || undefined, expanded: rest.join("\n") };
 }
 
-function sendPresentation(details: Record<string, unknown>, context: AgentCardContext): ToolResultPresentation {
+function sendPresentation(
+	details: Record<string, unknown>,
+	context: AgentCardContext,
+	label?: string,
+): ToolResultPresentation {
 	if (details.cancelled === true) return { outcome: "Cancelled" };
 	const diagnostic = diagnosticPresentation(details);
 	if (context.isError || details.format === "refused" || diagnostic.outcome) return diagnostic;
 	const placement = receiptPlacement(details);
 	return {
-		outcome: sendOutcome(details, context),
+		outcome: sendOutcome(details, context, label),
 		expanded:
 			placement === "withdrawn"
 				? WITHDRAWN_INPUT_LINE
@@ -2053,10 +1943,11 @@ export function renderSteerResult(
 	theme: Theme,
 	context: AgentCardContext,
 ): Component {
-	return messageResult(result, options, theme, context, {
-		error: "Steer error",
+	const details = resultDetails(result);
+	const presentation = sendPresentation(details, context, "Steer");
+	return controlResultCard(result, options, theme, context, {
+		...presentation,
 		partial: "Steering disposition pending",
-		receipt: "Steer admitted",
 	});
 }
 
@@ -2067,25 +1958,23 @@ function renderBriefResult(
 	context: AgentCardContext,
 ): Component {
 	const details = resultDetails(result);
-	if (details.preview === true) {
-		const problems = Array.isArray(details.problems) ? details.problems : [];
-		const size = record(details.brief).characters;
-		const lines = [theme.fg("toolOutput", `Preview · ${size} characters`), muted(theme, "Nothing was sent")];
-		for (const problem of problems) {
-			if (typeof problem === "string")
-				lines.push(theme.fg("warning", options.expanded ? boundedSource(problem) : displayPreview(problem, 300)));
-		}
-		return cardLayout({ body: lines }, theme, { expanded: options.expanded, previous: context.lastComponent });
+	if (details.preview === true && !context.isError) {
+		const size = count(record(details.brief).characters);
+		return controlResultCard(result, options, theme, context, {
+			outcome:
+				size === undefined
+					? "Preview only; nothing was sent"
+					: `Preview · ${cardinal(size, "character")}; nothing was sent`,
+			body: array(details.problems).map(text).filter(Boolean).join("\n"),
+		});
 	}
 	const args = record(context.args);
-	if (!text(args.sessionId)) return renderAgentResult(result, options, theme, context);
-	return args.mode === "steer"
-		? renderSteerResult(result, options, theme, context)
-		: messageResult(result, options, theme, context, {
-				error: "Send error",
-				partial: "Admission pending",
-				receipt: "Admitted",
-			});
+	if (!text(args.sessionId)) return renderAgentResult("agent_spawn")(result, options, theme, context);
+	if (args.mode === "steer") return renderSteerResult(result, options, theme, context);
+	return controlResultCard(result, options, theme, context, {
+		...sendPresentation(details, context),
+		partial: "Admission pending",
+	});
 }
 
 function compactTarget(facts: Record<string, unknown>): string {
@@ -2103,7 +1992,7 @@ function compactConfiguration(facts: Record<string, unknown>): string {
 function compactFactLines(facts: Record<string, unknown>, showTarget: boolean): string[] {
 	const lines: string[] = [];
 	if (showTarget) {
-		if (compactTarget(facts)) lines.push(`Target: ${compactTarget(facts)}`);
+		if (compactTarget(facts)) lines.push(compactTarget(facts));
 		const configuration = compactConfiguration(facts);
 		if (configuration) lines.push(configuration);
 	}
@@ -2116,29 +2005,63 @@ function compactFactLines(facts: Record<string, unknown>, showTarget: boolean): 
 		window === undefined ? "" : `${window} window`,
 		percent === undefined ? "" : `${percent.toFixed(1)}%`,
 	].filter(Boolean);
-	if (parts.length) lines.push(`Before: ${parts.join(" · ")}`);
+	if (parts.length) lines.push(`${parts.join(" · ")} before compaction`);
 	if (facts.self !== true && count(facts.summaryChars) !== undefined)
-		lines.push(`Summary: ${facts.summaryChars} chars`);
-	if (text(facts.metadataError)) lines.push(`Metadata read failed: ${displayPreview(text(facts.metadataError), 240)}`);
+		lines.push(`${cardinal(Number(facts.summaryChars), "character")} in summary`);
+	if (text(facts.metadataError)) lines.push(`Could not read compaction metadata: ${facts.metadataError}`);
 	return lines;
 }
 
-function compactSummary(details: Record<string, unknown>, context: AgentCardContext): string[] | undefined {
-	const self = text(record(context.args).summary) !== "";
+function compactPlacement(details: Record<string, unknown>): string {
+	const reason = text(details.summaryReason);
+	switch (details.summaryPlacement) {
+		case "unanswered":
+			return `Summary not placed${reason ? `: ${reason}` : ""}`;
+		case "placed":
+			return "Summary placed";
+		case "queued":
+			return "Summary queued";
+		case "unknown":
+			return "Summary placement not established";
+		case "none":
+			return "No summary recorded";
+		default:
+			return "";
+	}
+}
+
+function compactPresentation(
+	details: Record<string, unknown>,
+	facts: Record<string, unknown>,
+	context: AgentCardContext,
+): ToolResultPresentation {
+	if (details.cancelled === true) return { outcome: "Cancelled" };
+	const diagnostic = diagnosticPresentation(details);
+	if (context.isError) return diagnostic;
 	const status = text(details.status);
-	const taskId = count(details.taskId);
-	const entryId = count(details.entryId);
-	const submissionId = count(details.submissionId);
-	const error = text(details.error);
-	if (!status && !taskId && !error) return undefined;
-	const lines = [
-		`${self ? "Summary" : "Compaction"} ${displayPreview(status === "task" ? "admitted" : status || "pending", 40)}${taskId !== undefined ? ` · task ${taskId}` : ""}${submissionId !== undefined ? ` · submission ${submissionId}` : ""}`,
-	];
-	if (entryId !== undefined) lines.push(`summary entry ${entryId}`);
-	if (error) lines.push(displayPreview(error, 240));
-	if (text(details.summarySizeError))
-		lines.push(`Summary size read failed: ${displayPreview(text(details.summarySizeError), 240)}`);
-	return lines;
+	const task = count(details.taskId);
+	const entry = count(details.entryId);
+	const submission = count(details.submissionId);
+	const label = text(record(context.args).summary) ? "Summary" : "Compaction";
+	const state = [
+		status ? `${label} ${status === "task" ? "admitted" : status}` : task === undefined ? "" : `${label} task recorded`,
+		task === undefined ? "" : `task ${task}`,
+		submission === undefined ? "" : `submission ${submission}`,
+	]
+		.filter(Boolean)
+		.join(" · ");
+	return {
+		outcome: [state, diagnostic.outcome].filter(Boolean).join(": ") || undefined,
+		body: [
+			compactPlacement(details),
+			entry === undefined ? "" : `summary entry ${entry}`,
+			text(details.summarySizeError) ? `Summary size read failed: ${details.summarySizeError}` : "",
+			...compactFactLines(facts, context.state?.compactFactsShown !== true),
+		]
+			.filter(Boolean)
+			.join("\n"),
+		expanded: diagnostic.expanded,
+	};
 }
 
 function rememberCompactionFacts(
@@ -2157,25 +2080,10 @@ export function renderCompactResult(
 	context: AgentCardContext,
 ): Component {
 	const details = resultDetails(result);
-	const output = resultText(result);
-	const received = record(details.compaction);
-	const facts = rememberCompactionFacts(received, context);
-	const lines: string[] = [];
-	if (context.isError === true) lines.push(theme.fg("error", "Compact error"));
-	else if (options.isPartial) lines.push(theme.fg("muted", "Compaction pending"));
-	if (options.expanded) {
-		lines.push(...compactFactLines(facts, true).map((line) => muted(theme, line)));
-		lines.push(theme.fg("toolOutput", boundedSource(output)));
-		if (Object.keys(received).length) lines.push(theme.fg("dim", boundedSource(JSON.stringify(received, null, 2))));
-	} else {
-		const summary = compactSummary(details, context);
-		if (summary) lines.push(...summary);
-		else lines.push(theme.fg("toolOutput", resultPreview(output, 300)));
-		lines.push(...compactFactLines(facts, context.state?.compactFactsShown !== true).map((line) => muted(theme, line)));
-	}
-	return cardLayout({ outcome: lines, hint: options.expanded ? "" : cardHint(context, "result", "result") }, theme, {
-		expanded: options.expanded,
-		previous: context.lastComponent,
+	const facts = rememberCompactionFacts(record(details.compaction), context);
+	return controlResultCard(result, options, theme, context, {
+		...compactPresentation(details, facts, context),
+		partial: "Compaction pending",
 	});
 }
 
@@ -2296,15 +2204,6 @@ function profileLines(details: Record<string, unknown>, theme: Theme, context: A
 		),
 		...profileRouteLines(profile, theme),
 	];
-}
-function resolveProfileLines(
-	details: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-): string[] | undefined {
-	if (typeof details.created !== "boolean") return undefined;
-	const lines = profileLines(record(details.profile), theme, context) ?? profileLines(details, theme, context);
-	return lines ? [theme.fg("toolOutput", details.created ? "Agent created" : "Agent reused"), ...lines] : undefined;
 }
 export function renderProfileResult(
 	result: AgentToolResult<unknown>,
@@ -2574,18 +2473,16 @@ function collaborationLines(
 	];
 }
 
-function resetLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
-	const source = text(details.text);
-	if (!source) return undefined;
-	const placed = /^Reset (placed|queued) for “(.*?)”[;.]/u.exec(source);
-	if (placed) {
-		const known = findTarget(callIdentity(context), context.lookup?.() ?? []);
-		return [
-			muted(theme, `Reset ${placed[1]}${known?.name === placed[2] ? "" : ` · ${displayPreview(placed[2], 100)}`}`),
-		];
+function resetPresentation(details: Record<string, unknown>, context: AgentCardContext): ToolResultPresentation {
+	const identity = text(details.identity) || text(details.sessionId);
+	const target = identity ? targetSuffix(identity, context) : "";
+	if (details.status === "placed" || details.status === "queued")
+		return { outcome: `Reset ${details.status}${target}` };
+	if (details.status === "unanswered") {
+		const reason = diagnosticPresentation(details);
+		return { ...reason, outcome: `Reset not placed${target}${reason.outcome ? `: ${reason.outcome}` : ""}` };
 	}
-	const failure = /^Reset did not place for “.*?”: (.*).$/u.exec(source);
-	return [muted(theme, failure ? `Reset not placed: ${displayPreview(failure[1], 240)}` : displayPreview(source, 240))];
+	return {};
 }
 
 // --- Peer message card ----------------------------------------------------------
@@ -3479,10 +3376,10 @@ export function ordinaryWorkCard(name: string, lookup: AgentCardLookup = () => [
 /** Call and result renderers for every registered agent tool, keyed by tool name. */
 export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readonly<Record<string, AgentToolCard>> {
 	const cards: Record<string, AgentToolCard> = {
-		agent_spawn: { renderCall: bindCall("agent_spawn"), renderResult: renderAgentResult },
+		agent_spawn: { renderCall: bindCall("agent_spawn"), renderResult: renderAgentResult("agent_spawn") },
 		agent_brief: { renderCall: bindCall("agent_brief"), renderResult: renderBriefResult },
-		agent_attach: { renderCall: bindCall("agent_attach"), renderResult: renderAgentResult },
-		agent_place: { renderCall: bindCall("agent_place"), renderResult: renderAgentResult },
+		agent_attach: { renderCall: bindCall("agent_attach"), renderResult: renderAgentResult("agent_attach") },
+		agent_place: { renderCall: bindCall("agent_place"), renderResult: renderAgentResult("agent_place") },
 		agent_intent: {
 			renderCall: bindCall("agent_intent"),
 			renderResult: (result, options, theme, context) =>
@@ -3508,15 +3405,11 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 				),
 		},
 		agent_status: { renderCall: bindCall("agent_status"), renderResult: renderStatusResult },
-		agent_fork: { renderCall: bindCall("agent_fork"), renderResult: renderAgentResult },
-		agent_rewind: { renderCall: bindCall("agent_rewind"), renderResult: renderAgentResult },
-		agent_configure: { renderCall: bindCall("agent_configure"), renderResult: renderAgentResult },
+		agent_fork: { renderCall: bindCall("agent_fork"), renderResult: renderAgentResult("agent_fork") },
+		agent_rewind: { renderCall: bindCall("agent_rewind"), renderResult: renderAgentResult("agent_rewind") },
+		agent_configure: { renderCall: bindCall("agent_configure"), renderResult: renderAgentResult("agent_configure") },
 		agent_profile: { renderCall: bindCall("agent_profile"), renderResult: renderProfileResult },
-		agent_abort: {
-			renderCall: renderAbortCall,
-			renderResult: (result, options, theme, context) =>
-				outcomeCard(result, options, theme, context, { error: "Abort error", partial: "Abort pending" }, abortLines),
-		},
+		agent_abort: { renderCall: renderAbortCall, renderResult: renderAgentResult("agent_abort") },
 		agent_list: { renderCall: renderListCall, renderResult: renderListResult },
 		agent_send: { renderCall: renderSendCall, renderResult: renderSendResult },
 		agent_steer: { renderCall: renderSteerCall, renderResult: renderSteerResult },
@@ -3525,25 +3418,10 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 			renderResult: (result, options, theme, context) =>
 				outcomeCard(result, options, theme, context, { error: "Work error", partial: "Work pending" }, workLines),
 		},
-		agent_command: {
-			renderCall: renderCommandCall,
-			renderResult: (result, options, theme, context) =>
-				outcomeCard(
-					result,
-					options,
-					theme,
-					context,
-					{ error: "Command error", partial: "Command pending" },
-					commandLines,
-				),
-		},
+		agent_command: { renderCall: renderCommandCall, renderResult: renderAgentResult("agent_command") },
 		agent_inspect: { renderCall: renderInspectCall, renderResult: renderInspectResult },
 		agent_compact: { renderCall: renderCompactCall, renderResult: renderCompactResult },
-		agent_reset: {
-			renderCall: bindCall("agent_reset"),
-			renderResult: (result, options, theme, context) =>
-				outcomeCard(result, options, theme, context, { error: "Reset error", partial: "Reset pending" }, resetLines),
-		},
+		agent_reset: { renderCall: bindCall("agent_reset"), renderResult: renderAgentResult("agent_reset") },
 	};
 	return Object.fromEntries(
 		Object.entries(cards).map(([name, card]) => [

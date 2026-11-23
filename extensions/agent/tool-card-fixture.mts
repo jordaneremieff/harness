@@ -89,7 +89,7 @@ export const fixtures: Record<string, CardFixture> = {
 	},
 	agent_configure: {
 		args: { sessionId: targetId, thinkingLevel: "high" },
-		details: { identity: targetId, conversationId: 1, status: snapshot },
+		details: { sessionId: targetId, outcome: "applied", status: snapshot },
 	},
 	agent_abort: { args: { sessionId: targetId }, details: { identity: targetId, conversationId: 1, background: false } },
 	agent_command: {
@@ -147,7 +147,9 @@ export const fixtures: Record<string, CardFixture> = {
 	agent_reset: {
 		args: { sessionId: targetId, handoff: "Review the other branch." },
 		details: {
-			text: "Reset queued for “Parser review”; it places at the next native boundary and starts no model turn.",
+			identity: targetId,
+			status: "queued",
+			submissionId: 405,
 		},
 	},
 };

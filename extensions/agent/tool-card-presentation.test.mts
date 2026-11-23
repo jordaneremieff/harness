@@ -381,10 +381,18 @@ it("new fork facts survive an incomplete roster and applied settings preserve ho
 	const configured = nativeRow(
 		"agent_configure",
 		{ sessionId: targetId, model: "provider/new-model", thinkingLevel: "high" },
-		{ identity: targetId, conversationId: 1, status: snapshot },
+		{
+			sessionId: targetId,
+			outcome: "applied",
+			before: { name: "Parser review", model: "provider/model", thinkingLevel: "high" },
+			after: { name: "Parser review", model: "provider/new-model", thinkingLevel: "low" },
+			reasoning: { requested: "high", effective: "low", clamped: true },
+			status: snapshot,
+		},
 	);
 	assert.match(screen(configured), /provider\/new-model · low/u);
-	assert.match(screen(configured), /Configuration applied/u);
+	assert.equal(screen(configured).split("provider/new-model").length - 1, 1);
+	assert.match(screen(configured), /Configuration applied\nReasoning adjusted to low/u);
 });
 
 it("scheduled messages and timer cancellation name their actual outcomes without duplicate targets", () => {
@@ -416,13 +424,13 @@ it("distinguishes pending stops, cold release and guarded continuation on a nati
 	const unsettled = { identity: targetId, background: true, settled: false, pendingTasks: [24, 32] };
 	const stop = card({ background: true }, unsettled);
 	assert.match(stop, /same-storage children/u);
-	assert.match(stop, /Stop not settled; do not repeat · pending tasks: 24, 32/u);
+	assert.match(stop, /Stop not settled; do not repeat · pending tasks 24, 32/u);
 	const release = card(
 		{ release: true },
 		{ aborted: { ...unsettled, background: false, cold: true }, retiring: true, blockers: [], writesPlaced: 0 },
 	);
 	assert.match(release, /Cold stop recorded; no serving host started/u);
-	assert.match(release, /pending tasks: 24, 32/u);
+	assert.match(release, /pending tasks 24, 32/u);
 	assert.doesNotMatch(release, /retirement requested/u);
 	const args = { interrupt: { taskId: 24, queuedInputs: [32], intentId: "selection" } };
 	const admitted = card(args, { state: "continued", submissionId: 49 });
@@ -449,13 +457,102 @@ it("collaboration pages, reset refusals, and raw error previews keep detail behi
 	const reset = nativeRow(
 		"agent_reset",
 		{ sessionId: targetId },
-		{ text: "Reset did not place for “Parser review”: unavailable." },
+		{ status: "unanswered", identity: targetId, reason: "unavailable" },
 	);
 	assert.match(screen(reset), /Reset not placed: unavailable/u);
 	const error = nativeRow("agent_status", { sessionId: targetId }, `Storage ${targetId} is unavailable`);
 	assert.ok(screen(error).includes(targetId));
 	error.setExpanded(true);
 	assert.match(screen(error), new RegExp(targetId));
+});
+
+it("reset uses the returned placement and preserves separate model text and receipt IDs", () => {
+	const reset = nativeRow("agent_reset", { sessionId: targetId }, undefined);
+	reset.markExecutionStarted();
+	const modelText = "The next input starts from new context only after the reset places.";
+	reset.updateResult({
+		content: [{ type: "text", text: modelText }],
+		details: { status: "queued", identity: targetId, submissionId: 541, text: modelText },
+		isError: false,
+	});
+	assert.match(screen(reset, 42), /Reset queued/u);
+	assert.doesNotMatch(screen(reset, 42), /new context|submissionId|Reset placed/u);
+	assert.equal(hints(screen(reset, 42)).length, 1);
+	reset.setExpanded(true);
+	assert.ok(screen(reset).includes(modelText));
+	assert.match(screen(reset), /"submissionId": 541/u);
+	assert.equal(hints(screen(reset)).length, 0);
+});
+
+it("command results keep the last five output rows and reveal the complete native command report on expansion", () => {
+	const command = nativeRow("agent_command", { sessionId: targetId, name: "report" }, undefined);
+	const report = Array.from({ length: 8 }, (_, i) => `Report row ${i + 1}`).join("\n");
+	const details = { name: "report", identity: targetId, text: report };
+	command.markExecutionStarted();
+	command.updateResult({
+		content: [{ type: "text", text: JSON.stringify({ ...details, data: { reportId: 71 } }) }],
+		details,
+		isError: false,
+	});
+	assert.match(
+		screen(command, 52),
+		/Command completed\nReport row 4\nReport row 5\nReport row 6\nReport row 7\nReport row 8\n\.\.\. \(3 more lines,/u,
+	);
+	assert.doesNotMatch(screen(command, 52), /Report row [123]|reportId|Result received/u);
+	command.setExpanded(true);
+	assert.ok(screen(command).includes(report));
+	assert.match(screen(command), /"reportId":71/u);
+	assert.equal(hints(screen(command)).length, 0);
+	const reload = nativeRow(
+		"agent_command",
+		{ sessionId: targetId, name: "reload" },
+		{ reloaded: true, sessionId: targetId, contributionCount: 4 },
+	);
+	assert.match(screen(reload), /Host registrations reloaded\n4 native contributions installed/u);
+	const tree = nativeRow(
+		"agent_command",
+		{ sessionId: targetId, name: "tree" },
+		{ forkedIdentity: forkId, deduped: true },
+	);
+	assert.match(screen(tree), /Existing tree fork · Fork review/u);
+});
+
+it("remote compact reports task settlement without claiming a summary placed", () => {
+	const compact = nativeRow("agent_compact", { sessionId: targetId }, undefined);
+	const details = {
+		status: "completed",
+		taskId: 58,
+		submissionId: 91,
+		summaryPlacement: "unanswered",
+		summaryReason: "Reset superseded the write",
+		compaction: { identity: targetId, before: { contextWindow: 48000 } },
+	};
+	compact.markExecutionStarted();
+	compact.updateResult({ ...fixtureResult(details), isError: false });
+	const collapsed = screen(compact, 76);
+	assert.match(collapsed, /Compaction completed · task 58 · submission 91/u);
+	assert.match(collapsed, /Summary not placed: Reset superseded the write/u);
+	assert.match(collapsed, /48000 window/u);
+	assert.doesNotMatch(collapsed, /Summary placed|summary entry|Result received/u);
+	compact.setExpanded(true);
+	assert.match(screen(compact), /"summaryPlacement": "unanswered"/u);
+});
+
+it("an actual structured configuration diagnostic replaces generic errors", () => {
+	const configure = nativeRow("agent_configure", { sessionId: targetId, model: "provider/unavailable" }, undefined);
+	configure.markExecutionStarted();
+	configure.updateResult({
+		...fixtureResult({
+			outcome: "failed",
+			error: "The model is unavailable",
+			persistence: { nativeWrites: "not-attempted" },
+		}),
+		isError: true,
+	});
+	assert.match(screen(configure, 65), /The model is unavailable/u);
+	assert.doesNotMatch(screen(configure, 65), /Tool error|Configuration applied|nativeWrites/u);
+	configure.setExpanded(true);
+	assert.match(screen(configure), /"nativeWrites": "not-attempted"/u);
 });
 
 it("a primary continuity receipt and expanded messages use plain labels", () => {

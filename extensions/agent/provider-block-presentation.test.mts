@@ -31,7 +31,7 @@ import { eventLog } from "./host-fixture.mts";
 import { parseHostMetadata } from "./host-protocol.ts";
 import { createPrimaryChannel, type PrimaryDelivery } from "./primary-channel.ts";
 import { safeProviderError } from "./primary-observation.ts";
-import { renderAgentResult, renderInspectResult } from "./tool-cards.ts";
+import { createAgentToolCards, renderInspectResult } from "./tool-cards.ts";
 
 const timestamp = Date.parse("2026-10-11T01:02:03.000Z");
 const target = "fixture-storage:2";
@@ -175,7 +175,7 @@ it("renders readable retained recovery facts in status output", () => {
 				submissions: [],
 			},
 		};
-		const rendered = renderAgentResult(
+		const rendered = createAgentToolCards().agent_status.renderResult(
 			{ content: [{ type: "text", text: JSON.stringify(details) }], details },
 			{ expanded: true, isPartial: false },
 			theme,

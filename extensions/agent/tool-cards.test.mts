@@ -24,7 +24,6 @@ import {
 	displayText,
 	renderAbortCall,
 	renderAgentCall,
-	renderAgentResult,
 	renderCommandCall,
 	renderCompactCall,
 	renderCompactResult,
@@ -132,7 +131,7 @@ it("renders a brief creation or admission like its dispatch path and a preview l
 	const created = result(details);
 	assert.equal(render("agent_brief", created, args), render("agent_spawn", created, args));
 	for (const [mode, outcome] of [
-		["followUp", "Admitted"],
+		["followUp", "Message admitted"],
 		["steer", "Steer admitted"],
 	] as const) {
 		const reach = { ...args, sessionId: targetId, mode };
@@ -143,7 +142,7 @@ it("renders a brief creation or admission like its dispatch path and a preview l
 	const preview = briefPreview(renderBrief(args), [problem]);
 	const output = render("agent_brief", result(preview, briefPreviewText(preview)), { ...args, preview: true });
 	assert.match(output, new RegExp(`Preview · ${preview.brief.characters} characters`));
-	assert.match(output, /Nothing was sent/u);
+	assert.match(output, /nothing was sent/u);
 	assert.ok(output.includes(problem));
 	assert.doesNotMatch(output, /Spawned|Admitted/u);
 });
@@ -582,24 +581,36 @@ describe("agent result cards", () => {
 	it("shows the snapshot model, activity, running tools, pending input, and capability limits", () => {
 		const resultValue = snapshotResult(conversationStatus());
 		const before = structuredClone(resultValue);
-		const card = renderAgentResult(resultValue, { ...cardKeys, expanded: false, isPartial: false }, theme, context());
+		const card = createAgentToolCards().agent_status.renderResult(
+			resultValue,
+			{ ...cardKeys, expanded: false, isPartial: false },
+			theme,
+			context(),
+		);
 		const text = screen(card, 180);
 		assert.match(text, /Parser review/);
 		assert.match(text, /provider\/model · high/);
 		assert.match(text, /Activity: working · tool read · 1 pending/);
 		assert.match(text, /Running: read · call call-7/);
 		assert.match(text, /Running: bash · call call-8 · pending/);
-		assert.match(text, /Working on the task: Check the source$/mu);
-		assert.doesNotMatch(text, /\x1b|\\u\{/u, "a control in the task text is removed, not shown");
-		assert.match(text, /Saved: done · submission 3/);
-		assert.match(text, /Capability limits: 1 configured extension without a native form/);
+		assert.match(text, /\(3 more lines, ctrl\+o to expand\)/u);
+		assert.doesNotMatch(text, /Working on the task|Saved: done|Capability limits/u);
 		assert.deepEqual(resultValue, before);
 		for (const width of [12, 40, 100]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 		const expanded = screen(
-			renderAgentResult(resultValue, { ...cardKeys, expanded: true, isPartial: false }, theme, context()),
+			createAgentToolCards().agent_status.renderResult(
+				resultValue,
+				{ ...cardKeys, expanded: true, isPartial: false },
+				theme,
+				context(),
+			),
 			240,
 		);
-		assert.match(expanded, /"callId": "call-7"/);
+		assert.match(expanded, /Working on the task: Check the source$/mu);
+		assert.doesNotMatch(expanded, /\x1b|\\u\{/u, "a control in the task text is removed, not shown");
+		assert.match(expanded, /Saved: done · submission 3/);
+		assert.match(expanded, /Capability limits: 1 configured extension without a native form/);
+		assert.match(expanded, /"callId":\s*"call-7"/);
 	});
 
 	it("lists parked tool calls without calling them running", () => {
@@ -609,7 +620,7 @@ describe("agent result cards", () => {
 				{ callId: "child", name: "codemode", status: "waiting" },
 			],
 		};
-		const card = renderAgentResult(
+		const card = createAgentToolCards().agent_status.renderResult(
 			snapshotResult(conversationStatus({ live })),
 			{ ...cardKeys, expanded: false, isPartial: false },
 			theme,
@@ -624,7 +635,12 @@ describe("agent result cards", () => {
 	it("marks a cold snapshot read-only instead of reporting it idle", () => {
 		const readOnly = snapshotResult(conversationStatus({ busy: false, live: {} }), { live: false });
 		const text = screen(
-			renderAgentResult(readOnly, { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
+			createAgentToolCards().agent_status.renderResult(
+				readOnly,
+				{ ...cardKeys, expanded: false, isPartial: false },
+				theme,
+				context(),
+			),
 			180,
 		);
 		assert.match(text, /Read-only snapshot; live owner state unavailable/);
@@ -634,7 +650,12 @@ describe("agent result cards", () => {
 	it("labels the newest text by state instead of claiming an in-progress reply", () => {
 		const render = (status: Record<string, unknown>) =>
 			screen(
-				renderAgentResult(snapshotResult(status), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
+				createAgentToolCards().agent_status.renderResult(
+					snapshotResult(status),
+					{ ...cardKeys, expanded: true, isPartial: false },
+					theme,
+					context(),
+				),
 				180,
 			);
 		assert.match(
@@ -682,14 +703,19 @@ describe("agent result cards", () => {
 				limits: { ordinaryOnly: ["/ext/ordinary.ts"] },
 			},
 		});
-		const text = screen(
-			renderAgentResult(compact, { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
+		const card = createAgentToolCards().agent_spawn;
+		const collapsed = screen(
+			card.renderResult(compact, { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 			180,
 		);
-		assert.match(text, /Parser review/);
-		assert.match(text, /provider\/model · high/);
-		assert.match(text, /State: idle/);
-		assert.match(text, /Capability limits: 1 configured extension without a native form/);
+		assert.match(collapsed, /Admitted · Parser review · submission 9 · provider\/model · high/u);
+		assert.doesNotMatch(collapsed, /State:|Capability limits/u);
+		const text = screen(
+			card.renderResult(compact, { ...cardKeys, expanded: true, isPartial: false }, theme, context()),
+			180,
+		);
+		assert.match(text, /^idle$/mu);
+		assert.match(text, /1 configured extension without a native form/);
 		assert.doesNotMatch(text, /Activity: idle · pending unknown/u);
 	});
 
@@ -703,7 +729,12 @@ describe("agent result cards", () => {
 				"primary owner 18f6603b runs an agent extension with endpoint version 1; this host requires version 2. Restart that Pi process to load the current extension.",
 		});
 		const text = screen(
-			renderAgentResult(status, { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
+			createAgentToolCards().agent_status.renderResult(
+				status,
+				{ ...cardKeys, expanded: false, isPartial: false },
+				theme,
+				context(),
+			),
 			240,
 		);
 		assert.match(text, /Delivery paused: /);
@@ -718,7 +749,12 @@ describe("agent result cards", () => {
 			status: { conversation: conversationStatus({ name: "Forked review" }) },
 		});
 		const text = screen(
-			renderAgentResult(fork, { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
+			createAgentToolCards().agent_fork.renderResult(
+				fork,
+				{ ...cardKeys, expanded: false, isPartial: false },
+				theme,
+				context(),
+			),
 			180,
 		);
 		assert.match(text, /provider\/model · high/);
@@ -732,7 +768,12 @@ describe("agent result cards", () => {
 			deduped: false,
 			snapshotError: "claim refused after mutation",
 		});
-		const card = renderAgentResult(fork, { ...cardKeys, expanded: false, isPartial: false }, theme, context());
+		const card = createAgentToolCards().agent_fork.renderResult(
+			fork,
+			{ ...cardKeys, expanded: false, isPartial: false },
+			theme,
+			context(),
+		);
 		const text = screen(card, 180);
 		assert.match(text, /Snapshot unavailable: claim refused after mutation/);
 		assert.match(text, /Fork created · storage-a:2/);
@@ -742,7 +783,7 @@ describe("agent result cards", () => {
 
 	it("accepts a bare conversation status and a conversations wrapper without inventing cost", () => {
 		const bare = screen(
-			renderAgentResult(
+			createAgentToolCards().agent_status.renderResult(
 				result({ conversation: conversationStatus({ busy: false, live: {} }) }),
 				{ ...cardKeys, expanded: false, isPartial: false },
 				theme,
@@ -1045,14 +1086,28 @@ describe("agent result cards", () => {
 				},
 			});
 		assert.match(
-			screen(renderAgentResult(compact({ unplaced: 2, oldest: 372000 }), options, theme, context()), 180),
+			screen(
+				createAgentToolCards().agent_status.renderResult(
+					compact({ unplaced: 2, oldest: 372000 }),
+					options,
+					theme,
+					context(),
+				),
+				180,
+			),
 			/timers · unplaced: 2, oldest: 6m 12s/u,
 		);
 		assert.match(
-			screen(renderAgentResult(compact({ unplaced: 0 }), options, theme, context()), 180),
+			screen(
+				createAgentToolCards().agent_status.renderResult(compact({ unplaced: 0 }), options, theme, context()),
+				180,
+			),
 			/timers · unplaced: 0$/mu,
 		);
-		assert.doesNotMatch(screen(renderAgentResult(compact({}), options, theme, context()), 180), /unplaced/u);
+		assert.doesNotMatch(
+			screen(createAgentToolCards().agent_status.renderResult(compact({}), options, theme, context()), 180),
+			/unplaced/u,
+		);
 		const line = /placed at the recipient's next tool boundary/u;
 		const receipt = { submissionId: 9, conversationId: 1, deduped: false, identity: "storage-a" };
 		const unplaced = screen(
@@ -1083,18 +1138,12 @@ describe("agent result cards", () => {
 			screen(renderSendResult(result({ ...receipt, placement: "queued" }), options, theme, context()), 180),
 			/submission 9 ·/u,
 		);
-		assert.match(
-			screen(
-				renderAgentResult(
-					result({ sessionId: "storage-a", admission: { ...receipt, placement: "unplaced" } }),
-					options,
-					theme,
-					context(),
-				),
-				180,
-			),
-			line,
-		);
+		const spawn = createAgentToolCards().agent_spawn;
+		const spawnReceipt = result({ sessionId: "storage-a", admission: { ...receipt, placement: "unplaced" } });
+		const spawned = screen(spawn.renderResult(spawnReceipt, options, theme, context()), 180);
+		assert.match(spawned, /submission 9 · unplaced/u);
+		assert.doesNotMatch(spawned, line);
+		assert.match(screen(spawn.renderResult(spawnReceipt, { ...options, expanded: true }, theme, context()), 180), line);
 		const retained = screen(
 			renderSendResult(
 				result({ sourceId: "report:one", ownerId: "storage-a", acknowledged: false, placement: "unplaced" }),
@@ -1139,21 +1188,22 @@ describe("agent result cards", () => {
 			for (const render of [renderSendResult, renderSteerResult]) {
 				const output = screen(render(result(receipt), options, theme, context()), 180);
 				assert.match(output, /withdrawn/u);
-				const disclosed =
-					render === renderSendResult
-						? screen(render(result(receipt), { ...options, expanded: true }, theme, context({ expanded: true })), 180)
-						: output;
+				assert.doesNotMatch(output, /not in the recipient's inbox or transcript/u);
+				const disclosed = screen(
+					render(result(receipt), { ...options, expanded: true }, theme, context({ expanded: true })),
+					180,
+				);
 				assert.match(disclosed, /not in the recipient's inbox or transcript/u);
 				assert.doesNotMatch(output, / · placed\b|next tool boundary|delivered to|queued for/u);
 			}
 		}
-		const spawned = screen(
-			renderAgentResult(result({ sessionId: "storage-a", admission: native }), options, theme, context()),
-			180,
-		);
+		const spawn = createAgentToolCards().agent_spawn;
+		const receipt = result({ sessionId: "storage-a", admission: native });
+		const spawned = screen(spawn.renderResult(receipt, options, theme, context()), 180);
 		assert.match(spawned, /withdrawn/u);
-		assert.match(spawned, /not in the recipient's inbox or transcript/u);
-		assert.doesNotMatch(spawned, / · placed\b|next tool boundary/u);
+		assert.doesNotMatch(spawned, / · placed\b|next tool boundary|not in the recipient's inbox or transcript/u);
+		const expanded = screen(spawn.renderResult(receipt, { ...options, expanded: true }, theme, context()), 180);
+		assert.match(expanded, /not in the recipient's inbox or transcript/u);
 	});
 
 	it("shows a declared work item with its dependencies and a closed item with its final report row", () => {
@@ -1291,7 +1341,7 @@ describe("agent result cards", () => {
 		);
 		assert.match(
 			screen(
-				renderAgentResult(
+				createAgentToolCards().agent_fork.renderResult(
 					result({ conversationId: 2, identity: "storage-a:2", deduped: false }),
 					{ ...cardKeys, expanded: false, isPartial: false },
 					theme,
@@ -1301,20 +1351,20 @@ describe("agent result cards", () => {
 			/Fork created · storage-a:2/,
 		);
 		const rewind = screen(
-			renderAgentResult(
+			createAgentToolCards().agent_rewind.renderResult(
 				result({ conversationId: 3, identity: "storage-a:3", predecessorEntryId: 5, submissionId: 11, deduped: false }),
-				{ ...cardKeys, expanded: false, isPartial: false },
+				{ ...cardKeys, expanded: true, isPartial: false },
 				theme,
 				context(),
 			),
 		);
 		assert.match(rewind, /Rewind submitted · storage-a:3/);
-		assert.match(rewind, /forked before entry 5/);
+		assert.match(rewind, /Forked before entry 5/);
 		assert.match(rewind, /submission 11/);
 		assert.match(
 			screen(
-				renderAgentResult(
-					result({ conversationId: 1, identity: "storage-a" }),
+				createAgentToolCards().agent_configure.renderResult(
+					result({ sessionId: "storage-a", outcome: "applied" }),
 					{ ...cardKeys, expanded: false, isPartial: false },
 					theme,
 					context(),
@@ -1339,13 +1389,12 @@ describe("agent result cards", () => {
 		assert.match(screen(release), /Host remains active/);
 		assert.match(screen(release), /pending timer/);
 		const command = createAgentToolCards().agent_command.renderResult(
-			result({ name: "reload", conversationId: 1, identity: "storage-a", text: "Reloaded 3 extensions" }),
+			result({ name: "inventory", conversationId: 1, identity: "storage-a", text: "3 native contributions" }),
 			{ ...cardKeys, expanded: false, isPartial: false },
 			theme,
 			context(),
 		);
-		assert.match(screen(command), /Reloaded 3 extensions/);
-		assert.match(screen(command), /command reload\nstorage-a/);
+		assert.match(screen(command), /Command completed\n3 native contributions/u);
 		const reload = createAgentToolCards().agent_command.renderResult(
 			result({ sessionId: "storage-a", inventory: { contributions: [{}, {}] }, reloaded: true }),
 			{ ...cardKeys, expanded: false, isPartial: false },
@@ -1394,7 +1443,7 @@ describe("agent result cards", () => {
 			theme,
 			context({ args: { summary: "s" }, isError: true }),
 		);
-		assert.match(screen(error), /Compact error/);
+		assert.match(screen(error), /refused/);
 		assert.doesNotMatch(screen(error), /receipt/);
 	});
 
@@ -1431,12 +1480,19 @@ describe("agent result cards", () => {
 			/\x1b/,
 		);
 		assert.match(
-			screen(renderAgentResult(result(undefined), { ...cardKeys, expanded: false, isPartial: true }, theme, context())),
+			screen(
+				createAgentToolCards().agent_attach.renderResult(
+					result(undefined),
+					{ ...cardKeys, expanded: false, isPartial: true },
+					theme,
+					context(),
+				),
+			),
 			/Partial result/,
 		);
 		assert.match(
 			screen(
-				renderAgentResult(
+				createAgentToolCards().agent_attach.renderResult(
 					result(undefined),
 					{ ...cardKeys, expanded: true, isPartial: false },
 					theme,
@@ -1447,27 +1503,18 @@ describe("agent result cards", () => {
 		);
 	});
 
-	it("bounds expanded source units before it removes controls", () => {
-		const render = (value: string) =>
-			screen(
-				renderAgentResult(
-					result(undefined, value),
-					{ ...cardKeys, expanded: true, isPartial: false },
-					theme,
-					context(),
-				),
-				800,
-			).replace(/\n/gu, "");
-		const source = "\u202e".repeat(32_000);
-		assert.equal(render(source), "");
-		assert.equal(
-			render(`${source}OMITTED`),
-			"[Display limit: 7 more UTF-16 code units. Full text remains in native history.]",
-		);
-		assert.equal(
-			render(`${"x".repeat(31_999)}\u{e0001}OMITTED`),
-			`${"x".repeat(31_999)}[Display limit: 9 more UTF-16 code units. Full text remains in native history.]`,
-		);
+	it("sanitizes and bounds expanded control evidence without cutting an astral character", () => {
+		const bounds = screen(
+			createAgentToolCards().agent_attach.renderResult(
+				result({ sessionId: "storage-a" }, `${"x".repeat(31_999)}\u202e😀OMITTED`),
+				{ ...cardKeys, expanded: true, isPartial: false },
+				theme,
+				context(),
+			),
+			800,
+		).replace(/\n/gu, "");
+		assert.ok(bounds.includes(`${"x".repeat(31_999)}😀[Truncated: showing 32000 of 32007 characters]`));
+		assert.doesNotMatch(bounds, /\u202e|OMITTED/u);
 	});
 });
 

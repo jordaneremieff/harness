@@ -100,7 +100,7 @@ it("captures self context once at execution and keeps it stable through native r
 	assert.match(rendered, /provider\/model.*high/u);
 	assert.equal((rendered.match(/provider\/model/gu) ?? []).length, 1);
 	assert.equal((rendered.match(/Parser session/gu) ?? []).length, 1);
-	assert.match(rendered, /Before: 12000 tokens · 48000 window · 25\.0%/u);
+	assert.match(rendered, /12000 tokens · 48000 window · 25\.0% before compaction/u);
 	assert.match(rendered, /supplied summary/u);
 	assert.ok(rendered.includes(args.summary));
 	assert.match(rendered, /Summary queued/u);
@@ -111,7 +111,7 @@ it("captures self context once at execution and keeps it stable through native r
 	assert.ok(screen(row, 500).includes(identity));
 	row.setExpanded(false);
 	rendered = screen(row);
-	assert.match(rendered, /Before: 12000 tokens · 48000 window · 25\.0%/u);
+	assert.match(rendered, /12000 tokens · 48000 window · 25\.0% before compaction/u);
 	assert.doesNotMatch(rendered, /44000|91\.7|After:/u);
 	assert.equal(reads, 1, "rendering does not query current context again");
 });
@@ -140,8 +140,8 @@ it("shows only observed other-agent configuration, context facts and retained su
 	assert.match(text, new RegExp(`agent_compact ${identity}`));
 	assert.match(text, /Target: Other parser/u);
 	assert.match(text, /provider\/model.*off/u);
-	assert.match(text, /Before: 48000 window/u);
-	assert.match(text, /Summary: 150 chars/u);
+	assert.match(text, /48000 window before compaction/u);
+	assert.match(text, /150 characters in summary/u);
 	assert.doesNotMatch(text, /unknown|unavailable|tokens|After:/u);
 	const absent = { status: "queued", compaction: { identity, self: true, before: { tokens: null, percent: null } } };
 	const missing = screen(
@@ -152,7 +152,7 @@ it("shows only observed other-agent configuration, context facts and retained su
 			context(),
 		),
 	);
-	assert.doesNotMatch(missing, /unknown|unavailable|Before:|After:|completed/u);
+	assert.doesNotMatch(missing, /unknown|unavailable|before compaction|After:|completed/u);
 });
 
 it("returns the live compaction task when the summariser outlasts its observer", async () => {
