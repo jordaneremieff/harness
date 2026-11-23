@@ -345,6 +345,7 @@ function resultHidden(
 	bodyHidden: number,
 ): Hidden | undefined {
 	const callHidden = callRows(call, width, theme, false).hidden;
+	if (typeof callHidden === "number") return callHidden + bodyHidden;
 	return (
 		bodyHidden ||
 		callHidden ||

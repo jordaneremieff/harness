@@ -230,6 +230,22 @@ test("log pages show retained bytes, a real gap, pending UTF-8 and the full cont
 	assert.doesNotMatch(logs.text(), /Truncated|to expand/u);
 });
 
+test("the settled Bash card counts hidden visual rows from both the command and the receipt", () => {
+	setExpandKeys(["ctrl+p"]);
+	const width = 60;
+	const files = Array.from({ length: 6 }, (_, i) => `section-${i + 1}-${"x".repeat(20)}.log`);
+	const command = `wc -l ${files.join(" ")}`;
+	const launch = card("bash", { background: true, command });
+	assertHintAtEnd(launch.rows(width), /^\.\.\. \(1 more line, ctrl\+p to expand\)$/u);
+	launch.result({ job: { id: fullId, status: "running", cwd: "/work", owner: "session", commandPreview: command } });
+	const compact = launch.rows(width);
+	assertHintAtEnd(compact, /^\.\.\. \(4 more lines, ctrl\+p to expand\)$/u);
+	launch.component.setExpanded(true);
+	const full = launch.rows(width).filter(Boolean);
+	const shown = compact.filter((row) => row && !row.includes("to expand"));
+	assert.equal(full.length - shown.length, 4);
+});
+
 test("managed Bash distinguishes the launch command, admission and an actual launch error", () => {
 	setExpandKeys([]);
 	const args = { background: true, timeout: 10, command: "one\ntwo\nthree\nfour\nfive\nsix" };
