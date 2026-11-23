@@ -305,6 +305,46 @@ import Testing
         }
     }
 
+    @Test func aRefusedDraftSwitchRetainsTheDisplayedBuffer() async throws {
+        try await withSurface { surface, model, drafts in
+            let workspace = EditorWorkspace(directory: drafts, store: nil)
+            surface.setWorkspace(workspace)
+            let file = drafts.deletingLastPathComponent().appendingPathComponent("reading.md")
+            try Data("Read this.".utf8).write(to: file)
+            await workspace.openReading(.file(path: file.path))
+            _ = try await model.page.callJavaScript("""
+            const receive = reader.receive;
+            window.refuseDraft = true; window.refusals = 0;
+            reader.receive = m => {
+                if (m.type === 'document' && window.refuseDraft) { window.refusals++; return false; }
+                return receive(m);
+            };
+            return true;
+            """)
+            for previousIsDraft in [false, true] {
+                let previous = workspace.active, handle = workspace.liveDocumentID
+                let presentation = try #require(model.page.presentation), key = model.page.documentKey
+                try await post("command", fields: ["name": "newDraft"], to: model)
+                #expect(model.page.presentation == presentation && model.page.documentKey == key)
+                #expect(workspace.liveDocumentID == handle && workspace.active === previous)
+                #expect(workspace.livePaneView.kind == (previousIsDraft ? "scratchpad" : "local-file"))
+                #expect(workspace.notice != nil)
+                let target = try #require(workspace.documents.last)
+                #expect(target !== previous && target.text.source.isEmpty)
+                if previousIsDraft {
+                    try await post("edits", fields: ["presentation": presentation, "baseGeneration": 0, "generation": 1,
+                        "origin": "person", "edits": [["start": 0, "end": 0, "text": "Keep this", "expected": ""]]], to: model)
+                    #expect(previous?.text.source == "Keep this" && target.text.source.isEmpty)
+                } else {
+                    _ = try await model.page.callJavaScript("window.refuseDraft = false; return true;")
+                    try await post("command", fields: ["name": "newDraft"], to: model)
+                    _ = try await model.page.callJavaScript("window.refuseDraft = true; return true;")
+                }
+            }
+            #expect(try await model.page.callJavaScript("return window.refusals;") as? Int == 2)
+        }
+    }
+
     @Test func saveAsRebindsTheDisplayedDraftWithoutDroppingAnEdit() async throws {
         let server = try LiveTestBridge(); defer { server.stop() }
         try await withSurface { surface, model, drafts in

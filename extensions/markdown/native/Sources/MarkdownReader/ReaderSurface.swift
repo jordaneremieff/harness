@@ -16,6 +16,7 @@ final class ReaderSurface: NSView {
     private var pendingAgent: (id: String, finish: (WebAgentApplyResult) -> Void)?
     private var observedDocument: UUID?
     private weak var displayedDraft: WorkingDocument?
+    private var draftInstall: (document: UUID, token: UUID, task: Task<Void, Never>)?
     private var updatingDestination = false
     private struct SaveState: Equatable {
         let presentation: String
@@ -62,8 +63,9 @@ final class ReaderSurface: NSView {
             self.shownSave = nil
             self.shownConnection = nil
             if ready { Task { await self.reportStatus() } }
-            workspace.webReady = ready
-            if ready, let document = workspace.active, workspace.isDisplayed(document) { document.checkForUpdates() }
+            // A refusal restores the old receipt before the workspace restores its buffer.
+            workspace.webReady = ready && (self.draftInstall == nil || self.model.page.presentation != self.model.displayedPresentation)
+            if ready, self.draftInstall == nil, let document = workspace.active, workspace.isDisplayed(document) { document.checkForUpdates() }
         }
         model.page.onMessage = { [weak self] message in
             guard let self else { return [:] }
@@ -225,15 +227,13 @@ final class ReaderSurface: NSView {
         case "edits":
             let change = try Self.change(message)
             guard let presentation = message["presentation"] as? String else { throw BridgeFailure.invalid }
-            guard installed(presentation) else {
-                await refuseChange(change, presentation: presentation)
-                break
-            }
+            let install = draftInstall?.task
             queuedChanges += 1
             workspace?.pageBusy = true
             let previous = changeTail
             let task = Task { @MainActor [weak self] in
                 await previous?.value
+                await install?.value
                 guard let self else { return }
                 await self.applyPageChange(change, presentation: presentation)
                 self.queuedChanges -= 1
@@ -547,16 +547,34 @@ final class ReaderSurface: NSView {
     private func showWorkspace() async {
         guard pageReady, !applying, let workspace else { return }
         if let document = workspace.active, workspace.reading == nil {
+            if let install = draftInstall, install.document == document.id { await install.task.value; return }
             observedDocument = document.id
-            displayedDraft = nil
-            do {
-                try await model.sendDocument(source: document.text.source, generation: document.text.generation,
-                    meta: metadata(document), resolver: document.assetResolver, draftId: document.session.record.id)
-                if workspace.active === document {
+            let previous = model.page.presentation, token = UUID()
+            let task = Task { @MainActor in
+                defer { if draftInstall?.token == token { draftInstall = nil } }
+                guard workspace.active === document, draftInstall?.token == token else { return }
+                do {
+                    try await model.sendDocument(source: document.text.source, generation: document.text.generation,
+                        meta: metadata(document), resolver: document.assetResolver, draftId: document.session.record.id)
+                    guard draftInstall?.token == token, workspace.active === document else { return }
                     displayedDraft = document
-                    await reportStatus()
+                    workspace.webReady = true
+                    document.checkForUpdates()
+                } catch {
+                    guard draftInstall?.token == token, workspace.active === document, !workspace.closing else { return }
+                    workspace.webReady = false
+                    if let previous, installed(previous), workspace.resumeDisplayedBuffer(draft: displayedDraft, host: model) {
+                        observedDocument = workspace.active?.id
+                        workspace.webReady = true
+                        workspace.pageHeld = Self.range(pageState["held"])
+                        updateBusy()
+                        workspace.notice = "The page kept the previous document. Finish the current edit and open the draft again."
+                    } else { workspace.notice = "The draft did not open. Select it again to retry." }
                 }
-            } catch { return }
+            }
+            draftInstall = (document.id, token, task)
+            await task.value
+            await reportStatus()
         } else if let reading = workspace.reading, reading !== model, let snapshot = reading.snapshot {
             observedDocument = nil; displayedDraft = nil
             try? await model.showSnapshot(snapshot, latestRevision: reading.latestRevision)

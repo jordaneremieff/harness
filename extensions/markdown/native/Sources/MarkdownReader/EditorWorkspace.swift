@@ -392,6 +392,25 @@ final class EditorWorkspace {
 
     func newScratchpad() { add(DraftRecord()) }
 
+    /// Restore the buffer of an unchanged page receipt without reinstalling its editor or history.
+    func resumeDisplayedBuffer(draft: WorkingDocument?, host: ReaderModel) -> Bool {
+        guard !closing, let target = active, host === webHostModel, host.page.documentReady else { return false }
+        if let draft {
+            guard host.isDraft, documents.contains(where: { $0 === draft }),
+                  host.page.documentKey == documentKey(for: draft).uuidString else { return false }
+            target.setVisible(false)
+            selected = draft.id; liveDocumentID = draft.id
+            draft.setVisible(true)
+        } else {
+            guard !host.isDraft, let handle = readingHandles[host.reference],
+                  host.page.documentKey == host.issueReference(host.reference) else { return false }
+            target.setVisible(false)
+            selected = nil; reading = host; liveDocumentID = handle
+        }
+        collaboration?.bind(document: liveDocumentID)
+        return true
+    }
+
     func select(_ document: WorkingDocument) {
         guard allowNavigation("switching documents") else { return }
         let fromReading = reading != nil
