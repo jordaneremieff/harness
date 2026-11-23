@@ -289,7 +289,7 @@ describe("the jobs_yield card", () => {
 	it("shows the title, three note lines and Pi's expansion hint when collapsed", () => {
 		const lines = plain(row({}).result?.render(100));
 		assert.equal(lines[1], " jobs_yield Turn ended");
-		assert.equal(lines[2], " 1 job still runs · 1 job completion pending · 09:05");
+		assert.equal(lines[2], " 1 job still runs · 1 job completion pending · 9:05 AM");
 		assert.equal(lines.length, 9, "padding, title, facts, blank, three note lines, hint, padding");
 		assert.match(lines[7] ?? "", /^ \.\.\. \(\d+ more lines?, ctrl\+o to expand\)$/u);
 		assert.doesNotMatch(lines.join("\n"), /npm test|starts the next turn/u, "details wait for expansion");
@@ -327,14 +327,15 @@ describe("the jobs_yield card", () => {
 		assert.doesNotMatch(joined, /to expand|nothing/iu);
 		const omitted = plain(row({ expanded: true }, { ...details, omitted: 2 }).result?.render(100));
 		assert.match(omitted.join("\n"), /^ \[Excerpt: 2 jobs not listed\]$/mu);
-		assert.equal(omitted[2], " 4 jobs open · 09:05");
+		assert.equal(omitted[2], " 4 jobs open · 9:05 AM");
 	});
 
-	it("shows the time in local 24-hour form and includes earlier dates", () => {
+	it("shows local 12-hour time and includes the date outside today", () => {
 		const now = new Date(2026, 10, 15, 18, 0).getTime();
-		assert.equal(yieldClock(new Date(2026, 10, 15, 9, 5).getTime(), now), "09:05");
-		assert.equal(yieldClock(new Date(2026, 10, 14, 21, 30).getTime(), now), "14 Nov 21:30");
-		assert.equal(yieldClock(new Date(2025, 11, 31, 23, 59).getTime(), now), "31 Dec 2025 23:59");
+		assert.equal(yieldClock(new Date(2026, 10, 15, 0, 5).getTime(), now), "12:05 AM");
+		assert.equal(yieldClock(new Date(2026, 10, 15, 12, 0).getTime(), now), "12:00 PM");
+		assert.equal(yieldClock(new Date(2026, 10, 14, 21, 30).getTime(), now), "14 Nov 9:30 PM");
+		assert.equal(yieldClock(new Date(2025, 11, 31, 23, 59).getTime(), now), "31 Dec 2025 11:59 PM");
 	});
 
 	it("draws a refused call in the error background with its error", () => {

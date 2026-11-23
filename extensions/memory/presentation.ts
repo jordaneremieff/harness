@@ -672,6 +672,21 @@ function resultDetails(result: AgentToolResult<unknown>, kind: string): Record<s
 	return {};
 }
 
+function captureClock(value: unknown): string {
+	if (typeof value !== "string") return "";
+	const date = new Date(value);
+	if (!Number.isFinite(date.getTime()) || date.toISOString() !== value) return "";
+	const today = new Date();
+	const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+	if (date.toDateString() === today.toDateString()) return time;
+	const day = date.toLocaleDateString("en-GB", {
+		day: "numeric",
+		month: "short",
+		...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }),
+	});
+	return `${day} ${time}`;
+}
+
 function knownLabel(label: string, value: unknown): string {
 	const text = textField(value);
 	return text ? `${label}: ${text}` : "";
@@ -748,7 +763,7 @@ function readResult(
 		offset !== null && end !== null ? `Source range: [${offset}, ${end}) code points` : "",
 		knownLabel("Digest", details.digest),
 		knownLabel("Revision", details.revision),
-		knownLabel("Captured", details.capturedAt),
+		knownLabel("Captured", captureClock(details.capturedAt)),
 		lifecycle.label,
 		knownLabel("Lifecycle problem", lifecycle.problem),
 		textField(details.authority) ?? "",
@@ -880,7 +895,7 @@ function mutationEvidence(receipt: Record<string, unknown>): string[] {
 				joinedParts([
 					textField(capture.slug) ?? "",
 					textField(capture.revision) ?? "",
-					textField(capture.capturedAt) ?? "",
+					captureClock(capture.capturedAt),
 					textField(capture.digest) ?? "",
 					...numberLines([["Bytes", capture.bytes]]),
 				]),
@@ -932,7 +947,7 @@ function historyPlanEvidence(plan: Record<string, unknown>): string[] {
 	if (Object.keys(plan).length === 0) return [];
 	return [
 		"Read-only history plan",
-		knownLabel("Captured before", plan.capturedBefore),
+		knownLabel("Captured before", captureClock(plan.capturedBefore)),
 		...numberLines([
 			["Keep newest", plan.keepNewest],
 			["Available bytes on this metadata page", plan.availableBytes],
@@ -978,7 +993,7 @@ function historyCoverage(coverage: Record<string, unknown>): string[] {
 function revisionEvidence(revision: Record<string, unknown>): string {
 	return [
 		knownLabel("Revision", revision.revision),
-		knownLabel("Captured", revision.capturedAt),
+		knownLabel("Captured", captureClock(revision.capturedAt)),
 		knownLabel("Digest", revision.digest),
 		...numberLines([["Bytes", revision.bytes]]),
 		knownLabel("Selection", revision.selection),

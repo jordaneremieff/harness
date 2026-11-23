@@ -325,7 +325,7 @@ function usagePageCopy(page: Extract<Response, { kind: "page" }>): ResultCopy | 
 		const continuation = nextCursor ? "; continuation available" : "";
 		return {
 			outcome: `Read page ${pageNumber} of ${pageCount} of the ${page.view} (${fromDay} through ${toDay}; ${n} read ${n === 1 ? "request" : "requests"})${continuation}.`,
-			body: usageMarkdown(page, false),
+			body: usageMarkdown(page, "card"),
 			extra: nextCursor ? `Continue: pillars_usage ${quoted({ cursor: nextCursor })}` : undefined,
 		};
 	} catch {
@@ -365,7 +365,21 @@ export function exportMarkdown(result: ExportResult): string {
 	return `${result.message}\n\n- Code: \`${result.code}\`\n- Published: ${result.published ? "Yes" : "No"}\n- Durability: ${result.durability === "not_published" ? "Not published" : result.durability === "confirmed" ? "Confirmed" : "Unconfirmed"}`;
 }
 
-export function usageMarkdown(response: Response, commandContinuation = true): string {
+function expiryClock(value: string): string {
+	const date = new Date(value);
+	if (!Number.isFinite(date.getTime()) || date.toISOString() !== value) return "";
+	const today = new Date();
+	const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+	if (date.toDateString() === today.toDateString()) return time;
+	const day = date.toLocaleDateString("en-GB", {
+		day: "numeric",
+		month: "short",
+		...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }),
+	});
+	return `${day} ${time}`;
+}
+
+export function usageMarkdown(response: Response, target: "command" | "card" = "command"): string {
 	if (response.kind === "error")
 		return `# Pillars access evidence\n\n${response.message}\n\n${Object.values(response.meaning).join("\n\n")}`;
 	const lines = [
@@ -399,10 +413,11 @@ export function usageMarkdown(response: Response, commandContinuation = true): s
 		);
 	}
 	lines.push("## Interpretation", ...Object.values(response.meaning));
-	if (response.pagination.nextCursor)
-		lines.push(
-			...(commandContinuation ? [`Next page: /pillars next ${response.pagination.nextCursor}`] : []),
-			`Capture expires at ${response.pagination.cursorExpiresAt}.`,
-		);
+	const { nextCursor, cursorExpiresAt } = response.pagination;
+	if (nextCursor) {
+		if (target === "command") lines.push(`Next page: /pillars next ${nextCursor}`);
+		const expiry = cursorExpiresAt && (target === "card" ? expiryClock(cursorExpiresAt) : cursorExpiresAt);
+		if (expiry) lines.push(`Capture expires at ${expiry}.`);
+	}
 	return lines.join("\n\n");
 }

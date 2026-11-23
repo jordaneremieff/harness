@@ -653,24 +653,26 @@ describe("read and history cards", () => {
 		wellFormed(shown);
 	});
 
-	it("carries the historical identity into the whole continuation call", () => {
+	it("shows today's local capture time and keeps the historical identity in the continuation", () => {
+		const today = new Date();
+		today.setHours(14, 32, 21, 789);
 		const details = {
 			...notePage,
 			source: "history",
 			revision,
-			capturedAt: "2026-01-01T12:00:00.000Z",
+			capturedAt: today.toISOString(),
 			authority: "Historical evidence, not current authority.",
 		};
 		assert.match(show("memory_read", details), /on this historical page/);
 		const full = show("memory_read", details, expandedView);
 		assert.match(full, /Historical evidence · prior status active/);
-		assert.match(full, /Captured: 2026-01-01T12:00:00\.000Z/);
+		assert.match(full, /Captured: 2:32 PM/);
 		assert.match(full, /not current authority/);
 		assert.ok(full.includes(`"revision": "${revision}"`));
 	});
 
 	it("keeps history metadata, partial coverage and an exact plan cursor on empty pages", () => {
-		const plan = { capturedBefore: "2026-02-01T00:00:00.000Z", keepNewest: 1 };
+		const plan = { capturedBefore: new Date(2001, 10, 23, 14, 32, 21, 789).toISOString(), keepNewest: 1 };
 		const details = {
 			ok: true,
 			kind: "history",
@@ -685,6 +687,7 @@ describe("read and history cards", () => {
 		assert.match(compact, /\[1 unavailable revision\]/);
 		assert.doesNotMatch(compact, /opaque-history-token|End of/);
 		const body = show("memory_history", details, expandedView);
+		assert.match(body, /Captured before: 23 Nov 2001 2:32 PM/);
 		assert.match(body, /Capture name inventory: complete/);
 		assert.match(body, /Historical bodies were not read/);
 		assert.match(body, /Capture-name digests are unverified/);
@@ -698,7 +701,7 @@ describe("read and history cards", () => {
 			revisions: [
 				{
 					revision,
-					capturedAt: "2026-01-01T12:00:00.000Z",
+					capturedAt: new Date(2001, 10, 22, 0, 1).toISOString(),
 					digest,
 					bytes: 200,
 					selection: "candidate",
@@ -709,6 +712,7 @@ describe("read and history cards", () => {
 		const finalBody = show("memory_history", final, expandedView);
 		assert.match(finalBody, /End of the capture inventory/);
 		assert.ok(finalBody.includes(revision));
+		assert.match(finalBody, /Captured: 22 Nov 2001 12:01 AM/);
 		assert.match(finalBody, /Selection: candidate\nReason: before-cutoff-outside-floor/);
 		assert.match(finalBody, /Bytes: 200/);
 	});
@@ -742,7 +746,7 @@ describe("mutation cards", () => {
 		written: ["editor.md"],
 		notWritten: [],
 		digest: "a".repeat(64),
-		captured: [{ slug: "editor", revision: "prior" }],
+		captured: [{ slug: "editor", revision: "prior", capturedAt: new Date(2001, 10, 23, 14, 32).toISOString() }],
 		historyOmitted: [{ file: "other.md", reason: "credential-policy" }],
 	};
 	const show = (name: string, details: unknown, options = collapsed, ctx = okContext, diagnostic = "") =>
@@ -804,6 +808,7 @@ describe("mutation cards", () => {
 		}
 		const full = show("memory_write", { ...receipt, initialized: true }, expandedView);
 		assert.match(full, /initialised the corpus/);
+		assert.match(full, /Prior capture: editor · prior · 23 Nov 2001 2:32 PM/);
 		assert.match(full, /Written: editor\.md/);
 		assert.match(full, /Digest: a{64}/);
 	});

@@ -451,7 +451,7 @@ interface YieldFacts {
 export function yieldClock(at: number, now = Date.now()): string {
 	const date = new Date(at);
 	const today = new Date(now);
-	const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+	const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
 	if (date.toDateString() === today.toDateString()) return time;
 	const day = date.toLocaleDateString("en-GB", {
 		day: "numeric",

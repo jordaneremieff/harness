@@ -24,7 +24,8 @@ import { toolDisplay } from "./display.ts";
 import { createReader, errorResponse } from "./readback.ts";
 
 test("operator pages preserve evidence meaning, continuation, and narrow terminal widths", async () => {
-	const day = "2026-09-07";
+	const now = new Date(2001, 10, 23, 14, 22).getTime();
+	const day = new Date(now).toISOString().slice(0, 10);
 	const shard = emptyShard(day);
 	for (let i = 0; i < 25; i++)
 		shard.cells.push({
@@ -39,7 +40,7 @@ test("operator pages preserve evidence meaning, continuation, and narrow termina
 			piVersion: "0.85.1",
 			counters: { ...zero(), readRequests: 1 },
 		});
-	const reader = createReader(() => ({ shards: { [day]: shard } }), { now: () => Date.parse(`${day}T00:00:00Z`) });
+	const reader = createReader(() => ({ shards: { [day]: shard } }), { now: () => now });
 	const page = await reader.read({ view: "revisions" });
 	assert.equal(page.kind, "page");
 	const text = usageMarkdown(page);
@@ -66,7 +67,10 @@ test("operator pages preserve evidence meaning, continuation, and narrow termina
 	card.setExpanded(true);
 	const cursor = page.pagination.nextCursor;
 	assert.ok(cursor);
-	assert.ok(render(card, 280).includes(`Continue: pillars_usage ${JSON.stringify({ cursor })}`));
+	const expanded = render(card, 280);
+	assert.ok(expanded.includes(`Continue: pillars_usage ${JSON.stringify({ cursor })}`));
+	assert.match(expanded, /Capture expires at 23 Nov 2001 2:32 PM\./);
+	assert.ok(text.includes(`Capture expires at ${page.pagination.cursorExpiresAt}.`));
 	reader.clear();
 	const error = usageMarkdown(errorResponse("store_corrupt"));
 	assert.ok(error.includes("invalid"));
