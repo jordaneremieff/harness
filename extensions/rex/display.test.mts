@@ -57,6 +57,43 @@ function receipt(outcome: string, fields: Partial<RexResult> = {}) {
 	return resultChannels({ ok: true, outcome, effects: { state: "none" }, coverage: { bounded: true }, ...fields });
 }
 
+it("formats requested allowances without confusing them with elapsed time", (t) => {
+	keyFixture(t);
+	const cases = [
+		[
+			"rex_owned",
+			{ op: "cleanup", recordId: effectRecord, timeoutMs: 15_000 },
+			"15s",
+			receipt("cleanup_unknown", { ok: false }),
+		],
+		["rex_wait", { op: "wait", condition: "child_exit", timeoutMs: 4_219 }, "4.2s", receipt("child_completed")],
+		[
+			"rex_wait",
+			{ op: "wait", condition: "text", text: "PRIVATE-PREDICATE", timeoutMs: 90_007 },
+			"1m 30s",
+			receipt("not_observed", { ok: false }),
+		],
+	] as const;
+	for (const [name, args, allowance, result] of cases) {
+		const component = card(name, args);
+		const verifyFacts = () => {
+			const text = screen(component);
+			assert.ok(text.includes(`requested allowance ${allowance}`));
+			assert.doesNotMatch(text, /\bms\b|timeoutMs|Elapsed|Took|PRIVATE-PREDICATE/);
+			assert.equal(text.match(/to expand/g)?.length, 1);
+		};
+		verifyFacts();
+		const before = JSON.stringify(result);
+		component.updateResult({ ...result, durationMs: 321 });
+		verifyFacts();
+		component.setExpanded(true);
+		const expanded = screen(component);
+		assert.ok(expanded.includes(`timeoutMs: ${args.timeoutMs}`));
+		assert.doesNotMatch(expanded, /PRIVATE-PREDICATE|to expand/);
+		assert.equal(JSON.stringify(result), before);
+	}
+});
+
 it("moves one disclosure hint from the Lua call to the partial and final result", (t) => {
 	keyFixture(t);
 	const component = card("rex_native", { op: "native", kind: "lua", code: `return "${"界".repeat(150)}END-LUA"` });

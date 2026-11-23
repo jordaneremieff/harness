@@ -67,7 +67,7 @@ export function createRexToolDisplay(name: string) {
 				const { rows, skipped, hidden } = resultRows(view, width, theme, options.expanded);
 				if (options.expanded) return rows;
 				const callSkipped = visual(call.body, width, false).skippedCount;
-				if (hidden || callDisclosure(name, call, width) || callSkipped)
+				if (hidden || expandedCallArguments(name, call, width) || callSkipped)
 					rows.push(clip(hint(theme, context, skipped || callSkipped), width));
 				return rows;
 			});
@@ -80,10 +80,9 @@ function callRows(call: Call, name: string, head: string, width: number, theme: 
 	if (call.facts) rows.push(clip(theme.fg("muted", call.facts), width));
 	const preview = visual(call.body, width, expanded);
 	for (const text of preview.visualLines) rows.push(theme.fg("toolOutput", text));
-	const hidden = callDisclosure(name, call, width);
-	if (expanded && hidden)
-		for (const row of wrapped(argumentText(call.arguments), width, theme, "muted")) rows.push(row);
-	return { rows, skipped: preview.skippedCount, hidden: hidden || preview.skippedCount > 0 };
+	const args = expandedCallArguments(name, call, width);
+	if (expanded && args) rows.push(...wrapped(argumentText(args), width, theme, "muted"));
+	return { rows, skipped: preview.skippedCount, hidden: !!args || preview.skippedCount > 0 };
 }
 
 function resultRows(view: ResultView, width: number, theme: Theme, expanded: boolean) {
@@ -212,7 +211,6 @@ const CALL_FACTS = new Set([
 	"maxSnapshots",
 ]);
 const NUMERIC_FACTS: Record<string, string> = {
-	timeoutMs: "deadline",
 	offset: "offset",
 	limit: "limit",
 	maxBytes: "max bytes",
@@ -292,7 +290,7 @@ function callHeading(request: Fields, op: string, kind: string, target: string[]
 		) || "";
 	const numbers = Object.entries(NUMERIC_FACTS).flatMap(([key, label]) => {
 		const n = number(request[key]);
-		return n === undefined ? [] : [`${label} ${n}${key === "timeoutMs" ? " ms" : ""}`];
+		return n === undefined ? [] : [`${label} ${n}`];
 	});
 	const qualifiers = [
 		op === "native" || op === "wait" ? "" : op,
@@ -304,20 +302,34 @@ function callHeading(request: Fields, op: string, kind: string, target: string[]
 		qualified("phase", phase),
 		qualified("state", state),
 		statusId,
+		requestedAllowance(request.timeoutMs),
 		...numbers,
 	];
 	return { subject, facts: [...new Set(qualifiers.filter((part) => part && part !== subject))].join(" · ") };
+}
+function requestedAllowance(value: unknown): string {
+	const ms = number(value);
+	if (ms === undefined || ms <= 0) return "";
+	const seconds = ms / 1000;
+	// Use Pi's tool duration units; the exact requested milliseconds stay in expanded arguments.
+	const whole = Math.floor(seconds);
+	const duration =
+		seconds < 60 ? `${seconds.toFixed(1).replace(/\.0$/, "")}s` : `${Math.floor(whole / 60)}m ${whole % 60}s`;
+	return `requested allowance ${duration}`;
 }
 function qualified(label: string, value: string): string {
 	return value ? `${label} ${value}` : "";
 }
 type Call = ReturnType<typeof callParts>;
-function callDisclosure(name: string, call: Call, width: number): boolean {
-	return (
+function expandedCallArguments(name: string, call: Call, width: number): Fields | undefined {
+	if (
 		Object.keys(call.arguments).some((key) => !CALL_FACTS.has(key)) ||
 		visibleWidth(`${name} ${call.subject}`.trimEnd()) > width ||
 		visibleWidth(call.facts) > width
-	);
+	)
+		return call.arguments;
+	const timeoutMs = number(call.arguments.timeoutMs);
+	return timeoutMs === undefined ? undefined : { timeoutMs };
 }
 function argumentText(args: Fields): string {
 	return Object.entries(args)
