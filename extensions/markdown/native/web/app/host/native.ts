@@ -41,6 +41,84 @@
 		ensure(typeof encoded === "string");
 		return encoder.encode(encoded).length;
 	}
+	const DRAFT = 4 * 1024 * 1024;
+	function keys(fields: Fields, allowed: string[]) {
+		ensure(Object.keys(fields).every((key) => allowed.includes(key)));
+	}
+	function wireText(value: unknown, max: number, empty = false): value is string {
+		return string(value, max, empty) && encoder.encode(value).length <= max;
+	}
+	function passageAnchor(value: unknown, quote: unknown, located: unknown) {
+		const a = object(value);
+		keys(a, ["text", "contexts", "headings", "rendered"]);
+		ensure(wireText(a.text, 16384) && wireText(quote, 8192) && Array.isArray(a.contexts) && a.contexts.length <= 2);
+		if (located !== undefined) {
+			const r = range(located);
+			ensure(r.end - r.start === a.text.length);
+		}
+		for (const item of a.contexts) {
+			const c = object(item);
+			keys(c, ["before", "after"]);
+			ensure(string(c.before, 64, true) && string(c.after, 64, true) && /[^\s\u0085]/u.test(c.before + c.after));
+		}
+		if (a.headings !== undefined)
+			ensure(Array.isArray(a.headings) && a.headings.length <= 6 && a.headings.every((h) => string(h, 256, true)));
+		if (a.rendered !== undefined) {
+			const r = object(a.rendered);
+			keys(r, ["before", "text", "after"]);
+			ensure(r.text === quote && string(r.before, 256, true) && string(r.after, 256, true));
+		}
+	}
+	const draftRevision = (n: unknown) => integer(n) && n > 0;
+	function draftComment(value: unknown) {
+		const c = object(value);
+		keys(c, ["text", "quote", "authoredRevision", "range", "sourceAnchor", "anchorDigest"]);
+		ensure(
+			wireText(c.text, 64 * 1024, true) &&
+				optional(c.quote, (q) => wireText(q, 8192)) &&
+				optional(c.authoredRevision, draftRevision),
+		);
+		ensure(
+			optional(c.anchorDigest, (d) => typeof d === "string" && /^sha256:[0-9a-f]{64}$/u.test(d) && d.length === 71),
+		);
+		if (c.range !== undefined) {
+			keys(object(c.range), ["start", "end"]);
+			range(c.range);
+		}
+		if (c.sourceAnchor !== undefined) passageAnchor(c.sourceAnchor, c.quote, c.range);
+		return c;
+	}
+	function reviewDraft(value: unknown) {
+		const d = object(value);
+		keys(d, ["comments", "overall", "overallRevision", "parked"]);
+		ensure(
+			Array.isArray(d.comments) && wireText(d.overall, 64 * 1024, true) && optional(d.overallRevision, draftRevision),
+		);
+		const parked = d.parked === undefined ? [] : d.parked;
+		ensure(
+			Array.isArray(parked) &&
+				d.comments.length + parked.length <= 512 &&
+				(d.comments.length || parked.length || d.overall),
+		);
+		for (const item of d.comments) draftComment(item);
+		for (const item of parked) {
+			const p = object(item);
+			ensure(wireText(p.text, 64 * 1024, true));
+			if (p.comment !== undefined) {
+				keys(p, ["text", "index", "comment"]);
+				ensure(integer(p.index, 511) && draftComment(p.comment).text === p.text);
+			} else {
+				keys(p, ["text", "index", "authoredRevision"]);
+				ensure(p.index === -1 && optional(p.authoredRevision, draftRevision));
+			}
+		}
+	}
+	function draftMetadata(fields: Fields) {
+		const metadata = { ...fields };
+		if (fields.draft !== undefined) ensure(bytes(fields.draft) <= DRAFT, "Review draft exceeds its byte limit.");
+		delete metadata.draft;
+		return metadata;
+	}
 	function groupLimit(message: Fields, bodyField?: string) {
 		const metadata = { ...message };
 		if (message.type === "document") {
@@ -273,6 +351,7 @@
 	}
 	const nativeValidators: Record<string, (m: Fields) => void> = {
 		document: documentMessage,
+		reviewChanged() {},
 		ack(m) {
 			ensure(string(m.presentation, 200));
 			ensure(integer(m.generation) && string(m.digest, 200) && one(m.recovery, ["retained", "pending"]));
@@ -361,14 +440,30 @@
 		"saveSettings",
 		"chooseStore",
 		"readClipboard",
+		"setReviewComment",
+		"setReviewDraft",
 	];
 	function hostCommand(m: Fields) {
 		ensure(one(m.name, hostCommands));
 		const a = m.args === undefined ? {} : object(m.args);
+		if (m.name === "setReviewDraft") keys(m, ["v", "type", "id", "name", "args"]);
 		const test = hostCommandValidators[String(m.name)];
 		if (test) test(a);
 	}
 	const hostCommandValidators: Record<string, (a: Fields) => void> = {
+		setReviewDraft(a) {
+			keys(a, ["documentKey", "expectedVersion", "draft"]);
+			ensure(wireText(a.documentKey, 36) && integer(a.expectedVersion, Number.MAX_SAFE_INTEGER - 1));
+			if (a.draft !== undefined) reviewDraft(a.draft);
+		},
+		setReviewComment: (a) =>
+			ensure(
+				string(a.documentKey, 36) &&
+					string(a.commentId, 39) &&
+					one(a.commentState, ["open", "closed"]) &&
+					integer(a.expectedVersion) &&
+					a.expectedVersion > 0,
+			),
 		openLink: (a) => ensure(string(a.href, META)),
 		copy: (a) => ensure(string(a.text, META, true) && Object.keys(a).length === 1),
 		export: (a) => ensure(one(a.format, ["archive", "sharing", "pdf"])),
@@ -384,7 +479,12 @@
 		saveSettings: (a) => settings(a.patch),
 	};
 	function query(m: Fields) {
-		ensure(one(m.kind, ["review", "details", "image", "library", "markdown"]));
+		ensure(one(m.kind, ["review", "reviewComments", "reviewDraft", "details", "image", "library", "markdown"]));
+		if (m.kind === "reviewDraft") {
+			keys(m, ["v", "type", "id", "kind", "documentKey"]);
+			ensure(wireText(m.documentKey, 36));
+		}
+		if (m.kind === "reviewComments") ensure(string(m.documentKey, 36));
 		if (m.kind === "review") ensure(one(m.against, ["previous", "base"]) || integer(m.against));
 		if (m.kind === "image") ensure(integer(m.index));
 		if (m.kind === "markdown") ensure(string(m.text, META, true));
@@ -404,6 +504,10 @@
 		ensure(string(m.text, META, !nonblank) && (!nonblank || m.text.trim()));
 		ensure(optional(m.quote, (v) => string(v, META, true)));
 		if (m.quoteRange !== undefined) range(m.quoteRange);
+		if (m.passageAnchor !== undefined) {
+			ensure(m.quoteRange !== undefined);
+			passageAnchor(m.passageAnchor, m.quote, m.quoteRange);
+		}
 	}
 	function prompt(m: Fields) {
 		ensure(string(m.documentKey, 200) && string(m.presentation, 200));
@@ -413,7 +517,9 @@
 			return annotation(m);
 		}
 		ensure(m.authoredRevision === undefined || (m.overall !== undefined && revision(m.authoredRevision)));
-		ensure(m.text === undefined && m.quote === undefined && m.quoteRange === undefined);
+		ensure(
+			m.text === undefined && m.quote === undefined && m.quoteRange === undefined && m.passageAnchor === undefined,
+		);
 		// Native refuses an overall comment over 64 KiB of UTF-8 or of white space alone, U+0085 included.
 		ensure(optional(m.overall, (v) => string(v) && /[^\s\u0085]/u.test(v) && encoder.encode(v).length <= 64 * 1024));
 		ensure(Array.isArray(m.annotations) && m.annotations.length > 0 && m.annotations.length <= 50);
@@ -449,7 +555,8 @@
 	};
 	function page(value: unknown) {
 		const m = envelope(value);
-		groupLimit(m);
+		if (m.type === "command" && m.name === "setReviewDraft") groupLimit({ ...m, args: draftMetadata(object(m.args)) });
+		else groupLimit(m);
 		ensure(Object.hasOwn(pageValidators, m.type), "Unknown page message type.");
 		const validate = pageValidators[m.type];
 		validate(m);
@@ -501,7 +608,63 @@
 			);
 		}
 	}
+	function reviewCommentsReply(m: Fields) {
+		ensure(
+			typeof m.available === "boolean" &&
+				integer(m.revision) &&
+				Array.isArray(m.comments) &&
+				m.comments.length <= 16384,
+		);
+		for (const item of m.comments) {
+			const r = object(item);
+			ensure(
+				string(r.commentId, 39) &&
+					string(r.threadId, 36) &&
+					integer(r.ordinal, 50) &&
+					r.commentId === `${r.threadId}:${r.ordinal}`,
+			);
+			ensure(
+				one(r.kind, ["question", "annotation", "overall"]) &&
+					one(r.commentState, ["open", "closed"]) &&
+					integer(r.version) &&
+					r.version > 0 &&
+					string(r.text, 128 * 1024),
+			);
+			ensure(optional(r.quote, (v) => string(v, 8192)) && optional(r.madeOnRevision, (v) => integer(v) && v > 0));
+			if (r.sourceAnchor !== undefined)
+				ensure(
+					string(r.sourceAnchor, SOURCE) &&
+						integer(r.start, SOURCE) &&
+						integer(r.end, SOURCE) &&
+						r.end - r.start === r.sourceAnchor.length,
+				);
+			if (r.anchorDigest !== undefined)
+				ensure(typeof r.anchorDigest === "string" && /^sha256:[0-9a-f]{64}$/u.test(r.anchorDigest));
+			if (r.passageAnchor !== undefined) {
+				ensure(r.sourceAnchor !== undefined && object(r.passageAnchor).text === r.sourceAnchor);
+				passageAnchor(r.passageAnchor, r.quote, { start: r.start, end: r.end });
+			}
+		}
+	}
+	function reviewDraftReply(m: Fields) {
+		keys(m, ["v", "type", "id", "ok", "available", "version", "draft"]);
+		ensure(typeof m.available === "boolean" && integer(m.version) && (m.available || m.version === 0));
+		if (m.draft !== undefined) {
+			ensure(m.available && m.version > 0);
+			reviewDraft(m.draft);
+		}
+	}
+	function detailsReply(m: Fields) {
+		labelledRows(m.rows);
+		ensure(Array.isArray(m.images));
+		for (const image of m.images) {
+			const r = object(image);
+			ensure(integer(r.index) && string(r.state, 80) && optional(r.reason, (v) => string(v, 8192, true)));
+		}
+	}
 	function queryReply(m: Fields, fields: Fields) {
+		if (fields.kind === "reviewDraft") return reviewDraftReply(m);
+		if (fields.kind === "reviewComments") return reviewCommentsReply(m);
 		if (fields.kind === "markdown") {
 			ensure(string(m.html, BODY, true));
 			return;
@@ -511,15 +674,7 @@
 			reviewSummary(m.summary);
 			return;
 		}
-		if (fields.kind === "details") {
-			labelledRows(m.rows);
-			ensure(Array.isArray(m.images));
-			for (const image of m.images) {
-				const r = object(image);
-				ensure(integer(r.index) && string(r.state, 80) && optional(r.reason, (v) => string(v, 8192, true)));
-			}
-			return;
-		}
+		if (fields.kind === "details") return detailsReply(m);
 		if (fields.kind === "image") {
 			ensure(string(m.address, META) && number(m.width) && number(m.height));
 			labelledRows(m.facts);
@@ -529,6 +684,7 @@
 	}
 	function replyBody(kind: string, fields: Fields) {
 		if (kind === "render") return "blocks";
+		if (kind === "query" && fields.kind === "reviewComments") return "comments";
 		if (kind === "query" && (fields.kind === "review" || fields.kind === "markdown")) return "html";
 		if (kind === "command" && fields.name === "readClipboard") return "text";
 		return undefined;
@@ -541,7 +697,22 @@
 		ensure(integer(m.generation));
 		edits(m.edits);
 	}
+	function reviewDraftReceipt(m: Fields, fields: Fields) {
+		keys(m, ["v", "type", "id", "ok", "status", "version", "message"]);
+		ensure(
+			one(m.status, ["stored", "stale", "busy", "error"]) &&
+				optional(m.version, integer) &&
+				optional(m.message, (v) => wireText(v, 8192)),
+		);
+		if (m.status === "stored") {
+			const expected = object(fields.args).expectedVersion;
+			ensure(integer(expected) && m.version === expected + 1);
+		}
+	}
 	function commandReply(m: Fields, fields: Fields) {
+		if (fields.name === "setReviewDraft") return reviewDraftReceipt(m, fields);
+		if (fields.name === "setReviewComment")
+			ensure(one(m.status, ["commentSet", "stale", "busy", "error"]) && optional(m.message, (v) => string(v, 8192)));
 		if (fields.name === "pickImage") imageReply(m);
 		if (fields.name === "readClipboard")
 			ensure(
@@ -560,10 +731,14 @@
 		if (m.uncertain === undefined) ensure(m.retryable === undefined);
 		else ensure(m.uncertain === true && !m.accepted && typeof m.retryable === "boolean");
 	}
+	function replyLimit(m: Fields, kind: string, fields: Fields) {
+		if (m.ok && kind === "query" && fields.kind === "reviewDraft") groupLimit(draftMetadata(m));
+		else groupLimit(m, replyBody(kind, fields));
+	}
 	function reply(value: unknown, id: string, kind: string, fields: Fields) {
 		const m = envelope(value);
 		ensure(m.type === "reply" && m.id === id && typeof m.ok === "boolean", "Unexpected reader reply.");
-		groupLimit(m, replyBody(kind, fields));
+		replyLimit(m, kind, fields);
 		if (!m.ok) {
 			ensure(string(m.error, 8192));
 			throw new Error(m.error);

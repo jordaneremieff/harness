@@ -147,6 +147,115 @@ test("the copy command accepts text as its only argument", () => {
 	assert.equal(api.bridge.page(copy).type, "command");
 	assert.throws(() => api.bridge.page({ ...copy, args: { text: "exact", markdown: "unused" } }));
 });
+test("only the private draft command and its matching query reply accept a 4 MiB recovery group", () => {
+	const { page, reply } = bridge().bridge;
+	const documentKey = "doc",
+		query = { kind: "reviewDraft", documentKey },
+		set = { v: 1, type: "command", name: "setReviewDraft" },
+		header = { v: 1, type: "reply", id: "q", ok: true };
+	const comments = Array.from({ length: 64 }, () => ({ text: "x".repeat(65536) }));
+	const draft = { comments, overall: "", parked: [{ text: "saved direction", index: -1, authoredRevision: 2 }] };
+	const excess = Buffer.byteLength(JSON.stringify(draft)) - 4 * 1024 * 1024;
+	comments[0].text = comments[0].text.slice(excess);
+	const args = { documentKey, expectedVersion: 0, draft };
+	const snapshot = { ...header, available: true, version: 1, draft };
+	assert.equal(page({ ...set, args }).type, "command");
+	assert.equal(reply(snapshot, "q", "query", query).version, 1);
+	assert.throws(() => reply(snapshot, "q", "query", { kind: "details" }), /byte limit/);
+	assert.throws(() => reply({ ...snapshot, ok: false }, "q", "query", query), /byte limit/);
+	assert.throws(() => page({ ...set, name: "copy", args }), /byte limit/);
+	assert.throws(() => page({ ...set, args, padding: "x".repeat(256 * 1024) }), /byte limit/);
+	comments[0].text += "x";
+	assert.throws(() => page({ ...set, args }), /byte limit/);
+	assert.throws(() => reply(snapshot, "q", "query", query), /byte limit/);
+	assert.equal(reply({ ...header, available: false, version: 0 }, "q", "query", query).available, false);
+	assert.throws(() => reply({ ...header, available: false, version: 1 }, "q", "query", query));
+	const clear = { ...set, args: { documentKey, expectedVersion: 3 } };
+	assert.equal(page(clear).name, "setReviewDraft");
+	assert.equal(reply({ ...header, status: "stored", version: 4 }, "q", "command", clear).status, "stored");
+	assert.throws(() => reply({ ...header, status: "stored", version: 3 }, "q", "command", clear));
+});
+test("the recovery boundary refuses thread state and validates passage evidence before either direction", () => {
+	const { page, reply } = bridge().bridge;
+	const proof = {
+		text: "**hi**",
+		contexts: [{ before: "In ", after: "" }],
+		headings: ["A"],
+		rendered: { before: "", text: "hi", after: "." },
+	};
+	const item = {
+		text: "explain",
+		quote: "hi",
+		sourceAnchor: proof,
+		range: { start: 0, end: 6 },
+		anchorDigest: `sha256:${"0".repeat(64)}`,
+		authoredRevision: 1,
+	};
+	const draft = { comments: [item], overall: "reader notes", parked: [{ comment: item, text: item.text, index: 0 }] };
+	const command = (draft: unknown) =>
+		page({ v: 1, type: "command", name: "setReviewDraft", args: { documentKey: "doc", expectedVersion: 1, draft } });
+	const snapshot = (draft: unknown) =>
+		reply({ v: 1, type: "reply", id: "q", ok: true, available: true, version: 2, draft }, "q", "query", {
+			kind: "reviewDraft",
+		});
+	command(draft);
+	snapshot(draft);
+	for (const bad of [
+		{ ...draft, threadId: "private" },
+		{ ...draft, comments: [{ ...item, requestId: "private" }] },
+		{ ...draft, comments: [{ ...item, sourceAnchor: { ...proof, token: "private" } }] },
+		{ ...draft, comments: [{ ...item, sourceAnchor: { ...proof, contexts: [{ before: " ", after: "" }] } }] },
+		{
+			...draft,
+			comments: [{ ...item, sourceAnchor: { ...proof, rendered: { before: "", text: "else", after: "" } } }],
+		},
+		{ ...draft, comments: [{ ...item, range: { start: 0, end: 6, html: "unbound" } }] },
+		{ ...draft, parked: [{ comment: item, text: "other", index: 0 }] },
+		{ ...draft, comments: Array.from({ length: 513 }, () => ({ text: "x" })) },
+		{ ...draft, parked: [{ index: -1, text: "a", authoredRevision: false }] },
+	]) {
+		assert.throws(() => command(bad));
+		assert.throws(() => snapshot(bad));
+	}
+	const prompt = {
+		v: 1,
+		type: "prompt",
+		documentKey: "doc",
+		presentation: "shown",
+		generation: 0,
+		requestId: "r",
+		threadId: "t",
+		text: item.text,
+		quote: item.quote,
+		quoteRange: item.range,
+		passageAnchor: proof,
+	};
+	assert.equal(page(prompt).type, "prompt");
+	assert.throws(() => page({ ...prompt, passageAnchor: { ...proof, token: "private" } }));
+	const threadId = "92ad1af3-be1a-4585-bdef-64926112c3bc";
+	const row = {
+		threadId,
+		commentId: `${threadId}:0`,
+		kind: "question",
+		ordinal: 0,
+		text: item.text,
+		commentState: "closed",
+		version: 2,
+		quote: item.quote,
+		sourceAnchor: proof.text,
+		start: 0,
+		end: 6,
+	};
+	const retained = (passageAnchor: unknown) =>
+		reply(
+			{ v: 1, type: "reply", id: "q", ok: true, available: true, revision: 2, comments: [{ ...row, passageAnchor }] },
+			"q",
+			"query",
+			{ kind: "reviewComments" },
+		);
+	assert.equal(retained(proof).revision, 2);
+	assert.throws(() => retained({ ...proof, text: "**no**" }));
+});
 test("ordinary messages enforce their exact byte bound", () => {
 	const api = bridge(),
 		base = { v: 1, type: "command", name: "copy", args: { text: "" } };
