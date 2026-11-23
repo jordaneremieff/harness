@@ -194,6 +194,52 @@ test("a bare Pi diagnostic stays intact without a hint that adds nothing", (t) =
 	assert.match(rows(component, 24).join("\n"), /Could not start status\ncheck\./);
 });
 
+test("Calendar names the share grantee before and after the receipt", () => {
+	const component = card("calendar_share", {
+		calendarId: "primary",
+		role: "reader",
+		scopeType: "user",
+		scopeValue: "reader@example.invalid",
+		sendNotifications: false,
+	});
+	const call = /calendar_share reader@example\.invalid\nreader · user · primary/;
+	assert.match(rows(component, 60).join("\n"), call);
+	component.setExpanded(true);
+	assert.match(rows(component, 60).join("\n"), call);
+	settle(component, ok({ ruleId: "user:reader@example.invalid", calendarId: "primary", notificationsSent: false }));
+	const expanded = rows(component).join("\n");
+	assert.match(expanded, call);
+	assert.match(expanded, /Calendar access rule created\./);
+});
+
+test("Calendar default scope and revoke use the supplied scope or rule as the subject", () => {
+	const defaultShare = card("calendar_share", { role: "freeBusyReader", scopeType: "default" });
+	assert.match(
+		rows(defaultShare).join("\n"),
+		/calendar_share Default access\nfreeBusyReader · default scope · primary calendar/,
+	);
+	const revoke = card("calendar_unshare", { calendarId: "team-calendar", ruleId: "group:team@example.invalid" });
+	assert.match(rows(revoke).join("\n"), /calendar_unshare group:team@example\.invalid\nteam-calendar/);
+});
+
+test("Drive names the share grantee and keeps the notification message private", () => {
+	const component = card("drive_share", {
+		fileId: "file-1",
+		type: "user",
+		role: "reader",
+		emailAddress: "reader@example.invalid",
+		emailMessage: "PRIVATE_NOTIFICATION_MESSAGE",
+	});
+	const call = /drive_share reader@example\.invalid\nreader · user · file file-1/;
+	assert.match(rows(component).join("\n"), call);
+	settle(component, ok({ permissionId: "p-1", fileId: "file-1", notificationSent: false }));
+	component.setExpanded(true);
+	const expanded = rows(component).join("\n");
+	assert.match(expanded, call);
+	assert.match(expanded, /emailMessage: \d+ characters/);
+	assert.doesNotMatch(expanded, /PRIVATE_NOTIFICATION_MESSAGE/);
+});
+
 test("calendar page owns the only settled hint and preserves the exact next call", (t) => {
 	expansionKey(t, ["ctrl+g"]);
 	const args = { calendarId: "cal@example.invalid", limit: 1, orderBy: "updated", cursor: "old-token" };

@@ -119,11 +119,14 @@ export const calendarPresenters: Record<string, Presenter> = {
 		),
 	},
 	calendar_share: {
-		call: (args) => ({
-			subject: calendarId(args),
-			facts: [field(args.role), field(args.scopeType)].filter(Boolean),
-			args: pick(args, "sendNotifications"),
-		}),
+		call: (args) => {
+			const scope = field(args.scopeType);
+			return {
+				subject: scope === "default" ? "Default access" : field(args.scopeValue),
+				facts: [field(args.role), scope === "default" ? "default scope" : scope, calendarId(args)].filter(Boolean),
+				args: pick(args, "sendNotifications"),
+			};
+		},
 		result: ({ data, isError }) =>
 			!isError && field(data.ruleId)
 				? {

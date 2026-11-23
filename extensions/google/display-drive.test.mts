@@ -130,9 +130,16 @@ test("Sharing shows the permission receipt, not the email message or a claim of 
 		emailMessage: "Private note",
 	};
 	const call = drivePresenters.drive_share?.call(args);
-	assert.ok(call?.facts?.includes(args.emailAddress));
+	assert.equal(call?.subject, args.emailAddress);
+	assert.deepEqual(call?.facts, ["reader", "user", "file file-1", "request email notification"]);
 	assert.deepEqual(call?.args, { emailMessage: "12 characters" });
+	assert.equal(
+		drivePresenters.drive_share.call({ ...args, type: "domain", domain: "team.invalid" }).subject,
+		"team.invalid",
+	);
+	assert.equal(drivePresenters.drive_share.call({ ...args, type: "anyone" }).subject, "Anyone");
 	const permission = { fileId: args.fileId, permissionId: "p-1", notificationSent: true };
+	assert.deepEqual(drivePresenters.drive_unshare.call(permission), { subject: "p-1", facts: ["file file-1"] });
 	const shared = result("drive_share", args, permission);
 	assert.match(shared?.outcome ?? "", /^Created a Drive sharing permission/);
 	assert.deepEqual(shared?.body, ["Permission p-1"]);

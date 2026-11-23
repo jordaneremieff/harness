@@ -252,18 +252,22 @@ export const drivePresenters: Record<string, Presenter> = {
 		(context) => pageResult(context, "permissions", "permission", ["fileId", "limit"], permissionLine),
 	),
 	drive_share: drive(
-		(args) => ({
-			subject: field(args.fileId),
-			facts: [
-				field(args.type),
-				principal(args.type, args),
-				field(args.role),
-				args.sendNotificationEmail === true ? "request email notification" : "no email notification requested",
-			].filter(Boolean),
-			...(typeof args.emailMessage === "string"
-				? { args: { emailMessage: count([...args.emailMessage].length, "character") } }
-				: {}),
-		}),
+		(args) => {
+			const file = field(args.fileId);
+			const type = field(args.type);
+			return {
+				subject: type === "anyone" ? "Anyone" : principal(args.type, args),
+				facts: [
+					field(args.role),
+					type === "anyone" ? "" : type,
+					file && `file ${file}`,
+					args.sendNotificationEmail === true ? "request email notification" : "no email notification requested",
+				].filter(Boolean),
+				...(typeof args.emailMessage === "string"
+					? { args: { emailMessage: count([...args.emailMessage].length, "character") } }
+					: {}),
+			};
+		},
 		(context) => {
 			const { data } = context;
 			const permissionId = field(data.permissionId);
@@ -281,10 +285,10 @@ export const drivePresenters: Record<string, Presenter> = {
 		},
 	),
 	drive_unshare: drive(
-		(args) => ({
-			subject: field(args.fileId),
-			facts: field(args.permissionId) ? [`permission ${field(args.permissionId)}`] : [],
-		}),
+		(args) => {
+			const file = field(args.fileId);
+			return { subject: field(args.permissionId), facts: file ? [`file ${file}`] : [] };
+		},
 		(context) => {
 			const { args, data } = context;
 			const permissionId = field(data.permissionId);
