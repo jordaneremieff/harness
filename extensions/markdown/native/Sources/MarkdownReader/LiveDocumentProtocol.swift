@@ -13,11 +13,30 @@ struct LiveTextEdit: Codable, Sendable {
 
 struct LiveClaimRange: Codable, Sendable { var start: Int; var end: Int }
 
+/// The last accepted page, or a loading surface that cannot yet confirm a document.
+struct LivePaneView: Codable, Equatable, Sendable {
+    var kind: String
+    var title: String
+    var mode: String
+    var dirty: Bool
+    var conflict: Bool
+    var storeId: String?
+    var documentId: String?
+    var revision: Int?
+    var digest: String?
+
+    static let loading = Self(kind: "loading", title: "Opening document", mode: "reading", dirty: false, conflict: false)
+}
+
 struct LiveCommand: Codable, Sendable {
     var requestId: String
     var workspace: String
     var document: String
     var op: String
+    var storeId: String?
+    var documentId: String?
+    var revision: Int?
+    var digest: String?
     var operationId: String?
     var baseGeneration: UInt64?
     var baseDigest: String?
@@ -31,6 +50,10 @@ struct LiveAssetIdentity: Codable, Sendable { var reference: String; var digest:
 
 struct LiveResult: Codable, Sendable {
     var status: String
+    var workspace: String?
+    var document: String?
+    var handle: String?
+    var view: LivePaneView?
     var message: String?
     var source: String?
     var generation: UInt64?
