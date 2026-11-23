@@ -117,8 +117,8 @@ test("a request without details gets its title from the message type, not its in
 	};
 	const card = new CustomMessageComponent(message, renderJudgmentRequestMessage);
 	const collapsed = stripVTControlCharacters(card.render(100).join("\n"));
-	assert.match(collapsed, /\[pillars\] Alignment check requested/);
-	assert.doesNotMatch(collapsed, /Candidate derivation|\/pillars |Hidden subject/);
+	assert.match(collapsed, /\[pillars\] Judgment requested/);
+	assert.doesNotMatch(collapsed, /Alignment check|Candidate derivation|\/pillars |Hidden subject/);
 	card.setExpanded(true);
 	assert.match(stripVTControlCharacters(card.render(100).join("\n")), /Hidden subject/);
 });
