@@ -2601,7 +2601,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const intentTool = durable.defineTool({
 		name: "agent_intent",
 		description:
-			"Publish or clear this native conversation's purpose, integration intent, scope, carried operator direction and contact thread. Intent is a session claim, not verified authority or a lock. Returns the current published claim and bounded related efforts. No model wake.",
+			"Read current related efforts and your own intent without a write, or publish or clear this native conversation's claim. Intent is a session claim, not verified authority or a lock. Publish and clear also return the published claim. No model wake.",
 		parameters: IntentParams,
 		replay: "safe",
 		execute: async (args, api, context) => {
@@ -2609,14 +2609,20 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			if (host.catalogRoot === undefined || effortResources === undefined)
 				return errorResult("Native intent requires the host's selected catalogue root");
 			const agent = await api.agent(context);
-			const location = await locations.resolve(agent.cwd ?? host.cwd);
+			const cwd = agent.cwd ?? host.cwd;
+			if (args.action === "read") {
+				const meta = await api.snapshot(AgentMetaDoc, api.conversationId, context);
+				const self = nativeIntentSelf(identity(api.conversationId), cwd, meta === undefined ? null : meta.intent);
+				const value = { awareness: await readEffortAwareness(effortResources, self, "reported") };
+				return textResult(JSON.stringify(value), JSON.parse(JSON.stringify(value)));
+			}
+			const location = await locations.resolve(cwd);
 			const stamp = await api.memo("agent-intent-time", new Date(api.now()).toISOString(), context);
 			const { action, ...fields } = args;
 			const claim =
 				action === "clear"
 					? null
 					: ({ ...fields, updatedAt: stamp } as import("./effort-presence.ts").PrimaryIntentClaim);
-			const cwd = agent.cwd ?? host.cwd;
 			const metadata = await api.commit(
 				(tx) =>
 					publishConversationIntent(tx, api.conversationId, {
@@ -2730,7 +2736,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			);
 			return formatEffortAwareness(await readEffortAwareness(resources, self, "reported", "prompt"), "prompt");
 		} catch {
-			return "Current effort and active thread awareness is unavailable. Read agent_status for a new bounded observation. Earlier notices describe changes, not current state.";
+			return "Current effort and active thread awareness is unavailable. Use agent_intent read for a new bounded observation. Earlier notices describe changes, not current state.";
 		}
 	};
 	const efforts = durable.section("agent-efforts", async (input, context) => {

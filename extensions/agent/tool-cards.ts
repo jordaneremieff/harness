@@ -794,10 +794,10 @@ export function renderCompactCall(value: unknown, theme: Theme, context: AgentCa
 }
 
 function intentObservation(details: Record<string, unknown>): Record<string, unknown> | undefined {
-	const published = record(details.published);
-	const identity = text(published.id);
+	const self = record(details.published ?? record(details.awareness).self);
+	const identity = text(self.id);
 	return identity
-		? { identity, name: published.name, agent: { model: published.model, thinkingLevel: published.thinkingLevel } }
+		? { identity, name: self.name, agent: { model: self.model, thinkingLevel: self.thinkingLevel } }
 		: undefined;
 }
 
@@ -826,10 +826,14 @@ function renderIntentCall(value: unknown, theme: Theme, context: AgentCardContex
 }
 
 function intentLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
-	const published = record(details.published);
-	const identity = text(published.id);
+	const identity = text(intentObservation(details)?.identity);
 	if (!identity || context.isError === true || context.isPartial === true) return undefined;
-	const outcome = published.intentClaim === undefined ? "Intent cleared" : "Intent published";
+	const outcome =
+		details.published === undefined
+			? "Related efforts read"
+			: record(details.published).intentClaim === undefined
+				? "Intent cleared"
+				: "Intent published";
 	return [theme.fg("toolOutput", `${outcome} · ${displayIdentity(identity)}`)];
 }
 

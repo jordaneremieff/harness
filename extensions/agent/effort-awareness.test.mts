@@ -162,7 +162,7 @@ it("names only project efforts and threads and keeps unrelated arrivals out of t
 	const observation = await readEffortAwareness(shared, current);
 	assert.equal(observation.presence.coverage.outOfScope, 1);
 	assert.equal(observation.threads.coverage.outOfScope, 1);
-	assert.match(after, /Read agent_status/u);
+	assert.match(after, /Use agent_intent read/u);
 	publish(root, peer, claim("Revised in-project intent"), nested);
 	assert.match(await prompt(), /Revised in-project intent/u);
 	rmSync(primaryEndpointPath(root, peer));
@@ -495,7 +495,7 @@ it("keeps zero-live-effort context to one line without losing unknown coverage",
 		"4 unreadable",
 		"unvisited yes",
 		"Own detail incomplete",
-		"agent_status",
+		"agent_intent read",
 	])
 		assert.ok(line.includes(label), label);
 });
@@ -587,7 +587,7 @@ it("refreshes native root and child sections at run starts while stable state em
 	const body = emptyPrompt.match(/<agent-efforts>\n([\s\S]*?)\n<\/agent-efforts>/u)?.[1];
 	assert.ok(body);
 	assert.equal(body.split("\n").length, 1);
-	assert.ok(body.includes("Read agent_status for current coverage, out-of-scope counts"));
+	assert.ok(body.includes("Use agent_intent read for current coverage, out-of-scope counts"));
 	rmSync(join(sessionsRoot, "durable"), { recursive: true, force: true });
 	await say(root);
 	assert.ok(
@@ -612,7 +612,7 @@ it("keeps native awareness for the rest of a run and refreshes it at the next ru
 			if (index !== 0) return fauxAssistantMessage("DONE");
 			// A peer changes its claim while this run still has a tool round to go.
 			publish(sessionsRoot, peer, claim("MID-RUN-PURPOSE"));
-			return fauxAssistantMessage([fauxToolCall("agent_status", {})], { stopReason: "toolUse" });
+			return fauxAssistantMessage([fauxToolCall("agent_intent", { action: "read" })], { stopReason: "toolUse" });
 		}),
 	);
 	const registry = Durable.createRegistry();
@@ -620,12 +620,6 @@ it("keeps native awareness for the rest of a run and refreshes it at the next ru
 		createAgentContribution({
 			configureSettings: () => {},
 			source: "/extensions/agent/index.ts",
-			dispatch: async () => ({
-				conversations: [],
-				live: false,
-				storageId: randomUUID(),
-				coverage: { complete: true, returned: 0, scanned: 0, next: null },
-			}),
 		}).create({
 			onClose() {},
 			durable: Durable,
@@ -652,6 +646,9 @@ it("keeps native awareness for the rest of a run and refreshes it at the next ru
 			.length;
 	await say();
 	assert.equal(requests.length, 2, "one run with one tool round makes two requests");
+	const result = requests[1].findLast((message) => message.role === "toolResult");
+	assert.ok(result && !result.isError);
+	assert.match(JSON.stringify(result.content), /MID-RUN-PURPOSE/u, "explicit reads use fresh peer evidence");
 	const laterRound = getCurrentSystemPrompt(requests[1]);
 	assert.ok(laterRound.includes("BEFORE-PURPOSE"), laterRound);
 	assert.equal(laterRound.includes("MID-RUN-PURPOSE"), false, "a running prompt keeps its run's awareness");

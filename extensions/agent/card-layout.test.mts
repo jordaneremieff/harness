@@ -272,6 +272,9 @@ it("intent cards omit absent endpoint facts and keep errors and pending outcomes
 	);
 	assert.match(before, /^agent_intent · this session\naction clear/u);
 	assert.doesNotMatch(before, /provider|model|unknown|unavailable/u);
+	const read = nativeTool("agent_intent", { action: "read" }, { awareness: { self: { id: identity } } }, []);
+	assert.ok(text(read).includes(`Related efforts read · ${identity}`));
+	assert.doesNotMatch(text(read), /Intent published|Intent cleared/u);
 	const component = nativeTool("agent_intent", { action: "publish" }, { published: { id: identity } }, []);
 	assert.ok(text(component).includes(`agent_intent · ${identity}`));
 	assert.ok(

@@ -189,7 +189,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		],
 	},
 	agent_intent: {
-		snippet: "Publish or clear your integration intent",
+		snippet: "Read related efforts or publish or clear your integration intent",
 		guidelines: [
 			"Intent is your claim, not verified authority or a machine lock. Independent work needs no claim. Before a shared act (an activation switch, a host-operation or stored-format change, removal of another session's worktrees or snapshots) or possible overlap with another effort, use bounded discovery; current context can already supply it. Publish your purpose, shared acts, scope and carried operator direction only where an actual dependency needs coordination. Declare a need for a quiet machine with scope.fullGate true, then clear or update the claim on release. Native conversations publish only their own claim. Current updated readers discover native claims through bounded catalogue projections; unchanged readers do not gain that support.",
 		],

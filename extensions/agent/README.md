@@ -106,7 +106,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
 | `agent_configure` | Change the name, model, preset or reasoning of an idle conversation. |
 | `agent_profile` | Read a complete bounded profile, or update role and expertise with `expectedRevision`. Reads start no host. A conflict returns the current profile without a change. |
-| `agent_intent` | Publish or clear the invoking session's intent claim. Native conversations persist their own claim without an ordinary primary. Claims are not locks or authority. |
+| `agent_intent` | Read the invoking session's intent and related efforts without changing the claim, or publish or clear the claim. Native conversations need no ordinary primary. Claims are not locks or authority. |
 | `agent_fork` | Create an idle native fork at an entry or current leaf. |
 | `agent_rewind` | Fork before a mistaken entry and submit a correction. Files remain current. |
 | `agent_compact` | Run native compaction without stopping active work or withdrawing queued inputs. The summary applies at the next native boundary. Self-compaction uses its completed tool boundary. |
@@ -2931,7 +2931,7 @@ Publish with `action: "publish"`,
 `purpose`, `integration`, `authority`, `scope: { paths, branches, fullGate? }`, and
 an optional `contactThread`. Clear with `action: "clear"` alone. The tool declares
 one object schema so models receive the action and publish fields directly.
-Execution rejects missing publish fields and any publish fields on clear.
+Execution rejects missing publish fields and any publish fields on read or clear.
 The host supplies the
 claim's update time. Repository-relative paths use exact or component-prefix
 matching, not globs. `scope.fullGate` declares a planned full-gate run; it is not
@@ -2974,8 +2974,11 @@ still consume visits without repeating hints. An absent optional priority record
 does not mark the general sample unreadable. Missing hints and unvisited records
 leave global recency unknown.
 
-Ordinary primaries read this view through untargeted `agent_status`. Inside a
-Durable agent the compact untargeted read omits it. Both receive a separate
+Use `agent_intent({ action: "read" })` in either runtime for current bounded
+awareness without publishing or clearing a claim. Its `awareness` result contains
+the caller, related efforts, active thread hints and coverage. It neither starts
+a peer host nor sends model input. The ordinary untargeted `agent_status`
+also includes awareness when it fits; compact native status omits it. Both receive a separate
 current-effort section in their model context at natural run boundaries. Durable
 renders sections before every model request, so a native conversation reads
 awareness at the first request of a run and keeps those bytes for that run's
@@ -2987,7 +2990,7 @@ a contact link alone does not establish a match. Relative scope paths describe
 work within their declared location and cannot match across repositories.
 Prompt rows use identity order and omit activity, timestamps, member counts,
 and scan coverage. Out-of-scope counts belong to the explicit observation, not
-the system section. The section points to `agent_status` for current coverage
+the system section. The section points to `agent_intent` read for current coverage
 and omitted sources. Awareness is available only
 through this per-run context, explicit tool reads, and the Related efforts view.
 Registration, intent publication, and intent clearing do not append unsolicited

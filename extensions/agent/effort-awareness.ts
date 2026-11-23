@@ -115,7 +115,7 @@ function shortSelf(self: EffortAwareness["self"]): object {
 		cwd: self.cwd.slice(0, 64),
 		...(self.intentClaim === undefined ? {} : { purposeClaim: self.intentClaim.purpose.slice(0, 128) }),
 		...(origin === undefined ? {} : { observedPurpose: { source: origin.source, text: origin.text.slice(0, 128) } }),
-		omitted: "Self detail shortened; read agent_status for the bounded published claim.",
+		omitted: "Self detail shortened; use agent_intent read for the bounded published claim.",
 	};
 }
 function shortEffort(effort: RelatedEffort): object {
@@ -128,7 +128,7 @@ function shortEffort(effort: RelatedEffort): object {
 		...(purpose === undefined ? {} : { purposeClaim: purpose.slice(0, 128) }),
 		...(origin === undefined ? {} : { observedPurpose: { source: origin.source, text: origin.text.slice(0, 128) } }),
 		sharedSubstrates: effort.sharedSubstrates,
-		omitted: "Effort detail shortened; read agent_status for the bounded published claim.",
+		omitted: "Effort detail shortened; use agent_intent read for the bounded published claim.",
 	};
 }
 
@@ -149,7 +149,7 @@ function quietAwareness(view: EffortAwareness): string {
 		!view.self.omitted
 	)
 		return "No other live efforts or active thread hints in the covered sources.";
-	return `No other live effort is shown. Outside project scope: ${p.outOfScope ?? 0} live efforts and ${t.outOfScope ?? 0} active thread hints in the covered sources. Presence ${p.complete ? "complete" : "partial"}: ${unknown} unknown, ${incompatible} incompatible, ${p.omitted} omitted, ${p.unreadable} unreadable, ${p.unsupported ?? 0} unsupported native producers. Active thread hints: ${view.threads.items.length}; coverage ${t.complete ? "complete" : "partial"}, ${t.omittedHints} source omissions, ${t.omittedResults} result omissions, ${t.missingHints} missing, ${t.unreadable} unreadable, unvisited ${t.unvisited ? "yes" : "no"}.${view.self.omitted ? " Own detail incomplete." : ""} Read agent_status for details.`;
+	return `No other live effort is shown. Outside project scope: ${p.outOfScope ?? 0} live efforts and ${t.outOfScope ?? 0} active thread hints in the covered sources. Presence ${p.complete ? "complete" : "partial"}: ${unknown} unknown, ${incompatible} incompatible, ${p.omitted} omitted, ${p.unreadable} unreadable, ${p.unsupported ?? 0} unsupported native producers. Active thread hints: ${view.threads.items.length}; coverage ${t.complete ? "complete" : "partial"}, ${t.omittedHints} source omissions, ${t.omittedResults} result omissions, ${t.missingHints} missing, ${t.unreadable} unreadable, unvisited ${t.unvisited ? "yes" : "no"}.${view.self.omitted ? " Own detail incomplete." : ""} Use agent_intent read for details.`;
 }
 
 function appendRow(lines: string[], label: string, value: unknown, maximum: number): boolean {
@@ -167,7 +167,7 @@ function promptClaim(claim: PrimaryIntentClaim | undefined) {
 
 /** The input is the project-scoped read. Scan evidence and active membership stay in explicit observations. */
 function formatEffortSection(view: EffortAwareness): string {
-	const pointer = "Read agent_status for current coverage, out-of-scope counts, and omitted sources.";
+	const pointer = "Use agent_intent read for current coverage, out-of-scope counts, and omitted sources.";
 	const efforts = view.presence.efforts.filter(
 		(effort) => effort.liveness === "live" && effort.relationship !== "machine",
 	);

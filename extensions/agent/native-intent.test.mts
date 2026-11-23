@@ -76,10 +76,9 @@ function lastToolResult(directory: string): unknown {
 	return JSON.parse(text);
 }
 async function awareness(client: HostConnection, directory: string, requestId: string): Promise<EffortAwareness> {
-	await run(client, client.storageId, { action: "clear" }, requestId);
-	const value = lastToolResult(directory) as { published: { intentClaim?: unknown }; awareness: EffortAwareness };
-	assert.ok(value.published);
-	assert.equal(value.published.intentClaim, undefined);
+	await run(client, client.storageId, { action: "read" }, requestId);
+	const value = lastToolResult(directory) as { awareness: EffortAwareness };
+	assert.ok(!("published" in value));
 	assert.ok(value.awareness);
 	return value.awareness;
 }
@@ -138,6 +137,7 @@ test("native intent has catalogue peer discovery without a liveness claim, exact
 	assert.equal(saved.cwd, f.cwd);
 	assert.equal(a.catalog.read(a.record.storageId).view?.rows[0]?.cwd, f.cwd);
 	const originalClaim = JSON.stringify(saved.claim);
+	assert.deepEqual((await awareness(aClient, f.testDir, "read-root")).self.intentClaim, saved.claim);
 	const child = (await aClient.request("fork", { sessionId: a.record.storageId, name: "native intent child" })) as {
 		identity: string;
 	};

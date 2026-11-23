@@ -24,7 +24,7 @@ it("registers every ordinary agent tool with a plain object parameter schema", a
 	}
 });
 
-it("validates publish and clear at execution without a union declaration", () => {
+it("validates read, publish and clear at execution without a union declaration", () => {
 	const publish = {
 		action: "publish",
 		purpose: "Review parser",
@@ -34,9 +34,11 @@ it("validates publish and clear at execution without a union declaration", () =>
 	};
 	assert.doesNotThrow(() => validateIntentInput(publish));
 	assert.doesNotThrow(() => validateIntentInput({ action: "clear" }));
+	assert.doesNotThrow(() => validateIntentInput({ action: "read" }));
+	assert.throws(() => validateIntentInput({ ...publish, action: "read" }), /Read intent takes only action/u);
 	assert.throws(() => validateIntentInput({ action: "publish" }), /Publish intent requires/u);
 	assert.throws(() => validateIntentInput({ ...publish, action: "clear" }), /Clear intent takes only action/u);
 	assert.throws(() => validateIntentInput({ action: "clear", purpose: "extra" }), /Clear intent takes only action/u);
 	assert.throws(() => validateIntentInput({ ...publish, scope: {} }), /valid publish fields/u);
-	assert.throws(() => validateIntentInput({ action: "other" }), /action publish or clear/u);
+	assert.throws(() => validateIntentInput({ action: "other" }), /action read, publish or clear/u);
 });

@@ -36,7 +36,7 @@ const intentFields = {
 	contactThread: opt(str({ minLength: 1, maxLength: 256 })),
 };
 export const IntentParams = obj({
-	action: StringEnum(["publish", "clear"]),
+	action: StringEnum(["read", "publish", "clear"]),
 	purpose: opt(intentFields.purpose),
 	integration: opt(intentFields.integration),
 	authority: opt(intentFields.authority),
@@ -44,13 +44,15 @@ export const IntentParams = obj({
 	contactThread: intentFields.contactThread,
 });
 const publishIntent = obj({ action: lit("publish"), ...intentFields });
-const clearIntent = obj({ action: lit("clear") });
+const actionOnly = obj({ action: StringEnum(["read", "clear"]) });
 
 export function validateIntentInput(input: unknown): void {
 	if (!matchesSchema(IntentParams, input))
-		throw new Error("Intent requires action publish or clear and valid publish fields");
-	if ((input as { action: string }).action === "clear") {
-		if (!matchesSchema(clearIntent, input)) throw new Error("Clear intent takes only action; omit all publish fields");
+		throw new Error("Intent requires action read, publish or clear and valid publish fields");
+	const { action } = input as { action: string };
+	if (action !== "publish") {
+		if (!matchesSchema(actionOnly, input))
+			throw new Error(`${action === "read" ? "Read" : "Clear"} intent takes only action; omit all publish fields`);
 	} else if (!matchesSchema(publishIntent, input)) {
 		throw new Error("Publish intent requires purpose, integration, authority, and scope with paths and branches");
 	}

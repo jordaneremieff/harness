@@ -290,7 +290,7 @@ function assertRunGuidance(requests: TranscriptContext[]) {
 		assert.match(sections?.["agent-preferences"] ?? "", /PEER_RUN_GUIDANCE/u);
 		assert.match(
 			sections?.["agent-efforts"] ?? "",
-			/No other live effort is shown.*Read agent_status for current coverage/u,
+			/No other live effort is shown.*Use agent_intent read for current coverage/u,
 		);
 		assert.match(getCurrentSystemPrompt(context.messages) ?? "", /PEER_RUN_GUIDANCE/u);
 	}

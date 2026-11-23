@@ -609,15 +609,17 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		promptSnippet: AGENT_CONTROL_GUIDANCE.agent_intent.snippet,
 		promptGuidelines: [...(AGENT_CONTROL_GUIDANCE.agent_intent.guidelines ?? [])],
 		description:
-			"Publish or clear this ordinary primary session's purpose, integration intent, scope, carried operator direction, and contact thread. Intent is a session claim, not verified authority or a lock. Returns the published endpoint and bounded related efforts. No model wake. Independent work needs no claim. Publish where an actual dependency with another effort needs coordination, after bounded discovery; update or clear intent when integration completes. Use agent_send for direct effort contact and agent_collaborate for a retained agreement.",
+			"Read current related efforts and your own intent without a write, or publish or clear this ordinary primary session's claim. Intent is a session claim, not verified authority or a lock. Publish and clear also return the published endpoint. No model wake. Independent work needs no claim. Publish where an actual dependency with another effort needs coordination, after bounded discovery; update or clear intent when integration completes. Use agent_send for direct effort contact and agent_collaborate for a retained agreement.",
 		parameters: IntentParams,
 		outputSchema: unknown(),
 		async execute(_callId, input: Static<typeof IntentParams>, _signal, _update, ctx) {
 			validateIntentInput(input);
 			const { action, ...fields } = input;
+			const ownerId = ctx.sessionManager.getSessionId();
+			if (action === "read") return result({ awareness: await getManager().awareness(ownerId, ctx.cwd) });
 			return result(
 				await getManager().publishIntent(
-					ctx.sessionManager.getSessionId(),
+					ownerId,
 					action === "clear" ? undefined : (fields as Omit<PrimaryIntentClaim, "updatedAt">),
 				),
 			);

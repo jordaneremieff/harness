@@ -78,6 +78,18 @@ const conversation = {
 	submissions: [],
 };
 
+it("reads current effort awareness without publishing an ordinary intent", async (t) => {
+	const f = fixture(t);
+	const publish = t.mock.method(AgentManager.prototype, "publishIntent", () => {
+		throw new Error("read must not publish");
+	});
+	const { details } = await f.execute("agent_intent", { action: "read" });
+	const { awareness } = details as { awareness: { self: { id: string }; presence: { coverage: object } } };
+	assert.equal(awareness.self.id, "00000000-0000-4000-8000-000000000002");
+	assert.ok(awareness.presence.coverage);
+	assert.equal(publish.mock.callCount(), 0);
+});
+
 it("applies compact selected status and preserves explicit full detail", async (t) => {
 	const f = fixture(t);
 	t.mock.method(AgentManager.prototype, "status", async () => ({ conversation }));

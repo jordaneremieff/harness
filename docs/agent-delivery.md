@@ -155,13 +155,13 @@ carries your invoking session's purpose,
 integration intent, declared scope, carried operator direction, and contact
 thread through `agent_intent`. An ordinary primary publishes its own claim; a
 native root or child publishes only its own conversation claim without a primary
-or terminal. The tool accepts no target identity. Read the related efforts in its result or in
-`agent_status`. Update or clear intent when integration completes; a completed
+or terminal. The tool accepts no target identity. Use `agent_intent({ action: "read" })`
+for related efforts without changing your claim. Update or clear intent when integration completes; a completed
 plan must not remain the declared next action. Host facts and session intent
 claims are different evidence; unknown liveness and incomplete coverage do not
 prove absence. Per-run context names only live efforts and active thread hints
 in the same repository, or the same working directory outside Git. Read
-`agent_status` for the bounded observation and its counts outside that scope.
+the `awareness` result of `agent_intent` for the bounded observation and its counts outside that scope.
 Awareness appears in per-run context, explicit tool reads, and `/agent`'s
 Related efforts view only. Registration and intent changes do not
 create unsolicited transcript messages. Endpoint records and local roster
