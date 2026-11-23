@@ -337,8 +337,10 @@ for (const failure of ["source", "transport"] as const)
 
 it("preserves native changed parameter fields through the public Anthropic serializer", async () => {
 	const selected = tools(async () => undefined).filter((entry) =>
-		["agent_send", "agent_inspect", "agent_status"].includes(entry.name),
+		["agent_send", "agent_inspect", "agent_status", "agent_abort"].includes(entry.name),
 	);
+	const stop = selected.find((entry) => entry.name === "agent_abort");
+	assert.match(stop?.description ?? "", /plain stop spares spawned children/u);
 	const model: Model<"anthropic-messages"> = {
 		id: "fixture",
 		name: "fixture",
@@ -383,6 +385,8 @@ it("preserves native changed parameter fields through the public Anthropic seria
 		)?.input_schema;
 		assert.ok(schema);
 		assert.equal(schema.type, "object");
+		if (registered.name === "agent_abort")
+			assert.match(JSON.stringify(schema.properties.background), /spawned child conversations in the same storage/u);
 		assert.deepEqual(schema.properties, (registered.parameters as { properties: Record<string, unknown> }).properties);
 	}
 });

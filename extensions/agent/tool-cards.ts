@@ -844,12 +844,15 @@ export function renderListCall(value: unknown, theme: Theme, context: AgentCardC
 export function renderAbortCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
 	const target = text(args.sessionId);
-	const qualifier =
-		count(args.timerId) !== undefined
-			? `timer ${args.timerId}`
-			: [args.background === true ? "background tasks" : "", args.release === true ? "release host" : ""]
-					.filter(Boolean)
-					.join(" · ") || undefined;
+	const interrupt = record(args.interrupt);
+	const qualifier = [
+		count(args.timerId) !== undefined ? `timer ${args.timerId}` : "",
+		count(interrupt.taskId) !== undefined ? `interrupt generation ${interrupt.taskId}` : "",
+		args.background === true ? "includes same-storage children and background tasks" : "",
+		args.release === true ? "release host" : "",
+	]
+		.filter(Boolean)
+		.join(" · ");
 	return argumentCard(
 		"agent_abort",
 		target ? targetLabel(target, context) : "(target pending)",
@@ -857,7 +860,7 @@ export function renderAbortCall(value: unknown, theme: Theme, context: AgentCard
 		args,
 		theme,
 		context,
-		target.length > 300 || args.trust !== undefined,
+		target.length > 300 || args.interrupt !== undefined || args.trust !== undefined,
 	);
 }
 
@@ -1039,17 +1042,48 @@ function timerLines(details: Record<string, unknown>, theme: Theme, context: Age
 	];
 }
 
+function pendingStopLines(details: Record<string, unknown>, theme: Theme): string[] {
+	if (details.settled !== false) return [];
+	const ids = array(details.pendingTasks).filter((id) => typeof id === "number");
+	const shown = ids.slice(0, 4).join(", ");
+	const tasks = shown ? ` · pending tasks: ${shown}${ids.length > 4 ? ", …" : ""}` : "";
+	return [theme.fg("warning", `Stop not settled; do not repeat${tasks}`)];
+}
+
+function interruptLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
+	if (details.state === "protected") return [muted(theme, "Selection changed; no continuation admitted")];
+	if (details.state === "pending") return [muted(theme, "Interrupt pending; keep the same intent for any retry")];
+	if (details.state === "continued" && count(details.submissionId) !== undefined)
+		return [theme.fg("toolOutput", `Continuation admitted · submission ${details.submissionId}`)];
+	return undefined;
+}
+
+function releaseLines(details: Record<string, unknown>, theme: Theme): string[] {
+	const aborted = record(details.aborted);
+	const outcome =
+		aborted.cold === true
+			? "Cold stop recorded; no serving host started"
+			: details.retiring
+				? "Host retirement requested"
+				: "Host remains active";
+	const lines = [theme.fg("toolOutput", outcome), ...pendingStopLines(aborted, theme)];
+	for (const blocker of array(details.blockers))
+		if (typeof blocker === "string") lines.push(muted(theme, displayPreview(blocker, 160)));
+	return lines;
+}
+
 function abortLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	const timer = timerLines(details, theme, context);
 	if (timer) return timer;
-	if (typeof details.retiring === "boolean") {
-		const lines = [theme.fg("toolOutput", details.retiring ? "Host retirement requested" : "Host remains active")];
-		for (const blocker of array(details.blockers))
-			if (typeof blocker === "string") lines.push(muted(theme, displayPreview(blocker, 160)));
-		return lines;
-	}
+	if (record(context.args).interrupt !== undefined) return interruptLines(details, theme);
+	if (typeof details.retiring === "boolean") return releaseLines(details, theme);
 	if (text(details.identity) === "" || details.background === undefined) return undefined;
-	const lines = [theme.fg("toolOutput", `Abort requested${targetSuffix(text(details.identity), context)}`)];
+	const outcome =
+		details.cold === true ? "Cold stop recorded" : details.settled === true ? "Stop settled" : "Abort requested";
+	const lines = [
+		theme.fg("toolOutput", `${outcome}${targetSuffix(text(details.identity), context)}`),
+		...pendingStopLines(details, theme),
+	];
 	if (details.background === true && record(context.args).background !== true)
 		lines.push(muted(theme, "Includes background task trees"));
 	return lines;

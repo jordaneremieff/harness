@@ -2028,6 +2028,8 @@ An unanswered receipt still wakes unless the host recovered open work for its re
 
 ### Stopping work
 
+A plain stop of a parent leaves its spawned children running: a background task owns each child in the same storage. Use `background: true` on the parent to include its same-storage children and other background work. To stop just one child, target its own `sessionId`. Neither form crosses into another storage. The stop card distinguishes pending tasks from a settled stop, and a cold stop from a request to retire a serving host.
+
 The optional `interrupt` object on `agent_abort` selects an exact live generation (`taskId`) and its complete ordered queue (`queuedInputs`). Give it a stable `intentId`. It refuses a cold or unsupported host. Use the same intent after `pending`; `continued` identifies one admitted continuation, not its answer. It never repeats tool effects or undoes them. Do not combine `interrupt` with release, background stop, or timer cancellation.
 
 A live abort marks every conversation of its scope stopped, then commits the abort

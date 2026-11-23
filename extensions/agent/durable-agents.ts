@@ -101,6 +101,8 @@ import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema }
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import {
+	ABORT_BACKGROUND_DESCRIPTION,
+	ABORT_DESCRIPTION,
 	AGENT_CONTROL_EXPOSURE,
 	AGENT_CONTROL_TOOL_NAMES,
 	FOLLOW_UP_DELIVERY_BOUNDARY,
@@ -485,7 +487,7 @@ const AbortParams = obj(
 	{
 		interrupt: opt(InterruptSelection),
 		sessionId: str({ minLength: 1 }),
-		background: opt(bool({ description: "Also stop background work such as anchors and reporters." })),
+		background: opt(bool({ description: ABORT_BACKGROUND_DESCRIPTION })),
 		timerId: opt(int({ minimum: 1, description: "Timer ID from agent_status; cancels only that scheduled input." })),
 		release: opt(bool({ description: "Request host retirement after abort." })),
 	},
@@ -2093,8 +2095,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const abortTool = durable.defineTool({
 		name: "agent_abort",
-		description:
-			"Stop a conversation's current work without deleting its transcript. A live stop waits up to 15 seconds for settlement. A cold stop marks retained work without starting execution. settled: false names pending tasks; do not repeat the abort. Stopped conversations stay quiet until explicit input. With interrupt, stop only the expected generation and continue the exact ordered queue under a stable intent ID. With timerId, cancel only that scheduled input. With release, request host retirement after stopping; other work and timers remain. Background work survives unless background is true.",
+		description: ABORT_DESCRIPTION,
 		parameters: AbortParams,
 		replay: "unsafe",
 		execute: async (args: AbortInput, api, context) => {

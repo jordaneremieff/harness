@@ -194,6 +194,28 @@ it("scheduled messages and timer cancellation name their actual outcomes without
 	assert.match(screen(fired), /Timer fired · unchanged/u);
 });
 
+it("distinguishes pending stops, cold release and guarded continuation on a native abort card", () => {
+	const card = (args: Record<string, unknown>, details: unknown) =>
+		screen(nativeRow("agent_abort", { sessionId: targetId, ...args }, details));
+	const unsettled = { identity: targetId, background: true, settled: false, pendingTasks: [24, 32] };
+	const stop = card({ background: true }, unsettled);
+	assert.match(stop, /same-storage children/u);
+	assert.match(stop, /Stop not settled; do not repeat · pending tasks: 24, 32/u);
+	const release = card(
+		{ release: true },
+		{ aborted: { ...unsettled, background: false, cold: true }, retiring: true, blockers: [], writesPlaced: 0 },
+	);
+	assert.match(release, /Cold stop recorded; no serving host started/u);
+	assert.match(release, /pending tasks: 24, 32/u);
+	assert.doesNotMatch(release, /retirement requested/u);
+	const args = { interrupt: { taskId: 24, queuedInputs: [32], intentId: "selection" } };
+	const admitted = card(args, { state: "continued", submissionId: 49 });
+	assert.match(admitted, /interrupt generation 24/u);
+	assert.match(admitted, /Continuation admitted · submission 49/u);
+	assert.match(card(args, { state: "protected" }), /no continuation admitted/u);
+	assert.match(card(args, { state: "pending" }), /same intent/u);
+});
+
 it("collaboration pages, reset refusals, and raw error previews keep detail behind expansion", () => {
 	const collaboration = nativeRow(
 		"agent_collaborate",

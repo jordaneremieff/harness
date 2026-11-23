@@ -33,6 +33,8 @@ import { CollaborationParams } from "./collaboration-contract.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { THINKING_LEVELS, isThinkingLevel, parseConfigurationArguments } from "./configuration.ts";
 import {
+	ABORT_BACKGROUND_DESCRIPTION,
+	ABORT_DESCRIPTION,
 	AGENT_CONTROL_EXPOSURE,
 	AGENT_CONTROL_GUIDANCE,
 	agentControlGuidance,
@@ -152,7 +154,7 @@ const abort = obj(
 		interrupt: opt(InterruptSelection),
 		sessionId: id,
 		trust: maybeTrust,
-		background: opt(bool()),
+		background: opt(bool({ description: ABORT_BACKGROUND_DESCRIPTION })),
 		release: opt(bool()),
 		timerId: opt(int({ minimum: 1 })),
 	},
@@ -790,26 +792,20 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		message,
 		(input, ctx, _callId, _admissionCaller, signal) => steer(input, ctx, signal),
 	);
-	register(
-		"agent_abort",
-		"Abort the selected conversation without deleting retained evidence. A live stop waits up to 15 seconds for settlement. A cold stop marks retained work without starting execution. settled: false names pending tasks; do not repeat the abort. Stopped conversations stay quiet until explicit input. With interrupt, stop only the expected generation and continue the exact ordered queue under a stable intent ID. With timerId, cancel only that input. With release, request host retirement; other work and timers remain.",
-		abort,
-		(input, ctx, _callId, _admissionCaller, signal) => {
-			if (input.interrupt) {
-				if (interruptConflict(input))
-					throw new Error("interrupt cannot be combined with release, background or timerId");
-				return control("interrupt-continue", { sessionId: input.sessionId, interrupt: input.interrupt }, ctx, signal);
-			}
-			if (input.release === true && input.background === true)
-				throw new Error("release cannot be combined with background; abort with background first, then release");
-			if (input.timerId !== undefined && input.release === true)
-				throw new Error("release cannot be combined with timerId");
-			if (input.timerId !== undefined)
-				return control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx, signal);
-			const { release, ...params } = input;
-			return control(release === true ? "release" : "abort", params, ctx, signal);
-		},
-	);
+	register("agent_abort", ABORT_DESCRIPTION, abort, (input, ctx, _callId, _admissionCaller, signal) => {
+		if (input.interrupt) {
+			if (interruptConflict(input)) throw new Error("interrupt cannot be combined with release, background or timerId");
+			return control("interrupt-continue", { sessionId: input.sessionId, interrupt: input.interrupt }, ctx, signal);
+		}
+		if (input.release === true && input.background === true)
+			throw new Error("release cannot be combined with background; abort with background first, then release");
+		if (input.timerId !== undefined && input.release === true)
+			throw new Error("release cannot be combined with timerId");
+		if (input.timerId !== undefined)
+			return control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx, signal);
+		const { release, ...params } = input;
+		return control(release === true ? "release" : "abort", params, ctx, signal);
+	});
 	register(
 		"agent_attach",
 		"Connect to a Durable storage host without new input. Retained unfinished work resumes automatically.",

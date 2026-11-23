@@ -39,6 +39,9 @@ it("ordinary delegation guidance names only registered controls and native guida
 		for (const mentioned of text.matchAll(/\bagent_[a-z]+\b/gu))
 			assert.ok(tools.has(mentioned[0]), `${name} names unavailable ${mentioned[0]}`);
 	}
+	const stop = tools.get("agent_abort");
+	assert.match(stop?.description ?? "", /plain stop spares spawned children/u);
+	assert.match(stop?.description ?? "", /background: true[^.]*in this storage, never other storages/u);
 	for (const name of ["agent_spawn", "agent_send"] as const) {
 		const actual = tools.get(name)?.promptGuidelines;
 		assert.deepEqual(actual, agentControlGuidance(name, "ordinary").guidelines);

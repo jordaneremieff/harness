@@ -75,6 +75,14 @@ const EXECUTION_PRESET_GUIDANCE =
 export const MODEL_SELECTION_GUIDANCE =
 	"For an explicit model override, use an exact provider/model identity. Apply current task directions and the operator's route, budget, and role preferences before choosing the override. Verify its exact model and supported thinking level. The resolver owns preset and default identity selection. Configured access is not operator use; past use is not preference.";
 
+/** Crossing a background anchor never widens a stop beyond descendants of the selected conversation. */
+export const ABORT_BACKGROUND_DESCRIPTION =
+	"Include background work owned by the target, including spawned child conversations in the same storage. Omit or set false to leave that work running.";
+
+/** The live and cold stop contracts apply to callers on both surfaces. */
+export const ABORT_DESCRIPTION =
+	"Stop the selected conversation without deleting retained evidence. A plain stop spares spawned children and other background work. With background: true, include the target's background work and spawned children in this storage, never other storages. A live stop waits up to 15 seconds for settlement. A cold stop marks retained work without starting execution. If settled is false, pendingTasks lists outstanding tasks. Do not repeat the stop. Stopped conversations stay quiet until explicit input. With interrupt, stop only the expected generation and continue the exact ordered queue under a stable intent ID. With timerId, cancel only that scheduled input. With release, request host retirement after the stop; other work and timers remain.";
+
 /** A follow-up places at a tool boundary of a running recipient, not at the run end. */
 export const FOLLOW_UP_DELIVERY_BOUNDARY =
 	"A followUp to a running agent is placed at the recipient's next tool boundary, the end of its current round of tool calls, not at the end of its run. It does not interrupt a running tool. It joins the current work, so both inputs may share one answer.";
@@ -156,7 +164,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 	agent_abort: {
 		snippet: "Abort an agent session operation",
 		guidelines: [
-			"Self-targets refuse.",
+			"Self-targets refuse. To stop one spawned child without stopping its siblings, target the child by sessionId.",
 			"With timerId from agent_status, cancel only that scheduled input and leave other work running.",
 			"With release: true, abort the target and request host retirement. Other work and timers stay; blockers are reported. Do not combine release with timerId or background: true; abort with background first, then release.",
 		],
