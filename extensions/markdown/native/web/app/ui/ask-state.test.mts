@@ -182,6 +182,40 @@ test("restored offsets are authoritative only for matching source, including rep
 	assert.equal(item.range, undefined);
 });
 
+test("private drafts keep only proven ranges, with parked items intact after a batch consume", () => {
+	const sessions = reader.createAskSessions(),
+		digest = `sha256:${"a".repeat(64)}`,
+		owner = sessions.show("A", "abcd", digest);
+	const comment = {
+		text: "Explain",
+		quote: "bc",
+		range: { start: 1, end: 3 },
+		authoredRevision: 1,
+		sourceAnchor: { text: "bc", contexts: [] },
+	};
+	owner.comments.push(comment);
+	owner.overall = "Together";
+	owner.overallRevision = 2;
+	owner.parked = [{ text: "Explain", index: 0, comment }];
+	assert.deepEqual(plain(sessions.snapshot(owner)), {
+		comments: [{ ...comment, anchorDigest: digest }],
+		overall: "Together",
+		overallRevision: 2,
+		parked: [{ text: "Explain", index: 0, comment: { ...comment, anchorDigest: digest } }],
+	});
+	const remaining = sessions.snapshot(owner, true);
+	assert.deepEqual(plain(remaining), {
+		comments: [],
+		overall: "",
+		parked: [{ text: "Explain", index: 0, comment: { ...comment, anchorDigest: digest } }],
+	});
+	owner.digest = undefined;
+	assert.equal(sessions.snapshot(owner)?.comments[0].range, undefined);
+	comment.sourceAnchor.text = "previous markdown";
+	assert.deepEqual(plain(sessions.snapshot(owner)?.comments[0]), { text: "Explain", quote: "bc", authoredRevision: 1 });
+	assert.equal(remaining?.parked?.[0].comment?.sourceAnchor?.text, "bc");
+});
+
 test("batch members, the overall comment and a follow-up keep their own authored revisions", () => {
 	const sessions = reader.createAskSessions();
 	const thread: ReaderThread = {
@@ -220,4 +254,116 @@ test("batch members, the overall comment and a follow-up keep their own authored
 		text: "And another thing",
 		authoredRevision: 4,
 	});
+});
+
+test("Save As moves the private batch and its open editor without changing passage coordinates", () => {
+	const sessions = reader.createAskSessions(),
+		old = sessions.show("private", "same");
+	const range = { start: 1, end: 3 },
+		comment = { text: "active", range },
+		closed = { text: "closed", range };
+	old.comments.push(comment);
+	old.parked = [
+		{ text: "closed", comment: closed, index: 0 },
+		{ text: "earlier overall", index: -1, authoredRevision: 2 },
+	];
+	old.overall = "source overall";
+	old.overallRevision = 3;
+	const editor = { ...question(""), pendingComment: comment };
+	old.visible = true;
+	old.current = editor;
+	const card = { ...question("card"), range };
+	old.threads.push(card);
+	const next = sessions.show("destination", "same");
+	const existing = { text: "existing" };
+	next.comments.push(existing);
+	next.overall = "destination overall";
+	next.overallRevision = 7;
+	sessions.moveUnsent(old, next);
+	assert.equal(next.comments[0], existing);
+	assert.equal(next.comments[1], comment);
+	assert.equal(next.current, editor);
+	assert.equal(next.visible, true);
+	assert.equal(next.comments[1].range, range);
+	assert.equal(next.threads[0], card);
+	assert.equal(card.range, range);
+	assert.equal(next.parked?.[0].comment, closed);
+	assert.equal(next.parked?.[0].index, 1);
+	assert.equal(next.overall, "destination overall");
+	assert.equal(next.overallRevision, 7);
+	assert.deepEqual(plain(next.parked?.slice(1)), [
+		{ text: "earlier overall", index: -1, authoredRevision: 2 },
+		{ text: "source overall", index: -1, authoredRevision: 3 },
+	]);
+	assert.equal(old.current, null);
+	assert.equal(old.visible, false);
+	assert.equal(old.threads.length, 0);
+	assert.equal(old.comments.length, 0);
+	assert.equal(old.overall, "");
+	assert.equal(old.overallRevision, undefined);
+	assert.equal(old.parked, undefined);
+	sessions.moveUnsent(old, next);
+	sessions.moveUnsent(next, next);
+	assert.equal(next.comments.length, 2);
+	assert.equal(next.threads.length, 1);
+	assert.equal(next.parked?.length, 3);
+});
+
+test("Save As detaches only the unsent follow-up and leaves each attempted request at its original destination", () => {
+	const sessions = reader.createAskSessions(),
+		old = sessions.show("old", "alpha", "d");
+	const message: ReaderAskMessage = { requestId: "old-request", text: "attempted", state: "unknown" };
+	const thread: ReaderThread = {
+		threadId: "delivered",
+		draft: "my reply",
+		draftRevision: 4,
+		quote: "alpha",
+		range: { start: 0, end: 5 },
+		messages: [message],
+	};
+	old.threads.push(thread);
+	old.current = thread;
+	old.visible = true;
+	old.heldThread = thread;
+	old.overall = "move this overall";
+	old.overallRevision = 5;
+	sessions.register(old, thread, message);
+	const original = sessions.packet(thread, message, { documentKey: old.documentKey, presentation: "p", generation: 1 });
+	const next = sessions.show("new", "alpha", "d");
+	const existing = question("different unsent draft");
+	next.current = existing;
+	next.visible = true;
+	const other: ReaderThread = {
+		threadId: "other",
+		messages: [{ requestId: "other", text: "already sent", state: "sent" }],
+		draft: "different follow-up",
+	};
+	next.threads.push(existing, other);
+	sessions.moveUnsent(old, next);
+	const fresh = next.threads[2];
+	assert.notEqual(fresh, thread);
+	assert.equal(fresh.draft, "my reply");
+	assert.equal(fresh.draftRevision, 4);
+	assert.equal(fresh.threadId, "");
+	assert.equal(fresh.messages.length, 0);
+	assert.equal(fresh.range, thread.range);
+	assert.equal(old.heldThread, thread);
+	assert.equal(old.current, thread);
+	assert.equal(old.threads.length, 1);
+	assert.equal(thread.draft, "");
+	assert.equal(thread.draftRevision, undefined);
+	assert.equal(next.current, existing);
+	assert.equal(other.draft, "different follow-up");
+	assert.equal(next.overall, "move this overall");
+	assert.equal(next.overallRevision, 5);
+	const result = sessions.delivery("old-request", "delivered");
+	assert.ok(result);
+	result.message.detail = "late reply";
+	assert.equal(result.owner, old);
+	assert.equal(result.thread, thread);
+	assert.equal(thread.messages[0].detail, "late reply");
+	assert.equal(sessions.packet(thread, message, { documentKey: "new", presentation: "q", generation: 3 }), original);
+	assert.equal(sessions.show("old", "alpha", "d").current, thread);
+	assert.equal(sessions.show("new", "alpha", "d").current, existing);
+	assert.equal(fresh.messages.length, 0);
 });

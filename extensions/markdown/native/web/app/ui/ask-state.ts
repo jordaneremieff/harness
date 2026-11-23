@@ -17,15 +17,54 @@
 		}
 	}
 	// Project a damaged interval onto the new source, including only the replacements that hit it.
+	function precedes(position: number, right: boolean, edit: ReaderEdit) {
+		return edit.end < position || (edit.end === position && (!right || edit.start !== edit.end));
+	}
 	function boundary(position: number, right: boolean, edits: ReaderEdit[]) {
 		let delta = 0;
 		for (const edit of edits) {
-			if (edit.end < position || (edit.end === position && (!right || edit.start !== edit.end)))
-				delta += edit.text.length - (edit.end - edit.start);
+			if (precedes(position, right, edit)) delta += edit.text.length - (edit.end - edit.start);
 			else if (edit.start < position) return edit.start + delta + (right ? edit.text.length : 0);
 			else break;
 		}
 		return position + delta;
+	}
+	function proof(item: Passage) {
+		const anchor = item.sourceAnchor;
+		if (!item.quote || !anchor?.text || utf8.encode(anchor.text).length > 16384) return undefined;
+		if (item.range && anchor.text.length !== item.range.end - item.range.start) return undefined;
+		return anchor;
+	}
+	function savedComment(owner: ReaderAskDocument, item: ReaderComment): ReaderComment {
+		const copy: ReaderComment = { text: item.text };
+		if (item.quote) copy.quote = item.quote;
+		if (item.authoredRevision !== undefined) copy.authoredRevision = item.authoredRevision;
+		const anchor = proof(item);
+		if (!anchor) return copy;
+		copy.sourceAnchor = structuredClone(anchor);
+		if (item.range && owner.digest && /^sha256:[0-9a-f]{64}$/u.test(owner.digest)) {
+			copy.range = { ...item.range };
+			copy.anchorDigest = owner.digest;
+		}
+		return copy;
+	}
+	function snapshot(owner: ReaderAskDocument, parkedOnly = false): ReaderReviewDraft | undefined {
+		const draft: ReaderReviewDraft = { comments: [], overall: "" };
+		if (!parkedOnly) {
+			draft.comments = owner.comments.map((item) => savedComment(owner, item));
+			draft.overall = owner.overall;
+			if (owner.overallRevision !== undefined) draft.overallRevision = owner.overallRevision;
+		}
+		if (owner.parked?.length)
+			draft.parked = owner.parked.map((item) =>
+				item.comment
+					? { index: item.index, text: item.comment.text, comment: savedComment(owner, item.comment) }
+					: { ...item },
+			);
+		return draft.comments.length || draft.overall || draft.parked ? draft : undefined;
+	}
+	function sameProof(left?: ReaderPassageAnchor, right?: ReaderPassageAnchor) {
+		return left === right || JSON.stringify(left) === JSON.stringify(right);
 	}
 	function annotation(item: { text: string; quote?: string; range?: ReaderRange; authoredRevision?: number }) {
 		return {
@@ -63,12 +102,77 @@
 	function attachProofs(packet: object, annotations: Record<string, unknown>[], items: Passage[]) {
 		let budget = 256 * 1024 - 128 - utf8.encode(JSON.stringify(packet)).length;
 		for (const [index, item] of items.entries()) {
-			const anchor = item.sourceAnchor;
-			if (!item.range || !anchor || utf8.encode(anchor.text).length > 16384) continue;
+			const anchor = proof(item);
+			if (!item.range || !anchor) continue;
 			const size = utf8.encode(JSON.stringify({ passageAnchor: anchor })).length;
 			if (size > budget) continue;
-			annotations[index].passageAnchor = anchor;
+			annotations[index].passageAnchor = structuredClone(anchor);
 			budget -= size;
+		}
+	}
+	function moveBatch(previous: ReaderAskDocument, next: ReaderAskDocument) {
+		const offset = next.comments.length;
+		next.comments.push(...previous.comments.splice(0));
+		for (const item of previous.parked ?? []) {
+			if (item.comment) item.index += offset;
+			next.parked ??= [];
+			next.parked.push(item);
+		}
+		previous.parked = undefined;
+		if (previous.overall) {
+			if (next.overall) {
+				next.parked ??= [];
+				next.parked.push({ text: previous.overall, index: -1, authoredRevision: previous.overallRevision });
+			} else {
+				next.overall = previous.overall;
+				next.overallRevision = previous.overallRevision;
+			}
+		}
+		previous.overall = "";
+		previous.overallRevision = undefined;
+	}
+	function detachDraft(thread: ReaderThread): ReaderThread | null {
+		if (!thread.draft) return null;
+		const draft: ReaderThread = {
+			threadId: "",
+			messages: [],
+			draft: thread.draft,
+			draftRevision: thread.draftRevision,
+			quote: thread.quote,
+			sourceAnchor: thread.sourceAnchor,
+			range: thread.range,
+		};
+		thread.draft = "";
+		thread.draftRevision = undefined;
+		return draft;
+	}
+	function moveCards(previous: ReaderAskDocument, next: ReaderAskDocument) {
+		let current: ReaderThread | null = null;
+		const retained: ReaderThread[] = [];
+		for (const thread of previous.threads) {
+			const sent = thread.messages.length > 0 || thread === previous.heldThread;
+			if (sent) retained.push(thread);
+			const moved = sent ? detachDraft(thread) : thread;
+			if (!moved) continue;
+			next.threads.push(moved);
+			if (previous.current === thread) current = moved;
+		}
+		previous.threads = retained;
+		return current;
+	}
+	// Save As keeps the exact buffer. Only text that nobody has tried to send changes owner.
+	function moveUnsent(previous: ReaderAskDocument, next: ReaderAskDocument) {
+		if (previous === next) return;
+		moveBatch(previous, next);
+		const current = moveCards(previous, next) ?? (previous.current?.pendingComment ? previous.current : null);
+		if (!current) return;
+		if (previous.visible && !(next.visible && next.current)) {
+			next.current = current;
+			next.visible = true;
+		}
+		if (current === previous.current) {
+			previous.current = null;
+			previous.visible = false;
 		}
 	}
 	api.createAskSessions = () => {
@@ -105,17 +209,22 @@
 				within: { start: boundary(range.start, false, edits), end: boundary(range.end, true, edits) },
 			});
 		}
+		function verifiedRange(item: Passage) {
+			if (item.range && source.slice(item.range.start, item.range.end) === item.sourceAnchor?.text) return item.range;
+			return undefined;
+		}
 		function locate(item: Passage, fresh: ReaderPassageView) {
-			const damage = damaged.get(item);
-			if (item.range && item.sourceAnchor) {
-				if (source.slice(item.range.start, item.range.end) !== item.sourceAnchor.text) item.range = undefined;
-				else if (!damage && item.sourceAnchor.headings) return;
-			}
-			if (damage) {
-				item.range = api.uiLogic.reanchorPassage(source, damage.anchor, fresh, damage.within);
-				damaged.delete(item);
-			} else if (!item.range) item.range = api.uiLogic.reanchorPassage(source, item.sourceAnchor, fresh);
-			if (item.range) item.sourceAnchor = api.uiLogic.capturePassage(source, item.range, fresh, item.quote);
+			const damage = damaged.get(item),
+				old = verifiedRange(item),
+				before = item.range,
+				proof = item.sourceAnchor;
+			if (old && !edited && item.sourceAnchor?.headings) return false;
+			const range =
+				old ?? api.uiLogic.reanchorPassage(source, damage?.anchor ?? item.sourceAnchor, fresh, damage?.within);
+			damaged.delete(item);
+			item.range = range;
+			if (range) item.sourceAnchor = api.uiLogic.capturePassage(source, range, fresh, item.quote);
+			return before?.start !== range?.start || before?.end !== range?.end || !sameProof(proof, item.sourceAnchor);
 		}
 		function restoreRange(owner: ReaderAskDocument, item: ReaderComment) {
 			const verified =
@@ -128,6 +237,7 @@
 			if (owner === shown && view) locate(item, view);
 		}
 		return {
+			moveUnsent,
 			get shown() {
 				return shown;
 			},
@@ -156,14 +266,13 @@
 			},
 			render(fresh) {
 				view = fresh;
-				for (const item of locations(shown)) locate(item, fresh);
-			},
-			captureAnchors() {
-				if (!edited || !view) return;
-				for (const item of locations(shown))
-					if (item.range) item.sourceAnchor = api.uiLogic.capturePassage(source, item.range, view, item.quote);
+				const tracked = new Set<Passage>(pending(shown));
+				let pendingChanged = false;
+				for (const item of locations(shown)) if (locate(item, fresh) && tracked.has(item)) pendingChanged = true;
 				edited = false;
+				return pendingChanged;
 			},
+			snapshot,
 			restoreRanges(owner) {
 				for (const item of pending(owner)) restoreRange(owner, item);
 			},

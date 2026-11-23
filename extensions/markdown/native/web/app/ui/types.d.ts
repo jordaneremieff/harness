@@ -59,11 +59,12 @@ declare global {
 		message: ReaderAskMessage;
 	}
 	interface ReaderAskSessions {
+		moveUnsent(previous: ReaderAskDocument, next: ReaderAskDocument): void;
 		readonly shown: ReaderAskDocument;
 		show(key: string, source: string, digest?: string): ReaderAskDocument;
 		change(edits: ReaderEdit[], source: string): void;
-		render(view: ReaderPassageView): void;
-		captureAnchors(): void;
+		render(view: ReaderPassageView): boolean;
+		snapshot(owner: ReaderAskDocument, parkedOnly?: boolean): ReaderReviewDraft | undefined;
 		restoreRanges(owner: ReaderAskDocument): void;
 		trackReview(owner: ReaderAskDocument, id: string, seed: ReaderComment): ReaderComment;
 		register(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage): void;

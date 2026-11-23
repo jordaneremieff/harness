@@ -17,10 +17,13 @@
 		if (detail !== undefined || old !== next) message.detail = detail;
 		if (next !== "unknown") message.retryable = false;
 	}
+	// A refusal of a replay is not a rejection of its original submission.
+	function unconfirmed(receipt: ReaderPromptReceipt, replay: boolean) {
+		if (receipt.accepted) return false;
+		return receipt.uncertain || receipt.fresh === false || (replay && receipt.fresh !== true);
+	}
 	function receiveReceipt(message: ReaderAskMessage, receipt: ReaderPromptReceipt, replay: boolean) {
-		// A refusal of a replay is not a rejection of its original submission.
-		const previouslyTried = receipt.fresh === false || (replay && receipt.fresh !== true);
-		if (!receipt.accepted && (receipt.uncertain || previouslyTried)) {
+		if (unconfirmed(receipt, replay)) {
 			evidence(message, "unknown", receipt.detail);
 			if (message.state === "unknown") message.retryable = receipt.uncertain ? receipt.retryable === true : true;
 		} else evidence(message, receipt.accepted ? "sent" : "failed", receipt.detail);
