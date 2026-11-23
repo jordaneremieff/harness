@@ -247,6 +247,7 @@ function makePi(
 function makeCtx(over: CtxOverrides = {}) {
 	const footerCalls: (MockFactory | undefined)[] = [];
 	const notifications: string[] = [];
+	const noticeLevels: (string | undefined)[] = [];
 	const branchChangeCbs: (() => void)[] = [];
 	const customCalls: Array<{ factory: CustomFactory; options: unknown }> = [];
 	const editorCalls: string[] = [];
@@ -282,7 +283,10 @@ function makeCtx(over: CtxOverrides = {}) {
 		},
 		ui: {
 			setFooter: (factory) => footerCalls.push(factory),
-			notify: (msg) => notifications.push(msg),
+			notify: (msg, level) => {
+				notifications.push(msg);
+				noticeLevels.push(level);
+			},
 			custom: (factory, options) =>
 				new Promise((resolve, reject) => {
 					customCalls.push({ factory, options });
@@ -351,6 +355,7 @@ function makeCtx(over: CtxOverrides = {}) {
 		state,
 		footerCalls,
 		notifications,
+		noticeLevels,
 		footerData,
 		theme,
 		tui,
@@ -891,9 +896,7 @@ describe("/statusline toggle", () => {
 		assert.equal(mocks.footerCalls.length, 0);
 		await commands.get("statusline").handler("", mocks.ctx);
 		assert.equal(mocks.footerCalls.length, 0, "setFooter untouched in rpc");
-		const disabledNote = mocks.notifications.at(-1);
-		assert.ok(disabledNote !== undefined, "disable notification recorded");
-		assert.match(disabledNote, /disabled/);
+		assert.equal(mocks.notifications.at(-1), "Statusline is disabled.");
 	});
 });
 
@@ -1045,7 +1048,11 @@ describe("Commands view", () => {
 		await commands.get("commands").handler("", mocks.ctx);
 		await done;
 		assert.equal(sent.length, 0, "a disappeared command is never sent as a prompt");
-		assert.match(mocks.notifications.at(-1) ?? "", /no longer registered as selected; nothing was sent/);
+		assert.equal(
+			mocks.notifications.at(-1),
+			"The selected /review:1 registration changed; Pi did not send the command.",
+		);
+		assert.equal(mocks.noticeLevels.at(-1), "warning");
 	});
 
 	it("refuses a same-name command when its provenance changes after selection", async () => {
@@ -1060,7 +1067,11 @@ describe("Commands view", () => {
 		await commands.get("commands").handler("", mocks.ctx);
 		await done;
 		assert.deepEqual(sent, []);
-		assert.match(mocks.notifications.at(-1) ?? "", /no longer registered as selected; nothing was sent/);
+		assert.equal(
+			mocks.notifications.at(-1),
+			"The selected /review:1 registration changed; Pi did not send the command.",
+		);
+		assert.equal(mocks.noticeLevels.at(-1), "warning");
 	});
 
 	it("keeps printable keys in search and lets More and Escape leave the edit in order", async () => {
@@ -1157,7 +1168,8 @@ describe("Commands view", () => {
 		const rpc = makeCtx({ mode: "rpc", hasUI: true });
 		await handlers.get("session_start")(sessionStart, rpc.ctx);
 		await commands.get("commands").handler("", rpc.ctx);
-		assert.match(rpc.notifications.at(-1) ?? "", /interactive terminal/);
+		assert.equal(rpc.notifications.at(-1), "The Commands view requires an interactive Pi terminal.");
+		assert.equal(rpc.noticeLevels.at(-1), "warning");
 		assert.equal(rpc.customCalls.length, 0);
 	});
 });
@@ -1210,6 +1222,27 @@ describe("Model view", () => {
 		{ provider: "other", id: "plain", name: "Plain", reasoning: false },
 		{ provider: "locked", id: "needs-auth", name: "Needs Auth", reasoning: true },
 	];
+
+	it("reports a failed footer click with the view and one plain diagnostic", async () => {
+		const { handlers } = makePi();
+		const mocks = makeCtx({ tuiMode: "fullscreen" });
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const footer = installFooter(mocks);
+		footer.render(100);
+		const failure = new Error("\u001b[31mView failed\u001b[0m\ninside Pi");
+		const rejected = assert.rejects(
+			mocks.onNextFrame(() => {
+				throw failure;
+			}),
+			failure,
+		);
+		assert.equal(footer.handleMouse?.(click(2, 0, 100))?.handled, true);
+		await rejected;
+		await turn();
+		footer.dispose();
+		assert.deepEqual(mocks.notifications, ["The Model view did not open: View failed inside Pi"]);
+		assert.deepEqual(mocks.noticeLevels, ["error"]);
+	});
 
 	it("stages model and reasoning and applies them only on Apply", async () => {
 		const { handlers, models: applied, levels } = makePi();

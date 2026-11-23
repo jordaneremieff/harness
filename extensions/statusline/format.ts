@@ -165,7 +165,7 @@ function consumeEscape(text: string, index: number): EscapeStep | null {
  * Callers must anchor each status with a reset so kept SGR cannot bleed past
  * its own cell.
  */
-export function sanitizeDisplay(input: string): string {
+export function sanitizeDisplay(input: string, allowSgr = true): string {
 	// The sequence matchers read forward from the cursor, so the cap has to bound
 	// the string itself; a loop bound alone leaves them free to run past it.
 	const text = input.length > MAX_STATUS_LENGTH ? input.slice(0, MAX_STATUS_LENGTH) : input;
@@ -175,7 +175,7 @@ export function sanitizeDisplay(input: string): string {
 	while (i < n) {
 		const step = consumeEscape(text, i);
 		if (step) {
-			out += step.kept;
+			if (allowSgr) out += step.kept;
 			i = step.next;
 			continue;
 		}
@@ -186,6 +186,14 @@ export function sanitizeDisplay(input: string): string {
 		i++;
 	}
 	return out.replace(/ +/g, " ").trim();
+}
+
+export function viewFailure(view: string, error: unknown): string {
+	const cause = sanitizeDisplay(error instanceof Error ? error.message : String(error), false)
+		.replace(/[\p{Cf}\u2028\u2029]/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim();
+	return cause ? `The ${view} view did not open: ${cause}` : `The ${view} view did not open.`;
 }
 
 /** Home-relative folder label, following Pi's footer convention ("~/work/app"). */

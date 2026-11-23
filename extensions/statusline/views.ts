@@ -98,7 +98,7 @@ function dispatchNow(deps: CommandDeps, command: SlashCommandInfo, args: string)
 	if (outcome.kind === "sent") deps.state.args.delete(commandIdentity(command));
 	else
 		deps.ctx.ui.notify(
-			`/${sanitizeDisplay(command.name)} is no longer registered as selected; nothing was sent.`,
+			`The selected /${plainLine(command.name)} registration changed; Pi did not send the command.`,
 			"warning",
 		);
 }
@@ -137,7 +137,10 @@ function prepareForm(deps: CommandDeps, command: SlashCommandInfo, host: ViewHos
 				deps.state.args.delete(identity);
 				if (outcome.replaced) {
 					deps.state.replaced = outcome.replaced;
-					deps.ctx.ui.notify("Draft replaced. Commands offers Restore replaced draft.", "info");
+					deps.ctx.ui.notify(
+						"Pi replaced the editor draft; recover it with Restore replaced draft in Commands.",
+						"info",
+					);
 				}
 			});
 			return undefined;

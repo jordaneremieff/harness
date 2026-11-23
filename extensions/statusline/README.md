@@ -124,7 +124,7 @@ Segments join with a dim `│` separator:
    `tokens/contextWindow`. Zero usage shows `0%`. Unknown usage after compaction
    shows `context ?` and `?/contextWindow`; an absent host estimate shows
    `context unavailable`. Overflow fills the bar but preserves the percentage
-   above 100. Color ramp: success through 60%, warning through 80%, error above.
+   above 100. Round the percentage before choosing the band: success through 60%, warning through 80%, error above.
    These are display bands, not Pi's configurable compaction threshold or a safe
    remaining token budget.
 3. **Cost.** `~$N.NN` sums Pi's recorded cost estimates across the whole session,
@@ -220,7 +220,8 @@ set the window title, write the clipboard, or emit a hyperlink.
   mode `setFooter` is a documented no-op, and in JSON/print there is no
   footer at all, so no install is attempted. `/statusline` toggles the flag
   in any mode but only touches the footer in TUI mode; it notifies when
-  `ctx.hasUI`. The view commands explain the requirement outside the TUI.
+  `ctx.hasUI`. Outside the TUI, the view commands warn that the named view
+  requires an interactive Pi terminal. See the [notification convention](../../docs/conventions/emissions.md#notifications).
 - One 5-second interval owns wall-clock freshness: Pi re-renders only on
   events, so without it the duration would go stale while idle. A render
   recomputes the lines of every component in the session view, so the tick

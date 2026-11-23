@@ -27,6 +27,7 @@ import {
 	folderLabel,
 	hitRatePercent,
 	sanitizeDisplay,
+	viewFailure,
 	type Fg,
 	type Line1Parts,
 	type Line2Layout,
@@ -200,10 +201,11 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	let activeView: { frame?: Frame } | undefined;
 	const loadViews = () => Promise.all([import("./frame.ts"), import("./views.ts")]);
 
+	const viewNames = { commands: "Commands", model: "Model", statuses: "Statuses" };
 	/** Commands wait for the view; footer clicks use the same path without waiting. */
-	async function openOwn(ctx: ExtensionContext, id: "commands" | "model" | "statuses"): Promise<void> {
+	async function openOwn(ctx: ExtensionContext, id: keyof typeof viewNames): Promise<void> {
 		if (ctx.mode !== "tui") {
-			if (ctx.hasUI) ctx.ui.notify("This view needs the interactive terminal.", "info");
+			if (ctx.hasUI) ctx.ui.notify(`The ${viewNames[id]} view requires an interactive Pi terminal.`, "warning");
 			return;
 		}
 		if (activeView) return;
@@ -319,7 +321,10 @@ export default function registerStatusline(pi: ExtensionAPI) {
 							? clickTarget(event, spans, layout)
 							: undefined;
 					if (!target) return undefined;
-					void openOwn(session(), target).catch((error: unknown) => session().ui.notify(String(error), "error"));
+					const ctx = session();
+					void openOwn(ctx, target).catch((error: unknown) =>
+						ctx.ui.notify(viewFailure(viewNames[target], error), "error"),
+					);
 					return { handled: true };
 				},
 			};
@@ -379,7 +384,12 @@ export default function registerStatusline(pi: ExtensionAPI) {
 				else ctx.ui.setFooter(undefined);
 			}
 			if (ctx.hasUI) {
-				ctx.ui.notify(enabled ? "Statusline enabled" : "Statusline disabled (default footer restored)", "info");
+				const notice = enabled
+					? "Statusline is enabled."
+					: ctx.mode === "tui"
+						? "Statusline is disabled and Pi's default footer is restored."
+						: "Statusline is disabled.";
+				ctx.ui.notify(notice, "info");
 			}
 		},
 	});
