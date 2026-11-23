@@ -380,36 +380,18 @@ evidence. Closing the caller's temporary connection does not cancel that work.
 
 ### Tool cards
 
-Agent tool and peer cards use one two-tier layout. The first header line shows
-the tool name or message kind and the target or sender label. A thread notice
-names what happened as its kind and the thread as its subject:
-`thread post · Parser contract`. The kinds are `thread post`, `operator
-direction` (a post that relays operator direction), `member joined`, `member
-left`, `thread closed`, `frame revised` and `thread created`; an unknown event
-kind keeps `thread notice`. The thread is its title, or its full identity when
-no title is known. The second line starts with `from <sender>` and the sender's
-provider/model and thinking level when known, then the event number (`#12`)
-and `notified this session` for a notice that asked for attention. The body is
-what the event says (see [peer threads](#peer-threads)); an event without text,
-such as a join without a statement, has no body. The muted
-second line shows known provider/model, thinking level, and other secondary
-facts. All card kinds use the same `provider/model · xhigh` form, without
-redundant `Model:`, `thinking`, or `reasoning` labels. Ambiguous values retain labels such as
-`submission 2987` or `mode report`. Missing facts create no placeholders.
-Targeted cards use the retained `@handle` or display name. Duplicate display names add the full identity when neither handles nor
-model settings distinguish them. Unobserved targets use the full identity or
-the supplied `@handle`; only the rendered width clips a collapsed line.
+Agent cards follow the [emission grammar](../../docs/conventions/emissions.md).
+A target uses its observed handle or display name; when neither is known, the
+card shows the supplied identity. A full identity distinguishes otherwise
+indistinguishable targets. An expanded call retains the supplied selector.
 The synchronous lookup uses roster facts already observed by the primary footer;
 it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
-Tool cards retain Pi's native padding. Peer cards supply the same inner top and
-bottom padding, while Pi supplies their outer separator.
 The manager contract is `manager/8.0.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
-Expanded cards retain full IDs and the complete result within the display bound.
-A result card shows `Answer continuation:` and `Receipt continuation:` as
-separate exact calls when the result carries them. An expanded result notice
-shows its receipt continuation call in its source details.
+An inspection can page the answer, final report and receipt references
+independently. Expansion shows each available continuation with the arguments
+for that page.
 
 Status cards distinguish fleet samples, storage pages and selected sessions.
 Fleet cards separate matching evidence from partial machine-wide coverage.
@@ -418,72 +400,13 @@ when another page exists. Selected cards distinguish ordinary primary presence
 from Durable host or retained observations; neither ordinary presence nor a
 retained snapshot establishes live session activity.
 
-A collapsed card has at most one expansion hint across its call and result.
-Before execution, the call owns the hint; after execution starts, the result
-owns it. The native-style `... (ctrl+o to expand)` hint applies to the whole
-card, not just its result. All tool card expansion hints use theme `muted`.
-Expanded cards show no expansion hint. Expanded messages use the plain `Message:` label.
-
-Peer notices in ordinary chat show Pi's tool-card hint whenever the preview
-hides body text or the card holds source details, so a short notice never hides
-its details silently: `... (2 more lines, ctrl+o to expand)` names the hidden
-body lines, and `... (ctrl+o to expand)` stands alone when only source details
-are hidden. The key is drawn with Pi's `keyHint` (dimmed key, muted words) and
-the rest of the hint is muted, on the unbroken message background. Without a
-configured key the hint reads `click to expand`. A left click anywhere on the
-card's content rows toggles that one card, as Pi's compaction and tool cards
-toggle on a left click: Pi checks only the click type and the left button, so a
-modified click and each click of a multi-click also toggle. A click on the
-padding rows, a right click and a drag pass through; Pi sends no click for a
-drag, so text selection still works. The toggle is local reading state that
-sends nothing, starts no turn and changes no retained content. Pi's global expansion (`ctrl+o`) rebuilds every card
-and resets those local choices.
-
-In ordinary chat, retained communications (reports, thread notices, results and
-check-ins carried by a conversation's `communication` view) use the Agent card:
-the first line names the kind (`Report`, `Thread notice`, `Result`,
-`Result unanswered`, `Check-in`) and the thread or work it belongs to; the second
-line names the sender and the recorded local time. A thread notice names its
-event as its kind, as the tool cards do (`Thread closed · <thread title>`), and
-adds the event number and `notified this agent` for an addressed notice to its
-second line. The body renders as Markdown
-with `Partial body` and `Redacted body` marks when they apply. Disclosure adds
-the exact sender identity, the recorded timestamp and every retained metadata
-field in full: a result lists each retained reference on its own line with its
-submission, request, entry and answer entry identifiers. A communication retains
-no authoring provider or model, and the card never shows the current roster
-configuration as if it were.
-
-The agent work view and the attached terminal show the same communications in
-a compact form without a background. One header row holds a disclosure mark
-(`▸` closed, `▾` open), the sender in bold and what it is (`Report from
-<sender>`, `Result from <sender>`, `Check-in from <sender>`), then muted facts:
-`unanswered` for an unanswered result, a check-in's elapsed time, and the
-recorded local time (the clock time today, the date and time on other days).
-A thread notice has two header rows, as an agent tool card has: the disclosure
-mark, its kind in bold and the thread title (`Thread post · <thread title>`),
-then `from` and the sender in bold with muted facts: the sender's provider/model
-and thinking level as the view knows them (an agent's from the roster, a main
-session's from its session file), the post number, `notified this agent` for a
-notice that woke it, and the recorded local time. Each row clips at its end in
-a narrow pane. Two rows of the Markdown body follow; a longer body ends its
-second row with a muted `+N lines`. A thread event without text shows its header
-rows alone, with no placeholder. A plain click on a header row or on that
-row opens the card; there is no repeated key hint, and Ctrl+O (the footer's
-`expand all`) opens every card. The open card shows the complete retained body, then muted
-notes, then every retained field in full: the sender identity, the recorded
-time, the thread, event, request and source identifiers, and each retained
-reference of a result. A thread notice names its fields in plain labels:
-`Thread`, `Thread ID`, `Event` (number, kind and frame revision) and
-`Delivery` (passive without a wake, or notified). A notice copy that is not marked complete says
-`Notice copy; the full post #N is in Threads.`; another incomplete copy says
-`Retained copy; it may be shorter than the original.`; a redacted copy says so.
-A collapsed preview never claims the copy is incomplete; the notes say it once.
-The sender is the retained name, then a name the view already knows (a roster
-name or handle, `This session` for the session that runs the view, a Pi session
-name from effort presence), then `Session` or `Agent` with the first eight
-characters of the identity. The thread title comes from the notice, then from a
-thread the view has read.
+Peer and retained communication cards name the event, then its sender and
+known source facts. Thread notices use the thread title or its full identity.
+A post, carried operator direction, membership change or revised frame keeps
+its own event kind. A notice distinguishes passive delivery from an explicit
+request for attention; an absent delivery field establishes neither. The
+original event remains in [Threads](#peer-threads). Expanding a notice shows
+its retained copy, not a new read of the original event.
 
 Dashboard and attached-terminal agent cards resolve their targets through the
 roster rows already observed by that view (the dashboard page, or the attached
@@ -506,19 +429,12 @@ keep it in the conversation's reading state under the entry id. It survives a
 theme refresh, a rebuilt transcript and a return from the dashboard or a browser;
 a global expansion change still sets every card.
 
-Collapsed results use plain outcomes rather than raw JSON. Expanded results
-retain the raw result within the display bound. Message receipts use `Admitted`
-or `Steer admitted` and the submission number. A primary channel receipt after
-successful delivery shows `Report delivered to` or `Message delivered to` and
-the target label. Receipts omit target facts already visible in the call or snapshot. A different
-conversation or a newly resolved target retains its label. Snapshots show changed
-model facts without repeating unchanged header facts. Intent cards show
-`Intent published` or `Intent cleared` from the returned primary endpoint,
-with its full identity. Its known name and configuration update the header;
-expanded results retain the intent claim and bounded awareness as raw data.
-An intent claim is not verified authority or a reservation. Collaboration and
-context reset use the same card layout. Scheduled inputs show their timer and deadline;
-timer cancellation shows whether it changed the timer.
+Dispatch receipts state admission, placement, acknowledgement or a timer
+only when the route supplies that evidence. A control result can include an
+observed snapshot. A snapshot read failure leaves the control receipt intact.
+An intent observation shows a published claim, not verified authority or a
+reservation. An expanded collaboration read keeps the source frame and the
+next event call when the page has one.
 
 Admission does not establish delivery, action, or task completion. A primary
 channel delivery receipt does not establish action or task acceptance. Model-visible
@@ -586,26 +502,19 @@ communication keeps its retained text. Source:
 
 ### Transcript messages
 
-The ordinary entry registers a message renderer for each custom message it
-shows in the transcript. Every card title starts with the bold label `[agent]`
-in Pi's custom message label colour (`customMessageLabel`), then what happened. A muted second line holds the known facts; an unknown fact
-is left out:
+The ordinary entry registers the following transcript renderers. A peer
+message keeps the sender separate from the event it reports.
 
 | Message type | First line | Second line |
 | --- | --- | --- |
-| `agent.peer` | `[agent] result · Parser review`, `[agent] Report received`, `[agent] thread post · Parser contract` | `from Reviewer · provider/model · high` for reports; other peer notices show the facts of the event |
+| `agent.peer` | The peer event, with the thread or work name when known | Sender, model and recorded event facts |
 | `application-message` | `[agent] Notebook · Release notes` | `#a2b3c4d5 · follows #d1c2b3a4 · reply requested · pane 42`: the request reference, any earlier reference, whether the application expects a reply, then the place |
 | `agent.compaction` | `[agent] Compaction not applied` | none |
 | `agent.planning-budget` | `[agent] Planning budget reached` | `210000 of 200000 tokens · openai-codex/gpt-6.1-sol` |
 
-The compaction and planning-budget cards use the peer card layout: a blank
-line, a preview of at most three visual lines in the text colour, the expansion
-hint only when text is hidden, and the whole notice text when expanded. The planning-budget facts come from the notice's own
-text. Every displayed string of the agent's cards (tool cards, message cards,
-and the dashboard's compact communication cards) has terminal control and
-escape sequences and other control or format characters removed; newlines and
-tabs stay. The renderers
-change neither the content nor the details of a message.
+A compaction notice states the observed outcome. A planning-budget notice
+reports the estimate and the threshold; it is not a capacity stop. These
+notices change neither the session budget nor the model-facing message.
 
 ### Application messages
 
@@ -777,13 +686,11 @@ advertises through its admitted contribution (see
 [tool display](../../docs/conventions/tool-display.md#presentation-modules-for-the-attached-terminal)).
 When the operator selects a conversation, the client reads the live host's
 inventory and imports those modules locally, without running any extension
-factory or tool. A stored or stopped host advertises none. A module that is
-missing, malformed or throws costs only its own cards, which fall back to Pi's
-standard card. The renderer lookup is replaced as a unit when the selection
-changes, and a late answer for an earlier selection is dropped. A replacement
-lookup rebuilds the selected transcript from its retained entries at once, so
-the reading position and each card's disclosure survive it. Builtin,
-codemode and Agent cards keep their precedence. A host from another release
+factory or tool. A stored or stopped host advertises none. An advertised module that fails to load leaves the remaining renderers
+available. The client reports the load diagnostic once. A cold read with no
+inventory uses the local definitions without a diagnostic. When the lookup
+changes, the selected transcript rebuilds from retained entries and keeps its
+reading position and disclosure choices. A host from another release
 refuses the status read through the existing operation identity check; there
 is no older reader. Owner views (clipboard, markdown, pillars, policy, stash) load the
 same way and open from Owner views (`o`) in the key row; see
@@ -1170,21 +1077,12 @@ one step with no blank row inside it. One blank row separates steps, and
 separates user, compaction and custom-message blocks from their neighbours. A
 tool result belongs to its call.
 
-Every tool other than an agent tool uses its native presentation with Pi's own
-coloured block, as in the main session: a shell command with the newest lines
-of its output, a file edit with its diff, a read with its first lines, and so
-on, collapsed as Pi collapses them. A click or Ctrl+O expands a card to its full
-call and result. Codemode, published custom tools and unpublished tools follow
-the same rule: codemode uses Pi's public codemode presentation, published
-custom tools use their owning extension renderers through the
-[tool-display contract](../../docs/conventions/tool-display.md), and
-unpublished tools use Pi's standard named-argument card. Agent tools keep the
-shared agent card's two-line header and collapse only its body, without an
-expansion hint line; the main transcript keeps its hint. Display definitions
-never execute tools. The agent factory subscribes before it requests
-renderers. Publishers subscribe before their initial publication. Pi reload
-replaces subscriptions and the factory-local renderer registry; reopening the
-view creates new component instances.
+The dashboard and the attached terminal use the same display definitions.
+Agent tools keep the shell and disclosure hint that Pi shows in the main
+session. [Tool display](../../docs/conventions/tool-display.md#agent-dashboard-resolution)
+defines how each view selects the renderer. Replay never executes a tool. Pi
+reload replaces the renderer registry, and reopening the view creates new
+component instances.
 
 The agent's reasoning shows as the main session shows it, in the thinking
 colour; Ctrl+T (More, Hide thinking) hides it for this view and never writes
@@ -2189,21 +2087,10 @@ run settles (Pi's `agent_settled` event), it is cleared, so a message that
 starts a new run gets its own answer and no request to restate the earlier
 run's answer.
 
-The card of the call in the transcript is the only display of the note. The
-turn ended there, so the card is a message to the operator, not a tool
-outcome: it registers `renderShell: "self"` and draws Pi's message background
-(`customMessageBg`) instead of the tool success background, and a failed call
-in the error background. Its title names the tool and then what happened:
-`agent_yield · turn ended`, then how many agent results were due here
-(`2 agent results due`) and how many scheduled inputs, then the local time the
-turn ended (`ending turn` while the note arrives, `could not end the turn` for
-a failed call). Below it, the note with collapsed white space wraps at word
-boundaries on at most three lines, and Pi's tool card hint follows:
-`... (2 more lines, ctrl+o to expand)`, or `... (ctrl+o to expand)` when only
-the details are hidden. Pi's expand key or a click anywhere on the card, as on
-every tool card, shows the complete note, each agent whose result was due with
-its name, model and current roster state, and the line
-`A result or message from an agent, or your input, starts the next turn.`
+`agent_yield` displays the turn's state note in its own shell. The result
+replaces the call so that the transcript shows the note once. The card uses
+the recorded turn time and separates outstanding results from scheduled
+inputs. Expansion shows the retained requests and what starts the next turn.
 
 In a session with an operator view, the call's result details hold the time
 the turn ended (`at`) and the requests that this session routed to itself and
@@ -4309,25 +4196,11 @@ thread title, or full thread identity when no title is known, on the first line.
 Their second line starts with `from <sender>` when known. Their display body
 comes from the defining event, while stored model content stays unchanged.
 Thread mutations, not only posts, produce these notices.
-The first header line uses plain kinds: result, still working, report, thread
-notice, or message from another session. Other kinds keep the sender label on
-that line. The muted second line contains known provider/model, thinking level,
-check-in elapsed time, and cost. A blank line separates the header from the body.
-The `[agent]` label uses bold text in Pi's custom message label colour; peer
-kinds use bold theme text; their subjects and normal body use theme text.
-Metadata stays muted; the hint dims its key and mutes the rest. Warning colors and native Markdown
-styles retain their meaning. Missing optional facts produce no unknown or
-unavailable header fields. Expected reports and direct messages omit the unsaved
-result warning; genuine failure warnings remain in the body.
-The collapsed answer uses up to three visual lines, including any warning or
-reason lines and a blank line between paragraphs; a blank line at the end of
-that window is dropped. One Pi expansion hint follows only when text or source
-details are hidden, with no separate ellipsis row. The shared layout adds the same inner top and bottom
-padding as Pi tool cards, with no collapsed navigation instructions. Expanding the notice shows the full
-received answer, source details including full identities and submission rows,
-and `/agent opens the dashboard`. Model-facing caveats stay in the stored
-message content rather than the answer preview. Catalog follow-ups between Durable hosts keep their
-existing form.
+For the presentation of these records, see [Transcript messages](#transcript-messages).
+Expansion shows the received text and retained source details. A report is
+not an assistant answer. A result without an answer does not become a
+successful completion. The display keeps authored text separate from any
+instructions the delivery path adds for the model.
 
 Automatic owner check-ins do not depend on voluntary worker reports. Model
 `agent_spawn` and `agent_place` prompts and `agent_send` tasks use the effective
@@ -5092,13 +4965,6 @@ requesting tool batch. It uses the ordinary `turn_end` boundary. A native Durabl
 agent uses Durable compaction and its own task boundary, not an ordinary
 SessionManager.
 
-Tool and peer cards keep complete identities, including operation, thread, and
-revision identifiers. Collapsed lines clip at the rendered width with `…`,
-matching content previews. The clipped text and ellipsis retain their foreground
-where a styled prefix fits, while the whole row keeps Pi's selected tool or
-custom-message background.
-The native expansion hint stays unchanged. Expanded source wraps and retains full
-identities within the explicit source-display safety bound.
 Compaction cards use execution-specific facts. A self request copies the public
 context estimate, session name, selected provider/model/thinking, and supplied
 summary size before it queues the boundary request. Later redraws do not read
