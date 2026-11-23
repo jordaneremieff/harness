@@ -8,7 +8,13 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
-import type { ConversationId, EntryRecord, Harness, SubmissionRecord } from "@earendil-works/pi-durable";
+import {
+	InboxDoc,
+	type ConversationId,
+	type EntryRecord,
+	type Harness,
+	type SubmissionRecord,
+} from "@earendil-works/pi-durable";
 import { OpenWorkDoc } from "./open-work.ts";
 import { reconcileResetClosures, type ResetResult } from "./durable-reset.ts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
@@ -99,6 +105,23 @@ it("places an idle reset immediately and keeps old history inspectable", { timeo
 		"old history stays inspectable",
 	);
 	assert.equal(page.items.filter((entry) => entry.kind === "pi.reset").length, 1);
+});
+
+it("keeps an idle inbox with stranded user input quiet on repeated reset", async (t) => {
+	const f = await scheduleFixture(t);
+	const conversation = await f.conversation();
+	const queued = await conversation.commit(async (tx) => {
+		const { id } = await tx.createSubmission({ conversationId: conversation.id, type: "input", status: "queued" });
+		(await tx.doc(InboxDoc, conversation.id)).items.push({ id, mode: "followUp", content: "stranded" });
+		return id;
+	}, BACKGROUND_CONTEXT);
+	const reset = () =>
+		f.host.request("reset", { sessionId: f.storageId, requestId: "behind-queue" }) as Promise<ResetResult>;
+	const first = await reset();
+	assert.equal(first.status, "queued");
+	assert.deepEqual(await reset(), { ...first, deduped: true });
+	assert.equal((await conversation.commit((tx) => tx.submission(queued), BACKGROUND_CONTEXT))?.status, "queued");
+	assert.equal(f.modelRequestCount(), 0);
 });
 
 it("queues a busy reset until the next boundary and then places it", { timeout: 60000 }, async (t) => {

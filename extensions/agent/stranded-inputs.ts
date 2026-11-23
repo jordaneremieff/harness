@@ -8,13 +8,12 @@ import {
 	type Conversation,
 	type ConversationId,
 	type Harness,
-	type Cursor,
-	type EntryRecord,
 	type EntryDraft,
 	type Tx,
 	type SubmissionId,
 	type JsonObject,
 } from "@earendil-works/pi-durable";
+import { isStopped } from "./conversation-stop.ts";
 import { onStoredCommit } from "./commit-observation.ts";
 
 /** Retain passive context without providing the boundary that would place a stranded user input. */
@@ -46,36 +45,18 @@ export async function recoverStrandedInputs(conversation: Conversation, context:
 		const live = await tx.doc(LiveDoc, conversation.id);
 		const inbox = await tx.doc(InboxDoc, conversation.id);
 		if (live.run || !inbox.items.some((item) => item.mode !== "write")) return undefined;
-		let cursor: Cursor | undefined;
-		let entry: EntryRecord | undefined;
-		do {
-			const page = await tx.scanEntries({ conversationId: conversation.id }, 64, cursor);
-			entry = page.items.find((item) => item.kind === "pi.assistant");
-			cursor = page.next;
-		} while (!entry && cursor);
-		if (entry?.byTaskId === undefined) return undefined;
-		const task = await tx.task(entry.byTaskId);
-		const outcome = task?.state.outcome;
-		if (
-			outcome?.status !== "failed" ||
-			(outcome.error.detail as { reason?: unknown } | undefined)?.reason !== "model_error"
-		)
-			return undefined;
-		const candidate = {
-			requestId: `agent-recovery:${conversation.id}:${entry.byTaskId}`,
-			error: outcome.error.message,
-			timestamp: entry.model?.[0]?.timestamp ?? 0,
-		};
+		const failure = live.runFailure;
+		if (failure?.reason !== "model_error" || (await isStopped(tx, conversation.id))) return undefined;
 		await conversation.submit(tx, {
 			type: "write",
-			requestId: candidate.requestId,
+			requestId: `agent-recovery:${conversation.id}:${failure.taskId}`,
 			entry: {
 				kind: "agent.recovery",
 				model: [
 					{
 						role: "system",
-						content: `The previous run ended with a model error: ${JSON.stringify(candidate.error)}. Queued inputs follow. This is a host status notice, not an operator instruction.`,
-						timestamp: candidate.timestamp,
+						content: `The previous run ended with a model error: ${JSON.stringify(failure.detail ?? "model error")}. Queued inputs follow. This is a host status notice, not an operator instruction.`,
+						timestamp: Date.now(),
 					},
 				],
 			},

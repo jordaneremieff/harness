@@ -28,7 +28,7 @@ import {
 } from "./conversation-stop.ts";
 
 /** A transaction stub that holds the stop document in memory. */
-function memoryStore() {
+function memoryStore(extra: { id: number; state: { status: string }; background: boolean; owner?: number }[] = []) {
 	const state = new Map<number, { stoppedAt: number | null; explicit: number | null }>();
 	const tx = {
 		retireDoc: async (token: unknown, id: number) => {
@@ -40,11 +40,13 @@ function memoryStore() {
 			return state.get(id);
 		},
 		submission: async () => ({ status: "done" }),
-		scanTasks: async (query: { conversationId: number; status?: string }, limit: number) => ({
+		task: async (id: number) => extra.find((task) => task.id === id),
+		scanTasks: async (query: { conversationId: number; status?: string; background?: boolean }, limit: number) => ({
 			items: [
 				...Array.from({ length: 64 }, (_, index) => ({ id: index + 100, state: { status: "terminal" } })),
 				{ id: query.conversationId * 10, state: { status: "running" } },
 			]
+				.concat(extra.filter((task) => query.background === undefined || task.background === query.background))
 				.filter((task) => query.status === undefined || task.state.status === query.status)
 				.slice(0, limit),
 		}),
@@ -73,7 +75,7 @@ it("answers within its bound while a marked task ignores its abort, and names li
 		{
 			now: 5,
 			answerWithinMs: 30,
-			openRequests: async () => [],
+			captureWork: async () => [],
 			report: (error) => reports.push(error),
 		},
 	);
@@ -84,6 +86,23 @@ it("answers within its bound while a marked task ignores its abort, and names li
 	assert.deepEqual(reports, []);
 });
 
+it("excludes independently marked background descendants from a foreground stop answer", async () => {
+	const { store } = memoryStore([
+		{ id: 11, state: { status: "running" }, background: true },
+		{ id: 12, state: { status: "running" }, background: false, owner: 11 },
+	]);
+	const outcome = await stopScope(
+		store,
+		{ id: 1 as ConversationId, abort: () => new Promise<void>(() => {}) },
+		async () => [1 as ConversationId],
+		false,
+		BACKGROUND_CONTEXT,
+		{ now: 1, answerWithinMs: 1, captureWork: async () => [], report: () => {} },
+	);
+	assert.ok(!outcome.settled);
+	assert.deepEqual(outcome.pendingTasks, [10]);
+});
+
 it("answers settled when the scope becomes idle within the bound", async () => {
 	const { store } = memoryStore();
 	const outcome = await stopScope(
@@ -92,7 +111,7 @@ it("answers settled when the scope becomes idle within the bound", async () => {
 		async () => [3] as ConversationId[],
 		false,
 		BACKGROUND_CONTEXT,
-		{ now: 1, answerWithinMs: 10_000, openRequests: async () => [], report: () => {} },
+		{ now: 1, answerWithinMs: 10_000, captureWork: async () => [], report: () => {} },
 	);
 	assert.deepEqual(outcome, { settled: true, scope: [3], work: new Map() });
 });

@@ -2073,9 +2073,7 @@ A plain stop of a parent leaves its spawned children running: a background task 
 
 The optional `interrupt` object on `agent_abort` selects an exact live generation (`taskId`) and its complete ordered queue (`queuedInputs`). Give it a stable `intentId`. It refuses a cold or unsupported host. Use the same intent after `pending`; `continued` identifies one admitted continuation, not its answer. It never repeats tool effects or undoes them. Do not combine `interrupt` with release, background stop, or timer cancellation.
 
-A live abort marks every conversation of its scope stopped, then commits the abort
-marks of the scope's live tasks and withdraws its queued inputs in one native
-commit. A live host waits at most 15 seconds for that scope to settle. Target
+A stop marks its conversations stopped, withdraws eligible queued inputs and closes settled declared work in one commit. Work with a still-placed input waits for settlement or the stop deadline. A live host marks the scope's tasks in the next native commit. If the writer dies between commits, the first commit survives but does not prove the tasks stopped. A live host waits at most 15 seconds for that scope to settle. Target
 resolution, the scope read and work closure are outside this settlement wait.
 Only requests with declared work open at the stop boundary close as stopped. A task that has
 not ended keeps its committed mark and ends when its current call returns;
@@ -4399,8 +4397,7 @@ bounded timer listing is not replay authority. Cancellation reads the native tas
 and never reports prevention when its input already entered the conversation.
 
 A reset admits a native `pi.reset` write with an optional handoff message. It
-places at the next boundary when the conversation is busy, starts no model
-turn, and leaves history inspectable.
+places at the next boundary when the conversation is busy. If an idle inbox contains stranded user inputs, the reset queues behind them without starting a turn. A repeat returns the same write. History stays inspectable.
 
 A registered primary refreshes its recorded model, reasoning level, and session
 name when the ordinary session changes them, so `agent_status` and endpoint

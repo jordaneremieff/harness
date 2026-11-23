@@ -68,7 +68,6 @@ import { ModelEvidenceCollector } from "./model-evidence.ts";
 import { isInputClass, isInputKind, type InputClass } from "./input-entry.ts";
 import {
 	Harness,
-	InboxDoc,
 	SessionFailed,
 	ROOT_CONVERSATION_ID,
 	UsageDoc,
@@ -1751,13 +1750,13 @@ export class DurableHost {
  * A final report whose recipient the same abort stopped becomes a terminal row: it stays readable and starts no
  * run in the stopped recipient.
  */
-async function closeStoppedWork(
-	harness: Harness,
+async function closeStoppedRequests(
+	tx: Tx,
 	storageId: string,
 	now: () => number,
 	scope: readonly ConversationId[],
-	work: ReadonlyMap<ConversationId, readonly string[]>,
-	context: Context,
+	id: ConversationId,
+	requestIds: readonly string[],
 ): Promise<void> {
 	const stopped = new Set(scope);
 	const stoppedRecipient = (identity: string): boolean => {
@@ -1767,19 +1766,46 @@ async function closeStoppedWork(
 			return false;
 		}
 	};
-	for (const [id, requestIds] of work)
-		await harness.commit(async (tx) => {
-			for (const item of await closeOpenWork(tx, storageId, id, "stopped", now(), requestIds)) {
-				const requestId = item.close?.reportRequestId;
-				if (requestId === undefined || !stoppedRecipient(item.replyTo)) continue;
-				const row = await retainedReportRequest(tx, item.replyTo, requestId);
-				if (row !== undefined && !row.acknowledged)
-					await storeDeliveryRow(tx, "report", {
-						...row,
-						delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" },
-					});
-			}
-		}, context);
+	for (const item of await closeOpenWork(tx, storageId, id, "stopped", now(), requestIds)) {
+		const requestId = item.close?.reportRequestId;
+		if (requestId === undefined || !stoppedRecipient(item.replyTo)) continue;
+		const row = await retainedReportRequest(tx, item.replyTo, requestId);
+		if (row !== undefined && !row.acknowledged)
+			await storeDeliveryRow(tx, "report", {
+				...row,
+				delivery: { state: "terminal", reason: "The recipient was stopped by the same abort" },
+			});
+	}
+}
+
+/** Settled inputs already owe a separate final report. A placed input can still settle unanswered instead. */
+async function closeSettledAtStop(
+	tx: Tx,
+	storageId: string,
+	now: () => number,
+	scope: readonly ConversationId[],
+	id: ConversationId,
+) {
+	const settled: string[] = [];
+	const active: string[] = [];
+	for (const item of await openWorkItems(tx, id)) {
+		const terminal = item.recovered || (await tx.submission(item.submissionId as SubmissionId))?.status === "done";
+		(terminal ? settled : active).push(item.requestId);
+	}
+	if (settled.length) await closeStoppedRequests(tx, storageId, now, scope, id, settled);
+	return active;
+}
+
+async function closeStoppedWork(
+	harness: Harness,
+	storageId: string,
+	now: () => number,
+	scope: readonly ConversationId[],
+	work: ReadonlyMap<ConversationId, readonly string[]>,
+	context: Context,
+) {
+	for (const [id, requests] of work)
+		await harness.commit((tx) => closeStoppedRequests(tx, storageId, now, scope, id, requests), context);
 }
 
 /** Stop one live scope independently of the transport or tool invocation that requested it. */
@@ -1801,8 +1827,8 @@ export async function stopLiveConversation(
 		context,
 		{
 			now: now(),
-			openRequests: async (tx, id) => (await openWorkItems(tx, id)).map((item) => item.requestId),
-			report: report,
+			captureWork: (tx, id, scope) => closeSettledAtStop(tx, storageId, now, scope, id),
+			report,
 		},
 	);
 	// The work open at the stop closes now even when a marked task has not ended yet: its run cannot answer.
@@ -1848,20 +1874,15 @@ export async function stopBeforeResume(
 	if (!conversation) throw new Error(`Conversation ${sessionId} does not exist`);
 	const inspection = await harness.inspect(context);
 	if (inspection.scheduling !== "paused") throw new Error("A cold stop requires a paused scheduler");
-	const { scope, work, tasks, queued } = await harness.commit(async (tx) => {
+	const { scope, work, tasks } = await harness.commit(async (tx) => {
 		const scope = await abortScopeConversations(tx, conversation.id, background);
 		const tasks = await coldTasks(tx, inspection, new Set(scope), background);
-		const queued = [];
-		for (const id of scope)
-			for (const item of (await tx.doc(InboxDoc, id)).items)
-				if (item.mode !== "write" && item.onAbort !== "keep") queued.push({ id: item.id, conversationId: id });
 		const work = await captureStoppedWork(tx, scope, {
 			now: Date.now(),
-			openRequests: async (tx, id) => (await openWorkItems(tx, id)).map((item) => item.requestId),
+			captureWork: (tx, id, scope) => closeSettledAtStop(tx, storageId, Date.now, scope, id),
 		});
-		return { scope, tasks, queued, work };
+		return { scope, tasks, work };
 	}, context);
-	for (const { id, conversationId } of queued) await harness.abortSubmission(id, context, conversationId);
 	for (const id of tasks) await harness.abortTask(id, context);
 	await closeStoppedWork(harness, storageId, Date.now, scope, work, context);
 	const pendingTasks: number[] = [];

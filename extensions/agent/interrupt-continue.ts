@@ -32,24 +32,22 @@ async function matchesQueue(tx: Tx, id: ConversationId, inputs: number[]): Promi
 	const { items } = await tx.doc(InboxDoc, id);
 	return items.length === inputs.length && items.every((item, i) => item.mode !== "write" && item.id === inputs[i]);
 }
-async function begin(conversation: Conversation, selection: Selection, context: Context): Promise<Outcome | undefined> {
-	return conversation.commit(async (tx) => {
-		const intent = await tx.doc(Intent, conversation.id, selection.intentId, null);
-		if (intent.taskId !== undefined) {
-			if (
-				intent.taskId !== selection.taskId ||
-				JSON.stringify(intent.inputs) !== JSON.stringify(selection.queuedInputs)
-			)
-				throw new Error("Intent already selects a different interrupt");
-			return intent.outcome ? { ...intent.outcome } : undefined;
-		}
-		const live = await tx.doc(LiveDoc, conversation.id);
+async function selectMark(tx: Tx, id: ConversationId, selection: Selection): Promise<Outcome | "mark" | "observe"> {
+	const intent = await tx.doc(Intent, id, selection.intentId, null);
+	const replay = intent.taskId !== undefined;
+	if (replay) {
+		if (intent.taskId !== selection.taskId || JSON.stringify(intent.inputs) !== JSON.stringify(selection.queuedInputs))
+			throw new Error("Intent already selects a different interrupt");
+		if (intent.outcome) return { ...intent.outcome };
+	} else {
 		intent.taskId = selection.taskId;
 		intent.inputs = selection.queuedInputs;
-		if (live.run?.taskId !== selection.taskId || !(await matchesQueue(tx, conversation.id, selection.queuedInputs)))
-			return retain(intent, { state: "protected" });
-		return undefined;
-	}, context);
+	}
+	const live = await tx.doc(LiveDoc, id);
+	if (replay && !live.run) return "observe";
+	if (live.run?.taskId !== selection.taskId || !(await matchesQueue(tx, id, selection.queuedInputs)))
+		return retain(intent, { state: "protected" });
+	return "mark";
 }
 export async function interruptContinue(
 	harness: Harness,
@@ -57,16 +55,29 @@ export async function interruptContinue(
 	selection: Selection,
 	context: Context,
 ): Promise<Outcome> {
-	const retained = await begin(conversation, selection, context);
-	if (retained) return retained;
+	// Place the selection and conditional native mark adjacently on the session line. A queue change cannot enter between them.
+	const veto = new AbortController();
+	const decision = conversation.commit(async (tx) => {
+		try {
+			const selected = await selectMark(tx, conversation.id, selection);
+			if (selected !== "mark") veto.abort();
+			return selected;
+		} catch (error) {
+			veto.abort(error);
+			throw error;
+		}
+	}, context);
 	const deadline = AbortSignal.timeout(15_000);
-	const bounded = withAbortSignal(
-		context.abortSignal ? AbortSignal.any([context.abortSignal, deadline]) : deadline,
-		context,
-	);
+	const signal = context.abortSignal ? AbortSignal.any([context.abortSignal, deadline]) : deadline;
+	const bounded = withAbortSignal(signal, context);
 	const taskId = selection.taskId as TaskId;
+	const marking = withAbortSignal(AbortSignal.any([veto.signal, signal]), bounded);
+	const marked = harness.abortTask(taskId, marking);
+	void marked.catch(() => {});
+	const selected = await decision;
+	if (typeof selected !== "string") return selected;
 	try {
-		await awaitWithContext(harness.abortTask(taskId, bounded), bounded);
+		if (selected === "mark") await awaitWithContext(marked, bounded);
 		await awaitWithContext(harness.waitForTask(taskId, bounded), bounded);
 	} catch (error) {
 		context.abortSignal?.throwIfAborted();

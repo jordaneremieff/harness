@@ -176,6 +176,21 @@ test("queued cancellation reports partial effects when native placement wins the
 	assert.equal(result.effects, "partial-effects-possible");
 });
 
+test("a retained interrupt that missed its mark protects a changed queue on retry", async (t) => {
+	const { host } = await fixture(t);
+	const scope = (await host.request("run-scope")) as RunScope;
+	const queued = await host.submit({ message: "first", requestId: "first", whenBusy: "followUp" });
+	const interrupt = { taskId: scope.taskId, queuedInputs: [queued.submissionId], intentId: "retained" };
+	const abort = t.mock.method(host.harness, "abortTask", async () => {
+		throw new Error("before mark");
+	});
+	await assert.rejects(host.request("interrupt-continue", { interrupt }), /before mark/u);
+	abort.mock.restore();
+	await host.submit({ message: "later", requestId: "later", whenBusy: "followUp" });
+	assert.deepEqual(await host.request("interrupt-continue", { interrupt }), { state: "protected" });
+	assert.equal((await host.harness.getTask(scope.taskId as TaskId, BACKGROUND_CONTEXT))?.abortRequested, false);
+});
+
 test("interrupt continues only the exact queued cohort and replays the same boundary", async (t) => {
 	const { host } = await fixture(t);
 	const scope = (await host.request("run-scope")) as RunScope;

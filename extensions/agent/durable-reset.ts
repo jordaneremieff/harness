@@ -5,8 +5,8 @@
  * and retains no caller submission identity. This module composes the same
  * public write entry through `Conversation.submit()` with a caller request ID,
  * so a repeated reset request is deduplicated and the caller can track its
- * queued-until-placed state. The write places immediately on an idle
- * conversation and at the next boundary while one is busy; it starts no model
+ * queued-until-placed state. An empty idle inbox places it immediately. A busy
+ * or stranded user inbox waits for the next independent boundary; it starts no model
  * turn. History, identity, files, and settings are not removed, and a reset
  * never cancels background timers.
  */
@@ -24,6 +24,7 @@ import {
 	type SubmissionRecord,
 } from "@earendil-works/pi-durable";
 
+import { admitPassiveWrite } from "./stranded-inputs.ts";
 import { discardDispatches } from "./delegated-recovery.ts";
 import { closeOpenWork, OpenWorkDoc } from "./open-work.ts";
 
@@ -119,8 +120,7 @@ function resetResult(
 }
 
 /**
- * Admit one reset write. An idle conversation places it in the admission
- * commit; a busy conversation queues it until the next boundary. The caller
+ * Admit one reset write without providing a run boundary to a stranded user inbox. The caller
  * request ID is the deduplication key, so a crash-retried control reports the
  * same submission instead of writing a second reset.
  */
@@ -149,7 +149,7 @@ export async function resetConversation(
 				throw new Error(`request ${params.requestId} does not identify a reset write`);
 			return { id: existing.id, deduped: true };
 		}
-		const id = await conversation.submit(tx, { type: "write", entry, requestId: params.requestId });
+		const id = await admitPassiveWrite(tx, conversation, params.requestId, entry);
 		pending.ids.push(id);
 		return { id, deduped: false };
 	}, context);

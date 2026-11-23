@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+	InboxDoc,
 	LiveDoc,
 	defineExtension,
 	defineTask,
@@ -13,7 +14,7 @@ import {
 	type Tx,
 } from "@earendil-works/pi-durable";
 import { retainedReportRequest } from "./delivery-store.ts";
-import { DurableHost } from "./durable-host.ts";
+import { DurableHost, stopLiveConversation } from "./durable-host.ts";
 import { deferred, fixtureRegistry, fixtureRuntime, fixtureStorageId, hostOptions } from "./durable-host-fixture.mts";
 import { inputEntry } from "./input-entry.ts";
 import { declareOpenWork, openWorkStatus } from "./open-work.ts";
@@ -145,6 +146,32 @@ it("closes the open work of each conversation that an abort stops, and keeps a r
 		{ state: "closed", status: "stopped", delivery: "terminal" },
 		"an abort with background also stops the child below a background task",
 	);
+});
+
+it("keeps the queue withdrawal and settled work closure if native task marking does not complete", async (t) => {
+	const f = await family(t);
+	const { host } = f;
+	const root = host.root();
+	const queued = await host.harness.commit(async (tx) => {
+		const input = await tx.submissionByRequest(root.id, "root-task");
+		assert.ok(input?.entry);
+		tx.settleSubmission(input.id, { status: "done", answer: input.entry });
+		const { id } = await tx.createSubmission({ conversationId: root.id, type: "input", status: "queued" });
+		(await tx.doc(InboxDoc, root.id)).items.push({ id, mode: "followUp", content: "Queued work" });
+		return id;
+	}, BACKGROUND_CONTEXT);
+	t.mock.method(root, "abort", async () => {
+		throw new Error("native mark did not commit");
+	});
+	await assert.rejects(
+		stopLiveConversation(host.harness, fixtureStorageId, root, false, Date.now, () => {}, BACKGROUND_CONTEXT),
+		/native mark did not commit/u,
+	);
+	assert.deepEqual(await f.work(root.id), { state: "closed", status: "stopped", delivery: "active" });
+	assert.deepEqual(await f.work(f.background), { state: "open" });
+	const record = await host.harness.commit((tx) => tx.submission(queued), BACKGROUND_CONTEXT);
+	assert.equal(record?.status, "unanswered");
+	assert.equal(record?.reason, "aborted");
 });
 
 it("closes only requests open at the stop, not work declared by a later input", async (t) => {

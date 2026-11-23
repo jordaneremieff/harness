@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { GenerationTask, hook, Harness, InboxDoc, defineTool, type Conversation } from "@earendil-works/pi-durable";
+import {
+	GenerationTask,
+	hook,
+	Harness,
+	InboxDoc,
+	configure,
+	defineTool,
+	type Conversation,
+} from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { obj } from "@earendil-works/pi-schema";
 import { recordRequestContext, requestContextHooks, requestContextSection } from "./request-context.ts";
@@ -226,14 +234,20 @@ it("places a queued write after an unavailable model ends the run", { timeout: 1
 	assert.equal(p.calls(), 0);
 });
 
-it("keeps a mixed inbox after an unavailable model", { timeout: 10000 }, async (t) => {
+it("keeps a mixed inbox after an unavailable model even when an older run recorded a model error", {
+	timeout: 10000,
+}, async (t) => {
 	const p = await provider();
-	const host = await DurableHost.open({
-		...hostOptions(rootPath(t), p.runtime, fixtureRegistry()),
-		agent: { model: { provider: "missing", modelId: "missing" } },
-		settings,
-	});
+	const host = await DurableHost.open({ ...hostOptions(rootPath(t), p.runtime, fixtureRegistry()), settings });
 	t.after(() => host.close());
+	const prior = await host.root().submit({ type: "input", content: "Earlier request" }, context);
+	await p.started.promise;
+	p.release.resolve();
+	assert.equal((await prior.wait(context)).reason, "model_error");
+	await host.root().waitForIdle(context);
+	await host
+		.root()
+		.commit((tx) => configure(tx, host.root().id, { model: { provider: "missing", modelId: "missing" } }), context);
 	const first = await host.root().submit({ type: "input", content: "first" }, context);
 	await host.root().submit({ type: "input", content: "queued", whenBusy: "followUp" }, context);
 	await host

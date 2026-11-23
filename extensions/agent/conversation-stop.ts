@@ -5,6 +5,7 @@
  * answer and that arrives without the recipient's request (a result, report, check-in, thread notice or timer) is kept
  * as context and starts no run. A delivery that carries only state notes is kept the same way on any conversation.
  */
+import { taskPathCrossesBackground } from "./abort-scope.ts";
 import { discardDispatches } from "./delegated-recovery.ts";
 import { copyJson } from "@earendil-works/chord/json";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,6 +13,7 @@ import { withAbortSignal, type Context } from "@earendil-works/chord/context";
 import {
 	defineDoc,
 	InboxDoc,
+	type Cursor,
 	type ConversationHandle,
 	type ConversationId,
 	type JsonObject,
@@ -144,8 +146,12 @@ export type StopOutcome =
 export interface StopOptions {
 	readonly now: number;
 	readonly answerWithinMs?: number;
-	/** Request IDs of a conversation's open declared work, read in the stop commit. */
-	readonly openRequests: (tx: Tx, conversationId: ConversationId) => Promise<readonly string[]>;
+	/** Close settled work in the stop commit. Return requests whose closure still depends on input settlement. */
+	readonly captureWork: (
+		tx: Tx,
+		conversationId: ConversationId,
+		scope: readonly ConversationId[],
+	) => Promise<readonly string[]>;
 	/** Receives a failure of the wait that continues after the answer. */
 	readonly report: (error: unknown) => void;
 }
@@ -153,21 +159,29 @@ export interface StopOptions {
 /** Open declared work at the stop boundary, by conversation: only these items close as stopped. */
 export type StoppedWork = ReadonlyMap<ConversationId, readonly string[]>;
 
-/** Replace each queued automatic wake with passive context before native withdrawal. */
-async function preserveWakeBodies(tx: Tx, scope: readonly ConversationId[], now: number): Promise<void> {
+/** Withdraw the captured queue. Preserve selected automatic messages as passive writes in their original positions. */
+async function withdrawStoppedInputs(tx: Tx, scope: readonly ConversationId[], now: number): Promise<void> {
 	const queues = await Promise.all(scope.map(async (id) => ({ id, inbox: await tx.doc(InboxDoc, id) })));
 	for (const { id, inbox } of queues) {
 		for (let index = 0; index < inbox.items.length; index++) {
 			const item = inbox.items[index];
-			if (item.mode === "write" || !item.entry || item.onAbort === "keep") continue;
-			const data = item.entry.data;
-			if (typeof data !== "object" || data === null || !("preserveOnStop" in data) || data.preserveOnStop !== true)
+			if (item.mode === "write" || item.onAbort === "keep") continue;
+			const data = item.entry?.data;
+			const label =
+				item.entry &&
+				typeof data === "object" &&
+				data !== null &&
+				"preserveOnStop" in data &&
+				data.preserveOnStop === true
+					? inputLabel(item.entry, "")
+					: undefined;
+			tx.settleSubmission(item.id, { status: "unanswered", reason: "aborted" });
+			if (!label) {
+				inbox.items.splice(index--, 1);
 				continue;
-			const label = inputLabel(item.entry, "");
-			if (!label) continue;
+			}
 			const copy = await tx.createSubmission({ conversationId: id, type: "write", status: "queued" });
 			const entry = quietInputEntry(item.content, label, "stopped", now);
-			tx.settleSubmission(item.id, { status: "unanswered", reason: "aborted" });
 			inbox.items.splice(index, 1, { id: copy.id, mode: "write", entry: copyJson(entry) as JsonObject });
 		}
 	}
@@ -176,23 +190,23 @@ async function preserveWakeBodies(tx: Tx, scope: readonly ConversationId[], now:
 export async function captureStoppedWork(
 	tx: Tx,
 	scope: readonly ConversationId[],
-	options: Pick<StopOptions, "now" | "openRequests">,
+	options: Pick<StopOptions, "now" | "captureWork">,
 ): Promise<StoppedWork> {
 	const open = new Map<ConversationId, readonly string[]>();
 	for (const id of scope) {
-		const requests = await options.openRequests(tx, id);
+		const requests = await options.captureWork(tx, id, scope);
 		if (requests.length > 0) open.set(id, requests);
 	}
 	await markStopped(tx, scope, options.now);
-	await preserveWakeBodies(tx, scope, options.now);
+	await withdrawStoppedInputs(tx, scope, options.now);
 	return open;
 }
 
 type Store = { commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): Promise<T> };
 
 /**
- * Mark the scope stopped and capture its open declared work in one commit, then abort the target. The abort marks and
- * the withdrawal of queued inputs commit at once; this waits at most `answerWithinMs` for the scope to settle. A wait
+ * Mark the scope stopped, withdraw its queued inputs and capture its work in one commit. Native abort marks tasks
+ * in the immediately following commit; this waits at most `answerWithinMs` for the scope to settle. A wait
  * past the bound continues in the background, and a task that ends later still settles through its committed mark.
  */
 export async function stopScope(
@@ -232,18 +246,46 @@ export async function stopScope(
 	}
 	if (settled) return { settled: true, work, scope };
 	abort.catch(options.report);
-	return { settled: false, pendingTasks: await pendingTasks(store, scope, context), work, scope };
+	return { settled: false, pendingTasks: await pendingTasks(store, scope, background, context), work, scope };
+}
+
+async function* pendingInConversation(
+	tx: Tx,
+	conversationId: ConversationId,
+	status: (typeof LIVE_STATUSES)[number],
+	background: boolean,
+) {
+	let cursor: Cursor | undefined;
+	do {
+		const page = await tx.scanTasks(
+			{ conversationId, abortRequested: true, status, ...(background ? {} : { background: false }) },
+			PENDING_TASKS_LIMIT,
+			cursor,
+		);
+		for (const task of page.items) {
+			if (!background && task.owner !== undefined && (await taskPathCrossesBackground(tx, task.owner)) !== false)
+				continue;
+			yield task.id;
+		}
+		cursor = page.next;
+	} while (cursor);
 }
 
 /** Live abort-marked tasks of the scope, by status so that ended tasks never fill the bound. */
-async function pendingTasks(store: Store, scope: readonly ConversationId[], context: Context): Promise<number[]> {
+async function pendingTasks(
+	store: Store,
+	scope: readonly ConversationId[],
+	background: boolean,
+	context: Context,
+): Promise<number[]> {
 	return store.commit(async (tx) => {
 		const ids: number[] = [];
 		for (const conversationId of scope)
 			for (const status of LIVE_STATUSES) {
-				const page = await tx.scanTasks({ conversationId, abortRequested: true, status }, PENDING_TASKS_LIMIT);
-				for (const task of page.items) ids.push(task.id as number);
-				if (ids.length >= PENDING_TASKS_LIMIT) return ids.slice(0, PENDING_TASKS_LIMIT);
+				for await (const id of pendingInConversation(tx, conversationId, status, background)) {
+					ids.push(id);
+					if (ids.length === PENDING_TASKS_LIMIT) return ids;
+				}
 			}
 		return ids;
 	}, context);
