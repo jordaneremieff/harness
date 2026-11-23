@@ -23,6 +23,8 @@ key, and a consumer must not parse a sibling's status text.
 |---|---|---|---|
 | `agent` | [Agent roster and coverage](../../extensions/agent/README.md#roster-and-coverage) | Working and total agents created by the current primary session, including agents they create, with observed native cost. Each primary receives its own figures. | No agents in that session scope, primary lifecycle cleanup, or manager close. Retained idle agents remain in scope. |
 | `explorer` | [Explorer app update](../../extensions/explorer/README.md#open-explorer) | The Explorer native app update is active. | Update completion or session shutdown. |
+| `jobs` | [Background job status](../../extensions/jobs/README.md#footer-status-and-terminal-records) | Number of background commands that still run in this session. | The last job settles or is cancelled, or the session shuts down. |
+| `stash` | [Background distillation](../../extensions/stash/README.md#background-distillation) | A `/stash new` request is starting. The status covers admission, not the work that follows. | The last pending admission returns or fails, or the session shuts down. |
 
 ## Rules
 
