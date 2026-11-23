@@ -143,7 +143,7 @@ test("a source error shows its code and stops further pages; the filter narrows 
 	v.action("Read more").run();
 	await turn();
 	assert.ok(v.screen().includes("source_changed"));
-	assert.equal(typeof v.action("Read more").disabled, "string");
+	assert.equal(v.action("Read more").disabled, "No continuation is available for this Pillars source.");
 	v.view.handleInput("/");
 	for (const key of "frame") v.view.handleInput(key);
 	const filtered = v.screen();

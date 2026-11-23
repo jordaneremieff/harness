@@ -41,7 +41,7 @@ function attachedEnd(value: string, index: number): number {
 }
 
 /** This bounded rule is not full Unicode grapheme segmentation; skin tones remain separate. */
-function characterCount(value: string): number {
+export function characterCount(value: string): number {
 	let count = 0;
 	let index = 0;
 	const width = (point: number) => (point > 0xffff ? 2 : 1);

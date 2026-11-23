@@ -11,7 +11,7 @@ import { browserEntries } from "./inventory.ts";
 import type { PillarsViewState } from "./operator-view.ts";
 import { InputError } from "./input.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
-import { Collector, utcDay } from "./collector.ts";
+import { Collector, utcDay, type DiagnosticNotice } from "./collector.ts";
 import { COMMAND_HELP, commandCompletions, judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
 import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, DraftSchema, splitDraft } from "./draft.ts";
 import { toolDisplay } from "./display.ts";
@@ -23,7 +23,7 @@ import {
 	VIEW_ENTRY,
 	type ViewEntryData,
 } from "./request-card.ts";
-import { exportLocal, parseCommand } from "./export.ts";
+import { CommandSyntaxError, exportLocal, parseCommand } from "./export.ts";
 import {
 	accessEvidence,
 	Deduplicator,
@@ -32,8 +32,8 @@ import {
 	readEvidence,
 	type ResultEvidence,
 } from "./observation.ts";
-import { usageMarkdown } from "./presentation.ts";
-import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./readback.ts";
+import { exportTitle, oneLine, usageMarkdown } from "./presentation.ts";
+import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION, type Response } from "./readback.ts";
 import { PillarsStore } from "./store.ts";
 
 const PillarsParameters = obj(
@@ -110,8 +110,8 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	const dedup = new Deduplicator();
 	const delivered = new Map<string, DeliveryExtent>();
 	let sourceWarned = false;
-	function diagnostic(ctx: ExtensionContext, text: string): void {
-		if (ctx.hasUI) ctx.ui.notify(text, "warning");
+	function diagnostic(ctx: ExtensionContext, text: string, notice?: DiagnosticNotice): void {
+		if (ctx.hasUI) ctx.ui.notify(oneLine(notice?.text ?? text), notice?.level ?? "warning");
 		else process.stderr.write(`${text}\n`);
 	}
 	async function discover(signal?: AbortSignal, retainCatalog = false): Promise<boolean> {
@@ -127,20 +127,28 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		const current = readSettings(options);
 		const invalidCollect = current.records.find((record) => record.key === "collect")?.status === "invalid";
 		enabled = current.values.collect && !invalidCollect;
-		for (const issue of current.diagnostics) diagnostic(ctx, `${issue.field}: ${issue.message}`);
+		for (const issue of current.diagnostics)
+			diagnostic(ctx, `${issue.field}: ${issue.message}`, {
+				text: `Pillars configuration (${issue.field}): ${issue.message}`,
+			});
 		if (invalidCollect)
 			diagnostic(
 				ctx,
 				"pillars.collect requires a boolean (environment: 0, 1, false, or true). The collector is disabled.",
+				{
+					text: "The Pillars collector is disabled because pillars.collect needs a boolean (0, 1, false or true in the environment).",
+				},
 			);
-		collector = new Collector(store, { diagnostic: (text) => diagnostic(ctx, text) });
+		collector = new Collector(store, { diagnostic: (text, notice) => diagnostic(ctx, text, notice) });
 		dedup.newTurn();
 		sourceWarned = false;
 		if (enabled && event.reason === "fork") collector.incident("forkResets");
 		await discover(ctx.signal);
 		if (!catalog && !sourceWarned) {
 			sourceWarned = true;
-			diagnostic(ctx, "The loaded Pillars source is unavailable. Access attribution remains unavailable.");
+			diagnostic(ctx, "The loaded Pillars source is unavailable. Access attribution remains unavailable.", {
+				text: "Pillars cannot attribute access because the source is unavailable.",
+			});
 		}
 	});
 	pi.on("turn_start", () => {
@@ -202,7 +210,9 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		const admission = dedup.admit(event.toolCallId, stage);
 		if (admission === "admitted") return true;
 		if (admission === "saturated" && dedup.warnOnce())
-			diagnostic(ctx, "Pillars callback deduplication reached its limit. Unpersisted loss remains unknown.");
+			diagnostic(ctx, "Pillars callback deduplication reached its limit. Unpersisted loss remains unknown.", {
+				text: "Pillars reached its limit for tracking duplicate callbacks; unpersisted loss remains unknown.",
+			});
 		return false;
 	}
 	function observationCell(
@@ -247,7 +257,10 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			const cell = observationCell(event, ctx, stage, resource, reference);
 			if (collector.admit(cell)) await collector.observed(ctx.signal);
 		} catch {
-			diagnostic(ctx, "Pillars observation was unavailable. Unpersisted loss remains unknown.");
+			diagnostic(ctx, "Pillars observation was unavailable. Unpersisted loss remains unknown.", {
+				text: "Pillars failed to observe an access event; unpersisted loss remains unknown.",
+				level: "error",
+			});
 		}
 	}
 	function sendAssessment(toolCallId: string, draft: string, resource: string): void {
@@ -309,7 +322,8 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 				const { resource, offset, endOffset, bodyBytes, referenceBodyDigest } = result;
 				delivered.set(id, { resource, offset, endOffset, bodyBytes, referenceBodyDigest });
 			}
-			if (result.schema === "pillars-source-error") throw new Error(JSON.stringify(result));
+			if (result.schema === "pillars-source-error")
+				return { content: [{ type: "text", text: JSON.stringify(result) }], details: result, isError: true };
 			if (input.draft !== undefined && !signal?.aborted) sendAssessment(id, input.draft, result.resource);
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 		},
@@ -359,17 +373,18 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	}
 	const READ_PATTERN = /^read ([a-z0-9][a-z0-9-]{0,63})(?: ([0-9]{1,7}) ([a-f0-9]{64}))?$/;
 	async function readSource(input: string, ctx: ExtensionContext): Promise<void> {
-		const match = input.startsWith("read ") ? READ_PATTERN.exec(input) : undefined;
-		if (input.startsWith("read ") && !match) throw new Error("invalid_command");
+		const explicit = input.startsWith("read ");
+		const match = explicit ? READ_PATTERN.exec(input) : null;
+		if (explicit && !match) throw new CommandSyntaxError();
 		const result = await access(
 			catalog,
-			match ? { resource: match[1], offset: match[2] ? Number(match[2]) : 0, referenceBodyDigest: match[3] } : {},
+			{ resource: match?.[1], offset: Number(match?.[2] ?? 0), referenceBodyDigest: match?.[3] },
 			ctx.signal,
 		);
 		if (result.schema === "pillars-source-error") {
 			display(
 				`Pillars source: ${result.code}. ${result.message ?? ""}`.trimEnd(),
-				{ title: "Source unavailable", facts: [result.code] },
+				{ title: "Source read did not complete", subject: match?.[1], facts: [result.code] },
 				ctx,
 			);
 			return;
@@ -380,7 +395,14 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 				: "Read an entry: /pillars read <resource>. Read consultation rules: /pillars read governance. View access evidence: /pillars usage.";
 		display(
 			`${result.text}\n\nSource: ${result.resource}; SHA-256: ${result.referenceBodyDigest}.\n${continuation}`,
-			{ title: "Source", subject: result.resource },
+			{
+				title: "Source page",
+				subject: result.resource,
+				facts: [
+					`${result.endOffset - result.offset} of ${result.bodyBytes} bytes`,
+					...(result.nextOffset !== undefined ? ["continuation available"] : []),
+				],
+			},
 			ctx,
 		);
 	}
@@ -389,19 +411,25 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		if (parsed.kind === "export") {
 			const document = await reader.exportCapture(parsed.windowDays, ctx.signal);
 			if (document.schema !== "pillars-export") {
-				display(usageMarkdown(document), { title: "Access evidence" }, ctx);
+				display(
+					usageMarkdown(document),
+					{ title: "Access evidence export did not capture data", facts: [document.code] },
+					ctx,
+				);
 				return;
 			}
-			display(
-				JSON.stringify(await exportLocal(parsed.path, document, { signal: ctx.signal })),
-				{ title: "Access evidence export" },
-				ctx,
-			);
+			const receipt = await exportLocal(parsed.path, document, { signal: ctx.signal });
+			display(JSON.stringify(receipt), { title: exportTitle(receipt), receipt }, ctx);
 			return;
 		}
+		displayUsage(await reader.read({ view: parsed.kind, windowDays: parsed.windowDays }, ctx.signal), ctx);
+	}
+	function displayUsage(response: Response, ctx: ExtensionContext): void {
 		display(
-			usageMarkdown(await reader.read({ view: parsed.kind, windowDays: parsed.windowDays }, ctx.signal)),
-			{ title: "Access evidence" },
+			usageMarkdown(response),
+			response.kind === "error"
+				? { title: "Access evidence read did not complete", facts: [response.code] }
+				: { title: "Access evidence page", subject: response.view },
 			ctx,
 		);
 	}
@@ -452,11 +480,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			return;
 		}
 		if (input.startsWith("next ")) {
-			display(
-				usageMarkdown(await reader.read({ cursor: input.slice(5) }, ctx.signal)),
-				{ title: "Access evidence" },
-				ctx,
-			);
+			displayUsage(await reader.read({ cursor: input.slice(5) }, ctx.signal), ctx);
 			return;
 		}
 		await usageOrExport(input, ctx);
@@ -468,6 +492,11 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			catalog
 				? "Pillars catalogue refresh failed. The judgment uses the last available catalogue; source reads still verify current body bytes."
 				: "Pillars catalogue refresh failed. No catalogue is available; check the configured corpus and retry.",
+			{
+				text: catalog
+					? "Pillars could not refresh the catalogue and will use the last one for judgment while source reads still verify current bytes."
+					: "Pillars could not load a catalogue; check the configured corpus and retry.",
+			},
 		);
 	}
 	pi.registerCommand("pillars", {
@@ -479,23 +508,23 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			if (request) {
 				await refreshJudgment(ctx);
 				pi.sendMessage(
-					{ customType: JUDGMENT_REQUEST_MESSAGE, content: judgmentPrompt(request), display: true },
+					{ customType: JUDGMENT_REQUEST_MESSAGE, content: judgmentPrompt(request), display: true, details: request },
 					{ triggerTurn: true, deliverAs: "steer" },
 				);
 				return;
 			}
 			const input = args.trim();
 			if (!input || input === "help") {
-				display(COMMAND_HELP, { title: "Commands" }, ctx);
+				display(COMMAND_HELP, { title: "Command help" }, ctx);
 				if (input === "help") return;
 			}
 			await discover(ctx.signal);
 			try {
 				await route(input, ctx);
-			} catch {
+			} catch (error) {
 				display(
 					`The Pillars command did not complete. Check the command syntax and source or export availability.\n\n${COMMAND_HELP}`,
-					{ title: "Command did not complete" },
+					{ title: error instanceof CommandSyntaxError ? "Command syntax is invalid" : "Command did not complete" },
 					ctx,
 				);
 			}

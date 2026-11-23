@@ -386,16 +386,17 @@ test("native draft assessment follows source results without a context transform
 			done();
 			const controller = new AbortController();
 			controller.abort();
-			await assert.rejects(
-				tool().execute(
-					"cancelled-read",
-					{ resource: "governance", draft: proposal },
-					controller.signal,
-					undefined,
-					active().extensionRunner.createToolContext("cancelled-read", controller.signal),
-				),
-				/source_unavailable/,
+			const refusal = await tool().execute(
+				"cancelled-read",
+				{ resource: "governance", draft: proposal },
+				controller.signal,
+				undefined,
+				active().extensionRunner.createToolContext("cancelled-read", controller.signal),
 			);
+			assert.equal(refusal.isError, true);
+			const diagnostic = { schema: "pillars-source-error", code: "source_unavailable" };
+			assert.deepEqual(refusal.details, diagnostic);
+			assert.deepEqual(refusal.content, [{ type: "text", text: JSON.stringify(diagnostic) }]);
 			assert.equal(assessments().length, before);
 		});
 		await t.test(

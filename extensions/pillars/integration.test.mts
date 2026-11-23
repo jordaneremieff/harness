@@ -218,6 +218,7 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 				assert.equal(message.isError, true);
 				assert.ok("code" in source);
 				assert.equal(source.code, expected);
+				assert.deepEqual(message.details, source);
 			} else {
 				assert.equal(message.isError, false);
 				assert.ok("text" in source);
@@ -260,6 +261,15 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 			const view = activeSession.sessionManager.getLeafEntry();
 			assert.ok(view?.type === "custom" && view.customType === "pillars-view");
 			assert.ok((view.data as { text: string }).text.includes(entryBody));
+			const destination = join(root, "existing-export.json");
+			await writeFile(destination, "Do not overwrite.");
+			await activeSession.prompt(`/pillars export ${JSON.stringify(destination)}`);
+			const exported = activeSession.sessionManager.getLeafEntry();
+			assert.ok(exported?.type === "custom" && exported.customType === "pillars-view");
+			const stored = exported.data as { text: string; receipt: { published: boolean; code: string } };
+			assert.deepEqual(stored.receipt, JSON.parse(stored.text));
+			assert.equal(stored.receipt.published, false);
+			assert.equal(activeSession.messages.length, messagesBeforeCommand);
 			for (const input of ["/pillars help", "/pillars", "/pillars invalid"]) {
 				const before = activeSession.sessionManager.getEntries().length;
 				await activeSession.prompt(input);
@@ -370,6 +380,13 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 				assert.equal(received, true);
 				const request = activeSession.messages.findLast((message) => message.role === "custom");
 				assert.ok(request?.role === "custom" && request.customType === "pillars-request" && request.display);
+				const firstSpace = input.indexOf(" ");
+				assert.deepEqual(
+					request.details,
+					firstSpace < 0
+						? { action: input, hint: "" }
+						: { action: input.slice(0, firstSpace), hint: input.slice(firstSpace + 1) },
+				);
 			}
 		};
 		await assertJudgmentRequests();

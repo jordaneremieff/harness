@@ -150,8 +150,11 @@ test("source rendering identifies the agent draft without showing it as source c
 	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
 	const renderers = accessRenderers();
 	const draft = "A draft unrelated to the source body.";
-	const call = renderers.renderCall({ resource: "governance", draft }, theme).render(120).join("\n");
-	assert.match(call, /agent draft assessment/);
+	const call = renderers
+		.renderCall({ resource: "governance", draft }, theme, { isError: false })
+		.render(120)
+		.join("\n");
+	assert.match(call, /draft assessment/);
 	assert.ok(!call.includes(draft));
 	const source = {
 		schema: "pillars-source" as const,
@@ -173,5 +176,5 @@ test("source rendering identifies the agent draft without showing it as source c
 		.join("\n");
 	assert.match(result, /body/);
 	assert.ok(!result.includes(draft));
-	assert.doesNotMatch(result, /agent draft assessment/);
+	assert.doesNotMatch(result, /draft assessment/);
 });

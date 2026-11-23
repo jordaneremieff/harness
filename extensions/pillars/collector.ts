@@ -18,9 +18,13 @@ import { StoreBusyError, StoreCorruptError, StoreLockIdentityError, StorePlatfor
 export interface Publisher {
 	commit(batch: Batch, today: string, signal?: AbortSignal): Promise<CommitStatus>;
 }
+export interface DiagnosticNotice {
+	text: string;
+	level?: "warning" | "error";
+}
 export interface CollectorOptions {
 	now?: () => number;
-	diagnostic?: (message: string) => void;
+	diagnostic?: (message: string, notice?: DiagnosticNotice) => void;
 }
 export const utcDay = (now = Date.now()): string => new Date(now).toISOString().slice(0, 10);
 export function folded(cell: Cell): Cell {
@@ -55,7 +59,7 @@ const REFUSED_STATUSES: readonly CommitStatus[] = [
 export class Collector {
 	private readonly owner = randomBytes(16).toString("hex");
 	private readonly now: () => number;
-	private readonly diagnostic: (message: string) => void;
+	private readonly diagnostic: NonNullable<CollectorOptions["diagnostic"]>;
 	private pending = new Map<string, Cell>();
 	private health = new Map<string, HealthDelta>();
 	private sequences = new Map<string, number>();
@@ -107,7 +111,9 @@ export class Collector {
 			this.health.set(day, health);
 		} catch {
 			this.saturated = true;
-			this.diagnostic("Pillars access counters reached their limit. Unpersisted loss remains unknown.");
+			this.diagnostic("Pillars access counters reached their limit. Unpersisted loss remains unknown.", {
+				text: "Pillars access counters reached their limit; unpersisted loss remains unknown.",
+			});
 		}
 	}
 	private normalCells(): number {
@@ -193,7 +199,9 @@ export class Collector {
 				this.refused.add(batch.day);
 				for (const [cellKey, cell] of this.pending) if (cell.day === batch.day) this.pending.delete(cellKey);
 				this.health.delete(batch.day);
-				this.diagnostic("Pillars storage refused a delta. Unpersisted loss remains unknown.");
+				this.diagnostic("Pillars storage refused a delta. Unpersisted loss remains unknown.", {
+					text: "Pillars storage refused an update; unpersisted loss remains unknown.",
+				});
 			} else if (status === "publication_failed") this.incident("writeFailures");
 		} catch (error) {
 			this.failed(error);
@@ -207,10 +215,13 @@ export class Collector {
 				this.incident("writeFailures");
 				this.diagnostic(
 					"Pillars shutdown publication is busy. The unpublished delta is lost when this collector closes.",
+					{ text: "Pillars lost an unpublished update at shutdown because the writer was busy.", level: "error" },
 				);
 			} else if (this.busyAttempts === 3) {
 				this.incident("writeFailures");
-				this.diagnostic(error.message);
+				this.diagnostic(error.message, {
+					text: "Pillars will retry the busy write at the next publication event; leave the lock file in place.",
+				});
 			}
 			return;
 		}
@@ -218,17 +229,27 @@ export class Collector {
 		this.incident("writeFailures");
 		if (error instanceof StoreLockIdentityError) {
 			this.publicationBlocked = true;
-			this.diagnostic(error.message);
+			this.diagnostic(error.message, {
+				text: "Pillars stopped the write because the lock path changed; leave the lock file in place.",
+				level: "error",
+			});
 		} else if (error instanceof StorePlatformError && !this.platformWarned) {
 			this.platformWarned = true;
 			this.diagnostic(error.message);
 		} else if (error instanceof Error && error.message === "store_corrupt" && !this.corruptWarned) {
-			this.corruptWarned = true;
-			const slot = error instanceof StoreCorruptError ? error.slot : undefined;
-			this.diagnostic(
-				`Pillars access evidence is not recorded: the aggregate store is invalid${slot ? ` (${slot} fails validation)` : ""}. Recording resumes when the invalid file leaves the aggregate directory.`,
-			);
+			this.reportCorruption(error);
 		}
+	}
+
+	private reportCorruption(error: Error): void {
+		this.corruptWarned = true;
+		const slot = error instanceof StoreCorruptError ? error.slot : undefined;
+		this.diagnostic(
+			`Pillars access evidence is not recorded: the aggregate store is invalid${slot ? ` (${slot} fails validation)` : ""}. Recording resumes when the invalid file leaves the aggregate directory.`,
+			{
+				text: `Pillars cannot record access evidence until the invalid store file${slot ? ` (${slot})` : ""} leaves the aggregate directory.`,
+			},
+		);
 	}
 
 	async flush(immediate = false, signal?: AbortSignal): Promise<void> {

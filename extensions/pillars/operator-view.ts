@@ -186,7 +186,13 @@ class PillarsView {
 				key: "m",
 				short: "read more",
 				primary: true,
-				disabled: source?.pending ? "A read is running" : more ? undefined : "The whole source is shown",
+				disabled: source?.pending
+					? "A Pillars source read is in progress."
+					: more
+						? undefined
+						: source?.last && !source.error
+							? "The whole Pillars source is shown."
+							: "No continuation is available for this Pillars source.",
 				description: "Read the next page of the same source revision",
 				run: () => void this.read(entry.resource, true),
 			},
@@ -196,7 +202,7 @@ class PillarsView {
 				key: "r",
 				short: "read again",
 				primary: true,
-				disabled: source?.pending ? "A read is running" : undefined,
+				disabled: source?.pending ? "A Pillars source read is in progress." : undefined,
 				description: "Read the source from its first page",
 				run: () => void this.read(entry.resource, false),
 			},

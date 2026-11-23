@@ -8,6 +8,11 @@ import { type ExportDocument, MAX_BYTES, parseRequest, validateExport } from "./
 export type Command =
 	| { kind: "overview" | "revisions"; windowDays: number }
 	| { kind: "export"; path: string; windowDays: number };
+export class CommandSyntaxError extends Error {
+	constructor() {
+		super("invalid_command");
+	}
+}
 const WINDOW_DAYS = /^(?:[1-9]|[12][0-9]|30)$/;
 
 function readQuoted(args: string, start: number): { token: string; next: number } {
@@ -22,11 +27,11 @@ function readQuoted(args: string, start: number): { token: string; next: number 
 		}
 		if (character === "\\") {
 			const escaped = args[i++];
-			if (escaped !== '"' && escaped !== "\\") throw new Error("invalid_command");
+			if (escaped !== '"' && escaped !== "\\") throw new CommandSyntaxError();
 			token += escaped;
 		} else token += character;
 	}
-	if (!closed || (i < args.length && args[i] !== " ")) throw new Error("invalid_command");
+	if (!closed || (i < args.length && args[i] !== " ")) throw new CommandSyntaxError();
 	return { token, next: i };
 }
 
@@ -34,7 +39,7 @@ function readBare(args: string, start: number): { token: string; next: number } 
 	let i = start;
 	let token = "";
 	while (i < args.length && args[i] !== " ") {
-		if (/["'\\]/.test(args[i])) throw new Error("invalid_command");
+		if (/["'\\]/.test(args[i])) throw new CommandSyntaxError();
 		token += args[i++];
 	}
 	return { token, next: i };
@@ -50,7 +55,7 @@ function tokenize(args: string): string[] {
 		}
 		const read = args[i] === '"' ? readQuoted(args, i) : readBare(args, i);
 		tokens.push(read.token);
-		if (tokens.length > 4) throw new Error("invalid_command");
+		if (tokens.length > 4) throw new CommandSyntaxError();
 		i = read.next;
 	}
 	return tokens;
@@ -58,19 +63,19 @@ function tokenize(args: string): string[] {
 
 function parseWindowDays(tokens: string[]): number {
 	if (!tokens.length) return 30;
-	if (tokens.length !== 2 || tokens[0] !== "--days" || !WINDOW_DAYS.test(tokens[1])) throw new Error("invalid_command");
+	if (tokens.length !== 2 || tokens[0] !== "--days" || !WINDOW_DAYS.test(tokens[1])) throw new CommandSyntaxError();
 	return Number(tokens[1]);
 }
 
 export function parseCommand(args: string): Command {
-	if (Buffer.byteLength(args) > 8192 || /[\x00-\x1f\x7f]/.test(args)) throw new Error("invalid_command");
+	if (Buffer.byteLength(args) > 8192 || /[\x00-\x1f\x7f]/.test(args)) throw new CommandSyntaxError();
 	const tokens = tokenize(args);
 	const head = tokens[0];
 	const kind: Command["kind"] = head === "revisions" || head === "export" ? head : "overview";
 	if (kind !== "overview") tokens.shift();
 	if (kind === "export") {
 		const path = tokens.shift();
-		if (!path || !validDestination(path)) throw new Error("invalid_command");
+		if (!path || !validDestination(path)) throw new CommandSyntaxError();
 		const windowDays = parseWindowDays(tokens);
 		parseRequest({ windowDays });
 		return { kind, path, windowDays };

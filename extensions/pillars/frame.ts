@@ -291,7 +291,8 @@ export class Frame {
 			view.focusEdge?.(false);
 		} catch (error) {
 			controller.abort();
-			if (this.layers.length) this.notice = { text: failureText(error), kind: "error" };
+			if (this.layers.length)
+				this.notice = { text: `The Pillars view did not open: ${failureText(error)}`, kind: "error" };
 			else this.layers.push({ view: this.failure(failureText(error)), controller });
 		}
 		this.options.requestRender();

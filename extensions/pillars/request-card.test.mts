@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import {
+	CustomMessageComponent,
 	initTheme,
 	type EntryRenderOptions,
 	type ExtensionAPI,
@@ -9,13 +10,12 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { COMMAND_HELP, judgmentPrompt, judgmentRequestOf } from "./commands.ts";
+import { COMMAND_HELP, judgmentPrompt, type JudgmentRequest } from "./commands.ts";
 import pillarsExtension from "./index.ts";
 import {
 	JUDGMENT_REQUEST_MESSAGE,
 	renderJudgmentRequestMessage,
 	renderViewEntry,
-	requestSummary,
 	VIEW_ENTRY,
 	type ViewEntryData,
 } from "./request-card.ts";
@@ -48,13 +48,14 @@ function options(expanded: boolean, key = "ctrl+o"): MessageRenderOptions {
 	} as unknown as MessageRenderOptions;
 }
 
-function render(content: string, expanded = false, key = "ctrl+o", width = 80): string[] {
+function render(request: JudgmentRequest, expanded = false, key = "ctrl+o", width = 80): string[] {
 	const message = {
 		role: "custom" as const,
 		customType: JUDGMENT_REQUEST_MESSAGE,
 		display: true,
 		timestamp: 0,
-		content,
+		content: judgmentPrompt(request),
+		details: request,
 	};
 	const component = renderJudgmentRequestMessage(message, options(expanded, key), theme);
 	assert.ok(component);
@@ -83,61 +84,59 @@ test("the ordinary entry registers the request and view renderers for the types 
 		on: () => () => {},
 		getAllTools: () => [],
 	} as unknown as ExtensionAPI);
-	assert.equal(renderers.get(JUDGMENT_REQUEST_MESSAGE), renderJudgmentRequestMessage);
+	assert.deepEqual([...renderers], [[JUDGMENT_REQUEST_MESSAGE, renderJudgmentRequestMessage]]);
 	assert.equal(entries.get(VIEW_ENTRY), renderViewEntry);
 });
 
-test("the request text round-trips to its action and hint", () => {
-	for (const request of [
-		{ action: "check", hint: "" },
-		{ action: "derive", hint: "the retry rule" },
-		{ action: "review", hint: "line one\nline two" },
-	] as const)
-		assert.deepEqual(judgmentRequestOf(judgmentPrompt(request)), request);
-	assert.equal(judgmentRequestOf("Another message."), undefined);
+test("Pi renders the requested hint as a message and keeps instructions behind disclosure", () => {
+	const request = { action: "review", hint: "Actual operator words." } as const;
+	const stored = {
+		role: "custom" as const,
+		customType: JUDGMENT_REQUEST_MESSAGE,
+		display: true,
+		timestamp: 0,
+		content: judgmentPrompt(request),
+		details: request,
+	};
+	const card = new CustomMessageComponent(stored, renderJudgmentRequestMessage);
+	const collapsed = stripVTControlCharacters(card.render(100).join("\n"));
+	assert.match(collapsed, /\[pillars\] Guidance review requested/);
+	assert.match(collapsed, /Actual operator words\./);
+	assert.doesNotMatch(collapsed, /extension-provided task scaffolding|more lines/);
+	card.setExpanded(true);
+	assert.match(stripVTControlCharacters(card.render(100).join("\n")), /extension-provided task scaffolding/);
 });
 
 test("each action has its own header: what was requested, then the command on a muted line", () => {
-	assert.deepEqual(render(judgmentPrompt({ action: "check", hint: "" })).slice(1, 4), [
+	assert.deepEqual(render({ action: "check", hint: "" }).slice(1, 4), [
 		" [pillars] Alignment check requested",
 		" /pillars check",
 		"",
 	]);
-	assert.equal(render(judgmentPrompt({ action: "derive", hint: "" }))[1], " [pillars] Candidate derivation requested");
-	assert.equal(render(judgmentPrompt({ action: "review", hint: "" }))[1], " [pillars] Guidance review requested");
-	assert.deepEqual(
-		render("Another message.").slice(1, 4),
-		[" [pillars] Request", "", " Another message."],
-		"no facts, no second line",
-	);
+	assert.equal(render({ action: "derive", hint: "" })[1], " [pillars] Candidate derivation requested");
+	assert.equal(render({ action: "review", hint: "" })[1], " [pillars] Guidance review requested");
+
 	colors.length = 0;
-	render(judgmentPrompt({ action: "check", hint: "focus" }));
+	render({ action: "check", hint: "focus" });
 	assert.ok(colors.some(({ color, value }) => color === "customMessageLabel" && value === "[pillars]"));
-	assert.ok(colors.some(({ color, value }) => color === "text" && value === "Alignment check requested"));
+	assert.ok(colors.some(({ color, value }) => color === "customMessageText" && value === "Alignment check requested"));
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "/pillars check"));
-	assert.ok(colors.some(({ color, value }) => color === "text" && value.includes("focus")));
-	assert.equal(
-		colors.some(({ color }) => color === "customMessageText"),
-		false,
-	);
+	assert.ok(colors.some(({ color, value }) => color === "customMessageText" && value.includes("focus")));
 });
 
-test("a collapsed request shows the operator hint, or how the subject is found, then Pi's expansion hint", () => {
-	const lines = render(judgmentPrompt({ action: "check", hint: "the jobs card design" }));
+test("a collapsed request has no fabricated hint and names disclosure without a false line count", () => {
+	const lines = render({ action: "check", hint: "the jobs card design" });
 	assert.equal(lines[4], " the jobs card design");
-	assert.match(lines[5] ?? "", /^ \.\.\. \(\d+ more lines, ctrl\+o to expand\)$/u);
+	assert.match(lines[5] ?? "", /^ \.\.\. \(ctrl\+o to expand\)$/u);
 	assert.equal(lines.length, 7);
-	assert.match(
-		render(judgmentPrompt({ action: "check", hint: "" }))[4] ?? "",
-		/^ Infer the subject from the current conversation/u,
-	);
-	assert.equal(requestSummary(judgmentPrompt({ action: "check", hint: "a b" })).preview, "a b");
-	assert.match(render(judgmentPrompt({ action: "check", hint: "" }), false, "")[6] ?? "", /click to expand\)$/u);
+	const withoutHint = render({ action: "check", hint: "" }, false, "");
+	assert.match(withoutHint[4] ?? "", /click to expand\)$/u);
+	assert.doesNotMatch(withoutHint.join("\n"), /Infer the subject|Operator hint|more lines/);
 });
 
 test("a long hint wraps at word boundaries within three visual lines", () => {
 	const hint = `Check ${"the message label convention ".repeat(8)}END`;
-	const lines = render(judgmentPrompt({ action: "check", hint }), false, "ctrl+o", 40);
+	const lines = render({ action: "check", hint }, false, "ctrl+o", 40);
 	const body = lines.slice(4, 7);
 	assert.ok(body.every((line) => line.length > 0 && !line.endsWith("…")));
 	assert.match(lines[7] ?? "", /^ \.\.\. \(/u);
@@ -145,7 +144,7 @@ test("a long hint wraps at word boundaries within three visual lines", () => {
 });
 
 test("an expanded request shows the header, a blank line and the whole task text without a hint", () => {
-	const lines = render(judgmentPrompt({ action: "review", hint: "the stash notices" }), true);
+	const lines = render({ action: "review", hint: "the stash notices" }, true);
 	assert.deepEqual(lines.slice(1, 4), [" [pillars] Guidance review requested", " /pillars review", ""]);
 	const text = lines.join(" ").replace(/\s+/gu, " ");
 	assert.match(text, /The operator invoked \/pillars review\./u);
@@ -192,17 +191,24 @@ test("long headers clip with one ellipsis in their own colour and keep the row b
 });
 
 test("terminal control sequences in the hint and the entry never reach the card", () => {
-	const content = judgmentPrompt({ action: "check", hint: "focus \x1b[31mred\x1b[0m \x1b]0;title\x07 here" });
+	const request = { action: "check", hint: "focus \x1b[31mred\x1b[0m \x1b]0;title\x07 here" } as const;
 	for (const expanded of [false, true]) {
 		const component = renderJudgmentRequestMessage(
-			{ role: "custom", customType: JUDGMENT_REQUEST_MESSAGE, display: true, timestamp: 0, content },
+			{
+				role: "custom",
+				customType: JUDGMENT_REQUEST_MESSAGE,
+				display: true,
+				timestamp: 0,
+				content: judgmentPrompt(request),
+				details: request,
+			},
 			options(expanded),
 			theme,
 		);
 		assert.ok(component);
 		assert.doesNotMatch(component.render(80).join("\n"), /\x1b|\x07/u);
 	}
-	assert.match(render(content)[4] ?? "", /^ focus red\s+here$/u);
+	assert.match(render(request)[4] ?? "", /^ focus red\s+here$/u);
 	assert.doesNotMatch(
 		view({ text: "a \x1b[2J b", title: "Source \x1b]0;x\x07", subject: "gov\x1b[31m" }).join("\n"),
 		/\x1b|\x07/u,
@@ -227,18 +233,25 @@ const piKeyHint = (expanded: boolean) =>
 	}) as unknown as MessageRenderOptions;
 
 test("the hint dims the key from Pi's keyHint, mutes the rest and keeps the row background", () => {
-	const content = judgmentPrompt({ action: "check", hint: "focus" });
+	const request = { action: "check", hint: "focus" } as const;
 	const component = renderJudgmentRequestMessage(
-		{ role: "custom", customType: JUDGMENT_REQUEST_MESSAGE, display: true, timestamp: 0, content },
+		{
+			role: "custom",
+			customType: JUDGMENT_REQUEST_MESSAGE,
+			display: true,
+			timestamp: 0,
+			content: judgmentPrompt(request),
+			details: request,
+		},
 		piKeyHint(false),
 		ansiTheme,
 	);
 	assert.ok(component);
 	const rows = component.render(80);
 	const hint = rows.find((row) => stripVTControlCharacters(row).includes("to expand")) ?? "";
-	assert.match(stripVTControlCharacters(hint).trim(), /^\.\.\. \(\d+ more lines, ctrl\+o to expand\)$/u);
+	assert.match(stripVTControlCharacters(hint).trim(), /^\.\.\. \(ctrl\+o to expand\)$/u);
 	assert.ok(hint.includes("\x1b[2mctrl+o"), "the key comes from Pi's keyHint");
-	assert.match(hint, /\x1b\[38;5;1m\.\.\. \(\d+ more lines, \x1b\[39m/u, "the rest is muted");
+	assert.match(hint, /\x1b\[38;5;1m\.\.\. \(\x1b\[39m/u, "the rest is muted");
 	for (const row of rows) assertContinuousBackground(row);
 	for (const row of view({ text: "Body", title: "Commands" }, 80, ansiTheme)) assertContinuousBackground(row);
 });
@@ -256,6 +269,7 @@ test("a left click anywhere on the card toggles it, as on Pi's cards, and Pi's g
 		display: true,
 		timestamp: 0,
 		content: judgmentPrompt({ action: "check", hint: "focus" }),
+		details: { action: "check", hint: "focus" },
 	};
 	const card = (expanded: boolean) => {
 		const component = renderJudgmentRequestMessage(stored, options(expanded), theme);
@@ -313,4 +327,25 @@ test("a left click anywhere on the card toggles it, as on Pi's cards, and Pi's g
 	);
 	assert.doesNotMatch(text(card(true)), /to expand\)/u);
 	assert.match(text(card(false)), /to expand\)/u, "a change of Pi's global expansion discards the local choice");
+});
+
+test("the operator entry renders an export receipt without showing the exact machine JSON as prose", () => {
+	const receipt = {
+		code: "export_published_sync_failed",
+		published: true,
+		durability: "unconfirmed",
+		message: "The export file exists, but durability is not confirmed.",
+	} as const;
+	const data = {
+		title: "Access evidence export published without durability confirmation",
+		text: JSON.stringify(receipt),
+		receipt,
+	};
+	const shown = view(data, 100).join("\n");
+	assert.match(shown, /The export file exists/);
+	assert.match(shown, /Code: export_published_sync_failed/);
+	assert.match(shown, /Published: Yes/);
+	assert.match(shown, /Durability: Unconfirmed/);
+	assert.doesNotMatch(shown, /\{"code"/);
+	assert.deepEqual(JSON.parse(data.text), data.receipt);
 });

@@ -82,17 +82,6 @@ export const JUDGMENT_AUTHORITY =
 
 const HINT_HEADING = "Operator hint (free text):";
 
-/** The request a `judgmentPrompt` text carries, or undefined for any other text. */
-export function judgmentRequestOf(text: string): JudgmentRequest | undefined {
-	const match = /^The operator invoked \/pillars (check|derive|review)\. /u.exec(text);
-	if (!match) return undefined;
-	const marker = text.indexOf(`\n\n${HINT_HEADING}\n\n`);
-	return {
-		action: match[1] as JudgmentRequest["action"],
-		hint: marker < 0 ? "" : text.slice(marker + HINT_HEADING.length + 4).trim(),
-	};
-}
-
 export function judgmentPrompt({ action, hint }: JudgmentRequest): string {
 	return [
 		`The operator invoked /pillars ${action}. This message contains extension-provided task scaffolding, not new doctrine.`,

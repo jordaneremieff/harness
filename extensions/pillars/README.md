@@ -75,36 +75,21 @@ governance and remains subject to operator approval.
 
 ### Transcript message
 
-The task message has type `pillars-request`, and the ordinary extension
-registers its renderer. The first line is the bold label `[pillars]` in Pi's
-custom message label colour, then what was requested in bold text: `Alignment
-check requested`, `Candidate derivation requested` or `Guidance review
-requested`. A muted second line names the command (`/pillars check`), and a
-blank line follows. Collapsed, the card shows at most three visual lines of the
-operator hint, or of the task sentence that says how the subject is found. A
-blank line between paragraphs counts as a line, and a blank line at the end of
-the preview is dropped. When text is hidden, Pi's `... (N more lines, ctrl+o to
-expand)` hint follows: the key comes from Pi's `keyHint`, the rest is muted,
-and without a configured key the hint reads `click to expand`. A left click anywhere on the card's content rows toggles that card, as Pi's
-compaction and tool cards toggle on a left click; a modified click and each
-click of a multi-click toggle too, and a drag still selects text. Pi's global
-expansion resets that local choice.
-Expanded, the card shows the whole task text as Markdown and no hint. The
-renderer reads the action and hint from the message's own text, removes
-terminal control and escape sequences and other control or format characters
-from every displayed string, keeps newlines and tabs, and changes neither the
-message nor the model context.
+`pillars-request` shows the judgment action and previews the operator's hint
+only when one was supplied. The complete task instructions appear on expansion.
+The renderer uses the action and hint retained as display details; the model
+receives the task text, not the display details. The separate `pillars-draft`
+assessment remains hidden in ordinary chat.
 
-Command output that `/pillars` shows without model context (help, a source
-read, access evidence, an export result or a failed command) is a
-`pillars-view` entry. Its card uses the same header: `[pillars]` and what the
-command showed, such as `[pillars] Commands`, `[pillars] Source · governance`
-or `[pillars] Access evidence`, then a blank line and the whole Markdown body,
-which the operator asked to read. Pi gives an entry renderer no `outputPad`, so
-the entry card uses Pi's default horizontal padding of one column. The entry
-has no collapsed form, so a click on it has nothing to toggle.
-The entry data carries the body text and the header facts; an entry without a
-title shows `[pillars] Command output`.
+`pillars-view` is an operator-only entry for help, source and access-evidence
+pages, export receipts and command failures. It shows the entire requested
+Markdown page without disclosure. Pi does not pass `outputPad` to an entry
+renderer, so this entry uses one column of horizontal padding. An export entry
+retains the exact receipt (`code`, `published`, `durability`, `message`) for
+inspection and renders those fields as readable text; print mode still writes
+its JSON receipt.
+
+The tool and transcript cards follow the [emission grammar](../../docs/conventions/emissions.md).
 
 ## Read the corpus
 
@@ -132,9 +117,10 @@ than silently combining revisions. A source body is limited to 1 MiB.
 Source errors retain `schema:"pillars-source-error"` and `code`.
 `invalid_input` and `source_changed` also carry a bounded `message` (at most
 1,024 characters) that names the field, describes the received value, explains
-the rejection, and gives the valid input. The tool throws the JSON error object
-as its message, so Pi marks the result as an error without discarding the
-structured diagnostic. Pi leaves `details` unset for thrown errors. An unavailable
+the rejection, and gives the valid input. Execution-time source refusals return
+that JSON text, the same object in `details`, and `isError: true`. Pi retains
+only the JSON text from an argument preparation refusal. The card recognises
+these bounded error envelopes without deriving state from prose. An unavailable
 catalog or unreadable body remains `source_unavailable`, not invalid input.
 
 Resource identifiers are not filenames. A `.md` suffix is rejected with the
@@ -171,12 +157,12 @@ never the draft text. The source tool echoes only a known identifier with its
 These rules prevent control characters, paths, credentials, and arbitrary input
 text from entering diagnostic messages.
 
-In the terminal TUI both tools render inside Pi's standard tool-call shell,
-collapsed by default. The call line names the requested resource or evidence
-view; the result line names the delivered byte range or evidence page and hides
-the body behind the host's tool-output expansion binding (`app.tools.expand`,
-`ctrl+o` by default). Expanding shows the full source text or the evidence page.
-The host owns the collapsed and expanded state; the tools only render it.
+Tool cards name the requested resource or evidence view, the delivered page
+and whether another page exists. The expanded card shows the complete returned
+page and the exact continuation call, where applicable. The expanded call
+shows the size of an input draft, digest or cursor rather than echoing its
+contents. The verified digest and returned continuation remain visible in the
+expanded result.
 
 Operator commands:
 
@@ -543,8 +529,8 @@ A retained busy batch produces no warning or `writeFailures` incident until thre
 consecutive busy attempts, which distinguish one collision from repeated deferral
 without a timed retry. The third attempt produces one warning and incident per
 busy sequence; a non-busy outcome resets the sequence. A busy shutdown probe
-produces a warning and incident because the unpublished tail is lost when the
-collector closes. An unsupported platform produces one diagnostic per collector:
+produces an error notice and incident because the unpublished tail is lost when
+the collector closes. An unsupported platform produces one diagnostic per collector:
 ordinary sessions show a warning in the UI or stderr without a UI, and native
 sessions write the diagnostic to stderr. Each
 new instance uses a fresh private owner key. Forks do not replay history.
