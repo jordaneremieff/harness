@@ -172,7 +172,7 @@ test("a missing key omits the pre-result hint and offers a click after settlemen
 	assert.deepEqual(hints(screen(component)), ["... (click to expand)"]);
 });
 
-test("an execution error shows its diagnostic; an oversized result retains the model envelope", async () => {
+test("an error preserves its cause; a lost edit receipt preserves the known outcome", async () => {
 	const component = card();
 	const failure = await executeConfigTool(
 		name,
@@ -202,7 +202,10 @@ test("an execution error shows its diagnostic; an oversized result retains the m
 	});
 	assert.equal(oversized.isError, true);
 	assert.deepEqual(oversized.content, [
-		{ type: "text", text: '{"error":"The result exceeds 98304 bytes; request fewer ids or a smaller page."}' },
+		{
+			type: "text",
+			text: '{"error":"Edit mode commit returned committed. The edit receipt exceeds 98304 bytes. Read the settings before another edit."}',
+		},
 	]);
 	settle(component, oversized);
 	const oversizeRows = screen(component);

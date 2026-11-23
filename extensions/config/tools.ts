@@ -136,15 +136,13 @@ export async function executeConfigTool<T>(
 		const result = await run();
 		const serialized = JSON.stringify(result);
 		const limited = Buffer.byteLength(serialized) > OUTPUT_BYTES;
-		const body = limited ? JSON.stringify({ error: outputDiagnostic }) : serialized;
-		return send(
-			body,
-			{
-				...(limited ? ({ diagnostic: outputDiagnostic, outputLimited: true } as const) : {}),
-				...describe?.(result, limited),
-			},
-			limited,
-		);
+		const facts = describe?.(result, limited) ?? {};
+		if (!limited) return send(serialized, facts);
+		const diagnostic = facts.diagnostic ?? outputDiagnostic;
+		const error = facts.edit
+			? `Edit mode ${facts.edit.mode} returned ${facts.edit.outcome}. ${diagnostic}`
+			: diagnostic;
+		return send(JSON.stringify({ error }), { ...facts, diagnostic, outputLimited: true }, true);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		const diagnostic = errorText(message);
@@ -160,8 +158,7 @@ export function editDisplay(result: EditResult, limited: boolean): ConfigDisplay
 	return limited
 		? {
 				edit: { mode: result.mode, outcome: result.outcome, lines: [] },
-				diagnostic: "The edit receipt exceeds 98304 bytes. Read the settings before another edit.",
-				outputLimited: true,
+				diagnostic: `The edit receipt exceeds ${OUTPUT_BYTES} bytes. Read the settings before another edit.`,
 			}
 		: { edit: describeConfigEdit(result) };
 }
