@@ -4243,9 +4243,9 @@ arm another default check-in.
 The host's `pi.host` built-in registers the check-in task independently of the
 configured native agent contribution. Native Reporters arm check-ins only when
 the host registry supplies that task. The runtime therefore owns availability.
-A check-in is a native `agent.check-in` background task, armed atomically with
-the delivery intent, or with the local Reporter's retained arming checkpoint.
-The public admission API owns a separate commit. The task reacquires the input
+A check-in is a native `agent.check-in` background task. Ordinary submissions,
+local Reporters and fired timers arm it in the same commit as the native input
+and its delivery intent. The task reacquires the input
 by submitting its same request ID, then waits for settlement while its owned
 `agent.check-in-deadline` task commits durable sleeps. On recovery, the parent
 reattaches to that owned task instead of creating another deadline. Settlement
@@ -4292,8 +4292,11 @@ A scheduled input is a native `agent.timer` background task in the target's
 storage. Its input persists the absolute deadline, target conversation,
 message, mode, admission origin, and a deterministic request ID before it
 waits on Durable's `sleepUntil`. Replay never recomputes the
-deadline. On fire it admits the input once through request-ID deduplication,
-and the answer follows the notice and wake rule of its origin. A timer that
+deadline. Once the deadline wins, the firing checkpoint survives a restart or
+clock correction. One commit admits the labelled input, links its answer route,
+arms its check-in if requested, ends any previous stop, and settles the timer.
+A replay keeps the same native submission and never clears a later stop.
+The answer follows the notice and wake rule of its origin. A timer that
 was due while its host was down fires once after the host reopens and records
 that it ran overdue. A pending timer is live work, so the host does not retire
 while it waits. A timer fires only while its storage host runs; Pi starts no

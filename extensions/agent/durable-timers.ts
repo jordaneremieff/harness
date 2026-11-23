@@ -38,13 +38,7 @@ import {
 	type TaskOutcome,
 	type Tx,
 } from "@earendil-works/pi-durable";
-import {
-	linkDeliveryIntent,
-	placementMode,
-	recordDeliveryIntent,
-	type DeliveryIntentState,
-	type DeliveryOrigin,
-} from "./durable-controls.ts";
+import { placementMode, recordDeliveryIntent, type DeliveryOrigin } from "./durable-controls.ts";
 import { reconcileProfile } from "./profile.ts";
 import { prepareQueuedInputs } from "./unplaced-inputs.ts";
 import { validateRequestContext, type RequestContext } from "./request-context.ts";
@@ -171,13 +165,14 @@ async function markTimerSettled(tx: Tx, timerId: number, settlement: TimerSettle
 	pruneTimerRecords(state);
 }
 
-/** Admit and record the same submission on both paths through the deadline. */
-async function admitFiredTimer(
+/** The native input, answer route, watcher and fired task share one commit. No recovery path can admit a partial timer. */
+async function fireTimer(
 	tx: Tx,
 	conversation: ConversationHandle,
+	timerId: number,
 	input: TimerInput,
-	admittedAt: number,
-): Promise<{ id: SubmissionId; deduped: boolean }> {
+	firedAt: number,
+) {
 	const prior = await tx.submissionByRequest(conversation.id, input.requestId);
 	const retain = await prepareQueuedInputs(tx, conversation.id, input.identity);
 	const label = {
@@ -185,155 +180,82 @@ async function admitFiredTimer(
 		sender: input.requestContext?.requester ?? input.ownerId,
 		requestId: input.requestId,
 	};
-	const id = await conversation.submit(tx, {
-		type: "input",
-		content: input.message,
-		requestId: input.requestId,
-		whenBusy: placementMode(input.mode),
-		entry: inputEntry(input.origin, input.requestContext?.requester, label),
-	});
+	let id: SubmissionId | undefined;
+	await recordDeliveryIntent(
+		tx,
+		conversation.id,
+		{
+			requestId: input.requestId,
+			ownerId: input.ownerId,
+			message: input.message,
+			whenBusy: input.mode,
+			origin: input.origin,
+			checkInMinutes: input.checkInMinutes ?? 0,
+			senderIdentity: input.identity,
+			...(input.requestContext === undefined ? {} : { requestContext: input.requestContext }),
+		},
+		firedAt,
+		"retained",
+		async () =>
+			(id = await conversation.submit(tx, {
+				type: "input",
+				content: input.message,
+				requestId: input.requestId,
+				whenBusy: placementMode(input.mode),
+				entry: inputEntry(input.origin, input.requestContext?.requester, label),
+			})),
+	);
+	if (id === undefined) throw new Error("The timer admission did not run");
 	if (prior === undefined) await noteExplicitInput(tx, conversation.id, id);
-	await retain([{ submissionId: id, requestId: input.requestId, admittedAt, label }]);
-	return { id, deduped: prior !== undefined };
+	await retain([{ submissionId: id, requestId: input.requestId, admittedAt: firedAt, label }]);
+	const result: TimerResult = {
+		deadline: input.deadline,
+		firedAt,
+		overdueMs: Math.max(0, firedAt - input.deadline),
+		conversationId: input.conversationId,
+		submissionId: id,
+		requestId: input.requestId,
+		mode: input.mode,
+		origin: input.origin,
+		deduped: prior !== undefined,
+	};
+	await markTimerSettled(tx, timerId, {
+		status: "fired",
+		firedAt,
+		overdueMs: result.overdueMs,
+		submissionId: id,
+		settledAt: firedAt,
+	});
+	return { status: "terminal", outcome: { status: "completed", result } } as const;
 }
 
-/**
- * One scheduled input. The phase sleeps on the absolute input deadline, admits
- * the stored message through the delivery ledger, and settles in the commit
- * that records the fired result. A replay reads the same input, so the
- * deadline is never recomputed and the request ID admits at most one input.
- */
 export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 	name: TIMER_TASK_NAME,
 	version: 1,
 	initial: () => ({ phase: "wait" }),
 	phases: {
 		wait: async (task, runtime, context) => {
-			if (task.input.deadline > runtime.now())
-				return runtime.sleepUntil(task.input.deadline, task.state.checkpoint, context);
-			// Record that the deadline was reached before any admission work, so
-			// an abort in the fire window settles the input instead of cancelling it.
-			await runtime.commit(
-				() => ({ status: "running", checkpoint: { phase: "wait", firing: true } as TimerState }),
-				context,
-			);
-			const conversationId = task.input.conversationId as ConversationId;
-			const conversation = await runtime.conversation(conversationId, context);
+			if (!task.state.checkpoint.firing) {
+				if (task.input.deadline > runtime.now())
+					return runtime.sleepUntil(task.input.deadline, task.state.checkpoint, context);
+				// Once the deadline wins, an abort or a replay finishes the same admission.
+				await runtime.commit(
+					() => ({ status: "running", checkpoint: { phase: "wait", firing: true } as TimerState }),
+					context,
+				);
+			}
+			const conversation = await runtime.conversation(task.input.conversationId as ConversationId, context);
 			if (conversation === undefined) throw new Error(`scheduled input target ${task.input.identity} is not retained`);
 			await reconcileProfile(runtime, conversation.id, context, (error) => runtime.report(error));
-			const mode = task.input.mode;
-			let intent: DeliveryIntentState | undefined;
-			await runtime.commit(async (tx) => {
-				intent = await recordDeliveryIntent(
-					tx,
-					conversationId,
-					{
-						requestId: task.input.requestId,
-						ownerId: task.input.ownerId,
-						message: task.input.message,
-						whenBusy: mode,
-						origin: task.input.origin,
-						checkInMinutes: task.input.checkInMinutes ?? 0,
-						senderIdentity: task.input.identity,
-						...(task.input.requestContext === undefined ? {} : { requestContext: task.input.requestContext }),
-					},
-					runtime.now(),
-					"retained",
-				);
-				return undefined;
-			}, context);
-			const firedAt = runtime.now();
-			let admitted: Awaited<ReturnType<typeof admitFiredTimer>> | undefined;
-			await runtime.commit(async (tx) => {
-				admitted = await admitFiredTimer(tx, conversation, task.input, firedAt);
-				return undefined;
-			}, context);
-			const submission = admitted;
-			if (submission === undefined) throw new Error("The timer admission did not run");
-			const result: TimerResult = {
-				deadline: task.input.deadline,
-				firedAt,
-				overdueMs: Math.max(0, firedAt - task.input.deadline),
-				conversationId: task.input.conversationId,
-				submissionId: submission.id,
-				requestId: task.input.requestId,
-				mode: task.input.mode,
-				origin: task.input.origin,
-				deduped: submission.deduped || intent?.kind === "linked",
-			};
-			await runtime.commit(async (tx) => {
-				await linkDeliveryIntent(tx, conversationId, task.input.requestId, submission.id);
-				await markTimerSettled(tx, Number(task.id), {
-					status: "fired",
-					firedAt,
-					overdueMs: result.overdueMs,
-					submissionId: submission.id,
-					settledAt: firedAt,
-				});
-				return { status: "terminal", outcome: { status: "completed", result } };
-			}, context);
+			await runtime.commit((tx) => fireTimer(tx, conversation, task.id, task.input, runtime.now()), context);
 		},
 	},
 	abort: async (task, runtime, context) => {
-		const input = task.input;
-		const conversationId = input.conversationId as ConversationId;
-		const settledAt = runtime.now();
-		// An abort after the deadline reached admission work: the input fires once
-		// through the retained request ID instead of reporting a cancellation for
-		// an input that the delivery ledger may already hold.
-		if (task.state.checkpoint.firing === true) {
-			const conversation = await runtime.conversation(conversationId, context);
+		if (task.state.checkpoint.firing) {
+			const conversation = await runtime.conversation(task.input.conversationId as ConversationId, context);
 			if (conversation !== undefined) {
 				await reconcileProfile(runtime, conversation.id, context, (error) => runtime.report(error));
-				const mode = input.mode;
-				await runtime.commit(async (tx) => {
-					await recordDeliveryIntent(
-						tx,
-						conversationId,
-						{
-							requestId: input.requestId,
-							ownerId: input.ownerId,
-							message: input.message,
-							whenBusy: mode,
-							origin: input.origin,
-							checkInMinutes: input.checkInMinutes ?? 0,
-							senderIdentity: input.identity,
-							...(input.requestContext === undefined ? {} : { requestContext: input.requestContext }),
-						},
-						runtime.now(),
-						"retained",
-					);
-					return undefined;
-				}, context);
-				let admitted: Awaited<ReturnType<typeof admitFiredTimer>> | undefined;
-				await runtime.commit(async (tx) => {
-					admitted = await admitFiredTimer(tx, conversation, input, settledAt);
-					return undefined;
-				}, context);
-				const submission = admitted;
-				if (submission === undefined) throw new Error("The timer admission did not run");
-				const result: TimerResult = {
-					deadline: input.deadline,
-					firedAt: settledAt,
-					overdueMs: Math.max(0, settledAt - input.deadline),
-					conversationId: input.conversationId,
-					submissionId: submission.id,
-					requestId: input.requestId,
-					mode: input.mode,
-					origin: input.origin,
-					deduped: submission.deduped,
-				};
-				await runtime.commit(async (tx) => {
-					await linkDeliveryIntent(tx, conversationId, input.requestId, submission.id);
-					await markTimerSettled(tx, Number(task.id), {
-						status: "fired",
-						firedAt: settledAt,
-						overdueMs: result.overdueMs,
-						submissionId: submission.id,
-						settledAt,
-					});
-					return { status: "terminal", outcome: { status: "completed", result } };
-				}, context);
+				await runtime.commit((tx) => fireTimer(tx, conversation, task.id, task.input, runtime.now()), context);
 				return;
 			}
 		}
@@ -343,7 +265,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				firedAt: null,
 				overdueMs: null,
 				submissionId: null,
-				settledAt,
+				settledAt: runtime.now(),
 			});
 			return { status: "terminal", outcome: { status: "aborted" } };
 		}, context);

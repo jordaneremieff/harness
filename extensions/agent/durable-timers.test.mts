@@ -8,6 +8,7 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineExtension, defineTask, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import { stopBeforeResume } from "./durable-host.ts";
+import { onStoredCommit } from "./commit-observation.ts";
 import { isStopped } from "./conversation-stop.ts";
 import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
@@ -96,6 +97,38 @@ it("fires one scheduled input at its deadline and records the fired timer", { ti
 	assert.equal(cancelled.status, "fired");
 	assert.ok(row.firedAt !== null && row.firedAt >= deadline, "the fire does not precede the deadline");
 	assert.ok((row.overdueMs ?? -1) >= 0, "the fire records its lateness");
+});
+
+it("admits the timer input before its check-in can claim that request", { timeout: 10000 }, async (t) => {
+	const f = await scheduleFixture(t, { agentExtension: true });
+	await f.host.request("abort", {});
+	const requestId = "timer-with-check-in";
+	let atomic = false;
+	const detach = onStoredCommit(f.host.harness, ({ changes }) => {
+		if (changes.some((change) => change.type === "task" && change.value.kind === "agent.check-in"))
+			atomic ||= changes.some((change) => change.type === "submission" && change.value.requestId === requestId);
+	});
+	t.after(detach);
+	await f.host.request("timer-schedule", {
+		sessionId: f.storageId,
+		message: "scheduled work",
+		deliverAt: Date.now(),
+		mode: "followUp",
+		origin: "model",
+		ownerId: f.ownerId,
+		scheduleId: "timer-watch",
+		requestId,
+		checkInMinutes: 1,
+	});
+	const receipt = await f.waitForReceipt(requestId);
+	assert.equal(receipt.status, "done");
+	const id = f.host.root().id;
+	assert.equal(await f.host.harness.commit((tx) => isStopped(tx, id), BACKGROUND_CONTEXT), false);
+	const entry = (await (await f.conversation()).entries({}, 30, undefined, BACKGROUND_CONTEXT)).items.find(
+		(item) => item.id === receipt.entryId,
+	);
+	assert.equal((entry?.data as { class?: string })?.class, "timer");
+	assert.equal(atomic, true, "no committed check-in can race to admit the input before the timer");
 });
 
 it("ends a stop when abort must finish a timer already past its firing checkpoint", async (t) => {
