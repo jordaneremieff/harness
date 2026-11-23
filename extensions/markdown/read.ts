@@ -1,11 +1,8 @@
-import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import type { Context } from "@earendil-works/chord/context";
-import type { LiveConfig } from "./live-protocol.ts";
-import { withLiveShow } from "./live-launch.ts";
+import { ShowRequestSchema, type ShowRequest } from "./pane-state.ts";
 import { arr, bool, int, lit, obj, opt, str, union, type Static } from "@earendil-works/pi-schema";
 import { toolDisplay } from "./display.ts";
-import { hasPaneRevision, paneCommand } from "./pane-command.ts";
 import { coverageText, referenceSummary, ReferenceSummarySchema, type ReferenceSummary } from "./publish.ts";
 import {
 	type AssetRecord,
@@ -104,7 +101,7 @@ export type ReadOutcome =
 			unreadable: number;
 			bounded: boolean;
 	  }
-	| {
+	| ({
 			ok: true;
 			op: "read";
 			documentId: string;
@@ -122,17 +119,36 @@ export type ReadOutcome =
 			images?: ListedImage[];
 			imagesOmitted?: number;
 			provenance: ContentOrigin;
-			offset: number;
-			nextOffset: number | null;
 			chars: number;
-			text: string;
-			show?: string[];
-			paneInput?: string;
-			showUnavailable?: string;
-	  }
+			show?: ShowRequest;
+	  } & (
+			| { status: "complete"; offset: 0; nextOffset: null; text: string }
+			| { status: "page"; offset: number; nextOffset: number | null; fragment: string }
+	  ))
 	| { ok: false; error: { code: "invalid" | "not-found" | "store-failure"; message: string } };
 
 const KindSchema = union([lit("published"), lit("response"), lit("file")]);
+const ReadFields = {
+	ok: lit(true),
+	op: lit("read"),
+	documentId: str(),
+	kind: KindSchema,
+	title: str(),
+	currentRevision: int(),
+	revision: int(),
+	revisionTitle: str(),
+	createdAt: str(),
+	digest: str(),
+	bytes: int(),
+	completeness: obj({ state: str() }, { open: true }),
+	selfContained: opt(bool()),
+	references: ReferenceSummarySchema,
+	images: opt(arr(obj({ reference: str(), state: str() }, { open: true }))),
+	imagesOmitted: opt(int()),
+	provenance: obj({ kind: str(), capturedAt: str() }, { open: true }),
+	chars: int(),
+	show: opt(ShowRequestSchema),
+};
 export const ReadOutcomeSchema = union([
 	obj({
 		ok: lit(true),
@@ -160,32 +176,11 @@ export const ReadOutcomeSchema = union([
 		unreadable: int(),
 		bounded: bool(),
 	}),
-	obj({
-		ok: lit(true),
-		op: lit("read"),
-		documentId: str(),
-		kind: KindSchema,
-		title: str(),
-		currentRevision: int(),
-		revision: int(),
-		revisionTitle: str(),
-		createdAt: str(),
-		digest: str(),
-		bytes: int(),
-		completeness: obj({ state: str() }, { open: true }),
-		selfContained: opt(bool()),
-		references: ReferenceSummarySchema,
-		images: opt(arr(obj({ reference: str(), state: str() }, { open: true }))),
-		imagesOmitted: opt(int()),
-		provenance: obj({ kind: str(), capturedAt: str() }, { open: true }),
-		offset: int(),
-		nextOffset: union([int(), lit(null)]),
-		chars: int(),
-		text: str(),
-		show: opt(arr(str())),
-		paneInput: opt(str()),
-		showUnavailable: opt(str()),
-	}),
+	obj({ ...ReadFields, status: lit("complete"), offset: lit(0), nextOffset: lit(null), text: str() }, { open: false }),
+	obj(
+		{ ...ReadFields, status: lit("page"), offset: int(), nextOffset: union([int(), lit(null)]), fragment: str() },
+		{ open: false },
+	),
 	obj({
 		ok: lit(false),
 		error: obj({ code: union([lit("invalid"), lit("not-found"), lit("store-failure")]), message: str() }),
@@ -193,7 +188,7 @@ export const ReadOutcomeSchema = union([
 ]);
 
 const DESCRIPTION =
-	"Find and read stored Markdown documents exactly, without opening a window. Without document, list the newest documents of one collection, optionally matching query against titles and IDs and contains against the current source (a bounded search that reports its coverage). With document, read the exact source of its current revision, or of a named revision, in pages of at most 64 KiB; continue with the returned offset and the same revision. The result names the current revision, the source digest and the reference coverage. For a connected pane, use markdown_live to read or edit its actual buffer. To correct a stored publication instead, read its current revision, then call markdown_publish with document and expectedRevision set to that revision. After a conflict, read the revision that the conflict names before you publish again. Reading starts no model work and leaves stored document content unchanged.";
+	"Find and read stored Markdown documents exactly, without opening a window. Without document, list the newest documents of one collection, optionally matching query against titles and IDs and contains against the current source (a bounded search that reports its coverage). With document, read the exact source of its current revision, or of a named revision, in pages of at most 64 KiB; use a fragment on its own for a passage. Before copying or republishing a whole document, join all fragments in order from offset zero using nextOffset and the same revision. The result names the current revision, the source digest and the reference coverage. For a connected pane, use markdown_live to read or edit its actual buffer. To correct a stored publication instead, read its entire current revision, then call markdown_publish with document and expectedRevision set to that revision. After a conflict, read the revision that the conflict names before you publish again. Reading starts no model work and leaves stored document content unchanged.";
 
 function validate(params: ReadInput): void {
 	if (!params || typeof params !== "object")
@@ -328,11 +323,7 @@ function listedImages(items: AssetRecord[]): { images: ListedImage[]; imagesOmit
 		imagesOmitted: Math.max(0, images.length - LISTED_IMAGES),
 	};
 }
-async function readDocument(
-	store: MarkdownStore,
-	params: ReadInput & { document: string },
-	app: string | undefined,
-): Promise<ReadOutcome> {
+async function readDocument(store: MarkdownStore, params: ReadInput & { document: string }): Promise<ReadOutcome> {
 	const stored = await store.get(params.document, params.revision);
 	const offset = params.offset ?? 0;
 	const page = sourcePage(stored.source, offset);
@@ -354,21 +345,27 @@ async function readDocument(
 		references: referenceSummary(revision.references),
 		...(offset === 0 ? listedImages(revision.references.items) : {}),
 		provenance: revision.contentOrigin,
-		offset,
-		nextOffset: page.nextOffset,
 		chars: stored.source.length,
-		text: page.text,
+		...(offset === 0 && page.nextOffset === null
+			? { status: "complete" as const, offset: 0 as const, nextOffset: null, text: page.text }
+			: { status: "page" as const, offset, nextOffset: page.nextOffset, fragment: page.text }),
 		...(offset === 0
-			? paneCommand(app, store.root, document.id, params.revision === undefined ? undefined : revision)
+			? {
+					show: {
+						op: "show",
+						document: document.id,
+						...(params.revision === undefined ? {} : { revision: revision.revision }),
+					} as const,
+				}
 			: {}),
 	};
 }
-/** Reads only: no window, reveal, publication or model work. `app` names the installed reader for the pane command. */
-export async function readStored(store: MarkdownStore, params: ReadInput, app?: string): Promise<ReadOutcome> {
+/** Reads only: no window, reveal, publication or model work. */
+export async function readStored(store: MarkdownStore, params: ReadInput): Promise<ReadOutcome> {
 	try {
 		validate(params);
 		if (params.document === undefined) return await find(store, params);
-		return await readDocument(store, { ...params, document: params.document }, app);
+		return await readDocument(store, { ...params, document: params.document });
 	} catch (error) {
 		if (error instanceof StoreError && (error.code === "invalid" || error.code === "not-found"))
 			return { ok: false, error: { code: error.code, message: error.message.slice(0, 300) } };
@@ -435,25 +432,17 @@ function findLimits(outcome: Found): string {
 	return parts.join("");
 }
 type ReadPage = Extract<ReadOutcome, { op: "read" }>;
-function showGuidance(outcome: ReadPage): string[] {
-	if (!outcome.show) return [];
-	const run = `run ${JSON.stringify(outcome.show)} as the program of a new pane.`;
-	if (hasPaneRevision(outcome.show)) return [`To show revision ${outcome.revision}, ${run}`];
-	const input = outcome.paneInput
-		? `type ${JSON.stringify(outcome.paneInput.trimEnd())} and Enter into a reader pane that you opened, or `
-		: "";
-	if (outcome.revision !== outcome.currentRevision)
-		return [
-			`Current revision only: this reader build cannot pin revision ${outcome.revision}. To show the current revision, ${input}${run}`,
-		];
-	return [`To show it, ${input}${run} This opens the revision that is current when used.`];
-}
 function readHeader(outcome: ReadPage): string {
-	const end = outcome.offset + outcome.text.length;
 	const position =
-		outcome.nextOffset === null && outcome.offset === 0
-			? "Complete source follows."
-			: `Characters ${outcome.offset}\u2013${end} of ${outcome.chars} follow.${outcome.nextOffset === null ? "" : ` Continue with ${JSON.stringify({ document: outcome.documentId, revision: outcome.revision, offset: outcome.nextOffset })}.`}`;
+		outcome.status === "complete"
+			? "Complete stored source follows."
+			: [
+					`Source fragment at UTF-16 offset ${outcome.offset}, length ${outcome.fragment.length} of ${outcome.chars} code units.`,
+					"Use this fragment for its passage. To copy or republish the whole revision, join all its fragments in order from offset zero.",
+					outcome.nextOffset === null
+						? "This is the final fragment."
+						: `Continue with ${JSON.stringify({ document: outcome.documentId, revision: outcome.revision, offset: outcome.nextOffset })}.`,
+				].join(" ");
 	const coverage = coverageText(outcome.references, outcome.provenance.kind);
 	const newer = outcome.revision === outcome.currentRevision ? "" : ` Revision ${outcome.currentRevision} is current.`;
 	const partial =
@@ -461,33 +450,31 @@ function readHeader(outcome: ReadPage): string {
 			? ` The captured response is partial (${outcome.completeness.reason ?? "unknown reason"}).`
 			: "";
 	const update =
-		outcome.kind !== "published"
+		outcome.kind !== "published" || outcome.offset !== 0
 			? ""
 			: outcome.revision === outcome.currentRevision
-				? ` To correct it, publish with document ${outcome.documentId} and expectedRevision ${outcome.revision}.`
+				? outcome.status === "page"
+					? ""
+					: ` To correct it, publish with document ${outcome.documentId} and expectedRevision ${outcome.revision}.`
 				: ` Before a correction, read the current revision with markdown_read ${JSON.stringify({ document: outcome.documentId, revision: outcome.currentRevision })}. This historical text is not the update base.`;
 	return [
 		`${outcome.documentId} revision ${outcome.revision} of ${outcome.currentRevision} · ${outcome.kind} · ${JSON.stringify(line(outcome.revisionTitle))} · ${outcome.bytes} bytes · ${outcome.digest}.${newer}${partial}${update}`,
 		...(coverage ? [coverage] : []),
-		...showGuidance(outcome),
+		...(outcome.show ? [`To show it, call markdown_live ${JSON.stringify(outcome.show)}.`] : []),
 		position,
 	].join("\n");
 }
 export function readText(outcome: ReadOutcome): { header: string; source?: string } {
 	if (!outcome.ok) return { header: `Markdown read failed (${outcome.error.code}): ${outcome.error.message}` };
 	if (outcome.op === "find") return { header: findText(outcome) };
-	return { header: readHeader(outcome), source: outcome.text };
+	return { header: readHeader(outcome), source: outcome.status === "complete" ? outcome.text : outcome.fragment };
 }
 function content(outcome: ReadOutcome): { type: "text"; text: string }[] {
 	const { header, source } = readText(outcome);
 	return [{ type: "text", text: header }, ...(source === undefined ? [] : [{ type: "text" as const, text: source }])];
 }
 
-export function createReadTool(options: {
-	store: MarkdownStore;
-	app?: string;
-	connection?: (context: ExtensionContext) => Promise<LiveConfig>;
-}): ToolDefinition<typeof ReadParameters, ReadOutcome> {
+export function createReadTool(options: { store: MarkdownStore }): ToolDefinition<typeof ReadParameters, ReadOutcome> {
 	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_read");
 	return {
 		...presentation,
@@ -497,22 +484,15 @@ export function createReadTool(options: {
 		promptSnippet: "Find stored Markdown documents and read an exact revision in pages, for example before an update.",
 		parameters: ReadParameters,
 		outputSchema: ReadOutcomeSchema,
-		async execute(_id, params, _signal, _update, context) {
-			let outcome = await readStored(options.store, params as ReadInput, options.app);
-			const connection = options.connection;
-			if (outcome.ok && outcome.op === "read")
-				outcome = await withLiveShow(outcome, options.app, connection ? () => connection(context) : undefined, _signal);
+		async execute(_id, params) {
+			const outcome = await readStored(options.store, params as ReadInput);
 			return { content: content(outcome), details: outcome, structuredContent: outcome, isError: !outcome.ok };
 		},
 	};
 }
 export function createNativeReadTool(
 	durable: typeof Durable,
-	options: {
-		store: MarkdownStore;
-		app?: string;
-		connection?: (conversation: Durable.ConversationId, context: Context) => Promise<LiveConfig>;
-	},
+	options: { store: MarkdownStore },
 ): Durable.ToolRegistration<typeof ReadParameters, Durable.JsonObject> {
 	return durable.defineTool({
 		name: "markdown_read",
@@ -520,18 +500,10 @@ export function createNativeReadTool(
 		parameters: ReadParameters,
 		structuredOutputSchema: ReadOutcomeSchema,
 		replay: "safe",
-		// A source page can be all newlines; both limits also reserve room for the header and launch guidance.
+		// A source page can be all newlines; both limits also reserve room for the header.
 		outputLimits: { maxBytes: READ_PAGE_BYTES * 2, maxLines: READ_PAGE_BYTES + 128 },
-		async execute(params, api, context) {
-			let outcome = await readStored(options.store, params as ReadInput, options.app);
-			const connection = options.connection;
-			if (outcome.ok && outcome.op === "read")
-				outcome = await withLiveShow(
-					outcome,
-					options.app,
-					connection ? () => connection(api.conversationId, context) : undefined,
-					context.abortSignal,
-				);
+		async execute(params) {
+			const outcome = await readStored(options.store, params as ReadInput);
 			return { output: content(outcome), structuredOutput: outcome, details: outcome, isError: !outcome.ok };
 		},
 	});

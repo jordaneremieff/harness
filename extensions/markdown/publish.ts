@@ -1,46 +1,44 @@
 import { open, realpath } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
 import { hostname } from "node:os";
+import { basename, dirname, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import type { Context } from "@earendil-works/chord/context";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import { arr, obj, str, opt, int, num, bool, lit, union, type Static } from "@earendil-works/pi-schema";
-import { toolDisplay } from "./display.ts";
-import type { Context } from "@earendil-works/chord/context";
-import { previousNative } from "./native-responses.ts";
-import { hasPaneRevision, paneCommand } from "./pane-command.ts";
-import { withLiveShow } from "./live-launch.ts";
-import type { LiveConfig } from "./live-protocol.ts";
-import { previousOrdinary, responseSnapshotWrite, type ResponseSnapshot } from "./responses.ts";
-import { settings, type AgentPane } from "./settings.ts";
-import {
-	digest,
-	INSPECTION_FAILURES,
-	LIMITS,
-	type MarkdownStore,
-	StoreError,
-	validateInput,
-	type AssetRecord,
-	type ContentOrigin,
-	type ErrorCode,
-	type InspectionFailure,
-	type PublicationPlan,
-	type ReferenceInventory,
-	type StoredDocument,
-	type WriteInput,
-	type WriteResult,
-} from "./store.ts";
-
-import { checkWriting, describeFindings, type Finding } from "./checks.ts";
-import { RULE_IDS, describeRules } from "./check-rules.ts";
+import { arr, bool, int, lit, num, obj, opt, type Static, str, union } from "@earendil-works/pi-schema";
 import { buildBrief, formatBrief, type WritingBrief } from "./brief.ts";
 import {
 	BRIEF_GUIDANCE,
+	type BriefBuilder,
 	makeBrief,
 	nativeBrief,
 	ordinaryBriefMessages,
 	WritingBriefSchema,
-	type BriefBuilder,
 } from "./brief-tool.ts";
+import { describeRules, RULE_IDS } from "./check-rules.ts";
+import { checkWriting, describeFindings, type Finding } from "./checks.ts";
+import { toolDisplay } from "./display.ts";
+import { previousNative } from "./native-responses.ts";
+import { type PaneInventory, PaneInventorySchema, type ShowRequest, ShowRequestSchema } from "./pane-state.ts";
+import { previousOrdinary, type ResponseSnapshot, responseSnapshotWrite } from "./responses.ts";
+import { type AgentPane, settings } from "./settings.ts";
+import {
+	type AssetRecord,
+	type ContentOrigin,
+	digest,
+	type ErrorCode,
+	INSPECTION_FAILURES,
+	type InspectionFailure,
+	LIMITS,
+	type MarkdownStore,
+	type PublicationPlan,
+	type ReferenceInventory,
+	type StoredDocument,
+	StoreError,
+	validateInput,
+	type WriteInput,
+	type WriteResult,
+} from "./store.ts";
 import { loadLexicon, WritingConfigError, type WritingOptions } from "./writing-config.ts";
 
 export const PublishParameters = obj(
@@ -93,6 +91,17 @@ export type ReferenceSummary = {
 	unavailableItems?: { reference: string; reason: string }[];
 	kept?: { revision: number; images: number };
 };
+type PaneQuery = () => Promise<PaneInventory | undefined>;
+const PaneStateSchema = union([
+	obj({ status: lit("unknown") }),
+	obj({ status: lit("observed"), inventory: PaneInventorySchema, showing: arr(str()) }),
+]);
+type PaneState = Static<typeof PaneStateSchema>;
+const RecoverySchema = union([
+	obj({ op: lit("list") }),
+	obj({ op: lit("read"), handle: str() }),
+	obj({ document: str(), revision: int() }),
+]);
 export type PublishOutcome =
 	| {
 			ok: true;
@@ -108,16 +117,18 @@ export type PublishOutcome =
 			references: ReferenceSummary;
 			provenance: ContentOrigin;
 			open: string;
-			show?: string[];
-			paneInput?: string;
-			showUnavailable?: string;
-			panes?: number;
+			show: ShowRequest;
+			paneState: PaneState;
 			checks?: { findings: Finding[] };
 	  }
 	| {
 			ok: false;
 			error: {
-				code: ErrorCode | "checks";
+				code: ErrorCode | "checks" | "live-editor" | "live-state-unavailable";
+				currentMatches?: "source" | "source-title-references";
+				currentFromEditor?: boolean;
+				next?: Static<typeof RecoverySchema>;
+				paneState?: PaneState;
 				findings?: Finding[];
 				brief?: WritingBrief;
 				message: string;
@@ -163,10 +174,8 @@ export const PublishOutcomeSchema = union([
 		references: ReferenceSummarySchema,
 		provenance: OriginSchema,
 		open: str(),
-		show: opt(arr(str())),
-		paneInput: opt(str()),
-		showUnavailable: opt(str()),
-		panes: opt(int()),
+		show: ShowRequestSchema,
+		paneState: PaneStateSchema,
 		checks: opt(obj({ findings: FindingsSchema })),
 	}),
 	obj({
@@ -182,11 +191,17 @@ export const PublishOutcomeSchema = union([
 					"file-unreadable",
 					"store-failure",
 					"checks",
+					"live-editor",
+					"live-state-unavailable",
 				].map((code) => lit(code)),
 			),
 			message: str(),
 			currentRevision: opt(int()),
 			currentDigest: opt(str()),
+			currentMatches: opt(union([lit("source"), lit("source-title-references")])),
+			currentFromEditor: opt(bool()),
+			next: opt(RecoverySchema),
+			paneState: opt(PaneStateSchema),
 			findings: opt(FindingsSchema),
 			brief: opt(WritingBriefSchema),
 		}),
@@ -211,37 +226,30 @@ const PLACEMENT: Record<AgentPane, string> = {
 	float: "a floating pane that stays in place",
 };
 const USE_PANE =
-	"Use the exact show command as the program of the new pane, with no target, and close the pane when its program ends. Respect the operator's requested placement. Do not take focus unless the operator asked to see it now.";
-export const NATIVE_PUBLISH_GUIDANCE = `Publish silently when a document helps the recipient. ${REPORT} Do not open or navigate a reader pane unless the operator explicitly asks you to show the material. For that request, reuse the reader pane you already opened. If you need a new pane, use a split on the right of the inherited pane. ${USE_PANE} ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
+	"Pass the returned show request to markdown_live. Only status:launch offers a one-use command for a new pane. Run that exact command as its program, with no target, and close the pane when its program ends. Starting the program does not confirm display. Check the reported document and revision with markdown_live list. Status:navigated confirms the document, revision and handle. If display is uncertain, list panes rather than launching another. Respect the operator's requested placement. Do not take focus unless the operator asked to see it now.";
+export const NATIVE_PUBLISH_GUIDANCE = `Publish silently when a document helps the recipient. ${REPORT} Do not open or navigate a reader pane unless the operator explicitly asks you to show the material. For that request, reuse a reader pane you opened. For a new pane, use a split on the right of the inherited pane. ${USE_PANE} ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
 export const publishGuideline = (pane: AgentPane): string =>
-	`If you work for another agent or run without an interactive conversation, publish silently and do not open or navigate a reader pane unless the operator explicitly asks you to show the material. ${REPORT} In the interactive session with the operator, show material that is hard to read in a terminal without waiting to be asked: ${READER_MATERIAL}. Choose which findings from other agents to show. Publish your synthesis or use markdown_read with the reported document ID. Reuse your reader pane across reports. For a new pane, use ${PLACEMENT[pane]}. ${USE_PANE} Say what the pane holds and give the answer and any needed decision in chat. A plain answer of a few sentences stays in chat. ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
-/**
- * How an agent learns that the operator closed a reader pane. Ordinary conversations also receive
- * a notice when a pane closes; native conversations learn it from the update result only.
- */
-const PANE_CLOSURE = {
-	notice:
-		"The operator can close a reader pane at any time. When a reader pane connected to this conversation closes, a notice in the conversation says so and how many panes remain connected; the result of an update gives the same count. With no pane connected, nothing that you save reaches the operator by itself: show the document in a new pane if the operator should read it now, or answer in chat and say that it is saved, and never tell the operator that a pane shows it.",
-	result:
-		"The operator can close a reader pane at any time. The result of an update says how many reader panes are still connected to this conversation; when none is, no pane of yours shows the update, so do not tell the operator that a pane shows it.",
-};
+	`If you work for another agent or run without an interactive conversation, publish silently and do not open or navigate a reader pane unless the operator explicitly asks you to show the material. ${REPORT} In the interactive session with the operator, show material that is hard to read in a terminal without waiting to be asked: ${READER_MATERIAL}. Choose which findings from other agents to show. Publish your synthesis or use markdown_read with the reported document ID. Reuse your reader pane across reports. For a new pane, use ${PLACEMENT[pane]}. ${USE_PANE} Say what the pane holds only after the reader confirms the revision. Give the answer and any needed decision in chat. A plain answer of a few sentences stays in chat. ${BRIEF_GUIDANCE} ${ASK_REPLY}`;
+const EDITORIAL_POLICY =
+	"Writing checks apply to new full publications and replacements, not to live edits, private drafts, Undo, recovery, exact captures or saved replays. If publication checks refuse your text, repair it rather than switching to live edits. Use markdown_live for a requested change to the actual buffer.";
 const describePublication = (guidance: string, paneNotices: boolean) =>
-	`Save an exact Markdown document silently for the native reader. Supply a title and exactly one of text or an explicit local file. Updates require document and expectedRevision. No window opens. Configured writing checks return findings and can refuse new source; repair the sentence rather than swapping forms. ${guidance} Use markdown_live to change a connected pane's actual buffer; reserve document/expectedRevision updates for stored publications rather than live collaboration. ${PANE_CLOSURE[paneNotices ? "notice" : "result"]} When the result offers paneInput, use it to show the current revision in a reader pane that you opened instead of opening another pane. The pane keeps its place and saves the earlier document's reading position. Use a pinned show command in a new pane for an exact replay revision. Type into or close only reader panes that you opened yourself, never the operator's or another session's panes. To show a stored document again later, run the same command with that document's ID: the reader returns to the saved reading position. To show an earlier answer exactly, use response "previous" instead of retyping it. To explain something visually, write an SVG or PNG diagram beside a Markdown file, reference it with a relative image link, and publish the file: the revision keeps the image. Before you update a document whose current text you do not hold, read it with markdown_read; after a conflict, read the current revision that the conflict names. The operator can also open a published document from the Markdown view under Published, or with the result's open command in an ordinary Pi session.`;
+	`Save an exact Markdown document silently. Supply a title and one source: text or an explicit local file. To capture the earlier answer exactly, use response "previous" alone. For a diagram, publish a Markdown file that references the SVG or PNG beside it. To revise a stored draft, use its document ID and expectedRevision. Read the current revision with markdown_read if you do not hold its text. A clean editor permits a stored revision. On conflict, follow the receipt: preserve unsaved edits, check the current stored revision, and never retry an older replacement blindly. ${EDITORIAL_POLICY} ${guidance} Publication does not open or navigate panes. paneState.showing identifies only panes that reported the saved revision. Check the observations before you claim a pane shows it.${paneNotices ? " When a reader pane connected to this conversation closes, a notice identifies the departed pane." : ""} The operator can also open a document under Published in the Markdown view or with the open command in ordinary Pi.`;
 export const publishDescription = (pane: AgentPane, paneNotices = false): string =>
 	describePublication(publishGuideline(pane), paneNotices);
-export { captureReferences, inspectReferences } from "./reference-capture.ts";
 export type {
-	ReferenceRunner,
 	InspectionOptions,
-	ReferenceInspection,
 	InspectionResult,
 	KeptImages,
+	ReferenceInspection,
+	ReferenceRunner,
 } from "./reference-capture.ts";
+export { captureReferences, inspectReferences } from "./reference-capture.ts";
+
 import {
 	boundedFile,
 	captureReferences,
-	inspectReferences,
 	type InspectionOptions,
+	inspectReferences,
 	type KeptImages,
 } from "./reference-capture.ts";
 export type PublishOptions = InspectionOptions & {
@@ -250,6 +258,7 @@ export type PublishOptions = InspectionOptions & {
 	provenance?: Partial<ContentOrigin>;
 	plan?: PublicationPlan;
 	previousResponse?: () => Promise<ResponseSnapshot>;
+	observePanes?: PaneQuery;
 	writing?: WritingOptions;
 	brief?: BriefBuilder;
 };
@@ -424,11 +433,7 @@ async function snapshotPrevious(params: PublishInput, options: PublishOptions): 
 		throw new StoreError("not-found", error instanceof Error ? error.message : String(error));
 	}
 	const { sourceKey, input } = responseSnapshotWrite(response);
-	return publicationOutcome(
-		await options.store.snapshot(sourceKey, "response", input),
-		options.store.root,
-		options.app,
-	);
+	return publicationOutcome(await options.store.snapshot(sourceKey, "response", input));
 }
 const SUMMARY_ITEMS = 5;
 const SUMMARY_REFERENCE_CHARS = 120;
@@ -456,12 +461,7 @@ export function referenceSummary(references: ReferenceInventory): ReferenceSumma
 		...(unavailable.length ? { unavailableItems: unavailable } : {}),
 	};
 }
-export function publicationOutcome(
-	result: WriteResult,
-	root: string,
-	app: string | undefined,
-	kept?: ReferenceSummary["kept"],
-): PublishOutcome {
+export function publicationOutcome(result: WriteResult, kept?: ReferenceSummary["kept"]): PublishOutcome {
 	const { revision } = result;
 	return {
 		ok: true,
@@ -477,7 +477,12 @@ export function publicationOutcome(
 		references: { ...referenceSummary(revision.references), ...(kept && !result.replayed ? { kept } : {}) },
 		provenance: revision.contentOrigin,
 		open: `/markdown ${revision.document}`,
-		...paneCommand(app, root, revision.document, result.replayed ? revision : undefined),
+		show: {
+			op: "show",
+			document: revision.document,
+			...(result.replayed || result.document.kind === "response" ? { revision: revision.revision } : {}),
+		},
+		paneState: { status: "unknown" },
 	};
 }
 /** The images that a text update kept from the revision it edits. */
@@ -546,22 +551,139 @@ async function normaliseInvocation(
 		throw new StoreError("invalid", "Only published documents accept explicit updates.");
 	return { ...params, document: stored.document.id };
 }
+type StoredTarget = { document: string; revision: number; digest?: string; kind: "published" | "response" };
+async function observe(
+	query: PaneQuery | undefined,
+	storeId: string | undefined,
+	target: StoredTarget,
+): Promise<PaneState> {
+	let inventory: PaneInventory | undefined;
+	try {
+		inventory = await query?.();
+	} catch {
+		return { status: "unknown" };
+	}
+	return classifyPanes(inventory, storeId, target);
+}
+function classifyPanes(
+	inventory: PaneInventory | undefined,
+	storeId: string | undefined,
+	target: StoredTarget,
+): PaneState {
+	if (!inventory) return { status: "unknown" };
+	const showing = inventory.panes
+		.filter(
+			({ view }) =>
+				storeId !== undefined &&
+				view.storeId === storeId &&
+				view.kind === target.kind &&
+				view.documentId === target.document &&
+				view.revision === target.revision &&
+				(!view.digest || !target.digest || view.digest === target.digest) &&
+				!view.dirty &&
+				!view.conflict,
+		)
+		.map(({ handle }) => handle);
+	return { status: "observed", inventory, showing };
+}
+function editor(state: PaneState, storeId: string | undefined, document: string) {
+	return state.status === "observed"
+		? state.inventory.panes.find(
+				({ view }) =>
+					view.documentId === document &&
+					(!view.storeId || !storeId || view.storeId === storeId) &&
+					(view.kind === "loading" || (view.kind === "published" && (view.dirty || view.conflict))),
+			)
+		: undefined;
+}
 async function save(params: PublishInput, input: WriteInput, options: PublishOptions): Promise<PublishOutcome> {
-	if (params.document)
+	const { store, plan, observePanes } = options;
+	const { document, expectedRevision, reuseKey } = params;
+	if (!document) return publicationOutcome(await store.create(input, { plan, reuseKey }));
+	const storeId = (await store.identity())?.storeId;
+	const target = { document, revision: expectedRevision ?? 0, kind: "published" } as const;
+	const paneState = await observe(observePanes, storeId, target);
+	if (observePanes && paneState.status === "unknown")
+		return {
+			ok: false,
+			error: {
+				code: "live-state-unavailable",
+				message: "Pane state is unavailable. List the panes in this conversation before a stored update.",
+				paneState,
+				next: { op: "list" },
+			},
+		};
+	const active = editor(paneState, storeId, document);
+	if (active) {
+		const current = await store.get(document);
+		if (current.revision.revision !== target.revision && paneState.status === "observed") {
+			const state = classifyPanes(paneState.inventory, storeId, {
+				...target,
+				revision: current.revision.revision,
+				digest: current.revision.digest,
+			});
+			return stalePublication(input, current, state, active.handle);
+		}
+		return {
+			ok: false,
+			error: {
+				code: "live-editor",
+				message: `Pane ${active.handle} ${active.view.kind === "loading" ? "has not confirmed its state" : "reports unsaved changes or a conflict"} for ${document}. No stored update was made.`,
+				currentRevision: current.revision.revision,
+				currentDigest: current.revision.digest,
+				paneState,
+				next: { op: "read", handle: active.handle },
+			},
+		};
+	}
+	try {
 		return publicationOutcome(
-			await options.store.update(params.document, params.expectedRevision ?? 0, input, {
-				plan: options.plan,
-				reuseKey: params.reuseKey,
-			}),
-			options.store.root,
-			options.app,
+			await store.update(document, target.revision, input, { plan, reuseKey, expectedStoreId: storeId }),
 			keptSummary(input),
 		);
-	return publicationOutcome(
-		await options.store.create(input, { plan: options.plan, reuseKey: params.reuseKey }),
-		options.store.root,
-		options.app,
-	);
+	} catch (error) {
+		if (!(error instanceof StoreError) || error.code !== "conflict" || error.currentRevision === undefined) throw error;
+		const current = await store.get(document);
+		const state = await observe(observePanes, storeId, {
+			...target,
+			revision: current.revision.revision,
+			digest: current.revision.digest,
+		});
+		return stalePublication(input, current, state, editor(state, storeId, document)?.handle, !!observePanes);
+	}
+}
+function stalePublication(
+	input: WriteInput,
+	current: StoredDocument,
+	paneState: PaneState,
+	handle?: string,
+	observed = true,
+): PublishOutcome {
+	const { revision } = current;
+	return {
+		ok: false,
+		error: {
+			code: "conflict",
+			message: "Expected revision is stale. No stored update was made.",
+			currentRevision: revision.revision,
+			currentDigest: revision.digest,
+			paneState,
+			...(current.source === input.source
+				? {
+						currentFromEditor: revision.contentOrigin.kind === "editor",
+						currentMatches:
+							revision.title === input.title && isDeepStrictEqual(revision.references, input.references)
+								? "source-title-references"
+								: "source",
+					}
+				: {}),
+			...(handle
+				? { next: { op: "read", handle } as const }
+				: observed && paneState.status === "unknown"
+					? { next: { op: "list" } as const }
+					: { next: { document: revision.document, revision: revision.revision } }),
+		},
+	};
 }
 async function savedPlan(store: MarkdownStore, plan: PublicationPlan): Promise<WriteResult | undefined> {
 	try {
@@ -585,12 +707,15 @@ function withFindings(outcome: PublishOutcome, findings: Finding[], writing?: Wr
 	return outcome.ok && !outcome.replayed && writing?.mode === "warn" ? { ...outcome, checks: { findings } } : outcome;
 }
 export async function publish(params: PublishInput, options: PublishOptions): Promise<PublishOutcome> {
+	return withPanes(await publication(params, options), options);
+}
+async function publication(params: PublishInput, options: PublishOptions): Promise<PublishOutcome> {
 	try {
 		if (params?.response !== undefined) return await snapshotPrevious(params, options);
 		params = await normaliseInvocation(params, options.store);
 		const plan = await previousPlan(params, options);
 		const saved = plan ? await savedPlan(options.store, plan) : undefined;
-		if (saved) return publicationOutcome(saved, options.store.root, options.app);
+		if (saved) return publicationOutcome(saved);
 		const { input, findings } = await preparePublication(params, options);
 		return withFindings(await save(params, input, { ...options, plan }), findings, options.writing);
 	} catch (error) {
@@ -623,30 +748,49 @@ function savedText(outcome: Extract<PublishOutcome, { ok: true }>): string {
 		return `Returned the earlier publication ${identity}: this request was already saved, so later changes to its text, file or images are not in it. No window opened.`;
 	return `Saved ${outcome.created ? "new document " : ""}${identity}. No window opened.`;
 }
-function nextText(outcome: Extract<PublishOutcome, { ok: true }>): string {
-	if (!outcome.show)
-		return `It cannot be shown in a pane: ${outcome.showUnavailable ?? "no reader command is available."}`;
-	const command = JSON.stringify(outcome.show);
-	const input =
-		outcome.paneInput && outcome.panes !== 0
-			? `type ${JSON.stringify(outcome.paneInput.trimEnd())} and Enter into a reader pane that you opened, or `
-			: "";
-	if (outcome.replayed) {
-		if (hasPaneRevision(outcome.show))
-			return `To show revision ${outcome.revision}, run ${command} as the program of a new pane.`;
-		return `Current revision only: this reader build cannot pin revision ${outcome.revision}. To show the current revision, ${input}run ${command} as the program of a new pane.`;
-	}
-	if (outcome.kind !== "published" || outcome.revision < 2)
-		return `To show it now, ${input}run ${command} as the program of a new pane.`;
-	if (outcome.panes === 0)
-		return `No reader pane is connected to this conversation now; the operator may have closed it. No pane of yours shows this revision. To show it now, run ${command} as the program of a new pane.`;
-	const open =
-		outcome.panes === undefined
-			? ""
-			: `${outcome.panes} reader ${outcome.panes === 1 ? "pane is" : "panes are"} connected to this conversation. `;
-	return `${open}A reader pane that still shows ${outcome.documentId} follows this revision by itself; the operator can close a pane at any time. To show it elsewhere, ${input}run ${command} as the program of a new pane.`;
+function paneText(state: PaneState): string {
+	if (state.status === "unknown") return "Reader pane state is unknown for this conversation.";
+	const observedRevision = (view: PaneInventory["panes"][number]["view"]) => {
+		if (view.revision === undefined) return "";
+		return ` ${view.dirty || view.conflict ? "base revision" : "revision"} ${view.revision}`;
+	};
+	const rows = state.inventory.panes.map(({ handle, view }) => {
+		const target = view.documentId ?? view.kind;
+		const revision = observedRevision(view);
+		const follow =
+			view.follows === undefined ? "follow policy unknown" : view.follows ? "follow latest on" : "follow latest off";
+		const store = view.storeId ? `, store ${view.storeId}` : "";
+		return `Pane ${handle} last reported ${JSON.stringify(view.title)} (${target}${revision}, ${view.mode}${view.dirty ? ", unsaved" : ""}${view.conflict ? ", conflict" : ""}, ${follow}${store}).${state.showing.includes(handle) ? " It reported the saved revision." : " It did not confirm the saved revision."}`;
+	});
+	const pending = state.inventory.pending.map(
+		(item) =>
+			`Launch ${item.launchId} (${item.documentId ?? "target unknown"}): ${item.status}. No connected pane confirmed by this launch.`,
+	);
+	return [...(rows.length ? rows : ["No connected reader pane was observed in this conversation."]), ...pending].join(
+		"\n",
+	);
 }
-function failureText(error: Extract<PublishOutcome, { ok: false }>["error"]): string {
+function nextText(outcome: Extract<PublishOutcome, { ok: true }>): string {
+	return [
+		paneText(outcome.paneState),
+		...(outcome.paneState.status === "observed" && outcome.paneState.showing.length
+			? []
+			: [`Optional display request for markdown_live (not run): ${JSON.stringify(outcome.show)}`]),
+	].join("\n");
+}
+type PublishError = Extract<PublishOutcome, { ok: false }>["error"];
+function currentText(error: PublishError): string {
+	if (error.currentRevision === undefined) return "";
+	const revision = ` Revision ${error.currentRevision} (${error.currentDigest ?? "digest unknown"}) is current.`;
+	if (!error.currentMatches) return revision;
+	const origin = error.currentFromEditor ? " from the editor" : "";
+	const match =
+		error.currentMatches === "source-title-references"
+			? "the requested source, title and reference inventory"
+			: "the requested source; its title or reference inventory differs";
+	return `${revision} The stored revision${origin} already contains ${match}.`;
+}
+function failureText(error: PublishError): string {
 	if (error.code === "checks" && error.findings)
 		return [
 			error.message,
@@ -655,29 +799,42 @@ function failureText(error: Extract<PublishOutcome, { ok: false }>["error"]): st
 			"Fix the passages and publish again.",
 		].join("\n");
 	const text = `Markdown publication failed (${error.code}): ${error.message}`;
+	const current = currentText(error);
+	if (error.next && "op" in error.next) {
+		const state = error.paneState ? `\n${paneText(error.paneState)}` : "";
+		const advice =
+			error.next.op === "read"
+				? "Keep the live draft. Use markdown_live to edit it. For a stored update, first let the editor save or resolve its conflict. Read the resulting revision before you compose the update. Never publish a page of the live buffer as the whole document."
+				: "Check the pane state before changing the document. Do not retry the old replacement.";
+		return `${text}${current}${state}\nUse markdown_live with ${JSON.stringify(error.next)}. ${advice}`;
+	}
+	if (error.currentMatches === "source-title-references") return `${text}${current} No duplicate revision is needed.`;
 	if (error.code === "conflict" && error.currentRevision !== undefined)
-		return `${text} Revision ${error.currentRevision} (${error.currentDigest ?? "digest unknown"}) is current. Read it with markdown_read (this document, revision ${error.currentRevision}), apply your change to that text, and publish again with expectedRevision ${error.currentRevision}. Text based on an older revision would undo its changes.`;
+		return `${text}${current} Read it with markdown_read (this document, revision ${error.currentRevision}), apply your change to that text, and publish again with expectedRevision ${error.currentRevision}. Text based on an older revision would undo its changes.`;
 	if (error.code === "replay-conflict")
 		return `${text} This reuseKey already names other input; use a new reuseKey for new input.`;
 	return text;
 }
-/**
- * Counts the reader panes connected to this conversation, when the show command carries the live
- * connection through which a pane reports itself. A pane leaves the count when it closes.
- */
-export async function withPanes(
+async function withPanes(
 	outcome: PublishOutcome,
-	panes?: () => Promise<number | undefined>,
+	{ store, observePanes }: Pick<PublishOptions, "store" | "observePanes">,
 ): Promise<PublishOutcome> {
-	if (!outcome.ok || !panes || !outcome.show?.includes("--live")) return outcome;
-	const count = await panes().catch(() => undefined);
-	return count === undefined ? outcome : { ...outcome, panes: count };
+	if (!outcome.ok || !observePanes) return outcome;
+	const storeId = (await store.identity().catch(() => undefined))?.storeId;
+	return {
+		...outcome,
+		paneState: await observe(observePanes, storeId, {
+			document: outcome.documentId,
+			revision: outcome.revision,
+			digest: outcome.digest,
+			kind: outcome.kind,
+		}),
+	};
 }
 export function createPublishTool(
-	options: Omit<PublishOptions, "cwd"> & {
+	options: Omit<PublishOptions, "cwd" | "observePanes"> & {
 		cwd?: string;
-		connection?: (context: ExtensionContext) => Promise<LiveConfig>;
-		panes?: (context: ExtensionContext) => Promise<number | undefined>;
+		panes?: (context: ExtensionContext) => Promise<PaneInventory | undefined>;
 		pane?: AgentPane;
 		/** The conversation receives a notice when a connected reader pane closes. */
 		paneNotices?: boolean;
@@ -691,28 +848,33 @@ export function createPublishTool(
 		name: "markdown_publish",
 		label: "Markdown Publish",
 		description: publishDescription(pane, options.paneNotices),
-		promptSnippet:
-			"Save an exact Markdown document for the native reader; its show command puts the reader over a terminal pane.",
+		promptSnippet: "Save an exact Markdown document silently and report the stored revision and observed pane state.",
 		promptGuidelines: [publishGuideline(pane)],
 		parameters: PublishParameters,
 		outputSchema: PublishOutcomeSchema,
 		async execute(_id, params, _signal, _update, context) {
-			let outcome = await publish(params as PublishInput, {
+			const { panes } = options;
+			const session = context.sessionManager.getSessionId();
+			const observePanes = panes
+				? async () => {
+						if (context.sessionManager.getSessionId() !== session) return undefined;
+						const inventory = await panes(context);
+						return context.sessionManager.getSessionId() === session ? inventory : undefined;
+					}
+				: undefined;
+			const outcome = await publish(params as PublishInput, {
 				...options,
+				observePanes,
 				writing,
 				brief: makeBrief(writing, () => ordinaryBriefMessages(context.sessionManager)),
 				cwd: context.cwd,
 				provenance: {
 					...options.provenance,
-					session: context.sessionManager.getSessionId(),
+					session,
 					...(context.model ? { model: `${context.model.provider}/${context.model.id}` } : {}),
 				},
 				previousResponse: async () => previousOrdinary(context.sessionManager),
 			});
-			const { connection, panes } = options;
-			if (outcome.ok)
-				outcome = await withLiveShow(outcome, options.app, connection ? () => connection(context) : undefined, _signal);
-			outcome = await withPanes(outcome, panes ? () => panes(context) : undefined);
 			return {
 				content: [{ type: "text", text: publicationText(outcome) }],
 				details: outcome,
@@ -730,9 +892,8 @@ type NativeHost = {
 };
 export function createNativePublishTool(
 	host: NativeHost,
-	options: Omit<PublishOptions, "cwd" | "plan"> & {
-		connection?: (conversation: Durable.ConversationId, context: Context) => Promise<LiveConfig>;
-		panes?: (conversation: Durable.ConversationId) => Promise<number | undefined>;
+	options: Omit<PublishOptions, "cwd" | "plan" | "observePanes"> & {
+		panes?: (conversation: Durable.ConversationId) => Promise<PaneInventory | undefined>;
 	},
 ): Durable.ToolRegistration<typeof PublishParameters, Durable.JsonObject> {
 	return host.durable.defineTool({
@@ -743,24 +904,17 @@ export function createNativePublishTool(
 		replay: "safe",
 		async execute(params, api, context) {
 			try {
-				let outcome =
+				const { panes } = options;
+				const local = { ...options, observePanes: panes ? () => panes(api.conversationId) : undefined };
+				const outcome =
 					params?.response !== undefined
 						? await snapshotPrevious(params, {
 								...options,
 								cwd: api.env?.cwd ?? host.cwd,
 								previousResponse: () => nativePrevious(host, api, context),
 							})
-						: await nativePublication(params, api, context, host, options);
-				const { connection, panes } = options;
-				if (outcome.ok)
-					outcome = await withLiveShow(
-						outcome,
-						options.app,
-						connection ? () => connection(api.conversationId, context) : undefined,
-						context.abortSignal,
-					);
-				outcome = await withPanes(outcome, panes ? () => panes(api.conversationId) : undefined);
-				return nativeResult(outcome);
+						: await nativePublication(params, api, context, host, local);
+				return nativeResult(await withPanes(outcome, local));
 			} catch (error) {
 				return nativeResult(failure(error));
 			}
@@ -781,7 +935,7 @@ async function nativePublication(
 	const previous = await previousPlan(params, { ...options, cwd, plan: remembered });
 	if (previous) await api.memo("markdown.publication", previous, context);
 	const saved = previous ? await savedPlan(options.store, previous) : undefined;
-	if (saved) return publicationOutcome(saved, options.store.root, options.app);
+	if (saved) return publicationOutcome(saved);
 	const agent = await api.agent(context);
 	const writing = options.writing ?? { mode: settings.fields.checks.default };
 	const local = {

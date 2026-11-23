@@ -53,7 +53,7 @@ interface Pending {
 	cancelled: boolean;
 }
 type Apply = Extract<LiveAction, { op: "apply" }>;
-export type AnchorIdentity = { key: string; refreshed: boolean };
+export type AnchorIdentity = { key: string };
 type EditReceipt = { fingerprint: string; pending: Pending; anchor?: AnchorIdentity };
 const RELOAD_PAUSE = { ok: false, error: "Pi is reloading this conversation." };
 const POLL_GRACE_MS = 6_000;
@@ -328,7 +328,7 @@ export class LiveBridge {
 			throw new Error("The live Markdown document closed or changed.");
 		return handle;
 	}
-	resolvedEdit(handle: string, operationId: string, key: string): { action: Apply; refreshed: boolean } | undefined {
+	resolvedEdit(handle: string, operationId: string, key: string): { action: Apply } | undefined {
 		if (this.fencedEdits.has(operationId))
 			throw new Error("The previous host did not transfer this edit receipt. Inspect the pane before another edit.");
 		const prior = this.edits.get(operationId);
@@ -339,7 +339,6 @@ export class LiveBridge {
 		const { baseGeneration, baseDigest, edits } = action;
 		return {
 			action: { op: "apply", operationId, baseGeneration, baseDigest, edits },
-			refreshed: prior.anchor.refreshed,
 		};
 	}
 	async execute(handle: string, input: LiveAction, signal?: AbortSignal, anchor?: AnchorIdentity): Promise<LiveResult> {

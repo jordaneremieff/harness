@@ -1,5 +1,5 @@
 import type { AgentToolResult, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Text, type Component } from "@earendil-works/pi-tui";
+import { type Component, Text } from "@earendil-works/pi-tui";
 
 type Publication = {
 	version: 1;
@@ -79,7 +79,10 @@ function subject(name: ToolName, args: Record<string, unknown>): string {
 			string(args.file) ||
 			(args.response === "previous" ? "previous response" : string(args.document))
 		);
-	if (name === "markdown_live") return `${string(args.op)}${args.handle ? ` ${string(args.handle)}` : ""}`;
+	if (name === "markdown_live") {
+		const target = args.op === "show" ? string(args.document) : string(args.handle);
+		return `${string(args.op)}${target ? ` ${target}` : ""}`;
+	}
 	if (args.document)
 		return `${string(args.document)}${args.revision === undefined ? "" : ` · revision ${number(args.revision)}`}`;
 	return `find ${string(args.kind) || "published"}${args.query ? ` · ${string(args.query)}` : ""}`;
@@ -107,14 +110,39 @@ function storedSummary(value: Record<string, unknown>): string {
 		return `Read ${string(value.documentId)} · revision ${number(value.revision)} of ${number(value.currentRevision)} · offset ${number(value.offset)}`;
 	return "Read result available";
 }
+function liveReadSummary(value: Record<string, unknown>): string {
+	const view = record(record(value.pane).view);
+	const state = view.conflict === true ? " · autosave conflict" : view.dirty === true ? " · unsaved" : "";
+	const next = typeof value.nextOffset === "number" ? ` · next ${value.nextOffset}` : "";
+	const read = value.status === "complete" ? "Read complete live source" : "Read live fragment";
+	return `${read} · generation ${number(value.generation)} · offset ${number(value.offset)}${next}${state}`;
+}
 function liveSummary(value: Record<string, unknown>): string {
-	if (Array.isArray(value.panes))
-		return `${value.panes.length} connected ${value.panes.length === 1 ? "pane" : "panes"}`;
-	if (value.status === "ok")
-		return `Read live source · generation ${number(value.generation)} · offset ${number(value.offset)}${typeof value.nextOffset === "number" ? ` · next ${value.nextOffset}` : ""}`;
-	if (value.status === "applied")
-		return `Applied · generation ${number(value.generation)}${value.retained === true ? " · recovery retained" : ""}`;
-	return typeof value.status === "string" ? `${value.status}: ${string(value.message)}` : "Live result available";
+	if (Array.isArray(value.panes)) {
+		const pending = Array.isArray(value.pending) ? value.pending.length : 0;
+		return `${value.panes.length} connected ${value.panes.length === 1 ? "pane" : "panes"}${pending ? ` · ${pending} pending` : ""}`;
+	}
+	switch (value.status) {
+		case "navigated": {
+			const view = record(value.view);
+			return `Reader confirmed ${string(view.documentId)} · revision ${number(view.revision)}`;
+		}
+		case "launch":
+			return `Launch offered for ${string(value.documentId)} · display unconfirmed`;
+		case "pending":
+			return "Reader launch outstanding · display unconfirmed";
+		case "comments":
+			return `${number(value.total)} ${string(value.commentState)} comments · offset ${number(value.offset)}`;
+		case "commentSet":
+			return `Comment ${string(value.commentState)} · version ${number(value.version)}`;
+		case "complete":
+		case "page":
+			return liveReadSummary(value);
+		case "applied":
+			return `Applied · generation ${number(value.generation)}${value.retained === true ? " · recovery retained" : ""}`;
+		default:
+			return typeof value.status === "string" ? `${value.status}: ${string(value.message)}` : "Live result available";
+	}
 }
 const summaries = { markdown_publish: publishedSummary, markdown_read: storedSummary, markdown_live: liveSummary };
 function result(name: ToolName): Result {

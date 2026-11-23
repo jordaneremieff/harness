@@ -1,0 +1,338 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test, type TestContext } from "node:test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import * as Durable from "@earendil-works/pi-durable";
+import { LiveBridge } from "./live-bridge.ts";
+import { isRecord } from "./live-protocol.ts";
+import { createLiveTool, createNativeLiveTool } from "./live-tool.ts";
+import type { PaneInventory } from "./pane-state.ts";
+import { MarkdownStore } from "./store.ts";
+
+async function fixture(t: TestContext) {
+	const root = await mkdtemp(join(tmpdir(), "markdown-show-"));
+	t.after(() => rm(root, { force: true, recursive: true }));
+	const store = new MarkdownStore(join(root, "store"));
+	const first = await store.create({
+		title: "Plan",
+		source: "Draft one",
+		contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() },
+	});
+	const document = first.document.id;
+	const second = await store.update(document, 1, {
+		title: "Plan",
+		source: "Draft two",
+		contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() },
+	});
+	const identity = await store.identity();
+	assert.ok(identity);
+	return {
+		root,
+		store,
+		storeId: identity.storeId,
+		document,
+		first: first.revision.digest,
+		second: second.revision.digest,
+	};
+}
+function pane(origin: "agent" | "operator"): PaneInventory["panes"][number] {
+	const workspace = randomUUID(),
+		document = randomUUID();
+	return {
+		handle: `${workspace}:${document}`,
+		workspace,
+		document,
+		origin,
+		live: 3,
+		pid: process.pid,
+		reportedAt: Date.now(),
+		view: { kind: "scratchpad", mode: "writing", title: "Notes", dirty: false, conflict: false, follows: false },
+	};
+}
+function recipient(inventory: PaneInventory, deliver: (handle: string, action: Record<string, unknown>) => unknown) {
+	return {
+		list: () => inventory.panes,
+		pendingLaunches: () => inventory.pending,
+		execute: async (handle: string, action: Record<string, unknown>) => deliver(handle, action),
+	} as unknown as LiveBridge;
+}
+const forbidden = async (): Promise<never> => {
+	throw new Error("Unexpected reader launch");
+};
+const ctx = (session = () => "original") =>
+	({ sessionManager: { getSessionId: session } }) as unknown as ExtensionToolContext;
+type NativeTool = ReturnType<typeof createNativeLiveTool>;
+type Input = Parameters<NativeTool["execute"]>[0];
+async function ordinary(tool: ReturnType<typeof createLiveTool>, input: Input, context = ctx()) {
+	const result = await tool.execute("call", input, undefined, undefined, context);
+	assert.ok(isRecord(result.structuredContent));
+	return result.structuredContent;
+}
+async function native(tool: NativeTool, input: Input, api: Durable.ToolExecutionApi) {
+	const result = await tool.execute(input, api, BACKGROUND_CONTEXT);
+	assert.ok("structuredOutput" in result && isRecord(result.structuredOutput));
+	return result.structuredOutput;
+}
+function task(beforeSave: (value: unknown) => void = () => {}) {
+	const memos = new Map<string, unknown>();
+	return {
+		conversationId: "original",
+		taskId: 1,
+		memo: async (name: string, value: unknown, context?: unknown) => {
+			if (context !== undefined && !memos.has(name)) {
+				beforeSave(value);
+				memos.set(name, structuredClone(value));
+			}
+			return structuredClone(memos.get(name));
+		},
+	} as unknown as Durable.ToolExecutionApi;
+}
+
+test("show requests current-follow or an exact revision, and reports only what the selected pane confirms", async (t) => {
+	const { store, storeId, document, first, second } = await fixture(t);
+	const agent = pane("agent"),
+		operator = pane("operator"),
+		next = pane("agent");
+	const calls: unknown[] = [];
+	const inventory = { panes: [operator, agent], pending: [] };
+	const confirm = (revision: number, digest: string, follows: boolean) => ({
+		status: "navigated" as const,
+		workspace: agent.workspace,
+		document: next.document,
+		handle: `${agent.workspace}:${next.document}`,
+		view: {
+			...agent.view,
+			kind: "published" as const,
+			title: "Plan",
+			mode: "reading" as const,
+			storeId,
+			documentId: document,
+			revision,
+			digest,
+			follows,
+		},
+	});
+	const receipts = [
+		confirm(2, second, true),
+		confirm(1, first, false),
+		{ status: "stale", message: "The selected document changed." },
+		{ status: "uncertain", message: "Lost display acknowledgement." },
+	];
+	const host = recipient(inventory, (handle, action) => {
+		calls.push([handle, action]);
+		const receipt = receipts[calls.length - 1];
+		if ("view" in receipt && receipt.view)
+			inventory.panes[1] = { ...agent, handle: receipt.handle, document: receipt.document, view: receipt.view };
+		return receipt;
+	});
+	const tool = createLiveTool(async () => host, { store, connection: forbidden });
+	const current = { op: "show", document } as const;
+	assert.deepEqual(await ordinary(tool, current), receipts[0]);
+	assert.deepEqual(await ordinary(tool, { ...current, revision: 1 }), receipts[1]);
+	assert.deepEqual(await ordinary(tool, current), receipts[2]);
+	const uncertain = await ordinary(tool, current);
+	assert.equal(uncertain.status, "uncertain");
+	assert.ok(String(uncertain.message).includes("Lost display acknowledgement."));
+	assert.ok(!("argv" in uncertain));
+	const follow = { op: "navigate", storeId, documentId: document };
+	assert.deepEqual(
+		calls,
+		[follow, { ...follow, revision: 1, digest: first }, follow, follow].map((action, i) => [
+			i === 0 ? agent.handle : `${agent.workspace}:${next.document}`,
+			action,
+		]),
+	);
+});
+
+test("ambiguous, obsolete and operator handles never authorise a fallback pane", async (t) => {
+	const { store, document } = await fixture(t);
+	const operator = pane("operator"),
+		inventory = { panes: [operator, pane("agent"), pane("agent")], pending: [] };
+	let dispatches = 0;
+	const host = recipient(inventory, () => {
+		dispatches++;
+	});
+	const tool = createLiveTool(async () => host, { store, connection: forbidden });
+	const show = { op: "show", document } as const;
+	for (const [request, status] of [
+		[show, "busy"],
+		[{ ...show, handle: operator.handle }, "error"],
+		[{ ...show, handle: pane("agent").handle }, "closed"],
+	] as const) {
+		const result = await ordinary(tool, request);
+		assert.equal(result.status, status);
+		assert.ok(!("argv" in result));
+	}
+	const unavailable = await ordinary(
+		createLiveTool(async () => host),
+		show,
+	);
+	assert.equal(unavailable.status, "error");
+	assert.ok(!("argv" in unavailable));
+	assert.equal(dispatches, 0);
+});
+
+test("switching or shutting down the invoking ordinary session prevents navigation", async (t) => {
+	const { store, document } = await fixture(t);
+	const inventory = { panes: [pane("agent")], pending: [] };
+	for (const change of ["switch", "shutdown"]) {
+		const controller = new AbortController();
+		let id = "original",
+			effects = 0;
+		const tool = createLiveTool(
+			async () => {
+				if (change === "switch") id = "another";
+				else controller.abort(new Error("Session closed"));
+				return recipient(inventory, () => {
+					effects++;
+				});
+			},
+			{
+				store,
+				lifecycle: () => controller.signal,
+				connection: async () => {
+					effects++;
+					return forbidden();
+				},
+			},
+		);
+		const result = ordinary(
+			tool,
+			{ op: "show", document },
+			ctx(() => id),
+		);
+		if (change === "shutdown") await assert.rejects(result, /Session closed/u);
+		else {
+			const refused = await result;
+			assert.equal(refused.status, "error");
+			assert.ok(!("argv" in refused));
+		}
+		assert.equal(effects, 0);
+	}
+});
+
+test("an operator pane permits one initial agent offer, never a second argv on task recovery", {
+	timeout: 10000,
+}, async (t) => {
+	const { root, store, document } = await fixture(t);
+	const previous = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = root;
+	t.after(() => {
+		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previous;
+	});
+	const app = join(root, "Reader.app"),
+		resources = join(app, "Contents", "Resources");
+	await mkdir(resources, { recursive: true });
+	await writeFile(
+		join(resources, "build.json"),
+		JSON.stringify({ contract: 1, pane: 1, live: 2, paneProtocol: 3, paneRevision: 1 }),
+	);
+	const server = new LiveBridge({ submit: async () => ({ status: "requested" }) });
+	t.after(() => server.close());
+	const live = await server.start();
+	const operator = pane("operator");
+	let calls = 0;
+	const host = {
+		list: () => [operator],
+		pendingLaunches: () => server.pendingLaunches(),
+		execute: forbidden,
+	} as unknown as LiveBridge;
+	const tool = createNativeLiveTool(
+		Durable,
+		async (id) => {
+			assert.equal(id, "original");
+			calls++;
+			return host;
+		},
+		{
+			store,
+			app,
+			connection: async (id) => {
+				assert.equal(id, "original");
+				return live;
+			},
+		},
+	);
+	const show = { op: "show", document } as const,
+		api = task();
+	const offer = await native(tool, show, api);
+	assert.equal(offer.status, "launch", String(offer.message));
+	assert.ok(Array.isArray(offer.argv) && typeof offer.launchId === "string");
+	const replay = await native(tool, show, api);
+	assert.equal(replay.status, "uncertain");
+	assert.ok(!("argv" in replay));
+	assert.equal(calls, 1);
+	const pending = async (status: "offered" | "launching") => {
+		const again = await native(tool, show, task());
+		assert.equal(again.status, "pending");
+		assert.ok(!("argv" in again));
+		assert.ok(Array.isArray(again.pending));
+		assert.equal(again.pending.length, 1);
+		const [row] = again.pending;
+		assert.ok(isRecord(row));
+		assert.equal(row.status, status);
+		assert.equal(row.launchId, offer.launchId);
+	};
+	await pending("offered");
+	const started = await fetch(`${live.endpoint}/starting`, {
+		method: "POST",
+		headers: { authorization: `Bearer ${live.token}`, "content-type": "application/json" },
+		body: JSON.stringify({ launchId: offer.launchId, pid: process.pid }),
+		signal: AbortSignal.timeout(2000),
+	});
+	await started.body?.cancel();
+	assert.equal(started.status, 200);
+	await pending("launching");
+});
+
+test("an interrupted show never navigates a replacement pane on task recovery", async (t) => {
+	const { store, document } = await fixture(t);
+	const inventory = { panes: [pane("agent")], pending: [] };
+	const dispatched: string[] = [];
+	const host = recipient(inventory, (handle) => {
+		dispatched.push(handle);
+		return { status: "uncertain", message: "No page acknowledgement." };
+	});
+	const tool = createNativeLiveTool(Durable, async () => host, { store, connection: forbidden });
+	const api = task((value) => {
+		if (isRecord(value)) throw new Error("Interrupted before receipt commit");
+	});
+	const input = { op: "show", document } as const;
+	const original = inventory.panes[0].handle;
+	await assert.rejects(native(tool, input, api), /Interrupted before receipt commit/u);
+	inventory.panes.splice(0, 1, pane("agent"));
+	const recovered = await native(tool, input, api);
+	assert.equal(recovered.status, "uncertain");
+	assert.ok(!("argv" in recovered));
+	assert.deepEqual(dispatched, [original]);
+});
+
+test("a completed comment change returns its exact saved receipt on task recovery", async () => {
+	const original = pane("agent"),
+		inventory = { panes: [original], pending: [] };
+	const input = {
+		op: "setComment",
+		handle: original.handle,
+		commentId: `${randomUUID()}:1`,
+		expectedVersion: 6,
+		commentState: "closed",
+	} as const;
+	const receipt = { status: "commentSet", commentId: input.commentId, commentState: "closed", version: 7 };
+	const calls: unknown[] = [];
+	const host = recipient(inventory, (handle, action) => {
+		calls.push([handle, action]);
+		return receipt;
+	});
+	const tool = createNativeLiveTool(Durable, async () => host),
+		api = task();
+	assert.deepEqual(await native(tool, input, api), receipt);
+	inventory.panes.splice(0, 1, pane("agent"));
+	assert.deepEqual(await native(tool, input, api), receipt);
+	const { handle, ...action } = input;
+	assert.deepEqual(calls, [[handle, action]]);
+});

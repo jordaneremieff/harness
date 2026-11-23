@@ -245,11 +245,31 @@ async function dispatchPane(
 	origin: LaunchOrigin | null,
 	signal: AbortSignal,
 	processRuntime: RevealRuntime,
-	live?: LiveConfig,
+	live: LiveConfig | undefined,
+	target: StoredTarget,
 ): Promise<PaneDispatch> {
 	const command = paneRequestCommand(app, request);
 	if ("showUnavailable" in command) return { version: 1, outcome: "unavailable", detail: command.showUnavailable };
-	const launch = await liveArguments(command.show, live);
+	return launchPane(command.show, origin, signal, processRuntime, live, target);
+}
+type StoredTarget = Pick<SavedDocument, "documentId" | "revision">;
+function storedTarget({ documentId, revision }: SavedDocument): StoredTarget {
+	return { documentId, revision };
+}
+async function launchPane(
+	argv: string[],
+	origin: LaunchOrigin | null,
+	signal: AbortSignal,
+	processRuntime: RevealRuntime,
+	live?: LiveConfig,
+	target?: StoredTarget,
+): Promise<PaneDispatch> {
+	signal.throwIfAborted();
+	const launch = await liveArguments(argv, live, { origin: "operator", ...target });
+	if (signal.aborted) {
+		await launch.remove();
+		signal.throwIfAborted();
+	}
 	const result = await dispatchPaneArgv(launch.argv, origin, signal, processRuntime);
 	if (result.outcome === "unavailable" || result.outcome === "stale") await launch.remove();
 	return result;
@@ -348,7 +368,7 @@ async function revealWithOrigin(
 	const request = await store.writeOpenRequest(saved.documentId, saved.revision, launchOrigin);
 	let pane: PaneDispatch | undefined;
 	if (presentation === "pane") {
-		pane = await dispatchPane(app, request, launchOrigin, signal, processRuntime, live);
+		pane = await dispatchPane(app, request, launchOrigin, signal, processRuntime, live, storedTarget(saved));
 		if (pane.outcome !== "created")
 			return { ...saved, state: pane.outcome === "uncertain" ? "pane-uncertain" : "pane-unavailable", request, pane };
 		if (signal.aborted) return { ...saved, state: "pane-uncertain", request, pane };
@@ -388,10 +408,9 @@ async function launchEditorPane(
 	signal: AbortSignal,
 	processRuntime: RevealRuntime,
 	live?: LiveConfig,
+	target?: StoredTarget,
 ): Promise<string | undefined> {
-	const launch = await liveArguments(argv, live);
-	const pane = await dispatchPaneArgv(launch.argv, origin, signal, processRuntime);
-	if (pane.outcome === "unavailable" || pane.outcome === "stale") await launch.remove();
+	const pane = await launchPane(argv, origin, signal, processRuntime, live, target);
 	if (pane.outcome === "uncertain" || signal.aborted)
 		return "Editor pane creation is unconfirmed. Do not retry automatically.";
 	return pane.outcome === "created" ? undefined : `${pane.detail} No separate window was selected.`;
@@ -403,6 +422,7 @@ async function revealEditor(
 	signal: AbortSignal,
 	origin: LaunchOrigin | null,
 	options: EditorRevealOptions,
+	target?: StoredTarget,
 ): Promise<string> {
 	const processRuntime = options.runtime ?? runtime;
 	if (processRuntime.platform !== "darwin") throw new Error("The Markdown editor requires macOS 26 or later.");
@@ -421,10 +441,10 @@ async function revealEditor(
 	);
 	if ("showUnavailable" in command) throw new Error(command.showUnavailable);
 	if (presentation === "pane") {
-		const notice = await launchEditorPane(command.show, origin, signal, processRuntime, options.live);
+		const notice = await launchEditorPane(command.show, origin, signal, processRuntime, options.live, target);
 		if (notice) return notice;
 	} else {
-		const launch = await liveArguments(command.show, options.live);
+		const launch = await liveArguments(command.show, options.live, { origin: "operator", ...target });
 		await processRuntime.run("/usr/bin/open", ["-n", "-a", app, "--args", ...launch.argv.slice(1)], {
 			timeout: 5000,
 			maxBuffer: 8192,
@@ -487,7 +507,7 @@ async function openEditorSelection(
 	signal.throwIfAborted();
 	const request = await store.writeOpenRequest(saved.documentId, saved.revision, origin);
 	signal.throwIfAborted();
-	return revealEditor(saved.root, intent, request, signal, origin, options);
+	return revealEditor(saved.root, intent, request, signal, origin, options, storedTarget(saved));
 }
 export async function openEditorStored(
 	root: string,

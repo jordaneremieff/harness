@@ -1,33 +1,65 @@
 import { randomUUID } from "node:crypto";
-import { arr, int, lit, obj, opt, str, union } from "@earendil-works/pi-schema";
-import type * as Durable from "@earendil-works/pi-durable";
+import type { Context } from "@earendil-works/chord/context";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type * as Durable from "@earendil-works/pi-durable";
+import {
+	arr,
+	bool,
+	compile,
+	int,
+	lit,
+	nullable,
+	obj,
+	oneOf,
+	opt,
+	type Static,
+	str,
+	union,
+} from "@earendil-works/pi-schema";
 import { toolDisplay } from "./display.ts";
 import type { LiveBridge } from "./live-bridge.ts";
 import {
 	LIVE_WIRE_BYTES,
+	type LiveAction,
+	type LiveResult,
 	liveDigest,
 	liveId,
 	readLiveAction,
-	type LiveAction,
-	type LiveResult,
 } from "./live-protocol.ts";
-import { SOURCE_BYTES, responseDigest, validUnicode } from "./responses.ts";
+import { type ShowOptions, ShowOutcomes, showStored } from "./live-show.ts";
+import { LaunchSchema, PaneSchema, paneInventory } from "./pane-state.ts";
+import { responseDigest, SOURCE_BYTES, validUnicode } from "./responses.ts";
 
 const DESCRIPTION =
-	"Use apply with unique {find, replace} edits in the unsaved pane. Base and operationId are optional for anchors. Retry unconfirmed edits only with the returned UUID and unchanged arguments. The pane owns Undo and private recovery. List handles; read pages with nextOffset and the same baseGeneration/baseDigest. Claim ranges before composing a larger edit; claims never block the person. Claim and release need live: 2. Range edits need the read base. If the person has the passage open, edit elsewhere or read after they leave it. If stale, read again; if closed, reopen the exact pane. Never substitute stored documents, file writes or a new pane.";
+	"Use list for this conversation's connected panes and pending launches. Each handle names an exact live buffer; view.documentId names its stored document. A dirty or conflicted view reports its base, not saved live text. Conflict means autosave stopped: preserve the draft and read the stored revision separately. Use show with a full stored document ID for current/follow, or add revision to pin. It reuses an agent pane, never an operator pane. Only navigated confirms a switch. Only launch supplies argv for an initial pane; confirm its view with list. Never type navigation into the terminal or repeat an uncertain show. Use read on an exact handle. Only complete has whole source; for page, join all fragments from offset zero with nextOffset and unchanged baseGeneration/baseDigest. Use apply with unique {find,replace} anchors. An explicit base binds the edit; range edits require it. Claim ranges before composing a larger edit; claims never block the person. If busy, edit elsewhere or read after the person leaves the passage. Retry an uncertain edit only with its UUID and identical arguments. Applied confirms private recovery, not a saved revision. Use comments for delivered open or closed comments; continue with nextOffset and the sheet version as expectedVersion. setComment requires the listed item ID, its version as expectedVersion, and the new state. It does not send a message.";
 const Anchor = obj({ find: str({ minLength: 1 }), replace: str() }, { open: false });
 const Range = obj(
 	{ start: int({ minimum: 0 }), end: int({ minimum: 0 }), expected: str(), replacement: str() },
 	{ open: false },
 );
+const CommentState = oneOf(["open", "closed"]);
+const CommentId = str({ maxLength: 39 });
 const LiveParameters = obj(
 	{
-		op: union([lit("list"), lit("read"), lit("apply"), lit("claim"), lit("release")]),
-		handle: opt(str({ maxLength: 73 })),
+		op: union([
+			lit("list"),
+			lit("show"),
+			lit("read"),
+			lit("apply"),
+			lit("claim"),
+			lit("release"),
+			lit("comments"),
+			lit("setComment"),
+		]),
+		handle: opt(str({ minLength: 1, maxLength: 73 })),
+		document: opt(str({ pattern: "^md-[a-f0-9]{20}$" })),
+		revision: opt(int({ minimum: 1 })),
 		offset: opt(int({ minimum: 0 })),
 		operationId: opt(str({ maxLength: 36 })),
 		claimId: opt(str({ maxLength: 36 })),
+		commentId: opt(CommentId),
+		commentState: opt(CommentState),
+		expectedVersion: opt(int({ minimum: 0 })),
 		ranges: opt(
 			arr(obj({ start: int({ minimum: 0 }), end: int({ minimum: 0 }) }, { open: false }), {
 				minItems: 1,
@@ -41,33 +73,103 @@ const LiveParameters = obj(
 	},
 	{ open: false },
 );
+const VersionFields = { generation: int({ minimum: 0 }), digest: str() };
+const ReadFields = {
+	...VersionFields,
+	pane: opt(PaneSchema),
+	assets: arr(obj({ reference: str(), digest: str() })),
+	totalChars: int({ minimum: 0 }),
+	totalBytes: int({ minimum: 0 }),
+};
+const Complete = obj({ status: lit("complete"), ...ReadFields, offset: lit(0), nextOffset: lit(null), source: str() });
+const Page = obj({
+	status: lit("page"),
+	...ReadFields,
+	offset: int({ minimum: 0 }),
+	nextOffset: nullable(int({ minimum: 1 })),
+	fragment: str(),
+});
+const FailureFields = { status: oneOf(["stale", "busy", "closed", "error", "uncertain"]), message: str() };
+const LiveOutcomeSchema = union([
+	Complete,
+	Page,
+	...ShowOutcomes,
+	obj({ status: lit("ok"), panes: arr(PaneSchema), pending: arr(LaunchSchema) }),
+	obj({ status: lit("applied"), ...VersionFields, operationId: str(), retained: lit(true), pane: opt(PaneSchema) }),
+	obj({ status: lit("claimed"), claimId: str(), expiresAt: int() }),
+	obj({ status: lit("released"), claimId: str() }),
+	obj({
+		status: lit("comments"),
+		commentState: CommentState,
+		version: int({ minimum: 0 }),
+		comments: arr(
+			obj({
+				commentId: CommentId,
+				threadId: str(),
+				kind: oneOf(["question", "annotation", "overall"]),
+				ordinal: int({ minimum: 0, maximum: 50 }),
+				text: str(),
+				quote: opt(str()),
+				madeOnRevision: opt(int({ minimum: 1 })),
+				commentState: CommentState,
+				version: int({ minimum: 1 }),
+			}),
+			{ maxItems: 20 },
+		),
+		offset: int({ minimum: 0 }),
+		total: int({ minimum: 0 }),
+		nextOffset: opt(int({ minimum: 1 })),
+	}),
+	obj({ status: lit("commentSet"), commentId: CommentId, commentState: CommentState, version: int({ minimum: 1 }) }),
+	obj({
+		...FailureFields,
+		pane: opt(PaneSchema),
+		generation: opt(VersionFields.generation),
+		digest: opt(VersionFields.digest),
+		refreshFailure: opt(obj(FailureFields)),
+		operationId: opt(str()),
+		edit: opt(int()),
+		count: opt(int()),
+		lines: opt(arr(int())),
+		suggestedFind: opt(str()),
+		suggestion: opt(obj({ line: int(), text: str(), truncated: bool() })),
+	}),
+]);
+type LiveOutcome = Static<typeof LiveOutcomeSchema>;
+const checkOutcome = compile(LiveOutcomeSchema).check;
+function checkedOutcome(value: unknown): LiveOutcome {
+	if (!checkOutcome(value)) throw new Error("The live Markdown result does not match its output contract.");
+	return value;
+}
 type AnchorEdit = { find: string; replace: string };
 type Apply = Omit<Extract<LiveAction, { op: "apply" }>, "edits"> & {
 	edits: { start: number; end: number; expected: string; replacement: string }[];
 };
 type Snapshot = Extract<LiveResult, { status: "ok" }>;
 type Version = Pick<Snapshot, "generation" | "digest">;
-type Input = {
-	op: "list" | "read" | "apply" | "claim" | "release";
-	offset?: number;
-	handle?: string;
-	operationId?: string;
-	claimId?: string;
-	baseGeneration?: number;
-	baseDigest?: string;
-	ranges?: { start: number; end: number }[];
-	label?: string;
-	edits?: AnchorEdit[] | Apply["edits"];
-};
-type SourcePage = Snapshot & { offset: number; nextOffset: number | null; totalChars: number; totalBytes: number };
+type Input = Static<typeof LiveParameters>;
+const checkInput = compile(LiveParameters).check;
+type SourceRead = Static<typeof Complete> | Static<typeof Page>;
 const versionOf = ({ generation, digest }: Version): Version => ({ generation, digest });
 const matchesBase = (input: Input, snapshot: Version): boolean =>
 	input.baseGeneration === snapshot.generation && input.baseDigest === snapshot.digest;
 
+function pageEnd(source: string, offset: number): number {
+	let end = offset;
+	let bytes = 0;
+	for (const point of source.slice(offset)) {
+		const size = Buffer.byteLength(point);
+		if (bytes + size > 65536) break;
+		bytes += size;
+		end += point.length;
+	}
+	return end;
+}
+
 export function liveSourcePage(
 	result: LiveResult,
 	input: Input,
-): Exclude<LiveResult, Snapshot> | SourcePage | ({ status: "stale"; message: string } & Version) {
+): Exclude<LiveResult, Snapshot> | SourceRead | ({ status: "stale"; message: string } & Version) {
 	if (result.status !== "ok") return result;
 	const offset = input.offset ?? 0;
 	if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid live source page boundary.");
@@ -79,21 +181,21 @@ export function liveSourcePage(
 		};
 	if (offset > result.source.length || (offset > 0 && /[\uDC00-\uDFFF]/u.test(result.source[offset] ?? "")))
 		throw new Error("Invalid live source page boundary.");
-	let end = offset;
-	let bytes = 0;
-	for (const point of result.source.slice(offset)) {
-		const size = Buffer.byteLength(point);
-		if (bytes + size > 65536) break;
-		bytes += size;
-		end += point.length;
-	}
-	return {
-		...result,
-		source: result.source.slice(offset, end),
-		offset,
-		nextOffset: end < result.source.length ? end : null,
+	const end = pageEnd(result.source, offset);
+	const metadata = {
+		...versionOf(result),
+		assets: result.assets,
 		totalChars: result.source.length,
 		totalBytes: Buffer.byteLength(result.source),
+	};
+	if (offset === 0 && end === result.source.length)
+		return { status: "complete", source: result.source, offset: 0, nextOffset: null, ...metadata };
+	return {
+		status: "page",
+		fragment: result.source.slice(offset, end),
+		offset,
+		nextOffset: end < result.source.length ? end : null,
+		...metadata,
 	};
 }
 
@@ -148,7 +250,7 @@ function missingAnchor(source: string, find: string, edit: number): AnchorError 
 		message: suggestion
 			? "Anchor not found. Use the closest passage shown, or read the buffer and copy exact text."
 			: "Anchor not found. The live buffer is empty.",
-		suggestion,
+		...(suggestion ? { suggestion } : {}),
 	};
 }
 
@@ -206,22 +308,27 @@ function resultWithNextStep(result: LiveResult): LiveResult {
 	if (result.status === "closed")
 		return {
 			...result,
-			message: `${result.message} Reopen the same live document and list handles before you try again.`,
+			message: `${result.message} List panes to check the exact handle. Do not edit another buffer or open a substitute pane.`,
 		};
 	if (result.status === "busy" && !/read again|release an active claim/iu.test(result.message))
 		return { ...result, message: `${result.message} Read again after the pane is ready.` };
 	return result;
 }
 
-function staleResult(snapshot: LiveResult, problem?: AnchorError) {
+function staleResult(snapshot: LiveResult) {
 	return {
-		...problem,
 		status: "stale" as const,
-		message: problem
-			? `The buffer changed. ${problem.message}`
-			: "The buffer changed. Read the exact pane and revise the edit.",
+		message: "The buffer changed. Read the exact pane and revise the edit.",
 		...(snapshot.status === "ok" ? versionOf(snapshot) : { refreshFailure: resultWithNextStep(snapshot) }),
 	};
+}
+
+async function staleVersion(bridge: LiveBridge, handle: string, signal?: AbortSignal) {
+	try {
+		return staleResult(await bridge.execute(handle, { op: "read" }, signal));
+	} catch (error) {
+		return staleResult({ status: "error", message: error instanceof Error ? error.message : String(error) });
+	}
 }
 
 function editId(seed: string): string {
@@ -229,7 +336,7 @@ function editId(seed: string): string {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-type Plan = { action: Apply; refreshed: boolean };
+type Plan = { action: Apply };
 type Seal = (operationId: string, plan?: Plan) => Promise<Plan | undefined>;
 
 function anchorKey(input: Input, anchors: AnchorEdit[]): string {
@@ -250,42 +357,6 @@ function anchorKey(input: Input, anchors: AnchorEdit[]): string {
 	);
 }
 
-type AnchorRequest = {
-	bridge: LiveBridge;
-	handle: string;
-	input: Input;
-	anchors: AnchorEdit[];
-	key: string;
-	signal?: AbortSignal;
-	seal?: Seal;
-};
-
-async function anchoredAttempt(request: AnchorRequest, operationId: string, refreshed: boolean) {
-	const { bridge, handle, input, anchors, key, signal, seal } = request;
-	let plan = (await seal?.(operationId)) ?? bridge.resolvedEdit(handle, operationId, key);
-	if (!plan) {
-		const snapshot = await bridge.execute(handle, { op: "read" }, signal);
-		if (snapshot.status !== "ok") return { result: refreshed ? staleResult(snapshot) : resultWithNextStep(snapshot) };
-		refreshed ||= input.baseGeneration !== undefined && !matchesBase(input, snapshot);
-		const edits = resolveAnchors(snapshot.source, anchors);
-		if (!Array.isArray(edits)) return { result: refreshed ? staleResult(snapshot, edits) : edits };
-		plan = {
-			refreshed,
-			action: requestApply({
-				op: "apply",
-				operationId,
-				baseGeneration: snapshot.generation,
-				baseDigest: snapshot.digest,
-				edits,
-			}),
-		};
-	}
-	// Replay must use the exact command, not resolve the same intent against a changed pane.
-	plan = (await seal?.(operationId, plan)) ?? plan;
-	const result = await bridge.execute(handle, plan.action, signal, { key, refreshed: plan.refreshed });
-	return { result, plan };
-}
-
 async function applyAnchors(
 	bridge: LiveBridge,
 	handle: string,
@@ -295,16 +366,29 @@ async function applyAnchors(
 	signal?: AbortSignal,
 	seal?: Seal,
 ) {
-	const request = { bridge, handle, input, anchors, key: anchorKey(input, anchors), signal, seal };
-	let attempt = await anchoredAttempt(request, operationId, false);
-	if (attempt.plan && !attempt.plan.refreshed && attempt.result.status === "stale") {
-		operationId = editId(`markdown-live refresh:${operationId}`);
-		attempt = await anchoredAttempt(request, operationId, true);
+	const key = anchorKey(input, anchors);
+	let plan = (await seal?.(operationId)) ?? bridge.resolvedEdit(handle, operationId, key);
+	if (!plan) {
+		const snapshot = await bridge.execute(handle, { op: "read" }, signal);
+		if (snapshot.status !== "ok") return resultWithNextStep(snapshot);
+		if (input.baseGeneration !== undefined && !matchesBase(input, snapshot)) return staleResult(snapshot);
+		const edits = resolveAnchors(snapshot.source, anchors);
+		if (!Array.isArray(edits)) return edits;
+		plan = {
+			action: requestApply({
+				op: "apply",
+				operationId,
+				baseGeneration: snapshot.generation,
+				baseDigest: snapshot.digest,
+				edits,
+			}),
+		};
 	}
-	if (!attempt.plan) return attempt.result;
-	if (attempt.result.status === "stale")
-		return { ...staleResult(await bridge.execute(handle, { op: "read" }, signal)), retried: true };
-	return { ...resultWithNextStep(attempt.result), operationId, ...(attempt.plan.refreshed ? { retried: true } : {}) };
+	// A retry must send the same resolved command. A unique match on a newer base can name a different passage.
+	plan = (await seal?.(operationId, plan)) ?? plan;
+	const result = await bridge.execute(handle, plan.action, signal, { key });
+	if (result.status === "stale") return staleVersion(bridge, handle, signal);
+	return { ...resultWithNextStep(result), operationId };
 }
 
 async function apply(
@@ -330,19 +414,90 @@ async function apply(
 		return applyAnchors(bridge, handle, input, anchors, operationId, signal, seal);
 	}
 	const result = await bridge.execute(handle, requestApply({ ...input, operationId }), signal);
-	if (result.status === "stale") return staleResult(await bridge.execute(handle, { op: "read" }, signal));
+	if (result.status === "stale") return staleVersion(bridge, handle, signal);
 	return { ...resultWithNextStep(result), operationId };
 }
 
+function observeBuffer(bridge: LiveBridge, handle: string | undefined, result: LiveOutcome): LiveOutcome {
+	// A later state report is independent of the command receipt. A failed observation must not undo the receipt.
+	try {
+		const pane = bridge.list().find((row) => row.handle === handle);
+		return pane ? checkedOutcome({ ...result, pane }) : result;
+	} catch {
+		return result;
+	}
+}
+
 async function execute(
+	find: () => Promise<LiveBridge | undefined>,
+	input: Input,
+	signal?: AbortSignal,
+	taskId?: string,
+	seal?: Seal,
+	show?: ShowOptions,
+): Promise<LiveOutcome> {
+	try {
+		if (input.op !== "show" && (input.document !== undefined || input.revision !== undefined))
+			return {
+				status: "error",
+				message: "Only show accepts a stored document or revision. Other operations require the exact live handle.",
+			};
+		if (
+			input.op === "show" &&
+			Object.keys(input).some((key) => !["op", "handle", "document", "revision"].includes(key))
+		)
+			return { status: "error", message: "Show takes only document, optional revision and optional exact handle." };
+		const bridge = await find();
+		if (input.op === "show") return checkedOutcome(await showStored(bridge, input, show, signal));
+		const result = checkedOutcome(await executeOnBridge(bridge, input, signal, taskId, seal));
+		return bridge && (input.op === "read" || input.op === "apply")
+			? observeBuffer(bridge, input.handle, result)
+			: result;
+	} catch (error) {
+		if (!["read", "list", "show"].includes(input.op) || signal?.aborted) throw error;
+		return { status: "error", message: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+async function reviewComments(bridge: LiveBridge | undefined, handle: string, input: Input, signal?: AbortSignal) {
+	const action = readLiveAction(input);
+	if (!bridge)
+		return {
+			status: "closed",
+			message: "This conversation has no connected pane. List panes to check the exact handle.",
+		};
+	const result = await bridge.execute(handle, action, signal);
+	switch (result.status) {
+		case "closed":
+			return {
+				...result,
+				message: `${result.message} List panes to check the exact handle. Do not select a different pane.`,
+			};
+		case "stale":
+			return {
+				...result,
+				message: `${result.message} List comments on the exact handle from offset zero for the current versions.`,
+			};
+		case "uncertain":
+			return {
+				...result,
+				message: `${result.message} List open and closed comments on the exact handle before another change.`,
+			};
+		default:
+			return result;
+	}
+}
+
+async function executeOnBridge(
 	bridge: LiveBridge | undefined,
 	input: Input,
 	signal?: AbortSignal,
 	taskId?: string,
 	seal?: Seal,
-): Promise<unknown> {
-	if (input.op === "list") return { status: "ok", panes: bridge?.list() ?? [] };
-	if (!input.handle) throw new Error("Read, apply, claim and release require the exact live pane handle.");
+) {
+	if (input.op === "list") return { status: "ok", ...paneInventory(bridge) };
+	if (!input.handle) throw new Error(`${input.op} requires the exact live pane handle.`);
+	if (input.op === "comments" || input.op === "setComment") return reviewComments(bridge, input.handle, input, signal);
 	if (!bridge)
 		return resultWithNextStep({
 			status: "closed",
@@ -360,6 +515,10 @@ function output(value: unknown): { type: "text"; text: string }[] {
 }
 export function createLiveTool(
 	find: (ctx: ExtensionContext) => Promise<LiveBridge | undefined>,
+	show?: Omit<ShowOptions, "connection"> & {
+		lifecycle?: () => AbortSignal;
+		connection: (ctx: ExtensionContext) => ReturnType<ShowOptions["connection"]>;
+	},
 ): ToolDefinition<typeof LiveParameters> {
 	const presentation = toolDisplay().tools.find((tool) => tool.name === "markdown_live");
 	return {
@@ -368,33 +527,83 @@ export function createLiveTool(
 		label: "Markdown Live",
 		description: DESCRIPTION,
 		parameters: LiveParameters,
+		outputSchema: LiveOutcomeSchema,
 		async execute(_id, input, signal, _update, ctx) {
-			const result = await execute(await find(ctx), input as Input, signal);
-			return { content: output(result), details: result };
+			if (!checkInput(input)) throw new Error("Invalid live Markdown arguments.");
+			const id = input.op === "show" && show ? ctx.sessionManager.getSessionId() : undefined;
+			const checkRoute = () => {
+				if (ctx.sessionManager.getSessionId() !== id) throw new Error("The invoking Markdown conversation changed.");
+			};
+			const local =
+				show && input.op === "show"
+					? {
+							...show,
+							checkRoute,
+							connection: () => {
+								checkRoute();
+								return show.connection(ctx);
+							},
+						}
+					: undefined;
+			const lifetime = local?.lifecycle?.();
+			const active = lifetime && signal ? AbortSignal.any([lifetime, signal]) : (lifetime ?? signal);
+			const result = await execute(() => find(ctx), input, active, undefined, undefined, local);
+			return { content: output(result), details: result, structuredContent: result };
 		},
 	};
 }
+/** Neither a one-use launch nor a navigation/transition with an unconfirmed receipt is a replayable command. */
+async function oncePerTask(
+	op: "show" | "setComment",
+	run: () => Promise<LiveOutcome>,
+	api: Durable.ToolExecutionApi,
+	context: Context,
+): Promise<LiveOutcome> {
+	const attempt = randomUUID();
+	if ((await api.memo("markdown.live.attempt", attempt, context)) !== attempt) {
+		const receipt = await api.memo<LiveOutcome>("markdown.live.receipt", context);
+		if (receipt) return receipt;
+		return {
+			status: "uncertain",
+			message:
+				op === "show"
+					? "This show was attempted before recovery. List panes and pending launches. No command was repeated and no launch argv was reissued."
+					: "The earlier comment change has no confirmed receipt. List open and closed comments on the same handle before another change.",
+		};
+	}
+	const result = await run();
+	return result.status === "launch" ? result : await api.memo("markdown.live.receipt", result, context);
+}
+
 export function createNativeLiveTool(
 	durable: typeof Durable,
 	find: (conversation: string) => Promise<LiveBridge | undefined>,
+	show?: Omit<ShowOptions, "connection"> & {
+		connection: (id: Durable.ConversationId, context: Context) => ReturnType<ShowOptions["connection"]>;
+	},
 ): Durable.ToolRegistration<typeof LiveParameters> {
 	return durable.defineTool({
 		name: "markdown_live",
 		description: DESCRIPTION,
 		parameters: LiveParameters,
+		structuredOutputSchema: LiveOutcomeSchema,
 		replay: "safe",
 		outputLimits: { maxBytes: LIVE_WIRE_BYTES, maxLines: 2000 },
 		async execute(input, api, context) {
 			const seal: Seal = (id, plan) =>
 				plan ? api.memo(`live-edit:${id}`, plan, context) : api.memo<Plan>(`live-edit:${id}`, context);
-			const result = await execute(
-				await find(String(api.conversationId)),
-				input as Input,
-				context.abortSignal,
-				String(api.taskId),
-				seal,
-			);
-			return { output: output(result), details: result as Durable.JsonObject };
+			const run = () =>
+				execute(
+					() => find(String(api.conversationId)),
+					input,
+					context.abortSignal,
+					String(api.taskId),
+					seal,
+					show && { ...show, connection: () => show.connection(api.conversationId, context) },
+				);
+			const result =
+				input.op === "show" || input.op === "setComment" ? await oncePerTask(input.op, run, api, context) : await run();
+			return { output: output(result), details: result, structuredOutput: result };
 		},
 	});
 }

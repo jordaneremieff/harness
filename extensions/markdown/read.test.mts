@@ -16,7 +16,6 @@ import {
 	type ReadOutcome,
 } from "./read.ts";
 import { MarkdownStore } from "./store.ts";
-import { PANE_MODE, PANE_OPEN } from "./pane-command.ts";
 
 async function fixture(run: (root: string, store: MarkdownStore) => Promise<void>) {
 	const root = await mkdtemp(join(tmpdir(), "markdown-read-"));
@@ -257,6 +256,7 @@ test("historical read guidance requires the current source before a correction",
 		const newer = "# Plan\n\nOriginal.\nNewer work.\n";
 		saved(await publish({ title: "Plan", text: newer, document: first.documentId, expectedRevision: 1 }, options));
 		const historical = read(await readStored(store, { document: first.documentId, revision: 1 }));
+		assert.equal(historical.status, "complete");
 		const header = readText(historical).header;
 		assert.doesNotMatch(header, /expectedRevision/u);
 		assert.ok(
@@ -266,6 +266,7 @@ test("historical read guidance requires the current source before a correction",
 		);
 		assert.match(header, /This historical text is not the update base/u);
 		const current = read(await readStored(store, { document: first.documentId, revision: historical.currentRevision }));
+		assert.equal(current.status, "complete");
 		assert.match(readText(current).header, /expectedRevision 2/u);
 		saved(
 			await publish(
@@ -282,42 +283,24 @@ test("historical read guidance requires the current source before a correction",
 		assert.equal((await store.get(first.documentId, 1)).source, historical.text);
 	}));
 
-test("an exact read offers a pinned show command without writing an open request", () =>
+test("first-page show requests resolve the full identity and preserve explicit revisions without a launch", () =>
 	fixture(async (root, store) => {
-		const app = join(root, "Reader.app");
-		const resources = join(app, "Contents", "Resources");
-		await mkdir(resources, { recursive: true });
-		const manifest = join(resources, "build.json");
-		const build = { contract: 1, pane: PANE_MODE, paneOpen: PANE_OPEN };
-		await writeFile(manifest, JSON.stringify({ ...build, paneRevision: 1 }));
 		const options = { cwd: root, store };
 		const first = saved(await publish({ title: "Plan", text: "# First\n" }, options));
 		saved(
 			await publish({ title: "Plan", text: "# Second\n", document: first.documentId, expectedRevision: 1 }, options),
 		);
-		const opens = join(store.root, "opens");
-		await mkdir(opens, { recursive: true });
-		const command = [
-			join(app, "Contents", "MacOS", "MarkdownReader"),
-			"--pane",
-			"--store",
-			store.root,
-			first.documentId,
-		];
-		const exact = read(await readStored(store, { document: first.documentId.slice(0, 9), revision: 1 }, app));
-		assert.deepEqual(exact.show, [...command, "--revision", "1", "--digest", first.digest]);
-		assert.equal(exact.paneInput, undefined);
-		assert.match(readText(exact).header, /To show revision 1, run /u);
-		assert.doesNotMatch(readText(exact).header, /:open/u);
-		const thenCurrent = read(await readStored(store, { document: first.documentId, revision: 2 }, app));
-		assert.deepEqual(thenCurrent.show, [...command, "--revision", "2", "--digest", thenCurrent.digest]);
-		assert.deepEqual(await readdir(opens), []);
-		await writeFile(manifest, JSON.stringify(build));
-		const fallback = read(await readStored(store, { document: first.documentId, revision: 1 }, app));
-		assert.deepEqual(fallback.show, command);
-		assert.equal(fallback.paneInput, `:open ${first.documentId}\r`);
-		assert.match(readText(fallback).header, /Current revision only/u);
-		assert.doesNotMatch(readText(fallback).header, /To show it/u);
+		const before = await readdir(store.root);
+		for (const revision of [undefined, 1, 2]) {
+			const exact = read(await readStored(store, { document: first.documentId.slice(0, 9), revision }));
+			assert.deepEqual(exact.show, {
+				op: "show",
+				document: first.documentId,
+				...(revision === undefined ? {} : { revision }),
+			});
+			assert.ok(readText(exact).header.includes(`call markdown_live ${JSON.stringify(exact.show)}`));
+		}
+		assert.deepEqual(await readdir(store.root), before);
 	}));
 
 test("reading returns exact pages of a named revision and the steps to correct it", () =>
@@ -331,23 +314,33 @@ test("reading returns exact pages of a named revision and the steps to correct i
 		assert.equal(page.revision, 1);
 		assert.equal(page.currentRevision, 1);
 		assert.equal(page.digest, first.digest);
-		assert.ok(Buffer.byteLength(page.text) <= READ_PAGE_BYTES);
+		assert.equal(page.status, "page");
+		assert.ok(!("text" in page));
+		assert.doesNotMatch(readText(page).header, /expectedRevision/u);
+		assert.ok(Buffer.byteLength(page.fragment) <= READ_PAGE_BYTES);
 		assert.ok(page.nextOffset);
-		assert.equal(page.text.length, READ_PAGE_BYTES - 2);
+		assert.equal(page.fragment.length, READ_PAGE_BYTES - 2);
 		assert.equal(page.nextOffset, READ_PAGE_BYTES - 2, "a page never splits a surrogate pair");
-		let text = page.text;
+		let text = page.fragment;
 		let offset: number | null = page.nextOffset;
 		while (offset !== null) {
 			const next = read(await readStored(store, { document: first.documentId, revision: 1, offset }));
-			text += next.text;
+			assert.equal(next.status, "page");
+			assert.ok(!("text" in next));
+			assert.equal(next.show, undefined);
+			assert.equal(next.digest, page.digest);
+			assert.equal(readText(next).source, next.fragment);
+			assert.match(readText(next).header, /join all its fragments in order/u);
+			if (next.nextOffset === null) assert.match(readText(next).header, /final fragment/u);
+			text += next.fragment;
 			offset = next.nextOffset;
 		}
 		assert.equal(text, long);
 		failed(
-			await readStored(store, { document: first.documentId, revision: 1, offset: page.text.length + 1 }),
+			await readStored(store, { document: first.documentId, revision: 1, offset: page.fragment.length + 1 }),
 			"invalid",
 		);
-		failed(await readStored(store, { document: first.documentId, offset: page.text.length }), "invalid");
+		failed(await readStored(store, { document: first.documentId, offset: page.fragment.length }), "invalid");
 		assert.match(readText(page).header, /Continue with \{"document":"md-[a-f0-9]{20}","revision":1,"offset":\d+\}\./u);
 
 		const update = saved(
@@ -366,12 +359,14 @@ test("reading returns exact pages of a named revision and the steps to correct i
 			/Revision 2 \(sha256:[a-f0-9]{64}\) is current\. Read it with markdown_read \(this document, revision 2\), apply your change to that text, and publish again with expectedRevision 2\./u,
 		);
 		const current = read(await readStored(store, { document: first.documentId, revision: 2 }));
+		assert.equal(current.status, "complete");
+		assert.ok(!("fragment" in current));
 		assert.equal(current.text, "# Short\n");
 		assert.equal(current.nextOffset, null);
 		assert.equal(current.digest, update.digest);
 		assert.match(
 			readText(current).header,
-			/^md-[a-f0-9]{20} revision 2 of 2 · published · "Long document" · 8 bytes · sha256:[a-f0-9]{64}\. To correct it, publish with document md-[a-f0-9]{20} and expectedRevision 2\.\nReferences not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\.\nComplete source follows\.$/u,
+			/^md-[a-f0-9]{20} revision 2 of 2 · published · "Long document" · 8 bytes · sha256:[a-f0-9]{64}\. To correct it, publish with document md-[a-f0-9]{20} and expectedRevision 2\.\nReferences not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\.\nTo show it, call markdown_live .*\nComplete stored source follows\.$/u,
 		);
 		const old = read(await readStored(store, { document: first.documentId, revision: 1, offset: 0 }));
 		assert.equal(old.currentRevision, 2);
@@ -402,7 +397,7 @@ test("a read lists retained and unavailable images on its first page", () =>
 		const runner = async () =>
 			JSON.stringify({ version: 1, images: ["diagram.svg", "gone.png"], links: [], truncated: false });
 		const outcome = saved(await publish({ title: "Diagram", file: path }, { cwd: root, store, app, runner }));
-		const page = read(await readStored(store, { document: outcome.documentId }, app));
+		const page = read(await readStored(store, { document: outcome.documentId }));
 		assert.deepEqual(
 			page.images?.map((image) => [image.reference, image.state, image.reason ?? image.mediaType]),
 			[
@@ -412,33 +407,8 @@ test("a read lists retained and unavailable images on its first page", () =>
 		);
 		assert.equal(page.imagesOmitted, 0);
 		assert.match(readText(page).header, /References: 1 image retained; 1 unavailable \("gone\.png": missing\)\./u);
-		assert.equal(page.show, undefined);
-		assert.match(
-			page.showUnavailable ?? "",
-			/cannot show documents in a pane/u,
-			"the fixture app declares no pane mode",
-		);
-		await writeFile(
-			join(app, "Contents/Resources/build.json"),
-			JSON.stringify({ contract: 1, pane: PANE_MODE, paneOpen: PANE_OPEN }),
-		);
-		const shown = read(await readStored(store, { document: outcome.documentId }, app));
-		assert.deepEqual(shown.show, [
-			join(app, "Contents", "MacOS", "MarkdownReader"),
-			"--pane",
-			"--store",
-			store.root,
-			outcome.documentId,
-		]);
-		assert.equal(shown.paneInput, `:open ${outcome.documentId}\r`);
-		assert.match(
-			readText(shown).header,
-			new RegExp(
-				`\\nTo show it, type ":open ${outcome.documentId}" and Enter into a reader pane that you opened, or run \\[`,
-				"u",
-			),
-		);
-		const tool = createReadTool({ store, app });
+		assert.deepEqual(page.show, { op: "show", document: outcome.documentId });
+		const tool = createReadTool({ store });
 		const result = await tool.execute("call", { document: outcome.documentId }, undefined, undefined, {} as never);
 		assert.equal(result.content.length, 2);
 		assert.equal(
@@ -483,10 +453,29 @@ test("the ordinary tool pipeline retains long lines and paged source exactly", (
 				{ type: "text", text: text.header },
 				{ type: "text", text: text.source },
 			]);
-			acquired += page.text;
+			assert.equal(page.status, "page");
+			assert.ok(!("text" in page));
+			acquired += page.fragment;
 			offset = page.nextOffset;
 		} while (offset !== null);
 		assert.ok(acquired === source, "the ordinary pipeline retains every source code unit");
+	}));
+
+test("a complete stored source does not imply that the original response finished", () =>
+	fixture(async (_root, store) => {
+		const origin = { kind: "native-response" as const, capturedAt: new Date().toISOString() };
+		const snapshot = await store.snapshot("interrupted", "response", {
+			title: "Interrupted response",
+			source: "Partial response.",
+			completeness: { state: "partial", reason: "length" },
+			contentOrigin: origin,
+		});
+		const result = read(await readStored(store, { document: snapshot.document.id }));
+		assert.equal(result.status, "complete");
+		assert.deepEqual(result.provenance, origin);
+		assert.deepEqual(result.completeness, { state: "partial", reason: "length" });
+		assert.match(readText(result).header, /captured response is partial \(length\)/u);
+		assert.equal(readText(result).source, "Partial response.");
 	}));
 
 test("source pages count UTF-16 offsets and refuse a split pair", () => {

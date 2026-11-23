@@ -2,24 +2,27 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { Frame } from "./frame.ts";
-import { markdownContribution } from "./durable.ts";
 import { createBriefTool } from "./brief-tool.ts";
-import { writingOptions } from "./writing-config.ts";
-import { readSettings, publishSettings } from "./settings.ts";
-import { MarkdownStore } from "./store.ts";
+import { MARKDOWN_USAGE, markdownCompletions, markdownHelp } from "./commands.ts";
+import { toolDisplay } from "./display.ts";
+import { markdownContribution } from "./durable.ts";
+import type { Frame } from "./frame.ts";
+import { ordinaryLive } from "./live-host.ts";
+import type { LiveConfig } from "./live-protocol.ts";
+import { createLiveTool } from "./live-tool.ts";
+import type { MarkdownOperations, MarkdownScope, MarkdownViewState } from "./operator-view.ts";
+import { paneInventory } from "./pane-state.ts";
 import { coverageText, createPublishTool, fileSnapshotInput, referenceSummary } from "./publish.ts";
 import { createReadTool } from "./read.ts";
-import { toolDisplay } from "./display.ts";
-import { readOrdinary, recentOrdinary, type ResponseSnapshot } from "./responses.ts";
+import { checkReader, type UpdateReporter, updateNow } from "./reader-update.ts";
+import { type ResponseSnapshot, readOrdinary, recentOrdinary } from "./responses.ts";
 import type { Presentation } from "./reveal.ts";
-import type { MarkdownOperations, MarkdownScope, MarkdownViewState } from "./operator-view.ts";
-import { MARKDOWN_USAGE, markdownHelp, markdownCompletions } from "./commands.ts";
-import { ordinaryLive } from "./live-host.ts";
-import { createLiveTool } from "./live-tool.ts";
-import type { LiveConfig } from "./live-protocol.ts";
-import { checkReader, updateNow, type UpdateReporter } from "./reader-update.ts";
+import { publishSettings, readSettings } from "./settings.ts";
+import { MarkdownStore } from "./store.ts";
+import { writingOptions } from "./writing-config.ts";
+
 type Connection = () => Promise<LiveConfig | undefined>;
+
 export { markdownCompletions } from "./commands.ts";
 
 const OWNER = fileURLToPath(import.meta.url);
@@ -389,26 +392,20 @@ export default function markdown(pi: ExtensionAPI): void {
 	const snapshot = readSettings({ agentDir });
 	const { dir, app, agentPane } = snapshot.values;
 	const writing = writingOptions(agentDir, snapshot);
+	const store = new MarkdownStore(dir);
 	pi.registerTool(createBriefTool(writing));
 	pi.registerTool(
 		createPublishTool({
 			writing,
-			store: new MarkdownStore(dir),
+			store,
 			app,
-			connection: live.connection,
-			panes: async (ctx) => (await live.find(ctx))?.list().length ?? 0,
+			panes: async (ctx) => paneInventory(await live.find(ctx)),
 			pane: agentPane,
 			paneNotices: true,
 		}),
 	);
-	pi.registerTool(
-		createReadTool({
-			store: new MarkdownStore(dir),
-			app,
-			connection: live.connection,
-		}),
-	);
-	pi.registerTool(createLiveTool(live.find));
+	pi.registerTool(createReadTool({ store }));
+	pi.registerTool(createLiveTool(live.find, { store, app, connection: live.connection, lifecycle }));
 	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
 	pi.events.on("harness:tool-display:request", (request) => {
 		if (typeof request === "object" && request !== null && "version" in request && request.version === 1)

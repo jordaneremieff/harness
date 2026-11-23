@@ -34,7 +34,6 @@ import {
 	publish,
 	publishDescription,
 	publicationText,
-	withPanes,
 	type InspectionResult,
 	type PublishOutcome,
 	type PublishInput,
@@ -42,7 +41,7 @@ import {
 import type { WritingBrief } from "./brief.ts";
 import { createBriefTool, createNativeBriefTool } from "./brief-tool.ts";
 import { LIMITS, MarkdownStore, type PublicationPlan, type WriteResult } from "./store.ts";
-import { paneCommand, PANE_MODE, PANE_OPEN } from "./pane-command.ts";
+import type { PaneInventory } from "./pane-state.ts";
 const scratch = tmpdir();
 async function fixture(run: (root: string, store: MarkdownStore) => Promise<void>) {
 	const root = await mkdtemp(join(scratch, "markdown-publish-"));
@@ -651,12 +650,8 @@ test("ordinary tool supplies the same structured outcome and never opens a windo
 			"a native agent reports to its coordinator and shows nothing unprompted",
 		);
 		const first = success(result.details);
-		assert.equal(first.show, undefined);
-		assert.ok(
-			(result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(
-				"\nIt cannot be shown in a pane: No reader app is configured. Build it with node extensions/markdown/native/build.mts.",
-			),
-		);
+		assert.deepEqual(first.show, { op: "show", document: first.documentId });
+		assert.deepEqual(first.paneState, { status: "unknown" });
 		assert.equal(first.provenance.session, "first");
 		assert.equal(first.provenance.model, "faux/faux-1");
 		assert.ok(first.provenance.host);
@@ -913,7 +908,7 @@ test("native model and codemode calls share outcomes, prefixes and explicit reus
 			assert.ok(firstOutcome?.ok);
 			assert.match(
 				results[0]?.text ?? "",
-				/^Saved new document md-[a-f0-9]{20} revision 1 \(\d+ bytes, sha256:[a-f0-9]{64}\)\. No window opened\.\nReferences not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\.\nIt cannot be shown in a pane: /u,
+				/^Saved new document md-[a-f0-9]{20} revision 1 \(\d+ bytes, sha256:[a-f0-9]{64}\)\. No window opened\.\nReferences not inspected: the reader app is not installed; build it with node extensions\/markdown\/native\/build\.mts\.\nReader pane state is unknown for this conversation\.\nOptional display request for markdown_live/u,
 			);
 			faux.setResponses([
 				fauxAssistantMessage(
@@ -989,114 +984,24 @@ test("native model and codemode calls share outcomes, prefixes and explicit reus
 	}),
 );
 
-test("the show command runs the installed reader's pane mode only when the build declares it", () =>
+test("a silent publication returns a show request; replay targets the exact revision", () =>
 	fixture(async (root, store) => {
-		const app = join(root, "Reader.app");
-		assert.deepEqual(paneCommand(app, store.root, "md-0123456789abcdef0123"), {
-			showUnavailable: `The reader app is not installed at ${app}. Build it with node extensions/markdown/native/build.mts.`,
-		});
-		await mkdir(join(app, "Contents", "Resources"), { recursive: true });
-		await writeFile(join(app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1 }));
-		assert.match(
-			(paneCommand(app, store.root, "md-0123456789abcdef0123") as { showUnavailable: string }).showUnavailable,
-			/cannot show documents in a pane/u,
-		);
-		await writeFile(join(app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1, pane: PANE_MODE }));
-		const show = [
-			join(app, "Contents", "MacOS", "MarkdownReader"),
-			"--pane",
-			"--store",
-			store.root,
-			"md-0123456789abcdef0123",
-		];
-		assert.deepEqual(
-			paneCommand(app, store.root, "md-0123456789abcdef0123"),
-			{ show },
-			"a reader without :open still shows documents in a new pane",
-		);
-		await writeFile(
-			join(app, "Contents", "Resources", "build.json"),
-			JSON.stringify({ contract: 1, pane: PANE_MODE, paneOpen: PANE_OPEN }),
-		);
-		assert.deepEqual(paneCommand(app, store.root, "md-0123456789abcdef0123"), {
-			show,
-			paneInput: ":open md-0123456789abcdef0123\r",
-		});
-		const tool = createPublishTool({ store, cwd: root, app });
-		const context = { cwd: root, sessionManager: { getSessionId: () => "s" } } as never;
-		const result = await tool.execute("call", { title: "Shown", text: "# exact" }, undefined, undefined, context);
-		const outcome = success(result.details);
-		assert.equal(outcome.show, undefined);
-		assert.equal(outcome.paneInput, undefined);
-		assert.match(outcome.showUnavailable ?? "", /exact invoking conversation/u);
-		assert.doesNotMatch(result.content[0]?.type === "text" ? result.content[0].text : "", /:open/u);
-		const update = await tool.execute(
-			"update",
-			{ title: "Shown", text: "# changed", document: outcome.documentId, expectedRevision: 1 },
-			undefined,
-			undefined,
-			context,
-		);
-		const revised = success(update.details);
-		assert.equal(revised.revision, 2);
-		assert.equal(revised.show, undefined);
-		assert.equal(revised.paneInput, undefined);
-		assert.match(revised.showUnavailable ?? "", /exact invoking conversation/u);
-		const replay = await tool.execute(
-			"replay",
-			{ title: "Keyed", text: "# keyed", reuseKey: "shown" },
-			undefined,
-			undefined,
-			context,
-		);
-		const again = await tool.execute(
-			"again",
-			{ title: "Keyed", text: "# keyed", reuseKey: "shown" },
-			undefined,
-			undefined,
-			context,
-		);
-		assert.match(replay.content[0]?.type === "text" ? replay.content[0].text : "", /^Saved new document /u);
-		assert.match(
-			again.content[0]?.type === "text" ? again.content[0].text : "",
-			/^Returned the earlier publication md-[a-f0-9]{20} revision 1 \(7 bytes, sha256:[a-f0-9]{64}\): this request was already saved, so later changes to its text, file or images are not in it\. No window opened\.\n/u,
-		);
-	}));
-
-test("publication replay shows its saved revision, or labels current-only routes", () =>
-	fixture(async (root, store) => {
-		const { app, runner } = await inspection(root);
-		const manifest = join(app, "Contents", "Resources", "build.json");
-		const build = { contract: 1, pane: PANE_MODE, paneOpen: PANE_OPEN };
-		await writeFile(manifest, JSON.stringify({ ...build, paneRevision: 1 }));
-		const options = { cwd: root, store, app, runner };
-		const input = { title: "Keyed", text: "# first", reuseKey: "shown" };
+		const options = { cwd: root, store };
+		const input = { title: "Draft", text: "First.", reuseKey: "draft" };
 		const first = success(await publish(input, options));
-		const current = success(
-			await publish({ title: "Keyed", text: "# changed", document: first.documentId, expectedRevision: 1 }, options),
+		assert.deepEqual(first.show, { op: "show", document: first.documentId });
+		assert.deepEqual(first.paneState, { status: "unknown" });
+		success(
+			await publish(
+				{ ...input, reuseKey: undefined, document: first.documentId, expectedRevision: 1, text: "Second." },
+				options,
+			),
 		);
-		assert.equal(current.revision, 2);
-		const command = [
-			join(app, "Contents", "MacOS", "MarkdownReader"),
-			"--pane",
-			"--store",
-			store.root,
-			first.documentId,
-		];
-		const pinned = success(await publish(input, options));
-		assert.equal(pinned.replayed, true);
-		assert.equal(pinned.revision, 1);
-		assert.equal(pinned.digest, first.digest);
-		assert.deepEqual(pinned.show, [...command, "--revision", "1", "--digest", first.digest]);
-		assert.equal(pinned.paneInput, undefined, "existing-pane navigation would show revision 2");
-		assert.match(publicationText(pinned), /To show revision 1, run /u);
-		assert.doesNotMatch(publicationText(pinned), /:open/u);
-		await writeFile(manifest, JSON.stringify(build));
-		const fallback = success(await publish(input, options));
-		assert.deepEqual(fallback.show, command);
-		assert.equal(fallback.paneInput, `:open ${first.documentId}\r`);
-		assert.match(publicationText(fallback), /Current revision only/u);
-		assert.doesNotMatch(publicationText(fallback), /To show it now/u);
+		const replay = success(await publish(input, options));
+		assert.equal(replay.replayed, true);
+		assert.deepEqual(replay.show, { op: "show", document: first.documentId, revision: 1 });
+		assert.match(publicationText(replay), /Optional display request for markdown_live/u);
+		assert.doesNotMatch(publicationText(replay), /--pane|:open|follows this revision/u);
 	}));
 
 test("a response snapshot saves the earlier answer exactly, once per response", () =>
@@ -1162,81 +1067,221 @@ test("a response snapshot saves the earlier answer exactly, once per response", 
 test("only a conversation that receives pane closure notices is told to expect them", () => {
 	const store = new MarkdownStore(join(tmpdir(), "unused-markdown-store"));
 	const ordinary = createPublishTool({ store, paneNotices: true });
-	assert.match(
-		ordinary.description,
-		/When a reader pane connected to this conversation closes, a notice in the conversation says so/u,
-	);
-	assert.match(ordinary.description, /never tell the operator that a pane shows it/u);
-	for (const description of [publishDescription("float"), createPublishTool({ store }).description]) {
-		assert.doesNotMatch(description, /a notice in the conversation/u);
-		assert.match(description, /The result of an update says how many reader panes are still connected/u);
+	assert.match(ordinary.description, /a notice identifies the departed pane/u);
+	const native = createNativePublishTool({ durable: Durable, cwd: tmpdir() }, { store });
+	assert.match(native.description ?? "", /split on the right of the inherited pane/u);
+	assert.doesNotMatch(native.description ?? "", /without waiting to be asked/u);
+	for (const description of [
+		publishDescription("float"),
+		createPublishTool({ store }).description,
+		native.description ?? "",
+	]) {
+		assert.doesNotMatch(description, /a notice identifies the departed pane/u);
+		assert.match(description, /only panes that reported the saved revision/u);
+		assert.match(description, /repair it rather than switching to live edits/u);
+		assert.match(description, /Only status:launch offers a one-use command/u);
+		assert.match(description, /Status:navigated confirms the document, revision and handle/u);
+		assert.doesNotMatch(description, /:open|paneInput|follows this revision/u);
 	}
 });
-test("an update says whether a reader pane is still connected, so a closed pane is never reported as showing it", async () => {
-	const base = {
-		ok: true as const,
-		documentId: "md-0123456789abcdef0123",
-		revision: 2,
-		digest: `sha256:${"0".repeat(64)}`,
-		bytes: 9,
-		title: "Shown",
-		kind: "published" as const,
-		created: false,
-		replayed: false,
-		references: {
-			state: "uninspected" as const,
-			truncated: false,
-			omitted: 0,
-			retained: 0,
-			embedded: 0,
-			external: 0,
-			unavailable: 0,
-			localLinks: 0,
+type Pane = PaneInventory["panes"][number];
+function reader(storeId: string, documentId: string, mode: "writing" | "reading" = "reading"): Pane {
+	const workspace = "3710fd78-3b61-4e5a-852e-55dd0304f389",
+		document = "53da365c-3374-41d1-b10b-fc785917f95b";
+	return {
+		workspace,
+		document,
+		handle: `${workspace}:${document}`,
+		live: 3,
+		origin: "operator",
+		pid: 71,
+		reportedAt: 17,
+		view: {
+			kind: "published",
+			title: "Draft",
+			mode,
+			storeId,
+			documentId,
+			revision: 1,
+			follows: true,
+			dirty: false,
+			conflict: false,
 		},
-		provenance: { kind: "tool" as const, capturedAt: "2026-11-18T00:00:00.000Z" },
-		open: "/markdown md-0123456789abcdef0123",
-		show: [
-			"/app/MarkdownReader",
-			"--pane",
-			"--store",
-			"/store",
-			"md-0123456789abcdef0123",
-			"--live",
-			"/private/live.json",
-		],
-		paneInput: ":open md-0123456789abcdef0123\r",
 	};
-	const command = JSON.stringify(base.show);
-	const closed = await withPanes(base, async () => 0);
-	assert.ok(closed.ok && closed.panes === 0);
-	assert.ok(
-		publicationText(closed).endsWith(
-			`\nNo reader pane is connected to this conversation now; the operator may have closed it. No pane of yours shows this revision. To show it now, run ${command} as the program of a new pane.`,
-		),
-	);
-	const open = await withPanes(base, async () => 1);
-	assert.match(
-		publicationText(open),
-		/\n1 reader pane is connected to this conversation\. A reader pane that still shows md-0123456789abcdef0123 follows this revision by itself; the operator can close a pane at any time\. To show it elsewhere, type ":open md-0123456789abcdef0123" and Enter into a reader pane that you opened, or run /u,
-	);
-	const created = await withPanes({ ...base, revision: 1, created: true }, async () => 0);
-	assert.ok(
-		publicationText(created).endsWith(`\nTo show it now, run ${command} as the program of a new pane.`),
-		"with no connected pane there is no pane to type into",
-	);
-	assert.deepEqual(
-		await withPanes({ ...base, show: base.show.slice(0, 5) }, async () => 0),
-		{ ...base, show: base.show.slice(0, 5) },
-		"a pane without the live connection reports nothing, so no count is claimed",
-	);
-	assert.deepEqual(
-		await withPanes(base, async () => {
-			throw new Error("unavailable");
-		}),
-		base,
-		"an unavailable count leaves the outcome unchanged",
-	);
-});
+}
+test("publication reports each last-observed view and pending launch, not an assumed follow", () =>
+	fixture(async (cwd, store) => {
+		const first = success(await publish({ title: "Draft", text: "First." }, { cwd, store }));
+		const document = first.documentId,
+			storeId = (await store.initialise()).storeId;
+		const reading = reader(storeId, document);
+		reading.view.follows = false;
+		const elsewhere = reader(storeId, "md-ffffffffffffffffffff");
+		elsewhere.handle = "other document";
+		const other = reader("1".repeat(32), document);
+		other.handle = "another pane";
+		other.view.dirty = true;
+		other.view.revision = 2;
+		const input = { title: "Draft", text: "Second.", document, expectedRevision: 1, reuseKey: "second" };
+		const inventory: PaneInventory = {
+			panes: [reading, other, elsewhere],
+			pending: [
+				{ launchId: "offered", origin: "agent", status: "offered" },
+				{ launchId: "started", documentId: document, origin: "operator", status: "launching" },
+			],
+		};
+		const options = { cwd, store, observePanes: async () => inventory };
+		const second = success(await publish(input, options));
+		assert.deepEqual(second.paneState, { status: "observed", inventory, showing: [] });
+		const text = publicationText(second);
+		assert.ok(
+			text.includes(
+				`${document} revision 1, reading, follow latest off, store ${storeId}). It did not confirm the saved revision.`,
+			),
+		);
+		assert.ok(
+			text.includes(
+				`${elsewhere.view.documentId} revision 1, reading, follow latest on, store ${storeId}). It did not confirm the saved revision.`,
+			),
+		);
+		for (const match of [/another pane.*unsaved, follow latest on/u, /offered/u, /launching/u])
+			assert.match(text, match);
+		reading.view.revision = 2;
+		reading.view.follows = true;
+		const replay = success(await publish(input, options));
+		assert.deepEqual(replay.paneState, { status: "observed", inventory, showing: [reading.handle] });
+		assert.doesNotMatch(publicationText(replay), /Optional display request/u);
+		assert.ok(
+			publicationText(replay).includes(
+				`${document} revision 2, reading, follow latest on, store ${storeId}). It reported the saved revision.`,
+			),
+		);
+		reading.view.dirty = true;
+		assert.deepEqual(
+			success(await publish(input, options)).paneState,
+			{ status: "observed", inventory, showing: [] },
+			"replay preserves the dirty editor and never calls it exact",
+		);
+		assert.deepEqual(
+			success(
+				await publish(input, {
+					...options,
+					observePanes: async () => {
+						throw Error("offline");
+					},
+				}),
+			).paneState,
+			{ status: "unknown" },
+		);
+		assert.deepEqual(
+			success(await publish(input, { ...options, observePanes: async () => ({ panes: [], pending: [] }) })).paneState,
+			{ status: "observed", inventory: { panes: [], pending: [] }, showing: [] },
+		);
+	}));
+
+test("an ordinary update never uses a replacement conversation's pane inventory", () =>
+	fixture(async (cwd, store) => {
+		const first = success(await publish({ title: "Draft", text: "First." }, { cwd, store }));
+		const request = { title: "Draft", text: "Second.", document: first.documentId, expectedRevision: 1 };
+		const parser = await inspection(cwd);
+		for (const change of ["before query", "during query"]) {
+			let session = "invoking",
+				queries = 0;
+			const ctx = { cwd, sessionManager: { getSessionId: () => session } } as never;
+			const tool = createPublishTool({
+				store,
+				...parser,
+				runner: async () => {
+					if (change === "before query") session = "replacement";
+					return parser.runner();
+				},
+				panes: async () => {
+					queries++;
+					session = "replacement";
+					return { panes: [], pending: [] };
+				},
+			});
+			const outcome = (await tool.execute("update", request, undefined, undefined, ctx)).details;
+			assert.ok(!outcome.ok && outcome.error.code === "live-state-unavailable");
+			assert.deepEqual(outcome.error.paneState, { status: "unknown" });
+			assert.equal(queries, change === "before query" ? 0 : 1);
+			assert.equal((await store.get(first.documentId)).source, "First.");
+		}
+	}));
+
+test("a new explicit update protects a dirty or conflicted exact publication, but not an independent copy", () =>
+	fixture(async (cwd, store) => {
+		const first = success(await publish({ title: "Draft", text: "First." }, { cwd, store }));
+		const document = first.documentId;
+		const pane = reader((await store.initialise()).storeId, document, "writing");
+		const request = { title: "Draft", text: "Second.", document: document.slice(0, 12), expectedRevision: 1 };
+		const options = { cwd, store, observePanes: async () => ({ panes: [pane], pending: [] }) };
+		for (const state of [
+			{ dirty: true, conflict: false },
+			{ dirty: false, conflict: true },
+		]) {
+			Object.assign(pane.view, state);
+			const refused = await publish(request, options);
+			assert.ok(!refused.ok && refused.error.code === "live-editor");
+			assert.deepEqual(refused.error.next, { op: "read", handle: pane.handle });
+			assert.match(publicationText(refused), /Keep the live draft/u);
+			assert.equal((await store.get(document)).source, "First.");
+		}
+		error(await publish(request, { ...options, observePanes: async () => undefined }), "live-state-unavailable");
+		pane.view.kind = "loading";
+		pane.view.dirty = pane.view.conflict = false;
+		error(await publish(request, options), "live-editor");
+		pane.view.kind = "copy";
+		pane.view.dirty = true;
+		assert.equal(success(await publish(request, options)).revision, 2);
+	}));
+
+test("clean editor autosave and stored publication alternate without duplicate revisions or a blind retry", () =>
+	fixture(async (cwd, store) => {
+		const first = success(await publish({ title: "Draft", text: "First." }, { cwd, store }));
+		const document = first.documentId,
+			pane = reader((await store.initialise()).storeId, document, "writing");
+		const observePanes = async () => ({ panes: [pane], pending: [] });
+		const options = { cwd, store, observePanes };
+		const request = { title: "Draft", text: "Second.", document, expectedRevision: 1 };
+		const second = success(await publish(request, options));
+		assert.equal(second.revision, 2);
+		const refs = (await store.get(document)).revision.references;
+		const third = { ...request, text: "Third.", expectedRevision: 2 };
+		let saved = false;
+		const raced = await publish(third, {
+			...options,
+			observePanes: async () => {
+				if (!saved) {
+					await store.update(document, 2, {
+						title: "Draft",
+						source: "Third.",
+						references: refs,
+						contentOrigin: { kind: "editor", capturedAt: new Date().toISOString() },
+					});
+					saved = true;
+					pane.view.revision = 3;
+				}
+				return observePanes();
+			},
+		});
+		assert.ok(!raced.ok && raced.error.code === "conflict");
+		assert.equal(raced.error.currentRevision, 3);
+		assert.equal(raced.error.currentMatches, "source-title-references");
+		assert.equal(raced.error.currentFromEditor, true);
+		assert.deepEqual(raced.error.next, { document, revision: 3 });
+		assert.match(publicationText(raced), /No duplicate revision is needed/u);
+		const otherTitle = await publish({ ...third, title: "New title" }, options);
+		assert.ok(!otherTitle.ok && otherTitle.error.currentMatches === "source");
+		pane.view.dirty = true;
+		const editedAgain = await publish(third, options);
+		assert.ok(!editedAgain.ok && editedAgain.error.code === "conflict");
+		assert.deepEqual(editedAgain.error.next, { op: "read", handle: pane.handle });
+		assert.match(publicationText(editedAgain), /base revision 3, writing, unsaved/u);
+		pane.view.dirty = false;
+		assert.equal(success(await publish({ ...third, text: "Fourth.", expectedRevision: 3 }, options)).revision, 4);
+		assert.equal((await store.get(document)).source, "Fourth.");
+	}));
 
 test("ordinary publication checks text and file updates before saving and leaves saved reuse intact", () =>
 	fixture(async (root, store) => {

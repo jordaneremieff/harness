@@ -119,23 +119,38 @@ applied operation removes the handle's claims.
 Image insertion returns prepared edits from native without applying them. The page commits
 those edits as person history. Captured sources acquire a copy only when the edits arrive.
 
-The native live connection advertises `live: 2` at connect. Its private one-use launch
-configuration retains `version: 1`. Read returns the native mirror. Apply validates its
+A protocol 3 host requires `paneProtocol: 3` in the app manifest. The app retains the
+`live: 2` marker for an older host and selects that protocol for its older launch file.
+Both launch formats use `version: 1`; an offer for the current pane protocol adds `live: 3`. The process
+consumes the private, one-use file and reports startup for its reservation. The first
+connection binds its launch origin and process ID to a workspace. The workspace and
+live document UUID identify the buffer; neither is a stored document ID.
+
+The reported `view` describes the displayed page, not a background editor. It includes
+Reading or Writing, the kind of document, its dirty and conflict flags and the stored
+identity when applicable. `follows` describes eligibility to follow future revisions,
+not confirmation that a particular revision arrived. A dirty editor's stored revision
+is a base, not its current text; a private copy is not its source publication. Read
+returns the visible buffer. Apply validates its
 base generation and digest, then sends `agentApply` to the page. The page returns `edits`
 with the same operation identity. Native answers `applied` only after the mirror and
 recovery contain that change. Replays retain the operation identity and input digest;
 a different edit never reuses an accepted identity. Stale, busy, closed, error and
 uncertain outcomes remain distinct.
 
-The page sends a `prompt` with `requestId`, `threadId`, `generation` and either `text`
+The page sends a `prompt` with `requestId`, `threadId`, `documentKey`, `presentation`,
+`generation` and either `text`
 with an optional `quote` and `quoteRange`, or `annotations`. A batch contains one to fifty
 annotations with nonblank `text` and optional `quote` and `quoteRange`, and an optional
 `overall`: the person's nonblank comment on the whole batch, at most 64 KiB UTF-8. A single
 comment never carries `overall`. Ranges use UTF-16. The page envelope limit is 256 KiB. The
 batch message gives the overall comment exactly, after its instructions and before the
 numbered comments; the instructions say that it applies to every comment and ask for a reply
-to it before the numbered replies. For a request at the current generation, native locates
-each `quoteRange` in the mirror (`PassageExcerpt`): the message names the passage's lines
+to it before the numbered replies. A new prompt must match the installed presentation,
+logical document and generation. Native uses the displayed source, including a Reading
+page with no active draft, rather than a hidden editor's source. An optional authored
+revision names the revision where the person wrote the comment. For a located
+`quoteRange` (`PassageExcerpt`), the message names the passage's lines
 (CR LF, CR and LF each end a line), the headings above it and its UTF-16 offsets at that
 generation, and shows a fenced excerpt of its source lines, at most 120 characters on each
 side, with the selected text between marks that the excerpt does not otherwise contain. When
@@ -150,8 +165,14 @@ retry with the same inputs sends the message of its first submission, even when 
 changed since. The live bridge accepts up to the
 batch limit. A bridge with a smaller limit refuses a larger request without submitting it.
 
-The page holds each batch and its overall comment by document. It maintains ranges through edits. On a new revision, a passage needs matching context and heading evidence, not just matching words elsewhere. Without a match, the quote stays in the batch without a
-highlight, and the message carries the rendered quote. Open pending comments and delivered questions keep their marks when the person dismisses their cards.
+The running pane keeps unsent Ask text, threads, pending comments and the overall
+comment with the logical document across revision changes, switching away and back,
+and transient disconnection. It maps surviving ranges through edits. On refresh it
+relocates a passage only when the quote, surrounding context and heading identify the
+same passage. A replaced or ambiguous passage keeps its quote and authored revision
+when known, not a highlight on matching words elsewhere. A batch sends the rendered quote
+for a passage it cannot locate. Open review items and pending
+comments can keep marks even after the person dismisses their cards.
 A plain click on a mark in Reading, or the mark's item in the page menu, opens its card
 again; where marks overlap, each further click opens the next card.
 A definite refusal restores the batch with its overall comment. For an unconfirmed request, native returns
@@ -160,6 +181,20 @@ when `retryable` is true. Retry sends the original request ID and contents so th
 can reconcile the receipt without repeating an accepted submission. A batch follow-up uses
 the single shape and identifies the batch, with its overall comment when it had one, as
 context.
+Only definitely unsent batch comments and their overall comment have private recovery
+when the same stored document reopens in the same conversation. Send and Remove all
+clear active items from recovery and leave parked items intact. Reopening never sends a prompt, restores a delivered batch,
+or treats an uncertain send as new. Recovery does not require a connection token in the
+saved draft. Standalone Ask text and follow-up drafts do not have this reopen guarantee.
+
+Confirmed delivery creates separate review items for the initial question, or for the
+numbered annotations and optional overall comment. Their stable IDs and open or closed
+state belong to the document and conversation across revisions. Closing an item does
+not remove its text or submit a follow-up. A private copy does not inherit its source's
+review items. Agent access is limited to delivered items on an exact handle; it excludes
+pending batches, draft text and follow-up messages. See the [live tool contract](../README.md#live-collaboration)
+for list and item versions.
+
 Each thread keeps its first request identity, while follow-ups receive new request identities.
 Native emits `promptState` with the question and thread identities and the route-reported answer text. A late send receipt cannot hide an answer already in the card. If a running host cannot identify the question, the card does not quote unscoped chat activity as an answer. An agent edit
 names a thread only when one document thread is admitted or active. The page draws the comment
@@ -186,7 +221,7 @@ snapshot; failed recovery leaves the document open.
 
 Edits to a local file or a published document coalesce into automatic saves to that destination.
 Scratchpads and copies remain private until an explicit Save. Closing first retains the draft
-and tries to finish a pending destination save within the close deadline. An unresolved conflict
+and tries to finish a pending destination save within the close deadline. A conflict stops destination autosave. It
 does not block close; Drafts retains the edits and the conflict. If a destination save still needs
 confirmation, the reader keeps the window open and says that the edits are in Drafts.
 A save acknowledges only its submitted source, not later typing. Local-file saves check the original file identity and content.
@@ -286,8 +321,12 @@ Top-level Escape sends `command returnFocus` and gives focus back to the termina
 A pinned open request (`--pane <request path>`) displays its exact revision and digest.
 To open an exact revision without a request file, use
 `--pane --store <store root> <document ID> --revision <n> --digest <sha256:...>`.
-The reader checks the digest before it changes the terminal. `:open <document ID>` in the
-pane selects the current revision in the same window. The placeholder names the displayed
+The reader checks the digest before it changes the terminal. `:open <document ID>` is a
+person's terminal control for the current revision. Agents request navigation through
+`markdown_live` on an agent-origin pane in their conversation. The reader checks the
+store and pin, respects a busy or conflicted draft, and waits for the target WebKit page
+to acknowledge its load. Only then does `navigated` identify the new live handle and
+stored revision. An uncertain receipt is not a reason to open a replacement. The placeholder names the displayed
 document, revision and build. A malformed request leaves the current document intact.
 Closing restores the terminal and retains the reading position within the shutdown deadline.
 

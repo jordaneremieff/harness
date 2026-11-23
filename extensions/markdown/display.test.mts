@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Text } from "@earendil-works/pi-tui";
-import { createPublishTool } from "./publish.ts";
-import { createLiveTool } from "./live-tool.ts";
 import { toolDisplay } from "./display.ts";
+import { createLiveTool } from "./live-tool.ts";
+import { createPublishTool } from "./publish.ts";
 import { MarkdownStore } from "./store.ts";
+
 const theme = { fg: (_colour: string, value: string) => value, bold: (value: string) => value } as never;
 const context = { expanded: false, isError: false, keyText: () => "ctrl+o" } as never;
 function card(name: string) {
@@ -78,10 +79,40 @@ test("outcome cards preserve useful state and keep navigation ceremony out of co
 	);
 	assert.match(result("markdown_live", { status: "ok", panes: [{ handle: "one" }] }), /1 connected pane/u);
 	assert.match(
-		result("markdown_live", { status: "ok", source: "hidden body", generation: 3, offset: 0, nextOffset: 20 }),
-		/Read live source · generation 3 · offset 0 · next 20/u,
+		result("markdown_live", {
+			status: "page",
+			fragment: "hidden body",
+			generation: 3,
+			offset: 0,
+			nextOffset: 20,
+			pane: { view: { conflict: true } },
+		}),
+		/Read live fragment · generation 3 · offset 0 · next 20 · autosave conflict/u,
 	);
-	assert.doesNotMatch(result("markdown_live", { status: "ok", source: "hidden body", generation: 3 }), /hidden body/u);
+	assert.doesNotMatch(
+		result("markdown_live", { status: "complete", source: "hidden body", generation: 3 }),
+		/hidden body/u,
+	);
+	assert.match(
+		result("markdown_live", { status: "pending", pending: [{}] }),
+		/launch outstanding · display unconfirmed/u,
+	);
+	assert.match(
+		result("markdown_live", { status: "launch", documentId: "md-id", argv: ["private/path"] }),
+		/Launch offered for md-id · display unconfirmed/u,
+	);
+	assert.match(
+		result("markdown_live", { status: "navigated", view: { documentId: "md-id", revision: 5 } }),
+		/Reader confirmed md-id · revision 5/u,
+	);
+	assert.match(
+		result("markdown_live", { status: "comments", commentState: "open", total: 2, offset: 0 }),
+		/2 open comments/u,
+	);
+	assert.match(
+		result("markdown_live", { status: "commentSet", commentState: "closed", version: 4 }),
+		/Comment closed · version 4/u,
+	);
 	assert.match(
 		result("markdown_live", { status: "applied", generation: 4, retained: true }),
 		/Applied · generation 4 · recovery retained/u,
@@ -98,7 +129,7 @@ test("expanded cards show bounded escaped evidence and reuse the native componen
 		assert.doesNotMatch(call("markdown_publish", { title: unsafe, text: unsafe }, expanded), /[\u001b\u202e]/u);
 		assert.doesNotMatch(result("markdown_live", { status: "error", message: unsafe }, expanded), /[\u001b\u202e]/u);
 	}
-	const shown = result("markdown_live", { status: "ok", source: "x".repeat(50_000), generation: 0 }, true);
+	const shown = result("markdown_live", { status: "complete", source: "x".repeat(50_000), generation: 0 }, true);
 	assert.match(shown, /Display limit/u);
 	assert.ok(shown.length < 34_000);
 	const previous = new Text("old", 0, 0);

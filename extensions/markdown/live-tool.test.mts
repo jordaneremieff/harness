@@ -7,6 +7,8 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { LiveBridge } from "./live-bridge.ts";
 import { createLiveTool, createNativeLiveTool, liveSourcePage } from "./live-tool.ts";
 import { liveId, type LiveAction, type LiveCommand, type LiveResult } from "./live-protocol.ts";
@@ -85,18 +87,19 @@ test("live source pages preserve exact UTF-16 continuation and all source bytes"
 	let offset = 0;
 	for (let step = 0; step < 4; step++) {
 		const page = liveSourcePage(result, { op: "read", offset, baseGeneration: 8, baseDigest: result.digest });
-		assert.equal(page.status, "ok");
-		if (page.status !== "ok") throw new Error("No source page");
+		assert.equal(page.status, "page");
+		if (page.status !== "page") throw new Error("No source fragment");
+		assert.ok(!("source" in page));
 		assert.equal(page.offset, offset);
 		assert.equal(page.totalChars, source.length);
 		assert.equal(page.totalBytes, Buffer.byteLength(source));
 		assert.equal(page.digest, result.digest);
 		assert.deepEqual(page.assets, result.assets);
-		assert.ok(Buffer.byteLength(page.source) <= 65536);
-		if (step === 0) assert.equal(Buffer.byteLength(page.source), 65535, "a page does not split a surrogate pair");
-		pages.push(page.source);
+		assert.ok(Buffer.byteLength(page.fragment) <= 65536);
+		if (step === 0) assert.equal(Buffer.byteLength(page.fragment), 65535, "a page does not split a surrogate pair");
+		pages.push(page.fragment);
 		if (page.nextOffset === null) break;
-		assert.equal(page.nextOffset, offset + page.source.length);
+		assert.equal(page.nextOffset, offset + page.fragment.length);
 		offset = page.nextOffset;
 	}
 	assert.ok(pages.join("") === source, "no source bytes disappear between pages");
@@ -159,6 +162,7 @@ test("the native tool retains a full escaped page beyond the host's default outp
 		const text = message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
 		assert.ok(Buffer.byteLength(text) > 65536);
 		const page = JSON.parse(text);
+		assert.equal(page.status, "complete");
 		assert.ok(page.source === source, "the host receives every byte of the escaped source page");
 		assert.equal(page.nextOffset, null);
 		assert.equal(page.totalBytes, 65536);
@@ -171,7 +175,7 @@ test("an empty live source and native failures remain exact", () => {
 		{ status: "ok", source: "", generation: 0, digest: responseDigest(""), assets: [] },
 		{ op: "read" },
 	);
-	assert.ok(page.status === "ok" && page.source === "" && page.nextOffset === null && page.totalBytes === 0);
+	assert.ok(page.status === "complete" && page.source === "" && page.nextOffset === null && page.totalBytes === 0);
 	assert.deepEqual(liveSourcePage({ status: "busy", message: "Composition is active." }, { op: "read" }), {
 		status: "busy",
 		message: "Composition is active.",
@@ -210,6 +214,46 @@ function scriptedTool(...replies: LiveResult[]) {
 	} as unknown as LiveBridge;
 	return { actions, tool: createLiveTool(async () => bridge) };
 }
+
+test("both tool registrations declare disjoint structured read outcomes", async () => {
+	const short = snapshot("short"),
+		long = snapshot("a".repeat(65537));
+	const { tool } = scriptedTool(short, long, long, { status: "busy", message: "Draft in use." }, long);
+	const native = createNativeLiveTool(Durable, async () => undefined);
+	assert.deepEqual(native.structuredOutputSchema, tool.outputSchema);
+	assert.ok(tool.outputSchema);
+	const check = compile(tool.outputSchema).check;
+	const read = async (params: { offset?: number; baseGeneration?: number; baseDigest?: string } = {}) => {
+		const result = await tool.execute(
+			"read",
+			{ op: "read", handle: "handle", ...params },
+			undefined,
+			undefined,
+			{} as ExtensionToolContext,
+		);
+		const value = JSON.parse((result.content[0] as { text: string }).text);
+		assert.ok(check(result.structuredContent));
+		assert.deepEqual(result.structuredContent, value);
+		return value;
+	};
+	const whole = await read();
+	assert.equal(whole.status, "complete");
+	assert.equal(whole.source, short.source);
+	const first = await read();
+	const version = { baseGeneration: first.generation, baseDigest: first.digest };
+	const last = await read({ offset: first.nextOffset, ...version });
+	assert.equal(last.nextOffset, null);
+	for (const page of [first, last]) {
+		assert.equal(page.status, "page");
+		assert.equal(page.source, undefined);
+		assert.equal(check({ ...page, source: page.fragment }), false);
+	}
+	assert.ok(first.fragment + last.fragment === long.source);
+	assert.deepEqual(await read(), { status: "busy", message: "Draft in use. Read again after the pane is ready." });
+	const invalid = await read({ offset: long.source.length + 1, ...version });
+	assert.equal(invalid.status, "error");
+	assert.equal(check({ ...invalid, source: "" }), false);
+});
 
 test("apply schema accepts anchors and ranges separately", () => {
 	const { tool } = scriptedTool();
@@ -308,45 +352,63 @@ test("anchor errors show exact nearby text, match locations, and escaped whitesp
 	assert.equal(escapedText.actions[1]?.op === "apply" && escapedText.actions[1].edits[0]?.expected, "first\\nsecond");
 });
 
-test("only a stale refusal permits one changed apply", async () => {
-	const old = snapshot("before\nold"),
-		refreshed = snapshot("changed\nbefore\nold", 2),
-		latest = snapshot("changed again\nbefore\nold", 3);
-	const stale = { status: "stale", message: "Changed." } as const;
-	const input = applyInput("handle", [{ find: "old", replace: "new" }]);
-	const route = scriptedTool(old, stale, refreshed, stale, latest);
+test("a stale unpinned anchor never follows its text to another passage", async () => {
+	const scope = snapshot("Scope: ready\nBudget: pending");
+	const budget = snapshot("Scope: done\nBudget: ready", 2);
+	const refused = { status: "stale", message: "Changed." } as const;
+	const input = applyInput("handle", [{ find: "ready", replace: "approved" }]);
+	const route = scriptedTool(scope, refused, budget);
 	const result = await runTool(route.tool, input);
 	assert.equal(result.status, "stale");
-	assert.equal(result.generation, latest.generation);
-	assert.equal(result.digest, latest.digest);
-	assert.equal(result.retried, true);
+	assert.equal(result.generation, budget.generation);
+	assert.equal(result.digest, budget.digest);
 	assert.match(result.message, /read the exact pane and revise/iu);
-	const [, first, , retry] = route.actions;
-	assert.ok(first?.op === "apply" && retry?.op === "apply");
-	assert.notEqual(first.operationId, retry.operationId);
-	assert.equal(retry.edits[0]?.start, 15);
 	assert.deepEqual(
 		route.actions.map((action) => action.op),
-		["read", "apply", "read", "apply", "read"],
-	);
-	const duplicate = snapshot("old\nold", 2);
-	const ambiguous = scriptedTool(old, stale, duplicate);
-	const refused = await runTool(ambiguous.tool, input);
-	assert.equal(refused.status, "stale");
-	assert.deepEqual(refused.lines, [1, 2]);
-	assert.equal(refused.digest, duplicate.digest);
-	assert.deepEqual(
-		ambiguous.actions.map((action) => action.op),
 		["read", "apply", "read"],
 	);
-	const priorBase = scriptedTool(refreshed, { status: "closed", message: "The document disconnected." });
-	const closed = await runTool(priorBase.tool, { ...input, baseGeneration: old.generation, baseDigest: old.digest });
-	assert.equal(closed.retried, true);
-	assert.equal(closed.status, "closed");
-	assert.match(closed.message, /reopen the same live document/iu);
+	const applied = route.actions[1];
+	assert.ok(applied?.op === "apply");
+	assert.equal(applied.edits[0]?.start, scope.source.indexOf("ready"));
+	const offline = scriptedTool(scope, refused, { status: "closed", message: "Pane disconnected." });
+	const stale = await runTool(offline.tool, input);
+	assert.equal(stale.status, "stale");
+	assert.equal(stale.refreshFailure.status, "closed");
+	assert.deepEqual(
+		offline.actions.map((action) => action.op),
+		["read", "apply", "read"],
+	);
 });
 
-test("the Durable registration runs anchored applies with an omitted operation ID", { timeout: 10000 }, async () => {
+test("an explicitly pinned anchor never applies to a later base", async () => {
+	const base = snapshot("old"),
+		later = snapshot("unrelated\nold", 2);
+	const input = {
+		...applyInput("handle", [{ find: "old", replace: "new" }]),
+		operationId: randomUUID(),
+		baseGeneration: base.generation,
+		baseDigest: base.digest,
+	};
+	for (const current of [snapshot(base.source, 2), snapshot(later.source, 1)]) {
+		const mismatch = scriptedTool(current);
+		const result = await runTool(mismatch.tool, input);
+		assert.equal(result.status, "stale");
+		assert.equal(result.digest, current.digest);
+		assert.deepEqual(mismatch.actions, [{ op: "read" }]);
+	}
+	const race = scriptedTool(base, { status: "stale", message: "Changed." }, later, later);
+	assert.equal((await runTool(race.tool, input)).status, "stale");
+	assert.equal((await runTool(race.tool, input)).status, "stale");
+	assert.deepEqual(
+		race.actions.map((action) => action.op),
+		["read", "apply", "read", "read"],
+	);
+	assert.ok(race.actions[1]?.op === "apply" && race.actions[1].operationId === input.operationId);
+});
+
+test("Durable codemode receives structured reads and applies with an omitted operation ID", {
+	timeout: 10000,
+}, async () => {
 	const base = snapshot("🧭 old");
 	const actions: LiveAction[] = [];
 	const bridge = {
@@ -371,13 +433,17 @@ test("the Durable registration runs anchored applies with an omitted operation I
 	registry.install(
 		Durable.defineExtension({ name: "markdown", tools: [createNativeLiveTool(Durable, async () => bridge)] }),
 	);
+	const sandbox = new CodemodeSandbox();
+	registry.install(createCodemodeExtension({ sandbox, models: false }));
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
 	try {
 		const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+		const code = `const read = await tools.markdown_live({op:"read",handle:"handle"});
+			if (read.status !== "complete" || read.source !== "🧭 old") throw new Error("Expected a whole live source object");
+			const edit = await tools.markdown_live({op:"apply",handle:"handle",edits:[{find:"old",replace:"new"}]});
+			return edit.status + ":" + edit.operationId;`;
 		faux.setResponses([
-			fauxAssistantMessage(fauxToolCall("markdown_live", applyInput("handle", [{ find: "old", replace: "new" }])), {
-				stopReason: "toolUse",
-			}),
+			fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Edit complete."),
 		]);
 		await (await conversation.submit({ type: "input", content: "Edit the exact buffer." }, context)).wait(context);
@@ -386,14 +452,16 @@ test("the Durable registration runs anchored applies with an omitted operation I
 		);
 		const message = entry?.model?.[0];
 		assert.ok(message?.role === "toolResult" && !message.isError);
-		const result = JSON.parse(message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""));
-		assert.equal(result.status, "applied");
-		assert.ok(liveId(result.operationId));
+		const action = actions.at(-1);
+		assert.ok(action?.op === "apply" && liveId(action.operationId));
+		const scriptOutput = message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+		assert.ok(scriptOutput.includes(`applied:${action.operationId}`), scriptOutput);
 		assert.deepEqual(actions, [
+			{ op: "read" },
 			{ op: "read" },
 			{
 				op: "apply",
-				operationId: result.operationId,
+				operationId: action.operationId,
 				baseGeneration: 1,
 				baseDigest: base.digest,
 				edits: [{ start: 3, end: 6, expected: "old", replacement: "new" }],
@@ -401,10 +469,11 @@ test("the Durable registration runs anchored applies with an omitted operation I
 		]);
 	} finally {
 		await harness.close(context);
+		await sandbox.close();
 	}
 });
 
-test("retry after an unconfirmed refreshed edit keeps its exact native command", { timeout: 10000 }, async () => {
+test("retry after an unconfirmed anchored edit keeps its exact native command", { timeout: 10000 }, async () => {
 	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) }, 1000, 400);
 	const config = await bridge.start();
 	const binding = { workspace: randomUUID(), document: randomUUID() };
@@ -431,15 +500,12 @@ test("retry after an unconfirmed refreshed edit keeps its exact native command",
 		const input = applyInput(handle, [{ find: "old", replace: "new" }]);
 		const tool = createLiveTool(async () => bridge);
 		const pending = runTool(tool, input);
-		await reply(await next(), snapshot("old"));
-		await reply(await next(), { status: "stale", message: "Changed." });
 		await reply(await next(), snapshot("edited\nold", 2));
 		const apply = await next();
 		assert.ok(apply.op === "apply");
 		assert.equal(apply.edits[0]?.start, 7);
 		const uncertain = await pending;
 		assert.equal(uncertain.status, "uncertain");
-		assert.equal(uncertain.retried, true);
 		assert.equal(uncertain.operationId, apply.operationId);
 		await assert.rejects(
 			runTool(tool, { ...input, operationId: apply.operationId, edits: [{ find: "old", replace: "other" }] }),
@@ -454,15 +520,97 @@ test("retry after an unconfirmed refreshed edit keeps its exact native command",
 			digest: responseDigest("edited\nnew"),
 			retained: true,
 		});
-		assert.deepEqual(await retry, {
+		const { pane, ...receipt } = await retry;
+		if (pane) assert.equal(pane.handle, handle);
+		assert.deepEqual(receipt, {
 			status: "applied",
 			operationId: apply.operationId,
 			generation: 3,
 			digest: responseDigest("edited\nnew"),
 			retained: true,
-			retried: true,
 		});
 	} finally {
 		bridge.close();
+	}
+});
+
+test("comments page by sheet version and change one listed item by its own version", async () => {
+	const threadId = randomUUID(),
+		handle = `${randomUUID()}:${randomUUID()}`;
+	const item = {
+		commentId: `${threadId}:1`,
+		threadId,
+		ordinal: 1,
+		kind: "annotation",
+		text: "Keep this detail",
+		quote: "detail",
+		madeOnRevision: 3,
+		commentState: "open",
+		version: 2,
+	} as const;
+	const page = {
+		status: "comments",
+		commentState: "open",
+		comments: [item],
+		total: 2,
+		offset: 0,
+		version: 5,
+		nextOffset: 1,
+	} as const;
+	const last = {
+		status: "comments",
+		commentState: "open",
+		comments: [{ ...item, ordinal: 2, commentId: `${threadId}:2` }],
+		total: 2,
+		offset: 1,
+		version: 5,
+	} as const;
+	const receipt = { status: "commentSet", commentId: item.commentId, commentState: "closed", version: 3 } as const;
+	const replies = [page, last, receipt];
+	const seen: { handle: string; action: LiveAction }[] = [];
+	const bridge = {
+		execute: async (handle: string, action: LiveAction) => {
+			seen.push({ handle, action });
+			return replies.shift();
+		},
+	} as unknown as LiveBridge;
+	const tool = createLiveTool(async () => bridge);
+	const read = { op: "comments", handle } as const;
+	const close = {
+		op: "setComment",
+		handle,
+		commentId: item.commentId,
+		commentState: "closed",
+		expectedVersion: item.version,
+	} as const;
+	for (const invalid of [
+		{ ...read, offset: 1 },
+		{ ...close, commentId: `${threadId}:51` },
+		{ ...close, expectedVersion: 0 },
+		{ ...close, handle: undefined },
+	])
+		await assert.rejects(runTool(tool, invalid));
+	assert.deepEqual(seen, []);
+	assert.deepEqual(await runTool(tool, read), page);
+	assert.deepEqual(await runTool(tool, { ...read, offset: page.nextOffset, expectedVersion: page.version }), last);
+	assert.deepEqual(await runTool(tool, close), receipt);
+	assert.deepEqual(seen, [
+		{ handle, action: { op: "comments", commentState: "open", offset: 0 } },
+		{ handle, action: { op: "comments", commentState: "open", offset: 1, expectedVersion: 5 } },
+		{ handle, action: { op: "setComment", commentId: item.commentId, commentState: "closed", expectedVersion: 2 } },
+	]);
+});
+
+test("comment refusals retain the exact result and do not retry or retarget", async () => {
+	const handle = `${randomUUID()}:${randomUUID()}`,
+		commentId = `${randomUUID()}:0`;
+	const input = { op: "setComment", handle, commentId, commentState: "open", expectedVersion: 4 } as const;
+	for (const status of ["uncertain", "stale", "closed"] as const) {
+		const { tool, actions } = scriptedTool({ status, message: "Test receipt." });
+		const result = await runTool(tool, input);
+		assert.equal(result.status, status);
+		assert.match(result.message, /^Test receipt\./u);
+		assert.match(result.message, /exact handle/u);
+		assert.deepEqual(actions, [{ op: "setComment", commentId, commentState: "open", expectedVersion: 4 }]);
 	}
 });

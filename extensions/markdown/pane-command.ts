@@ -3,14 +3,11 @@ import { join } from "node:path";
 
 /** Version of the native reader's `--pane` mode that this slice runs. */
 export const PANE_MODE = 1;
-/**
- * Version of the pane's `:open <document ID>` input. A separate marker, so that Pi processes that
- * check only the pane mode keep offering the pane command after the app gains this input.
- */
+/** The reader build still advertises terminal input support to older hosts. */
 export const PANE_OPEN = 1;
 
 /** Version of pinned open-request intake in pane mode. */
-export const PANE_OPEN_REQUEST = 1;
+const PANE_OPEN_REQUEST = 1;
 /** Version of the native pane's direct `--revision` and `--digest` inputs. */
 export const PANE_REVISION = 1;
 /** Version of the explicit native editor launch input. */
@@ -19,17 +16,13 @@ export type EditorOpenIntent = "scratchpad" | "file" | "edit" | "copy";
 
 const BUILD_REMEDY = "Build it with node extensions/markdown/native/build.mts.";
 
-/**
- * A command that shows a stored document in the reader over its terminal pane, with the input
- * that shows it in a reader pane that already runs, or why there is none.
- */
-export type PaneCommand = { show: string[]; paneInput?: string } | { showUnavailable: string };
+type PaneCommand = { show: string[] } | { showUnavailable: string };
 
 /**
  * The command that shows a stored document in the native reader over the terminal pane that
  * runs it. The installed app must declare contract 1 and pane mode 1 in its `build.json`;
  * otherwise the result names the reason and the build command instead of a command.
- * If the build lacks direct revision selection, the returned command opens current only.
+ * A pinned command requires support for the exact revision and digest.
  */
 export function paneCommand(
 	app: string | undefined,
@@ -49,14 +42,10 @@ export function paneCommand(
 		return { showUnavailable: `The installed reader app cannot show documents in a pane. ${BUILD_REMEDY}` };
 	}
 	const show = [join(app, "Contents", "MacOS", "MarkdownReader"), "--pane", "--store", root, documentId];
-	if (pin && manifest.paneRevision === PANE_REVISION)
-		return { show: [...show, "--revision", String(pin.revision), "--digest", pin.digest] };
-	return manifest.paneOpen === PANE_OPEN ? { show, paneInput: `:open ${documentId}\r` } : { show };
-}
-
-/** Recognises direct revision selection even after live arguments are appended. */
-export function hasPaneRevision(show: string[]): boolean {
-	return show[5] === "--revision" && show[7] === "--digest";
+	if (!pin) return { show };
+	if (manifest.paneRevision !== PANE_REVISION)
+		return { showUnavailable: `The installed reader app cannot open an exact revision in a pane. ${BUILD_REMEDY}` };
+	return { show: [...show, "--revision", String(pin.revision), "--digest", pin.digest] };
 }
 
 /** Opens a revision selected in an existing pinned request file. */
