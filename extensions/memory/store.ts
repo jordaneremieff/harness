@@ -1099,7 +1099,7 @@ function mutate(
 	}
 	// The scan is advisory. Staged hardlinks no longer mask notes, and only published targets are included.
 	if (publishedStale.length > 0)
-		receipt.affectedReferences = scanAffectedReferences(root, publishedStale, readSource, signal);
+		receipt.affectedReferences = scanAffectedReferences(root, publishedStale, subject, readSource, signal);
 	if (!receipt.ok) throw new MemoryWriteError(receipt);
 	return receipt;
 }

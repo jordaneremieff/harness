@@ -306,14 +306,17 @@ On the first page of a current subject, `staleReferences` lists body mentions of
 other subjects that are now superseded or retired. Each row gives the exact
 `slug`, current `status` and `supersededBy` (the named replacement or null).
 Read the replacement before applying a statement about that subject. A mention
-is not proof that the statement is wrong: it may describe the past.
+is not proof that the statement is wrong: it may describe the past. The list
+omits subjects in this note's own `supersedes` list and subjects whose verified
+replacement chain leads here. An unconfirmed chain does not suppress a warning.
 
 The scan checks whole, case-sensitive slugs or `.md` filenames in the complete
 body, not only the returned page. It matches existing top-level filenames; it
 does not resolve body text as paths, infer semantic links, or treat generated
 frontmatter links as prose references. The advisory scan visits up to 4,096
-directory entries and checks up to 128 matching prefixes (8 KiB each). It stops
-between operations after a 100 ms time budget. Self-references, `README`, prior
+directory entries. Mentions and intermediate replacement links share the limit
+of 128 header prefixes (8 KiB each) and the 100 ms time budget. The same
+16-hop, reciprocal-link check applies as in [search](#memory_search). Self-references, `README`, prior
 revisions and continuation pages produce no such list. The same JSON page reaches
 the model and tool details.
 
@@ -475,7 +478,8 @@ note publication or proves that the requested mutation succeeded.
 
 After a supersession or retirement reaches disk, `affectedReferences` names the
 transitioned subjects (`slugs`) and up to 25 still-active `notes` whose bodies name
-them. `count` counts distinct affected notes observed, not occurrences. Review those
+them. The replacement written in that call is not a dependant, nor is the
+retired subject itself. `count` counts distinct affected notes observed, not occurrences. Review those
 statements in the same pass; no dependant is changed automatically. The same
 advice accompanies a partial publication, but only for transitions that succeeded.
 A successful ordinary edit, update or create without a lifecycle transition does

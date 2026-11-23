@@ -27,6 +27,8 @@ import {
 	SLUG,
 	SLUG_PATTERN,
 	sourceLifecycle,
+	verifiedReplacement,
+	type LinkedSubject,
 	type Lifecycle,
 } from "./note-identity.ts";
 import { scanStaleReferences } from "./references.ts";
@@ -48,7 +50,6 @@ const PAGE_CODEPOINTS = 12000;
 const MATCH_EXCERPT_POINTS = 480;
 const MATCH_CONTEXT_POINTS = 120;
 const MAX_RESULT_BYTES = 48 * 1024;
-const MAX_REPLACEMENT_HOPS = 16;
 const MAX_REPLACED_MATCHES = 8;
 const MAX_REPLACED_MATCH_BYTES = 2 * 1024;
 const MAX_QUERY_CHARS = 200;
@@ -1131,50 +1132,6 @@ function fuseRankings(rankings: Ranking[], signal?: AbortSignal): NoteCue[] {
 		.map(({ note }) => note);
 }
 
-function reciprocalSlugs(note: NoteCue): Set<string> {
-	const parsed = note.header.parsed;
-	const slugs =
-		note.header.metadata === "ok" && parsed && Object.hasOwn(parsed, "supersedes") ? parsed.supersedes : null;
-	if (!Array.isArray(slugs)) return new Set();
-	const result = new Set<string>();
-	for (const slug of slugs) {
-		if (
-			typeof slug !== "string" ||
-			slug.length > MAX_SLUG_CHARS ||
-			!SLUG.test(slug) ||
-			slug === "readme" ||
-			slug === note.slug ||
-			result.has(slug)
-		)
-			return new Set();
-		result.add(slug);
-	}
-	return result;
-}
-
-function verifiedReplacement(
-	start: NoteCue,
-	bySlug: Map<string, NoteCue>,
-	links: Map<string, Set<string>>,
-): NoteCue | undefined {
-	let current = start;
-	const seen = new Set([current.slug]);
-	for (let hops = 0; hops < MAX_REPLACEMENT_HOPS && current.lifecycle.status === "superseded"; hops++) {
-		const next = bySlug.get(current.lifecycle.supersededBy ?? "");
-		if (!next || seen.has(next.slug)) return undefined;
-		let reciprocal = links.get(next.slug);
-		if (!reciprocal) {
-			reciprocal = reciprocalSlugs(next);
-			links.set(next.slug, reciprocal);
-		}
-		if (!reciprocal.has(current.slug)) return undefined;
-		if (next.lifecycle.status === "active") return next;
-		seen.add(next.slug);
-		current = next;
-	}
-	return undefined;
-}
-
 function addReplacedMatch(group: ReplacementGroup, note: NoteCue): void {
 	const member = { slug: note.slug, title: bounded(note.title, MAX_TITLE_CHARS) };
 	const memberBytes = byteLength(member) + (group.listed.length > 0 ? 1 : 0);
@@ -1506,29 +1463,37 @@ function readNextOffset(slice: PageSlice): number | null {
 	return slice.hasMore ? slice.nextOffset : null;
 }
 
-function referenceLifecycle(
+function referenceSubject(
 	root: string,
 	file: string,
 	slug: string,
 	selectedFile: string,
 	signal?: AbortSignal,
-): Lifecycle | null | undefined {
+): LinkedSubject | null | undefined {
 	const path = join(root, file);
 	const before = fileEvidence(path);
 	if (file.toLowerCase() === selectedFile.toLowerCase() && before === fileEvidence(join(root, selectedFile)))
 		return null;
 	const window = readIndexWindow(path, signal);
 	if (!window.ok || window.size > SOURCE_READ_BYTES || fileEvidence(path) !== before) return undefined;
-	return sourceLifecycle(memorySourceCache.read(root, file, window), slug);
+	const header = memorySourceCache.read(root, file, window);
+	return { slug, header, lifecycle: sourceLifecycle(header, slug) };
 }
 
-function noteReferenceFields(root: string, args: NoteRequest, file: string, body: string, signal?: AbortSignal) {
+function noteReferenceFields(
+	root: string,
+	args: NoteRequest,
+	file: string,
+	text: string,
+	header: ParsedMemoryHeader,
+	signal?: AbortSignal,
+) {
 	if (file.toLowerCase() === "readme.md" || args.revision !== undefined || args.offset !== 0) return {};
 	return scanStaleReferences(
 		root,
-		args.slug,
-		body,
-		(referencedFile, slug) => referenceLifecycle(root, referencedFile, slug, file, signal),
+		{ slug: args.slug, header, lifecycle: sourceLifecycle(header, args.slug) },
+		text.slice(header.bodyStart),
+		(referencedFile, slug) => referenceSubject(root, referencedFile, slug, file, signal),
 		signal,
 	);
 }
@@ -1557,7 +1522,7 @@ function runNote(root: string, args: NoteRequest, signal?: AbortSignal): Record<
 			: {}),
 		lifecycle: contract ? null : sourceLifecycle(header, args.slug),
 		freshness: contract ? null : sourceFreshness(header.parsed, header.header),
-		...noteReferenceFields(root, args, file, text.slice(header.bodyStart), signal),
+		...noteReferenceFields(root, args, file, text, header, signal),
 		sourceBytes: source.buffer.length,
 		maxSourceBytes: SOURCE_READ_BYTES,
 		digest,

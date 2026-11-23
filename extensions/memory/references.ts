@@ -1,6 +1,12 @@
 import { opendirSync } from "node:fs";
 import { join } from "node:path";
-import { addressableSlug, type Lifecycle, sourceLifecycle } from "./note-identity.ts";
+import {
+	addressableSlug,
+	type LinkedSubject,
+	predecessorSlugs,
+	sourceLifecycle,
+	verifiedReplacement,
+} from "./note-identity.ts";
 import { completeBodyStart, memorySourceCache } from "./source-cache.ts";
 
 const ENTRY_LIMIT = 4096;
@@ -35,14 +41,17 @@ function* mentionedSlugs(body: string): Iterable<string> {
 	}
 }
 
+function scanLimit(signal?: AbortSignal) {
+	const deadline = performance.now() + TIME_LIMIT_MS;
+	return () => Boolean(signal?.aborted) || performance.now() >= deadline;
+}
+
 /** Match exact directory spellings even when pathname lookup is case-insensitive. */
-function* referenceEntries(root: string, coverage: ReferenceCoverage, signal?: AbortSignal) {
-	if (signal?.aborted) {
+function* referenceEntries(root: string, coverage: ReferenceCoverage, stopped: () => boolean) {
+	if (stopped()) {
 		coverage.complete = false;
 		return;
 	}
-	const deadline = performance.now() + TIME_LIMIT_MS;
-	const stopped = () => signal?.aborted || performance.now() >= deadline;
 	const directory = opendirSync(root);
 	try {
 		while (!stopped()) {
@@ -80,7 +89,7 @@ function scanReferenceNotes<T>(
 	let count = 0;
 	let attempts = 0;
 	try {
-		for (const { entry, slug } of referenceEntries(root, coverage, signal)) {
+		for (const { entry, slug } of referenceEntries(root, coverage, scanLimit(signal))) {
 			if (!select(slug)) continue;
 			if (!entry.isFile()) {
 				coverage.complete = false;
@@ -107,30 +116,99 @@ function scanReferenceNotes<T>(
 	return { coverage, count, matches };
 }
 
+type ReadSubject = (file: string, slug: string) => LinkedSubject | null | undefined;
+
+/** Mentions and intermediate links share one prefix budget. Only open exact names seen in the directory. */
+function referenceLookup(
+	subject: LinkedSubject,
+	files: Map<string, string | null>,
+	read: ReadSubject,
+	coverage: ReferenceCoverage,
+	stopped: () => boolean,
+) {
+	const cache = new Map<string, LinkedSubject | undefined>();
+	return {
+		get(slug: string) {
+			if (slug === subject.slug) return subject;
+			if (cache.has(slug)) return cache.get(slug);
+			const file = files.get(slug);
+			if (file === undefined) return undefined;
+			if (file === null || cache.size >= PREFIX_LIMIT || stopped()) {
+				coverage.complete = false;
+				return undefined;
+			}
+			const note = probeReference(() => read(file, slug));
+			const unknown = note === undefined || note?.lifecycle.status === "unknown";
+			if (unknown) coverage.complete = false;
+			else coverage.notesChecked++;
+			const result = unknown ? undefined : (note ?? undefined);
+			cache.set(slug, result);
+			return result;
+		},
+	};
+}
+
+function readMentionedSubjects(
+	root: string,
+	subject: LinkedSubject,
+	mentioned: ReadonlySet<string>,
+	includeLinkSources: boolean,
+	read: ReadSubject,
+	signal?: AbortSignal,
+) {
+	const coverage = { complete: true, entriesVisited: 0, notesChecked: 0 };
+	const stopped = scanLimit(signal);
+	const files = new Map<string, string | null>();
+	const lookup = referenceLookup(subject, files, read, coverage, stopped);
+	const candidates: LinkedSubject[] = [];
+	try {
+		for (const { entry, slug } of referenceEntries(root, coverage, stopped)) {
+			const named = mentioned.has(slug);
+			if (named || includeLinkSources) files.set(slug, entry.isFile() ? entry.name : null);
+			if (!named) continue;
+			const note = lookup.get(slug);
+			if (note) candidates.push(note);
+		}
+	} catch {
+		coverage.complete = false;
+	}
+	return { coverage, lookup, candidates };
+}
+
 export function scanStaleReferences(
 	root: string,
-	subject: string,
+	subject: LinkedSubject,
 	body: string,
-	readLifecycle: (file: string, slug: string) => Lifecycle | null | undefined,
+	read: ReadSubject,
 	signal?: AbortSignal,
 ) {
 	const mentioned = new Set(mentionedSlugs(body));
-	mentioned.delete(subject);
+	const predecessors = predecessorSlugs(subject);
+	mentioned.delete(subject.slug);
+	for (const slug of predecessors) mentioned.delete(slug);
 	if (mentioned.size === 0) return {};
-	const { matches, coverage, count } = scanReferenceNotes<StaleReference>(
+	const { coverage, lookup, candidates } = readMentionedSubjects(
 		root,
-		(slug) => mentioned.has(slug),
-		(file, slug) => {
-			const lifecycle = readLifecycle(file, slug);
-			if (lifecycle === null) return null;
-			if (lifecycle === undefined || lifecycle.status === "unknown") return undefined;
-			if (lifecycle.status === "active") return null;
-			return { slug, status: lifecycle.status, supersededBy: lifecycle.supersededBy };
-		},
-		PREFIX_LIMIT,
+		subject,
+		mentioned,
+		predecessors.size > 0,
+		read,
 		signal,
 	);
-	matches.sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+	const links = new Map([[subject.slug, predecessors]]);
+	const stale = candidates.flatMap((note): StaleReference[] => {
+		const { status, supersededBy } = note.lifecycle;
+		if (status !== "superseded" && status !== "retired") return [];
+		if (
+			predecessors.size &&
+			status === "superseded" &&
+			verifiedReplacement(note, lookup, links, (next) => next === subject)
+		)
+			return [];
+		return [{ slug: note.slug, status, supersededBy }];
+	});
+	const count = stale.length;
+	const matches = stale.slice(0, RESULT_LIMIT).sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
 	return {
 		...(matches.length > 0 ? { staleReferences: matches, staleReferenceGuidance: STALE_REFERENCE_GUIDANCE } : {}),
 		...(!coverage.complete || count > matches.length ? { staleReferenceCoverage: { ...coverage, count } } : {}),
@@ -157,13 +235,14 @@ function affectedNote(root: string, file: string, slug: string, source: string, 
 export function scanAffectedReferences(
 	root: string,
 	published: string[],
+	writtenSubject: string,
 	readSource: (path: string) => string,
 	signal?: AbortSignal,
 ): AffectedReferences {
 	const targets = new Set(published);
 	const { coverage, matches, count } = scanReferenceNotes<string>(
 		root,
-		(slug) => !targets.has(slug),
+		(slug) => slug !== writtenSubject && !targets.has(slug),
 		(file, slug) => {
 			const source = readSource(join(root, file));
 			if (!published.some((target) => source.includes(target))) return null;

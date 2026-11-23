@@ -13,10 +13,17 @@ function corpus(t: TestContext) {
 	return root;
 }
 
-function fixture(root: string, slug: string, body = "", status = "active", supersededBy: string | null = null) {
+function fixture(
+	root: string,
+	slug: string,
+	body = "",
+	status = "active",
+	supersededBy: string | null = null,
+	supersedes: string[] = ["header-only"],
+) {
 	writeFileSync(
 		join(root, `${slug}.md`),
-		`---\ntitle: ${slug}\nstatus: ${status}\nsuperseded_by: ${supersededBy ?? "null"}\nsupersedes: [header-only]\n---\n# ${slug}\n\n${body}\n`,
+		`---\ntitle: ${slug}\nstatus: ${status}\nsuperseded_by: ${supersededBy ?? "null"}\nsupersedes: ${JSON.stringify(supersedes)}\n---\n# ${slug}\n\n${body}\n`,
 	);
 }
 
@@ -79,7 +86,27 @@ test("a first current page reports exact stale body references even beyond the p
 	}
 });
 
-test("post-publication advice counts only committed transitions and active references", (t) => {
+test("a current read omits its declared predecessors and verified ancestors but keeps unrelated stale references", async (t) => {
+	const root = corpus(t);
+	fixture(root, "current", "Compare earliest, withdrawn, one-way and different.", "active", null, [
+		"middle",
+		"withdrawn",
+	]);
+	fixture(root, "earliest", "", "superseded", "middle");
+	fixture(root, "middle", "", "superseded", "current", ["earliest"]);
+	fixture(root, "withdrawn", "", "retired");
+	fixture(root, "one-way", "", "superseded", "middle");
+	fixture(root, "different", "", "superseded", "other");
+	fixture(root, "other", "", "active", null, ["different"]);
+	const page = await readMemory(root, { slug: "current" });
+	assert.deepEqual(page.staleReferences, [
+		{ slug: "different", status: "superseded", supersededBy: "other" },
+		{ slug: "one-way", status: "superseded", supersededBy: "middle" },
+	]);
+	assert.equal(page.staleReferenceCoverage, undefined);
+});
+
+test("post-publication advice counts only committed transitions and references outside the replacement", (t) => {
 	const root = corpus(t);
 	const first = writeMemory(root, note("first-rule"));
 	const second = writeMemory(root, note("second-rule"));
@@ -95,7 +122,7 @@ test("post-publication advice counts only committed transitions and active refer
 			writeMemory(
 				root,
 				{
-					...note("next-rule"),
+					...note("next-rule", "This replaces first-rule and second-rule."),
 					supersedes: [
 						{ slug: "first-rule", digest: first.digest as string },
 						{ slug: "second-rule", digest: second.digest as string },
@@ -126,13 +153,25 @@ test("post-publication advice counts only committed transitions and active refer
 	fixture(root, "malformed-boundaries", "See ésecond-rule, second-rule\u0301 and not-second-rule.", "broken");
 	fixture(root, "malformed-header-only", "", "[second-rule");
 	const completed = writeMemory(root, {
-		...note("next-rule"),
+		...note("next-rule", "This replaces first-rule and second-rule."),
 		expectedDigest: error?.receipt.digest,
 		supersedes: [{ slug: "second-rule", digest: second.digest as string }],
 	});
 	assert.deepEqual(completed.affectedReferences?.slugs, ["second-rule"]);
 	assert.deepEqual(completed.affectedReferences?.notes, ["other-note"]);
 	assert.equal(completed.affectedReferences?.coverage.complete, true);
+});
+
+test("a retirement receipt excludes the withdrawn subject but keeps other active notes that name it", (t) => {
+	const root = corpus(t);
+	const prior = writeMemory(root, note("withdrawn-rule", "This is the withdrawn-rule subject."));
+	writeMemory(root, note("another-rule", "This depends on withdrawn-rule."));
+	const advice = retire(root, "withdrawn-rule", prior.digest as string).affectedReferences;
+	assert.deepEqual(advice?.slugs, ["withdrawn-rule"]);
+	assert.deepEqual(advice?.notes, ["another-rule"]);
+	assert.equal(advice?.count, 1);
+	assert.equal(advice?.coverage.complete, true);
+	assert.equal(advice?.coverage.notesChecked, 1);
 });
 
 test("reference lists are bounded separately from the observed count", async (t) => {
