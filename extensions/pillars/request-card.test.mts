@@ -107,6 +107,22 @@ test("Pi renders the requested hint as a message and keeps instructions behind d
 	assert.match(stripVTControlCharacters(card.render(100).join("\n")), /extension-provided task scaffolding/);
 });
 
+test("a request without details gets its title from the message type, not its instructions", () => {
+	const message = {
+		role: "custom" as const,
+		customType: JUDGMENT_REQUEST_MESSAGE,
+		display: true,
+		timestamp: 0,
+		content: judgmentPrompt({ action: "derive", hint: "Hidden subject" }),
+	};
+	const card = new CustomMessageComponent(message, renderJudgmentRequestMessage);
+	const collapsed = stripVTControlCharacters(card.render(100).join("\n"));
+	assert.match(collapsed, /\[pillars\] Alignment check requested/);
+	assert.doesNotMatch(collapsed, /Candidate derivation|\/pillars |Hidden subject/);
+	card.setExpanded(true);
+	assert.match(stripVTControlCharacters(card.render(100).join("\n")), /Hidden subject/);
+});
+
 test("each action has its own header: what was requested, then the command on a muted line", () => {
 	assert.deepEqual(render({ action: "check", hint: "" }).slice(1, 4), [
 		" [pillars] Alignment check requested",

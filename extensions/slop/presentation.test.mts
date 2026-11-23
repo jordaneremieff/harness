@@ -226,6 +226,23 @@ function catalogFixture(t: TestContext) {
 	return { dir, options: { agentDir: root, env: {} } };
 }
 
+test("a catalog list without structured rows shows its summary but keeps the body in expansion", () => {
+	const body = "Read with slop to compare starter entries.";
+	for (const [summary, outcome] of [
+		["1 slop entries", "1 slop entry."],
+		["Field \x1b[31mnotes\x1b[0m", "Field notes"],
+		["", "Catalog list returned."],
+	]) {
+		const card = tool("slop", { query: "restricted input" });
+		card.updateResult({ content: blocks(body), details: { summary }, isError: false });
+		const rows = rendered(card);
+		assert.ok(rows.includes(outcome));
+		assert.doesNotMatch(rows.join("\n"), /Read with slop|restricted input/);
+		card.setExpanded(true);
+		assert.ok(rendered(card).includes(body));
+	}
+});
+
 test("catalog inventory keeps starter guidance and zero counts out of the preview", (t) => {
 	binding(t, "ctrl+o");
 	const { options } = catalogFixture(t);

@@ -828,11 +828,12 @@ describe("mutation cards", () => {
 			assert.doesNotMatch(shown, /Sensitive diagnostic/);
 		}
 		const text = 'Current failure: {"ok":false,"written":["a"],"notWritten":["b"]}';
-		const fallback = show("memory_write", {}, collapsed, errorContext, text);
-		assert.match(fallback, /Memory write failed/);
+		const fallback = show("memory_edit", {}, collapsed, errorContext, text);
+		assert.match(fallback, /Memory edit failed/);
 		assert.doesNotMatch(fallback, /Published|no live files|Current failure/i);
-		const full = show("memory_write", {}, expandedView, errorContext, text);
-		assert.ok(full.includes(text));
+		const full = show("memory_edit", {}, expandedView, errorContext, text);
+		assert.equal(full.trim(), `{error}${text}`);
+		assert.match(show("memory_edit", {}, expandedView, errorContext), /Memory edit failed/);
 	});
 
 	it("does not over-disclose before a result or print text for unknown call arguments", () => {

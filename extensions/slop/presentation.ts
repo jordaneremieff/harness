@@ -209,9 +209,11 @@ function checkOutcome(details: Record<string, unknown>) {
 	return { outcome, limits };
 }
 
+const summaryOf = (details: Record<string, unknown>) =>
+	typeof details.summary === "string" ? singleLine(details.summary) : "";
+
 function outcomeOf(name: SlopTool, details: Record<string, unknown>, fallback: string) {
 	if (name === "slop_check") return checkOutcome(details) ?? { outcome: fallback, limits: [] };
-	const summary = typeof details.summary === "string" ? singleLine(details.summary) : "";
 	const limits: string[] = [];
 	if (name === "slop_record") {
 		const imported = nonnegative(details.importedCount);
@@ -219,7 +221,7 @@ function outcomeOf(name: SlopTool, details: Record<string, unknown>, fallback: s
 		const unmatched = nonnegative(details.unmatchedCount);
 		if (unmatched) limits.push(`No detector matched ${count(unmatched, "Slop example")}`);
 	}
-	return { outcome: summary || fallback, limits };
+	return { outcome: summaryOf(details) || fallback, limits };
 }
 
 function catalogOutcome(kind: "catalog" | "starter", total: number, list: Record<string, unknown>): string {
@@ -329,7 +331,9 @@ function resultRows(
 	if (name === "slop" && !error && !id(object(args).entry)) {
 		const list = catalogListView(object(details.list));
 		return {
-			outcome: list?.outcome ?? "Catalog list returned.",
+			outcome:
+				list?.outcome ??
+				(summaryOf(details).replace(/^1 (slop|starter) entries$/u, "1 $1 entry.") || "Catalog list returned."),
 			body,
 			rest: "",
 			limit: "",

@@ -927,7 +927,8 @@ function writeResult(
 	const receipt = record(result.details);
 	const text = textContent(result);
 	if (typeof receipt.ok !== "boolean" || !(textField(receipt.slug) || files(receipt.written))) {
-		if (!context.isError) return unstructuredResult(result, options, theme, context);
+		if (!context.isError || (options.expanded && terminalText(text).trim()))
+			return unstructuredResult(result, options, theme, context);
 		return cardResult({ outcome: `Memory ${operation} failed`, body: text }, options, theme, context);
 	}
 	const diagnostic = context.isError || receipt.ok === false ? text || textField(receipt.error) || "" : "";

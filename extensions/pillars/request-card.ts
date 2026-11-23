@@ -42,7 +42,7 @@ function contentText(content: Parameters<MessageRenderer>[0]["content"]): string
 function requestSummary(details: unknown): { label: string; facts: string[]; preview: string } {
 	const request = details as Partial<JudgmentRequest> | undefined;
 	if (request?.action !== "check" && request?.action !== "derive" && request?.action !== "review")
-		return { label: "Request", facts: [], preview: "" };
+		return { label: TITLES.check, facts: [], preview: "" };
 	return {
 		label: TITLES[request.action],
 		facts: [`/pillars ${request.action}`],
