@@ -1,3 +1,4 @@
+import { type CommentAction, type CommentResult, readCommentAction, readCommentResult } from "./comment-protocol.ts";
 import { SOURCE_BYTES, responseDigest, validUnicode } from "./responses.ts";
 
 export const LIVE_WIRE_BYTES = 32 * 1024 * 1024;
@@ -51,6 +52,7 @@ export interface LiveEdit extends LiveRange {
 	replacement: string;
 }
 export type LiveAction =
+	| CommentAction
 	| { op: "read" }
 	| { op: "navigate"; storeId: string; documentId: string; revision?: number; digest?: string }
 	| { op: "apply"; operationId: string; baseGeneration: number; baseDigest: string; edits: LiveEdit[] }
@@ -58,6 +60,7 @@ export type LiveAction =
 	| { op: "release"; claimId: string };
 export type LiveCommand = LiveBinding & LiveAction & { requestId: string };
 export type LiveResult =
+	| CommentResult
 	| {
 			status: "ok";
 			source: string;
@@ -211,6 +214,7 @@ function readNavigation(value: Record<string, unknown>): Extract<LiveAction, { o
 }
 export function readLiveAction(value: unknown): LiveAction {
 	if (!isRecord(value)) throw new Error("Invalid live Markdown action.");
+	if (value.op === "comments" || value.op === "setComment") return readCommentAction(value);
 	if (value.op === "read") return { op: "read" };
 	if (value.op === "navigate") return readNavigation(value);
 	if (value.op === "release") {
@@ -287,6 +291,7 @@ export function readLiveResult(value: unknown, action: LiveAction): LiveResult {
 	)
 		return { status: value.status as "error", message: value.message };
 	if (action.op === "navigate" && value.status === "navigated") return readNavigationResult(value, action);
+	if (action.op === "comments" || action.op === "setComment") return readCommentResult(value, action);
 	if (
 		action.op === "claim" &&
 		value.status === "claimed" &&
