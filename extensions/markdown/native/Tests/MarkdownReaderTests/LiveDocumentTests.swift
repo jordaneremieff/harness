@@ -6,14 +6,17 @@ import ReaderFeature
 @testable import MarkdownReader
 
 /// Runs the production bridge on isolated loopback sockets; the proxy controls only receipt delivery.
-@MainActor private final class LiveTestBridge {
+@MainActor final class LiveTestBridge {
     enum Failure: Error { case response, deadline }
     private let process = Process()
     private let input = Pipe()
     private let output = Pipe()
+    private let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     init(mode: String = "normal") throws {
         let script = #"""
         import { createServer } from 'node:http';
+        import { randomUUID } from 'node:crypto';
+        import { readFile, unlink } from 'node:fs/promises';
         import { createInterface } from 'node:readline';
         import { pathToFileURL } from 'node:url';
         const { LiveBridge } = await import(pathToFileURL(process.argv[1]));
@@ -29,10 +32,32 @@ import ReaderFeature
           return { status: 'admitted', submissionId: 'fixture' };
         } }, 2000, 100);
         const config = await bridge.start();
+        const post = (route, body) => fetch(config.endpoint + route, {method:'POST', headers:{Authorization:'Bearer ' + config.token, 'Content-Type':'application/json'}, body:JSON.stringify(body)});
+        const launchId = randomUUID();
+        const reservation = await post('/reserve', { launchId, origin:mode === 'transport' ? 'agent' : 'operator' });
+        if (!reservation.ok) throw new Error('Reservation refused: ' + reservation.status);
+        const {path} = await reservation.json();
+        const launch = JSON.parse(await readFile(path, 'utf8')); await unlink(path);
+        const transport = []; let currentConnect, pollFailure;
         const proxy = createServer(async (request, response) => {
           const chunks = [];
           for await (const chunk of request) chunks.push(chunk);
-          const body = Buffer.concat(chunks).toString();
+          let body = Buffer.concat(chunks).toString();
+          if (request.url === '/connect') {
+            const connect = JSON.parse(body);
+            // Behind this proxy, an unscoped-activity fixture presents the still-running live-2 contract.
+            if (mode === 'unscoped') {
+              if (connect.live !== 2) throw new Error('Expected live-2 connection');
+              Object.assign(connect, {live:3, launchId, pid:process.pid, serial:(currentConnect?.serial ?? 0) + 1,
+                view:{kind:'loading', title:'Opening document', mode:'reading', dirty:false, conflict:false}});
+              body = JSON.stringify(connect);
+            }
+            currentConnect = connect;
+          }
+          if (mode === 'transport') {
+            if (['/connect','/result','/state','/starting'].includes(request.url)) transport.push({path:request.url, body:JSON.parse(body)});
+            if (request.url === '/poll' && pollFailure) {response.writeHead(pollFailure); pollFailure = undefined; response.end(); return;}
+          }
           if (request.url === '/prompt') prompts.push(JSON.parse(body));
           const upstream = await fetch(config.endpoint + request.url, { method: 'POST',
             headers: { Authorization: 'Bearer ' + config.token, 'Content-Type': 'application/json' }, body });
@@ -47,17 +72,19 @@ import ReaderFeature
         });
         await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
         const write = value => process.stdout.write(JSON.stringify(value) + '\n');
-        write({ ...config, endpoint: 'http://127.0.0.1:' + proxy.address().port });
+        write({ ...(mode === 'unscoped' ? {version:1, token:config.token} : launch), endpoint: 'http://127.0.0.1:' + proxy.address().port });
         const lines = createInterface({ input: process.stdin });
         for await (const line of lines) {
           const command = JSON.parse(line);
           if (command.op === 'release') { release(); write({ ok: true }); }
-          else if (command.op === 'state') write({ document: bridge.list()[0]?.document, prompts, submissions });
+          else if (command.op === 'state') write({ document: bridge.list()[0]?.document, prompts, submissions, transport });
+          else if (command.op === 'failPoll') { pollFailure = command.status; write({ok:true}); }
+          else if (command.op === 'navigate') write(await bridge.execute(bridge.list()[0].handle, command));
           else if (command.op === 'publish') { bridge.publish(command.status, command.text, command.operationId); write({ ok: true }); }
           else if (command.op === 'read') write(await bridge.execute(bridge.list()[0].handle, { op: 'read' }));
           else if (command.op === 'connect') {
             const response = await fetch(config.endpoint + '/connect', { method: 'POST',
-              headers: { Authorization: 'Bearer ' + config.token, 'Content-Type': 'application/json' }, body: JSON.stringify(command) });
+              headers: { Authorization: 'Bearer ' + config.token, 'Content-Type': 'application/json' }, body: JSON.stringify({...currentConnect, ...command, serial:currentConnect.serial + 1}) });
             write({ status: response.status });
           }
         }
@@ -66,12 +93,16 @@ import ReaderFeature
         for _ in 0..<4 { root.deleteLastPathComponent() }
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["node", "--input-type=module", "-e", "setTimeout(() => process.exit(2), 60000).unref();\n" + script, root.appendingPathComponent("live-bridge.ts").path, mode]
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        var environment = ProcessInfo.processInfo.environment
+        environment["PI_CODING_AGENT_DIR"] = home.path; process.environment = environment
         process.standardInput = input; process.standardOutput = output
         try process.run()
     }
     func stop() {
         if process.isRunning { process.terminate() }
         try? input.fileHandleForWriting.close()
+        try? FileManager.default.removeItem(at: home)
     }
     func configuration() async throws -> CollaborationConfiguration {
         try JSONDecoder().decode(CollaborationConfiguration.self, from: await line())
