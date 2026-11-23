@@ -85,18 +85,12 @@ the note, the time the turn ended, at most eight jobs in start order as
 completion is still to arrive), and the count of jobs not listed. The model
 receives only a short text that the turn ends here.
 
-The call is a card in the message background, not a tool outcome box. Its title
-names the tool and what happened, for example
-`jobs_yield · turn ended · 2 jobs still run · 1 job completion pending · 9:05 AM`.
-The time is local, in 12-hour form; a turn of an earlier day also shows its
-date (`Nov 14, 9:30 PM`). Collapsed, the card shows at most three wrapped note
-lines and Pi's expansion hint with the operator's configured key. Expanded, it
-shows the whole note, one line per job (short job ID, `running` or
-`completion pending`, then the command preview, which the card's width cuts
-first), and the line `Each job completion starts the next turn.` A failed
-call shows its error in the error background. The card's renderers live in
-`presentation.ts` and are published through `display.ts` with the other job
-cards; the card draws its own shell (`renderShell: "self"`).
+`jobs_yield` uses a state-note card with its own message background. The result
+replaces the call in that card. A separate facts line reports the jobs still
+running, the completions still due, and the local time. The card shows up to
+three visual lines of the note before expansion. Expansion shows the rest of
+the note, the full retained job IDs and their states, and what starts the next
+turn. A failed call shows its diagnostic and does not claim the turn ended.
 
 Print and JSON runs (`ctx.mode` `print` or `json`) have no operator view and
 answer with their last text message, so they do not offer `jobs_yield`: a
@@ -341,39 +335,28 @@ take command, directory, and owner from the task input, never from formatted
 tool output. Each snapshot also carries `observedAt`, the time the record was
 read. It is a snapshot clock, not a live clock: an elapsed time on a retained
 card is elapsed at observation, and a card without `endedAt` has no final
-duration. A record without identity fields is unknown, not blank: older
-records that never stored them render `command unknown` and `owner: unknown`
-instead of an empty string. `logs` results carry the job record alongside the
-page, so a log card names the command it belongs to.
+duration. The cards omit identity or clock facts absent from the record.
+`logs` results carry the job record alongside the page.
 
 ## Tool cards
 
-The `jobs_yield` card is described [above](#ending-a-turn-while-jobs-run).
-The `jobs` tool and background `bash` results have owner renderers. A compact
-card leads with the command preview, then one context line that tells repeated
-commands apart (`job 7 · in harness · storage:9`: the short job ID, the last
-segment of the working directory and the owner, each only when known), then
-the facts line with the exceptional state first: accepted and running,
-cancellation requested, settled cancellation, timed out, host lost, or
-succeeded/failed, followed by the exit code when one exists and the duration,
-then a one-line error preview. The routine absence of a cancel request is not
-stated; the expanded `cancel request:` line keeps the exact value. A collapsed
-card ends with `... (ctrl+o to expand)` using the operator's configured key.
-Expanded detail adds the exact job ID, owner, working directory, timeout, the
-full retained error, and for log pages the byte cursors, gap, continuation
-(`more`), pending UTF-8 suffix, and the retained page text; a collapsed log
-card shows the page marks (`output gap · more output · output pending`) rather
-than the job error. A `list` card identifies each job by command preview, not
-only by ID. Foreground `bash` results keep Pi's native bash card; only the
-background admission shape uses the job card. A list with `nextTaskCursor`
-shows `More jobs: partial page` in both forms; the expanded card also prints the
-exact JSON cursor. A complete empty page stays `No jobs`.
+Jobs follows the [emission grammar](../../docs/conventions/emissions.md).
+Foreground `bash` keeps Pi's native renderer. A managed `bash` call shows
+`bash launch` and previews the command. Its result reports job admission,
+not process readiness or completion. A failed launch shows the diagnostic.
 
-Every retained string on a card (command preview, directory, owner, identifiers,
-error text, model-visible fallback text and the retained log page) passes
-through the same display sanitation as the model-visible text before theme
-styling: terminal control and escape sequences are removed, newlines and tabs
-stay. The raw bytes remain in the structured result for exact reads.
+`jobs status` and `jobs cancel` report the observed state and the known job
+facts. A cancellation request is distinct from a settled cancellation.
+`jobs list` reports the number of jobs on the current page. `jobs logs` reports
+the retained byte range by size, any discarded earlier output, and whether an
+incomplete UTF-8 suffix remains. Its preview uses the retained page, not the
+model's next-step guidance. If another page exists, expansion shows the exact
+continuation call. Pagination is distinct from discarded output.
+
+A record's bounded command preview does not establish how much of the original
+command the record retains. Card text sanitation does not alter stored results.
+The [state note](#ending-a-turn-while-jobs-run) uses the same expansion controls,
+but draws its own shell.
 
 The renderers live in `presentation.ts` as pure functions over the result
 shape, and `display.ts` publishes them. The same records serve three routes:

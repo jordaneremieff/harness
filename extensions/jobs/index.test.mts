@@ -90,9 +90,9 @@ class TestPi {
 		);
 		this.#handlers.set(name, [...(this.#handlers.get(name) ?? []), handler]);
 	}
-	failSend = false;
+	sendFailure?: Error;
 	sendMessage(message: SentMessage["message"], options?: SentMessage["options"]) {
-		if (this.failSend) throw new Error("send failed");
+		if (this.sendFailure) throw this.sendFailure;
 		this.sent.push({ message, options });
 		if (this.idle && options?.triggerTurn === false)
 			this.branch.push({ type: "custom_message", customType: message.customType, details: message.details });
@@ -453,7 +453,7 @@ describe("Command Jobs adapter", () => {
 		};
 		const { pi, call } = setup(root, false, terminal);
 		try {
-			pi.failSend = true;
+			pi.sendFailure = new Error("send\n\x1b[31mfailed\x1b[0m");
 			const job = jobOf(await call("bash", { command: "printf done", background: true }));
 			await settled(call, job.id);
 			await delay(10);
@@ -470,7 +470,7 @@ describe("Command Jobs adapter", () => {
 			const writes = terminal.writes.length;
 			await pi.emit("agent_settled", { type: "agent_settled", aborted: false });
 			assert.equal(terminal.writes.length, writes, "a completion that was never sent is not reconsidered");
-			assert.match(terminal.notices[0] ?? "", /completion message could not be sent: send failed/);
+			assert.deepEqual(terminal.notices, [`The completion message for job ${job.id} failed to send: send failed`]);
 		} finally {
 			await pi.shutdown();
 		}

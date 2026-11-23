@@ -242,7 +242,7 @@ describe("the jobs_yield card", () => {
 		const shared = { ...base, ...context, state, args: { note: value.note } };
 		const call = f.tool.renderCall?.({ note: value.note } as never, theme, shared as never);
 		const result = f.tool.renderResult?.(
-			{ content: [{ type: "text", text: output }], details: value, isError: shared.isError } as never,
+			{ content: [{ type: "text", text: output }], details: value } as never,
 			{ expanded: shared.expanded === true, isPartial: false },
 			theme,
 			shared as never,
@@ -271,7 +271,7 @@ describe("the jobs_yield card", () => {
 		const state: Record<string, unknown> = {};
 		const call = f.tool.renderCall?.({ note: "The suite\nruns." } as never, theme, { ...base, state } as never);
 		const streaming = call?.render(60) ?? [];
-		assert.deepEqual(plain(streaming), ["", " jobs_yield · ending turn", " The suite runs.", ""]);
+		assert.deepEqual(plain(streaming), ["", " jobs_yield Ending turn", "", " The suite", " runs.", ""]);
 		assert.ok(streaming.every((line) => line.startsWith("<customMessageBg>")));
 		assert.ok(
 			streaming.every((line) => stripVTControlCharacters(line).replace(/<[A-Za-z]+>/gu, "").length === 60),
@@ -288,9 +288,10 @@ describe("the jobs_yield card", () => {
 
 	it("shows the title, three note lines and Pi's expansion hint when collapsed", () => {
 		const lines = plain(row({}).result?.render(100));
-		assert.equal(lines[1], " jobs_yield · turn ended · 1 job still runs · 1 job completion pending · 9:05 AM");
-		assert.equal(lines.length, 1 + 1 + 3 + 1 + 1, "padding, title, three note lines, hint, padding");
-		assert.match(lines[5] ?? "", /^ \.\.\. \(\d+ more lines?, ctrl\+o to expand\)$/u);
+		assert.equal(lines[1], " jobs_yield Turn ended");
+		assert.equal(lines[2], " 1 job still runs · 1 job completion pending · 09:05");
+		assert.equal(lines.length, 9, "padding, title, facts, blank, three note lines, hint, padding");
+		assert.equal(lines[7], " ... (ctrl+o to expand)");
 		assert.doesNotMatch(lines.join("\n"), /npm test|starts the next turn/u, "details wait for expansion");
 		assert.equal(
 			plain(row({}, { ...details, note: "Short note." }).result?.render(100)).at(-2),
@@ -299,38 +300,41 @@ describe("the jobs_yield card", () => {
 		const hinted = plain(
 			row({ keyHint: (id: string, description: string) => `[${id}] ${description}` }).result?.render(100),
 		);
-		assert.match(hinted[5] ?? "", /^ \.\.\. \(\d+ more lines?, \[app\.tools\.expand\] to expand\)$/u);
+		assert.equal(hinted[7], " ... ([app.tools.expand] to expand)");
 	});
 
 	it("expands to the whole note, the jobs and what starts the next turn", () => {
 		const lines = plain(row({ expanded: true }).result?.render(100));
 		const joined = lines.join("\n");
 		assert.equal(lines.slice(2).join(" ").replace(/\s+/gu, " ").includes(note), true);
-		assert.match(joined, /^ {3}job 4f2a9c1e · running · npm test$/mu);
-		assert.match(joined, /^ {3}job 7b3d2e10 · completion pending · npm run lint$/mu);
+		assert.ok(joined.includes(`job ${RUNNING.id} · running · command preview: npm test`));
+		assert.ok(joined.includes(`job ${SETTLED.id} · completion pending · command preview: npm run lint`));
 		const long = plain(
 			row(
 				{ expanded: true },
 				{ ...details, jobs: [{ ...RUNNING, commandPreview: `npm test -- ${"--flag ".repeat(30)}` }] },
 			).result?.render(60),
 		);
-		assert.match(
-			long.join("\n"),
-			/^ {3}job 4f2a9c1e · running · npm test -- --flag/mu,
-			"a long command loses only its own end",
+		assert.ok(
+			long.some((row) => row.includes(`job ${RUNNING.id}`)),
+			"the known ID is complete",
+		);
+		assert.ok(
+			long.some((row) => row.includes("--flag")),
+			"the expansion wraps the retained command preview",
 		);
 		assert.match(joined, /^ Each job completion starts the next turn\.$/mu);
 		assert.doesNotMatch(joined, /to expand|nothing/iu);
 		const omitted = plain(row({ expanded: true }, { ...details, omitted: 2 }).result?.render(100));
-		assert.match(omitted.join("\n"), /^ {3}2 more not listed$/mu);
-		assert.equal(omitted[1], " jobs_yield · turn ended · 4 jobs open · 9:05 AM");
+		assert.match(omitted.join("\n"), /^ \[Excerpt: 2 jobs not listed\]$/mu);
+		assert.equal(omitted[2], " 4 jobs open · 09:05");
 	});
 
-	it("shows the time in 12-hour form, with the date for a turn of an earlier day", () => {
+	it("shows the time in local 24-hour form and includes earlier dates", () => {
 		const now = new Date(2026, 10, 15, 18, 0).getTime();
-		assert.equal(yieldClock(new Date(2026, 10, 15, 9, 5).getTime(), now), "9:05 AM");
-		assert.equal(yieldClock(new Date(2026, 10, 14, 21, 30).getTime(), now), "Nov 14, 9:30 PM");
-		assert.equal(yieldClock(new Date(2025, 11, 31, 23, 59).getTime(), now), "Dec 31, 2025, 11:59 PM");
+		assert.equal(yieldClock(new Date(2026, 10, 15, 9, 5).getTime(), now), "09:05");
+		assert.equal(yieldClock(new Date(2026, 10, 14, 21, 30).getTime(), now), "14 Nov 21:30");
+		assert.equal(yieldClock(new Date(2025, 11, 31, 23, 59).getTime(), now), "31 Dec 2025 23:59");
 	});
 
 	it("draws a refused call in the error background with its error", () => {
@@ -338,8 +342,10 @@ describe("the jobs_yield card", () => {
 		assert.ok(drawn.every((line) => line.startsWith("<toolErrorBg>")));
 		assert.deepEqual(plain(drawn), [
 			"",
-			" jobs_yield · could not end the turn",
+			" jobs_yield Could not end the turn",
+			"",
 			" Short note.",
+			"",
 			` ${YIELD_REFUSED}`,
 			"",
 		]);
@@ -398,12 +404,12 @@ describe("the jobs_yield card", () => {
 				ctrl: false,
 				clickCount: 1,
 			} as never);
-		assert.match(lines().join("\n"), /\.\.\. \(\d+ more lines?, ctrl\+o to expand\)/u);
+		assert.match(lines().join("\n"), /\.\.\. \(ctrl\+o to expand\)/u);
 		const noteRow = lines().findIndex((line) => line.includes("The test suite and the lint"));
 		assert.ok(noteRow > 0);
 		assert.equal(click(noteRow)?.handled, true);
 		assert.match(lines().join("\n"), /Each job completion starts the next turn\./u);
-		const titleRow = lines().findIndex((line) => line.includes("jobs_yield · turn ended"));
+		const titleRow = lines().findIndex((line) => line.includes("jobs_yield Turn ended"));
 		assert.equal(click(titleRow)?.handled, true);
 		assert.doesNotMatch(lines().join("\n"), /Each job completion starts the next turn\./u);
 	});

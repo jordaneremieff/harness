@@ -2,13 +2,13 @@ import {
 	createBashToolDefinition,
 	type AgentToolResult,
 	type Theme,
+	type ThemeColor,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
-import { basename } from "node:path";
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import { homedir } from "node:os";
 import { displayText, executionErrorLabel } from "./completion.ts";
 
-/** Facts a job card can show. Absent fields are unknown, not empty. */
 export interface JobView {
 	id?: string;
 	commandPreview?: string;
@@ -24,300 +24,377 @@ export interface JobView {
 	timeoutSeconds?: number;
 }
 
-interface LogView {
-	id?: string;
-	text?: string;
-	earliest?: number;
-	next?: number;
-	end?: number;
-	gap?: boolean;
-	more?: boolean;
-	pendingBytes?: number;
-	job?: JobView;
-}
-
-type NativeBash = ReturnType<typeof createBashToolDefinition>;
-/** Pi's tool render context; the job cards use its previous component and host key hints. */
 type RenderContext = Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
-type NativeContext = Parameters<NonNullable<NativeBash["renderCall"]>>[2];
-const COMPACT_ERROR_CHARS = 120;
+type NativeBashContext = Parameters<NonNullable<ReturnType<typeof createBashToolDefinition>["renderCall"]>>[2];
+type Options = { expanded: boolean; isPartial?: boolean };
+type Hidden = number | "details";
+const BODY_ROWS = 5;
 
-/** One retained string as display text: terminal controls removed, newlines and tabs kept. */
-function textOf(value: unknown): string | undefined {
-	if (typeof value !== "string" || value.length === 0) return undefined;
-	const clean = displayText(value);
-	return clean.length > 0 ? clean : undefined;
-}
-
-/** One retained string on one card line. */
-function lineOf(value: unknown): string | undefined {
-	return textOf(value)?.replace(/\s+/gu, " ").trim() || undefined;
-}
-
-function jobView(value: unknown): JobView | undefined {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
-	return value as JobView;
-}
-
-function logView(value: unknown): LogView | undefined {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
-	const record = value as LogView;
-	return typeof record.earliest === "number" ? record : undefined;
-}
-
-function known(value: string | undefined): string {
-	return value ?? "unknown";
-}
-
-/** Elapsed time between two clock readings: one decimal below ten seconds, whole seconds above. */
-export function seconds(start: number, end: number): string {
-	const value = Math.max(0, (end - start) / 1000);
-	return value < 10 ? `${value.toFixed(1)}s` : `${Math.round(value)}s`;
-}
-
-/** Elapsed time uses the snapshot clock. A missing clock stays unknown. */
-function duration(job: JobView): string {
-	if (typeof job.startedAt !== "number") return "duration unknown";
-	if (typeof job.endedAt === "number") return `final ${seconds(job.startedAt, job.endedAt)}`;
-	if (job.status === "running" && typeof job.observedAt === "number")
-		return `elapsed ${seconds(job.startedAt, job.observedAt)} at observation`;
-	return job.status === "running" ? "elapsed unknown" : "duration unknown";
-}
-
-function stateLabel(job: JobView): string {
-	if (job.status === "running" && job.cancellationRequested) return "cancellation requested";
-	if (job.status === "running") return "accepted, running";
-	if (job.status === "cancelled") return "settled cancellation";
-	if (job.status === "timed_out") return "timed out";
-	if (job.status === "lost") return "host lost";
-	if (job.status === "succeeded" || job.status === "failed") return job.status;
-	return "unknown";
-}
-
-/** A requested cancellation on a settled job is a fact worth a word; its absence is routine. */
-function requestLabel(job: JobView): string | undefined {
-	return job.cancellationRequested &&
-		job.status !== "running" &&
-		job.status !== "cancelled" &&
-		job.status !== "timed_out"
-		? "cancellation requested"
+function record(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
 		: undefined;
 }
 
-/** Short stable identity and the context that tells repeated commands apart. */
-function contextLine(job: JobView): string | undefined {
-	const id = lineOf(job.id);
-	const cwd = lineOf(job.cwd);
-	const folder = cwd ? basename(cwd) || cwd : undefined;
-	const parts = [id ? `job ${id}` : undefined, folder ? `in ${folder}` : undefined, lineOf(job.owner)].filter(
-		(part): part is string => part !== undefined,
-	);
-	return parts.length ? parts.join(" · ") : undefined;
+function textOf(value: unknown): string {
+	return typeof value === "string" ? displayText(value).replace(/\t/gu, "   ") : "";
 }
 
-function exitLabel(job: JobView): string | undefined {
-	if (typeof job.exitCode === "number") return `exit ${job.exitCode}`;
-	if (job.exitCode === null) return "exit unavailable";
-	if (job.status === "failed" || job.status === "succeeded") return "exit unknown";
+function lineOf(value: unknown): string | undefined {
+	return textOf(value).replace(/\s+/gu, " ").trim() || undefined;
+}
+
+function knownNumber(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
+}
+
+function count(value: number, one: string, many: string): string {
+	return `${value} ${value === 1 ? one : many}`;
+}
+
+export function formatDuration(ms: number): string {
+	const seconds = ms / 1000;
+	if (seconds < 60) return `${seconds.toFixed(1)}s`;
+	const minutes = Math.floor(seconds / 60);
+	const hours = Math.floor(minutes / 60);
+	return `${hours ? `${hours}h ` : ""}${minutes % 60}m ${Math.floor(seconds) % 60}s`;
+}
+
+function jobDuration(job: JobView): string | undefined {
+	const { startedAt, endedAt, observedAt } = job;
+	if (!knownNumber(startedAt)) return undefined;
+	if (knownNumber(endedAt) && endedAt >= startedAt) return `final ${formatDuration(endedAt - startedAt)}`;
+	if (job.status === "running" && knownNumber(observedAt) && observedAt >= startedAt)
+		return `elapsed ${formatDuration(observedAt - startedAt)} at observation`;
 	return undefined;
 }
 
-function compactError(error: string | undefined): string | undefined {
-	if (error === undefined) return undefined;
-	const flat = error.replace(/\s+/gu, " ").trim();
-	if (flat.length <= COMPACT_ERROR_CHARS) return flat;
-	return `${flat.slice(0, COMPACT_ERROR_CHARS - 1)}…`;
+function jobState(job: JobView): string | undefined {
+	switch (job.status) {
+		case "running":
+			return job.cancellationRequested ? "cancellation requested" : "running";
+		case "succeeded":
+		case "failed":
+		case "cancelled":
+			return job.status;
+		case "timed_out":
+			return "timed out";
+		case "lost":
+			return "host lost";
+		default:
+			return undefined;
+	}
 }
 
-/** The exceptional state leads; exit and duration follow; the routine absence of a cancel request says nothing. */
-function compactJob(job: JobView): string[] {
-	const facts = [stateLabel(job), requestLabel(job), exitLabel(job), duration(job)].filter(
-		(fact): fact is string => fact !== undefined,
-	);
-	const context = contextLine(job);
-	const lines = [
-		lineOf(job.commandPreview) ?? "command unknown",
-		...(context ? [context] : []),
-		[...new Set(facts)].join(" · "),
-	];
-	const error = compactError(textOf(job.error));
-	if (error) lines.push(`${executionErrorLabel(job.status)}: ${error}`);
-	return lines;
+function jobOutcome(job: JobView, admitted: boolean): string {
+	const id = lineOf(job.id);
+	if (admitted) return id ? `Accepted job ${id}.` : "Accepted a background job.";
+	switch (jobState(job)) {
+		case "running":
+			return "Job recorded as running at observation.";
+		case "cancellation requested":
+			return "Cancellation requested.";
+		case "cancelled":
+			return "Cancelled";
+		case "succeeded":
+			return "Job succeeded.";
+		case "failed":
+			return "Job failed.";
+		case "timed out":
+			return "Job timed out.";
+		case "host lost":
+			return "Job lost its host.";
+		default:
+			return "Job state is not established.";
+	}
 }
 
-function lossLines(job: JobView): string[] {
-	if (job.status !== "lost") return [];
+function jobFacts(job: JobView, showId = true): string[] {
+	const id = lineOf(job.id);
+	const cwd = lineOf(job.cwd);
+	const command = lineOf(job.commandPreview);
+	const home = homedir();
+	const directory = cwd === home || cwd?.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd;
 	return [
-		"The host stopped while the command ran.",
-		"Output is unavailable. The command was not run again.",
-		"Zero retained bytes does not mean the command produced no output.",
-	];
+		showId && id ? `job ${id}` : undefined,
+		knownNumber(job.exitCode) ? `exit ${job.exitCode}` : undefined,
+		jobDuration(job),
+		knownNumber(job.timeoutSeconds) ? `timeout ${job.timeoutSeconds}s` : undefined,
+		job.cancellationRequested === true &&
+		job.status !== "running" &&
+		job.status !== "timed_out" &&
+		job.status !== "cancelled"
+			? "cancellation requested"
+			: undefined,
+		directory ? `directory: ${directory}` : undefined,
+		lineOf(job.owner),
+		command ? `command preview: ${command}` : undefined,
+	].filter((fact): fact is string => fact !== undefined);
 }
 
-function detailJob(job: JobView, logs?: LogView): string[] {
-	const lines = [
-		...compactJob(job),
-		`id: ${known(lineOf(job.id))}`,
-		`owner: ${known(lineOf(job.owner))}`,
-		`working directory: ${known(lineOf(job.cwd))}`,
-		`timeout: ${typeof job.timeoutSeconds === "number" ? `${job.timeoutSeconds}s` : "none"}`,
-		`cancel request: ${job.cancellationRequested === undefined ? "unknown" : job.cancellationRequested ? "yes" : "no"}`,
-		...lossLines(job),
-	];
-	const error = textOf(job.error);
-	if (error) lines.push(`${executionErrorLabel(job.status)}: ${error}`);
-	if (logs) lines.push(...logDetail(logs));
-	else lines.push("Logs are not in this result.");
-	return lines;
+function jobError(job: JobView): string | undefined {
+	const error = textOf(job.error).trim();
+	return error ? `${executionErrorLabel(job.status)}: ${error}` : undefined;
 }
 
-function flag(value: boolean | undefined, yes: string): string {
-	if (value === undefined) return "unknown";
-	return value ? yes : "no";
+function clipRow(line: string, width: number): string {
+	return truncateToWidth(line, width, "…").replace(/\x1b\[0m…\x1b\[0m$/u, "…\x1b[22;23;24;25;27;28;29;39m");
 }
 
-/** The retained page as display text; the raw bytes stay in the result. */
-function logTextLines(text: string | undefined): string[] {
-	if (text === undefined) return ["Log text is unavailable."];
-	if (text.length === 0) return ["This page has no output."];
-	return ["Retained page:", displayText(text)];
+function expansionHint(theme: Theme, context: RenderContext, width: number, hidden: Hidden, pending = false): string[] {
+	const key = context.keyText?.("app.tools.expand");
+	if (!key && pending) return [];
+	const action = key
+		? (context.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
+		: theme.fg("muted", "click to expand");
+	const prefix = hidden === "details" ? "" : `${count(hidden, "more line", "more lines")}, `;
+	return [clipRow(theme.fg("muted", `... (${prefix}`) + action + theme.fg("muted", ")"), width)];
 }
 
-function logDetail(logs: LogView): string[] {
-	const lines = [
-		`log id: ${known(lineOf(logs.id))}`,
-		`earliest: ${logs.earliest ?? "unknown"}`,
-		`next: ${logs.next ?? "unknown"}`,
-		`end: ${logs.end ?? "unknown"}`,
-		`gap: ${flag(logs.gap, "yes, earlier output was discarded")}`,
-		`more: ${flag(logs.more, "yes")}`,
-		`pending bytes: ${typeof logs.pendingBytes === "number" ? String(logs.pendingBytes) : "unknown"}`,
-	];
-	if (logs.gap) lines.push("Output before the retained tail is unavailable.");
-	if ((logs.pendingBytes ?? 0) > 0) lines.push("An incomplete UTF-8 suffix is pending. It is not missing output.");
-	return [...lines, ...logTextLines(logs.text)];
+function wrapped(text: string, width: number): string[] {
+	return text ? wrapTextWithAnsi(text, width) : [];
 }
 
-function compactLogs(logs: LogView): string[] {
-	const job = logs.job;
-	const lines = job ? compactJob({ ...job, error: undefined }) : [`log ${known(lineOf(logs.id))}`];
-	const marks = [
-		logs.gap ? "output gap" : undefined,
-		logs.more ? "more output" : undefined,
-		(logs.pendingBytes ?? 0) > 0 ? "output pending" : undefined,
-		logs.text === undefined ? "output unavailable" : undefined,
-	].filter((mark): mark is string => mark !== undefined);
-	if (marks.length > 0) lines.push(marks.join(" · "));
-	return lines;
+function component(draw: (width: number) => string[], resultPresent?: () => boolean): Component {
+	let cache: { width: number; result?: boolean; lines: string[] } | undefined;
+	return {
+		render(width) {
+			const result = resultPresent?.();
+			if (cache?.width !== width || cache.result !== result) cache = { width, result, lines: draw(width) };
+			return cache.lines;
+		},
+		invalidate() {
+			cache = undefined;
+		},
+	};
 }
 
-/** The disclosure hint names the operator's configured expansion key when the host supplies one. */
-function expansionHint(context: RenderContext): string {
-	const key = typeof context.keyText === "function" ? context.keyText("app.tools.expand") : "";
-	return key ? `... (${key} to expand)` : "... (expand for full details)";
+interface CallCopy {
+	name: string;
+	subject?: string;
+	facts?: string[];
+	body?: string;
+	cursor?: string;
 }
 
-function card(lines: string[], theme: Theme, context: RenderContext, hint = false): Text {
-	const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-	const [title, ...rest] = lines;
-	text.setText(
-		[
-			theme.fg("toolTitle", title ?? "command unknown"),
-			...rest.map((line) => theme.fg("toolOutput", line)),
-			...(hint ? [theme.fg("muted", expansionHint(context))] : []),
-		].join("\n"),
+function jobsCall(args: unknown): CallCopy {
+	const call = record(args);
+	const cursor = knownNumber(call?.cursor) ? `cursor: ${call.cursor}` : undefined;
+	return {
+		name: "jobs",
+		subject: [lineOf(call?.action), lineOf(call?.id)].filter(Boolean).join(" "),
+		facts: cursor ? [cursor] : undefined,
+		cursor: record(call?.taskCursor) ? `  taskCursor: ${displayText(JSON.stringify(call?.taskCursor))}` : undefined,
+	};
+}
+
+function bashCall(args: unknown): CallCopy {
+	const call = record(args);
+	return {
+		name: "bash",
+		subject: call?.background === true ? "launch" : undefined,
+		facts: knownNumber(call?.timeout) ? [`timeout ${call.timeout}s`] : undefined,
+		body: textOf(call?.command),
+	};
+}
+
+function callRows(copy: CallCopy, width: number, theme: Theme, expanded: boolean): { rows: string[]; hidden?: Hidden } {
+	const { name, subject, facts, body, cursor } = copy;
+	const title = theme.fg("toolTitle", theme.bold(name)) + (subject ? ` ${theme.fg("accent", subject)}` : "");
+	const fact = facts?.length ? theme.fg("muted", facts.join(" · ")) : "";
+	const headings = [title, ...(fact ? [fact] : [])];
+	const rows = expanded
+		? headings.flatMap((line) => wrapped(line, width))
+		: headings.map((line) => clipRow(line, width));
+	const visual = wrapped(body ?? "", width);
+	const shown = expanded ? visual : visual.slice(0, BODY_ROWS);
+	rows.push(...shown.map((line) => theme.fg("toolOutput", line)));
+	if (expanded && cursor) rows.push(...wrapped(cursor, width).map((line) => theme.fg("muted", line)));
+	const hidden =
+		cursor || headings.some((line) => visibleWidth(line) > width)
+			? "details"
+			: visual.length - shown.length || undefined;
+	return { rows, hidden };
+}
+
+function renderCall(copy: CallCopy, theme: Theme, context: RenderContext): Component {
+	return component(
+		(width) => {
+			const { rows, hidden } = callRows(copy, width, theme, context.expanded);
+			if (!context.expanded && !context.state?.jobsResult && hidden !== undefined)
+				rows.push(...expansionHint(theme, context, width, hidden, true));
+			return rows;
+		},
+		() => context.state?.jobsResult === true,
 	);
-	return text;
+}
+
+interface ResultCopy {
+	outcome: string;
+	body?: string;
+	details?: string[];
+	limit?: string;
+	color?: ThemeColor;
+}
+
+function continuation(args: unknown): string {
+	return `Continue with jobs ${displayText(JSON.stringify(args))}`;
+}
+
+function logsCopy(logs: Record<string, unknown>, earliest: number, args: unknown): ResultCopy {
+	const job = record(logs.job) ?? {};
+	const call = record(args);
+	const id = lineOf(logs.id) ?? lineOf(job.id) ?? lineOf(call?.id);
+	const start = call ? Math.max(knownNumber(call.cursor) ? call.cursor : 0, earliest) : undefined;
+	const next = knownNumber(logs.next) ? logs.next : undefined;
+	const bytes = next !== undefined && start !== undefined && next >= start ? next - start : undefined;
+	const page =
+		bytes === undefined ? "Read a retained log page" : `Read ${count(bytes, "byte", "bytes")} from retained logs`;
+	const pending = knownNumber(logs.pendingBytes) && logs.pendingBytes > 0 ? logs.pendingBytes : undefined;
+	const coverage =
+		logs.more === true ? "more output is available" : logs.more === false ? "reached the readable end" : undefined;
+	const pendingFact =
+		pending === undefined ? undefined : `${count(pending, "byte", "bytes")} in an incomplete UTF-8 suffix`;
+	const outcome = `${[page, coverage, pendingFact].filter(Boolean).join("; ")}.`;
+	const error = jobError(job);
+	return {
+		outcome,
+		body: typeof logs.text === "string" ? textOf(logs.text) : undefined,
+		details: [
+			...jobFacts({ ...job, id }),
+			`earliest byte: ${earliest}`,
+			...(next === undefined ? [] : [`next byte: ${next}`]),
+			...(knownNumber(logs.end) ? [`end byte: ${logs.end}`] : []),
+			...(error ? [error] : []),
+			...(logs.more === true && id && next !== undefined ? [continuation({ action: "logs", id, cursor: next })] : []),
+		],
+		limit: logs.gap === true ? "[Excerpt: earlier output was discarded]" : undefined,
+	};
+}
+
+function listCopy(jobs: unknown[], nextTaskCursor: unknown): ResultCopy {
+	const partial = nextTaskCursor !== undefined;
+	const entries = jobs.map((entry) => (record(entry) ?? {}) as JobView);
+	const scope = count(jobs.length, "job", "jobs");
+	return {
+		outcome: partial
+			? `Listed ${scope} on this page; another page is available.`
+			: jobs.length
+				? `Listed ${scope}.`
+				: "No jobs.",
+		body: entries
+			.map((job) => [jobState(job), ...jobFacts(job)].filter(Boolean).join(" · "))
+			.filter(Boolean)
+			.join("\n"),
+		details: partial ? [continuation({ action: "list", taskCursor: nextTaskCursor })] : undefined,
+	};
+}
+
+function singleCopy(job: JobView, admitted: boolean, args: unknown): ResultCopy {
+	const idOnCall = lineOf(job.id) === lineOf(record(args)?.id);
+	// Admission clocks do not establish that the job process started.
+	const facts = admitted ? jobFacts({ ...job, startedAt: undefined }, false) : jobFacts(job, !idOnCall);
+	const error = jobError(job);
+	return {
+		outcome: jobOutcome(job, admitted),
+		body: [
+			...facts,
+			...(job.status === "lost" ? ["Output is unavailable after host loss; the command was not run again."] : []),
+			...(error ? [error] : []),
+		].join("\n"),
+	};
 }
 
 function resultText(result: AgentToolResult<unknown>): string {
-	return result.content
-		.filter((part) => part.type === "text")
-		.map((part) => part.text)
-		.join("\n");
+	return textOf(
+		result.content
+			.filter((part) => part.type === "text")
+			.map((part) => part.text)
+			.join("\n"),
+	).trim();
 }
 
-function logsLines(logs: LogView, expanded: boolean): string[] {
-	if (!expanded) return compactLogs(logs);
-	return logs.job ? detailJob(logs.job, logs) : ["command unknown", "unknown", ...logDetail(logs)];
+function resultCopy(result: AgentToolResult<unknown>, context: RenderContext, admitted: boolean): ResultCopy {
+	if (!context.isError) {
+		const data = record(result.details);
+		if (Array.isArray(data?.jobs)) return listCopy(data.jobs, data.nextTaskCursor);
+		if (data && knownNumber(data.earliest)) return logsCopy(data, data.earliest, context.args);
+		const job = record(data?.job);
+		if (job && (lineOf(job.id) || jobState(job))) return singleCopy(job, admitted, context.args);
+	}
+	const [outcome, ...body] = resultText(result).split("\n");
+	return {
+		outcome: outcome || (context.isError ? "No diagnostic was retained." : "No job result was retained."),
+		body: context.isError ? body.join("\n") : undefined,
+		details: !context.isError && body.length ? [body.join("\n")] : undefined,
+		color: context.isError ? "error" : undefined,
+	};
 }
 
-function listLines(jobs: unknown[], expanded: boolean, nextTaskCursor?: unknown): string[] {
-	if (jobs.length === 0 && nextTaskCursor === undefined) return ["No jobs"];
-	const lines = jobs.flatMap((entry, index) => {
-		const job = jobView(entry) ?? {};
-		const rows = expanded ? detailJob(job) : compactJob(job);
-		return index === 0 ? rows : ["", ...rows];
+function renderResult(
+	copy: ResultCopy,
+	call: CallCopy,
+	options: Options,
+	theme: Theme,
+	context: RenderContext,
+): Component {
+	if (context.state) context.state.jobsResult = true;
+	return component((width) => {
+		const expanded = options.expanded;
+		const bodyColor = copy.color ?? "toolOutput";
+		const [outcome = "", ...overflow] = wrapped(copy.outcome, width);
+		const body = [...overflow, ...wrapped(copy.body ?? "", width)];
+		const shown = expanded ? body : body.slice(0, BODY_ROWS);
+		const rows = [
+			"",
+			theme.fg(copy.color ?? (options.isPartial ? "muted" : "toolOutput"), outcome),
+			...shown.map((row) => theme.fg(bodyColor, row)),
+		];
+		if (expanded && copy.details?.length)
+			rows.push("", ...copy.details.flatMap((line) => wrapped(line, width).map((row) => theme.fg(bodyColor, row))));
+		if (copy.limit) {
+			const limit = theme.fg("warning", copy.limit);
+			rows.push(...(expanded ? wrapped(limit, width) : [clipRow(limit, width)]));
+		}
+		if (!expanded) {
+			const callHidden = callRows(call, width, theme, false).hidden;
+			const bodyHidden = body.length - shown.length;
+			const hidden =
+				copy.details?.length ||
+				(copy.limit && visibleWidth(copy.limit) > width) ||
+				callHidden === "details" ||
+				(callHidden && bodyHidden)
+					? "details"
+					: callHidden || bodyHidden;
+			if (hidden) rows.push(...expansionHint(theme, context, width, hidden));
+		}
+		return rows.map((row) => clipRow(row, width));
 	});
-	if (nextTaskCursor !== undefined) {
-		lines.push("More jobs: partial page");
-		if (expanded) lines.push(`nextTaskCursor: ${JSON.stringify(nextTaskCursor)}`);
-	}
-	return lines;
 }
 
-/** Card lines and whether a collapsed card hides more. Fallback text is the model-visible result text. */
-function jobsLines(
-	details: unknown,
-	expanded: boolean,
-	isError: boolean,
-	fallback: string,
-): { lines: string[]; more: boolean } {
-	const cleanFallback = displayText(fallback);
-	const logs = logView(details);
-	if (logs) {
-		const lines = logsLines(logs, expanded);
-		return { lines: isError && cleanFallback ? [...lines, cleanFallback] : lines, more: !expanded };
-	}
-	const record = jobView(details) as { jobs?: unknown; job?: unknown; nextTaskCursor?: unknown } | undefined;
-	if (Array.isArray(record?.jobs))
-		return {
-			lines: listLines(record.jobs, expanded, record.nextTaskCursor),
-			more: !expanded && (record.jobs.length > 0 || record.nextTaskCursor !== undefined),
-		};
-	const job = jobView(record?.job);
-	if (job) return { lines: expanded ? detailJob(job) : compactJob(job), more: !expanded };
-	if (cleanFallback) {
-		const [first = "unknown", ...rest] = cleanFallback.split("\n");
-		return { lines: expanded ? [cleanFallback] : [first], more: !expanded && rest.length > 0 };
-	}
-	return { lines: ["command unknown", "unknown"], more: false };
-}
-
-let nativeBash: ReturnType<typeof createBashToolDefinition> | undefined;
-
-function nativeRenderers(): ReturnType<typeof createBashToolDefinition> {
-	nativeBash ??= createBashToolDefinition(process.cwd());
-	return nativeBash;
-}
-
-export function renderJobsCall(args: unknown, theme: Theme, context: RenderContext): Text {
-	const record = args !== null && typeof args === "object" ? (args as { action?: unknown; id?: unknown }) : {};
-	const action = textOf(record.action) ?? "unknown";
-	const id = textOf(record.id);
-	return card([`jobs ${action}${id ? ` ${id}` : ""}`], theme, context);
+export function renderJobsCall(args: unknown, theme: Theme, context: RenderContext): Component {
+	return renderCall(jobsCall(args), theme, context);
 }
 
 export function renderJobsResult(
 	result: AgentToolResult<unknown>,
-	options: { expanded: boolean },
+	options: Options,
 	theme: Theme,
 	context: RenderContext,
-): Text {
-	const { lines, more } = jobsLines(
-		result.details,
-		options.expanded,
-		result.isError === true,
-		result.isError ? resultText(result) : "",
-	);
-	return card(lines, theme, context, more);
+): Component {
+	return renderResult(resultCopy(result, context, false), jobsCall(context.args), options, theme, context);
 }
 
-export function renderBashCall(args: unknown, theme: Theme, context: RenderContext): Text {
+let nativeBash: ReturnType<typeof createBashToolDefinition> | undefined;
+
+function nativeRenderers() {
+	return (nativeBash ??= createBashToolDefinition(process.cwd()));
+}
+
+export function renderBashCall(args: unknown, theme: Theme, context: RenderContext): Component {
 	const native = nativeRenderers().renderCall;
-	if (native) return native(args as never, theme, context as NativeContext) as Text;
-	const command = textOf((args as { command?: unknown } | null)?.command);
-	return card([command ?? "command unknown"], theme, context);
+	if (record(args)?.background !== true && native) return native(args as never, theme, context as NativeBashContext);
+	return renderCall(bashCall(args), theme, context);
 }
 
 export function renderBashResult(
@@ -325,16 +402,19 @@ export function renderBashResult(
 	options: { expanded: boolean; isPartial: boolean },
 	theme: Theme,
 	context: RenderContext,
-): Text | ReturnType<NonNullable<ReturnType<typeof createBashToolDefinition>["renderResult"]>> {
-	if (jobView(result.details) && jobView((result.details as { job?: unknown }).job))
-		return renderJobsResult(result, options, theme, context);
+): Component {
+	const admitted = Boolean(record(record(result.details)?.job));
 	const native = nativeRenderers().renderResult;
-	if (native) return native(result as never, options, theme, context as NativeContext);
-	const { lines, more } = jobsLines(result.details, options.expanded, result.isError === true, resultText(result));
-	return card(lines, theme, context, more);
+	if (!admitted && record(context.args)?.background !== true && native)
+		return native(result as never, options, theme, context as NativeBashContext);
+	const call =
+		record(context.args)?.background === true || !nativeRenderers().renderCall
+			? bashCall(context.args)
+			: { name: "bash" };
+	return renderResult(resultCopy(result, context, admitted), call, options, theme, context);
 }
 
-/** Collapsed `jobs_yield` cards show at most this many note lines. */
+/** Collapsed state notes use the message preview height in the self-drawn shell. */
 export const YIELD_NOTE_LINES = 3;
 
 interface YieldFacts {
@@ -346,25 +426,19 @@ interface YieldFacts {
 	settled: boolean;
 }
 
-type YieldContext = RenderContext & { state?: Record<string, unknown> };
-
-const count = (value: number, one: string, many: string) => `${value} ${value === 1 ? one : many}`;
-
-/** Local time the turn ended in 12-hour form, as `9:05 AM`; a turn of an earlier day also shows its date. */
 export function yieldClock(at: number, now = Date.now()): string {
 	const date = new Date(at);
 	const today = new Date(now);
-	const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+	const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 	if (date.toDateString() === today.toDateString()) return time;
-	const day = date.toLocaleDateString("en-US", {
-		month: "short",
+	const day = date.toLocaleDateString("en-GB", {
 		day: "numeric",
+		month: "short",
 		...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }),
 	});
-	return `${day}, ${time}`;
+	return `${day} ${time}`;
 }
 
-/** What remains, by state: `2 jobs still run`, `1 job completion pending`, or a total when rows were omitted. */
 export function yieldSummary(jobs: readonly { state: string }[], omitted: number): string[] {
 	if (omitted > 0) return [count(jobs.length + omitted, "job open", "jobs open")];
 	const running = jobs.filter((job) => job.state === "running").length;
@@ -375,157 +449,106 @@ export function yieldSummary(jobs: readonly { state: string }[], omitted: number
 	];
 }
 
-/**
- * The `jobs_yield` card in the message background: the turn ended there, so the card is a note to the
- * operator, not a tool outcome. Collapsed, it shows the title, at most three note lines and Pi's expansion
- * hint; expanded, the whole note, the jobs, and what starts the next turn. Every line keeps the background to
- * the edge of the row.
- */
-class YieldCard implements Component {
-	private facts: YieldFacts = { note: "", jobs: [], omitted: 0, settled: false };
-	private theme: Theme | undefined;
-	private context: YieldContext | undefined;
-	/** The call slot draws nothing once the result slot draws the card. */
-	private hidden: () => boolean = () => false;
-	set(facts: YieldFacts, theme: Theme, context: YieldContext, hidden: () => boolean): void {
-		this.facts = facts;
-		this.theme = theme;
-		this.context = context;
-		this.hidden = hidden;
-	}
-	invalidate(): void {}
-	private title(theme: Theme): string {
-		const head =
-			this.facts.error !== undefined ? "could not end the turn" : this.facts.settled ? "turn ended" : "ending turn";
-		const parts = this.facts.error === undefined ? yieldSummary(this.facts.jobs, this.facts.omitted) : [];
-		const time = this.facts.at === undefined ? "" : theme.fg("muted", ` · ${yieldClock(this.facts.at)}`);
-		return (
-			theme.fg("toolTitle", theme.bold("jobs_yield")) + theme.fg("accent", ` · ${[head, ...parts].join(" · ")}`) + time
-		);
-	}
-	private jobLines(theme: Theme, width: number): string[] {
-		const lines = this.facts.jobs.map((job) => {
-			const state = job.state === "running" ? "running" : "completion pending";
-			// The ID and state lead, so a long command preview loses only its own end at the card's width.
-			const row = [`job ${job.id.slice(0, 8)}`, state, lineOf(job.commandPreview) ?? "command unknown"].join(" · ");
-			return truncateToWidth(`  ${theme.fg("text", row)}`, width);
-		});
-		if (this.facts.omitted > 0) lines.push(theme.fg("muted", `  ${this.facts.omitted} more not listed`));
-		return lines;
-	}
-	private expandedLines(theme: Theme, width: number): string[] {
-		const lines = this.jobLines(theme, width);
-		const out = lines.length > 0 ? ["", ...lines] : [];
-		if (this.facts.settled && this.facts.error === undefined)
-			out.push(
-				"",
-				...wrapTextWithAnsi("Each job completion starts the next turn.", width).map((line) => theme.fg("muted", line)),
-			);
-		return out;
-	}
-	/** Pi's tool card hint: `... (2 more lines, ctrl+o to expand)`, or `... (ctrl+o to expand)` when only details are hidden. */
-	private hint(theme: Theme, width: number, hiddenLines: number): string[] {
-		const context = this.context;
-		if (!this.facts.settled || (hiddenLines === 0 && this.facts.error !== undefined)) return [];
-		const key = typeof context?.keyText === "function" ? context.keyText("app.tools.expand") : "";
-		const action = !key
-			? theme.fg("muted", "expand for full details")
-			: typeof context?.keyHint === "function"
-				? context.keyHint("app.tools.expand", "to expand")
-				: theme.fg("dim", key) + theme.fg("muted", " to expand");
-		const more = hiddenLines > 0 ? `${hiddenLines} more line${hiddenLines === 1 ? "" : "s"}, ` : "";
-		return [truncateToWidth(theme.fg("muted", `... (${more}`) + action + theme.fg("muted", ")"), width)];
-	}
-	private body(theme: Theme, width: number): string[] {
-		const expanded = this.context?.expanded === true;
-		const lines = wrapTextWithAnsi(this.title(theme), width);
-		const note = this.facts.note ? wrapTextWithAnsi(this.facts.note, width) : [];
-		const shown = expanded ? note : note.slice(0, YIELD_NOTE_LINES);
-		lines.push(...shown.map((line) => theme.fg("text", line)));
-		if (this.facts.error !== undefined)
-			lines.push(...wrapTextWithAnsi(this.facts.error, width).map((line) => theme.fg("error", line)));
-		return [
-			...lines,
-			...(expanded ? this.expandedLines(theme, width) : this.hint(theme, width, note.length - shown.length)),
-		];
-	}
-	render(width: number): string[] {
-		const theme = this.theme;
-		if (!theme || this.hidden()) return [];
-		const pad = Math.max(0, Math.min(this.context?.outputPad ?? 1, Math.floor((width - 1) / 2)));
-		const inner = Math.max(1, width - pad * 2);
-		const color = this.facts.error === undefined ? "customMessageBg" : "toolErrorBg";
-		const background = theme.getBgAnsi(color);
-		const fill = (line: string): string => {
-			const content = line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background);
-			return theme.bg(color, " ".repeat(pad) + content + " ".repeat(Math.max(0, inner - visibleWidth(line)) + pad));
-		};
-		return ["", ...this.body(theme, inner), ""].map(fill);
-	}
-}
-
-function yieldNote(args: unknown): string {
-	const note = args !== null && typeof args === "object" ? (args as { note?: unknown }).note : undefined;
-	return lineOf(note) ?? "";
+function yieldCard(facts: YieldFacts, theme: Theme, context: RenderContext): Component {
+	return component(
+		(width) => {
+			if (!facts.settled && context.state?.yieldResult) return [];
+			const pad = Math.max(0, Math.min(context.outputPad ?? 1, Math.floor((width - 1) / 2)));
+			const inner = Math.max(1, width - pad * 2);
+			const expanded = context.expanded;
+			const error = facts.error !== undefined;
+			const status = error ? "Could not end the turn" : facts.settled ? "Turn ended" : "Ending turn";
+			const title = `${theme.fg("toolTitle", theme.bold("jobs_yield"))} ${theme.fg("accent", status)}`;
+			const secondary = error ? [] : yieldSummary(facts.jobs, facts.omitted);
+			if (facts.at !== undefined) secondary.push(yieldClock(facts.at));
+			const headings = [title, ...(secondary.length ? [theme.fg("muted", secondary.join(" · "))] : [])];
+			const rows = expanded
+				? headings.flatMap((line) => wrapped(line, inner))
+				: headings.map((line) => clipRow(line, inner));
+			const note = wrapped(facts.note, inner);
+			const shown = expanded ? note : note.slice(0, YIELD_NOTE_LINES);
+			if (shown.length) rows.push("", ...shown.map((row) => theme.fg("toolOutput", row)));
+			const diagnostic = wrapped(facts.error ?? "", inner);
+			const errorRows = expanded ? diagnostic : diagnostic.slice(0, BODY_ROWS);
+			if (errorRows.length) rows.push("", ...errorRows.map((row) => theme.fg("error", row)));
+			if (expanded && facts.settled && !error) {
+				const jobs = facts.jobs.flatMap((job) =>
+					wrapped(
+						[
+							`job ${job.id}`,
+							job.state === "running" ? "running" : "completion pending",
+							job.commandPreview ? `command preview: ${job.commandPreview}` : undefined,
+						]
+							.filter(Boolean)
+							.join(" · "),
+						inner,
+					).map((row) => theme.fg("toolOutput", row)),
+				);
+				if (jobs.length) rows.push("", ...jobs);
+				rows.push(
+					"",
+					...wrapped("Each job completion starts the next turn.", inner).map((row) => theme.fg("muted", row)),
+				);
+			}
+			if (facts.omitted > 0)
+				rows.push(clipRow(theme.fg("warning", `[Excerpt: ${count(facts.omitted, "job", "jobs")} not listed]`), inner));
+			if (!expanded) {
+				const noteHidden = note.length - shown.length;
+				const errorHidden = diagnostic.length - errorRows.length;
+				const hidden =
+					(facts.settled && !error) ||
+					headings.some((line) => visibleWidth(line) > inner) ||
+					(noteHidden && errorHidden)
+						? "details"
+						: noteHidden || errorHidden;
+				if (hidden) rows.push(...expansionHint(theme, context, inner, hidden, !facts.settled));
+			}
+			const color = error ? "toolErrorBg" : "customMessageBg";
+			const background = theme.getBgAnsi(color);
+			return ["", ...rows, ""].map((row) => {
+				const line = clipRow(row, inner);
+				const content = line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background);
+				return theme.bg(color, " ".repeat(pad) + content + " ".repeat(Math.max(0, inner - visibleWidth(line)) + pad));
+			});
+		},
+		() => !facts.settled && context.state?.yieldResult === true,
+	);
 }
 
 function yieldRows(value: unknown): YieldFacts["jobs"] {
 	if (!Array.isArray(value)) return [];
 	return value.flatMap((entry) => {
-		const job = jobView(entry) as { id?: unknown; commandPreview?: unknown; state?: unknown } | undefined;
-		if (typeof job?.id !== "string" || job.id.length === 0) return [];
-		return [
-			{
-				id: lineOf(job.id) ?? "",
-				...(typeof job.commandPreview === "string" ? { commandPreview: job.commandPreview } : {}),
-				state: job.state === "settled" ? "settled" : "running",
-			},
-		];
+		const job = record(entry);
+		const id = lineOf(job?.id);
+		if (!id || (job?.state !== "running" && job?.state !== "settled")) return [];
+		return [{ id, commandPreview: lineOf(job.commandPreview), state: job.state }];
 	});
 }
 
-/** The call slot shows the note while it arrives and draws nothing once the result exists. */
 export function renderYieldCall(args: unknown, theme: Theme, context: RenderContext): Component {
-	const card = context.lastComponent instanceof YieldCard ? context.lastComponent : new YieldCard();
-	const state = (context as YieldContext).state;
-	card.set(
-		{ note: yieldNote(args), jobs: [], omitted: 0, settled: false },
-		theme,
-		context,
-		() => state?.yieldResult === true,
-	);
-	return card;
+	return yieldCard({ note: textOf(record(args)?.note).trim(), jobs: [], omitted: 0, settled: false }, theme, context);
 }
 
-/** The result slot draws the whole card: the time the turn ended and the jobs, or the error in the error background. */
 export function renderYieldResult(
 	result: AgentToolResult<unknown>,
-	_options: { expanded: boolean },
+	options: Options,
 	theme: Theme,
 	context: RenderContext,
 ): Component {
-	const state = (context as YieldContext).state;
-	if (state) state.yieldResult = true;
-	const details = jobView(result.details) as
-		| { note?: unknown; at?: unknown; jobs?: unknown; omitted?: unknown }
-		| undefined;
-	const card = context.lastComponent instanceof YieldCard ? context.lastComponent : new YieldCard();
+	if (context.state) context.state.yieldResult = true;
+	const details = record(result.details);
 	const at = details?.at;
 	const omitted = details?.omitted;
-	card.set(
+	return yieldCard(
 		{
-			note: yieldNote(context.args ?? details),
+			note: textOf(details?.note ?? record(context.args)?.note).trim(),
 			jobs: yieldRows(details?.jobs),
-			omitted: typeof omitted === "number" && Number.isSafeInteger(omitted) && omitted > 0 ? omitted : 0,
-			...(typeof at === "number" && Number.isSafeInteger(at) && at >= 0 ? { at } : {}),
-			...(result.isError === true || context.isError === true
-				? { error: lineOf(resultText(result)) ?? "unknown error" }
-				: {}),
+			omitted: knownNumber(omitted) && Number.isSafeInteger(omitted) && omitted > 0 ? omitted : 0,
+			at: knownNumber(at) && Number.isFinite(new Date(at).getTime()) ? at : undefined,
+			error: context.isError ? resultText(result) || "No diagnostic was retained." : undefined,
 			settled: true,
 		},
 		theme,
-		context,
-		() => false,
+		{ ...context, expanded: options.expanded },
 	);
-	return card;
 }

@@ -1,6 +1,7 @@
 import type { MessageRenderer, MessageRenderOptions, Theme } from "@earendil-works/pi-coding-agent";
 import { Box, MouseRegion, truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { displayText } from "./completion.ts";
+import { formatDuration } from "./presentation.ts";
 
 /** Collapsed completion cards show at most this many visual body lines under the header. */
 export const COMPLETION_PREVIEW_LINES = 3;
@@ -32,14 +33,6 @@ function finite(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value);
 }
 
-function duration(start: number, end: number): string {
-	const seconds = (end - start) / 1000;
-	if (seconds < 60) return `${seconds.toFixed(1)}s`;
-	const minutes = Math.floor(seconds / 60);
-	const hours = Math.floor(minutes / 60);
-	return `${hours ? `${hours}h ` : ""}${minutes % 60}m ${Math.floor(seconds) % 60}s`;
-}
-
 /** What happened, then the known facts: exit code, settled duration and, last, the command preview. */
 export function completionHeader(details: unknown): { label: string; facts: string[] } {
 	const data = record(details);
@@ -50,9 +43,9 @@ export function completionHeader(details: unknown): { label: string; facts: stri
 	const facts: string[] = [];
 	if (finite(job.exitCode)) facts.push(`exit ${job.exitCode}`);
 	if (finite(job.startedAt) && finite(job.endedAt) && job.endedAt >= job.startedAt)
-		facts.push(duration(job.startedAt, job.endedAt));
+		facts.push(formatDuration(job.endedAt - job.startedAt));
 	const command = oneLine(data.command);
-	if (command) facts.push(command);
+	if (command) facts.push(`command preview: ${command}`);
 	return { label, facts };
 }
 

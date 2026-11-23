@@ -84,18 +84,21 @@ function render(value: JobCompletionDetails, expanded = false, key = "ctrl+o", w
 }
 
 test("the header reports the known full identity, outcome, exit code, duration and command", () => {
-	assert.deepEqual(completionHeader(details()), { label: "Job 7 succeeded", facts: ["exit 0", "10.0s", "npm test"] });
+	assert.deepEqual(completionHeader(details()), {
+		label: "Job 7 succeeded",
+		facts: ["exit 0", "10.0s", "command preview: npm test"],
+	});
 	assert.deepEqual(completionHeader(details({ status: "failed", exitCode: 2, endedAt: 3_500 })), {
 		label: "Job 7 failed",
-		facts: ["exit 2", "2.5s", "npm test"],
+		facts: ["exit 2", "2.5s", "command preview: npm test"],
 	});
 	assert.deepEqual(completionHeader(details({ status: "timed_out", exitCode: null, endedAt: 91_000 })), {
 		label: "Job 7 timed out",
-		facts: ["1m 30s", "npm test"],
+		facts: ["1m 30s", "command preview: npm test"],
 	});
 	assert.deepEqual(completionHeader(details({ status: "lost", exitCode: undefined, endedAt: undefined })), {
 		label: "Job 7 lost",
-		facts: ["npm test"],
+		facts: ["command preview: npm test"],
 	});
 	assert.deepEqual(completionHeader({ job: { id: "7", status: "running", exitCode: NaN } }), {
 		label: "Completion notice for job 7",
@@ -115,7 +118,9 @@ test("the label has its own colour, the title and body use the message colour, a
 	render(details());
 	assert.ok(colors.some(({ color, value }) => color === "customMessageLabel" && value === "[jobs]"));
 	assert.ok(colors.some(({ color, value }) => color === "customMessageText" && value === "Job 7 succeeded"));
-	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "exit 0 · 10.0s · npm test"));
+	assert.ok(
+		colors.some(({ color, value }) => color === "muted" && value === "exit 0 · 10.0s · command preview: npm test"),
+	);
 	assert.ok(colors.some(({ color, value }) => color === "customMessageText" && value === "line 4"));
 });
 
@@ -175,7 +180,7 @@ test("the preview wraps errors and outcomes as prose and stays within three visu
 	]);
 	assert.deepEqual(render(details({ status: "lost", exitCode: undefined, endedAt: undefined }, "", 0)).slice(1, 5), [
 		" [jobs] Job 7 lost",
-		" npm test",
+		" command preview: npm test",
 		"",
 		" Output is unavailable after host loss.",
 	]);
@@ -192,8 +197,8 @@ test("the preview wraps errors and outcomes as prose and stays within three visu
 
 test("long output lines and facts clip with one ellipsis and keep the row background", () => {
 	const long = details({}, `short\n${"x".repeat(200)}`, 210);
-	const lines = render({ ...long, command: `npm test ${"-- extensions/jobs ".repeat(10)}` }, false, "ctrl+o", 40);
-	assert.match(lines[2] ?? "", /^ exit 0 · 10\.0s · npm test .*…$/u);
+	const lines = render({ ...long, command: `npm test ${"-- extensions/jobs ".repeat(10)}` }, false, "ctrl+o", 64);
+	assert.match(lines[2] ?? "", /^ exit 0 · 10\.0s · command preview: npm test .*…$/u);
 	assert.match(lines[5] ?? "", /^ x+…$/u);
 	assert.doesNotMatch(lines.join("\n"), /\.\.\.(?! \()/u, "clipped rows end in … rather than ...");
 	const component = renderJobCompletionMessage(message(long), options(false), ansiTheme);
@@ -214,7 +219,7 @@ test("long output lines and facts clip with one ellipsis and keep the row backgr
 test("an expanded card shows the header, a blank line and the whole message text without a hint", () => {
 	const value = details({}, "# build\n**literal**\n| one | two |");
 	const lines = render(value, true);
-	assert.deepEqual(lines.slice(1, 4), [" [jobs] Job 7 succeeded", " exit 0 · 10.0s · npm test", ""]);
+	assert.deepEqual(lines.slice(1, 4), [" [jobs] Job 7 succeeded", " exit 0 · 10.0s · command preview: npm test", ""]);
 	const text = lines.join("\n");
 	for (const line of completionContent(value).split("\n")) assert.ok(text.includes(line.slice(0, 40)), line);
 	assert.doesNotMatch(text, /to expand/u);
@@ -303,7 +308,7 @@ test("Pi's custom message shell supplies disclosure keys, theme, padding and cli
 		"",
 		"",
 		` [jobs] Job ${value.job.id} succeeded`,
-		" exit 0 · 10.0s · npm test",
+		" exit 0 · 10.0s · command preview: npm test",
 		"",
 	]);
 	assert.equal(rows[6], " **literal**");
@@ -315,7 +320,7 @@ test("Pi's custom message shell supplies disclosure keys, theme, padding and cli
 		card.render(90)[2]?.includes(hostTheme.fg("customMessageText", hostTheme.bold(`Job ${value.job.id} succeeded`))),
 	);
 	assert.ok(card.render(90)[6]?.includes(hostTheme.fg("customMessageText", "**literal**")));
-	assert.ok(card.render(90)[3]?.includes(hostTheme.fg("muted", "exit 0 · 10.0s · npm test")));
+	assert.ok(card.render(90)[3]?.includes(hostTheme.fg("muted", "exit 0 · 10.0s · command preview: npm test")));
 	assert.ok(card.render(90)[3]?.startsWith(hostTheme.getBgAnsi("customMessageBg")));
 	assert.match(body(26)[2] ?? "", /^ \[jobs\] Job .+…$/u);
 	assert.ok(card.render(26).every((row) => visibleWidth(row) <= 26));

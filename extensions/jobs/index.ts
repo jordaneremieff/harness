@@ -15,6 +15,7 @@ import {
 	completionContent,
 	completionJobId,
 	completionTail,
+	displayText,
 	JOB_COMPLETION_MESSAGE,
 	type JobCompletionDetails,
 	logsText,
@@ -242,11 +243,11 @@ export default function registerJobs(pi: ExtensionAPI, activity = createJobActiv
 
 	/** A rejection would end the Pi process; the operator learns of the lost completion instead. */
 	function notifySendFailure(jobId: string, error: unknown, ctx: ExtensionContext): void {
-		if (ctx.hasUI)
-			ctx.ui.notify(
-				`Job ${jobId} settled, but its completion message could not be sent: ${error instanceof Error ? error.message : String(error)}`,
-				"error",
-			);
+		if (!ctx.hasUI) return;
+		const cause = displayText(error instanceof Error ? error.message : String(error))
+			.replace(/\s+/gu, " ")
+			.trim();
+		ctx.ui.notify(`The completion message for job ${jobId} failed to send${cause ? `: ${cause}` : "."}`, "error");
 	}
 
 	/** Job ids of the completion messages on the current branch of the session. */
