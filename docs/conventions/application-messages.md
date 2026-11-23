@@ -79,8 +79,12 @@ The receiver refuses a message whose fields break these limits:
 - `subject` and `place` are one line of 1 to 200 characters.
 - `guidance` is 1 to 2000 characters.
 - `text` is nonblank, well-formed Unicode and at most 128 KiB in UTF-8.
-- No field contains control or format characters other than line feeds in
-  `guidance` and `text`.
+- `extension`, `application`, `id`, `follows`, `subject` and `place` contain
+  no control or format characters, and `guidance` none other than line feeds.
+
+`text` passes to the model unchanged, because it carries exact quotes such as
+tab-indented code, CRLF line ends and emoji sequences. The card removes control
+and escape sequences from what it displays, as the receiver's other cards do.
 
 ## Receiver
 
