@@ -1203,9 +1203,7 @@ result details. Native tool components retain their instances across slot update
 Final codemode results use the public `details.calls` shape: numeric script call
 IDs, names, bounded arguments, statuses, and optional `durationMs`, without a
 fabricated cost field. The dashboard passes these details to Pi's codemode
-renderer. Missing arguments stay absent. For nonpartial results, remaining
-`running` rows display as `cancelled`; partial results stay unchanged. Stored
-snapshots are never mutated.
+renderer without changing the nested statuses. Missing arguments stay absent.
 The primary's no-target `agent_status` is a compact fleet overview.
 Each `sessions` row uses `id` for the conversation identity and `state` for
 its catalogue lifecycle state. Hosts with a verified current publication on a
