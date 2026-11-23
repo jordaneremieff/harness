@@ -93,11 +93,20 @@ describe("compact observation cards", () => {
 		const output = screen(
 			card.renderResult({ content: [], details }, { expanded: false, isPartial: false }, theme, context()),
 		);
-		assert.match(output, /forward events · frame 2 · open/u);
-		assert.match(output, /Known frame not repeated/u);
-		assert.doesNotMatch(output, /Recorded|Posted|agent_inspect/u);
+		assert.match(output, /1 event on this forward page; next page available/u);
+		assert.match(output, /· open\nFrame 2 \(known frame not repeated\)/u);
+		assert.doesNotMatch(output, /Recorded|Posted|agent_inspect|Next events:/u);
+		const expanded = screen(
+			card.renderResult(
+				{ content: [], details },
+				{ expanded: true, isPartial: false },
+				theme,
+				context({ expanded: true }),
+			),
+			240,
+		);
 		assert.ok(
-			output.includes(
+			expanded.includes(
 				`agent_collaborate(${JSON.stringify({ action: "read", threadId, after: 9, knownFrameRevision: 2, limit: 3 })})`,
 			),
 		);
@@ -232,17 +241,38 @@ describe("compact observation cards", () => {
 			cards.agent_inspect.renderResult(result, { expanded: false, isPartial: false }, theme, context()),
 		);
 		assert.match(output, /Answer offset 0 \(UTF-16 units\)/u);
-		assert.match(output, /Answer continuation: agent_inspect/u);
-		assert.match(output, /Receipt continuation: agent_inspect/u);
+		assert.match(output, /Assistant answer retained · done; continuation available/u);
+		assert.match(output, /Readable answer/u);
+		assert.doesNotMatch(output, /Answer continuation:|Receipt continuation:/u);
+		const expanded = screen(
+			cards.agent_inspect.renderResult(
+				result,
+				{ expanded: true, isPartial: false },
+				theme,
+				context({ expanded: true }),
+			),
+			240,
+		);
+		assert.match(expanded, /Readable answer/u);
 		assert.ok(
-			screen(
-				cards.agent_inspect.renderResult(
-					result,
-					{ expanded: true, isPartial: false },
-					theme,
-					context({ expanded: true }),
-				),
-			).includes("Readable answer"),
+			expanded.includes(
+				"Answer continuation: agent_inspect(" +
+					JSON.stringify({ view: "result", sessionId: id, submissionId: 7, requestId: "input", offset: 4096 }) +
+					")",
+			),
+		);
+		assert.ok(
+			expanded.includes(
+				"Receipt continuation: agent_inspect(" +
+					JSON.stringify({
+						view: "result",
+						sessionId: id,
+						submissionId: 7,
+						requestId: "input",
+						receiptCursor: "next",
+					}) +
+					")",
+			),
 		);
 		assert.match(
 			screen(

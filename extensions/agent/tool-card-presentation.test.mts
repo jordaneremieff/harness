@@ -451,8 +451,8 @@ it("collaboration pages, reset refusals, and raw error previews keep detail behi
 			coverage: { complete: false },
 		},
 	);
-	assert.match(screen(collaboration), /Parser plan · open · 1 members/u);
-	assert.match(screen(collaboration), /bounded page/u);
+	assert.match(screen(collaboration), /Parser plan · open\n1 pending notice\n1 member/u);
+	assert.match(screen(collaboration), /0 events on this page; coverage incomplete/u);
 	assert.ok(screen(collaboration).includes(`${targetId}/0123456789abcdef0123456789abcdef`));
 	const reset = nativeRow(
 		"agent_reset",

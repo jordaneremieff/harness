@@ -70,7 +70,7 @@ it("profile cards qualify bounded route counts with omissions", () => {
 			}),
 			width,
 		);
-		assert.match(text, /Request routes omitted: 129/u);
+		assert.match(text, /\[129 routes omitted by source\]/u);
 		assert.doesNotMatch(text, /0 active request routes/u);
 	}
 	assert.doesNotMatch(
@@ -106,7 +106,8 @@ it("list tool cards show retained handles and roles rather than only record coun
 		}),
 	);
 	assert.match(text, /@history · History/);
-	assert.match(text, /Role: Review decisions/);
-	assert.match(text, /unknown profile coverage/);
+	assert.match(text, /^Review decisions$/mu);
+	assert.match(text, /^old$/mu);
+	assert.doesNotMatch(text, /No role set|unknown profile coverage/u);
 	assert.match(text, /Profile search incomplete/);
 });

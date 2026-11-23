@@ -885,13 +885,14 @@ describe("agent result cards", () => {
 
 	it("summarizes a discovery page with coverage and the next page", () => {
 		const details = {
-			rows: [{}, {}],
+			rows: [{ identity: "reader" }, { identity: "reviewer" }],
 			nextCursor: "Y3Vyc29y",
 			coverage: {
 				complete: false,
 				storagesVisited: 3,
 				unavailable: [{ storageId: "s", reason: "x" }],
 				catalog: { storages: 40, pass: "remainder", pending: 12, settled: 5 },
+				next: { tool: "agent_list", query: "review", cwd: "/work area", limit: 2, cursor: "Y3Vyc29y" },
 			},
 			observedAt: "t",
 			authority: "Observation grants no control or task authority",
@@ -900,14 +901,23 @@ describe("agent result cards", () => {
 			renderListResult(result(details), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 			180,
 		);
+		assert.match(text, /2 conversations on this page; next page available/u);
 		assert.match(
 			text,
-			/2 conversations on this page · 3 storages observed · 5 settled by publication · 1 storage unavailable \(unknown, not absent\)/,
+			/1 storage unavailable\n3 storages visited on this page\n12 storage scan steps open\n5 storages settled by publication/u,
 		);
-		assert.match(
-			text,
-			/Next page available · 12 storage observations open; repeat with coverage\.next, including after an empty page/,
+		assert.doesNotMatch(text, /Y3Vyc29y|repeat with coverage/u);
+		const expanded = screen(
+			renderListResult(
+				result(details),
+				{ ...cardKeys, expanded: true, isPartial: false },
+				theme,
+				context({ expanded: true }),
+			),
+			180,
 		);
+		assert.ok(expanded.includes('agent_list({"query":"review","cwd":"/work area","limit":2,"cursor":"Y3Vyc29y"})'));
+		assert.match(expanded, /reviewer/u);
 		const covered = screen(
 			renderListResult(
 				result({ rows: [], nextCursor: null, coverage: { complete: true, storagesVisited: 1, unavailable: [] } }),
@@ -916,8 +926,8 @@ describe("agent result cards", () => {
 				context(),
 			),
 		);
-		assert.match(covered, /0 conversations on this page · 1 storage observed/);
-		assert.match(covered, /Inventory covered; no further page/);
+		assert.match(covered, /0 conversations on this page; end of scan\n1 storage visited on this page/u);
+		assert.doesNotMatch(covered, /inventory covered|next page available/iu);
 	});
 
 	it("summarizes each inspect view against its returned bounds", () => {
@@ -934,13 +944,13 @@ describe("agent result cards", () => {
 			screen(
 				renderInspectResult(result(history), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 			),
-			/history page · 2 entries/,
+			/2 entries on this history page/,
 		);
 		assert.match(
 			screen(
 				renderInspectResult(result(history), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 			),
-			/older page available/,
+			/next page available/,
 		);
 		const primaryPage = {
 			kind: "ordinary-primary",
@@ -953,18 +963,18 @@ describe("agent result cards", () => {
 		const primaryCard = screen(
 			renderInspectResult(result(primaryPage), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 		);
-		assert.match(primaryCard, /entry f392f536 · text 0-16000 of 24000/);
-		assert.match(primaryCard, /more of this entry remains/);
+		assert.match(primaryCard, /Retained entry text 0–16000 of 24000/);
+		assert.match(primaryCard, /next page available/);
 		assert.match(
 			screen(
 				renderInspectResult(
-					result({ ...primaryPage, nextCursor: undefined }),
+					result({ ...primaryPage, page: { ...primaryPage.page, endOffset: 24000 }, nextCursor: undefined }),
 					{ ...cardKeys, expanded: false, isPartial: false },
 					theme,
 					context(),
 				),
 			),
-			/text complete/,
+			/Retained text complete/,
 		);
 		const search = {
 			view: "search",
@@ -977,11 +987,11 @@ describe("agent result cards", () => {
 		};
 		assert.match(
 			screen(renderInspectResult(result(search), { ...cardKeys, expanded: false, isPartial: false }, theme, context())),
-			/search · 1 match · 12 entries scanned/,
+			/1 match on this page; next page available\n12 entries scanned/,
 		);
 		assert.match(
 			screen(renderInspectResult(result(search), { ...cardKeys, expanded: false, isPartial: false }, theme, context())),
-			/Continuation available/,
+			/next page available/,
 		);
 		const exact = {
 			view: "exact",
@@ -997,8 +1007,8 @@ describe("agent result cards", () => {
 		const exactText = screen(
 			renderInspectResult(result(exact), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 		);
-		assert.match(exactText, /entry 5 · offset 0/);
-		assert.match(exactText, /more of this entry remains · clipped to the display bound · 3 omitted fields/);
+		assert.match(exactText, /Entry 5 from offset 0; next page available/);
+		assert.match(exactText, /2 provider signatures omitted\n1 image payload omitted/);
 		const activity = {
 			view: "activity",
 			sessionId: "s",
@@ -1012,13 +1022,13 @@ describe("agent result cards", () => {
 			screen(
 				renderInspectResult(result(activity), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 			),
-			/activity · 2 turns · 7 entries scanned/,
+			/2 turns on this activity page; next page available\n7 entries scanned/,
 		);
 		assert.match(
 			screen(
 				renderInspectResult(result(activity), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 			),
-			/older turns available/,
+			/next page available/,
 		);
 		const saved = {
 			view: "result",
@@ -1034,8 +1044,8 @@ describe("agent result cards", () => {
 		const savedText = screen(
 			renderInspectResult(result(saved), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 		);
-		assert.match(savedText, /saved result · done · submission 9/);
-		assert.match(savedText, /assistant answer retained/);
+		assert.match(savedText, /Assistant answer retained · done/);
+		assert.match(savedText, /^Final$/mu);
 	});
 
 	it("keeps an empty or bounded page calibrated to the covered ancestry", () => {
@@ -1051,7 +1061,7 @@ describe("agent result cards", () => {
 		const text = screen(
 			renderInspectResult(result(empty), { ...cardKeys, expanded: false, isPartial: false }, theme, context()),
 		);
-		assert.match(text, /search · 0 matches · ancestry covered/);
+		assert.match(text, /0 matches on this page\n30 entries scanned\nReached the end of the selected scan/);
 		assert.doesNotMatch(text, /no matches|absent|not found/i);
 	});
 
@@ -1235,12 +1245,23 @@ describe("agent result cards", () => {
 			],
 		};
 		const open = screen(card.renderResult(result({ action: "continue", item }), options, theme, context()), 180);
-		assert.match(open, /Work open · request request-1 · 5 dependencies/u);
+		assert.match(open, /Work declared · request request-1 · open\n5 dependencies/u);
 		assert.match(open, /Final report to storage-a/u);
-		assert.match(open, /Note: Two reviews remain/u);
-		assert.match(open, /producer-2 · submission 2 · request input-2 · state-note/u);
-		assert.match(open, /1 more dependencies/u);
+		assert.doesNotMatch(open, /Two reviews remain/u);
+		assert.match(open, /producer-2 · submission 2 · state-note/u);
+		assert.match(open, /2 more lines/u);
 		assert.doesNotMatch(open, /producer-5/u);
+		const declaration = screen(
+			card.renderResult(
+				result({ action: "continue", item }),
+				{ ...options, expanded: true },
+				theme,
+				context({ expanded: true }),
+			),
+			180,
+		);
+		assert.match(declaration, /Two reviews\s+remain/u);
+		assert.match(declaration, /input-5/u);
 		const report = {
 			sourceId: "report:work-final",
 			requestId: "work-final:1:request-1",
@@ -1264,11 +1285,11 @@ describe("agent result cards", () => {
 			),
 			180,
 		);
-		assert.match(closed, /Work closed \(failed\) · request request-1 · already closed/u);
-		assert.match(closed, /Final report retained · storage-a · acknowledgement pending/u);
+		assert.match(closed, /Work already closed \(failed\) · request request-1/u);
+		assert.doesNotMatch(closed, /Final report retained|Two reviews remain/u);
 		const empty: OpenWorkDetails = { action: "continue", item: { ...item, dependencies: [], updatedAt: 2 } };
 		const emptyOutput = screen(card.renderResult(result(empty), options, theme, context()), 180);
-		assert.match(emptyOutput, /Work open · request request-1 · 0 dependencies/u);
+		assert.match(emptyOutput, /Work declared · request request-1 · open\n0 dependencies/u);
 		assert.doesNotMatch(emptyOutput, /withdrawn|Work closed/u);
 		const unavailable: OpenWorkDetails = {
 			action: "continue",
@@ -1277,9 +1298,9 @@ describe("agent result cards", () => {
 				dependencies: [{ ...dependency(1, "open"), unavailable: `Producer facts missing ${"x".repeat(300)}` }],
 			},
 		};
-		const unavailableOutput = screen(card.renderResult(result(unavailable), options, theme, context()), 240);
-		assert.match(unavailableOutput, /unavailable: Producer facts missing/u);
-		assert.doesNotMatch(unavailableOutput, /x{121}/u);
+		const unavailableCard = card.renderResult(result(unavailable), options, theme, context());
+		assert.match(screen(unavailableCard, 240), /Producer facts missing/u);
+		assert.match(screen(unavailableCard, 52), /\d+ more lines/u);
 		for (const status of ["stopped", "reset"] as const) {
 			const retained: OpenWorkDetails = {
 				action: "complete",
@@ -1306,8 +1327,11 @@ describe("agent result cards", () => {
 					},
 				},
 			};
-			const output = screen(card.renderResult(result(retained), options, theme, context()), 180);
-			assert.ok(output.includes(`Work closed (${status})`));
+			const output = screen(
+				card.renderResult(result(retained), { ...options, expanded: true }, theme, context({ expanded: true })),
+				180,
+			);
+			assert.ok(output.includes(`Work already closed (${status})`));
 			assert.match(output, /Final report delivery: terminal/u);
 			assert.doesNotMatch(output, /Final report retained|acknowledgement pending/u);
 		}
@@ -1466,7 +1490,7 @@ describe("agent result cards", () => {
 					context({ isError: true }),
 				),
 			),
-			/List error/,
+			/^denied$/mu,
 		);
 		assert.doesNotMatch(
 			screen(

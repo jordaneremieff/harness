@@ -30,6 +30,7 @@ import {
 import { dashboardClock } from "./dashboard-time.ts";
 import type { Communication } from "./communication.ts";
 import { receiptContinuationLine, resultContinuationLines } from "./control-result.ts";
+import { FinalReportReadSchema } from "./open-work-schema.ts";
 import { planningBudgetSelfFacts } from "./continuity-budget.ts";
 import { THREAD_NOTICE_DISPLAY_UNITS, threadEventTitle } from "./thread-notice-display.ts";
 import { threadRecoveryText, utcTime } from "./thread-notice-projection.ts";
@@ -661,16 +662,42 @@ function intentObservation(details: Record<string, unknown>): Record<string, unk
 		: undefined;
 }
 
-function intentLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
+function intentPresentation(
+	details: Record<string, unknown>,
+	context: AgentCardContext,
+): ToolResultPresentation | undefined {
 	const identity = text(intentObservation(details)?.identity);
-	if (!identity || context.isError === true || context.isPartial === true) return undefined;
-	const outcome =
-		details.published === undefined
-			? "Related efforts read"
-			: record(details.published).intentClaim === undefined
-				? "Intent cleared"
-				: "Intent published";
-	return [theme.fg("toolOutput", `${outcome} · ${displayIdentity(identity)}`)];
+	if (!identity) return undefined;
+	if (details.published !== undefined) {
+		const claim = record(record(details.published).intentClaim);
+		return {
+			outcome: claim.purpose === undefined ? `Intent cleared · ${identity}` : `Intent published · ${identity}`,
+			body: claim.purpose === record(context.args).purpose ? undefined : text(claim.purpose),
+		};
+	}
+	const awareness = record(details.awareness);
+	const presence = record(awareness.presence),
+		threads = record(awareness.threads);
+	const effects = Array.isArray(presence.efforts) ? quantity(presence.efforts.length, "related effort") : "";
+	const hints = Array.isArray(threads.items) ? quantity(threads.items.length, "thread hint") : "";
+	const partial =
+		record(presence.coverage).complete === false ||
+		record(threads.coverage).complete === false ||
+		record(awareness.self).omitted === true;
+	return {
+		outcome: `Related efforts read · ${identity}${partial ? "; coverage incomplete" : ""}`,
+		body: factLines([
+			effects,
+			hints,
+			...array(presence.efforts).map((entry) => {
+				const effort = record(entry);
+				const who = text(effort.name) || text(effort.id);
+				const claim = text(record(effort.intentClaim).purpose) || text(effort.purposeClaim);
+				return who ? [who, text(effort.liveness), claim].filter(Boolean).join(" · ") : "";
+			}),
+			...array(threads.items).map((item) => text(record(item).title)),
+		]),
+	};
 }
 
 function homePath(path: string): string {
@@ -2087,69 +2114,81 @@ export function renderCompactResult(
 	});
 }
 
-function listedProfiles(rows: unknown[], theme: Theme): string[] {
-	const lines = rows.slice(0, 4).flatMap((value) => {
-		const row = record(value);
-		return [
-			theme.fg(
-				"accent",
-				text(row.handle) || text(row.name)
-					? displayPreview([text(row.handle), text(row.name)].filter(Boolean).join(" · "), 160)
-					: displayIdentity(text(row.identity)),
-			),
-			muted(
-				theme,
-				typeof row.role === "string"
-					? `Role: ${displayPreview(row.role, 180) || "(empty)"}`
-					: "Role: unknown profile coverage",
-			),
-		];
-	});
-	if (rows.length > 4) lines.push(muted(theme, `${rows.length - 4} more rows`));
-	return lines;
-}
-/** Catalog counts of one discovery page: `settled` storages need no observation, `pending` ones are not observed yet. */
-function listCatalogText(coverage: Record<string, unknown>, field: "settled" | "pending"): string {
-	const value = count(record(coverage.catalog)[field]) ?? 0;
-	if (!value) return "";
-	return field === "settled"
-		? ` · ${value} settled by publication`
-		: ` · ${value} storage observation${value === 1 ? "" : "s"} open`;
+function quantity(n: number, singular: string, plural = `${singular}s`): string {
+	return `${n} ${n === 1 ? singular : plural}`;
 }
 
-function listSummary(details: Record<string, unknown>, theme: Theme): string[] | undefined {
-	const rows = details.rows;
-	if (!Array.isArray(rows)) return undefined;
-	const coverage = record(details.coverage);
-	const visited = count(coverage.storagesVisited);
+function counted(value: unknown, singular: string, plural?: string): string {
+	const n = count(value);
+	return n === undefined ? "" : quantity(n, singular, plural);
+}
+
+function factLines(lines: readonly string[]): string {
+	return lines.filter(Boolean).join("\n");
+}
+
+function callText(tool: string, args: Record<string, unknown>): string {
+	return `${tool}(${JSON.stringify(args)})`;
+}
+
+function nextCall(tool: string, value: unknown): string {
+	const { tool: name, ...args } = record(value);
+	return name === tool ? callText(tool, args) : "";
+}
+
+function queryDetails(result: AgentToolResult<unknown>): Record<string, unknown> {
+	const details = resultDetails(result);
+	if (Object.keys(details).length) return details;
+	try {
+		return record(JSON.parse(resultText(result)));
+	} catch {
+		return {};
+	}
+}
+
+function queryCard(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: AgentCardContext,
+	project: (details: Record<string, unknown>, context: AgentCardContext) => ToolResultPresentation | undefined,
+): Component {
+	const details = queryDetails(result);
+	let presentation: ToolResultPresentation | undefined;
+	if (context.isError || details.format === "refused")
+		presentation = diagnosticPresentation(typeof result.details === "string" ? { error: result.details } : details);
+	else if (!options.isPartial)
+		presentation = details.cancelled === true ? { outcome: "Cancelled" } : project(details, context);
+	return toolResultCard(result, options, theme, context, presentation ?? {});
+}
+
+function listPresentation(details: Record<string, unknown>): ToolResultPresentation | undefined {
+	if (!Array.isArray(details.rows)) return undefined;
+	const coverage = record(details.coverage),
+		profiles = record(coverage.profileHints),
+		catalog = record(coverage.catalog);
+	const next = nextCall("agent_list", coverage.next);
+	const hasNext = Boolean(next || text(details.nextCursor));
 	const unavailable = array(coverage.unavailable).length;
-	const lines = [
-		theme.fg(
-			"toolOutput",
-			`${rows.length} conversation${rows.length === 1 ? "" : "s"} on this page · ${visited ?? "?"} storage${visited === 1 ? "" : "s"} observed${listCatalogText(coverage, "settled")}${unavailable ? ` · ${unavailable} storage${unavailable === 1 ? "" : "s"} unavailable (unknown, not absent)` : ""}`,
-		),
-	];
-	const profiles = record(coverage.profileHints);
-	if (profiles.complete === false)
-		lines.push(
-			theme.fg(
-				"warning",
-				`Profile search incomplete · ${count(profiles.unknownStorages) ?? "?"} stores with unknown hints · ${count(profiles.omitted) ?? "?"} omitted hints`,
-			),
-		);
-	lines.push(...listedProfiles(rows, theme));
-	const next = details.nextCursor;
-	lines.push(
-		muted(
-			theme,
-			typeof next === "string" && next
-				? `Next page available${listCatalogText(coverage, "pending")}; repeat with coverage.next, including after an empty page`
-				: coverage.complete === false
-					? "Inventory may be incomplete; continue discovery"
-					: "Inventory covered; no further page",
-		),
-	);
-	return lines;
+	const visited = count(coverage.storagesVisited),
+		settled = count(catalog.settled),
+		pending = count(catalog.pending);
+	return {
+		outcome: `${quantity(details.rows.length, "conversation")} on this page${hasNext ? "; next page available" : coverage.complete === true ? "; end of scan" : coverage.complete === false ? "; coverage incomplete" : ""}`,
+		body: factLines([
+			unavailable ? quantity(unavailable, "storage unavailable", "storages unavailable") : "",
+			profiles.complete === false ? "Profile search incomplete" : "",
+			visited ? quantity(visited, "storage visited on this page", "storages visited on this page") : "",
+			pending ? quantity(pending, "storage scan step open", "storage scan steps open") : "",
+			settled ? quantity(settled, "storage settled by publication", "storages settled by publication") : "",
+			...details.rows.flatMap((value) => {
+				const row = record(value);
+				const label = [text(row.handle), text(row.name)].filter(Boolean).join(" · ") || text(row.identity);
+				return [label, typeof row.role === "string" ? row.role || "No role set" : ""];
+			}),
+		]),
+		expanded: next ? `Next page: ${next}` : undefined,
+	};
 }
 
 function profileRouteLines(profile: Record<string, unknown>, theme: Theme): string[] {
@@ -2205,20 +2244,64 @@ function profileLines(details: Record<string, unknown>, theme: Theme, context: A
 		...profileRouteLines(profile, theme),
 	];
 }
+function profileModelFact(profile: Record<string, unknown>, context: AgentCardContext): string {
+	const model = record(profile.model);
+	const provider = text(model.provider),
+		modelId = text(model.modelId),
+		thinking = text(profile.thinkingLevel);
+	return headerHasModel(text(profile.identity), provider, modelId, thinking, context)
+		? ""
+		: resolvedModelLine(provider, modelId, thinking);
+}
+
+function profileRequestFact(profile: Record<string, unknown>, omitted: number | undefined): string {
+	if (!Array.isArray(profile.requests)) return "";
+	const shown = profile.requests.length;
+	if (omitted) return `${quantity(shown, "request route")} shown`;
+	return shown ? quantity(shown, "active request route") : "";
+}
+
+function profileSourceFact(live: unknown): string {
+	if (live === true) return "Live host";
+	return live === false ? "Retained profile" : "";
+}
+
+function profilePresentation(
+	details: Record<string, unknown>,
+	context: AgentCardContext,
+): ToolResultPresentation | undefined {
+	const profile = typeof details.outcome === "string" ? record(details.profile) : details;
+	if (typeof profile.revision !== "string" || typeof profile.role !== "string") return undefined;
+	const identity = text(profile.identity),
+		name = text(profile.name);
+	const label = headerHasName(identity, name, context) ? "" : text(profile.handle) || name || identity;
+	const omitted = count(profile.requestsOmitted);
+	const outcome =
+		details.outcome === "conflict"
+			? "Profile conflict; no change"
+			: details.outcome === "applied"
+				? "Profile saved"
+				: "Profile read";
+	return {
+		outcome: label ? `${outcome} · ${label}` : outcome,
+		body: factLines([
+			details.deduped === true ? "Already applied" : "",
+			profile.role || "No role set",
+			profileSourceFact(profile.live),
+			`Revision ${profile.revision}`,
+			profileRequestFact(profile, omitted),
+			profileModelFact(profile, context),
+		]),
+		limit: omitted ? quantity(omitted, "route omitted by source", "routes omitted by source") : undefined,
+	};
+}
 export function renderProfileResult(
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	context: AgentCardContext,
 ): Component {
-	return outcomeCard(
-		result,
-		options,
-		theme,
-		context,
-		{ error: "Profile error", partial: "Profile pending" },
-		profileLines,
-	);
+	return queryCard(result, options, theme, context, profilePresentation);
 }
 
 export function renderListResult(
@@ -2227,143 +2310,188 @@ export function renderListResult(
 	theme: Theme,
 	context: AgentCardContext,
 ): Component {
-	return outcomeCard(
-		result,
-		options,
-		theme,
-		context,
-		{ error: "List error", partial: "Discovery pending" },
-		listSummary,
-	);
+	return queryCard(result, options, theme, context, listPresentation);
 }
 
-function inspectSummary(
+function finalReportCall(value: unknown): string {
+	return matchesSchema(FinalReportReadSchema, value) ? nextCall("agent_inspect", value) : "";
+}
+
+function inspectProviderFacts(block: unknown): string[] {
+	if (block === undefined) return [];
+	return matchesSchema(ProviderBlockFactSchema, block)
+		? providerBlockSummary(block)
+		: ["Provider block unavailable: invalid native fact"];
+}
+
+function resultPageTitle(details: Record<string, unknown>, args: Record<string, unknown>): string {
+	if (typeof record(details.finalReport).text === "string") return "Final report page";
+	if (args.finalReport === true) return "Final report unavailable";
+	const receipt = record(details.receiptGroup);
+	if (typeof args.receiptCursor === "string" && Array.isArray(receipt.results))
+		return `${quantity(receipt.results.length, "receipt reference")} on this page`;
+	if (details.status === "unavailable") return "Result unavailable";
+	if (typeof details.answer !== "string") return "No assistant answer";
+	return record(details.work).answer === "state-note" ? "State note retained" : "Assistant answer retained";
+}
+
+function resultAnswerFacts(details: Record<string, unknown>, receiptPage: boolean, read: string): string[] {
+	const work = record(details.work),
+		report = record(details.finalReport);
+	const reportPage = typeof report.text === "string";
+	const offset = count(reportPage ? report.offset : details.offset);
+	const workState = work.state === "open" || work.state === "closed" ? `Declared work is ${work.state}` : "";
+	const receiptCount = array(record(details.receiptGroup).results).length;
+	return [
+		offset === undefined ? "" : `${reportPage ? "Report" : "Answer"} offset ${offset} (UTF-16 units)`,
+		workState,
+		read ? "Completed report available" : "",
+		receiptPage ? "" : text(reportPage ? report.text : details.answer),
+		!receiptPage && receiptCount ? `${quantity(receiptCount, "receipt reference")} on this page` : "",
+	];
+}
+
+function inspectResultPresentation(
 	details: Record<string, unknown>,
-	theme: Theme,
 	context: AgentCardContext,
-): string[] | undefined {
+): ToolResultPresentation {
+	const report = record(details.finalReport),
+		args = record(context.args);
+	const continuation = resultContinuationLines(details);
+	const reportPage = typeof report.text === "string";
+	const read =
+		reportPage || args.finalReport === true ? "" : finalReportCall(record(record(details.work).finalReport).read);
+	const status = reportPage ? text(report.status) : text(details.status);
+	return {
+		outcome: `${resultPageTitle(details, args)}${status && status !== "unavailable" ? ` · ${status}` : ""}${continuation.length ? "; continuation available" : ""}`,
+		body: factLines([
+			...inspectProviderFacts(details.providerBlock),
+			text(details.reason),
+			...resultAnswerFacts(details, typeof args.receiptCursor === "string", read),
+		]),
+		expanded: factLines([...continuation, read ? `Read the final report: ${read}` : ""]),
+	};
+}
+
+function inspectPageCall(details: Record<string, unknown>, context: AgentCardContext): string {
 	const view = text(details.view);
-	if (view === "result") return inspectResultSummary(details, theme, context);
-	if (view === "exact" && details.kind === "ordinary-primary") return inspectPrimaryEntrySummary(details, theme);
-	if (view === "exact" || (count(details.nextOffset) !== undefined && identifier(details.entryId) !== ""))
-		return inspectEntrySummary(details, theme);
-	if (view === "search") return inspectSearchSummary(details, theme);
-	if (view === "activity") return inspectActivitySummary(details, theme);
-	if (Array.isArray(details.entries)) return inspectHistorySummary(details, view || "history", theme);
-	return undefined;
-}
-
-function inspectResultSummary(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
-	const status = text(details.status);
+	const sessionId = text(details.sessionId) || text(record(context.args).sessionId);
 	const args = record(context.args);
-	const submission =
-		identifier(args.submissionId) === identifier(details.submissionId) ? undefined : count(details.submissionId);
-	const operation = args.operationId === details.operationId ? "" : text(details.operationId);
-	const reason = text(details.reason);
-	const hasAnswer = text(details.answer) !== "";
-	const headline = `saved result${status ? ` · ${displayPreview(status, 40)}` : ""}${operation ? ` · operation ${displayIdentity(operation)}` : submission !== undefined ? ` · submission ${submission}` : ""}`;
-	const lines = [theme.fg("toolOutput", headline)];
-	lines.push(
-		muted(
-			theme,
-			`${hasAnswer ? "assistant answer retained" : "no assistant answer"}${reason ? ` · ${displayPreview(reason, 160)}` : ""}`,
-		),
-	);
-	if (details.providerBlock !== undefined) lines.push(...providerBlockLines(details.providerBlock, theme, true));
-	if (count(details.offset) !== undefined)
-		lines.push(
-			muted(
-				theme,
-				`Answer offset ${String(details.offset)} (UTF-16 units)${details.truncated === true ? " · more answer text remains" : ""}`,
-			),
-		);
-	for (const continuation of resultContinuationLines(details)) lines.push(muted(theme, continuation));
-	return lines;
+	const target = sessionId ? { sessionId } : {};
+	const limit = count(args.limit);
+	if (Object.keys(record(details.nextCursor)).length && (view !== "search" || text(args.query))) {
+		return callText("agent_inspect", {
+			view,
+			...target,
+			cursor: details.nextCursor,
+			...(limit === undefined ? {} : { limit }),
+			...(view === "search" ? { query: args.query, source: args.source } : {}),
+		});
+	}
+	const offset = count(details.nextOffset),
+		entryId = count(details.entryId);
+	return view === "exact" && offset !== undefined && entryId !== undefined
+		? callText("agent_inspect", { view, ...target, entryId, offset })
+		: "";
 }
 
-function inspectPrimaryEntrySummary(details: Record<string, unknown>, theme: Theme): string[] {
-	const entry = Array.isArray(details.entries) ? record(details.entries[0]) : {};
-	const page = record(details.page);
-	const [from, to, total] = [count(page.offset), count(page.endOffset), count(page.totalUnits)];
-	const range =
-		from !== undefined && to !== undefined && total !== undefined ? ` · text ${from}-${to} of ${total}` : "";
-	const lines = [theme.fg("toolOutput", `entry ${displayIdentity(identifier(entry.id))}${range}`)];
-	lines.push(
-		muted(
-			theme,
-			details.nextCursor
-				? "more of this entry remains"
-				: page.totalUnits === undefined
-					? "entry unavailable"
-					: "text complete",
-		),
-	);
-	return lines;
+function inspectedEntry(value: unknown): string {
+	const entry = record(value);
+	const identity = identifier(entry.id) || identifier(entry.entryId);
+	const kind = text(entry.role) || text(entry.kind);
+	const content = text(entry.excerptText) || text(entry.text) || text(entry.excerpt);
+	const label = [kind, identity ? `entry ${identity}` : ""].filter(Boolean).join(" · ");
+	return [label, content].filter(Boolean).join(": ");
 }
 
-function inspectEntrySummary(details: Record<string, unknown>, theme: Theme): string[] {
-	const entryId = identifier(details.entryId);
-	const offset = count(details.offset);
-	const truncated = details.truncated === true;
-	const omissions = record(details.omissions);
-	const omitted = ["providerSignatures", "imagePayloads", "redactedThinking"].reduce(
-		(sum, key) => sum + (count(omissions[key]) ?? 0),
-		0,
-	);
-	const remaining = details.nextOffset === null ? "representation complete" : "more of this entry remains";
-	const lines = [
-		theme.fg("toolOutput", `entry ${displayIdentity(entryId)}${offset !== undefined ? ` · offset ${offset}` : ""}`),
+type ReadPage = { headline: string; facts: string[] };
+
+function primaryExactPage(details: Record<string, unknown>, more: boolean): ReadPage {
+	const entry = array(details.entries)[0],
+		page = record(details.page);
+	const start = count(page.offset),
+		end = count(page.endOffset),
+		total = count(page.totalUnits);
+	const headline =
+		start !== undefined && end !== undefined && total !== undefined
+			? `Retained entry text ${start}–${end} of ${total}`
+			: "Retained entry text unavailable";
+	return {
+		headline,
+		facts: [end !== undefined && end === total && !more ? "Retained text complete" : "", inspectedEntry(entry)],
+	};
+}
+
+function durableExactPage(details: Record<string, unknown>): ReadPage | undefined {
+	const id = identifier(details.entryId),
+		offset = count(details.offset),
+		omitted = record(details.omissions);
+	if (!id) return undefined;
+	const fields = [
+		["providerSignatures", "provider signature"],
+		["imagePayloads", "image payload"],
+		["redactedThinking", "redacted field"],
 	];
-	lines.push(
-		muted(
-			theme,
-			`${remaining}${truncated ? " · clipped to the display bound" : ""}${omitted ? ` · ${omitted} omitted fields` : ""}`,
-		),
-	);
-	return lines;
+	return {
+		headline: `Entry ${id}${offset === undefined ? "" : ` from offset ${offset}`}`,
+		facts: [
+			details.nextOffset === null && details.truncated === false ? "Representation complete" : "",
+			...fields.map(([key, label]) => (count(omitted[key]) ? `${counted(omitted[key], label)} omitted` : "")),
+			text(details.text),
+		],
+	};
 }
 
-function inspectSearchSummary(details: Record<string, unknown>, theme: Theme): string[] {
-	const matches = Array.isArray(details.matches) ? details.matches.length : 0;
-	const coverage = record(details.coverage);
-	const complete = coverage.complete === true;
-	const scanned = count(coverage.scannedEntries);
-	const lines = [
-		theme.fg(
-			"toolOutput",
-			`search · ${matches} ${matches === 1 ? "match" : "matches"}${complete ? " · ancestry covered" : scanned !== undefined ? ` · ${scanned} entries scanned` : ""}`,
-		),
-	];
-	lines.push(muted(theme, details.nextCursor === null ? "No continuation" : "Continuation available"));
-	return lines;
+function inspectionPage(details: Record<string, unknown>, more: boolean): ReadPage | undefined {
+	const view = text(details.view),
+		coverage = record(details.coverage);
+	if (view === "exact")
+		return details.kind === "ordinary-primary" ? primaryExactPage(details, more) : durableExactPage(details);
+	const complete = coverage.complete === true ? "Reached the end of the selected scan" : "";
+	const scanned = count(coverage.scannedEntries)
+		? counted(coverage.scannedEntries, "entry scanned", "entries scanned")
+		: "";
+	if (view === "search" && Array.isArray(details.matches))
+		return {
+			headline: `${quantity(details.matches.length, "match", "matches")} on this page`,
+			facts: [scanned, complete, ...details.matches.map(inspectedEntry)],
+		};
+	if (view === "activity" && Array.isArray(details.turns))
+		return {
+			headline: `${quantity(details.turns.length, "turn")} on this activity page`,
+			facts: [scanned, complete, ...details.turns.flatMap((turn) => array(record(turn).entries).map(inspectedEntry))],
+		};
+	if (!Array.isArray(details.entries) || !["history", "activity", "branch"].includes(view)) return undefined;
+	return {
+		headline: `${quantity(details.entries.length, "entry", "entries")} on this ${view} page`,
+		facts: [
+			details.kind === "ordinary-primary" ? "Latest retained ancestry, not live activity" : "",
+			details.nextCursor === null ? "No older page" : "",
+			complete,
+			...details.entries.map(inspectedEntry),
+		],
+	};
 }
 
-function inspectActivitySummary(details: Record<string, unknown>, theme: Theme): string[] {
-	const turns = Array.isArray(details.turns) ? details.turns.length : 0;
-	const coverage = record(details.coverage);
-	const scanned = count(coverage.scannedEntries);
-	const lines = [
-		theme.fg(
-			"toolOutput",
-			`activity · ${turns} ${turns === 1 ? "turn" : "turns"}${scanned !== undefined ? ` · ${scanned} entries scanned` : ""}`,
-		),
-	];
-	lines.push(
-		muted(
-			theme,
-			`${coverage.complete === true ? "page complete" : "page bounded or partial"}${details.nextCursor === null ? "" : " · older turns available"}`,
-		),
-	);
-	return lines;
+function pageScope(more: boolean, coverage: unknown): string {
+	if (more) return "; next page available";
+	return record(coverage).complete === false ? "; coverage incomplete" : "";
 }
 
-function inspectHistorySummary(details: Record<string, unknown>, view: string, theme: Theme): string[] {
-	const entries = array(details.entries).length;
-	const lines = [theme.fg("toolOutput", `${view} page · ${entries} ${entries === 1 ? "entry" : "entries"}`)];
-	lines.push(
-		muted(theme, details.nextCursor === null ? "older-page boundary; no further page" : "older page available"),
-	);
-	return lines;
+function inspectPresentation(
+	details: Record<string, unknown>,
+	context: AgentCardContext,
+): ToolResultPresentation | undefined {
+	if (details.view === "result") return inspectResultPresentation(details, context);
+	const next = inspectPageCall(details, context);
+	const more = Boolean(next || Object.keys(record(details.nextCursor)).length);
+	const page = inspectionPage(details, more);
+	if (!page) return undefined;
+	return {
+		outcome: page.headline + pageScope(more, details.coverage),
+		body: factLines(page.facts),
+		expanded: next ? `Next page: ${next}` : undefined,
+	};
 }
 
 export function renderInspectResult(
@@ -2372,20 +2500,7 @@ export function renderInspectResult(
 	theme: Theme,
 	context: AgentCardContext,
 ): Component {
-	const details = resultDetails(result);
-	const recovery =
-		options.expanded && details.view === "result" && details.providerBlock !== undefined
-			? providerBlockLines(details.providerBlock, theme)
-			: [];
-	return outcomeCard(
-		result,
-		options,
-		theme,
-		context,
-		{ error: "Inspect error", partial: "Inspection pending" },
-		inspectSummary,
-		recovery,
-	);
+	return queryCard(result, options, theme, context, inspectPresentation);
 }
 
 /** A thread's known title, or its exact identity when the view has not read that thread. */
@@ -2394,83 +2509,123 @@ function threadLabel(thread: string, context: AgentCardContext): string {
 	return title ? displayPreview(title, 100) : `thread ${displayIdentity(thread)}`;
 }
 
-function collaborationReceiptLines(
-	details: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-): string[] | undefined {
-	const args = record(context.args);
-	const threadId = text(details.threadId);
-	if (threadId) {
-		const actions: Record<string, string> = {
-			create: "Thread created",
-			join: "Joined",
-			leave: "Left",
-			post: "Posted",
-			revise: "Frame revised",
-			close: "Thread closed",
-		};
-		const sequence = count(details.sequence);
-		return [
-			muted(
-				theme,
-				`${actions[text(args.action)] || "Recorded"}${sequence !== undefined ? ` · #${sequence}` : ""}${args.threadId === threadId ? "" : ` · ${threadLabel(threadId, context)}`}${details.deduped === true ? " · replay" : ""}`,
-			),
-		];
-	}
-	return undefined;
+function threadEventFact(value: unknown): string {
+	const event = record(value),
+		seq = count(event.sequence),
+		kind = text(event.kind);
+	const label = [seq === undefined ? "" : `#${seq}`, kind, text(event.sender)].filter(Boolean).join(" ");
+	const body = kind === "create" || kind === "revise" ? "" : text(event.message);
+	return [label, body].filter(Boolean).join(": ");
 }
 
-function forwardThreadLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] {
-	const coverage = record(details.coverage),
-		next = record(details.next);
-	const lines = [
-		muted(
-			theme,
-			`${threadLabel(text(details.threadId), context)} · forward events · frame ${String(details.frameRevision)} · ${details.closed === true ? "closed" : "open"}`,
-		),
-		muted(
-			theme,
-			`${array(details.events).length} events · after ${String(coverage.after)} through ${String(coverage.through)}${coverage.complete === false ? " · bounded page" : ""} · ${String(details.pending)} pending notices`,
-		),
-	];
-	if (details.thread === undefined) lines.push(muted(theme, "Known frame not repeated"));
-	if (next.tool === "agent_collaborate" && next.action === "read") {
-		const { tool: _tool, ...args } = next;
-		lines.push(muted(theme, `Next events: agent_collaborate(${JSON.stringify(args)})`));
-	}
-	return lines;
-}
-
-function collaborationLines(
-	details: Record<string, unknown>,
-	theme: Theme,
-	context: AgentCardContext,
-): string[] | undefined {
-	if (details.direction === "forward") return forwardThreadLines(details, theme, context);
-	const receipt = collaborationReceiptLines(details, theme, context);
-	if (receipt) return receipt;
-	const thread = record(details.thread);
-	if (text(thread.title))
-		return [
-			muted(
-				theme,
-				`${displayPreview(text(thread.title), 100)} · ${thread.closed === true ? "closed" : "open"} · ${array(thread.members).length} members`,
-			),
-			muted(
-				theme,
-				`${array(details.events).length} events · ${count(details.pending) ?? "?"} pending notices${record(details.coverage).complete === false ? " · bounded page" : ""}`,
-			),
-		];
-	if (!Array.isArray(details.items)) return undefined;
+function threadPageFacts(details: Record<string, unknown>, context: AgentCardContext, id: string): string[] {
+	const thread = record(details.thread),
+		coverage = record(details.coverage);
+	const forward = details.direction === "forward",
+		closed = forward ? details.closed : thread.closed;
+	const label = text(thread.title) || (id ? threadLabel(id, context) : "");
+	const revision = count(forward ? details.frameRevision : thread.revision);
+	const after = count(coverage.after),
+		through = count(coverage.through);
+	const members = array(thread.members).length;
 	return [
-		muted(
-			theme,
-			`${details.items.length} threads${record(details.coverage).complete === false ? " · incomplete coverage" : ""}`,
-		),
-		...details.items.slice(0, 3).map((value) => muted(theme, displayPreview(text(record(value).title), 100))),
-		...(details.nextCursor ? [muted(theme, "Next page available")] : []),
+		[label, closed === true ? "closed" : closed === false ? "open" : ""].filter(Boolean).join(" · "),
+		revision === undefined
+			? ""
+			: `Frame ${revision}${forward && details.thread === undefined ? " (known frame not repeated)" : ""}`,
+		after === undefined || through === undefined ? "" : `Events after ${after} through ${through}`,
+		count(details.pending) ? counted(details.pending, "pending notice") : "",
+		members ? quantity(members, "member") : "",
 	];
+}
+
+function backwardEventsCall(details: Record<string, unknown>, args: Record<string, unknown>, threadId: string): string {
+	const before = count(details.nextBefore),
+		limit = count(args.limit);
+	return before === undefined || !threadId
+		? ""
+		: callText("agent_collaborate", { action: "read", threadId, before, limit });
+}
+
+function collaborationThreadPresentation(
+	details: Record<string, unknown>,
+	context: AgentCardContext,
+): ToolResultPresentation | undefined {
+	if (!Array.isArray(details.events)) return undefined;
+	const args = record(context.args),
+		forward = details.direction === "forward";
+	const id = text(forward ? details.threadId : record(details.thread).id) || text(args.threadId);
+	const next = forward ? nextCall("agent_collaborate", details.next) : backwardEventsCall(details, args, id);
+	return {
+		outcome: `${quantity(details.events.length, "event")} on this ${forward ? "forward " : ""}page${pageScope(Boolean(next), details.coverage)}`,
+		body: factLines([...threadPageFacts(details, context, id), ...details.events.map(threadEventFact)]),
+		expanded: next ? `Next events: ${next}` : undefined,
+	};
+}
+
+function collaborationListPresentation(
+	details: Record<string, unknown>,
+	args: Record<string, unknown>,
+): ToolResultPresentation | undefined {
+	if (!Array.isArray(details.items)) return undefined;
+	const cursor = text(details.nextCursor),
+		visited = count(record(details.coverage).visited);
+	const next = cursor
+		? callText("agent_collaborate", {
+				action: "list",
+				sessionId: args.sessionId,
+				query: args.query,
+				cursor,
+				limit: args.limit,
+			})
+		: "";
+	return {
+		outcome: `${quantity(details.items.length, "thread")} on this page${pageScope(Boolean(next), details.coverage)}`,
+		body: factLines([
+			visited ? quantity(visited, "source visited", "sources visited") : "",
+			...details.items.map((item) => text(record(item).title) || text(record(item).id)),
+		]),
+		expanded: next ? `Next page: ${next}` : undefined,
+	};
+}
+
+function collaborationReceiptPresentation(
+	details: Record<string, unknown>,
+	context: AgentCardContext,
+): ToolResultPresentation | undefined {
+	const id = text(details.threadId),
+		args = record(context.args);
+	if (!id || typeof details.deduped !== "boolean") return undefined;
+	const actions: Record<string, string> = {
+		create: "Thread created",
+		join: "Joined thread",
+		leave: "Left thread",
+		post: "Posted to thread",
+		revise: "Frame revised",
+		close: "Thread closed",
+	};
+	const sequence = count(details.sequence);
+	return {
+		outcome: [
+			actions[text(args.action)] || "Thread change recorded",
+			args.threadId === id ? "" : threadLabel(id, context),
+			sequence === undefined ? "" : `#${sequence}`,
+			details.deduped ? "already recorded" : "",
+		]
+			.filter(Boolean)
+			.join(" · "),
+	};
+}
+
+function collaborationPresentation(
+	details: Record<string, unknown>,
+	context: AgentCardContext,
+): ToolResultPresentation | undefined {
+	return (
+		collaborationThreadPresentation(details, context) ??
+		collaborationListPresentation(details, record(context.args)) ??
+		collaborationReceiptPresentation(details, context)
+	);
 }
 
 function resetPresentation(details: Record<string, unknown>, context: AgentCardContext): ToolResultPresentation {
@@ -3071,91 +3226,69 @@ function observeResult(result: AgentToolResult<unknown>, context: AgentCardConte
 	return snapshotFacts(context, snapshot);
 }
 
-const WORK_DEPENDENCY_ROWS = 4;
-
-function closedWorkLines(
+function completedWorkPresentation(
 	details: Record<string, unknown>,
 	item: Record<string, unknown>,
-	subject: string,
-	theme: Theme,
+	request: string,
 	context: AgentCardContext,
-): string[] {
+): ToolResultPresentation {
 	const status = text(details.status),
 		report = record(details.report),
-		owner = text(report.ownerId);
-	const lines = [
-		theme.fg(
-			status === "failed" ? "warning" : "toolOutput",
-			`Work closed${status ? ` (${displayText(status)})` : ""} · ${subject}${details.deduped === true ? " · already closed" : ""}`,
-		),
-	];
-	if (text(report.sourceId))
-		lines.push(
-			muted(
-				theme,
-				`Final report retained${owner ? ` · ${targetLabel(owner, context)}` : ""} · ${report.acknowledged === true ? "acknowledged" : "acknowledgement pending"}`,
-			),
-		);
-	const delivery = text(record(item.close).delivery);
-	if (delivery)
-		lines.push(
-			theme.fg(delivery === "terminal" ? "warning" : "muted", `Final report delivery: ${displayPreview(delivery, 20)}`),
-		);
-	return lines;
+		close = record(item.close);
+	const delivery = text(close.delivery),
+		owner = text(report.ownerId),
+		read = finalReportCall(close.read);
+	const acknowledgement =
+		report.acknowledged === true
+			? "Report acknowledged"
+			: report.acknowledged === false
+				? "Report not acknowledged"
+				: "";
+	return {
+		outcome: `${details.deduped === true ? "Work already closed" : "Work closed"}${status ? ` (${status})` : ""} · request ${request}`,
+		expanded: factLines([
+			text(report.sourceId) ? "Final report retained" : "",
+			owner ? `Report to ${targetLabel(owner, context)}` : "",
+			acknowledgement,
+			delivery ? `Final report delivery: ${delivery}` : "",
+			read ? `Read the final report: ${read}` : "",
+		]),
+	};
 }
 
-function workDependencyLine(dependency: Record<string, unknown>, theme: Theme, context: AgentCardContext): string {
-	const reference = text(dependency.requestId),
-		unavailable = text(dependency.unavailable),
+function workDependencyFact(value: unknown, context: AgentCardContext): string {
+	const dependency = record(value),
+		id = text(dependency.sessionId),
 		submission = count(dependency.submissionId);
-	return muted(
-		theme,
-		[
-			targetLabel(text(dependency.sessionId), context),
-			submission === undefined ? "" : `submission ${submission}`,
-			reference ? `request ${displayText(reference)}` : "",
-			displayText(text(dependency.state)),
-			unavailable ? `unavailable: ${displayPreview(unavailable, 120)}` : "",
-		]
-			.filter(Boolean)
-			.join(" · "),
-	);
+	return [
+		id ? targetLabel(id, context) : "",
+		submission === undefined ? "" : `submission ${submission}`,
+		text(dependency.state),
+		text(dependency.unavailable),
+	]
+		.filter(Boolean)
+		.join(" · ");
 }
 
-function declaredWorkLines(
-	item: Record<string, unknown>,
-	subject: string,
-	theme: Theme,
+function workPresentation(
+	details: Record<string, unknown>,
 	context: AgentCardContext,
-): string[] {
-	const dependencies = array(item.dependencies).map(record),
-		replyTo = text(item.replyTo),
-		note = text(item.note);
-	const lines = [
-		theme.fg(
-			"toolOutput",
-			`Work ${displayPreview(text(item.state), 20) || "declared"} · ${subject} · ${dependencies.length} dependenc${dependencies.length === 1 ? "y" : "ies"}`,
-		),
-	];
-	if (replyTo) lines.push(muted(theme, `Final report to ${targetLabel(replyTo, context)}`));
-	if (note) lines.push(muted(theme, `Note: ${displayPreview(note, 160)}`));
-	for (const dependency of dependencies.slice(0, WORK_DEPENDENCY_ROWS))
-		lines.push(workDependencyLine(dependency, theme, context));
-	if (dependencies.length > WORK_DEPENDENCY_ROWS)
-		lines.push(muted(theme, `${dependencies.length - WORK_DEPENDENCY_ROWS} more dependencies`));
-	return lines;
-}
-
-/** A declared item with its dependencies, or the close of an item with its final report row. */
-function workLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
-	const action = text(details.action),
-		item = record(details.item);
-	const request = text(item.requestId) || text(details.requestId);
-	if ((action !== "continue" && action !== "complete") || !request) return undefined;
-	const subject = `request ${displayText(request)}`;
-	return action === "complete"
-		? closedWorkLines(details, item, subject, theme, context)
-		: declaredWorkLines(item, subject, theme, context);
+): ToolResultPresentation | undefined {
+	const item = record(details.item),
+		request = text(item.requestId) || text(details.requestId);
+	if (!request) return undefined;
+	if (details.action === "complete") return completedWorkPresentation(details, item, request, context);
+	if (details.action !== "continue") return undefined;
+	const state = text(item.state),
+		replyTo = text(item.replyTo);
+	return {
+		outcome: `Work declared · request ${request}${state ? ` · ${state}` : ""}`,
+		body: factLines([
+			Array.isArray(item.dependencies) ? quantity(item.dependencies.length, "dependency", "dependencies") : "",
+			replyTo ? `Final report to ${targetLabel(replyTo, context)}` : "",
+			...array(item.dependencies).map((value) => workDependencyFact(value, context)),
+		]),
+	};
 }
 
 const STATE_NOTE_LINES = 3;
@@ -3382,27 +3515,12 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 		agent_place: { renderCall: bindCall("agent_place"), renderResult: renderAgentResult("agent_place") },
 		agent_intent: {
 			renderCall: bindCall("agent_intent"),
-			renderResult: (result, options, theme, context) =>
-				outcomeCard(
-					result,
-					options,
-					theme,
-					{ ...context, isPartial: options.isPartial },
-					{ error: "Intent error", partial: "Intent pending" },
-					intentLines,
-				),
+			renderResult: (result, options, theme, context) => queryCard(result, options, theme, context, intentPresentation),
 		},
 		agent_collaborate: {
 			renderCall: bindCall("agent_collaborate"),
 			renderResult: (result, options, theme, context) =>
-				outcomeCard(
-					result,
-					options,
-					theme,
-					context,
-					{ error: "Collaboration error", partial: "Collaboration pending" },
-					collaborationLines,
-				),
+				queryCard(result, options, theme, context, collaborationPresentation),
 		},
 		agent_status: { renderCall: bindCall("agent_status"), renderResult: renderStatusResult },
 		agent_fork: { renderCall: bindCall("agent_fork"), renderResult: renderAgentResult("agent_fork") },
@@ -3415,8 +3533,7 @@ export function createAgentToolCards(lookup: AgentCardLookup = () => []): Readon
 		agent_steer: { renderCall: renderSteerCall, renderResult: renderSteerResult },
 		agent_work: {
 			renderCall: bindCall("agent_work"),
-			renderResult: (result, options, theme, context) =>
-				outcomeCard(result, options, theme, context, { error: "Work error", partial: "Work pending" }, workLines),
+			renderResult: (result, options, theme, context) => queryCard(result, options, theme, context, workPresentation),
 		},
 		agent_command: { renderCall: renderCommandCall, renderResult: renderAgentResult("agent_command") },
 		agent_inspect: { renderCall: renderInspectCall, renderResult: renderInspectResult },

@@ -297,7 +297,7 @@ it("intent cards omit absent endpoint facts and keep errors and pending outcomes
 			isError: true,
 		}),
 	);
-	assert.match(failed, /Intent error\nIntent publication requires this live ordinary primary session/u);
+	assert.match(failed, /^Intent publication requires this live ordinary primary session$/mu);
 	assert.doesNotMatch(failed, /Intent published|Intent cleared/u);
 	const pending = text(
 		cards.agent_intent.renderResult(
@@ -307,8 +307,158 @@ it("intent cards omit absent endpoint facts and keep errors and pending outcomes
 			{ ...cardKeys, expanded: false },
 		),
 	);
-	assert.match(pending, /Intent pending/u);
+	assert.match(pending, /^Waiting for publication$/mu);
 	assert.doesNotMatch(pending, /Intent published|Intent cleared/u);
+});
+
+it("registered inspect renders final report pages, state notes and absent answers as distinct outcomes", async (t) => {
+	noticeKeys(t);
+	const tool = (await registeredTools()).get("agent_inspect");
+	assert.ok(tool);
+	const select = { view: "result", sessionId: identity, submissionId: 7 };
+	const read = { ...select, finalReport: true, offset: 0 };
+	const page = { ...read, offset: 18 };
+	const base = { ...select, conversationId: 1, status: "placed", usage: {} };
+	const work = {
+		state: "closed",
+		finalReport: {
+			requestId: "report",
+			ownerId: identity,
+			status: "failed",
+			delivery: "retained",
+			read: { tool: "agent_inspect", ...read },
+		},
+	};
+	const component = nativeTool(
+		"agent_inspect",
+		read,
+		{
+			...base,
+			work,
+			finalReport: {
+				requestId: "report",
+				ownerId: identity,
+				status: "failed",
+				text: "One report excerpt",
+				length: 300,
+				offset: 0,
+				nextOffset: 18,
+				truncated: true,
+			},
+			finalReportContinuation: { tool: "agent_inspect", ...page },
+		},
+		[],
+		tool,
+	);
+	const collapsed = text(component, 72);
+	assert.match(collapsed, /Final report page · failed; continuation available/u);
+	assert.match(collapsed, /One report excerpt/u);
+	assert.doesNotMatch(collapsed, /No assistant answer|State note retained|Final report continuation:/u);
+	assert.equal((collapsed.match(/to expand/gu) ?? []).length, 1);
+	assert.ok(component.render(38).every((line) => visibleWidth(line) <= 38));
+	component.setExpanded(true);
+	const expanded = text(component);
+	assert.ok(expanded.includes(`Final report continuation: agent_inspect(${JSON.stringify(page)})`));
+	assert.match(expanded, /"length": 300/u);
+	assert.doesNotMatch(expanded, /Read the final report:|to expand/u);
+
+	const note = nativeTool(
+		"agent_inspect",
+		select,
+		{
+			...base,
+			status: "done",
+			answer: "One dependency remains",
+			work: { ...work, answer: "state-note" },
+		},
+		[],
+		tool,
+	);
+	assert.match(text(note), /State note retained · done/u);
+	assert.match(text(note), /One dependency remains/u);
+	assert.doesNotMatch(text(note), /One report excerpt|Read the final report:/u);
+	note.setExpanded(true);
+	assert.ok(text(note).includes(`Read the final report: agent_inspect(${JSON.stringify(read)})`));
+
+	const absent = nativeTool("agent_inspect", select, base, [], tool);
+	assert.match(text(absent), /No assistant answer · placed/u);
+	const unavailable = nativeTool(
+		"agent_inspect",
+		read,
+		{ ...base, work: { state: "open" }, reason: "The work is still open" },
+		[],
+		tool,
+	);
+	assert.match(text(unavailable), /Final report unavailable · placed/u);
+	assert.doesNotMatch(text(unavailable), /No assistant answer/u);
+});
+
+it("registered list preserves an empty page and discloses its exact filtered continuation", async (t) => {
+	noticeKeys(t);
+	const tool = (await registeredTools()).get("agent_list");
+	assert.ok(tool);
+	const args = { query: "Parser plan", cwd: "/local work", limit: 3 };
+	const cursor = "YWJj".repeat(24);
+	const next = { ...args, cursor };
+	const component = nativeTool(
+		"agent_list",
+		args,
+		{
+			rows: [],
+			nextCursor: cursor,
+			coverage: { complete: false, storagesVisited: 1, next: { tool: "agent_list", ...next } },
+		},
+		[],
+		tool,
+	);
+	assert.match(text(component, 64), /0 conversations on this page; next page available/u);
+	assert.doesNotMatch(text(component, 64), /YWJj|inventory covered|\[.*page/iu);
+	assert.ok(component.render(36).every((line) => visibleWidth(line) <= 36));
+	component.setExpanded(true);
+	assert.ok(text(component).includes(`Next page: agent_list(${JSON.stringify(next)})`));
+	component.setExpanded(false);
+	component.updateResult({
+		content: [{ type: "text", text: "The caller cancelled its read after the source stopped responding" }],
+		details: { rows: [], coverage: { complete: true } },
+		isError: true,
+	});
+	assert.match(text(component), /The caller cancelled its read after the source stopped responding/u);
+	assert.doesNotMatch(text(component), /^\s*Cancelled\s*$|end of scan/mu);
+});
+
+it("registered inspect search repeats the exact query, source and cursor on expansion", async () => {
+	const tool = (await registeredTools()).get("agent_inspect");
+	assert.ok(tool);
+	const args = { view: "search", sessionId: identity, limit: 2, query: 'A "literal"', source: "user" };
+	const cursor = { cursor: { after: 19486 }, skip: 3, scannedBytes: 22048 };
+	const component = nativeTool(
+		"agent_inspect",
+		args,
+		{
+			view: "search",
+			sessionId: identity,
+			conversationId: 1,
+			matches: [{ entryId: 94, kind: "message", excerptText: "A literal result" }],
+			nextCursor: cursor,
+			coverage: { complete: false, scannedEntries: 7 },
+		},
+		[],
+		tool,
+	);
+	assert.match(text(component), /1 match on this page; next page available/u);
+	assert.match(text(component), /7 entries scanned/u);
+	assert.match(text(component), /A literal result/u);
+	assert.doesNotMatch(text(component), /19486|Next page:/u);
+	component.setExpanded(true);
+	const next = {
+		view: args.view,
+		sessionId: args.sessionId,
+		cursor,
+		limit: args.limit,
+		query: args.query,
+		source: args.source,
+	};
+	assert.ok(text(component).includes(`Next page: agent_inspect(${JSON.stringify(next)})`));
 });
 
 it("peer cards supply the same native inner top and bottom padding as tool rows", () => {
