@@ -10,9 +10,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
+	type CompletionJob,
 	completionContent,
 	JOB_COMPLETION_MESSAGE,
-	type CompletionJob,
 	type JobCompletionDetails,
 } from "./completion.ts";
 import { completionHeader, renderJobCompletionMessage } from "./completion-card.ts";
@@ -124,14 +124,14 @@ test("the label has its own colour, the title and body use the message colour, a
 	assert.ok(colors.some(({ color, value }) => color === "customMessageText" && value === "line 4"));
 });
 
-test("a collapsed receipt summary shows the last output lines and an uncounted hint", () => {
+test("a collapsed receipt counts hidden rows of retained output separately from job facts", () => {
 	const lines = render(details());
 	assert.equal(lines[0], "");
 	assert.deepEqual(lines.slice(4, 7), [" line 2", " line 3", " line 4"]);
-	assert.equal(lines[7], " ... (ctrl+o to expand)");
+	assert.equal(lines[7], " ... (1 more line, ctrl+o to expand)");
 	assert.equal(lines[8], "");
 	assert.equal(lines.length, 9);
-	assert.equal(render(details(), false, "")[7], " ... (click to expand)");
+	assert.equal(render(details(), false, "")[7], " ... (1 more line, click to expand)");
 });
 
 test("the count covers only hidden visual rows of the same body", () => {
@@ -169,7 +169,10 @@ test("the count covers only hidden visual rows of the same body", () => {
 test("the preview reports earlier output outside the completion without counting it", () => {
 	const value = details();
 	value.tail.omitted = true;
-	assert.deepEqual(render(value).slice(-3, -1), [" [Excerpt: earlier output omitted]", " ... (ctrl+o to expand)"]);
+	assert.deepEqual(render(value).slice(-3, -1), [
+		" [Excerpt: earlier output omitted]",
+		" ... (1 more line, ctrl+o to expand)",
+	]);
 	assert.match(render(value, true).join("\n"), /read the retained tail/u);
 });
 
@@ -257,9 +260,9 @@ test("the hint dims the key from Pi's keyHint, mutes the rest and keeps the row 
 	assert.ok(component);
 	const rows = component.render(80);
 	const hint = rows.find((row) => stripVTControlCharacters(row).includes("to expand")) ?? "";
-	assert.equal(stripVTControlCharacters(hint).trim(), "... (ctrl+o to expand)");
+	assert.equal(stripVTControlCharacters(hint).trim(), "... (1 more line, ctrl+o to expand)");
 	assert.ok(hint.includes("\x1b[2mctrl+o"), "the key comes from Pi's keyHint");
-	assert.match(hint, /\x1b\[38;5;1m\.\.\. \(\x1b\[39m/u, "the rest is muted");
+	assert.match(hint, /\x1b\[38;5;1m\.\.\. \(1 more line, \x1b\[39m/u, "the rest is muted");
 	for (const row of rows) {
 		assert.ok(row.startsWith("\x1b[48;5;2m"));
 		const body = row.slice(0, -5);
@@ -317,7 +320,7 @@ test("Pi's custom message shell supplies disclosure keys, theme, padding and cli
 	assert.match(rows[6] ?? "", /^ 界+END$/u);
 	assert.equal(rows[7], " **literal**");
 	assert.doesNotMatch(rows.join("\n"), /START/u);
-	assert.deepEqual(rows.slice(-2), [" ... (click to expand)", ""]);
+	assert.deepEqual(rows.slice(-2), [" ... (2 more lines, click to expand)", ""]);
 	assert.ok(hostTheme);
 	assert.ok(card.render(90)[2]?.includes(hostTheme.fg("customMessageLabel", hostTheme.bold("[jobs]"))));
 	assert.ok(
@@ -338,7 +341,7 @@ test("Pi's custom message shell supplies disclosure keys, theme, padding and cli
 	card.setExpanded(true);
 	assert.doesNotMatch(body().join("\n"), /to expand/u);
 	card.setExpanded(false);
-	assert.equal(body().at(-2), " ... (ctrl+p to expand)");
+	assert.equal(body().at(-2), " ... (2 more lines, ctrl+p to expand)");
 	assert.ok(card.render(90).at(-2)?.includes(hostTheme.fg("dim", "ctrl+p")));
 
 	nativeTui.setKeybindings(bindings([]));

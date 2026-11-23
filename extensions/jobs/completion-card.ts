@@ -1,11 +1,11 @@
 import type { MessageRenderer, MessageRenderOptions, Theme } from "@earendil-works/pi-coding-agent";
 import {
 	Box,
+	type Component,
 	MouseRegion,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
-	type Component,
 } from "@earendil-works/pi-tui";
 import { displayText } from "./completion.ts";
 import { formatDuration } from "./presentation.ts";
@@ -54,6 +54,14 @@ export function completionHeader(details: unknown): { label: string; facts: stri
 	const command = oneLine(data.command);
 	if (command) facts.push(`command preview ${command}`);
 	return { label, facts };
+}
+
+function tailPreview(content: string[], tail: string[], width: number, room: number) {
+	const rows = tail.length ? wrapTextWithAnsi(tail.join("\n"), width) : [];
+	const shown = room > 0 ? trimBlank(rows.slice(-room)) : [];
+	const start = content.length - tail.length;
+	const retained = start >= 0 && tail.every((row, i) => content[start + i] === row);
+	return { shown, hidden: retained ? rows.length - shown.length : 0 };
 }
 
 function bodyLines(text: string): string[] {
@@ -177,8 +185,9 @@ class CompletionBody implements Component {
 		}
 		const lines = prose.flatMap((paragraph) => wrapTextWithAnsi(paragraph, width)).slice(0, COMPLETION_PREVIEW_LINES);
 		const room = COMPLETION_PREVIEW_LINES - lines.length;
-		if (room > 0 && output.length > 0)
-			lines.push(...trimBlank(wrapTextWithAnsi(output.join("\n"), width).slice(-room)));
+		const { shown, hidden } = tailPreview(this.content, output, width, room);
+		lines.push(...shown);
+		if (hidden) return { lines, hidden };
 		const sameRows = full.length === lines.length && full.every((line, i) => line.trimEnd() === lines[i]?.trimEnd());
 		return { lines, hidden: full.length > 0 && !sameRows ? "details" : undefined };
 	}
