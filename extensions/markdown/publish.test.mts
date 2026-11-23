@@ -1026,19 +1026,10 @@ test("the show command runs the installed reader's pane mode only when the build
 		const context = { cwd: root, sessionManager: { getSessionId: () => "s" } } as never;
 		const result = await tool.execute("call", { title: "Shown", text: "# exact" }, undefined, undefined, context);
 		const outcome = success(result.details);
-		assert.deepEqual(outcome.show, [
-			join(app, "Contents", "MacOS", "MarkdownReader"),
-			"--pane",
-			"--store",
-			store.root,
-			outcome.documentId,
-		]);
-		assert.equal(outcome.paneInput, `:open ${outcome.documentId}\r`);
-		assert.ok(
-			(result.content[0]?.type === "text" ? result.content[0].text : "").endsWith(
-				`\nTo show it now, type ":open ${outcome.documentId}" and Enter into a reader pane that you opened, or run ${JSON.stringify(outcome.show)} as the program of a new pane.`,
-			),
-		);
+		assert.equal(outcome.show, undefined);
+		assert.equal(outcome.paneInput, undefined);
+		assert.match(outcome.showUnavailable ?? "", /exact invoking conversation/u);
+		assert.doesNotMatch(result.content[0]?.type === "text" ? result.content[0].text : "", /:open/u);
 		const update = await tool.execute(
 			"update",
 			{ title: "Shown", text: "# changed", document: outcome.documentId, expectedRevision: 1 },
@@ -1046,11 +1037,11 @@ test("the show command runs the installed reader's pane mode only when the build
 			undefined,
 			context,
 		);
-		assert.ok(
-			(update.content[0]?.type === "text" ? update.content[0].text : "").endsWith(
-				`\nA reader pane that still shows ${outcome.documentId} follows this revision by itself; the operator can close a pane at any time. To show it elsewhere, type ":open ${outcome.documentId}" and Enter into a reader pane that you opened, or run ${JSON.stringify(outcome.show)} as the program of a new pane.`,
-			),
-		);
+		const revised = success(update.details);
+		assert.equal(revised.revision, 2);
+		assert.equal(revised.show, undefined);
+		assert.equal(revised.paneInput, undefined);
+		assert.match(revised.showUnavailable ?? "", /exact invoking conversation/u);
 		const replay = await tool.execute(
 			"replay",
 			{ title: "Keyed", text: "# keyed", reuseKey: "shown" },

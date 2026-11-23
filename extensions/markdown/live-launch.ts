@@ -89,12 +89,14 @@ export async function withLiveShow<
 		return {
 			...outcome,
 			show: undefined,
+			paneInput: undefined,
 			showUnavailable: "The exact invoking conversation is unavailable. No reader launch was prepared.",
 		};
 	if (!(await supportsLive(app)))
 		return {
 			...outcome,
 			show: undefined,
+			paneInput: undefined,
 			showUnavailable:
 				"The installed app does not support the current live pane protocol. Build it with node extensions/markdown/native/build.mts. The saved document remains readable.",
 		};
@@ -116,6 +118,7 @@ export async function withLiveShow<
 		return {
 			...outcome,
 			show: undefined,
+			paneInput: undefined,
 			showUnavailable:
 				error instanceof ReservationRefused
 					? error.message
