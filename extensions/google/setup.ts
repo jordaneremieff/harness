@@ -34,15 +34,18 @@ const ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
 const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 const COMMAND_TIMEOUT_MS = 60 * 1000;
 
+type LoginStream = "stdout" | "stderr";
+
 export type SetupDeps = {
 	fetch: typeof fetch;
 	platformKey: string;
 	release: Release;
-	log: (line: string) => void;
+	log: (line: string, kind?: "sign-in" | "sign-in-output") => void;
+	observeLogin?: (chunk: Buffer, stream: LoginStream) => void;
 	openUrl: (url: string) => void;
 };
 
-export function productionDeps(log: (line: string) => void): SetupDeps {
+export function productionDeps(log: SetupDeps["log"]): SetupDeps {
 	return {
 		fetch: globalThis.fetch,
 		platformKey: `${platform()}-${arch()}`,
@@ -68,7 +71,13 @@ type RunResult = { code: number | null; stdout: string; stderr: string };
 function runCommand(
 	executable: string,
 	args: string[],
-	options: { env: NodeJS.ProcessEnv; cwd?: string; timeoutMs: number; onLine?: (line: string) => void },
+	options: {
+		env: NodeJS.ProcessEnv;
+		cwd?: string;
+		timeoutMs: number;
+		onLine?: (line: string) => void;
+		onChunk?: SetupDeps["observeLogin"];
+	},
 ): Promise<RunResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(executable, args, {
@@ -84,6 +93,7 @@ function runCommand(
 			if (sink === "stdout") stdout = (stdout + text).slice(-65536);
 			else stderr = (stderr + text).slice(-65536);
 			for (const line of text.split(/\r?\n/)) if (line.trim()) options.onLine?.(line);
+			options.onChunk?.(chunk, sink);
 		};
 		const timer = setTimeout(() => child.kill("SIGKILL"), options.timeoutMs);
 		child.stdout.on("data", (chunk: Buffer) => forward(chunk, "stdout"));
@@ -221,13 +231,14 @@ export async function setup(options: SetupOptions, deps: SetupDeps): Promise<Set
 	const env = gwsEnvironment(options.env, target.configDir, target.stateDir);
 	const scopes = scopesFor(options.services, options.access);
 	await runCommand(target.executable, ["auth", "logout"], { env, cwd: target.stateDir, timeoutMs: COMMAND_TIMEOUT_MS });
-	deps.log("Opening Google sign-in. Approve access in the browser.");
+	deps.log("Opening Google sign-in. Approve access in the browser.", "sign-in");
 	const login = await runCommand(target.executable, ["auth", "login", "--scopes", scopes.join(",")], {
 		env,
 		cwd: target.stateDir,
 		timeoutMs: LOGIN_TIMEOUT_MS,
+		onChunk: deps.observeLogin,
 		onLine: (line) => {
-			deps.log(line);
+			deps.log(line, "sign-in-output");
 			const url = /^\s*(https:\/\/accounts\.google\.com\/\S+)\s*$/.exec(line)?.[1];
 			if (url) deps.openUrl(url);
 		},

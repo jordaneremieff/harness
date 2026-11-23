@@ -44,7 +44,12 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("google", {
 		description: `Set up, update, inspect or sign out of Google access: ${USAGE}`,
 		handler: async (args, ctx) => {
-			await googleCommand(args, agentDir, process.env, (line, level) => ctx.ui.notify(line, level ?? "info"));
+			if (ctx.mode === "tui") {
+				const { googleTuiCommand } = await import("./report-view.ts");
+				await googleTuiCommand(args, agentDir, process.env, ctx.ui);
+			} else {
+				await googleCommand(args, agentDir, process.env, (line, level) => ctx.ui.notify(line, level ?? "info"));
+			}
 		},
 	});
 	for (const tool of googleTools) {

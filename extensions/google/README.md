@@ -318,6 +318,12 @@ command in Pi, or the same verbs from a shell with
 | `status` | Shows the backend, account, granted scopes and capabilities. |
 | `logout` | Removes local `gws` credentials and the recorded account. The grant at Google stays until you remove the app's access in your Google Account. |
 
+In the Pi terminal, `/google status` opens a scrollable local report. During
+`/google setup`, the sign-in view shows the instructions and URL that `gws`
+supplies. Escape closes the view without cancelling setup. These reports do
+not enter the conversation. The shell command prints status as JSON and
+streams setup output.
+
 The managed copy lives at `<agentDir>/google/bin/<version>/gws`. Setup
 downloads the macOS archive for the running architecture from the
 `googleworkspace/cli` GitHub release and refuses it unless its SHA-256 matches
