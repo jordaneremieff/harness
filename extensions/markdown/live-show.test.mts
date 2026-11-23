@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
+import { compile } from "@earendil-works/pi-schema";
 import { LiveBridge } from "./live-bridge.ts";
-import { isRecord } from "./live-protocol.ts";
+import { liveArguments } from "./live-launch.ts";
+import { isRecord, type LiveConfig } from "./live-protocol.ts";
 import { createLiveTool, createNativeLiveTool } from "./live-tool.ts";
 import type { PaneInventory } from "./pane-state.ts";
 import { MarkdownStore } from "./store.ts";
@@ -99,11 +101,12 @@ test("show requests current-follow or an exact revision, and reports only what t
 		next = pane("agent");
 	const calls: unknown[] = [];
 	const inventory = { panes: [operator, agent], pending: [] };
+	const nextHandle = `${agent.workspace}:${next.document}`;
 	const confirm = (revision: number, digest: string, follows: boolean) => ({
 		status: "navigated" as const,
 		workspace: agent.workspace,
 		document: next.document,
-		handle: `${agent.workspace}:${next.document}`,
+		handle: nextHandle,
 		view: {
 			...agent.view,
 			kind: "published" as const,
@@ -132,9 +135,9 @@ test("show requests current-follow or an exact revision, and reports only what t
 	const tool = createLiveTool(async () => host, { store, connection: forbidden });
 	const current = { op: "show", document } as const;
 	assert.deepEqual(await ordinary(tool, current), receipts[0]);
-	assert.deepEqual(await ordinary(tool, { ...current, revision: 1 }), receipts[1]);
+	assert.deepEqual(await ordinary(tool, { ...current, revision: 1, newPane: false }), receipts[1]);
 	assert.deepEqual(await ordinary(tool, current), receipts[2]);
-	const uncertain = await ordinary(tool, current);
+	const uncertain = await ordinary(tool, { ...current, handle: nextHandle, newPane: false });
 	assert.equal(uncertain.status, "uncertain");
 	assert.ok(String(uncertain.message).includes("Lost display acknowledgement."));
 	assert.ok(!("argv" in uncertain));
@@ -142,7 +145,7 @@ test("show requests current-follow or an exact revision, and reports only what t
 	assert.deepEqual(
 		calls,
 		[follow, { ...follow, revision: 1, digest: first }, follow, follow].map((action, i) => [
-			i === 0 ? agent.handle : `${agent.workspace}:${next.document}`,
+			i === 0 ? agent.handle : nextHandle,
 			action,
 		]),
 	);
@@ -215,10 +218,7 @@ test("switching or shutting down the invoking ordinary session prevents navigati
 	}
 });
 
-test("an operator pane permits one initial agent offer, never a second argv on task recovery", {
-	timeout: 10000,
-}, async (t) => {
-	const { root, store, document } = await fixture(t);
+async function launchFixture(t: TestContext, root: string) {
 	const previous = process.env.PI_CODING_AGENT_DIR;
 	process.env.PI_CODING_AGENT_DIR = root;
 	t.after(() => {
@@ -235,6 +235,124 @@ test("an operator pane permits one initial agent offer, never a second argv on t
 	const server = new LiveBridge({ submit: async () => ({ status: "requested" }) });
 	t.after(() => server.close());
 	const live = await server.start();
+	return { app, server, live };
+}
+
+async function post(live: LiveConfig, path: string, body: object) {
+	const response = await fetch(live.endpoint + path, {
+		method: "POST",
+		headers: { authorization: `Bearer ${live.token}`, "content-type": "application/json" },
+		body: JSON.stringify(body),
+		signal: AbortSignal.timeout(2000),
+	});
+	await response.body?.cancel();
+	return response.status;
+}
+
+function privatePath(argv: unknown) {
+	assert.ok(Array.isArray(argv));
+	assert.equal(argv.at(-2), "--live");
+	const path: unknown = argv.at(-1);
+	assert.ok(typeof path === "string");
+	return path;
+}
+
+test("only show accepts newPane, and true rejects an exact handle", async () => {
+	const ordinaryTool = createLiveTool(forbidden);
+	const nativeTool = createNativeLiveTool(Durable, forbidden);
+	const show = { op: "show", document: `md-${"a".repeat(20)}` } as const;
+	for (const tool of [ordinaryTool, nativeTool]) {
+		const check = compile(tool.parameters).check;
+		assert.ok(check({ ...show, newPane: true }));
+		assert.ok(check({ ...show, newPane: false }));
+		assert.equal(check({ ...show, newPane: "true" }), false);
+	}
+	for (const execute of [
+		(input: Input) => ordinary(ordinaryTool, input),
+		(input: Input) => native(nativeTool, input, task()),
+	]) {
+		for (const newPane of [false, true]) {
+			const result = await execute({ op: "list", newPane });
+			assert.equal(result.status, "error");
+			assert.match(String(result.message), /Only show accepts newPane/u);
+		}
+		const result = await execute({ ...show, handle: pane("agent").handle, newPane: true });
+		assert.equal(result.status, "error");
+		assert.match(String(result.message), /not both/u);
+	}
+});
+
+test("explicit new launches preserve connected panes and still use one pending reservation", {
+	timeout: 10000,
+}, async (t) => {
+	const { root, store, document, first } = await fixture(t);
+	const { app, server, live } = await launchFixture(t, root);
+	const tool = createLiveTool(async () => server, { store, app, connection: async () => live });
+	const durable = createNativeLiveTool(Durable, async () => server, { store, app, connection: async () => live });
+	const { workspace, document: liveDocument, view, pid } = pane("agent");
+	const original = await liveArguments(["reader"], live, { origin: "agent" });
+	const binding = { workspace, document: liveDocument, view, pid, launchId: original.launchId, live: 3, serial: 1 };
+	assert.equal(await post(live, "/connect", binding), 200);
+	const existing = server.list();
+	assert.equal(existing.length, 1);
+	assert.equal(existing[0].origin, "agent");
+	await assert.rejects(liveArguments(["reader"], live, { origin: "agent", newPane: false }), /refused/u);
+
+	const show = { op: "show", document, revision: 1, newPane: true } as const;
+	const offer = await ordinary(tool, show);
+	assert.equal(offer.status, "launch", String(offer.message));
+	assert.equal(offer.documentId, document);
+	assert.equal(offer.revision, 1);
+	const path = privatePath(offer.argv);
+	assert.deepEqual(offer.argv, [
+		join(app, "Contents", "MacOS", "MarkdownReader"),
+		"--pane",
+		"--store",
+		store.root,
+		document,
+		"--revision",
+		"1",
+		"--digest",
+		first,
+		"--live",
+		path,
+	]);
+	assert.equal((await stat(path)).mode & 0o777, 0o600);
+	assert.equal(JSON.parse(await readFile(path, "utf8")).launchId, offer.launchId);
+	assert.deepEqual(server.list(), existing);
+
+	const pending = await native(durable, show, task());
+	assert.equal(pending.status, "pending");
+	assert.ok(!("argv" in pending));
+	assert.deepEqual(pending.pending, [
+		{ status: "offered", origin: "agent", documentId: document, revision: 1, launchId: offer.launchId },
+	]);
+	await assert.rejects(liveArguments(["reader"], live, { origin: "agent", newPane: true }), /refused/u);
+	assert.deepEqual(server.pendingLaunches(), pending.pending);
+
+	const separate = { ...binding, workspace: randomUUID(), document: randomUUID(), launchId: offer.launchId };
+	assert.equal(await post(live, "/connect", separate), 200);
+	assert.equal(await post(live, "/connect", { ...separate, workspace: randomUUID() }), 410);
+	await assert.rejects(stat(path), { code: "ENOENT" });
+	assert.equal(server.list().length, 2);
+	assert.deepEqual(server.list()[0], existing[0]);
+	const ambiguous = await ordinary(tool, { ...show, newPane: false });
+	assert.equal(ambiguous.status, "busy");
+
+	const api = task();
+	const another = await native(durable, show, api);
+	assert.equal(another.status, "launch", String(another.message));
+	const replay = await native(durable, show, api);
+	assert.equal(replay.status, "uncertain");
+	assert.ok(!("argv" in replay));
+	assert.equal(server.pendingLaunches().length, 1);
+});
+
+test("an operator pane permits one initial agent offer, never a second argv on task recovery", {
+	timeout: 10000,
+}, async (t) => {
+	const { root, store, document } = await fixture(t);
+	const { app, server, live } = await launchFixture(t, root);
 	const operator = pane("operator");
 	let calls = 0;
 	const host = {
@@ -279,14 +397,7 @@ test("an operator pane permits one initial agent offer, never a second argv on t
 		assert.equal(row.launchId, offer.launchId);
 	};
 	await pending("offered");
-	const started = await fetch(`${live.endpoint}/starting`, {
-		method: "POST",
-		headers: { authorization: `Bearer ${live.token}`, "content-type": "application/json" },
-		body: JSON.stringify({ launchId: offer.launchId, pid: process.pid }),
-		signal: AbortSignal.timeout(2000),
-	});
-	await started.body?.cancel();
-	assert.equal(started.status, 200);
+	assert.equal(await post(live, "/starting", { launchId: offer.launchId, pid: process.pid }), 200);
 	await pending("launching");
 });
 

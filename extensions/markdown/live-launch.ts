@@ -28,7 +28,7 @@ async function post(config: LiveConfig, route: "reserve" | "cancel", body: objec
 export async function liveArguments(
 	argv: string[],
 	live?: LiveConfig,
-	options: Partial<Pick<LiveLaunch, "origin" | "documentId" | "revision">> = {},
+	options: Partial<Pick<LiveLaunch, "origin" | "documentId" | "revision">> & { newPane?: boolean } = {},
 ): Promise<{ argv: string[]; launchId?: string; remove: () => Promise<void> }> {
 	if (!live) return { argv, remove: async () => {} };
 	const config = readLiveConfig(live);
@@ -46,6 +46,7 @@ export async function liveArguments(
 		origin: options.origin ?? "operator",
 		documentId: options.documentId,
 		revision: options.revision,
+		...(options.newPane === true ? { newPane: true } : {}),
 	}).catch(async (error: unknown) => {
 		// A lost response can leave an unused file on a still-running bridge.
 		if (!(error instanceof ReservationRefused)) await remove();
@@ -83,6 +84,7 @@ export async function withLiveShow<
 	app: string | undefined,
 	connection?: () => Promise<LiveConfig>,
 	signal?: AbortSignal,
+	newPane?: boolean,
 ): Promise<T & { launchId?: string }> {
 	if (!outcome.show) return outcome;
 	if (!connection)
@@ -108,6 +110,7 @@ export async function withLiveShow<
 			origin: "agent",
 			documentId: outcome.documentId,
 			revision: outcome.revision,
+			newPane,
 		});
 		if (signal?.aborted) {
 			await launch.remove();

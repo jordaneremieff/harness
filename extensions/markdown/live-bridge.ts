@@ -996,7 +996,11 @@ export class LiveBridge {
 		switch (path) {
 			case "/reserve":
 				this.prune();
-				if (body.origin === "agent" && [...this.readers.values()].some((r) => r.origin === "agent"))
+				if (
+					body.origin === "agent" &&
+					body.newPane !== true &&
+					[...this.readers.values()].some((r) => r.origin === "agent")
+				)
 					throw new Error("An agent reader is already open. Check its connection and navigate that pane instead.");
 				return this.launches.reserve(body, this.config);
 			case "/starting":

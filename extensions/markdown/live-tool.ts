@@ -31,7 +31,7 @@ import { LaunchSchema, PaneSchema, paneInventory } from "./pane-state.ts";
 import { responseDigest, SOURCE_BYTES, validUnicode } from "./responses.ts";
 
 const DESCRIPTION =
-	"Use list for this conversation's connected panes and pending launches. Each handle names an exact live buffer; view.documentId names its stored document. A dirty or conflicted view reports its base, not saved live text. Conflict means autosave stopped: preserve the draft and read the stored revision separately. Use show with a full stored document ID for current/follow, or add revision to pin. It reuses an agent pane, never an operator pane. Only navigated confirms a switch. Only launch supplies argv for an initial pane; confirm its view with list. Never type navigation into the terminal or repeat an uncertain show. Use read on an exact handle. Only complete has whole source; for page, join all fragments from offset zero with nextOffset and unchanged baseGeneration/baseDigest. Use apply with unique {find,replace} anchors. An explicit base binds the edit; range edits require it. Claim ranges before composing a larger edit; claims never block the person. If busy, edit elsewhere or read after the person leaves the passage. Retry an uncertain edit only with its UUID and identical arguments. Applied confirms private recovery, not a saved revision. Use comments for delivered open or closed comments; continue with nextOffset and the sheet version as expectedVersion. setComment requires the listed item ID, its version as expectedVersion, and the new state. It does not send a message.";
+	"Use list for this conversation's connected panes and pending launches. Each handle names an exact live buffer; view.documentId names its stored document. A dirty or conflicted view reports its base, not saved live text. Conflict means autosave stopped: preserve the draft and read the stored revision separately. Use show with a full stored document ID for current/follow, or add revision to pin. Show reuses an agent pane by default, never an operator pane. Set newPane: true to request a separate launch without changing any existing pane. Do not combine it with a handle. Only navigated confirms a switch. Only launch supplies argv for an initial pane; confirm its view with list. Never type navigation into the terminal or repeat an uncertain show. Use read on an exact handle. Only complete has whole source; for page, join all fragments from offset zero with nextOffset and unchanged baseGeneration/baseDigest. Use apply with unique {find,replace} anchors. An explicit base binds the edit; range edits require it. Claim ranges before composing a larger edit; claims never block the person. If busy, edit elsewhere or read after the person leaves the passage. Retry an uncertain edit only with its UUID and identical arguments. Applied confirms private recovery, not a saved revision. Use comments for delivered open or closed comments; continue with nextOffset and the sheet version as expectedVersion. setComment requires the listed item ID, its version as expectedVersion, and the new state. It does not send a message.";
 const Anchor = obj({ find: str({ minLength: 1 }), replace: str() }, { open: false });
 const Range = obj(
 	{ start: int({ minimum: 0 }), end: int({ minimum: 0 }), expected: str(), replacement: str() },
@@ -54,6 +54,9 @@ const LiveParameters = obj(
 		handle: opt(str({ minLength: 1, maxLength: 73 })),
 		document: opt(str({ pattern: "^md-[a-f0-9]{20}$" })),
 		revision: opt(int({ minimum: 1 })),
+		newPane: opt(
+			bool({ description: "Show only: request a separate launch instead of pane reuse. Omit handle when true." }),
+		),
 		offset: opt(int({ minimum: 0 })),
 		operationId: opt(str({ maxLength: 36 })),
 		claimId: opt(str({ maxLength: 36 })),
@@ -428,6 +431,19 @@ function observeBuffer(bridge: LiveBridge, handle: string | undefined, result: L
 	}
 }
 
+function invalidOperation(input: Input): string | undefined {
+	if (input.op !== "show") {
+		if (input.document !== undefined || input.revision !== undefined)
+			return "Only show accepts a stored document or revision. Other operations require the exact live handle.";
+		if (input.newPane !== undefined) return "Only show accepts newPane.";
+		return;
+	}
+	if (Object.keys(input).some((key) => !["op", "handle", "document", "revision", "newPane"].includes(key)))
+		return "Show takes only document, optional revision, optional handle and optional newPane.";
+	if (input.newPane === true && input.handle !== undefined)
+		return "Use either an exact handle or newPane: true, not both.";
+}
+
 async function execute(
 	find: () => Promise<LiveBridge | undefined>,
 	input: Input,
@@ -437,16 +453,8 @@ async function execute(
 	show?: ShowOptions,
 ): Promise<LiveOutcome> {
 	try {
-		if (input.op !== "show" && (input.document !== undefined || input.revision !== undefined))
-			return {
-				status: "error",
-				message: "Only show accepts a stored document or revision. Other operations require the exact live handle.",
-			};
-		if (
-			input.op === "show" &&
-			Object.keys(input).some((key) => !["op", "handle", "document", "revision"].includes(key))
-		)
-			return { status: "error", message: "Show takes only document, optional revision and optional exact handle." };
+		const issue = invalidOperation(input);
+		if (issue) return { status: "error", message: issue };
 		const bridge = await find();
 		if (input.op === "show") return checkedOutcome(await showStored(bridge, input, show, signal));
 		const result = checkedOutcome(await executeOnBridge(bridge, input, signal, taskId, seal));

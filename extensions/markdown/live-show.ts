@@ -29,7 +29,7 @@ export interface ShowOptions {
 /** A handle selects a specific live buffer; a stored ID selects content, never a substitute buffer. */
 export async function showStored(
 	bridge: LiveBridge | undefined,
-	input: { document?: string; revision?: number; handle?: string },
+	input: { document?: string; revision?: number; handle?: string; newPane?: boolean },
 	options: ShowOptions | undefined,
 	signal?: AbortSignal,
 ) {
@@ -48,8 +48,8 @@ export async function showStored(
 			: { revision: selected.revision.revision, digest: selected.revision.digest };
 	signal?.throwIfAborted();
 	options.checkRoute?.();
-	const selection = selectPane(paneInventory(bridge), input.handle);
-	if (selection.status === "new") return offerLaunch(options, documentId, pin, signal);
+	const selection = selectPane(paneInventory(bridge), input.handle, input.newPane);
+	if (selection.status === "new") return offerLaunch(options, documentId, pin, signal, input.newPane);
 	if (selection.status !== "reuse") return selection;
 	if (!bridge) return { status: "closed", message: "The exact conversation is no longer available." };
 	// Navigation success comes from the rendered page, even if inventory already names this document.
@@ -72,8 +72,7 @@ type Selection =
 	| { status: "reuse"; handle: string }
 	| { status: "pending"; pending: Inventory["pending"]; message: string }
 	| { status: "busy" | "closed" | "error"; message: string };
-function selectPane(inventory: Inventory, handle?: string): Selection {
-	const eligible = inventory.panes.filter((pane) => pane.origin === "agent");
+function selectPane(inventory: Inventory, handle?: string, newPane?: boolean): Selection {
 	const pending = inventory.pending.filter((launch) => launch.origin === "agent");
 	if (handle === undefined && pending.length)
 		return {
@@ -82,6 +81,8 @@ function selectPane(inventory: Inventory, handle?: string): Selection {
 			message:
 				"An agent launch is outstanding. An offer is not a started pane. Use list to check for a connected handle; do not open another pane.",
 		};
+	if (newPane === true) return { status: "new" };
+	const eligible = inventory.panes.filter((pane) => pane.origin === "agent");
 	if (handle === undefined && eligible.length > 1)
 		return {
 			status: "busy",
@@ -107,12 +108,13 @@ async function offerLaunch(
 	documentId: string,
 	pin: { revision: number; digest: string } | undefined,
 	signal?: AbortSignal,
+	newPane?: boolean,
 ) {
 	const command = paneCommand(app, store.root, documentId, pin);
 	if ("showUnavailable" in command) return { status: "error", message: command.showUnavailable };
 	const target = { documentId, ...(pin && { revision: pin.revision }) };
 	const offer: typeof target & { show?: string[]; showUnavailable?: string } = { ...target, show: command.show };
-	const launch = await withLiveShow(offer, app, connection, signal);
+	const launch = await withLiveShow(offer, app, connection, signal, newPane);
 	if (!launch.show || !launch.launchId)
 		return {
 			status: "error",
@@ -124,6 +126,7 @@ async function offerLaunch(
 		launchId: launch.launchId,
 		argv: launch.show,
 		message:
-			"Run this exact one-use argv as the initial pane program. This offer does not confirm startup or display. Use list to confirm the document and revision; do not start a second pane.",
+			"Run this exact one-use argv as the initial pane program. This offer does not confirm startup or display. Use list to confirm the document and revision; " +
+			(newPane === true ? "use the offer only once." : "do not start a second pane."),
 	};
 }
