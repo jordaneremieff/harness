@@ -427,6 +427,76 @@ it("keeps coordination and fault rows ahead of newer done or idle rows in either
 	check(result);
 });
 
+it("preserves coordination identities under preview pressure after lower-priority rows go", () => {
+	const preview = '\\"😀'.repeat(160);
+	const work = Array.from({ length: 30 }, (_, index) =>
+		summary(index + 1, {
+			state: index % 2 ? "working" : "idle",
+			rosterOrder: { priority: true, modifiedAt: index },
+			name: `Coordinator ${index}`,
+			model: { provider: "fixture", modelId: "worker", thinkingLevel: "high" },
+			openWorkCount: index % 2 ? 0 : 1,
+			unplaced: 1,
+			firstMessage: preview,
+			latestReply: preview,
+			ownerLabel: preview,
+			currentTool: { name: "read", argument: preview },
+		}),
+	);
+	const result = buildStatusOverview(
+		page([summary(0), ...work]),
+		[{ sessionId: "primary", cwd: "/work" }],
+		[{ storageId: "failed-host", error: "host failed" }],
+	);
+	check(result);
+	assert.equal(result.coverage.byteLimitReached, true);
+	assert.equal(result.coverage.complete, false);
+	assert.equal(result.coverage.omitted, 1);
+	assert.equal(result.coverage.omittedPriorityRows, 0);
+	assert.equal(result.coverage.omittedPriorityRecords, 0);
+	assert.equal(result.coverage.omittedOpenWorkRows, 0);
+	assert.equal(result.coverage.omittedPrimaries, 1);
+	assert.equal(result.coverage.omittedFailures, 1);
+	assert.deepEqual(
+		result.sessions.map((row) => row.id),
+		work.map((row) => row.id).reverse(),
+	);
+	for (const row of result.sessions) {
+		const original = work.find((item) => item.id === row.id);
+		assert.equal(row.name, original?.name);
+		assert.deepEqual(row.model, original?.model);
+		assert.equal(row.openWorkCount, original?.openWorkCount);
+		assert.equal(row.unplaced, original?.unplaced);
+		assert.deepEqual(row.currentTool, { name: "read" });
+		assert.equal(row.firstMessage, undefined);
+		assert.equal(row.latestReply, undefined);
+		assert.equal(row.ownerLabel, undefined);
+	}
+	assert.match(result.coverage.reasons.join(" "), /descriptions/u);
+	assert.equal(work[0]?.currentTool?.argument, preview, "the compact overlay does not change the source rows");
+});
+
+it("recovers an individually oversized live row without reporting a row omission", () => {
+	const source = summary(1, {
+		state: "working",
+		rosterOrder: { priority: true, modifiedAt: 1 },
+		model: { provider: "test", modelId: "m".repeat(STATUS_OVERVIEW_BYTE_LIMIT), thinkingLevel: "off" },
+	});
+	const result = buildStatusOverview(page([source]), [], []);
+	check(result);
+	assert.deepEqual(
+		result.sessions.map((row) => row.id),
+		[source.id],
+	);
+	assert.equal(result.sessions[0]?.model, undefined);
+	assert.equal(result.coverage.byteLimitReached, true);
+	assert.equal(result.coverage.complete, false);
+	assert.equal(result.coverage.omitted, 0);
+	assert.equal(result.coverage.omittedPriorityRows, 0);
+	assert.ok(result.coverage.reasons.some((reason) => reason.includes("descriptions")));
+	assert.ok(result.coverage.reasons.every((reason) => !reason.includes("excluded")));
+});
+
 it("reports an irreducible declared-work identity as omitted without truncating its target", () => {
 	const row = summary(1, {
 		id: "x".repeat(100000),

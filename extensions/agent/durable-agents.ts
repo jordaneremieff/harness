@@ -2435,8 +2435,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				if (args.view === "storage-page") return readStoragePage(args);
 				const result = await readStatus(args, api, context, selection);
 				if (result.isError || args.view === "fleet") return result;
-				if (args.sessionId === undefined) return publicStatus(projectStorageStatus(result.details));
-				return args.detail === true ? result : publicStatus(projectSelectedStatus(result.details));
+				if (args.sessionId !== undefined)
+					return args.detail === true ? result : publicStatus(projectSelectedStatus(result.details));
+				const projected = projectStorageStatus(result.details);
+				if (projected.format === "refused" && projected.cause === "byte-limit") {
+					const input = storageStatusPageInput({ view: "storage-page", storageId: host.storageId });
+					return readStoragePage({ ...input, limit: Math.ceil(input.limit / 2) });
+				}
+				return publicStatus(projected);
 			},
 		}),
 		structuredOutputSchema: StatusToolOutputSchema,

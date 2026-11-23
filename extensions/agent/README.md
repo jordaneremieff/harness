@@ -1317,11 +1317,14 @@ samples; connected primaries and failures also have bounded samples.
 rows absent from the response, including byte exclusions.
 
 All rows remain subject to the overview byte limit. The tool first excludes any
-session row too large to fit alone. It then removes inactive rows without faults,
-followed by older terminal faults without open work or unplaced inputs. This
-applies even to live or caller-owned records. Next it reduces primary and failure
-samples and effort awareness. Starting or working rows, unplaced inputs, recent
-failures, and other current attention outlast those reductions. Declared open work
+session row too large to fit alone even without descriptions. It then removes
+inactive rows without faults, followed by older terminal faults without open
+work or unplaced inputs. This applies even to live or caller-owned records. Next
+it reduces primary and failure samples and effort awareness. Before excluding
+more rows, it can omit message previews, owner labels and current tool arguments.
+It keeps session names and models if those cuts suffice. Otherwise, it also
+omits names and models. Tool names, coordination state and fault evidence
+remain. These cuts do not count as row exclusions. Declared open work
 is last to go. Within each session tier, eviction starts at the end of the
 catalogue display order. The collapsed card reports supplied-page totals, not
 sampled-row totals or costs.
@@ -1337,8 +1340,9 @@ byte-excluded session row; intentional attention, unavailable and quiet samples
 do not add to it. This is a separate measure from the group summary counts: a byte-excluded
 unavailable or quiet row also contributes to its group's summarised count.
 Counts cover the supplied catalog page, not unseen inventory. `complete` remains
-true for intentional samples only when source coverage is complete; source gaps
-or byte exclusions make it false. `summary.sessions.attention` counts all supplied
+true for intentional samples only when source coverage is complete; source gaps,
+byte exclusions, or descriptions omitted for the byte limit make it false.
+`summary.sessions.attention` counts all supplied
 attention rows, not just the sample. `coverage.reasons` states the count of
 intentionally summarised old terminal attention rows and the exact initial call,
 `agent_list({})`; follow its returned `coverage.next` to discover the identities.
@@ -1350,7 +1354,9 @@ cursor, then call it again with the fields of its returned `coverage.next` to fi
 other identities. Use
 targeted `agent_status` with `detail: true` for
 full conversation state. Native agents without a status target read their own
-storage's conversation state rather than the primary's fleet overview.
+storage's conversation state rather than the primary's fleet overview. If the
+first compact page does not fit, the tool reads a smaller page from the same
+starting position and returns its exact `coverage.next` for continuation.
 
 A targeted `agent_status` without `detail: true` returns a compact status for
 ordinary and Durable callers. It keeps the exact identity, busy state,

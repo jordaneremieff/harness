@@ -19,10 +19,10 @@ import { hostPaths } from "./host-protocol.ts";
 import { projectStorageStatus, STATUS_OVERVIEW_BYTE_LIMIT } from "./status-overview.ts";
 import { storageStatusPageInput, type StorageStatusPageInput } from "./storage-status.ts";
 
-function tools(dispatch: AgentControlDispatch) {
+function tools(dispatch: AgentControlDispatch, storageId = "producer") {
 	const extension = createAgentContribution({ source: import.meta.filename, configureSettings() {}, dispatch }).create({
 		durable: Durable,
-		storageId: "producer",
+		storageId,
 		cwd: "/work",
 		agentDir: "/config",
 		onClose() {},
@@ -32,8 +32,8 @@ function tools(dispatch: AgentControlDispatch) {
 	registry.install(extension);
 	return extension.tools ?? [];
 }
-function tool(dispatch: AgentControlDispatch, name: string) {
-	const selected = tools(dispatch).find((entry) => entry.name === name);
+function tool(dispatch: AgentControlDispatch, name: string, storageId?: string) {
+	const selected = tools(dispatch, storageId).find((entry) => entry.name === name);
 	assert.ok(selected);
 	return selected;
 }
@@ -297,6 +297,53 @@ function statusSource(identity: string) {
 		],
 	};
 }
+it("fits the native no-target overview and continues from the accepted scan", async () => {
+	const source = statusSource("root");
+	const rows = Array.from({ length: 50 }, (_, index) => ({
+		...source.conversations[0],
+		identity: `${source.storageId}:${index + 1}`,
+		conversationId: index + 1,
+	}));
+	const requests: Readonly<Record<string, unknown>>[] = [];
+	let accepted: unknown;
+	const status = tool(
+		async (method, params) => {
+			assert.equal(method, "status");
+			requests.push(params);
+			const limit = Number(params.limit ?? 50);
+			const start = Number((params.cursor as { position?: number } | undefined)?.position ?? 0);
+			const conversations = rows.slice(start, start + limit);
+			const position = start + conversations.length;
+			const next =
+				position < rows.length
+					? {
+							tool: "agent_status",
+							view: "storage-page",
+							storageId: source.storageId,
+							cursor: { position },
+							limit,
+						}
+					: null;
+			const coverage = { complete: next === null, scanned: conversations.length, returned: conversations.length, next };
+			accepted = coverage;
+			return { ...source, conversations, coverage };
+		},
+		"agent_status",
+		source.storageId,
+	);
+	const first = publicPage(await status.execute({}, api, BACKGROUND_CONTEXT), accepted);
+	assert.deepEqual(requests, [{}, { view: "storage-page", storageId: source.storageId, limit: 25 }]);
+	assert.ok(first.coverage.next);
+	const { tool: _tool, ...next } = first.coverage.next;
+	const second = publicPage(await status.execute(next, api, BACKGROUND_CONTEXT), accepted);
+	assert.deepEqual(requests.at(-1), next);
+	assert.equal(second.coverage.complete, true);
+	assert.deepEqual(
+		[...first.conversations, ...second.conversations].map((item) => item.identity),
+		rows.map((item) => item.identity),
+	);
+});
+
 for (const limit of [undefined, 1])
 	it(`returns the exact native one-row byte refusal with requested limit=${limit}`, async () => {
 		const source = statusSource("x".repeat(20000));

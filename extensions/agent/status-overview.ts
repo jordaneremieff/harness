@@ -27,7 +27,7 @@ export interface StatusOverviewFailure {
 }
 
 export interface StatusOverviewCoverage {
-	/** Complete source inventory for this page, with no additional byte omissions. Summaries are intentional. */
+	/** Complete source inventory for this page, with no additional byte omissions of rows or descriptions. */
 	readonly complete: boolean;
 	readonly storagesVisited: number;
 	readonly inventory: CatalogPriorityCoverage;
@@ -137,10 +137,36 @@ function compact(row: AgentConversationSummary): ToolOverviewRow {
 	return result;
 }
 
+const DESCRIPTION_OMISSION = "Session descriptions omitted for byte limit.";
+
+/** Remove previews without changing identity, tool name, coordination state, or fault evidence. */
+function withoutPreviews(row: ToolOverviewRow): ToolOverviewRow {
+	if (
+		row.firstMessage === undefined &&
+		row.latestReply === undefined &&
+		row.ownerLabel === undefined &&
+		row.currentTool?.argument === undefined
+	)
+		return row;
+	const { firstMessage: _firstMessage, latestReply: _latestReply, ownerLabel: _ownerLabel, ...reduced } = row;
+	if (row.currentTool?.argument !== undefined) reduced.currentTool = { name: row.currentTool.name };
+	return reduced;
+}
+
+function withoutLabels(row: ToolOverviewRow): ToolOverviewRow {
+	if (row.name === undefined && row.model === undefined) return row;
+	const { name: _name, model: _model, ...reduced } = row;
+	return reduced;
+}
+
 type OverviewGroup = "working" | "attention" | "unavailable" | "quiet";
+type OverviewState = Pick<
+	ToolOverviewRow,
+	"attention" | "health" | "state" | "owner" | "error" | "openWorkCount" | "unplaced" | "modifiedAt"
+>;
 
 /** Independent fault evidence takes precedence over unavailable observation and activity. */
-function group(row: AgentConversationSummary): OverviewGroup {
+function group(row: OverviewState): OverviewGroup {
 	if (
 		row.attention ||
 		row.health?.lastError ||
@@ -154,16 +180,16 @@ function group(row: AgentConversationSummary): OverviewGroup {
 	return "quiet";
 }
 
-function hasOpenWork(row: AgentConversationSummary): boolean {
+function hasOpenWork(row: OverviewState): boolean {
 	return (row.openWorkCount ?? 0) > 0;
 }
 
 /** Coordination state is independent of the summary group and the catalogue rank. */
-function hasCoordinationWork(row: AgentConversationSummary): boolean {
+function hasCoordinationWork(row: OverviewState): boolean {
 	return hasOpenWork(row) || (row.unplaced ?? 0) > 0 || row.state === "starting" || row.state === "working";
 }
 
-function oldTerminal(row: AgentConversationSummary, observedAt: number): boolean {
+function oldTerminal(row: OverviewState, observedAt: number): boolean {
 	return (
 		["failed", "stopped", "done", "interrupted"].includes(row.state) &&
 		Number.isFinite(observedAt) &&
@@ -318,15 +344,17 @@ function excludeSession(
 	value.coverage.omitted++;
 }
 
-function excludeRow(
+function excludeLowerPriority(
 	value: MutableOverview,
 	dropped: ByteOmissions,
 	priorityIds: ReadonlySet<string>,
 	observedAt: number,
-): void {
+): boolean {
 	const rowBudget =
 		STATUS_OVERVIEW_BYTE_LIMIT - measure({ ...value, sessions: [], primaries: [], failures: [], awareness: undefined });
-	const oversized = value.sessions.findIndex((row) => measure(row) > rowBudget);
+	const oversized = value.sessions.findIndex(
+		(row) => measure(row) > rowBudget && measure(withoutLabels(withoutPreviews(row))) > rowBudget,
+	);
 	// Evict by urgency first. Reverse catalogue order breaks ties without changing display order.
 	const inactive = value.sessions.findLastIndex(
 		(row) => !hasCoordinationWork(row) && row.state !== "failed" && group(row) !== "attention",
@@ -343,16 +371,68 @@ function excludeRow(
 		value.failures.pop();
 		value.summary.failures.summarized++;
 		value.coverage.omittedFailures++;
-	} else if (excludeAwareness(value.awareness)) {
-		dropped.rows++;
-		return;
-	} else if (value.sessions.length > 0) {
-		const withoutOpenWork = value.sessions.findLastIndex((row) => !hasOpenWork(row));
-		excludeSession(value, withoutOpenWork >= 0 ? withoutOpenWork : value.sessions.length - 1, dropped, priorityIds);
-	} else {
-		throw new Error("Status overview metadata exceeds the byte limit after every row was summarized or omitted.");
-	}
+	} else return excludeAwareness(value.awareness);
 	dropped.rows++;
+	return true;
+}
+
+function applyOverviewCoverage(
+	value: MutableOverview,
+	page: AgentPriorityPage,
+	dropped: ByteOmissions,
+	priorityIds: ReadonlySet<string>,
+	source: readonly string[],
+	samples: readonly string[],
+	reducedRows: ReadonlySet<ToolOverviewRow> | undefined,
+): void {
+	const { coverage } = value;
+	coverage.reasons = [...source];
+	if (value.sessions.some((row) => reducedRows?.has(row))) coverage.reasons.push(DESCRIPTION_OMISSION);
+	coverage.omittedPriorityRows = dropped.priority;
+	coverage.omittedOpenWorkRows = dropped.openWork;
+	const retained = new Set(value.sessions.map((row) => row.id));
+	coverage.omittedPriorityRecords = new Set(
+		page.rows.filter((row) => priorityIds.has(row.id) && !retained.has(row.id)).map((row) => row.storageId),
+	).size;
+	if (dropped.priority)
+		coverage.reasons.push(
+			`Status byte limit excluded ${dropped.priority} live or caller-owned rows from ${coverage.omittedPriorityRecords} records; a record counts once when any of its priority rows was excluded.`,
+		);
+	if (dropped.openWork)
+		coverage.reasons.push(
+			`Status byte limit excluded ${dropped.openWork} declared-open-work rows; use targeted agent_status or fresh agent_list discovery.`,
+		);
+	if (dropped.rows > 0)
+		coverage.reasons.push(
+			`Status byte limit excluded ${dropped.working} working rows, ${dropped.attention} attention rows, ${dropped.unavailable} unavailable rows, ${dropped.quiet} quiet rows, ${coverage.omittedPrimaries} primary sample rows, and ${coverage.omittedFailures} failure sample rows; use fresh agent_list discovery or targeted agent_status. agent_status has no continuation parameter; call agent_list without a cursor to rediscover these rows.`,
+		);
+	if (
+		value.awareness &&
+		(!value.awareness.presence.coverage.complete ||
+			!value.awareness.threads.coverage.complete ||
+			value.awareness.self.omitted)
+	)
+		coverage.reasons.push(
+			"Effort awareness is partial; its presence, thread, and self coverage identifies omitted observations.",
+		);
+	coverage.complete = coverage.reasons.length === 0;
+	coverage.reasons.push(...samples);
+}
+
+function reduceOverviewDescriptions(value: MutableOverview): Set<ToolOverviewRow> {
+	const candidate = {
+		...value,
+		sessions: value.sessions.map(withoutPreviews),
+		coverage: { ...value.coverage, reasons: [...value.coverage.reasons, DESCRIPTION_OMISSION] },
+	};
+	// Keep names and model selections if the previews alone release enough space.
+	if (fixedPointBytes(candidate) > STATUS_OVERVIEW_BYTE_LIMIT)
+		candidate.sessions = candidate.sessions.map(withoutLabels);
+	// The cut must save bytes even after its notice.
+	if (fixedPointBytes(candidate) >= fixedPointBytes(value)) return new Set();
+	const reducedRows = new Set(candidate.sessions.filter((row, index) => row !== value.sessions[index]));
+	value.sessions = candidate.sessions;
+	return reducedRows;
 }
 
 /** Keep coordination and recent fault evidence; sample older terminal faults and inactive history. */
@@ -383,40 +463,21 @@ export function buildStatusOverview(
 					`${summarizedAttention} older terminal attention rows were intentionally summarised; the recent attention window is 24 hours. Discover their identities with agent_list({}), then repeat coverage.next; use agent_status({sessionId:<identity>,detail:true}) for full status.`,
 				]
 			: [];
+	let reducedRows: Set<ToolOverviewRow> | undefined;
 	for (;;) {
-		value.coverage.reasons = [...reasons];
-		value.coverage.omittedPriorityRows = dropped.priority;
-		value.coverage.omittedOpenWorkRows = dropped.openWork;
-		const retained = new Set(value.sessions.map((row) => row.id));
-		value.coverage.omittedPriorityRecords = new Set(
-			page.rows.filter((row) => priorityIds.has(row.id) && !retained.has(row.id)).map((row) => row.storageId),
-		).size;
-		if (dropped.priority)
-			value.coverage.reasons.push(
-				`Status byte limit excluded ${dropped.priority} live or caller-owned rows from ${value.coverage.omittedPriorityRecords} records; a record counts once when any of its priority rows was excluded.`,
-			);
-		if (dropped.openWork)
-			value.coverage.reasons.push(
-				`Status byte limit excluded ${dropped.openWork} declared-open-work rows; use targeted agent_status or fresh agent_list discovery.`,
-			);
-		if (dropped.rows > 0)
-			value.coverage.reasons.push(
-				`Status byte limit excluded ${dropped.working} working rows, ${dropped.attention} attention rows, ${dropped.unavailable} unavailable rows, ${dropped.quiet} quiet rows, ${value.coverage.omittedPrimaries} primary sample rows, and ${value.coverage.omittedFailures} failure sample rows; use fresh agent_list discovery or targeted agent_status. agent_status has no continuation parameter; call agent_list without a cursor to rediscover these rows.`,
-			);
-		if (
-			value.awareness &&
-			(!value.awareness.presence.coverage.complete ||
-				!value.awareness.threads.coverage.complete ||
-				value.awareness.self.omitted)
-		)
-			value.coverage.reasons.push(
-				"Effort awareness is partial; its presence, thread, and self coverage identifies omitted observations.",
-			);
-		value.coverage.complete = value.coverage.reasons.length === 0 && dropped.rows === 0;
-		value.coverage.reasons.push(...samplingReasons);
+		applyOverviewCoverage(value, page, dropped, priorityIds, reasons, samplingReasons, reducedRows);
 		if (fixedPointBytes(value) <= STATUS_OVERVIEW_BYTE_LIMIT) return value;
 		value.coverage.byteLimitReached = true;
-		excludeRow(value, dropped, priorityIds, observedAt);
+		if (excludeLowerPriority(value, dropped, priorityIds, observedAt)) continue;
+		if (reducedRows === undefined) {
+			reducedRows = reduceOverviewDescriptions(value);
+			if (reducedRows.size > 0) continue;
+		}
+		if (value.sessions.length === 0)
+			throw new Error("Status overview metadata exceeds the byte limit after every row was summarized or omitted.");
+		const withoutOpenWork = value.sessions.findLastIndex((row) => !hasOpenWork(row));
+		excludeSession(value, withoutOpenWork >= 0 ? withoutOpenWork : value.sessions.length - 1, dropped, priorityIds);
+		dropped.rows++;
 	}
 }
 

@@ -428,9 +428,10 @@ export const AgentConversationSummaryProperties = {
 };
 export const AgentConversationSummarySchema = obj(AgentConversationSummaryProperties);
 
-/** The overview row: the native row plus the catalog's intervention hint, which no native publication carries. */
+/** The overview can omit the tool argument independently of its name; native publications keep both. */
 export const ToolOverviewRowSchema = obj({
 	...AgentConversationSummaryProperties,
+	currentTool: opt(obj({ name: string, argument: opt(string) })),
 	attention: opt(union([lit("provider-blocked"), lit("task-blocked"), lit("failed-turn")])),
 });
 export type ToolOverviewRow = Static<typeof ToolOverviewRowSchema>;
