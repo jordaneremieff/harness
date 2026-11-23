@@ -29,10 +29,8 @@ final class PaneHost {
     private var lostTerminal = false
     private var editorFocusPending = false
     let state: ReadingStateStore
-    private let platform: ReaderPlatform
     private let terminal: PaneTerminal
     /// Runs after the pane shows another document, so that menu actions reach its model.
-    var onModelChange: ((_ previous: ReaderModel, _ next: ReaderModel) -> Void)?
     private var commandLine: String?
     private var message: String?
     private var opening = false
@@ -45,9 +43,8 @@ final class PaneHost {
     private var surface: ReaderSurface?
     private var ending = false
 
-    init(model: ReaderModel, platform: ReaderPlatform, state: ReadingStateStore, terminal: PaneTerminal, workspace: EditorWorkspace? = nil) {
+    init(model: ReaderModel, state: ReadingStateStore, terminal: PaneTerminal, workspace: EditorWorkspace? = nil) {
         self.model = model
-        self.platform = platform
         self.state = state
         self.terminal = terminal
         self.workspace = workspace
@@ -109,16 +106,7 @@ final class PaneHost {
     }
 
     func newScratchpad(showDrafts: Bool = false, showLibrary: Bool = false) {
-        let workspace: EditorWorkspace
-        if let current = self.workspace { workspace = current }
-        else {
-            let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
-            workspace = EditorWorkspace(directory: AppDelegate.stateDirectory().appendingPathComponent("Drafts"), store: root, automaticallySaves: true)
-            workspace.launchOrigin = model.launchOrigin; workspace.reading = model
-            self.workspace = workspace
-            connect(workspace); surface?.setWorkspace(workspace)
-            onWorkspaceChange?(window, workspace)
-        }
+        guard let workspace = workspace ?? surface?.ensureWorkspace() else { return }
         if showLibrary || showDrafts {
             surface?.sendCommand("showLibrary", args: ["collection": showDrafts ? "drafts" : "published"])
         } else { workspace.newScratchpad() }
@@ -174,58 +162,17 @@ final class PaneHost {
             message = "\(document) is not a document ID (md- and 20 hexadecimal digits)."
             return
         }
-        if let workspace {
-            Task { await workspace.readStored(document, followsLatest: true) }
-            return
-        }
-        guard case .stored(let root, let storeId, let shown) = model.reference else { return }
-        if document == shown {
-            message = nil
-            model.followsLatest = true
-            Task { await model.refresh() }
-            return
-        }
-        opening = true
-        message = "Opening \(document)…"
+        guard let workspace = workspace ?? surface?.ensureWorkspace() else { return }
+        opening = true; message = "Opening \(document)…"
         Task { @MainActor in
-            let checked = await Task.detached { () -> String? in
-                do {
-                    let store = try DirectoryStore(root: URL(fileURLWithPath: root))
-                    guard store.storeId == storeId else { return "the store changed its identity" }
-                    _ = try store.document(document)
-                    return nil
-                } catch {
-                    return "\(error)"
-                }
-            }.value
-            defer {
-                opening = false
-                draw()
-            }
+            let result = await workspace.readStored(document, followsLatest: true)
+            opening = false
             guard !ending else { return }
-            if let checked {
-                message = "\(document) cannot be shown: \(checked)"
-                return
+            switch result {
+            case .shown: message = nil
+            case .failed(let reason), .busy(let reason): message = "\(document) cannot be shown: \(reason)"
             }
-            let previous = model
-            guard !ending else { return }
-            let next = ReaderModel(reference: .stored(root: root, storeId: storeId, document: document), platform: platform, state: state)
-            next.followsLatest = true
-            model = next
-            installSurface(next)
-            message = nil
-            observePhase()
-            await next.open(revision: nil, origin: nil)
-            guard !ending else { await previous.close(); return }
-            if case .failed(let error) = next.phase {
-                model = previous; installSurface(previous)
-                message = "\(document) cannot be shown: \(error)"
-                await next.close(); observePhase()
-                return
-            }
-            onModelChange?(previous, next)
-            await previous.close()
-            paneLog.notice("pane opened \(document, privacy: .public) after \(shown, privacy: .public)")
+            observePhase(); draw()
         }
     }
 

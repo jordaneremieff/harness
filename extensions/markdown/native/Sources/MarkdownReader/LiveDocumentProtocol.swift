@@ -20,6 +20,7 @@ struct LivePaneView: Codable, Equatable, Sendable {
     var mode: String
     var dirty: Bool
     var conflict: Bool
+    var follows = false
     var storeId: String?
     var documentId: String?
     var revision: Int?
@@ -106,7 +107,8 @@ struct WebLiveClaim {
 extension EditorWorkspace {
     func startCollaboration(_ configuration: CollaborationConfiguration) {
         guard collaboration == nil else { return }
-        let client = CollaborationClient(configuration: configuration, workspace: id, document: liveDocumentID) { [weak self] command in
+        let client = CollaborationClient(configuration: configuration, workspace: id, document: liveDocumentID,
+            documentKey: { [weak self] in self?.logicalDocumentKey }, view: { [weak self] in self?.livePaneView ?? .loading }) { [weak self] command in
             guard let self else { return LiveResult(status: "closed", message: "The workspace closed.") }
             return await self.handleLive(command)
         }
@@ -115,8 +117,12 @@ extension EditorWorkspace {
     }
 
     /// The only page-to-native mutation path. An acknowledgement follows recovery retention.
-    func receivePageChange(_ change: WebPageChange) async throws -> WebPageAck {
-        guard !closing, !pageChangeInProgress else { throw WebMirrorError.closed }
+    func receivePageChange(_ change: WebPageChange, presentation: String? = nil) async throws -> WebPageAck {
+        func matchesPresentation() -> Bool {
+            guard let presentation else { return true }
+            return webHostModel?.page.presentation == presentation && webHostModel?.displayedPresentation == presentation
+        }
+        guard !closing, !pageChangeInProgress, matchesPresentation() else { throw WebMirrorError.closed }
         guard ["person", "agent", "history"].contains(change.origin), change.baseGeneration < UInt64.max,
               change.generation == change.baseGeneration + 1,
               change.operationId == nil || (change.operationId!.utf8.count <= 128 && !change.operationId!.isEmpty),
@@ -125,11 +131,7 @@ extension EditorWorkspace {
         if change.origin == "agent", let operation = change.operationId {
             guard issuedPageOperations[operation] == identity else { throw WebMirrorError.closed }
         }
-        let source: String
-        let generation: UInt64
-        if let reading, let snapshot = reading.snapshot { source = snapshot.source; generation = 0 }
-        else if let document = active { source = document.text.source; generation = document.text.generation }
-        else { throw WebMirrorError.closed }
+        guard let (source, generation, _) = visibleText else { throw WebMirrorError.closed }
         guard generation == change.baseGeneration else { throw WebMirrorError.stale }
         guard let nextSource = MirrorText.applying(change.edits, to: source) else { throw WebMirrorError.invalidChange }
         if change.origin == "agent", let operation = change.operationId, observedPageChanges[operation] != nil { throw WebMirrorError.invalidChange }
@@ -139,13 +141,13 @@ extension EditorWorkspace {
         pageChangeInProgress = true
         defer { pageChangeInProgress = false }
         let imageAdoption = try await prepareImageAdoption(source: nextSource, identity: identity)
-        guard identity == liveDocumentID, !closing else { throw WebMirrorError.closed }
+        guard identity == liveDocumentID, !closing, matchesPresentation() else { throw WebMirrorError.closed }
         var copied = false
         if let reading {
             copied = reading.snapshot?.document?.kind != .published
             guard await editReading(copy: copied, pagePromotion: true) else { throw WebMirrorError.copyFailed }
         }
-        guard identity == liveDocumentID, !closing, let document = active else { throw WebMirrorError.closed }
+        guard identity == liveDocumentID, !closing, matchesPresentation(), let document = active else { throw WebMirrorError.closed }
         guard document.text.generation == change.baseGeneration, document.text.source.utf8.elementsEqual(source.utf8) else { throw WebMirrorError.stale }
         if let imageAdoption {
             document.session.retainImages(root: imageAdoption.root.path, images: imageAdoption.images)
@@ -232,11 +234,75 @@ extension EditorWorkspace {
         }
     }
 
+    /// Never describe a selected model as a visible page before WebKit accepts it.
+    var livePaneView: LivePaneView {
+        guard webReady, let key = logicalDocumentKey, let model = webHostModel,
+              model.page.documentReady, let presentation = model.page.presentation,
+              presentation == model.displayedPresentation, model.page.documentKey == key.uuidString else { return .loading }
+        let mode = model.lock.rawValue
+        if let snapshot = reading?.snapshot {
+            if case .stored(_, let storeId, let documentId) = snapshot.reference, let stored = snapshot.document {
+                return LivePaneView(kind: stored.kind.rawValue, title: viewTitle(snapshot.title), mode: mode, dirty: false, conflict: false,
+                    follows: model.followsStoredRevisions, storeId: storeId, documentId: documentId, revision: snapshot.revision, digest: snapshot.digest)
+            }
+            return LivePaneView(kind: "local-file", title: viewTitle(snapshot.title), mode: mode, dirty: false, conflict: false)
+        }
+        guard let session = active?.session else { return .loading }
+        let record = session.record, title = viewTitle(record.displayTitle), conflict = record.conflict != nil
+        let kind: String
+        switch record.destination {
+        case .published(let base):
+            return LivePaneView(kind: "published", title: title, mode: mode, dirty: session.isDirty, conflict: conflict,
+                follows: automaticallySaves && !conflict, storeId: base.storeId, documentId: base.document, revision: base.revision, digest: base.digest)
+        case .scratchpad: kind = "scratchpad"
+        case .copy: kind = "copy"
+        case .file: kind = "local-file"
+        }
+        return LivePaneView(kind: kind, title: title, mode: mode, dirty: session.isDirty, conflict: conflict)
+    }
+
+    private func viewTitle(_ title: String) -> String {
+        let line = title.components(separatedBy: CharacterSet.controlCharacters.union(.newlines)).joined(separator: " ")
+        let limited = String(decoding: line.utf8.prefix(1024), as: UTF8.self).trimmingCharacters(in: .whitespaces)
+        return limited.isEmpty ? "Untitled" : limited
+    }
+
+    private func navigateLive(_ command: LiveCommand) async -> LiveResult {
+        guard let target = command.documentId, PaneCommand.isDocumentIdentity(target), let storeId = command.storeId,
+              (command.revision == nil) == (command.digest == nil), command.revision.map({ $0 > 0 }) ?? true else {
+            return LiveResult(status: "error", message: "Specify a stored document and a complete revision pin.")
+        }
+        guard let root = selectedStore else { return LiveResult(status: "error", message: "This reader has no selected store.") }
+        await drainPageChanges?()
+        do {
+            let actual = try await Task.detached { try DirectoryStore(root: URL(fileURLWithPath: root)).storeId }.value
+            guard command.document == liveDocumentID.uuidString, !closing, selectedStore == root else {
+                return LiveResult(status: "closed", message: "The selected document or store changed.")
+            }
+            guard actual == storeId else { return LiveResult(status: "error", message: "This reader belongs to another store.") }
+        } catch { return LiveResult(status: "error", message: "The reader could not verify its store: \(error)") }
+        let reference = DocumentReference.stored(root: root, storeId: storeId, document: target)
+        switch await openReading(reference, revision: command.revision, digest: command.digest, followsLatest: command.revision == nil, remotely: true) {
+        case .failed(let detail): return LiveResult(status: "error", message: detail)
+        case .busy(let detail): return LiveResult(status: "busy", message: detail)
+        case .shown: break
+        }
+        let view = livePaneView
+        guard view.storeId == storeId, view.documentId == target, view.mode == "reading", !view.dirty, !view.conflict,
+              view.revision != nil, view.digest != nil,
+              command.revision == nil || (command.revision == view.revision && command.digest == view.digest) else {
+            return LiveResult(status: "uncertain", message: "The reader did not confirm the requested revision. List the pane before another navigation.")
+        }
+        let workspace = id.uuidString, document = liveDocumentID.uuidString
+        return LiveResult(status: "navigated", workspace: workspace, document: document, handle: workspace + ":" + document, view: view)
+    }
+
     func handleLive(_ command: LiveCommand) async -> LiveResult {
         guard command.workspace == id.uuidString, command.document == liveDocumentID.uuidString, !closing else {
             return LiveResult(status: "closed", message: "This document handle is no longer active.")
         }
         expireClaims()
+        if command.op == "navigate" { return await navigateLive(command) }
         guard !libraryVisible, publishedLibrary == nil else { return LiveResult(status: "busy", message: "Select a document first.") }
         if command.op == "release" {
             guard let claim = command.claimId, let value = liveClaims[claim], value.document == liveDocumentID else {
@@ -245,11 +311,9 @@ extension EditorWorkspace {
             liveClaims[claim] = nil; webRelease?(claim)
             return LiveResult(status: "released", claimId: claim)
         }
+        if webHostModel != nil, livePaneView.kind == "loading" { return LiveResult(status: "busy", message: "The document page has not confirmed this buffer.") }
         if command.op == "read" { return await readLive(command) }
-        let source: String, generation: UInt64, digest: String
-        if let reading, let snapshot = reading.snapshot { source = snapshot.source; generation = 0; digest = snapshot.digest }
-        else if let document = active { source = document.text.source; generation = document.text.generation; digest = document.text.digest }
-        else { return LiveResult(status: "busy", message: "The document has not opened yet.") }
+        guard let (source, generation, digest) = visibleText else { return LiveResult(status: "busy", message: "The document has not opened yet.") }
         if command.op == "claim" {
             guard let ranges = command.ranges, !ranges.isEmpty, ranges.count <= 16,
                   command.label.map({ $0.count <= 80 }) ?? true,
@@ -345,7 +409,7 @@ extension EditorWorkspace {
 
     private func readLive(_ command: LiveCommand) async -> LiveResult {
         if let reading, let snapshot = reading.snapshot {
-            return LiveResult(status: "ok", source: snapshot.source, generation: 0, digest: snapshot.digest,
+            return LiveResult(status: "ok", view: livePaneView, source: snapshot.source, generation: reading.sourceGeneration, digest: snapshot.digest,
                 assets: snapshot.record?.references?.items?.compactMap { item in item.digest.map { LiveAssetIdentity(reference: item.reference, digest: $0) } } ?? [])
         }
         guard let document = active else { return LiveResult(status: "busy", message: "The document has not opened yet.") }
@@ -364,6 +428,9 @@ extension EditorWorkspace {
             assets.removeAll { $0.reference == image.reference }
             assets.append(LiveAssetIdentity(reference: image.reference, digest: image.digest))
         }
-        return LiveResult(status: "ok", source: source, generation: generation, digest: Digest.sha256(Data(source.utf8)), assets: assets)
+        guard active === document, document.text.generation == generation, document.session.record.destination == record.destination else {
+            return LiveResult(status: "stale", message: "The live buffer changed during the read.")
+        }
+        return LiveResult(status: "ok", view: livePaneView, source: source, generation: generation, digest: Digest.sha256(Data(source.utf8)), assets: assets)
     }
 }

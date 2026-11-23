@@ -153,7 +153,7 @@ final class ReaderSurface: NSView {
         pendingAgent = nil; pending.finish(result)
     }
 
-    private func ensureWorkspace() -> EditorWorkspace {
+    func ensureWorkspace() -> EditorWorkspace {
         if let workspace { return workspace }
         let root: String? = if case .stored(let root, _, _) = model.reference { root } else { state.selectedStoreRoot }
         let value = EditorWorkspace(directory: draftDirectory, store: root, automaticallySaves: true)
@@ -383,7 +383,7 @@ final class ReaderSurface: NSView {
                 await showWorkspace()
             } else {
                 guard let reference = model.resolveReference(token) else { throw BridgeFailure.invalid }
-                await workspace.openReading(reference)
+                await workspace.openReading(reference, followsLatest: model.chrome == "pane")
             }
         case "saveSettings": break // The ReaderModel owns durable page settings.
         default: throw BridgeFailure.invalid

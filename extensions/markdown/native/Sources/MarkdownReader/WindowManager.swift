@@ -39,7 +39,7 @@ final class WindowManager: NSObject, NSWindowDelegate {
     private func displays(_ reader: Reader, reference: DocumentReference) -> Bool {
         guard reader.model.reference == reference else { return false }
         let workspace = surfaces[ObjectIdentifier(reader.window)]?.workspace
-        return workspace?.active == nil || workspace?.reading != nil
+        return workspace == nil || workspace?.reading === reader.model
     }
     func model(for reference: DocumentReference) -> ReaderModel? { readers.values.first { displays($0, reference: reference) }?.model }
 
@@ -52,10 +52,6 @@ final class WindowManager: NSObject, NSWindowDelegate {
         editorWindow = window; editor = workspace
         if let surface = window.contentView as? ReaderSurface { surfaces[ObjectIdentifier(window)] = surface }
         else if let surface = window.contentView?.subviews.compactMap({ $0 as? ReaderSurface }).first { surfaces[ObjectIdentifier(window)] = surface }
-    }
-    func replace(_ previous: ReaderModel, with next: ReaderModel) {
-        guard let entry = readers.first(where: { $0.value.model === previous }) else { return }
-        readers[entry.key] = Reader(window: entry.value.window, model: next, workspace: entry.value.workspace)
     }
 
     @discardableResult

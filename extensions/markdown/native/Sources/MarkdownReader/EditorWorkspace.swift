@@ -156,6 +156,8 @@ final class WorkingDocument: Identifiable {
 @MainActor @Observable
 final class EditorWorkspace {
     let id = UUID()
+    /// An exact buffer handle is distinct from both a stored document and an installation of its page.
+    private var readingHandles: [DocumentReference: UUID] = [:]
     var liveDocumentID = UUID() {
         didSet {
             guard oldValue != liveDocumentID else { return }
@@ -174,6 +176,7 @@ final class EditorWorkspace {
     @ObservationIgnored var webRelease: ((String) -> Void)?
     /// Tells the page that an agent edit or claim waited because the person holds the passage.
     @ObservationIgnored var webHeldRefusal: (() -> Void)?
+    @ObservationIgnored var drainPageChanges: (() async -> Void)?
     @ObservationIgnored var pageChangeInProgress = false
     @ObservationIgnored var liveApplyInProgress = false
     @ObservationIgnored var observedPageChanges: [String: WebObservedChange] = [:]
@@ -193,20 +196,55 @@ final class EditorWorkspace {
     var recovered: [DraftRecord] = []
     var recoveryIssues: [String] = []
     var nextDraftOffset: Int?
-    var notice: String?
+    private(set) var noticeSerial: UInt64 = 0
+    var notice: String? { didSet { noticeSerial &+= 1 } }
     var closing = false
     var launchOrigin: LaunchOrigin?
     var reading: ReaderModel?
     var publishedLibrary: LibraryModel?
     private let readingState = ReadingStateStore(directory: nil)
     private var navigationGeneration: UInt64 = 0
+    private var installingReading: (navigation: UInt64, previousPresentation: String?)?
+    private var bindingMatchesPage: Bool {
+        guard let installingReading else { return true }
+        return installingReading.previousPresentation != nil && webHostModel?.page.presentation == installingReading.previousPresentation
+    }
     @ObservationIgnored var onClose: (() -> Void)?
     @ObservationIgnored var onRelease: (() -> Void)?
     @ObservationIgnored var onEditorFocus: (() -> Void)?
     let automaticallySaves: Bool
-    var active: WorkingDocument? { documents.first { $0.id == selected } }
-    func isDisplayed(_ document: WorkingDocument) -> Bool {
-        active === document && reading == nil && !libraryVisible && publishedLibrary == nil
+    var active: WorkingDocument? {
+        guard reading == nil, !libraryVisible, publishedLibrary == nil else { return nil }
+        return documents.first { $0.id == selected }
+    }
+    func isDisplayed(_ document: WorkingDocument) -> Bool { active === document }
+
+    var visibleText: (source: String, generation: UInt64, digest: String)? {
+        guard bindingMatchesPage, !closing, !libraryVisible, publishedLibrary == nil else { return nil }
+        if let reading {
+            guard let snapshot = reading.snapshot else { return nil }
+            return (snapshot.source, reading.sourceGeneration, snapshot.digest)
+        }
+        guard let document = active else { return nil }
+        return (document.text.source, document.text.generation, document.text.digest)
+    }
+
+    func documentKey(for document: WorkingDocument) -> UUID {
+        let record = document.session.record
+        let reference: DocumentReference
+        switch record.destination {
+        case .published(let base): reference = .stored(root: base.root, storeId: base.storeId, document: base.document)
+        case .file(let base): reference = .file(path: base.path)
+        case .scratchpad, .copy: return record.branch
+        }
+        guard let host = webHostModel else { return document.id }
+        return UUID(uuidString: host.issueReference(reference))!
+    }
+
+    var logicalDocumentKey: UUID? {
+        guard bindingMatchesPage, !closing, !libraryVisible, publishedLibrary == nil else { return nil }
+        if let reading { return UUID(uuidString: reading.issueReference(reading.reference)) }
+        return active.map(documentKey(for:))
     }
     var selectedStore: String?
 
@@ -226,7 +264,7 @@ final class EditorWorkspace {
     }
 
     @discardableResult func allowNavigation(_ action: String) -> Bool {
-        guard !pageBusy, !pageChangeInProgress, !liveApplyInProgress else {
+        guard !pageBusy, !pageChangeInProgress, !liveApplyInProgress, !pickingImages, active?.session.updatingExternal != true else {
             notice = "Wait for page changes before " + action + "."
             return false
         }
@@ -259,12 +297,16 @@ final class EditorWorkspace {
             guard let self, let document else { return false }
             return await self.applyThroughPage(edits, generation: generation, document: document)
         }
-        let closedReading = reading != nil && liveIdentity != liveDocumentID ? liveDocumentID : nil
+        if let reading {
+            // A promoted buffer keeps its handle. A later immutable view is a separate buffer.
+            if liveIdentity == liveDocumentID { readingHandles.removeValue(forKey: reading.reference) }
+            else { readingHandles[reading.reference] = liveDocumentID }
+        }
         leaveReading()
         active?.setVisible(false)
         if webHostModel != nil, !pagePromotion { webReady = false }
         documents.append(document); selected = document.id; liveDocumentID = document.id; libraryVisible = false
-        collaboration?.bind(document: liveDocumentID, closing: closedReading)
+        collaboration?.bind(document: liveDocumentID, closing: nil)
         document.setVisible(true)
         if case .published(let base) = record.destination { loadResolver(base, document: document) }
         if case .copy(let base) = record.destination { loadResolver(base, document: document) }
@@ -348,12 +390,13 @@ final class EditorWorkspace {
 
     func select(_ document: WorkingDocument) {
         guard allowNavigation("switching documents") else { return }
-        let closedReading = reading == nil ? nil : liveDocumentID
+        let fromReading = reading != nil
+        if let reading { readingHandles[reading.reference] = liveDocumentID }
         leaveReading()
         active?.setVisible(false)
-        if webHostModel != nil, selected != document.id || closedReading != nil || !document.visible { webReady = false }
+        if webHostModel != nil, selected != document.id || fromReading || !document.visible { webReady = false }
         selected = document.id; liveDocumentID = document.id; libraryVisible = false
-        collaboration?.bind(document: liveDocumentID, closing: closedReading)
+        collaboration?.bind(document: liveDocumentID, closing: nil)
         document.setVisible(true)
         if webReady { document.checkForUpdates() }
         focusWhenActive(document)
@@ -365,15 +408,16 @@ final class EditorWorkspace {
         do {
             let page = try await drafts.list(offset: more ? (nextDraftOffset ?? 0) : 0)
             guard navigation == navigationGeneration, allowNavigation("opening drafts") else { return }
+            if let reading { readingHandles[reading.reference] = liveDocumentID }
+            active?.setVisible(false)
             leaveReading()
             recovered = more ? recovered + page.records : page.records
             recoveryIssues = page.issues; nextDraftOffset = page.nextOffset; libraryVisible = true
-            active?.setVisible(false)
         } catch { notice = "Drafts unavailable: \(error)" }
     }
 
     private func leaveReading() {
-        navigationGeneration &+= 1
+        navigationGeneration &+= 1; installingReading = nil
         if let root = publishedLibrary?.selectedRoot { selectedStore = root }
         let previous = reading
         reading = nil; publishedLibrary = nil
@@ -382,7 +426,8 @@ final class EditorWorkspace {
 
     func showPublishedLibrary() async {
         guard allowNavigation("opening the library") else { return }
-        leaveReading(); active?.setVisible(false); libraryVisible = false
+        if let reading { readingHandles[reading.reference] = liveDocumentID }
+        active?.setVisible(false); leaveReading(); libraryVisible = false
         let model = LibraryModel(state: readingState, extraRoots: selectedStore.map { [$0] } ?? [])
         publishedLibrary = model
         if let selectedStore { await model.selectStore(selectedStore) } else { await model.reload() }
@@ -404,51 +449,90 @@ final class EditorWorkspace {
         }
     }
 
-    func readStored(_ document: String, followsLatest: Bool = false) async {
-        guard let root = selectedStore else { notice = "Choose a library store first."; return }
+    enum NavigationResult { case shown, busy(String), failed(String) }
+
+    @discardableResult func readStored(_ document: String, followsLatest: Bool = false) async -> NavigationResult {
+        guard let root = selectedStore else { return navigationFailure("Choose a library store first.") }
+        let current = navigationGeneration
+        let expectedStore: String? = if case .stored(let shownRoot, let storeId, _) = reading?.reference, shownRoot == root { storeId }
+            else if case .published(let base) = active?.session.record.destination, base.root == root { base.storeId }
+            else { nil }
         do {
             let identity = try await Task.detached { try DirectoryStore(root: URL(fileURLWithPath: root)).storeId }.value
-            await openReading(.stored(root: root, storeId: identity, document: document), followsLatest: followsLatest)
-        } catch { notice = "Document not opened: \(error)" }
+            guard current == navigationGeneration, selectedStore == root else { return .busy("The selected store changed.") }
+            guard expectedStore == nil || expectedStore == identity else { return navigationFailure("The store changed its identity.") }
+            return await openReading(.stored(root: root, storeId: identity, document: document), followsLatest: followsLatest)
+        } catch { return navigationFailure("Document not opened: \(error)") }
     }
 
-    func openReading(_ reference: DocumentReference, revision: Int? = nil, digest: String? = nil, origin: LaunchOrigin? = nil, followsLatest: Bool = false) async {
-        guard allowNavigation("opening another document") else { return }
+    private func navigationFailure(_ text: String) -> NavigationResult { notice = text; return .failed(text) }
+
+    /// Agent navigation must never hide the person's unsaved changes or replace an open passage.
+    private func mayOpenReading(remotely: Bool) -> Bool {
+        guard allowNavigation("opening another document") else { return false }
+        if remotely {
+            guard webReady, pageHeld == nil else { notice = "The document is not ready or a passage is open for writing."; return false }
+            if let session = active?.session, session.isDirty || session.saving || session.record.conflict != nil || session.record.pendingPublication != nil {
+                notice = "The reader kept this draft open. Resolve or save its changes before the agent switches documents."
+                return false
+            }
+        }
+        return true
+    }
+
+    @discardableResult func openReading(_ reference: DocumentReference, revision: Int? = nil, digest: String? = nil,
+                                         origin: LaunchOrigin? = nil, followsLatest: Bool = false, remotely: Bool = false) async -> NavigationResult {
+        guard mayOpenReading(remotely: remotely) else { return .busy(notice ?? "The reader is busy.") }
+        notice = nil
         navigationGeneration &+= 1
-        let navigation = navigationGeneration
-        let previous = reading
+        let navigation = navigationGeneration, priorHandle = liveDocumentID
+        defer { if installingReading?.navigation == navigation { installingReading = nil } }
+        let previous = reading, previousReference = reading?.reference, previousDraft = active
+        let previousGeneration = previousDraft?.text.generation
+        func mayInstall() -> Bool {
+            navigation == navigationGeneration && !closing && liveDocumentID == priorHandle && reading === previous
+                && active === previousDraft && active?.text.generation == previousGeneration && mayOpenReading(remotely: remotely)
+        }
+        let next: ReaderModel
         if let host = webHostModel {
             do {
                 let snapshot = try await Task.detached { try DocumentLoader.load(reference, revision: revision, pinnedDigest: digest) }.value
-                guard navigation == navigationGeneration, allowNavigation("opening another document") else { return }
-                try await host.showSnapshot(snapshot, origin: origin ?? launchOrigin)
-                guard navigation == navigationGeneration, reading === previous else { return }
-                host.followsLatest = followsLatest
-                publishedLibrary = nil; libraryVisible = false; active?.setVisible(false); reading = host
-                let closedReading = previous == nil ? nil : liveDocumentID
-                liveDocumentID = UUID(); collaboration?.bind(document: liveDocumentID, closing: closedReading)
-                if let previous, previous !== host { await previous.close() }
-                await host.checkForUpdate()
+                guard mayInstall() else { return .busy(notice ?? "The document changed while the reader prepared the page.") }
+                if previous === host, previousReference == reference, host.page.documentReady, let receipt = host.page.presentation,
+                   receipt == host.displayedPresentation, !host.isDraft, (!remotely || host.lock == .reading),
+                   host.snapshot?.revision == snapshot.revision, host.snapshot?.digest == snapshot.digest,
+                   host.followsLatest == followsLatest, !followsLatest || host.followsStoredRevisions {
+                    return .shown
+                }
+                installingReading = (navigation, host.page.presentation)
+                try await host.showSnapshot(snapshot, origin: origin ?? launchOrigin, mayInstall: mayInstall)
+                guard navigation == navigationGeneration, !closing, reading === previous else {
+                    return .busy("Another document switch took precedence.")
+                }
             } catch {
-                guard navigation == navigationGeneration else { return }
-                notice = "Document not opened: \(error)"
+                guard navigation == navigationGeneration, !closing else { return .busy("Another document switch took precedence.") }
+                if error is CancellationError || !mayInstall() { return .busy(notice ?? "Finish the current edit, then retry the document switch.") }
+                return navigationFailure("Document not opened: \(error)")
             }
-            return
-        }
-        let next = ReaderModel(reference: reference, platform: MacPlatform.operations(), state: readingState)
-        next.followsLatest = followsLatest
-        publishedLibrary = nil; libraryVisible = false; active?.setVisible(false); reading = next
-        await next.open(revision: revision, digest: digest, origin: origin ?? launchOrigin)
-        guard reading === next else { await next.close(); return }
-        if case .failed(let error) = next.phase {
-            reading = previous; notice = "Document not opened: \(error)"
-            if previous == nil { active?.setVisible(true) }
-            await next.close()
+            next = host
         } else {
-            let closedReading = previous == nil ? nil : liveDocumentID
-            liveDocumentID = UUID(); collaboration?.bind(document: liveDocumentID, closing: closedReading)
-            if previous !== webHostModel { await previous?.close() }
+            next = ReaderModel(reference: reference, platform: MacPlatform.operations(), state: readingState)
+            await next.open(revision: revision, digest: digest, origin: origin ?? launchOrigin)
+            guard mayInstall() else { await next.close(); return .busy("The document changed while the reader prepared the page.") }
+            if case .failed(let error) = next.phase { await next.close(); return navigationFailure("Document not opened: \(error)") }
         }
+        if let previousReference { readingHandles[previousReference] = priorHandle }
+        let handle = readingHandles[reference] ?? UUID()
+        readingHandles[reference] = handle
+        previousDraft?.setVisible(false)
+        selected = nil; publishedLibrary = nil; libraryVisible = false
+        reading = next; next.followsLatest = followsLatest
+        if case .stored(let root, _, _) = reference { selectedStore = root }
+        liveDocumentID = handle; installingReading = nil
+        collaboration?.bind(document: handle, closing: nil)
+        if let previous, previous !== next, previous !== webHostModel { await previous.close() }
+        if followsLatest { await next.checkForUpdate() }
+        return .shown
     }
 
     @discardableResult func editReading(copy: Bool, pagePromotion: Bool = false) async -> Bool {
@@ -466,7 +550,7 @@ final class EditorWorkspace {
                 record = DraftRecord(title: snapshot.title, source: snapshot.source, destination: makeCopy ? .copy(base) : .published(base), savedSource: makeCopy ? nil : snapshot.source)
             } else if case .file(let path) = model.reference {
                 let file = try await Task.detached { try LocalFileSave.open(URL(fileURLWithPath: path)) }.value
-                guard file.source == snapshot.source else { throw FileSaveError.changed }
+                guard file.source.utf8.elementsEqual(snapshot.source.utf8) else { throw FileSaveError.changed }
                 record = DraftRecord(title: snapshot.title, source: file.source, destination: .file(file.base), savedSource: file.source)
             } else { return false }
             guard navigation == navigationGeneration, reading === model, model.phase == .ready,
@@ -517,8 +601,11 @@ final class EditorWorkspace {
     }
 
     func closeActive() async {
-        guard allowAction("closing this document"), let document = active else { return }
+        await drainPageChanges?()
+        guard allowNavigation("closing this document"), let document = active else { return }
+        guard !document.session.updatingExternal else { notice = "Wait for the external change before closing this document."; return }
         guard await document.session.persist() else { notice = "The draft was not retained. Keep this document open and retry recovery."; return }
+        guard isDisplayed(document), !document.session.updatingExternal else { return }
         documents.removeAll { $0.id == document.id }; selected = documents.last?.id
         liveDocumentID = active?.id ?? UUID(); collaboration?.bind(document: liveDocumentID, closing: document.id)
         active?.setVisible(true)
@@ -527,7 +614,16 @@ final class EditorWorkspace {
     }
 
     func prepareToClose(saveDeadline: DispatchTime = .now() + PaneHost.saveAllowance) async -> Bool {
+        await drainPageChanges?()
         guard !closing else { return false }
+        guard !pageBusy, !pageChangeInProgress, !liveApplyInProgress else {
+            notice = "Finish the current edit before closing the workspace."
+            return false
+        }
+        guard !documents.contains(where: { $0.session.updatingExternal }) else {
+            notice = "Wait for the external change before closing the workspace."
+            return false
+        }
         guard !documents.contains(where: \.stagingImages) else {
             notice = "Wait for the image to reach private storage before closing."
             return false
@@ -573,15 +669,9 @@ final class EditorWorkspace {
     private func refuseClose(_ message: String) {
         notice = message
         resumeEdits()
-        if let model = webHostModel {
-            Task { _ = try? await model.sendEnvelope(["v": 1, "type": "notice", "tone": "warning", "text": message, "actions": []]) }
-        }
     }
 
-    func resumeEdits() {
-        closing = false
-
-    }
+    func resumeEdits() { closing = false }
 
     func retainAll() async -> Bool {
         var result = true
@@ -629,11 +719,18 @@ final class EditorWorkspace {
 
     func saveFile(_ document: WorkingDocument, to url: URL? = nil, replacing existing: FileEditBase? = nil, duringClose: Bool = false) async {
         guard duringClose ? closing : allowAction("saving", document: document) else { return }
+        if url != nil, document.session.record.pendingPublication != nil {
+            document.session.setDestinationSaveError("The previous publication is unconfirmed. Use Save to reconcile it before Save As."); return
+        }
         guard let snapshot = document.session.beginSave() else { return }
         do {
             let (base, images) = try await Task.detached {
                 let resolver = try DraftAssets.resolver(for: snapshot)
                 if let url {
+                    if snapshot.conflict != nil, case .file(let original) = snapshot.destination,
+                       existing?.path == original.path {
+                        throw FileSaveError.invalid("Use a separate file for Save As. The original has conflicting changes.")
+                    }
                     guard existing == nil || existing?.requestedPath == url.standardizedFileURL.path else { throw FileSaveError.changed }
                     let images = try FileAssetTransfer.copy(source: snapshot.source, resolver: resolver, beside: url)
                     let saved = try existing.map { try LocalFileSave.save(source: snapshot.source, base: $0) }
@@ -651,21 +748,35 @@ final class EditorWorkspace {
             document.setResolver(DirectoryAssetResolver(directory: URL(fileURLWithPath: base.path).deletingLastPathComponent()))
             document.observeBase()
         } catch {
-            if case FileSaveError.changed = error { document.session.setConflict(.init(message: String(describing: error))) }
+            if url == nil, case FileSaveError.changed = error { document.session.setConflict(.init(message: String(describing: error))) }
             document.session.failSave(String(describing: error))
         }
-        if automaticallySaves, document.session.record.conflict != nil { await receiveExternalChange(document) }
+        if url == nil, automaticallySaves, document.session.record.conflict != nil { await receiveExternalChange(document) }
     }
 
     func save() {
         guard allowAction("saving"), let document = active else { return }
-        if case .file = document.session.record.destination { Task { await saveFile(document) }; return }
-        Task { await savePublished(document) }
+        Task {
+            if document.session.record.conflict != nil, document.session.record.pendingPublication == nil {
+                switch document.session.record.destination {
+                case .file, .published:
+                    await receiveExternalChange(document)
+                    guard document.session.record.conflict == nil, document.session.isDirty else { return }
+                case .copy, .scratchpad: break
+                }
+            }
+            await saveDestination(document)
+        }
     }
 
     func savePublished(_ document: WorkingDocument, duringClose: Bool = false) async {
         guard duringClose ? closing : allowAction("saving", document: document) else { return }
-        guard let writer = PublicationClient.fromBundle() else { document.session.setError("The bundled library writer is unavailable. Rebuild the app or use Save As."); return }
+        guard let writer = PublicationClient.fromBundle() else {
+            document.session.setDestinationSaveError(document.session.record.pendingPublication == nil
+                ? "The bundled library writer is unavailable. Rebuild the app or use Save As."
+                : "The bundled library writer is unavailable. Rebuild the app, then use Save to reconcile the unconfirmed publication.")
+            return
+        }
         do {
             var request: PublicationRequest
             if document.session.record.pendingPublication != nil {
@@ -673,7 +784,10 @@ final class EditorWorkspace {
                 request = try JSONDecoder().decode(PublicationRequest.self, from: pending)
                 request.operation = "reconcile"
                 let checked = try await writer.send(request)
-                if checked.status == "saved" { acknowledge(checked, request: request, document: document); return }
+                if checked.ok, checked.status == "saved" { acknowledge(checked, request: request, document: document); return }
+                guard checked.ok, checked.status == "unconfirmed" else {
+                    throw FileSaveError.invalid(checked.error?.message ?? "Save did not confirm the previous publication. Retry Save to reconcile it.")
+                }
                 request.operation = "save"
             } else {
                 guard let snapshot = document.session.beginSave() else { return }
@@ -691,10 +805,13 @@ final class EditorWorkspace {
                 if request.stagedAssets?.isEmpty == false { request.assetRoot = assetRoot.path }
                 let pending = try JSONEncoder().encode(request)
                 document.session.setPendingPublication(pending)
-                guard await document.session.persistPendingPublication(pending) else { throw FileSaveError.invalid("Recovery failed. The library save did not start.") }
+                guard await document.session.persistPendingPublication(pending) else {
+                    document.session.setPendingPublication(nil)
+                    throw FileSaveError.invalid("Recovery failed. The library save did not start. Retry Save.")
+                }
             }
             let outcome = try await writer.send(request)
-            if outcome.status == "saved" { acknowledge(outcome, request: request, document: document) }
+            if outcome.ok, outcome.status == "saved" { acknowledge(outcome, request: request, document: document) }
             else {
                 if outcome.outcome == "not-committed" { document.session.setPendingPublication(nil) }
                 if outcome.error?.code == "conflict" {
@@ -712,5 +829,6 @@ final class EditorWorkspace {
         document.session.finishSave(source: request.source, destination: .published(base))
         document.observeBase()
         loadResolver(base, document: document)
+        schedulePersistence(document)
     }
 }

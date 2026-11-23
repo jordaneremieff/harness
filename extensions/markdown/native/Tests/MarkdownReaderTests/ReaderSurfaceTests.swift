@@ -84,6 +84,49 @@ import Testing
         try await post("state", fields: fields, to: model)
     }
 
+    @Test func navigationConfirmsTheInstalledRevisionAndResumesExactReadingHandles() async throws {
+        let fixture = try PaneRun(); defer { fixture.remove() }
+        let store = try DirectoryStore(root: URL(fileURLWithPath: fixture.store))
+        let stored = DocumentReference.stored(root: fixture.store, storeId: store.storeId, document: fixture.document)
+        let snapshot = try DocumentLoader.load(stored)
+        try await withSurface { surface, model, drafts in
+            let localFile = fixture.root.appendingPathComponent("start.md")
+            try Data("Start here.".utf8).write(to: localFile)
+            let local = DocumentReference.file(path: localFile.path)
+            let workspace = EditorWorkspace(directory: drafts, store: fixture.store)
+            surface.setWorkspace(workspace)
+            await workspace.openReading(local)
+            let original = workspace.liveDocumentID
+            @MainActor func request(_ digest: String? = nil) -> LiveCommand {
+                LiveCommand(requestId: UUID().uuidString, workspace: workspace.id.uuidString, document: workspace.liveDocumentID.uuidString,
+                            op: "navigate", storeId: store.storeId, documentId: fixture.document, revision: digest == nil ? nil : 1, digest: digest)
+            }
+            let invalidPin = await workspace.handleLive(request("sha256:" + String(repeating: "f", count: 64)))
+            #expect(invalidPin.status == "error")
+            #expect(workspace.liveDocumentID == original && workspace.visibleText?.source == "Start here.")
+
+            workspace.pageHeld = NSRange(location: 0, length: 0)
+            #expect(await workspace.handleLive(request()).status == "busy")
+            workspace.pageHeld = nil
+            let shown = await workspace.handleLive(request())
+            let first = workspace.liveDocumentID
+            #expect(shown.status == "navigated" && first != original)
+            #expect(shown.handle == "\(workspace.id.uuidString):\(first.uuidString)")
+            #expect(shown.view?.documentId == fixture.document && shown.view?.digest == snapshot.digest && shown.view?.follows == true)
+            let receipt = try #require(model.page.presentation)
+            #expect(await workspace.handleLive(request()).status == "navigated" && model.page.presentation == receipt)
+
+            let pinned = await workspace.handleLive(request(snapshot.digest))
+            #expect(pinned.status == "navigated" && pinned.view?.revision == 1 && pinned.view?.follows == false)
+            #expect(workspace.liveDocumentID == first)
+            let oldHandle = request()
+            await workspace.openReading(local)
+            #expect(workspace.liveDocumentID == original && workspace.logicalDocumentKey != nil)
+            #expect(await workspace.handleLive(oldHandle).status == "closed")
+            #expect(await workspace.handleLive(request()).status == "navigated" && workspace.liveDocumentID == first)
+        }
+    }
+
     @Test func nativeMenuCommandsReachThePageWithTheirArguments() async throws {
         try await withSurface { surface, model, _ in
             _ = try await model.page.callJavaScript("""
@@ -282,7 +325,7 @@ import Testing
             await workspace.openReading(reference)
             workspace.startCollaboration(try await server.configuration())
             defer { workspace.collaboration?.stop() }
-            func waitForBinding() async throws {
+            @MainActor func waitForBinding() async throws {
                 let deadline = ContinuousClock.now + .seconds(5)
                 while true {
                     let state = try await server.request(["op": "state"])

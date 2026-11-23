@@ -131,6 +131,8 @@ public final class ReaderModel {
     /// the reader sees it. Scrolling defers replacement until it settles. A text selection or
     /// an open find bar keeps the update notice for the reader's choice.
     public var followsLatest = false
+    /// The selected policy for this stored view, independent of an in-progress load or a deferred update.
+    public var followsStoredRevisions: Bool { followsLatest && !olderChosen && snapshot?.document?.kind == .published }
     public var settings: PageSettings {
         didSet {
             guard settings != oldValue else { return }

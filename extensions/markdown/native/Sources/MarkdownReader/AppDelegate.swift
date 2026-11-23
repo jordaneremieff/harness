@@ -212,7 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                     workspace.notice = liveUnavailable
                     if let liveConfiguration { workspace.startCollaboration(liveConfiguration) }
                     let model = ReaderModel(reference: .file(path: "draft:" + record.id.uuidString), platform: windows.platform, state: windows.state)
-                    let host = PaneHost(model: model, platform: windows.platform, state: windows.state, terminal: terminal, workspace: workspace)
+                    let host = PaneHost(model: model, state: windows.state, terminal: terminal, workspace: workspace)
                     paneHost = host
                     windows.adoptEditor(host.start(), workspace: workspace)
                 } else {
@@ -281,8 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                     if let liveConfiguration { live.startCollaboration(liveConfiguration) }
                     workspace = live
                 } else { workspace = nil }
-                let host = PaneHost(model: model, platform: windows.platform, state: windows.state, terminal: terminal, workspace: workspace)
-                host.onModelChange = { [weak self] previous, next in self?.windows.replace(previous, with: next) }
+                let host = PaneHost(model: model, state: windows.state, terminal: terminal, workspace: workspace)
                 host.onWorkspaceChange = { [weak self] window, workspace in self?.windows.adoptEditor(window, workspace: workspace) }
                 paneHost = host
                 let window = host.start(revision: revision, digest: digest, origin: origin)
