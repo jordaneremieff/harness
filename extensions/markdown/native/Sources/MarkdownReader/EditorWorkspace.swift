@@ -200,6 +200,7 @@ final class EditorWorkspace {
     private(set) var noticeSerial: UInt64 = 0
     var notice: String? { didSet { noticeSerial &+= 1 } }
     var closing = false
+    private var closePreparation: UUID?
     var launchOrigin: LaunchOrigin?
     var reading: ReaderModel?
     var publishedLibrary: LibraryModel?
@@ -617,13 +618,19 @@ final class EditorWorkspace {
     }
 
     func prepareToClose(saveDeadline: DispatchTime = .now() + PaneHost.saveAllowance) async -> Bool {
-        guard !closing else { return false }
+        guard !closing, closePreparation == nil else { return false }
+        let attempt = UUID()
+        closePreparation = attempt
+        defer { if closePreparation == attempt { closePreparation = nil } }
         await drainPageChanges?()
         if let flushReviewDrafts, !(await flushReviewDrafts()) {
+            guard closePreparation == attempt else { return false }
             notice = "A review draft is not saved. Keep this pane open and retry Close after the draft is saved."
             return false
         }
-        guard !closing, !Task.isCancelled, DispatchTime.now() < saveDeadline else { return false }
+        // The deadline bounds destination writes, not private recovery. A timed-out caller
+        // resumes editing and invalidates this attempt while the page flush is suspended.
+        guard closePreparation == attempt, !closing, !Task.isCancelled else { return false }
         guard !pageBusy, !pageChangeInProgress, !liveApplyInProgress else {
             notice = "Finish the current edit before closing the workspace."
             return false
@@ -642,8 +649,8 @@ final class EditorWorkspace {
         }
         closing = true
 
-        guard await retainAll(), closing, !Task.isCancelled else {
-            if closing { refuseClose("Draft recovery failed. This window remains open. Retry Close after recovery succeeds.") }
+        guard await retainAll(), closePreparation == attempt, closing, !Task.isCancelled else {
+            if closePreparation == attempt, closing { refuseClose("Draft recovery failed. This window remains open. Retry Close after recovery succeeds.") }
             return false
         }
         let pending = documents.filter(needsDestinationSaveBeforeClose)
@@ -651,18 +658,19 @@ final class EditorWorkspace {
         let saved = Flag(), proceed = Flag(true)
         let finished = await PaneHost.run(until: saveDeadline) {
             for document in pending {
-                guard proceed.value, self.closing, DispatchTime.now() < saveDeadline else { return }
+                guard proceed.value, self.closePreparation == attempt, self.closing, DispatchTime.now() < saveDeadline else { return }
                 if document.session.saving { await document.persistenceTask?.value }
-                guard proceed.value, self.closing, DispatchTime.now() < saveDeadline else { return }
+                guard proceed.value, self.closePreparation == attempt, self.closing, DispatchTime.now() < saveDeadline else { return }
                 if self.needsAutomaticSave(document), !document.session.saving,
                    document.session.record.conflict == nil {
                     await self.saveDestination(document, duringClose: true)
                 }
             }
-            guard proceed.value, self.closing else { return }
+            guard proceed.value, self.closePreparation == attempt, self.closing else { return }
             saved.value = await self.retainAll() && !self.documents.contains(where: self.needsDestinationSaveBeforeClose)
         }
         proceed.value = false
+        guard closePreparation == attempt else { return false }
         guard finished, saved.value else {
             refuseClose("The destination save did not finish. Your edits are in Drafts. This window remains open.")
             return false
@@ -679,7 +687,7 @@ final class EditorWorkspace {
         resumeEdits()
     }
 
-    func resumeEdits() { closing = false }
+    func resumeEdits() { closePreparation = nil; closing = false }
 
     func retainAll() async -> Bool {
         var result = true
