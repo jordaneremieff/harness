@@ -323,7 +323,7 @@ public enum ReaderBridgeCodec {
             try validateArrayGroup(fields, key: "blocks", limit: renderedLimit)
         case "agentApply":
             try validateArrayGroup(fields, key: "edits", limit: editListLimit)
-        case "ack", "refused", "claim", "release", "promptState", "connectionState", "saveState", "command", "notice":
+        case "documentMetadata", "ack", "refused", "claim", "release", "promptState", "connectionState", "saveState", "command", "notice":
             try validateJSONSize(fields, limit: messageLimit)
         default: throw ReaderBridgeError.invalid("type")
         }

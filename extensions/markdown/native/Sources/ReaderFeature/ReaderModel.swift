@@ -433,6 +433,20 @@ public final class ReaderModel {
         resumeRenderingWaiters()
     }
 
+    /// Save As changes the destination of this draft, not its page history or source generation.
+    public func updateDraftMetadata(_ meta: [String: Any], draftId: UUID, presentation: String, previousKey: String) async throws {
+        guard !closed, isDraft, draftIdentity == draftId, displayedPresentation == presentation,
+              page.presentation == presentation, page.documentKey == previousKey,
+              let key = meta["documentKey"] as? String else { throw DisplayWait.Superseded() }
+        let receipt = try await page.send(["v": 1, "type": "documentMetadata", "presentation": presentation,
+            "previousDocumentKey": previousKey, "meta": meta])
+        guard receipt as? Bool == true, !closed, draftIdentity == draftId, displayedPresentation == presentation,
+              page.presentation == presentation, page.documentKey == key else { throw DisplayWait.Superseded() }
+        metadata = meta
+        metadata["digest"] = snapshot?.digest
+        if let title = meta["title"] as? String { snapshot?.title = title }
+    }
+
     @discardableResult
     public func sendEnvelope(_ envelope: [String: Any]) async throws -> Any? {
         preparePositionDelivery(envelope)

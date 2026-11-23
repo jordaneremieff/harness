@@ -134,6 +134,10 @@ public final class ReaderWebPage: NSObject, WKNavigationDelegate, WKScriptMessag
             presentation = token
             documentKey = key
             setDocumentReady(true)
+        } else if envelope["type"] as? String == "documentMetadata", result as? Bool == true,
+                  let token, token == presentation, let key, UUID(uuidString: key) != nil,
+                  documentKey == envelope["previousDocumentKey"] as? String {
+            documentKey = key
         } else if envelope["type"] as? String == "ack", result as? Bool == true,
                   let token, token == presentation, let key, UUID(uuidString: key) != nil {
             documentKey = key

@@ -15,6 +15,8 @@ final class ReaderSurface: NSView {
     var onReturnFocus: (() -> Void)?
     private var pendingAgent: (id: String, finish: (WebAgentApplyResult) -> Void)?
     private var observedDocument: UUID?
+    private weak var displayedDraft: WorkingDocument?
+    private var updatingDestination = false
     private struct SaveState: Equatable {
         let presentation: String
         let state: String
@@ -281,7 +283,7 @@ final class ReaderSurface: NSView {
 
     private var pageMatchesWorkspace: Bool {
         guard let workspace, workspace.webReady, let key = workspace.logicalDocumentKey, let presentation = model.page.presentation else { return false }
-        return model.page.documentKey == key.uuidString && installed(presentation)
+        return !updatingDestination && model.page.documentKey == key.uuidString && installed(presentation)
     }
 
     private func refuseChange(_ change: WebPageChange, presentation: String, reason: String = "stale") async {
@@ -293,7 +295,9 @@ final class ReaderSurface: NSView {
     private func applyPageChange(_ change: WebPageChange, presentation: String) async {
         guard installed(presentation) else { await refuseChange(change, presentation: presentation); return }
         let workspace = ensureWorkspace()
-        guard pageMatchesWorkspace else { await refuseChange(change, presentation: presentation); return }
+        // A destination change updates metadata only. Source writes still belong to this exact buffer.
+        guard pageMatchesWorkspace || (workspace.webReady && workspace.active != nil && workspace.active === displayedDraft
+            && workspace.logicalDocumentKey != nil && model.isDraft) else { await refuseChange(change, presentation: presentation); return }
         let wasReading = workspace.reading != nil
         applying = true; workspace.pageBusy = true
         defer { applying = false; updateBusy() }
@@ -302,12 +306,17 @@ final class ReaderSurface: NSView {
             guard installed(presentation), let document = workspace.active else { throw BridgeFailure.invalid }
             observedDocument = document.id
             try await model.acceptSource(source: document.text.source, generation: document.text.generation,
-                meta: metadata(document), resolver: document.assetResolver, draftId: document.session.record.id)
+                meta: wasReading || pageMatchesWorkspace ? metadata(document) : nil,
+                resolver: document.assetResolver, draftId: document.session.record.id)
             guard installed(presentation), workspace.active === document else { throw BridgeFailure.invalid }
             var envelope: [String: Any] = ["v": 1, "type": "ack", "presentation": presentation, "generation": ack.generation,
                 "digest": ack.digest, "recovery": ack.recoveryRetained ? "retained" : "pending"]
             if wasReading { envelope["meta"] = metadata(document) }
             guard try await model.sendEnvelope(envelope) as? Bool == true else { throw BridgeFailure.invalid }
+            if installed(presentation), workspace.active === document {
+                displayedDraft = document
+                if wasReading, pageMatchesWorkspace { workspace.collaboration?.bind(document: workspace.liveDocumentID) }
+            }
             if let operation = change.operationId { finishAgent(operation, result: .accepted(change)) }
             await reportStatus()
         } catch {
@@ -486,18 +495,41 @@ final class ReaderSurface: NSView {
         guard pageReady, !applying, let workspace else { return }
         if let document = workspace.active, workspace.reading == nil {
             observedDocument = document.id
-            document.setVisible(false)
-            try? await model.sendDocument(source: document.text.source, generation: document.text.generation,
-                meta: metadata(document), resolver: document.assetResolver, draftId: document.session.record.id)
+            displayedDraft = nil
+            do {
+                try await model.sendDocument(source: document.text.source, generation: document.text.generation,
+                    meta: metadata(document), resolver: document.assetResolver, draftId: document.session.record.id)
+                if workspace.active === document {
+                    displayedDraft = document
+                    await reportStatus()
+                }
+            } catch { return }
         } else if let reading = workspace.reading, reading !== model, let snapshot = reading.snapshot {
-            observedDocument = nil
+            observedDocument = nil; displayedDraft = nil
             try? await model.showSnapshot(snapshot, latestRevision: reading.latestRevision)
-        } else if workspace.reading === model { observedDocument = nil }
+        } else if workspace.reading === model { observedDocument = nil; displayedDraft = nil }
     }
     private func resynchronise() async {
         if workspace?.active != nil { await showWorkspace() }
         else if let snapshot = model.snapshot { try? await model.sendDocument(source: snapshot.source, generation: 0) }
     }
+    private func updateDestination(in workspace: EditorWorkspace) async {
+        guard !updatingDestination else { return }
+        updatingDestination = true
+        defer { updatingDestination = false }
+        while workspace.webReady, let document = workspace.active, displayedDraft === document,
+              let presentation = model.page.presentation, installed(presentation), let previousKey = model.page.documentKey,
+              let key = workspace.logicalDocumentKey, previousKey != key.uuidString {
+            do {
+                try await model.updateDraftMetadata(metadata(document), draftId: document.session.record.id,
+                                                    presentation: presentation, previousKey: previousKey)
+            } catch { return }
+            guard installed(presentation), workspace.active === document else { return }
+            if workspace.logicalDocumentKey == key { workspace.collaboration?.bind(document: workspace.liveDocumentID) }
+            shownSave = nil
+        }
+    }
+
     private func reportStatus() async {
         guard let workspace, model.page.documentReady else { return }
         if let status = workspace.collaboration?.connectionStatus, status != shownConnection {
@@ -508,6 +540,7 @@ final class ReaderSurface: NSView {
             shownNotice = workspace.noticeSerial
             _ = try? await model.sendEnvelope(["v": 1, "type": "notice", "tone": "warn", "text": notice, "actions": []])
         }
+        await updateDestination(in: workspace)
         guard pageMatchesWorkspace, let presentation = model.page.presentation, let document = workspace.active else { return }
         let session = document.session
         let state: String, detail: String?

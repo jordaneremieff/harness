@@ -270,6 +270,59 @@ import Testing
         }
     }
 
+    @Test func saveAsRebindsTheDisplayedDraftWithoutDroppingAnEdit() async throws {
+        let server = try LiveTestBridge(); defer { server.stop() }
+        try await withSurface { surface, model, drafts in
+            let workspace = EditorWorkspace(directory: drafts, store: nil)
+            surface.setWorkspace(workspace)
+            try await post("command", fields: ["name": "newDraft"], to: model)
+            let document = try #require(workspace.active), presentation = try #require(model.page.presentation)
+            let handle = workspace.liveDocumentID, previous = try #require(model.page.documentKey)
+            workspace.startCollaboration(try await server.configuration())
+            defer { workspace.collaboration?.stop() }
+            _ = try await model.page.callJavaScript("""
+            const receive = reader.receive;
+            let entered, released, confirmed;
+            window.metadataStarted = new Promise(resolve => entered = resolve);
+            window.saveConfirmed = new Promise(resolve => confirmed = resolve);
+            window.installations = 0;
+            reader.receive = async m => {
+                if (m.type === 'document') window.installations++;
+                if (m.type === 'documentMetadata') {
+                    entered(m);
+                    await new Promise(resolve => { window.releaseMetadata = resolve; });
+                    released = true;
+                }
+                if (released && m.type === 'saveState') confirmed(true);
+                return await receive(m);
+            };
+            window.bounded = p => Promise.race([p, new Promise((_, reject) => setTimeout(() => reject(Error('no receipt')), 5000))]);
+            return true;
+            """)
+            let file = drafts.deletingLastPathComponent().appendingPathComponent("saved-as.md")
+            await workspace.saveFile(document, to: file)
+            let message = try await model.page.callJavaScript("return await window.bounded(window.metadataStarted);")
+            let envelope = try #require(message as? [String: Any])
+            #expect(envelope["previousDocumentKey"] as? String == previous)
+            let key = try #require(workspace.logicalDocumentKey)
+            #expect(key.uuidString != previous && model.page.documentKey == previous)
+            let fields: [String: Any] = ["presentation": presentation, "baseGeneration": 0, "generation": 1,
+                "origin": "person", "edits": [["start": 0, "end": 0, "text": "Still writing", "expected": ""]]]
+            try await post("edits", fields: fields, to: model)
+            #expect(document.text.source == "Still writing" && document.text.generation == 1)
+            let installations = try await model.page.callJavaScript("window.releaseMetadata(); await window.bounded(window.saveConfirmed); return window.installations;")
+            #expect(installations as? Int == 0)
+            #expect(model.page.documentKey == key.uuidString && model.page.presentation == presentation)
+            #expect(workspace.liveDocumentID == handle && workspace.livePaneView.kind == "local-file")
+            #expect(model.source == "Still writing" && workspace.livePaneView.dirty)
+            let id = UUID().uuidString
+            let reply = try await request("prompt", fields: ["documentKey": key.uuidString, "presentation": presentation,
+                "generation": 1, "requestId": id, "threadId": id, "text": "Explain the new text."], to: model)
+            #expect(reply["accepted"] as? Bool == true)
+            #expect(workspace.collaboration?.currentAdmittedThreadId(for: key) == id)
+        }
+    }
+
     @Test func thePageReceivesConflictAndRepeatedWorkspaceNotices() async throws {
         try await withSurface { surface, model, drafts in
             let workspace = EditorWorkspace(directory: drafts, store: nil)
@@ -295,7 +348,7 @@ import Testing
             });
             return true;
             """)
-            func wait(_ type: String, _ field: String, _ value: String, count: Int = 1) async throws -> [String: Any] {
+            @MainActor func wait(_ type: String, _ field: String, _ value: String, count: Int = 1) async throws -> [String: Any] {
                 let received = try await model.page.callJavaScript("return await window.waitForStatus(type, field, value, count);",
                     arguments: ["type": type, "field": field, "value": value, "count": count])
                 return try #require(received as? [String: Any])
