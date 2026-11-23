@@ -142,7 +142,7 @@ function liveInput(args: Fields) {
 			fact("offset", args.offset),
 			line(args.commentState),
 		],
-		skip: ["op", "handle", "document", "revision", "offset", "commentState"],
+		skip: ["op", "handle", "revision", "offset", "commentState", ...(show ? ["document"] : [])],
 	};
 }
 const inputs = {
@@ -343,14 +343,28 @@ function liveApplied(v: Fields): Copy {
 		more: receipt(v, "status", "generation", "retained"),
 	};
 }
+function candidateCoverage(search: Fields): string {
+	const searched = number(search.searched);
+	const candidates = number(search.candidates);
+	if (searched === undefined || candidates === undefined || !candidates) return "";
+	return `examined ${searched} of ${units(candidates, "source candidate")}`;
+}
 function findCoverage(v: Fields): string {
+	const search = record(v.search);
 	return [
+		candidateCoverage(search),
+		search.complete === false ? "source search incomplete" : "",
+		number(search.unreadable) ? units(Number(search.unreadable), "unreadable source") : "",
 		v.bounded === true ? "scan stopped early" : "",
-		number(v.unreadable) ? `${v.unreadable} unreadable` : "",
-		record(v.search).complete === false ? "source search incomplete" : "",
+		number(v.unreadable) ? units(Number(v.unreadable), "unreadable entry", "unreadable entries") : "",
 	]
 		.filter(Boolean)
 		.join(" · ");
+}
+function findOutcome(returned: number, matched: number | undefined): string {
+	if (matched !== undefined && matched > returned)
+		return `Returned ${returned} of ${units(matched, "match", "matches")}`;
+	return returned ? `Returned ${units(returned, "match", "matches")}` : "No matches in this page";
 }
 function findNext(v: Fields): Fields | undefined {
 	if (typeof v.nextCursor !== "string" || !v.nextCursor) return;
@@ -359,7 +373,7 @@ function findNext(v: Fields): Fields | undefined {
 function readFind(v: Fields, matches: unknown[]): Copy {
 	const continuation = findNext(v);
 	const scanned = number(v.scanned);
-	const outcome = matches.length ? `Returned ${units(matches.length, "match", "matches")}` : "No matches in this page";
+	const outcome = findOutcome(matches.length, number(v.matched));
 	const scope = scanned === undefined ? "" : `; scanned ${units(scanned, "document")}`;
 	const coverage = findCoverage(v);
 	const preview = matches

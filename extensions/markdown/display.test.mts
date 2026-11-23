@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { defineTool, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
@@ -10,7 +13,7 @@ import { toolDisplay } from "./display.ts";
 import { markdownContribution } from "./durable.ts";
 import { createLiveTool } from "./live-tool.ts";
 import { createPublishTool } from "./publish.ts";
-import { createReadTool } from "./read.ts";
+import { createReadTool, readStored, readText } from "./read.ts";
 import { MarkdownStore } from "./store.ts";
 
 const requirePi = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
@@ -294,7 +297,7 @@ test("a retained live snapshot receipt expands as source without exposing the bu
 	}
 });
 
-test("a stored document listing inflects the retained result count", (t) => {
+test("an archived document page shows its known match total without implying another page", (t) => {
 	keys(t);
 	const component = card("markdown_read", { kind: "published" });
 	const documents = Array.from({ length: 20 }, (_, i) => ({
@@ -302,20 +305,65 @@ test("a stored document listing inflects the retained result count", (t) => {
 		title: `Document ${i}`,
 		revision: 1,
 	}));
-	for (const count of [20, 1]) {
-		component.updateResult(
-			result("", {
-				ok: true,
-				op: "find",
-				kind: "published",
-				rows: documents.slice(0, count),
-				matched: count,
-				scanned: 172,
-			}),
-		);
-		const noun = count === 1 ? "match" : "matches";
-		assert.ok(screen(component).includes(`Returned ${count} ${noun}; scanned 172 documents.`));
+	component.updateResult(
+		result("", { ok: true, op: "find", kind: "published", rows: documents, matched: 172, scanned: 172 }),
+	);
+	assert.match(screen(component), /Returned 20 of 172 matches; scanned 172 documents\./u);
+	component.setExpanded(true);
+	assert.doesNotMatch(screen(component), /more results follow|Continue with/u);
+});
+
+test("current title and source searches distinguish the match total from source candidate coverage", async (t) => {
+	keys(t);
+	const root = await mkdtemp(join(tmpdir(), "markdown-search-card-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const store = new MarkdownStore(root);
+	for (let i = 0; i < 24; i++) {
+		await store.create({
+			title: i === 23 ? "Outside the title filter" : `Fixture ${i}`,
+			source: "Shared source phrase",
+			contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() },
+		});
 	}
+	for (const [args, wording] of [
+		[{ query: "Fixture" }, "Returned 20 of 23 matches; scanned 24 documents; more results follow."],
+		[
+			{ query: "Fixture", contains: "Shared" },
+			"Returned 20 matches; scanned 24 documents; examined 20 of 23 source candidates · source search incomplete; more results follow.",
+		],
+	] as const) {
+		const receipt = await readStored(store, args);
+		assert.ok(receipt.ok && receipt.op === "find" && receipt.nextCursor);
+		const component = card("markdown_read", args);
+		component.updateResult(result(readText(receipt).header, receipt));
+		assert.ok(screen(component, 172).includes(wording));
+		component.setExpanded(true);
+		const next = { kind: receipt.kind, ...args, cursor: receipt.nextCursor };
+		assert.ok(screen(component, 400).includes(`Continue with markdown_read ${JSON.stringify(next)}`));
+	}
+});
+
+test("live read rejection reveals a supplied document only on expansion; show does not repeat its subject", (t) => {
+	keys(t);
+	const read = card("markdown_live", { op: "read", document: id });
+	for (const settled of [false, true]) {
+		if (settled) {
+			const receipt = { status: "error", message: "Only show accepts a stored document or revision." };
+			read.updateResult(result(JSON.stringify(receipt), receipt));
+		}
+		const compact = screen(read);
+		assert.doesNotMatch(compact, new RegExp(id, "u"));
+		assert.equal(compact.match(/to expand/gu)?.length, 1);
+		read.setExpanded(true);
+		assert.ok(screen(read).includes(`document: ${id}`));
+		assert.doesNotMatch(screen(read), /to expand/u);
+		read.setExpanded(false);
+	}
+	const show = card("markdown_live", { op: "show", document: id });
+	assert.doesNotMatch(screen(show), /to expand/u);
+	show.setExpanded(true);
+	assert.equal(screen(show).match(new RegExp(id, "gu"))?.length, 1);
+	assert.doesNotMatch(screen(show), /document:/u);
 });
 
 test("publication moves its counted hint to the bottom after settlement and reflows it on resize", (t) => {
@@ -361,6 +409,7 @@ test("an empty find page preserves the same filters and full cursor", (t) => {
 			query: "notes",
 			search: { contains: "line\nneedle" },
 			rows: [],
+			matched: 0,
 			scanned: 25,
 			nextCursor: cursor,
 		}),
