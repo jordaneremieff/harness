@@ -1215,11 +1215,10 @@ function latestSavedResult(submissions: unknown, label = "Saved: "): string | un
 	return `${label}${text(last.status)}${id === undefined ? "" : ` · submission ${id}`}`;
 }
 
-/** The newest text is named by its author: the agent's reply or the input it received. */
-function newestTextLabel(working: boolean, role: string | undefined): string {
-	if (role === "assistant") return working ? "Replying" : "Latest reply";
-	if (role === "user") return working ? "Working on input" : "Latest input";
-	return working ? "Working on the task" : "Latest message";
+/** A saved entry names its author; it does not establish what the current run is doing. */
+function newestTextLabel(role: string): string {
+	if (role === "assistant") return "Latest reply";
+	return role === "user" ? "Latest input" : "Latest message";
 }
 
 function providerBlockLines(block: unknown, theme: Theme, compact = false): string[] {
@@ -1296,7 +1295,7 @@ function fullStatusActivityFacts(status: Record<string, unknown>, live: boolean,
 		pending > 0 ? cardinal(pending, "pending input") : "",
 		statusUnplaced(status),
 		...running.map(statusToolFact),
-		lastText ? `${newestTextLabel(live && status.busy === true, text(status.lastTextRole))} · ${lastText}` : "",
+		lastText ? `${newestTextLabel(text(status.lastTextRole))} · ${lastText}` : "",
 		latestSavedResult(status.submissions, "Saved result · ") ?? "",
 		...(live ? statusRetryFacts(runtime) : []),
 	];

@@ -486,9 +486,9 @@ admits a follow-up when the target is busy; `/agent steer` admits steering. A
 busy Durable target receives both at its next tool boundary. The
 model-facing `agent_send` also defaults to follow-up/new work; `agent_steer`
 marks a correction. The
-status card labels its newest text by role and state: `Latest reply` or
-`Latest input` when idle, and `Replying` or `Working on input` while active.
-Text without a retained author role uses `Latest message` or `Working on the task`.
+status card labels its newest retained text by author: `Latest reply`,
+`Latest input`, or `Latest message` if the role is absent. The live state
+appears separately.
 When the newest entry is a thread notice, its status text (`lastText`) is one
 line from the notice's verified communication rather than its model text. It
 leads with what happened: the event kind of the cards, the event number, the

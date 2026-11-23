@@ -601,11 +601,9 @@ describe("agent result cards", () => {
 		const text = screen(card, 180);
 		assert.match(text, /Parser review/);
 		assert.match(text, /provider\/model · high/);
-		assert.match(text, /Activity: working · tool read · 1 pending/);
-		assert.match(text, /Running: read · call call-7/);
-		assert.match(text, /Running: bash · call call-8 · pending/);
-		assert.match(text, /\(3 more lines, ctrl\+o to expand\)/u);
-		assert.doesNotMatch(text, /Working on the task|Saved: done|Capability limits/u);
+		assert.match(text, /^\nWorking\nDurable agent · live host observation\n/u);
+		assert.match(text, /1 pending input\nRunning read · call call-7\n\.\.\. \(4 more lines, ctrl\+o to expand\)$/u);
+		assert.doesNotMatch(text, /Pending bash|Latest message|Saved result|configured extension/u);
 		assert.deepEqual(resultValue, before);
 		for (const width of [12, 40, 100]) assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
 		const expanded = screen(
@@ -617,10 +615,10 @@ describe("agent result cards", () => {
 			),
 			240,
 		);
-		assert.match(expanded, /Working on the task: Check the source$/mu);
-		assert.doesNotMatch(expanded, /\x1b|\\u\{/u, "a control in the task text is removed, not shown");
-		assert.match(expanded, /Saved: done · submission 3/);
-		assert.match(expanded, /Capability limits: 1 configured extension without a native form/);
+		assert.match(expanded, /^\nWorking\nDurable agent · live host observation\n/u);
+		assert.match(expanded, /Pending bash · call call-8\nLatest message · Check the source$/mu);
+		assert.doesNotMatch(expanded, /\x1b|\\u\{|to expand/u, "expanded text has no control characters or hint");
+		assert.match(expanded, /Saved result · done · submission 3\n1 configured extension without a native form/u);
 		assert.match(expanded, /"callId":\s*"call-7"/);
 	});
 
@@ -631,16 +629,16 @@ describe("agent result cards", () => {
 				{ callId: "child", name: "codemode", status: "waiting" },
 			],
 		};
-		const card = createAgentToolCards().agent_status.renderResult(
-			snapshotResult(conversationStatus({ live })),
-			{ ...cardKeys, expanded: false, isPartial: false },
-			theme,
-			context(),
-		);
-		const text = screen(card, 180);
-		assert.match(text, /Sleeping: read · call signal/u);
-		assert.match(text, /Waiting: codemode · call child/u);
-		assert.doesNotMatch(text, /Running:/u);
+		const status = createAgentToolCards().agent_status;
+		const value = snapshotResult(conversationStatus({ live }));
+		const render = (expanded: boolean) =>
+			screen(status.renderResult(value, { ...cardKeys, expanded, isPartial: false }, theme, context()), 180);
+		const collapsed = render(false);
+		assert.match(collapsed, /Sleeping read · call signal\n\.\.\. \(4 more lines, ctrl\+o to expand\)$/u);
+		assert.doesNotMatch(collapsed, /Waiting codemode|Running (?:read|codemode)/u);
+		const expanded = render(true);
+		assert.match(expanded, /Sleeping read · call signal\nWaiting codemode · call child/u);
+		assert.doesNotMatch(expanded, /Running (?:read|codemode)|to expand/u);
 	});
 
 	it("marks a cold snapshot read-only instead of reporting it idle", () => {
@@ -654,11 +652,11 @@ describe("agent result cards", () => {
 			),
 			180,
 		);
-		assert.match(text, /Read-only snapshot; live owner state unavailable/);
-		assert.doesNotMatch(text, /Activity: idle/);
+		assert.match(text, /^\nLive session activity not observed\nDurable agent · retained snapshot\n/u);
+		assert.doesNotMatch(text, /\n(?:Idle|Working)\n|live host observation/u);
 	});
 
-	it("labels the newest text by state instead of claiming an in-progress reply", () => {
+	it("labels the newest retained text by author without inferring current work from it", () => {
 		const render = (status: Record<string, unknown>) =>
 			screen(
 				createAgentToolCards().agent_status.renderResult(
@@ -669,33 +667,20 @@ describe("agent result cards", () => {
 				),
 				180,
 			);
-		assert.match(
-			render(conversationStatus({ busy: true, lastText: "Ran crash-1." })),
-			/Working on the task: Ran crash-1\./,
-		);
-		assert.match(
-			render(conversationStatus({ busy: false, live: {}, lastText: "Ran crash-1." })),
-			/Latest message: Ran crash-1\./,
-		);
-		assert.match(
-			render(conversationStatus({ busy: false, live: {}, lastText: "Done reviewing." })),
-			/Latest message: Done reviewing\./,
-		);
-		const idle = render(conversationStatus({ busy: false, live: {}, lastText: "Ran crash-1." }));
-		assert.doesNotMatch(idle, /Assistant in progress/u);
-		assert.doesNotMatch(idle, /Latest input|Latest reply/u);
-		assert.match(
-			render(conversationStatus({ busy: false, live: {}, lastText: "Done reviewing.", lastTextRole: "assistant" })),
-			/Latest reply: Done reviewing\./,
-		);
-		assert.match(
-			render(conversationStatus({ busy: true, lastText: "Check the parser", lastTextRole: "user" })),
-			/Working on input: Check the parser/,
-		);
-		assert.match(
-			render(conversationStatus({ busy: false, live: {}, lastText: "Check the parser", lastTextRole: "user" })),
-			/Latest input: Check the parser/,
-		);
+		for (const busy of [true, false]) {
+			const live = busy ? { run: { taskId: 7 } } : {};
+			const cases = [
+				[undefined, "Ran crash-1.", "Latest message"],
+				["assistant", "Done reviewing.", "Latest reply"],
+				["user", "Check the parser", "Latest input"],
+			] as const;
+			for (const [lastTextRole, lastText, label] of cases) {
+				const lines = render(conversationStatus({ busy, live, lastTextRole, lastText })).split("\n");
+				assert.equal(lines[1], busy ? "Working" : "Idle");
+				assert.ok(lines.includes(`${label} · ${lastText}`));
+				assert.doesNotMatch(lines.join("\n"), /Replying|Working on (?:the task|input)/u);
+			}
+		}
 	});
 
 	it("renders a compact mutation status with state and capability limits", () => {
@@ -748,8 +733,8 @@ describe("agent result cards", () => {
 			),
 			240,
 		);
-		assert.match(text, /Delivery paused: /);
-		assert.match(text, /Restart that Pi process/u);
+		assert.match(text, /^\nIdle\nDelivery paused · primary owner [^\n]+Restart that Pi process/u);
+		assert.match(text, /\nDurable agent · live host observation\n/u);
 	});
 
 	it("shows an enriched mutation snapshot beside its receipt", () => {
@@ -802,7 +787,7 @@ describe("agent result cards", () => {
 			),
 			180,
 		);
-		assert.match(bare, /Activity: idle/);
+		assert.match(bare, /^\nIdle\nDurable agent · live host observation\n/u);
 		const wrapped = screen(
 			createAgentToolCards().agent_status.renderResult(
 				result({
@@ -815,8 +800,8 @@ describe("agent result cards", () => {
 			180,
 		);
 		assert.match(wrapped, /2 conversations on a storage page/);
-		assert.match(wrapped, /live activity not observed/);
-		assert.doesNotMatch(wrapped, /\$0\.00/);
+		assert.match(wrapped, /Parser review · live activity not observed/u);
+		assert.doesNotMatch(wrapped, / · (?:working|idle)\b|\$0\.00/u);
 	});
 
 	it("summarizes a status overview with unavailable storage counters", () => {
@@ -1106,29 +1091,18 @@ describe("agent result cards", () => {
 					...extra,
 				},
 			});
-		assert.match(
-			screen(
-				createAgentToolCards().agent_status.renderResult(
-					compact({ unplaced: 2, oldest: 372000 }),
-					options,
-					theme,
-					context(),
-				),
-				180,
-			),
-			/timers · unplaced: 2, oldest: 6m 12s/u,
-		);
-		assert.match(
-			screen(
-				createAgentToolCards().agent_status.renderResult(compact({ unplaced: 0 }), options, theme, context()),
-				180,
-			),
-			/timers · unplaced: 0$/mu,
-		);
-		assert.doesNotMatch(
-			screen(createAgentToolCards().agent_status.renderResult(compact({}), options, theme, context()), 180),
-			/unplaced/u,
-		);
+		const status = createAgentToolCards().agent_status;
+		const render = (extra: Record<string, unknown>, expanded = false) =>
+			screen(status.renderResult(compact(extra), { ...options, expanded }, theme, context()), 180);
+		const unplacedStatus = render({ unplaced: 2, oldest: 372000 });
+		assert.match(unplacedStatus, /^\nWorking\nDurable agent · live host observation\n/u);
+		assert.match(unplacedStatus, /^2 unplaced inputs · oldest 6m 12s$/mu);
+		assert.doesNotMatch(unplacedStatus, /queued input|0 timers/u);
+		for (const extra of [{ unplaced: 0 }, {}]) {
+			assert.match(render(extra), /^2 queued inputs$/mu);
+			assert.doesNotMatch(render(extra), /unplaced|0 timers/u);
+		}
+		assert.match(render({ unplaced: 0 }, true), /"unplaced":0/u);
 		const line = /placed at the recipient's next tool boundary/u;
 		const receipt = { submissionId: 9, conversationId: 1, deduped: false, identity: "storage-a" };
 		const unplaced = screen(
