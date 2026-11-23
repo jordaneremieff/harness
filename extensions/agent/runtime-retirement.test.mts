@@ -1,5 +1,11 @@
 import { onStoredCommit } from "./commit-observation.ts";
-import { DeliveryRowDoc, storeDeliveryRow, deliveryState as readRetainedDelivery } from "./delivery-store.ts";
+import {
+	DeliveryRowDoc,
+	storeDeliveryRow,
+	snapshotIntent,
+	snapshotReceipt,
+	deliveryState as readRetainedDelivery,
+} from "./delivery-store.ts";
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -11,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
-import { AgentCatalog, hostMetadata } from "./catalog.ts";
+import { AgentCatalog, hostMetadata, storageIdOf } from "./catalog.ts";
 import { readDeliveryWake } from "./delivery-wake.ts";
 import { AgentMetaDoc } from "./durable-controls.ts";
 import type { TimerTask } from "./durable-timers.ts";
@@ -812,6 +818,41 @@ it("refuses malformed recipients before creating report and intent rows", { time
 	const state = await readRetainedDelivery(f.native.harness, BACKGROUND_CONTEXT, true);
 	assert.equal(state?.reports.some((report) => report.ownerId === "12345678") ?? false, false);
 	assert.equal(state?.intents.some((intent) => intent.ownerId === "12345678") ?? false, false);
+});
+
+it("checks exact native answer routes before task admission without changing retained lookup", {
+	timeout: 15000,
+}, async (t) => {
+	const f = await fixture(t);
+	const harness = f.native.harness;
+	const conversationId = f.native.root().id;
+	for (const child of ["0", "02", "9007199254740992"]) {
+		const replyTo = `${f.ownerId}:${child}`;
+		const requestId = `invalid-reply:${child}`;
+		assert.equal(storageIdOf(replyTo), f.ownerId, "retained storage lookup stays lexical");
+		for (const route of [{ requester: f.ownerId, replyTo }, { requester: replyTo }]) {
+			await assert.rejects(
+				f.runtime.request("task-submit", { ...route, message: "invalid", requestId, origin: "operator" }, requestId),
+				/Delivery recipient must be an exact/u,
+			);
+		}
+		assert.equal(await snapshotIntent(harness, conversationId, requestId, BACKGROUND_CONTEXT), undefined);
+		assert.equal(
+			await harness.commit((tx) => tx.submissionByRequest(conversationId, requestId), BACKGROUND_CONTEXT),
+			undefined,
+		);
+	}
+	for (const replyTo of [f.ownerId, `${f.ownerId}:1`, `${f.ownerId}:2`]) {
+		const requestId = `valid-reply:${replyTo}`;
+		const admitted = (await f.runtime.request(
+			"task-submit",
+			{ message: "valid", requester: f.ownerId, replyTo, requestId, origin: "operator" },
+			requestId,
+		)) as { submissionId: SubmissionId };
+		const receipt = await snapshotReceipt(harness, admitted.submissionId, BACKGROUND_CONTEXT);
+		const intent = await snapshotIntent(harness, conversationId, requestId, BACKGROUND_CONTEXT);
+		assert.equal(receipt?.ownerId ?? intent?.ownerId, replyTo);
+	}
 });
 
 it("validates rewind recipients but permits a self-owned rewind", { timeout: 15000 }, async (t) => {

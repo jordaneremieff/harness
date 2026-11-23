@@ -395,6 +395,7 @@ export interface CatalogCreateResult {
 /** Outcome of one guarded discard. Only `removed` changes state. */
 export type CatalogDiscardResult = "removed" | "record-changed" | "storage-present" | "writer-present";
 
+/** Locate storage without revalidating a retained conversation selector. */
 export function storageIdOf(identity: string): string {
 	const [storageId, conversationId, extra] = identity.split(":");
 	if (!UUID.test(storageId) || extra !== undefined || (conversationId !== undefined && !/^\d+$/u.test(conversationId)))
@@ -405,10 +406,15 @@ export function storageIdOf(identity: string): string {
 /** Validate an exact delivery recipient before accepting a new route. */
 export function validateDeliveryRecipient(identity: string): void {
 	try {
-		storageIdOf(identity);
+		const storageId = storageIdOf(identity);
+		if (storageId === identity) return;
+		const suffix = identity.slice(storageId.length + 1);
+		const id = Number(suffix);
+		if (Number.isSafeInteger(id) && id > 0 && String(id) === suffix) return;
 	} catch {
-		throw new Error("Delivery recipient must be an exact native or primary identity");
+		// Storage lookup rejected the identity before the conversation-ID check.
 	}
+	throw new Error("Delivery recipient must be an exact native or primary identity");
 }
 
 /** Discovery metadata locates storage. It never substitutes for native conversation state. */
