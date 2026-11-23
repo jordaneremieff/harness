@@ -1,10 +1,17 @@
-import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/chord/context";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import { LiveBridges, type LivePublisher, type LiveRoute, type PaneClosure } from "./live-bridge.ts";
-import type { LiveConfig, LiveState } from "./live-protocol.ts";
 import type { MarkdownCommandCall, MarkdownHost } from "./durable.ts";
+import {
+	discardLiveHandoff,
+	type LiveBridgeHandoff,
+	LiveBridges,
+	type LivePublisher,
+	type LiveRoute,
+	type PaneClosure,
+} from "./live-bridge.ts";
+import type { LiveConfig, LiveState } from "./live-protocol.ts";
 
 function assistantText(message: { role: string; content: unknown }): string {
 	if (message.role !== "assistant" || !Array.isArray(message.content)) return "";
@@ -50,30 +57,29 @@ function submittedText(content: UserMessage["content"]): string {
 	if (typeof content === "string") return content;
 	return content.length === 1 && content[0].type === "text" ? content[0].text : "";
 }
-function ordinaryReplies(
-	pi: ExtensionAPI,
-	active: () => boolean,
-	pending: Map<string, string>,
-	publish: LivePublisher,
-) {
-	let hasInput = false,
-		request: string | undefined;
+interface ReplyState {
+	pending: Map<string, string>;
+	hasInput: boolean;
+	request?: string;
+}
+function ordinaryReplies(pi: ExtensionAPI, active: () => boolean, replies: ReplyState, publish: LivePublisher) {
+	const { pending } = replies;
 	const reset = () => {
-		hasInput = false;
-		request = undefined;
+		replies.hasInput = false;
+		replies.request = undefined;
 	};
 	function takeInput(content: UserMessage["content"]) {
 		const text = submittedText(content),
 			delivered = pending.get(text);
 		pending.delete(text);
-		if (hasInput) {
-			for (const id of [request, delivered]) if (id) publish("error", sharedTurn, id);
-			request = undefined;
+		if (replies.hasInput) {
+			for (const id of [replies.request, delivered]) if (id) publish("error", sharedTurn, id);
+			replies.request = undefined;
 			return;
 		}
-		hasInput = true;
-		request = delivered;
-		if (request) publish("working", "", request);
+		replies.hasInput = true;
+		replies.request = delivered;
+		if (replies.request) publish("working", "", replies.request);
 	}
 	function finish(message: AssistantMessage) {
 		// Pi can retry an error or take another turn after tools without a new user message.
@@ -82,10 +88,10 @@ function ordinaryReplies(
 			message.content.some((part) => part.type === "toolCall")
 		)
 			return;
-		if (request) {
+		if (replies.request) {
 			const text = assistantText(message);
-			if (text.trim()) publish("answer", text, request);
-			else publish("error", noReply, request);
+			if (text.trim()) publish("answer", text, replies.request);
+			else publish("error", noReply, replies.request);
 		}
 		reset();
 	}
@@ -97,7 +103,7 @@ function ordinaryReplies(
 			if (active() && message.role === "assistant") finish(message);
 		}),
 		pi.on("agent_settled", () => {
-			if (active() && request) publish("error", noReply, request);
+			if (active() && replies.request) publish("error", noReply, replies.request);
 			reset();
 		}),
 	];
@@ -108,7 +114,7 @@ function ordinaryReplies(
 }
 export const PANE_NOTICE_TYPE = "markdown-pane-closed";
 /** Tells the conversation's agent that a report it showed is no longer in front of the operator. */
-export function paneClosedNotice({ closed, connected }: PaneClosure): string {
+export function paneClosedNotice({ closed, connected, panes }: PaneClosure): string {
 	const event =
 		closed === 1
 			? "A reader pane connected to this conversation closed; the operator may have closed it."
@@ -117,19 +123,26 @@ export function paneClosedNotice({ closed, connected }: PaneClosure): string {
 		connected === 0
 			? "No reader pane is connected to this conversation now, so a document update that you save reaches no pane."
 			: `${connected} reader ${connected === 1 ? "pane is" : "panes are"} still connected to this conversation; a document update reaches a pane only while that pane shows the document.`;
-	return `[markdown] ${event} ${state} To show a document to the operator again, run its show command as the program of a new pane. This notice needs no reply.`;
+	const departed = panes.map(({ handle, view }) => {
+		const title = JSON.stringify(view.title.replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 180));
+		const revision = view.revision === undefined ? "" : ` revision ${view.revision}`;
+		return `${handle} last showed ${view.kind} ${title}${view.documentId ? ` (${view.documentId}${revision})` : ""}.`;
+	});
+	return `[markdown] ${event} ${departed.join(" ")} ${state} This notice needs no reply.`;
 }
-function ordinaryRoute(pi: ExtensionAPI, check: () => void, active: () => boolean): LiveRoute {
-	const pending = new Map<string, string>();
+function ordinaryRoute(pi: ExtensionAPI, active: () => boolean, replies: ReplyState): LiveRoute {
+	const checkAdmission = () => {
+		if (!active()) throw new Error("The invoking Markdown conversation changed.");
+	};
 	return {
+		checkAdmission,
 		submit: async (text, operationId) => {
-			check();
-			pending.set(text, operationId);
+			checkAdmission();
+			replies.pending.set(text, operationId);
 			pi.sendUserMessage(text, { deliverAs: "followUp", expandPromptTemplates: false });
 			return { status: "requested" };
 		},
-		observe: async (publish) => ordinaryReplies(pi, active, pending, publish),
-		// Without a turn of its own: a running agent reads it before its next response, an idle one with the next prompt.
+		observe: async (publish) => ordinaryReplies(pi, active, replies, publish),
 		panesClosed: (closure) => {
 			if (!active()) return;
 			pi.sendMessage(
@@ -139,33 +152,97 @@ function ordinaryRoute(pi: ExtensionAPI, check: () => void, active: () => boolea
 		},
 	};
 }
-export function ordinaryLive(pi: ExtensionAPI, lifecycle: () => AbortSignal, paneGraceMs?: number) {
+type Manager = ExtensionContext["sessionManager"];
+interface ReloadRecord {
+	id: string;
+	handoff: LiveBridgeHandoff;
+	pending: [string, string][];
+	hasInput: boolean;
+	request?: string;
+	expires: number;
+	timer: NodeJS.Timeout;
+}
+// Resource reload imports a fresh extension. The manager object survives; a session ID alone is not a route.
+const reloadSlot = Symbol.for("pi.markdown.ordinary.handoff.v3");
+const processScope = globalThis as typeof globalThis & { [reloadSlot]?: WeakMap<Manager, ReloadRecord> };
+processScope[reloadSlot] ??= new WeakMap();
+const reloads = processScope[reloadSlot];
+const reclaimMs = 30_000;
+function takeReload(manager: Manager) {
+	const record = reloads.get(manager);
+	if (record) {
+		reloads.delete(manager);
+		clearTimeout(record.timer);
+	}
+	return record;
+}
+export function ordinaryLive(pi: ExtensionAPI, paneGraceMs?: number) {
 	let bridges = new LiveBridges(paneGraceMs);
-	const invalidate = () => {
+	let current: { manager: Manager; id: string; replies: ReplyState } | undefined;
+	let stopped = false;
+	const open = async (manager: Manager, record?: ReloadRecord) => {
+		const id = manager.getSessionId();
+		if (stopped || (current && (current.manager !== manager || current.id !== id)))
+			throw new Error("The invoking Markdown conversation changed.");
+		current ??= {
+			manager,
+			id,
+			replies: { pending: new Map(record?.pending), hasInput: record?.hasInput ?? false, request: record?.request },
+		};
+		const bound = current;
+		const active = () => !stopped && current === bound && manager.getSessionId() === id;
+		const bridge = await bridges.get(
+			id,
+			() => ordinaryRoute(pi, active, bound.replies),
+			`ordinary:${id}`,
+			record?.handoff,
+		);
+		if (!active()) throw new Error("The invoking Markdown conversation changed.");
+		return bridge.start();
+	};
+	pi.on("session_tree", () => {
+		current = undefined;
 		bridges.close();
 		bridges = new LiveBridges(paneGraceMs);
-	};
-	pi.on("session_before_switch", invalidate);
-	pi.on("session_before_fork", invalidate);
-	pi.on("session_before_tree", invalidate);
-	pi.on("session_shutdown", () => bridges.close());
+	});
+	pi.on("session_shutdown", async (event) => {
+		stopped = true;
+		const bound = current;
+		current = undefined;
+		try {
+			if (event.reason !== "reload" || !bound || bound.manager.getSessionId() !== bound.id) return;
+			const { manager, id, replies } = bound;
+			const { hasInput, request } = replies;
+			const pending = [...replies.pending];
+			const handoff = await bridges.release(id);
+			if (!handoff) return;
+			const prior = takeReload(manager);
+			if (prior) discardLiveHandoff(prior.handoff);
+			const timer = setTimeout(() => {
+				reloads.delete(manager);
+				discardLiveHandoff(handoff);
+			}, reclaimMs).unref();
+			reloads.set(manager, { id, handoff, pending, hasInput, request, expires: Date.now() + reclaimMs, timer });
+		} finally {
+			bridges.close();
+		}
+	});
+	pi.on("session_start", async (event, ctx) => {
+		const manager = ctx.sessionManager;
+		const record = takeReload(manager);
+		if (!record) return;
+		if (event.reason !== "reload" || manager.getSessionId() !== record.id || Date.now() >= record.expires) {
+			discardLiveHandoff(record.handoff);
+			return;
+		}
+		await open(manager, record);
+	});
 	return {
-		find: (ctx: ExtensionContext) => bridges.find(ctx.sessionManager.getSessionId()),
-		async connection(ctx: ExtensionContext): Promise<LiveConfig> {
-			const source = ctx.sessionManager;
-			const id = source.getSessionId();
-			const signal = lifecycle();
-			const check = () => {
-				signal.throwIfAborted();
-				if (source.getSessionId() !== id) throw new Error("The invoking Markdown conversation changed.");
-			};
-			check();
-			const bridge = await bridges.get(id, () =>
-				ordinaryRoute(pi, check, () => !signal.aborted && source.getSessionId() === id),
-			);
-			check();
-			return bridge.start();
-		},
+		find: async (ctx: ExtensionContext) =>
+			current?.manager === ctx.sessionManager && current.id === current.manager.getSessionId()
+				? bridges.find(current.id)
+				: undefined,
+		connection: (ctx: ExtensionContext): Promise<LiveConfig> => open(ctx.sessionManager),
 	};
 }
 interface HostLive {
@@ -196,64 +273,78 @@ export async function nativeConversationConnection(
 	conversation: Durable.Conversation,
 ): Promise<LiveConfig> {
 	const { bridges, signal } = nativeLive(host);
-	const context = withAbortSignal(signal, BACKGROUND_CONTEXT);
-	const bridge = await bridges.get(String(conversation.id), () => {
-		const inputs = new Map<Durable.SubmissionId, string>();
-		let publish: LivePublisher = () => {};
-		let latest: Durable.ConversationView | undefined;
-		const show = (value: Durable.ConversationView) => {
-			latest = value;
-			const live = value.docs["pi.live"] as Durable.LiveState | undefined;
-			if (!live?.run) return;
-			for (const [id, operationId] of inputs)
-				if (live.run.inputs.includes(id))
-					publish("working", live.generation?.message ? assistantText(live.generation.message) : "", operationId);
-		};
-		const finish = async (submission: Durable.Submission, operationId: string) => {
-			try {
-				const result = await settledAnswer(conversation, await submission.wait(context), context);
-				publish(result.status, result.text, operationId);
-			} catch {
-				if (!signal.aborted)
-					publish("error", "The exact document request ended without a confirmed answer.", operationId);
-			} finally {
-				inputs.delete(submission.id);
-			}
-		};
-		return {
-			retryFailedSubmission: true,
-			submit: async (text, operationId) => {
-				signal.throwIfAborted();
-				const submission = await conversation.submit(
-					{ type: "input", content: text, whenBusy: "followUp", requestId: `markdown:${operationId}` },
-					context,
-				);
-				inputs.set(submission.id, operationId);
-				if (latest) show(latest);
-				void finish(submission, operationId);
-				return { status: "admitted", submissionId: String(submission.id) };
-			},
-			observe: async (emit) => {
-				publish = emit;
-				const observation = await host.harness.observeConversation(
-					conversation.id,
-					{
-						advance: (update) => {
-							if (update.kind === "value") show(update.value);
+	signal.throwIfAborted();
+	const key = String(conversation.id);
+	const bridge = await bridges.get(
+		key,
+		() => {
+			const observing = new AbortController();
+			const lifetime = AbortSignal.any([signal, observing.signal]);
+			const context = withAbortSignal(lifetime, BACKGROUND_CONTEXT);
+			const inputs = new Map<Durable.SubmissionId, string>();
+			let publish: LivePublisher = () => {};
+			let latest: Durable.ConversationView | undefined;
+			const show = (value: Durable.ConversationView) => {
+				latest = value;
+				const live = value.docs["pi.live"] as Durable.LiveState | undefined;
+				if (!live?.run) return;
+				for (const [id, operationId] of inputs)
+					if (live.run.inputs.includes(id))
+						publish("working", live.generation?.message ? assistantText(live.generation.message) : "", operationId);
+			};
+			const finish = async (submission: Durable.Submission, operationId: string) => {
+				try {
+					const result = await settledAnswer(conversation, await submission.wait(context), context);
+					publish(result.status, result.text, operationId);
+				} catch {
+					if (!lifetime.aborted)
+						publish("error", "The exact document request ended without a confirmed answer.", operationId);
+				} finally {
+					inputs.delete(submission.id);
+				}
+			};
+			return {
+				retryFailedSubmission: true,
+				checkAdmission: () => lifetime.throwIfAborted(),
+				submit: async (text, operationId) => {
+					lifetime.throwIfAborted();
+					const submission = await conversation.submit(
+						{ type: "input", content: text, whenBusy: "followUp", requestId: `markdown:${operationId}` },
+						context,
+					);
+					inputs.set(submission.id, operationId);
+					if (latest) show(latest);
+					void finish(submission, operationId);
+					return { status: "admitted", submissionId: String(submission.id) };
+				},
+				observe: async (emit) => {
+					publish = emit;
+					const observation = await host.harness.observeConversation(
+						conversation.id,
+						{
+							advance: (update) => {
+								if (update.kind === "value") show(update.value);
+							},
+							end: () => {
+								observing.abort();
+								for (const operationId of inputs.values())
+									publish("error", "The exact Pi conversation connection closed.", operationId);
+								bridges.delete(key);
+							},
 						},
-						end: () => {
-							for (const operationId of inputs.values())
-								publish("error", "The exact Pi conversation connection closed.", operationId);
-						},
-					},
-					context,
-					{ min: 8, max: 16 },
-				);
-				show(observation.value);
-				return () => observation.detach();
-			},
-		};
-	});
+						context,
+						{ min: 8, max: 16 },
+					);
+					show(observation.value);
+					return () => {
+						observing.abort();
+						observation.detach();
+					};
+				},
+			};
+		},
+		`durable:${host.storageId}:${conversation.id}`,
+	);
 	signal.throwIfAborted();
 	return bridge.start();
 }

@@ -290,7 +290,7 @@ export default function markdown(pi: ExtensionAPI): void {
 	const states = new Map<string, MarkdownViewState>();
 	const lifecycle = ordinaryLifecycle(pi);
 	const updateReader = readerUpdates(pi);
-	const live = ordinaryLive(pi, lifecycle);
+	const live = ordinaryLive(pi);
 	const connectionFor = (ctx: ExtensionContext, presentation: Presentation = "pane"): Connection | undefined =>
 		ctx.mode === "tui" && presentation === "pane" ? () => live.connection(ctx) : undefined;
 	const stopSettings = publishSettings(pi.events, { agentDir: getAgentDir() });

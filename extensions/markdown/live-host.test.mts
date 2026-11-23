@@ -1,38 +1,50 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { InMemoryCredentialStore, InMemoryModelsStore, type Message } from "@earendil-works/pi-ai";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import {
 	createAgentSession,
 	createEventBus,
 	DefaultResourceLoader,
+	type ExtensionAPI,
+	type ExtensionContext,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
-	type ExtensionAPI,
-	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { InMemoryCredentialStore, InMemoryModelsStore, type Message } from "@earendil-works/pi-ai";
-import { obj } from "@earendil-works/pi-schema";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
-import { ordinaryLifecycle } from "./index.ts";
+import { obj } from "@earendil-works/pi-schema";
+import { type MarkdownCommandCall, type MarkdownHost, markdownContribution } from "./durable.ts";
 import { ordinaryLive, PANE_NOTICE_TYPE, paneClosedNotice } from "./live-host.ts";
-import { markdownContribution, type MarkdownHost, type MarkdownCommandCall } from "./durable.ts";
-import { readLiveConfig, type LiveCommand, type LiveConfig, type LiveState } from "./live-protocol.ts";
+import {
+	type LiveBinding,
+	type LiveCommand,
+	type LiveConfig,
+	type LivePane,
+	type LiveState,
+	readLiveConfig,
+} from "./live-protocol.ts";
 import { responseDigest } from "./responses.ts";
+import { connectTestPane } from "./test-live-pane.mts";
+
 const pane = () => ({ workspace: randomUUID().toUpperCase(), document: randomUUID().toUpperCase() });
 async function post(config: LiveConfig, path: string, body: unknown) {
-	const result = await fetch(config.endpoint + path, {
-		method: "POST",
-		headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.token}` },
-		body: JSON.stringify(body),
-		signal: AbortSignal.timeout(5000),
-	});
+	const result =
+		path === "/connect"
+			? await connectTestPane(config, body as LiveBinding)
+			: await fetch(config.endpoint + path, {
+					method: "POST",
+					headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.token}` },
+					body: JSON.stringify(body),
+					signal: AbortSignal.timeout(5000),
+				});
 	assert.equal(result.status, 200, await result.clone().text());
 	return (await result.json()) as {
 		handle: string;
@@ -51,9 +63,7 @@ async function nextCommand(config: LiveConfig, binding: ReturnType<typeof pane>)
 	}
 	throw new Error("No native command arrived within the bounded progress updates.");
 }
-test("ordinary pane prompts use the captured session and session changes revoke its capability", {
-	timeout: 10000,
-}, async () => {
+function ordinaryMock() {
 	const handlers = new Map<string, Set<(...args: unknown[]) => void>>();
 	const sent: unknown[][] = [];
 	const pi = {
@@ -67,8 +77,16 @@ test("ordinary pane prompts use the captured session and session changes revoke 
 		},
 		sendUserMessage: (...args: unknown[]) => sent.push(args),
 	} as unknown as ExtensionAPI;
-	const lifecycle = ordinaryLifecycle(pi);
-	const live = ordinaryLive(pi, lifecycle);
+	const event = async (name: string, ...args: unknown[]) => {
+		for (const handler of [...(handlers.get(name) ?? [])]) await handler(...args);
+	};
+	return { pi, handlers, sent, event };
+}
+test("ordinary pane prompts use the captured session and session changes revoke its capability", {
+	timeout: 10000,
+}, async () => {
+	const { pi, handlers, sent } = ordinaryMock();
+	const live = ordinaryLive(pi);
 	let id = "ordinary-one";
 	const ctx = { sessionManager: { getSessionId: () => id } } as ExtensionContext;
 	const config = await live.connection(ctx);
@@ -93,13 +111,52 @@ test("ordinary pane prompts use the captured session and session changes revoke 
 		const { state } = await post(config, "/poll", { ...binding, after: 0 });
 		assert.equal(state.operationId, operationId);
 		assert.equal(state.text, "Pane answer");
-		for (const handler of [...(handlers.get("session_before_switch") ?? [])]) handler();
-		id = "ordinary-two";
+		for (const event of ["session_before_switch", "session_before_fork", "session_before_tree"]) {
+			for (const handler of [...(handlers.get(event) ?? [])]) handler();
+			assert.equal((await live.connection(ctx)).endpoint, config.endpoint, "a cancelled move keeps the route");
+		}
+		for (const handler of [...(handlers.get("session_tree") ?? [])]) await handler();
 		assert.equal(await live.find(ctx), undefined);
 		await assert.rejects(post(config, "/prompt", { ...binding, operationId: randomUUID(), text: "Stale request" }));
 		assert.equal(sent.length, 1);
+		assert.equal(handlers.get("message_end")?.size, 0, "old listeners left the revoked route");
+		const branch = await live.connection(ctx);
+		assert.notEqual(branch.token, config.token);
+		for (const handler of [...(handlers.get("session_shutdown") ?? [])]) await handler({ reason: "fork" });
+		id = "ordinary-two";
+		await assert.rejects(live.connection(ctx));
 	} finally {
-		for (const handler of [...(handlers.get("session_shutdown") ?? [])]) handler();
+		for (const handler of [...(handlers.get("session_shutdown") ?? [])]) await handler({ reason: "quit" });
+	}
+});
+test("an ordinary reload requires both the original manager and its unchanged session ID", async () => {
+	let id = randomUUID();
+	const manager = () => ({ getSessionId: () => id });
+	const ctx = { sessionManager: manager() } as ExtensionContext;
+	const other = { sessionManager: manager() } as ExtensionContext;
+	const old = ordinaryMock(),
+		fresh = ordinaryMock(),
+		replacement = ordinaryMock();
+	const live = ordinaryLive(old.pi),
+		otherLive = ordinaryLive(fresh.pi),
+		replaced = ordinaryLive(replacement.pi);
+	const previous = await live.connection(ctx);
+	try {
+		await old.event("session_shutdown", { reason: "reload" });
+		await fresh.event("session_start", { reason: "reload" }, other);
+		assert.equal(await otherLive.find(other), undefined, "matching ID on a different manager is not the same session");
+		assert.notEqual((await otherLive.connection(other)).token, previous.token);
+		id = randomUUID();
+		await replacement.event("session_start", { reason: "reload" }, ctx);
+		assert.equal(await replaced.find(ctx), undefined, "changed ID on the original manager is not the same session");
+		assert.notEqual((await replaced.connection(ctx)).token, previous.token);
+		await assert.rejects(
+			fetch(`${previous.endpoint}/reserve`, { method: "POST", signal: AbortSignal.timeout(1000) }),
+			TypeError,
+		);
+	} finally {
+		await fresh.event("session_shutdown", { reason: "quit" });
+		await replacement.event("session_shutdown", { reason: "quit" });
 	}
 });
 function assertPaneReply(state: LiveState, operationId: string, mode: string, index: number) {
@@ -113,7 +170,7 @@ function assertPaneReply(state: LiveState, operationId: string, mode: string, in
 		assert.equal(state.text, index === 0 ? "First document reply." : "Second document reply.");
 	}
 }
-test("ordinary Pi delivers queued questions to their own panes and does not guess a shared answer", {
+test("ordinary Pi keeps each pane and reply across reload and does not guess a shared answer", {
 	timeout: 15000,
 }, async () => {
 	const root = await mkdtemp(join(tmpdir(), "markdown-ask-"));
@@ -126,6 +183,7 @@ test("ordinary Pi delivers queued questions to their own panes and does not gues
 		refreshOnCreate: false,
 	});
 	runtime.registerNativeProvider(faux.provider);
+	let bindings = 0;
 	let config!: LiveConfig, close: (() => void) | undefined;
 	const loader = new DefaultResourceLoader({
 		cwd: root,
@@ -138,8 +196,9 @@ test("ordinary Pi delivers queued questions to their own panes and does not gues
 		noThemes: true,
 		extensionFactories: [
 			(pi) => {
-				const live = ordinaryLive(pi, ordinaryLifecycle(pi));
+				const live = ordinaryLive(pi);
 				pi.on("session_start", async (_event, ctx) => {
+					++bindings;
 					config = await live.connection(ctx);
 					const bridge = await live.find(ctx);
 					close = () => bridge?.close();
@@ -204,6 +263,44 @@ test("ordinary Pi delivers queued questions to their own panes and does not gues
 				assertPaneReply(state, ids[i], mode, i);
 			}
 			assert.equal(session.getLastAssistantText(), mode === "all" ? "Shared chat reply." : "Second document reply.");
+			if (mode === "one-at-a-time") {
+				const previous = config;
+				await session.reload({
+					beforeSessionStart: async () => {
+						const status = await new Promise<number | undefined>((resolve, reject) => {
+							const probe = request(
+								`${previous.endpoint}/prompt`,
+								{
+									method: "POST",
+									agent: false,
+									headers: { "content-type": "application/json", authorization: `Bearer ${previous.token}` },
+									signal: AbortSignal.timeout(1000),
+								},
+								(res) => {
+									res.resume();
+									resolve(res.statusCode);
+								},
+							);
+							probe.on("error", reject);
+							probe.end(
+								JSON.stringify({ ...panes[0], operationId: randomUUID(), text: "Not admitted during reload." }),
+							);
+						});
+						assert.equal(status, 503);
+					},
+				});
+				assert.equal(bindings, 2, "Pi installed a fresh runner");
+				assert.equal(config.endpoint, previous.endpoint);
+				assert.equal(config.token, previous.token);
+				assert.equal(config.conversation, `ordinary:${session.sessionManager.getSessionId()}`);
+				const replay = await post(config, "/prompt", {
+					...panes[0],
+					operationId: ids[0],
+					text: "Explain the document.",
+				});
+				assert.equal(replay.status, "requested");
+				assertPaneReply((await post(config, "/poll", { ...panes[0], after: 0 })).state, ids[0], mode, 0);
+			}
 		}
 	} finally {
 		close?.();
@@ -241,7 +338,7 @@ test("an ordinary conversation reads a pane closure before its next response, wi
 		noThemes: true,
 		extensionFactories: [
 			(pi) => {
-				const live = ordinaryLive(pi, ordinaryLifecycle(pi), 20);
+				const live = ordinaryLive(pi, 20);
 				pi.on("session_start", async (_event, ctx) => {
 					config = await live.connection(ctx);
 					const bridge = await live.find(ctx);
@@ -334,17 +431,31 @@ test("an ordinary conversation reads a pane closure before its next response, wi
 	}
 });
 test("a pane closure notice names the closed and still connected panes", () => {
-	assert.match(paneClosedNotice({ closed: 1, connected: 0 }), /needs no reply\.$/u);
-	const several = paneClosedNotice({ closed: 2, connected: 1 });
-	assert.match(
-		several,
-		/^\[markdown\] 2 reader panes connected to this conversation closed; the operator may have closed them\./u,
-	);
-	assert.match(
-		several,
-		/1 reader pane is still connected to this conversation; a document update reaches a pane only while that pane shows the document\./u,
-	);
-	assert.match(paneClosedNotice({ closed: 1, connected: 2 }), /2 reader panes are still connected/u);
+	const gone: LivePane = {
+		...pane(),
+		live: 3,
+		handle: "departed-handle",
+		pid: process.pid,
+		origin: "operator",
+		reportedAt: Date.now(),
+		view: {
+			kind: "published",
+			mode: "reading",
+			dirty: false,
+			conflict: false,
+			title: "Draft",
+			documentId: "md-123",
+			revision: 2,
+		},
+	};
+	const single = paneClosedNotice({ closed: 1, connected: 0, panes: [gone] });
+	assert.match(single, /departed-handle last showed published "Draft" \(md-123 revision 2\)/u);
+	assert.match(single, /No reader pane is connected/u);
+	assert.match(single, /needs no reply\.$/u);
+	const several = paneClosedNotice({ closed: 2, connected: 1, panes: [gone, { ...gone, handle: "second" }] });
+	assert.match(several, /2 reader panes connected to this conversation closed/u);
+	assert.match(several, /second last showed/u);
+	assert.match(several, /1 reader pane is still connected/u);
 });
 test("the real Durable contribution reconciles lost admission and edits only its exact live native buffer", {
 	timeout: 15000,
@@ -402,6 +513,7 @@ test("the real Durable contribution reconciles lost admission and edits only its
 		assert.notEqual(typeof answer, "string");
 		if (typeof answer === "string") throw new Error("No connection data");
 		const config = readLiveConfig((answer.data as { connection: unknown }).connection);
+		assert.equal(config.conversation, `durable:${host.storageId}:${conversation.id}`);
 		const binding = pane();
 		const handle = (await post(config, "/connect", binding)).handle;
 		const untouched = pane();
@@ -473,6 +585,8 @@ test("the real Durable contribution reconciles lost admission and edits only its
 		const results = entries.filter((entry) => Durable.ToolResultEntry.is(entry)).map((entry) => entry.model?.[0]);
 		assert.equal(results.length, 2);
 		assert.ok(results.every((result) => result?.role === "toolResult" && !result.isError));
+		await harness.close(context);
+		await assert.rejects(post(config, "/prompt", { ...binding, operationId: randomUUID(), text: "Closed host" }));
 	} finally {
 		for (const fn of dispose) await fn();
 		await harness.close(context);
