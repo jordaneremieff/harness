@@ -72,11 +72,11 @@ notes but do not establish their truth.
 | `memory_read` | Read a current note, corpus contract, or exact prior revision with lifecycle and freshness evidence. |
 | `memory_history` | List prior source captures and make a read-only retention plan. |
 | `memory_write` | Create a subject or intentionally rewrite a whole note. |
-| `memory_edit` | Apply exact body replacements against the current digest. |
+| `memory_edit` | Correct a title or replace exact body text against the current digest. |
 | `memory_review` | Record whole-note confirmation or an unresolved concern. |
 | `memory_retire` | Withdraw an active note without a successor. |
 
-Start with a short search:
+Read a known subject directly. If the subject is unknown, search for it:
 
 ```json
 {"query":["editor choice","editing preferences"]}
@@ -87,9 +87,10 @@ Continue every source page before relying on the whole note. Check lifecycle,
 replacement links, freshness, and unresolved concerns against current sources.
 Current instructions control; stored notes grant no fresh authority.
 
-For an authorized correction, use `memory_edit` with the current digest and
-unique exact text. Use `memory_write` only for creation or an intentional whole-note
-rewrite. Search first to avoid a second note for the same subject.
+Before the first write, read the corpus contract (`memory_read` with `slug: "README"`)
+if it exists. Search before creating a note to avoid a duplicate. For a correction
+to a subject you already read, use `memory_edit` with its current digest; no second
+search is needed. Use `memory_write` only for creation or an intentional whole-note rewrite.
 
 The [tool contracts](#tools) explain arguments and continuation.
 [Storage policy](#storage-policy) defines what belongs in memory.
@@ -100,15 +101,24 @@ and recovery. [System prompt index](#system-prompt-index) and
 
 ## Tools
 
+Use the declared argument names. For example, a write takes `reviewPolicy`;
+`review_policy` is the field in the Markdown file, not a tool argument.
+Ordinary and Durable tool preparation reject unknown keys before schema validation,
+including keys inside a history plan, body edit or supersession target. A unique
+near spelling names the accepted argument; the extension does not silently rename
+it or quote its value. Direct calls make the same checks before corpus access.
+Pi's later validation of types and required fields can include the submitted
+arguments in its own errors. Do not supply sensitive values.
+
 ### `memory_search`
 
 Omit `query` to browse compact alphabetical cues. Set `query` to a string or an
 array of up to three alternative formulations. Prefer two or three short formulations
 using the operator's likely vocabulary and synonyms, not pasted full questions.
 Blank strings are refused; only an omitted query selects browse.
-If a query exceeds its limits, shorten it to keywords. Query pages default to 10
-records and accept `limit` from 1 through 25. Browse returns all cues that fit the
-48 KiB output bound; its optional `limit` from 1 through 512 reduces the page.
+If a query exceeds its limits, shorten it to keywords. Query pages default to five
+leads and accept `limit` from 1 through 25. Browse returns up to 512 cues per page,
+subject to the 48 KiB output bound. Use a smaller `limit` to reduce the page.
 Retired notes are excluded unless `includeRetired: true` is explicit. Active,
 superseded, and unknown notes remain eligible, including due or unclassified notes.
 No recency boost applies. Pass the returned `nextCursor` as `cursor`, with the same
@@ -138,10 +148,9 @@ their best per-formulation rank first. Ties use reciprocal rank fusion,
 among the first three results even when another formulation matches many weakly
 related notes. The score stays internal. Ordinal rank describes retrieval order,
 never truth, confidence, freshness, or a comparable value across calls.
-Compact results report matched term strings from the best-ranked formulation;
-ties use formulation order. The explicit `detail: true` option returns full
-per-formulation ranks, matched fields, and missing terms. The calling agent
-supplies reformulations; the extension makes no model calls.
+Compact query results show the ranked leads and their source passages. Set
+`detail: true` for the per-formulation ranks, matched fields, missing terms, and
+term frequencies. The caller supplies reformulations; the extension makes no model calls.
 
 When title metadata is absent, browse cues use the first level 1–6 ATX heading
 outside backtick or tilde fences, then the filename if no heading exists.
@@ -152,18 +161,18 @@ closing delimiter. Otherwise raw cues remain visible with a qualification, metad
 receives no title weight, and the prompt index counts status as unknown. Unicode
 line and paragraph separators do not create Markdown delimiter lines.
 Each note includes parsed `lifecycle` evidence from the same source, including
-status, a replacement pointer, and any lifecycle problem. Default results keep
-slug, title, tags, outgoing supersession cues, and cue problems; query hits also
-keep their digest, rank, source excerpt, and compact matched terms. Duplicate raw
-status and replacement cues appear only with `detail: true`.
+status, a replacement pointer, and any lifecycle problem. Compact query hits keep
+slug, title, digest, window-local rank, source match with offsets, and cue problems.
+Browse cues keep tags and outgoing supersession links. Detailed results include
+the raw cues, including status and replacement, where available.
 
 Default `freshness` appears only for material facts: an unresolved `concern`, a
 `due` deadline with `reviewAfter` and `evaluatedOn`, a `retirement` record, or
 nonempty `problems`. The field is absent when none of these facts applies. Absence
 is not a declaration of freshness. `detail: true` returns the complete existing
-freshness record and match diagnostics for each note, for browse and query calls.
-The page echoes `detail`, which defaults to false. Coverage and corpus term
-frequencies remain unchanged. Use `memory_read` for full freshness and source
+freshness record for browse and query calls and full query match diagnostics.
+The page echoes `detail`, which defaults to false. Both forms use the same ranks
+and report the limits of coverage. Use `memory_read` for full freshness and source
 qualifications before relying on a selected note.
 
 Prefer applicable active sources and inspect supersession pointers before applying
@@ -184,10 +193,12 @@ room for its maximum supported size, so the byte limit can stop a window early.
 Browse reads at most 8 KiB per candidate. Query reads support complete sources up
 to 64 KiB, with a one-byte oversize check included in the window byte budget.
 
-`scan` reports complete filename inventory, candidate count, window boundaries,
-bytes read, unavailable notes, and bounded issues. `retiredNotes` and `excludedRetired`
-count retired notes observed and omitted in that source window. The result also returns
-`includeRetired` and `excludedRetired`; omitted retired notes do not become unknown gaps. `scan.complete` means that this
+On a compact query page `scan` reports filename inventory completeness, window
+boundaries, issue count, unavailable notes and whether that window covers all
+candidates. Browse and `detail: true` also report byte counts, inventory evidence,
+issue details, and the retired notes observed and omitted. Every page returns
+`includeRetired` and `excludedRetired`; omitted retired notes do not become unknown gaps.
+`scan.complete` means that this
 one window covers all candidates; it does not imply source availability.
 `search.complete` also requires every candidate to be available. `totalNotes`,
 `totalMatches`, ranks, term frequencies, and result offsets are **window-local**.
@@ -262,6 +273,26 @@ replacement. Retirement never implies a successor. `README` pages have `lifecycl
 and `freshness: null` because the contract has no note lifecycle. Original source
 content remains unchanged on every page.
 
+On the first page of a current subject, `staleReferences` lists body mentions of
+other subjects that are now superseded or retired. Each row gives the exact
+`slug`, current `status` and `supersededBy` (the named replacement or null).
+Read the replacement before applying a statement about that subject. A mention
+is not proof that the statement is wrong: it may describe the past.
+
+The scan checks whole, case-sensitive slugs or `.md` filenames in the complete
+body, not only the returned page. It matches existing top-level filenames; it
+does not resolve body text as paths, infer semantic links, or treat generated
+frontmatter links as prose references. The advisory scan visits up to 4,096
+directory entries and checks up to 128 matching prefixes (8 KiB each). It stops
+between operations after a 100 ms time budget. Self-references, `README`, prior
+revisions and continuation pages produce no such list. The same JSON page reaches
+the model and tool details.
+
+At most 25 stale subjects are returned. `staleReferenceCoverage` appears when a
+bound or an unavailable source leaves gaps, or the list omits matches. `count`
+is the observed match count; `complete: false` means others remain unknown. A
+note digest binds the note bytes, not the current status of other notes.
+
 Every note page also returns `freshness`: the UTC `evaluatedOn` date, declared
 `verified` and `verifiedDate`, `policy`, `reviewAfter`, `deadline`, `concern`,
 `lastReview`, `retirement`, and `problems`. Unknown verification fields are null.
@@ -273,8 +304,8 @@ normalization. Historical pages interpret those old declarations, not the curren
   facts. Contrary evidence or changed scope requires review.
 - `before-use` requires a current defining-source check when a decision depends on current
   environment or external behavior. Today's verification date does not bypass it.
-  That check does not require a memory write. Persist a review only when durable renewal,
-  concern resolution, or a policy adjustment has value.
+  That check does not require a memory write. Use `memory_review` to record a whole-note
+  confirmation or a durable concern, not to change a policy on its own.
 - An absent policy is `unclassified`; an invalid policy is `unknown`. Neither means false.
 - A subject-specific `review_after` requires a concrete reason. No universal interval or
   automatic renewal applies. A due date retains the note and does not revoke a decision.
@@ -399,9 +430,9 @@ replaces old title, tags, body, and verification fields; it does not require tho
 old authoring fields to match the newly supplied ones. No silent schema migration
 occurs.
 
-Search before every mutation. Update the existing subject instead of creating a near
-duplicate. The writer refuses identical slugs, not semantic duplicates. Search is
-the overlap preview; no second implicit search inflates write results.
+Search before creation or when the target is uncertain. The writer refuses identical
+slugs, not semantic duplicates. An exact current read supplies the target and digest
+for an update; the writer does not require another search.
 
 Successful calls report `Memory updated: <file>` for each changed note. Errors name
 `written` and `notWritten` files, whether initialization occurred, and the destination
@@ -413,10 +444,23 @@ copies, with revision, timestamp, digest, and size. `historyOmitted` names a sou
 and `credential-policy` reason without its content. Neither list counts as a live
 note publication or proves that the requested mutation succeeded.
 
+After a supersession or retirement reaches disk, `affectedReferences` names the
+transitioned subjects (`slugs`) and up to 25 still-active `notes` whose bodies name
+them. `count` counts distinct affected notes observed, not occurrences. Review those
+statements in the same pass; no dependant is changed automatically. The same
+advice accompanies a partial publication, but only for transitions that succeeded.
+A successful ordinary edit, update or create without a lifecycle transition does
+not scan for other notes. An unavailable or incomplete advisory scan does not change
+the publication outcome. This scan has the same directory and time limits as the
+[first-page reference check](#memory_read) and attempts at most 512 source reads
+of up to 64 KiB each. It checks for the named subject before it parses lifecycle
+metadata. `coverage.complete: false` means the reported count is not exhaustive.
+
 ### `memory_edit`
 
-Required fields are `slug`, `expectedDigest`, `verified`, and `edits`. Each edit has
-`oldText` and `newText`. Supply between 1 and 32 edits; each text is at most 24,000
+Supply `slug`, `expectedDigest`, `verified`, and at least one change: a new `title`,
+`edits`, or both. A title-only edit needs no `edits` array. For body changes, supply
+between 1 and 32 `{oldText, newText}` replacements; each text is at most 24,000
 UTF-16 code units. `oldText` must be nonempty; empty `newText` deletes the match.
 Every `oldText` must match exactly once in the original body after frontmatter.
 All matches use that original body, not earlier replacements in the same call.
@@ -432,17 +476,19 @@ quotes the body's exact text, as a JSON string with its line number, to copy
 unchanged. Otherwise it gives the number of leading or trailing characters that do
 match, the line where the match stops, and short excerpts of the body and of
 `oldText` at that point. An ambiguous `oldText` names the lines of its first two
-matches. The edit itself stays literal: the refusal never applies a folded match.
+matches. When a diagnostic would quote recognizable credential text, it omits the
+text and retains the line location. The edit itself stays literal: the refusal never
+applies a folded match.
 
 **An existing matching `# Title` heading is required.** The first level-one ATX title
-heading outside backtick or tilde fences must match the frontmatter `title` and
-remain unchanged. A missing or divergent heading refuses with an actionable error;
-the editor never invents a title or treats frontmatter as its body replacement.
-Use `memory_write` only when a complete rewrite is intentional. Fenced examples do
-not count as title headings.
-Edits that hide that heading or introduce an earlier title also refuse. Changes to
-introductory prose preserve the original heading's identity despite offset shifts.
-Title, tags, and other frontmatter are not editable through this tool. The writer updates
+heading outside backtick or tilde fences must match the frontmatter `title`.
+A new `title` (1–160 UTF-16 units, single-line and nonblank) changes both
+locations together. The new H1 is `# <trimmed title>` with the original line
+ending. Body replacements must not
+change or hide that heading or introduce an earlier title. A missing or divergent
+heading refuses; the editor never invents a title. Changes to introductory prose
+preserve the original heading's identity despite offset shifts. Tags and other
+user-authored frontmatter are not editable through this tool. The writer updates
 `updated`, `verified`, and `verified_date` frontmatter lines. Verified edits also remove
 `review_flag`; unverified edits preserve it. Policy, deadline, and digest-bound prior
 review evidence remain unchanged. All other bytes survive, including comments, unknown
@@ -483,8 +529,9 @@ writer-touch metadata, not evidence of a content change or claim freshness.
 - `unresolved` requires a nonblank `reason` and sources. It records `review_flag` and
   preserves old verification fields as historical attestations. An unavailable source
   is not confirmation. Report the exact source gap; persist only a durable concern.
-- Omitted `reviewPolicy` or `reviewAfter` preserves the field. Explicit null removes it.
-  A review never automatically advances a deadline.
+- A confirmation or unresolved concern can also set `reviewPolicy` or `reviewAfter`.
+  Omission preserves the field; explicit null removes it. A policy change alone is not
+  a review outcome. A review never automatically advances a deadline.
 - A retired note requires `outcome: confirmed` plus `reactivate: true`. New evidence and
   task authority justify that action; the argument itself proves no operator approval.
   Reactivation removes retirement and restores active status. Active notes reject
@@ -620,12 +667,18 @@ uses `true` with a settings diagnostic, not a lower-priority file value.
 
 Automatic recall scores exact lowercase Unicode words from subject slugs, titles
 and the first 800 summary characters. It drops short words and a fixed stop list.
-Rare cue words carry more weight than summary-only words. The score sums the six
+Cue words from titles and slugs carry more weight than summary-only words; rare
+words carry more weight than common ones. The ordinary lexical rule sums the six
 largest term weights, normalises for cue and summary length, and requires at least
-two cue matches and a score of 18. It selects at most one positively active note.
-Scores are internal selection values, not confidence probabilities. There is no
-stemming, fuzzy matching, synonym expansion, short-token recall or model-specific
-routing.
+two cue matches and a score of 18. With few eligible notes, even a full title can
+score below that floor. With at most 25 eligible notes, a single-line input can match
+a unique complete title with at least two substantive words. A short unquoted
+question can contain the complete title if it has at least three substantive
+title words, two distinguish it from the other notes' cues, and no more than eight
+words surround it. Neither title rule lowers
+the score floor for incidental word overlap. Both routes return at most one
+active note. Scores are selection values, not confidence probabilities. There is
+no fuzzy matching, synonym expansion or model-specific routing.
 
 Input of at most 2,000 UTF-16 units is scored on all its words. Longer input, such
 as a task brief, a pasted handover, a report or a log, is scored on extracted
@@ -663,8 +716,10 @@ message immediately after its exact admitted user message in the `context` hook.
 Recall uses admitted content: an exact match to a pending raw capture permits
 recall regardless of that capture's source. It does not establish operator
 provenance. Queued, ambiguous and unresolved captures receive qualified source
-labels, never an inferred direct-input label. Custom-message runs permit recall,
-not storage cues.
+labels, never an inferred direct-input label. Once an input is admitted for recall,
+its source class does not change which notes are eligible or how they score. A
+custom task or peer report can therefore trigger an irrelevant notice. Custom
+messages permit recall, not storage cues.
 
 Storage cues require an interactive or RPC source plus an admission check. For
 idle input, `before_agent_start` must supply the same text as the raw capture.
@@ -698,13 +753,17 @@ remains host-owned. Retained notices stop at 128 rather than evict visible
 notices and change old prompt bytes. Session changes, tree changes and compaction
 clear transient state. Process restart permits a repeated bounded notice.
 
-Proactive discovery shares explicit retrieval's regular-file checks and lifecycle
-parser. It reuses the same bounded verified-header parse cache but repeats every
-inventory, open, read and evidence check. It inventories at most 16,384 directory entries and examines at most 512
-candidate notes, with at most 8 KiB per prefix and 4 MiB total prefix reads. A
-complete eligible header and Summary section must fit that prefix. It reads only
-the selected full note, up to 64 KiB, to bind the digest and current review state.
-A changed title, summary or lifecycle between discovery and selection abstains.
+Proactive discovery inventories at most 16,384 directory entries and examines at
+most 512 candidates, with at most 8 KiB per prefix and 4 MiB total prefix reads.
+It opens regular files without following leaf symlinks and reuses parsed headers
+only for matching header bytes. It does not make explicit search's before-and-after
+pathname checks on every candidate. The prefix needs a complete, readable header
+and a `## Summary` heading. If the Summary continues beyond the prefix, discovery
+uses completed prose through a paragraph or sentence boundary within it. It does
+not invent the end of a sentence or expose a broken block as a Summary.
+It rereads only the selected full note, up to
+64 KiB, to confirm its discovery cues, bind the digest and obtain current review
+state. If those cues changed or the note is no longer active, no notice is sent.
 Notices label partial coverage; omitted sources remain unknown. An unknown
 lifecycle makes coverage partial; known retired and superseded notes are deliberate
 exclusions that do not make coverage partial. No background scan or stored index runs.
@@ -808,7 +867,9 @@ resulting-note category and pattern family, never the matched text. Replace a
 credential value with a descriptive placeholder. `oldText` is not independently
 rejected, so a targeted edit can remove an existing credential; the complete
 result must pass. Insertion or deletion that assembles a recognizable token refuses.
-The same narrow guard applies to prior bytes. If an authorized correction removes
+An anchor mismatch also checks the text it would quote before it clips an excerpt.
+If that text matches the credential guard, the refusal gives a line location, not
+the text. The same narrow guard applies to prior bytes. If an authorized correction removes
 forbidden prior material, the mutation skips that capture, reports a content-free
 `historyOmitted` entry, and preserves the correction. This policy omission differs
 from an ordinary archive I/O failure, which stops live publication.
@@ -859,11 +920,12 @@ available.
 
 A safe lock inode can have hard-link aliases, including a candidate left by an
 interrupted writer. Every alias shares the same kernel exclusion and stays unchanged.
-Acquisition requires read/write access and no group or other permission bits, not
-exact equality with mode `0600`. Unsafe modes refuse; an explicit owner chmod to
-`0600` at a quiet-writer boundary repairs the same inode without deletion. The
-extension performs no automatic permission repair. Unsafe-attribute refusals identify
-the lock file and request inspection and owner chmod at a quiet-writer boundary.
+The lock must be a regular file owned by the writer's user, with at least one link,
+no group or other permission bits, and a size of at most 4,096 bytes. Acquisition
+requires read/write access, not an exact mode of `0600`. The lock path must still
+name the held inode. If only permissions are wrong, stop writers before the owner
+sets mode `0600` on that same inode. A mode change does not repair a different owner,
+file type, or size. The extension performs no automatic permission repair.
 Operating-system refusals retain their error code. A busy refusal requests a later
 retry; it never requests lock removal.
 
@@ -872,6 +934,20 @@ lock's presence does not require removal before another supported writer acquire
 it. The extension does not delete crash residue automatically. Note receipts and
 source inspection still govern repair after interrupted or partial publication.
 Search ignores these hidden artifacts.
+
+A new file becomes visible through an exclusive hard link. The writer records the
+publication and removes its private staging name before it publishes the next file.
+Process loss between the link and unlink can still leave a live `README.md` or note
+with two names. If a later mutation refuses that multiply linked file:
+
+1. Stop corpus writers. Inspect the named live file and its private `.memory-<UUID>.tmp`
+   candidate in the same directory. Use `lstat` on both names; both must be regular
+   files with the same device and inode. A matching name or digest alone is not proof.
+2. If the two names account for both links and the live file holds the expected bytes,
+   remove **only the verified private alias**. Never remove the live file, the lock,
+   or another hard link to force an update. If the evidence does not match, stop.
+3. Read the current destination and each supersession target before retrying. A live
+   destination requires its current `expectedDigest`, not another create.
 
 Kernel exclusion coordinates Memory writers that use this protocol. A writer that
 does not use the protocol is not excluded. The writer never removes the persistent
@@ -888,7 +964,8 @@ persistent lock file.
 Contention reports `Memory writer is busy. Retry later. This writer never removes the lock file. Do not remove it.`
 Identity loss reports `Memory lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.`
 
-Retrieval refusals name unknown option keys and rejected subject slugs. The writer's
+Argument refusals identify unknown keys, with the accepted spelling when a key
+resembles a declared field. Read refusals identify rejected subject slugs. The writer's
 recognised credential formats are redacted before error clipping, including in
 rejected keys and subjects. Missing note refusals include the note filename and
 the search recovery step.
