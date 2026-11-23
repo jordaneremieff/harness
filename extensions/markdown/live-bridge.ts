@@ -752,7 +752,8 @@ export class LiveBridge {
 	private connect(binding: LiveBinding, body: Record<string, unknown>): object {
 		if (body.live !== PANE_PROTOCOL)
 			throw new RequestFailure(
-				426,
+				// Earlier readers stop retrying on 410; they do not recognise the upgrade response.
+				body.live === undefined || body.live === 1 || body.live === 2 ? 410 : 426,
 				"This reader and Pi use different live pane protocols. Update the reader and reopen it from this Pi session.",
 			);
 		if (!livePid(body.pid) || !liveId(body.launchId)) throw new Error("Invalid native pane process or launch.");

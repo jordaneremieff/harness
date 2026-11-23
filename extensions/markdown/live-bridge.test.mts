@@ -488,7 +488,8 @@ test("the host refuses older pane versions and preserves exact claim and release
 			ranges: [{ start: 0, end: 5 }],
 			label: "Revise passage",
 		};
-		for (const live of [undefined, 1, 2]) assert.equal((await post(config, "/connect", { ...pane, live })).status, 426);
+		for (const live of [undefined, 1, 2]) assert.equal((await post(config, "/connect", { ...pane, live })).status, 410);
+		assert.equal((await post(config, "/connect", { ...pane, live: 4 })).status, 426);
 		assert.equal(bridge.list()[0].live, 3);
 		const claimId = randomUUID();
 		const results = [
