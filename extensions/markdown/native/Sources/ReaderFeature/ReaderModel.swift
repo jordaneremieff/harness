@@ -48,6 +48,8 @@ public final class ReaderModel {
 
     public private(set) var reference: DocumentReference
     public let page: ReaderWebPage
+    /// Matches the page receipt only when this model has committed the corresponding source.
+    public private(set) var displayedPresentation: String?
     public private(set) var sourceGeneration: UInt64 = 0
     public var source: String { snapshot?.source ?? "" }
     public private(set) var lock: ReaderBridgeLock = .reading
@@ -61,6 +63,7 @@ public final class ReaderModel {
     @ObservationIgnored private var requestedSourceGeneration: UInt64 = 0
     @ObservationIgnored private var mirrorSequence = 0
     @ObservationIgnored private var snapshotDelivery: Task<Void, any Error>?
+    @ObservationIgnored private var stagedDelivery: Int?
     @ObservationIgnored private var snapshotDeliveryAssets: [String: ResolvedAsset] = [:]
     @ObservationIgnored private var snapshotDeliveryState: ReaderBridgeMessage?
     @ObservationIgnored private var draftReviewSequence = 0
@@ -155,7 +158,8 @@ public final class ReaderModel {
     /// The latest revision whose automatic load failed; following skips it until the pointer
     /// names another revision.
     @ObservationIgnored private var failedRevision: Int?
-    @ObservationIgnored private var interactionGeneration = 0
+    /// The page refused a follow before its interaction state reached the host.
+    @ObservationIgnored private var followWaitsForState = false
     @ObservationIgnored private var latestScroll: ReaderBridgeScroll?
     /// The source generation that `rendered` belongs to.
     @ObservationIgnored private var renderedGeneration: UInt64?
@@ -214,7 +218,8 @@ public final class ReaderModel {
     }
 
     /// Reuses the same web view for a different authoritative reading snapshot.
-    public func showSnapshot(_ snapshot: DocumentSnapshot, latestRevision: Int? = nil, initialLock: ReaderBridgeLock? = nil, origin: LaunchOrigin? = nil) async throws {
+    public func showSnapshot(_ snapshot: DocumentSnapshot, latestRevision: Int? = nil, initialLock: ReaderBridgeLock? = nil,
+                             origin: LaunchOrigin? = nil, mayInstall: @escaping @MainActor () -> Bool = { true }) async throws {
         await waitForSnapshotDelivery()
         guard !closed else { throw CancellationError() }
         guard snapshot.source.utf8.count <= Limits.sourceBytes else { throw ReaderBridgeError.oversized }
@@ -237,30 +242,27 @@ public final class ReaderModel {
         let envelope = documentPayload(snapshot: snapshot, rendered: candidate, generation: 0, lock: nextLock,
                                        position: position ?? state.position(for: snapshot.reference), draftId: nil,
                                        isDraft: false, latestRevision: latest, metadata: [:])
-        // ReaderWebPage clears documentReady before validation. Reject an oversized candidate
-        // here so the current page, including its navigation history, is never touched.
-        try ReaderBridgeCodec.validateNativeEnvelope(envelope)
         let delivery = Task { @MainActor in
-            defer {
-                snapshotDelivery = nil
-                snapshotDeliveryState = nil
-                snapshotDeliveryAssets = [:]
-                if !closed { updateAssets() }
-            }
+            defer { snapshotDelivery = nil; finishDelivery(token) }
             guard !closed, token == generation, mirror == mirrorSequence else { throw DisplayWait.Superseded() }
             let wasReady = page.documentReady
-            snapshotDeliveryAssets = candidate.assets
-            updateAssets()
             do {
-                _ = try await page.send(envelope)
+                _ = try await page.send(envelope) {
+                    guard mayInstall() else { return false }
+                    self.stageDelivery(token, assets: candidate.assets)
+                    return true
+                }
             } catch {
                 // A page-side failure may have interrupted delivery after it began. Redisplay
                 // the last accepted document without replacing the native mirror.
-                if wasReady, !closed, token == generation, let shown = self.snapshot, let rendered {
+                if wasReady, !page.documentReady, !closed, token == generation, let shown = self.snapshot, let rendered {
                     let previous = documentPayload(snapshot: shown, rendered: rendered, generation: sourceGeneration,
                                                    lock: lock, position: cachedReadingPosition)
-                    _ = try? await page.send(previous)
+                    if (try? await page.send(previous)) as? Bool == true, token == generation {
+                        displayedPresentation = previous["presentation"] as? String
+                    }
                 }
+                if token == generation, page.documentReady, let report = snapshotDeliveryState { applyPageState(report) }
                 throw error
             }
             guard !closed, token == generation else { throw DisplayWait.Superseded() }
@@ -281,6 +283,7 @@ public final class ReaderModel {
             showingSource = false
             scrolling = false
             olderChosen = false
+            followWaitsForState = false
             failedRevision = nil
             timings = nil
             update = nil
@@ -295,6 +298,7 @@ public final class ReaderModel {
             resumeRenderingWaiters()
             sentBlockKeys = Set(candidate.blocks.map(\.key))
             phase = .ready
+            displayedPresentation = envelope["presentation"] as? String
             if let report = snapshotDeliveryState { applyPageState(report) }
             startWatching()
             state.noteOpened(reference, title: Provenance.displayTitle(snapshot, rendered: candidate))
@@ -311,10 +315,10 @@ public final class ReaderModel {
     /// Updates the native mirror and rendering without replacing the page's history.
     public func acceptSource(source: String, generation: UInt64, meta: [String: Any]? = nil,
                              resolver: (any AssetResolving)? = nil, draftId: UUID? = nil) async throws {
-        guard !closed else { throw CancellationError() }
-        guard source.utf8.count <= Limits.sourceBytes, generation <= UInt64(ReaderBridgeCodec.maxInteger) else {
-            throw ReaderBridgeError.oversized
+        if snapshotDelivery != nil, page.presentation == nil || page.presentation != displayedPresentation {
+            throw DisplayWait.Superseded()
         }
+        _ = try beginMirrorUpdate(source: source, generation: generation)
         let wasCaptured = capturedSource
         let registersDraft = draftId != nil && draftIdentity != draftId
         if let draftId { draftIdentity = draftId; isDraft = true }
@@ -323,18 +327,7 @@ public final class ReaderModel {
         let assetResolver = resolver ?? snapshot?.resolver ?? NoAssetResolver()
         let nonce = rendered?.nonce ?? MarkdownRenderer.newNonce()
         sourceGeneration = generation
-        var current: DocumentSnapshot
-        if draftIdentity != nil {
-            current = DocumentSnapshot.draft(reference: reference, title: meta?["title"] as? String ?? snapshot?.title ?? "Document", source: source, resolver: assetResolver)
-        } else {
-            current = snapshot ?? DocumentSnapshot.draft(reference: reference, title: meta?["title"] as? String ?? "Document", source: source, resolver: assetResolver)
-        }
-        current.source = source
-        current.digest = Digest.sha256(Data(source.utf8))
-        current.bytes = source.utf8.count
-        current.resolver = assetResolver
-        if let title = meta?["title"] as? String { current.title = title }
-        snapshot = current
+        snapshot = mirrorSnapshot(source: source, resolver: assetResolver, meta: meta, draft: draftIdentity != nil)
         if let meta {
             metadata = meta
             if let kind = meta["kind"] as? String { isDraft = draftIdentity != nil || kind == "draft" }
@@ -349,7 +342,7 @@ public final class ReaderModel {
         let result = await Task.detached(priority: .userInitiated) {
             MarkdownRenderer.render(source, resolver: assetResolver, nonce: nonce)
         }.value
-        guard mirror == mirrorSequence, sourceGeneration == generation, self.source.utf8.elementsEqual(source.utf8) else { return }
+        guard mirror == mirrorSequence, !closed else { throw DisplayWait.Superseded() }
         rendered = result
         renderedGeneration = generation
         resumeRenderingWaiters()
@@ -359,26 +352,83 @@ public final class ReaderModel {
         updateAssets()
     }
 
+    private func beginMirrorUpdate(source: String, generation: UInt64) throws -> Int {
+        guard !closed else { throw CancellationError() }
+        guard source.utf8.count <= Limits.sourceBytes, generation <= UInt64(ReaderBridgeCodec.maxInteger) else {
+            throw ReaderBridgeError.oversized
+        }
+        self.generation += 1
+        loadPending = false
+        supersedeDisplay()
+        return self.generation
+    }
+
+    private func mirrorSnapshot(source: String, resolver: any AssetResolving, meta: [String: Any]?, draft: Bool) -> DocumentSnapshot {
+        let title = meta?["title"] as? String ?? snapshot?.title ?? "Document"
+        var current = (draft ? nil : snapshot) ?? DocumentSnapshot.draft(reference: reference, title: title, source: source, resolver: resolver)
+        current.title = title
+        current.source = source
+        current.digest = Digest.sha256(Data(source.utf8))
+        current.bytes = source.utf8.count
+        current.resolver = resolver
+        return current
+    }
+
     /// Sends a complete document on open or resynchronisation, never after an ordinary edit.
     public func sendDocument(source: String, generation: UInt64, meta: [String: Any]? = nil,
                              resolver: (any AssetResolving)? = nil, initialLock: ReaderBridgeLock? = nil,
                              draftId: UUID? = nil) async throws {
         await waitForSnapshotDelivery()
-        let changedDraft = draftId != nil && draftId != draftIdentity
-        if changedDraft { latestScroll = nil; requestedScroll = nil }
-        if let draftId { draftIdentity = draftId; isDraft = true }
-        try await acceptSource(source: source, generation: generation, meta: meta, resolver: resolver)
-        if let initialLock { self.initialLock = initialLock }
-        else if changedDraft { self.initialLock = initialDraftLock }
-        guard let snapshot, let rendered, sourceGeneration == generation, self.source.utf8.elementsEqual(source.utf8) else { return }
-        lock = capturedSource ? .reading : (self.initialLock ?? lock)
-        let position = cachedReadingPosition ?? (isDraft ? nil : state.position(for: reference))
-        var envelope = documentPayload(snapshot: snapshot, rendered: rendered, generation: generation, lock: lock, position: position)
-        if let meta { envelope["meta"] = mergedMetadata(envelope["meta"] as? [String: Any] ?? [:], override: meta) }
-        _ = try await sendEnvelope(envelope)
-        if let draftIdentity { state.setDraftLock(lock, for: draftIdentity.uuidString) }
+        let token = try beginMirrorUpdate(source: source, generation: generation)
+        let identity = draftId ?? draftIdentity
+        let nextMeta = meta ?? metadata
+        let draft = identity != nil || (nextMeta["kind"] as? String == "draft")
+        let assetResolver = resolver ?? snapshot?.resolver ?? NoAssetResolver()
+        let candidate = mirrorSnapshot(source: source, resolver: assetResolver, meta: nextMeta, draft: identity != nil)
+        let nonce = rendered?.nonce ?? MarkdownRenderer.newNonce()
+        let result = await Task.detached(priority: .userInitiated) {
+            MarkdownRenderer.render(source, resolver: assetResolver, nonce: nonce)
+        }.value
+        guard token == self.generation, !closed else { throw DisplayWait.Superseded() }
+        let changedDraft = identity != draftIdentity
+        let draftLock = changedDraft ? identity.map { state.draftLock(for: $0.uuidString) } : nil
+        let defaultLock = draftLock ?? self.initialLock ?? lock
+        let captured = nextMeta["capturedSource"] as? Bool ?? isCaptured(candidate)
+        let nextLock = captured ? ReaderBridgeLock.reading : (initialLock ?? defaultLock)
+        let position = changedDraft ? nil : (cachedReadingPosition ?? (draft ? nil : state.position(for: reference)))
+        let envelope = documentPayload(snapshot: candidate, rendered: result, generation: generation, lock: nextLock,
+                                       position: position, draftId: identity, isDraft: draft, latestRevision: latestRevision, metadata: nextMeta)
+        defer { finishDelivery(token) }
+        do {
+            _ = try await page.send(envelope) {
+                self.stageDelivery(token, assets: result.assets)
+                return true
+            }
+        }
+        catch {
+            if token == self.generation, page.documentReady, let report = snapshotDeliveryState { applyPageState(report) }
+            throw error
+        }
+        guard token == self.generation, !closed else { throw DisplayWait.Superseded() }
+        preparePositionDelivery(envelope)
+        mirrorSequence += 1
+        snapshot = candidate
+        rendered = result
+        renderedGeneration = generation
+        sourceGeneration = generation
+        draftIdentity = identity
+        isDraft = draft
+        draftGeneration = draft ? generation : nil
+        metadata = nextMeta
+        lock = nextLock
         self.initialLock = nil
-        sentBlockKeys = Set(rendered.blocks.map(\.key))
+        sentBlockKeys = Set(result.blocks.map(\.key))
+        phase = .ready
+        failure = nil
+        displayedPresentation = envelope["presentation"] as? String
+        if let identity { state.setDraftLock(lock, for: identity.uuidString) }
+        if let report = snapshotDeliveryState { applyPageState(report) }
+        resumeRenderingWaiters()
     }
 
     @discardableResult
@@ -425,6 +475,7 @@ public final class ReaderModel {
         let captured = metadata["capturedSource"] as? Bool ?? isCaptured(snapshot)
         var meta: [String: Any] = [
             "documentId": draftId?.uuidString ?? snapshot.document?.id ?? snapshot.reference.key,
+            "documentKey": draftId?.uuidString ?? issueReference(snapshot.reference),
             "kind": isDraft ? "draft" : (snapshot.document?.kind.rawValue ?? "localFile"),
             "title": Provenance.displayTitle(snapshot, rendered: rendered),
             "shortId": snapshot.document?.id ?? snapshot.location.lastPathComponent,
@@ -440,7 +491,8 @@ public final class ReaderModel {
              "start": rendered.blocks.first(where: { $0.html.contains("id=\"" + heading.id + "\"") })?.start ?? 0]
         }
         var result: [String: Any] = [
-            "v": 1, "type": "document", "meta": meta, "source": snapshot.source, "generation": generation,
+            "v": 1, "type": "document", "presentation": UUID().uuidString, "meta": meta,
+            "source": snapshot.source, "generation": generation,
             "blocks": blockPayload(rendered, incremental: false), "headings": headings,
             "settings": ["lock": (captured ? ReaderBridgeLock.reading : lock).rawValue,
                          "textSize": settings.textSizeMultiplier, "textSizeSteps": PageSettings.textSizeMultipliers,
@@ -462,6 +514,21 @@ public final class ReaderModel {
         }
     }
 
+    private func stageDelivery(_ token: Int, assets: [String: ResolvedAsset]) {
+        stagedDelivery = token
+        snapshotDeliveryState = nil
+        snapshotDeliveryAssets = assets
+        updateAssets()
+    }
+
+    private func finishDelivery(_ token: Int) {
+        guard stagedDelivery == token else { return }
+        stagedDelivery = nil
+        snapshotDeliveryState = nil
+        snapshotDeliveryAssets = [:]
+        if !closed { updateAssets() }
+    }
+
     func updateAssets() {
         var combined = rendered?.assets ?? [:]
         combined.merge(review.assets) { _, value in value }
@@ -476,7 +543,7 @@ public final class ReaderModel {
             // The display operation waiting for ready owns the document delivery.
             return nil
         case .state:
-            if snapshotDelivery != nil { snapshotDeliveryState = message }
+            if stagedDelivery != nil { snapshotDeliveryState = message }
             else { applyPageState(message) }
             return nil
         case .lock:
@@ -521,6 +588,8 @@ public final class ReaderModel {
 
     private func applyPageState(_ message: ReaderBridgeMessage) {
         guard let next = message.pageState else { return }
+        let wasInteracting = followWaitsForState || interacting()
+        followWaitsForState = false
         let previousScroll = pageState?.scroll
         pageState = next
         if next.scroll.blockStart <= (positionSourceLength ?? source.utf16.count) {
@@ -538,6 +607,9 @@ public final class ReaderModel {
             findStatus = (find["count"] as? Int ?? 0) > 0 ? .found : .notFound
         }
         if previousScroll != next.scroll { scrolled() }
+        if wasInteracting, !interacting(), followsNow {
+            Task { await followAvailableRevision() }
+        }
     }
 
     private func handleCommand(_ fields: [String: Any]) async throws -> [String: Any] {
@@ -751,7 +823,7 @@ public final class ReaderModel {
     /// a newer revision is known, the reader did not choose an older one, and that revision's
     /// automatic load did not fail.
     private var followsNow: Bool {
-        guard followsLatest, !olderChosen, !loadPending, case .revision(let latest) = update else { return false }
+        guard !isDraft, followsLatest, !olderChosen, !loadPending, !followWaitsForState, case .revision(let latest) = update else { return false }
         return latest != failedRevision
     }
 
@@ -774,6 +846,7 @@ public final class ReaderModel {
     func load(revision: Int?, pinnedDigest: String? = nil, restore: RestoreMode, automatic: Bool = false) async {
         await waitForSnapshotDelivery()
         guard !closed else { return }
+        if automatic, !followsNow || interacting() || revision != latestRevision { return }
         generation += 1
         supersedeDisplay()
         let token = generation
@@ -831,15 +904,10 @@ public final class ReaderModel {
             if automatic { failedRevision = revision }
             fail(String(describing: error))
         case .success(let prepared):
-            if automatic, await interacting() { return }
-            let interaction = interactionGeneration
             // The cached place counts offsets in the shown text; the new revision's text can differ above it.
             if case .current = restore { position = cachedReadingPosition?.carried(from: source, to: prepared.snapshot.source) }
-            if automatic, await interacting() { return }
-            guard token == generation, !closed else { return }
-            if automatic, interaction != interactionGeneration { return }
-            guard await install(prepared, position: position, token: token, started: started) else {
-                if automatic, token == generation, failure != nil { failedRevision = revision }
+            if automatic, !followsLatest || olderChosen || interacting() { return }
+            guard await install(prepared, position: position, token: token, started: started, automatic: automatic) else {
                 return
             }
             if automatic { failedRevision = nil }
@@ -862,26 +930,44 @@ public final class ReaderModel {
     /// to the shown rendering's tokens, the shown revision's state stays, and its page is displayed
     /// again at the position captured before the load. Returns true when the prepared revision was
     /// committed.
-    private func install(_ prepared: PreparedDocument, position: ReadingPosition?, token: Int, started: Date) async -> Bool {
+    private func install(_ prepared: PreparedDocument, position: ReadingPosition?, token: Int, started: Date, automatic: Bool) async -> Bool {
         let displayStart = Date()
-        assets.replace(prepared.rendered.assets)
+        defer { finishDelivery(token) }
+        let envelope: [String: Any]
         do {
             let nextLock = isCaptured(prepared.snapshot) ? ReaderBridgeLock.reading : (initialLock ?? (isDraft ? initialDraftLock : .reading))
-            let envelope = documentPayload(snapshot: prepared.snapshot, rendered: prepared.rendered,
-                                           generation: isDraft ? requestedSourceGeneration : 0, lock: nextLock, position: position, includeOverride: false)
-            try await display(envelope: envelope)
+            envelope = documentPayload(snapshot: prepared.snapshot, rendered: prepared.rendered,
+                                       generation: isDraft ? requestedSourceGeneration : 0, lock: nextLock, position: position, includeOverride: false)
+            try await display(envelope: envelope) {
+                if automatic, !self.followsLatest || self.olderChosen || self.interacting() { return false }
+                self.stageDelivery(token, assets: prepared.rendered.assets)
+                return true
+            }
+        } catch is CancellationError {
+            if token == generation, stagedDelivery == token {
+                if let report = snapshotDeliveryState { applyPageState(report) }
+                else if automatic { followWaitsForState = true }
+            }
+            return false
         } catch is DisplayWait.Superseded {
             return false
         } catch {
             guard token == generation, !closed else { return false }
             assets.replace(rendered?.assets ?? [:])
+            if automatic { failedRevision = prepared.snapshot.revision }
             fail("The page could not be shown: \(error.localizedDescription)")
-            if snapshot != nil {
-                try? await sendDocument(source: source, generation: sourceGeneration)
+            if let snapshot, let rendered, !page.documentReady {
+                let previous = documentPayload(snapshot: snapshot, rendered: rendered, generation: sourceGeneration,
+                                               lock: lock, position: cachedReadingPosition)
+                if (try? await sendEnvelope(previous)) as? Bool == true, token == generation {
+                    displayedPresentation = previous["presentation"] as? String
+                }
             }
             return false
         }
         guard token == generation, !closed else { return false }
+        preparePositionDelivery(envelope)
+        mirrorSequence += 1
         snapshot = prepared.snapshot
         rendered = prepared.rendered
         sourceGeneration = isDraft ? requestedSourceGeneration : 0
@@ -891,6 +977,8 @@ public final class ReaderModel {
         initialLock = nil
         sentBlockKeys = Set(prepared.rendered.blocks.map(\.key))
         metadata = [:]
+        followWaitsForState = false
+        displayedPresentation = envelope["presentation"] as? String
         failure = nil
         latestRevision = max(latestRevision ?? 0, prepared.snapshot.latestRevision ?? 0)
         if let shown = prepared.snapshot.revision, let latest = latestRevision, latest > shown {
@@ -906,6 +994,7 @@ public final class ReaderModel {
             displayMilliseconds: Date().timeIntervalSince(displayStart) * 1000,
             totalMilliseconds: Date().timeIntervalSince(started) * 1000
         )
+        if let report = snapshotDeliveryState { applyPageState(report) }
         if !isDraft { state.noteOpened(reference, title: Provenance.displayTitle(prepared.snapshot, rendered: prepared.rendered)) }
         readerLog.notice("rendered \(self.reference.key, privacy: .public) revision=\(prepared.snapshot.revision.map(String.init) ?? "-", privacy: .public) latest=\(prepared.snapshot.latestRevision.map(String.init) ?? "-", privacy: .public) update=\(self.update == nil ? "none" : "available", privacy: .public) restore=\(self.lastRestore.rawValue, privacy: .public) totalMs=\(Int(self.timings?.totalMilliseconds ?? 0), privacy: .public)")
         await savePosition()
@@ -913,8 +1002,7 @@ public final class ReaderModel {
     }
 
     /// Commits a document bridge delivery only after the application page accepts it.
-    func display(envelope: [String: Any]) async throws {
-        preparePositionDelivery(envelope)
+    func display(envelope: [String: Any], mayInstall: @escaping @MainActor () -> Bool = { true }) async throws {
         supersedeDisplay()
         let wait = DisplayWait()
         displayWait = wait
@@ -923,13 +1011,15 @@ public final class ReaderModel {
             try await wait.run(check)
         } else {
             try await wait.run { [page] in
-                let accepted = try await page.send(envelope)
+                let accepted = try await page.send(envelope, mayInstall: mayInstall)
                 guard accepted as? Bool == true else { throw URLError(.cannotParseResponse) }
             }
         }
     }
 
     private func supersedeDisplay() {
+        page.supersedeDocumentDelivery()
+        if let stagedDelivery { finishDelivery(stagedDelivery) }
         let previous = displayWait
         displayWait = nil
         previous?.supersede()
@@ -973,13 +1063,15 @@ public final class ReaderModel {
             latestRevision = newest
             update = .revision(newest)
             readerLog.notice("update available \(self.reference.key, privacy: .public) revision=\(latest, privacy: .public)")
-            if followsNow, await !interacting() {
-                guard token == generation, !closed, !loadPending else { return }
-                await load(revision: newest, restore: .current, automatic: true)
-            }
+            await followAvailableRevision()
         case .file:
             if marker != snapshot.digest { update = .fileChanged }
         }
+    }
+
+    private func followAvailableRevision() async {
+        guard !closed, followsNow, !interacting() else { return }
+        await load(revision: latestRevision, restore: .current, automatic: true)
     }
 
     // MARK: - Reading position
@@ -988,7 +1080,6 @@ public final class ReaderModel {
     public func scrolled() {
         guard !closed else { return }
         scrolling = true
-        interactionGeneration += 1
         positionTask?.cancel()
         positionTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(500))
@@ -997,10 +1088,7 @@ public final class ReaderModel {
             await self.savePosition()
             guard !Task.isCancelled, !self.closed else { return }
             self.positionTask = nil
-            if self.followsNow, await !self.interacting() {
-                guard !self.closed, !self.loadPending else { return }
-                await self.load(revision: self.latestRevision, restore: .current, automatic: true)
-            }
+            await self.followAvailableRevision()
         }
     }
 
@@ -1063,8 +1151,8 @@ public final class ReaderModel {
     /// Whether the reader is in the middle of something that a page replacement would undo: a
     /// text selection, source view, an open find bar, a scroll that has not settled or a
     /// comparison of revisions in preparation or on screen.
-    func interacting() async -> Bool {
-        if lock == .writing && pageState?.activeBlock != nil { return true }
+    func interacting() -> Bool {
+        if pageState?.editingPending == true || pageState?.held != nil || (lock == .writing && pageState?.activeBlock != nil) { return true }
         if pageState?.hasSelection == true || pageState?.findOpen == true || pageState?.overlay != nil { return true }
         if showingSource || findVisible || scrolling || review.preparing != nil { return true }
         return false
@@ -1100,7 +1188,6 @@ public final class ReaderModel {
 
     public func toggleSource() async {
         guard snapshot != nil else { return }
-        interactionGeneration += 1
         showingSource.toggle()
         await sendCommand("showSource")
         if !showingSource { await checkForUpdate() }

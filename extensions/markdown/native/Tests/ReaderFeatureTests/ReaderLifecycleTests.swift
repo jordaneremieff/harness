@@ -121,14 +121,65 @@ private final class LifecycleGate {
         reader.page.onDocumentReady = { transitions.append($0) }
         try await reader.sendDocument(source: "Text", generation: 0)
         #expect(reader.page.documentReady)
+        let first = try #require(reader.page.presentation)
+        let key = reader.issueReference(reader.reference)
+        #expect(UUID(uuidString: first) != nil)
+        #expect(reader.page.documentKey == key)
+        #expect(reader.displayedPresentation == first)
         try await reader.page.reload()
         #expect(reader.page.isReady)
         #expect(!reader.page.documentReady)
+        #expect(reader.page.presentation == nil)
+        #expect(reader.page.documentKey == nil)
         try await reader.sendDocument(source: "Text", generation: 0)
         #expect(reader.page.documentReady)
+        #expect(reader.page.documentKey == key)
+        #expect(reader.page.presentation != first)
+        #expect(reader.displayedPresentation == reader.page.presentation)
         await reader.close()
         #expect(!reader.page.documentReady)
         #expect(transitions == [true, false, true, false])
+    }
+
+    @Test func aBusyPageRefusesAReplacementWithoutDiscardingItsReceiptOrSource() async throws {
+        let reader = model(reference: .file(path: "draft-host"), state: ReadingStateStore(directory: nil))
+        try await reader.sendDocument(source: "First", generation: 5, draftId: UUID())
+        let receipt = try #require(reader.displayedPresentation)
+        let key = try #require(reader.page.documentKey)
+        _ = try await reader.page.callJavaScript("const receive = reader.receive; reader.receive = m => m.type === 'document' ? false : receive(m);")
+        await #expect(throws: CancellationError.self) { try await reader.sendDocument(source: "Next", generation: 0, draftId: UUID()) }
+        #expect(reader.page.documentReady)
+        #expect(reader.page.presentation == receipt)
+        #expect(reader.page.documentKey == key)
+        #expect(reader.displayedPresentation == receipt)
+        #expect(reader.sourceGeneration == 5)
+        #expect(reader.source == "First")
+        await reader.close()
+    }
+
+    @Test func lateDocumentReplyCannotConfirmASupersededSend() async throws {
+        let reader = model(reference: .file(path: "draft-host"), state: ReadingStateStore(directory: nil))
+        try await reader.page.load()
+        _ = try await reader.page.callJavaScript("""
+            const receive = reader.receive;
+            reader.receive = async m => {
+                const result = await receive(m);
+                if (m.source === 'First') await new Promise(resolve => window.finishFirst = resolve);
+                return result;
+            };
+            """)
+        let first = Task { try await reader.sendDocument(source: "First", generation: 0) }
+        let held = await wait { (try? await reader.page.callJavaScript("return !!window.finishFirst")) as? Bool == true }
+        try #require(held)
+        #expect(reader.page.presentation == nil)
+        try await reader.sendDocument(source: "Second", generation: 0)
+        let accepted = try #require(reader.page.presentation)
+        _ = try await reader.page.callJavaScript("window.finishFirst();")
+        await #expect(throws: DisplayWait.Superseded.self) { try await first.value }
+        #expect(reader.source == "Second")
+        #expect(reader.displayedPresentation == accepted)
+        #expect(reader.page.presentation == accepted)
+        await reader.close()
     }
 
     @Test func oversizedSnapshotSwitchKeepsTheSharedReaderOnItsAcceptedDocument() async throws {
@@ -178,6 +229,10 @@ private final class LifecycleGate {
         let nextURL = store.root.appendingPathComponent("next.md")
         try Data("# Next\n".utf8).write(to: nextURL)
         let next = try DocumentLoader.load(.file(path: nextURL.path))
+        let firstPresentation = try #require(reader.displayedPresentation)
+        await #expect(throws: CancellationError.self) { try await reader.showSnapshot(next, mayInstall: { false }) }
+        #expect(reader.page.presentation == firstPresentation)
+        #expect(reader.displayedPresentation == firstPresentation)
         try await reader.showSnapshot(next)
         #expect(reader.reference == next.reference)
         #expect(reader.source == next.source)
@@ -199,12 +254,20 @@ private final class LifecycleGate {
         #expect(reader.isDraft)
         #expect(reader.draftGeneration == 7)
         #expect(reader.lock == .reading)
+        #expect(reader.page.documentKey == id.uuidString)
         _ = try await reader.page.callJavaScript("window.replacements = 0; const receive = reader.receive; reader.receive = m => { if (m.type === 'document') window.replacements++; return receive(m); };")
         let exact = "# Draft\r\n\r\nCafe\u{301}\r\n"
         try await reader.acceptSource(source: exact, generation: 8)
         #expect(reader.source.utf8.elementsEqual(exact.utf8))
         #expect(reader.sourceGeneration == 8)
         #expect(reader.draftGeneration == 8)
+        let token = try #require(reader.page.presentation)
+        let key = UUID().uuidString
+        let ack: [String: Any] = ["v": 1, "type": "ack", "generation": 8, "presentation": token,
+                                  "meta": ["documentKey": key], "digest": Digest.sha256(Data(exact.utf8)), "recovery": "retained"]
+        _ = try await reader.sendEnvelope(ack)
+        #expect(reader.page.documentKey == key)
+        #expect(reader.page.presentation == token)
         #expect(try await reader.page.callJavaScript("return window.replacements;") as? Int == 0)
         await reader.close()
     }
@@ -459,6 +522,63 @@ private final class LifecycleGate {
         #expect(moved?.blockStart == start)
         #expect(restored?.blockStart == start)
         #expect(restored?.offsetY == -18.5)
+        await model.close()
+    }
+
+    @Test func aMirrorEditSupersedesARevisionInPreparation() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1)
+        try store.publish(2)
+        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
+        await model.open(revision: 1, origin: nil)
+        let first = try #require(model.page.presentation)
+        let gate = LifecycleGate()
+        defer { gate.release() }
+        model.preparationGate = { _ in await gate.wait() }
+        let refresh = Task { await model.refresh() }
+        try #require(await wait { gate.reached })
+        try await model.acceptSource(source: "Unsaved", generation: 1, draftId: UUID())
+        gate.release()
+        await refresh.value
+        #expect(model.source == "Unsaved")
+        #expect(model.sourceGeneration == 1)
+        #expect(model.page.presentation == first)
+        #expect(!model.isLoadingForCheck)
+        await model.close()
+    }
+
+    @Test func releasingASelectionResumesFollowingAtTheSameSourceGeneration() async throws {
+        let store = try LifecycleStore()
+        defer { try? FileManager.default.removeItem(at: store.root) }
+        try store.publish(1, source: "One")
+        try store.publish(2, source: "Two")
+        let model = model(reference: store.reference, state: ReadingStateStore(directory: nil))
+        await model.open(revision: 1, origin: nil)
+        let first = try #require(model.page.presentation)
+        try #require(await wait { !model.isScrollingForCheck && model.update == .revision(2) })
+        let key = try #require(model.page.documentKey)
+        try await reportState(model, selection: "One")
+        model.followsLatest = true
+        await model.checkForUpdate()
+        #expect(model.page.presentation == first)
+        _ = try await model.page.callJavaScript("""
+            const receive = reader.receive;
+            reader.receive = m => {
+                if (m.type === 'document') { window.refused = true; reader.receive = receive; return false; }
+                return receive(m);
+            };
+            """)
+        try await reportState(model)
+        try #require(await wait { (try? await model.page.callJavaScript("return !!window.refused")) as? Bool == true && !model.isLoadingForCheck })
+        #expect(model.page.presentation == first)
+        // The page coalesced its composition events and reported only the final idle state.
+        try await reportState(model)
+        #expect(await wait { model.snapshot?.revision == 2 && !model.isLoadingForCheck })
+        #expect(model.sourceGeneration == 0)
+        #expect(model.page.documentKey == key)
+        #expect(model.page.presentation != first)
+        #expect(model.displayedPresentation == model.page.presentation)
         await model.close()
     }
 

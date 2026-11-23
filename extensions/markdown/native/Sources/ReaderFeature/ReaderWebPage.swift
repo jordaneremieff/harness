@@ -9,6 +9,8 @@ public final class ReaderWebPage: NSObject, WKNavigationDelegate, WKScriptMessag
     public let webView: WKWebView
     public private(set) var isReady = false
     public private(set) var documentReady = false
+    public private(set) var presentation: String?
+    public private(set) var documentKey: String?
     public var onDocumentReady: ((Bool) -> Void)?
     private var documentDelivery = 0
     public private(set) var consoleErrors: [String] = []
@@ -94,15 +96,47 @@ public final class ReaderWebPage: NSObject, WKNavigationDelegate, WKScriptMessag
 
     @discardableResult
     public func send(_ envelope: [String: Any]) async throws -> Any? {
-        let document = envelope["type"] as? String == "document"
-        if document { invalidateDocument() }
-        let delivery = documentDelivery
+        try await send(envelope, mayInstall: { true })
+    }
+
+    @discardableResult
+    func send(_ envelope: [String: Any], mayInstall: @MainActor () -> Bool) async throws -> Any? {
         try ReaderBridgeCodec.validateNativeEnvelope(envelope)
+        try Task.checkCancellation()
+        let document = envelope["type"] as? String == "document"
+        let token = envelope["presentation"] as? String
+        let key = (envelope["meta"] as? [String: Any])?["documentKey"] as? String
+        if document {
+            guard let token, UUID(uuidString: token) != nil, let key, UUID(uuidString: key) != nil else {
+                throw ReaderBridgeError.invalid("Missing document identity")
+            }
+            supersedeDocumentDelivery()
+        }
+        let delivery = documentDelivery
         try await load()
+        let previous = (presentation, documentKey, documentReady)
+        if document {
+            try Task.checkCancellation()
+            guard delivery == documentDelivery else { throw DisplayWait.Superseded() }
+            guard mayInstall() else { throw CancellationError() }
+            clearDocumentReceipt()
+        }
         let result = try await callJavaScript("return reader.receive(m)", arguments: ["m": envelope])
         if document {
-            guard result as? Bool == true else { throw ReaderBridgeError.invalid("The page refused the document") }
-            if delivery == documentDelivery, !closed, isReady { setDocumentReady(true) }
+            try Task.checkCancellation()
+            guard delivery == documentDelivery, !closed, isReady else { throw DisplayWait.Superseded() }
+            guard let accepted = result as? Bool else { throw ReaderBridgeError.invalid("Missing page receipt") }
+            guard accepted else {
+                (presentation, documentKey) = (previous.0, previous.1)
+                setDocumentReady(previous.2)
+                throw CancellationError()
+            }
+            presentation = token
+            documentKey = key
+            setDocumentReady(true)
+        } else if envelope["type"] as? String == "ack", result as? Bool == true,
+                  let token, token == presentation, let key, UUID(uuidString: key) != nil {
+            documentKey = key
         }
         return result
     }
@@ -113,8 +147,17 @@ public final class ReaderWebPage: NSObject, WKNavigationDelegate, WKScriptMessag
         onDocumentReady?(ready)
     }
 
+    /// A newer model request supersedes in-flight sends but leaves an already accepted page intact.
+    func supersedeDocumentDelivery() { documentDelivery += 1 }
+
     private func invalidateDocument() {
-        documentDelivery += 1
+        supersedeDocumentDelivery()
+        clearDocumentReceipt()
+    }
+
+    private func clearDocumentReceipt() {
+        presentation = nil
+        documentKey = nil
         setDocumentReady(false)
     }
 
