@@ -57,14 +57,17 @@ records provenance; it does not detect or prevent prompt injection.
 
 ## Tool cards
 
-The `google_status` card distinguishes a successful status check that reports
-Google Workspace access is not ready from an error that prevents the check.
-It shows the reported account or readiness diagnostic and the required backend
-version when the result supplies them. Expand the card for the complete status
-envelope, including granted scopes and capabilities. The same renderer serves
-the main session, agent dashboard, and attached transcript. See the
-[emission grammar](../../docs/conventions/emissions.md). The model still receives
-one compact JSON envelope.
+Google tool cards show what was requested, what the result establishes, and up
+to five visual lines of result text. Expand a page to see its exact continuation
+call. A status check that reports access is not ready is distinct from a failed
+check. A Gmail acceptance receipt confirms acceptance by Gmail, not delivery;
+an unknown outcome identifies the operation to check instead of assuming a send.
+
+The cards do not reproduce the model's compact JSON envelope. They omit private
+mutation payloads and mark upstream diagnostics that could expose them. Safe
+read diagnostics remain visible. The same presenters serve the main session,
+agent dashboard, and attached transcript. See the
+[emission grammar](../../docs/conventions/emissions.md).
 
 ## Documents and presentations
 

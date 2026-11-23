@@ -23,7 +23,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { toolDisplay } from "./display.ts";
 import registerGoogle from "./index.ts";
-import { failure, GoogleError, ok, toolResult, type Result } from "./result.ts";
+import { failure, GoogleError, ok, partial, toolResult, type Result } from "./result.ts";
 
 initTheme("dark", false);
 
@@ -38,12 +38,13 @@ function expansionKey(t: TestContext, keys: KeyId[]): void {
 	t.after(() => setKeybindings(previous));
 }
 
-function card(): ToolExecutionComponent {
-	const record = toolDisplay().tools[0];
+function card(name = "google_status", args: Record<string, unknown> = {}): ToolExecutionComponent {
+	const record = toolDisplay().tools.find((record) => record.name === name);
+	assert.ok(record);
 	return new ToolExecutionComponent(
 		record.name,
 		"google-test-call",
-		{},
+		args,
 		{ outputPad: 1 },
 		record,
 		{ requestRender() {} } as TUI,
@@ -104,7 +105,7 @@ test("Pi renders an argument-free call, progress, and a ready status with one di
 	component.setExpanded(true);
 	const expanded = rows(component).join("\n");
 	assert.match(expanded, /scope-read/);
-	assert.match(expanded, /"gmailSend": false/);
+	assert.match(expanded, /gmailSend: not available/);
 	assert.doesNotMatch(expanded, /to expand|to collapse/);
 });
 
@@ -193,6 +194,132 @@ test("a bare Pi diagnostic stays intact without a hint that adds nothing", (t) =
 	assert.match(rows(component, 24).join("\n"), /Could not start status\ncheck\./);
 });
 
+test("calendar page owns the only settled hint and preserves the exact next call", (t) => {
+	expansionKey(t, ["ctrl+g"]);
+	const args = { calendarId: "cal@example.invalid", limit: 1, orderBy: "updated", cursor: "old-token" };
+	const component = card("calendar_events_list", args);
+	assert.match(rows(component).filter(Boolean).at(-1) ?? "", /ctrl\+g to expand/);
+	settle(
+		component,
+		ok({ events: [{ eventId: "evt", externalData: { summary: "Planning" } }], nextCursor: "x+/_=  %" }),
+	);
+	const collapsed = rows(component).filter(Boolean);
+	assert.match(collapsed.join("\n"), /This page contains 1 event\. Another page is available\./);
+	assert.deepEqual(
+		collapsed.filter((line) => line.includes("to expand")),
+		[collapsed.at(-1)],
+	);
+	assert.doesNotMatch(collapsed.join("\n"), /old-token|x\+\/|schemaVersion/);
+	component.setExpanded(true);
+	const expanded = rows(component, 160).join("\n");
+	assert.ok(
+		expanded.includes(
+			'Continue with calendar_events_list {"calendarId":"cal@example.invalid","limit":1,"orderBy":"updated","cursor":"x+/_=  %"}',
+		),
+	);
+	assert.doesNotMatch(expanded, /to expand|to collapse/);
+});
+
+test("private mutation arguments and echoed diagnostics stay out of both views", (t) => {
+	expansionKey(t, []);
+	const component = card("calendar_event_update", {
+		eventId: "evt",
+		event: { summary: "PRIVATE_PAYLOAD", description: "OTHER_PRIVATE_TEXT" },
+	});
+	const before = rows(component).join("\n");
+	assert.doesNotMatch(before, /click to expand|PRIVATE/);
+	settle(component, failure(new GoogleError("API_ERROR", "Bad request: PRIVATE_PAYLOAD")));
+	const after = rows(component).filter(Boolean);
+	assert.ok(after.includes("The Google API rejected the request."));
+	assert.ok(after.includes("[Upstream diagnostic withheld]"));
+	assert.equal(after.at(-1), "... (click to expand)");
+	component.setExpanded(true);
+	const expanded = rows(component).join("\n");
+	assert.match(expanded, /event: 2 fields/);
+	assert.match(expanded, /Error code API_ERROR/);
+	assert.doesNotMatch(expanded, /PRIVATE|to expand|to collapse/);
+});
+
+test("a bare Pi failure with private mutation arguments withholds the entire diagnostic", () => {
+	const args = { eventId: "evt", event: { description: "PRIVATE_EVENT_TEXT" } };
+	const component = card("calendar_event_update", args);
+	const diagnostic = `Invalid value PRIVATE_FIRST_LINE\n\nReceived arguments:\n${JSON.stringify(args, null, 2)}`;
+	component.updateResult({ content: [{ type: "text", text: diagnostic }], isError: true });
+	for (const expanded of [false, true]) {
+		component.setExpanded(expanded);
+		const rendered = rows(component).join("\n");
+		assert.match(rendered, /The tool call failed\.\n\[Unstructured diagnostic withheld\]/);
+		assert.doesNotMatch(rendered, /PRIVATE_|Received arguments|Invalid value/);
+	}
+});
+
+test("safe multiline read diagnostics retain error colour on every row", (t) => {
+	const colours = t.mock.method(Theme.prototype, "fg");
+	const component = card("calendar_events_list");
+	const lines = ["Calendar read failed.", "The read endpoint did not respond.", "No page was returned."];
+	const diagnostic = lines.join("\n");
+	const fixtures = [
+		{ content: [{ type: "text" as const, text: diagnostic }] },
+		toolResult(failure(new GoogleError("BACKEND_ERROR", diagnostic))),
+	];
+	for (const result of fixtures) {
+		component.updateResult({ ...result, isError: true });
+		for (const expanded of [false, true]) {
+			component.setExpanded(expanded);
+			colours.mock.resetCalls();
+			assert.ok(rows(component).join("\n").includes(diagnostic));
+			for (const line of lines) {
+				const roles = colours.mock.calls.flatMap(({ arguments: [role, value] }) =>
+					value.trimEnd() === line ? [role] : [],
+				);
+				assert.ok(roles.length > 0);
+				assert.ok(
+					roles.every((role) => role === "error"),
+					`${line} uses error colour`,
+				);
+			}
+		}
+	}
+});
+
+test("partial read coverage does not turn a safe read diagnostic into a mutation refusal", (t) => {
+	expansionKey(t, ["ctrl+o"]);
+	const component = card("calendar_events_list", { calendarId: "team" });
+	settle(component, partial({ events: [] }, ["PRIVATE_WARNING"]));
+	const coverage = rows(component).join("\n");
+	assert.match(coverage, /This page contains 0 events\./);
+	assert.match(coverage, /\[Partial result\]/);
+	assert.doesNotMatch(coverage, /PRIVATE_WARNING/);
+	settle(component, failure(new GoogleError("BACKEND_ERROR", "Calendar API returned a safe read diagnostic.")));
+	const failed = rows(component).join("\n");
+	assert.match(failed, /Calendar API returned a safe read diagnostic\./);
+	assert.doesNotMatch(failed, /contains 0|Partial|withheld/);
+});
+
+test("Gmail separates acceptance, refusal, and an unknown effect with the causal operation", (t) => {
+	expansionKey(t, ["ctrl+o"]);
+	const component = card("gmail_send", {
+		operationId: "requested-op",
+		mail: { to: ["reader@example.invalid"], text: "PRIVATE_BODY" },
+	});
+	settle(component, ok({ outcome: "accepted", operationId: "accepted-op", gmailMessageId: "m1" }));
+	assert.match(rows(component).join("\n"), /Gmail accepted the send\./);
+	settle(component, {
+		...failure(new GoogleError("API_ERROR", "PRIVATE_DIAGNOSTIC", false, undefined, "rejected-op")),
+		data: { outcome: "rejected", operationId: "rejected-op", rfcMessageId: "<m@example.invalid>" },
+	});
+	assert.match(rows(component).join("\n"), /Gmail rejected the send\./);
+	settle(
+		component,
+		failure(new GoogleError("SEND_OUTCOME_UNKNOWN", "PRIVATE_DIAGNOSTIC", true, undefined, "causal-op")),
+	);
+	assert.match(rows(component).join("\n"), /outcome is unknown/);
+	component.setExpanded(true);
+	const expanded = rows(component, 125).join("\n");
+	assert.match(expanded, /Continue with gmail_operation_status \{"operationId":"causal-op","reconcile":true\}/);
+	assert.doesNotMatch(expanded, /PRIVATE|accepted the send|rejected the send|to expand/);
+});
+
 test("ordinary registration, the display event bus and the Durable descriptor use the pure display records", async (t) => {
 	const dir = await mkdtemp(join(tmpdir(), "google-display-"));
 	const agentDir = process.env.PI_CODING_AGENT_DIR;
@@ -224,17 +351,15 @@ test("ordinary registration, the display event bus and the Durable descriptor us
 	assert.deepEqual(publications, [display]);
 	assert.deepEqual(descriptor, { version: 1, entry: "./display.ts", export: "toolDisplay" });
 	assert.deepEqual(Object.keys(await import("./display.ts")), ["toolDisplay"]);
-	const [record] = display.tools;
-	assert.deepEqual(Object.keys(record).sort(), ["name", "renderCall", "renderResult", "renderShell"].sort());
-	assert.deepEqual(
-		[...tools.values()].filter((tool) => tool.renderCall || tool.renderResult).map((tool) => tool.name),
-		[record.name],
-	);
-	const status = tools.get(record.name);
-	assert.ok(status);
-	assert.equal(status.renderCall, record.renderCall);
-	assert.equal(status.renderResult, record.renderResult);
-	assert.equal(status.renderShell, record.renderShell);
+	assert.deepEqual(display.tools.map((record) => record.name).sort(), [...tools.keys()].sort());
+	for (const record of display.tools) {
+		assert.deepEqual(Object.keys(record).sort(), ["name", "renderCall", "renderResult", "renderShell"].sort());
+		const registered = tools.get(record.name);
+		assert.ok(registered);
+		assert.equal(registered.renderCall, record.renderCall);
+		assert.equal(registered.renderResult, record.renderResult);
+		assert.equal(registered.renderShell, record.renderShell);
+	}
 	bus.emit("harness:tool-display:request", { version: 42 });
 	assert.equal(publications.length, 1);
 	bus.emit("harness:tool-display:request", { version: 1 });
