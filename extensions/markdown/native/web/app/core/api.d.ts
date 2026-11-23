@@ -167,7 +167,14 @@ declare global {
 		name: string;
 		args?: Record<string, unknown>;
 	}
+	interface ReaderSaveState {
+		presentation: string;
+		state: "saving" | "saved" | "retrying" | "conflict";
+		revision?: number;
+		detail?: string;
+	}
 	interface ReaderControllerEvents {
+		saveState: ReaderSaveState;
 		document: ReaderCoreDocument;
 		blocks: ReaderMappedBlock[];
 		lock: "reading" | "writing";

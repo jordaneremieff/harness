@@ -34,11 +34,14 @@
 		outline.id = "b-outline";
 		outline.setAttribute("aria-controls", "outline");
 		outline.setAttribute("aria-pressed", "true");
-		const status = el(
-			"span",
-			{ class: "status", "data-role": "status", "data-state": "saved", "aria-live": "polite" },
-			"Saved",
-		);
+		const status = el("button", { type: "button", class: "status", "data-role": "status", "aria-live": "polite" });
+		const connection = el("button", {
+			type: "button",
+			class: "status connection",
+			"data-role": "connection",
+			"aria-live": "polite",
+		});
+		connection.hidden = true;
 		const undo = button("Undo", "undo", () => command("undo", { document: true }), { iconOnly: true, key: "cmd+Z" }),
 			redo = button("Redo", "redo", () => command("redo", { document: true }), { iconOnly: true, key: "cmd+shift+Z" });
 		undo.id = "b-undo";
@@ -57,7 +60,18 @@
 			className: "btn-i agent",
 		});
 		askButton.id = "b-ask";
-		bar.append(outline, title, el("span", { class: "spacer" }), status, history, lock, find, appearance, askButton);
+		bar.append(
+			outline,
+			title,
+			el("span", { class: "spacer" }),
+			status,
+			connection,
+			history,
+			lock,
+			find,
+			appearance,
+			askButton,
+		);
 		function listen(
 			target: EventTarget,
 			type: string,
@@ -220,18 +234,20 @@
 				);
 			else removeNotice("captured-copy");
 		}
-		function saveStatus(state: string) {
-			const label =
-				(
-					{ saving: "Saving", saved: "Saved", retrying: "Kept on this Mac", conflict: "Kept on this Mac" } as Record<
-						string,
-						string
-					>
-				)[state] ?? "Saved";
-			status.dataset.state = state;
-			status.replaceChildren(icon(state === "saved" ? "check" : "info"), el("span", { class: "save-word" }, label));
-			status.setAttribute("aria-label", label);
+		function statusLabel(node: HTMLElement, glyph: string, label: string, description: string) {
+			node.title = description;
+			node.setAttribute("aria-label", description);
+			node.replaceChildren(icon(glyph), el("span", { class: "save-word" }, label));
 		}
+		function saveStatus(state: ReaderSaveState["state"], detail?: string) {
+			const label = { saving: "Saving", saved: "Saved", retrying: "Retrying save", conflict: "Autosave stopped" }[
+				state
+			];
+			status.dataset.state = state;
+			statusLabel(status, state === "saved" ? "check" : "info", label, detail ? `${label}: ${detail}` : label);
+		}
+		listen(status, "click", () => notice(status.title, "info", [], "save-detail"));
+		listen(connection, "click", () => notice(connection.title, "info", [], "connection-detail"));
 		function lockState() {
 			const writing = controller.lock === "writing";
 			app.dataset.mode = controller.lock;
@@ -712,16 +728,23 @@
 			}),
 		);
 		off.push(
-			host.on("saveState", (value) => {
-				const msg = value as { state: string; detail?: string };
-				saveStatus(msg.state);
+			host.on("connectionState", (value) => {
+				const { detail } = value as { detail: string };
+				removeNotice("connection-detail");
+				statusLabel(connection, "link", detail, `Conversation: ${detail}`);
+				connection.hidden = false;
+			}),
+			controller.on("saveState", (msg) => {
+				saveStatus(msg.state, msg.detail);
+				removeNotice("save-detail");
 				if (msg.state === "conflict")
 					notice(
-						msg.detail ?? "The file changed where you edited. Your version is kept; the other version is a draft.",
+						msg.detail ?? "Autosave stopped because of a conflict.",
 						"warn",
 						[{ label: "Show other version", run: () => views.open() }],
 						"conflict",
 					);
+				else removeNotice("conflict");
 			}),
 			controller.on("link", (value) => {
 				if (!value.href) return;

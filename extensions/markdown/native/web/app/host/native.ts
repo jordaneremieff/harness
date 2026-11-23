@@ -299,7 +299,11 @@
 					optional(m.detail, (v) => string(v, META, true)),
 			);
 		},
+		connectionState(m) {
+			ensure(string(m.detail, 8192));
+		},
 		saveState(m) {
+			ensure(string(m.presentation, 200) && optional(m.revision, revision));
 			ensure(
 				one(m.state, ["saving", "saved", "retrying", "conflict"]) &&
 					optional(m.detail, (v) => string(v, 8192, true)) &&
@@ -392,7 +396,11 @@
 					optional(m.match, (v) => one(v, ["title", "source"])),
 			);
 	}
+	function revision(value: unknown) {
+		return integer(value) && value > 0;
+	}
 	function annotation(m: Fields, nonblank = false) {
+		ensure(optional(m.authoredRevision, revision));
 		ensure(string(m.text, META, !nonblank) && (!nonblank || m.text.trim()));
 		ensure(optional(m.quote, (v) => string(v, META, true)));
 		if (m.quoteRange !== undefined) range(m.quoteRange);
@@ -404,6 +412,7 @@
 			ensure(m.overall === undefined);
 			return annotation(m);
 		}
+		ensure(m.authoredRevision === undefined || (m.overall !== undefined && revision(m.authoredRevision)));
 		ensure(m.text === undefined && m.quote === undefined && m.quoteRange === undefined);
 		// Native refuses an overall comment over 64 KiB of UTF-8 or of white space alone, U+0085 included.
 		ensure(optional(m.overall, (v) => string(v) && /[^\s\u0085]/u.test(v) && encoder.encode(v).length <= 64 * 1024));

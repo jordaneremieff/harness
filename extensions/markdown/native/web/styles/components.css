@@ -475,8 +475,10 @@
   #b-ask { anchor-name: --ask; }
   .bar .status { position: static; display: inline-flex; gap: 5px; align-items: center; color: var(--ink-3); white-space: nowrap; font: 500 11.5px/1.2 var(--font); }
   .bar .status .i { width: 13px; height: 13px; }
+  .bar .status[data-state="retrying"], .bar .status[data-state="conflict"] { color:var(--err); }
+  .connection .save-word { overflow:hidden; text-overflow:ellipsis; max-width:18ch; }
   /* Controls with nothing to offer take no room, so the title keeps it. */
-  #app[data-mode="reading"] .bar .status, .history-controls.idle { display:none; }
+  #app[data-mode="reading"] .bar .status[data-state="saved"], .history-controls.idle { display:none; }
   .history-controls { display: flex; gap: 2px; }
   .btn-i:disabled { opacity: .35; pointer-events: none; }
   .toc a .t { display:block; overflow:visible; white-space:normal; overflow-wrap:anywhere; -webkit-line-clamp:unset; }
@@ -549,7 +551,7 @@
     .overlay-head{padding:12px 16px;}.overlay-body{padding:18px 16px;}.facts{gap:10px 12px;grid-template-columns:minmax(0,1fr) minmax(0,2fr);}
     .library-search{flex-wrap:wrap;}.library-search input{flex-basis:55%;}.library-search select{max-width:130px;}
     .seltools { max-width:calc(100cqw - 16px); }.seltools .copy-selection { font-size:0;gap:0; }
-    #app[data-find] .bar :is(.status,.history-controls,#b-ask) { display:none; }
+    #app[data-find] .bar :is(.status[data-state="saved"],.history-controls,#b-ask) { display:none; }
   }
   @container app (width < 420px) {
     #app[data-find] .bar :is(#b-outline,#b-edit) { display:none; }

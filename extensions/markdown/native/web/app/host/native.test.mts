@@ -91,6 +91,41 @@ test("the page sends a batch as one prompt and refuses mixed or invalid shapes",
 	assert.equal(calls.length, 2);
 	host.dispose();
 });
+test("authored revisions belong to individual comments and the optional overall comment", () => {
+	const { page } = bridge().bridge;
+	const header = {
+		v: 1,
+		type: "prompt",
+		requestId: "r",
+		threadId: "t",
+		documentKey: "d",
+		presentation: "p",
+		generation: 4,
+	};
+	const single = { ...header, text: "Review this.", authoredRevision: 3 };
+	assert.equal(page(single).authoredRevision, 3);
+	const annotations = [
+		{ text: "One", authoredRevision: 1 },
+		{ text: "Two", authoredRevision: 2 },
+	];
+	assert.equal(page({ ...header, annotations, overall: "Summarise.", authoredRevision: 3 }).authoredRevision, 3);
+	assert.throws(() => page({ ...header, annotations, authoredRevision: 3 }));
+	for (const value of [0, -1, 1.5, "3"]) {
+		assert.throws(() => page({ ...single, authoredRevision: value }));
+		assert.throws(() => page({ ...header, annotations: [{ text: "One", authoredRevision: value }] }));
+		assert.throws(() => page({ ...header, annotations, overall: "Summarise.", authoredRevision: value }));
+	}
+});
+test("connection state belongs to the pane and save state requires a presentation", () => {
+	const { native } = bridge().bridge;
+	const connection = { v: 1, type: "connectionState", detail: "Disconnected" };
+	assert.equal(native(connection).detail, "Disconnected");
+	assert.throws(() => native({ ...connection, detail: "" }));
+	const save = { v: 1, type: "saveState", state: "saved", presentation: "p", revision: 5 };
+	assert.equal(native(save).revision, 5);
+	assert.throws(() => native({ ...save, presentation: undefined }));
+	assert.throws(() => native({ ...save, revision: 0 }));
+});
 test("a long Ask reply reaches its thread with its final paragraph intact", () => {
 	const api = bridge(),
 		host = api.createNativeHost(() => undefined);

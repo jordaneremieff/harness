@@ -203,6 +203,27 @@ test("the whole open block stays held without focus or a time limit and claims r
 	dispose();
 });
 
+test("a current save updates the shown publication revision; a stale save has no effect", () => {
+	const { host, payload, api, controller: c, dispose } = setup();
+	const states: string[] = [];
+	c.on("saveState", (msg) => states.push(msg.state));
+	host.emit("saveState", { state: "saved", presentation: payload.presentation, revision: 4 });
+	assert.equal(c.payload?.meta.revision, 4);
+	const next = api.fixtures.document("New revision");
+	next.meta.revision = 5;
+	host.emit("document", next);
+	host.emit("saveState", { state: "conflict", presentation: payload.presentation, revision: 4 });
+	assert.equal(c.payload?.meta.revision, 5);
+	assert.deepEqual(states, ["saved"]);
+	next.meta.kind = "draft";
+	next.meta.revision = null;
+	host.emit("document", next);
+	host.emit("saveState", { state: "retrying", presentation: next.presentation, revision: 6 });
+	assert.equal(c.payload?.meta.revision, null);
+	assert.deepEqual(states, ["saved", "retrying"]);
+	dispose();
+});
+
 test("late acknowledgements and refusals do not reach a replacement at the same generation", () => {
 	const { api, host, controller: c, dispose } = setup();
 	const before = host.document,

@@ -534,6 +534,11 @@
 			receive<{ presentation: string }>("refused", (m) => {
 				if (m.presentation === c.payload?.presentation) c.emit("refused", m);
 			}),
+			receive<ReaderSaveState>("saveState", (m) => {
+				if (!c.payload || c.payload.presentation !== m.presentation) return;
+				if (m.revision !== undefined && c.payload.meta.kind === "published") c.payload.meta.revision = m.revision;
+				c.emit("saveState", m);
+			}),
 			receive<ReaderNotice>("notice", (m) => c.emit("notice", m)),
 			receive<AgentApply>("agentApply", applyAgent),
 			receive<ReaderClaim>("claim", (m) => {
