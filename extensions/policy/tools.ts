@@ -42,6 +42,7 @@ import {
 } from "./pages.ts";
 import { capText, terminalSafe } from "./panel.ts";
 import { toolDisplayRecord } from "./display.ts";
+import { inspectionFacts } from "./presentation.ts";
 import type { TelemetryRequest, TelemetrySummary } from "./telemetry.ts";
 import { PROPOSAL_CONDITION_GRAMMAR, ProposalConditionSchema, ProposalProgramSchema } from "./program.ts";
 import {
@@ -1116,17 +1117,42 @@ export function pendingProposalOutput(proposal: ProposalEvent): string {
 }
 
 /** Store counts for every view, with the page facts of a paged view. */
-export function rulesDetails(snapshot: RuleSnapshot, output: string | PagedOutput) {
+export function rulesDetails(snapshot: RuleSnapshot, output: ToolInspectionOutput) {
 	return {
 		rules: snapshot.records.size,
 		pending: snapshot.pending.length,
 		ruleStoreDegraded: snapshot.health.status === "degraded",
 		ruleStorePath: snapshot.health.path,
-		...(typeof output === "string" ? {} : { page: output.page }),
+		...(typeof output !== "string" && "page" in output ? { page: output.page } : {}),
 	};
 }
 
-/** Render one read-only inspection view as bounded tool text; paged views also return their page facts. */
+export type ToolInspectionOutput = string | PagedOutput | { text: string; receipt: Record<string, unknown> };
+
+export function rulesTarget(
+	snapshot: RuleSnapshot,
+	id: string,
+	ctx: PolicyToolScope,
+	formatAbsence: (text: string) => string = (text) => text,
+): ToolInspectionOutput {
+	const pending = snapshot.pending.find((entry) => entry.ruleId === id || entry.id === id);
+	if (pending)
+		return { text: pendingProposalOutput(pending), receipt: { target: { status: "pending", id: pending.id } } };
+	const record = snapshot.records.get(id);
+	if (record) {
+		return {
+			text: formatRulesTool({ ...snapshot, records: new Map([[record.id, record]]), pending: [] }, ctx),
+			receipt: { target: { status: "rule", id, state: effectiveState(record), effect: effectiveEffect(record) } },
+		};
+	}
+	const unavailable = snapshot.health.status === "degraded" || snapshot.health.incompleteFinalLine;
+	return {
+		text: formatAbsence(ruleAbsenceMessage(snapshot.health, `No rule or pending proposal named ${formatAbsence(id)}.`)),
+		receipt: { target: { status: unavailable ? "unavailable" : "missing" } },
+	};
+}
+
+/** Keep selected receipt facts independent of the model text and its display limits. */
 async function rulesToolOutput(
 	pi: ExtensionAPI,
 	deps: ToolDeps,
@@ -1134,27 +1160,21 @@ async function rulesToolOutput(
 	params: PolicyRulesInput,
 	view: string,
 	ctx: PolicyToolContext,
-): Promise<string | PagedOutput> {
-	if (view === "rules") {
-		if (params.id) {
-			const record = snapshot.records.get(params.id);
-			const pending = snapshot.pending.filter((entry) => entry.ruleId === params.id || entry.id === params.id);
-			if (pending.length) return pendingProposalOutput(pending[0]);
-			return record
-				? formatRulesTool({ ...snapshot, records: new Map([[record.id, record]]), pending: [] }, ctx)
-				: line(ruleAbsenceMessage(snapshot.health, `No rule or pending proposal named ${line(params.id)}.`));
-		}
-		return rulesPage(snapshot, ctx, params.cursor);
-	}
+): Promise<ToolInspectionOutput> {
+	if (view === "rules")
+		return params.id ? rulesTarget(snapshot, params.id, ctx, line) : rulesPage(snapshot, ctx, params.cursor);
 	if (view === "authoring") return authoringGuide();
-	if (view === "check")
-		return boundedInspection(JSON.stringify(await checkDraft(params, snapshot, pi, ctx, parseAuthoringDraft)));
+	if (view === "check") {
+		const result = await checkDraft(params, snapshot, pi, ctx, parseAuthoringDraft);
+		return { text: boundedInspection(JSON.stringify(result)), receipt: { inspection: inspectionFacts(view, result) } };
+	}
 	if (view === "catalog") return formatCatalog(deps.registry, params.id);
 	if (view === "data") return dataPage(snapshot, params.id, params.cursor);
 	if (!deps.inspect) throw new Error(`policy ${view} inspection is unavailable: runtime callback absent`);
 	const inspected = await deps.inspect(view as PolicyInspectionView, params, ctx);
 	if (view === "capabilities") return capabilitiesPage(inspected as PolicyCapabilities, params.cursor);
-	return boundedInspection(inspected);
+	const text = boundedInspection(inspected);
+	return view === "preview" ? { text, receipt: { inspection: inspectionFacts(view, inspected) } } : text;
 }
 
 export function approvalReadback(
@@ -1317,10 +1337,9 @@ export function registerRuleTools(
 			const snapshot = await deps.loadRegistry(ctx);
 			const view = params.view ?? "rules";
 			const output = await rulesToolOutput(pi, deps, snapshot, params, view, ctx);
-			return {
-				content: [{ type: "text" as const, text: typeof output === "string" ? output : output.text }],
-				details: rulesDetails(snapshot, output),
-			};
+			const text = typeof output === "string" ? output : output.text;
+			const receipt = typeof output !== "string" && "receipt" in output ? output.receipt : undefined;
+			return { content: [{ type: "text" as const, text }], details: { ...rulesDetails(snapshot, output), ...receipt } };
 		},
 	});
 }

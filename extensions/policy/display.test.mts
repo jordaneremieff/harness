@@ -69,6 +69,7 @@ describe("policy display module", () => {
 		assert.deepEqual([...presentation.matchAll(/from "([^"]+)"/g)].map((match) => match[1]).sort(), [
 			"@earendil-works/pi-coding-agent",
 			"@earendil-works/pi-tui",
+			"node:os",
 		]);
 	});
 });

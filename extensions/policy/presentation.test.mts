@@ -1,598 +1,417 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { it, type TestContext } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import { renderProposeCall, renderProposeResult, renderRulesCall, renderRulesResult } from "./presentation.ts";
+import {
+	type ExtensionAPI,
+	type ExtensionToolContext,
+	initTheme,
+	type ToolDefinition,
+	ToolExecutionComponent,
+} from "@earendil-works/pi-coding-agent";
+import { parseToolCallArguments, validateToolArguments } from "@earendil-works/pi-ai";
+import { type KeyId, stripTerminalSequences, type TUI, visibleWidth } from "@earendil-works/pi-tui";
+import { controlResult } from "./control.ts";
+import { toolDisplay } from "./display.ts";
+import { RuleRegistry } from "./local-rules.ts";
+import { PolicyApproveParams, PolicyRulesParams, registerRuleTools } from "./tools.ts";
 
-const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
-const screen = (component: { render(width: number): readonly string[] }, width = 100) =>
-	component
-		.render(width)
-		.map((line) => stripVTControlCharacters(line).trimEnd())
-		.join("\n")
-		.replace(/^\n+/, "");
-const raw = (component: { render(width: number): readonly string[] }, width = 1000) =>
-	component.render(width).join("\n");
-const text = (value: string, details?: unknown) => ({ content: [{ type: "text" as const, text: value }], details });
-const collapsed = { expanded: false, isError: false };
-const expanded = { expanded: true, isError: false };
-
-function assertFits(component: { render(width: number): readonly string[] }, widths: number[] = [20, 60, 100]): void {
-	for (const width of widths)
-		assert.ok(
-			component.render(width).every((line) => visibleWidth(line) <= width),
-			`width ${width}`,
-		);
+const requirePi = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+const nativeTui: typeof import("@earendil-works/pi-tui") = await import(requirePi.resolve("@earendil-works/pi-tui"));
+const ui = { requestRender() {} } as unknown as TUI;
+const revision = "0123456789ab";
+const proposalId = "00000000-0000-4000-8000-000000000002";
+function keys(t: TestContext, binding: KeyId | KeyId[] = "ctrl+g") {
+	initTheme("dark", false);
+	const previous = nativeTui.getKeybindings();
+	nativeTui.setKeybindings(
+		new nativeTui.KeybindingsManager({
+			...nativeTui.TUI_KEYBINDINGS,
+			"app.tools.expand": { defaultKeys: binding, description: "Expand tool output" },
+		}),
+	);
+	t.after(() => nativeTui.setKeybindings(previous));
 }
 
-describe("policy_rules call cards", () => {
-	it("shows the view and id without extra rows for a plain inspection", () => {
-		const card = renderRulesCall({ view: "rules" }, theme, collapsed);
-		assert.equal(screen(card), "policy_rules · rules");
-		const named = renderRulesCall({ view: "rules", id: "local.shell" }, theme, collapsed);
-		assert.equal(screen(named), "policy_rules · rules · local.shell");
-		assertFits(named);
-	});
+function card(name: string, args: Record<string, unknown> = {}, tool?: ToolDefinition): ToolExecutionComponent {
+	const definition = tool ?? toolDisplay().tools.find((entry) => entry.name === name);
+	assert.ok(definition);
+	return new ToolExecutionComponent(
+		name,
+		"fixture",
+		args,
+		{ outputPad: 1 },
+		definition as ToolDefinition,
+		ui,
+		"/project",
+	);
+}
 
-	it("marks a call that continues a paged view", () => {
-		const card = renderRulesCall({ view: "data", id: "sample-lookup", cursor: "WyJkYXRhIl0" }, theme, collapsed);
-		assert.equal(screen(card), "policy_rules · data · sample-lookup · next page");
-		assertFits(card);
-	});
+function rows(component: ToolExecutionComponent, width = 110): string[] {
+	const rendered = component.render(width);
+	assert.ok(rendered.every((line) => visibleWidth(line) <= width));
+	return rendered.map((line) => stripVTControlCharacters(line).trimEnd()).filter(Boolean);
+}
 
-	it("summarizes a draft check with effect and case count", () => {
-		const card = renderRulesCall(
-			{
-				view: "check",
-				draft: { operation: "add", id: "local.file-reader" },
-				effect: "steer",
-				cases: [{ name: "a" }, { name: "b" }],
-			},
-			theme,
-			collapsed,
-		);
-		const lines = screen(card).split("\n");
-		assert.equal(lines.length, 2);
-		assert.equal(lines[0], "policy_rules · check");
-		assert.match(lines[1] ?? "", /draft add local\.file-reader · effect steer · 2 cases · .*[Ee]xpand/);
-	});
+function screen(component: ToolExecutionComponent, width?: number): string {
+	return rows(component, width).join("\n");
+}
 
-	it("summarizes a preview request with tool, input keys, and result replay", () => {
-		const card = renderRulesCall({ view: "preview", tool: "bash", input: { command: "git push" } }, theme, collapsed);
-		assert.match(screen(card), /policy_rules · preview\ntool bash · 1 input key · no result replay/);
-		const replay = renderRulesCall(
-			{ view: "preview", tool: "bash", input: { command: "x" }, result: { isError: true } },
-			theme,
-			collapsed,
-		);
-		assert.match(screen(replay), /result replayed/);
-	});
+function text(value: string, details?: unknown, isError = false) {
+	return { content: [{ type: "text" as const, text: value }], details, isError };
+}
 
-	it("marks a check draft that is still streaming", () => {
-		const card = renderRulesCall({ view: "check" }, theme, collapsed);
-		assert.match(screen(card), /policy_rules · check\ndraft pending · no cases/);
-	});
+const draft = {
+	operation: "add",
+	id: "local.scan",
+	purpose: "Bound command output.",
+	authority: "steer-or-block",
+	reason: "Preserve the task's output bound.",
+	note: "Use a bounded scan.",
+	match: { command: "sample-scan" },
+};
 
-	it("escapes terminal controls and clips long ids", () => {
-		const id = `\u0007${"x".repeat(300)}`;
-		const card = renderRulesCall({ view: "explain", id }, theme, collapsed);
-		const rendered = screen(card, 1000);
-		assert.ok(!rendered.includes("\u0007"));
-		assert.match(rendered, /\\x07x{90,}…/);
-		assert.ok(!rendered.includes("x".repeat(101)));
-		assertFits(card);
-	});
+async function fixture(t: TestContext) {
+	const dir = await mkdtemp(join(tmpdir(), "policy-card-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const registry = new RuleRegistry(dir, { catalog: [] });
+	const registered = new Map<string, ToolDefinition>();
+	registerRuleTools(
+		{
+			registerTool: (tool: ToolDefinition) => registered.set(tool.name, tool),
+			getAllTools: () => [],
+			getActiveTools: () => [],
+		} as unknown as ExtensionAPI,
+		{ registry, loadRegistry: () => registry.snapshot(), getMode: () => "observe" },
+	);
+	const context = {
+		cwd: "/project",
+		sessionManager: { getSessionId: () => "policy-card" },
+		tools: [],
+		executeTool: async () => assert.fail("A card test must not run another tool"),
+	} as unknown as ExtensionToolContext;
+	return {
+		async show(name: string, args: Record<string, unknown>) {
+			const tool = registered.get(name);
+			assert.ok(tool);
+			const component = card(name, args, tool);
+			try {
+				const result = await tool.execute("fixture", args, undefined, undefined, context);
+				component.updateResult({ ...result, isError: result.isError ?? false });
+				return { component, result };
+			} catch (error) {
+				component.updateResult(text(String(error instanceof Error ? error.message : error), undefined, true));
+				return { component, result: undefined };
+			}
+		},
+	};
+}
 
-	it("shows the complete arguments when expanded", () => {
-		const card = renderRulesCall({ view: "data", id: "branch-names" }, theme, expanded);
-		assert.match(screen(card, 400), /"view": "data"/);
-		assert.match(screen(card, 400), /"id": "branch-names"/);
-	});
-
-	it("escapes bidi and C1 controls in collapsed and expanded text", () => {
-		const id = "a\u202eb\u009bc";
-		const collapsedCard = renderRulesCall({ view: "explain", id }, theme, collapsed);
-		assert.ok(!raw(collapsedCard).includes("\u202e"));
-		assert.ok(!raw(collapsedCard).includes("\u009b"));
-		assert.match(screen(collapsedCard, 1000), /a\\u\{202e\}b\\x9bc/);
-		const expandedCard = renderRulesCall({ view: "explain", id }, theme, expanded);
-		assert.ok(!raw(expandedCard).includes("\u202e"));
-		assert.ok(!raw(expandedCard).includes("\u009b"));
-		assert.match(screen(expandedCard, 1000), /\\u\{202e\}/);
-	});
-
-	it("renders safely with missing, partial, and malformed arguments", () => {
-		for (const value of [undefined, {}, { view: 42 }, { id: null }, [], "rules"]) {
-			const card = renderRulesCall(value, theme, collapsed);
-			assertFits(card);
-			assert.match(screen(card), /^policy_rules/);
-		}
-	});
+it("retains one live key hint before execution and then moves it after progress and settled evidence", (t) => {
+	keys(t);
+	const component = card("policy_propose", draft);
+	assert.match(
+		screen(component),
+		/policy_propose add local\.scan\n.*authority steer-or-block · sample-scan command match/,
+	);
+	assert.match(rows(component).at(-1) ?? "", /\.\.\. \(ctrl\+g to expand\)$/);
+	assert.doesNotMatch(screen(component), /Preserve the task|Use a bounded scan/);
+	component.markExecutionStarted();
+	assert.equal(screen(component).match(/to expand/g)?.length, 1);
+	component.updateResult(text("Partial text"), true);
+	assert.match(screen(component), /Submitting the proposal for review…\n.*ctrl\+g to expand/);
+	assert.equal(screen(component).match(/to expand/g)?.length, 1);
+	component.updateResult(
+		text("Pending proposal. Model-only instructions.", { proposalId, proposalRevision: revision, state: "pending" }),
+	);
+	assert.match(screen(component), /Proposal is pending and inert until operator approval\./);
+	assert.match(screen(component), new RegExp(`${proposalId} · revision ${revision}`));
+	assert.doesNotMatch(screen(component), /Model-only instructions/);
+	assert.equal(screen(component).match(/to expand/g)?.length, 1);
+	component.setExpanded(true);
+	assert.match(screen(component), /reason: Preserve the task's output bound\./);
+	assert.match(screen(component), /Model-only instructions/);
+	assert.doesNotMatch(screen(component), /to expand/);
 });
 
-describe("policy_rules result cards", () => {
-	it("summarizes rule and proposal counts for the rules view", () => {
-		const card = renderRulesResult(
-			text("SESSION CONTEXT\nmodel provider: test", { rules: 3, pending: 1, ruleStoreDegraded: false }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{ ...collapsed, args: { view: "rules" } },
-		);
-		const lines = screen(card).split("\n");
-		assert.equal(lines[0], "3 rules · 1 pending proposal");
-		assert.match(lines[1] ?? "", /[Ee]xpand/);
-		assertFits(card);
+it("does not advertise pre-result clicks or a result with no extra content", (t) => {
+	keys(t, []);
+	const component = card("policy_approve", {
+		proposalId,
+		proposalRevision: revision,
+		effect: "block",
+		authorization: "Approved the exact proposal.",
 	});
+	assert.doesNotMatch(screen(component), /expand|authorization/);
+	component.updateResult(text("Approval transport error", undefined, true));
+	assert.match(rows(component).at(-1) ?? "", /click to expand/);
+	const simple = card("policy_control", { operation: "mode" });
+	simple.updateResult(text("", { mode: "observe" }));
+	assert.match(screen(simple), /Session is in observe mode\./);
+	assert.doesNotMatch(screen(simple), /expand/);
+	const shortError = card("policy_rules", { view: "health" });
+	shortError.updateResult(text("Transport error", undefined, true));
+	assert.doesNotMatch(screen(shortError), /expand/);
+});
 
-	it("adds the page position of a paged view and whether more follow", () => {
-		const first = renderRulesResult(
-			text("SESSION CONTEXT", {
-				rules: 51,
-				pending: 1,
-				page: { start: 0, returned: 17, total: 52, nextCursor: "WyJydWxlcyJd" },
-			}),
-			{ expanded: false, isPartial: false },
-			theme,
-			{ ...collapsed, args: { view: "rules" } },
-		);
-		assert.equal(screen(first).split("\n")[0], "51 rules · 1 pending proposal · 1–17 of 52 · more follow");
-		assertFits(first);
-		const last = renderRulesResult(
-			text(JSON.stringify({ phases: [], schemas: {}, page: {} }, null, 2), {
-				rules: 1,
-				pending: 0,
-				page: { start: 280, returned: 305, total: 585, nextCursor: null },
-			}),
-			{ expanded: false, isPartial: false },
-			theme,
-			{ ...collapsed, args: { view: "capabilities" } },
-		);
-		assert.match(screen(last).split("\n")[0] ?? "", /281–585 of 585$/);
-		assertFits(last);
+it("clips full IDs and paths at the real width and shows the entered arguments on expansion", (t) => {
+	keys(t);
+	const id = `call:${"x".repeat(250)}tail`;
+	const inspect = card("policy_rules", { view: "explain", id });
+	assert.ok(screen(inspect, 320).includes(id));
+	assert.match(rows(inspect, 27)[0] ?? "", /…$/);
+	inspect.setExpanded(true);
+	assert.ok(screen(inspect, 320).includes(`id: ${id}`) || (rows(inspect, 320)[0] ?? "").endsWith(id));
+	const path = join(homedir(), "data", `${"a".repeat(130)}.json`);
+	const control = card("policy_control", { operation: "data-preview", path });
+	assert.ok(screen(control, 250).includes(`~${path.slice(homedir().length)}`));
+	assert.match(rows(control, 38)[0] ?? "", /…$/);
+	control.setExpanded(true);
+	assert.ok(screen(control, 250).includes(`path: ${path}`));
+});
+
+it("omits streaming placeholders and does not leak simulated input or operator explanation", (t) => {
+	keys(t, []);
+	for (const args of [
+		{ view: "check" },
+		{ view: "preview" },
+		{ view: "preview", tool: "bash", input: { command: "private value" } },
+	]) {
+		assert.doesNotMatch(screen(card("policy_rules", args)), /pending|no cases|private value|\(empty\)|\(none\)/);
+	}
+	assert.doesNotMatch(
+		screen(card("policy_propose", { operation: "replace", id: "local.rule" })),
+		/expected revision pending/,
+	);
+	const replacement = card("policy_propose", {
+		operation: "replace",
+		id: "local.rule",
+		authority: "exact",
+		expectedRevision: revision,
+		predicate: "fixed.example",
 	});
-
-	it("keeps singular counts grammatical and flags a degraded store", () => {
-		const healthy = renderRulesResult(
-			text("SESSION CONTEXT", { rules: 1, pending: 0 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{ ...collapsed, args: {} },
-		);
-		assert.match(screen(healthy), /1 rule · 0 pending proposals/);
-		const degraded = renderRulesResult(
-			text("SESSION CONTEXT", { rules: 1, pending: 0, ruleStoreDegraded: true }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{ ...collapsed, args: { view: "rules" } },
-		);
-		assert.match(screen(degraded), /rule store degraded/);
+	assert.match(screen(replacement), /authority exact · predicate fixed\.example · expected revision 0123456789ab/);
+	const program = card("policy_propose", {
+		operation: "add",
+		id: "local.rule",
+		authority: "exact",
+		program: { note: "expanded only" },
 	});
+	assert.match(screen(program), /facts\/v1 program/);
+	assert.doesNotMatch(screen(program), /expanded only/);
+});
 
-	it("leads an admitted check with its diagnostics count", () => {
-		const output = JSON.stringify({
-			check: true,
-			admitted: true,
-			diagnostics: [
-				{ severity: "warning", message: "scope" },
-				{ severity: "warning", message: "mode" },
-			],
-			cases: [],
-		});
-		const card = renderRulesResult(
-			text(output, { rules: 0, pending: 0 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				args: { view: "check" },
-			},
-		);
-		assert.match(screen(card), /check: admitted · 2 warnings/);
+it("renders actual policy tool returns without confusing durable decisions with session enforcement", async (t) => {
+	keys(t);
+	const { show } = await fixture(t);
+	const submitted = await show("policy_propose", draft);
+	const pending = submitted.result?.details as { proposalId: string; proposalRevision: string };
+	assert.match(screen(submitted.component), /pending and inert/);
+	assert.ok(screen(submitted.component).includes(pending.proposalId));
+	const lookup = await show("policy_rules", { id: pending.proposalId });
+	assert.match(screen(lookup.component), /pending and inert/);
+	const inspection = await show("policy_control", { operation: "inspect", id: draft.id });
+	assert.match(screen(inspection.component), /Read inert pending proposal/);
+	const approval = await show("policy_approve", {
+		proposalId: pending.proposalId,
+		proposalRevision: pending.proposalRevision,
+		effect: "block",
+		authorization: "Approved this exact draft as a block.",
 	});
+	assert.match(screen(approval.component), /Approved the proposal\. Enforcement is not established by approval\./);
+	assert.match(screen(approval.component), /local\.scan · active · effect block/);
+	assert.match(screen(approval.component), /Session is in observe mode\./);
+	assert.doesNotMatch(screen(approval.component), /Approved this exact draft/);
+	const active = await show("policy_rules", { id: draft.id });
+	assert.match(screen(active.component), /Rule local\.scan is active \(block\)\./);
+	const readback = await show("policy_control", { operation: "inspect", id: draft.id });
+	assert.match(screen(readback.component), /Read stored rule local\.scan and its control revision\./);
+	const refusal = await show("policy_control", { operation: "inspect", id: "local.absent" });
+	assert.equal(refusal.result, undefined);
+	assert.match(screen(refusal.component), /No rule or proposal named local\.absent/);
+	assert.doesNotMatch(screen(refusal.component), /Control applied/);
+	const domainAbsence = await show("policy_rules", { id: "local.absent" });
+	assert.ok(domainAbsence.result);
+	assert.match(screen(domainAbsence.component), /No rule or pending proposal found\./);
+});
 
-	it("leads a rejected check with its errors", () => {
-		const output = JSON.stringify({
-			check: true,
-			admitted: false,
-			diagnostics: [{ severity: "error", message: "Draft does not satisfy the policy_propose schema" }],
-			cases: [],
-		});
-		const card = renderRulesResult(
-			text(output, { rules: 0, pending: 0 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				args: { view: "check", draft: { operation: "add" } },
-			},
-		);
-		assert.match(screen(card), /check: not admitted · 1 error/);
-	});
-
-	it("leads a preview with the simulated decision and the rules that caused it", () => {
-		const denied = JSON.stringify({
-			decision: { denied: true, correctedInput: false, resultCorrected: undefined },
-			preview: true,
-			wouldCorrectInput: false,
-			nonMatchingRules: 2,
-			input: { matches: ["routing.cat-read"] },
-			boundary: "No simulated tool executes.",
-		});
-		const card = renderRulesResult(
-			text(denied, { rules: 5, pending: 0 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				args: { view: "preview", tool: "bash" },
-			},
-		);
-		assert.match(screen(card), /^preview: denied by routing\.cat-read · 2 non-matching rules/);
-		assert.ok(!screen(card).includes("No simulated tool executes."));
-
-		const allowed = JSON.stringify({
-			decision: { denied: false, resultCorrected: false },
-			preview: true,
-			wouldCorrectInput: false,
-			nonMatchingRules: 0,
-			input: { matches: [] },
-		});
-		assert.match(
-			screen(
-				renderRulesResult(text(allowed, { rules: 1, pending: 0 }), { expanded: false, isPartial: false }, theme, {
-					...collapsed,
-					args: { view: "preview" },
-				}),
-			),
-			/^preview: allowed/,
-		);
-
-		const corrected = JSON.stringify({
-			decision: { denied: false, resultCorrected: false },
-			preview: true,
-			wouldCorrectInput: true,
-			nonMatchingRules: 0,
-			input: { matches: ["routing.alias"], corrections: [{ id: "routing.alias", stage: "values", path: ["command"] }] },
-		});
-		assert.match(
-			screen(
-				renderRulesResult(text(corrected, { rules: 1, pending: 0 }), { expanded: false, isPartial: false }, theme, {
-					...collapsed,
-					args: { view: "preview" },
-				}),
-			),
-			/^preview: input corrected by routing\.alias/,
-		);
-
-		const resultCorrected = JSON.stringify({
-			decision: { denied: false, resultCorrected: true },
-			preview: true,
-			wouldCorrectInput: false,
-			nonMatchingRules: 0,
-			input: { matches: [] },
-		});
-		assert.match(
-			screen(
-				renderRulesResult(
-					text(resultCorrected, { rules: 1, pending: 0 }),
-					{ expanded: false, isPartial: false },
-					theme,
-					{ ...collapsed, args: { view: "preview" } },
-				),
-			),
-			/^preview: result corrected/,
-		);
-	});
-
-	it("summarizes JSON views by top-level field", () => {
-		const health = renderRulesResult(
+it("keeps dry-run allow, deny and corrections distinct from real execution", (t) => {
+	keys(t);
+	const component = card("policy_rules", { view: "preview", tool: "sample-scan", input: {} });
+	for (const [denied, correctedInput, resultCorrected, expected] of [
+		[true, false, false, "deny"],
+		[false, true, false, "correct input"],
+		[false, false, true, "correct result"],
+		[false, true, true, "correct input and result"],
+		[false, false, false, "allow"],
+	] as const) {
+		component.updateResult(
 			text(
-				'{\n  "authority": { "status": "ok" },\n  "telemetry": { "status": "ready" },\n  "observations": { "incomplete": 0, "pending": 0 }\n}',
-				{ rules: 0, pending: 0 },
+				JSON.stringify({
+					preview: true,
+					mode: "enforce",
+					decision: { denied, correctedInput, resultCorrected },
+					input: { matches: ["local.scan"], candidate: { key: "extended-only" } },
+				}),
 			),
-			{ expanded: false, isPartial: false },
-			theme,
-			{ ...collapsed, args: { view: "health" } },
 		);
-		assert.equal(screen(health).split("\n")[0], "authority ok · telemetry ready · observations");
-		const catalog = renderRulesResult(
-			text('{\n  "source": "bundled starter catalog",\n  "rules": []}', { rules: 0, pending: 0 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{ ...collapsed, args: { view: "catalog" } },
-		);
-		assert.equal(screen(catalog).split("\n")[0], "source · rules");
-		const guide = renderRulesResult(
-			text("# Policy authoring guide\n\nUse views.", {}),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				args: { view: "authoring" },
-			},
-		);
-		assert.match(screen(guide), /# Policy authoring guide/);
-	});
-
-	it("leads the rules view with the selected rule and keeps a missing-rule message", () => {
-		const listing =
-			"SESSION CONTEXT\nmodel provider: test\ncwd: /project\nrecord count: 4 | pending proposal count: 0\n\nRULES\nlocal.shell | source=package | purpose=Bound output | state=active | effect=block | note=Use sample.\n  definition: revision=1 state=active effect=block\n\nPENDING PROPOSALS\n(none)";
-		const card = renderRulesResult(
-			text(listing, { rules: 4, pending: 0 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				args: { view: "rules", id: "local.shell" },
-			},
-		);
-		assert.equal(screen(card).split("\n")[0], "local.shell · active · block");
-		const missing = renderRulesResult(
-			text("No rule named local.gone.", { rules: 4, pending: 0 }),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				args: { view: "rules", id: "local.gone" },
-			},
-		);
-		assert.equal(screen(missing).split("\n")[0], "No rule named local.gone.");
-	});
-
-	it("escapes bidi and C1 controls in expanded result text", () => {
-		const output = "rule \u202e body \u009b tail";
-		const card = renderRulesResult(
-			text(output, { rules: 1, pending: 0 }),
-			{ expanded: true, isPartial: false },
-			theme,
-			{
-				...expanded,
-				args: { view: "rules" },
-			},
-		);
-		assert.ok(!raw(card).includes("\u202e"));
-		assert.ok(!raw(card).includes("\u009b"));
-		assert.match(screen(card, 1000), /\\u\{202e\}/);
-	});
-
-	it("handles malformed details and truncated check output without throwing", () => {
-		const truncated = `${JSON.stringify({ check: true, admitted: true, diagnostics: [{ severity: "warning", message: "x".repeat(100) }] }).slice(0, 60)}\n[policy text truncated]`;
-		const card = renderRulesResult(text(truncated, "not-a-record"), { expanded: false, isPartial: false }, theme, {
-			...collapsed,
-			args: { view: "check" },
-		});
-		assertFits(card);
-		assert.match(screen(card), /"check":true/);
-	});
-
-	it("shows the full output with a bound marker when expanded", () => {
-		const long = `${"line\n".repeat(9000)}end`;
-		const card = renderRulesResult(text(long, { rules: 0, pending: 0 }), { expanded: true, isPartial: false }, theme, {
-			...expanded,
-			args: { view: "rules" },
-		});
-		const rendered = screen(card, 4000);
-		assert.match(rendered, /Display limit\. The full text remains in the native tool history\./);
-		assert.ok(!rendered.includes("\nend"));
-	});
-
-	it("styles errors and partial results", () => {
-		const error = renderRulesResult(
-			text("unknown policy inspection view"),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				isError: true,
-				args: { view: "nope" },
-			},
-		);
-		assert.equal(screen(error), "policy_rules: unknown policy inspection view");
-		const partial = renderRulesResult(text(""), { expanded: true, isPartial: true }, theme, collapsed);
-		assert.equal(screen(partial), "Inspecting policy...");
-	});
+		assert.ok(screen(component).includes(`Dry run would ${expected} in enforce mode. No simulated tool ran.`));
+		assert.match(screen(component), /matched local\.scan/);
+		assert.doesNotMatch(screen(component), /extended-only/);
+	}
+	component.updateResult(text("[bad JSON]"));
+	assert.match(screen(component), /Dry-run decision not established\./);
 });
 
-describe("policy_propose call cards", () => {
-	it("names the operation, rule, authority, and authoring form", () => {
-		const card = renderProposeCall(
-			{
-				operation: "add",
-				id: "local.git-push-guard",
-				purpose: "Gate pushes.",
-				authority: "exact",
-				reason: "Operator asked for the gate.",
-				note: "Ask before push.",
-				match: { command: "git", flags: ["push"] },
-			},
-			theme,
-			collapsed,
-		);
-		const lines = screen(card).split("\n");
-		assert.equal(lines.length, 2);
-		assert.equal(lines[0], "policy_propose · add local.git-push-guard");
-		assert.match(lines[1] ?? "", /^authority exact · git command match · .*[Ee]xpand .*proposal$/);
-		assert.ok(!screen(card).includes("Operator asked for the gate."));
-		assertFits(card);
-	});
-
-	it("names the cli authoring form and the replaced revision", () => {
-		const card = renderProposeCall(
-			{
-				operation: "replace",
-				id: "local.git-push-guard",
-				authority: "steer-or-block",
-				expectedRevision: "abcdef123456",
-				match: { command: "git", cli: { profile: "git", subcommand: ["push"] } },
-			},
-			theme,
-			collapsed,
-		);
-		assert.match(screen(card), /authority steer-or-block · git push cli match · expected revision abcdef123456/);
-	});
-
-	it("names predicate and facts-program forms", () => {
-		const predicate = renderProposeCall(
-			{ operation: "add", id: "local.reader", authority: "exact", predicate: "routing.cat-read" },
-			theme,
-			collapsed,
-		);
-		assert.match(screen(predicate), /predicate routing\.cat-read/);
-		const program = renderProposeCall(
-			{
-				operation: "add",
-				id: "local.reader",
-				authority: "exact",
-				program: {
-					phase: "input",
-					when: { op: "exists", path: ["input"] },
-					action: { kind: "deny" },
-					onUnavailable: "skip",
-				},
-			},
-			theme,
-			collapsed,
-		);
-		assert.match(screen(program), /facts\/v1 program/);
-	});
-
-	it("keeps retire and disable cards to a heading and the expansion hint", () => {
-		const card = renderProposeCall({ operation: "retire", id: "local.old", reason: "Superseded." }, theme, collapsed);
-		const lines = screen(card).split("\n");
-		assert.equal(lines.length, 2);
-		assert.equal(lines[0], "policy_propose · retire local.old");
-		assert.match(lines[1] ?? "", /expand/i);
-	});
-
-	it("renders safely with missing and streaming arguments", () => {
-		for (const value of [undefined, {}, { operation: 7 }, { id: "x" }, []]) {
-			const card = renderProposeCall(value, theme, collapsed);
-			assertFits(card);
-			assert.match(screen(card), /^policy_propose/);
-		}
-		const pending = renderProposeCall({ operation: "replace", id: "local.x" }, theme, collapsed);
-		assert.match(screen(pending), /expected revision pending/);
-	});
-
-	it("shows the complete proposal arguments when expanded", () => {
-		const card = renderProposeCall({ operation: "retire", id: "local.old", reason: "Superseded." }, theme, expanded);
-		assert.match(screen(card, 400), /"reason": "Superseded\."/);
-	});
+it("uses actual check diagnostics and does not treat a refused draft as a thrown error", async (t) => {
+	keys(t);
+	const { show } = await fixture(t);
+	const refused = await show("policy_rules", { view: "check", draft: { operation: "add", id: "local.bad" } });
+	assert.ok(refused.result);
+	assert.match(screen(refused.component), /Draft not admitted \(1 error\)\. No authority changed\./);
+	const admitted = await show("policy_rules", { view: "check", draft, effect: "steer" });
+	assert.ok(admitted.result);
+	assert.match(screen(admitted.component), /Draft admitted(?: \([^)]*\))?\. No authority changed\./);
 });
 
-describe("policy_propose result cards", () => {
-	it("states the pending proposal, rule, revision, and inertness", () => {
-		const card = renderProposeResult(
-			text("Pending proposal prop-9: add local.x. It is inert until operator approval.", {
-				proposalId: "prop-9",
-				proposalRevision: "abcdef123456",
-				state: "pending",
-				operation: "add",
-				ruleId: "local.x",
-			}),
-			{ expanded: false, isPartial: false },
-			theme,
-			collapsed,
-		);
-		const lines = screen(card).split("\n");
-		assert.equal(lines[0], "proposal prop-9 · pending · revision abcdef123456");
-		assert.match(lines[1] ?? "", /inert until operator approval/);
-		assert.match(lines[1] ?? "", /expand/i);
-		assertFits(card);
+it("distinguishes control read progress, partial artifacts, and an armed retry from execution", (t) => {
+	keys(t);
+	const read = card("policy_control", { operation: "inspect", id: "local.sample" });
+	read.updateResult(text(""), true);
+	assert.match(screen(read), /Inspecting the policy target/);
+	assert.doesNotMatch(screen(read), /Applying/);
+	const preview = card("policy_control", { operation: "data-preview", path: "sample.json" });
+	preview.updateResult({
+		...controlResult({ complete: false, path: "/project/sample.json", revision, boundary: "Review the source first." }),
+		isError: false,
 	});
-
-	it("falls back to the receipt text when details are malformed", () => {
-		const card = renderProposeResult(
-			text("Pending proposal prop-9: add local.x.", {}),
-			{ expanded: false, isPartial: false },
-			theme,
-			collapsed,
-		);
-		assert.match(screen(card), /Pending proposal prop-9: add local\.x\./);
+	assert.match(screen(preview), /Previewed data metadata only\. Read the complete source before authorization\./);
+	assert.match(screen(preview), /\[Complete artifact exceeds the preview output bound\]/);
+	const approve = card("policy_control", { operation: "action-approve", actionId: proposalId });
+	approve.updateResult({
+		...controlResult({ actionId: proposalId, state: "approved", uses: 1, mode: "enforce" }),
+		isError: false,
 	});
-
-	it("styles errors and partial results", () => {
-		const error = renderProposeResult(
-			text("Draft does not satisfy the policy_propose schema"),
-			{ expanded: false, isPartial: false },
-			theme,
-			{
-				...collapsed,
-				isError: true,
-			},
-		);
-		assert.equal(screen(error), "policy_propose: Draft does not satisfy the policy_propose schema");
-		const partial = renderProposeResult(text(""), { expanded: false, isPartial: true }, theme, collapsed);
-		assert.equal(screen(partial), "Submitting proposal...");
-	});
-
-	it("shows the receipt text when expanded", () => {
-		const card = renderProposeResult(
-			text("Pending proposal prop-9: add local.x. It is inert until operator approval.", {
-				proposalId: "prop-9",
-				proposalRevision: "abcdef123456",
-				state: "pending",
-				operation: "add",
-				ruleId: "local.x",
-			}),
-			{ expanded: true, isPartial: false },
-			theme,
-			expanded,
-		);
-		const rendered = screen(card, 400);
-		assert.match(rendered, /inert until operator approval/);
-		assert.match(rendered, /Pending proposal prop-9/);
-	});
+	assert.match(screen(approve), /Approved one unchanged retry\. This did not run the action\./);
+	assert.match(screen(approve), /Session is in enforce mode\./);
 });
 
-describe("error diagnostics and host key hints", () => {
-	const multiline = "policy_rules failed: store unreadable\nline two: 界e\u0301 detail\n\u001b[31mcontrol\u0007 text";
-	const idle = { expanded: false, isPartial: false };
-	const open = { expanded: true, isPartial: false };
+it("reports page scope and preserves the exact cursor and request selection on expansion", (t) => {
+	keys(t);
+	const cursor = "opaque".repeat(23);
+	const args = { view: "data", id: "sample.binding", cursor: "prior" };
+	const rules = card("policy_rules", args);
+	rules.updateResult(
+		text(JSON.stringify({ binding: { status: "available" }, rows: [] }), {
+			page: { start: 2, returned: 2, total: 10, nextCursor: cursor },
+		}),
+	);
+	assert.match(screen(rules), /Returned rows 3–4 of 10; more follow\./);
+	assert.doesNotMatch(screen(rules), /\[|Next call:|prior/);
+	rules.setExpanded(true);
+	assert.ok(screen(rules, 240).includes(`Next call: policy_rules ${JSON.stringify({ ...args, cursor })}`));
+	const range = { operation: "telemetry", since: "2026-11-08T04:00:00Z", until: "2026-11-08T05:00:00Z" };
+	const telemetry = card("policy_control", range);
+	telemetry.updateResult(
+		text("Telemetry report", {
+			records: 3,
+			coverage: { status: "partial", pageStatus: "complete" },
+			continuation: { nextCursor: cursor, olderSegments: "removed" },
+			recording: { status: "unknown" },
+		}),
+	);
+	assert.match(screen(telemetry), /Read 3 records on this telemetry page; more records can be read/);
+	assert.match(screen(telemetry), /\[Telemetry coverage is partial\]/);
+	telemetry.setExpanded(true);
+	assert.ok(screen(telemetry, 330).includes(`Next call: policy_control ${JSON.stringify({ ...range, cursor })}`));
+});
 
-	it("collapses to the first line with an expansion hint when more diagnostics are retained", () => {
-		const card = renderRulesResult(text(multiline), idle, theme, {
-			...collapsed,
-			isError: true,
-			keyText: () => "ctrl+x",
-		});
-		const rendered = screen(card);
-		assert.match(rendered, /^policy_rules: policy_rules failed: store unreadable\nctrl\+x to expand diagnostics/);
-		assert.doesNotMatch(rendered, /line two/);
-	});
+it("does not treat missing bounded telemetry as proof of no decision", (t) => {
+	keys(t);
+	const component = card("policy_rules", { view: "explain", id: "call:fixture" });
+	component.updateResult(text(JSON.stringify({ callId: "fixture", records: [], partial: true })));
+	assert.match(screen(component), /No observation found in the bounded read; the call decision is not established/);
+	assert.match(screen(component), /\[Recorded evidence is partial\]/);
+	component.updateResult(text(JSON.stringify({ callId: "fixture", records: [{ decision: "deny" }], partial: false })));
+	assert.match(screen(component), /Found 1 recorded observation for the call\./);
+	assert.doesNotMatch(screen(component), /partial/);
+});
 
-	it("reveals every retained diagnostic line when expanded, with terminal controls escaped", () => {
-		for (const [render, label] of [
-			[renderRulesResult, "policy_rules"],
-			[renderProposeResult, "policy_propose"],
-		] as const) {
-			const card = render(text(multiline), open, theme, { ...expanded, isError: true });
-			const rendered = screen(card, 400);
-			assert.match(rendered, new RegExp(`^${label}: `));
-			assert.match(rendered, /line two: 界e\u0301 detail/);
-			assert.match(rendered, /\\x1b\[31mcontrol\\x07 text/);
-			assert.ok(!raw(card).includes("\u001b[31m"));
-			assertFits(card);
-		}
-	});
+it("limits a single long diagnostic to five visual body rows and discloses only actual hidden text", (t) => {
+	keys(t);
+	const component = card("policy_rules", { view: "health" });
+	component.updateResult(text(`Could not read\n${"界".repeat(180)} tail`, undefined, true));
+	const narrow = rows(component, 42);
+	assert.equal(narrow.slice(2, -1).length, 5);
+	assert.match(narrow[2] ?? "", /界/);
+	assert.match(narrow.at(-1) ?? "", /\d+ more lines, ctrl\+g to expand/);
+	assert.doesNotMatch(screen(component, 42), /tail/);
+	component.setExpanded(true);
+	assert.match(screen(component, 42), /tail/);
+	assert.doesNotMatch(screen(component, 42), /expand/);
+	component.setExpanded(false);
+	component.updateResult(text(`${"A".repeat(90)}⟨diagnostic end⟩`, undefined, true));
+	assert.match(rows(component, 40).at(-1) ?? "", /ctrl\+g to expand/);
+	assert.doesNotMatch(screen(component, 40), /diagnostic end/);
+});
 
-	it("uses neutral wording when the host supplies no binding", () => {
-		const card = renderRulesResult(text("{}", { rules: 1, pending: 0 }), idle, theme, {
-			...collapsed,
-			args: { view: "rules" },
-		});
-		assert.match(screen(card), /Expand for full result/);
-		const bound = renderRulesResult(text("{}", { rules: 1, pending: 0 }), idle, theme, {
-			...collapsed,
-			args: { view: "rules" },
-			keyText: () => "alt+e",
-		});
-		assert.match(screen(bound), /alt\+e to expand result/);
-	});
+it("keeps Pi's echoed validation arguments behind expansion, including unparseable input", (t) => {
+	keys(t);
+	const privateText = "disclosure fixture input";
+	const calls: Array<{ name: string; parameters: object; payload: ReturnType<typeof parseToolCallArguments> }> = [
+		{
+			name: "policy_approve",
+			parameters: PolicyApproveParams,
+			payload: { arguments: { proposalId, proposalRevision: revision, effect: "invalid", authorization: privateText } },
+		},
+		{
+			name: "policy_rules",
+			parameters: PolicyRulesParams,
+			payload: { arguments: { view: "invalid", input: { privateText } } },
+		},
+		{
+			name: "policy_rules",
+			parameters: PolicyRulesParams,
+			payload: parseToolCallArguments(JSON.stringify(privateText)),
+		},
+	];
+	for (const { name, parameters, payload } of calls) {
+		const component = card(name, payload.arguments);
+		assert.throws(
+			() =>
+				validateToolArguments(
+					{ name, parameters, description: name },
+					{ type: "toolCall", name, id: "fixture", ...payload },
+				),
+			(error: unknown) => {
+				assert.ok(error instanceof Error);
+				assert.ok(error.message.includes(privateText));
+				component.updateResult(text(error.message, undefined, true));
+				return true;
+			},
+		);
+		assert.match(screen(component), /Diagnostic hidden in collapsed view/);
+		assert.doesNotMatch(screen(component), /disclosure fixture input|Received arguments/);
+		assert.match(rows(component).at(-1) ?? "", /to expand/);
+		component.setExpanded(true);
+		assert.match(screen(component), /Received arguments:/);
+		assert.match(screen(component), /disclosure fixture input/);
+	}
+});
 
-	it("shows only the single line for a one-line error without an expansion hint", () => {
-		const card = renderProposeResult(text("bad draft"), idle, theme, { ...collapsed, isError: true });
-		assert.equal(screen(card), "policy_propose: bad draft");
-	});
+it("strips terminal sequences and names a character cap independently of the producer cap", (t) => {
+	keys(t);
+	const component = card("policy_rules", { view: "authoring" });
+	component.updateResult(text(`No \x1b[31mcontrol\u202e\x07 marks\n${"界".repeat(33_000)}\n[policy text truncated]`));
+	const collapsed = screen(component, 160);
+	assert.match(collapsed, /Policy output was truncated by the producer/);
+	assert.match(collapsed, /Truncated: showing 32000 of 33017 characters/);
+	assert.doesNotMatch(collapsed, /No control marks/);
+	component.setExpanded(true);
+	assert.match(screen(component, 160), /No control marks/);
+	const raw = component.render(160).join("\n");
+	assert.doesNotMatch(stripTerminalSequences(raw), /\u202e|\u0007/);
 });

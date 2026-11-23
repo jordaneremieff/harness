@@ -9,9 +9,7 @@ export returns the same renderer records the tool registration and the publicati
 It imports only `presentation.ts` and public Pi types, so a client can load it to
 render policy cards without starting the extension. The `durable:contribution` carries
 `display: { version: 1, entry: "./display.ts", export: "toolDisplay" }` for that purpose.
-Cards use the host-supplied key hints for the expansion binding and show neutral wording
-when the host has none. An error card leads with its first line; expansion shows every
-retained diagnostic line with terminal controls escaped.
+The [tool cards](#tool-cards) use the expansion binding supplied by their host.
 
 `policy` governs tool choice, argument validity, result interpretation, failure
 recovery, and resource use. Each rule declares its purpose, applicability,
@@ -1232,40 +1230,28 @@ telemetry; it is not a promise that the complete invocation performs no writes.
 
 ### Tool cards
 
-Every policy tool draws a compact TUI card and stays legible without expansion.
+Policy tool cards follow the [emission convention](../../docs/conventions/emissions.md).
+A control target can be a rule, proposal, action, file path, or telemetry range.
+Proposal text, authorizations, simulation inputs, raw artifacts, and diagnostics
+that may quote those arguments stay behind expansion.
 
-`policy_approve`: the collapsed heading names the proposal and the selected
-effect; one dim row adds the proposal revision. The result leads with the
-resulting rule id, state, and effect, then the session mode with the note that
-approval is not enforcement; a refusal shows its first diagnostic line.
-
-`policy_control`: the collapsed heading names the operation and its target
-(rule, action, proposal, selection, or data name); one dim row adds the effect
-and revision when the call carries them. The result leads with the operation,
-the returned state or outcome, and the mode; a refusal shows its first
-diagnostic line. Expansion shows the complete arguments or readback text.
-
-`policy_propose`: the collapsed heading names the operation and rule id. One dim
-row adds the authority, the authoring form, and the expected revision for
-`replace`. The purpose, reason, and note stay expanded-only.
-
-`policy_rules`: the collapsed heading names the view and, when present, the rule,
-data, or call id, and marks a call with `cursor` as a next page. A `check` row
-adds the draft operation and id, effect, and case count; a `preview` row adds the
-tool, input key count, and result replay state. Other views add no qualifier row.
-
-Results lead with the outcome that view produces: admission and diagnostic
-counts for `check`; the simulated decision and the rules that caused it for
-`preview`; the selected rule's id, state, and effect when `id` narrows `rules`,
-or the rule and pending-proposal counts otherwise; and a top-level field summary
-for JSON views such as `health`, `state`, `capabilities`, `explain`, `catalog`,
-and `data`. A paged view adds the position of its entries and whether more
-follow. A preview result never claims that a tool ran; its expansion carries
-the boundary text. A degraded rule store appends a warning. Expansion shows the
-complete arguments or result text with a display bound; terminal controls escape
-to text in every collapsed value.
+- `policy_propose` reports a pending, inert proposal with its exact ID and revision.
+- `policy_approve` reports the decision, resulting rule state and effect, and
+  session mode. Approval does not establish enforcement.
+- `policy_rules` reports the selected inspection's outcome. Draft admission
+  does not grant authority. A dry run reports what would happen without running
+  the simulated tool. A bounded evidence read does not prove that a decision
+  never occurred.
+- `policy_control` distinguishes reads and previews from changes. An exact
+  action approval arms one retry; it does not run that action. A metadata-only
+  data preview requires review of the complete source before authorization.
 
 ### `/policy`
+
+In the Pi terminal, multiline `/policy` reports open in a scrollable Policy view.
+Use **Copy report** to copy them without terminal line wraps. Single-line receipts
+use Pi notifications. Notice mode reports tool and context rule matches without
+applying the rules. Headless commands keep their existing text and JSON output.
 
 ```text
 /policy

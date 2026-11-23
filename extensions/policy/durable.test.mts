@@ -476,6 +476,7 @@ for (const state of ["healthy", "degraded", "incomplete"] as const) {
 			const result = (await toolResults(fixture.root, "policy_rules")).at(-1);
 			assert.ok(result);
 			const text = textOf(result);
+			assert.deepEqual(detailsOf(result)?.target, { status: state === "healthy" ? "missing" : "unavailable" });
 			if (state === "healthy") assert.equal(text, "No rule or pending proposal named missing.rule.");
 			else {
 				assert.doesNotMatch(text, /No rule or pending proposal/);
@@ -2078,6 +2079,7 @@ test("durable inspection and control surfaces answer model-issued calls", async 
 			},
 		});
 		assert.match(textOf(check), /"admitted":true/);
+		assert.equal((detailsOf(check)?.inspection as { admitted?: boolean })?.admitted, true);
 
 		const preview = await call("policy_rules", {
 			view: "preview",
@@ -2093,6 +2095,7 @@ test("durable inspection and control surfaces answer model-issued calls", async 
 		assert.equal(previewJson.preview, true);
 		assert.equal(previewJson.stateAdvanced, false);
 		assert.equal(typeof previewJson.decision, "object");
+		assert.equal(typeof (detailsOf(preview)?.inspection as { denied?: boolean })?.denied, "boolean");
 
 		const capabilities = await call("policy_rules", { view: "capabilities" });
 		const capabilityPage = JSON.parse(textOf(capabilities)) as {

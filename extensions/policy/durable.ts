@@ -72,11 +72,11 @@ import {
 	PolicyMutationCancelledError,
 	proposalRevision,
 	RuleRegistry,
-	ruleAbsenceMessage,
 	type RuleSnapshot,
 } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
 import { type PreparedPolicy, preparedPolicyFor } from "./prepared.ts";
+import { inspectionFacts } from "./presentation.ts";
 import { readSettings } from "./settings.ts";
 import { readFireSummary, readRecentActivity, terminalSafe } from "./panel.ts";
 import {
@@ -151,8 +151,6 @@ import {
 	capabilitiesPage,
 	dataPage,
 	formatCatalog,
-	formatRulesTool,
-	type PagedOutput,
 	type PolicyCapabilities,
 	type PolicyInspectionView,
 	POLICY_APPROVE_DESCRIPTION,
@@ -164,12 +162,13 @@ import {
 	PolicyApproveParams,
 	PolicyProposeParams,
 	PolicyRulesParams,
-	pendingProposalOutput,
 	prepareDataCommand,
 	rulesDetails,
 	rulesPage,
+	rulesTarget,
 	submitProposal,
 	type ToolDeps,
+	type ToolInspectionOutput,
 	validateInspectionParams,
 	validateProposal,
 } from "./tools.ts";
@@ -2062,10 +2061,11 @@ class DurablePolicyRuntime {
 		const view = params.view ?? "rules";
 		const output = await this.rulesOutput(params, view, snapshot, agent, scope, surface, context);
 		const detail = rulesDetails(snapshot, output);
+		const receipt = typeof output !== "string" && "receipt" in output ? output.receipt : undefined;
 		return {
 			output: [{ type: "text", text: typeof output === "string" ? output : output.text }],
 			structuredOutput: detail,
-			details: detail,
+			details: { ...detail, ...receipt },
 		};
 	}
 
@@ -2077,8 +2077,13 @@ class DurablePolicyRuntime {
 		scope: RuleMatchContext,
 		surface: PolicySurface,
 		context: Context,
-	): Promise<string | PagedOutput> {
-		if (view === "rules") return this.rulesView(params, snapshot, toolScope(scope, agent.model));
+	): Promise<ToolInspectionOutput> {
+		if (view === "rules") {
+			const toolContext = toolScope(scope, agent.model);
+			return params.id
+				? rulesTarget(snapshot, params.id, toolContext)
+				: rulesPage(snapshot, toolContext, params.cursor);
+		}
 		if (view === "authoring") return authoringGuide();
 		if (view === "check") {
 			const draftContext: DraftCheckContext = toolScope(scope, agent.model);
@@ -2087,9 +2092,11 @@ class DurablePolicyRuntime {
 					[...agent.tools, ...agent.callable].map((tool) => ({ name: tool.name, parameters: tool.parameters })),
 				getActiveTools: () => agent.tools.map((tool) => tool.name),
 			} as unknown as Parameters<typeof checkDraft>[2];
-			return boundedInspection(
-				JSON.stringify(await checkDraft(params, snapshot, catalog, draftContext, parseAuthoringDraft)),
-			);
+			const checked = await checkDraft(params, snapshot, catalog, draftContext, parseAuthoringDraft);
+			return {
+				text: boundedInspection(JSON.stringify(checked)),
+				receipt: { inspection: inspectionFacts(view, checked) },
+			};
 		}
 		if (view === "catalog") return formatCatalog(this.registry, params.id);
 		if (view === "data") return dataPage(snapshot, params.id, params.cursor);
@@ -2098,24 +2105,12 @@ class DurablePolicyRuntime {
 				(await this.inspect("capabilities", params, surface, context)) as PolicyCapabilities,
 				params.cursor,
 			);
-		if (view === "state" || view === "health" || view === "explain" || view === "preview")
-			return boundedInspection(await this.inspect(view as PolicyInspectionView, params, surface, context));
+		if (view === "state" || view === "health" || view === "explain" || view === "preview") {
+			const inspected = await this.inspect(view as PolicyInspectionView, params, surface, context);
+			const text = boundedInspection(inspected);
+			return view === "preview" ? { text, receipt: { inspection: inspectionFacts(view, inspected) } } : text;
+		}
 		throw new Error(`policy ${view} inspection is unavailable: runtime callback absent`);
-	}
-
-	/** One rule or pending proposal by id, or a page of the all-rules listing. */
-	private rulesView(
-		params: Static<typeof PolicyRulesParams>,
-		snapshot: RuleSnapshot,
-		scope: PolicyToolScope,
-	): string | PagedOutput {
-		if (!params.id) return rulesPage(snapshot, scope, params.cursor);
-		const record = snapshot.records.get(params.id);
-		const pending = snapshot.pending.filter((entry) => entry.ruleId === params.id || entry.id === params.id);
-		if (pending.length) return pendingProposalOutput(pending[0]);
-		return record
-			? formatRulesTool({ ...snapshot, records: new Map([[record.id, record]]), pending: [] }, scope)
-			: ruleAbsenceMessage(snapshot.health, `No rule or pending proposal named ${params.id}.`);
 	}
 
 	async executePropose(
