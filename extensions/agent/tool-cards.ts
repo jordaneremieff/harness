@@ -2,7 +2,8 @@
  * Agent cards render tool call arguments and retained results from native
  * Durable observation values, plus the `agent.peer` message notices the
  * manager returns to the primary and the ordinary session's own
- * `agent.compaction`, `agent.planning-budget`, and `agent.application` messages.
+ * `agent.compaction` and `agent.planning-budget` notices, and the package's
+ * `application-message` transcript cards.
  * Target labels use roster facts already observed by the primary footer.
  * Rendering opens no storage and changes no execution behavior.
  */
@@ -2637,40 +2638,37 @@ function messageText(content: Parameters<MessageRenderer>[0]["content"]): string
 		: content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
 
+function applicationReference(id: unknown): string {
+	const digits = text(id).match(/^[0-9a-f]{8}(?=-)/iu)?.[0];
+	return digits ? `#${digits.toLowerCase()}` : "";
+}
+
 export const renderAgentApplicationMessage: MessageRenderer = (message, options, theme) => {
 	const details = record(message.details);
 	const content = messageText(message.content);
-	const offset = details.bodyOffset;
-	const body =
-		typeof offset === "number" &&
-		Number.isInteger(offset) &&
-		offset >= 2 &&
-		offset < content.length &&
-		content.slice(offset - 2, offset) === "\n\n"
-			? [noticeBody(content.slice(offset), theme)]
-			: [];
+	const separator = content.indexOf("\n\n");
+	const body = noticeBody(separator < 0 ? content : content.slice(separator + 2), theme);
+	const follows = applicationReference(details.follows);
 	return cardLayout(
 		{
 			tag: "[agent]",
-			title: displayText(text(details.application)).replace(/\s+/gu, " ").trim() || "Application message",
+			title:
+				displayText(text(details.application) || text(details.source))
+					.replace(/\s+/gu, " ")
+					.trim() || "Application message",
 			label: text(details.subject),
 			// Short facts lead, so a narrow card cuts the place, such as a pane handle, first.
 			metadata: [
-				text(details.reference),
-				text(details.follow),
+				applicationReference(details.id),
+				follows ? `follows ${follows}` : "",
 				details.reply === "none" ? "no reply needed" : details.reply === "final" ? "reply requested" : "",
 				text(details.place),
 			],
-			body,
-			expandedBody: () => {
-				const headerEnd = content.indexOf("\n");
-				if (headerEnd < 0) return [new Text(displayText(content), 0, 0)];
-				return [
-					new Text(displayText(content.slice(0, headerEnd)), 0, 0),
-					new Spacer(1),
-					noticeBody(content.slice(headerEnd + 1), theme),
-				];
-			},
+			body: [body],
+			expandedBody:
+				separator < 0
+					? undefined
+					: () => [new Text(displayText(content.slice(0, separator)), 0, 0), new Spacer(1), body],
 			previewLines: NOTICE_PREVIEW_LINES,
 		},
 		theme,

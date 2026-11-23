@@ -16,6 +16,7 @@ import register from "./index.ts";
 import { PLANNING_BUDGET_NOTICE } from "./ordinary-continuity.ts";
 import { SELF_COMPACTION_NOTICE } from "./self-compaction.ts";
 import {
+	renderAgentApplicationMessage,
 	renderAgentCompactionMessage,
 	renderAgentPeerMessage,
 	renderAgentPlanningBudgetMessage,
@@ -51,8 +52,14 @@ const theme = {
 	bold: (value: string) => value,
 } as unknown as Theme;
 
-function render(renderer: MessageRenderer, customType: string, content: string, expanded = false): string[] {
-	const message = { role: "custom" as const, customType, display: true, timestamp: 0, content };
+function render(
+	renderer: MessageRenderer,
+	customType: string,
+	content: string,
+	expanded = false,
+	details?: unknown,
+): string[] {
+	const message = { role: "custom" as const, customType, display: true, timestamp: 0, content, details };
 	const component = renderer(message, { expanded, outputPad: 1, keyText, keyHint }, theme);
 	assert.ok(component);
 	return component.render(80).map((line) => stripVTControlCharacters(line).trimEnd());
@@ -70,9 +77,68 @@ it("the ordinary entry registers a renderer for each displayed agent message", a
 		registerToolRenderer() {},
 		getThinkingLevel: () => "off",
 	} as unknown as ExtensionAPI);
+	assert.equal(renderers.get("application-message"), renderAgentApplicationMessage);
 	assert.equal(renderers.get(SELF_COMPACTION_NOTICE), renderAgentCompactionMessage);
 	assert.equal(renderers.get(PLANNING_BUDGET_NOTICE), renderAgentPlanningBudgetMessage);
 	assert.ok(renderers.has("agent.peer"));
+});
+
+it("shows the application, its request facts and a preview of the body without changing the message", (t) => {
+	expandKey(t);
+	const header = "[Notebook] #a2b3c4d5 · follows #f0e1d2c3 · Notes · pane 42 · reply in your final message";
+	const message = {
+		role: "custom" as const,
+		customType: "application-message",
+		display: true,
+		timestamp: 0,
+		details: {
+			version: 1,
+			source: "notebook",
+			application: "Notebook",
+			subject: "Notes",
+			place: "pane 42",
+			id: "A2B3C4D5-9841-4DCA-9911-D6F18AFABF4F",
+			follows: "F0E1D2C3-9841-4DCA-9911-D6F18AFABF4F",
+			reply: "final",
+		},
+		content: `${header}\n\n\x1b[31m**Body preview**\x1b[0m\r\n\r\nSecond paragraph.\n\nThird paragraph.\n\nLast 👩‍💻 paragraph.`,
+	};
+	const before = structuredClone(message);
+	const show = (expanded: boolean) => {
+		const component = renderAgentApplicationMessage(message, { expanded, outputPad: 1, keyText, keyHint }, theme);
+		assert.ok(component);
+		const lines = component.render(120);
+		assert.doesNotMatch(lines.join("\n"), /\x1b\[31m|\r|\u200d/u);
+		return lines.map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
+	};
+	const collapsed = show(false);
+	assert.match(collapsed, /\[agent\] Notebook · Notes\n #a2b3c4d5 · follows #f0e1d2c3 · reply requested · pane 42/u);
+	assert.match(collapsed, /Body preview/u);
+	assert.doesNotMatch(collapsed, /\[Notebook\]|Last/u);
+	assert.match(collapsed, /to expand/u);
+	const expanded = show(true);
+	assert.ok(expanded.includes(header));
+	assert.match(expanded, /Last 👩💻 paragraph\./u);
+	assert.equal(expanded.match(/Body preview/gu)?.length, 1);
+	assert.deepEqual(message, before);
+});
+
+it("shows a message without a reply, predecessor or place", () => {
+	const lines = render(
+		renderAgentApplicationMessage,
+		"application-message",
+		"[Notebook] #abcd1234 · Notes · no reply needed\n\nSaved.",
+		false,
+		{
+			version: 1,
+			source: "notebook",
+			application: "Notebook",
+			id: "ABCD1234-1234-4111-8111-111111111111",
+			subject: "Notes",
+			reply: "none",
+		},
+	);
+	assert.deepEqual(lines.slice(1, 5), [" [agent] Notebook · Notes", " #abcd1234 · no reply needed", "", " Saved."]);
 });
 
 it("a preempted self-compaction shows the [agent] label in Pi's label colour and the whole notice", (t) => {

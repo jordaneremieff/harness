@@ -1,7 +1,8 @@
 import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/chord/context";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import { markdownMessages, MARKDOWN_ASK_GUIDANCE } from "./application-messages.ts";
+import { MARKDOWN_ASK_GUIDANCE } from "./application-message-content.ts";
+import { markdownMessages } from "./application-messages.ts";
 import type { MarkdownCommandCall, MarkdownHost } from "./durable.ts";
 import {
 	discardLiveHandoff,
@@ -75,7 +76,7 @@ export function paneClosedNotice({ closed, connected, panes }: PaneClosure): str
 function ordinaryRoute(
 	pi: ExtensionAPI,
 	active: () => boolean,
-	sessionId: string,
+	ctx: ExtensionContext,
 	messages: ReturnType<typeof markdownMessages>,
 ): LiveRoute {
 	const checkAdmission = () => {
@@ -85,7 +86,7 @@ function ordinaryRoute(
 		checkAdmission,
 		submit: async (prompt, reply) => {
 			checkAdmission();
-			return messages.send(sessionId, prompt, reply);
+			return messages.send(prompt, reply, ctx.isIdle());
 		},
 		panesClosed: (closure) => {
 			if (!active()) return;
@@ -118,11 +119,12 @@ function takeReload(manager: Manager) {
 	return record;
 }
 export function ordinaryLive(pi: ExtensionAPI, paneGraceMs?: number) {
-	const messages = markdownMessages(pi.events);
+	const messages = markdownMessages(pi);
 	let bridges = new LiveBridges(paneGraceMs);
 	let current: { manager: Manager; id: string } | undefined;
 	let stopped = false;
-	const open = async (manager: Manager, record?: ReloadRecord) => {
+	const open = async (ctx: ExtensionContext, record?: ReloadRecord) => {
+		const manager = ctx.sessionManager;
 		const id = manager.getSessionId();
 		if (stopped || (current && (current.manager !== manager || current.id !== id)))
 			throw new Error("The invoking Markdown conversation changed.");
@@ -131,7 +133,7 @@ export function ordinaryLive(pi: ExtensionAPI, paneGraceMs?: number) {
 		const active = () => !stopped && current === bound && manager.getSessionId() === id;
 		const bridge = await bridges.get(
 			id,
-			() => ordinaryRoute(pi, active, id, messages),
+			() => ordinaryRoute(pi, active, ctx, messages),
 			`ordinary:${id}`,
 			record?.handoff,
 		);
@@ -139,14 +141,18 @@ export function ordinaryLive(pi: ExtensionAPI, paneGraceMs?: number) {
 		return bridge.start();
 	};
 	pi.on("session_tree", () => {
-		messages.end(false);
+		messages.end("The conversation changed branches before Pi answered this request.");
 		current = undefined;
 		bridges.close();
 		bridges = new LiveBridges(paneGraceMs);
 	});
 	pi.on("session_shutdown", async (event) => {
 		stopped = true;
-		messages.end(event.reason === "reload");
+		messages.end(
+			event.reason === "reload"
+				? "Pi reloaded. Check the conversation for the reply."
+				: "The session closed before Pi answered this request.",
+		);
 		const bound = current;
 		current = undefined;
 		try {
@@ -173,14 +179,14 @@ export function ordinaryLive(pi: ExtensionAPI, paneGraceMs?: number) {
 			discardLiveHandoff(record.handoff);
 			return;
 		}
-		await open(manager, record);
+		await open(ctx, record);
 	});
 	return {
 		find: async (ctx: ExtensionContext) =>
 			current?.manager === ctx.sessionManager && current.id === current.manager.getSessionId()
 				? bridges.find(current.id)
 				: undefined,
-		connection: (ctx: ExtensionContext): Promise<LiveConfig> => open(ctx.sessionManager),
+		connection: (ctx: ExtensionContext): Promise<LiveConfig> => open(ctx),
 	};
 }
 interface HostLive {

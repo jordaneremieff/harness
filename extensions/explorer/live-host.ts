@@ -44,7 +44,7 @@ async function settledAnswer(
 		: { status: "error", text: "The request's exact answer is unavailable." };
 }
 export function ordinaryLive(pi: ExtensionAPI, lifecycle: () => AbortSignal) {
-	const route = explorerApplicationRoutes(pi.events);
+	const route = explorerApplicationRoutes(pi);
 	let bridges = new LiveBridges();
 	const invalidate = () => {
 		bridges.close();
@@ -65,7 +65,7 @@ export function ordinaryLive(pi: ExtensionAPI, lifecycle: () => AbortSignal) {
 				if (source.getSessionId() !== id) throw new Error("The invoking Explorer conversation changed.");
 			};
 			check();
-			const bridge = await bridges.get(id, () => route(id, check));
+			const bridge = await bridges.get(id, () => route(ctx, check));
 			check();
 			return bridge.start();
 		},

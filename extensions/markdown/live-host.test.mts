@@ -64,11 +64,18 @@ async function nextCommand(config: LiveConfig, binding: ReturnType<typeof pane>)
 	}
 	throw new Error("No native command arrived within the bounded progress updates.");
 }
-function ordinaryMock() {
+function ordinaryMock(manager = SessionManager.inMemory()) {
 	const handlers = new Map<string, Set<(...args: unknown[]) => void>>();
-	const sent: unknown[][] = [];
+	const sent: Parameters<ExtensionAPI["sendMessage"]>[] = [];
+	let signal: AbortSignal | undefined;
+	const ctx: Pick<ExtensionContext, "sessionManager" | "isIdle" | "signal"> = {
+		sessionManager: manager,
+		isIdle: () => signal === undefined,
+		get signal() {
+			return signal;
+		},
+	};
 	const pi = {
-		events: createEventBus(),
 		on(name: string, handler: (...args: unknown[]) => void) {
 			const set = handlers.get(name) ?? new Set();
 			set.add(handler);
@@ -77,42 +84,16 @@ function ordinaryMock() {
 				set.delete(handler);
 			};
 		},
-		sendUserMessage: (...args: unknown[]) => sent.push(args),
-	} as unknown as ExtensionAPI;
-	const event = async (name: string, ...args: unknown[]) => {
-		for (const handler of [...(handlers.get(name) ?? [])]) await handler(...args);
-	};
-	return { pi, sent, event };
-}
-
-const receiverEvent = "harness:application-messages:receiver";
-const requestEvent = "harness:application-messages:request";
-const replyEvent = "harness:application-messages:reply";
-type AppEvents = ExtensionAPI["events"];
-type AskEnvelope = { id: string; guidance?: string; [field: string]: unknown };
-function fakeReceiver(events: AppEvents, receive: (message: AskEnvelope) => string | undefined) {
-	const receiver = {
-		version: 1,
-		deliver(message: AskEnvelope) {
-			const refused = receive(message);
-			return refused === undefined
-				? { status: "requested", reference: `#${message.id.slice(0, 8).toLowerCase()}` }
-				: { status: "rejected", message: refused };
+		sendMessage: (...args: Parameters<ExtensionAPI["sendMessage"]>) => {
+			sent.push(args);
 		},
+	} as unknown as ExtensionAPI;
+	const event = async (name: string, fields: object = {}) => {
+		if (name === "agent_start") signal = new AbortController().signal;
+		if (name === "agent_settled") signal = undefined;
+		for (const handler of [...(handlers.get(name) ?? [])]) await handler({ type: name, ...fields }, ctx);
 	};
-	events.on(requestEvent, (request) => {
-		if ((request as { version?: number } | undefined)?.version === 1) events.emit(receiverEvent, receiver);
-	});
-	events.emit(receiverEvent, receiver);
-}
-function appReply(
-	events: AppEvents,
-	id: string,
-	status: "working" | "answer" | "unanswered",
-	text: string,
-	overrides?: { version?: number; extension?: string; shared?: number },
-) {
-	events.emit(replyEvent, { version: 1, extension: "markdown", id, status, text, ...overrides });
+	return { pi, ctx: ctx as ExtensionContext, manager, sent, event };
 }
 function assertEditGuidance(text: string) {
 	assert.match(text, /Use markdown_live with the pane handle to read the current buffer before any edit/u);
@@ -131,20 +112,11 @@ function assertPaneReply(state: LiveState, operationId: string, status: LiveStat
 test("ordinary pane prompts target the captured session and route replies by exact request ID", {
 	timeout: 10000,
 }, async () => {
-	const { pi, event, sent } = ordinaryMock();
-	const deliveries: AskEnvelope[] = [];
+	const { pi, ctx, manager, event, sent } = ordinaryMock();
 	const operationId = "ABCDEF12-0000-4000-8000-000000000001";
-	const followId = randomUUID();
-	fakeReceiver(pi.events, (message) => {
-		deliveries.push(message);
-		if (message.id === operationId) appReply(pi.events, message.id, "working", "");
-		return undefined;
-	});
+	const followId = "FEDCBA98-0000-4000-8000-000000000002";
 	const live = ordinaryLive(pi);
-	pi.events.emit(receiverEvent, { version: 2, deliver: () => ({ status: "rejected", message: "Wrong version" }) });
-	pi.events.emit(receiverEvent, { version: 1, deliver: "not a function" });
-	let id = "ordinary-one";
-	const ctx = { sessionManager: { getSessionId: () => id } } as ExtensionContext;
+	await event("session_start", { reason: "startup" });
 	const config = await live.connection(ctx);
 	const binding = pane();
 	const other = pane();
@@ -154,43 +126,94 @@ test("ordinary pane prompts target the captured session and route replies by exa
 	try {
 		const { handle } = await post(config, "/connect", binding);
 		const followPane = await post(config, "/connect", other);
-		assert.equal((await post(config, "/prompt", { ...binding, operationId, text })).status, "requested");
-		assert.equal(
-			(await post(config, "/prompt", { ...other, operationId: followId, follows: operationId, text })).status,
-			"requested",
-		);
-		assert.equal(deliveries.length, 2);
-		assert.equal(sent.length, 0);
-		const { guidance, ...message } = deliveries[0];
-		assert.deepEqual(message, {
+		const details = {
 			version: 1,
-			sessionId: id,
-			extension: "markdown",
+			source: "markdown",
 			application: "Markdown reader",
 			id: operationId,
 			subject: "Test pane",
 			place: `pane ${handle}`,
 			reply: "final",
-			text,
-		});
-		assert.ok(guidance);
-		assertEditGuidance(guidance);
-		assert.deepEqual(deliveries[1], {
-			...message,
-			id: followId,
-			place: `pane ${followPane.handle}`,
-			follows: operationId,
-			guidance,
-		});
-		assertPaneReply(await stateOf(binding), operationId, "working", "");
-		assertPaneReply(await stateOf(other), followId, "queued", "");
+		};
+		const first = {
+			customType: "application-message",
+			display: true,
+			content: `[Markdown reader] #abcdef12 · Test pane · pane ${handle} · reply in your final message\n\n${text}`,
+			details,
+		};
+		const second = {
+			...first,
+			content: `[Markdown reader] #fedcba98 · follows #abcdef12 · Test pane · pane ${followPane.handle} · reply in your final message\n\n${text}`,
+			details: { ...details, id: followId, place: `pane ${followPane.handle}`, follows: operationId },
+		};
+		const options = { triggerTurn: true, deliverAs: "followUp" };
+		const place = async (message: Parameters<SessionManager["appendMessage"]>[0]) => {
+			await event("message_start", { message });
+			await event("message_end", { message });
+			return message.role === "custom"
+				? manager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details)
+				: manager.appendMessage(message);
+		};
+		const boundary = (pendingMessages: Parameters<SessionManager["appendMessage"]>[0][] = []) => {
+			const { entries, messages } = manager.buildSessionProjection();
+			return {
+				entries: [],
+				continue: false,
+				outcome: "completed",
+				context: { contextEntries: entries, contextMessages: messages, pendingMessages },
+			};
+		};
+		const answer = async (text: string, turnIndex: number, pendingMessages?: Parameters<typeof boundary>[0]) => {
+			const message = fauxAssistantMessage(text);
+			const messageEntryId = await place(message);
+			await event("turn_end", {
+				...boundary(pendingMessages),
+				turnIndex,
+				message,
+				messageEntryId,
+				toolResults: [],
+				toolResultEntryIds: [],
+			});
+		};
 
-		appReply(pi.events, operationId, "answer", "Wrong application", { extension: "explorer" });
-		appReply(pi.events, operationId, "answer", "Wrong version", { version: 2 });
-		appReply(pi.events, operationId.toLowerCase(), "answer", "Wrong ID case");
+		for (const invalid of ["\t\n", "\ud800", "👩".repeat(32769)])
+			assert.equal((await post(config, "/prompt", { ...binding, operationId, text: invalid })).status, "rejected");
+		assert.equal(sent.length, 0);
+		assert.equal((await post(config, "/prompt", { ...binding, operationId, text })).status, "requested");
+		assert.deepEqual(sent, [[first, options]]);
+		assertPaneReply(await stateOf(binding), operationId, "queued", "");
+		await event("agent_start");
+		await event("turn_start", { turnIndex: 0, timestamp: Date.now() });
+		await place({ ...sent[0][0], role: "custom", timestamp: Date.now() });
 		assertPaneReply(await stateOf(binding), operationId, "working", "");
+
+		assert.equal(
+			(await post(config, "/prompt", { ...other, operationId: followId, follows: operationId, text })).status,
+			"requested",
+		);
+		assert.deepEqual(sent, [
+			[first, options],
+			[second, options],
+		]);
+		const follow = { ...sent[1][0], role: "custom" as const, timestamp: Date.now() };
+		await place({ role: "user", content: "Also explain the title.", timestamp: Date.now() });
+		await place({
+			role: "custom",
+			customType: "application-message",
+			display: true,
+			content: "[Notebook] #fedcba98 · Review · reply in your final message\n\nWhat changed?",
+			details: {
+				version: 1,
+				source: "notebook",
+				application: "Notebook",
+				id: followId,
+				subject: "Review",
+				reply: "final",
+			},
+			timestamp: Date.now(),
+		});
 		assertPaneReply(await stateOf(other), followId, "queued", "");
-		appReply(pi.events, operationId, "answer", "Shared reply.", { shared: 2 });
+		await answer("Shared reply.", 0, [follow]);
 		assertPaneReply(
 			await stateOf(binding),
 			operationId,
@@ -198,9 +221,19 @@ test("ordinary pane prompts target the captured session and route replies by exa
 			"Shared reply for #abcdef12 and 2 other messages:\n\nShared reply.",
 		);
 		assertPaneReply(await stateOf(other), followId, "queued", "");
-		appReply(pi.events, followId, "unanswered", "No answer in that run.");
-		appReply(pi.events, followId, "answer", "Late answer");
-		assertPaneReply(await stateOf(other), followId, "error", "No answer in that run.");
+		await event("turn_start", { turnIndex: 1, timestamp: Date.now() });
+		await place(follow);
+		assertPaneReply(await stateOf(other), followId, "working", "");
+		await answer("Follow-up reply.", 1);
+		await event("agent_before_settle", boundary());
+		await event("agent_settled", { aborted: false });
+		assertPaneReply(await stateOf(other), followId, "answer", "Follow-up reply.");
+		assertPaneReply(
+			await stateOf(binding),
+			operationId,
+			"answer",
+			"Shared reply for #abcdef12 and 2 other messages:\n\nShared reply.",
+		);
 
 		for (const name of ["session_before_switch", "session_before_fork", "session_before_tree"]) {
 			await event(name);
@@ -209,61 +242,45 @@ test("ordinary pane prompts target the captured session and route replies by exa
 		await event("session_tree");
 		assert.equal(await live.find(ctx), undefined);
 		await assert.rejects(post(config, "/prompt", { ...binding, operationId: randomUUID(), text: "Stale request" }));
-		assert.equal(deliveries.length, 2);
+		assert.equal(sent.length, 2);
 		const branch = await live.connection(ctx);
 		assert.notEqual(branch.token, config.token);
 		await event("session_shutdown", { reason: "fork" });
-		id = "ordinary-two";
+		manager.newSession();
 		await assert.rejects(live.connection(ctx));
 	} finally {
 		await event("session_shutdown", { reason: "quit" });
 	}
 });
 
-test("ordinary pane prompts report missing receivers and receiver refusals without a plain chat fallback", {
-	timeout: 10000,
-}, async () => {
-	const { pi, event, sent } = ordinaryMock();
-	const live = ordinaryLive(pi);
-	const ctx = { sessionManager: { getSessionId: () => "ordinary-refusal" } } as ExtensionContext;
-	const config = await live.connection(ctx);
-	const binding = pane();
-	try {
-		await post(config, "/connect", binding);
-		const prompt = { ...binding, operationId: randomUUID(), text: "Explain this passage." };
-		const missing = await post(config, "/prompt", prompt);
-		assert.equal(missing.status, "rejected");
-		assert.match(missing.message ?? "", /no application message receiver/u);
-		fakeReceiver(pi.events, () => "The receiver refused this question.");
-		const refused = await post(config, "/prompt", { ...prompt, operationId: randomUUID() });
-		assert.equal(refused.status, "rejected");
-		assert.equal(refused.message, "The receiver refused this question.");
-		assert.equal(sent.length, 0);
-	} finally {
-		await event("session_shutdown", { reason: "quit" });
-	}
-});
 test("an ordinary reload requires both the original manager and its unchanged session ID", async () => {
-	let id = randomUUID();
-	const manager = () => ({ getSessionId: () => id });
-	const ctx = { sessionManager: manager() } as ExtensionContext;
-	const other = { sessionManager: manager() } as ExtensionContext;
-	const old = ordinaryMock(),
-		fresh = ordinaryMock(),
-		replacement = ordinaryMock();
+	const old = ordinaryMock();
+	const header = old.manager.getHeader();
+	assert.ok(header);
+	const fresh = ordinaryMock(SessionManager.inMemory(header.cwd, undefined, [header]));
+	assert.equal(old.manager.getSessionId(), fresh.manager.getSessionId());
+	const replacement = ordinaryMock(old.manager);
 	const live = ordinaryLive(old.pi),
 		otherLive = ordinaryLive(fresh.pi),
 		replaced = ordinaryLive(replacement.pi);
-	const previous = await live.connection(ctx);
+	const previous = await live.connection(old.ctx);
 	try {
 		await old.event("session_shutdown", { reason: "reload" });
-		await fresh.event("session_start", { reason: "reload" }, other);
-		assert.equal(await otherLive.find(other), undefined, "matching ID on a different manager is not the same session");
-		assert.notEqual((await otherLive.connection(other)).token, previous.token);
-		id = randomUUID();
-		await replacement.event("session_start", { reason: "reload" }, ctx);
-		assert.equal(await replaced.find(ctx), undefined, "changed ID on the original manager is not the same session");
-		assert.notEqual((await replaced.connection(ctx)).token, previous.token);
+		await fresh.event("session_start", { reason: "reload" });
+		assert.equal(
+			await otherLive.find(fresh.ctx),
+			undefined,
+			"matching ID on a different manager is not the same session",
+		);
+		assert.notEqual((await otherLive.connection(fresh.ctx)).token, previous.token);
+		old.manager.newSession();
+		await replacement.event("session_start", { reason: "reload" });
+		assert.equal(
+			await replaced.find(replacement.ctx),
+			undefined,
+			"changed ID on the original manager is not the same session",
+		);
+		assert.notEqual((await replaced.connection(replacement.ctx)).token, previous.token);
 		await assert.rejects(
 			fetch(`${previous.endpoint}/reserve`, { method: "POST", signal: AbortSignal.timeout(1000) }),
 			TypeError,
@@ -273,7 +290,7 @@ test("an ordinary reload requires both the original manager and its unchanged se
 		await replacement.event("session_shutdown", { reason: "quit" });
 	}
 });
-test("ordinary Pi keeps pane receipts and settled answers across reload and binds a new receiver", {
+test("ordinary Pi keeps pane receipts and settled answers across reload and sends new Asks directly", {
 	timeout: 15000,
 }, async () => {
 	const root = await mkdtemp(join(tmpdir(), "markdown-ask-"));
@@ -287,10 +304,14 @@ test("ordinary Pi keeps pane receipts and settled answers across reload and bind
 	});
 	runtime.registerNativeProvider(faux.provider);
 	let bindings = 0;
-	let registrations = 0;
-	const deliveries: { id: string; registration: number }[] = [];
 	let config!: LiveConfig, close: (() => void) | undefined;
-	let events!: AppEvents;
+	let markStarted!: () => void, release!: () => void;
+	const started = new Promise<void>((resolve) => {
+		markStarted = resolve;
+	});
+	const released = new Promise<void>((resolve) => {
+		release = resolve;
+	});
 	const loader = new DefaultResourceLoader({
 		cwd: root,
 		agentDir: root,
@@ -310,16 +331,9 @@ test("ordinary Pi keeps pane receipts and settled answers across reload and bind
 					close = () => bridge?.close();
 				});
 			},
-			(pi) => {
-				const registration = ++registrations;
-				events = pi.events;
-				fakeReceiver(pi.events, ({ id }) => {
-					deliveries.push({ id, registration });
-					return undefined;
-				});
-			},
 		],
 	});
+	const manager = SessionManager.inMemory(root);
 	let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 	try {
 		await loader.reload();
@@ -328,7 +342,7 @@ test("ordinary Pi keeps pane receipts and settled answers across reload and bind
 			agentDir: root,
 			modelRuntime: runtime,
 			model: faux.getModel(),
-			sessionManager: SessionManager.inMemory(root),
+			sessionManager: manager,
 			settingsManager: settings,
 			resourceLoader: loader,
 			tools: [],
@@ -338,14 +352,57 @@ test("ordinary Pi keeps pane receipts and settled answers across reload and bind
 		const pending = pane();
 		const settledPrompt = { ...settled, operationId: randomUUID(), text: "Explain the document." };
 		const pendingPrompt = { ...pending, operationId: randomUUID(), text: "Explain the passage." };
-		for (const [binding, prompt] of [
-			[settled, settledPrompt],
-			[pending, pendingPrompt],
-		] as const) {
-			await post(config, "/connect", binding);
-			assert.equal((await post(config, "/prompt", prompt)).status, "requested");
-		}
-		appReply(events, settledPrompt.operationId, "answer", "Settled before reload.");
+		const askIds = () =>
+			manager
+				.getBranch()
+				.flatMap((entry) =>
+					entry.type === "custom_message" && entry.customType === "application-message"
+						? [(entry.details as { id: string }).id]
+						: [],
+				);
+		let projectedAsk: string | undefined;
+		faux.setResponses([
+			({ messages }) => {
+				projectedAsk = messages.map(messageText).find((text) => text.startsWith("[Markdown reader]"));
+				return fauxAssistantMessage("Settled before reload.");
+			},
+			async () => {
+				markStarted();
+				await released;
+				return fauxAssistantMessage("The stopped turn does not answer the queued Ask.");
+			},
+		]);
+		await post(config, "/connect", settled);
+		await post(config, "/connect", pending);
+		assert.equal((await post(config, "/prompt", settledPrompt)).status, "requested");
+		await session.waitForIdle();
+		assertPaneReply(
+			(await post(config, "/poll", { ...settled, after: 0 })).state,
+			settledPrompt.operationId,
+			"answer",
+			"Settled before reload.",
+		);
+		assert.ok(projectedAsk);
+		assertEditGuidance(projectedAsk);
+		assert.deepEqual(askIds(), [settledPrompt.operationId]);
+
+		const run = session.prompt("Start a run before the pending Ask.");
+		await Promise.race([started, run]);
+		assert.equal(session.isStreaming, true);
+		assert.equal((await post(config, "/prompt", pendingPrompt)).status, "requested");
+		assertPaneReply(
+			(await post(config, "/poll", { ...pending, after: 0 })).state,
+			pendingPrompt.operationId,
+			"queued",
+			"",
+		);
+		assert.deepEqual(askIds(), [settledPrompt.operationId]);
+		// Interactive Escape clears the queue before aborting the run.
+		session.clearQueue();
+		const abort = session.abort();
+		release();
+		await Promise.all([abort, run]);
+		assert.deepEqual(askIds(), [settledPrompt.operationId, pendingPrompt.operationId]);
 		const previous = config;
 		await session.reload({
 			beforeSessionStart: async () => {
@@ -384,17 +441,23 @@ test("ordinary Pi keeps pane receipts and settled answers across reload and bind
 			"error",
 			"Pi reloaded. Check the conversation for the reply.",
 		);
+		assert.deepEqual(askIds(), [settledPrompt.operationId, pendingPrompt.operationId]);
 		const next = { ...settledPrompt, operationId: randomUUID(), text: "Ask after reload." };
+		faux.setResponses([fauxAssistantMessage("Answered after reload.")]);
 		assert.equal((await post(config, "/prompt", next)).status, "requested");
-		appReply(events, next.operationId, "answer", "Answered by the new registration.");
+		await session.waitForIdle();
 		const { state } = await post(config, "/poll", { ...settled, after: restored.sequence });
-		assertPaneReply(state, next.operationId, "answer", "Answered by the new registration.");
-		assert.deepEqual(deliveries, [
-			{ id: settledPrompt.operationId, registration: 1 },
-			{ id: pendingPrompt.operationId, registration: 1 },
-			{ id: next.operationId, registration: 2 },
-		]);
+		assertPaneReply(state, next.operationId, "answer", "Answered after reload.");
+		assertPaneReply(
+			(await post(config, "/poll", { ...pending, after: 0 })).state,
+			pendingPrompt.operationId,
+			"error",
+			"Pi reloaded. Check the conversation for the reply.",
+		);
+		assert.deepEqual(askIds(), [settledPrompt.operationId, pendingPrompt.operationId, next.operationId]);
 	} finally {
+		release();
+		await session?.abort();
 		close?.();
 		session?.dispose();
 		await rm(root, { recursive: true, force: true });
