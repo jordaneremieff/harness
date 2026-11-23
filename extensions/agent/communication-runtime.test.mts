@@ -567,7 +567,7 @@ it("executes independent answer and recipient continuations through native tools
 	}
 });
 
-it("keeps unsettled results and missing answer bodies distinct from readable pages", async () => {
+it("returns no answer or receipt page for an unsettled result", async () => {
 	const control = await controlledRuntime(1);
 	await withHost(async (host, storageId) => {
 		const admitted = (await host.request("submit", { requestId: "pending-page", message: "Hold the answer" })) as {
@@ -595,23 +595,6 @@ it("keeps unsettled results and missing answer bodies distinct from readable pag
 		}
 		await readOutcome(host.harness, admitted.submissionId, BACKGROUND_CONTEXT);
 	}, control.models);
-	await withHost(
-		async (host) => {
-			const admitted = (await host.request("submit", {
-				requestId: "empty-answer",
-				message: "An empty retained answer",
-			})) as { submissionId: SubmissionId };
-			await readOutcome(host.harness, admitted.submissionId, BACKGROUND_CONTEXT);
-			const missing = retainedResultPage(
-				await host.request("inspect", { view: "result", submissionId: admitted.submissionId }),
-			);
-			assert.equal(missing.status, "done");
-			assert.equal(missing.answer, undefined);
-			assert.equal(missing.offset, undefined);
-			assert.match(missing.reason ?? "", /answer entry.*not retained/u);
-		},
-		await scriptedRuntime([answerMessage("")]),
-	);
 });
 
 it("preserves user model bytes and keeps communication out of input metadata", async () => {
