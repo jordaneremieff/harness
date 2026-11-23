@@ -598,20 +598,36 @@
 			ensure(handler, "Reader transport is unavailable.");
 			return handler.postMessage(message);
 		};
-		function installCapabilities(message: ReaderHostMessage) {
+		function allowsDocument(message: ReaderHostMessage) {
 			for (const allow of handlers.get("beforeDocument") ?? []) if (allow(message) === false) return false;
-			capabilities.windowChrome = String(message.chrome);
-			capabilities.menuBar = message.chrome === "window";
-			capabilities.returnFocus = message.chrome === "pane";
+			return true;
+		}
+		function prepare(value: unknown) {
+			try {
+				const message = native(value);
+				return message.type === "document" && !allowsDocument(message) ? null : message;
+			} catch (error) {
+				console.warn(`[reader] ${asError(error).message}`);
+				return null;
+			}
+		}
+		function dispatch(message: ReaderHostMessage) {
+			for (const fn of handlers.get(message.type) ?? []) fn(message);
 			return true;
 		}
 		const receive = (value: unknown) => {
 			if (disposed) return false;
+			const message = prepare(value);
+			if (!message) return false;
+			if (message.type === "document") {
+				// Native retains the old document on false. Once installation starts, errors must propagate.
+				capabilities.windowChrome = String(message.chrome);
+				capabilities.menuBar = message.chrome === "window";
+				capabilities.returnFocus = message.chrome === "pane";
+				return dispatch(message);
+			}
 			try {
-				const message = native(value);
-				if (message.type === "document" && !installCapabilities(message)) return false;
-				for (const fn of handlers.get(message.type) ?? []) fn(message);
-				return true;
+				return dispatch(message);
 			} catch (error) {
 				console.warn(`[reader] ${asError(error).message}`);
 				return false;

@@ -190,6 +190,40 @@ function documentMessage(source = "") {
 		live: true,
 	};
 }
+test("a refused document leaves capabilities and installed content untouched", () => {
+	const api = bridge(),
+		host = api.createNativeHost();
+	const candidate = { ...documentMessage("replacement"), chrome: "window" };
+	let source = "original";
+	host.on("document", (value) => {
+		source = (value as ReaderDocument).source;
+	});
+	assert.equal(api.receive({ ...candidate, presentation: null }), false);
+	host.on("beforeDocument", () => false);
+	assert.equal(api.receive(candidate), false);
+	assert.equal(host.capabilities.windowChrome, "pane");
+	assert.equal(source, "original");
+	host.dispose();
+});
+test("the native entry propagates an exception after document installation begins", () => {
+	const api = bridge(),
+		host = api.createNativeHost();
+	const failure = new Error("Document display failed.");
+	let source = "original";
+	host.on("document", (value) => {
+		source = (value as ReaderDocument).source;
+	});
+	host.on("document", () => {
+		throw failure;
+	});
+	assert.throws(
+		() => api.receive({ ...documentMessage("replacement"), chrome: "window" }),
+		(error) => error === failure,
+	);
+	assert.equal(host.capabilities.windowChrome, "window");
+	assert.equal(source, "replacement");
+	host.dispose();
+});
 test("documents and page writes require the identity of their source", () => {
 	const { native, page } = bridge().bridge;
 	const doc = documentMessage();
