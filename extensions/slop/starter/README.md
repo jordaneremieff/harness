@@ -1,12 +1,14 @@
-# Slop catalog
+# Slop starter set
 
-Each file in this directory describes one slop tell: a habit that makes prose, code or an interface read as generated, and that a person has to undo by hand. Agents read these entries before and while they write or review. The `slop_check` tool runs the detectors that some entries carry over text, files and diffs.
+Each machine's catalog starts as a copy of these entries. Changes here do not overwrite a machine's catalog. Use the `slop` tool to compare it with the starter set, and `slop_record` to import entries when the operator requests it.
+
+Each file describes one slop tell: a habit that makes prose, code or an interface read as generated, and that a person has to undo by hand. Agents read these entries before and while they write or review. The `slop_check` tool runs the detectors that some entries carry over text, files and diffs.
 
 ## How to read an entry
 
 Recognition says how to spot the tell. Cost says what it does to the reader. Repair says how to fix the move behind it, and its first sentence is the short form that the system prompt and check results show.
 
-An entry with a Detectors block has deterministic checks. Its Slop examples must match a detector and its Better examples must match none, so the examples are also its tests. An entry without detectors is a judgment entry: no check reports it, and agents apply it by reading.
+Every starter entry declares `prompt` explicitly. An entry with a Detectors block has deterministic checks. Each detector must match at least one Slop example and no Better example. A Slop example without a match illustrates a variant that needs judgment. Agents also judge entries without detectors by reading.
 
 ## Judge at density
 
@@ -61,7 +63,7 @@ Interface:
 - `open-labels`: controls labelled open, as a cue to review the interaction.
 - `symbol-noise`: decorative symbols, hidden actions and raw ids.
 
-The `slop` tool lists the active catalog on this machine, including local entries and the state of each entry.
+The `slop` tool lists the machine's catalog and the state of each entry. Use `{"starter":true}` to list these starter entries and their status on this machine.
 
 ## Related doctrine
 

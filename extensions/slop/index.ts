@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { checkPrompt, parseCheckHint } from "./command.ts";
 import { toolDisplay } from "./display.ts";
 import { slopContribution } from "./durable.ts";
 import {
@@ -21,35 +22,14 @@ import {
 } from "./operations.ts";
 import { terminalText } from "./presentation-text.ts";
 import { publishSettings, readSettings } from "./settings.ts";
-import { type Identity, readCatalog, saveFlag, setDisabled } from "./store.ts";
+import { type Identity, readCatalog, setDisabled } from "./store.ts";
 import type { ViewState } from "./view.ts";
 
 function identity(ctx: ExtensionContext): Identity {
 	return {
 		session: ctx.sessionManager.getSessionId(),
-		cwd: ctx.cwd,
 		model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null,
 	};
-}
-
-function lastReply(branch: ReturnType<ExtensionContext["sessionManager"]["getBranch"]>) {
-	for (let i = branch.length - 1; i >= 0; i--) {
-		const entry = branch[i];
-		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-		const message = entry.message;
-		const text = message.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
-		if (text.trim()) return { text, model: `${message.provider}/${message.model}` };
-	}
-}
-
-function flagReply(pi: ExtensionAPI, ctx: ExtensionContext, root: string, note: string) {
-	const reply = lastReply(ctx.sessionManager.getBranch());
-	if (!reply) throw new Error("There is no assistant reply to flag in this session.");
-	saveFlag(root, reply.text, note, { ...identity(ctx), model: reply.model });
-	pi.sendUserMessage(
-		`I flagged your last assistant reply as slop. Name the tells in plain words. Record each tell with slop_record as its own local entry, even when a shipped entry covers it, and update the local entry of a habit that comes back. Use the flagged passage as a Slop example and your repair as a Better example. Add a detector when the tell has a fixed wording or form that a phrase list or pattern finds without matching the repair. ${note ? `Then act on this note. If it has no other request, give the corrected reply.\n\n${note}` : "Then give the corrected reply."}`,
-		{ deliverAs: "followUp" },
-	);
 }
 
 export default function slopExtension(pi: ExtensionAPI) {
@@ -135,12 +115,22 @@ export default function slopExtension(pi: ExtensionAPI) {
 		}
 	}
 	pi.registerCommand("slop", {
-		description: "Browse slop entries, or use /slop flag [note] on the last reply.",
+		description: "Browse the slop catalog or check this conversation's work with an optional hint.",
+		getArgumentCompletions: (prefix) => ("check".startsWith(prefix) ? [{ value: "check", label: "check" }] : null),
 		handler: async (args, ctx) => {
 			try {
-				const flag = /^flag(?:\s+([\s\S]*))?$/.exec(args.trim());
-				if (flag) return flagReply(pi, ctx, root(), flag[1] ?? "");
-				if (args.trim()) throw new Error("Use /slop or /slop flag [note].");
+				const hint = parseCheckHint(args);
+				if (hint !== undefined) {
+					pi.sendMessage(
+						{ customType: "slop-check-request", content: checkPrompt(hint), display: true },
+						{ triggerTurn: true, deliverAs: "steer" },
+					);
+					return;
+				}
+				if (args.trim()) {
+					ctx.ui.notify("Use /slop to browse, or /slop check [hint] to check your work.", "info");
+					return;
+				}
 				await openBrowser(ctx);
 			} catch (error) {
 				ctx.ui.notify(terminalText(error instanceof Error ? error.message : String(error)), "error");

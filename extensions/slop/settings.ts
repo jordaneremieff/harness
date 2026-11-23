@@ -10,7 +10,7 @@ export const settings = {
 			type: "path",
 			env: "PI_SLOP_DIR",
 			defaultText: "<agentDir>/slop",
-			description: "Private store for local entries, entry state and reply flags.",
+			description: "Private store for the machine catalog and its state.",
 			apply: "use",
 		},
 		prompt: {

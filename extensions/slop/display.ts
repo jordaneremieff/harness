@@ -6,9 +6,9 @@ function card(name: string, label: string, keys: string[]): ToolDisplay {
 	return { name, renderCall: callCard(label, keys), renderResult: resultCard };
 }
 const cards = [
-	card("slop", "Slop catalog", ["entry", "scope", "query"]),
+	card("slop", "Slop catalog", ["entry", "scope", "query", "starter"]),
 	card("slop_check", "Slop check", ["text", "path", "diff"]),
-	card("slop_record", "Slop record", ["action", "id"]),
+	card("slop_record", "Slop record", ["action", "id", "ids"]),
 ];
 export function toolDisplay() {
 	return { version: 1 as const, tools: cards.map((tool) => ({ ...tool })) };

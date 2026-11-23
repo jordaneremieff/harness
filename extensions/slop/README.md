@@ -7,23 +7,44 @@ blocks, or rewrites ordinary chat replies automatically.
 
 | Surface | Purpose |
 |---|---|
-| `slop` | List entries by domain, filter by scope or literal query, or read one entry by ID. |
+| `slop` | List or read catalog entries, or compare the starter set. |
 | `slop_check` | Check supplied text, one file, or a Git diff. |
-| `slop_record` | Save or replace a local entry, or disable or enable an entry by ID. |
-| `/slop` | Browse and change entry state in the ordinary Pi terminal. |
-| `/slop flag [note]` | Save the last assistant reply privately and ask the agent to address it. |
+| `slop_record` | Save, remove, disable, enable, or import catalog entries. |
+| `/slop` | Browse the catalog in the ordinary Pi terminal. |
+| `/slop check [hint]` | Ask the agent to review and repair this conversation's work. |
 
 The tools are direct in ordinary and Durable Pi. Both use the same store and
-checks. A system prompt section includes short repairs from active entries
-marked `prompt: true`. It fits within 1,500 characters and considers newer
-local entries before shipped entries. Local entries default to `prompt: true`,
-so a tell that the operator flags reaches every later session on the machine.
-Shipped entries default to `prompt: false`. A general line about a habit
-changes more than wording: it can also shorten an answer past what the request
-needs or turn a recommendation into a list of options. The prompt therefore
-carries the operator's own corrections. A local entry with the same ID and
-`prompt: true` puts a shipped entry in the prompt. The
-Durable terminal has tool cards but no independent `/slop` panel.
+checks. The first catalog use copies the bundled [starter set](starter/) to a
+private machine catalog. The catalog is thereafter independent: edits, removals,
+and disablement survive package updates. An empty catalog does not seed again.
+
+An entry without a `prompt` field defaults to `true`. Starter entries set it
+explicitly. A system prompt section includes short repairs from active entries
+marked `prompt: true`, within 1,500 characters. It considers entries with a
+Record section newest first, then the other entries in ID order.
+
+## Browse and compare
+
+In the ordinary terminal, use **Enter** or **Right** to read, **/** to search,
+**s** to change scope, and **e** in the detail to change an entry's state.
+Rows mark entries set to reach the prompt and entries that are off.
+`/slop check [hint]` directs the agent to review recent replies and changed work.
+The hint is optional and the command passes it through as text. For a Durable
+conversation, select `slop` in the dashboard command form and enter `check`
+with an optional hint as the arguments.
+
+The `slop` tool accepts `scope` and `query` filters or reads one `entry` by ID.
+To compare with the starter set, use `{"starter":true}`. Add `entry` to read a
+starter file. The comparison reports:
+
+- `new`: not yet present in the machine catalog.
+- `removed`: explicitly removed from the machine catalog.
+- `current`: the starter file still matches the digest from seed or import.
+- `updated`: the starter file changed since seed or import.
+- `replaced`: the catalog has an entry for the ID, but has no import digest.
+
+Local edits to an imported entry do not change its status. Read both versions
+before you decide whether to import an updated entry.
 
 ## Check work
 
@@ -56,45 +77,48 @@ Git processes one bounded patch per file. It skips files whose new text exceeds
 8 MiB or whose patch exceeds 16 MiB, and continues with the other files.
 Checks also skip binary files and files with unsupported encodings.
 
-## Record a tell
+## Change the machine catalog
 
-The operator flags slop in ordinary words, such as calling a reply slop or
-objecting to a habit. In an ordinary session, the `slop_record` rules in the
-system prompt ask the agent to record the habit before it repairs the text.
-Each flagged habit gets a local entry under a new ID, even when a shipped entry
-covers it, because only local entries reach later prompts and a local entry
-with a shipped ID replaces that entry and its detectors. A habit that comes back
-updates its local entry with the new example. The ordinary tool list also gives
-each slop tool one line. Durable sessions receive the same instruction through
-the `slop_record` description.
+The operator asks for changes in chat. When the operator objects to a habit,
+record it with `slop_record` before repair. Update the existing entry if it
+covers the habit. Add the flagged passage and your repair as examples when
+available, and set `prompt: true` so the repair is eligible for later prompts.
+If no entry covers the habit, save a new one.
 
-`/slop flag` is the explicit form for the last reply.
-With a note, the agent also acts on that note. The flag keeps a copy of the
-reply, note, and session metadata under the private store's `flags/` directory.
-The ordinary browser opens in the editor slot. Use **Enter** or **Right** to
-read, **/** to search, **s** to change scope, and **e** in the detail to change
-an entry's state. Disabling does not delete an entry.
+- `save` takes a kebab-case `id` and the `operator`'s words. A new entry also
+  needs `title`, `domain`, `applies`, `recognition`, `cost`, and `repair`. An
+  update keeps fields you omit, appends distinct examples, and replaces the
+  detector list only if you supply it. Use `detectors: []` to clear the list.
+  Each save adds a Record item with the time, session, model and operator's
+  words, plus any `excerpt` and `note`. The oldest items drop out if the file
+  reaches its size limit.
+- `remove` deletes the entry with that `id` and clears its disabled state.
+  For a starter ID, it also marks the entry as removed so a later import skips
+  it unless the import names it explicitly. It accepts a `reason`.
+- `disable` keeps the entry with that `id` but excludes it from checks and
+  prompts. It accepts a `reason`.
+- `enable` clears the disabled state for that `id`.
+- `import` without `ids` copies only `new` starter entries. With `ids`, it
+  copies the named starter files over the catalog files, discards their local
+  edits, and clears their removal marks. An unknown ID refuses the entire call.
 
-Use `slop_record` with `action: "save"`, a kebab-case `id`, `title`, `domain`,
-`applies`, `recognition`, `cost`, `repair`, and `operator` (the operator's words).
-Include a Slop example and a Better example when the source supplies a usable
-pair. A detector entry's Slop examples must match before allowance; its Better
-examples must not match. An example supplies a kind but not a path, so this
-test checks detector matching independently of any path glob. Runtime checks
-still enforce path globs and never apply them to plain text or commit messages.
+Every detector must match at least one Slop example before allowance, and no
+Better example may match any detector. A Slop example without a match is valid:
+read it as a variant that needs judgment. The save result names such examples.
+An example supplies a kind but not a path, so these tests ignore path globs.
+Runtime checks still enforce path globs and never apply them to plain text or
+commit messages.
+
 Detectors match without regard to case by default. Set `caseSensitive: true`
 for case-sensitive matching. A `pattern` runs per scoped line with JavaScript
 flags `giu` by default or `gu` with `caseSensitive`. Inline modifier groups
-are not supported.
+are not supported. A judgment entry needs no detector. Only save regular
+expressions from sources you trust: detectors run in the Pi process.
 
-A judgment entry needs no detector. See [the shipped catalog](catalog/) for
-entry files and detector examples. Only save regular expressions from sources
-you trust: detectors use JavaScript regular expressions in the Pi process.
-
-A local entry replaces a shipped entry with the same ID. Save adds creation
-and update times plus session, model, and directory metadata. Entries live in
-`entries/`; state and its reasons live in `state.json`. Files change via atomic
-rename. A later write reclaims the store lock after it expires.
+The store keeps one entry per `catalog/<id>.md`. `catalog.json` tracks the
+starter digests in `imported`, disabled entries in `disabled`, and starter
+entries removed from the catalog in `removed`. A store lock serialises writes,
+and files publish by atomic rename. A later write reclaims an expired lock.
 
 ## Settings
 
@@ -105,7 +129,7 @@ from the agent directory. Changes apply at the next use.
 <!-- harness:settings:start -->
 | Key | Environment | Type | Default | Applies | Constraints | Description |
 |---|---|---|---|---|---|---|
-| dir | `PI_SLOP_DIR` | path | &lt;agentDir&gt;/slop | next use | none | Private store for local entries, entry state and reply flags. |
+| dir | `PI_SLOP_DIR` | path | &lt;agentDir&gt;/slop | next use | none | Private store for the machine catalog and its state. |
 | prompt | `PI_SLOP_PROMPT` | enum | "on" | next use | on, off | Include active catalog cues in the system prompt. Off leaves the tools, command and CLI available. |
 | lexicon | `PI_SLOP_LEXICON` | path | unset | next use | none | File of permitted UTF-8 matches for detectors that use the lexicon. |
 <!-- harness:settings:end -->

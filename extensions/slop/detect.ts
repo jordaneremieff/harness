@@ -348,18 +348,22 @@ export function checkLines(entries: Entry[], lines: ScopedLine[], lexicon: Set<s
 	);
 }
 
-export function exampleFailures(entry: Entry, lexicon = new Set<string>()): string[] {
-	if (!entry.detectors.length) return [];
-	return entry.examples.flatMap(({ kind, text, verdict }, i) => {
+export function testExamples(entry: Entry, lexicon = new Set<string>()) {
+	const untested = new Set(entry.detectors.map(({ id }) => id));
+	const failures: string[] = [];
+	const unmatched: string[] = [];
+	for (const [i, { kind, text, verdict }] of entry.examples.entries()) {
 		const prose = proseKinds.find((scope) => scope === kind);
 		const lines = segment(prose ? { kind: prose, text } : { kind: "file", path: `example.${kind}`, text });
 		const matched = entry.detectors
 			.filter((detector) => detectorMatches(detector, lines, lexicon, true).count > 0)
 			.map((detector) => detector.id);
 		const label = `Example ${i + 1} (${verdict}, ${kind})`;
-		if (verdict === "slop" && !matched.length)
-			return [`${label}: no match from ${entry.detectors.map((detector) => detector.id).join(", ")}.`];
-		if (verdict === "better" && matched.length) return [`${label}: matched ${matched.join(", ")}.`];
-		return [];
-	});
+		if (verdict === "slop") {
+			for (const id of matched) untested.delete(id);
+			if (!matched.length) unmatched.push(label);
+		} else if (matched.length) failures.push(`${label}: matched ${matched.join(", ")}.`);
+	}
+	for (const id of untested) failures.push(`Detector ${id}: no matching Slop example.`);
+	return { failures, unmatched };
 }

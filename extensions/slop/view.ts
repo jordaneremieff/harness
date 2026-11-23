@@ -276,7 +276,7 @@ class SlopView {
 			},
 		});
 		const selected = row.id === this.state.selected;
-		const title = `${selected ? "› " : "  "}${singleLine(row.title)}${row.source === "local" ? " (local)" : ""}${row.disabled ? " (disabled)" : ""}`;
+		const title = `${selected ? "› " : "  "}${singleLine(row.title)}${row.prompt ? " (prompt)" : ""}${row.disabled ? " (off)" : ""}`;
 		return this.theme.fg(selected ? "accent" : "text", truncateToWidth(title, width));
 	}
 	private listRows(width: number, y: number, entry?: CatalogEntry) {
@@ -326,9 +326,9 @@ class SlopView {
 
 	/** The entry as rendered Markdown under one line of its facts; the front matter is not shown. */
 	private entryRows(entry: CatalogEntry, width: number): string[] {
-		const key = `${entry.id}\u0000${entry.source}\u0000${entry.disabled}\u0000${width}\u0000${entry.raw}`;
+		const key = `${entry.id}\u0000${entry.origin}\u0000${entry.disabled}\u0000${width}\u0000${entry.raw}`;
 		if (this.rendered?.key === key) return this.rendered.rows;
-		const facts = `${entry.id} · ${entry.domain} · ${entry.applies.join(", ")} · ${entry.source} · ${stateLabel(entry)}`;
+		const facts = `${entry.id} · ${entry.domain} · ${entry.applies.join(", ")} · ${entry.origin} · ${stateLabel(entry)}`;
 		const body = terminalText(entry.raw.replace(/^---\r?\n[\s\S]*?\r?\n---[^\n]*\n+/, ""));
 		const markdown = new Markdown(body.trim() || "(no text)", 0, 0, markdownTheme(this.theme), {
 			color: (value) => this.theme.fg("text", value),

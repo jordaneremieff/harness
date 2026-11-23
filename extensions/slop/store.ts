@@ -1,76 +1,191 @@
-import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
-import { type Entry, type EntryFields, fenced, firstSentence, isRecord, parseEntry, requireId } from "./catalog.ts";
-import { exampleFailures } from "./detect.ts";
+import {
+	type Entry,
+	type EntryFields,
+	entryLimit,
+	fenced,
+	firstSentence,
+	formatRecord,
+	isRecord,
+	parseEntry,
+	requireId,
+} from "./catalog.ts";
+import { testExamples } from "./detect.ts";
 import { readRegular } from "./files.ts";
 
-export const shippedCatalog = fileURLToPath(new URL("./catalog/", import.meta.url));
-export type Identity = { session: string; model: string | null; cwd: string };
+export const starterDir = fileURLToPath(new URL("./starter/", import.meta.url));
+export type Identity = { session: string; model: string | null };
 export type CatalogEntry = Entry & { disabled: boolean };
-type EntryState = { disabled: boolean; time: string; session: string; reason?: string };
+type Change = { time: string; session: string; reason?: string };
+type CatalogState = { imported: Map<string, string>; disabled: Map<string, Change>; removed: Map<string, Change> };
+const stateLimit = 1024 * 1024;
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
-function findEntryFiles(dir: string): string[] {
-	try {
-		return readdirSync(dir, { withFileTypes: true })
-			.filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name !== "README.md")
-			.map((entry) => entry.name)
-			.sort();
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-		throw error;
-	}
+function entryFiles(dir: string): string[] {
+	return readdirSync(dir, { withFileTypes: true })
+		.filter((entry) => entry.isFile() && entry.name.endsWith(".md") && entry.name !== "README.md")
+		.map((entry) => entry.name)
+		.sort();
 }
 
-export function loadEntryFile(dir: string, file: string, source: Entry["source"]): Entry | undefined {
+function loadEntryFile(dir: string, file: string, starter = false) {
 	const id = requireId(file.slice(0, -3));
-	const bytes = readRegular(join(dir, file), 128 * 1024);
-	return bytes && parseEntry(utf8.decode(bytes), id, source);
+	const bytes = readRegular(join(dir, file), entryLimit);
+	if (bytes) return { file, bytes, entry: parseEntry(utf8.decode(bytes), id, starter) };
 }
 
-export function loadEntries(dir: string, source: Entry["source"]): Entry[] {
-	return findEntryFiles(dir).flatMap((file) => {
-		const entry = loadEntryFile(dir, file, source);
-		return entry ? [entry] : [];
+function loadStarters(dir: string) {
+	return entryFiles(dir).map((file) => {
+		const item = loadEntryFile(dir, file, true);
+		if (!item) throw new Error(`Starter file disappeared: ${file}.`);
+		return { ...item, digest: createHash("sha256").update(item.bytes).digest("hex") };
 	});
 }
 
-function loadState(root: string): Map<string, EntryState> {
-	const bytes = readRegular(join(root, "state.json"), 1024 * 1024);
-	if (!bytes) return new Map();
-	const state: unknown = JSON.parse(utf8.decode(bytes));
-	if (!isRecord(state)) throw new Error("Slop state must be an object.");
-	const entries = new Map<string, EntryState>();
-	for (const [id, record] of Object.entries(state)) {
+function stateMap<T>(value: unknown, valid: (value: unknown) => value is T, field: string) {
+	if (!isRecord(value)) throw new Error(`Invalid slop catalog state: ${field} must be an object.`);
+	const map = new Map<string, T>();
+	for (const [id, item] of Object.entries(value)) {
 		requireId(id);
-		if (
-			!isRecord(record) ||
-			typeof record.disabled !== "boolean" ||
-			typeof record.time !== "string" ||
-			typeof record.session !== "string" ||
-			(record.reason !== undefined && typeof record.reason !== "string")
-		)
-			throw new Error(`Invalid slop state for ${id}.`);
-		entries.set(id, {
-			disabled: record.disabled,
-			time: record.time,
-			session: record.session,
-			...(record.reason === undefined ? {} : { reason: record.reason }),
-		});
+		if (!valid(item)) throw new Error(`Invalid slop catalog state: ${field}.${id}.`);
+		map.set(id, item);
 	}
-	return entries;
+	return map;
 }
 
-export function readCatalog(root: string, shipped = shippedCatalog): CatalogEntry[] {
-	const local = loadEntries(join(root, "entries"), "local");
-	local.sort((a, b) => (b.updated ?? "").localeCompare(a.updated ?? "") || a.id.localeCompare(b.id));
-	const overrides = new Set(local.map((entry) => entry.id));
-	const entries = [...local, ...loadEntries(shipped, "shipped").filter((entry) => !overrides.has(entry.id))];
+function isChange(value: unknown): value is Change {
+	return (
+		isRecord(value) &&
+		typeof value.time === "string" &&
+		typeof value.session === "string" &&
+		(value.reason === undefined || typeof value.reason === "string")
+	);
+}
+
+function loadState(root: string): CatalogState {
+	const bytes = readRegular(join(root, "catalog.json"), stateLimit);
+	if (!bytes) return { imported: new Map(), disabled: new Map(), removed: new Map() };
+	const state: unknown = JSON.parse(utf8.decode(bytes));
+	if (!isRecord(state)) throw new Error("Slop catalog state must be an object.");
+	return {
+		imported: stateMap(
+			state.imported,
+			(v): v is string => typeof v === "string" && /^[a-f0-9]{64}$/.test(v),
+			"imported",
+		),
+		disabled: stateMap(state.disabled, isChange, "disabled"),
+		removed: stateMap(state.removed, isChange, "removed"),
+	};
+}
+
+function atomicWrite(dir: string, file: string, content: string | Buffer, maxBytes: number) {
+	if (Buffer.byteLength(content) > maxBytes) throw new Error(`${file}: exceeds ${maxBytes} bytes`);
+	const temp = join(dir, `.${randomUUID()}.new`);
+	try {
+		writeFileSync(temp, content, { mode: 0o600, flag: "wx" });
+		renameSync(temp, join(dir, file));
+	} finally {
+		rmSync(temp, { force: true });
+	}
+}
+
+function writeState(root: string, { imported, disabled, removed }: CatalogState, writeEntries?: () => void) {
+	const fields = {
+		imported: Object.fromEntries(imported),
+		disabled: Object.fromEntries(disabled),
+		removed: Object.fromEntries(removed),
+	};
+	const content = `${JSON.stringify(fields, null, 2)}\n`;
+	if (Buffer.byteLength(content) > stateLimit) throw new Error("catalog.json: exceeds 1 MiB.");
+	writeEntries?.();
+	atomicWrite(root, "catalog.json", content, stateLimit);
+}
+
+function writeExclusive<T>(root: string, operation: () => T): T {
+	mkdirSync(root, { recursive: true, mode: 0o700 });
+	const release = lockfile.lockSync(root, { realpath: false, lockfilePath: join(root, ".write-lock"), stale: 10_000 });
+	try {
+		return operation();
+	} finally {
+		release();
+	}
+}
+
+function hasCatalog(dir: string): boolean {
+	const stat = statSync(dir, { throwIfNoEntry: false });
+	if (!stat) return false;
+	if (!stat.isDirectory()) throw new Error(`${dir}: not a catalog directory.`);
+	return true;
+}
+
+function seedIfMissing(root: string, starter: string): string {
+	const dir = join(root, "catalog");
+	if (hasCatalog(dir)) return dir;
+	const entries = loadStarters(starter);
+	const temp = mkdtempSync(join(root, ".catalog-"));
+	try {
+		for (const { file, bytes } of entries) writeFileSync(join(temp, file), bytes, { mode: 0o600, flag: "wx" });
+		// Publish the state first so a reader that sees the directory also sees its import digests.
+		writeState(root, {
+			imported: new Map(entries.map(({ entry, digest }) => [entry.id, digest])),
+			disabled: new Map(),
+			removed: new Map(),
+		});
+		renameSync(temp, dir);
+	} finally {
+		rmSync(temp, { recursive: true, force: true });
+	}
+	return dir;
+}
+
+function catalogDir(root: string, starter: string) {
+	const dir = join(root, "catalog");
+	if (!hasCatalog(dir)) {
+		try {
+			return writeExclusive(root, () => seedIfMissing(root, starter));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ELOCKED" || !hasCatalog(dir)) throw error;
+		}
+	}
+	return dir;
+}
+
+function orderEntries(a: Entry, b: Entry) {
+	if (a.origin !== b.origin) return a.origin === "recorded" ? -1 : 1;
+	return (b.record?.updated ?? "").localeCompare(a.record?.updated ?? "") || a.id.localeCompare(b.id);
+}
+
+export function readCatalog(root: string, starter = starterDir): CatalogEntry[] {
+	const dir = catalogDir(root, starter);
 	const state = loadState(root);
-	return entries.map((entry) => ({ ...entry, disabled: state.get(entry.id)?.disabled ?? false }));
+	return entryFiles(dir)
+		.flatMap((file) => {
+			const item = loadEntryFile(dir, file);
+			return item ? [{ ...item.entry, disabled: state.disabled.has(item.entry.id) }] : [];
+		})
+		.sort(orderEntries);
+}
+
+type StarterStatus = "new" | "removed" | "current" | "updated" | "replaced";
+function starterStatus(id: string, digest: string, present: boolean, state: CatalogState): StarterStatus {
+	if (state.removed.has(id)) return "removed";
+	if (!present) return "new";
+	const imported = state.imported.get(id);
+	if (!imported) return "replaced";
+	return imported === digest ? "current" : "updated";
+}
+
+export function compareStarter(root: string, catalog: CatalogEntry[], starter = starterDir) {
+	const state = loadState(root);
+	const ids = new Set(catalog.map(({ id }) => id));
+	return loadStarters(starter).map(({ entry, digest }) => ({
+		entry,
+		status: starterStatus(entry.id, digest, ids.has(entry.id), state),
+	}));
 }
 
 export function readLexicon(path?: string): Set<string> {
@@ -87,64 +202,49 @@ export function readLexicon(path?: string): Set<string> {
 	);
 }
 
-function atomicWrite(dir: string, file: string, content: string, maxBytes: number) {
-	if (Buffer.byteLength(content) > maxBytes) throw new Error(`${file}: exceeds ${maxBytes} bytes`);
-	mkdirSync(dir, { recursive: true, mode: 0o700 });
-	const temp = join(dir, `.${randomUUID()}.new`);
-	try {
-		writeFileSync(temp, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
-		renameSync(temp, join(dir, file));
-	} finally {
-		rmSync(temp, { force: true });
+export type SaveFields = Pick<EntryFields, "id"> &
+	Partial<EntryFields> & { operator: string; excerpt?: string; note?: string };
+
+function mergedExamples(previous: Entry["examples"], given: Entry["examples"]) {
+	const examples = [...previous];
+	const key = ({ kind, verdict, text }: Entry["examples"][number]) => JSON.stringify([kind, verdict, text]);
+	const seen = new Set(previous.map(key));
+	for (const example of given) {
+		const item = { ...example, text: example.text.replaceAll("\r\n", "\n") };
+		const signature = key(item);
+		if (seen.has(signature)) continue;
+		seen.add(signature);
+		examples.push(item);
 	}
+	return examples;
 }
 
-function writeExclusive<T>(root: string, operation: () => T): T {
-	mkdirSync(root, { recursive: true, mode: 0o700 });
-	const release = lockfile.lockSync(root, { realpath: false, lockfilePath: join(root, ".write-lock"), stale: 10_000 });
-	try {
-		return operation();
-	} finally {
-		release();
-	}
-}
-
-export type SaveFields = EntryFields & { operator: string; excerpt?: string; note?: string };
-export function saveEntry(
-	root: string,
-	fields: SaveFields,
-	identity: Identity,
-	lexicon = new Set<string>(),
-): CatalogEntry {
+function mergeEntry(fields: SaveFields, previous: Entry | undefined) {
 	const {
 		id,
 		title,
 		domain,
 		applies,
-		prompt,
+		prompt = true,
 		recognition,
 		cost,
 		repair,
-		examples,
-		detectors,
-		operator,
-		excerpt,
-		note,
-	} = fields;
-	requireId(id);
-	if (typeof operator !== "string" || !operator.trim()) throw new Error("Save requires the operator's words.");
+		detectors = [],
+	} = { ...previous, ...fields };
+	if (!title || !domain || !applies || !recognition || !cost || !repair)
+		throw new Error("A new entry requires title, domain, applies, recognition, cost, repair and operator.");
 	if (typeof title !== "string" || !title.trim() || /[\p{Cc}]/u.test(title))
 		throw new Error("Use a nonempty title on one line.");
-	if (prompt !== undefined && typeof prompt !== "boolean") throw new Error("prompt must be boolean");
+	const examples = mergedExamples(previous?.examples ?? [], fields.examples ?? []);
 	const examplesBody = examples
-		?.map((example) => {
+		.map((example) => {
 			if (!/^[a-zA-Z0-9][a-zA-Z0-9_+-]*$/.test(example.kind) || !["slop", "better"].includes(example.verdict))
 				throw new Error("Invalid example kind or verdict.");
 			return `${example.verdict === "slop" ? "Slop:" : "Better:"}\n\n${fenced(example.kind, example.text)}`;
 		})
 		.join("\n\n");
-	const body = `---\nid: ${id}\ntitle: ${JSON.stringify(title)}\ndomain: ${JSON.stringify(domain)}\napplies: ${JSON.stringify(applies)}\n${prompt === undefined ? "" : `prompt: ${prompt}\n`}---\n\n# ${title}\n\n## Recognition\n\n${recognition}\n\n## Cost\n\n${cost}\n\n## Repair\n\n${repair}\n${examplesBody ? `\n## Examples\n\n${examplesBody}\n` : ""}${detectors ? `\n## Detectors\n\n${fenced("json", JSON.stringify(detectors, null, 2))}\n` : ""}`;
-	const entry = parseEntry(body, id, "local");
+	const body = `---\nid: ${id}\ntitle: ${JSON.stringify(title)}\ndomain: ${JSON.stringify(domain)}\napplies: ${JSON.stringify(applies)}\nprompt: ${prompt}\n---\n\n# ${title}\n\n## Recognition\n\n${recognition}\n\n## Cost\n\n${cost}\n\n## Repair\n\n${repair}\n${examplesBody ? `\n## Examples\n\n${examplesBody}\n` : ""}${detectors.length ? `\n## Detectors\n\n${fenced("json", JSON.stringify(detectors, null, 2))}\n` : ""}${previous?.notes === undefined ? "" : `\n## Notes\n\n${previous.notes}\n`}`;
+	const entry = parseEntry(body, id);
 	const normalize = (value: string) => value.replaceAll("\r\n", "\n").trim();
 	if (
 		entry.recognition !== normalize(recognition) ||
@@ -152,18 +252,79 @@ export function saveEntry(
 		entry.repair !== normalize(repair)
 	)
 		throw new Error("Entry sections must not contain other entry headings.");
-	const failures = exampleFailures(entry, lexicon);
-	if (failures.length) throw new Error(failures.join("\n"));
+	return entry;
+}
+
+function appendRecord(entry: Entry, previous: Entry | undefined, fields: SaveFields, identity: Identity) {
+	const { operator, excerpt, note } = fields;
+	const now = new Date().toISOString();
+	const created = previous?.record?.created ?? now;
+	const item = `Time: ${now}\nSession: ${JSON.stringify(identity.session)}\nModel: ${JSON.stringify(identity.model)}\n\nOperator:\n\n${fenced("text", operator)}${excerpt === undefined ? "" : `\n\nExcerpt:\n\n${fenced("text", excerpt)}`}${note === undefined ? "" : `\n\nNote:\n\n${fenced("text", note)}`}`;
+	const latest = formatRecord(created, now, [item]);
+	const budget = entryLimit - Buffer.byteLength(entry.raw + latest);
+	if (budget < 0) throw new Error(`${entry.id}: entry and latest save exceed 128 KiB.`);
+	const items = previous?.record?.items ?? [];
+	let size = 0;
+	let keep = items.length;
+	const headerBytes = Buffer.byteLength(formatRecord(created, now, []));
+	while (keep > 0) {
+		const bytes = Buffer.byteLength(formatRecord(created, now, [items[keep - 1]])) - headerBytes;
+		if (size + bytes > budget) break;
+		size += bytes;
+		keep--;
+	}
+	return parseEntry(entry.raw + formatRecord(created, now, [...items.slice(keep), item]), entry.id);
+}
+
+export function saveEntry(
+	root: string,
+	fields: SaveFields,
+	identity: Identity,
+	lexicon?: string,
+	starter = starterDir,
+) {
+	const id = requireId(fields.id);
+	if (typeof fields.operator !== "string" || !fields.operator.trim())
+		throw new Error("Save requires the operator's words.");
 	return writeExclusive(root, () => {
-		const dir = join(root, "entries");
 		const file = `${id}.md`;
-		const previous = loadEntryFile(dir, file, "local");
-		const now = new Date().toISOString();
-		const record = `\n## Record\n\nCreated: ${previous?.created ?? now}\nUpdated: ${now}\nSession: ${JSON.stringify(identity.session)}\nModel: ${JSON.stringify(identity.model)}\nCwd: ${JSON.stringify(identity.cwd)}\n\nOperator:\n\n${fenced("text", operator)}\n${excerpt === undefined ? "" : `\nExcerpt:\n\n${fenced("text", excerpt)}\n`}${note === undefined ? "" : `\nNote:\n\n${fenced("text", note)}\n`}`;
-		const ready = parseEntry(body + record, id, "local");
-		const disabled = loadState(root).get(id)?.disabled ?? false;
-		atomicWrite(dir, file, ready.raw, 128 * 1024);
-		return { ...ready, disabled };
+		const catalog = join(root, "catalog");
+		const seeded = hasCatalog(catalog);
+		const previous = loadEntryFile(seeded ? catalog : starter, file, !seeded)?.entry;
+		const entry = mergeEntry(fields, previous);
+		const { failures, unmatched } = testExamples(
+			entry,
+			readLexicon(entry.detectors.some((d) => d.lexicon) ? lexicon : undefined),
+		);
+		if (failures.length) throw new Error(failures.join("\n"));
+		const ready = appendRecord(entry, previous, fields, identity);
+		const dir = seedIfMissing(root, starter);
+		const state = loadState(root);
+		const restored = state.removed.delete(id);
+		const droppedDigest = !previous && state.imported.delete(id);
+		const write = () => atomicWrite(dir, file, ready.raw, entryLimit);
+		if (restored || droppedDigest) writeState(root, state, write);
+		else write();
+		return { entry: { ...ready, disabled: state.disabled.has(id) }, unmatched };
+	});
+}
+
+function change(identity: Identity, reason?: string): Change {
+	return { time: new Date().toISOString(), session: identity.session, ...(reason === undefined ? {} : { reason }) };
+}
+
+function changeEntry(
+	root: string,
+	id: string,
+	starter: string,
+	update: (dir: string, state: CatalogState) => (() => void) | undefined,
+) {
+	requireId(id);
+	writeExclusive(root, () => {
+		const dir = seedIfMissing(root, starter);
+		if (!loadEntryFile(dir, `${id}.md`)) throw new Error(`No slop entry named ${id}.`);
+		const state = loadState(root);
+		writeState(root, state, update(dir, state));
 	});
 }
 
@@ -173,44 +334,69 @@ export function setDisabled(
 	disabled: boolean,
 	identity: Identity,
 	reason?: string,
-	shipped = shippedCatalog,
+	starter = starterDir,
 ): void {
-	requireId(id);
-	writeExclusive(root, () => {
-		if (!readCatalog(root, shipped).some((entry) => entry.id === id)) throw new Error(`No slop entry named ${id}.`);
-		const state = loadState(root);
-		state.set(id, {
-			disabled,
-			time: new Date().toISOString(),
-			session: identity.session,
-			...(reason === undefined ? {} : { reason }),
-		});
-		atomicWrite(root, "state.json", `${JSON.stringify(Object.fromEntries(state), null, 2)}\n`, 1024 * 1024);
+	changeEntry(root, id, starter, (_dir, state) => {
+		if (disabled) state.disabled.set(id, change(identity, reason));
+		else state.disabled.delete(id);
+		return undefined;
 	});
 }
 
-export function saveFlag(root: string, reply: string, note: string, identity: Identity): string {
-	const time = new Date().toISOString();
-	const id = `${time.replace(/[:.]/g, "-")}-${randomUUID()}`;
-	atomicWrite(
-		join(root, "flags"),
-		`${id}.json`,
-		`${JSON.stringify({ id, time, reply, note, ...identity }, null, 2)}\n`,
-		8 * 1024 * 1024,
-	);
-	return id;
+export function removeEntry(root: string, id: string, identity: Identity, reason?: string, starter = starterDir): void {
+	changeEntry(root, id, starter, (dir, state) => {
+		if (state.imported.has(id) || entryFiles(starter).includes(`${id}.md`))
+			state.removed.set(id, change(identity, reason));
+		state.imported.delete(id);
+		state.disabled.delete(id);
+		return () => unlinkSync(join(dir, `${id}.md`));
+	});
 }
 
-export function promptSection(entries: CatalogEntry[]): string | undefined {
-	const introduction = "Each line names a habit to avoid and its repair.";
-	const lines: string[] = [];
-	let size = introduction.length;
-	for (const entry of entries) {
+export function importEntries(root: string, ids?: string[], starter = starterDir): string[] {
+	const entries = loadStarters(starter);
+	const byId = new Map(entries.map((item) => [item.entry.id, item]));
+	const explicit =
+		ids &&
+		[...new Set(ids)].map((id) => {
+			const item = byId.get(id);
+			if (!item) throw new Error(`No starter entry named ${id}.`);
+			return item;
+		});
+	return writeExclusive(root, () => {
+		const dir = seedIfMissing(root, starter);
+		const state = loadState(root);
+		const files = new Set(entryFiles(dir));
+		const selected =
+			explicit ??
+			entries.filter(({ file, entry, digest }) => starterStatus(entry.id, digest, files.has(file), state) === "new");
+		for (const { entry, digest } of selected) {
+			state.imported.set(entry.id, digest);
+			state.removed.delete(entry.id);
+		}
+		if (selected.length)
+			writeState(root, state, () => {
+				for (const { file, bytes } of selected) atomicWrite(dir, file, bytes, entryLimit);
+			});
+		return selected.map(({ entry }) => entry.id);
+	});
+}
+
+export function promptCues(entries: CatalogEntry[]): Map<string, string> {
+	const cues = new Map<string, string>();
+	let size = promptIntroduction.length;
+	for (const entry of [...entries].sort(orderEntries)) {
 		if (!entry.prompt || entry.disabled) continue;
 		const line = `${entry.title}: ${firstSentence(entry.repair)}`;
 		if (size + line.length + 1 > 1500) continue;
-		lines.push(line);
+		cues.set(entry.id, line);
 		size += line.length + 1;
 	}
-	return lines.length ? [introduction, ...lines].join("\n") : undefined;
+	return cues;
+}
+
+const promptIntroduction = "Each line names a habit to avoid and its repair.";
+export function promptSection(entries: CatalogEntry[]): string | undefined {
+	const cues = promptCues(entries);
+	return cues.size ? [promptIntroduction, ...cues.values()].join("\n") : undefined;
 }

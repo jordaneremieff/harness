@@ -29,16 +29,18 @@ export type EntryFields = {
 	detectors?: Detector[];
 };
 export type Entry = Required<EntryFields> & {
-	source: "shipped" | "local";
+	origin: "starter" | "recorded";
 	raw: string;
-	created?: string;
-	updated?: string;
+	notes?: string;
+	record?: { created?: string; updated?: string; items: string[] };
 };
+
+export const entryLimit = 128 * 1024;
 
 export const idPattern = "^[a-z0-9]+(?:-[a-z0-9]+)*$";
 const idRegex = new RegExp(idPattern);
 export function requireId(value: string): string {
-	if (!idRegex.test(value) || value.length > 128)
+	if (typeof value !== "string" || !idRegex.test(value) || value.length > 128)
 		throw new Error("Use a kebab-case entry id of at most 128 characters.");
 	return value;
 }
@@ -262,7 +264,7 @@ function frontmatter(lines: string[]) {
 	return { fields, boundary };
 }
 
-function parseFields(fields: Map<string, unknown>, id: string, source: Entry["source"]) {
+function parseFields(fields: Map<string, unknown>, id: string, starter: boolean) {
 	if (fields.get("id") !== id) throw new Error("id must equal the file name.");
 	const title = fields.get("title");
 	if (!hasText(title) || title !== title.trim() || /[\p{Cc}]/u.test(title))
@@ -274,11 +276,8 @@ function parseFields(fields: Map<string, unknown>, id: string, source: Entry["so
 		throw new Error("applies must be a nonempty array of scopes.");
 	const prompt = fields.get("prompt");
 	if (prompt !== undefined && prompt !== "true" && prompt !== "false") throw new Error("prompt must be true or false.");
-	return { title, domain, applies, prompt: prompt === undefined ? source === "local" : prompt === "true" };
-}
-
-function availableSection(name: string, source: Entry["source"]) {
-	return sectionNames.has(name) && (name !== "Record" || source === "local");
+	if (starter && prompt === undefined) throw new Error("Starter entries must declare prompt.");
+	return { title, domain, applies, prompt: prompt !== "false" };
 }
 
 function nextFence(line: string, fence: Fence | undefined): Fence | undefined {
@@ -286,7 +285,7 @@ function nextFence(line: string, fence: Fence | undefined): Fence | undefined {
 	return openingFence(line);
 }
 
-function parseSections(body: string[], source: Entry["source"]) {
+function parseSections(body: string[]) {
 	const sections = new Map<string, string[]>();
 	let section: string[] | undefined;
 	let fence: Fence | undefined;
@@ -294,7 +293,7 @@ function parseSections(body: string[], source: Entry["source"]) {
 		const heading = !fence && /^## (.+)$/.exec(line);
 		if (heading) {
 			const name = heading[1].trim();
-			if (!availableSection(name, source)) throw new Error(`Unknown section ${name}.`);
+			if (!sectionNames.has(name)) throw new Error(`Unknown section ${name}.`);
 			if (sections.has(name)) throw new Error(`Duplicate section ${name}.`);
 			section = [];
 			sections.set(name, section);
@@ -316,27 +315,47 @@ function detectorSection(section: string | undefined, applies: Scope[]): Detecto
 	return parseDetectors(JSON.parse(block.text), applies);
 }
 
-export function parseEntry(raw: string, id: string, source: Entry["source"]): Entry {
+const recordHeading = "### Save";
+
+function parseRecord(body: string): NonNullable<Entry["record"]> {
+	const groups: string[][] = [[]];
+	let fence: Fence | undefined;
+	for (const line of body.split("\n")) {
+		if (!fence && line === recordHeading) groups.push([]);
+		else groups[groups.length - 1].push(line);
+		fence = nextFence(line, fence);
+	}
+	const [header, ...items] = groups.map((group) => group.join("\n").trim());
+	const stamp = (key: string) => {
+		const value = new RegExp(`^${key}: (.+)$`, "m").exec(header)?.[1];
+		return value && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : undefined;
+	};
+	return { created: stamp("Created"), updated: stamp("Updated"), items };
+}
+
+export function formatRecord(created: string, updated: string, items: string[]): string {
+	return `\n## Record\n\nCreated: ${created}\nUpdated: ${updated}\n${items.map((item) => `\n${recordHeading}\n\n${item}\n`).join("")}`;
+}
+
+export function parseEntry(raw: string, id: string, starter = false): Entry {
 	try {
 		requireId(id);
-		if (Buffer.byteLength(raw) > 128 * 1024) throw new Error("Entry exceeds 128 KiB.");
+		if (Buffer.byteLength(raw) > entryLimit) throw new Error("Entry exceeds 128 KiB.");
 		const lines = raw.split(/\r?\n/);
 		const { fields, boundary } = frontmatter(lines);
-		const header = parseFields(fields, id, source);
+		const header = parseFields(fields, id, starter);
 		const body = lines.slice(boundary + 1);
 		while (body.length && !body[0].trim()) body.shift();
 		if (body.shift() !== `# ${header.title}`) throw new Error("First heading must match title.");
-		const sections = parseSections(body, source);
+		const sections = parseSections(body);
+		if (starter && sections.has("Record")) throw new Error("Starter entries cannot contain a Record section.");
 		const content = (name: string) => sections.get(name) ?? "";
 		const required = (name: string) => {
 			const text = content(name);
 			if (!text) throw new Error(`Missing or empty ${name} section.`);
 			return text;
 		};
-		const stamp = (key: string) => {
-			const value = new RegExp(`^${key}: (.+)$`, "m").exec(content("Record"))?.[1];
-			return value && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : undefined;
-		};
+		const record = sections.has("Record") ? parseRecord(content("Record")) : undefined;
 		return {
 			id,
 			...header,
@@ -345,10 +364,10 @@ export function parseEntry(raw: string, id: string, source: Entry["source"]): En
 			repair: required("Repair"),
 			examples: sections.has("Examples") ? parseExamples(content("Examples")) : [],
 			detectors: detectorSection(sections.get("Detectors"), header.applies),
-			source,
+			origin: record ? "recorded" : "starter",
 			raw,
-			created: stamp("Created"),
-			updated: stamp("Updated"),
+			notes: sections.get("Notes"),
+			record,
 		};
 	} catch (error) {
 		throw new Error(`${id}: ${error instanceof Error ? error.message : String(error)}`);

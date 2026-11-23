@@ -1,4 +1,6 @@
+import type { Context } from "@earendil-works/chord/context";
 import type * as Durable from "@earendil-works/pi-durable";
+import { checkPrompt, checkUsage, parseCheckHint } from "./command.ts";
 import {
 	catalogSection,
 	check,
@@ -22,10 +24,32 @@ interface Host {
 	onClose(dispose: () => void): void;
 }
 
+const slopCommand = {
+	name: "slop",
+	description: "Check this conversation's work for slop with an optional hint.",
+	async run(call: {
+		args: string;
+		origin?: "operator" | "model";
+		conversation: Durable.Conversation;
+		context: Context;
+		invocationId: string;
+	}) {
+		const hint = parseCheckHint(call.args);
+		if (hint === undefined) return checkUsage;
+		if (call.origin !== "operator") return "Only the operator can invoke /slop check.";
+		const submission = await call.conversation.submit(
+			{ type: "input", content: checkPrompt(hint), requestId: `slop:${call.invocationId}`, whenBusy: "steer" },
+			call.context,
+		);
+		return `Submitted the slop check as submission ${String(submission.id)}.`;
+	},
+};
+
 export function slopContribution(source: string, bus: SettingsBus, stopOrdinaryPublications: () => void) {
 	return {
 		name: "slop",
 		source,
+		commands: [slopCommand],
 		display: { version: 1, entry: "./display.ts", export: "toolDisplay" } as const,
 		create(host: Host): Durable.Extension {
 			const { defineExtension, defineTool, section } = host.durable;
@@ -70,7 +94,6 @@ export function slopContribution(source: string, bus: SettingsBus, stopOrdinaryP
 							return result(
 								record(options, args, {
 									session: `${host.storageId}:${api.conversationId}`,
-									cwd: agent.cwd ?? host.cwd,
 									model: agent.model ? `${agent.model.provider}/${agent.model.modelId}` : null,
 								}),
 							);

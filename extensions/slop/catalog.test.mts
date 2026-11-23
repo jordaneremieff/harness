@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { type Detector, fenced, parseDetectors, parseEntry, type Scope } from "./catalog.ts";
-import { checkLines, exampleFailures, segment } from "./detect.ts";
-import { loadEntries, shippedCatalog } from "./store.ts";
+import { checkLines, segment, testExamples } from "./detect.ts";
+import { starterDir } from "./store.ts";
+
+function starters() {
+	return readdirSync(starterDir)
+		.filter((file) => file.endsWith(".md") && file !== "README.md")
+		.map((file) => parseEntry(readFileSync(join(starterDir, file), "utf8"), file.slice(0, -3), true));
+}
 
 const entrySource = `---
 id: release-diary
@@ -31,31 +37,25 @@ function fixture(detector?: Detector) {
 	return parseEntry(
 		`${entrySource}${detector ? `\n## Detectors\n\n${fenced("json", JSON.stringify([detector]))}` : ""}`,
 		"release-diary",
-		"shipped",
 	);
 }
 const scope: Scope[] = ["reply", "comment", "document"];
 const detector: Detector = { id: "marker", in: scope, phrases: ["release diary"] };
 
-// This loop also checks new entries when a checkout contains no earlier catalog files.
-test("every shipped entry parses and its marked examples agree with its detectors", () => {
-	for (const entry of loadEntries(shippedCatalog, "shipped")) assert.deepEqual(exampleFailures(entry), [], entry.id);
+test("every starter entry declares prompt and its examples agree with its detectors", () => {
+	const entries = starters();
+	assert.ok(entries.length);
+	for (const entry of entries) assert.deepEqual(testExamples(entry).failures, [], entry.id);
 });
 
-test("frontmatter and sections require a matching id and title", () => {
-	assert.equal(fixture().prompt, false);
-	assert.equal(parseEntry(entrySource, "release-diary", "local").prompt, true);
-	assert.throws(() => parseEntry(entrySource, "another", "shipped"), /id must equal/);
-	assert.throws(
-		() => parseEntry(entrySource.replace("# Release diary", "# Different"), "release-diary", "shipped"),
-		/heading/,
-	);
-	assert.throws(() => parseEntry(entrySource.replace("## Cost", "## Notes"), "release-diary", "shipped"), /Cost/);
-	assert.throws(
-		() => parseEntry(entrySource.replace('domain: "code"', 'domain: "other"'), "release-diary", "shipped"),
-		/domain/,
-	);
-	assert.throws(() => parseEntry(`${entrySource}\n## Repair\n\na`, "release-diary", "shipped"), /Duplicate section/);
+test("frontmatter requires a matching id and title and only starter entries require prompt", () => {
+	assert.equal(fixture().prompt, true);
+	assert.throws(() => parseEntry(entrySource, "release-diary", true), /declare prompt/);
+	assert.throws(() => parseEntry(entrySource, "another"), /id must equal/);
+	assert.throws(() => parseEntry(entrySource.replace("# Release diary", "# Different"), "release-diary"), /heading/);
+	assert.throws(() => parseEntry(entrySource.replace("## Cost", "## Notes"), "release-diary"), /Cost/);
+	assert.throws(() => parseEntry(entrySource.replace('domain: "code"', 'domain: "other"'), "release-diary"), /domain/);
+	assert.throws(() => parseEntry(`${entrySource}\n## Repair\n\na`, "release-diary"), /Duplicate section/);
 });
 
 test("detector validation rejects invalid and contradictory fields", () => {
@@ -89,10 +89,11 @@ test("examples use file segmentation and count matches before the allowance", ()
 		{ kind: "ts", verdict: "better", text: "// release diary" },
 		{ kind: "ts", verdict: "slop", text: 'const s = "// release diary";' },
 	];
-	assert.deepEqual(exampleFailures(entry), [
-		"Example 3 (better, ts): matched marker.",
-		"Example 4 (slop, ts): no match from marker.",
-	]);
+	entry.detectors.push({ ...detector, id: "dead", phrases: ["unseen"] });
+	assert.deepEqual(testExamples(entry), {
+		failures: ["Example 3 (better, ts): matched marker.", "Detector dead: no matching Slop example."],
+		unmatched: ["Example 4 (slop, ts)"],
+	});
 });
 
 test("Markdown skips non-prose without altering original line numbers", () => {
@@ -179,18 +180,11 @@ test("allowance, distinct, allow and lexicon apply only to the chosen scope and 
 	assert.equal(checkLines([constrained], segment({ kind: "reply", text: "release diary" }), new Set()).length, 0);
 });
 
-test("the catalog overview's Entries section lists exactly the shipped ids", () => {
-	const ids = loadEntries(shippedCatalog, "shipped")
+test("the starter overview's Entries section lists exactly the starter ids", () => {
+	const ids = starters()
 		.map((entry) => entry.id)
 		.sort();
-	const path = join(shippedCatalog, "README.md");
-	let text: string;
-	try {
-		text = readFileSync(path, "utf8");
-	} catch (error) {
-		if (!ids.length && (error as NodeJS.ErrnoException).code === "ENOENT") return;
-		throw error;
-	}
+	const text = readFileSync(join(starterDir, "README.md"), "utf8");
 	const body = /^## Entries\s*\n([\s\S]*?)(?=^## |(?![\s\S]))/m.exec(text)?.[1];
 	assert.ok(body, "catalog overview must contain the Entries section");
 	const listed = [...body.matchAll(/^- `([a-z0-9-]+)`:/gm)].map((match) => match[1]).sort();
@@ -207,9 +201,9 @@ test("caseSensitive keeps letter case and modifier groups fail validation", () =
 	assert.doesNotThrow(() => parseDetectors([{ id: "literal", in: scope, pattern: "\\(\\?-i:literal\\)" }], scope));
 });
 
-test("the shipped compatibility detector recognises affixes in identifier case conventions", () => {
-	const entry = loadEntries(shippedCatalog, "shipped").find((item) => item.id === "compatibility-shims");
-	if (!entry) return;
+test("the compatibility detector recognises affixes in identifier case conventions", () => {
+	const entry = starters().find((item) => item.id === "compatibility-shims");
+	assert.ok(entry);
 	const identifiers = ["legacyFoo", "LegacyFoo", "LEGACY_FOO", "fooLegacy"];
 	const [found] = checkLines(
 		[entry],

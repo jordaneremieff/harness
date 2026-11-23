@@ -5,10 +5,14 @@ import { type Collected, diffInput, fileInput } from "./input.ts";
 import { type ReadOptions, readSettings } from "./settings.ts";
 import {
 	type CatalogEntry,
+	compareStarter,
 	type Identity,
+	importEntries,
+	promptCues,
 	promptSection,
 	readCatalog,
 	readLexicon,
+	removeEntry,
 	saveEntry,
 	setDisabled,
 } from "./store.ts";
@@ -20,7 +24,12 @@ const nonempty = str({ minLength: 1 });
 const stringList = arr(nonempty, { minItems: 1 });
 const scopesList = arr(scope, { minItems: 1 });
 
-export const ViewParams = obj({ entry: opt(Id), scope: opt(scope), query: opt(str()) });
+export const ViewParams = obj({
+	entry: opt(Id),
+	scope: opt(scope),
+	query: opt(str()),
+	starter: opt(bool({ description: "Compare the starter set with this catalog, or read one starter entry." })),
+});
 export const CheckParams = obj({
 	text: opt(str()),
 	kind: opt(kind),
@@ -42,43 +51,48 @@ const DetectorParams = obj({
 	distinct: opt(bool()),
 	paths: opt(stringList),
 });
-const saveField = (text: string) => opt(str({ minLength: 1, description: `Required for save: ${text}` }));
+const saveField = (text: string) => opt(str({ minLength: 1, description: `Required for a new entry: ${text}` }));
 export const RecordParams = obj({
-	action: union([lit("save"), lit("disable"), lit("enable")], {
-		description: "save creates or replaces a local entry; disable and enable change the state of any entry.",
-	}),
-	id: str({
-		pattern: idPattern,
-		maxLength: 128,
-		description: "Entry id in kebab-case, named after the habit. Saving an existing local id replaces that entry.",
-	}),
+	action: union([lit("save"), lit("remove"), lit("disable"), lit("enable"), lit("import")]),
+	id: opt(
+		str({ pattern: idPattern, maxLength: 128, description: "Entry id in kebab-case. Required except for import." }),
+	),
+	ids: opt(
+		arr(Id, {
+			description: "Import only: replace these entries with starter copies. Omit to import new entries only.",
+		}),
+	),
 	title: saveField("a short name for the habit itself, not for the topic of the reply."),
 	domain: opt(
 		union(
 			domains.map((name) => lit(name)),
-			{ description: "Required for save: prose, code or ui." },
+			{ description: "Required for a new entry: prose, code or ui." },
 		),
 	),
 	applies: opt(
 		arr(scope, {
 			minItems: 1,
-			description: "Required for save: where the habit occurs: reply, document, commit, comment or code.",
+			description: "Required for a new entry: where the habit occurs: reply, document, commit, comment or code.",
 		}),
 	),
 	recognition: saveField("how to spot the habit."),
 	cost: saveField("what the habit costs the reader."),
 	repair: saveField("how to fix the move behind the habit; the first sentence joins later prompts."),
-	operator: saveField("the operator's own words that flagged the habit or asked for the entry."),
-	prompt: opt(bool({ description: "Show the repair in later system prompts. Local entries default to true." })),
+	operator: opt(str({ minLength: 1, description: "Required for every save: the operator's own words." })),
+	prompt: opt(
+		bool({
+			description: "Show the repair in later prompts. New entries default to true; existing entries keep their value.",
+		}),
+	),
 	excerpt: opt(str({ description: "The flagged passage, when there is one." })),
 	note: opt(str()),
 	detectors: opt(
 		arr(DetectorParams, {
 			description:
-				"Optional checks for a fixed wording or form. Every Slop example must match one, and no Better example may match.",
+				"Replace the detector list. Use [] to clear it. Each detector must match a Slop example and no Better examples.",
 		}),
 	),
-	reason: opt(str({ description: "Only with disable or enable: why the state changes." })),
+	reason: opt(str({ description: "Only with remove, disable or enable: why the state changes." })),
 	examples: opt(
 		arr(
 			obj({
@@ -91,31 +105,27 @@ export const RecordParams = obj({
 				}),
 				text: str(),
 			}),
+			{ description: "Append examples that are not already in the entry." },
 		),
 	),
 });
 
 export const VIEW_DESCRIPTION =
-	"Read the slop catalog: habits in prose, code and interfaces that read as generated, each with its repair. List entries, filter by scope or query, or read one entry.";
+	"Read this machine's slop catalog: habits in prose, code and interfaces that read as generated, each with its repair. List or filter entries, read one, or compare the bundled starter set with the catalog.";
 export const CHECK_DESCRIPTION =
 	"Run the slop catalog's detectors on text, one file or a Git diff: uncommitted, staged, or a range with its commit messages. Run it on the staged diff before each commit, and on documents and messages written for someone else. Do not run it on ordinary chat replies. Repair the move a finding names, not its token.";
 export const RECORD_DESCRIPTION =
-	"Save a local slop entry, or disable or enable an entry. When the operator calls something slop or objects to a writing or code habit, in any words, save the habit as its own local entry, even when a shipped entry covers it, with the flagged passage as a Slop example and your repair as a Better example.";
+	"Change this machine's slop catalog: save a new entry or update one, remove, disable or enable an entry, or import entries from the bundled starter set. The operator asks for these changes in chat.";
 
-/** One-line entries for the tool list of an ordinary session's system prompt. */
 export const SNIPPETS = {
-	slop: "Read the catalog of prose, code and interface habits that read as generated",
+	slop: "Read or compare the machine's catalog of prose, code and interface habits",
 	check: "Check text, a file or a Git diff against the slop catalog",
-	record: "Record a writing or code habit that the operator flags as slop",
+	record: "Record habits the operator flags as slop and maintain the catalog",
 } as const;
 
-/**
- * Rules for an ordinary session's system prompt. The operator's flags arrive in ordinary chat, where no hook sees
- * the moment, so the rule that turns a flag into an entry must be in every prompt.
- */
 export const RECORD_GUIDELINES = [
-	"When the operator calls a reply, passage or piece of code slop, or objects to a writing or code habit in other words, record the habit with slop_record before you fix it. He does not need to type /slop flag.",
-	"Save each habit the operator flags as a local entry with slop_record under a new id, even when a shipped entry covers the habit, because only local entries reach later prompts and a local entry with a shipped id replaces that entry and its detectors. When the same habit comes back, read its local entry with slop and save it again with slop_record under that id, adding the new example.",
+	"When the operator calls a reply, passage or piece of code slop, or objects to a writing or code habit in other words, record the habit with slop_record before you fix it.",
+	"If a catalog entry already covers the flagged habit, update that entry with slop_record: add the flagged passage and your repair as examples and set prompt to true, so later sessions see its repair. Otherwise save a new entry.",
 ];
 
 export function catalogSection(options: ReadOptions): string | undefined {
@@ -128,7 +138,7 @@ export function catalogSection(options: ReadOptions): string | undefined {
 	} // A store error must not prevent a turn; catalog and check calls report it.
 }
 
-export const stateLabel = (entry: CatalogEntry) => (entry.disabled ? "disabled" : "active");
+export const stateLabel = (entry: CatalogEntry) => (entry.disabled ? "off" : "active");
 export const searchEntry = (entry: CatalogEntry, query: string) =>
 	[entry.id, entry.title, entry.recognition].some((value) => value.toLowerCase().includes(query.toLowerCase()));
 const textBlock = (text: string) => [{ type: "text" as const, text }];
@@ -136,18 +146,39 @@ export type ViewArgs = Static<typeof ViewParams>;
 export type CheckArgs = Static<typeof CheckParams>;
 export type RecordArgs = Static<typeof RecordParams>;
 
+function inspectStarter(comparison: ReturnType<typeof compareStarter>, id?: string) {
+	if (id !== undefined) {
+		const item = comparison.find(({ entry }) => entry.id === id);
+		if (!item) throw new Error(`No starter entry named ${id}.`);
+		const { entry, status } = item;
+		return {
+			content: textBlock(`${entry.id} · ${status}\n\n${entry.raw}`),
+			details: { summary: `${entry.title} · ${status}` },
+		};
+	}
+	const lines = comparison.map(({ entry, status }) => `- ${entry.id} · ${status} · ${entry.title}`);
+	lines.push(
+		'Import new entries with slop_record action "import". For an updated entry, read both versions and decide.',
+	);
+	return { content: textBlock(lines.join("\n")), details: { summary: `${comparison.length} starter entries` } };
+}
+
 export function inspectCatalog(options: ReadOptions, args: ViewArgs) {
-	const entries = readCatalog(readSettings(options).values.dir);
-	if (args.entry !== undefined) {
-		if (args.scope !== undefined || args.query !== undefined)
-			throw new Error("Use entry alone, or use scope and query to filter the inventory.");
+	if ((args.entry !== undefined || args.starter) && (args.scope !== undefined || args.query !== undefined))
+		throw new Error("Use scope and query only to filter the catalog inventory.");
+	const { dir, prompt } = readSettings(options).values;
+	const entries = readCatalog(dir);
+	if (args.entry !== undefined && !args.starter) {
 		const entry = entries.find((item) => item.id === args.entry);
 		if (!entry) throw new Error(`No slop entry named ${args.entry}.`);
 		return {
-			content: textBlock(`${entry.id} · ${entry.source} · ${stateLabel(entry)}\n\n${entry.raw}`),
+			content: textBlock(`${entry.id} · ${entry.origin} · ${stateLabel(entry)}\n\n${entry.raw}`),
 			details: { summary: `${entry.title} · ${stateLabel(entry)}` },
 		};
 	}
+	const comparison = compareStarter(dir, entries);
+	if (args.starter) return inspectStarter(comparison, args.entry);
+	const cues = prompt === "on" ? promptCues(entries) : new Map<string, string>();
 	const selected = entries.filter(
 		(entry) =>
 			(args.scope === undefined || entry.applies.includes(args.scope)) &&
@@ -160,15 +191,17 @@ export function inspectCatalog(options: ReadOptions, args: ViewArgs) {
 					`${domain}:`,
 					...group.map(
 						(entry) =>
-							`- ${entry.id} · ${entry.title} · ${entry.source} · ${stateLabel(entry)} · ${entry.detectors.length} detector(s) · ${firstSentence(entry.recognition)}`,
+							`- ${entry.id} · ${entry.title} · ${entry.origin} · ${stateLabel(entry)}${cues.has(entry.id) ? " · prompt" : ""} · ${entry.detectors.length} detector(s) · ${firstSentence(entry.recognition)}`,
 					),
 				]
 			: [];
 	});
-	return {
-		content: textBlock(lines.join("\n") || "No matching slop entries."),
-		details: { summary: `${selected.length} slop entries` },
-	};
+	if (!lines.length) lines.push("No matching slop entries.");
+	const fresh = comparison.filter(({ status }) => status === "new").length;
+	const updated = comparison.filter(({ status }) => status === "updated").length;
+	if (fresh || updated)
+		lines.unshift(`Starter set: ${fresh} new, ${updated} updated. Read with slop {"starter":true}.`);
+	return { content: textBlock(lines.join("\n")), details: { summary: `${selected.length} slop entries` } };
 }
 
 const closing = "Repair the underlying move: a synonym or punctuation swap keeps the tell.";
@@ -252,27 +285,58 @@ export async function check(options: ReadOptions, cwd: string, args: CheckArgs, 
 	return runCheck(options, input, entries);
 }
 
-export function record(options: ReadOptions, args: RecordArgs, identity: Identity) {
+const actionFields = {
+	save: [
+		"id",
+		"operator",
+		"title",
+		"domain",
+		"applies",
+		"recognition",
+		"cost",
+		"repair",
+		"prompt",
+		"excerpt",
+		"note",
+		"detectors",
+		"examples",
+	],
+	remove: ["id", "reason"],
+	disable: ["id", "reason"],
+	enable: ["id", "reason"],
+	import: ["ids"],
+};
+
+export function record(
+	options: ReadOptions,
+	args: RecordArgs,
+	identity: Identity,
+): { content: ReturnType<typeof textBlock>; details: Record<string, string> } {
+	const { action, id, operator, reason } = args;
+	const fields = actionFields[action];
+	if (Object.keys(args).some((key) => key !== "action" && !fields.includes(key)))
+		throw new Error(`${action} accepts only these fields besides action: ${fields.join(", ")}.`);
 	const { dir, lexicon } = readSettings(options).values;
-	if (args.action === "save") {
-		const { title, domain, applies, recognition, cost, repair, operator } = args;
-		if (!title || !domain || !applies || !recognition || !cost || !repair || !operator || args.reason !== undefined) {
-			throw new Error(
-				"Save requires title, domain, applies, recognition, cost, repair and operator. Use reason only with enable or disable.",
-			);
-		}
-		const entry = saveEntry(
-			dir,
-			{ ...args, title, domain, applies, recognition, cost, repair, operator },
-			identity,
-			readLexicon(args.detectors?.some((detector) => detector.lexicon) ? lexicon : undefined),
-		);
-		const summary = `Saved local entry ${entry.id} (${stateLabel(entry)}).`;
-		return { content: textBlock(summary), details: { id: entry.id, summary } };
+	if (action === "import") {
+		const ids = importEntries(dir, args.ids);
+		const summary = ids.length ? `Imported starter entries: ${ids.join(", ")}.` : "No new starter entries to import.";
+		return { content: textBlock(summary), details: { summary } };
 	}
-	if (Object.keys(args).some((key) => !["action", "id", "reason"].includes(key)))
-		throw new Error("Enable and disable accept only id and an optional reason.");
-	setDisabled(dir, args.id, args.action === "disable", identity, args.reason);
-	const summary = `${args.id} is ${args.action === "disable" ? "disabled" : "active"}.`;
-	return { content: textBlock(summary), details: { id: args.id, summary } };
+	if (id === undefined) throw new Error(`${action} requires id.`);
+	let summary: string;
+	if (action === "save") {
+		if (operator === undefined) throw new Error("Save requires operator: the operator's own words.");
+		const { entry, unmatched } = saveEntry(dir, { ...args, id, operator }, identity, lexicon);
+		summary = `Saved ${entry.id} (${stateLabel(entry)}).`;
+		const content = unmatched.length ? `${summary}\nNo detector matched: ${unmatched.join(", ")}.` : summary;
+		return { content: textBlock(content), details: { id, summary } };
+	}
+	if (action === "remove") {
+		removeEntry(dir, id, identity, reason);
+		summary = `Removed ${id}.`;
+	} else {
+		setDisabled(dir, id, action === "disable", identity, reason);
+		summary = `${id} is ${action === "disable" ? "off" : "active"}.`;
+	}
+	return { content: textBlock(summary), details: { id, summary } };
 }

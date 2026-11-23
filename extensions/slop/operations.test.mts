@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +9,17 @@ import { fileURLToPath } from "node:url";
 import { diffInput } from "./input.ts";
 import { catalogSection, check, inspectCatalog, record } from "./operations.ts";
 import { readSettings } from "./settings.ts";
-import { promptSection, type SaveFields, readCatalog, saveEntry, saveFlag } from "./store.ts";
+import {
+	compareStarter,
+	importEntries,
+	promptSection,
+	type SaveFields,
+	readCatalog,
+	removeEntry,
+	saveEntry,
+	setDisabled,
+	starterDir,
+} from "./store.ts";
 
 const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
 const entry: SaveFields = {
@@ -34,7 +45,7 @@ function fixture(t: TestContext) {
 	mkdirSync(cwd);
 	const options = { agentDir: root, env: {} };
 	const dir = join(root, "slop");
-	const identity = { session: "s1", model: "p/m", cwd };
+	const identity = { session: "s1", model: "p/m" };
 	return { root, cwd, dir, options, identity };
 }
 
@@ -56,29 +67,83 @@ function git(cwd: string, ...args: string[]) {
 	).trim();
 }
 
-test("save validates examples before writes and preserves creation time on replacement", (t) => {
-	const { dir, identity } = fixture(t);
+test("save validates merged examples and appends unmatched variants once", (t) => {
+	const { dir, identity, options } = fixture(t);
 	assert.throws(
-		() =>
-			saveEntry(dir, { ...entry, examples: [{ kind: "ts", verdict: "better", text: "// release diary" }] }, identity),
-		/Example 1.*matched phrase/,
+		() => record(options, { action: "save", id: entry.id, operator: "note" }, identity),
+		/new entry requires title/,
 	);
-	assert.throws(() => readdirSync(dir), { code: "ENOENT" });
-	const saved = saveEntry(dir, { ...entry, excerpt: "```\n## Repair\n```" }, identity);
+	assert.throws(() => record(options, { action: "save", id: entry.id }, identity), /requires operator/);
+	assert.deepEqual(readdirSync(dir), [], "a refused save does not seed the store");
+	const { entry: saved } = saveEntry(
+		dir,
+		{ ...entry, prompt: false, excerpt: "```\n## Repair\n### Save\n```" },
+		identity,
+	);
 	assert.match(saved.raw, /## Record\n\nCreated:/);
 	assert.match(saved.raw, /Session: "s1"/);
-	assert.equal(saved.prompt, true);
-	const replaced = saveEntry(dir, { ...entry, title: "Release log" }, identity);
-	assert.equal(replaced.created, saved.created);
-	assert.equal(readCatalog(dir)[0].title, "Release log");
+	const variant = { kind: "ts", verdict: "slop" as const, text: "// A human reader spots this without a detector." };
+	const update = { action: "save" as const, id: entry.id, operator: "Retain another variant.", examples: [variant] };
+	const changed = record(options, update, identity);
+	assert.match(changed.content[0].text, /No detector matched: Example 3 \(slop, ts\)\./);
+	assert.equal(readCatalog(dir).find((item) => item.id === entry.id)?.prompt, false);
+	record(options, { ...update, operator: "Keep the cue in prompts.", prompt: true }, identity);
+	const merged = readCatalog(dir).find((item) => item.id === entry.id);
+	assert.ok(merged);
+	assert.equal(merged.origin, "recorded");
+	assert.equal(merged.record?.created, saved.record?.created);
+	assert.equal(merged.record?.items.length, 3);
+	assert.match(merged.record?.items[0] ?? "", /### Save/);
+	assert.match(merged.record?.items[1] ?? "", /Retain another variant/);
+	assert.match(merged.record?.items[2] ?? "", /Keep the cue in prompts/);
+	assert.deepEqual(merged.examples, [...saved.examples, variant]);
+	assert.deepEqual(merged.detectors, saved.detectors);
+	assert.equal(merged.recognition, saved.recognition);
+	assert.equal(merged.prompt, true);
+	const file = join(dir, "catalog", `${entry.id}.md`);
+	assert.throws(
+		() =>
+			record(options, { ...update, examples: [{ ...variant, verdict: "better", text: "// release diary" }] }, identity),
+		/Better|matched phrase/,
+	);
+	assert.throws(
+		() =>
+			saveEntry(
+				dir,
+				{
+					id: entry.id,
+					operator: "A dead detector",
+					detectors: [{ id: "dead", in: ["comment"], phrases: ["absent"] }],
+				},
+				identity,
+			),
+		/Detector dead: no matching Slop example/,
+	);
+	assert.equal(readFileSync(file, "utf8"), merged.raw);
+	assert.deepEqual(
+		saveEntry(dir, { id: entry.id, operator: "Clear detectors.", detectors: [] }, identity).entry.detectors,
+		[],
+	);
 });
 
-test("catalog filtering, disabled state and prompt follow the effective local catalog", async (t) => {
+test("save drops the oldest history items when the entry reaches its byte limit", (t) => {
+	const { dir, identity } = fixture(t);
+	const large = "é".repeat(29_000);
+	const first = saveEntry(dir, { ...entry, note: `First ${large}` }, identity).entry;
+	saveEntry(dir, { id: entry.id, operator: "Second", note: large }, identity);
+	const latest = saveEntry(dir, { id: entry.id, operator: "Third", note: large }, identity).entry;
+	assert.equal(latest.record?.created, first.record?.created);
+	assert.equal(latest.record?.items.length, 2);
+	assert.ok(latest.record?.items[0].includes("Second"));
+	assert.ok(latest.record?.items[1].includes("Third"));
+});
+
+test("catalog filtering, disabled state and prompt follow the machine catalog", async (t) => {
 	const { dir, options, cwd, identity } = fixture(t);
 	saveEntry(dir, entry, identity);
 	assert.match(
 		inspectCatalog(options, { query: "RELEASE DIARY", scope: "comment" }).content[0].text,
-		/local · active · 1 detector/,
+		/recorded · active · prompt · 1 detector/,
 	);
 	assert.doesNotMatch(inspectCatalog(options, { scope: "code" }).content[0].text, /release-diary/);
 	assert.match(
@@ -91,9 +156,9 @@ test("catalog filtering, disabled state and prompt follow the effective local ca
 	record(options, { action: "disable", id: entry.id, reason: "Fixture" }, identity);
 	assert.equal((await check(options, cwd, arg)).details.ok, true);
 	assert.doesNotMatch(catalogSection(options) ?? "", /Release diary:/);
-	assert.match(inspectCatalog(options, { entry: entry.id }).content[0].text, /disabled/);
-	const state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
-	assert.equal(state[entry.id].reason, "Fixture");
+	assert.match(inspectCatalog(options, { entry: entry.id }).content[0].text, /recorded · off/);
+	const state = JSON.parse(readFileSync(join(dir, "catalog.json"), "utf8"));
+	assert.equal(state.disabled[entry.id].reason, "Fixture");
 	record(options, { action: "enable", id: entry.id }, identity);
 	assert.equal((await check(options, cwd, arg)).details.ok, false);
 	await assert.rejects(check(options, cwd, { text: "x", diff: {} }), /exactly one/);
@@ -127,13 +192,116 @@ test("settings keep a rejected environment value above the file and resolve rela
 	);
 });
 
-test("flags retain exact reply and note in a private file", (t) => {
-	const { dir, identity } = fixture(t);
-	const id = saveFlag(dir, "reply\n\n body\n", "note", identity);
-	const flag = JSON.parse(readFileSync(join(dir, "flags", `${id}.json`), "utf8"));
+test("the first read copies every starter byte and records each digest; an empty catalog never reseeds", (t) => {
+	const { dir } = fixture(t);
+	const files = readdirSync(starterDir).filter((file) => file !== "README.md" && file.endsWith(".md"));
+	assert.ok(files.length);
+	assert.equal(readCatalog(dir).length, files.length);
+	const catalog = join(dir, "catalog");
+	assert.deepEqual(readdirSync(catalog).sort(), files.sort());
+	const imported = Object.fromEntries(
+		files.map((file) => {
+			const bytes = readFileSync(join(starterDir, file));
+			assert.ok(readFileSync(join(catalog, file)).equals(bytes), file);
+			rmSync(join(catalog, file));
+			return [file.slice(0, -3), createHash("sha256").update(bytes).digest("hex")];
+		}),
+	);
+	const state = join(dir, "catalog.json");
+	const expected = { imported, disabled: {}, removed: {} };
+	assert.deepEqual(JSON.parse(readFileSync(state, "utf8")), expected);
+	assert.deepEqual(readCatalog(dir), []);
+	assert.deepEqual(readdirSync(catalog), []);
+	assert.deepEqual(JSON.parse(readFileSync(state, "utf8")), expected);
+});
+
+test("starter comparison tracks the ancestor, and only explicit import restores a removed entry", (t) => {
+	const { root, dir, identity } = fixture(t);
+	const starter = join(root, "starter");
+	mkdirSync(starter);
+	const writeStarter = (id: string, tail = "") => {
+		const content =
+			readFileSync(join(starterDir, "context-free-decisions.md"), "utf8").replace(
+				"id: context-free-decisions",
+				`id: ${id}`,
+			) + tail;
+		writeFileSync(join(starter, `${id}.md`), content);
+		return content;
+	};
+	for (const id of ["same", "changed", "deleted"]) writeStarter(id);
+	const list = () => readCatalog(dir, starter);
+	assert.throws(() => importEntries(dir, ["same", "absent"], starter), /No starter entry named absent/);
+	assert.throws(() => readdirSync(dir), { code: "ENOENT" });
+	assert.equal(list().length, 3);
+	const edited = saveEntry(
+		dir,
+		{ id: "same", operator: "Clarify the title.", title: "A different title" },
+		identity,
+		undefined,
+		starter,
+	).entry;
+	assert.equal(edited.prompt, false);
+	assert.equal(edited.origin, "recorded");
+	assert.equal(edited.record?.items.length, 1);
+	const updated = writeStarter("changed", "\n## Notes\n\nMore detail.\n");
+	writeStarter("fresh");
+	assert.deepEqual(importEntries(dir, [], starter), []);
+	assert.ok(!list().some(({ id }) => id === "fresh"));
+	saveEntry(dir, { ...entry, id: "replaced" }, identity, undefined, starter);
+	writeStarter("replaced");
+	setDisabled(dir, "deleted", true, identity, "Paused.", starter);
+	removeEntry(dir, "deleted", identity, "No longer useful.", starter);
 	assert.deepEqual(
-		{ ...flag, time: undefined },
-		{ id, time: undefined, ...identity, reply: "reply\n\n body\n", note: "note" },
+		Object.fromEntries(compareStarter(dir, list(), starter).map(({ entry, status }) => [entry.id, status])),
+		{
+			changed: "updated",
+			deleted: "removed",
+			fresh: "new",
+			replaced: "replaced",
+			same: "current",
+		},
+	);
+	assert.throws(() => importEntries(dir, ["fresh", "absent"], starter), /No starter entry named absent/);
+	assert.ok(!list().some(({ id }) => id === "fresh"));
+	assert.deepEqual(importEntries(dir, undefined, starter), ["fresh"]);
+	assert.ok(!list().some(({ id }) => id === "deleted"));
+	assert.deepEqual(importEntries(dir, ["deleted", "changed", "same"], starter), ["deleted", "changed", "same"]);
+	assert.equal(list().find(({ id }) => id === "deleted")?.disabled, false);
+	assert.equal(list().find(({ id }) => id === "changed")?.raw, updated);
+	assert.equal(list().find(({ id }) => id === "same")?.origin, "starter");
+});
+
+test("catalog and record tools keep starter reads and action fields distinct", (t) => {
+	const { dir, identity, options } = fixture(t);
+	mkdirSync(join(dir, "catalog"), { recursive: true });
+	assert.match(inspectCatalog(options, {}).content[0].text, /^Starter set: \d+ new, 0 updated/);
+	assert.match(
+		inspectCatalog(options, { starter: true }).content[0].text,
+		/context-free-decisions · new ·.*\n[\s\S]*slop_record/,
+	);
+	assert.match(
+		inspectCatalog(options, { starter: true, entry: "context-free-decisions" }).content[0].text,
+		/^context-free-decisions · new\n\n---/,
+	);
+	assert.throws(() => inspectCatalog(options, { starter: true, scope: "reply" }), /only to filter/);
+	assert.throws(() => record(options, { action: "import", id: entry.id }, identity), /import accepts.*ids/);
+	assert.throws(
+		() => record(options, { action: "remove", id: entry.id, title: "Title" }, identity),
+		/remove accepts.*id, reason/,
+	);
+	assert.throws(() => record(options, { action: "disable" }, identity), /disable requires id/);
+	assert.match(
+		record(options, { action: "import", ids: ["context-free-decisions"] }, identity).content[0].text,
+		/Imported starter entries: context-free-decisions/,
+	);
+	assert.match(inspectCatalog(options, { entry: "context-free-decisions" }).content[0].text, /starter · active/);
+	assert.match(
+		record(options, { action: "remove", id: "context-free-decisions" }, identity).content[0].text,
+		/Removed context-free-decisions/,
+	);
+	assert.match(
+		inspectCatalog(options, { starter: true, entry: "context-free-decisions" }).content[0].text,
+		/^context-free-decisions · removed/,
 	);
 });
 
@@ -215,25 +383,28 @@ test("a write recovers an expired lock but does not bypass a held lock", (t) => 
 	assert.throws(() => saveEntry(dir, entry, identity), { code: "ELOCKED" });
 	const expired = new Date(0);
 	utimesSync(lock, expired, expired);
-	assert.equal(saveEntry(dir, entry, identity).id, entry.id);
+	assert.equal(saveEntry(dir, entry, identity).entry.id, entry.id);
 	assert.throws(() => readdirSync(lock), { code: "ENOENT" });
 });
 
-test("prompt includes its introduction within the size limit and keeps the input order", (t) => {
+test("prompt puts recent records before starter entries in id order and stays within its limit", (t) => {
 	const { dir, identity } = fixture(t);
-	const local = saveEntry(dir, entry, identity);
+	const { entry: saved } = saveEntry(dir, entry, identity);
 	const scoped = [
-		local,
 		...Array.from({ length: 30 }, (_, i) => ({
-			...local,
+			...saved,
+			id: `habit-${String(i + 1).padStart(2, "0")}`,
 			title: `Habit ${i + 1}`,
 			repair: "Explain the rule that the code preserves in the place where that rule applies.",
-			source: "shipped" as const,
-		})),
+			origin: "starter" as const,
+			record: undefined,
+		})).reverse(),
+		{ ...saved, id: "older", title: "Older save", record: { items: [], updated: "2000-01-01T00:00:00.000Z" } },
+		saved,
 	];
 	const prompt = promptSection(scoped);
 	assert.ok(prompt);
 	assert.ok(prompt.length <= 1500);
-	assert.match(prompt, /^Each line names a habit to avoid and its repair\.\nRelease diary:.*\nHabit 1:/);
+	assert.match(prompt, /^Each line names a habit to avoid and its repair\.\nRelease diary:.*\nOlder save:.*\nHabit 1:/);
 	assert.doesNotMatch(prompt, /Habit 30/);
 });

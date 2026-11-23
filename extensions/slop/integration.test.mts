@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { Context } from "@earendil-works/chord/context";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import * as durable from "@earendil-works/pi-durable";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { parseEntry } from "./catalog.ts";
@@ -45,8 +46,8 @@ function settingsDirectory(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "slop-runtime-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const dir = join(root, "store");
-	mkdirSync(join(dir, "entries"), { recursive: true });
-	writeFileSync(join(dir, "entries", "field-note.md"), fixture);
+	mkdirSync(join(dir, "catalog"), { recursive: true });
+	writeFileSync(join(dir, "catalog", "field-note.md"), fixture);
 	writeFileSync(join(root, "harness.json"), JSON.stringify({ version: 1, slop: { dir } }));
 	return { root, dir };
 }
@@ -85,14 +86,15 @@ function bus() {
 	};
 }
 
-test("ordinary Pi registers direct tools, publishes cards and flags only on explicit command", async (t) => {
+test("ordinary Pi registers direct tools and submits one slop check with the verbatim hint", async (t) => {
 	const { root, dir } = settingsDirectory(t);
 	scopedEnv(t, root, dir);
 	const events = bus();
 	const registered: Parameters<ExtensionAPI["registerTool"]>[0][] = [];
 	const hooks = new Map<string, (event: unknown) => void>();
 	let command: Parameters<ExtensionAPI["registerCommand"]>[1] | undefined;
-	const messages: [string, unknown][] = [];
+	const messages: Parameters<ExtensionAPI["sendMessage"]>[] = [];
+	const notices: string[] = [];
 	const seen: ReturnType<typeof toolDisplay>[] = [];
 	events.on("harness:tool-display:publish", (value) => {
 		seen.push(value as ReturnType<typeof toolDisplay>);
@@ -104,7 +106,7 @@ test("ordinary Pi registers direct tools, publishes cards and flags only on expl
 			command = spec;
 		},
 		on: (name: string, handler: (event: unknown) => void) => hooks.set(name, handler),
-		sendUserMessage: (text: string, options: unknown) => messages.push([text, options]),
+		sendMessage: (...args: Parameters<ExtensionAPI["sendMessage"]>) => messages.push(args),
 	};
 	slopExtension(host as unknown as ExtensionAPI);
 	assert.deepEqual(
@@ -130,38 +132,20 @@ test("ordinary Pi registers direct tools, publishes cards and flags only on expl
 	const prompt = { systemPromptOptions: { sections: {} as Record<string, string> } };
 	hooks.get("before_agent_start")?.(prompt);
 	assert.match(prompt.systemPromptOptions.sections.slop, /Field note: State the result first/);
-	assert.throws(() => readdirSync(join(dir, "flags")), { code: "ENOENT" });
-	const ctx = {
-		cwd: root,
-		model: { provider: "now", id: "current" },
-		sessionManager: {
-			getSessionId: () => "session",
-			getBranch: () => [
-				{
-					type: "message",
-					message: {
-						role: "assistant",
-						provider: "then",
-						model: "reply-model",
-						content: [
-							{ type: "thinking", thinking: "private thought" },
-							{ type: "text", text: "The saved reply." },
-						],
-					},
-				},
-				{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "tool" }] } },
-			],
-		},
-		ui: { notify: assert.fail },
-	};
+	const ctx = { ui: { notify: (notice: string) => notices.push(notice) } } as unknown as ExtensionCommandContext;
 	assert.ok(command);
-	await command.handler("flag Please shorten it.", ctx as unknown as Parameters<typeof command.handler>[1]);
-	const [file] = readdirSync(join(dir, "flags"));
-	const saved = JSON.parse(readFileSync(join(dir, "flags", file), "utf8"));
-	assert.equal(saved.model, "then/reply-model");
-	assert.equal(saved.reply, "The saved reply.");
-	assert.match(messages[0][0], /slop_record.*\n\nPlease shorten it\./s);
-	assert.deepEqual(messages[0][1], { deliverAs: "followUp" });
+	assert.deepEqual(await command.getArgumentCompletions?.("ch"), [{ value: "check", label: "check" }]);
+	await command.handler("browse", ctx);
+	assert.equal(messages.length, 0);
+	assert.match(notices[0], /Use \/slop/);
+	const hint = '  The heading: "Results".\nLook at its sequence.  ';
+	await command.handler(`check ${hint}`, ctx);
+	assert.equal(messages.length, 1);
+	const [message, delivery] = messages[0];
+	assert.equal(message.display, true);
+	assert.match(String(message.content), /slop_record/);
+	assert.ok(String(message.content).endsWith(`Operator hint:\n${hint}`));
+	assert.deepEqual(delivery, { triggerTurn: true, deliverAs: "steer" });
 	hooks.get("session_shutdown")?.({});
 	assert.equal(events.count("harness:tool-display:request"), 0);
 	assert.equal(events.count("harness:settings:request"), 0);
@@ -210,8 +194,35 @@ test("native Pi installs the same tools, example-backed check and prompt section
 	assert.equal(events.count("harness:settings:request"), 0);
 });
 
+test("Durable Pi submits the slop check as a steer with the invocation's request id", async () => {
+	const [command] = slopContribution("/fixture/index.ts", bus(), () => {}).commands;
+	assert.equal(command.name, "slop");
+	const submitted: unknown[] = [];
+	const call = {
+		args: "check The lead.\nKeep the warning.",
+		origin: "operator" as const,
+		conversation: {
+			submit: async (input: unknown) => {
+				submitted.push(input);
+				return { id: 7 };
+			},
+		} as unknown as durable.Conversation,
+		context: {} as Context,
+		invocationId: "invocation-1",
+	};
+	assert.match(await command.run({ ...call, args: "browse" }), /Use \/slop check/);
+	assert.match(await command.run({ ...call, origin: "model" }), /Only the operator/);
+	assert.equal(submitted.length, 0);
+	assert.match(await command.run(call), /submission 7/);
+	assert.equal(submitted.length, 1);
+	assert.partialDeepStrictEqual(submitted[0], { type: "input", requestId: "slop:invocation-1", whenBusy: "steer" });
+	assert.match((submitted[0] as { content: string }).content, /Operator hint:\nThe lead\.\nKeep the warning\.$/);
+	await command.run({ ...call, args: "check", invocationId: "invocation-2" });
+	assert.match((submitted[1] as { content: string }).content, /Operator hint:\n\(none\)$/);
+});
+
 test("catalog view confirms state changes and cancellation preserves the selection", async () => {
-	const entry = { ...parseEntry(fixture, "field-note", "local"), disabled: false };
+	const entry = { ...parseEntry(fixture, "field-note"), disabled: false };
 	const plain = (text: string) => text;
 	const theme = {
 		fg: (_key: string, text: string) => text,
@@ -243,7 +254,7 @@ test("catalog view confirms state changes and cancellation preserves the selecti
 	assert.ok(component);
 	const render = (width: number) => component?.render(width).join("\n") ?? "";
 	const key = (input: string) => component?.handleInput?.(input);
-	assert.match(render(55), /Field note/);
+	assert.match(render(55), /Field note \(prompt\)/);
 	key("\r");
 	assert.match(render(55), /Catalog \/ field-note/);
 	key("e");
@@ -254,7 +265,7 @@ test("catalog view confirms state changes and cancellation preserves the selecti
 	key("e");
 	key("\r");
 	assert.equal(entry.disabled, true);
-	assert.match(render(100), /local · disabled/);
+	assert.match(render(100), /starter · off/);
 	assert.doesNotMatch(render(100), /\bid: field-note\b/, "the detail renders the entry body without its front matter");
 	key("\u001b");
 	key("\u001b");
