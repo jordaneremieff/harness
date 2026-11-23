@@ -2508,9 +2508,6 @@ function authoredPeerBody(details: Record<string, unknown>, content: string): st
 function peerSourceLines(details: Record<string, unknown>): string[] {
 	const thread = text(details.threadId);
 	const final = record(details.finalReport);
-	const references = array(record(details.receiptAssociation).results);
-	const submissions = array(details.submissions).map(record);
-	const bySubmission = new Map(submissions.map((row) => [row.submissionId, row]));
 	const facts = [
 		["Sender ID", text(details.senderIdentity) || text(details.identity)],
 		["Sender name", text(details.name)],
@@ -2527,30 +2524,7 @@ function peerSourceLines(details: Record<string, unknown>): string[] {
 	].flatMap(([label, value]) => (value ? [`${label}: ${displayText(value)}`] : []));
 	const model = resolvedModelLine(text(details.provider), text(details.modelId), text(details.thinkingLevel));
 	if (model) facts.push(model);
-	for (const value of references.length > 0 ? references : submissions) {
-		const reference = record(value);
-		const submission = count(reference.submissionId);
-		const member = bySubmission.get(submission) ?? reference;
-		const request = text(member.requestId);
-		const entry = member.entryId;
-		const answer = member.answerEntryId;
-		const state =
-			member.status === "unanswered" ? "No answer" : member.status === "done" ? text(member.workLabel) || "Answer" : "";
-		if (submission !== undefined)
-			facts.push(
-				displayText(
-					[
-						`Submission ${submission}`,
-						request,
-						typeof entry === "string" || typeof entry === "number" ? `entry ${entry}` : "",
-						typeof answer === "string" || typeof answer === "number" ? `answer entry ${answer}` : "",
-						state,
-					]
-						.filter(Boolean)
-						.join(" · "),
-				),
-			);
-	}
+	facts.push(...peerSubmissionLines(details));
 	if (thread) facts.push(threadRecoveryText(thread, count(details.threadEvent)));
 	if (matchesSchema(AnswerContinuationSchema, details.continuation)) {
 		const { tool, ...args } = details.continuation;
@@ -2569,6 +2543,38 @@ function peerSourceLines(details: Record<string, unknown>): string[] {
 				"Receipt continuation unavailable: invalid source metadata",
 		);
 	return facts;
+}
+
+function peerSubmissionLines(details: Record<string, unknown>): string[] {
+	const references = array(record(details.receiptAssociation).results);
+	const submissions = array(details.submissions).map(record);
+	const bySubmission = new Map(submissions.map((row) => [row.submissionId, row]));
+	const lines: string[] = [];
+	for (const value of references.length > 0 ? references : submissions) {
+		const reference = record(value);
+		const submission = count(reference.submissionId);
+		if (submission === undefined) continue;
+		lines.push(peerSubmissionLine(submission, bySubmission.get(submission) ?? reference));
+	}
+	return lines;
+}
+
+function peerSubmissionLine(submission: number, member: Record<string, unknown>): string {
+	const entry = member.entryId;
+	const answer = member.answerEntryId;
+	const state =
+		member.status === "unanswered" ? "No answer" : member.status === "done" ? text(member.workLabel) || "Answer" : "";
+	return displayText(
+		[
+			`Submission ${submission}`,
+			text(member.requestId),
+			typeof entry === "string" || typeof entry === "number" ? `entry ${entry}` : "",
+			typeof answer === "string" || typeof answer === "number" ? `answer entry ${answer}` : "",
+			state,
+		]
+			.filter(Boolean)
+			.join(" · "),
+	);
 }
 
 function peerLimit(details: Record<string, unknown>, source: string, prefix: string): string | undefined {

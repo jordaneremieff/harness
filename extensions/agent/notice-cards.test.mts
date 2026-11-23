@@ -7,6 +7,7 @@ import {
 	initTheme,
 	keyHint,
 	keyText,
+	SessionManager,
 	type ExtensionAPI,
 	type ExtensionContext,
 	type TurnEndEvent,
@@ -14,6 +15,7 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import register from "./index.ts";
+import type { FinalReportRead } from "./open-work-schema.ts";
 import { OrdinaryContinuity, PLANNING_BUDGET_NOTICE } from "./ordinary-continuity.ts";
 import { SelfCompaction, SELF_COMPACTION_NOTICE } from "./self-compaction.ts";
 import {
@@ -181,8 +183,22 @@ it("Pi distinguishes settled inputs, state notes, progress and final reports by 
 	const renderer = (await registeredRenderers()).get("agent.peer");
 	assert.ok(renderer);
 	const sessionId = "12345678-1234-4234-8234-123456789abc";
-	const read = { tool: "agent_inspect", view: "result", sessionId, submissionId: 9, finalReport: true, offset: 0 };
-	const cases = [
+	const read: FinalReportRead = {
+		tool: "agent_inspect",
+		view: "result",
+		sessionId,
+		submissionId: 9,
+		finalReport: true,
+		offset: 0,
+	};
+	const cases: {
+		title: string;
+		details: Record<string, unknown> & {
+			kind: "message" | "receipt" | "report";
+			finalReportContinuation?: FinalReportRead;
+		};
+		body: string;
+	}[] = [
 		{ title: "Message received", details: { kind: "message" }, body: "Agent “Scout” said this directly." },
 		{
 			title: "Answer received",
@@ -233,7 +249,7 @@ it("Pi distinguishes settled inputs, state notes, progress and final reports by 
 		},
 	];
 	for (const { title, details, body } of cases) {
-		const card = new CustomMessageComponent(
+		const card: CustomMessageComponent = new CustomMessageComponent(
 			{
 				role: "custom",
 				customType: "agent.peer",
@@ -253,11 +269,12 @@ it("Pi distinguishes settled inputs, state notes, progress and final reports by 
 		);
 		for (const width of [54, 160]) {
 			const collapsed = card.render(width).map((row) => stripVTControlCharacters(row).trim());
-			assert.deepEqual(collapsed.slice(2, 6), [`[agent] ${title}`, collapsed[3], "", body]);
+			assert.equal(collapsed[2], `[agent] ${title}`);
 			assert.match(collapsed[3] ?? "", /^from Scout · provider\/model · high/u);
+			assert.deepEqual(collapsed.slice(4, 6), ["", body]);
 			assert.doesNotMatch(collapsed.join("\n"), /Model-only envelope|agent_inspect/u);
 		}
-		if ("finalReportContinuation" in details && details.finalReportContinuation) {
+		if (details.finalReportContinuation) {
 			assert.match(
 				card.render(160).map(stripVTControlCharacters).join("\n"),
 				/\[Excerpt: first 13 UTF-16 code units retained\]/u,
@@ -412,11 +429,11 @@ it("Pi displays a planning-budget crossing from the producer's model and token f
 	});
 	let tokens = 199_000;
 	const ctx = {
-		sessionManager: { getSessionId: () => "owner", buildContextEntries: () => [] },
-		model: { provider: "provider", id: "model-6.1" },
+		sessionManager: SessionManager.inMemory(),
+		model: { provider: "provider", id: "model-6.1" } as ExtensionContext["model"],
 		thinkingLevel: "high",
-		getContextUsage: () => ({ tokens, contextWindow: 250_000 }),
-	} as Pick<ExtensionContext, "sessionManager" | "model" | "getContextUsage" | "thinkingLevel">;
+		getContextUsage: () => ({ tokens, contextWindow: 250_000, percent: (tokens / 250_000) * 100 }),
+	} satisfies Pick<ExtensionContext, "sessionManager" | "model" | "getContextUsage" | "thinkingLevel">;
 	assert.equal(continuity.turnEnd({ entries: [] }, ctx), undefined);
 	tokens = 210_000;
 	const draft = continuity.turnEnd({ entries: [] }, ctx)?.entries?.[0];
