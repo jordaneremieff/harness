@@ -3086,7 +3086,7 @@ it("pages list rows and reports unavailable storages", { timeout: 15000 }, async
 	);
 	const result = (await manager.list({ limit: 5 })) as {
 		rows: Array<{ identity: string; storageId: string }>;
-		coverage: { unavailable: Array<{ storageId: string }> };
+		coverage: { complete: boolean; basis: string; unavailable: Array<{ storageId: string }> };
 	};
 	assert.deepEqual(
 		result.rows.map((row) => row.identity),
@@ -3097,6 +3097,8 @@ it("pages list rows and reports unavailable storages", { timeout: 15000 }, async
 		true,
 	);
 	assert.equal(result.coverage.unavailable.length, 1);
+	assert.equal(result.coverage.complete, true);
+	assert.match(result.coverage.basis, /Missing matches remain unknown/u);
 	await manager.close();
 });
 

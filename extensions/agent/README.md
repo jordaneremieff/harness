@@ -214,10 +214,11 @@ and the replacement steps. Wait for active work to finish, release the idle
 host, then attach it from the current installation. Restart an ordinary
 primary to replace its loaded code. No older observation shape is accepted.
 
-Each `agent_list` call reads the shared catalog inventory once, then observes
-at most 32 storages. A storage observation is the costly step: a cold storage
-is copied before it is read. With a query, the call classifies every storage in
-scope from its catalog record and writer claim:
+Each `agent_list` call reads the shared catalog inventory once, then processes
+at most 32 scan steps. Each native page observation or unreadable catalog
+record uses one step. A storage observation is the costly step: a cold storage
+is copied before it is read. With a query, the call classifies every readable
+storage in scope from its catalog record and writer claim:
 
 - A **candidate** has a record that carries the query text, or a record that
   cannot decide the query. The text fields are the storage identity, the cwd,
@@ -243,11 +244,11 @@ applies throughout.
 Coverage keeps observed and unobserved storages apart.
 `coverage.storagesVisited` counts the observations of the call.
 `coverage.catalog` gives the readable storages in scope, the current pass, the
-open observations (`pending`), and the settled storages. `coverage.basis`
-states what the result rests on. `coverage.complete` is true only when no
-observation is open. While it is false, a page without rows is not absence:
-`coverage.next` names the tool and holds the exact fields of the continuation
-call, and `nextCursor` holds its cursor.
+open scan steps (`pending`), and the settled storages. `coverage.basis`
+states what the result rests on. `coverage.complete` means no scan step is
+open, not that every storage was observed. While it is false, a page without
+rows is not absence: `coverage.next` names the tool and holds the exact fields
+of the continuation call, and `nextCursor` holds its cursor.
 
 Continuations retain the pass, the last finished storage identity, the native
 page position, and the start time of the discovery. The continuation uses the
@@ -258,8 +259,9 @@ that changes behind the position needs a new discovery, with one exception:
 the remainder pass also observes each candidate whose record file changed after
 the discovery began, because the candidates pass can have read an earlier
 record that was no candidate. Such a storage can return its rows in both
-passes. `agent_list` reports each unreadable catalog record in
-`coverage.unavailable`, even when `coverage.complete` is true.
+passes. `coverage.unavailable` reports the unreadable records and failed
+observations on the current page. `coverage.basis` discloses uncertainty from
+this and earlier pages even when `coverage.complete` is true.
 
 Agent catalogue readers compile their projection schemas once per process.
 They keep a bounded process-local cache of validated records: at most 512

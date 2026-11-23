@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesSchema } from "./schema-check.ts";
@@ -261,6 +261,104 @@ for (const query of ["session-history", "@session-history"]) {
 		assert.equal(pages.at(-1)?.nextCursor, null);
 	});
 }
+
+it("bounds unreadable list records and keeps their uncertainty after later observations", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "list-unavailable-"));
+	const manager = new AgentManager({
+		root,
+		agentDir: root,
+		packageDir: root,
+		connect: async () => {
+			throw new Error("no live host");
+		},
+		acquire: async () => {
+			throw new Error("discovery must not acquire a host");
+		},
+		observe: async (record, method, input) => {
+			assert.equal(method, "list");
+			const first = input.cursor === undefined;
+			return {
+				items: [{ identity: first ? record.storageId : `${record.storageId}:2`, name: "needle" }],
+				next: first ? { after: "root" } : null,
+			};
+		},
+	});
+	t.after(async () => {
+		await manager.close();
+		rmSync(root, { recursive: true, force: true });
+	});
+	const ids = Array.from(
+		{ length: 34 },
+		() =>
+			manager.catalog.create({
+				cwd: root,
+				agentDir: root,
+				packageDir: root,
+				model: { provider: "fixture", modelId: "fixture" },
+				thinkingLevel: "off",
+			}).storageId,
+	).sort();
+	const valid = ids.at(-1);
+	assert.ok(valid);
+	const unreadable = ids.slice(0, -1);
+	for (const id of unreadable) writeFileSync(manager.catalog.path(id), "not a catalog record");
+	utimesSync(manager.catalog.path(valid), 1, 1);
+
+	type Page = {
+		rows: Array<{ identity: string }>;
+		coverage: {
+			complete: boolean;
+			storagesVisited: number;
+			unavailable: Array<{ storageId: string }>;
+			basis: string;
+			next: { tool: string; query: string; limit: number; cursor: string } | null;
+		};
+	};
+	const resume = async (page: Page) => {
+		assert.ok(page.coverage.next);
+		const { tool, ...input } = page.coverage.next;
+		assert.equal(tool, "agent_list");
+		return (await manager.list(input)) as Page;
+	};
+	const first = (await manager.list({ query: "needle", limit: 1 })) as Page;
+	assert.deepEqual(first.rows, []);
+	assert.equal(first.coverage.storagesVisited, 0);
+	assert.equal(first.coverage.complete, false);
+	assert.deepEqual(
+		first.coverage.unavailable.map(({ storageId }) => storageId),
+		unreadable.slice(0, 32),
+	);
+
+	const second = await resume(first);
+	assert.deepEqual(
+		second.rows.map(({ identity }) => identity),
+		[valid],
+	);
+	assert.equal(second.coverage.storagesVisited, 1);
+	assert.deepEqual(
+		second.coverage.unavailable.map(({ storageId }) => storageId),
+		unreadable.slice(32),
+	);
+
+	const last = await resume(second);
+	assert.deepEqual(
+		last.rows.map(({ identity }) => identity),
+		[`${valid}:2`],
+	);
+	assert.equal(last.coverage.storagesVisited, 1);
+	assert.equal(last.coverage.complete, true);
+	assert.equal(last.coverage.next, null);
+	assert.deepEqual(last.coverage.unavailable, []);
+	assert.match(last.coverage.basis, /unavailable on this or an earlier page.*Missing matches remain unknown/u);
+
+	writeFileSync(manager.catalog.path(valid), "not a catalog record");
+	const interrupted = await resume(second);
+	assert.deepEqual(interrupted.coverage.unavailable, [
+		{ storageId: valid, reason: "Catalog record could not be read" },
+	]);
+	assert.equal(interrupted.coverage.storagesVisited, 0);
+	assert.equal(interrupted.coverage.complete, true);
+});
 
 it("a publication at the publisher's 200-conversation scan bound always reports omitted rows", () => {
 	const storageId = "11111111-1111-4111-8111-111111111111";

@@ -206,17 +206,27 @@ export function planListScan(
 }
 
 /** State what one list result rests on, so a page without rows is never read as absence. */
-export function listCoverageBasis(state: { query: string; pass: ListPass; pending: number; settled: number }): string {
-	const { query, pass, pending, settled } = state;
+export function listCoverageBasis(state: {
+	query: string;
+	pass: ListPass;
+	pending: number;
+	settled: number;
+	unavailable: boolean;
+}): string {
+	const { query, pass, pending, settled, unavailable } = state;
+	const gap = unavailable
+		? " Some storage sources were unavailable on this or an earlier page. Missing matches remain unknown."
+		: "";
 	if (pending > 0) {
-		const open = `${pending} storage observation${pending === 1 ? " is" : "s are"} still open, so a page without rows is not absence. Call agent_list with the fields of coverage.next.`;
-		if (!query) return `Storages are observed in identity order. ${open}`;
+		const open = `${pending} storage scan step${pending === 1 ? " is" : "s are"} still open, so a page without rows is not absence. Call agent_list with the fields of coverage.next.`;
+		if (!query) return `Storages are scanned in identity order. ${open}${gap}`;
 		return pass === "candidates"
-			? `Candidates pass: storages whose catalog record carries the query, or cannot decide it, are observed first; exact retained handle matches precede other candidates. ${open}`
-			: `Remainder pass: every candidate storage is observed. The remaining storages publish no match, but their publication can be older than the store. ${open}`;
+			? `Candidates pass: storages whose catalog record carries the query, or cannot decide it, are scanned first; exact retained handle matches precede other candidates. ${open}${gap}`
+			: `Remainder pass: the candidates pass ended. The remaining storages publish no match, but their publication can be older than the store. ${open}${gap}`;
 	}
-	if (!query) return "Every storage in scope was observed.";
-	return `Every storage in scope was observed or settled. ${settled} settled storage${settled === 1 ? " was" : "s were"} not observed: a settled storage has a complete publication without a match from a writer that ended cleanly.`;
+	const done = `Discovery reached the end of its scan.${gap}`;
+	if (!query) return done;
+	return `${done} ${settled} settled storage${settled === 1 ? " was" : "s were"} not observed: a settled storage has a complete publication without a match from a writer that ended cleanly.`;
 }
 
 export function enrichDashboardRow(

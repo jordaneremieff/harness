@@ -205,13 +205,14 @@ interface ListCursor {
 	after?: string;
 	storage?: string;
 	native?: unknown;
+	unavailable?: true;
 }
 
 const DEFAULT_DELIVERED_LIMIT = 1024;
 const DEFAULT_FAILURE_LIMIT = 256;
 const MAX_ERROR_TEXT = 512;
 const MAX_INVENTORY_PAGES = 16;
-const MAX_LIST_VISITS = 32;
+const MAX_LIST_STEPS = 32;
 const PRIMARY_ACTIVITY_INTERVAL_MS = 60_000;
 const CRASH_WINDOW_MS = 60_000;
 const MAX_AUTOMATIC_RESTARTS = 3;
@@ -1464,6 +1465,7 @@ export class AgentManager {
 			...(typeof parsed.after === "string" ? { after: parsed.after } : {}),
 			...(typeof parsed.storage === "string" ? { storage: parsed.storage } : {}),
 			...(parsed.native === undefined ? {} : { native: parsed.native }),
+			...(parsed.unavailable === true ? { unavailable: true } : {}),
 		};
 	}
 
@@ -1499,33 +1501,33 @@ export class AgentManager {
 				? steps
 				: steps.filter((step) => compareListStorages(facts, cursor.query, step.storageId, position) > 0);
 		if (cursor.storage === undefined) return queue;
-		const record = facts.get(cursor.storage)?.record;
-		if (record) return [{ storageId: cursor.storage, record }, ...queue];
-		cursor.storage = undefined;
-		cursor.native = undefined;
-		return queue;
+		return [{ storageId: cursor.storage, record: facts.get(cursor.storage)?.record }, ...queue];
 	}
 
-	/** Observe queued storages until the row limit or the observation budget ends the call; return the steps left. */
+	/** Spend one step per native page or unreadable record, across both passes. */
 	private async observeListSteps(
 		queue: ListScanStep[],
 		cursor: ListCursor,
 		limit: number,
 		rows: unknown[],
 		unavailable: Array<{ storageId: string; reason: string }>,
-		progress: { visits: number; finished: Set<string> },
+		progress: { steps: number; visits: number; finished: Set<string> },
 	): Promise<number> {
 		let index = 0;
-		while (index < queue.length && rows.length < limit && progress.visits < MAX_LIST_VISITS) {
+		while (index < queue.length && rows.length < limit && progress.steps < MAX_LIST_STEPS) {
 			const step = queue[index];
+			progress.steps++;
 			if (step.record) {
 				cursor.storage = step.storageId;
-				progress.visits += 1;
+				progress.visits++;
 				await this.collectListPage(step.record, cursor, limit - rows.length, rows, unavailable);
 				if (cursor.native !== undefined) continue;
-				cursor.storage = undefined;
 				progress.finished.add(step.storageId);
-			} else unavailable.push({ storageId: step.storageId, reason: "Catalog record could not be read" });
+			} else {
+				unavailable.push({ storageId: step.storageId, reason: "Catalog record could not be read" });
+				cursor.native = undefined;
+			}
+			cursor.storage = undefined;
 			cursor.after = step.storageId;
 			index++;
 		}
@@ -1541,7 +1543,7 @@ export class AgentManager {
 		// One inventory reading orders the whole call; observations can rewrite catalog records.
 		const inventory = await this.inventory.read();
 		const plan = planListScan(inventory.facts, cursor.query, cursor.cwd, cursor.since);
-		const progress = { visits: 0, finished: new Set<string>() };
+		const progress = { steps: 0, visits: 0, finished: new Set<string>() };
 		let open = await this.observeListSteps(
 			this.listQueue(plan, cursor, inventory.facts),
 			cursor,
@@ -1560,6 +1562,7 @@ export class AgentManager {
 		const visits = progress.visits;
 		const pending = open + (cursor.pass === "candidates" ? remainder.length : 0);
 		const complete = pending === 0;
+		if (unavailable.length > 0) cursor.unavailable = true;
 		const nextCursor = complete ? null : Buffer.from(JSON.stringify(cursor)).toString("base64url");
 		const next =
 			nextCursor === null
@@ -1577,7 +1580,13 @@ export class AgentManager {
 			unavailable,
 			profileHints: plan.profileHints,
 			catalog: { storages: plan.storages, pass: cursor.pass, pending, settled: plan.settled },
-			basis: listCoverageBasis({ query: cursor.query, pass: cursor.pass, pending, settled: plan.settled }),
+			basis: listCoverageBasis({
+				query: cursor.query,
+				pass: cursor.pass,
+				pending,
+				settled: plan.settled,
+				unavailable: cursor.unavailable === true,
+			}),
 			next,
 		};
 		return {
