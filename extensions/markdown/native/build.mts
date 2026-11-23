@@ -668,6 +668,7 @@ function install(destination: string, store: string, webSourceDir: string): void
 			paneOpenRequest: PANE_OPEN_REQUEST,
 			editorOpen: EDITOR_OPEN,
 			live: 2,
+			paneProtocol: 3,
 			sourceDigest: digest,
 			...(source ? { source } : {}),
 			builtAt: new Date().toISOString(),

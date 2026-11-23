@@ -1,307 +1,250 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { once } from "node:events";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import type { ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import * as Durable from "@earendil-works/pi-durable";
-import { createPublishTool, createNativePublishTool } from "./publish.ts";
-import { createReadTool, createNativeReadTool } from "./read.ts";
-import { MarkdownStore } from "./store.ts";
+import { LaunchLedger } from "./launch-ledger.ts";
 import { liveArguments, withLiveShow } from "./live-launch.ts";
 import { LiveBridge } from "./live-bridge.ts";
+import type { LiveConfig } from "./live-protocol.ts";
 import { materializeAndReveal, openScratchpad, selectStored, type RevealRuntime } from "./reveal.ts";
-const config = { version: 1 as const, endpoint: "http://127.0.0.1:12345", token: "ab".repeat(32) };
+import { MarkdownStore } from "./store.ts";
+
+const documentId = `md-${"a".repeat(20)}`;
+const config: LiveConfig = {
+	version: 1,
+	live: 3,
+	conversation: "test",
+	hostPid: process.pid,
+	endpoint: "http://127.0.0.1:12345",
+	token: "ab".repeat(32),
+};
 async function fixture(t: TestContext) {
 	const root = await mkdtemp(join(tmpdir(), "markdown-live-launch-"));
-	const previous = process.env.PI_CODING_AGENT_DIR;
-	process.env.PI_CODING_AGENT_DIR = root;
+	const app = join(root, "Reader.app");
+	const store = new MarkdownStore(join(root, "store"));
+	const previous = new Map<string, string | undefined>();
+	for (const [key, value] of Object.entries({
+		PI_MARKDOWN_APP: app,
+		PI_MARKDOWN_DIR: store.root,
+		PI_CODING_AGENT_DIR: root,
+	})) {
+		previous.set(key, process.env[key]);
+		process.env[key] = value;
+	}
 	t.after(async () => {
-		if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
-		else process.env.PI_CODING_AGENT_DIR = previous;
+		for (const [key, value] of previous) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
 		await rm(root, { recursive: true, force: true });
 	});
-	const app = join(root, "Reader.app");
-	await mkdir(join(app, "Contents", "Resources"), { recursive: true });
-	await writeFile(
-		join(app, "Contents", "Resources", "build.json"),
-		JSON.stringify({ contract: 1, pane: 1, paneOpen: 1, live: 1 }),
-	);
-	return { root, app, store: new MarkdownStore(join(root, "store")) };
+	const resources = join(app, "Contents", "Resources");
+	await mkdir(resources, { recursive: true });
+	const build = async (live: number, paneProtocol?: number) =>
+		writeFile(
+			join(resources, "build.json"),
+			JSON.stringify({ contract: 1, pane: 1, paneOpenRequest: 1, editorOpen: 1, live, paneProtocol }),
+		);
+	await build(2, 3);
+	return { root, app, store, build };
 }
-async function checkLaunch(argv: string[], text: string) {
-	assert.equal(argv.at(-2), "--live");
-	const path = argv.at(-1);
-	assert.ok(path);
-	assert.equal((await stat(path)).mode & 0o777, 0o600);
-	assert.deepEqual(JSON.parse(await readFile(path, "utf8")), config);
-	assert.ok(!text.includes(config.token), "the tool output carries a private path, never its token");
-	await rm(path);
-}
-test("closing a bridge removes unused launch files without changing consumed files or another live owner's files", {
-	timeout: 10000,
-}, async (t) => {
-	const f = await fixture(t);
+async function bridge(t: TestContext) {
 	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
 	t.after(() => bridge.close());
 	const live = await bridge.start();
-	const show = await withLiveShow({ show: ["reader", "--pane", "document"] }, f.app, async () => live);
-	assert.ok(show.show);
-	const unusedPath = show.show.at(-1);
-	assert.ok(unusedPath);
-	const consumed = await liveArguments(["reader", "--pane", "document"], live);
-	const consumedPath = consumed.argv.at(-1);
-	assert.ok(consumedPath);
-	assert.deepEqual(JSON.parse(await readFile(unusedPath, "utf8")), {
-		version: 1,
-		endpoint: live.endpoint,
-		token: live.token,
+	return { bridge, live };
+}
+function launchPath(argv: string[]): string {
+	assert.equal(argv.at(-2), "--live");
+	const path = argv.at(-1);
+	assert.ok(path);
+	return path;
+}
+async function consume(argv: string[], live: LiveConfig) {
+	const path = launchPath(argv);
+	assert.equal((await stat(path)).mode & 0o777, 0o600);
+	const file = JSON.parse(await readFile(path, "utf8"));
+	assert.deepEqual(file, { ...JSON.parse(JSON.stringify(live)), launchId: file.launchId });
+	assert.match(file.launchId, /^[a-f0-9-]{36}$/u);
+	await rm(path);
+	return file.launchId as string;
+}
+async function post(live: LiveConfig, path: string, body: object) {
+	const response = await fetch(live.endpoint + path, {
+		method: "POST",
+		headers: { authorization: `Bearer ${live.token}`, "content-type": "application/json" },
+		body: JSON.stringify(body),
+		signal: AbortSignal.timeout(3000),
 	});
-	await rm(consumedPath);
-	const other = new LiveBridge({ submit: async () => ({ status: "requested" }) });
-	t.after(() => other.close());
-	const otherLaunch = await liveArguments(["reader"], await other.start());
-	const otherPath = otherLaunch.argv.at(-1);
-	assert.ok(otherPath);
-	const unrelatedPath = join(f.root, "markdown-live", "11111111-1111-4111-8111-111111111111.json");
-	await writeFile(unrelatedPath, "unattributed configuration", { mode: 0o600 });
-	const pendingLaunch = assert.rejects(liveArguments(["reader"], live), /closed/u);
-	bridge.close();
-	bridge.close();
-	await pendingLaunch;
-	await assert.rejects(stat(unusedPath), { code: "ENOENT" });
-	await assert.rejects(stat(consumedPath), { code: "ENOENT" });
-	await consumed.remove();
-	assert.ok((await stat(otherPath)).isFile());
-	assert.equal(await readFile(unrelatedPath, "utf8"), "unattributed configuration");
-	await assert.rejects(liveArguments(["reader"], live), /closed/u);
-	assert.deepEqual(
-		(await readdir(join(f.root, "markdown-live"))).sort(),
-		[unrelatedPath, otherPath].map((path) => path.split("/").at(-1)).sort(),
-	);
-	other.close();
-	await assert.rejects(stat(otherPath), { code: "ENOENT" });
-});
-test("a live process keeps its launch file until exit and another bridge never prunes it", {
+	await response.body?.cancel();
+	return response.status;
+}
+test("a serialised launch route creates a private offer, reports reader startup, and binds its first pane", {
 	timeout: 10000,
 }, async (t) => {
 	const f = await fixture(t);
-	const child = spawn(
-		process.execPath,
-		[
-			"--input-type=module",
-			"-e",
-			`
-		import { liveArguments } from ${JSON.stringify(new URL("./live-launch.ts", import.meta.url).href)};
-		const launch = await liveArguments(["reader"], ${JSON.stringify(config)});
-		process.send(launch.argv.at(-1));
-		process.stdin.once("data", () => process.exit(0));
-	`,
-		],
-		{ env: { ...process.env, PI_CODING_AGENT_DIR: f.root }, stdio: ["pipe", "pipe", "pipe", "ipc"] },
-	);
-	t.after(() => {
-		if (child.exitCode === null) child.kill();
-	});
-	const [path] = await once(child, "message");
-	assert.equal(typeof path, "string");
-	const bridge = new LiveBridge({ submit: async () => ({ status: "requested" }) });
-	t.after(() => bridge.close());
-	await liveArguments(["reader"], await bridge.start());
-	bridge.close();
-	assert.ok((await stat(path as string)).isFile());
-	const exited = once(child, "exit");
-	assert.ok(child.stdin);
-	child.stdin.end("close\n");
-	assert.deepEqual(await exited, [0, null]);
-	await assert.rejects(stat(path as string), { code: "ENOENT" });
-});
-test("ordinary publication and read show commands carry private one-use connections without revealing tokens", {
-	timeout: 10000,
-}, async (t) => {
-	const f = await fixture(t);
-	const calls: ExtensionContext[] = [];
-	const connection = async (ctx: ExtensionContext) => {
-		calls.push(ctx);
-		return config;
+	const { bridge: host, live } = await bridge(t);
+	const route = async () => JSON.parse(JSON.stringify(live)) as LiveConfig;
+	const show = await withLiveShow({ show: ["reader"], documentId, revision: 2 }, f.app, route);
+	assert.ok(show.show && show.launchId);
+	assert.ok(!JSON.stringify(show).includes(live.token));
+	assert.equal(show.launchId, await consume(show.show, live));
+	const offer = { launchId: show.launchId, origin: "agent", documentId, revision: 2, status: "offered" };
+	assert.deepEqual(host.pendingLaunches(), [offer]);
+	assert.deepEqual(host.list(), []);
+	const start = { launchId: show.launchId, pid: process.pid };
+	assert.equal(await post(live, "/starting", start), 200);
+	assert.deepEqual(host.pendingLaunches(), [{ ...offer, status: "launching", pid: process.pid }]);
+	const next = await withLiveShow({ show: ["reader"], showUnavailable: "" }, f.app, route);
+	assert.equal(next.show, undefined);
+	assert.match(next.showUnavailable ?? "", /pending launches/u);
+	const binding = {
+		workspace: randomUUID(),
+		document: randomUUID(),
+		live: 3,
+		serial: 1,
+		...start,
+		view: { kind: "scratchpad", title: "Test", mode: "writing", dirty: false, conflict: false },
 	};
-	const ctx = {
-		cwd: f.root,
-		sessionManager: { getSessionId: () => "exact-ordinary" },
-	} as unknown as ExtensionToolContext;
-	const published = await createPublishTool({ store: f.store, app: f.app, connection }).execute(
-		"publish",
-		{ title: "Live", text: "# Exact\n" },
-		new AbortController().signal,
-		undefined,
-		ctx,
-	);
-	assert.equal(published.details?.ok, true);
-	const result = published.details;
-	assert.ok(result?.ok && result.show);
-	await checkLaunch(result.show, JSON.stringify(published));
-	const read = await createReadTool({ store: f.store, app: f.app, connection }).execute(
-		"read",
-		{ document: result.documentId },
-		new AbortController().signal,
-		undefined,
-		ctx,
-	);
-	assert.ok(read.details?.ok && read.details.op === "read" && read.details.show);
-	await checkLaunch(read.details.show, JSON.stringify(read));
-	assert.deepEqual(calls, [ctx, ctx]);
-	assert.equal((await f.store.get(result.documentId)).source, "# Exact\n");
+	assert.equal(await post(live, "/connect", binding), 200);
+	assert.deepEqual(host.pendingLaunches(), []);
+	assert.equal(host.list()[0]?.origin, "agent");
+	assert.notEqual(await post(live, "/connect", { ...binding, workspace: randomUUID() }), 200);
 });
-test("native publication and read prepare show commands from their actual calling conversation", {
-	timeout: 10000,
-}, async (t) => {
+test("a bridge owns launch files after their caller loses its local lifetime symbol", { timeout: 10000 }, async (t) => {
 	const f = await fixture(t);
-	const faux = fauxProvider();
-	const models = createModels();
-	models.setProvider(faux.provider);
-	const registry = Durable.createRegistry();
-	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
-	try {
-		const selected = await f.store.create({
-			title: "Selected",
-			source: "# Selected\n",
-			contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() },
-		});
-		const calls: string[] = [];
-		const connection = async (id: Durable.ConversationId) => {
-			calls.push(String(id));
+	const { bridge: first, live } = await bridge(t);
+	const { bridge: second, live: other } = await bridge(t);
+	const detached = JSON.parse(JSON.stringify(live)) as LiveConfig;
+	const a = await liveArguments(["reader"], detached);
+	const b = await liveArguments(["reader"], other);
+	const cancelled = await liveArguments(["reader"], detached);
+	assert.deepEqual(
+		first.pendingLaunches().map((p) => p.origin),
+		["operator", "operator"],
+	);
+	await cancelled.remove();
+	await cancelled.remove();
+	assert.equal(first.pendingLaunches().length, 1);
+	const unrelated = join(f.root, "markdown-live", `${randomUUID()}.json`);
+	await writeFile(unrelated, "untouched");
+	first.close();
+	await assert.rejects(stat(launchPath(a.argv)), { code: "ENOENT" });
+	assert.ok((await stat(launchPath(b.argv))).isFile());
+	await assert.rejects(liveArguments(["reader"], detached));
+	second.close();
+	assert.equal(await readFile(unrelated, "utf8"), "untouched");
+	assert.equal((await readdir(join(f.root, "markdown-live"))).length, 1);
+});
+test("reload revokes unused offers and preserves consumed handoffs without a stale pid or timer", async (t) => {
+	await fixture(t);
+	const ledger = new LaunchLedger();
+	t.after(() => ledger.close());
+	const a = { origin: "agent", launchId: randomUUID() };
+	const b = { origin: "operator", launchId: randomUUID() };
+	const c = { origin: "operator", launchId: randomUUID() };
+	const aPath = ledger.reserve(a, config).path;
+	const bPath = ledger.reserve(b, config).path;
+	const cPath = ledger.reserve(c, config).path;
+	await rm(bPath);
+	await rm(cPath);
+	ledger.starting({ ...c, pid: process.pid });
+	const handoff = JSON.parse(JSON.stringify(ledger.suspend()));
+	assert.deepEqual(ledger.pendingLaunches(), []);
+	await assert.rejects(stat(aPath), { code: "ENOENT" });
+	const restored = new LaunchLedger();
+	t.after(() => restored.close());
+	restored.resume(handoff);
+	assert.throws(() => restored.consume(a.launchId, process.pid));
+	assert.equal(restored.consume(b.launchId, process.pid), "operator");
+	assert.throws(() => restored.consume(c.launchId, 1));
+	assert.equal(restored.consume(c.launchId, process.pid), "operator");
+	assert.throws(() => restored.consume(c.launchId, process.pid));
+});
+test("a reservation expires without a list call and cleanup preserves a replacement at its path", async (t) => {
+	await fixture(t);
+	t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+	const ledger = new LaunchLedger(100);
+	t.after(() => ledger.close());
+	const a = { launchId: randomUUID(), origin: "agent" };
+	const path = ledger.reserve(a, config).path;
+	assert.throws(() => ledger.reserve({ ...a, launchId: randomUUID() }, config), /pending/u);
+	t.mock.timers.tick(101);
+	await assert.rejects(stat(path), { code: "ENOENT" });
+	assert.throws(() => ledger.consume(a.launchId, process.pid));
+	const b = { ...a, launchId: randomUUID() };
+	const otherPath = ledger.reserve(b, config).path;
+	await rm(otherPath);
+	await writeFile(otherPath, "replacement");
+	ledger.cancel(b);
+	assert.equal(await readFile(otherPath, "utf8"), "replacement");
+});
+test("a live show requires the current app marker and an exact route", async (t) => {
+	const f = await fixture(t);
+	const outcome = { ok: true, show: ["reader"], showUnavailable: "" };
+	for (const [live, protocol] of [
+		[1, undefined],
+		[2, undefined],
+		[2, 4],
+		[3, undefined],
+	] as const) {
+		await f.build(live, protocol);
+		let calls = 0;
+		const result = await withLiveShow(outcome, f.app, async () => {
+			calls++;
 			return config;
-		};
-		registry.install(
-			Durable.defineExtension({
-				name: "markdown",
-				tools: [
-					createNativePublishTool(
-						{ durable: Durable, harness, cwd: f.root },
-						{ store: f.store, app: f.app, connection },
-					),
-					createNativeReadTool(Durable, { store: f.store, app: f.app, connection }),
-				],
-			}),
-		);
-		const conversation = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
-		faux.setResponses([
-			fauxAssistantMessage(fauxToolCall("markdown_publish", { title: "Native live", text: "# Native\n" }), {
-				stopReason: "toolUse",
-			}),
-			fauxAssistantMessage(fauxToolCall("markdown_read", { document: selected.document.id }), {
-				stopReason: "toolUse",
-			}),
-			fauxAssistantMessage("Ready."),
-		]);
-		assert.equal(
-			(await (await conversation.submit({ type: "input", content: "Prepare both commands." }, context)).wait(context))
-				.status,
-			"done",
-		);
-		const results = (await conversation.entries({}, 30, undefined, context)).items.filter((entry) =>
-			Durable.ToolResultEntry.is(entry),
-		);
-		assert.equal(results.length, 2);
-		for (const entry of results) {
-			const message = entry.model?.[0];
-			assert.ok(message?.role === "toolResult" && !message.isError);
-			const text = message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
-			const match = /run (\[[^\n]+\]) as the program/u.exec(text);
-			assert.ok(match, text);
-			await checkLaunch(JSON.parse(match[1]) as string[], text);
-		}
-		assert.deepEqual(calls, [String(conversation.id), String(conversation.id)]);
-	} finally {
-		await harness.close(context);
+		});
+		assert.equal(calls, 0);
+		assert.equal(result.show, undefined);
+		assert.equal(result.ok, true);
+		assert.match(result.showUnavailable, /build.mts/u);
 	}
-});
-test("pane and editor openers accept live versions 1 and 2 without changing their launch contracts", async (t) => {
-	const f = await fixture(t);
-	const previous = process.env.PI_MARKDOWN_APP;
-	process.env.PI_MARKDOWN_APP = f.app;
-	t.after(() => {
-		if (previous === undefined) delete process.env.PI_MARKDOWN_APP;
-		else process.env.PI_MARKDOWN_APP = previous;
+	await f.build(2, 3);
+	const closed = await withLiveShow(outcome, f.app, async () => {
+		throw Error("Closed");
 	});
-	const stored = await f.store.create({
+	assert.equal(closed.show, undefined);
+	assert.match(closed.showUnavailable, /exact invoking conversation/u);
+	assert.equal((await withLiveShow(outcome, f.app)).show, undefined);
+});
+test("pane and editor openers reserve operator launches only with the current reader", async (t) => {
+	const f = await fixture(t);
+	const { bridge: host, live } = await bridge(t);
+	const record = await f.store.create({
 		title: "Exact",
 		source: "captured",
 		contentOrigin: { kind: "tool", capturedAt: new Date().toISOString() },
 	});
-	const saved = await selectStored(f.store.root, stored.document.id);
-	for (const live of [1, 2, 3]) {
-		await writeFile(
-			join(f.app, "Contents", "Resources", "build.json"),
-			JSON.stringify({ contract: 1, pane: 1, paneOpenRequest: 1, editorOpen: 1, live }),
-		);
-		let dispatches = 0;
-		const runtime: RevealRuntime = {
-			platform: "darwin",
-			acceptanceMs: 5,
-			run: async (_exe, args, options) => {
-				if (args[1] === "capture") return { stdout: "null" };
-				dispatches++;
-				const payload = JSON.parse(options.input ?? "null");
-				await checkLaunch(payload.argv, JSON.stringify(payload));
-				return {
-					stdout: JSON.stringify({ version: 1, outcome: "created", detail: "Created.", receipt: { opaque: "pane" } }),
-				};
-			},
-		};
-		const result = await materializeAndReveal(async () => saved, new AbortController().signal, {
-			gui: true,
-			runtime,
-			live: config,
-		});
-		if (live === 1 || live === 2) {
-			assert.equal(result.state, "not-confirmed");
-			await openScratchpad(new AbortController().signal, { runtime, live: config });
-			assert.equal(dispatches, 2);
-		} else {
-			assert.equal(result.state, "reveal-failed");
-			await assert.rejects(openScratchpad(new AbortController().signal, { runtime, live: config }), /cannot connect/u);
-			assert.equal(dispatches, 0);
-		}
-	}
-});
-test("show attaches live versions 1 and 2 but refuses unknown capabilities", async (t) => {
-	const f = await fixture(t);
-	for (const live of [1, 2, 3, undefined]) {
-		await writeFile(join(f.app, "Contents", "Resources", "build.json"), JSON.stringify({ contract: 1, pane: 1, live }));
-		let calls = 0;
-		const outcome = await withLiveShow({ show: ["reader", "--pane", "document"] }, f.app, async () => {
-			calls++;
-			return config;
-		});
-		if (live === 1 || live === 2) {
-			assert.ok(outcome.show);
-			await checkLaunch(outcome.show, JSON.stringify(outcome));
-			assert.equal(calls, 1);
-		} else {
-			assert.equal(outcome.show, undefined);
-			assert.equal(calls, 0);
-		}
-	}
-});
-test("a missing live app or closed conversation preserves the successful document outcome", async (t) => {
-	const f = await fixture(t);
-	const outcome: { ok: boolean; show?: string[]; showUnavailable?: string } = {
-		ok: true,
-		show: ["reader", "--pane", "document"],
+	const saved = await selectStored(f.store.root, record.document.id);
+	let dispatches = 0;
+	const runtime: RevealRuntime = {
+		platform: "darwin",
+		acceptanceMs: 5,
+		run: async (_exe, args, options) => {
+			if (args[1] === "capture") return { stdout: "null" };
+			const payload = JSON.parse(options.input ?? "null");
+			const id = await consume(payload.argv, live);
+			assert.equal(host.pendingLaunches().find((p) => p.launchId === id)?.origin, "operator");
+			dispatches++;
+			return {
+				stdout: JSON.stringify({ version: 1, outcome: "created", detail: "Created.", receipt: { opaque: "pane" } }),
+			};
+		},
 	};
-	const missing = await withLiveShow(outcome, join(f.root, "missing.app"), async () => config);
-	assert.equal(missing.ok, true);
-	assert.equal(missing.show, undefined);
-	const closed = await withLiveShow(outcome, f.app, async () => {
-		throw new Error("closed");
-	});
-	assert.equal(closed.ok, true);
-	assert.equal(closed.show, undefined);
-	assert.match(closed.showUnavailable ?? "", /exact invoking conversation/u);
+	const options = { gui: true, runtime, live };
+	assert.equal(
+		(await materializeAndReveal(async () => saved, new AbortController().signal, options)).state,
+		"not-confirmed",
+	);
+	await openScratchpad(new AbortController().signal, options);
+	assert.equal(dispatches, 2);
+	await f.build(2);
+	assert.equal(
+		(await materializeAndReveal(async () => saved, new AbortController().signal, options)).state,
+		"reveal-failed",
+	);
+	await assert.rejects(openScratchpad(new AbortController().signal, options), /cannot connect/u);
+	assert.equal(dispatches, 2);
 });
