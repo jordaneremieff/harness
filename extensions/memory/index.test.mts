@@ -355,6 +355,7 @@ test("review and retirement adapters share receipts, preserve signals, and seria
 	const current = readFileSync(join(root, `${input.slug}.md`), "utf8");
 	assert.match(current, /last_review:/);
 	assert.doesNotMatch(current, /review_flag:|review_policy:|review_after:/);
+	await call(writer, { ...input, slug: "editor-notes", summary: "See `editor-choice`." });
 	const retirement = {
 		slug: input.slug,
 		expectedDigest: confirmed.details.digest as string,
@@ -372,6 +373,12 @@ test("review and retirement adapters share receipts, preserve signals, and seria
 	assert.match(retired.content[0].text, /^Memory updated: editor-choice.md\n/);
 	assert.deepEqual(retired.details.written, ["editor-choice.md"]);
 	assert.equal(retired.details.initialized, false);
+	assert.deepEqual((retired.details.affectedReferences as { notes: string[] }).notes, ["editor-notes"]);
+	assert.match(retired.content[0].text, /Review affected statements in this pass/);
+	assert.deepEqual(JSON.parse(retired.content[0].text.split("\n").at(-1) as string), retired.details);
+	const read = await call(all.get("memory_read") as Registered, { slug: "editor-notes" });
+	assert.deepEqual(read.details.staleReferences, [{ slug: "editor-choice", status: "retired", supersededBy: null }]);
+	assert.deepEqual(JSON.parse(read.content[0].text), read.details);
 	const reactivation = {
 		slug: input.slug,
 		expectedDigest: retired.details.digest as string,

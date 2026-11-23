@@ -93,7 +93,7 @@ type HeaderSkeleton = {
 	block?: string;
 };
 
-function boundedIssue(text: string): string {
+export function boundedIssue(text: string): string {
 	const safe = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 	if (safe.length <= MAX_ISSUE_CHARS) return safe;
 	let end = MAX_ISSUE_CHARS - 1;
@@ -203,6 +203,12 @@ function scanHeader(raw: string, truncated: boolean): HeaderSkeleton {
 			? rawOpen[0].length + rawClose.end
 			: rawOffset(raw, open[0].length + close.end);
 	return { header, bodyStart, metadata: "ok", block: afterOpen.slice(0, close.start) };
+}
+
+/** Locate the body of a complete source without parsing YAML. */
+export function completeBodyStart(text: string): number | undefined {
+	const frame = scanHeader(text, false);
+	return frame.metadata === "malformed" ? undefined : frame.bodyStart;
 }
 
 function buildHeader(skeleton: HeaderSkeleton, parse: () => void): HeaderRecord {

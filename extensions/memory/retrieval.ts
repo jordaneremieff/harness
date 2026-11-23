@@ -20,7 +20,16 @@ import { setImmediate } from "node:timers/promises";
 import { promisify } from "node:util";
 import { findMarkdownHeading, markdownHeadings } from "./headings.ts";
 import { findFrontmatterClose, memorySourceCache, type ParsedMemoryHeader } from "./source-cache.ts";
-import { memoryRoot, redactCredentials, SLUG } from "./store.ts";
+import {
+	addressableSlug,
+	MAX_SLUG_CHARS,
+	SLUG,
+	SLUG_PATTERN,
+	sourceLifecycle,
+	type Lifecycle,
+} from "./note-identity.ts";
+import { scanStaleReferences } from "./references.ts";
+import { memoryRoot, redactCredentials } from "./store.ts";
 import { historyDirectory, revisionIdentity } from "./history.ts";
 import { isDate, sourceFreshness, type Freshness } from "./lifecycle.ts";
 
@@ -39,7 +48,6 @@ const MATCH_EXCERPT_POINTS = 480;
 const MATCH_CONTEXT_POINTS = 120;
 const MAX_RESULT_BYTES = 48 * 1024;
 const MAX_QUERY_CHARS = 200;
-const MAX_SLUG_CHARS = 120;
 const MAX_ROOT_CHARS = 1024;
 const MAX_ERROR_CHARS = 500;
 const MAX_ISSUES = 20;
@@ -49,7 +57,6 @@ const MAX_CUE_CHARS = 240;
 const OFFSET_LIMIT = 1_000_000_000;
 const CURSOR_LIMIT = 1024;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/;
-const SLUG_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const NOTE_OPEN_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK;
 
 type TitleSource = "frontmatter" | "heading" | "filename";
@@ -198,63 +205,6 @@ function normalizeDigest(value: string): string {
 
 function noteFileForSlug(slug: string): string {
 	return slug === "README" ? "README.md" : `${slug}.md`;
-}
-
-// Only names that source reads reproduce exactly are addressable.
-function addressableSlug(name: string): string | undefined {
-	if (!name.endsWith(".md")) return undefined;
-	const slug = name.slice(0, -3);
-	if (slug === "README" || /\.md$/i.test(slug)) return undefined;
-	if (!SLUG_PATTERN.test(slug) || slug.length > MAX_SLUG_CHARS) return undefined;
-	return slug;
-}
-
-type Lifecycle = {
-	status: "active" | "superseded" | "retired" | "unknown";
-	supersededBy: string | null;
-	problem?: string;
-};
-
-function unreplacedLifecycle(header: ParsedMemoryHeader, status: "active" | "retired"): Lifecycle {
-	if (!header.lines.has("superseded_by") || header.unusable.has("superseded_by") || header.supersededBy !== null) {
-		const label = status === "retired" ? "Retired" : "Active";
-		return {
-			status: status === "retired" ? "retired" : "unknown",
-			supersededBy: null,
-			problem: bounded(
-				[header.issue, `${label} status requires an unambiguous superseded_by: null`].filter(Boolean).join("; "),
-				MAX_ISSUE_CHARS,
-			),
-		};
-	}
-	return { status, supersededBy: null, ...(header.issue ? { problem: header.issue } : {}) };
-}
-
-/** Read-only interpretation of the same bounded header used for discovery. */
-function sourceLifecycle(header: ParsedMemoryHeader, slug: string): Lifecycle {
-	const unknown: Lifecycle = { status: "unknown", supersededBy: null };
-	const problem = (message: string) => bounded([header.issue, message].filter(Boolean).join("; "), MAX_ISSUE_CHARS);
-	if (header.metadata !== "ok" || !header.lines.has("status") || header.unusable.has("status"))
-		return { ...unknown, problem: problem("Lifecycle status requires an unambiguous plain status key") };
-	if (header.status !== "active" && header.status !== "superseded" && header.status !== "retired")
-		return { ...unknown, problem: problem("Lifecycle status must be active or superseded or retired") };
-	if (header.status !== "superseded") return unreplacedLifecycle(header, header.status);
-	const usableReplacement = header.lines.has("superseded_by") && !header.unusable.has("superseded_by");
-	const replacement = header.supersededBy;
-	if (
-		!usableReplacement ||
-		typeof replacement !== "string" ||
-		replacement.length > MAX_SLUG_CHARS ||
-		!SLUG.test(replacement) ||
-		replacement === "readme" ||
-		replacement === slug
-	)
-		return {
-			status: "superseded",
-			supersededBy: null,
-			problem: problem("Superseded source requires a different lowercase subject slug in superseded_by"),
-		};
-	return { status: "superseded", supersededBy: replacement, ...(header.issue ? { problem: header.issue } : {}) };
 }
 
 function valueAfterKey(line: string): string {
@@ -1335,6 +1285,33 @@ function readNextOffset(slice: PageSlice): number | null {
 	return slice.hasMore ? slice.nextOffset : null;
 }
 
+function referenceLifecycle(
+	root: string,
+	file: string,
+	slug: string,
+	selectedFile: string,
+	signal?: AbortSignal,
+): Lifecycle | null | undefined {
+	const path = join(root, file);
+	const before = fileEvidence(path);
+	if (file.toLowerCase() === selectedFile.toLowerCase() && before === fileEvidence(join(root, selectedFile)))
+		return null;
+	const window = readIndexWindow(path, signal);
+	if (!window.ok || window.size > SOURCE_READ_BYTES || fileEvidence(path) !== before) return undefined;
+	return sourceLifecycle(memorySourceCache.read(root, file, window), slug);
+}
+
+function noteReferenceFields(root: string, args: NoteRequest, file: string, body: string, signal?: AbortSignal) {
+	if (file.toLowerCase() === "readme.md" || args.revision !== undefined || args.offset !== 0) return {};
+	return scanStaleReferences(
+		root,
+		args.slug,
+		body,
+		(referencedFile, slug) => referenceLifecycle(root, referencedFile, slug, file, signal),
+		signal,
+	);
+}
+
 function runNote(root: string, args: NoteRequest, signal?: AbortSignal): Record<string, unknown> {
 	const { identity, directory, file, source, digest, text } = selectedSource(root, args, signal);
 	const totalCodePoints = codePointCount(text);
@@ -1359,6 +1336,7 @@ function runNote(root: string, args: NoteRequest, signal?: AbortSignal): Record<
 			: {}),
 		lifecycle: contract ? null : sourceLifecycle(header, args.slug),
 		freshness: contract ? null : sourceFreshness(header.parsed, header.header),
+		...noteReferenceFields(root, args, file, text.slice(header.bodyStart), signal),
 		sourceBytes: source.buffer.length,
 		maxSourceBytes: SOURCE_READ_BYTES,
 		digest,

@@ -175,7 +175,16 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 	const corpus = join(root, "corpus");
 	mkdirSync(corpus);
 	writeFileSync(join(corpus, "README.md"), "# Memory corpus\n");
-	writeFileSync(join(corpus, "editor-choice.md"), note("Editor choice"));
+	writeFileSync(
+		join(corpus, "editor-choice.md"),
+		`${note("Editor choice")}\nSee \`past-editor\` and \`durable-note\`.\n`,
+	);
+	writeFileSync(
+		join(corpus, "past-editor.md"),
+		note("Prior choice")
+			.replace('status: "active"', 'status: "superseded"')
+			.replace("superseded_by: null", 'superseded_by: "editor-choice"'),
+	);
 	const previous = process.env.PI_MEMORY_DIR;
 	process.env.PI_MEMORY_DIR = corpus;
 
@@ -306,6 +315,10 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 		assert.equal(readPage.kind, "note");
 		assert.equal(readPage.hasMore, false);
 		assert.equal(readPage.nextOffset, null);
+		assert.deepEqual(readPage.staleReferences, [
+			{ slug: "past-editor", status: "superseded", supersededBy: "editor-choice" },
+		]);
+		assert.match(readPage.staleReferenceGuidance as string, /read its replacement/);
 		assert.deepEqual(nativeDetails(read), readPage);
 		assert.equal(Object.hasOwn(nativeDetails(read), "structuredContent"), false);
 
@@ -321,6 +334,9 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 			assert.ok(messageText(message).endsWith(JSON.stringify(details)));
 		}
 		assert.match(messageText(write), /^Memory updated: durable-note\.md\n/);
+		const retireMessage = resultFor("memory_retire");
+		assert.deepEqual((nativeDetails(retireMessage).affectedReferences as { notes: string[] }).notes, ["editor-choice"]);
+		assert.match(messageText(retireMessage), /Review affected statements in this pass/);
 
 		const retired = readFileSync(notePath, "utf8");
 		assert.match(retired, /Edited detail\./);

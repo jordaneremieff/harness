@@ -20,6 +20,8 @@ import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { anchorMismatch } from "./anchor.ts";
 import { findMarkdownHeading } from "./headings.ts";
 import { HISTORY_DIRECTORY, historyDirectory, newRevision, revisionIdentity } from "./history.ts";
+import { SLUG } from "./note-identity.ts";
+import { type AffectedReferences, scanAffectedReferences } from "./references.ts";
 import { memorySourceCache } from "./source-cache.ts";
 import {
 	independentField,
@@ -31,7 +33,7 @@ import {
 	type ReviewPolicy,
 } from "./lifecycle.ts";
 
-export const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export { SLUG } from "./note-identity.ts";
 export const DIGEST = /^[a-f0-9]{64}$/;
 const MAX_BYTES = 64 * 1024;
 const LOCK = ".memory-write.lock";
@@ -102,6 +104,7 @@ export interface WriteReceipt {
 	captured: Array<{ slug: string; revision: string; capturedAt: string; digest: string; bytes: number }>;
 	historyOmitted: Array<{ file: string; reason: "credential-policy" }>;
 	initialized: boolean;
+	affectedReferences?: AffectedReferences;
 	error?: string;
 }
 
@@ -526,6 +529,7 @@ interface Publication {
 	expected?: string;
 	expectedArgument?: DigestArgument;
 	prior?: string;
+	staleSlug?: string;
 }
 function targetPlans(root: string, input: MemoryWrite, today: string, signal?: AbortSignal): Publication[] {
 	return (input.supersedes ?? []).map((target, index) => {
@@ -541,6 +545,7 @@ function targetPlans(root: string, input: MemoryWrite, today: string, signal?: A
 			expected: target.digest,
 			expectedArgument,
 			prior: source.text,
+			...(source.meta.status === "superseded" ? {} : { staleSlug: target.slug }),
 		};
 	});
 }
@@ -744,10 +749,19 @@ function planMetadata(
 	if (!exists(path)) throw new Error("Update target does not exist");
 	const source = existing(path, input.expectedDigest);
 	const today = new Date().toISOString().slice(0, 10);
-	const header = changedHeader(source, { updated: today, ...fields(source, today) });
+	const changes = fields(source, today);
+	const header = changedHeader(source, { updated: today, ...changes });
 	const content = header + source.text.slice(source.end);
 	if (Buffer.byteLength(content) > MAX_BYTES) throw new Error("Note exceeds the 64 KiB source limit");
-	return [{ file, content, expected: input.expectedDigest, prior: source.text }];
+	return [
+		{
+			file,
+			content,
+			expected: input.expectedDigest,
+			prior: source.text,
+			...(changes.status === "retired" ? { staleSlug: input.slug } : {}),
+		},
+	];
 }
 
 function reviewFields(source: Existing, input: MemoryReview, today: string): Record<string, unknown> {
@@ -985,6 +999,7 @@ function mutate(
 		initialized: false,
 	};
 	const staged: string[] = [];
+	const publishedStale: string[] = [];
 	try {
 		const plans = plan(root);
 		receipt.notWritten = plans.map((plan) => plan.file);
@@ -1003,6 +1018,7 @@ function mutate(
 			if (root !== rootValue) memorySourceCache.invalidate(rootValue, plan.file);
 			receipt.written.push(plan.file);
 			receipt.notWritten.shift();
+			if (plan.staleSlug !== undefined) publishedStale.push(plan.staleSlug);
 			if (plan.file === "README.md") receipt.initialized = true;
 			if (plan.file === receipt.file) receipt.digest = sourceDigest(plan.content);
 		}
@@ -1012,6 +1028,9 @@ function mutate(
 	} finally {
 		cleanup(staged, lease, receipt);
 	}
+	// The scan is advisory. Staged hardlinks no longer mask notes, and only published targets are included.
+	if (publishedStale.length > 0)
+		receipt.affectedReferences = scanAffectedReferences(root, publishedStale, readSource, signal);
 	if (!receipt.ok) throw new MemoryWriteError(receipt);
 	return receipt;
 }
