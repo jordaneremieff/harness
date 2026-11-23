@@ -1,7 +1,16 @@
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { ExplorerUpdater } from "./app-update.ts";
-import { commandHelp, commandInput, completions, openExplorer, ordinaryLifecycle } from "./command.ts";
+import {
+	commandHelp,
+	commandInput,
+	completions,
+	ExplorerRefusal,
+	noticeText,
+	openExplorer,
+	ordinaryLifecycle,
+	showCommandReport,
+} from "./command.ts";
 import { toolDisplay } from "./display.ts";
 import { explorerContribution } from "./durable.ts";
 import { ordinaryLive } from "./live-host.ts";
@@ -13,6 +22,7 @@ import {
 	NotesParameters,
 	type Outcome,
 	outcomeContent,
+	outcomeDetails,
 	runNotes,
 	runShow,
 	type ShowInput,
@@ -22,12 +32,11 @@ import {
 	ToolOutcomeSchema,
 } from "./tools.ts";
 
-const singleLine = (value: string) => value.replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 1024);
 function result(value: Outcome) {
 	return {
 		content: outcomeContent(value),
 		structuredContent: JSON.parse(JSON.stringify(value)),
-		details: { summary: value.summary },
+		details: outcomeDetails(value),
 		isError: !value.ok,
 	};
 }
@@ -38,6 +47,24 @@ export default function explorer(pi: ExtensionAPI): void {
 	const live = ordinaryLive(pi, lifecycle);
 	const updater = new ExplorerUpdater();
 	const updateUi = new AbortController();
+	let reportOpen = false;
+	const report = async (ctx: ExtensionContext, title: string, text: string, signal: AbortSignal) => {
+		if (reportOpen) return;
+		reportOpen = true;
+		try {
+			await showCommandReport(ctx.ui, title, text, signal);
+		} finally {
+			reportOpen = false;
+		}
+	};
+	const reportProblem = async (ctx: ExtensionContext, error: unknown, signal: AbortSignal) => {
+		if (signal.aborted) return;
+		const message = error instanceof Error ? error.message : "Explorer could not open the location.";
+		const refusal = error instanceof ExplorerRefusal;
+		if (ctx.mode === "tui" && ctx.hasUI && message.trim().includes("\n"))
+			await report(ctx, refusal ? "Explorer refusal" : "Explorer error", message, signal);
+		else ctx.ui.notify(noticeText(message), refusal ? "warning" : "error");
+	};
 	pi.on("session_shutdown", (_event, ctx) => {
 		updateUi.abort();
 		if (ctx.mode === "tui") ctx.ui.setStatus("explorer", undefined);
@@ -50,8 +77,8 @@ export default function explorer(pi: ExtensionAPI): void {
 		void updater.check(
 			app,
 			{
-				notify: (text, error) => {
-					if (!signal.aborted) ctx.ui.notify(singleLine(text), error ? "error" : "info");
+				notify: (text, level) => {
+					if (!signal.aborted) ctx.ui.notify(noticeText(text), level);
 				},
 				status: (text) => {
 					if (!signal.aborted) ctx.ui.setStatus("explorer", text);
@@ -68,28 +95,30 @@ export default function explorer(pi: ExtensionAPI): void {
 		getArgumentCompletions: completions,
 		async handler(args, ctx) {
 			const signal = lifecycle();
+			const interactive = ctx.mode === "tui" && ctx.hasUI;
 			try {
 				const input = commandInput(args);
-				if (input.mode === "help") return ctx.ui.notify(commandHelp(input.value ?? ""), "info");
-				if (ctx.mode !== "tui") {
-					ctx.ui.notify("Explorer opens no pane outside interactive Pi.", "info");
+				if (input.mode === "help") {
+					const help = commandHelp(input.value ?? "", !interactive);
+					if (interactive) await report(ctx, "Explorer help", help, signal);
+					else ctx.ui.notify(help, "info");
 					return;
 				}
+				if (!interactive) throw new ExplorerRefusal("Explorer opens no pane outside interactive Pi.");
 				if (input.mode === "update") {
 					update(ctx, true);
 					return;
 				}
 				await openExplorer(input, { app, dir, agentDir, cwd: ctx.cwd, signal, connect: () => live.connection(ctx) });
+				if (!signal.aborted)
+					ctx.ui.notify("Rex created an Explorer pane; Explorer did not confirm the location.", "info");
 			} catch (error) {
-				if (signal.aborted) return;
-				ctx.ui.notify(
-					singleLine(error instanceof Error ? error.message : "Explorer could not open the location."),
-					"error",
-				);
+				await reportProblem(ctx, error, signal);
 			}
 		},
 	});
-	const [showCard, notesCard] = toolDisplay().tools;
+	const display = toolDisplay();
+	const [showCard, notesCard] = display.tools;
 	pi.registerTool({
 		...showCard,
 		name: "explorer_show",
@@ -123,7 +152,7 @@ export default function explorer(pi: ExtensionAPI): void {
 			return result(await runNotes(input as NotesInput, { cwd: ctx.cwd, dir, signal }));
 		},
 	});
-	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
+	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", display);
 	const requestDisplay = pi.events.on("harness:tool-display:request", (value) => {
 		if (isRecord(value) && value.version === 1) publishDisplay();
 	});

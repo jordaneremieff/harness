@@ -3,7 +3,10 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { commandInput, commandScope, completions } from "./command.ts";
+import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
+import { commandHelp, commandInput, commandScope, completions, ExplorerRefusal, showCommandReport } from "./command.ts";
+import { paletteStep } from "./palette-command.ts";
 import { BUILD_COMMAND, paneLaunch, targetArgs } from "./pane-command.ts";
 
 test("command readers distinguish paths and review scopes", () => {
@@ -16,6 +19,46 @@ test("command readers distinguish paths and review scopes", () => {
 		completions("changes since")?.map((choice) => choice.value),
 		["changes since-review"],
 	);
+});
+
+test("Explorer help keeps its headless form, and the local report scrolls through all forms", async () => {
+	assert.equal(commandHelp("notes", true), "/explorer notes  Open the repository's Notes list.");
+	assert.equal(commandHelp("notes"), "/explorer notes\nOpen the repository's Notes list.");
+	assert.throws(() => commandHelp("missing"), ExplorerRefusal);
+	const controller = new AbortController();
+	const tui = { terminal: { rows: 8 }, requestRender() {} } as TUI;
+	const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
+	const ui: Pick<ExtensionContext["ui"], "custom"> = {
+		async custom(factory) {
+			return await new Promise((resolve, reject) => {
+				void (async () => {
+					const component = await factory(tui, theme, {} as KeybindingsManager, resolve);
+					assert.match(component.render(70).join("\n"), /Explorer help\n\/explorer \[path\]/u);
+					assert.doesNotMatch(component.render(70).join("\n"), /Show command usage/u);
+					for (let i = 0; i < 6; i++) component.handleInput?.("\x1b[6~");
+					assert.match(component.render(70).join("\n"), /\/explorer help \[topic\]\nShow command usage\./u);
+					controller.abort();
+					component.dispose?.();
+				})().catch(reject);
+			});
+		},
+	};
+	await showCommandReport(ui, "Explorer help", commandHelp(""), controller.signal);
+});
+
+test("the Rex picker keeps complete captions and exact selection identities", { timeout: 5000 }, async (t) => {
+	const dir = await mkdtemp(join(tmpdir(), "explorer-palette-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const path = join(dir, "directory".repeat(35), "full-path");
+	const label = `${"Label ".repeat(25)}end`;
+	await writeFile(join(dir, "recents.json"), JSON.stringify({ version: 1, roots: [{ path, label }] }));
+	const request = JSON.stringify({ version: 1, command: "explorer.folder", context: {}, answers: [] });
+	const result = await paletteStep([dir, join(dir, "missing.app"), dir, request]);
+	assert.ok(result.ask);
+	const [row] = result.ask.prompt.items;
+	assert.equal(row.title, label);
+	assert.equal(row.subtitle, path);
+	assert.match(row.id, /^[a-f0-9]{32}$/u);
 });
 
 test("manifests gate fixed executable argv and same-pane navigation", { timeout: 5000 }, async () => {

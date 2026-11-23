@@ -1,7 +1,15 @@
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+	Key,
+	type KeyId,
+	matchesKey,
+	stripTerminalSequences,
+	truncateToWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { liveArguments } from "./live-launch.ts";
 import { isRecord, type LiveConfig } from "./live-protocol.ts";
 import { NotesStore } from "./notes-store.ts";
@@ -24,10 +32,76 @@ const help = {
 	update: { usage: "/explorer update", description: "Build and install the native app in the background." },
 	help: { usage: "/explorer help [topic]", description: "Show command usage." },
 } as const;
-export function commandHelp(topic: string): string {
-	const valid = Object.hasOwn(help, topic);
-	const rows = valid ? [help[topic as keyof typeof help]] : Object.values(help);
-	return rows.map(({ usage, description }) => `${usage}  ${description}`).join("\n");
+export class ExplorerRefusal extends Error {}
+
+export function commandHelp(topic: string, compact = false): string {
+	if (topic && !Object.hasOwn(help, topic))
+		throw new ExplorerRefusal(`Use /explorer help ${Object.keys(help).join(" | ")}.`);
+	const rows = topic ? [help[topic as keyof typeof help]] : Object.values(help);
+	return rows
+		.map(({ usage, description }) => `${usage}${compact ? "  " : "\n"}${description}`)
+		.join(compact ? "\n" : "\n\n");
+}
+
+function safeReport(text: string) {
+	return stripTerminalSequences(text).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
+		char === "\n" || char === "\t" ? char : " ",
+	);
+}
+
+export function noticeText(text: string) {
+	return safeReport(text).replace(/\s+/gu, " ").trim();
+}
+
+export async function showCommandReport(
+	ui: Pick<ExtensionContext["ui"], "custom">,
+	title: string,
+	text: string,
+	signal: AbortSignal,
+) {
+	if (signal.aborted) return;
+	const body = safeReport(text).replaceAll("\t", "   ");
+	await ui.custom<void>((tui, theme, _keys, done) => {
+		let offset = 0;
+		let total = 0;
+		let page = 1;
+		const close = () => done();
+		signal.addEventListener("abort", close, { once: true });
+		return {
+			capturesViewportInput: true,
+			invalidate() {},
+			dispose: () => signal.removeEventListener("abort", close),
+			render(width: number) {
+				const rows = wrapTextWithAnsi(body, Math.max(1, width));
+				page = Math.max(1, Math.min(12, tui.terminal.rows - 4));
+				total = rows.length;
+				offset = Math.min(offset, Math.max(0, total - page));
+				const keys =
+					total > page
+						? `${offset + 1}–${Math.min(total, offset + page)} of ${total} · pgup/pgdn read · esc close`
+						: "esc close";
+				const clip = (value: string) => stripTerminalSequences(truncateToWidth(value, width, "…"));
+				return [
+					theme.fg("accent", theme.bold(clip(title))),
+					...rows.slice(offset, offset + page),
+					theme.fg("muted", clip(keys)),
+				];
+			},
+			handleInput(data: string) {
+				if (matchesKey(data, Key.escape)) return close();
+				const moves: [KeyId, number][] = [
+					[Key.pageUp, -page],
+					[Key.pageDown, page],
+					[Key.up, -1],
+					[Key.down, 1],
+				];
+				const step = moves.find(([key]) => matchesKey(data, key))?.[1];
+				if (!step) return;
+				offset = Math.max(0, Math.min(Math.max(0, total - page), offset + step));
+				tui.requestRender();
+			},
+		};
+	});
 }
 export function completions(prefix: string) {
 	const spaced = prefix.trimStart();
@@ -140,15 +214,16 @@ export async function openExplorer(
 	},
 ) {
 	const { app, dir, agentDir, cwd, signal } = options;
-	if (process.platform !== "darwin") throw new Error("The native Explorer pane requires macOS.");
+	if (process.platform !== "darwin") throw new ExplorerRefusal("The native Explorer pane requires macOS.");
 	const origin = await adapter("capture", signal).catch(() => null);
 	signal.throwIfAborted();
 	if (!isRecord(origin) || origin.version !== 1 || origin.terminal !== "Rex" || !isRecord(origin.exact))
-		throw new Error("No exact Rex pane is available for this conversation.");
+		throw new ExplorerRefusal("Explorer found no exact Rex pane for this conversation.");
 	const target = await commandTarget(input, cwd, dir);
 	const launch = await paneLaunch(app, dir, target, agentDir);
-	if ("showUnavailable" in launch) throw new Error(launch.showUnavailable);
-	if (!launch.live) throw new Error("The installed app does not support live panes. Run /explorer update.");
+	if ("showUnavailable" in launch) throw new ExplorerRefusal(launch.showUnavailable);
+	if (!launch.live)
+		throw new ExplorerRefusal("The installed Explorer app does not support live panes; use /explorer update.");
 	signal.throwIfAborted();
 	const capability = await liveArguments(launch.show, await options.connect(), agentDir);
 	const receipt = await adapter("split", signal, {
@@ -163,9 +238,11 @@ export async function openExplorer(
 		receipt.version !== 1 ||
 		!["created", "stale", "unavailable", "uncertain"].includes(String(receipt.outcome))
 	) {
-		throw new Error("Explorer pane creation is unconfirmed. Check the Rex tab before another attempt.");
+		throw new ExplorerRefusal("Explorer pane creation is unconfirmed; check the Rex tab before another attempt.");
 	}
 	if (receipt.outcome === "stale" || receipt.outcome === "unavailable") await capability.remove();
 	if (receipt.outcome !== "created" || !receipt.receipt)
-		throw new Error(typeof receipt.detail === "string" ? receipt.detail : "Explorer pane creation is unconfirmed.");
+		throw new ExplorerRefusal(
+			typeof receipt.detail === "string" ? receipt.detail : "Explorer pane creation is unconfirmed.",
+		);
 }

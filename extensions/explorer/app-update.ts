@@ -30,7 +30,7 @@ export async function buildCurrency(installed: PaneBuild | undefined): Promise<"
 	return (await git(["merge-base", "--is-ancestor", head.text, installed.commit])).ok ? "current" : "unknown";
 }
 interface Observer {
-	notify(text: string, error?: boolean): void;
+	notify(text: string, level: "info" | "warning" | "error"): void;
 	status(text?: string): void;
 }
 async function install(app: string, observer: Observer) {
@@ -49,18 +49,28 @@ async function install(app: string, observer: Observer) {
 			env: { ...process.env, PI_EXPLORER_APP: app },
 			stdio: ["ignore", log.fd, log.fd],
 		});
-		const complete = new Promise<number | null>((resolve) => {
-			child.once("error", () => resolve(null));
-			child.once("exit", resolve);
+		const complete = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+			child.once("error", reject);
+			child.once("exit", (code, signal) => resolve({ code, signal }));
 		});
 		child.unref();
-		observer.status("Explorer update");
-		observer.notify(`Explorer app update started. Log: ${logPath}`);
-		const code = await complete;
+		observer.status("Explorer: updating");
+		observer.notify(`Explorer app update started; see ${logPath} for the log.`, "info");
+		const { code, signal } = await complete;
 		if (code === 0 && (await readBuild(app)))
-			observer.notify("Explorer app installed. Open a new pane to use the new build.");
-		else if (code === 75) observer.notify("Another Explorer app install is in progress.");
-		else observer.notify(`Explorer app update failed. See ${logPath}. Use /explorer update to try again.`, true);
+			observer.notify("Explorer app updated; open a new pane to use this build.", "info");
+		else if (code === 75) observer.notify("Another Explorer app update is already in progress.", "info");
+		else {
+			const reason = signal
+				? `the build process ended on ${signal}`
+				: code === 0
+					? "the installed build did not pass validation"
+					: `the build process exited with code ${code}`;
+			observer.notify(
+				`Explorer app update failed because ${reason}; see ${logPath} and use /explorer update to retry.`,
+				"error",
+			);
+		}
 	} finally {
 		await log.close();
 	}
@@ -69,11 +79,11 @@ export class ExplorerUpdater {
 	private launching = false;
 	async check(app: string, observer: Observer, explicit = false) {
 		if (process.platform !== "darwin") {
-			if (explicit) observer.notify("The Explorer app requires macOS.", true);
+			if (explicit) observer.notify("The Explorer app requires macOS.", "warning");
 			return;
 		}
 		if (this.launching) {
-			if (explicit) observer.notify("The Explorer app update is already in progress.");
+			if (explicit) observer.notify("The Explorer app update is already in progress.", "info");
 			return;
 		}
 		this.launching = true;
@@ -82,16 +92,15 @@ export class ExplorerUpdater {
 			if (currency === "current") return;
 			if (currency === "unknown") {
 				observer.notify(
-					"The installed Explorer build could not be ordered against this checkout. Use /explorer update to replace it.",
+					"Explorer kept the installed build because it could not establish which build is newer; use /explorer update to replace it.",
+					"warning",
 				);
 				return;
 			}
 			await install(app, observer);
-		} catch {
-			observer.notify(
-				"Explorer could not start its app update. Check the app and log paths, then use /explorer update.",
-				true,
-			);
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : "unknown cause";
+			observer.notify(`Explorer could not start its app update: ${detail}`, "error");
 		} finally {
 			this.launching = false;
 			observer.status();

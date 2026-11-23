@@ -30,11 +30,18 @@ test("Durable registers both Explorer tools and does not replay writes or naviga
 	const close: (() => void | Promise<void>)[] = [];
 	try {
 		await writeFile(join(root, "hello.txt"), "one\ntwo\n");
-		const extension = explorerContribution(
+		const contribution = explorerContribution(
 			fileURLToPath(new URL("./index.ts", import.meta.url)),
 			createEventBus(),
 			() => {},
-		).create({
+		);
+		assert.deepEqual(contribution.display, { version: 1, entry: "./display.ts", export: "toolDisplay" });
+		const module = await import(new URL(contribution.display.entry, import.meta.url).href);
+		assert.deepEqual(
+			module[contribution.display.export]().tools.map(({ name }: { name: string }) => name),
+			["explorer_show", "explorer_notes"],
+		);
+		const extension = contribution.create({
 			durable: Durable,
 			agentDir: root,
 			cwd: root,

@@ -69,7 +69,12 @@ export const ToolOutcomeSchema = obj(
 	},
 	{ open: true },
 );
-export type Outcome = Static<typeof ToolOutcomeSchema> & Record<string, unknown>;
+const diagnosticLength = Symbol("diagnostic length");
+export type Outcome = Static<typeof ToolOutcomeSchema> & Record<string, unknown> & { [diagnosticLength]?: number };
+export function outcomeDetails(value: Outcome) {
+	const retained = value[diagnosticLength];
+	return { summary: value.summary, ...(retained === undefined ? {} : { diagnosticLength: retained }) };
+}
 export const NOTES_DESCRIPTION =
 	"List and read a repository's Explorer notes, add an agent note or reply, resolve or reopen notes, or create an ordered walkthrough. root selects the repository; path is relative to its root. note requires path, start, end and text; tour requires title and stops. Pass the returned tour ID to explorer_show to show the walkthrough, or name the ID in your report. This tool opens no pane.";
 type ShowAudience = AgentPane | "native";
@@ -109,15 +114,14 @@ function outcome(op: string, summary: string, data: Record<string, unknown> = {}
 	return { ...data, ok: true, op, summary };
 }
 function failure(op: string, error: unknown): Outcome {
-	const summary = (error instanceof Error ? error.message : "Explorer could not complete the operation.").slice(
-		0,
-		1024,
-	);
+	const diagnostic = error instanceof Error ? error.message : "Explorer could not complete the operation.";
+	const summary = diagnostic.slice(0, 1024);
 	return {
 		ok: false,
 		op,
 		summary,
 		error: { code: error instanceof NotesError ? error.code : "invalid", message: summary },
+		...(diagnostic.length > summary.length ? { [diagnosticLength]: diagnostic.length } : {}),
 	};
 }
 function required<T>(value: T | undefined, name: string): T {

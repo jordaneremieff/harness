@@ -5,6 +5,7 @@ import {
 	NOTES_DESCRIPTION,
 	NotesParameters,
 	outcomeContent,
+	outcomeDetails,
 	runNotes,
 	runShow,
 	ShowParameters,
@@ -54,7 +55,7 @@ export function explorerContribution(source: string, bus: SettingsBus, stopFacto
 					return {
 						output: outcomeContent(value),
 						structuredOutput: JSON.parse(JSON.stringify(value)),
-						details: { summary: value.summary },
+						details: outcomeDetails(value),
 						isError: !value.ok,
 					};
 				},
@@ -71,7 +72,7 @@ export function explorerContribution(source: string, bus: SettingsBus, stopFacto
 					return {
 						output: outcomeContent(value),
 						structuredOutput: JSON.parse(JSON.stringify(value)),
-						details: { summary: value.summary },
+						details: outcomeDetails(value),
 						isError: !value.ok,
 					};
 				},

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { isRecord } from "./live-protocol.ts";
 import { recentRoots } from "./notes-store.ts";
 import { paneLaunch } from "./pane-command.ts";
@@ -19,10 +20,11 @@ export async function paletteStep(args: string[]) {
 			!Array.isArray(request.answers)
 		)
 			return { error: "The Explorer palette request is invalid." };
-		const roots = (await recentRoots(dir))
-			.slice(0, 100)
-			.map((root) => ({ ...root, id: createHash("sha256").update(root.path).digest("hex").slice(0, 32) }));
-		const clean = (value: string) => value.replace(/[\p{Cc}\p{Cf}]/gu, " ");
+		const roots = (await recentRoots(dir)).map((root) => ({
+			...root,
+			id: createHash("sha256").update(root.path).digest("hex").slice(0, 32),
+		}));
+		const clean = (value: string) => stripTerminalSequences(value).replace(/[\p{Cc}\p{Cf}]/gu, " ");
 		if (request.answers.length === 0) {
 			if (!roots.length) return { error: "There are no recent folders. Open a folder with /explorer first." };
 			return {
@@ -32,8 +34,8 @@ export async function paletteStep(args: string[]) {
 						title: "Explore a folder",
 						items: roots.map(({ id, label, path }) => ({
 							id,
-							title: Array.from(clean(label)).slice(0, 120).join(""),
-							subtitle: Array.from(clean(path)).slice(0, 220).join(""),
+							title: clean(label),
+							subtitle: clean(path),
 						})),
 					},
 				},
@@ -46,10 +48,11 @@ export async function paletteStep(args: string[]) {
 		const { repo } = await resolveTarget(selected.path, selected.path);
 		const pane = await paneLaunch(app, dir, { root: repo.root }, agentDir);
 		if ("showUnavailable" in pane) return { error: pane.showUnavailable };
+		const label = Array.from(clean(repo.label));
 		return {
 			show: {
 				argv: pane.show,
-				label: Array.from(clean(repo.label)).slice(0, 32).join("") || "Explorer",
+				label: (label.length > 32 ? `${label.slice(0, 31).join("")}…` : label.join("")) || "Explorer",
 				cwd: repo.root,
 				placement: "right",
 			},
