@@ -1,6 +1,7 @@
 (() => {
 	const api = (globalThis as unknown as { reader: ReaderCoreAPI }).reader;
 	const { element: el, button, get, icon } = api.uiDOM;
+	const TEXT_INPUTS = new Set(["text", "search", "url", "email", "tel", "password"]);
 	api.createUI = (host, controller, editor) => {
 		const app = get("#app"),
 			page = get("#page"),
@@ -21,12 +22,15 @@
 		const glyph = el("span", { class: "kind", id: "kind", "data-kind": "published" }, icon("doc")),
 			name = el("span", { class: "name", id: "doc-title" }, "Markdown Reader");
 		title.replaceChildren(glyph, name, icon("chev"));
-		const lock = button("Edit", "pen", () => command("toggleLock"), { iconOnly: true, key: "⌘E" });
+		const lock = button("Edit", "pen", () => command("toggleLock"), { iconOnly: true, key: "cmd+E" });
 		lock.classList.add("edit-lock");
 		lock.id = "b-edit";
 		lock.dataset.role = "lock";
 		lock.setAttribute("aria-pressed", "false");
-		const outline = button("Contents", "outline", () => command("toggleOutline"), { iconOnly: true, key: "⌃⌘S" });
+		const outline = button("Contents", "outline", () => command("toggleOutline"), {
+			iconOnly: true,
+			key: "cmd+control+S",
+		});
 		outline.id = "b-outline";
 		outline.setAttribute("aria-controls", "outline");
 		outline.setAttribute("aria-pressed", "true");
@@ -35,12 +39,12 @@
 			{ class: "status", "data-role": "status", "data-state": "saved", "aria-live": "polite" },
 			"Saved",
 		);
-		const undo = button("Undo", "undo", () => command("undo"), { iconOnly: true, key: "⌘Z" }),
-			redo = button("Redo", "redo", () => command("redo"), { iconOnly: true, key: "⇧⌘Z" });
+		const undo = button("Undo", "undo", () => command("undo", { document: true }), { iconOnly: true, key: "cmd+Z" }),
+			redo = button("Redo", "redo", () => command("redo", { document: true }), { iconOnly: true, key: "cmd+shift+Z" });
 		undo.id = "b-undo";
 		redo.id = "b-redo";
 		const history = el("span", { class: "history-controls" }, undo, redo);
-		const find = button("Find", "search", () => command("find"), { iconOnly: true, key: "⌘F" });
+		const find = button("Find", "search", () => command("find"), { iconOnly: true, key: "cmd+F" });
 		find.id = "b-find";
 		const appearance = button("Text and appearance", "text", () => get("#viewpanel").togglePopover(), {
 			iconOnly: true,
@@ -49,7 +53,7 @@
 		appearance.id = "b-view";
 		const askButton = button("Ask the agent", "ask", () => get("#activity").togglePopover(), {
 			iconOnly: true,
-			key: "⌥⌘M",
+			key: "cmd+option+M",
 			className: "btn-i agent",
 		});
 		askButton.id = "b-ask";
@@ -306,7 +310,7 @@
 		function selectionButtons(selected: ReaderSelection) {
 			const askSelected = button("Ask", "spark", () => ask.open(selected), { className: "ask" });
 			askSelected.dataset.tip = "Ask about the selection";
-			askSelected.dataset.key = "⌘D";
+			askSelected.dataset.key = "cmd+D";
 			strip.replaceChildren(
 				askSelected,
 				el("span", { class: "sep" }),
@@ -318,10 +322,10 @@
 			}
 			if (!controller.blocks.some((b) => b.start <= selected.start && b.end >= selected.end)) return;
 			for (const [format, key] of [
-				["bold", "⌘B"],
-				["italic", "⌘I"],
-				["code", "⇧⌘K"],
-				["link", "⌘K"],
+				["bold", "cmd+B"],
+				["italic", "cmd+I"],
+				["code", "cmd+shift+K"],
+				["link", "cmd+K"],
 			])
 				strip.append(
 					button(format[0].toUpperCase() + format.slice(1), format, () => editSelection(format), {
@@ -382,11 +386,13 @@
 				findNext: () => navigation.findNext(1),
 				findPrevious: () => navigation.findNext(-1),
 				undo: () => {
+					if (!args.document && editField("undo")) return;
 					const result = controller.undo();
 					if (result?.status === "blocked")
 						notice("A later edit overlaps this change. The document stays as it is.", "warn");
 				},
 				redo: () => {
+					if (!args.document && editField("redo")) return;
 					controller.redo();
 				},
 				format: () => {
@@ -427,6 +433,8 @@
 					void hostCommand("showLatest");
 				},
 				selectAll: () => {
+					const field = textField();
+					if (field) return field.select();
 					const range = document.createRange();
 					range.selectNodeContents(doc);
 					const selected = getSelection();
@@ -438,6 +446,18 @@
 				},
 			};
 			local[name]?.();
+		}
+		// A focused text field, such as an Ask card's message, keeps the editing keys of a native field:
+		// Undo, Redo and Select All act on its text and leave the document as it is.
+		function textField() {
+			const active = document.activeElement;
+			if (active instanceof HTMLTextAreaElement) return active;
+			return active instanceof HTMLInputElement && TEXT_INPUTS.has(active.type) ? active : null;
+		}
+		function editField(name: "undo" | "redo") {
+			if (!textField()) return false;
+			document.execCommand(name);
+			return true;
 		}
 		// Escape closes the topmost layer: menus over the page, then the open block, then views.
 		function closeTopLayer() {

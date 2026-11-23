@@ -29,8 +29,8 @@
 			"div",
 			{ class: "find", role: "search" },
 			el("label", { class: "field" }, api.uiDOM.icon("search"), field, status),
-			button("Previous match", "up", () => nav.findNext(-1), { iconOnly: true, key: "⇧⌘G" }),
-			button("Next match", "down", () => nav.findNext(1), { iconOnly: true, key: "⌘G" }),
+			button("Previous match", "up", () => nav.findNext(-1), { iconOnly: true, key: "cmd+shift+G" }),
+			button("Next match", "down", () => nav.findNext(1), { iconOnly: true, key: "cmd+G" }),
 			button(
 				"Replace",
 				"replace",
@@ -38,7 +38,7 @@
 					app.toggleAttribute("data-replace");
 					controller.state();
 				},
-				{ iconOnly: true, key: "⌥⌘F" },
+				{ iconOnly: true, key: "cmd+option+F" },
 			),
 			el(
 				"label",

@@ -45,7 +45,8 @@
 				signature,
 			);
 		if (command) return command;
-		if (context.input) return null;
+		// A text field keeps its own Undo, Redo and Select All; the commands act on the focused field.
+		if (context.input) return commandFor({ z: "undo", "shift:z": "redo", a: "selectAll" }, signature);
 		return editingKey(signature, context.writing);
 	}
 	function promptTransition(old: ReaderAskState, next: ReaderAskState): ReaderAskState {
@@ -176,20 +177,20 @@
 	function inputGroups(t: ReaderMenuTarget) {
 		return [
 			[
-				menuItem("cut", "Cut", "⌘X", t.inputSelection && t.inputEditable),
-				menuItem("copy", "Copy", "⌘C", t.inputSelection),
-				menuItem("paste", "Paste", "⌘V", t.inputEditable),
+				menuItem("cut", "Cut", "cmd+X", t.inputSelection && t.inputEditable),
+				menuItem("copy", "Copy", "cmd+C", t.inputSelection),
+				menuItem("paste", "Paste", "cmd+V", t.inputEditable),
 			],
-			[menuItem("selectAll", "Select All", "⌘A")],
+			[menuItem("selectAll", "Select All", "cmd+A")],
 		];
 	}
 	function clipboardGroup(t: ReaderMenuTarget) {
-		const passage = t.selection ? [menuItem("copyPassage", "Copy with Source", "⌥⌘C")] : [];
-		if (t.lock === "reading") return t.selection ? [menuItem("copy", "Copy", "⌘C"), ...passage] : [];
+		const passage = t.selection ? [menuItem("copyPassage", "Copy with Source", "cmd+option+C")] : [];
+		if (t.lock === "reading") return t.selection ? [menuItem("copy", "Copy", "cmd+C"), ...passage] : [];
 		return [
-			menuItem("cut", "Cut", "⌘X", t.selection),
-			menuItem("copy", "Copy", "⌘C", t.selection),
-			menuItem("paste", "Paste", "⌘V", t.editor || t.selection),
+			menuItem("cut", "Cut", "cmd+X", t.selection),
+			menuItem("copy", "Copy", "cmd+C", t.selection),
+			menuItem("paste", "Paste", "cmd+V", t.editor || t.selection),
 			...passage,
 		];
 	}
@@ -197,10 +198,10 @@
 		if (t.lock !== "writing" || !(t.editor || t.selectionInOneBlock)) return [];
 		return [
 			[
-				menuItem("bold", "Bold", "⌘B"),
-				menuItem("italic", "Italic", "⌘I"),
-				menuItem("code", "Code", "⇧⌘K"),
-				menuItem("link", "Link", "⌘K"),
+				menuItem("bold", "Bold", "cmd+B"),
+				menuItem("italic", "Italic", "cmd+I"),
+				menuItem("code", "Code", "cmd+shift+K"),
+				menuItem("link", "Link", "cmd+K"),
 			],
 			[
 				t.heading ? menuItem("bodyText", "Body Text") : menuItem("heading", "Heading"),
@@ -238,14 +239,14 @@
 				: [];
 		return [
 			...edit,
-			menuItem("find", t.selection ? "Find Selection" : "Find…", "⌘F"),
-			menuItem("toggleLock", t.lock === "writing" ? "Done Editing" : "Edit Document", "⌘E"),
+			menuItem("find", t.selection ? "Find Selection" : "Find…", "cmd+F"),
+			menuItem("toggleLock", t.lock === "writing" ? "Done Editing" : "Edit Document", "cmd+E"),
 		];
 	}
 	function documentGroups(t: ReaderMenuTarget) {
 		const ask = t.selection
-			? menuItem("ask", "Ask about this", "⌘D")
-			: menuItem("askDocument", "Ask about this document", "⌥⌘M");
+			? menuItem("ask", "Ask about this", "cmd+D")
+			: menuItem("askDocument", "Ask about this document", "cmd+option+M");
 		const mark = t.annotation
 			? [menuItem("openAnnotation", t.annotation === "comment" ? "Open Comment" : "Open Question")]
 			: [];

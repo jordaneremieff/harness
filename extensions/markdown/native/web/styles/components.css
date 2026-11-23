@@ -294,6 +294,9 @@
   }
   .composer:has(.batch-remove) .foot { flex-wrap: wrap; }
   .composer:has(.batch-remove) .foot .hint { flex-basis: 100%; order: -1; }
+  /* A hint that names two keys takes its own line above the buttons. */
+  .composer:has(.ask-secondary) .foot { flex-wrap: wrap; justify-content: end; }
+  .composer:has(.ask-secondary) .foot .hint { flex-basis: 100%; order: -1; }
   :is(.batch-primary, .batch-secondary, .batch-tray-open) {
     display: inline-flex; align-items: center; justify-content: center; gap: 5px;
     min-height: 30px; padding: 4px 9px; border-radius: 8px;
@@ -358,10 +361,6 @@
   @container app (width < 560px) {
     .batch-tray:not([hidden]) { inset-inline-end: 8px; bottom: 8px; }
     .batch-list { inset-inline-end: 8px; bottom: 54px; width: min(350px, calc(100vw - 16px)); }
-  }
-  @container app (width < 345px) {
-    .composer:has(.ask-secondary) .foot { flex-wrap: wrap; justify-content: end; }
-    .composer:has(.ask-secondary) .foot .hint { flex-basis: 100%; order: -1; }
   }
   .send {
     width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;

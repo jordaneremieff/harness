@@ -69,7 +69,10 @@ test("writing format shortcuts do not displace reading navigation", () => {
 
 test("composition and ordinary text controls retain their editing keys", () => {
 	assert.equal(key("f", true, { isComposing: true }), null);
-	assert.equal(key("z", true, {}, true), null);
+	assert.equal(key("z", true, {}, true)?.name, "undo");
+	assert.equal(key("z", false, { shiftKey: true }, true)?.name, "redo");
+	assert.equal(key("a", true, {}, true)?.name, "selectAll");
+	assert.equal(key("z", false, { isComposing: true }, true), null);
 	assert.equal(key("i", true, {}, true), null);
 	assert.equal(key("k", true, {}, true), null);
 	assert.equal(key("f", false, {}, true)?.name, "find");
@@ -375,10 +378,10 @@ test("the context menu offers the actions that apply where the person clicks", (
 			.contextMenuItems(target({ lock: "writing", editor: true, selection: true, selectionInOneBlock: true }))
 			.map((e) => [e.id, e.key]),
 	);
-	assert.equal(keys.ask, "⌘D");
-	assert.equal(keys.cut, "⌘X");
-	assert.equal(keys.paste, "⌘V");
-	assert.equal(keys.bold, "⌘B");
+	assert.equal(keys.ask, "cmd+D");
+	assert.equal(keys.cut, "cmd+X");
+	assert.equal(keys.paste, "cmd+V");
+	assert.equal(keys.bold, "cmd+B");
 });
 
 test("the context menu opens at the pointer and stays inside the pane", () => {

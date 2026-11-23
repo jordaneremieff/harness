@@ -26,7 +26,7 @@ struct Verification {
     static let pageCheckNames = [
         "latest-explicit-open-wins", "find-across-inline-formatting", "code-copy-crlf", "table-column-geometry", "wide-code-and-tables", "layout-fits-every-pane-size",
         "document-script-inert-under-csp", "reading-lock-blocks-edit", "bridge-typing-exact-line-endings",
-        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-batch-sends-one-prompt", "ask-marks-reopen-cards-and-command-d", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
+        "published-writing-undo-matches-source", "escape-layers-notices-and-focus", "agent-hold-change-panel-find-and-code", "ask-card-keeps-newest-exchange-in-view", "ask-batch-sends-one-prompt", "ask-marks-reopen-cards-and-command-d", "text-fields-keep-editing-keys", "ask-from-open-block-and-let-it", "narrow-writing-bar-keeps-save-icon", "agent-change-keeps-reading-position", "context-menu-ask-floats-beside-selection", "page-context-menu-replaces-system-menu", "real-keys-and-clicks-reach-find-and-menu", "selection-strip-clears-selection-under-bar", "triple-click-selection-before-heading-and-earlier-ask", "find-close-clears-highlights",
         "no-remote-requests", "asset-scheme-containment", "image-inspection-deadline", "find-moves-selection",
         "code-copy-exact", "code-syntax-and-rendered-markdown", "external-link-confirmation", "pinned-open-request", "initial-gap-announces-update",
         "initial-gap-follows-latest", "position-captured-at-installation", "interaction-during-revision-preparation",
@@ -81,6 +81,7 @@ struct Verification {
                 await run("ask-card-keeps-newest-exchange-in-view") { await context.askCardLatest(keep: &keep) }
                 await run("ask-batch-sends-one-prompt") { await context.askBatch(keep: &keep) }
                 await run("ask-marks-reopen-cards-and-command-d") { await context.askMarks(keep: &keep) }
+                await run("text-fields-keep-editing-keys") { await context.textFieldKeys(keep: &keep) }
                 await run("ask-from-open-block-and-let-it") { await context.askFromOpenBlock(keep: &keep) }
                 await run("narrow-writing-bar-keeps-save-icon") { await context.narrowWritingBar(keep: &keep) }
                 await run("agent-change-keeps-reading-position") { await context.agentChangeKeepsPlace(keep: &keep) }
@@ -602,6 +603,80 @@ struct Context {
             await surface.waitForPendingChanges()
             await model.close()
             return .init(name: name, pass: pass, detail: "typed \(typed); mirror after edits \(mirrored); edit control fixed \(lockFixed) (\(readingPlace) -> \(writingPlace)); bar Undo \(undone) (\(undoState)); mirror restored \(restored); rendered block matches restored source \(shown); notices '\(notices)'")
+        } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
+    }
+
+    /// A text field keeps the editing keys of a Mac text field. With a document edit to undo and the
+    /// Ask card's message focused, real Command-Z presses undo the typing in the field and leave the
+    /// document as it is, Shift-Command-Z redoes the typing, and Command-A selects the field's text
+    /// only. With no text field focused, Command-Z still undoes the document edit.
+    func textFieldKeys(keep: inout [NSWindow]) async -> Verification.Check {
+        let name = "text-fields-keep-editing-keys"
+        do {
+            let id = VerifyStore.newId()
+            let original = "# Field keys\n\nThe status waits for evidence from real use.\n\nA closing paragraph.\n"
+            try store.write(id, revision: 1, source: original)
+            let state = ReadingStateStore(directory: nil)
+            let model = ReaderModel(reference: store.reference(id), platform: CheckRunner.platform(), state: state)
+            let surface = ReaderSurface(model: model, state: state, chrome: "pane",
+                                        draftDirectory: workspace.appendingPathComponent("field-keys-drafts"))
+            defer { withExtendedLifetime(surface) {} }
+            let window = CheckRunner.offscreenWindow(page: model.page, width: 800, height: 700, focused: true)
+            keep.append(window)
+            await model.open(origin: nil)
+            try await CheckRunner.preparePageForCheck(model)
+            await model.sendCommand("toggleLock", args: ["lock": "writing"])
+            window.makeFirstResponder(model.page.webView)
+            func key(_ code: UInt16, _ characters: String, flags: NSEvent.ModifierFlags = []) async {
+                for type in [NSEvent.EventType.keyDown, .keyUp] {
+                    guard let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: flags, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code) else { continue }
+                    if type == .keyDown, window.performKeyEquivalent(with: event) || NSApp.mainMenu?.performKeyEquivalent(with: event) == true { continue }
+                    window.sendEvent(event)
+                }
+                _ = await js(model, "await new Promise(r => setTimeout(r, 120)); return true;")
+            }
+            // A person's edit in an open block gives the document something to undo.
+            let edited = await js(model, """
+            const block = [...document.querySelectorAll('[data-role="document"] [data-block]')].find(b => b.textContent.includes('evidence'));
+            if (!block) return false;
+            const rect = block.getBoundingClientRect();
+            const point = { bubbles: true, cancelable: true, button: 0, clientX: rect.left + 4, clientY: rect.top + rect.height / 2 };
+            block.dispatchEvent(new PointerEvent('pointerdown', { ...point, buttons: 1, pointerType: 'mouse', isPrimary: true }));
+            block.dispatchEvent(new PointerEvent('pointerup', { ...point, pointerType: 'mouse', isPrimary: true }));
+            block.dispatchEvent(new MouseEvent('click', point));
+            await new Promise(resolve => setTimeout(resolve, 0));
+            const editor = document.querySelector('[data-role="block-editor"]');
+            if (!editor) return false;
+            editor.focus();
+            const range = document.createRange(); range.selectNodeContents(editor); range.collapse(false);
+            getSelection().removeAllRanges(); getSelection().addRange(range);
+            document.execCommand('insertText', false, 'ZQ');
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            return true;
+            """) as? Bool == true
+            let changed = original.replacingOccurrences(of: "from real use.", with: "from real use.ZQ")
+            let mirrored = await wait(seconds: 5) { Data(model.source.utf8) == Data(changed.utf8) }
+            await model.sendCommand("askDocument")
+            let field = "const f = document.querySelector('.ask-card[data-open] textarea'); return f ? [f.value, String(document.activeElement === f), String(f.selectionStart), String(f.selectionEnd)] : [];"
+            let focused = await js(model, "const f = document.querySelector('.ask-card[data-open] textarea'); if (!f) return false; f.focus(); return document.activeElement === f;") as? Bool == true
+            for (code, character) in [(UInt16(0), "a"), (11, "b"), (8, "c")] { await key(code, character) }
+            let typed = await js(model, field) as? [String] ?? []
+            await key(6, "z", flags: [.command])
+            let undone = await js(model, field) as? [String] ?? []
+            let documentKept = Data(model.source.utf8) == Data(changed.utf8)
+            await key(6, "z", flags: [.command, .shift])
+            let redone = await js(model, field) as? [String] ?? []
+            await key(0, "a", flags: [.command])
+            let selected = await js(model, field) as? [String] ?? []
+            let documentSelection = await js(model, "return String(getSelection().toString().includes('evidence'));") as? String ?? ""
+            _ = await js(model, "document.activeElement?.blur(); return true;")
+            await key(6, "z", flags: [.command])
+            let restored = await wait(seconds: 5) { Data(model.source.utf8) == Data(original.utf8) }
+            let pass = edited && mirrored && focused && typed.first == "abc" && undone.first == "" && undone.dropFirst().first == "true"
+                && documentKept && redone.first == "abc" && selected == ["abc", "true", "0", "3"] && documentSelection == "false" && restored
+            await surface.waitForPendingChanges()
+            await model.close()
+            return .init(name: name, pass: pass, detail: "document edit \(edited) mirrored \(mirrored); field focused \(focused); typed \(typed); Command-Z \(undone), document kept \(documentKept); Shift-Command-Z \(redone); Command-A \(selected), document selected \(documentSelection); Command-Z without a field restored the document \(restored)")
         } catch { return .init(name: name, pass: false, detail: String(describing: error)) }
     }
 
@@ -1721,7 +1796,7 @@ struct Context {
                 """) as? Bool == true
                 let writingSelection = await probeAt("[data-role=\"block-editor\"]", text: "beta")
                 let writingOK = items(writingSelection).first == "ask" && ["cut", "copy", "paste", "bold", "italic", "code", "link", "heading", "bulletList"].allSatisfy(items(writingSelection).contains)
-                    && (writingSelection["keys"] as? [String] ?? []).contains("⌘X")
+                    && (writingSelection["keys"] as? [String] ?? []).contains("cmd+X")
                 _ = await js(model, "document.querySelector('[data-role=\"context-menu\"] .item[data-id=\"cut\"]').click(); return true;")
                 let cut = await wait(seconds: 3) { document.text.source.contains("Alpha gamma") && CheckRunner.checkPasteboard.string(forType: .string) == "beta " }
                 _ = await js(model, """

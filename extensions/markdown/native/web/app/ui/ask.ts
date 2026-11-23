@@ -276,18 +276,24 @@
 		}
 		function composerActions(thread: ReaderThread, followUp: boolean) {
 			const send = () => void sendMessage();
-			if (followUp) return { primary: "Send", run: send, hint: "⌘↩ send" };
+			if (followUp) return { primary: "Send", run: send, hint: "cmd+return send" };
 			if (thread.pendingComment)
 				return {
 					primary: "Done",
 					run: () => ask.close(),
 					secondary: `Send all ${comments.length}`,
 					runSecondary: () => void sendBatch(),
-					hint: "⌘↩ done · ⇧⌘↩ send",
+					hint: "cmd+return done · cmd+shift+return send",
 				};
 			const add = () => addComment(thread);
 			if (!comments.length)
-				return { primary: "Send", run: send, secondary: "Add to batch", runSecondary: add, hint: "⌘↩ send · ⇧⌘↩ add" };
+				return {
+					primary: "Send",
+					run: send,
+					secondary: "Add to batch",
+					runSecondary: add,
+					hint: "cmd+return send · cmd+shift+return add",
+				};
 			return {
 				primary: "Add to batch",
 				run: add,
@@ -295,7 +301,7 @@
 				runSecondary: () => {
 					if (add()) void sendBatch();
 				},
-				hint: "⌘↩ add · ⇧⌘↩ send",
+				hint: "cmd+return add · cmd+shift+return send",
 			};
 		}
 		function composerField(thread: ReaderThread, followUp: boolean) {
@@ -317,7 +323,7 @@
 			const { primary: label, run, secondary: alternative, runSecondary, hint } = composerActions(thread, followUp);
 			const primary =
 				label === "Send"
-					? button(label, "send", run, { iconOnly: true, key: "⌘↩", className: "ask-primary send" })
+					? button(label, "send", run, { iconOnly: true, key: "cmd+return", className: "ask-primary send" })
 					: button(label, "", run, { className: "ask-primary batch-primary" });
 			const secondary =
 				alternative && runSecondary

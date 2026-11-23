@@ -550,7 +550,7 @@
 					stored = typeof meta.revision === "number";
 				menu.replaceChildren(
 					menuHead(meta, revisions),
-					item(controller.lock === "writing" ? "Done" : "Edit", "pen", () => ctx.command("toggleLock"), "⌘E"),
+					item(controller.lock === "writing" ? "Done" : "Edit", "pen", () => ctx.command("toggleLock"), "cmd+E"),
 					item(
 						"Review changes",
 						"compare",
@@ -567,19 +567,25 @@
 					);
 				menu.append(
 					el("div", { class: "sep" }),
-					item("Copy Markdown", "copy", () => ctx.command("copyMarkdown"), "⇧⌘C"),
-					item("Copy passage with source", "quote", () => ctx.command("copyPassage"), "⌥⌘C", unavailable(hasPassage())),
+					item("Copy Markdown", "copy", () => ctx.command("copyMarkdown"), "cmd+shift+C"),
+					item(
+						"Copy passage with source",
+						"quote",
+						() => ctx.command("copyPassage"),
+						"cmd+option+C",
+						unavailable(hasPassage()),
+					),
 					el("div", { class: "sep" }),
 					el("div", { class: "sec" }, "Export"),
 					exportItem("PDF…", "doc", "pdf", true),
 					exportItem("Markdown and images…", "image", "sharing", stored),
 					exportItem("Archive with records…", "archive", "archive", stored),
 					el("div", { class: "sep" }),
-					item("Details", "info", () => views.show("details"), "⌘I"),
+					item("Details", "info", () => views.show("details"), "cmd+I"),
 					item("Markdown source", "code", () => views.show("source")),
 					item("Text and appearance…", "text", () => panel.showPopover()),
 					el("div", { class: "sep" }),
-					item("Open…", "open", () => views.open(), "⌘O"),
+					item("Open…", "open", () => views.open(), "cmd+O"),
 					item("New draft", "new", () => {
 						void ctx.hostCommand("newDraft");
 					}),
@@ -648,7 +654,7 @@
 					el(
 						"div",
 						{ class: "foot" },
-						el("span", {}, "↑↓ choose · ↩ open · # headings"),
+						el("span", {}, "↑↓ choose · return opens · # headings"),
 						button(
 							"Full library",
 							"open",
