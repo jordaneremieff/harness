@@ -40,8 +40,8 @@ function shortenHomePath(path: string): string {
 function fact(label: string, value: unknown): string {
 	return number(value) === undefined ? "" : `${label} ${value}`;
 }
-function units(n: number, unit: string): string {
-	return `${n} ${unit}${n === 1 ? "" : "s"}`;
+function units(n: number, singular: string, plural = `${singular}s`): string {
+	return `${n} ${n === 1 ? singular : plural}`;
 }
 function json(value: unknown, indent?: number): string {
 	try {
@@ -198,7 +198,7 @@ function callDisclosure(
 ): string[] {
 	if (context.expanded || state.result || !context.keyText?.("app.tools.expand")) return [];
 	const { more, count } = discloseCall(name, info, width);
-	return more || count ? [hint(theme, context, width, more ? 0 : count)] : [];
+	return more || count ? [hint(theme, context, width, count)] : [];
 }
 function callBody(info: CallInfo, state: State, expanded: boolean, theme: Theme, width: number) {
 	if (!expanded && state.hideCallBody) return [];
@@ -271,11 +271,10 @@ function liveList(v: Fields): Copy | undefined {
 		more: count || pending ? receipt(v) : "",
 	};
 }
-function liveRead(v: Fields, args: Fields): Copy {
+function liveRead(v: Fields, args: Fields, complete = v.status === "complete"): Copy {
 	const next = nextLivePage(v, args);
 	const view = record(record(v.pane).view);
 	const draft = view.conflict === true ? "; autosave conflict" : view.dirty === true ? "; unsaved" : "";
-	const complete = v.status === "complete";
 	const where = [fact("generation", v.generation), complete ? "" : fact("offset", v.offset)]
 		.filter(Boolean)
 		.join(" · ");
@@ -299,10 +298,14 @@ function liveComments(v: Fields, args: Fields): Copy {
 			next && state ? { op: "comments", ...next, commentState: state, expectedVersion: v.version } : undefined,
 	};
 }
+function liveSnapshot(v: Fields): boolean {
+	// Retained read receipts can carry the complete snapshot under the bridge's ok status.
+	return typeof v.source === "string" && number(v.generation) !== undefined && v.offset === 0 && v.nextOffset === null;
+}
 function liveCopy(v: Fields, args: Fields): Copy | undefined {
 	switch (v.status) {
 		case "ok":
-			return liveList(v);
+			return args.op === "read" && liveSnapshot(v) ? liveRead(v, args, true) : liveList(v);
 		case "navigated":
 			return { outcome: `Reader confirmed ${documentIdentity(record(v.view))}.`, more: receipt(v) };
 		case "launch":
@@ -356,7 +359,7 @@ function findNext(v: Fields): Fields | undefined {
 function readFind(v: Fields, matches: unknown[]): Copy {
 	const continuation = findNext(v);
 	const scanned = number(v.scanned);
-	const outcome = matches.length ? `Returned ${units(matches.length, "match")}` : "No matches in this page";
+	const outcome = matches.length ? `Returned ${units(matches.length, "match", "matches")}` : "No matches in this page";
 	const scope = scanned === undefined ? "" : `; scanned ${units(scanned, "document")}`;
 	const coverage = findCoverage(v);
 	const preview = matches
@@ -476,9 +479,8 @@ function finalDisclosure(
 ): string[] {
 	const call = state.call ? discloseCall(name, state.call, width, state.hideCallBody) : { more: false, count: 0 };
 	const other = call.more || !!view.more.text || !!view.next || visibleWidth(view.summary.text) > width;
-	if (!other && !call.count && !skipped) return [];
-	if (skipped && !call.count) return [hint(theme, context, width, skipped)];
-	return [hint(theme, context, width, other || skipped ? 0 : call.count)];
+	const count = call.count + skipped;
+	return other || count ? [hint(theme, context, width, count)] : [];
 }
 function expandedResult(view: ResultView, theme: Theme, width: number): string[] {
 	return [view.more.text, view.next]

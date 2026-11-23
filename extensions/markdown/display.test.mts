@@ -266,6 +266,89 @@ test("a publication draft previews only five visual rows and expands on the conf
 	assert.doesNotMatch(expanded, /to expand/u);
 });
 
+test("a retained live snapshot receipt expands as source without exposing the buffer in collapse", (t) => {
+	keys(t);
+	const component = card("markdown_live", { op: "read", handle: "exact-reader-handle" });
+	const source = "# Reader fixture\n\nThe draft remains in the same pane.\n";
+	const snapshot = {
+		status: "ok",
+		source,
+		generation: 0,
+		digest: `sha256:${"0".repeat(64)}`,
+		assets: [],
+		offset: 0,
+		nextOffset: null,
+		totalChars: source.length,
+		totalBytes: Buffer.byteLength(source),
+	};
+	for (const details of [snapshot, undefined]) {
+		component.setExpanded(false);
+		component.updateResult(result(JSON.stringify(snapshot), details));
+		assert.match(screen(component), /Read complete live source at generation 0\./u);
+		assert.doesNotMatch(screen(component), /Reader fixture|"status"|"source"/u);
+		component.setExpanded(true);
+		const expanded = screen(component);
+		assert.match(expanded, /\n # Reader fixture\n\n The draft remains in the same pane\./u);
+		assert.match(expanded, /"status": "ok"/u);
+		assert.doesNotMatch(expanded, /"source"|to expand/u);
+	}
+});
+
+test("a stored document listing inflects the retained result count", (t) => {
+	keys(t);
+	const component = card("markdown_read", { kind: "published" });
+	const documents = Array.from({ length: 20 }, (_, i) => ({
+		id: `md-${String(i).padStart(20, "0")}`,
+		title: `Document ${i}`,
+		revision: 1,
+	}));
+	for (const count of [20, 1]) {
+		component.updateResult(
+			result("", {
+				ok: true,
+				op: "find",
+				kind: "published",
+				rows: documents.slice(0, count),
+				matched: count,
+				scanned: 172,
+			}),
+		);
+		const noun = count === 1 ? "match" : "matches";
+		assert.ok(screen(component).includes(`Returned ${count} ${noun}; scanned 172 documents.`));
+	}
+});
+
+test("publication moves its counted hint to the bottom after settlement and reflows it on resize", (t) => {
+	keys(t);
+	const component = card("markdown_publish", {
+		title: "Draft",
+		text: "abcdefghij".repeat(32),
+		expectedRevision: 3,
+		reuseKey: "named-request",
+	});
+	const assertHint = (rendered: string, count: number) => {
+		const hints = rendered.split("\n").filter((row) => row.includes("to expand"));
+		assert.deepEqual(hints, [` ... (${count} more ${count === 1 ? "line" : "lines"}, ctrl+g to expand)`], rendered);
+		assert.equal(rendered.trimEnd().split("\n").at(-1), hints[0]);
+	};
+	assertHint(screen(component, 65), 1);
+	assertHint(screen(component, 45), 3);
+	component.updateResult(
+		result("Saved the exact source and document metadata.", {
+			ok: true,
+			documentId: id,
+			revision: 4,
+			paneState: { status: "observed", showing: [] },
+		}),
+	);
+	const wide = screen(component, 65);
+	assert.match(wide, /Saved .*revision 4/u);
+	assertHint(wide, 1);
+	assertHint(screen(component, 45), 3);
+	component.setExpanded(true);
+	assert.doesNotMatch(screen(component, 45), /to expand/u);
+});
+
 test("an empty find page preserves the same filters and full cursor", (t) => {
 	keys(t);
 	const component = card("markdown_read", { kind: "file", query: "notes", contains: "line\nneedle" });
