@@ -1801,22 +1801,67 @@ export const MEMORY_UNAVAILABLE =
 export type RecallSource = {
 	slug: string;
 	title: string;
+	exactTitle?: string;
 	summary: string;
+	summaryClipped?: true;
 	freshness: ReturnType<typeof sourceFreshness>;
 };
 export type RecallScan = { root: string; notes: RecallSource[]; complete: boolean };
+type DiscoverySummary = Pick<RecallSource, "summary" | "summaryClipped">;
 
-function discoverySummary(text: string, truncated: boolean): string | undefined {
-	const headings = [...markdownHeadings(text)];
+function plainSummaryProse(text: string): boolean {
+	// Do not infer continuation through Markdown blocks or unbalanced inline markup.
+	if (/^(?: *\t| {4}| {0,3}(?:[#>]|[-+*](?:\s|$)|\d+[.)]\s|[-=]{2,}\s*$))/m.test(text)) return false;
+	const prose = text.replace(/(?<!`)`[^`\r\n]+`(?!`)/g, "");
+	return /\p{L}/u.test(prose) && !/[`<>[\]*~\\]|(?:^|\s)_|_(?=\s|$)/u.test(prose);
+}
+
+const summarySentences = new Intl.Segmenter("en", { granularity: "sentence" });
+function clippedSummaryProse(text: string): string | undefined {
+	const gaps = [...text.matchAll(/(?:\r\n|\n|\r(?!\n))(?:[ \t]*(?:\r\n|\n|\r(?!\n)))+/g)];
+	let end = 0;
+	for (const gap of gaps) {
+		if (!plainSummaryProse(text.slice(end, gap.index))) break;
+		end = gap.index + gap[0].length;
+	}
+	if (end > 0) return text.slice(0, end).trimEnd();
+
+	const opening = text.slice(0, gaps[0]?.index);
+	let boundary: number | undefined;
+	for (const { index } of summarySentences.segment(opening)) {
+		if (index === 0) continue;
+		const sentence = opening.slice(0, index).trimEnd();
+		if (/[.!?]$/u.test(sentence) && /^\p{Lu}/u.test(opening.slice(index)) && plainSummaryProse(sentence))
+			boundary = index;
+	}
+	return boundary === undefined ? undefined : opening.slice(0, boundary).trimEnd();
+}
+
+function discoverySummary(text: string, truncated: boolean, bodyStart: number): DiscoverySummary | undefined {
+	// A last partial line can look like a heading or fence closure without being one.
+	const headingText = truncated ? text.slice(0, Math.max(text.lastIndexOf("\n"), text.lastIndexOf("\r")) + 1) : text;
+	const headings = [...markdownHeadings(headingText.slice(bodyStart))];
 	const start = headings.findIndex((heading) => heading.title === "Summary" && heading.level === 2);
 	if (start < 0) return undefined;
 	const heading = headings[start];
 	const end = headings.slice(start + 1).find((next) => next.level <= 2)?.start;
-	if (end === undefined && truncated) return undefined;
-	return text.slice(heading.end, end).trim();
+	const section = text.slice(bodyStart + heading.end, end === undefined ? undefined : bodyStart + end);
+	// The ATX scanner does not resolve HTML block scope in a partial source.
+	if (truncated && /<[A-Za-z!/?]/.test(text.slice(bodyStart, bodyStart + heading.start))) return undefined;
+	if (end !== undefined || !truncated) return { summary: section.trim() };
+	const clip = clippedSummaryProse(section.replace(/^(?:[ \t]*(?:\r\n|\n|\r(?!\n)))+/, ""));
+	return clip === undefined ? undefined : { summary: clip, summaryClipped: true };
 }
 
-function eligibleRecallSummary(summary: string | undefined, cue: NoteCue): summary is string {
+function exactRecallTitle(cue: NoteCue, text: string, truncated: boolean): string | undefined {
+	const declared = cue.header.pointer("title");
+	const heading = declared === undefined ? findMarkdownHeading(text.slice(cue.header.bodyStart), 1) : undefined;
+	if (truncated && heading && !/[\r\n]$/.test(heading.text)) return undefined;
+	const title = declared ?? heading?.title;
+	return title && !/[\p{Cc}\p{Cf}\uD800-\uDFFF]/u.test(title) ? title : undefined;
+}
+
+function eligibleRecallSummary(summary: DiscoverySummary | undefined, cue: NoteCue): summary is DiscoverySummary {
 	return summary !== undefined && cue.header.metadata === "ok" && cue.size <= SOURCE_READ_BYTES;
 }
 
@@ -1850,7 +1895,7 @@ export async function recallSources(root: string | undefined, signal?: AbortSign
 			const cue = buildNoteCue(resolved, entry.name, slug, window.text, window.truncated, window.size);
 			complete &&= cue.lifecycle.status !== "unknown";
 			if (cue.lifecycle.status !== "active") continue;
-			const summary = discoverySummary(window.text, window.truncated);
+			const summary = discoverySummary(window.text, window.truncated, cue.header.bodyStart);
 			if (!eligibleRecallSummary(summary, cue)) {
 				complete = false;
 				continue;
@@ -1858,7 +1903,8 @@ export async function recallSources(root: string | undefined, signal?: AbortSign
 			notes.push({
 				slug,
 				title: pointerTitle(cue),
-				summary,
+				exactTitle: exactRecallTitle(cue, window.text, window.truncated),
+				...summary,
 				freshness: sourceFreshness(cue.header.parsed, cue.header.header),
 			});
 			await setImmediate();
@@ -1869,6 +1915,16 @@ export async function recallSources(root: string | undefined, signal?: AbortSign
 		if (signal?.aborted) throw error;
 		return undefined;
 	}
+}
+
+function matchesRecallSummary(buffer: Buffer, text: string, bodyStart: number, expected: RecallSource): boolean {
+	const section = discoverySummary(text, false, bodyStart);
+	if (!section) return false;
+	if (!expected.summaryClipped) return section.summary === expected.summary;
+	if (buffer.length <= INDEX_READ_BYTES || !section.summary.startsWith(expected.summary)) return false;
+	const prefix = decodeUtf8(trimUtf8(buffer.subarray(0, INDEX_READ_BYTES), true));
+	const clip = prefix === undefined ? undefined : discoverySummary(prefix, true, bodyStart);
+	return clip?.summaryClipped === true && clip.summary === expected.summary;
 }
 
 export async function recallSource(
@@ -1888,8 +1944,12 @@ export async function recallSource(
 	const text = decodeUtf8(source.buffer);
 	if (text === undefined) return undefined;
 	const cue = buildNoteCue(scan.root, `${expected.slug}.md`, expected.slug, text, false, source.buffer.length);
-	const summary = discoverySummary(text, false);
-	if (cue.lifecycle.status !== "active" || pointerTitle(cue) !== expected.title || summary !== expected.summary)
+	if (
+		cue.lifecycle.status !== "active" ||
+		pointerTitle(cue) !== expected.title ||
+		(expected.exactTitle !== undefined && exactRecallTitle(cue, text, false) !== expected.exactTitle) ||
+		!matchesRecallSummary(source.buffer, text, cue.header.bodyStart, expected)
+	)
 		return undefined;
 	checkAbort(signal);
 	return {

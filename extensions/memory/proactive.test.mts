@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { memoryNotice, noteKey, recallCandidate, storageCue } from "./proactive.ts";
-import { memoryIndex, recallSources } from "./retrieval.ts";
+import { memoryIndex, recallSource, recallSources } from "./retrieval.ts";
 import { memorySourceCache } from "./source-cache.ts";
 import { readSettings } from "./settings.ts";
 
@@ -50,6 +50,81 @@ test("scorer preserves strong, length, summary-only and one-note gates", async (
 			new Set([noteKey(notice.root, notice.slug as string, notice.digest as string)]),
 		),
 	);
+});
+
+test("small inventories recall a unique full title without loosening lexical gates", async (t) => {
+	const corpus = fixture(t);
+	writeFileSync(join(corpus, "README.md"), "# Fixture corpus\n");
+	const body = "---\nstatus: active\nsuperseded_by: null\n---\n# Walnut notebook\n\n## Summary\nAn ordinary note.\n";
+	writeFileSync(join(corpus, "subject.md"), body);
+	writeFileSync(join(corpus, "fake-title.md"), body.replace("# Walnut notebook\n\n", ""));
+	const scan = await recallSources(corpus);
+	assert.ok(scan);
+	assert.equal((await memoryNotice(corpus, " WALNUT  NOTEBOOK ", "direct input", true, new Set()))?.slug, "subject");
+	for (const input of ["walnut", "notebook walnut", "What about Walnut notebook?", "fake-title"])
+		assert.equal(recallCandidate(input, scan.notes), undefined, input);
+	const subject = scan.notes.find(({ slug }) => slug === "subject");
+	assert.ok(subject);
+	const competing = { ...subject, slug: "competing" };
+	assert.equal(recallCandidate("Walnut notebook", [...scan.notes, competing]), undefined);
+	const natural = { ...subject, title: "Lacquered walnut notebook", exactTitle: "Lacquered walnut notebook" };
+	for (const distractor of [0, 1]) {
+		const notes = distractor ? [natural, { ...competing, exactTitle: "Walnut notebook" }] : [natural];
+		assert.equal(
+			recallCandidate("What does Lacquered walnut notebook say?", notes)?.slug,
+			distractor ? undefined : "subject",
+		);
+		assert.equal(recallCandidate('What does "Lacquered walnut notebook" say?', notes), undefined);
+		assert.equal(recallCandidate("What does walnut say?", notes), undefined);
+		assert.equal(recallCandidate("Any advice about rain?", notes), undefined);
+	}
+	const unrelated = Array.from({ length: 24 }, (_, i) => ({
+		...competing,
+		slug: `different-${i}`,
+		exactTitle: undefined,
+	}));
+	assert.equal(recallCandidate("Walnut notebook", [subject, ...unrelated])?.slug, "subject");
+	assert.equal(recallCandidate("Walnut notebook", [...scan.notes, ...unrelated]), undefined);
+});
+
+test("long Summary discovery uses only verified prefix prose and binds a current digest", async (t) => {
+	const corpus = fixture(t);
+	writeFileSync(join(corpus, "README.md"), "# Fixture corpus\n");
+	const header = "---\nstatus: active\nsuperseded_by: null\ntitle: Walnut notebook\n---\n";
+	const tail = "some more material ".repeat(550);
+	const path = join(corpus, "subject.md");
+	const paragraph = "A paragraph about the `walnut` notebook.";
+	const write = (text: string) => writeFileSync(path, `${header}${text}\n## Details\nDetails.\n`);
+	write(`## Summary\n\n${paragraph}\n\n${tail}`);
+	const first = await recallSources(corpus);
+	assert.ok(first);
+	assert.equal(first.complete, true);
+	assert.equal(first.notes[0]?.summary, paragraph);
+	assert.equal(first.notes[0]?.summaryClipped, true);
+	const notice = await memoryNotice(corpus, "Walnut notebook", "direct input", true, new Set());
+	assert.match(notice?.text ?? "", /Discovery excerpt: A paragraph about the `walnut` notebook\./);
+	assert.ok(notice?.digest);
+	write(`## Summary\n\n${paragraph}\n\n${tail} changed after the prefix`);
+	const changed = await recallSource(first, first.notes[0]);
+	assert.ok(changed?.digest && changed.digest !== notice.digest);
+	write(`## Summary\n\nA changed first paragraph.\n\n${tail}`);
+	assert.equal(await recallSource(first, first.notes[0]), undefined);
+
+	write(`## Summary\r\n\r\nOne complete sentence. Another sentence ${tail}`);
+	assert.equal((await recallSources(corpus))?.notes[0]?.summary, "One complete sentence.");
+	for (const malformed of [
+		`## Summary\n\nA single fragment ${tail}`,
+		`## Summary\r\n\r\nA wrapped fragment\r\ncontinued here ${tail}`,
+		`## Summary\n\n    An indented code block.\n\n${tail}`,
+		`## Summary\n\n\`\`\`text\nAn unfinished fence. More text ${tail}`,
+		`## Summary\n\nA [link without an ending. More text ${tail}`,
+		`<!--\n## Summary\n\nA false paragraph.\n\n${tail}\n-->`,
+	]) {
+		write(malformed);
+		const invalid = await recallSources(corpus);
+		assert.equal(invalid?.complete, false, malformed.slice(0, 60));
+		assert.deepEqual(invalid?.notes, []);
+	}
 });
 
 // Shared everyday vocabulary gives a fixture corpus the breadth of a real one.

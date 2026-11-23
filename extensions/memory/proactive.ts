@@ -13,6 +13,8 @@ const COMPLETE_INPUT_UNITS = 2000;
 const SCAN_UNITS = 32768;
 /** Longer input keeps at most this many terms, which limits incidental matches across a broad vocabulary. */
 const EXTRACTED_TERMS = 48;
+/** Rare cue weights are weakest in small inventories, even for a literal subject title. */
+const SMALL_CORPUS_NOTES = 25;
 export const inputDigest = (text: string): string => createHash("sha256").update(text).digest("hex");
 function terms(text: string): string[] {
 	return [
@@ -60,9 +62,47 @@ function inputTerms(text: string, frequency: ReadonlyMap<string, number>, total:
 	);
 }
 
+function normalizeTitle(text: string): string {
+	return text
+		.normalize("NFC")
+		.trim()
+		.replace(/[^\S\r\n]+/gu, " ")
+		.toLowerCase();
+}
+
+function literalTitleCandidate(text: string, notes: readonly RecallSource[]): RecallSource | undefined {
+	const input = normalizeTitle(text);
+	if (/[\r\n]/.test(input)) return undefined;
+	const titled = notes.flatMap((note) => (note.exactTitle ? [{ note, title: normalizeTitle(note.exactTitle) }] : []));
+	const exact = titled.filter(({ title }) => title === input && terms(title).length >= 2);
+	if (exact.length !== 0) return exact.length === 1 ? exact[0].note : undefined;
+
+	// In a short question, require the whole literal title plus words that distinguish it from other cues.
+	if (!input.endsWith("?") || /["“”`<>[\]]/.test(input)) return undefined;
+	const matches = titled.filter(({ note, title }) => {
+		const subject = terms(title);
+		if (subject.length < 3) return false;
+		const start = input.indexOf(title);
+		if (start < 0) return false;
+		const before = input.slice(0, start);
+		const after = input.slice(start + title.length);
+		if (/[\p{L}\p{N}'‘’]$/u.test(before) || /^[\p{L}\p{N}'‘’]/u.test(after)) return false;
+		if ((`${before} ${after}`.match(/[\p{L}\p{N}]+/gu) ?? []).length > 8) return false;
+		const otherCues = new Set(
+			notes.flatMap((other) => (other === note ? [] : terms(`${other.slug} ${other.exactTitle ?? other.title}`))),
+		);
+		return subject.filter((word) => !otherCues.has(word)).length >= 2;
+	});
+	return matches.length === 1 ? matches[0].note : undefined;
+}
+
 /** Fixed lexical selection values, not probabilities or a general-purpose search rank. */
 export function recallCandidate(text: string, notes: readonly RecallSource[]): RecallSource | undefined {
 	if (!text.trim()) return undefined;
+	if (notes.length <= SMALL_CORPUS_NOTES && text.length <= COMPLETE_INPUT_UNITS) {
+		const literal = literalTitleCandidate(text, notes);
+		if (literal) return literal;
+	}
 	const indexed = notes.map((note) => ({
 		note,
 		cue: terms(`${note.slug} ${note.title}`),
