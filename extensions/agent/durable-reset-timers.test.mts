@@ -5,7 +5,14 @@
  */
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { stripVTControlCharacters } from "node:util";
+import {
+	initTheme,
+	ToolExecutionComponent,
+	type ExtensionAPI,
+	type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
 import { createResetTimerActions, registerResetTimerTools, scheduleAgentInput } from "./durable-reset-timers.ts";
 
 interface ControlCall {
@@ -21,6 +28,7 @@ function stubControl(calls: ControlCall[]): (method: string, input: Record<strin
 				return {
 					conversationId: 1,
 					requestId: input.requestId,
+					identity: "storage-a",
 					submissionId: 4,
 					status: "queued",
 					entryId: null,
@@ -109,22 +117,9 @@ it("shows a retained terminal timer without claiming a new pending schedule", as
 
 it("registers the separate reset tool and leaves timers to agent_status and agent_abort", async () => {
 	const calls: ControlCall[] = [];
-	const tools = new Map<
-		string,
-		{
-			execute: (
-				callId: string,
-				params: Record<string, unknown>,
-				signal: undefined,
-				update: undefined,
-				ctx: unknown,
-			) => Promise<unknown>;
-			renderCall?: unknown;
-			renderResult?: unknown;
-		}
-	>();
+	const tools = new Map<string, ToolDefinition>();
 	const pi = {
-		registerTool: (tool: { name: string }) => tools.set(tool.name, tool as never),
+		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 	} as unknown as ExtensionAPI;
 	registerResetTimerTools(pi, () => surface(calls));
 	assert.deepEqual([...tools.keys()], ["agent_reset"]);
@@ -132,8 +127,36 @@ it("registers the separate reset tool and leaves timers to agent_status and agen
 	assert.ok(tool);
 	assert.equal(typeof tool.renderCall, "function");
 	assert.equal(typeof tool.renderResult, "function");
-	await tool.execute("call-1", { sessionId: "storage-a", handoff: "new start" }, undefined, undefined, {});
-	assert.deepEqual(calls.at(-1), { method: "reset", input: { sessionId: "storage-a", handoff: "new start" } });
+	const args = { sessionId: "@alpha", handoff: "new start" };
+	const result = await tool.execute("call-1", args, undefined, undefined, {} as never);
+	assert.deepEqual(calls.at(-1), { method: "reset", input: args });
+	const text = "Reset queued for “alpha”; it places at the next native boundary and starts no model turn.";
+	assert.deepEqual(result.content, [{ type: "text", text }]);
+	assert.deepEqual(result.details, {
+		text,
+		status: "queued",
+		identity: "storage-a",
+		submissionId: 4,
+		entryId: null,
+		reason: null,
+		deduped: false,
+	});
+	initTheme("dark", false);
+	const component = new ToolExecutionComponent(
+		tool.name,
+		"call-1",
+		args,
+		undefined,
+		tool,
+		{ requestRender() {} } as unknown as TUI,
+		".",
+	);
+	component.setArgsComplete();
+	component.markExecutionStarted();
+	component.updateResult({ ...result, isError: false });
+	const collapsed = component.render(28).map(stripVTControlCharacters).join("\n");
+	assert.match(collapsed, /Reset queued/iu);
+	assert.doesNotMatch(collapsed, /Reset placed|next native boundary/iu);
 });
 
 it("runs the operator reset, schedule, list, and cancel actions with operator origin", async () => {

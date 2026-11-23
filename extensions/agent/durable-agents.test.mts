@@ -2354,6 +2354,90 @@ it("returns an explicit error result for a missing conversation and a missing di
 	await opened.harness.close(context);
 });
 
+it("retains native command output, reload count, and fork identity without changing model text", async (t) => {
+	const route = createRoute();
+	const target = "another-storage";
+	const commandResult = {
+		name: "inspect",
+		conversationId: 7,
+		identity: target,
+		text: "line one\nline two",
+		data: { outputKind: "listing" },
+	};
+	const reloadResult = { sessionId: target, inventory: { contributions: [{ name: "agent" }] }, reloaded: true };
+	const forkResult = { conversationId: 8, identity: `${target}:8`, deduped: false };
+	const uncountedReload = { sessionId: target, reloaded: true };
+	const cases = [
+		{
+			name: "inspect",
+			result: commandResult,
+			details: { name: "inspect", identity: target, text: commandResult.text },
+		},
+		{ name: "reload", result: reloadResult, details: { sessionId: target, reloaded: true, contributionCount: 1 } },
+		{ name: "tree", result: forkResult, details: { forkedIdentity: forkResult.identity, deduped: false } },
+		{ name: "reload", result: uncountedReload, details: uncountedReload },
+	];
+	let calls = 0;
+	const { registry } = buildRegistry(async (method, params) => {
+		assert.equal(method, "command");
+		assert.equal(params.name, cases[calls].name);
+		assert.equal(params.sessionId, target);
+		assert.equal(params.origin, "model");
+		assert.match(String(params.invocationId), /^task:\d+$/u);
+		return cases[calls++].result;
+	});
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	for (const { name } of cases) {
+		route.script.push({ tool: "agent_command", args: { name, sessionId: target } });
+		await say(root, `Run ${name}`);
+	}
+	const results = (await toolOutcomes(harness, root.id)).filter(({ name }) => name === "agent_command");
+	assert.equal(results.length, cases.length);
+	for (const { result, details } of cases) {
+		const text = JSON.stringify(result);
+		assert.deepEqual(
+			results.find((outcome) => outcome.text === text),
+			{
+				name: "agent_command",
+				isError: false,
+				text,
+				details,
+			},
+		);
+	}
+});
+
+it("retains remote compaction task settlement separately from summary placement", async (t) => {
+	const route = createRoute();
+	const target = "another-storage";
+	const compaction = { identity: target, name: "Worker", before: { contextWindow: 1000 } };
+	const outcome = {
+		taskId: 7,
+		status: "completed",
+		summaryPlacement: "unanswered",
+		summaryReason: "withdrawn",
+		submissionId: 11,
+		compaction,
+	};
+	const { registry } = buildRegistry(async (method, params) => {
+		assert.equal(method, "compact");
+		assert.deepEqual(params, { sessionId: target, instructions: "Keep the parser notes." });
+		return { ...outcome, compaction: { ...compaction, internal: [1, 2] } };
+	});
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_compact", args: { sessionId: target, instructions: "Keep the parser notes." } });
+	await say(root, "Request remote compaction");
+	const result = (await toolOutcomes(harness, root.id)).find(({ name }) => name === "agent_compact");
+	assert.deepEqual(result, {
+		name: "agent_compact",
+		isError: false,
+		text: JSON.stringify({ ...outcome, compaction: { ...compaction, internal: [1, 2] } }),
+		details: outcome,
+	});
+});
+
 it("applies a self-compaction after the whole tool batch and continues the run", async (t) => {
 	const route = createRoute();
 	route.batch.push([
@@ -2384,6 +2468,17 @@ it("applies a self-compaction after the whole tool batch and continues the run",
 	const text = postBatch.map((message) => messageText(message)).join("\n");
 	assert.match(text, /SIBLING-OK/u, "the next request carries the sibling result");
 	assert.match(text, /Self-compaction requested/u, "the next request carries the compact result");
+	const receipt = (await toolOutcomes(harness, root.id)).find(({ name }) => name === "agent_compact");
+	assert.ok(receipt);
+	assert.equal(
+		receipt.text,
+		"Self-compaction requested for the end of this tool batch. The summary applies after the whole batch, and this run continues. This receipt does not establish that compaction occurred.",
+	);
+	const details = receipt.details as { taskId: number; status: string; compaction: unknown; summaryPlacement?: string };
+	assert.equal(details.status, "task");
+	assert.ok(Number.isInteger(details.taskId));
+	assert.deepEqual(details.compaction, { identity: storageId, self: true });
+	assert.equal(details.summaryPlacement, undefined);
 	assert.ok(
 		postBatch.some(
 			(message) =>

@@ -56,28 +56,37 @@ async function labelOf(deps: ResetTimerDeps, sessionId: string): Promise<string>
 	}
 }
 
+type ResetDetails = Pick<ResetResult, "status" | "submissionId" | "entryId" | "reason" | "deduped"> & {
+	readonly identity?: string;
+};
+
 export async function resetAgentContext(
 	deps: ResetTimerDeps,
 	input: { readonly sessionId: string; readonly handoff?: string },
-): Promise<ResetTimerOutcome> {
+): Promise<ResetTimerOutcome & { readonly details: ResetDetails }> {
 	const sessionId = requireSession(input.sessionId);
 	const handoff = input.handoff !== undefined && input.handoff.trim() !== "" ? input.handoff : undefined;
 	const result = (await deps.control("reset", {
 		sessionId,
 		...(handoff === undefined ? {} : { handoff }),
-	})) as ResetResult;
+	})) as ResetResult & { readonly identity?: string };
 	const label = await labelOf(deps, sessionId);
-	if (result.status === "placed")
-		return {
-			text: `Reset placed for “${label}”; the next input starts from the new context. History stays inspectable.`,
-			sessionId,
-		};
-	if (result.status === "queued")
-		return {
-			text: `Reset queued for “${label}”; it places at the next native boundary and starts no model turn.`,
-			sessionId,
-		};
-	return { text: `Reset did not place for “${label}”: ${result.reason ?? "unknown reason"}.`, sessionId };
+	const { status, submissionId, entryId, reason, deduped } = result;
+	const details: ResetDetails = {
+		status,
+		submissionId,
+		entryId,
+		reason,
+		deduped,
+		...(typeof result.identity === "string" ? { identity: result.identity } : {}),
+	};
+	const text =
+		status === "placed"
+			? `Reset placed for “${label}”; the next input starts from the new context. History stays inspectable.`
+			: status === "queued"
+				? `Reset queued for “${label}”; it places at the next native boundary and starts no model turn.`
+				: `Reset did not place for “${label}”: ${reason ?? "unknown reason"}.`;
+	return { text, sessionId, details };
 }
 
 export async function scheduleAgentInput(
@@ -217,11 +226,11 @@ export function createResetTimerActions(bind: (ctx: ExtensionContext) => ResetTi
 	];
 }
 
-function toolResult(value: { readonly text: string }): {
+function toolResult(value: { readonly text: string; readonly details: ResetDetails }): {
 	content: Array<{ type: "text"; text: string }>;
-	details: Record<string, unknown>;
+	details: ResetDetails & { readonly text: string };
 } {
-	return { content: [{ type: "text", text: value.text }], details: { text: value.text } };
+	return { content: [{ type: "text", text: value.text }], details: { text: value.text, ...value.details } };
 }
 
 /** Model-facing primary control for reset. Timer listing lives in `agent_status`; timer cancellation uses `agent_abort` with a `timerId`. */

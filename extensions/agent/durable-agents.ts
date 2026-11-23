@@ -334,6 +334,67 @@ function thinkingNotice(child: Pick<AgentChild, "thinking" | "selection">): stri
 
 type ControlDetails = Record<string, JsonValue>;
 
+function controlRecord(value: unknown): Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function controlFacts(
+	source: Record<string, unknown>,
+	strings: readonly string[],
+	numbers: readonly string[] = [],
+): ControlDetails {
+	const facts: ControlDetails = {};
+	for (const key of strings) {
+		const value = source[key];
+		if (typeof value === "string") facts[key] = value;
+	}
+	for (const key of numbers) {
+		const value = source[key];
+		if (typeof value === "number" && Number.isFinite(value)) facts[key] = value;
+	}
+	return facts;
+}
+
+function commandDetails(value: unknown, command: unknown): ControlDetails {
+	const result = controlRecord(value);
+	if (result.reloaded === true) {
+		const { contributions } = controlRecord(result.inventory);
+		return {
+			...controlFacts(result, ["sessionId"]),
+			reloaded: true,
+			...(Array.isArray(contributions) ? { contributionCount: contributions.length } : {}),
+		};
+	}
+	if (command === "tree" && typeof result.text !== "string") {
+		return typeof result.identity === "string" && typeof result.deduped === "boolean"
+			? { forkedIdentity: result.identity, deduped: result.deduped }
+			: {};
+	}
+	return controlFacts(result, ["name", "identity", "text"]);
+}
+
+function compactionDetails(value: unknown): ControlDetails {
+	const result = controlRecord(value);
+	const source = controlRecord(result.compaction);
+	const before = controlFacts(controlRecord(source.before), [], ["contextWindow"]);
+	const compaction = {
+		...controlFacts(
+			source,
+			["identity", "name", "provider", "modelId", "thinkingLevel", "metadataError"],
+			["summaryChars"],
+		),
+		...(Object.keys(before).length === 0 ? {} : { before }),
+	};
+	return {
+		...controlFacts(
+			result,
+			["status", "error", "summaryPlacement", "summaryReason", "summarySizeError"],
+			["taskId", "submissionId", "entryId"],
+		),
+		...(Object.keys(compaction).length === 0 ? {} : { compaction }),
+	};
+}
+
 function textResult(text: string, details: ControlDetails = {}): Durable.ToolExecutionResult<ControlDetails> {
 	return { output: [{ type: "text", text }], details };
 }
@@ -802,13 +863,17 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		sessionId === undefined || resolvesToSelf(sessionId, conversationId);
 
 	const hostControl = async (
-		method: AgentControlMethod,
+		method: "command" | "compact",
 		params: Readonly<Record<string, unknown>>,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		if (dispatch === undefined)
 			return errorResult(`Host control ${method} is unavailable: this contribution has no dispatch callback.`);
 		try {
-			return textResult(controlText(await dispatch(method, params)));
+			const value = await dispatch(method, params);
+			return textResult(
+				controlText(value),
+				method === "command" ? commandDetails(value, params.name) : compactionDetails(value),
+			);
 		} catch (error) {
 			return errorResult(`Host control ${method} failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
@@ -2364,7 +2429,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					if ("refusal" in admitted) return errorResult(admitted.refusal);
 					return textResult(
 						"Self-compaction requested for the end of this tool batch. The summary applies after the whole batch, and this run continues. This receipt does not establish that compaction occurred.",
-						admitted,
+						{
+							...admitted,
+							status: "task",
+							compaction: { identity: identity(api.conversationId), self: true },
+						},
 					);
 				}
 				const params: Record<string, unknown> = { sessionId: args.sessionId };
