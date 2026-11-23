@@ -210,6 +210,7 @@ test("drives one model-issued call per memory tool in a real Harness over Memory
 					Durable.hook(Durable.ToolTask, {
 						beforeTool: (call, api) => {
 							if (call.name === "memory_write") lastWriteTask = api.taskId;
+							return undefined;
 						},
 						afterTool: async (call, _result, api, context) => {
 							const task = await harness.getTask(api.taskId, context);

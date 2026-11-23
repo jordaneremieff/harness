@@ -31,7 +31,7 @@ const lines = (component: { render(width: number): readonly string[] }, width = 
 		.filter((line) => line !== "");
 const call = { expanded: false, argsComplete: true };
 const expandedCall = { expanded: true, argsComplete: true };
-const collapsed = { expanded: false, isPartial: false } satisfies ToolRenderResultOptions;
+const collapsed: ToolRenderResultOptions = { expanded: false, isPartial: false };
 const expandedView = { expanded: true, isPartial: false } satisfies ToolRenderResultOptions;
 const okContext = { isError: false };
 const errorContext = { isError: true };

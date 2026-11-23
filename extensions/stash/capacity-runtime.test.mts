@@ -464,10 +464,10 @@ test("an error above the stop threshold reports measured facts once per episode"
 		await host.prompt([
 			fauxAssistantMessage("failed", { stopReason: "error", errorMessage: "Synthetic provider failure" }),
 		]);
-	const failures = notices.filter((text) => text.includes("this turn failed while context use was"));
+	const failures = notices.filter((text) => text.startsWith("This turn failed at"));
 	assert.equal(failures.length, 1);
-	assert.match(failures[0], /Pi automatic compaction is disabled/);
-	assert.match(failures[0], /Remedies: \/compact/);
+	assert.match(failures[0], /96\.\d% context use; use \/compact/u);
+	assert.doesNotMatch(failures[0], /auto-compaction threshold/u);
 });
 
 test("three fully refused stop rounds terminate without a fourth provider request", { timeout: 20000 }, async (t) => {

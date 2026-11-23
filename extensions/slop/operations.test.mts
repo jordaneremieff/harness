@@ -22,7 +22,7 @@ import {
 } from "./store.ts";
 
 const cli = fileURLToPath(new URL("./cli.ts", import.meta.url));
-const entry: SaveFields = {
+const entry = {
 	id: "release-diary",
 	title: "Release diary",
 	domain: "code",
@@ -36,7 +36,7 @@ const entry: SaveFields = {
 		{ kind: "ts", verdict: "slop", text: "// release diary" },
 		{ kind: "ts", verdict: "better", text: "// Host permits one retry." },
 	],
-};
+} satisfies SaveFields;
 
 function fixture(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "slop-test-"));

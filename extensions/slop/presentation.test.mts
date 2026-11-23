@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { CustomMessageComponent, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
-import { type TUI, type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui";
+import { type KeyId, type TUI, type TuiMouseEvent, visibleWidth } from "@earendil-works/pi-tui";
 import { parseDetectors } from "./catalog.ts";
 import { CHECK_REQUEST, renderCheckRequest } from "./check-request.ts";
 import { checkPrompt, checkRequestDetails } from "./command.ts";
@@ -20,7 +20,7 @@ const nativeTui: typeof import("@earendil-works/pi-tui") = await import(
 );
 initTheme("dark", false);
 
-function binding(t: TestContext, keys: string | string[]) {
+function binding(t: TestContext, keys: KeyId | KeyId[]) {
 	const previous = nativeTui.getKeybindings();
 	nativeTui.setKeybindings(
 		new nativeTui.KeybindingsManager({

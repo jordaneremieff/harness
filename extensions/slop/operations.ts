@@ -157,7 +157,12 @@ type CatalogListDetails = {
 	updated?: number;
 };
 
-export function inspectStarter(comparison: ReturnType<typeof compareStarter>, id?: string) {
+type CatalogReceipt = {
+	content: ReturnType<typeof textBlock>;
+	details: { summary: string; list?: CatalogListDetails };
+};
+
+export function inspectStarter(comparison: ReturnType<typeof compareStarter>, id?: string): CatalogReceipt {
 	if (id !== undefined) {
 		const item = comparison.find(({ entry }) => entry.id === id);
 		if (!item) throw new Error(`No starter entry named ${id}.`);
@@ -180,7 +185,7 @@ export function inspectStarter(comparison: ReturnType<typeof compareStarter>, id
 	return { content: textBlock(lines.join("\n")), details: { summary: `${comparison.length} starter entries`, list } };
 }
 
-export function inspectCatalog(options: ReadOptions, args: ViewArgs) {
+export function inspectCatalog(options: ReadOptions, args: ViewArgs): CatalogReceipt {
 	if ((args.entry !== undefined || args.starter) && (args.scope !== undefined || args.query !== undefined))
 		throw new Error("Use scope and query only to filter the catalog inventory.");
 	const { dir, prompt } = readSettings(options).values;
@@ -217,8 +222,8 @@ export function inspectCatalog(options: ReadOptions, args: ViewArgs) {
 		count: selected.length,
 		rows,
 		hasGuidance: Boolean(fresh || updated),
-		...(fresh ? { fresh } : {}),
-		...(updated ? { updated } : {}),
+		fresh,
+		updated,
 	};
 	return { content: textBlock(lines.join("\n")), details: { summary: `${selected.length} slop entries`, list } };
 }
