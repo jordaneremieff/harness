@@ -86,19 +86,19 @@ function render(value: JobCompletionDetails, expanded = false, key = "ctrl+o", w
 test("the header reports the known full identity, outcome, exit code, duration and command", () => {
 	assert.deepEqual(completionHeader(details()), {
 		label: "Job 7 succeeded",
-		facts: ["exit 0", "10.0s", "command preview: npm test"],
+		facts: ["exit 0", "10.0s", "command preview npm test"],
 	});
 	assert.deepEqual(completionHeader(details({ status: "failed", exitCode: 2, endedAt: 3_500 })), {
 		label: "Job 7 failed",
-		facts: ["exit 2", "2.5s", "command preview: npm test"],
+		facts: ["exit 2", "2.5s", "command preview npm test"],
 	});
 	assert.deepEqual(completionHeader(details({ status: "timed_out", exitCode: null, endedAt: 91_000 })), {
 		label: "Job 7 timed out",
-		facts: ["1m 30s", "command preview: npm test"],
+		facts: ["1m 30s", "command preview npm test"],
 	});
 	assert.deepEqual(completionHeader(details({ status: "lost", exitCode: undefined, endedAt: undefined })), {
 		label: "Job 7 lost",
-		facts: ["command preview: npm test"],
+		facts: ["command preview npm test"],
 	});
 	assert.deepEqual(completionHeader({ job: { id: "7", status: "running", exitCode: NaN } }), {
 		label: "Completion notice for job 7",
@@ -119,7 +119,7 @@ test("the label has its own colour, the title and body use the message colour, a
 	assert.ok(colors.some(({ color, value }) => color === "customMessageLabel" && value === "[jobs]"));
 	assert.ok(colors.some(({ color, value }) => color === "customMessageText" && value === "Job 7 succeeded"));
 	assert.ok(
-		colors.some(({ color, value }) => color === "muted" && value === "exit 0 · 10.0s · command preview: npm test"),
+		colors.some(({ color, value }) => color === "muted" && value === "exit 0 · 10.0s · command preview npm test"),
 	);
 	assert.ok(colors.some(({ color, value }) => color === "customMessageText" && value === "line 4"));
 });
@@ -135,7 +135,7 @@ test("a collapsed receipt summary shows the last output lines and an uncounted h
 });
 
 test("the count covers only hidden visual rows of the same body", () => {
-	const value = details({}, `${"x".repeat(55)}\nsecond\nthird\nfourth`);
+	const value = { ...details({}, `${"x".repeat(55)}\nsecond\nthird\nfourth`), command: "" };
 	const card = renderJobCompletionMessage(message(value, value.tail.text), options(false), theme);
 	assert.ok(card);
 	assert.deepEqual(
@@ -180,7 +180,7 @@ test("the preview wraps errors and outcomes as prose and stays within three visu
 	]);
 	assert.deepEqual(render(details({ status: "lost", exitCode: undefined, endedAt: undefined }, "", 0)).slice(1, 5), [
 		" [jobs] Job 7 lost",
-		" command preview: npm test",
+		" command preview npm test",
 		"",
 		" Output is unavailable after host loss.",
 	]);
@@ -195,23 +195,22 @@ test("the preview wraps errors and outcomes as prose and stays within three visu
 	assert.doesNotMatch(body.join("\n"), /END/u);
 });
 
-test("long output lines and facts clip with one ellipsis and keep the row background", () => {
-	const long = details({}, `short\n${"x".repeat(200)}`, 210);
-	const lines = render({ ...long, command: `npm test ${"-- extensions/jobs ".repeat(10)}` }, false, "ctrl+o", 64);
-	assert.match(lines[2] ?? "", /^ exit 0 · 10\.0s · command preview: npm test .*…$/u);
-	assert.match(lines[5] ?? "", /^ x+…$/u);
+test("clipped facts keep their colour and the row background", () => {
+	const long = { ...details(), command: `npm test ${"x".repeat(200)}` };
+	const lines = render(long, false, "ctrl+o", 64);
+	assert.match(lines[2] ?? "", /^ exit 0 · 10\.0s · command preview npm test x+…$/u);
 	assert.doesNotMatch(lines.join("\n"), /\.\.\.(?! \()/u, "clipped rows end in … rather than ...");
 	const component = renderJobCompletionMessage(message(long), options(false), ansiTheme);
 	assert.ok(component);
-	for (const row of component.render(30)) {
-		assert.equal(visibleWidth(row), 30);
+	for (const row of component.render(64)) {
+		assert.equal(visibleWidth(row), 64);
 		assert.ok(row.startsWith("\x1b[48;5;2m"), "each row starts on the message background");
 		assert.doesNotMatch(row, /\x1b\[0m(?!\x1b\[48;5;2m)/u, "a reset never ends the background inside the row");
 	}
-	const clipped = component.render(30).find((row) => stripVTControlCharacters(row).includes("x…")) ?? "";
+	const clipped = component.render(64).find((row) => stripVTControlCharacters(row).includes("x…")) ?? "";
 	assert.match(
 		clipped,
-		/\x1b\[38;5;1mx+…\x1b\[[\d;]*39m/u,
+		/\x1b\[38;5;1m[^\x1b]+x+…\x1b\[[\d;]*39m/u,
 		"the ellipsis keeps the line's own colour and only then resets the foreground",
 	);
 });
@@ -219,7 +218,7 @@ test("long output lines and facts clip with one ellipsis and keep the row backgr
 test("an expanded card shows the header, a blank line and the whole message text without a hint", () => {
 	const value = details({}, "# build\n**literal**\n| one | two |");
 	const lines = render(value, true);
-	assert.deepEqual(lines.slice(1, 4), [" [jobs] Job 7 succeeded", " exit 0 · 10.0s · command preview: npm test", ""]);
+	assert.deepEqual(lines.slice(1, 4), [" [jobs] Job 7 succeeded", " exit 0 · 10.0s · command preview npm test", ""]);
 	const text = lines.join("\n");
 	for (const line of completionContent(value).split("\n")) assert.ok(text.includes(line.slice(0, 40)), line);
 	assert.doesNotMatch(text, /to expand/u);
@@ -295,7 +294,10 @@ test("Pi's custom message shell supplies disclosure keys, theme, padding and cli
 			"app.tools.expand": { defaultKeys: keys, description: "Toggle tool output" },
 		});
 	nativeTui.setKeybindings(bindings([]));
-	const value = details({ id: "d5b9bde7-6e43-4a07-a284-f022679d4be9" }, "short\n**literal**\n" + "界".repeat(65));
+	const value = details(
+		{ id: "d5b9bde7-6e43-4a07-a284-f022679d4be9", status: "failed", error: "Build failed" },
+		`START${"界".repeat(110)}END\n**literal**`,
+	);
 	const stored = message(value);
 	let hostTheme: Theme | undefined;
 	const card = new CustomMessageComponent(stored, (entry, opts, colors) => {
@@ -307,20 +309,22 @@ test("Pi's custom message shell supplies disclosure keys, theme, padding and cli
 	assert.deepEqual(rows.slice(0, 5), [
 		"",
 		"",
-		` [jobs] Job ${value.job.id} succeeded`,
-		" exit 0 · 10.0s · command preview: npm test",
+		` [jobs] Job ${value.job.id} failed`,
+		" exit 0 · 10.0s · command preview npm test",
 		"",
 	]);
-	assert.equal(rows[6], " **literal**");
-	assert.match(rows[7] ?? "", /^ 界+…$/u);
+	assert.equal(rows[5], " Build failed");
+	assert.match(rows[6] ?? "", /^ 界+END$/u);
+	assert.equal(rows[7], " **literal**");
+	assert.doesNotMatch(rows.join("\n"), /START/u);
 	assert.deepEqual(rows.slice(-2), [" ... (click to expand)", ""]);
 	assert.ok(hostTheme);
 	assert.ok(card.render(90)[2]?.includes(hostTheme.fg("customMessageLabel", hostTheme.bold("[jobs]"))));
 	assert.ok(
-		card.render(90)[2]?.includes(hostTheme.fg("customMessageText", hostTheme.bold(`Job ${value.job.id} succeeded`))),
+		card.render(90)[2]?.includes(hostTheme.fg("customMessageText", hostTheme.bold(`Job ${value.job.id} failed`))),
 	);
-	assert.ok(card.render(90)[6]?.includes(hostTheme.fg("customMessageText", "**literal**")));
-	assert.ok(card.render(90)[3]?.includes(hostTheme.fg("muted", "exit 0 · 10.0s · command preview: npm test")));
+	assert.ok(card.render(90)[7]?.includes(hostTheme.fg("customMessageText", "**literal**")));
+	assert.ok(card.render(90)[3]?.includes(hostTheme.fg("muted", "exit 0 · 10.0s · command preview npm test")));
 	assert.ok(card.render(90)[3]?.startsWith(hostTheme.getBgAnsi("customMessageBg")));
 	assert.match(body(26)[2] ?? "", /^ \[jobs\] Job .+…$/u);
 	assert.ok(card.render(26).every((row) => visibleWidth(row) <= 26));
@@ -338,9 +342,22 @@ test("Pi's custom message shell supplies disclosure keys, theme, padding and cli
 	assert.ok(card.render(90).at(-2)?.includes(hostTheme.fg("dim", "ctrl+p")));
 
 	nativeTui.setKeybindings(bindings([]));
-	const single = details({}, "only output");
+	const single = { ...details({ id: value.job.id }, "only output"), command: `printf ${"x".repeat(35)}END-OF-COMMAND` };
 	const same = new CustomMessageComponent(message(single, single.tail.text), renderJobCompletionMessage);
-	assert.doesNotMatch(same.render(90).join("\n"), /to expand/u);
+	const sameRows = (width: number) => same.render(width).map((row) => stripVTControlCharacters(row).trim());
+	assert.doesNotMatch(sameRows(110).join("\n"), /to expand/u);
+	const clipped = sameRows(34);
+	assert.ok(clipped[2]?.endsWith("…"));
+	assert.ok(clipped[3]?.endsWith("…"));
+	assert.deepEqual(
+		clipped.filter((row) => row.includes("to expand")),
+		["... (click to expand)"],
+	);
+	same.setExpanded(true);
+	const expanded = sameRows(34).join("");
+	assert.ok(expanded.includes(single.job.id));
+	assert.ok(expanded.includes("END-OF-COMMAND"));
+	assert.doesNotMatch(expanded, /…|to expand/u);
 });
 
 test("a left click anywhere on the card toggles it, as on Pi's cards, and Pi's global expansion resets the choice", () => {

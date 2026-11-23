@@ -291,7 +291,7 @@ describe("the jobs_yield card", () => {
 		assert.equal(lines[1], " jobs_yield Turn ended");
 		assert.equal(lines[2], " 1 job still runs · 1 job completion pending · 09:05");
 		assert.equal(lines.length, 9, "padding, title, facts, blank, three note lines, hint, padding");
-		assert.equal(lines[7], " ... (ctrl+o to expand)");
+		assert.match(lines[7] ?? "", /^ \.\.\. \(\d+ more lines?, ctrl\+o to expand\)$/u);
 		assert.doesNotMatch(lines.join("\n"), /npm test|starts the next turn/u, "details wait for expansion");
 		assert.equal(
 			plain(row({}, { ...details, note: "Short note." }).result?.render(100)).at(-2),
@@ -300,7 +300,7 @@ describe("the jobs_yield card", () => {
 		const hinted = plain(
 			row({ keyHint: (id: string, description: string) => `[${id}] ${description}` }).result?.render(100),
 		);
-		assert.equal(hinted[7], " ... ([app.tools.expand] to expand)");
+		assert.match(hinted[7] ?? "", /^ \.\.\. \(\d+ more lines?, \[app\.tools\.expand\] to expand\)$/u);
 	});
 
 	it("expands to the whole note, the jobs and what starts the next turn", () => {
@@ -404,7 +404,7 @@ describe("the jobs_yield card", () => {
 				ctrl: false,
 				clickCount: 1,
 			} as never);
-		assert.match(lines().join("\n"), /\.\.\. \(ctrl\+o to expand\)/u);
+		assert.match(lines().join("\n"), /\.\.\. \(\d+ more lines?, ctrl\+o to expand\)/u);
 		const noteRow = lines().findIndex((line) => line.includes("The test suite and the lint"));
 		assert.ok(noteRow > 0);
 		assert.equal(click(noteRow)?.handled, true);

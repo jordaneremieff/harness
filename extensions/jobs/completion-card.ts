@@ -1,5 +1,12 @@
 import type { MessageRenderer, MessageRenderOptions, Theme } from "@earendil-works/pi-coding-agent";
-import { Box, MouseRegion, truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
+import {
+	Box,
+	MouseRegion,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+	type Component,
+} from "@earendil-works/pi-tui";
 import { displayText } from "./completion.ts";
 import { formatDuration } from "./presentation.ts";
 
@@ -45,7 +52,7 @@ export function completionHeader(details: unknown): { label: string; facts: stri
 	if (finite(job.startedAt) && finite(job.endedAt) && job.endedAt >= job.startedAt)
 		facts.push(formatDuration(job.endedAt - job.startedAt));
 	const command = oneLine(data.command);
-	if (command) facts.push(`command preview: ${command}`);
+	if (command) facts.push(`command preview ${command}`);
 	return { label, facts };
 }
 
@@ -147,14 +154,11 @@ class CompletionBody implements Component {
 		this.expanded = disclosedExpansion(message, options.expanded);
 		this.content = bodyLines(content);
 	}
-	private header(width: number): string[] {
+	private header(): string[] {
 		const theme = this.theme;
 		const { label, facts } = completionHeader(this.details);
-		const title = clipRow(
-			`${theme.fg("customMessageLabel", theme.bold("[jobs]"))} ${theme.fg("customMessageText", theme.bold(label))}`,
-			width,
-		);
-		return facts.length ? [title, clipRow(theme.fg("muted", facts.join(" · ")), width)] : [title];
+		const title = `${theme.fg("customMessageLabel", theme.bold("[jobs]"))} ${theme.fg("customMessageText", theme.bold(label))}`;
+		return facts.length ? [title, theme.fg("muted", facts.join(" · "))] : [title];
 	}
 	private preview(
 		width: number,
@@ -173,7 +177,8 @@ class CompletionBody implements Component {
 		}
 		const lines = prose.flatMap((paragraph) => wrapTextWithAnsi(paragraph, width)).slice(0, COMPLETION_PREVIEW_LINES);
 		const room = COMPLETION_PREVIEW_LINES - lines.length;
-		if (room > 0) lines.push(...trimBlank(output.slice(-room)));
+		if (room > 0 && output.length > 0)
+			lines.push(...trimBlank(wrapTextWithAnsi(output.join("\n"), width).slice(-room)));
 		const sameRows = full.length === lines.length && full.every((line, i) => line.trimEnd() === lines[i]?.trimEnd());
 		return { lines, hidden: full.length > 0 && !sameRows ? "details" : undefined };
 	}
@@ -188,12 +193,18 @@ class CompletionBody implements Component {
 		const full = this.content.length > 0 ? wrapTextWithAnsi(this.content.join("\n"), width) : [];
 		const { prose, output, omitted } = completionPreview(this.details);
 		const body = this.expanded ? { lines: full, hidden: undefined } : this.preview(width, full, prose, output);
+		const header = this.header();
+		const limit = omitted ? [this.theme.fg("warning", "[Excerpt: earlier output omitted]")] : [];
+		const format = (rows: string[]) =>
+			this.expanded ? rows.flatMap((row) => wrapTextWithAnsi(row, width)) : rows.map((row) => clipRow(row, width));
+		const clipped = !this.expanded && [...header, ...limit].some((row) => visibleWidth(row) > width);
+		const hidden = body.hidden ?? (clipped ? "details" : undefined);
 		const lines = [
-			...this.header(width),
+			...format(header),
 			...(body.lines.length || omitted ? [""] : []),
 			...body.lines.map((line) => clipRow(this.theme.fg("customMessageText", line), width)),
-			...(omitted ? [clipRow(this.theme.fg("warning", "[Excerpt: earlier output omitted]"), width)] : []),
-			...(body.hidden === undefined ? [] : [clipRow(expansionHint(this.theme, this.options, body.hidden), width)]),
+			...format(limit),
+			...(hidden === undefined ? [] : [clipRow(expansionHint(this.theme, this.options, hidden), width)]),
 		];
 		this.cache = { width, lines };
 		return lines;

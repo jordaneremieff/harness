@@ -109,7 +109,7 @@ function jobOutcome(job: JobView, admitted: boolean): string {
 	}
 }
 
-function jobFacts(job: JobView, showId = true): string[] {
+function jobFacts(job: JobView, showId = true, evidence = false): string[] {
 	const id = lineOf(job.id);
 	const cwd = lineOf(job.cwd);
 	const command = lineOf(job.commandPreview);
@@ -126,9 +126,9 @@ function jobFacts(job: JobView, showId = true): string[] {
 		job.status !== "cancelled"
 			? "cancellation requested"
 			: undefined,
-		directory ? `directory: ${directory}` : undefined,
+		directory && evidence ? `directory: ${directory}` : directory,
 		lineOf(job.owner),
-		command ? `command preview: ${command}` : undefined,
+		command ? `command preview${evidence ? ":" : ""} ${command}` : undefined,
 	].filter((fact): fact is string => fact !== undefined);
 }
 
@@ -179,7 +179,7 @@ interface CallCopy {
 
 function jobsCall(args: unknown): CallCopy {
 	const call = record(args);
-	const cursor = knownNumber(call?.cursor) ? `cursor: ${call.cursor}` : undefined;
+	const cursor = knownNumber(call?.cursor) ? `cursor ${call.cursor}` : undefined;
 	return {
 		name: "jobs",
 		subject: [lineOf(call?.action), lineOf(call?.id)].filter(Boolean).join(" "),
@@ -211,9 +211,8 @@ function callRows(copy: CallCopy, width: number, theme: Theme, expanded: boolean
 	rows.push(...shown.map((line) => theme.fg("toolOutput", line)));
 	if (expanded && cursor) rows.push(...wrapped(cursor, width).map((line) => theme.fg("muted", line)));
 	const hidden =
-		cursor || headings.some((line) => visibleWidth(line) > width)
-			? "details"
-			: visual.length - shown.length || undefined;
+		visual.length - shown.length ||
+		(cursor || headings.some((line) => visibleWidth(line) > width) ? "details" : undefined);
 	return { rows, hidden };
 }
 
@@ -261,7 +260,7 @@ function logsCopy(logs: Record<string, unknown>, earliest: number, args: unknown
 		outcome,
 		body: typeof logs.text === "string" ? textOf(logs.text) : undefined,
 		details: [
-			...jobFacts({ ...job, id }),
+			...jobFacts({ ...job, id }, true, true),
 			`earliest byte: ${earliest}`,
 			...(next === undefined ? [] : [`next byte: ${next}`]),
 			...(knownNumber(logs.end) ? [`end byte: ${logs.end}`] : []),
@@ -360,12 +359,9 @@ function renderResult(
 			const callHidden = callRows(call, width, theme, false).hidden;
 			const bodyHidden = body.length - shown.length;
 			const hidden =
-				copy.details?.length ||
-				(copy.limit && visibleWidth(copy.limit) > width) ||
-				callHidden === "details" ||
-				(callHidden && bodyHidden)
-					? "details"
-					: callHidden || bodyHidden;
+				bodyHidden ||
+				callHidden ||
+				(copy.details?.length || (copy.limit && visibleWidth(copy.limit) > width) ? "details" : undefined);
 			if (hidden) rows.push(...expansionHint(theme, context, width, hidden));
 		}
 		return rows.map((row) => clipRow(row, width));
@@ -496,11 +492,9 @@ function yieldCard(facts: YieldFacts, theme: Theme, context: RenderContext): Com
 				const noteHidden = note.length - shown.length;
 				const errorHidden = diagnostic.length - errorRows.length;
 				const hidden =
-					(facts.settled && !error) ||
-					headings.some((line) => visibleWidth(line) > inner) ||
-					(noteHidden && errorHidden)
-						? "details"
-						: noteHidden || errorHidden;
+					noteHidden ||
+					errorHidden ||
+					((facts.settled && !error) || headings.some((line) => visibleWidth(line) > inner) ? "details" : undefined);
 				if (hidden) rows.push(...expansionHint(theme, context, inner, hidden, !facts.settled));
 			}
 			const color = error ? "toolErrorBg" : "customMessageBg";

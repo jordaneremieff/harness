@@ -92,7 +92,7 @@ test("Pi shows a managed status with full identity and a bounded snapshot clock"
 		"Job recorded as running at observation.",
 		"elapsed 1.5s at observation",
 	]);
-	assert.match(status.text(), /elapsed 1\.5s at observation\ndirectory: ~\/work\nsession\ncommand preview: npm test/u);
+	assert.match(status.text(), /elapsed 1\.5s at observation\n~\/work\nsession\ncommand preview npm test/u);
 	assert.doesNotMatch(status.text(), /unknown|to expand|Do not poll/u);
 	const narrow = status.rows(32);
 	assert.match(narrow[2] ?? "", /^jobs status .+…$/u);
@@ -181,12 +181,21 @@ test("list pages distinguish an empty list, an empty partial page and the exact 
 	complete.result({ jobs: [] });
 	assert.match(complete.text(), /No jobs\./u);
 	assert.doesNotMatch(complete.text(), /expand/u);
-	complete.result({
-		jobs: Array.from({ length: 6 }, (_, i) => ({ id: String(i), commandPreview: `fixture ${i}`, status: "succeeded" })),
-	});
-	assert.match(complete.text(), /Listed 6 jobs\.\nsucceeded · job 0 · command preview: fixture 0/u);
+	const jobs = Array.from({ length: 6 }, (_, i) => ({
+		id: String(i),
+		commandPreview: `fixture ${i}`,
+		status: "succeeded",
+	}));
+	complete.result({ jobs });
+	assert.match(complete.text(), /Listed 6 jobs\.\nsucceeded · job 0 · command preview fixture 0/u);
 	assert.doesNotMatch(complete.text(), /fixture 5/u);
 	assertHintAtEnd(complete.rows(), /1 more line, ctrl\+p to expand/u);
+	complete.result({ jobs, nextTaskCursor: cursor });
+	assertHintAtEnd(complete.rows(), /1 more line, ctrl\+p to expand/u);
+	complete.component.setExpanded(true);
+	assert.equal(complete.rows().filter((row) => row.startsWith("Listed 6 jobs")).length, 1);
+	assert.match(complete.text(), /fixture 5/u);
+	assert.match(complete.text(), /Continue with jobs/u);
 });
 
 test("log pages show retained bytes, a real gap, pending UTF-8 and the full continuation call", () => {
@@ -202,7 +211,7 @@ test("log pages show retained bytes, a real gap, pending UTF-8 and the full cont
 			pendingBytes: 2,
 			gap: true,
 			more: true,
-			job: { id: fullId, status: "running", error: "backend detail" },
+			job: { id: fullId, status: "running", cwd: "/work/logs", commandPreview: "printf out", error: "backend detail" },
 		},
 		"Do not poll for completion.",
 	);
@@ -211,9 +220,11 @@ test("log pages show retained bytes, a real gap, pending UTF-8 and the full cont
 		/Read 50 bytes from retained logs; more output is available; 2 bytes in an incomplete UTF-8 suffix\./u,
 	);
 	assert.match(logs.text(), /\*\*literal\*\*\nline {3}red!\n\[Excerpt: earlier output was discarded\]/u);
-	assert.doesNotMatch(logs.text(), /backend detail|Do not poll|cursor":150/u);
+	assert.match(logs.text(), /^cursor 25$/mu);
+	assert.doesNotMatch(logs.text(), /backend detail|Do not poll|cursor:|cursor":150/u);
 	assertHintAtEnd(logs.rows(), /^\.\.\. \(click to expand\)$/u);
 	logs.component.setExpanded(true);
+	assert.match(logs.text(), /directory: \/work\/logs\ncommand preview: printf out/u);
 	assert.match(logs.text(), /earliest byte: 100\nnext byte: 150\nend byte: 170\nExecution error: backend detail/u);
 	assert.ok(logs.text().includes(`Continue with jobs ${JSON.stringify({ action: "logs", id: fullId, cursor: 150 })}`));
 	assert.doesNotMatch(logs.text(), /Truncated|to expand/u);
