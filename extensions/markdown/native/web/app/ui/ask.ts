@@ -706,20 +706,28 @@
 			session.current = null;
 			return true;
 		}
-		function restoreBatch(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
-			owner.comments.unshift(...(thread.comments ?? []));
-			restoreOverall(thread.overall, message.authoredRevision, owner);
-			const index = owner.threads.indexOf(thread);
-			if (index >= 0) owner.threads.splice(index, 1);
-			const next: ReaderThread | null = thread.draft
+		function followUpDraft(thread: ReaderThread): ReaderThread | null {
+			return thread.draft
 				? { threadId: "", draft: thread.draft, draftRevision: thread.draftRevision, messages: [] }
 				: null;
+		}
+		function restoreFollowUp(owner: ReaderAskDocument, thread: ReaderThread) {
+			const next = followUpDraft(thread);
 			if (next) owner.threads.unshift(next);
 			if (owner.heldThread === thread) owner.heldThread = null;
 			if (owner.current === thread) {
 				owner.current = next;
 				owner.visible &&= !!next;
 			}
+			return next;
+		}
+		function restoreBatch(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
+			const index = owner.threads.indexOf(thread);
+			if (index < 0 || !thread.comments) return;
+			owner.threads.splice(index, 1);
+			owner.comments.unshift(...thread.comments);
+			restoreOverall(thread.overall, message.authoredRevision, owner);
+			const next = restoreFollowUp(owner, thread);
 			sessions.forget(message);
 			pendingChanged(owner);
 			const detail = message.detail ?? "The conversation did not accept it.";
@@ -924,6 +932,16 @@
 			if (messages) messages.scrollTop = messages.scrollHeight;
 			card.scrollTop = card.scrollHeight;
 		}
+		function drawQuote(thread: ReaderThread) {
+			if (!thread.comments)
+				card.append(
+					el(
+						"div",
+						{ class: "quote" },
+						el("span", {}, thread.quote ?? `About ${String(controller.payload?.meta.title ?? "this document")}`),
+					),
+				);
+		}
 		function draw() {
 			if (!session.current || !session.visible) {
 				card.removeAttribute("data-open");
@@ -938,14 +956,7 @@
 			card.dataset.state = activeMessage(thread)?.state ?? "draft";
 			card.setAttribute("data-open", "");
 			card.append(drawHead(thread));
-			if (!thread.comments)
-				card.append(
-					el(
-						"div",
-						{ class: "quote" },
-						el("span", {}, thread.quote ?? `About ${String(controller.payload?.meta.title ?? "this document")}`),
-					),
-				);
+			drawQuote(thread);
 			drawConversation(thread);
 			card.append(composer(thread, !!activeMessage(thread)));
 			revealLatest(thread);
@@ -957,21 +968,23 @@
 				field?.setSelectionRange(focused.start, focused.end);
 			}
 		}
+		function currentVersion() {
+			if (!controller.doc || controller.payload?.meta.documentKey !== session.documentKey) return undefined;
+			return version();
+		}
+		const delivery = api.createAskDelivery(
+			sessions,
+			currentVersion,
+			async (packet) => (await host.request("prompt", packet)) as ReaderPromptReceipt,
+		);
 		function receivePrompt(value: unknown) {
-			const msg = value as {
-				documentKey?: string;
-				requestId: string;
-				threadId: string;
-				state: ReaderAskState;
-				detail?: string;
-			};
-			const delivery = sessions.delivery(msg.requestId, msg.threadId);
-			if (!delivery || (msg.documentKey !== undefined && msg.documentKey !== delivery.owner.documentKey)) return;
-			const { owner, message } = delivery;
-			// Admission evidence from the original request resolves an earlier transport uncertainty.
-			if (message.state === "unknown" && ["sent", "admitted", "working"].includes(msg.state)) message.state = msg.state;
-			else message.state = api.uiLogic.promptTransition(message.state, msg.state);
-			if (message.state === msg.state) message.detail = msg.detail;
+			const result = delivery.update(value as ReaderPromptEvent);
+			if (!result) return;
+			const { owner, thread, message } = result;
+			if (message.state === "failed" && thread.comments && thread.messages[0] === message) {
+				retryBatch.delete(message);
+				restoreBatch(owner, thread, message);
+			}
 			if (owner === session) ask.refresh();
 		}
 		function newMessage(thread: ReaderThread) {
@@ -996,49 +1009,22 @@
 			ctx.notice("Finish the composition before sending the question.", "warn");
 			return false;
 		}
+		function canSend(thread: ReaderThread, retry?: ReaderAskMessage) {
+			if (retry) return retry === activeMessage(thread);
+			return thread.draft.trim() && !pending(thread) && quoteFits(thread.quote);
+		}
 		async function sendMessage(retry?: ReaderAskMessage) {
-			const thread = session.current;
-			if (!thread || (!retry && (!thread.draft.trim() || pending(thread) || !quoteFits(thread.quote)))) return;
-			if (!releaseEditor()) return;
-			await sendAttempt(session, thread, retry ?? newMessage(thread));
+			const owner = session,
+				thread = owner.current;
+			if (!thread || !canSend(thread, retry) || !releaseEditor()) return;
+			if (owner !== session || session.current !== thread || !currentVersion()) return;
+			await sendAttempt(owner, thread, retry ?? newMessage(thread));
 			if (thread === session.current) ask.refresh();
 		}
 		async function sendAttempt(owner: ReaderAskDocument, thread: ReaderThread, message: ReaderAskMessage) {
-			message.state = "sending";
-			message.retryable = false;
-			ask.refresh();
-			for (let attempt = 0; attempt < 2; attempt++) {
-				const packet = sessions.packet(thread, message, version());
-				try {
-					const receipt = (await host.request("prompt", packet)) as {
-						accepted: boolean;
-						uncertain?: true;
-						retryable?: boolean;
-						fresh?: true;
-						detail?: string;
-					};
-					if (receipt.fresh) {
-						// Native confirmed that this request never entered the conversation. Only then is a new base safe.
-						sessions.releasePacket(message);
-						if (
-							!attempt &&
-							owner === session &&
-							(packet.presentation !== controller.payload?.presentation ||
-								packet.generation !== controller.doc?.generation)
-						)
-							continue;
-					}
-					receiveReceipt(message, receipt);
-					if (receipt.accepted) sessions.releasePacket(message);
-				} catch (error) {
-					if (message.state === "sending") {
-						message.state = "unknown";
-						message.retryable = true;
-						message.detail = String(error);
-					}
-				}
-				break;
-			}
+			const pending = delivery.submit(owner, thread, message);
+			if (owner === session) ask.refresh();
+			await pending;
 		}
 		// The held request belongs to the document where the passage was open.
 		function noteHeld() {
@@ -1073,16 +1059,6 @@
 			void sendAttempt(session, thread, message).then(() => {
 				if (thread === session.current) ask.refresh();
 			});
-		}
-		function receiveReceipt(message: ReaderAskMessage, value: unknown) {
-			const receipt = value as { accepted: boolean; uncertain?: true; retryable?: boolean; detail?: string };
-			const state = receipt.uncertain ? "unknown" : receipt.accepted ? "sent" : "failed";
-			// A delayed transport receipt must not undo proven admission or progress.
-			if ((state === "unknown" || state === "failed") && ["sent", "admitted", "working"].includes(message.state))
-				return;
-			message.state = api.uiLogic.promptTransition(message.state, state);
-			message.retryable = message.state === "unknown" && receipt.retryable === true;
-			if (message.state === "failed" && state === "failed") message.detail = receipt.detail;
 		}
 		function undoLabel(op: ReaderAgentOperation, latest = false) {
 			if (op.edits.length === 1) return latest ? "Undo latest change" : "Undo";
