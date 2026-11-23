@@ -60,7 +60,7 @@ it("pages one recipient across empty filtered pages and a captured append-only t
 			(cursor) => harness.commit((tx) => receiptReferencePage(tx, storageId, selected, cursor), context),
 			async (id) => ({ note: id !== 81, model: true }),
 		),
-		{ wake: true, onlyNotes: false },
+		{ wake: true, onlyNotes: false, result: { sessionId: storageId, submissionId: 81, requestId: "input-81" } },
 	);
 	assert.deepEqual(first.results, []);
 	assert.equal(first.complete, false);

@@ -1,5 +1,5 @@
 import { onStoredCommit } from "./commit-observation.ts";
-import { parseCommunication } from "./communication.ts";
+import { parseCommunication, parseCommunicationPassive } from "./communication.ts";
 import {
 	receiptSourceIdentity,
 	deliveryState as readRetainedDelivery,
@@ -1217,17 +1217,31 @@ for (const origin of [undefined, "unknown"])
 	});
 
 for (const route of ["primary", "same-storage", "catalog"] as const)
-	it(`delivers an exact long-answer continuation through the ${route} route`, { timeout: 10000 }, async (t) => {
+	it(`delivers a result continuation after the inline answer through the ${route} route`, {
+		timeout: 10000,
+	}, async (t) => {
 		const root = fixtureRoot(t);
 		const sessionsRoot = join(root, "sessions");
 		const sourcePath = join(root, "source.sqlite");
-		const answer = `${"x".repeat(17000)}EXACT-END`;
+		const prefix = "x".repeat(2399);
+		const suffix = `😀${"y".repeat(15000)}ANSWER-END`;
+		const answer = prefix + suffix;
 		const source = await DurableHost.open(
 			{
 				storagePath: sourcePath,
 				storageId: "11111111-1111-4111-8111-111111111111",
 				cwd: root,
-				models: await scriptedRuntime([answerMessage(answer), answerMessage("RECEIVED")]),
+				models: await scriptedRuntime([
+					{
+						...answerMessage(),
+						content: [
+							{ type: "text", text: prefix },
+							{ type: "thinking", thinking: "not answer text" },
+							{ type: "text", text: suffix },
+						],
+					},
+					answerMessage("RECEIVED"),
+				]),
 				registry: fixtureRegistry(),
 				agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
 			},
@@ -1315,37 +1329,39 @@ for (const route of ["primary", "same-storage", "catalog"] as const)
 		);
 		const receipt = (await deliveryState(source))?.receipts[String(submitted.submissionId)];
 		assert.ok(receipt);
-		assert.equal(receipt.answer?.length, 1200);
+		assert.equal(receipt.answer, prefix);
+		assert.equal(receipt.answerTruncated, true);
+		assert.equal(receipt.answerLength, answer.length);
 		const continuation = {
 			tool: "agent_inspect",
+			view: "result",
 			sessionId: `${source.storageId}:${producer.id}`,
-			view: "exact",
-			entryId: receipt.answerEntryId,
-			offset: 0,
+			submissionId: submitted.submissionId,
+			requestId: "long-result",
+			offset: prefix.length,
 		};
 		const text = route === "primary" ? received[0].text : String(nativeReceived[0].message);
 		assert.ok(text.includes(JSON.stringify(continuation)));
-		assert.doesNotMatch(text, /EXACT-END/u);
+		assert.doesNotMatch(text, /ANSWER-END|not answer text/u);
 		if (route === "primary")
 			assert.deepEqual((received[0].details as { continuation: unknown }).continuation, continuation);
-		let offset = 0;
-		let retained = "";
-		let done = false;
-		for (let page = 0; page < 8; page++) {
-			const exact = (await source.request(
-				"inspect",
-				{ sessionId: continuation.sessionId, view: "exact", entryId: continuation.entryId, offset },
-				BACKGROUND_CONTEXT,
-			)) as { text: string; nextOffset: number | null };
-			retained += exact.text;
-			if (exact.nextOffset === null) {
-				done = true;
-				break;
-			}
-			offset = exact.nextOffset;
+		else {
+			const communication = parseCommunication(nativeReceived[0].communication);
+			assert.deepEqual(communication?.body, { text: prefix, complete: false, redacted: false });
 		}
-		assert.equal(done, true);
-		assert.ok(retained.includes(answer));
+		const { tool: _tool, ...selector } = continuation;
+		let retained = prefix;
+		let next: number | null = selector.offset;
+		while (next !== null) {
+			const result = (await source.request("inspect", { ...selector, offset: next }, BACKGROUND_CONTEXT)) as {
+				answer: string;
+				nextOffset: number | null;
+			};
+			retained += result.answer;
+			assert.ok(result.nextOffset === null || result.nextOffset > next);
+			next = result.nextOffset;
+		}
+		assert.equal(retained, answer);
 	});
 
 it("bounds a check-in digest while retaining the full source", { timeout: 30000 }, async (t) => {
@@ -1585,6 +1601,8 @@ it("routes a receipt and a report only after the target admits them", { timeout:
 	const expectedReport = `deliver:11111111-1111-4111-8111-111111111111:report:${createHash("sha256").update("report:source-report").digest("hex").slice(0, 32)}`;
 	assert.equal(receiptCall.requestId, expectedReceipt);
 	assert.equal(receiptCall.params.requestId, expectedReceipt);
+	assert.doesNotMatch(String(receiptCall.params.message), /Answer continues:|Read retained answer:|Full answer:/u);
+	assert.equal(parseCommunication(receiptCall.params.communication)?.body.complete, true);
 	assert.equal(reportCall.requestId, expectedReport);
 	assert.equal(reportCall.params.requestId, expectedReport);
 	for (const call of [receiptCall, reportCall]) {
@@ -1917,6 +1935,11 @@ it("keeps a stored admission origin across a host reopen before delivery", { tim
 		BACKGROUND_CONTEXT,
 	)) as { submissionId: SubmissionId };
 	await first.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+	await settleDeliveries(first.harness, BACKGROUND_CONTEXT);
+	const stored = (await deliveryState(first))?.receipts[String(admitted.submissionId)];
+	assert.ok(stored);
+	const { answerTruncated: _cut, answerLength: _length, ...withoutLengthFacts } = stored;
+	await first.harness.commit((tx) => storeDeliveryRow(tx, "receipt", withoutLengthFacts), BACKGROUND_CONTEXT);
 	await first.close();
 	const reopened = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
@@ -1939,6 +1962,15 @@ it("keeps a stored admission origin across a host reopen before delivery", { tim
 		"the intent origin survives the reopen",
 	);
 	assert.equal(details.wake, false, "the reopened watcher keeps the operator-only delivery quiet");
+	assert.deepEqual((received[0].details as { continuation: unknown }).continuation, {
+		tool: "agent_inspect",
+		view: "result",
+		sessionId: reopened.storageId,
+		submissionId: admitted.submissionId,
+		requestId: "survives-restart",
+		offset: 0,
+	});
+	assert.match(received[0].text, /Read retained answer:/u);
 	await watcher.close();
 	assert.deepEqual(errors, []);
 });
@@ -2159,7 +2191,11 @@ it("names the work state of each request of a shared answer and continues a cut 
 			storagePath: path,
 			storageId,
 			cwd: root,
-			models: await scriptedRuntime([toolCallMessage("gate"), answerMessage(), answerMessage()]),
+			models: await scriptedRuntime([
+				toolCallMessage("gate"),
+				answerMessage("shared".repeat(500)),
+				answerMessage("shared".repeat(500)),
+			]),
 			registry: fixtureRegistry([gateTool(gate, () => started.push(undefined))]),
 			agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
 		},
@@ -2223,6 +2259,21 @@ it("names the work state of each request of a shared answer and continues a cut 
 			),
 		);
 
+		const continuation = {
+			tool: "agent_inspect",
+			view: "result",
+			sessionId: storageId,
+			submissionId: plain.submissionId,
+			requestId: "task-b",
+			offset: 2400,
+		};
+		assert.ok(text.includes(JSON.stringify(continuation)));
+		assert.deepEqual((received[0].details as { continuation: unknown }).continuation, continuation);
+		assert.deepEqual(
+			(received[0].details as { deliveredResults?: unknown }).deliveredResults,
+			[{ sessionId: storageId, submissionId: plain.submissionId, requestId: "task-b" }],
+			"the shared answer closes the ordinary request only",
+		);
 		const message = `${"r".repeat(15_000)}😀${"s".repeat(5_000)}`;
 		const completed = await source.harness.commit(
 			(tx) => completeOpenWork(tx, storageId, 1 as ConversationId, { request: "task-a", status: "done", message }, 2),
@@ -2231,6 +2282,11 @@ it("names the work state of each request of a shared answer and continues a cut 
 		assert.ok(!("error" in completed) && completed.report !== undefined);
 		await received.waitForCount(2);
 		const report = received[1]?.text ?? "";
+		assert.deepEqual(
+			(received[1].details as { deliveredResults?: unknown }).deliveredResults,
+			[{ sessionId: storageId, submissionId: declared.submissionId, requestId: "task-a" }],
+			"the final report closes the declared request",
+		);
 		assert.match(
 			report,
 			/^Agent “[^”]+” sent a final work report\. Work completed with a final report \(done\) for request task-a \(report work-final:1:task-a\)\. This report is the result of that request: dependency arrived\./u,
@@ -2268,6 +2324,68 @@ function workTool(storageId: string): ToolRegistration {
 			executeAgentWork(args, { harness: api, storageId, conversationId: api.conversationId, now: api.now() }, context),
 	});
 }
+it("keeps the final report read as the only result pointer for a cut state note", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const sessionsRoot = join(root, "sessions");
+	const storageId = "11111111-1111-4111-8111-111111111111";
+	const path = join(root, "producer.sqlite");
+	const owner = randomUUID();
+	const received = eventLog<PrimaryDelivery>();
+	const channel = await createPrimaryChannel({
+		id: owner,
+		cwd: root,
+		sessionsRoot,
+		deliver: (message) => {
+			received.push(message);
+		},
+		promptTrust: async () => undefined,
+	});
+	t.after(() => channel.close());
+	const source = await DurableHost.open(
+		{
+			storagePath: path,
+			storageId,
+			cwd: root,
+			models: await scriptedRuntime([
+				toolCall("declare", "agent_work", { action: "continue", request: "task", results: [], note: "still open" }),
+				toolCall("complete", "agent_work", {
+					action: "complete",
+					request: "task",
+					status: "done",
+					message: "Final report.",
+				}),
+				answerMessage("state note ".repeat(500)),
+			]),
+			registry: fixtureRegistry([workTool(storageId)]),
+			agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
+		},
+		BACKGROUND_CONTEXT,
+	);
+	t.after(() => source.close());
+	const input = (await source.request("task-submit", {
+		message: "survey",
+		requestId: "task",
+		requester: owner,
+		origin: "model",
+	})) as { submissionId: SubmissionId };
+	await source.wait(input.submissionId, BACKGROUND_CONTEXT);
+	const watcher = startDurableDelivery({
+		host: source,
+		metadata: sourceMetadata(root, storageId, path),
+		catalog: new AgentCatalog(root),
+		sessionsRoot,
+		signal: new AbortController().signal,
+	});
+	t.after(() => watcher.close());
+	await received.waitForCount(2);
+	const receipt = received.find((item) => (item.details as { kind: string }).kind === "receipt");
+	assert.ok(receipt);
+	assert.match(receipt.text, /Read the final report: agent_inspect\(.*"finalReport":true/u);
+	assert.match(receipt.text, /\[State note excerpt\]/u);
+	assert.doesNotMatch(receipt.text, /Answer continues:|Read retained answer:|Full answer:/u);
+	assert.equal((receipt.details as { continuation?: unknown }).continuation, undefined);
+});
+
 function toolCall(id: string, name: string, args: Record<string, string | string[]> = {}) {
 	const message = toolCallMessage(name, args);
 	return { ...message, content: message.content.map((part) => (part.type === "toolCall" ? { ...part, id } : part)) };
@@ -4205,77 +4323,105 @@ it("bounds long peer bodies without mutating the retained originals", { timeout:
 	await watcher.close();
 });
 
-it("delivers explicit passive reports as native writes without fabricated thread metadata", {
-	timeout: 10000,
-}, async (t) => {
-	const root = fixtureRoot(t);
-	const catalog = new AgentCatalog(root);
-	const record = catalog.create({
-		cwd: root,
-		agentDir: join(root, "agent"),
-		packageDir: join(root, "package"),
-		model: { provider: fixtureProvider, modelId: fixtureModelId },
-		thinkingLevel: "off",
+for (const route of ["same-storage", "cross-storage"] as const) {
+	it(`delivers byte-bounded passive reports without a task over ${route}`, { timeout: 10000 }, async (t) => {
+		const root = fixtureRoot(t);
+		const catalog = new AgentCatalog(root);
+		const sourcePath = join(root, "passive-source.sqlite");
+		const source = await openHost(sourcePath, randomUUID(), root);
+		t.after(() => source.close());
+		const record =
+			route === "cross-storage"
+				? catalog.create({
+						cwd: root,
+						agentDir: join(root, "agent"),
+						packageDir: join(root, "package"),
+						model: { provider: fixtureProvider, modelId: fixtureModelId },
+						thinkingLevel: "off",
+					})
+				: undefined;
+		const target = record === undefined ? source : await openHost(record.storagePath, record.storageId, root);
+		if (target !== source) t.after(() => target.close());
+		const conversation =
+			target !== source
+				? target.root()
+				: await source.harness.createConversation(
+						{
+							ownership: { kind: "ownerless" },
+							agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
+						},
+						BACKGROUND_CONTEXT,
+					);
+		const ownerId = target.identity(conversation.id);
+		const cases = [
+			{ id: "short", message: "Progress. No reply requested.", transportCut: false, bodyComplete: true },
+			{ id: "ascii", message: "x".repeat(16_384), transportCut: true, bodyComplete: true },
+			{ id: "unicode", message: "🌏".repeat(9_000), transportCut: true, bodyComplete: false },
+			{ id: "escaped", message: '\t\\"'.repeat(4_500), transportCut: false, bodyComplete: false },
+		];
+		for (const { id, message } of cases) {
+			await source.request("report", {
+				requestId: id,
+				ownerId,
+				senderIdentity: source.storageId,
+				message,
+				passive: true,
+			});
+		}
+		const errors = eventLog<Error>();
+		const watcher = startDurableDelivery({
+			host: source,
+			metadata: sourceMetadata(root, source.storageId, sourcePath),
+			catalog,
+			signal: new AbortController().signal,
+			acquire: async () => {
+				assert.equal(route, "cross-storage");
+				return fakeTarget(target, []);
+			},
+			onError: (error) => errors.push(error),
+		});
+		t.after(() => watcher.close());
+		await waitForDelivery(
+			source,
+			async () =>
+				(await deliveryState(source))?.reports.filter((report) => report.acknowledged).length === cases.length,
+		);
+		const entries = (await conversation.entries({}, 20, undefined, BACKGROUND_CONTEXT)).items.filter(
+			(entry) => entry.kind === "agent.passive-report",
+		);
+		assert.equal(entries.length, cases.length);
+		const retained = (await deliveryState(source))?.reports;
+		for (const { id, message, transportCut, bodyComplete } of cases) {
+			const sourceId = `report:${id}`;
+			const entry = entries.find((item) => {
+				const value = parseCommunicationPassive(item.data)?.value;
+				return value?.kind === "report" && value.metadata.sourceId === sourceId;
+			});
+			assert.ok(entry, `retained passive entry for ${id}`);
+			const text = entry.model?.[0]?.content;
+			assert.ok(typeof text === "string" && Buffer.byteLength(text) <= 16_384);
+			assert.doesNotMatch(text, /[\uD800-\uDFFF]/u);
+			const excerpt = text.slice(text.indexOf("\n\n") + 2);
+			if (transportCut) {
+				const marker = "\n\n[text truncated; the sender's delivery record retains the full report]";
+				assert.ok(excerpt.endsWith(marker));
+				const prefix = excerpt.slice(0, -marker.length);
+				assert.ok(prefix.length > 0 && message.startsWith(prefix));
+			} else {
+				assert.equal(excerpt, message);
+			}
+			const body = parseCommunicationPassive(entry.data)?.value.body;
+			assert.ok(body);
+			assert.equal(body.complete, bodyComplete);
+			assert.equal(body.text === message, bodyComplete);
+			assert.ok(body.text.length > 0 && message.startsWith(body.text));
+			assert.equal(retained?.find((report) => report.sourceId === sourceId)?.message, message);
+		}
+		assert.equal((await target.harness.inspect(BACKGROUND_CONTEXT)).tasks.length, 0);
+		assert.equal((await readRetainedDelivery(target.harness, BACKGROUND_CONTEXT, true))?.intents.length ?? 0, 0);
+		assert.deepEqual(errors, []);
 	});
-	const sourcePath = join(root, "thread-source.sqlite");
-	const source = await openHost(sourcePath, randomUUID(), root);
-	const target = await openHost(record.storagePath, record.storageId, root);
-	t.after(async () => {
-		await source.close();
-		await target.close();
-	});
-	await source.harness.commit(
-		async (tx) =>
-			editDeliveryFixture(tx, async (deliveryFixtureState) => {
-				const state = deliveryFixtureState;
-				state.reports.push({
-					sourceId: "report:thread-notice",
-					requestId: "thread-notice",
-					ownerId: record.storageId,
-					senderIdentity: source.storageId,
-					message: "A joined thread has a new event. No reply is requested.",
-					replyTo: null,
-					acknowledged: false,
-					createdAt: Date.now(),
-					direct: true,
-					passive: true,
-					steer: false,
-				});
-			}),
-		BACKGROUND_CONTEXT,
-	);
-	const requests: string[] = [];
-	const errors = eventLog<Error>();
-	const watcher = startDurableDelivery({
-		host: source,
-		metadata: sourceMetadata(root, source.storageId, sourcePath),
-		catalog,
-		signal: new AbortController().signal,
-		acquire: async () => {
-			const client = fakeTarget(target, []);
-			return {
-				...client,
-				request: async (method, params, options) => {
-					requests.push(method);
-					return client.request(method, params, options);
-				},
-			};
-		},
-		onError: (error) => errors.push(error),
-	});
-	t.after(() => watcher.close());
-	await waitForDelivery(source, async () => (await deliveryState(source))?.reports[0]?.acknowledged === true);
-	assert.ok(requests.includes("passive-submit"));
-	assert.equal(requests.includes("submit"), false);
-	const observation = (await target.request("inspect", { view: "history" })) as {
-		entries?: unknown[];
-		rows?: unknown[];
-	};
-	assert.match(JSON.stringify(observation), /agent.passive-report/u);
-	assert.equal((await target.harness.inspect(BACKGROUND_CONTEXT)).tasks.length, 0);
-	assert.equal((await readRetainedDelivery(target.harness, BACKGROUND_CONTEXT, true))?.intents.length ?? 0, 0);
-	assert.deepEqual(errors, []);
-});
+}
 
 it("keeps a direct thread notice pending rather than broadcasting to another primary", {
 	timeout: 10000,

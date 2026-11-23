@@ -791,6 +791,7 @@ async function receiptRange(
 }
 async function readReceiptRange(tx: Tx, range: ReceiptRange) {
 	const results: ReceiptReferencePage["results"] = [];
+	const positions: number[] = [];
 	const { position, page, limit } = range;
 	let offset = position.offset;
 	while (offset < limit && results.length < 16) {
@@ -804,9 +805,12 @@ async function readReceiptRange(tx: Tx, range: ReceiptRange) {
 			keyOf("receipt", receipt) !== key
 		)
 			throw new Error("Receipt group reference is invalid");
-		if (receipt.ownerId === position.recipient) results.push(receiptReference(position.storageId, receipt));
+		if (receipt.ownerId === position.recipient) {
+			results.push(receiptReference(position.storageId, receipt));
+			positions.push(offset - 1);
+		}
 	}
-	return { results, offset };
+	return { results, offset, positions };
 }
 function receiptNext(range: ReceiptRange, offset: number): string | null {
 	const { position, page } = range;
@@ -820,6 +824,7 @@ export async function receiptReferencePage(
 	storageId: string,
 	selected: DeliveryReceipt,
 	cursor?: string,
+	fits?: (page: ReceiptReferencePage) => boolean,
 ): Promise<ReceiptReferencePage> {
 	if (selected.answerEntryId === null) {
 		if (cursor !== undefined) throw new Error("An unanswered input has no receipt cursor");
@@ -831,9 +836,19 @@ export async function receiptReferencePage(
 		};
 	}
 	const range = await receiptRange(tx, storageId, selected, selected.answerEntryId, cursor);
-	const { results, offset } = await readReceiptRange(tx, range);
-	const next = receiptNext(range, offset);
-	return { recipient: selected.ownerId, results, complete: next === null, next };
+	const { results, offset, positions } = await readReceiptRange(tx, range);
+	const pageAtOffset = (end: number): ReceiptReferencePage => {
+		const next = receiptNext(range, end);
+		return { recipient: selected.ownerId, results, complete: next === null, next };
+	};
+	let page = pageAtOffset(offset);
+	// Resume at the first excluded match without reading the list again or changing its captured tail.
+	// Leave a singleton (or an empty scan with progress) for the caller to enforce its hard response limit.
+	while (fits !== undefined && results.length > 1 && !fits(page)) {
+		results.pop();
+		page = pageAtOffset(positions[results.length]);
+	}
+	return page;
 }
 
 export async function operationReceipts(

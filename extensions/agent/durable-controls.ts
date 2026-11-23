@@ -246,6 +246,9 @@ export type DeliveryReceipt = {
 	readonly answerEntryId: EntryId | null;
 	/** Bounded answer text retained with the receipt. */
 	readonly answer: string | null;
+	/** UTF-16 units in the complete retained answer, before the inline limit. */
+	readonly answerLength?: number;
+	readonly answerTruncated?: boolean;
 	/** Terminal reason for an unanswered submission. */
 	readonly reason: string | null;
 	readonly providerBlock?: ProviderBlockFact;
@@ -989,7 +992,7 @@ async function admitConversation(
 	};
 }
 
-function assistantTextOf(messages: readonly Message[] | undefined): string {
+export function assistantTextOf(messages: readonly Message[] | undefined): string {
 	if (!messages) return "";
 	return messages
 		.flatMap((message) => {
@@ -1691,7 +1694,10 @@ type SettledInputRecord = Extract<SubmissionRecord, { readonly type: "input" }> 
 	readonly status: "done" | "unanswered";
 };
 
-function receiptRow(intent: DeliveryIntent, record: SettledInputRecord, answer: string | null): DeliveryReceipt {
+type ReceiptAnswer = Pick<DeliveryReceipt, "answer" | "answerTruncated" | "answerLength">;
+const RECEIPT_ANSWER_UNITS = 2400;
+
+function receiptRow(intent: DeliveryIntent, record: SettledInputRecord, answer: ReceiptAnswer): DeliveryReceipt {
 	return {
 		submissionId: record.id,
 		requestId: intent.requestId,
@@ -1702,7 +1708,7 @@ function receiptRow(intent: DeliveryIntent, record: SettledInputRecord, answer: 
 		status: record.status,
 		entryId: record.entry ?? null,
 		answerEntryId: record.status === "done" ? record.answer : null,
-		answer,
+		...answer,
 		reason: record.status === "unanswered" ? record.reason : null,
 		acknowledged: false,
 	};
@@ -1715,11 +1721,15 @@ function receiptIsRetainedOrTerminal(state: AgentDeliveryState, intent: Delivery
 	);
 }
 
-async function receiptAnswer(tx: Tx, record: SettledInputRecord): Promise<string | null> {
-	if (record.status !== "done") return null;
+async function receiptAnswer(tx: Tx, record: SettledInputRecord): Promise<ReceiptAnswer> {
+	if (record.status !== "done") return { answer: null };
 	const entry = await tx.entry(AssistantEntry, record.answer);
-	const text = assistantTextOf(entry?.model);
-	return text === "" ? null : text.slice(0, 1200);
+	if (!entry) return { answer: null };
+	const text = assistantTextOf(entry.model);
+	const truncated = text.length > RECEIPT_ANSWER_UNITS;
+	let end = Math.min(text.length, RECEIPT_ANSWER_UNITS);
+	if (truncated && /[\uD800-\uDBFF]/u.test(text[end - 1]) && /[\uDC00-\uDFFF]/u.test(text[end])) end--;
+	return { answer: text.slice(0, end) || null, answerTruncated: truncated, answerLength: text.length };
 }
 
 async function finalizeReceipt(

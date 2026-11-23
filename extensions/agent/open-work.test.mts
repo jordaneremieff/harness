@@ -20,7 +20,7 @@ import {
 import { onStoredCommit } from "./commit-observation.ts";
 import { deliveryPendingCount, retainedReportRequest, storeDeliveryRow } from "./delivery-store.ts";
 import { acknowledgeReports } from "./durable-controls.ts";
-import { readInspection, RESULT_PAGE_BYTES } from "./durable-observation.ts";
+import { readInspection, RESULT_PAGE_BYTES, RESULT_PAGE_UNITS } from "./durable-observation.ts";
 import { readableControlText } from "./control-result.ts";
 import { InspectToolOutputSchema } from "./observation-schema.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
@@ -50,7 +50,7 @@ import {
 	markedState,
 	parseAgentWorkInput,
 	parseDependencyMarks,
-	receiptDependencyMarks,
+	receiptDependencyMark,
 	recordDependencyMarks,
 	reportDelivery,
 	reportDependencyMarks,
@@ -65,6 +65,18 @@ import {
 import { recordRequestContext, type RequestContext } from "./request-context.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { testModel } from "./test-runtime.mts";
+
+async function receiptDependencyMarks(
+	reader: Parameters<typeof requestWork>[0],
+	storageId: string,
+	receipts: readonly (Parameters<typeof receiptDependencyMark>[1] & { ownerId: string })[],
+) {
+	return Promise.all(
+		receipts.map(async (receipt) =>
+			receiptDependencyMark(storageId, receipt, await requestWork(reader, storageId, receipt.conversationId, receipt)),
+		),
+	);
+}
 
 const STORAGE = "storage-a";
 const dependency = (submissionId = 90, sessionId = "storage-b:4") => ({ sessionId, submissionId });
@@ -1025,7 +1037,16 @@ type ResultFields = {
 		label: string;
 		finalReport?: { status?: string; delivery: string; read: unknown };
 	};
-	finalReport: { requestId: string; ownerId: string; status?: string; length: number; text: string };
+	finalReport: {
+		requestId: string;
+		ownerId: string;
+		status?: string;
+		length: number;
+		text: string;
+		offset: number;
+		nextOffset: number | null;
+		truncated: boolean;
+	};
 	finalReportContinuation?: Record<string, unknown>;
 };
 
@@ -1106,8 +1127,9 @@ it("reads the exact final report in pages after acknowledgement and after the cl
 		/open; its final report does not exist yet/u,
 	);
 
-	// A long report with a surrogate pair across the first page boundary.
-	const message = `${"a".repeat(4095 - finalReportLabel("done", "task-a").length - 2)}😀${"b".repeat(9000)}`;
+	const unitBoundary = RESULT_PAGE_UNITS - 1;
+	const label = `${finalReportLabel("done", "task-a")}\n\n`;
+	const message = `${"a".repeat(unitBoundary - label.length)}😀${"\u0001".repeat(13000)}${"漢字\n".repeat(1000)}`;
 	const done = await executeAgentWork(
 		{ action: "complete", request: "task-a", status: "done", message },
 		host(20),
@@ -1121,7 +1143,7 @@ it("reads the exact final report in pages after acknowledgement and after the cl
 		read,
 		"the status names the read call",
 	);
-	const exact = `${finalReportLabel("done", "task-a")}\n\n${message}`;
+	const exact = label + message;
 	const readAll = async (): Promise<string> => {
 		let text = "";
 		let call: Record<string, unknown> | undefined = { ...read };
@@ -1135,12 +1157,29 @@ it("reads the exact final report in pages after acknowledgement and after the cl
 				[page.finalReport.requestId, page.finalReport.ownerId, page.finalReport.status, page.finalReport.length],
 				[`work-final:${conversation.id}:task-a`, "recipient-c", "done", exact.length],
 			);
+			assert.equal(page.finalReport.offset, text.length);
+			assert.ok(page.finalReport.text.length > 0 && page.finalReport.text.length <= RESULT_PAGE_UNITS);
+			assert.doesNotMatch(page.finalReport.text, /^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/u);
+			if (text.length === 0) assert.equal(page.finalReport.text.length, unitBoundary);
+			const rendered = readableControlText(page);
+			assert.ok(rendered.startsWith(`${page.finalReport.text}\n\nFinal report page: `));
 			text += page.finalReport.text;
 			call = page.finalReportContinuation;
+			assert.equal(page.finalReport.truncated, call !== undefined);
+			assert.equal(page.finalReport.nextOffset, call === undefined ? null : text.length);
+			assert.equal(call?.offset, call === undefined ? undefined : text.length);
+			assert.equal(rendered.includes("Final report continuation: agent_inspect("), call !== undefined);
 		}
 		return text;
 	};
 	assert.equal(await readAll(), exact, "the pages join to the retained report exactly");
+	for (const offset of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, exact.length + 1]) {
+		await assert.rejects(inspect({ submissionId: id, finalReport: true, offset }), /result offset/u);
+	}
+	const split = await inspect({ submissionId: id, finalReport: true, offset: unitBoundary + 1 });
+	assert.equal(split.finalReport.offset, unitBoundary);
+	assert.ok(split.finalReport.text.startsWith("😀"));
+	assert.ok(split.finalReport.truncated && split.finalReport.text.length < RESULT_PAGE_UNITS);
 
 	const answer = await inspect({ submissionId: id });
 	assert.deepEqual(

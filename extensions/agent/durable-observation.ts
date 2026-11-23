@@ -54,7 +54,13 @@ import type {
 	DashboardCompactionFailure,
 	DashboardHealth,
 } from "./dashboard-types.ts";
-import { AgentMetaDoc, settleDeliveries, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
+import {
+	AgentMetaDoc,
+	assistantTextOf,
+	settleDeliveries,
+	type AgentDeliveryState,
+	type DeliveryReceipt,
+} from "./durable-controls.ts";
 import {
 	snapshotDeliveryState,
 	deliveryState,
@@ -65,6 +71,7 @@ import {
 	snapshotReceipt,
 } from "./delivery-store.ts";
 import type { AnswerContinuation, ReceiptGroup } from "./observation-schema.ts";
+import type { ReceiptReferencePage } from "./result-schema.ts";
 import { timerStatusRows } from "./durable-timers.ts";
 import { readUnplacedSummary } from "./unplaced-inputs.ts";
 import {
@@ -94,8 +101,8 @@ import { TASK_HOOK_REPORT_KIND } from "./task-hook-reports.ts";
 /** Byte/unit bounds used by every projection in this module. */
 export const ENTRY_PREVIEW_UNITS = 1200;
 export const ENTRY_PAGE_UNITS = 12000;
-/** Readable answer pages count UTF-16 units; the complete serialized result includes receipt metadata. */
-export const RESULT_PAGE_UNITS = 4096;
+/** Answer and final report pages also fit the byte limit for the complete serialized result. */
+export const RESULT_PAGE_UNITS = 16_384;
 export const RESULT_PAGE_BYTES = 64 * 1024;
 export const HISTORY_LIMIT_DEFAULT = 12;
 export const HISTORY_LIMIT_MAX = 50;
@@ -729,12 +736,14 @@ function checkResultPageSelectors(
 	view: string | undefined,
 	receiptCursor: unknown,
 	finalReport: boolean | undefined,
+	offset: number | undefined,
 ): void {
 	if (finalReport !== undefined && view !== "result") throw new TypeError("finalReport selects only the result view");
 	if (finalReport === true && receiptCursor !== undefined)
 		throw new TypeError("finalReport and receiptCursor select different pages");
 	if (receiptCursor === undefined) return;
 	if (view !== "result") throw new TypeError("receiptCursor selects only the result view");
+	if (offset !== undefined) throw new TypeError("receiptCursor and offset select different pages");
 	if (typeof receiptCursor !== "string" || receiptCursor.length === 0 || receiptCursor.length > 2048)
 		throw new TypeError("receiptCursor must contain 1 to 2048 characters");
 }
@@ -746,8 +755,8 @@ export function parseInspectParams(params: RequestParams | undefined): DurableIn
 	if (requestId === "") throw new TypeError("requestId must be nonempty");
 	const receiptCursor = requestString(params, "receiptCursor");
 	const finalReport = requestBoolean(params, "finalReport");
-	checkResultPageSelectors(view, receiptCursor, finalReport);
 	const offset = requestInteger(params, "offset");
+	checkResultPageSelectors(view, receiptCursor, finalReport, offset);
 	if (view === "result" && offset !== undefined && offset < 0)
 		throw new RangeError("result offset must be a nonnegative safe integer");
 	const source = requestString(params, "source");
@@ -2810,11 +2819,11 @@ function finalReportPage(
 			reason: `Final report ${work.finalReport.requestId} is not retained for ${work.finalReport.ownerId}`,
 		});
 	if (offset > text.length) throw new RangeError("result offset exceeds the retained final report length");
-	const cut = fragment(text, offset, RESULT_PAGE_UNITS);
 	const { requestId, ownerId, status } = work.finalReport;
-	return boundedResult({
+	const declared = resultWork(work, record);
+	return fitResultBody(text, offset, (cut) => ({
 		...identity,
-		work: resultWork(work, record),
+		work: declared,
 		finalReport: {
 			requestId,
 			ownerId,
@@ -2828,7 +2837,7 @@ function finalReportPage(
 		...(cut.nextOffset === null
 			? {}
 			: { finalReportContinuation: { ...work.finalReport.read, offset: cut.nextOffset } }),
-	});
+	}));
 }
 
 interface ResultSelection {
@@ -2912,10 +2921,8 @@ async function resultAnswer(
 	context: Context,
 ): Promise<{ readonly answer?: string; readonly reason?: string }> {
 	const answer = await harness.commit((tx) => tx.entry(AssistantEntry, answerEntryId), context);
-	const text = answer === undefined ? undefined : (answer.model ?? []).map(textOfMessage).join("");
-	return text === undefined || text === ""
-		? { reason: `durable answer entry ${answerEntryId} is not retained` }
-		: { answer: text };
+	const text = assistantTextOf(answer?.model);
+	return text === "" ? { reason: `durable answer entry ${answerEntryId} is not retained` } : { answer: text };
 }
 
 function observedInputRecovery(harness: Harness, id: SubmissionId, context: Context) {
@@ -2929,24 +2936,82 @@ function observedInputProviderBlock(harness: Harness, id: SubmissionId, context:
 		: harness.commit((tx) => readInputProviderBlock(tx, id), context);
 }
 
+function fitsResult(page: ResultPage): boolean {
+	return Buffer.byteLength(JSON.stringify(page), "utf8") <= RESULT_PAGE_BYTES;
+}
+
 function boundedResult(page: ResultPage): ResultPage {
-	if (Buffer.byteLength(JSON.stringify(page), "utf8") > RESULT_PAGE_BYTES)
+	if (!fitsResult(page))
 		throw new InspectionRequestError(
 			`Result identity, body and receipt metadata exceed the ${RESULT_PAGE_BYTES}-byte response limit`,
 		);
 	return page;
 }
 
+interface ResultCut {
+	readonly text: string;
+	readonly start: number;
+	readonly nextOffset: number | null;
+	readonly truncated: boolean;
+}
+
+function resultBoundary(text: string, index: number): number {
+	const before = text.charCodeAt(index - 1);
+	const after = text.charCodeAt(index);
+	return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff ? index - 1 : index;
+}
+
+function resultCut(text: string, start: number, end: number): ResultCut {
+	return {
+		text: text.slice(start, end),
+		start,
+		nextOffset: end < text.length ? end : null,
+		truncated: end < text.length,
+	};
+}
+
+function fitResultBody(text: string, offset: number, draft: (cut: ResultCut) => ResultPage): ResultPage {
+	const start = resultBoundary(text, offset);
+	const end = resultBoundary(text, Math.min(text.length, start + RESULT_PAGE_UNITS));
+	const largest = draft(resultCut(text, start, end));
+	if (fitsResult(largest)) return largest;
+
+	// Try the largest cut first: a terminal page can fit even when an earlier cut with a continuation does not.
+	// Smaller cuts all include a continuation, so their serialized size grows monotonically with the prefix.
+	let low = start + 1;
+	let high = end - 1;
+	let best: ResultPage | undefined;
+	while (low <= high) {
+		const mid = Math.floor((low + high) / 2);
+		const boundary = resultBoundary(text, mid);
+		if (boundary === start) {
+			low = mid + 1;
+			continue;
+		}
+		const page = draft(resultCut(text, start, boundary));
+		if (fitsResult(page)) {
+			best = page;
+			low = mid + 1;
+		} else high = mid - 1;
+	}
+	return best ?? boundedResult(largest);
+}
+
 async function resultReceiptGroup(
 	harness: Harness,
 	storageId: string,
 	record: SubmissionRecord,
-	sessionId: string,
+	base: ResultPage,
 	cursor: string | undefined,
 	context: Context,
 ): Promise<ReceiptGroup | undefined> {
-	if (cursor === undefined && !frozenObservations.has(harness)) await settleDeliveries(harness, context, null);
-	if ((await snapshotReceipt(harness, record.id, context)) === undefined) {
+	let receipt = await snapshotReceipt(harness, record.id, context);
+	const continuingAnswer = (base.offset ?? 0) > 0 && receipt !== undefined;
+	if (cursor === undefined && !continuingAnswer && !frozenObservations.has(harness)) {
+		await settleDeliveries(harness, context, null);
+		receipt ??= await snapshotReceipt(harness, record.id, context);
+	}
+	if (receipt === undefined) {
 		if (cursor !== undefined) throw new InspectionRequestError("No retained receipt matches the selected result");
 		return undefined;
 	}
@@ -2959,8 +3024,7 @@ async function resultReceiptGroup(
 			(record.type === "input" && record.status === "done" && selected.answerEntryId !== record.answer)
 		)
 			throw new InspectionRequestError("The retained receipt disagrees with the selected native submission");
-		const page = await receiptReferencePage(tx, storageId, selected, cursor);
-		return {
+		const group = (page: ReceiptReferencePage): ReceiptGroup => ({
 			...page,
 			next:
 				page.next === null
@@ -2968,12 +3032,17 @@ async function resultReceiptGroup(
 					: {
 							tool: "agent_inspect",
 							view: "result",
-							sessionId,
+							sessionId: base.sessionId,
 							submissionId: record.id,
 							...optionalParam("requestId", record.requestId),
 							receiptCursor: page.next,
 						},
-		};
+		});
+		return group(
+			await receiptReferencePage(tx, storageId, selected, cursor, (page) =>
+				fitsResult({ ...base, receiptGroup: group(page) }),
+			),
+		);
 	}, context);
 }
 
@@ -3005,15 +3074,18 @@ async function readResultBody(
 	record: Extract<SubmissionRecord, { type: "input"; status: "done" }>,
 	params: DurableInspectParams,
 	context: Context,
+	groupFor: (base: ResultPage) => Promise<ReceiptGroup | undefined>,
 ): Promise<ResultPage> {
 	const identity = { ...selected, entryId: record.entry, answerEntryId: record.answer };
-	if (params.receiptCursor !== undefined) return boundedResult(identity);
-	const retained = await resultAnswer(harness, record.answer, context);
-	if (retained.answer === undefined) return boundedResult({ ...identity, ...retained });
+	const retained = params.receiptCursor === undefined ? await resultAnswer(harness, record.answer, context) : {};
+	const text = retained.answer;
+	if (text === undefined) {
+		const base = { ...identity, ...retained };
+		return boundedResult({ ...base, ...optionalParam("receiptGroup", await groupFor(base)) });
+	}
 	const offset = params.offset ?? 0;
-	if (offset > retained.answer.length) throw new RangeError("result offset exceeds the retained answer length");
-	const cut = fragment(retained.answer, offset, RESULT_PAGE_UNITS);
-	return boundedResult({
+	if (offset > text.length) throw new RangeError("result offset exceeds the retained answer length");
+	const draft = (cut: ResultCut): ResultPage => ({
 		...identity,
 		answer: cut.text,
 		offset: cut.start,
@@ -3032,6 +3104,12 @@ async function readResultBody(
 					},
 				}),
 	});
+	// Reserve the shortest intact answer prefix and its continuation before allocating bytes to references.
+	const start = resultBoundary(text, offset);
+	let end = resultBoundary(text, Math.min(start + 1, text.length));
+	if (end === start && start < text.length) end = start + 2;
+	const group = optionalParam("receiptGroup", await groupFor(draft(resultCut(text, start, end))));
+	return fitResultBody(text, offset, (cut) => ({ ...draft(cut), ...group }));
 }
 
 async function readResult(
@@ -3094,27 +3172,21 @@ async function settledResult(
 	params: DurableInspectParams,
 	context: Context,
 ): Promise<ResultPage> {
-	const receiptGroup = await resultReceiptGroup(
-		harness,
-		storageId,
-		record,
-		base.sessionId,
-		params.receiptCursor,
-		context,
-	);
+	const groupFor = (page: ResultPage) =>
+		resultReceiptGroup(harness, storageId, record, page, params.receiptCursor, context);
 	const selected = {
 		...base,
-		...optionalParam("receiptGroup", receiptGroup),
 		...(work === undefined ? {} : { work: resultWork(work, record) }),
 	};
-	if (record.status === "done") return readResultBody(harness, selected, record, params, context);
+	if (record.status === "done") return readResultBody(harness, selected, record, params, context, groupFor);
 	const providerBlock = await observedInputProviderBlock(harness, record.id, context);
-	return boundedResult({
+	const page = {
 		...selected,
 		...(record.entry === undefined ? {} : { entryId: record.entry }),
 		reason: modelFailureText(record.reason, record.detail, providerBlock),
 		...(providerBlock === undefined ? {} : { providerBlock }),
-	});
+	};
+	return boundedResult({ ...page, ...optionalParam("receiptGroup", await groupFor(page)) });
 }
 
 /** One bounded inspection over a conversation's committed entries, submissions, and receipts. */
@@ -3129,7 +3201,7 @@ export async function readInspection(
 	const view = params.view ?? "history";
 	if (params.requestId !== undefined && view !== "result")
 		throw new TypeError("requestId selects only the result view");
-	checkResultPageSelectors(view, params.receiptCursor, params.finalReport);
+	checkResultPageSelectors(view, params.receiptCursor, params.finalReport, params.offset);
 	switch (view) {
 		case "history":
 			return readHistoryPage(harness, storageId, conversation, params, "history", context);

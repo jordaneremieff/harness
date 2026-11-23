@@ -14,7 +14,7 @@ import {
 import type { TuiMouseEvent } from "@earendil-works/pi-tui";
 import { conversationFrame, deferred, fixture, formsHost, row, source, turn } from "./dashboard-test-fixture.mts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
-import { readConversationStatus, readInspection } from "./durable-observation.ts";
+import { readConversationStatus, readInspection, RESULT_PAGE_UNITS } from "./durable-observation.ts";
 import { inputEntry } from "./input-entry.ts";
 import { declareOpenWork, executeAgentWork, finalReportLabel } from "./open-work.ts";
 import { recordRequestContext, type RequestContext } from "./request-context.ts";
@@ -266,7 +266,7 @@ it("opens Work with w, reads an arrived dependency, then reads the exact final r
 		);
 		press(f, "\x1b");
 
-		const report = `Combined: ${"x".repeat(5000)} END`;
+		const report = `Combined: ${"x".repeat(RESULT_PAGE_UNITS)} END`;
 		await scenario.complete(report);
 		press(f, "r");
 		await settle();
@@ -290,7 +290,13 @@ it("opens Work with w, reads an arrived dependency, then reads the exact final r
 			scenario.inspections.slice(inspected),
 			[
 				{ sessionId: STORAGE, view: "result", submissionId: scenario.leadInput, finalReport: true, offset: 0 },
-				{ sessionId: STORAGE, view: "result", submissionId: scenario.leadInput, finalReport: true, offset: 4096 },
+				{
+					sessionId: STORAGE,
+					view: "result",
+					submissionId: scenario.leadInput,
+					finalReport: true,
+					offset: RESULT_PAGE_UNITS,
+				},
 			],
 			"the second page uses the exact continuation the first page returned",
 		);

@@ -43,7 +43,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	finalReportDeliveryFacts,
 	finalReportToItself,
-	receiptDependencyMarks,
+	receiptDependencyMark,
 	reportDependencyMarks,
 	requestHasOpenWork,
 	requestWork,
@@ -113,6 +113,9 @@ const FALLBACK_LABEL = "no live owning session";
 /** Bound for one peer body; the marker names the retained source for the full text. */
 const PEER_TEXT_LIMIT = 16_000;
 const PEER_TRUNCATION_MARKER = "\n\n[text truncated; use agent_inspect for retained full text]";
+/** The passive-submit host operation bounds the entire model message, not its body. */
+const PASSIVE_MESSAGE_BYTES = 16 * 1024;
+const PASSIVE_REPORT_TRUNCATION = "\n\n[text truncated; the sender's delivery record retains the full report]";
 
 /** Storage prefix of one external identity, for the same-storage check; the catalog owns strict validation. */
 function ownerStorageId(identity: string): string {
@@ -213,7 +216,7 @@ type ReceiptRow = {
 	readonly receipt: DeliveryReceipt;
 	readonly receipts: DeliveryReceipt[];
 	receiptGroup?: ReceiptReferencePage;
-	groupDecision?: { wake: boolean; onlyNotes: boolean };
+	groupDecision?: { wake: boolean; onlyNotes: boolean; result?: ResultReference };
 	displayReason?: string;
 	readonly deliveredTo: Set<string>;
 };
@@ -229,7 +232,11 @@ function receiptCommunication(row: ReceiptRow, host: DurableHost): Communication
 		format: "agent.communication/1",
 		kind: "result",
 		sender: { identity: host.identity(receipt.conversationId) },
-		body: { text: receipt.answer ?? row.displayReason ?? receipt.reason ?? "", complete: false, redacted: false },
+		body: {
+			text: inlineAnswer(receipt) ?? row.displayReason ?? receipt.reason ?? "",
+			complete: receipt.answerTruncated === false,
+			redacted: false,
+		},
 		recordedAt: 0,
 		metadata: {
 			status: receipt.status,
@@ -282,6 +289,7 @@ function reportCommunication(report: DeliveryReport): Communication | undefined 
 	return {
 		...common,
 		kind: "report",
+		body: { ...common.body, complete: report.passive === true },
 		metadata: {
 			sourceId: report.sourceId,
 			requestId: report.requestId,
@@ -303,7 +311,10 @@ function deliveryCommunication(row: DeliveryRow, host: DurableHost): Communicati
 			text += point;
 			bytes += size;
 		}
-		value = { ...value, body: { ...value.body, text } };
+		value = {
+			...value,
+			body: { ...value.body, text, complete: value.body.complete && !value.body.redacted && text === value.body.text },
+		};
 		while (communicationSerializedBytes(value) > COMMUNICATION_VALUE_BYTES && value.body.text.length > 0) {
 			const points: string[] = Array.from(value.body.text);
 			value = {
@@ -451,17 +462,17 @@ export async function groupWakeDecision(
 	next: (cursor: string) => Promise<ReceiptReferencePage>,
 	classify: (id: number) => Promise<{ note: boolean; model: boolean }>,
 ) {
-	let page = first,
-		onlyNotes = true;
+	let page = first;
+	let result: ResultReference | undefined;
 	for (;;) {
 		for (const ref of page.results) {
 			const { note, model } = await classify(ref.submissionId);
 			if (!note) {
-				onlyNotes = false;
-				if (model) return { wake: true, onlyNotes: false };
+				result ??= ref;
+				if (model) return { wake: true, onlyNotes: false, result };
 			}
 		}
-		if (page.next === null) return { wake: false, onlyNotes };
+		if (page.next === null) return { wake: false, onlyNotes: !result, ...(result ? { result } : {}) };
 		page = await next(page.next);
 	}
 }
@@ -571,26 +582,45 @@ function rowOwners(row: DeliveryRow): string[] {
 			: [row.report.ownerId];
 }
 
-/** Receipts retain answer excerpts; the native entry owns the complete answer. */
-function receiptContinuation(metadata: HostMetadata, receipt: DeliveryReceipt) {
-	if (receipt.answerEntryId === null) return undefined;
+/** A receipt without length facts may end halfway through a surrogate pair. */
+function inlineAnswer(receipt: DeliveryReceipt): string | null {
+	return receipt.answerTruncated === undefined
+		? (receipt.answer?.replace(/[\uD800-\uDBFF]$/u, "") ?? null)
+		: receipt.answer;
+}
+
+/** The displayed excerpt belongs to the shared answer, but only an undeclared request uses it as its result. */
+function receiptContinuation(metadata: HostMetadata, row: ReceiptRow, states: readonly ReceiptState[]) {
+	const { receipt } = row;
+	if (receipt.status !== "done" || receipt.answerEntryId === null || receipt.answerTruncated === false)
+		return undefined;
+	const plain = states.find((state) => state.work === undefined)?.receipt;
+	const target = plain
+		? {
+				sessionId: canonicalIdentity(metadata.storageId, plain.conversationId),
+				submissionId: plain.submissionId,
+				requestId: plain.requestId,
+			}
+		: row.groupDecision?.result;
+	if (!target || (!plain && states.some((state) => state.receipt.submissionId === target.submissionId)))
+		return undefined;
 	return {
 		tool: "agent_inspect",
-		sessionId: canonicalIdentity(metadata.storageId, receipt.conversationId),
-		view: "exact",
-		entryId: receipt.answerEntryId,
-		offset: 0,
+		view: "result",
+		...target,
+		offset: receipt.answerTruncated === true ? (receipt.answer?.length ?? 0) : 0,
 	} as const;
 }
 
-function receiptContinuationDetails(metadata: HostMetadata, receipt: DeliveryReceipt) {
-	const continuation = receiptContinuation(metadata, receipt);
+function receiptContinuationDetails(metadata: HostMetadata, row: ReceiptRow, states: readonly ReceiptState[]) {
+	const continuation = receiptContinuation(metadata, row, states);
 	return continuation === undefined ? {} : { continuation };
 }
 
-function receiptContinuationText(metadata: HostMetadata, receipt: DeliveryReceipt): string {
-	const continuation = receiptContinuation(metadata, receipt);
-	return continuation === undefined ? "" : `\n\nFull answer: ${JSON.stringify(continuation)}`;
+function receiptContinuationText(metadata: HostMetadata, row: ReceiptRow, states: readonly ReceiptState[]): string {
+	const continuation = receiptContinuation(metadata, row, states);
+	if (continuation === undefined) return row.receipt.answerTruncated === true ? "\n\n[State note excerpt]" : "";
+	return `\n\n${continuation.offset === 0 ? "Read retained answer" : "Answer continues"}: ${JSON.stringify(continuation)}`;
 }
 
 /** Catalog follow-up text; the peer body is bounded. */
@@ -604,13 +634,10 @@ async function checkInCurrent(tx: Tx, conversationId: ConversationId, requestId:
 function receiptFailureText(receipt: DeliveryReceipt, displayReason = receipt.reason): string {
 	return `No answer: ${displayReason ?? "the submission settled unanswered"}${receipt.providerBlock === undefined ? "" : `\n${providerBlockText(receipt.providerBlock)}`}`;
 }
-/** Every result tuple that this delivered group settles for its recipient, independent of the bounded display references. */
-function deliveredResults(metadata: HostMetadata, row: ReceiptRow): ResultReference[] {
-	return row.receipts.map((receipt) => ({
-		sessionId: canonicalIdentity(metadata.storageId, receipt.conversationId),
-		submissionId: receipt.submissionId,
-		requestId: receipt.requestId,
-	}));
+/** Only the outcome of a request closes it in the requester's continuity record. */
+function arrivedReferences(marks: readonly DependencyMark[]): { deliveredResults?: ResultReference[] } {
+	const deliveredResults = marks.flatMap(({ state, ...reference }) => (state === "arrived" ? [reference] : []));
+	return deliveredResults.length === 0 ? {} : { deliveredResults };
 }
 function receiptUnusable(receipt: DeliveryReceipt): boolean {
 	return receipt.status !== "done" || (receipt.answer ?? "").trim() === "";
@@ -702,9 +729,9 @@ function receiptFollowText(
 	const receipt = row.receipt;
 	const result =
 		receipt.status === "done"
-			? (receipt.answer ?? "No assistant text.")
+			? (inlineAnswer(receipt) ?? "No assistant text.")
 			: receiptFailureText(receipt, row.displayReason);
-	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (${submissionLabel(row)}).\n${receiptStateText(states)}\nResults do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, receipt)}${receiptGroupContinuationText(row, metadata.storageId)}${continuity.length === 0 ? "" : `\n\n${continuity.join("\n")}`}`;
+	return `Agent result from ${metadata.storageId}:${receipt.conversationId} (${submissionLabel(row)}).\n${receiptStateText(states)}\nResults do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, row, states)}${receiptGroupContinuationText(row, metadata.storageId)}${continuity.length === 0 ? "" : `\n\n${continuity.join("\n")}`}`;
 }
 
 /** The request and close status of a final report; a cut body names the exact call that continues it. */
@@ -775,25 +802,42 @@ function reportFollowText(report: DeliveryReport, facts?: FinalReportDeliveryFac
 	if (report.checkIn !== undefined)
 		return `Check-in from ${report.senderIdentity} (source ${report.sourceId}): still working, not finished. ${checkInSummary(report.checkIn)}. ${CHECK_IN_GUIDANCE}\n\n${boundedPeerText(report.message).text}`;
 	const lead = facts === undefined ? "" : ` ${finalReportLead(facts)}`;
-	return `${facts !== undefined ? "Final work report" : report.threadId === undefined ? "Report" : "Thread notice"} from ${report.senderIdentity} (source ${report.sourceId}).${lead} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${reportBody(report, facts).text}`;
+	const header = `${facts !== undefined ? "Final work report" : report.threadId === undefined ? "Report" : "Thread notice"} from ${report.senderIdentity} (source ${report.sourceId}).${lead} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n`;
+	if (!report.passive) return header + reportBody(report, facts).text;
+
+	const available = PASSIVE_MESSAGE_BYTES - Buffer.byteLength(header);
+	if (Buffer.byteLength(report.message) <= available) return header + report.message;
+	const recovery = report.threadId === undefined ? undefined : threadRecoveryText(report.threadId, report.threadEvent);
+	const marker = recovery === undefined ? PASSIVE_REPORT_TRUNCATION : ` [cut]\n\n${recovery}`;
+	const limit = available - Buffer.byteLength(marker);
+	let bytes = 0;
+	let end = 0;
+	for (const point of report.message) {
+		bytes += Buffer.byteLength(point);
+		if (bytes > limit) break;
+		end += point.length;
+	}
+	if (recovery === undefined) return header + report.message.slice(0, end) + marker;
+	const excerpt = threadExcerpt(report.message, end).text;
+	return header + excerpt + (excerpt.includes(recovery) ? " [cut]" : marker);
 }
 
-/** Primary-channel text: display name, plain outcome, and exact answer continuation. */
+/** Keep the headline separate: the primary card omits it, but must show each request's work state. */
 function channelText(
 	metadata: HostMetadata,
 	row: DeliveryRow,
 	label: string,
 	originalOwnerId: string,
 	fallback: boolean,
-	facts: ChannelFacts,
+	facts: NoticeFacts,
 ): string {
 	const fallbackLabel = fallback ? ` ${FALLBACK_LABEL} for ${originalOwnerId}.` : "";
 	if (row.kind === "receipt") {
 		const result =
 			row.receipt.status === "done"
-				? (row.receipt.answer ?? "No assistant text.")
+				? (inlineAnswer(row.receipt) ?? "No assistant text.")
 				: receiptFailureText(row.receipt, row.displayReason);
-		return `Agent “${label}” ${receiptOutcome(row.receipt)}.${fallbackLabel}\n${receiptStateText(facts.states)}\nResults do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, row.receipt)}${receiptGroupContinuationText(row, metadata.storageId)}\n\nUse agent_inspect for retained source evidence.`;
+		return `Agent “${label}” ${receiptOutcome(row.receipt)}.${fallbackLabel}\n\n${receiptStateText(facts.states)}\nResults do not establish task acceptance. Carried operator decisions retain their original scope; agent claims remain claims.\n\n${boundedPeerText(result).text}${receiptContinuationText(metadata, row, facts.states)}${receiptGroupContinuationText(row, metadata.storageId)}\n\nUse agent_inspect for retained source evidence.`;
 	}
 	if (row.report.checkIn !== undefined)
 		return `Agent “${label}” still working, not finished (check-in from ${row.report.senderIdentity}; source ${row.report.sourceId}). ${checkInSummary(row.report.checkIn)}.${fallbackLabel} ${CHECK_IN_GUIDANCE}\n\n${boundedPeerText(row.report.message).text}\n\nUse agent_inspect for retained source evidence.`;
@@ -807,8 +851,12 @@ function channelText(
 	return `${lead}${fallbackLabel} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${reportBody(row.report, final).text}${row.report.threadId === undefined ? "\n\nUse agent_inspect for retained source evidence." : ""}`;
 }
 
-/** Per-request work of a receipt group, or the final-report facts of a report, read before the text is built. */
-type ChannelFacts = { readonly states: readonly ReceiptState[]; readonly finalReport?: FinalReportDeliveryFacts };
+/** The notice, wake decision and arrival evidence describe the same retained work. */
+type NoticeFacts = {
+	readonly states: readonly ReceiptState[];
+	readonly marks: DependencyMark[];
+	readonly finalReport?: FinalReportDeliveryFacts;
+};
 
 function asError(error: unknown): Error {
 	return error instanceof Error ? error : new Error(String(error));
@@ -1206,18 +1254,6 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	/** Snapshot reads of open work: a transaction read would create the document of a conversation that has none. */
 	const workReader = { harness: host.harness, context: BACKGROUND_CONTEXT };
 
-	/** Dependency marks of an active report for the recipient's open work; a passive report carries none. */
-	const reportMarks = async (
-		report: DeliveryReport,
-	): Promise<{ dependencyMarks?: Awaited<ReturnType<typeof reportDependencyMarks>> }> => {
-		if (report.passive) return {};
-		const dependencyMarks = await host.harness.commit(
-			(tx) => reportDependencyMarks(tx, metadata.storageId, report),
-			BACKGROUND_CONTEXT,
-		);
-		return dependencyMarks.length === 0 ? {} : { dependencyMarks };
-	};
-
 	const receiptStates = (row: ReceiptRow) =>
 		readReceiptStates(
 			row,
@@ -1240,19 +1276,28 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			return 0;
 		}
 	};
-	/** Marks and final-report facts of one report delivery. */
-	const reportFacts = async (
-		report: DeliveryReport,
-	): Promise<{ marks: { dependencyMarks?: DependencyMark[] }; finalReport?: FinalReportDeliveryFacts }> => {
-		const marks = await reportMarks(report);
-		const finalReport = finalReportDeliveryFacts(report, marks.dependencyMarks ?? []);
-		return { marks, ...(finalReport === undefined ? {} : { finalReport }) };
+	const deliveryFacts = async (row: DeliveryRow): Promise<NoticeFacts> => {
+		if (row.kind === "receipt") {
+			const states = await receiptStates(row);
+			return {
+				states,
+				marks: states.map(({ receipt, work }) => receiptDependencyMark(metadata.storageId, receipt, work)),
+			};
+		}
+		const { report } = row;
+		const marks = report.passive
+			? []
+			: await host.harness.commit((tx) => reportDependencyMarks(tx, metadata.storageId, report), BACKGROUND_CONTEXT);
+		const finalReport = finalReportDeliveryFacts(report, marks);
+		return { states: [], marks, ...(finalReport === undefined ? {} : { finalReport }) };
 	};
-	const channelFacts = async (row: DeliveryRow): Promise<ChannelFacts> => {
-		if (row.kind === "receipt") return { states: await receiptStates(row) };
-		const { finalReport } = await reportFacts(row.report);
-		return { states: [], ...(finalReport === undefined ? {} : { finalReport }) };
-	};
+	const nativeEvidence = ({ marks }: NoticeFacts) =>
+		marks.length === 0
+			? {}
+			: {
+					dependencyMarks: marks,
+					...arrivedReferences(marks),
+				};
 
 	const reportCurrent = async (row: DeliveryRow): Promise<boolean> => {
 		if (
@@ -1289,16 +1334,15 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const requestId = receiptRequestId(metadata, row.receipt);
 		const communicationParams = deliveryCommunicationParams(row, host);
 		const continuity = await host.childContinuityLines(row.receipt.conversationId, receiptUnusable(row.receipt));
-		const states = await receiptStates(row);
-		const dependencyMarks = await receiptDependencyMarks(workReader, metadata.storageId, row.receipts);
+		const facts = await deliveryFacts(row);
+		const { states } = facts;
 		return {
 			sessionId: owner,
 			message: receiptFollowText(metadata, row, continuity, states),
 			requestId,
 			provenance: { classification: "automatic" },
 			...communicationParams,
-			deliveredResults: deliveredResults(metadata, row),
-			dependencyMarks,
+			...nativeEvidence(facts),
 			...(onlyStateNotes(row, states) ? { stateNotesOnly: true } : {}),
 			whenBusy: "followUp",
 		};
@@ -1314,7 +1358,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (!(await reportCurrent(row))) return;
 		const requestId = reportRequestId(metadata, row.report);
 		const communicationParams = deliveryCommunicationParams(row, host);
-		const facts = await reportFacts(row.report);
+		const facts = await deliveryFacts(row);
 		await hostAttempt(
 			() =>
 				host.request(row.report.passive ? "passive-submit" : "submit", {
@@ -1322,7 +1366,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 					message: reportFollowText(row.report, facts.finalReport),
 					requestId,
 					...communicationParams,
-					...facts.marks,
+					...nativeEvidence(facts),
 					provenance: reportProvenance(row.report),
 					...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }),
 					whenBusy: row.report.steer ? "steer" : "followUp",
@@ -1434,8 +1478,35 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		};
 	};
 
+	/** Fields of the displayed receipt and the exact related submissions on this delivery. */
+	const receiptFields = (row: ReceiptRow, states: readonly ReceiptState[], fallback: boolean) => {
+		const receipt = row.receipt;
+		const work = states.find((state) => state.receipt.submissionId === receipt.submissionId)?.work;
+		return {
+			...receiptWorkDetails(receipt, work),
+			submissions: row.receipts.map((member) => ({
+				submissionId: member.submissionId,
+				requestId: member.requestId,
+				operationId: member.operationId,
+				entryId: member.entryId,
+				ownerId: member.ownerId,
+				origin: receiptOrigin(member),
+			})),
+			conversationId: receipt.conversationId,
+			status: receipt.status,
+			answerEntryId: receipt.answerEntryId,
+			...(receipt.answerTruncated ? { textTruncated: true } : {}),
+			...receiptContinuationDetails(metadata, row, states),
+			...receiptGroupContinuation(row, metadata.storageId),
+			...(fallback ? {} : { receiptAssociation: receiptAssociation(metadata, row) }),
+			reason: row.displayReason ?? receipt.reason,
+			...(receipt.providerBlock === undefined ? {} : { providerBlock: receipt.providerBlock }),
+			acknowledged: row.receipts.every((member) => member.acknowledged),
+		};
+	};
+
 	/** Observation details: actual source metadata, owner flags, origin, wake intent, and retained row ids. */
-	const rowDetails = async (
+	const rowDetails = (
 		row: DeliveryRow,
 		identity: string,
 		originalOwnerId: string,
@@ -1443,9 +1514,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		liveOwner: boolean,
 		fallback: boolean,
 		status: SourceStatus | undefined,
-	): Promise<JsonValue> => {
-		const body = row.kind === "receipt" ? boundedPeerText(row.receipt.answer ?? "") : boundedReportText(row.report);
-		const states = row.kind === "receipt" ? await receiptStates(row) : [];
+		{ states, marks }: NoticeFacts,
+	): JsonValue => {
+		const body =
+			row.kind === "receipt" ? boundedPeerText(inlineAnswer(row.receipt) ?? "") : boundedReportText(row.report);
 		const shared = sharedRowDetails(
 			row,
 			identity,
@@ -1457,42 +1529,20 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			body,
 			states,
 		);
-		if (row.kind === "receipt") {
-			const receipt = row.receipt;
-			const work = states.find((state) => state.receipt.submissionId === receipt.submissionId)?.work;
+		// Informational copies do not settle requests in the session that receives the copy.
+		const arrivals = fallback ? {} : arrivedReferences(marks);
+		if (row.kind === "receipt")
 			return {
 				...shared,
-				...receiptWorkDetails(receipt, work),
-				submissions: row.receipts.map((member) => ({
-					submissionId: member.submissionId,
-					requestId: member.requestId,
-					operationId: member.operationId,
-					entryId: member.entryId,
-					ownerId: member.ownerId,
-					origin: receiptOrigin(member),
-				})),
-				conversationId: receipt.conversationId,
-				status: receipt.status,
-				answerEntryId: receipt.answerEntryId,
+				...arrivals,
+				...receiptFields(row, states, fallback),
 				answer: body.text,
-				...receiptContinuationDetails(metadata, receipt),
-				...receiptGroupContinuation(row, metadata.storageId),
-				// An informational copy never settles the recipient's requests, so it carries no delivered tuples.
-				...(fallback
-					? {}
-					: {
-							receiptAssociation: receiptAssociation(metadata, row),
-							deliveredResults: deliveredResults(metadata, row),
-						}),
-				reason: row.displayReason ?? receipt.reason,
-				...(receipt.providerBlock === undefined ? {} : { providerBlock: receipt.providerBlock }),
-				acknowledged: row.receipts.every((member) => member.acknowledged),
 			} as unknown as JsonValue;
-		}
 		const report = row.report;
 		return {
 			...shared,
 			...passiveThreadDetails(row, host, metadata, fallback),
+			...arrivals,
 			reportSourceId: report.sourceId,
 			requestId: report.requestId,
 			senderIdentity: report.senderIdentity,
@@ -1515,18 +1565,12 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		fallback: boolean,
 	): Promise<boolean> => {
 		const status = await readSourceStatus(identity);
+		const facts = await deliveryFacts(row);
 		const message: PrimaryDelivery = {
 			requireRetained: true,
 			sourceId: rowSourceId(metadata, row, fallback ? deliveryRecipient : undefined),
-			text: channelText(
-				metadata,
-				row,
-				displayName(status, identity),
-				originalOwnerId,
-				fallback,
-				await channelFacts(row),
-			),
-			details: await rowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback, status),
+			text: channelText(metadata, row, displayName(status, identity), originalOwnerId, fallback, facts),
+			details: rowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback, status, facts),
 		};
 		if (!(await reportCurrent(row))) return false;
 		await connection.deliver(message);
@@ -1747,7 +1791,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			if (!(await reportCurrent(row))) return;
 			const requestId = reportRequestId(metadata, row.report);
 			const communicationParams = deliveryCommunicationParams(row, host);
-			const facts = await reportFacts(row.report);
+			const facts = await deliveryFacts(row);
 			await connection.request(
 				row.report.passive ? "passive-submit" : "submit",
 				{
@@ -1755,7 +1799,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 					message: reportFollowText(row.report, facts.finalReport),
 					requestId,
 					...communicationParams,
-					...facts.marks,
+					...nativeEvidence(facts),
 					provenance: reportProvenance(row.report),
 					...(row.report.providerRetry === undefined ? {} : { providerRetry: row.report.providerRetry }),
 					whenBusy: row.report.steer ? "steer" : "followUp",

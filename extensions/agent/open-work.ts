@@ -956,33 +956,18 @@ export async function closeOpenWork(
 
 // ─── Delivery evidence ────────────────────────────────────────────────────────
 
-/**
- * Marks that the producer's host sends with a receipt delivery: a receipt of a request with declared work is
- * a state note, whether that work is open or closed; every other receipt is the result. Read in the
- * producer's storage when the delivery is sent, through `requestWork`, so a closed item that left the
- * bounded work document still marks its receipt a state note.
- */
-export async function receiptDependencyMarks(
-	reader: SnapshotReader,
+/** A request with declared work owes a separate final report, even after its closed item leaves the work document. */
+export function receiptDependencyMark(
 	storageId: string,
-	receipts: readonly Pick<DeliveryReceipt, "conversationId" | "submissionId" | "requestId" | "ownerId">[],
-): Promise<DependencyMark[]> {
-	const marks: DependencyMark[] = [];
-	for (const receipt of receipts.slice(0, DEPENDENCY_MARK_LIMIT)) {
-		const stateNote =
-			(await requestWork(reader, storageId, receipt.conversationId, {
-				requestId: receipt.requestId,
-				submissionId: receipt.submissionId,
-				ownerId: receipt.ownerId,
-			})) !== undefined;
-		marks.push({
-			sessionId: canonicalIdentity(storageId, receipt.conversationId),
-			submissionId: receipt.submissionId,
-			requestId: receipt.requestId,
-			state: stateNote ? "state-note" : "arrived",
-		});
-	}
-	return marks;
+	receipt: Pick<DeliveryReceipt, "conversationId" | "submissionId" | "requestId">,
+	work: RequestWork | undefined,
+): DependencyMark {
+	return {
+		sessionId: canonicalIdentity(storageId, receipt.conversationId),
+		submissionId: receipt.submissionId,
+		requestId: receipt.requestId,
+		state: work === undefined ? "arrived" : "state-note",
+	};
 }
 
 /**

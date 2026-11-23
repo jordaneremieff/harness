@@ -318,24 +318,51 @@ function retainedResultPage(value: unknown): RetainedResultPage {
 	return value as RetainedResultPage;
 }
 
-async function readAnswerPages(
-	initial: RetainedResultPage,
-	execute: (args: Record<string, unknown>) => Promise<RetainedResultPage>,
-): Promise<string> {
-	let body = initial.answer ?? "",
-		page = initial;
-	while (page.answerContinuation !== undefined) {
+type ExecuteResultPage = (args: Record<string, unknown>) => Promise<RetainedResultPage>;
+
+async function readAnswerPages(initial: RetainedResultPage, execute: ExecuteResultPage): Promise<string> {
+	let body = "";
+	let page = initial;
+	const start = initial.offset ?? 0;
+	for (;;) {
+		assert.ok(typeof page.answer === "string" && page.answer.length > 0);
+		assert.equal(page.offset, start + body.length);
+		assert.ok(page.answer.length <= RESULT_PAGE_UNITS);
+		assert.doesNotMatch(page.answer, /^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/u);
+		body += page.answer;
+		if (page.answerContinuation === undefined) {
+			assert.equal(page.nextOffset, null);
+			assert.equal(page.truncated, false);
+			return body;
+		}
+		assert.equal(page.nextOffset, start + body.length);
+		assert.equal(page.truncated, true);
 		const { tool: name, ...args } = page.answerContinuation;
 		assert.equal(name, "agent_inspect");
+		assert.equal(args.offset, page.nextOffset);
 		assert.equal(Object.hasOwn(args, "receiptCursor"), false);
-		const previousOffset = page.offset ?? 0;
 		page = await execute(args);
-		assert.ok((page.offset ?? 0) > previousOffset);
-		assert.ok((page.answer?.length ?? 0) <= RESULT_PAGE_UNITS);
-		body += page.answer ?? "";
 	}
-	assert.equal(page.nextOffset, null);
-	return body;
+}
+
+async function readReceiptPages(
+	initial: RetainedResultPage,
+	execute: ExecuteResultPage,
+	recipient: string,
+): Promise<NonNullable<RetainedResultPage["receiptGroup"]>["results"]> {
+	const results: NonNullable<RetainedResultPage["receiptGroup"]>["results"] = [];
+	let page = initial;
+	for (;;) {
+		const group = page.receiptGroup;
+		assert.equal(group?.recipient, recipient);
+		assert.ok(group);
+		results.push(...group.results);
+		assert.equal(group.complete, group.next === null);
+		if (group.next === null) return results;
+		const { tool: _tool, ...args } = group.next;
+		page = await execute(args);
+		assert.equal(page.answer, undefined);
+	}
 }
 
 it("executes independent answer and recipient continuations through native tools, cold reads and reopen", {
@@ -345,7 +372,8 @@ it("executes independent answer and recipient continuations through native tools
 		storageId = randomUUID();
 	const released = signal(),
 		entered = signal();
-	const answer = `${"a".repeat(4095)}😀\n${"separate answer line\n".repeat(400)}`;
+	const unitBoundary = RESULT_PAGE_UNITS - 1;
+	const answer = `${"a".repeat(unitBoundary)}😀${"\u0000".repeat(17000)}${'漢字\r\n"\\'.repeat(2400)}`;
 	const models = await scriptedRuntime([toolCallMessage("gate"), answerMessage(answer)]);
 	let host: DurableHost | undefined;
 	try {
@@ -381,6 +409,22 @@ it("executes independent answer and recipient continuations through native tools
 			})) as { submissionId: SubmissionId };
 			(ownerId === "recipient-a" ? intended : other).push(admitted.submissionId);
 		}
+		const expectedLargeGroup: [number, string][] = [
+			[other[0], "result-group-6"],
+			[other[1], "result-group-12"],
+		];
+		for (let index = 0; index < 16; index++) {
+			const requestId = String(index).padStart(2, "0") + "\u0001".repeat(1022);
+			const admitted = (await host.request("submit", {
+				message: `large reference ${index}`,
+				requestId,
+				ownerId: "recipient-b",
+				origin: "model",
+				whenBusy: "steer",
+			})) as { submissionId: SubmissionId };
+			other.push(admitted.submissionId);
+			expectedLargeGroup.push([admitted.submissionId, requestId]);
+		}
 		released.resolve();
 		for (const id of [...intended, ...other]) await readOutcome(host.harness, id, BACKGROUND_CONTEXT);
 		const active = host;
@@ -405,12 +449,12 @@ it("executes independent answer and recipient continuations through native tools
 				"each emitted call satisfies the native public input schema",
 			);
 			const output = await tool.execute(args, {} as never, BACKGROUND_CONTEXT);
-			assert.notEqual(output.isError, true);
+			assert.notEqual(output.isError, true, JSON.stringify(output.output));
 			const page = retainedResultPage(output.structuredOutput);
 			const text = output.output?.find((part) => part.type === "text");
 			assert.ok(text?.type === "text");
 			assert.equal(text.text, readableControlText(page));
-			assert.equal(page.requestId, "result-group-0");
+			assert.equal(page.requestId, args.requestId);
 			return page;
 		};
 		const selected = {
@@ -420,12 +464,18 @@ it("executes independent answer and recipient continuations through native tools
 			requestId: "result-group-0",
 		};
 		const initial = await execute(selected);
-		assert.equal(initial.answer?.length, 4095, "the first page never splits the surrogate pair at its limit");
-		assert.equal(initial.nextOffset, 4095);
+		assert.equal(initial.answer?.length, unitBoundary, "the first page never splits the surrogate pair at its limit");
+		assert.equal(initial.nextOffset, unitBoundary);
 		assert.equal(initial.receiptGroup?.recipient, "recipient-a");
 		assert.equal(initial.receiptGroup?.results.length, 16);
 		assert.equal(initial.receiptGroup?.complete, false);
 		assert.equal(await readAnswerPages(initial, execute), answer);
+		const split = await execute({ ...selected, offset: unitBoundary + 1 });
+		assert.equal(split.offset, unitBoundary, "an offset inside a pair moves back to its start");
+		assert.ok(split.answer?.startsWith("😀"));
+		assert.ok(typeof split.nextOffset === "number" && split.nextOffset < unitBoundary + RESULT_PAGE_UNITS);
+		const eof = await execute({ ...selected, offset: answer.length });
+		assert.deepEqual([eof.answer, eof.offset, eof.nextOffset, eof.truncated], ["", answer.length, null, false]);
 		const answerContinuation = initial.answerContinuation;
 		assert.ok(answerContinuation);
 		const receiptCall = initial.receiptGroup?.next;
@@ -433,6 +483,7 @@ it("executes independent answer and recipient continuations through native tools
 		const { tool: receiptTool, ...receiptArgs } = receiptCall;
 		assert.equal(receiptTool, "agent_inspect");
 		assert.equal(Object.hasOwn(receiptArgs, "offset"), false);
+		await assert.rejects(host.request("inspect", { ...receiptArgs, offset: 0 }), /select different pages/u);
 		const receiptPage = await execute(receiptArgs);
 		assert.equal(receiptPage.answer, undefined, "a receipt-only continuation never repeats the answer body");
 		assert.equal(receiptPage.answerContinuation, undefined);
@@ -456,8 +507,24 @@ it("executes independent answer and recipient continuations through native tools
 			host.request("inspect", { ...receiptArgs, receiptCursor: "not-a-current-cursor" }),
 			/Invalid receipt cursor/u,
 		);
+		const largeGroupPage = await execute({
+			...selected,
+			submissionId: other[0],
+			requestId: "result-group-6",
+			offset: unitBoundary,
+		});
+		assert.ok(largeGroupPage.answer?.startsWith("😀"), "group metadata leaves room for a complete scalar");
+		assert.ok(largeGroupPage.answerContinuation, "both the answer and the reference group have more data");
+		assert.ok(largeGroupPage.receiptGroup?.next);
+		assert.equal(await readAnswerPages(largeGroupPage, execute), answer.slice(unitBoundary));
+		const largeGroup = await readReceiptPages(largeGroupPage, execute, "recipient-b");
+		assert.deepEqual(
+			largeGroup.map((ref) => [ref.submissionId, ref.requestId]),
+			expectedLargeGroup,
+			"byte-fit receipt pages preserve every recipient reference in order",
+		);
 		const receipts = Object.values((await deliveryState(host.harness, BACKGROUND_CONTEXT, true)).receipts);
-		assert.equal(receipts.length, 19);
+		assert.equal(receipts.length, intended.length + other.length);
 		assert.equal(new Set(receipts.map((row) => row.answerEntryId)).size, 1);
 		assert.ok(
 			receipts.every((row) => row.acknowledged === false),
@@ -478,7 +545,8 @@ it("executes independent answer and recipient continuations through native tools
 			assert.equal(coldReceipt.answer, undefined);
 			const { tool: _tool, ...answerArgs } = answerContinuation;
 			const coldAnswer = retainedResultPage(await cold.request("inspect", answerArgs));
-			assert.equal(coldAnswer.answer, answer.slice(4095, 4095 + RESULT_PAGE_UNITS));
+			assert.equal(coldAnswer.answer, split.answer);
+			assert.equal(coldAnswer.nextOffset, split.nextOffset);
 			await assert.rejects(cold.request("inspect", { ...receiptArgs, view: "history" }), /only the result view/u);
 		} finally {
 			await cold.close();

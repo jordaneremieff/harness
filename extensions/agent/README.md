@@ -2071,7 +2071,7 @@ Sources: `conversation-stop.ts`, `provider-models.ts` (`requestEnd`),
 
 Sources: `open-work.ts` (`AgentWorkParams`, `declareOpenWork`,
 `continueWork`, `completeOpenWork`, `finalReport`, `OpenWorkDoc`,
-`openWorkStatus`, `requestWork`, `receiptDependencyMarks`, `closeOpenWork`),
+`openWorkStatus`, `requestWork`, `receiptDependencyMark`, `closeOpenWork`),
 `durable-agents.ts`
 (`workTool`, `exposedControl`), `durable-observation.ts`
 (`readConversationStatus`), `durable-delivery.ts` (`receiptFollowText`,
@@ -2201,7 +2201,10 @@ and requester/reply routes remain distinct even when several inputs share one
 final answer. An automatic result stays an automatic result, and a report
 stays a report; the class describes the input, not its placement time.
 A passive report or thread notice is a write, not an active input. It starts
-no turn and enters context at its normal write boundary. The same-storage
+no turn and enters context at its normal write boundary. For native delivery,
+the sender fits the whole passive message, including its header and any cut
+marker, within 16 KiB of UTF-8. The source retains the original report.
+The same-storage
 background `Reporter` admits delegated work and follows its settlement; the
 delivery watcher supplies the answer copy.
 
@@ -2250,10 +2253,15 @@ Sources: `durable-controls.ts` (`placementMode`, `admitConversation`),
 `currentStep`, `noticeDue`),
 and `durable-observation.ts` (`readConversationStatus`).
 
-Normal delivered receipts retain a short answer excerpt and include a
-`Full answer` exact-entry continuation. Ordinary primary delivery details also
-include the structured `continuation`. Follow it with `agent_inspect`, then use
-each returned `nextOffset` until the retained answer is complete.
+A receipt retains up to 2,400 UTF-16 units of answer text without splitting a
+surrogate pair. `answerLength` is the length of the original answer and
+`answerTruncated` records whether any text was cut. A complete answer has no
+body continuation. A cut answer names the `view: "result"` call that starts at
+the first omitted unit. Ordinary primary details include that call as
+`continuation`. A receipt without truncation facts names an offset-zero read
+instead. These calls select an ordinary result, never a raw entry or a state
+note in place of its final report. In a shared answer group, the body
+continuation selects a request without declared work, if the group has one.
 
 A result notice names at most 16 references. When the recipient's receipt group
 continues, the notice text adds `Receipt references continue:` and one
@@ -2269,13 +2277,14 @@ does not count references on later pages.
 pages. Two continuations exist, and neither advances the other:
 
 - `answerContinuation` continues the answer text. An answer page holds at most
-  4,096 UTF-16 code units and never splits a surrogate pair. `offset` and
+  16,384 UTF-16 code units and never splits a surrogate pair. `offset` and
   `nextOffset` count UTF-16 code units. The call repeats the selector with the
   next `offset`.
 - `receiptGroup.next` continues the recipient's references. `receiptGroup` is
   `{recipient, results, complete, next}` with at most 16 references for the
   recipient of the selected receipt. A page read with `receiptCursor` returns
   the result identity and the next reference page, without the answer body.
+  Pass no `offset` with `receiptCursor`; the two select different pages.
 
 When the request of the selected input declared work, its answer is a state
 note, not the result. The page then carries `work`: `state` (`open` or
@@ -2289,7 +2298,7 @@ item left the bounded work document, from the retained final report row.
 
 - `finalReport: true` selects the final report instead of the answer. The
   page returns `finalReport` with `text`, `length`, `offset`, `nextOffset` and
-  `truncated`, in pages of the same 4,096 UTF-16 code units, and
+  `truncated`, with the same unit and byte limits as the answer, and
   `finalReportContinuation` while text remains. The pages join to the
   retained report text exactly. The retained report decides this page, not
   the settlement of the input: the report of closed work is readable while
@@ -2302,8 +2311,10 @@ item left the bounded work document, from the retained final report row.
   the result view and with `receiptCursor`.
 
 Execute each returned call unchanged. A complete result page, including its
-identity, body and receipt metadata, fits 65,536 serialised UTF-8 bytes; a
-larger page is refused. `receiptCursor` contains 1 to 2,048 characters, selects
+identity, escaped text, reference metadata and continuations, fits 65,536
+serialised UTF-8 bytes. The reader reduces the number of references and the
+text length as needed. Each continuation starts at the first omitted item or
+text unit. `receiptCursor` contains 1 to 2,048 characters, selects
 only the result view, and requires a settled input with a retained receipt.
 A cursor binds the storage, the recipient, the selected submission, the answer,
 and the end of the receipt list at the first read. References appended later
@@ -3606,7 +3617,9 @@ prompt for an agent that the same call creates in another storage is recorded
 only after the creation. A result delivery carries each settled result
 reference; the receiving host checks the references before it admits the body
 and marks each matching request as delivered, also for a replayed body. A
-request whose answer routes to another identity never closes in the sender's
+state-note receipt leaves its request listed until the final report arrives;
+an ordinary outcome closes only its own request. An informational fallback
+closes no request. A request whose answer routes to another identity never closes in the sender's
 record.
 
 A scheduled input stays in the note until its result is delivered or its timer
