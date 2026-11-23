@@ -1,9 +1,9 @@
 import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/chord/context";
-import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { ExplorerHost } from "./durable.ts";
-import { LiveBridges, type LivePublisher, type LiveRoute } from "./live-bridge.ts";
+import { explorerApplicationRoutes } from "./application-messages.ts";
+import { LiveBridges, type LivePublisher } from "./live-bridge.ts";
 import type { LiveConfig, LiveState } from "./live-protocol.ts";
 
 function assistantText(message: { role: string; content: unknown }): string {
@@ -43,83 +43,8 @@ async function settledAnswer(
 		? { status: messageStatus(answer.stopReason), text: assistantText(answer) }
 		: { status: "error", text: "The request's exact answer is unavailable." };
 }
-const noReply = "The agent stopped without a text reply. You can ask a follow-up here.";
-const sharedTurn =
-	"Pi took this question with another message. The shared reply belongs in chat, not under either question.";
-function submittedText(content: UserMessage["content"]): string {
-	if (typeof content === "string") return content;
-	return content.length === 1 && content[0].type === "text" ? content[0].text : "";
-}
-function ordinaryReplies(
-	pi: ExtensionAPI,
-	active: () => boolean,
-	pending: Map<string, string>,
-	publish: LivePublisher,
-) {
-	let hasInput = false,
-		request: string | undefined;
-	const reset = () => {
-		hasInput = false;
-		request = undefined;
-	};
-	function takeInput(content: UserMessage["content"]) {
-		const text = submittedText(content),
-			delivered = pending.get(text);
-		pending.delete(text);
-		if (hasInput) {
-			for (const id of [request, delivered]) if (id) publish("error", sharedTurn, id);
-			request = undefined;
-			return;
-		}
-		hasInput = true;
-		request = delivered;
-		if (request) publish("working", "", request);
-	}
-	function finish(message: AssistantMessage) {
-		// Pi can retry an error or take another turn after tools without a new user message.
-		if (
-			["toolUse", "error", "aborted"].includes(message.stopReason) ||
-			message.content.some((part) => part.type === "toolCall")
-		)
-			return;
-		if (request) {
-			const text = assistantText(message);
-			if (text.trim()) publish("answer", text, request);
-			else publish("error", noReply, request);
-		}
-		reset();
-	}
-	const off = [
-		pi.on("message_start", ({ message }) => {
-			if (active() && message.role === "user") takeInput(message.content);
-		}),
-		pi.on("message_end", ({ message }) => {
-			if (active() && message.role === "assistant") finish(message);
-		}),
-		pi.on("agent_settled", () => {
-			if (active() && request) publish("error", noReply, request);
-			reset();
-		}),
-	];
-	return () => {
-		for (const remove of off) remove();
-		pending.clear();
-	};
-}
-function ordinaryRoute(pi: ExtensionAPI, check: () => void, active: () => boolean): LiveRoute {
-	const pending = new Map<string, string>();
-	return {
-		label: "this Pi conversation",
-		submit: async (text, operationId) => {
-			check();
-			pending.set(text, operationId);
-			pi.sendUserMessage(text, { deliverAs: "followUp", expandPromptTemplates: false });
-			return { status: "requested" };
-		},
-		observe: async (publish) => ordinaryReplies(pi, active, pending, publish),
-	};
-}
 export function ordinaryLive(pi: ExtensionAPI, lifecycle: () => AbortSignal) {
+	const route = explorerApplicationRoutes(pi.events);
 	let bridges = new LiveBridges();
 	const invalidate = () => {
 		bridges.close();
@@ -140,9 +65,7 @@ export function ordinaryLive(pi: ExtensionAPI, lifecycle: () => AbortSignal) {
 				if (source.getSessionId() !== id) throw new Error("The invoking Explorer conversation changed.");
 			};
 			check();
-			const bridge = await bridges.get(id, () =>
-				ordinaryRoute(pi, check, () => !signal.aborted && source.getSessionId() === id),
-			);
+			const bridge = await bridges.get(id, () => route(id, check));
 			check();
 			return bridge.start();
 		},
@@ -199,10 +122,11 @@ export async function nativeConversationConnection(
 		return {
 			label: "this agent conversation",
 			retryFailedSubmission: true,
-			submit: async (text, operationId) => {
+			submit: async ({ text, requestId: operationId }) => {
 				signal.throwIfAborted();
+				const content = `This question (${operationId}) comes from the live Explorer pane. Answer in your final message; the pane shows it under this question.\n\n${text}`;
 				const submission = await conversation.submit(
-					{ type: "input", content: text, whenBusy: "followUp", requestId: `explorer:${operationId}` },
+					{ type: "input", content, whenBusy: "followUp", requestId: `explorer:${operationId}` },
 					context,
 				);
 				inputs.set(submission.id, operationId);

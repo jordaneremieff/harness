@@ -17,8 +17,14 @@ import {
 import type { LaunchTarget } from "./pane-command.ts";
 
 export type LivePublisher = (status: LiveState["status"], text: string, requestId: string) => void;
+export interface LivePrompt {
+	requestId: string;
+	threadId: string;
+	root: string;
+	text: string;
+}
 export interface LiveRoute {
-	submit(text: string, requestId: string): Promise<LivePromptReceipt>;
+	submit(prompt: LivePrompt): Promise<LivePromptReceipt>;
 	/** Only idempotent admission can reconcile a thrown submission error by retrying. */
 	retryFailedSubmission?: boolean;
 	observe?(publish: LivePublisher): Promise<() => void>;
@@ -267,10 +273,16 @@ export class LiveBridge {
 
 	private async prompt(handle: string, body: Record<string, unknown>): Promise<object> {
 		const rejected = (message: string) => ({ ok: true, status: "rejected", message });
-		const { requestId, threadId, text, noteIds } = body;
+		const { requestId, threadId, root, text, noteIds } = body;
+		if (root === undefined)
+			return rejected("The pane did not send its root. Run /explorer update, then reopen the pane.");
 		if (
 			!liveId(requestId) ||
 			!liveId(threadId) ||
+			typeof root !== "string" ||
+			!root.startsWith("/") ||
+			/[\u0000\uD800-\uDFFF]/u.test(root) ||
+			Buffer.byteLength(root) > 4096 ||
 			typeof text !== "string" ||
 			!text.trim() ||
 			/[\uD800-\uDFFF]/u.test(text) ||
@@ -281,16 +293,15 @@ export class LiveBridge {
 			return rejected("Invalid Explorer prompt; this request was not submitted.");
 		const key = requestId.toLowerCase();
 		const fingerprint = createHash("sha256")
-			.update(JSON.stringify([handle, requestId, threadId, text, noteIds]))
+			.update(JSON.stringify([handle, requestId, threadId, root, text, noteIds]))
 			.digest("hex");
 		let prior = this.prompts.get(key);
 		if (prior && prior.fingerprint !== fingerprint)
 			return rejected("The request ID already names a different Explorer prompt.");
 		if (!prior || (prior.receipt?.status === "uncertain" && prior.receipt.retryable)) {
 			if (!prior && this.prompts.size >= 128) return rejected("The live Explorer prompt limit is reached.");
-			const routed = `This question (${requestId}) comes from the live Explorer pane. Answer in your final message; the pane shows it under this question.\n\n${text}`;
 			const promise = Promise.resolve()
-				.then(() => this.route.submit(routed, requestId))
+				.then(() => this.route.submit({ requestId, threadId, root, text }))
 				.catch((): LivePromptReceipt => {
 					const retryable = this.route.retryFailedSubmission === true;
 					return {

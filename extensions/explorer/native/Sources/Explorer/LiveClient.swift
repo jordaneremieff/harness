@@ -113,7 +113,7 @@ final class LiveClient {
         }
     }
 
-    func submit(_ fields: [String: Any]) async throws -> [String: Any] {
+    func submit(_ fields: [String: Any], root: String) async throws -> [String: Any] {
         guard !closing, let label else { throw ExplorerError("unavailable", reason) }
         _ = label
         guard let id = fields["requestId"] as? String, UUID(uuidString: id) != nil,
@@ -122,7 +122,7 @@ final class LiveClient {
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ExplorerError("rejected", "A valid request, thread and message of at most 128 KiB are required.")
         }
-        var body: [String: Any] = ["requestId": id, "threadId": thread, "text": text]
+        var body: [String: Any] = ["requestId": id, "threadId": thread, "text": text, "root": root]
         if let notes = fields["noteIds"] {
             guard let ids = notes as? [String], ids.allSatisfy({ $0.range(of: #"^n-[a-f0-9]{20}$"#, options: .regularExpression) != nil }) else {
                 throw ExplorerError("rejected", "A note identifier is invalid.")

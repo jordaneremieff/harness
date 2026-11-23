@@ -264,7 +264,7 @@ final class ExplorerHost {
             return draft.map { ["draft": $0] } ?? [:]
         case "prompt":
             guard let live else { throw ExplorerError("unavailable", "No live Pi conversation is attached.") }
-            return try await live.submit(fields)
+            return try await live.submit(fields, root: workspace.root.path)
         default:
             let service = ExplorerServices(workspace: workspace, store: store, resources: resources, showIgnored: showIgnored)
             return try await Task.detached(priority: .userInitiated) { try service.handle(type, fields) }.value

@@ -66,7 +66,8 @@ enum ExplorerCheck {
         try FileManager.default.createDirectory(at: embedded, withIntermediateDirectories: false)
         try git(["-C", embedded.path, "init", "--quiet", "--template=", "-b", "topic"])
         try Data("answer from another repository\n".utf8).write(to: embedded.appendingPathComponent("text.txt"))
-        let fake = try FakeLive()
+        let nestedPath = canonical(embedded.path) ?? embedded.path
+        let fake = try FakeLive(promptRoot: nestedPath)
         defer { fake.stop() }
         let config = LiveConfiguration(version: 1, endpoint: URL(string: "http://127.0.0.1:\(fake.port)")!, token: FakeLive.token)
         let target = try Launch(target: ["root": root.path, "path": "example.ts"])
@@ -155,24 +156,11 @@ enum ExplorerCheck {
             press('Escape');
             const viewed = await accept('review.state', {op:'set',key:review.resolved.key,viewed:['example.ts']});
             if (viewed.viewed[0] !== 'example.ts') throw Error('review state');
-            let connected = false;
-            for (let i = 0; i < 180 && !connected; i++) {
-              connected = (await accept('hello')).live.connected;
-              if (!connected) await new Promise(requestAnimationFrame);
-            }
-            if (!connected) throw Error('fake Pi did not connect');
-            const requestId = '00000000-0000-4000-8000-000000000001';
-            const threadId = '00000000-0000-4000-8000-000000000002';
             const original = globalThis.explorer.receive;
             globalThis.explorer.receive = event => {
               if (event.type === 'files.changed' && event.paths.includes('cache/added.txt')) globalThis.__verifiedChange = event;
-              if (event.type === 'promptState' && event.requestId === requestId && event.threadId === threadId && event.text === 'Verified reply' && event.status === 'answer') globalThis.__verifiedAnswer = true;
               return original(event);
             };
-            const receipt = await accept('prompt', {requestId,threadId,text:'Verify Explorer'});
-            if (receipt.status !== 'admitted') throw Error('prompt receipt');
-            for (let i=0; i<180 && !globalThis.__verifiedAnswer; i++) await new Promise(requestAnimationFrame);
-            if (!globalThis.__verifiedAnswer) throw Error('prompt answer');
             const rendered = await accept('markdown.render', {path:'guide.md'});
             if (!rendered.html.includes('<strong>rendered</strong>') || !rendered.html.includes('data-sourcepos="3:')) throw Error('Markdown render and source map');
             if ((await call('link.open', {url:'file:///etc/passwd'})).ok) throw Error('outside link accepted');
@@ -220,19 +208,32 @@ enum ExplorerCheck {
             _ = try await host.page.view.callAsyncJavaScript("""
             const call = (type, fields) => globalThis.webkit.messageHandlers.explorer.postMessage({ v:1, type, ...fields });
             const receive = globalThis.explorer.receive;
-            let opened;
+            const requestId = '00000000-0000-4000-8000-000000000001';
+            const threadId = '00000000-0000-4000-8000-000000000002';
+            let opened, answered;
             globalThis.explorer.receive = event => {
               if (event.type === 'open' && event.root) opened = event;
+              if (event.type === 'promptState' && event.requestId === requestId && event.threadId === threadId && event.text === 'Verified reply' && event.status === 'answer') answered = true;
               return receive(event);
             };
             const first = await call('root.open', {path: nested});
             if (!first.ok || opened?.root.path !== nested || opened?.base.path !== base) throw Error('open nested root');
             const hello = await call('hello');
             if (hello.root.branch !== 'topic' || hello.base.path !== base) throw Error('retained base root');
+            let connected = hello.live.connected;
+            for (let i = 0; i < 180 && !connected; i++) {
+              await new Promise(requestAnimationFrame);
+              connected = (await call('hello')).live.connected;
+            }
+            if (!connected) throw Error('fake Pi did not connect');
+            const receipt = await call('prompt', {requestId, threadId, text:'Verify Explorer', root:base});
+            if (!receipt.ok || receipt.status !== 'admitted') throw Error('prompt receipt: ' + receipt.error?.message);
+            for (let i = 0; i < 180 && !answered; i++) await new Promise(requestAnimationFrame);
+            if (!answered) throw Error('prompt answer');
             if ((await call('root.open', {path: base + '/..'})).ok || (await call('root.open', {path: base + '/.git'})).ok) throw Error('root escape');
             if (!(await call('root.open', {path: base})).ok || opened?.root.path !== base) throw Error('return to base');
             return true;
-            """, arguments: ["base": canonical(root.path) ?? root.path, "nested": canonical(embedded.path) ?? embedded.path], in: nil, contentWorld: .page)
+            """, arguments: ["base": canonical(root.path) ?? root.path, "nested": nestedPath], in: nil, contentWorld: .page)
             try await verifyTextMenu(host.page.view)
             try await verifyZoom(host)
         }
@@ -459,11 +460,13 @@ enum ExplorerCheck {
 private final class FakeLive {
     static let token = String(repeating: "a", count: 64)
     private let listener: NWListener
+    private let promptRoot: String
     private let queue = DispatchQueue(label: "explorer.verify.live")
     private var state: [String: Any] = ["sequence": 0, "status": "idle", "text": "", "truncated": false]
     private(set) var port: UInt16 = 0
 
-    init() throws {
+    init(promptRoot: String) throws {
+        self.promptRoot = promptRoot
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
         listener = try NWListener(using: params)
@@ -510,6 +513,10 @@ private final class FakeLive {
         case "/connect": result["handle"] = "verify"; result["label"] = "Explorer verification"
         case "/poll": result["state"] = state; result["command"] = jsonNull
         case "/prompt":
+            guard fields["root"] as? String == promptRoot else {
+                result = ["ok": false, "error": "The prompt did not name the open Explorer root."]
+                break
+            }
             guard fields["text"] as? String == "Verify Explorer", let id = fields["requestId"], let thread = fields["threadId"] else { connection.cancel(); return }
             result["status"] = "admitted"
             state = ["sequence": 1, "status": "answer", "text": "Verified reply", "truncated": false, "requestId": id, "threadId": thread]

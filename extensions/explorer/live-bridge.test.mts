@@ -2,12 +2,20 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { request } from "node:http";
 import { type TestContext, test } from "node:test";
-import { LiveBridge, LiveBridges, type LivePublisher, type LiveRoute } from "./live-bridge.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
+import * as Durable from "@earendil-works/pi-durable";
+import { LiveBridge, LiveBridges, type LivePrompt, type LivePublisher, type LiveRoute } from "./live-bridge.ts";
+import { nativeConversationConnection } from "./live-host.ts";
 import { LIVE_LIFETIME, LIVE_PROMPT_BYTES, LIVE_WIRE_BYTES, type LiveConfig } from "./live-protocol.ts";
 import type { LaunchTarget } from "./pane-command.ts";
 
 const pane = () => ({ workspace: randomUUID(), document: randomUUID() });
-const question = () => ({ requestId: randomUUID(), threadId: randomUUID(), text: "Question" });
+const question = () => {
+	const requestId = randomUUID();
+	return { requestId, threadId: requestId, root: "/repo", text: "Question" };
+};
 const requested = async () => ({ status: "requested" as const });
 const offer = { version: 1, navigate: 1 };
 const target: LaunchTarget = { root: "/repo", path: "src/example.ts", line: 3, end: 5, view: "file" };
@@ -194,12 +202,12 @@ test("a command timeout does not assert success or redeliver a command", { timeo
 });
 
 test("exact prompt retries share admission and preserve the original text", { timeout: 5000 }, async (t) => {
-	const calls: { text: string; id: string }[] = [];
+	const calls: LivePrompt[] = [];
 	const entered = deferred<void>();
 	const admission = deferred<Awaited<ReturnType<LiveRoute["submit"]>>>();
 	const { config, connect } = await setup(t, {
-		submit: async (text, id) => {
-			calls.push({ text, id });
+		submit: async (prompt) => {
+			calls.push(prompt);
 			entered.resolve();
 			return admission.promise;
 		},
@@ -214,6 +222,7 @@ test("exact prompt retries share admission and preserve the original text", { ti
 	for (const changed of [
 		{ ...first, ...input, text: text.trim() },
 		{ ...first, ...input, threadId: randomUUID() },
+		{ ...first, ...input, root: "/repo/nested" },
 		{ ...first, ...input, noteIds: [...input.noteIds].reverse() },
 		{ ...first, ...input, noteIds: undefined },
 		{ ...second, ...input },
@@ -225,14 +234,58 @@ test("exact prompt retries share admission and preserve the original text", { ti
 	assert.deepEqual((await initial).json, receipt);
 	assert.deepEqual((await retry).json, receipt);
 	assert.deepEqual((await post(config, "/prompt", { ...first, ...input })).json, receipt);
-	assert.equal(calls.length, 1);
-	assert.equal(calls[0].id, input.requestId);
-	const boundary = calls[0].text.indexOf("\n\n");
-	assert.ok(boundary > 0);
-	const header = calls[0].text.slice(0, boundary);
-	assert.ok(header.includes(input.requestId));
-	assert.match(header, /answer in your final message/iu);
-	assert.equal(calls[0].text.slice(boundary + 2), text);
+	assert.deepEqual(calls, [{ text, requestId: input.requestId, threadId: input.threadId, root: input.root }]);
+});
+
+test("a native Ask keeps its final-answer instruction and returns the admitted submission's reply", {
+	timeout: 10000,
+}, async (t) => {
+	const models = createModels();
+	const faux = fauxProvider();
+	models.setProvider(faux.provider);
+	let modelInput: string | undefined;
+	faux.setResponses([
+		({ messages }) => {
+			const content = messages.findLast((message) => message.role === "user")?.content;
+			modelInput =
+				typeof content === "string"
+					? content
+					: content?.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+			return fauxAssistantMessage("Native answer");
+		},
+	]);
+	const harness = await Durable.Harness.open(
+		new Durable.MemoryStorage(),
+		{ models, registry: Durable.createRegistry() },
+		BACKGROUND_CONTEXT,
+	);
+	const close: (() => void | Promise<void>)[] = [];
+	t.after(async () => {
+		for (const dispose of close) await dispose();
+		await harness.close(BACKGROUND_CONTEXT);
+	});
+	const conversation = await harness.root(BACKGROUND_CONTEXT, {
+		agent: { model: { provider: "faux", modelId: "faux-1" } },
+	});
+	const config = await nativeConversationConnection(
+		{ durable: Durable, agentDir: "/agent", cwd: "/repo", harness, onClose: (dispose) => close.push(dispose) },
+		conversation,
+	);
+	const binding = pane();
+	const input = question();
+	assert.equal((await post(config, "/connect", { ...binding, ...offer })).status, 200);
+	assert.equal((await post(config, "/prompt", { ...binding, ...input })).json.status, "admitted");
+	let current = state(await post(config, "/poll", { ...binding, after: 0 }));
+	while (current.status === "queued" || current.status === "working") {
+		current = state(await post(config, "/poll", { ...binding, after: current.sequence }));
+	}
+	assert.equal(current.status, "answer");
+	assert.equal(current.text, "Native answer");
+	assert.equal(current.requestId, input.requestId);
+	assert.equal(
+		modelInput,
+		`This question (${input.requestId}) comes from the live Explorer pane. Answer in your final message; the pane shows it under this question.\n\n${input.text}`,
+	);
 });
 
 test("only a retryable uncertainty permits exact resubmission", { timeout: 5000 }, async (t) => {
@@ -274,9 +327,14 @@ test("prompt validation measures UTF-8 bytes and rejects invalid Unicode and not
 		{ noteIds: [`n-${"A".repeat(20)}`] },
 		{ noteIds: null },
 		{ threadId: "invalid" },
+		{ root: "relative" },
+		{ root: "/\0" },
 	]) {
 		assert.equal((await post(config, "/prompt", { ...body, ...input })).json.status, "rejected");
 	}
+	const missingRoot = (await post(config, "/prompt", { ...body, root: undefined })).json;
+	assert.equal(missingRoot.status, "rejected");
+	assert.match(String(missingRoot.message), /\/explorer update.*reopen the pane/u);
 	assert.deepEqual((await post(config, "/prompt", { ...body, text: "🧪".repeat(LIVE_PROMPT_BYTES / 4) })).json, {
 		ok: true,
 		status: "requested",
