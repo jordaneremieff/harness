@@ -64,6 +64,7 @@ public struct DraftRecord: Codable, Sendable, Identifiable {
     public var assetRoot: String?
     public var stagedAssets: [StagedImage]?
     public var pendingImageReferences: [String]?
+    public var hasUnpublishedImageChanges: Bool?
     public var liveReceipts: [LiveEditReceipt]?
     public var updatedAt: Date
 
@@ -100,9 +101,11 @@ public final class EditSession {
     public private(set) var record: DraftRecord
     public private(set) var recovery: RecoveryState = .pending
     public private(set) var saving = false
+    public private(set) var updatingExternal = false
     public private(set) var error: String?
+    public private(set) var destinationSaveError: String?
     public var isDirty: Bool {
-        guard let saved = record.savedSource else { return true }
+        guard record.hasUnpublishedImageChanges != true, let saved = record.savedSource else { return true }
         return !saved.utf8.elementsEqual(record.source.utf8)
     }
     @ObservationIgnored private let drafts: DraftStore
@@ -127,17 +130,25 @@ public final class EditSession {
         changed()
     }
 
-    public func setConflict(_ conflict: EditConflict) { record.conflict = conflict; changed() }
+    public func setConflict(_ conflict: EditConflict) {
+        guard record.conflict != conflict else { return }
+        record.conflict = conflict; changed()
+    }
     public func setError(_ message: String?) { error = message }
+    public func setDestinationSaveError(_ message: String?) {
+        destinationSaveError = message; error = message
+    }
     public func retainLiveReceipt(_ receipt: LiveEditReceipt) {
         var receipts = record.liveReceipts ?? []
         receipts.append(receipt); record.liveReceipts = receipts
         changed()
     }
 
-    public func advanceBase(source: String, destination: EditDestination) {
+    public func advanceBase(source: String, destination: EditDestination, title: String) {
         guard !saving, record.pendingPublication == nil else { return }
+        record.title = title
         record.savedSource = source; record.destination = destination; record.conflict = nil
+        setDestinationSaveError(nil)
         changed()
     }
 
@@ -160,15 +171,32 @@ public final class EditSession {
         changed()
     }
 
+    public func beginExternalUpdate() -> Bool {
+        guard !updatingExternal, !saving, record.pendingPublication == nil else { return false }
+        updatingExternal = true
+        return true
+    }
+
+    public func endExternalUpdate() { updatingExternal = false }
+
+    public func rebaseImages(root: String, references: Set<String>, overrides: [StagedImage]) {
+        var staged = (record.stagedAssets ?? []).filter { !references.contains($0.reference) }
+        staged.append(contentsOf: overrides)
+        record.stagedAssets = staged
+        if !staged.isEmpty { record.assetRoot = root }
+        record.hasUnpublishedImageChanges = !overrides.isEmpty
+        changed()
+    }
+
     public func beginSave() -> DraftRecord? {
-        guard !saving, record.pendingPublication == nil else { return nil }
-        saving = true; error = nil
+        guard !updatingExternal, !saving, record.pendingPublication == nil else { return nil }
+        saving = true; setDestinationSaveError(nil)
         return record
     }
 
     public func beginReconciliation() -> Data? {
         guard !saving, let pending = record.pendingPublication else { return nil }
-        saving = true; error = nil
+        saving = true; setDestinationSaveError(nil)
         return pending
     }
 
@@ -177,6 +205,7 @@ public final class EditSession {
         record.destination = destination
         record.conflict = nil
         record.pendingPublication = nil
+        record.hasUnpublishedImageChanges = nil
         saving = false
         changed()
     }
@@ -187,7 +216,7 @@ public final class EditSession {
         if case .copy = destination { record.savedSource = nil; changed() }
     }
 
-    public func failSave(_ message: String) { saving = false; error = message; changed() }
+    public func failSave(_ message: String) { saving = false; setDestinationSaveError(message); changed() }
 
     public func setPendingPublication(_ data: Data?) {
         record.pendingPublication = data
