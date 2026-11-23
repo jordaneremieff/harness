@@ -87,6 +87,17 @@ import MarkdownCore
         await workspace.closeViews()
     }
 
+    @Test func closeRetainsTheWorkspaceWhenReviewDraftsRemainUnconfirmed() async throws {
+        let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = EditorWorkspace(directory: root, store: nil)
+        workspace.flushReviewDrafts = { false }
+        #expect(!(await workspace.prepareToClose()) && !workspace.closing)
+        #expect(workspace.notice?.contains("review draft") == true)
+        workspace.flushReviewDrafts = { !workspace.closing }
+        #expect(await workspace.prepareToClose() && workspace.closing)
+        await workspace.closeViews()
+    }
+
     @Test func failedRecoveryKeepsTheDocumentOpen() async throws {
         let root = try directory(); defer { try? FileManager.default.removeItem(at: root) }
         let blocked = root.appendingPathComponent("blocked")

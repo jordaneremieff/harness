@@ -106,6 +106,10 @@ final class ReaderSurface: NSView {
             if previousKey != workspace.logicalDocumentKey { workspace.collaboration?.bind(document: workspace.liveDocumentID) }
         }
         workspace.drainPageChanges = { [weak self] in await self?.waitForPendingChanges() }
+        workspace.flushReviewDrafts = { [weak self] in
+            guard let self, self.model.live, self.pageReady else { return true }
+            return (try? await self.model.page.callJavaScript("return await reader.flushReviewDrafts();")) as? Bool == true
+        }
         workspace.webAgentApply = { [weak self] operation, generation, edits in
             guard let self, self.pageReady, self.pendingAgent == nil else { return .refused(reason: "stale") }
             return await withCheckedContinuation { continuation in

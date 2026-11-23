@@ -177,6 +177,7 @@ final class EditorWorkspace {
     /// Tells the page that an agent edit or claim waited because the person holds the passage.
     @ObservationIgnored var webHeldRefusal: (() -> Void)?
     @ObservationIgnored var drainPageChanges: (() async -> Void)?
+    @ObservationIgnored var flushReviewDrafts: (() async -> Bool)?
     @ObservationIgnored var pageChangeInProgress = false
     @ObservationIgnored var liveApplyInProgress = false
     @ObservationIgnored var observedPageChanges: [String: WebObservedChange] = [:]
@@ -614,8 +615,13 @@ final class EditorWorkspace {
     }
 
     func prepareToClose(saveDeadline: DispatchTime = .now() + PaneHost.saveAllowance) async -> Bool {
-        await drainPageChanges?()
         guard !closing else { return false }
+        await drainPageChanges?()
+        if let flushReviewDrafts, !(await flushReviewDrafts()) {
+            notice = "A review draft is not saved. Keep this pane open and retry Close after the draft is saved."
+            return false
+        }
+        guard !closing, !Task.isCancelled, DispatchTime.now() < saveDeadline else { return false }
         guard !pageBusy, !pageChangeInProgress, !liveApplyInProgress else {
             notice = "Finish the current edit before closing the workspace."
             return false

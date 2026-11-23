@@ -122,6 +122,9 @@
 	}
 
 	window.reader = {
+		async flushReviewDrafts() {
+			return true;
+		},
 		async receive(message) {
 			if (message?.v !== 1) throw new Error("Unsupported version");
 			switch (message.type) {
