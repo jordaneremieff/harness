@@ -5072,6 +5072,12 @@ Old ordinary agent files stay on disk untouched. The extension does not migrate
 or read them through a compatibility path. A process with the old manager
 protocol requires a Pi restart before the changed controls load.
 
+## Primary session ID
+
+`/id` shows the current Pi session ID and copies it to the clipboard without a
+label or newline. If the copy fails, the warning still shows the ID. In RPC
+mode the command shows the ID without copying it.
+
 ## Primary restart and continuity
 
 `/restart` performs the ordinary Pi shutdown and restarts the CLI with its saved

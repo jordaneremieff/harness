@@ -69,6 +69,7 @@ import { formatEffortAwareness } from "./effort-awareness.ts";
 import { EFFORT_PURPOSE_ENTRY, purposeExcerpt, retainedPurpose } from "./effort-purpose.ts";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
 import { validateFleetSelection } from "./fleet-status.ts";
+import { createIdCommand } from "./id-command.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { AgentManager, MANAGER_PROTOCOL, type AgentCaller } from "./manager.ts";
 import {
@@ -1280,6 +1281,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		description: "Open the agent dashboard",
 		handler: (ctx) => command.openDashboard(ctx),
 	});
+	pi.registerCommand("id", createIdCommand());
 	pi.registerCommand("restart", createRestartCommand({ hosts: agentRestartHosts, managedChild: () => false }));
 	pi.registerMessageRenderer("agent.peer", renderAgentPeerMessage);
 	pi.registerMessageRenderer(APPLICATION_MESSAGE_TYPE, renderAgentApplicationMessage);

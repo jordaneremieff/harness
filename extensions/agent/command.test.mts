@@ -54,7 +54,6 @@ async function registration() {
 		getThinkingLevel: () => "off",
 		registerCommand(name: string, options: typeof command) {
 			if (name === "agent") command = options;
-			else assert.equal(name, "restart");
 		},
 	} as unknown as ExtensionAPI);
 	return command;
@@ -382,7 +381,7 @@ function completionFixture(sessions: () => Promise<readonly AgentConversationSum
 }
 
 describe("agent command discovery and help", () => {
-	it("registers restart only as a top-level command without an exit listener at load", async () => {
+	it("registers agent, id and restart as top-level commands without an exit listener at load", async () => {
 		const commands = new Map<string, unknown>();
 		const listeners = process.listenerCount("exit");
 		await registerAgentExtension({
@@ -397,7 +396,7 @@ describe("agent command discovery and help", () => {
 				commands.set(name, command);
 			},
 		} as unknown as ExtensionAPI);
-		assert.deepEqual([...commands.keys()], ["agent", "restart"]);
+		assert.deepEqual([...commands.keys()], ["agent", "id", "restart"]);
 		assert.equal(process.listenerCount("exit"), listeners);
 	});
 	it("uses a short slash description and lists real actions with outcome descriptions", async () => {
