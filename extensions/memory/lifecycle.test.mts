@@ -22,6 +22,7 @@ import {
 	retireMemory,
 	reviewMemory,
 	sourceDigest,
+	type WriteHooks,
 	writeMemory,
 } from "./store.ts";
 
@@ -69,22 +70,32 @@ function confirm(f: ReturnType<typeof fixture>) {
 		sources: "Current authoritative source.",
 	});
 }
-function flag(f: ReturnType<typeof fixture>) {
-	return reviewMemory(f.root, {
-		slug: "subject",
-		expectedDigest: f.digest(),
-		outcome: "unresolved",
-		reason: "Conflicting scoped evidence.",
-		sources: "Two source statements.",
-	});
+function flag(f: ReturnType<typeof fixture>, signal?: AbortSignal, hooks?: WriteHooks) {
+	return reviewMemory(
+		f.root,
+		{
+			slug: "subject",
+			expectedDigest: f.digest(),
+			outcome: "unresolved",
+			reason: "Conflicting scoped evidence.",
+			sources: "Two source statements.",
+		},
+		signal,
+		hooks,
+	);
 }
-function retire(f: ReturnType<typeof fixture>) {
-	return retireMemory(f.root, {
-		slug: "subject",
-		expectedDigest: f.digest(),
-		reason: "The operator withdrew the choice.",
-		sources: "Current operator instruction.",
-	});
+function retire(f: ReturnType<typeof fixture>, signal?: AbortSignal, hooks?: WriteHooks) {
+	return retireMemory(
+		f.root,
+		{
+			slug: "subject",
+			expectedDigest: f.digest(),
+			reason: "The operator withdrew the choice.",
+			sources: "Current operator instruction.",
+		},
+		signal,
+		hooks,
+	);
 }
 
 test("metadata confirmation inserts optional keys and preserves every other byte", (t) => {
@@ -435,31 +446,26 @@ test("new mutations reject stale digests, contention, cancellation and failed ca
 		closeSync(held);
 	}
 	assert.equal(retire(contended).ok, true);
-	for (const operation of [reviewMemory, retireMemory]) {
-		const input = {
-			slug: "subject",
-			expectedDigest: f.digest(),
-			outcome: "unresolved" as const,
-			reason: "Concern.",
-			sources: "Source.",
-		};
+	for (const operation of [flag, retire]) {
 		const controller = new AbortController();
 		const cancelled = failure(() =>
-			operation(f.root, input, controller.signal, {
+			operation(f, controller.signal, {
 				beforeCapture() {
 					controller.abort();
 				},
 			}),
 		);
+		assert.equal(cancelled.receipt.error, "Memory write cancelled");
 		assert.deepEqual(cancelled.receipt.written, []);
 		assert.deepEqual(cancelled.receipt.captured, []);
 		const refused = failure(() =>
-			operation(f.root, input, undefined, {
+			operation(f, undefined, {
 				beforeCapture() {
 					throw new Error("Controlled capture failure");
 				},
 			}),
 		);
+		assert.equal(refused.receipt.error, "Controlled capture failure");
 		assert.deepEqual(refused.receipt.written, []);
 		assert.equal(f.source(), before);
 		assert.equal(existsSync(join(f.root, ".memory-write.lock")), true);
@@ -469,25 +475,14 @@ test("new mutations reject stale digests, contention, cancellation and failed ca
 test("review and retirement preserve captures but refuse changed sources before publication", (t) => {
 	const f = fixture(t);
 	const original = f.source();
-	for (const operation of [reviewMemory, retireMemory]) {
+	for (const operation of [flag, retire]) {
 		writeFileSync(f.path, original);
 		const result = failure(() =>
-			operation(
-				f.root,
-				{
-					slug: "subject",
-					expectedDigest: f.digest(),
-					outcome: "unresolved",
-					reason: "Concern.",
-					sources: "Source.",
+			operation(f, undefined, {
+				beforePublish() {
+					writeFileSync(f.path, "External change");
 				},
-				undefined,
-				{
-					beforePublish() {
-						writeFileSync(f.path, "External change");
-					},
-				},
-			),
+			}),
 		);
 		assert.deepEqual(result.receipt.written, []);
 		assert.deepEqual(result.receipt.notWritten, ["subject.md"]);

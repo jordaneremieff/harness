@@ -82,7 +82,9 @@ test("history plans require explicit exact UTC cutoff and bounded retention floo
 	]) {
 		await assert.rejects(
 			historyMemory(root, { slug: "subject", plan } as HistoryOptions),
-			/options|unknown option|plan\./,
+			plan === null || Array.isArray(plan)
+				? /plan must be an object/
+				: /unknown option: "plan\.remove"|plan\.(?:capturedBefore|keepNewest)/,
 		);
 	}
 	for (const keepNewest of [0, 16384]) {
