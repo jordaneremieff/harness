@@ -6,7 +6,13 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
-import { type ExtensionAPI, type ExtensionContext, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+	type ExtensionAPI,
+	type ExtensionContext,
+	initTheme,
+	SessionManager,
+	type Theme,
+} from "@earendil-works/pi-coding-agent";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { Frame } from "./frame.ts";
 import registerStash from "./index.ts";
@@ -64,6 +70,7 @@ function extension(copied: string[] = []) {
 		sendUserMessage: (content: string, options?: unknown) => sent.push({ content, options }),
 		sendMessage: () => {},
 		appendEntry: () => {},
+		getSettings: () => ({ compaction: { enabled: false } }),
 		getCommands: () =>
 			[...commands.keys()].map((name) => ({
 				name,
@@ -415,6 +422,27 @@ describe("ordinary stash browser", () => {
 		assert.ok(stored.ok && /^state: "open"$/m.test(stored.content), "a cancelled note activates nothing");
 	});
 
+	it("opens help and capacity reports in a scrollable view without transcript notifications", async () => {
+		const { command, sent } = extension();
+		const help = context(async (frame) => {
+			assert.match(text(frame), /Stash help/u);
+			frame.handleInput("\x1b[F");
+			assert.match(text(frame), /stash_edit/u);
+		});
+		await command.handler("help", help.ctx);
+		const capacity = context(async (frame) => {
+			assert.match(text(frame), /Stash capacity/u);
+			assert.match(text(frame), /Thresholds: checkpoint/u);
+		});
+		await command.handler("capacity", {
+			...capacity.ctx,
+			sessionManager: SessionManager.inMemory(dir),
+			getContextUsage: () => undefined,
+		});
+		assert.deepEqual([help.run.frames, capacity.run.frames], [1, 1]);
+		assert.deepEqual([...help.run.notices, ...capacity.run.notices, ...sent], []);
+	});
+
 	it("closes an active record with a required outcome and releases another back to open", async () => {
 		const closing = await writeStash(dir, { title: `Closing ${Date.now()}`, summary: "active work" });
 		const releasing = await writeStash(dir, { title: `Releasing ${Date.now()}`, summary: "active work" });
@@ -438,9 +466,13 @@ describe("ordinary stash browser", () => {
 			act(frame, "Close with outcome…");
 			act(frame, "Close stash");
 			await until(frame, /Write the concrete outcome first\./);
-			for (const key of "Shipped the fix.") frame.handleInput(key);
+			const token = "sk-abcdefgh" + "ijklmnop1234";
+			for (const key of `Shipped the fix. Verified ${token}`) frame.handleInput(key);
 			act(frame, "Close stash");
-			await until(frame, /Closed stash/);
+			await until(frame, /Close receipt/);
+			assert.match(text(frame), /1 credential value redacted/u);
+			assert.match(text(frame), /Verified \[REDACTED\]/u);
+			assert.ok(!text(frame).includes(token));
 		});
 		await command.handler("", ctx);
 		const closed = await readStash(dir, closing.record.id);

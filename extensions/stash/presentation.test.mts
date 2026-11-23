@@ -1,481 +1,235 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { before, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import registerStash from "./index.ts";
-import {
-	renderCompleteCall,
-	renderCompleteResult,
-	renderEditCall,
-	renderEditResult,
-	renderListCall,
-	renderListResult,
-	renderReadCall,
-	renderReadResult,
-	renderRotateCall,
-	renderRotateResult,
-	renderWriteCall,
-	renderWriteResult,
-} from "./presentation.ts";
+import { initTheme, type Theme, type ToolDefinition, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
+import { toolDisplay } from "./display.ts";
+import { renderReadResult } from "./presentation.ts";
 
-const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
-const screen = (component: { render(width: number): readonly string[] }, width = 120) =>
-	component
-		.render(width)
-		.map((line) => stripVTControlCharacters(line).trimEnd())
-		.join("\n");
-const lines = (component: { render(width: number): readonly string[] }, width = 120) =>
-	component
-		.render(width)
-		.map((line) => stripVTControlCharacters(line).trimEnd())
-		.filter((line) => line !== "");
-
-function registeredTools(): Map<string, ToolDefinition> {
-	const tools = new Map<string, ToolDefinition>();
-	registerStash({
-		on: () => {},
-		registerCommand: () => {},
-		registerShortcut: () => {},
-		registerMessageRenderer: () => {},
-		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
-		sendUserMessage: () => {},
-		exec: async () => ({ code: 0, stdout: "", stderr: "", killed: false, truncated: false }),
-		appendEntry: () => {},
-		events: { emit: () => {}, on: () => () => {} },
-	} as unknown as Parameters<typeof registerStash>[0]);
-	return tools;
+const nativeTui = await import(
+	createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui")
+);
+before(() => initTheme("dark", false));
+const line = (row: string) => stripVTControlCharacters(row).trimEnd();
+const tool = (name: string) => toolDisplay().tools.find((item) => item.name === name) as ToolDefinition;
+const view = (name: string, args: unknown) =>
+	new ToolExecutionComponent(
+		name,
+		`call-${name}`,
+		args,
+		undefined,
+		tool(name),
+		{ requestRender() {} } as unknown as TUI,
+		".",
+	);
+const text = (value: string, details: unknown = {}, isError = false) => ({
+	content: [{ type: "text" as const, text: value }],
+	details,
+	isError,
+});
+const screen = (card: ToolExecutionComponent, width = 120) => card.render(width).map(line).join("\n");
+const click = (card: ToolExecutionComponent, width = 120) => {
+	const rows = card.render(width).map(line);
+	const y = rows.findIndex((row) => row.trimStart().startsWith("stash_"));
+	return card.handleMouse({
+		type: "click",
+		button: "left",
+		x: 4,
+		y,
+		screenX: 4,
+		screenY: y,
+		width,
+		height: rows.length,
+		shift: false,
+		alt: false,
+		ctrl: false,
+		clickCount: 1,
+	} as never);
+};
+function keys(t: import("node:test").TestContext, defaultKeys: string[]) {
+	const previous = nativeTui.getKeybindings();
+	nativeTui.setKeybindings(
+		new nativeTui.KeybindingsManager({
+			...nativeTui.TUI_KEYBINDINGS,
+			"app.tools.expand": { defaultKeys, description: "Expand tool output" },
+		}),
+	);
+	t.after(() => nativeTui.setKeybindings(previous));
 }
 
-const text = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
-
-describe("redaction notice cards", () => {
-	it("shows counts and classes in collapsed mutation results", () => {
-		const result = {
-			content: [
-				{
-					type: "text" as const,
-					text: "Receipt\nRedaction notice: 1 credential value(s) removed.\nsummary: Used [REDACTED]",
-				},
-			],
-			details: {
-				id: "stash-id",
-				path: "/workspace/stash.md",
-				state: "open",
-				changed: true,
-				redactions: { count: 1, classes: { "provider token": 1 }, contexts: ["summary: Used [REDACTED]"] },
-			},
-		};
-		for (const render of [renderWriteResult, renderEditResult, renderCompleteResult]) {
-			const shown = screen(render(result, { expanded: false, isPartial: false }, theme, { isError: false }));
-			assert.match(shown, /Redaction notice: 1 credential value\(s\) removed \(provider token: 1\)/);
-			assert.match(shown, /expand/i);
-			const expanded = screen(render(result, { expanded: true, isPartial: false }, theme, { isError: false }));
-			assert.match(expanded, /summary: Used \[REDACTED\]/);
-		}
-		const checkpoint = screen(
-			renderWriteResult(
-				{ ...result, details: { ...result.details, checkpoint: true } },
-				{ expanded: false, isPartial: false },
-				theme,
-				{ isError: false },
-			),
-		);
-		assert.match(checkpoint, /Redaction notice:/);
+it("hands a call-only hint to the result slot and only accepts clicks after a result", (t) => {
+	keys(t, ["alt+e"]);
+	const card = view("stash_write", {
+		title: "Release notes",
+		summary: "keep this content off the card",
+		tags: ["work"],
 	});
+	const rows = screen(card).split("\n");
+	assert.match(rows[2] ?? "", /stash_write Release notes/u);
+	assert.match(rows[3] ?? "", /summary 30 characters/u);
+	assert.match(rows[4] ?? "", /\.\.\. \((?:alt|option)\+e to expand\)/u);
+	assert.equal(click(card)?.handled, undefined);
+	card.updateResult(text("model instructions", { id: "saved-id", state: "open" }));
+	const collapsed = screen(card);
+	assert.equal(collapsed.match(/to expand/gu)?.length, 1);
+	assert.match(
+		collapsed,
+		/summary 30 characters · tags 1\n\n\s+Saved open stash saved-id\.\n\s+\.\.\. \((?:alt|option)\+e to expand\)/u,
+	);
+	assert.equal(click(card)?.handled, true);
+	assert.match(screen(card), /4 characters/u);
+	assert.doesNotMatch(screen(card), /keep this content|model instructions|to expand/u);
 });
 
-describe("stash tool registration", () => {
-	it("attaches call and result renderers to every stash tool", () => {
-		const tools = registeredTools();
-		const expected: Array<[string, unknown, unknown]> = [
-			["stash_write", renderWriteCall, renderWriteResult],
-			["stash_list", renderListCall, renderListResult],
-			["stash_read", renderReadCall, renderReadResult],
-			["stash_edit", renderEditCall, renderEditResult],
-			["stash_complete", renderCompleteCall, renderCompleteResult],
-			["stash_rotate", renderRotateCall, renderRotateResult],
-		];
-		for (const [name, call, result] of expected) {
-			assert.equal(tools.get(name)?.renderCall, call, name);
-			assert.equal(tools.get(name)?.renderResult, result, name);
-		}
-	});
+it("omits a pre-result hint without a key and omits placeholders in partial or malformed calls", (t) => {
+	keys(t, []);
+	const card = view("stash_complete", { outcome: "one\ntwo\nthree\nfour\nfive\nsix" });
+	assert.doesNotMatch(screen(card), /to expand|pending|six/u);
+	card.updateResult(text("Closed.", { id: "closed-id", state: "closed" }));
+	assert.match(screen(card), /\.\.\. \(1 more line, click to expand\)/u);
+	const empty = view("stash_read", undefined);
+	assert.match(screen(empty), /stash_read/u);
+	assert.doesNotMatch(screen(empty), /pending|unknown|expand/u);
 });
 
-describe("stash_write cards", () => {
-	it("names the title and summarizes the payload shape in one qualifier row", () => {
-		const view = renderWriteCall(
-			{
-				title: "Registry tool cards",
-				summary: "What is true now.",
-				decisions: ["one", "two"],
-				openLoops: ["question"],
-				nextActions: ["a", "b", "c"],
-				files: ["extensions/stash/presentation.ts"],
-				tags: ["continuity"],
-			},
-			theme,
-			{ expanded: false, argsComplete: true },
-		);
-		const shown = screen(view);
-		assert.match(shown, /stash_write · Registry tool cards/);
-		assert.match(shown, /summary 17 chars/);
-		assert.match(shown, /2 decisions · 1 loop · 3 actions · 1 file · 1 tag/);
-		assert.match(shown, /(?:to expand arguments|expand for arguments)/i);
-		assert.doesNotMatch(shown, /What is true now/);
-		assert.equal(lines(view).length, 2);
-	});
-
-	it("shows full arguments with controls escaped when expanded", () => {
-		const args = { title: "line\nbreak\ttab", summary: "body" };
-		const view = renderWriteCall(args, theme, { expanded: true, argsComplete: true });
-		const shown = screen(view);
-		assert.match(shown, /"summary": "body"/);
-		assert.match(shown, /line\\nbreak\\ttab/);
-		assert.doesNotMatch(shown, /[\x1b\x07]/);
-	});
-
-	it("tolerates streaming, missing, and malformed arguments", () => {
-		assert.match(screen(renderWriteCall({ summary: "partial" }, theme, { argsComplete: false })), /stash_write\s/);
-		const missing = screen(renderWriteCall(undefined, theme, { argsComplete: true }));
-		assert.match(missing, /stash_write · \(untitled\)/);
-		assert.doesNotMatch(missing, /summary/);
-		const hostile = renderWriteCall({ title: `\x1b]52;c;clip\x07${"long ".repeat(60)}`, summary: "x" }, theme, {
-			expanded: false,
-			argsComplete: true,
-		});
-		const shown = screen(hostile, 60);
-		assert.doesNotMatch(shown, /[\x1b\x07]/);
-		assert.ok(shown.includes("…"));
-	});
-
-	it("marks checkpoint writes without the handover subject", () => {
-		const shown = screen(
-			renderWriteCall({ checkpoint: true, title: "Synthesis", summary: "s" }, theme, { argsComplete: true }),
-		);
-		assert.match(shown, /checkpoint/);
-	});
-
-	it("reports a handover record without claiming the effort is complete", () => {
-		const result = {
-			content: [{ type: "text" as const, text: 'Stashed "x" as 20260928T101010Z-x\n/path/stash.md' }],
-			details: { id: "20260928T101010Z-x", path: "/path/stash.md", state: "open" },
-		};
-		const before = structuredClone(result);
-		const view = renderWriteResult(result, { expanded: false, isPartial: false }, theme, { isError: false });
-		const shown = screen(view);
-		assert.match(shown, /20260928T101010Z-x written · open/);
-		assert.doesNotMatch(shown, /\/path\/stash\.md/);
-		assert.doesNotMatch(shown, /complet/i);
-		assert.equal(lines(view).length, 1);
-		const expanded = screen(renderWriteResult(result, { expanded: true, isPartial: false }, theme, { isError: false }));
-		assert.match(expanded, /Stashed "x"/);
-		assert.match(expanded, /\/path\/stash\.md/);
-		assert.deepEqual(result, before);
-	});
-
-	it("distinguishes checkpoints from pickup handovers", () => {
-		const result = text('Saved working checkpoint "Synthesis".');
-		result.details = { path: "/path/checkpoints/x.md", checkpoint: true };
-		const shown = screen(renderWriteResult(result, { expanded: false, isPartial: false }, theme, { isError: false }));
-		assert.match(shown, /checkpoint saved · not listed for pickup/);
-	});
-
-	it("renders errors, partial state, and malformed details safely", () => {
-		const error = screen(
-			renderWriteResult(text("stash_write failed: store unavailable"), { expanded: false, isPartial: false }, theme, {
-				isError: true,
-			}),
-		);
-		assert.match(error, /stash_write failed: store unavailable/);
-		assert.match(
-			screen(renderWriteResult(text(""), { expanded: false, isPartial: true }, theme, { isError: false })),
-			/Saving stash\.\.\./,
-		);
-		const malformed = screen(
-			renderWriteResult({ content: [], details: "broken" } as never, { expanded: false, isPartial: false }, theme, {
-				isError: false,
-			}),
-		);
-		assert.ok(malformed.trim().length > 0);
-		const absent = screen(
-			renderWriteResult(text("fallback"), { expanded: false, isPartial: false }, theme, { isError: false }),
-		);
-		assert.match(absent, /fallback/);
-	});
+it("reports a producer page and expands to an exact continuation, including on an empty page", (t) => {
+	keys(t, ["ctrl+o"]);
+	const args = { query: "release notes", tag: "continuity", limit: 5, collection: "handovers", state: "active" };
+	const card = view("stash_list", { ...args, cursor: "previous" });
+	const cursor = `opaque.${"7AB56pX".repeat(26)}`;
+	card.updateResult(
+		text("{}", { matches: [], skipped: [], coverage: { from: 12, next: 24, complete: false }, nextCursor: cursor }),
+	);
+	assert.match(screen(card), /Found 0 matches on this page, candidates \[12, 24\); continuation available\./u);
+	assert.doesNotMatch(screen(card), /(?:Partial coverage|Excerpt|Truncated|more lines)/u);
+	assert.equal(screen(card).match(/to expand/gu)?.length, 1);
+	card.setExpanded(true);
+	const expanded = screen(card);
+	const exact = expanded
+		.slice(expanded.indexOf("Continue with stash_list:") + "Continue with stash_list:".length)
+		.replace(/\n\s*/gu, "")
+		.trim();
+	assert.deepEqual(JSON.parse(exact), { ...args, cursor });
+	assert.doesNotMatch(expanded, /to expand/u);
 });
 
-describe("stash_list cards", () => {
-	it("names the query with its filters and continuations", () => {
-		const shown = screen(
-			renderListCall({ query: "registry tool", tag: "continuity", limit: 5, cursor: "opaque" }, theme, {
-				argsComplete: true,
-			}),
-		);
-		assert.match(shown, /stash_list · "registry tool"/);
-		assert.match(shown, /tag continuity · limit 5/);
-		assert.match(shown, /Expand for arguments/);
-		const keyed = screen(
-			renderListCall({ query: "registry tool", cursor: "opaque" }, theme, {
-				argsComplete: true,
-				keyText: () => "ctrl+g",
-			}),
-		);
-		assert.match(keyed, /ctrl\+g to expand arguments/, "the hint uses the host-injected binding");
-		assert.match(screen(renderListCall({}, theme, { argsComplete: true })), /stash_list · recent/);
-	});
-
-	it("summarizes a search page with counts, coverage, states, and continuation", () => {
-		const result = text(JSON.stringify({ matches: [{ id: "a", excerpt: "the remembered decision" }] }));
-		result.details = {
-			matches: [{ id: "a", title: "A", state: "open", excerpt: "the remembered decision" }],
-			skipped: [],
-			coverage: { complete: true },
-			nextCursor: "cursor-1",
-		};
-		const shown = screen(renderListResult(result, { expanded: false, isPartial: false }, theme, { isError: false }));
-		assert.match(shown, /1 match · 0 skipped · coverage complete/);
-		assert.match(shown, /open 1/);
-		assert.match(shown, /continuation available/);
-		assert.doesNotMatch(shown, /↳|remembered decision/);
-	});
-
-	it("keeps an empty partial page from reading as proof of absence", () => {
-		const result = text("{}");
-		result.details = {
-			matches: [],
-			skipped: [{ id: "b", reason: "unreadable" }],
-			coverage: { complete: false },
-			nextCursor: null,
-		};
-		const shown = screen(renderListResult(result, { expanded: false, isPartial: false }, theme, { isError: false }));
-		assert.match(shown, /0 matches · 1 skipped · coverage partial/);
-		assert.doesNotMatch(shown, /no stashes|not found/i);
-	});
-
-	it("agrees in number and marks an omitted state", () => {
-		const single = text("x");
-		single.details = { count: 1, ids: ["a"], states: ["open"], truncated: false };
-		assert.match(
-			screen(renderListResult(single, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/1 stash listed/,
-		);
-		const many = text("x");
-		many.details = { count: 6, ids: [], states: ["a", "b", "c", "d", "e", "f"], truncated: false };
-		assert.match(
-			screen(renderListResult(many, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/\+2 more/,
-		);
-	});
-
-	it("summarizes recent-list pages by state with truncation and empty stores", () => {
-		const listed = text("ids");
-		listed.details = { count: 2, ids: ["20260928T1-a", "20260928T2-b"], states: ["open", "closed"], truncated: true };
-		const shown = screen(renderListResult(listed, { expanded: false, isPartial: false }, theme, { isError: false }));
-		assert.match(shown, /2 stashes listed/);
-		assert.match(shown, /open 1, closed 1 · list truncated/);
-		const empty = text("No stashes found.");
-		empty.details = { count: 0 };
-		assert.match(
-			screen(renderListResult(empty, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/0 stashes listed/,
-		);
-		const malformed = screen(
-			renderListResult(text("raw"), { expanded: false, isPartial: false }, theme, { isError: false }),
-		);
-		assert.match(malformed, /raw/);
-	});
+it("shows first visual rows of read results and counts exactly what is hidden", (t) => {
+	keys(t, ["ctrl+o"]);
+	const card = view("stash_read", { id: "full-id" });
+	const body = "0123456789".repeat(42);
+	card.updateResult(text(body, { id: "full-id", totalLines: 1 }));
+	const collapsed = screen(card, 62);
+	assert.match(collapsed, /Read stash \(1 line\)\./u);
+	assert.equal(collapsed.split("\n").filter((row) => /^\s*[0-9]+$/u.test(row)).length, 5);
+	assert.match(collapsed, /\.\.\. \(2 more lines, ctrl\+o to expand\)/u);
+	assert.equal(click(card, 62)?.handled, true);
+	assert.equal(
+		screen(card, 62)
+			.split("\n")
+			.filter((row) => /^\s*[0-9]+$/u.test(row)).length,
+		7,
+	);
 });
 
-describe("stash_edit cards", () => {
-	it("keeps replacement text in the expansion and names the active acknowledgement", () => {
-		const args = {
-			id: "saved-effort",
-			expectedDigest: "a".repeat(64),
-			allowActive: true,
-			edits: [{ oldText: "old text", newText: "new text" }],
-		};
-		const collapsed = screen(renderEditCall(args, theme, { expanded: false, argsComplete: true }));
-		assert.match(collapsed, /stash_edit · saved-effort/);
-		assert.match(collapsed, /1 replacement · active edit acknowledged/);
-		assert.doesNotMatch(collapsed, /old text|new text/);
-		assert.match(screen(renderEditCall(args, theme, { expanded: true })), /old text/);
-		assert.doesNotThrow(() => renderEditCall(undefined, theme, { argsComplete: false }));
-	});
-
-	it("distinguishes an update from a no-op without claiming a lifecycle change", () => {
-		for (const changed of [true, false]) {
-			const result = { ...text("Digest: abc"), details: { changed, state: "active" } };
-			const collapsed = screen(
-				renderEditResult(result, { expanded: false, isPartial: false }, theme, { isError: false }),
-			);
-			assert.match(collapsed, changed ? /updated/ : /unchanged/);
-			assert.match(collapsed, /state: active \(unchanged\)/);
-			assert.doesNotMatch(collapsed, /Digest:/);
-			assert.match(
-				screen(renderEditResult(result, { expanded: true, isPartial: false }, theme, { isError: false })),
-				/Digest: abc/,
-			);
-		}
-		assert.match(
-			screen(renderEditResult(text("stale revision"), { expanded: false, isPartial: false }, theme, { isError: true })),
-			/stale revision/,
-		);
-	});
+it("reports a recent selection without absent states or provenance", () => {
+	const card = view("stash_list", { collection: "checkpoints" });
+	card.updateResult(
+		text("Producer content unchanged", {
+			count: 3,
+			provisional: true,
+			records: [{ id: "checkpoint:one", title: "Start", state: "unknown", source: null, workspace: "unknown" }],
+			omittedRecords: 2,
+		}),
+	);
+	assert.match(screen(card), /3 recent checkpoints listed/u);
+	assert.match(screen(card), /checkpoint:one\n\s+Start/u);
+	assert.match(screen(card), /\[Excerpt: 2 selected records not retained in the list\]/u);
+	assert.doesNotMatch(screen(card), /null|unknown|pending/u);
 });
 
-describe("stash_read, stash_complete, and stash_rotate cards", () => {
-	it("shows the requested id and the page versus the file", () => {
-		assert.match(
-			screen(renderReadCall({ id: "20260928T101010Z-x" }, theme, { argsComplete: true })),
-			/stash_read · 20260928T101010Z-x/,
-		);
-		const result = text("body");
-		result.details = {
-			path: "/path/stash.md",
-			truncated: true,
-			controlsEscaped: true,
-			totalBytes: 1000,
-			totalLines: 40,
-		};
-		const shown = screen(renderReadResult(result, { expanded: false, isPartial: false }, theme, { isError: false }));
-		assert.match(shown, /artifact read · 40 lines · truncated, full artifact remains in the file/);
-		assert.doesNotMatch(shown, /\/path\/stash\.md/);
-		assert.doesNotMatch(shown, /20260928T101010Z-x/);
-		assert.match(
-			screen(renderReadResult(result, { expanded: true, isPartial: false }, theme, { isError: false })),
-			/path: \/path\/stash\.md/,
-		);
-	});
-
-	it("leads a read with the artifact's frontmatter state and title", () => {
-		const artifact = '---\nid: "x"\ntitle: "Add evidence-based application change review"\nstate: "open"\n---\n\nbody';
-		const result = text(artifact);
-		result.details = { path: "/path/x.md", truncated: false, totalLines: 91 };
-		const shown = screen(renderReadResult(result, { expanded: false, isPartial: false }, theme, { isError: false }));
-		assert.match(shown, /open · Add evidence-based application change review · 91 lines/);
-	});
-
-	it("previews the requested outcome and records retention on close", () => {
-		const call = screen(
-			renderCompleteCall({ id: "20260928T-x", outcome: "Shipped in release 1.2" }, theme, { argsComplete: true }),
-		);
-		assert.match(call, /stash_complete · 20260928T-x/);
-		assert.match(call, /outcome: Shipped in release 1\.2/);
-		const result = text("Closed stash 20260928T-x.\nOutcome: Shipped in release 1.2");
-		result.details = { id: "20260928T-x", state: "closed", outcome: "Shipped in release 1.2" };
-		const shown = screen(
-			renderCompleteResult(result, { expanded: false, isPartial: false }, theme, { isError: false }),
-		);
-		assert.match(shown, /closed · artifact retained/);
-		assert.doesNotMatch(shown, /Shipped in release 1\.2/);
-		assert.match(
-			screen(renderCompleteResult(result, { expanded: true, isPartial: false }, theme, { isError: false })),
-			/Outcome: Shipped in release 1\.2/,
-		);
-	});
-
-	it("reports rotation as recoverable archiving", () => {
-		assert.match(
-			screen(renderRotateCall({ id: "stale-id" }, theme, { argsComplete: true })),
-			/stash_rotate · stale-id/,
-		);
-		const result = text("Rotated stash stale-id to the stash archive.");
-		result.details = { id: "stale-id", state: "rotated", archivePath: "/store/.trash/stale-id.md" };
-		const shown = screen(renderRotateResult(result, { expanded: false, isPartial: false }, theme, { isError: false }));
-		assert.match(shown, /rotated · recoverable/);
-		assert.match(shown, /\/store\/\.trash\/stale-id\.md/);
-		const error = screen(
-			renderRotateResult(text("rotate failed: active stash"), { expanded: false, isPartial: false }, theme, {
-				isError: true,
-			}),
-		);
-		assert.match(error, /rotate failed: active stash/);
-	});
-
-	it("reuses the previous component and bounds the expanded body", () => {
-		const initial = renderReadCall({ id: "x" }, theme, { expanded: false, argsComplete: true });
-		const updated = renderReadCall({ id: "x", extra: "ignored" } as never, theme, {
-			expanded: true,
-			argsComplete: true,
-			lastComponent: initial,
-		});
-		assert.equal(initial, updated);
-		const long = "line\n".repeat(9000);
-		const expanded = screen(
-			renderReadResult(text(long), { expanded: true, isPartial: false }, theme, { isError: false }),
-			400,
-		);
-		assert.match(expanded, /Display limit; full text remains in native tool history/);
-		assert.ok(expanded.length < 90_000);
-	});
+it("restores a long archive path on expansion and keeps archive distinct from deletion", () => {
+	const card = view("stash_rotate", { id: "stash-id" });
+	const archive = `${homedir()}/archive/${"retained-".repeat(18)}.md`;
+	card.updateResult(text("Rotated.", { id: "stash-id", state: "closed", archivePath: archive }));
+	assert.match(screen(card), /Archived the stash; the artifact remains recoverable\./u);
+	assert.doesNotMatch(screen(card), /retained-retained/u);
+	assert.equal(click(card)?.handled, true);
+	assert.ok(screen(card).replace(/\n\s*/gu, "").includes(archive.replace(homedir(), "~")));
+	assert.doesNotMatch(screen(card), /deleted|to expand/u);
 });
 
-describe("stash card safety", () => {
-	const hostile = "safe\u009b\u202e\x1b[31m";
-	it("escapes C0, C1, and bidi controls in collapsed and expanded views", () => {
-		assert.doesNotMatch(
-			screen(renderWriteCall({ title: hostile, summary: hostile }, theme, { expanded: false, argsComplete: true })),
-			/[\x1b\u009b\u202e]/u,
-		);
-		assert.doesNotMatch(
-			screen(renderWriteCall({ title: "t", summary: hostile }, theme, { expanded: true, argsComplete: true })),
-			/[\x1b\u009b\u202e]/u,
-		);
-		const result = text(hostile);
-		result.details = { id: "x", state: hostile, path: hostile };
-		assert.doesNotMatch(
-			screen(renderWriteResult(result, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/[\x1b\u009b\u202e]/u,
-		);
-		assert.doesNotMatch(
-			screen(renderWriteResult(result, { expanded: true, isPartial: false }, theme, { isError: false })),
-			/[\x1b\u009b\u202e]/u,
-		);
-	});
-	it("escapes values taken from list details", () => {
-		const result = text("{}");
-		result.details = { count: 1, ids: [hostile], states: [hostile], truncated: false };
-		assert.doesNotMatch(
-			screen(renderListResult(result, { expanded: false, isPartial: false }, theme, { isError: false })),
-			/[\x1b\u009b\u202e]/u,
-		);
-	});
-	it("tolerates null and undefined arguments", () => {
-		assert.doesNotThrow(() => renderWriteCall(null, theme, { expanded: false, argsComplete: false }));
-		assert.doesNotThrow(() => renderListCall(null, theme, { expanded: false, argsComplete: false }));
-		assert.doesNotThrow(() => renderReadCall(undefined, theme, { expanded: false, argsComplete: false }));
-		assert.doesNotThrow(() => renderCompleteCall(null, theme, { expanded: false, argsComplete: false }));
-		assert.doesNotThrow(() => renderRotateCall(null, theme, { expanded: false, argsComplete: false }));
-	});
+it("reports close redaction counts and withholds credentials in call, result and safe contexts", () => {
+	const token = "sk-abcdefgh" + "ijklmnop1234";
+	const card = view("stash_complete", { id: "one", outcome: `Verified ${token}` });
+	const details = {
+		id: "one",
+		state: "closed",
+		outcome: "Verified [REDACTED]",
+		redactions: { count: 2, classes: { "provider token": 2 }, contexts: [`Verified ${token}`] },
+	};
+	card.updateResult(text(`Raw ${token}`, details));
+	assert.match(screen(card), /Closed the stash with 2 credential values redacted; the artifact remains\./u);
+	assert.doesNotMatch(screen(card), new RegExp(token, "u"));
+	card.setExpanded(true);
+	assert.match(screen(card), /Verified \[REDACTED\]/u);
+	assert.match(screen(card), /provider token: 2/u);
+	assert.match(screen(card), /Reopen this stash before pickup/u);
+	assert.doesNotMatch(screen(card), new RegExp(token, "u"));
 });
 
-describe("closed lifecycle cards", () => {
-	it("point a closed record at the guarded reopen route instead of pickup", () => {
-		const closed = screen(
-			renderCompleteResult({ ...text("closed"), details: {} }, { expanded: false, isPartial: false }, theme, {
-				isError: false,
-			}),
-		);
-		assert.match(closed, /closed · artifact retained/);
-		assert.match(closed, /pickup needs Reopen first/);
-		const read = screen(
-			renderReadResult(
-				text('---\nstate: "closed"\ntitle: "Done"\n---\nbody'),
-				{ expanded: false, isPartial: false },
-				theme,
-				{ isError: false },
-			),
-		);
-		assert.match(read, /pickup needs Reopen first/);
-		const open = screen(
-			renderReadResult(
-				text('---\nstate: "open"\ntitle: "Live"\n---\nbody'),
-				{ expanded: false, isPartial: false },
-				theme,
-				{ isError: false },
-			),
-		);
-		assert.doesNotMatch(open, /Reopen/);
+it("reports unchanged lifecycle on edit and expands sizes and digest instead of replacement text", () => {
+	const card = view("stash_edit", {
+		id: "one",
+		allowActive: true,
+		expectedDigest: "requested-digest",
+		edits: [{ oldText: "original body", newText: "private replacement" }],
 	});
+	card.updateResult(text("Unchanged.", { id: "one", state: "active", changed: false, digest: "result-digest" }));
+	assert.match(screen(card), /The stash did not change; state remains active\./u);
+	assert.match(screen(card), /1 replacement · active edit acknowledged/u);
+	card.setExpanded(true);
+	assert.match(screen(card), /oldText.*13 characters/u);
+	assert.match(screen(card), /Digest: result-digest/u);
+	assert.doesNotMatch(screen(card), /original body|private replacement/u);
+});
+
+it("reports an actual host error and restores its diagnostic rather than inferring cancellation", () => {
+	const card = view("stash_rotate", { id: "one" });
+	const diagnostic = `Rotate failed: write cancelled by another process\n${"evidence ".repeat(100)}\nLast diagnostic line`;
+	card.updateResult(text(diagnostic.replace("Last", "\x1b[31mLast\x1b[0m"), {}, true));
+	assert.match(screen(card), /Rotate failed: write cancelled by another process/u);
+	assert.doesNotMatch(screen(card), /\n\s+Cancelled\b|Last diagnostic line/u);
+	card.setExpanded(true);
+	assert.match(screen(card), /Last diagnostic line/u);
+});
+
+it("keeps validation echoes out of collapsed writes and edits and discloses the safe diagnostic", () => {
+	const secret = "private memo 🐠";
+	for (const [name, args] of [
+		["stash_write", { title: "Memo", summary: secret }],
+		["stash_edit", { id: "memo", edits: [{ oldText: secret, newText: "next" }] }],
+	] as const) {
+		const card = view(name, args);
+		const diagnostic = `Invalid field: ${secret}\nReceived arguments:\n${JSON.stringify(args)}`;
+		card.updateResult(text(diagnostic, {}, true));
+		assert.match(screen(card), /The stash (?:write|edit) failed\./u);
+		assert.doesNotMatch(screen(card), /private memo|Received arguments/u);
+		card.setExpanded(true);
+		assert.match(screen(card), /14 characters/u);
+		assert.match(screen(card), /Invalid field: private memo 🐠\n\s*Received arguments:/u);
+	}
+});
+
+it("reuses the result component and reports the width-independent display limit", () => {
+	const theme = { fg: (_: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
+	const options = { expanded: true, isPartial: false };
+	const card = renderReadResult(text("original"), options, theme, { isError: false });
+	const updated = renderReadResult(text(`first row\n${"🌏".repeat(33000)}`), options, theme, {
+		isError: false,
+		lastComponent: card,
+	});
+	assert.equal(card, updated);
+	assert.ok(card.render(120).includes("[Truncated: showing 32000 of 33000 characters]"));
 });

@@ -138,6 +138,21 @@ it("exposes safe reports for write, checkpoint, edit, and completion tools", asy
 	}
 });
 
+it("reports the actual redaction count in one close notification without the removed value", async () => {
+	const { record } = await writeStash(dir, { title: "Close receipt", summary: "Completed." });
+	const { commands, safety, sent } = registry();
+	const token = "sk-abcdefgh" + "ijklmnop1234";
+	const notices: string[] = [];
+	await commands.get("stash").handler(`complete ${record.id} Verified ${token}`, {
+		mode: "rpc",
+		hasUI: true,
+		ui: { notify: (value) => notices.push(value) },
+	});
+	assert.deepEqual(notices, [`Closed stash ${record.id} with 1 credential value redacted.`]);
+	assert.ok(!JSON.stringify(safety).includes(token));
+	assert.deepEqual(sent, []);
+});
+
 it("retains command safety notices without a model acknowledgment in print mode", async () => {
 	const { record } = await writeStash(dir, { title: "Print safety", summary: "Completed." });
 	const { commands, safety, sent } = registry();
@@ -1224,6 +1239,7 @@ describe("stash command grammar", () => {
 			actions?.map((item) => item.value),
 			["new", "get", "complete", "release", "reopen", "rotate", "capacity", "budget", "help"],
 		);
+		assert.match(actions?.find((item) => item.value === "capacity")?.description ?? "", /reset\|release/u);
 		assert.equal(await complete("20270724"), null, "bare ids must not autocomplete as actions");
 		const ids = await complete("get 20270724");
 		assert.ok(ids?.some((item) => item.value === "get 20270724T100000Z-pickup-target"));
@@ -1288,7 +1304,7 @@ describe("stash command grammar", () => {
 			hasUI: true,
 			ui: { notify: (message: string) => notifications.push(message) },
 		});
-		assert.match(notifications.join("\n"), /Create:[\s\S]*\/stash new <hint>[\s\S]*\/stash get/);
+		assert.match(notifications.join("\n"), /Create:[\s\S]*\/stash new <hint>[\s\S]*\/stash get[\s\S]*stash_edit/u);
 	});
 
 	it("requires an id for /stash get", async () => {

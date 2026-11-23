@@ -609,7 +609,16 @@ class StashView implements View {
 			action: { label: "Close stash" },
 			host,
 			validate: (outcome) => (outcome.trim() ? undefined : "Write the concrete outcome first."),
-			submit: async (outcome) => this.effect(() => this.ops.close(entry.meta.id, outcome.trim())),
+			submit: async (outcome) => {
+				const result = await this.effect(() => this.ops.close(entry.meta.id, outcome.trim()));
+				const [summary, ...details] = result.notice.text.split("\n");
+				return {
+					notice: { ...result.notice, text: summary ?? "" },
+					...(details.length
+						? { after: () => this.push((next) => readerView("Close receipt", next, () => result.notice.text)) }
+						: {}),
+				};
+			},
 		});
 	}
 

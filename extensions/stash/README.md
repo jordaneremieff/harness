@@ -69,39 +69,42 @@ environment setup.
 
 ## Terminal cards
 
-The stash tools render their own cards in the interactive transcript. A collapsed
-card shows the request on its heading row and one qualifier row, then the
-outcome on one or two summary rows. The argument and result expansion hints
-appear only when the collapsed view hides or clips content, and each rides the
-row it belongs to. An expanded card shows the full arguments or result text.
-Terminal controls are escaped and long values are clipped.
+The call line shows the tool name and its subject. A facts line lists known
+qualifiers. The result starts below a blank line. A preview keeps the first
+five visual rows of the body; one final hint describes the available expansion.
+The call owns the hint until the result arrives. Before that, only a configured
+key works; after that, a click also works. A counted hint counts hidden rows of
+the same text, not a cursor, omitted records or withheld content.
 
-- `stash_write` names the title and the payload shape (checkpoint mode, summary
-  length, list sizes). The outcome names the stored id and state; it reports a
-  handover record and never claims the effort is complete. The artifact path
-  stays in the expansion. Checkpoints return a collection-qualified identifier
-  and path, without a pickup shortcut.
-- `stash_list` names the remembered phrase or the recent list, with tag, state,
-  limit, and continuation qualifiers. A search page states matches, skips, and
-  whether coverage is complete or partial, plus the match states, so an empty
-  partial page never reads as proof of absence; a recent list states the entry
-  count by state and any truncation. Each count agrees with its noun, and a
-  bounded state list marks each omitted state.
-- `stash_read` names the requested id. The outcome leads with the artifact's
-  frontmatter state and title and the returned line count, and falls back to the
-  line count when the frontmatter is absent. The artifact path stays in the
-  expansion.
-- `stash_edit` names the artifact, replacement count, and any explicit active-edit
-  acknowledgement. Its outcome separates changed content from an unchanged
-  artifact and names the preserved lifecycle state. The digest stays in the
-  expanded result.
-- `stash_complete` previews the requested outcome on the call row. The outcome
-  reports the closed state with the retained artifact; the recorded outcome
-  stays in the expansion.
-- `stash_rotate` names the id and reports the recoverable archive path.
+- `stash_write` reports the saved handover or provisional checkpoint, with its
+  identifier and path. Only a handover offers a pickup command. Expansion shows
+  sizes instead of the supplied body fields.
+- `stash_list` shows recent records or the matches on a search page. It keeps
+  coverage separate from match count; an empty page does not establish absence.
+  When the page has a cursor, expansion shows the exact continuation arguments
+  with the original query and filters. It withholds a continuation that would
+  expose a credential.
+- `stash_read` previews the retained artifact text. Expansion shows the whole
+  safe retained excerpt within the display bound, and the artifact path.
+- `stash_edit` reports a change or no change and preserves the lifecycle state.
+  Expansion shows the digest and replacement sizes, not the replacement text.
+- `stash_complete` reports closure, retention and the actual number of removed
+  credentials when nonzero. Expansion shows the recorded outcome and safe
+  redaction contexts. An ordinary command puts the count in the close
+  confirmation; a browser close opens a receipt when there are safe contexts
+  to inspect.
+- `stash_rotate` reports a recoverable archive, not deletion. Expansion shows
+  the full archive path.
 
-All cards tolerate partial arguments and malformed details, and escape terminal
-controls before display.
+An error shows the actual safe diagnostic; expansion restores the retained
+text up to the stated display bound. Cards remove terminal controls before
+rendering and do not change model-facing tool content.
+
+In the TUI, `/stash help` and `/stash capacity` open scrollable command reports
+in the stash frame. In RPC, the existing operator-only report transport keeps
+all lines because Pi's RPC client API does not support custom terminal views.
+Headless reports keep their existing transport. These reports add no messages
+to model context.
 
 ### Transcript messages
 
@@ -115,26 +118,19 @@ second line:
 | --- | --- | --- |
 | `stash-redaction` | `[stash] Credentials redacted` | `3 values · JWT 2, Bearer 1` |
 | `stash-budget` | `[stash] Budget notice`, or `Budget reached` at or above a budget | `context 60% of 200k`, and the cost share when Pi records a cost |
-| `stash-budget-status` | `[stash] Budget notices on`, `Budget selected`, or `Budget off` | `200k tokens · USD 5` |
+| `stash-budget-status` | `[stash] Budget notices on` or `Budget off` | `200k tokens · USD 5` |
 | `stash-capacity-request` | `[stash] Capacity checkpoint requested`, or `Continuity decision requested` | `context 85%` when Pi estimates context use |
 
-A blank line follows the header. Collapsed, a card shows at most three visual
-lines of the message text, wrapped at word boundaries and without the redaction
-summary or the capacity notice header. A blank line between paragraphs counts
-as a line, and a blank line at the end of the preview is dropped. When text is
-hidden, Pi's `... (N more lines, ctrl+o to expand)` hint follows: the key comes
-from Pi's `keyHint`, the rest is muted, and without a configured key the hint
-reads `click to expand`. A left click anywhere on the card's content rows toggles that card, as Pi's
-compaction and tool cards toggle on a left click; a modified click and each
-click of a multi-click toggle too, and a drag still selects text. Pi's global
-expansion resets that local choice. Expanded, it shows the whole message text as
-Markdown and no hint; a budget notice omits its model-facing `[stash-budget]`
-tag line, which stays in the message text. The facts come from the message's
-own details (redaction report, capacity state) or its own text (budget
-notices). A header line that does not fit ends in `…` in its own colour. The
-renderers remove terminal control and escape sequences and other control or
-format characters from every displayed string, keep newlines and tabs, and
-change neither the content nor the details.
+A blank line precedes the body. The collapsed card shows at most three visual
+Markdown rows. The capacity request previews only its observation and keeps
+instructions in the expanded view. Redaction messages use only validated safe
+contexts. A budget notice omits the model-facing `[stash-budget]` tag line.
+
+Each message takes its facts from retained details. The final hint has a count
+only when expansion adds rows of the same body. The configured key comes from
+Pi, and without a key the hint says `click to expand`. A left click toggles the
+card, a drag selects text, and a change to Pi's global expansion resets the
+local choice. A clipped header ends in `…` and wraps on expansion.
 
 ## Recover a checkpoint
 

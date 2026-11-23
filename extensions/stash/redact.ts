@@ -239,6 +239,10 @@ export function mergeRedactionReports(...reports: RedactionReport[]): RedactionR
 	return result;
 }
 
+export function closeNotice(id: string, report: RedactionReport): string {
+	return `Closed stash ${id}${report.count ? ` with ${report.count} credential ${report.count === 1 ? "value" : "values"} redacted` : ""}.`;
+}
+
 export function redactionNotice(report: RedactionReport): string {
 	if (!report.count) return "";
 	const classes = Object.entries(report.classes)

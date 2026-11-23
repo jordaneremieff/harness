@@ -1,516 +1,520 @@
-/**
- * Terminal cards for the stash tools.
- *
- * A collapsed card shows the request on its heading row and at most one
- * qualifier row, then the outcome on one or two summary rows. The expansion
- * hint appears only when the collapsed view hides or clips content, and it
- * rides the row it belongs to instead of taking a row of its own. An expanded
- * card shows the full arguments or result text with controls escaped and a
- * display bound. The cards keep the store's evidence semantics: a written stash
- * is a handover record, and a partial or empty bounded page is not proof of
- * absence.
- */
-
 import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { type Component, Text } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
+import { clipRow, clipsRow, expansionHint, oneLine, pathLabel, plural, record, safe, wrapBody } from "./card-text.ts";
 import { parseFrontmatter } from "./format.ts";
+import { readRedactionReport, redactSecrets } from "./redact.ts";
 
 const DISPLAY_LIMIT = 32_000;
+const PREVIEW_LINES = 5;
+const REOPEN_NOTE = "Reopen this stash before pickup (browser Actions or /stash reopen).";
 
-/** Pickup refuses a closed record; the browser's Actions and /stash reopen are the guarded route back to open. */
-const REOPEN_NOTE = "pickup needs Reopen first (browser Actions or /stash reopen)";
-
-/** Controls render as text, never as terminal commands; newlines keep structure. */
-function escapeControls(value: string): string {
-	return value.replace(/[\p{Cc}\p{Cf}]/gu, (char) => {
-		if (char === "\n") return char;
-		if (char === "\t") return "\\t";
-		if (char === "\r") return "\\r";
-		return `\\u{${(char.codePointAt(0) ?? 0).toString(16)}}`;
-	});
+type Args = Record<string, unknown>;
+interface CardState {
+	stashHasResult?: boolean;
+	stashCallDisclosure?: (width: number) => { hidden: number; other: boolean };
+	stashCallLimit?: string;
+}
+export interface CallContext extends Partial<KeybindingHints> {
+	expanded?: boolean;
+	argsComplete?: boolean;
+	state?: CardState;
+	lastComponent?: Component;
+}
+export interface ResultContext extends Partial<KeybindingHints> {
+	isError: boolean;
+	args?: unknown;
+	state?: CardState;
+	lastComponent?: Component;
 }
 
-/** Final card-row text: escape every value and keep the row on one line. */
-function rowSafe(value: string): string {
-	return escapeControls(value).replace(/\s+/gu, " ").trim();
+const string = (value: unknown) => (typeof value === "string" ? value : "");
+const safeCopy = (text: string) => redactSecrets(safe(text));
+const path = (value: unknown) => pathLabel(string(value));
+const lines = (...parts: string[]) => parts.filter(Boolean).join("\n");
+const argsText = (args: Args) =>
+	Object.entries(args)
+		.map(([key, value]) => {
+			const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+			return `  ${key}: ${(text ?? "").replace(/\n/gu, "\n  ")}`;
+		})
+		.join("\n");
+function characterCount(value: string): number {
+	let count = 0;
+	for (const _ of value) count++;
+	return count;
 }
+const bodySize = (value: string) => plural(characterCount(value), "character", "characters");
 
-/** Longest prefix that never splits a surrogate pair. */
-function clip(value: string, limit: number): string {
-	const end = Math.min(value.length, limit);
-	return value.slice(0, /[\uD800-\uDBFF]/u.test(value[end - 1] ?? "") ? end - 1 : end);
-}
-
-/** Single-line preview plus whether content was dropped. */
-function previewMark(value: string, limit: number): { text: string; clipped: boolean } {
-	const prefix = clip(value, limit);
-	const flat = escapeControls(prefix).replace(/\s+/gu, " ").trim();
-	const clipped = value.length > prefix.length;
-	return { text: clipped ? `${flat}…` : flat, clipped };
-}
-
-/** Join non-empty parts with the card separator. */
-function joinedParts(parts: string[]): string {
-	return parts.filter((part) => part !== "").join(" · ");
-}
-
-/** Escaped body with a display bound; the full text stays in native tool history. */
-function boundedBody(value: string): string {
-	const prefix = clip(value, DISPLAY_LIMIT);
-	return `${escapeControls(prefix)}${value.length > prefix.length ? "\n[Display limit; full text remains in native tool history.]" : ""}`;
+function bounded(text: string): { text: string; limit?: string } {
+	if (text.length <= DISPLAY_LIMIT) return { text };
+	let count = 0;
+	let end = 0;
+	for (const point of text) {
+		if (++count <= DISPLAY_LIMIT) end += point.length;
+	}
+	return count <= DISPLAY_LIMIT
+		? { text }
+		: { text: text.slice(0, end), limit: `[Truncated: showing ${DISPLAY_LIMIT} of ${count} characters]` };
 }
 
 function textContent(result: AgentToolResult<unknown>): string {
 	return result.content
-		.filter((block) => block.type === "text")
-		.map((block) => block.text)
-		.join("\n");
+		.flatMap((block) => (block.type === "text" ? [block.text] : []))
+		.join("\n")
+		.trim();
 }
 
-/** The host injects keyText with the operator's configured bindings; without it the hint names no key. */
-function expandHint(subject: string, keys: Partial<KeybindingHints>): string {
-	const key = keys.keyText?.("app.tools.expand");
-	return key ? `${key} to expand ${subject}` : `Expand for ${subject}`;
+function report(details: Args) {
+	try {
+		return readRedactionReport(details.redactions);
+	} catch {
+		return undefined;
+	}
 }
 
-function record(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+function redactionCount(details: Args): string {
+	const count = report(details)?.count ?? 0;
+	return count > 0 ? `${plural(count, "credential value", "credential values")} redacted` : "";
 }
 
-function redactionSummary(details: Record<string, unknown>): string {
-	const report = record(details.redactions);
-	if (typeof report.count !== "number" || report.count <= 0) return "";
-	const classes = Object.entries(record(report.classes))
-		.filter(([, count]) => typeof count === "number" && count > 0)
-		.map(([kind, count]) => `${previewMark(kind, 40).text}: ${count}`)
-		.join(", ");
-	return `Redaction notice: ${report.count} credential value(s) removed${classes ? ` (${classes})` : ""}.`;
+function redactionBody(details: Args): string {
+	const redactions = report(details);
+	if (!redactions?.count) return "";
+	return lines(
+		Object.entries(redactions.classes)
+			.map(([kind, count]) => `${kind}: ${count}`)
+			.join(", "),
+		...redactions.contexts,
+		redactions.count > redactions.contexts.length
+			? `Contexts retained for ${redactions.contexts.length} of ${redactions.count} replacements.`
+			: "",
+	);
 }
 
-function textComponent(text: string, previous?: Component): Text {
-	const component = previous instanceof Text ? previous : new Text("", 0, 0);
-	component.setText(text);
-	return component;
+function component(render: (width: number) => string[], previous?: Component): Component {
+	if (previous instanceof CardRows) {
+		previous.render = render;
+		return previous;
+	}
+	return new CardRows(render);
+}
+class CardRows implements Component {
+	render: (width: number) => string[];
+	constructor(render: (width: number) => string[]) {
+		this.render = render;
+	}
+	invalidate(): void {}
 }
 
-export interface CallContext extends Partial<KeybindingHints> {
-	expanded?: boolean;
-	argsComplete?: boolean;
-	lastComponent?: Component;
+function headingRows(flat: string, full: string, expanded: boolean, width: number): string[] {
+	if (!flat) return [];
+	return expanded ? wrapBody(full, width) : [clipRow(flat, width)];
 }
 
-export interface ResultContext extends Partial<KeybindingHints> {
-	isError: boolean;
-	lastComponent?: Component;
+function preResultHint(theme: Theme, context: CallContext, hidden: number, other: boolean): string {
+	if (context.expanded || context.state?.stashHasResult || (!hidden && !other)) return "";
+	return expansionHint(theme, context, hidden, false);
 }
 
-type OutcomeColor = "success" | "muted" | "warning" | "error";
-
-/** Heading row plus one qualifier row; the hint rides the qualifier row. */
 function callCard(
 	name: string,
 	subject: string,
-	qualifiers: string[],
-	hint: boolean,
-	args: unknown,
+	facts: string[],
+	disclosure: string,
+	body: string,
 	theme: Theme,
 	context: CallContext,
-): Text {
-	const heading =
-		theme.fg("toolTitle", theme.bold(name)) + (subject ? theme.fg("accent", ` · ${rowSafe(subject)}`) : "");
-	if (context.expanded) {
-		return textComponent(
-			[heading, theme.fg("toolOutput", boundedBody(JSON.stringify(args ?? {}, null, 2)))].join("\n"),
-			context.lastComponent,
-		);
+): Component {
+	const target = oneLine(safeCopy(subject));
+	const header = theme.fg("toolTitle", theme.bold(name)) + (target ? ` ${theme.fg("accent", target)}` : "");
+	const factRow = oneLine(safeCopy(facts.join(" · ")));
+	const prose = bounded(safeCopy(body));
+	const args = bounded(safeCopy(disclosure));
+	const hidden = (width: number) => Math.max(0, wrapBody(prose.text, width).length - PREVIEW_LINES);
+	const other = (width: number) => !!args.text || clipsRow(header, width) || clipsRow(factRow, width);
+	if (context.state) {
+		context.state.stashHasResult = false;
+		context.state.stashCallDisclosure = (width) => ({ hidden: hidden(width), other: other(width) });
+		context.state.stashCallLimit = prose.limit ?? args.limit;
 	}
-	const detail = qualifiers.join(" · ");
-	const line = detail
-		? theme.fg("muted", rowSafe(detail)) + (hint ? theme.fg("dim", ` · ${expandHint("arguments", context)}`) : "")
-		: hint
-			? theme.fg("dim", expandHint("arguments", context))
-			: "";
-	return textComponent(line ? `${heading}\n${line}` : heading, context.lastComponent);
+	return component((width) => {
+		const expanded = context.expanded === true;
+		const limit = prose.limit ?? args.limit;
+		const muted = factRow ? theme.fg("muted", factRow) : "";
+		const rows = [
+			...headingRows(header, header, expanded, width),
+			...headingRows(muted, muted, expanded, width),
+			...wrapBody(expanded ? args.text : "", width).map((row) => theme.fg("muted", row)),
+			...wrapBody(prose.text, width)
+				.slice(0, expanded ? undefined : PREVIEW_LINES)
+				.map((row) => theme.fg("toolOutput", row)),
+		];
+		if (limit && !context.state?.stashHasResult) rows.push(clipRow(theme.fg("warning", limit), width));
+		const hint = preResultHint(theme, context, hidden(width), other(width));
+		if (hint) rows.push(clipRow(hint, width));
+		return rows;
+	}, context.lastComponent);
 }
 
-/** Outcome row plus at most one summary row; the hint rides the last row. */
+type Receipt = {
+	outcome: string;
+	body?: string;
+	extra?: string;
+	continuation?: string;
+	retainedLimit?: string;
+	partialCoverage?: boolean;
+};
+
 function resultCard(
-	outcome: { color: OutcomeColor; line: string },
-	second: string,
-	hint: boolean,
-	body: string,
+	receipt: Receipt,
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	context: ResultContext,
-): Text {
-	const lines = [`\n${theme.fg(context.isError ? "error" : outcome.color, rowSafe(outcome.line))}`];
-	if (options.expanded) {
-		if (body) lines.push(theme.fg("toolOutput", boundedBody(body)));
-	} else {
-		const hintSuffix = hint ? theme.fg("dim", `${second ? " · " : ""}${expandHint("result", context)}`) : "";
-		const row = second ? theme.fg("muted", rowSafe(second)) + hintSuffix : hintSuffix;
-		if (row) lines.push(row);
-	}
-	return textComponent(lines.join("\n"), context.lastComponent);
+): Component {
+	if (context.state) context.state.stashHasResult = true;
+	const outcomeBound = bounded(safeCopy(receipt.outcome));
+	const outcome = oneLine(outcomeBound.text);
+	const body = bounded(safeCopy(receipt.body ?? ""));
+	const extra = bounded(safeCopy(receipt.extra ?? ""));
+	const tone = context.isError ? "error" : options.isPartial ? "muted" : "toolOutput";
+	const limit =
+		outcomeBound.limit ??
+		body.limit ??
+		extra.limit ??
+		context.state?.stashCallLimit ??
+		receipt.retainedLimit ??
+		(receipt.partialCoverage ? "[Partial coverage]" : undefined);
+	const more = lines(extra.text, receipt.continuation ?? "");
+	const flatOutcome = outcome ? theme.fg(tone, outcome) : "";
+	const fullOutcome = theme.fg(tone, outcomeBound.text);
+	return component((width) => {
+		const expanded = options.expanded;
+		const preview = wrapBody(body.text, width);
+		const call = context.state?.stashCallDisclosure?.(width);
+		const hidden = Math.max(0, preview.length - PREVIEW_LINES) + (call?.hidden ?? 0);
+		const hasOther = !!more || clipsRow(outcome, width) || call?.other;
+		const rows = [
+			"",
+			...headingRows(flatOutcome, fullOutcome, expanded, width),
+			...preview.slice(0, expanded ? undefined : PREVIEW_LINES).map((row) => theme.fg(tone, row)),
+			...wrapBody(expanded ? more : "", width).map((row) => theme.fg(tone, row)),
+		];
+		if (limit) rows.push(clipRow(theme.fg("warning", limit), width));
+		if (!expanded && (hidden || hasOther)) rows.push(clipRow(expansionHint(theme, context, hidden), width));
+		return rows;
+	}, context.lastComponent);
 }
 
-function errorCard(
-	name: string,
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Text {
-	const message = previewMark(textContent(result), 300).text || `${name} did not complete`;
-	return resultCard({ color: "error", line: message }, "", false, "", options, theme, context);
+function plainReceipt(text: string, failure = ""): Receipt {
+	const [outcome, ...rest] = safeCopy(text).trim().split("\n");
+	return { outcome: outcome || failure, body: rest.join("\n") };
 }
 
-function partialCard(line: string, theme: Theme, context: ResultContext): Text {
-	return textComponent(`\n${theme.fg("warning", line)}`, context.lastComponent);
-}
+type Tool = {
+	name: string;
+	progress: string;
+	protectedFailure?: string;
+	receipt(details: Args, text: string, context: ResultContext): Receipt;
+};
 
-function listLength(value: unknown): number {
-	return Array.isArray(value) ? value.length : 0;
+function errorReceipt(tool: Tool, text: string): Receipt {
+	// A write or edit error can quote an argument whose card shows only its size.
+	if (tool.protectedFailure) return { outcome: tool.protectedFailure, extra: text };
+	return plainReceipt(text, `${tool.name} failed without a diagnostic.`);
 }
-
-/** "1 file" / "2 files": the count list reads as prose. */
-function countLabel(n: number, singular: string, plural: string): string {
-	return `${n} ${n === 1 ? singular : plural}`;
+function renderer(tool: Tool) {
+	return (
+		result: AgentToolResult<unknown>,
+		options: ToolRenderResultOptions,
+		theme: Theme,
+		context: ResultContext,
+	): Component => {
+		const text = textContent(result);
+		const receipt = context.isError
+			? errorReceipt(tool, text)
+			: options.isPartial
+				? { outcome: tool.progress }
+				: tool.receipt(record(result.details), text, context);
+		return resultCard(receipt, options, theme, context);
+	};
 }
+const sized = (value: unknown) => (typeof value === "string" ? bodySize(value) : undefined);
 
-/** The request row names what will be stashed and the payload's shape. */
 export function renderWriteCall(input: unknown, theme: Theme, context: CallContext): Component {
 	const args = record(input);
-	const title = typeof args?.title === "string" ? previewMark(args.title, 64).text : "";
-	const subject = title || (context.argsComplete === false ? "" : "(untitled)");
-	const qualifiers: string[] = [];
-	if (args?.checkpoint === true) qualifiers.push("checkpoint");
-	if (typeof args?.summary === "string") qualifiers.push(`summary ${args.summary.length} chars`);
-	if (args) {
-		const counts: Array<[number, string, string]> = [
-			[listLength(args.decisions), "decision", "decisions"],
-			[listLength(args.openLoops), "loop", "loops"],
-			[listLength(args.nextActions), "action", "actions"],
-			[listLength(args.files), "file", "files"],
-			[listLength(args.tags), "tag", "tags"],
-		];
-		for (const [n, singular, plural] of counts) if (n > 0) qualifiers.push(countLabel(n, singular, plural));
+	const facts: string[] = args.checkpoint === true ? ["checkpoint"] : [];
+	if (typeof args.summary === "string" && args.summary.length) facts.push(`summary ${bodySize(args.summary)}`);
+	const display: Args = {};
+	for (const key of ["decisions", "openLoops", "nextActions", "files", "tags"]) {
+		const values = args[key];
+		if (!Array.isArray(values) || !values.length) continue;
+		facts.push(`${key} ${values.length}`);
+		display[key] = values.map(sized);
 	}
-	return callCard("stash_write", subject, qualifiers, true, input, theme, context);
+	return callCard("stash_write", string(args.title), facts, argsText(display), "", theme, context);
 }
 
-/** A write receipt names the stored artifact; it never states the effort is complete. */
-export function renderWriteResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Component {
-	if (options.isPartial) return partialCard("Saving stash...", theme, context);
-	if (context.isError) return errorCard("stash_write", result, options, theme, context);
-	const details = record(result.details);
-	const path = typeof details.path === "string" ? previewMark(details.path, 160).text : "";
-	const notice = redactionSummary(details);
-	if (details.checkpoint === true) {
-		return resultCard(
-			{ color: "success", line: "checkpoint saved · not listed for pickup" },
-			joinedParts([notice, path]),
-			notice !== "",
-			textContent(result),
-			options,
-			theme,
-			context,
-		);
-	}
-	const id = typeof details.id === "string" ? previewMark(details.id, 100).text : "";
-	if (!id) {
-		return resultCard(
-			{ color: "muted", line: previewMark(textContent(result), 160).text || "stash_write" },
-			"",
-			false,
-			textContent(result),
-			options,
-			theme,
-			context,
-		);
-	}
-	const state = typeof details.state === "string" ? previewMark(details.state, 40).text : "";
-	return resultCard(
-		{ color: "success", line: `${id} written${state ? ` · ${state}` : ""}` },
-		notice,
-		notice !== "",
-		textContent(result),
-		options,
-		theme,
-		context,
-	);
-}
+export const renderWriteResult = renderer({
+	name: "stash_write",
+	progress: "Saving stash…",
+	protectedFailure: "The stash write failed.",
+	receipt(details, text) {
+		const id = string(details.id);
+		if (!id && details.checkpoint !== true) return plainReceipt(text);
+		const state = string(details.state);
+		const count = redactionCount(details);
+		return {
+			outcome: `${details.checkpoint === true ? `Saved working checkpoint${id ? ` ${id}` : ""}` : `Saved ${state ? `${state} ` : ""}stash ${id}`}${count ? ` with ${count}` : ""}.`,
+			body: path(details.path),
+			extra: lines(
+				details.checkpoint === true ? "Provisional working material; not a pickup handover." : `/stash get ${id}`,
+				redactionBody(details),
+			),
+		};
+	},
+});
 
-/** The subject is the remembered phrase when searching, otherwise the recent list. */
 export function renderListCall(input: unknown, theme: Theme, context: CallContext): Component {
 	const args = record(input);
-	const query = typeof args?.query === "string" ? previewMark(args.query, 64) : { text: "", clipped: false };
-	const subject = query.text ? `"${query.text}"` : "recent";
-	const qualifiers: string[] = [];
-	let hint = query.clipped;
-	if (typeof args?.tag === "string" && args.tag) {
-		const tag = previewMark(args.tag, 60);
-		qualifiers.push(`tag ${tag.text}`);
-		hint = hint || tag.clipped;
-	}
-	if (args?.collection === "checkpoints") qualifiers.push("provisional checkpoints");
-	if (typeof args?.state === "string" && args.state) qualifiers.push(`state ${args.state}`);
-	if (typeof args?.limit === "number") qualifiers.push(`limit ${args.limit}`);
-	if (typeof args?.cursor === "string" && args.cursor) hint = true;
-	return callCard("stash_list", subject, qualifiers, hint, input, theme, context);
-}
-
-/** Count the match states the search page already reports. */
-function stateTally(states: string[]): string {
-	const counts = new Map<string, number>();
-	for (const state of states) counts.set(state, (counts.get(state) ?? 0) + 1);
-	const entries = [...counts.entries()];
-	const shown = entries
-		.slice(0, 4)
-		.map(([state, count]) => `${state} ${count}`)
-		.join(", ");
-	const omitted = entries.length - 4;
-	if (omitted > 0) return `${shown}, +${omitted} more`;
-	return shown;
-}
-
-function searchPageCard(
-	details: Record<string, unknown>,
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Text {
-	const matches = Array.isArray(details.matches) ? details.matches.map(record) : [];
-	const skipped = Array.isArray(details.skipped) ? details.skipped.length : 0;
-	const complete = record(details.coverage).complete === true;
-	const states = matches
-		.map((match) => (typeof match.state === "string" ? match.state : ""))
-		.filter((state) => state !== "");
-	const tally = stateTally(states);
-	const continuation = typeof details.nextCursor === "string" && details.nextCursor ? "continuation available" : "";
-	const color: OutcomeColor = complete ? (matches.length === 0 ? "muted" : "success") : "warning";
-	return resultCard(
-		{
-			color,
-			line: `${countLabel(matches.length, "match", "matches")} · ${skipped} skipped · coverage ${complete ? "complete" : "partial"}`,
-		},
-		[details.provisional === true ? "provisional checkpoints" : "", tally, continuation].filter(Boolean).join(" · "),
-		matches.length > 0,
-		textContent(result),
-		options,
-		theme,
-		context,
-	);
-}
-
-function listingCard(
-	details: Record<string, unknown>,
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Text {
-	const count = typeof details.count === "number" ? details.count : 0;
-	const states = Array.isArray(details.states)
-		? details.states.filter((state) => typeof state === "string").map(String)
-		: [];
-	const tally = stateTally(states);
-	const second = details.truncated === true ? `${tally ? `${tally} · ` : ""}list truncated` : tally;
-	return resultCard(
-		{
-			color: count > 0 ? "success" : "muted",
-			line: `${details.provisional === true ? countLabel(count, "checkpoint", "checkpoints") : countLabel(count, "stash", "stashes")} listed`,
-		},
-		details.provisional === true ? `provisional working material${second ? ` · ${second}` : ""}` : second,
-		count > 0,
-		textContent(result),
-		options,
-		theme,
-		context,
-	);
-}
-
-/**
- * Search pages state matches, skips, and coverage; an empty page inherits the
- * coverage word rather than reading as proof nothing exists.
- */
-export function renderListResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Component {
-	if (options.isPartial) return partialCard("Listing stashes...", theme, context);
-	if (context.isError) return errorCard("stash_list", result, options, theme, context);
-	const details = record(result.details);
-	if (Array.isArray(details.matches)) return searchPageCard(details, result, options, theme, context);
-	if (typeof details.count === "number") return listingCard(details, result, options, theme, context);
-	return resultCard(
-		{ color: "muted", line: previewMark(textContent(result), 160).text || "stash_list" },
+	const query = string(args.query);
+	const facts = [
+		string(args.tag) ? `tag ${args.tag}` : "",
+		args.collection === "checkpoints" ? "provisional checkpoints" : "",
+		string(args.state) ? `state ${args.state}` : "",
+		typeof args.limit === "number" ? `limit ${args.limit}` : "",
+		string(args.cursor) ? "continuation page" : "",
+	].filter(Boolean);
+	const additional = {
+		...(args.collection === "handovers" ? { collection: args.collection } : {}),
+		...(typeof args.cursor === "string" ? { cursor: args.cursor } : {}),
+	};
+	return callCard(
+		"stash_list",
+		query ? `"${query}"` : context.argsComplete === false ? "" : "recent",
+		facts,
+		argsText(additional),
 		"",
-		false,
-		textContent(result),
-		options,
 		theme,
 		context,
 	);
 }
+
+function listRow(item: Args): string {
+	const state =
+		item.state === "open" || item.state === "active" || item.state === "closed" || item.state === "provisional"
+			? item.state
+			: "";
+	const facts = [
+		state,
+		string(item.title),
+		...[item.source, item.workspace].map(string).filter((fact) => fact !== "unknown"),
+	].filter(Boolean);
+	return lines(string(item.id), facts.length ? `  ${facts.join(" · ")}` : "", string(item.excerpt));
+}
+
+function continuation(cursor: string, args: Args): string {
+	if (typeof args.query !== "string") return "The original search arguments are not available in this view.";
+	const { query, collection, tag, state, limit } = args;
+	const call = JSON.stringify({ query, collection, tag, state, limit, cursor });
+	if (redactSecrets(call) !== call) return "The continuation includes a credential and is withheld.";
+	// Keep the exact JSON literal even when the terminal wraps it; escape terminal controls inside strings.
+	return `Continue with stash_list:\n${call.replace(/[ \p{Cc}\p{Cf}]/gu, (char) =>
+		char
+			.split("")
+			.map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`)
+			.join(""),
+	)}`;
+}
+
+function searchEvidence(coverage: Args, matches: unknown[], skips: unknown[]): string {
+	const counts = Object.entries({
+		candidates: "Candidates",
+		visited: "Visited",
+		searched: "Searched",
+		filtered: "Filtered",
+		deferred: "Deferred",
+		skippedTotal: "Total skipped",
+	});
+	return lines(
+		...counts.map(([key, label]) => (typeof coverage[key] === "number" ? `${label}: ${coverage[key]}` : "")),
+		...matches.map((item) => {
+			const match = record(item);
+			return typeof match.id === "string" &&
+				typeof match.field === "string" &&
+				typeof match.start === "number" &&
+				typeof match.end === "number"
+				? `${match.id}: ${match.field} [${match.start}, ${match.end})`
+				: "";
+		}),
+		...skips.map((item) => {
+			const skip = record(item);
+			const reason = string(skip.reason);
+			return typeof skip.id === "string" ? `Skipped ${skip.id}${reason ? `: ${reason}` : ""}` : "";
+		}),
+	);
+}
+
+function searchReceipt(details: Args, matches: unknown[], args: unknown): Receipt {
+	const coverage = record(details.coverage);
+	const skips = Array.isArray(details.skipped) ? details.skipped : [];
+	const cursor = string(details.nextCursor);
+	const scope =
+		typeof coverage.from === "number" && typeof coverage.next === "number"
+			? `, candidates [${coverage.from}, ${coverage.next})`
+			: "";
+	return {
+		outcome: `Found ${plural(matches.length, "match", "matches")} ${details.provisional === true ? "on this checkpoint page" : "on this page"}${scope}${skips.length ? `, ${skips.length} skipped` : ""}${cursor ? "; continuation available" : ""}.`,
+		body: lines(...matches.map((item) => listRow(record(item)))),
+		extra: searchEvidence(coverage, matches, skips),
+		continuation: cursor ? continuation(cursor, record(args)) : undefined,
+		partialCoverage: coverage.complete === false && !cursor,
+	};
+}
+
+export const renderListResult = renderer({
+	name: "stash_list",
+	progress: "Listing stashes…",
+	receipt(details, text, context) {
+		if (Array.isArray(details.matches)) return searchReceipt(details, details.matches, context.args);
+		if (typeof details.count === "number") {
+			const label =
+				details.provisional === true
+					? plural(details.count, "recent checkpoint", "recent checkpoints")
+					: plural(details.count, "recent stash", "recent stashes");
+			return {
+				outcome: `${label[0]?.toUpperCase()}${label.slice(1)} listed.`,
+				body: Array.isArray(details.records) ? lines(...details.records.map((item) => listRow(record(item)))) : "",
+				retainedLimit:
+					typeof details.omittedRecords === "number" && details.omittedRecords > 0
+						? `[Excerpt: ${plural(details.omittedRecords, "selected record", "selected records")} not retained in the list]`
+						: undefined,
+			};
+		}
+		return plainReceipt(text);
+	},
+});
 
 export interface ReadDisplayArgs {
 	collection?: string;
 	id: string;
 }
-
 export function renderReadCall(input: unknown, theme: Theme, context: CallContext): Component {
 	const args = record(input);
-	const id = typeof args?.id === "string" ? previewMark(args.id, 72) : { text: "", clipped: false };
-	const subject = id.text || (context.argsComplete === false ? "" : "(id pending)");
 	return callCard(
 		"stash_read",
-		subject,
-		args?.collection === "checkpoints" ? ["provisional checkpoint"] : [],
-		false,
-		input,
+		string(args.id),
+		args.collection === "checkpoints" ? ["provisional checkpoint"] : [],
+		"",
+		"",
 		theme,
 		context,
 	);
 }
 
-/** The outcome row separates the returned page from the artifact that remains on disk. */
-export function renderReadResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Component {
-	if (options.isPartial) return partialCard("Reading stash...", theme, context);
-	if (context.isError) return errorCard("stash_read", result, options, theme, context);
-	const details = record(result.details);
-	const text = textContent(result);
-	const meta = parseFrontmatter(text).meta;
-	const state =
-		details.provisional === true
-			? "provisional checkpoint"
-			: typeof meta.state === "string"
-				? previewMark(meta.state, 40).text
+export const renderReadResult = renderer({
+	name: "stash_read",
+	progress: "Reading stash…",
+	receipt(details, text) {
+		if (!string(details.id)) return plainReceipt(text);
+		const meta = details.provisional === true ? undefined : parseFrontmatter(text).meta;
+		const state = meta?.state === "open" || meta?.state === "active" || meta?.state === "closed" ? meta.state : "";
+		const label = details.provisional === true ? "provisional checkpoint" : `${state ? `${state} ` : ""}stash`;
+		const title = typeof meta?.title === "string" && meta.title ? ` “${meta.title}”` : "";
+		const size =
+			typeof details.totalLines === "number"
+				? ` (${plural(details.totalLines, "line", "lines")}${details.truncated === true ? " before output bounds" : ""})`
 				: "";
-	const title = typeof meta.title === "string" ? previewMark(meta.title, 80).text : "";
-	const lines = typeof details.totalLines === "number" ? `${details.totalLines} lines` : "";
-	const truncated = details.truncated === true ? " · truncated, full artifact remains in the file" : "";
-	const path = typeof details.path === "string" ? previewMark(details.path, 160).text : "";
-	const line =
-		state || title
-			? joinedParts([state, title, lines]).concat(truncated)
-			: `artifact read${lines ? ` · ${lines}` : ""}${truncated}`;
-	return resultCard(
-		{ color: "success", line },
-		state === "closed" ? REOPEN_NOTE : "",
-		true,
-		path ? `path: ${path}\n\n${text}` : text,
-		options,
-		theme,
-		context,
-	);
-}
+		return {
+			outcome: `Read ${label}${title}${size}.`,
+			body: text,
+			extra: lines(path(details.path), state === "closed" ? REOPEN_NOTE : ""),
+			retainedLimit:
+				details.truncated === true
+					? "[Excerpt: read output is bounded; the full artifact remains in the file]"
+					: undefined,
+		};
+	},
+});
 
 export function renderEditCall(input: unknown, theme: Theme, context: CallContext): Component {
-	const args = record(input);
-	const id = typeof args?.id === "string" ? previewMark(args.id, 72).text : "";
-	const qualifiers: string[] = [];
-	if (Array.isArray(args?.edits)) {
-		qualifiers.push(`${args.edits.length} replacement${args.edits.length === 1 ? "" : "s"}`);
-	}
-	if (args?.allowActive === true) qualifiers.push("active edit acknowledged");
-	return callCard("stash_edit", id, qualifiers, true, input, theme, context);
-}
-
-export function renderEditResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Component {
-	if (options.isPartial) return partialCard("Editing stash...", theme, context);
-	if (context.isError) return errorCard("stash_edit", result, options, theme, context);
-	const details = record(result.details);
-	const outcome = details.changed === true ? "updated" : details.changed === false ? "unchanged" : "edit result";
-	const state = typeof details.state === "string" ? `state: ${previewMark(details.state, 40).text} (unchanged)` : "";
-	return resultCard(
-		{ color: "success", line: outcome },
-		joinedParts([redactionSummary(details), state]),
-		true,
-		textContent(result),
-		options,
+	const { id, edits, ...args } = record(input);
+	const replacementSizes = Array.isArray(edits)
+		? edits.map((edit) => {
+				const { oldText, newText } = record(edit);
+				return { oldText: sized(oldText), newText: sized(newText) };
+			})
+		: undefined;
+	return callCard(
+		"stash_edit",
+		string(id),
+		[
+			...(replacementSizes?.length ? [plural(replacementSizes.length, "replacement", "replacements")] : []),
+			...(args.allowActive === true ? ["active edit acknowledged"] : []),
+		],
+		argsText({
+			...(typeof args.expectedDigest === "string" ? { expectedDigest: args.expectedDigest } : {}),
+			...(typeof args.allowActive === "boolean" ? { allowActive: args.allowActive } : {}),
+			...(replacementSizes ? { edits: replacementSizes } : {}),
+		}),
+		"",
 		theme,
 		context,
 	);
 }
+
+export const renderEditResult = renderer({
+	name: "stash_edit",
+	progress: "Editing stash…",
+	protectedFailure: "The stash edit failed.",
+	receipt(details, text) {
+		if (typeof details.changed !== "boolean") return plainReceipt(text);
+		const count = redactionCount(details);
+		const state = string(details.state);
+		return {
+			outcome: `${details.changed ? "Updated the stash" : "The stash did not change"}${state ? `; state remains ${state}` : ""}${count ? `; ${count}` : ""}.`,
+			extra: lines(
+				path(details.path),
+				string(details.digest) ? `Digest: ${details.digest}` : "",
+				redactionBody(details),
+			),
+		};
+	},
+});
 
 export function renderCompleteCall(input: unknown, theme: Theme, context: CallContext): Component {
 	const args = record(input);
-	const id = typeof args?.id === "string" ? previewMark(args.id, 72) : { text: "", clipped: false };
-	const subject = id.text || (context.argsComplete === false ? "" : "(id pending)");
-	const qualifiers: string[] = [];
-	let hint = false;
-	if (typeof args?.outcome === "string" && args.outcome) {
-		const outcome = previewMark(args.outcome, 96);
-		qualifiers.push(`outcome: ${outcome.text}`);
-		hint = outcome.clipped;
-	}
-	return callCard("stash_complete", subject, qualifiers, hint, input, theme, context);
+	return callCard("stash_complete", string(args.id), [], "", string(args.outcome), theme, context);
 }
 
-/** Closing records the terminal outcome; the artifact itself is retained. */
-export function renderCompleteResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Component {
-	if (options.isPartial) return partialCard("Closing stash...", theme, context);
-	if (context.isError) return errorCard("stash_complete", result, options, theme, context);
-	return resultCard(
-		{ color: "success", line: "closed · artifact retained" },
-		joinedParts([redactionSummary(record(result.details)), REOPEN_NOTE]),
-		redactionSummary(record(result.details)) !== "",
-		textContent(result),
-		options,
-		theme,
-		context,
-	);
-}
+export const renderCompleteResult = renderer({
+	name: "stash_complete",
+	progress: "Closing stash…",
+	receipt(details, text, context) {
+		const id = string(details.id);
+		if (!id && details.state !== "closed") return plainReceipt(text);
+		const count = redactionCount(details);
+		return {
+			outcome: `Closed the stash${count ? ` with ${count}` : ""}; the artifact remains.`,
+			body: string(details.outcome),
+			extra: lines(
+				id && id !== record(context.args).id ? `Stash: ${id}` : "",
+				path(details.path),
+				REOPEN_NOTE,
+				redactionBody(details),
+			),
+		};
+	},
+});
 
 export function renderRotateCall(input: unknown, theme: Theme, context: CallContext): Component {
-	const args = record(input);
-	const id = typeof args?.id === "string" ? previewMark(args.id, 72) : { text: "", clipped: false };
-	const subject = id.text || (context.argsComplete === false ? "" : "(id pending)");
-	return callCard("stash_rotate", subject, [], false, input, theme, context);
+	return callCard("stash_rotate", string(record(input).id), [], "", "", theme, context);
 }
 
-/** Rotation archives the artifact; the file stays recoverable in the store's trash. */
-export function renderRotateResult(
-	result: AgentToolResult<unknown>,
-	options: ToolRenderResultOptions,
-	theme: Theme,
-	context: ResultContext,
-): Component {
-	if (options.isPartial) return partialCard("Rotating stash...", theme, context);
-	if (context.isError) return errorCard("stash_rotate", result, options, theme, context);
-	const details = record(result.details);
-	const archivePath = typeof details.archivePath === "string" ? previewMark(details.archivePath, 160).text : "";
-	return resultCard(
-		{ color: "success", line: "rotated · recoverable" },
-		archivePath,
-		false,
-		textContent(result),
-		options,
-		theme,
-		context,
-	);
-}
+export const renderRotateResult = renderer({
+	name: "stash_rotate",
+	progress: "Archiving stash…",
+	receipt(details, text) {
+		if (!string(details.archivePath)) return plainReceipt(text);
+		return { outcome: "Archived the stash; the artifact remains recoverable.", extra: path(details.archivePath) };
+	},
+});

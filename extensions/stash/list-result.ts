@@ -136,14 +136,17 @@ export function recentListResult(
 		rows.map((row) => row.text).join("\n"),
 		"Lower limit or filter by tag for a narrower list.",
 	);
+	const page = recentListContent(rows, limit, bounded.outputChars, bounded.truncated, collection);
 	return {
 		content: [{ type: "text", text: bounded.text }],
-		structuredContent: recentListContent(rows, limit, bounded.outputChars, bounded.truncated, collection),
+		structuredContent: page,
 		details: {
 			count: entries.length,
 			collection,
 			provisional: collection === "checkpoints",
 			ids: entries.map((entry) => collectionId(entry.meta.id, collection)),
+			records: page.records,
+			omittedRecords: page.omittedRecords,
 			states: entries.map((entry) =>
 				collection === "checkpoints"
 					? "provisional"

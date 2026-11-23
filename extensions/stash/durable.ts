@@ -63,6 +63,7 @@ import { CompleteParams, EditParams, ListParams, ReadParams, RotateParams, Write
 import { buildPickupMessage } from "./pickup.ts";
 import { readStashResult } from "./read-result.ts";
 import {
+	closeNotice,
 	mergeRedactionReports,
 	type RedactionReport,
 	redactionNotice,
@@ -776,11 +777,19 @@ async function completeCommand(binding: StashBinding, context: Context, parts: s
 	return closeStash(binding, context, id, outcome);
 }
 
-async function closeStash(binding: StashBinding, context: Context, id: string, outcome: string): Promise<string> {
+async function closeStash(
+	binding: StashBinding,
+	context: Context,
+	id: string,
+	outcome: string,
+	audience: "command" | "panel" = "command",
+): Promise<string> {
 	const transitioned = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
 		transitionStash(dir, targetId, { action: "close", outcome }, undefined, context.abortSignal),
 	);
-	return `Closed stash ${transitioned.id}.\nOutcome: ${safeLine(transitioned.meta.outcome ?? outcome.trim())}${transitioned.redactions.count ? `\n${redactionNotice(transitioned.redactions)}` : ""}`;
+	const safety = transitioned.redactions.count ? `\n${redactionNotice(transitioned.redactions)}` : "";
+	if (audience === "panel") return closeNotice(transitioned.id, transitioned.redactions) + safety;
+	return `Closed stash ${transitioned.id}.\nOutcome: ${safeLine(transitioned.meta.outcome ?? outcome.trim())}${safety}`;
 }
 
 async function lifecycleCommand(
@@ -857,7 +866,7 @@ async function browserRequestAnswer(
 			return {
 				op: "close",
 				id: request.id,
-				text: await closeStash(binding, call.context, request.id, request.outcome),
+				text: await closeStash(binding, call.context, request.id, request.outcome, "panel"),
 			};
 		case "release":
 		case "reopen":

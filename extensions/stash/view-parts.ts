@@ -121,7 +121,7 @@ export interface FormOptions {
 	readonly host: ViewHost;
 	validate?(value: string): string | undefined;
 	/** The single owner call. A rejection keeps the text and shows the reason. */
-	submit(value: string): Promise<{ notice?: { text: string; kind: "success" } } | undefined>;
+	submit(value: string): Promise<{ notice?: { text: string; kind: "success" }; after?: () => void } | undefined>;
 }
 
 /**
@@ -223,6 +223,7 @@ export class Form implements View {
 			if (host.signal.aborted) return;
 			if (result?.notice) host.notify(result.notice.text, result.notice.kind);
 			host.back();
+			result?.after?.();
 		} catch (error) {
 			if (!host.signal.aborted) this.error = error instanceof Error ? error.message : String(error);
 		} finally {

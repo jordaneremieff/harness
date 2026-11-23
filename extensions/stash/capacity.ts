@@ -355,13 +355,7 @@ function usageSnapshot(read: () => ContextUsage | undefined): Usage {
 	return { kind: "unknown" };
 }
 
-function requestText(
-	state: CapacityState,
-	checkpoint: boolean,
-	decision: boolean,
-	config: CapacityConfig,
-	piThreshold?: number,
-): string {
+function requestObservation(state: CapacityState, config: CapacityConfig, piThreshold?: number): string {
 	const observation =
 		state.usage.kind === "host_estimate"
 			? `Pi estimates context use at ${state.usage.percent.toFixed(1)}% (${Math.round(state.usage.tokens)} tokens). This is not a safe remaining budget.`
@@ -370,14 +364,7 @@ function requestText(
 		piThreshold !== undefined && effectiveCheckpointPercent(config, piThreshold) < config.checkpointPercent
 			? `Pi automatic compaction starts at ${piThreshold.toFixed(1)}%; the effective checkpoint threshold is ${effectiveCheckpointPercent(config, piThreshold).toFixed(1)}%.`
 			: undefined;
-	return [
-		CAPACITY_NOTICE_HEADER,
-		observation,
-		lead,
-		...capacityDirectiveLines(checkpoint, decision, config.stopPercent),
-	]
-		.filter(Boolean)
-		.join("\n\n");
+	return [observation, lead].filter(Boolean).join("\n\n");
 }
 
 export const CAPACITY_NOTICE_HEADER = "Stash capacity notice from the local extension, not a new operator request.";
@@ -414,6 +401,27 @@ function requestLevels(state: CapacityState, config: CapacityConfig, actionable:
 	};
 }
 
+function requestEntry(
+	state: CapacityState,
+	checkpoint: boolean,
+	decision: boolean,
+	config: CapacityConfig,
+	piThreshold?: number,
+): SessionBoundaryDraft {
+	const observation = requestObservation(state, config, piThreshold);
+	return {
+		type: "custom_message",
+		customType: CAPACITY_REQUEST,
+		content: [
+			CAPACITY_NOTICE_HEADER,
+			observation,
+			...capacityDirectiveLines(checkpoint, decision, config.stopPercent),
+		].join("\n\n"),
+		display: true,
+		details: { ...state, observation, request: decision ? "decision" : "checkpoint" },
+	};
+}
+
 export function capacityTurnEnd(
 	event: TurnEndEvent,
 	ctx: CapacityContext,
@@ -443,18 +451,11 @@ export function capacityTurnEnd(
 	state.checkpointRequested ||= checkpoint;
 	state.decisionRequested ||= decision;
 	const entries: SessionBoundaryDraft[] = [...event.entries];
-	if (checkpoint || decision) {
-		// Persist the request before its latch. Pi validates the batch but appends nontransactionally.
-		entries.push({
-			type: "custom_message",
-			customType: CAPACITY_REQUEST,
-			content: requestText(state, checkpoint, decision, config, piThreshold),
-			display: true,
-			details: state,
-		});
-	}
+	const requested = checkpoint || decision;
+	// Persist the request before its latch. Pi validates the batch but appends nontransactionally.
+	if (requested) entries.push(requestEntry(state, checkpoint, decision, config, piThreshold));
 	entries.push({ type: "custom", customType: CAPACITY_STATE, data: state });
-	return checkpoint || decision ? { entries, continue: true } : { entries };
+	return requested ? { entries, continue: true } : { entries };
 }
 
 export function capacityReset(ctx: Pick<ExtensionContext, "sessionManager">): CapacityState {

@@ -1,47 +1,26 @@
+import { stripVTControlCharacters } from "node:util";
 import {
 	getMarkdownTheme,
 	type MessageRenderer,
 	type MessageRenderOptions,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, MouseRegion, truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { stripVTControlCharacters } from "node:util";
-import { BUDGET_NOTICE, budgetNoticeFacts, budgetStatusFacts } from "./budget.ts";
-import { CAPACITY_NOTICE_HEADER, CAPACITY_REQUEST, type CapacityState } from "./capacity.ts";
-import type { RedactionReport } from "./redact.ts";
+import { Box, type Component, Markdown, MouseRegion } from "@earendil-works/pi-tui";
+import { BUDGET_NOTICE } from "./budget.ts";
+import { CAPACITY_REQUEST } from "./capacity.ts";
+import { clipRow, clipsRow, expansionHint, oneLine, plural, record, safe, wrapBody } from "./card-text.ts";
+import { readRedactionReport, redactSecrets } from "./redact.ts";
 import { formatTokenCount } from "./text.ts";
 
-/** Displayed stash messages, by type. */
 export const STASH_MESSAGES = Object.freeze({
 	redaction: "stash-redaction",
 	budget: "stash-budget",
 	budgetStatus: "stash-budget-status",
 	capacity: CAPACITY_REQUEST,
 });
-/** Collapsed stash message cards show at most this many visual body lines under the header. */
 export const MESSAGE_PREVIEW_LINES = 3;
 
-interface CardFacts {
-	/** What happened, after the `[stash]` label. */
-	label: string;
-	/** Known facts for the muted second line; an unknown fact is left out. */
-	facts: string[];
-	/** The body text the expanded card shows. */
-	body: string;
-	/** The part of the body a collapsed card previews. */
-	preview: string;
-}
-
-/** Displayed text keeps newlines and tabs and drops terminal controls and other control or format characters. */
-const safe = (value: string) =>
-	stripVTControlCharacters(value).replace(/[\p{Cc}\p{Cf}]/gu, (character) =>
-		character === "\n" || character === "\t" ? character : "",
-	);
-const oneLine = (value: string) => safe(value).replace(/\s+/gu, " ").trim();
-
-function record(value: unknown): Record<string, unknown> {
-	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
-}
+type CardFacts = { label: string; facts?: string[]; body?: string; expandedOnly?: string; alternateBody?: string };
 
 function contentText(content: Parameters<MessageRenderer>[0]["content"]): string {
 	return typeof content === "string"
@@ -49,114 +28,80 @@ function contentText(content: Parameters<MessageRenderer>[0]["content"]): string
 		: content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
 }
 
-/** The text after its first line, or after its first paragraph. */
-const afterLine = (text: string) => text.split("\n").slice(1).join("\n");
-const afterParagraph = (text: string) => text.split("\n\n").slice(1).join("\n\n");
-
 const percent = (value: number, limit: number) => `${Math.round((value / limit) * 100)}%`;
-const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+const number = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 
-export function redactionFacts(details: unknown, text: string): CardFacts {
-	const report = record(record(details).redactions) as Partial<RedactionReport>;
-	const count = typeof report.count === "number" ? report.count : undefined;
-	const classes = Object.entries(record(report.classes)).flatMap(([kind, amount]) =>
-		typeof amount === "number" ? [`${safe(kind)} ${amount}`] : [],
-	);
-	return {
-		label: "Credentials redacted",
-		facts: [
-			...(count === undefined ? [] : [plural(count, "value", "values")]),
-			...(classes.length ? [classes.join(", ")] : []),
-		],
-		body: text,
-		preview: afterLine(text)
-			.split("\n")
-			.map((line) => line.trim())
-			.join("\n"),
-	};
+function redactionFacts(details: unknown): CardFacts {
+	try {
+		const report = readRedactionReport(record(details).redactions);
+		if (report.count === 0) return { label: "Redaction notice" };
+		const classes = Object.entries(report.classes)
+			.map(([kind, amount]) => `${kind} ${amount}`)
+			.join(", ");
+		return {
+			label: "Credentials redacted",
+			facts: [plural(report.count, "value", "values"), classes],
+			body: [
+				...report.contexts,
+				...(report.count > report.contexts.length
+					? [`Contexts retained for ${report.contexts.length} of ${report.count} replacements.`]
+					: []),
+			].join("\n"),
+		};
+	} catch {
+		return { label: "Redaction notice" };
+	}
 }
 
-/** The model-facing tag line stays in the message text and is not displayed. */
-export function budgetFacts(text: string): CardFacts {
-	const facts = budgetNoticeFacts(text);
-	const reached =
-		(facts?.context !== undefined && facts.context.tokens >= facts.context.budget) ||
-		(facts?.cost !== undefined && facts.cost.usd >= facts.cost.budget);
-	const body = text.startsWith(`${BUDGET_NOTICE}\n`) ? afterLine(text) : text;
+function budgetFacts(details: unknown, text: string): CardFacts {
+	const data = record(details);
+	const budget = record(data.budget);
+	const tokens = record(data.context).tokens;
+	const usd = record(data.cost).usd;
+	const contextTokens = number(budget.contextTokens) && budget.contextTokens > 0 ? budget.contextTokens : undefined;
+	const costUsd = number(budget.costUsd) && budget.costUsd > 0 ? budget.costUsd : undefined;
+	const facts: string[] = [];
+	let reached = false;
+	if (number(tokens) && contextTokens !== undefined) {
+		facts.push(`context ${percent(tokens, contextTokens)} of ${formatTokenCount(contextTokens)}`);
+		reached ||= tokens >= contextTokens;
+	}
+	if (number(usd) && costUsd !== undefined) {
+		facts.push(`cost ${percent(usd, costUsd)} of USD ${costUsd}`);
+		reached ||= usd >= costUsd;
+	}
 	return {
 		label: reached ? "Budget reached" : "Budget notice",
-		facts: [
-			...(facts?.context
-				? [
-						`context ${percent(facts.context.tokens, facts.context.budget)} of ${formatTokenCount(facts.context.budget)}`,
-					]
-				: []),
-			...(facts?.cost ? [`cost ${percent(facts.cost.usd, facts.cost.budget)} of USD ${facts.cost.budget}`] : []),
-		],
-		body,
-		preview: body,
+		facts,
+		body: text.startsWith(`${BUDGET_NOTICE}\n`) ? text.slice(BUDGET_NOTICE.length + 1) : text,
 	};
 }
 
-export function budgetStatusCardFacts(text: string): CardFacts {
-	const facts = budgetStatusFacts(text);
-	const label =
-		facts?.state === "disabled"
-			? "Budget off"
-			: facts?.state === "enabled"
-				? "Budget notices on"
-				: facts?.state === "selected"
-					? "Budget selected"
-					: "Budget status";
+function budgetStatusCardFacts(details: unknown, text: string): CardFacts {
+	const data = record(details);
+	const budget = record(data.budget);
 	return {
-		label,
-		facts: facts?.budget
-			? [`${formatTokenCount(facts.budget.contextTokens)} tokens`, `USD ${facts.budget.costUsd}`]
-			: [],
-		body: text,
-		preview: text,
-	};
-}
-
-export function capacityFacts(details: unknown, text: string): CardFacts {
-	const state = record(details) as Partial<CapacityState>;
-	const usage = record(state.usage);
-	return {
-		label:
-			state.decisionRequested === true
-				? "Continuity decision requested"
-				: state.checkpointRequested === true
-					? "Capacity checkpoint requested"
-					: "Capacity notice",
+		label: data.state === "disabled" ? "Budget off" : data.state === "enabled" ? "Budget notices on" : "Budget status",
 		facts:
-			usage.kind === "host_estimate" && typeof usage.percent === "number"
-				? [`context ${Math.round(usage.percent)}%`]
+			number(budget.contextTokens) && number(budget.costUsd)
+				? [`${formatTokenCount(budget.contextTokens)} tokens`, `USD ${budget.costUsd}`]
 				: [],
 		body: text,
-		preview: text.startsWith(`${CAPACITY_NOTICE_HEADER}\n\n`) ? afterParagraph(text) : text,
 	};
 }
 
-/** One row at most `width` wide; a clipped row ends in `…` in the colour of the text it cuts and keeps the row background. */
-function clipRow(line: string, width: number): string {
-	return truncateToWidth(line, Math.max(0, width), "…").replace(
-		/\x1b\[0m…\x1b\[0m$/u,
-		"…\x1b[22;23;24;25;27;28;29;39m",
-	);
+function capacityFacts(details: unknown, text: string): CardFacts {
+	const data = record(details);
+	const usage = record(data.usage);
+	const decision = data.request === "decision" || (data.request === undefined && data.decisionRequested === true);
+	return {
+		label: decision ? "Continuity decision requested" : "Capacity checkpoint requested",
+		facts: usage.kind === "host_estimate" && number(usage.percent) ? [`context ${Math.round(usage.percent)}%`] : [],
+		alternateBody: typeof data.observation === "string" ? data.observation : "",
+		expandedOnly: text,
+	};
 }
 
-/** Pi's tool-card hint, `... (2 more lines, ctrl+o to expand)`, with the key from Pi's `keyHint` and the rest muted. */
-function expansionHint(theme: Theme, options: MessageRenderOptions, hidden: number): string {
-	const key = typeof options.keyText === "function" ? options.keyText("app.tools.expand") : "";
-	const action = !key
-		? theme.fg("muted", "click to expand")
-		: typeof options.keyHint === "function"
-			? options.keyHint("app.tools.expand", "to expand")
-			: theme.fg("dim", key) + theme.fg("muted", " to expand");
-	return theme.fg("muted", `... (${hidden} more line${hidden === 1 ? "" : "s"}, `) + action + theme.fg("muted", ")");
-}
-
-/** Blank lines at the start and the end of a run of lines are dropped; blank lines inside it stay. */
 function trimBlank(lines: readonly string[]): string[] {
 	let start = 0;
 	let end = lines.length;
@@ -166,92 +111,69 @@ function trimBlank(lines: readonly string[]): string[] {
 }
 
 const markdown = (text: string, theme: Theme) =>
-	new Markdown(safe(text).trim() || "(no text)", 0, 0, getMarkdownTheme(), {
-		color: (value) => theme.fg("text", value),
+	new Markdown(redactSecrets(safe(text)).replace(/\t/gu, "   ").trim(), 0, 0, getMarkdownTheme(), {
+		color: (value) => theme.fg("customMessageText", value),
 	});
 
-/**
- * A card's own disclosure, kept with the stored message object that Pi hands to every rebuild of the card. A
- * choice holds only under the global expansion it was made under; a change of Pi's global expansion discards it.
- */
 const disclosures = new WeakMap<object, { expanded: boolean; under: boolean }>();
 
-function disclosedExpansion(message: object, global: boolean): boolean {
-	const choice = disclosures.get(message);
-	if (choice && choice.under !== global) disclosures.delete(message);
-	return disclosures.get(message)?.expanded ?? global;
-}
-
-/**
- * A left click on the card's content toggles it, as Pi's compaction and tool cards do with `MouseRegion`: Pi checks
- * only the click type and the left button. A drag still selects text, because Pi sends no click for it.
- */
-function clickToggle(body: Component & { toggle(): void }): MouseRegion {
-	return new MouseRegion(body, (event) => {
-		if (event.type !== "click" || event.button !== "left") return undefined;
-		body.toggle();
-		return { handled: true };
-	});
-}
-
-/**
- * The `[stash]` header and its facts line, a blank line, then at most three body lines with Pi's expansion
- * hint when text is hidden, or the whole body as Markdown when expanded.
- */
 class MessageCardBody implements Component {
 	private readonly full: Markdown;
-	private readonly preview: Markdown;
+	private readonly preview?: Markdown;
 	private cache: { width: number; lines: string[] } | undefined;
+	private expanded: boolean;
+	private readonly message: object;
 	private readonly facts: CardFacts;
 	private readonly theme: Theme;
 	private readonly options: MessageRenderOptions;
-	private readonly message: object;
-	private expanded: boolean;
 	constructor(message: object, facts: CardFacts, theme: Theme, options: MessageRenderOptions) {
 		this.message = message;
 		this.facts = facts;
 		this.theme = theme;
 		this.options = options;
-		this.expanded = disclosedExpansion(message, options.expanded);
-		this.full = markdown(facts.body, theme);
-		this.preview = markdown(facts.preview, theme);
+		const choice = disclosures.get(message);
+		if (choice && choice.under !== options.expanded) disclosures.delete(message);
+		this.expanded = disclosures.get(message)?.expanded ?? options.expanded;
+		this.full = markdown(facts.expandedOnly ?? facts.body ?? "", theme);
+		if (facts.alternateBody !== undefined) this.preview = markdown(facts.alternateBody, theme);
 	}
-	private header(width: number): string[] {
-		const theme = this.theme;
-		const title = clipRow(
-			`${theme.fg("customMessageLabel", theme.bold("[stash]"))} ${theme.fg("text", theme.bold(oneLine(this.facts.label)))}`,
-			width,
-		);
-		const facts = this.facts.facts.map(oneLine).filter(Boolean);
-		return [title, ...(facts.length ? [clipRow(theme.fg("muted", facts.join(" · ")), width)] : []), ""];
-	}
-	/** Shows the other form of this card and keeps the choice under the current global expansion. */
 	toggle(): void {
 		this.expanded = !this.expanded;
 		disclosures.set(this.message, { expanded: this.expanded, under: this.options.expanded });
 		this.cache = undefined;
 	}
+	private header(): string[] {
+		const theme = this.theme;
+		const title = `${theme.fg("customMessageLabel", theme.bold("[stash]"))} ${theme.fg("customMessageText", theme.bold(oneLine(this.facts.label)))}`;
+		const facts = this.facts.facts?.map(oneLine).filter(Boolean).join(" · ");
+		return facts ? [title, theme.fg("muted", facts)] : [title];
+	}
+	private hint(width: number, header: string[], full: number, shown: number): string {
+		if (this.expanded) return "";
+		const hidden = this.preview ? 0 : full - shown;
+		const other = !!(this.preview && full) || header.some((row) => clipsRow(row, width));
+		return hidden || other ? clipRow(expansionHint(this.theme, this.options, hidden), width) : "";
+	}
 	render(width: number): string[] {
 		if (this.cache?.width === width) return this.cache.lines;
+		const header = this.header();
 		const full = trimBlank(this.full.render(width));
-		let lines: string[];
-		if (this.expanded) lines = [...this.header(width), ...full];
-		else {
-			const preview = trimBlank(trimBlank(this.preview.render(width)).slice(0, MESSAGE_PREVIEW_LINES));
-			const hidden = Math.max(0, full.length - preview.length);
-			lines = [
-				...this.header(width),
-				...preview,
-				...(hidden > 0 ? [clipRow(expansionHint(this.theme, this.options, hidden), width)] : []),
-			];
-		}
-		this.cache = { width, lines };
-		return lines;
+		const body = this.expanded
+			? full
+			: trimBlank((this.preview ? trimBlank(this.preview.render(width)) : full).slice(0, MESSAGE_PREVIEW_LINES));
+		const rows = this.expanded
+			? header.flatMap((row) => wrapBody(row, width))
+			: header.map((row) => clipRow(row, width));
+		if (body.length) rows.push("", ...body);
+		const hint = this.hint(width, header, full.length, body.length);
+		if (hint) rows.push(hint);
+		this.cache = { width, lines: rows };
+		return rows;
 	}
 	invalidate(): void {
 		this.cache = undefined;
 		this.full.invalidate();
-		this.preview.invalidate();
+		this.preview?.invalidate();
 	}
 }
 
@@ -263,30 +185,22 @@ function card(message: object, facts: CardFacts, options: MessageRenderOptions, 
 			line.replace(/\x1b\[(?:0|49)?m/gu, (reset) => reset + background),
 		),
 	);
-	box.addChild(clickToggle(new MessageCardBody(message, facts, theme, options)));
+	const body = new MessageCardBody(message, facts, theme, options);
+	box.addChild(
+		new MouseRegion(body, (event) => {
+			if (event.type !== "click" || event.button !== "left") return undefined;
+			body.toggle();
+			return { handled: true };
+		}),
+	);
 	return box;
 }
 
-/** `[stash] Credentials redacted`, then `2 values · JWT 1, Bearer 1`, then the redaction contexts. */
-export const renderRedactionMessage: MessageRenderer = (message, options, theme) => {
-	const content = contentText(message.content);
-	return card(message, redactionFacts(message.details, content), options, theme);
-};
-
-/** `[stash] Budget reached`, then `context 105% of 200k` and the cost share when it is known, then the budget lines. */
-export const renderBudgetMessage: MessageRenderer = (message, options, theme) => {
-	const content = contentText(message.content);
-	return card(message, budgetFacts(content), options, theme);
-};
-
-/** `[stash] Budget notices on`, then `200k tokens · USD 5`, after `/stash budget`. */
-export const renderBudgetStatusMessage: MessageRenderer = (message, options, theme) => {
-	const content = contentText(message.content);
-	return card(message, budgetStatusCardFacts(content), options, theme);
-};
-
-/** `[stash] Capacity checkpoint requested`, then `context 85%` when Pi estimates it, then the request text. */
-export const renderCapacityMessage: MessageRenderer = (message, options, theme) => {
-	const content = contentText(message.content);
-	return card(message, capacityFacts(message.details, content), options, theme);
-};
+export const renderRedactionMessage: MessageRenderer = (message, options, theme) =>
+	card(message, redactionFacts(message.details), options, theme);
+export const renderBudgetMessage: MessageRenderer = (message, options, theme) =>
+	card(message, budgetFacts(message.details, contentText(message.content)), options, theme);
+export const renderBudgetStatusMessage: MessageRenderer = (message, options, theme) =>
+	card(message, budgetStatusCardFacts(message.details, contentText(message.content)), options, theme);
+export const renderCapacityMessage: MessageRenderer = (message, options, theme) =>
+	card(message, capacityFacts(message.details, contentText(message.content)), options, theme);

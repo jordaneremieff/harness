@@ -86,7 +86,13 @@ import {
 	renderRedactionMessage,
 	STASH_MESSAGES,
 } from "./message-cards.ts";
-import { mergeRedactionReports, type RedactionReport, redactionNotice, redactSecretsWithReport } from "./redact.ts";
+import {
+	closeNotice,
+	mergeRedactionReports,
+	type RedactionReport,
+	redactionNotice,
+	redactSecretsWithReport,
+} from "./redact.ts";
 import { searchStashes } from "./search.ts";
 import {
 	editStash,
@@ -138,6 +144,7 @@ async function checkpointDirectory(): Promise<string> {
 const safe = (value: string) => sanitizeTerminalText(value).text;
 const safeLine = (value: string) => safe(value).replace(/\n/g, "↵");
 const noticeSuffix = (report: RedactionReport) => (report.count ? `\n${redactionNotice(report)}` : "");
+const notification = (value: string) => safeLine(redactSecretsWithReport(value).text).replace(/\s+/gu, " ").trim();
 
 function notifyCommandRedactions(
 	pi: Pick<ExtensionAPI, "sendMessage">,
@@ -282,7 +289,7 @@ const STASH_VERBS: ReadonlyArray<{ value: string; label: string; description: st
 	{
 		value: "capacity",
 		label: "capacity",
-		description: "[reset] · inspect capacity requests or explicitly start a new episode",
+		description: "[reset|release] · inspect requests, reset notices, or lift the gate",
 	},
 	{
 		value: "budget",
@@ -319,7 +326,7 @@ const STASH_USAGE = [
 	"",
 	"  <id> may be a full stash id or a unique prefix.",
 	"",
-	"Agent tools: stash_write, stash_list, stash_read, stash_complete, stash_rotate.",
+	"Agent tools: stash_write, stash_list, stash_read, stash_edit, stash_complete, stash_rotate.",
 ].join("\n");
 
 type StashCompletionItem = { value: string; label: string; description: string };
@@ -448,8 +455,7 @@ function ordinaryOperations(
 		},
 		close: async (id, outcome) => {
 			const transitioned = await changeLifecycle(id, { action: "close", outcome });
-			if (transitioned.redactions.count) ctx.ui.notify(redactionNotice(transitioned.redactions), "warning");
-			return `Closed stash ${transitioned.id}.`;
+			return closeNotice(transitioned.id, transitioned.redactions) + noticeSuffix(transitioned.redactions);
 		},
 		release: async (id) => `Released stash ${(await changeLifecycle(id, { action: "release" })).id} back to open.`,
 		reopen: async (id) => `Reopened stash ${(await changeLifecycle(id, { action: "reopen" })).id}.`,
@@ -507,7 +513,7 @@ function reportCapacityFailure(
 	if (measured.kind !== "known" || band(measured, config) !== "stop") return;
 	state.failureReported = true;
 	ctx.ui.notify(
-		`Stash capacity: this turn failed while context use was ${measured.percent.toFixed(1)}% of ${measured.contextWindow} tokens. Pi automatic compaction is ${threshold === undefined ? "disabled or unknown" : `enabled at ${threshold.toFixed(1)}%`}. Remedies: /compact, then continue; or start a fresh session with the latest handover or checkpoint (stash_list with collection checkpoints).`,
+		`This turn failed at ${measured.percent.toFixed(1)}% context use${threshold === undefined ? "" : ` (auto-compaction threshold ${threshold.toFixed(1)}%)`}; use /compact or start a new session with a handover or checkpoint.`,
 		"error",
 	);
 }
@@ -609,7 +615,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 					customType: STASH_MESSAGES.budget,
 					content: budgetNotice(budget, observation, ORDINARY_COST),
 					display: true,
-					details: { turnEntryId: event.messageEntryId },
+					details: { turnEntryId: event.messageEntryId, budget, context: observation, cost: ORDINARY_COST },
 				},
 			],
 		};
@@ -834,7 +840,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	});
 
 	const failFor = (ctx: ExtensionContext) => (message: string) => {
-		if (ctx.hasUI) ctx.ui.notify(message, "error");
+		if (ctx.hasUI) ctx.ui.notify(notification(message), "error");
 		else throw new Error(message);
 	};
 	/** Browsing position per session, kept while the extension instance lives. */
@@ -892,7 +898,7 @@ async function handleStashCommand(
 	const parts = raw.split(/\s+/).filter(Boolean);
 	const verb = parts[0];
 	const fail = (message: string): void => {
-		if (ctx.hasUI) ctx.ui.notify(message, "error");
+		if (ctx.hasUI) ctx.ui.notify(notification(message), "error");
 		else throw new Error(message);
 	};
 
@@ -927,7 +933,7 @@ async function handleStashCommand(
 		return;
 	}
 	if (!verb) return openBrowser(ctx);
-	fail(`Unknown /stash action "${safeLine(verb)}". Create with /stash new <hint>, or use /stash help.`);
+	fail(`Unknown /stash action "${safeLine(verb)}"; create with /stash new <hint>, or use /stash help.`);
 }
 
 type CommandFailure = (message: string) => void;
@@ -949,18 +955,27 @@ function budgetCommand(
 	const id = ctx.sessionManager.getSessionId();
 	if (action.kind === "set") budgets.set(id, action.budget);
 	else if (action.kind === "off") budgets.delete(id);
-	const message = budgetStatus(budgets.get(id));
-	pi.sendMessage({ customType: STASH_MESSAGES.budgetStatus, content: message, display: true }, { triggerTurn: false });
+	const budget = budgets.get(id);
+	const message = budgetStatus(budget);
+	pi.sendMessage(
+		{
+			customType: STASH_MESSAGES.budgetStatus,
+			content: message,
+			display: true,
+			details: budget ? { state: "enabled", budget } : { state: "disabled" },
+		},
+		{ triggerTurn: false },
+	);
 	if (!ctx.hasUI) console.error(message);
 }
 
-function capacityCommand(
+async function capacityCommand(
 	pi: StashExtensionApi,
 	ctx: ExtensionCommandContext,
 	parts: string[],
 	fail: CommandFailure,
 	gates: Map<string, GateState>,
-): void {
+): Promise<void> {
 	if (parts.length > 2 || (parts[1] !== undefined && parts[1] !== "reset" && parts[1] !== "release")) {
 		fail("Usage: /stash capacity [reset|release]");
 		return;
@@ -985,8 +1000,18 @@ function capacityCommand(
 		fail(error instanceof Error ? error.message : String(error));
 		return;
 	}
-	if (ctx.hasUI) ctx.ui.notify(message, "info");
-	else throw new Error(message);
+	await commandReport(ctx, "Stash capacity", message);
+}
+
+async function commandReport(ctx: ExtensionContext, title: string, text: string): Promise<void> {
+	if (!ctx.hasUI) throw new Error(text);
+	if (ctx.mode !== "tui") {
+		// RPC exposes notification data but does not implement custom terminal views.
+		ctx.ui.notify(text, "info");
+		return;
+	}
+	const [{ openFrame }, { readerView }] = await Promise.all([import("./frame.ts"), import("./view-parts.ts")]);
+	await openFrame(ctx, (host) => readerView(title, host, () => text));
 }
 
 async function createCommand(
@@ -1001,13 +1026,12 @@ async function createCommand(
 	await startCreation(pi, ctx, hint, status);
 }
 
-function helpCommand(ctx: ExtensionCommandContext, parts: string[], fail: CommandFailure): void {
+async function helpCommand(ctx: ExtensionCommandContext, parts: string[], fail: CommandFailure): Promise<void> {
 	if (parts.length !== 1) {
 		fail("Usage: /stash help");
 		return;
 	}
-	if (ctx.hasUI) ctx.ui.notify(STASH_USAGE, "info");
-	else throw new Error(STASH_USAGE);
+	await commandReport(ctx, "Stash help", STASH_USAGE);
 }
 
 async function getCommand(
@@ -1041,7 +1065,7 @@ async function completeCommand(
 	}
 	try {
 		const transitioned = await changeLifecycle(id, { action: "close", outcome });
-		if (ctx.hasUI) ctx.ui.notify(`Closed stash ${transitioned.id}.`, "info");
+		if (ctx.hasUI) ctx.ui.notify(closeNotice(transitioned.id, transitioned.redactions), "info");
 		notifyCommandRedactions(pi, ctx, transitioned.redactions);
 	} catch (error) {
 		fail(safeLine(error instanceof Error ? error.message : String(error)));
