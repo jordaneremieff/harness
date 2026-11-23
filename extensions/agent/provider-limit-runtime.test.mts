@@ -417,7 +417,11 @@ it("retains immutable blocked results across restart, deduplicates notices, and 
 		const initialRecord = initialClaim.claim as { token: string; endedAt?: string };
 		assert.equal(typeof initialRecord.token, "string");
 		assert.equal(initialRecord.endedAt, undefined);
-		await waitForHostRelease(f.metadata, { after: host.request("close"), signal: AbortSignal.timeout(10000) });
+		await waitForHostRelease(f.metadata, {
+			after: host.request("close"),
+			exit: host.ownedExit,
+			signal: AbortSignal.timeout(10000),
+		});
 		await host.close();
 		const ended = observeClaim(paths.claim, paths.identity);
 		assert.ok(ended.kind === "dead");

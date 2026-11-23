@@ -647,11 +647,16 @@ for (const method of ["resolve-agent", "place"] as const)
 		// No tool result is committed in the caller. A clean restart excludes process-local state from replay.
 		await waitForHostRelease(hostMetadata(record), {
 			after: target.request("close"),
+			exit: target.ownedExit,
 			signal: AbortSignal.timeout(10000),
 		});
 		await target.close();
 		const previousCallerPid = caller.pid;
-		await waitForHostRelease(f.metadata, { after: caller.request("close"), signal: AbortSignal.timeout(10000) });
+		await waitForHostRelease(f.metadata, {
+			after: caller.request("close"),
+			exit: caller.ownedExit,
+			signal: AbortSignal.timeout(10000),
+		});
 		await caller.close();
 		caller = await acquireHost(f.metadata, { env: f.env("answer") });
 		trackHost(t, caller.pid);
@@ -749,10 +754,10 @@ for (const operation of ["creation", "configure"] as const)
 				ownerId: f.metadata.storageId,
 				submissionIds: [first.result.submissionId],
 			});
-			await waitForHostRelease(metadata, { after: target.request("close") });
+			await waitForHostRelease(metadata, { after: target.request("close"), exit: target.ownedExit });
 			await target.close();
 		} else assert.equal(first.outcome, "applied");
-		await waitForHostRelease(f.metadata, { after: caller.request("close") });
+		await waitForHostRelease(f.metadata, { after: caller.request("close"), exit: caller.ownedExit });
 		await caller.close();
 		const storage = await openNodeSqliteStorage(f.storagePath);
 		try {

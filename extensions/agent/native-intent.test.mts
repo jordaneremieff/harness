@@ -85,7 +85,11 @@ async function awareness(client: HostConnection, directory: string, requestId: s
 async function close(client: HostConnection): Promise<void> {
 	if (client.closed) return;
 	const closing = client.request("close");
-	await waitForHostRelease(client.metadata, { after: closing, signal: AbortSignal.timeout(10000) });
+	await waitForHostRelease(client.metadata, {
+		after: closing,
+		exit: client.ownedExit,
+		signal: AbortSignal.timeout(10000),
+	});
 	await client.close();
 }
 

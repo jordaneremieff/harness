@@ -301,6 +301,24 @@ it("launches a host, echoes, and attaches to the live claim", { timeout: 30000 }
 	await first.close();
 });
 
+it("keeps owned launch and exit evidence separate for copied agent directories", { timeout: 15000 }, async (t) => {
+	const original = fixtureMetadata(fixtureRoot(t));
+	const copy = { ...fixtureMetadata(fixtureRoot(t), original.storageId), cwd: original.cwd };
+	const first = await acquireHost(original, launch());
+	track(t, first.pid);
+	t.after(() => first.close());
+	assert.equal(observeOwnedHostExit(copy), undefined);
+	const second = await acquireHost(copy, launch());
+	track(t, second.pid);
+	t.after(() => second.close());
+	assert.notEqual(first.pid, second.pid);
+	assert.equal(observeOwnedHostExit(original), first.ownedExit);
+	assert.equal(observeOwnedHostExit(copy), second.ownedExit);
+	await second.request("close");
+	assert.equal((await second.ownedExit)?.failed, false);
+	assert.deepEqual(await first.request("timer-list", {}), {});
+});
+
 it("names a missing working directory instead of starting a host there", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const cwd = join(root, "removed-worktree");
@@ -1078,6 +1096,10 @@ it("a foreign writer never inherits a retired child's failed-exit evidence", { t
 	);
 	assert.deepEqual(await attached.request("status"), { writer: "foreign" });
 	assert.equal(inherited, undefined, "the current foreign endpoint has no owned-child exit source");
+	await assert.rejects(
+		waitForHostRelease(metadata, { after: Promise.reject(new Error("foreign close not confirmed")), exit: inherited }),
+		/Owner close failed; writer release is unconfirmed/u,
+	);
 });
 
 it("wrong-path readiness never establishes an owned-exit source for attachment", { timeout: 10000 }, async (t) => {

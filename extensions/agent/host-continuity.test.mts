@@ -221,7 +221,11 @@ it("retains native child work across ordinary caller exit and a fresh caller ins
 		);
 		note("result-inspection", { reading, oldHostPid: original.pid });
 		const closing = original.request("close");
-		await waitForHostRelease(metadata, { after: closing, signal: AbortSignal.timeout(10000) });
+		await waitForHostRelease(metadata, {
+			after: closing,
+			exit: original.ownedExit,
+			signal: AbortSignal.timeout(10000),
+		});
 		await original.close();
 		note("old-host-retired", { pid: original.pid });
 		p2.send("prompt", `CONTINUITY_SEND:${reference.sessionId}`);
@@ -289,7 +293,7 @@ it("retains native child work across ordinary caller exit and a fresh caller ins
 		for (const link of links) {
 			if (!link.closed) {
 				const closing = link.request("close");
-				await waitForHostRelease(link.metadata, { after: closing }).catch(() => {});
+				await waitForHostRelease(link.metadata, { after: closing, exit: link.ownedExit }).catch(() => {});
 			}
 			await link.close().catch(() => {});
 		}

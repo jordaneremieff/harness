@@ -67,6 +67,7 @@ import {
 	acquireHost,
 	connectHost,
 	HostBusyEndpointUnavailableError,
+	HostLaunchDemandEnded,
 	HostEndpointUnavailableError,
 	type HostConnection,
 	type HostObservationListener,
@@ -2257,6 +2258,7 @@ export class AgentManager {
 			await this.monitorRecovery(record.storageId, client, primary);
 		} catch (error) {
 			this.recovering.delete(record.storageId);
+			if (error instanceof HostLaunchDemandEnded) return;
 			if (error instanceof HostBusyEndpointUnavailableError) {
 				this.recoveryNotes.set(record.storageId, error.message);
 				void this.refreshFooter();

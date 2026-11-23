@@ -3876,7 +3876,8 @@ contract negotiation. Parse failure, wrong socket, timeout or caller cancellatio
 ends only that observation. The child remains independent, its pipes stay
 drained, and its uncertain launch record remains until an actual exit. An
 explicit attachment can verify its endpoint later. Concurrent callers reuse the
-same attempt rather than start another uncertain writer.
+same attempt rather than start another uncertain writer. The attempt belongs to
+one socket path; a copied agent directory has its own launch and exit evidence.
 
 A connection retains its initial acquire or attach-only policy. A safe read does
 not grant launch authority. Recovery first attempts attachment; an automatic
@@ -3885,7 +3886,8 @@ A clean child exit or successful owner close does not trigger a replacement.
 When a runner reports BUSY and no endpoint is verified, registration retains an
 unavailable note without adding a recovery fault or clearing a genuine earlier
 error. This proves neither a live owner nor that another startup will succeed.
-Foreign transport loss without an exit source remains unavailable and names
+If recovery demand ends before launch, the manager skips the launch without
+recording a recovery failure. Foreign transport loss without an exit source remains unavailable and names
 `agent_attach` for an explicit endpoint check. A qualified clean-end marker for
 that exact negotiated writer identifies expected retirement, not a recovery
 fault. It never authorises automatic replacement. A marker for another writer

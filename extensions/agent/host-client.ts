@@ -87,7 +87,7 @@ const exitedLaunches = new Set<string>();
 
 /** Only an exact child-exit event establishes the outcome of an owned launch. */
 export function observeOwnedHostExit(metadata: HostMetadata): Promise<OwnedHostExit> | undefined {
-	return ownedLaunches.get(hostPaths(metadata).serverId)?.exited;
+	return ownedLaunches.get(hostPaths(metadata).socket)?.exited;
 }
 
 export interface HostRequestOptions {
@@ -380,6 +380,13 @@ export class HostBusyEndpointUnavailableError extends HostError {
 	}
 }
 
+export class HostLaunchDemandEnded extends HostError {
+	constructor() {
+		super("Host launch demand ended", "unavailable");
+		this.name = "HostLaunchDemandEnded";
+	}
+}
+
 export class HostReadinessUnavailableError extends HostError {
 	constructor(cause: unknown) {
 		super(
@@ -460,7 +467,7 @@ function startOwnedLaunch(metadata: HostMetadata, options: HostLaunchOptions, de
 	options.signal?.throwIfAborted();
 	const timeout = remaining(deadline);
 	const paths = hostPaths(metadata);
-	const key = paths.serverId;
+	const key = paths.socket;
 	const runner = options.runner ?? fileURLToPath(new URL("./durable-runner.ts", import.meta.url));
 	// Node reports a missing cwd as `spawn <executable> ENOENT`, which names the wrong path.
 	if (!statSync(metadata.cwd, { throwIfNoEntry: false })?.isDirectory())
@@ -531,11 +538,11 @@ function assertBusyTarget(error: unknown, metadata: HostMetadata, paths: HostPat
 
 async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions, deadline: number): Promise<Link> {
 	const paths = hostPaths(metadata);
-	let attempt = ownedLaunches.get(paths.serverId);
+	let attempt = ownedLaunches.get(paths.socket);
 	if (attempt?.state === "uncertain")
 		throw new HostReadinessUnavailableError(new Error("The previous launch has no terminal child-exit event"));
 	if (!attempt || attempt.state === "exited" || attempt.writerReleased) {
-		if (options.launchNeeded?.() === false) throw new HostError("Host launch demand ended", "unavailable");
+		if (options.launchNeeded?.() === false) throw new HostLaunchDemandEnded();
 		attempt = startOwnedLaunch(metadata, options, deadline);
 	}
 	try {
@@ -562,7 +569,7 @@ async function attachLink(
 	signal?: AbortSignal,
 ): Promise<Link> {
 	const paths = hostPaths(metadata);
-	const attempt = ownedLaunches.get(paths.serverId);
+	const attempt = ownedLaunches.get(paths.socket);
 	if (attempt?.state === "pending") {
 		try {
 			await withinBudget(attempt.ready, deadline, signal);
@@ -625,7 +632,8 @@ export function waitForHostRelease(
 	metadata: HostMetadata,
 	options: { signal?: AbortSignal; after?: Promise<unknown>; exit?: Promise<OwnedHostExit> } = {},
 ): Promise<void> {
-	const exited = options.exit ?? observeOwnedHostExit(metadata);
+	// A close belongs to its negotiated writer, not necessarily our last child at this endpoint.
+	const exited = options.exit ?? (options.after ? undefined : observeOwnedHostExit(metadata));
 	if (!exited && !options.after)
 		return Promise.reject(
 			new Error("No owned child-exit or owner close-completion event is available; writer release is unconfirmed"),
@@ -879,7 +887,7 @@ class HostConnectionImpl implements HostConnection {
 						this.ownerReleasedValue = true;
 						this.clearPublication("The host owner released the writer");
 					}
-					const attempt = ownedLaunches.get(hostPaths(this.metadata).serverId);
+					const attempt = ownedLaunches.get(hostPaths(this.metadata).socket);
 					if (attempt && ownedExit === attempt.exited) attempt.writerReleased = true;
 				}
 				if (!this.pending.delete(call)) return;

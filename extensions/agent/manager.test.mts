@@ -28,6 +28,7 @@ import { writeDeliveryWake } from "./delivery-wake.ts";
 import { publishCatalogChange } from "./catalog-events.ts";
 import { dashboardText } from "./dashboard-roster.ts";
 import {
+	acquireHost,
 	connectHost,
 	HostBusyEndpointUnavailableError,
 	HostEndpointUnavailableError,
@@ -2241,6 +2242,28 @@ for (const [kind, error] of [
 			assert.deepEqual(status.failures, [{ storageId: record.storageId, error: error.message }]);
 		}
 	});
+
+it("does not record a recovery failure when launch demand ends during attachment", { timeout: 5000 }, async (t) => {
+	const root = fixtureRoot(t);
+	let acquisitions = 0;
+	const manager = new AgentManager(
+		managerOptions(root, {
+			createPrimary: primaryFactory().factory,
+			acquire: async (metadata, options) => {
+				acquisitions++;
+				manager.catalog.markRecoveryDue(metadata.storageId, false);
+				return acquireHost(metadata, { ...options, runner: "--eval", runnerArgs: ["process.exit(42)"] });
+			},
+		}),
+	);
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await settleCatalogueRecovery(manager);
+	assert.equal(acquisitions, 1);
+	assert.deepEqual(((await manager.status()) as { failures: unknown[] }).failures, []);
+});
 
 it("a BUSY recovery note preserves an earlier genuine error until successful recovery", {
 	timeout: 10000,
