@@ -385,27 +385,17 @@ registers no tools, emits no events, and starts nothing.
 
 ## Transcript message
 
-The ordinary extension registers a message renderer for `jobs.completion`, the
-one message it shows in the transcript. The first line is the bold label
-`[jobs]` in Pi's custom message label colour, then what happened in bold text:
-`Job succeeded`, `Job failed`, `Job timed out` or `Job lost`. A muted second
-line holds the known facts: the exit code, the settled duration and, last, the
-command preview (`exit 0 · 10s · npm test`). An unknown fact is left out. A
-blank line follows. Collapsed, the card shows at most three visual body lines
-(the backend error or the host-loss outcome as wrapped prose, then the last
-output lines, each clipped to one row with `…` in its own colour). A blank
-output line inside that window counts as a line; blank lines at its edges are
-dropped. When text is hidden, Pi's `... (N more lines, ctrl+o to expand)` hint
-follows: the key comes from Pi's `keyHint`, the rest is muted, and without a
-configured key the hint reads `click to expand`. Expanded, the card
-shows the whole message text as Markdown, as Pi shows a custom message without
-a renderer, and no hint. A left click anywhere on the card's content rows toggles that card, as Pi's
-compaction and tool cards toggle on a left click; a modified click and each
-click of a multi-click toggle too, and a drag still selects text. Pi's global
-expansion resets that local choice.
-Every displayed string passes through the display sanitation above. The
-renderer reads only the message's own `details` and content; it changes
-neither, so the model context and the stored entry stay the same.
+The ordinary `jobs.completion` card follows the
+[emission grammar](../../docs/conventions/emissions.md#message-card). Its
+`[jobs]` title identifies the job by its full known ID and reports its outcome.
+The facts line shows the known exit code, settled duration and command preview.
+
+The preview starts with any backend error or host-loss notice, then shows the
+end of the retained output. If earlier output is outside this completion, the
+card marks the excerpt. The expanded body shows the full safe message text
+without interpreting command output as Markdown. The preview normally has an
+uncounted hint because it summarises that text. The renderer changes neither
+the stored receipt nor the model copy.
 
 ## Programmatic results
 

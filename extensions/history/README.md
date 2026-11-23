@@ -176,18 +176,11 @@ directly to that position; it does not walk the values before it.
 
 ## Terminal cards
 
-Both history tools render their own cards in the interactive transcript. A
-collapsed card shows the request on its heading row and at most one qualifier
-row, then one or two outcome rows. The argument and result expansion hints
-appear only when the collapsed view hides or clips content, and each rides the
-row it belongs to. An expanded card shows the full arguments, or readable
-evidence first: for a search, the shown matches with entry kind, role or tool,
-time, error flag, excerpt, pointer, and offsets, then the walked scope, then the
-retained payload under a `Raw payload (retained)` heading; for a read, the
-exact stored page text, then scope, then the raw payload. A collapsed error
-shows one clipped line and the expanded card keeps the full retained
-diagnostic. Expansion hints use the host-injected key binding and name no key
-without one. Terminal controls are escaped and long values are clipped.
+Both history tools render their own cards in the interactive transcript. The
+[emission convention](../../docs/conventions/emissions.md) defines card
+structure and disclosure. `history_search` expands to readable matches with
+entry identity, error flags, excerpts, pointers and offsets, followed by the
+walked scope and the retained payload.
 
 - `history_search` names the literal query, or the bounded listing when the
   query is omitted, with argument mode, filter, start entry, and continuation
@@ -198,16 +191,13 @@ without one. Terminal controls are escaped and long values are clipped.
   count agrees with its noun. An exhausted empty page reads as absence only
   within the walked scope; a limit status keeps the continuation visible, so a
   bounded page never reads as the end of the ancestry.
-- `history_read` names the requested entry and pointer, with an offset
-  qualifier. The outcome states the read status and the returned page versus the
-  field total (UTF-16 code units for strings, item counts for lists), and shows
-  the returned text with a continuation when more remains. A withheld result
-  shows its reason. Each count agrees with its noun, and the text preview stays
-  one row.
-
-Both cards tolerate partial arguments and malformed payloads, and escape
-terminal controls before display. The full result remains in native tool
-history.
+- `history_read` names the ordinary entry ID or native `#` entry ID, the
+  pointer and the requested offset. The outcome distinguishes a complete
+  field, a page, an absent field and withheld evidence. For a page, the card
+  states the next offset and expansion exposes the complete `next` selector.
+  Expansion shows the returned text or descriptors and any remaining result
+  details. A display limit does not change the retained result or imply that
+  the source has another page.
 
 ## Scope and evidence
 

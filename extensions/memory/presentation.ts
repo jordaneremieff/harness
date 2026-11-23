@@ -1,12 +1,6 @@
 /**
  * Terminal cards for the memory tools.
  *
- * A collapsed card shows the request on its heading row and at most one
- * qualifier row, then the outcome and coverage. Search results also preview
- * a few subjects. The expansion hint appears when the collapsed view hides
- * or clips content. Expanded retrieval cards show labeled evidence and source
- * text with controls escaped and a display bound.
- *
  * Evidence semantics: a bounded page is not proof of absence, so coverage
  * words travel with every page count. A write receipt reports which files
  * changed; a thrown write error may carry the receipt only inside its message
@@ -16,14 +10,18 @@
  * credential, so payload fields are summarized as withheld lengths.
  */
 
-import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { type Component, Text } from "@earendil-works/pi-tui";
+import { stripVTControlCharacters } from "node:util";
+import {
+	type AgentToolResult,
+	type KeybindingHints,
+	type Theme,
+	type ToolRenderResultOptions,
+	truncateToVisualLines,
+} from "@earendil-works/pi-coding-agent";
+import { type Component, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const DISPLAY_LIMIT = 32_000;
-const QUERY_LIMIT = 64;
 const SLUG_LIMIT = 72;
-const COMPACT_TITLE_LIMIT = 48;
-const COMPACT_SLUG_LIMIT = 36;
 const COMPACT_LIFECYCLE_LIMIT = 80;
 /** Timestamp plus the first identifier group; the exact revision stays in the expanded evidence. */
 const REVISION_PREVIEW_LIMIT = 28;
@@ -31,20 +29,25 @@ const ROW_BUDGET = 100;
 const ERROR_LIMIT = 300;
 const DIGEST_PREFIX = 8;
 const PREVIEW_ARRAY_LIMIT = 20;
-const SEARCH_PREVIEW_LIMIT = 3;
+const SEARCH_PREVIEW_LINES = 5;
 const WITHHOLD_THRESHOLD = 120;
 const WRITE_ERROR_PREFIX = "Memory write incomplete: ";
 const WITHHELD_KEYS = new Set(["summary", "details", "sources", "reason", "title", "oldText", "newText"]);
+
+type SearchDisclosure = { hasResult: boolean; hidesArgs: (width: number) => boolean };
+type MemoryRenderState = { searchDisclosure?: SearchDisclosure };
 
 export interface CallContext extends Partial<KeybindingHints> {
 	expanded?: boolean;
 	argsComplete?: boolean;
 	lastComponent?: Component;
+	state?: MemoryRenderState;
 }
 
 export interface ResultContext extends Partial<KeybindingHints> {
 	isError: boolean;
 	lastComponent?: Component;
+	state?: MemoryRenderState;
 }
 
 type OutcomeColor = "success" | "muted" | "warning" | "error";
@@ -277,36 +280,97 @@ function errorCard(
 	);
 }
 
-/** Query subjects: one formulation, or the first of several, quoted. */
-function querySubject(
-	query: unknown,
-	argsComplete: boolean | undefined,
-): { subject: string; qualifiers: string[]; hint: boolean } {
-	if (typeof query === "string") {
-		const preview = previewMark(query, QUERY_LIMIT);
-		return { subject: preview.text ? `"${preview.text}"` : "", qualifiers: [], hint: preview.clipped };
-	}
-	if (Array.isArray(query)) {
-		const parts = query.filter((part): part is string => typeof part === "string" && part !== "");
-		if (parts.length === 0) return { subject: "", qualifiers: [], hint: false };
-		const first = previewMark(parts[0], QUERY_LIMIT);
-		const qualifiers = parts.length > 1 ? [`${parts.length} queries`] : [];
-		return { subject: `"${first.text}"`, qualifiers, hint: first.clipped || parts.length > 1 };
-	}
-	return { subject: argsComplete === false ? "" : "browse", qualifiers: [], hint: false };
+function searchText(value: string): string {
+	return stripVTControlCharacters(value).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
+		char === "\n" || char === "\t" ? char : "",
+	);
+}
+
+function searchRow(value: string): string {
+	return searchText(value).replace(/\s+/gu, " ").trim();
+}
+
+function searchRows(draw: (width: number) => string[]): Component {
+	let cache: { width: number; lines: string[] } | undefined;
+	return {
+		render(width) {
+			if (cache?.width !== width) cache = { width, lines: draw(width) };
+			return cache.lines;
+		},
+		invalidate() {
+			cache = undefined;
+		},
+	};
+}
+
+function searchHint(theme: Theme, context: Partial<KeybindingHints>, allowClick: boolean): string {
+	const binding = context.keyText?.("app.tools.expand");
+	if (!binding && !allowClick) return "";
+	const action = binding
+		? (context.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", binding) + theme.fg("muted", " to expand"))
+		: theme.fg("muted", "click to expand");
+	return theme.fg("muted", "... (") + action + theme.fg("muted", ")");
+}
+
+function searchLimitBody(value: string, theme: Theme, color: "muted" | "toolOutput" | "error"): string {
+	const safe = searchText(value);
+	const prefix = clip(safe, DISPLAY_LIMIT);
+	return safe.length === prefix.length
+		? theme.fg(color, safe)
+		: `${theme.fg(color, prefix)}\n${theme.fg("warning", `[Truncated: showing ${[...prefix].length} of ${[...safe].length} characters]`)}`;
+}
+
+function searchCallFacts(fields: Record<string, unknown>, queries: number, argsComplete: boolean | undefined): string {
+	const facts: string[] = [];
+	if (queries > 1) facts.push(`${queries} queries`);
+	if (textField(fields.cursor)) facts.push("continuation");
+	if (fields.includeRetired === true) facts.push("includes retired");
+	if (fields.detail === true) facts.push("full evidence");
+	const limit = numberField(fields.limit);
+	if (limit !== null && limit > 0) facts.push(`limit ${limit}`);
+	else if (fields.query === undefined && argsComplete !== false) facts.push("byte-bounded cues");
+	return facts.join(" · ");
 }
 
 function searchCall(args: unknown, theme: Theme, context: CallContext): Component {
 	const fields = record(args);
-	const { subject, qualifiers, hint } = querySubject(fields.query, context.argsComplete);
-	const detail = [...qualifiers];
-	if (textField(fields.cursor)) detail.push("continuation");
-	if (fields.includeRetired === true) detail.push("includes retired");
-	if (fields.detail === true) detail.push("full evidence");
-	const limit = numberField(fields.limit);
-	if (limit !== null && limit > 0) detail.push(`limit ${limit}`);
-	else if (fields.query === undefined && context.argsComplete !== false) detail.push("byte-bounded cues");
-	return callCard("memory_search", subject, detail, hint, stringifySafe(args), theme, context);
+	const queries = [fields.query]
+		.flat()
+		.flatMap((value) => (typeof value === "string" && searchRow(value) ? [value] : []));
+	const first = searchText(queries[0] ?? "");
+	const query = searchRow(first);
+	const subject = query ? ` "${query}"` : context.argsComplete === false ? "" : " browse";
+	const heading = theme.fg("toolTitle", theme.bold("memory_search")) + (subject ? theme.fg("accent", subject) : "");
+	const factLine = searchCallFacts(fields, queries.length, context.argsComplete);
+	const disclosure: SearchDisclosure = {
+		hasResult: false,
+		hidesArgs: (width) =>
+			queries.length > 1 ||
+			!!textField(fields.cursor) ||
+			query !== first ||
+			visibleWidth(heading) > width ||
+			visibleWidth(factLine) > width,
+	};
+	if (context.state) context.state.searchDisclosure = disclosure;
+	if (context.expanded) {
+		const body = Object.entries(fields)
+			.map(
+				([key, value]) =>
+					`  ${searchRow(key)}: ${(value === null ? "null" : stringifySafe(value)).replaceAll("\n", "\n  ")}`,
+			)
+			.join("\n");
+		return textComponent(
+			body ? `${heading}\n${searchLimitBody(body, theme, "muted")}` : heading,
+			context.lastComponent,
+		);
+	}
+	const hint = searchHint(theme, context, false);
+	return searchRows((width) => {
+		const rows = [truncateToWidth(heading, width, "…")];
+		if (factLine) rows.push(truncateToWidth(theme.fg("muted", factLine), width, "…"));
+		if (hint && !disclosure.hasResult && disclosure.hidesArgs(width)) rows.push(truncateToWidth(hint, width, "…"));
+		return rows;
+	});
 }
 
 function readCall(args: unknown, theme: Theme, context: CallContext): Component {
@@ -377,44 +441,36 @@ function isQueryPage(query: unknown): boolean {
 	return false;
 }
 
-/** Coverage word for a page: an absent flag reads as partial, never as proof. */
-function pageCoverage(details: Record<string, unknown>, query: boolean): { complete: boolean; total: number } {
-	const complete = query ? record(details.search).complete === true : record(details.scan).complete === true;
-	const total = numberField(query ? details.totalMatches : details.totalNotes);
-	return { complete, total: total ?? 0 };
+function countField(value: unknown): number | null {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
-/** The qualifier row names what the page left out: scan issues and continuations. */
-function pageQualifiers(
-	details: Record<string, unknown>,
-	search: Record<string, unknown>,
-	scan: Record<string, unknown>,
-): string {
-	const issues = numberField(scan.issueCount);
-	const unavailable = numberField(search.unavailableNotes) ?? numberField(scan.unavailableNotes);
-	const hasContinuation = details.hasMore === true || textField(details.nextCursor) !== null;
-	return joinedParts([
-		issues !== null && issues > 0 ? `${issues} scan issues` : "",
-		unavailable !== null && unavailable > 0 ? `${unavailable} unavailable notes` : "",
-		numberField(details.excludedRetired) ? `${details.excludedRetired} retired notes excluded in this window` : "",
-		hasContinuation ? "continuation available" : "",
-	]);
+function counted(count: number, noun: string, plural = `${noun}s`): string {
+	return `${count} ${count === 1 ? noun : plural}`;
 }
 
-/**
- * Compact identity: the meaningful title leads, the slug trails. Both rows stay
- * short so a subject preview survives 60-column terminals without wrapping onto
- * a third line; full slug and title remain in the expanded evidence.
- */
-function noteHeading(note: Record<string, unknown>, compact = false): string {
-	const slug = textField(note.slug) ?? "unknown subject";
-	const title = textField(note.title);
-	if (!compact) return joinedParts([slug, title && title !== slug ? title : ""]);
-	const titled = title !== null && title !== slug;
-	return joinedParts([
-		titled ? previewMark(title, COMPACT_TITLE_LIMIT).text : previewMark(slug, SLUG_LIMIT).text,
-		titled ? previewMark(slug, COMPACT_SLUG_LIMIT).text : "",
-	]);
+function searchCoverage(details: Record<string, unknown>) {
+	const scan = record(details.scan);
+	const search = record(details.search);
+	const querying = isQueryPage(details.query);
+	const issues = countField(scan.issueCount);
+	const scanUnavailable = countField(scan.unavailableNotes);
+	const queryUnavailable = countField(search.unavailableNotes);
+	const unavailable = Math.max(scanUnavailable ?? 0, queryUnavailable ?? 0);
+	// scan.complete means this scan visited the whole inventory, not that every source was readable.
+	const complete =
+		scan.inventoryComplete === true &&
+		scan.complete === true &&
+		issues === 0 &&
+		scanUnavailable === 0 &&
+		(!querying || (search.complete === true && queryUnavailable === 0));
+	return { complete, issues, unavailable: scanUnavailable === null && queryUnavailable === null ? null : unavailable };
+}
+
+function noteHeading(note: Record<string, unknown>, preview = false): string {
+	const slug = textField(note.slug) ?? "";
+	const title = textField(note.title) ?? "";
+	return preview && title !== slug ? joinedParts([title, slug]) : joinedParts([slug, title !== slug ? title : ""]);
 }
 
 function matchedTerms(value: unknown): string {
@@ -444,9 +500,19 @@ function numberLines(fields: Array<[string, unknown]>): string[] {
 function scanEvidence(details: Record<string, unknown>): string[] {
 	const scan = record(details.scan);
 	const issues = Array.isArray(scan.issues) ? scan.issues.map(record) : [];
+	const coverage = searchCoverage(details);
+	const traversal = record(details.coverage);
 	return [
-		`Source coverage: ${scan.complete === true ? "complete in this window" : "partial or unknown"}`,
-		`Filename inventory: ${scan.inventoryComplete === true ? "complete" : "unknown"}`,
+		`Source coverage: ${coverage.complete ? "complete for this operation" : "partial"}`,
+		...(scan.inventoryComplete === true ? ["Filename inventory: complete"] : []),
+		...(typeof scan.complete === "boolean"
+			? [`Candidates visited by this scan: ${scan.complete ? "all" : "bounded to this window"}`]
+			: []),
+		...(typeof traversal.traversalComplete === "boolean"
+			? [
+					`Cursor traversal: ${traversal.traversalComplete ? "reached the end of the inventory" : "has not reached the end of the inventory"}`,
+				]
+			: []),
 		...numberLines([
 			["Entries visited", scan.visited],
 			["Visit limit", scan.visitCap],
@@ -454,15 +520,16 @@ function scanEvidence(details: Record<string, unknown>): string[] {
 			["Window start", scan.windowStart],
 			["Window end", scan.windowEnd],
 			["Window source bytes", scan.sourceBytes],
-			["Unavailable notes", record(details.search).unavailableNotes ?? scan.unavailableNotes],
+			["Unavailable notes", coverage.unavailable],
 			["Retired notes in this window", scan.retiredNotes],
 			["Retired notes excluded in this window", details.excludedRetired],
 			["Scan issues", scan.issueCount],
 			["Scan issues shown", scan.issuesShown],
 		]),
-		...issues.map(
-			(issue) => `Scan issue: ${joinedParts([textField(issue.code) ?? "unknown", textField(issue.message) ?? ""])}`,
-		),
+		...issues
+			.map((issue) => joinedParts([textField(issue.code) ?? "", textField(issue.message) ?? ""]))
+			.filter(Boolean)
+			.map((issue) => `Scan issue: ${issue}`),
 	];
 }
 
@@ -471,7 +538,7 @@ function queryCoverage(details: Record<string, unknown>): string[] {
 	const search = record(details.search);
 	const summaries = Array.isArray(search.formulations) ? search.formulations.map(record) : [search];
 	return [
-		`Query coverage: ${search.complete === true ? "complete" : "partial or unknown"}`,
+		`Query coverage: ${searchCoverage(details).complete ? "complete" : "partial"}`,
 		...numberLines([
 			["Notes searched", search.notesSearched],
 			["Source byte limit", search.maxSourceBytes],
@@ -487,25 +554,42 @@ function queryCoverage(details: Record<string, unknown>): string[] {
 }
 
 function searchContinuation(details: Record<string, unknown>): string {
-	if (details.hasMore === true)
-		return `Continue with the same query and includeRetired filter and nextCursor: ${textField(details.nextCursor) ?? "unknown"}`;
-	return details.hasMore === false ? "End of this result set; coverage limits still apply." : "Continuation: unknown.";
+	const cursor = textField(details.nextCursor);
+	if (cursor) {
+		const args: Record<string, unknown> = {};
+		if (isQueryPage(details.query)) args.query = details.query;
+		if (typeof details.includeRetired === "boolean") args.includeRetired = details.includeRetired;
+		args.cursor = cursor;
+		return `Continue with memory_search:\n${JSON.stringify(args, null, 2)}`;
+	}
+	if (details.hasMore === true) return "This page reports more results but has no continuation cursor.";
+	return details.hasMore === false ? "End of this result set; coverage limits still apply." : "";
 }
 
 function passageEvidence(value: unknown, query: boolean): string[] {
 	const passage = record(value);
 	const excerpt = textField(passage.excerpt);
 	if (excerpt === null) return query ? ["No source passage in this record."] : [];
+	const start = countField(passage.offset);
+	const end = countField(passage.endOffset);
+	const excerptStart = countField(passage.excerptOffset);
+	const excerptEnd = countField(passage.excerptEndOffset);
 	return [
-		`Match [${numberField(passage.offset) ?? "?"}, ${numberField(passage.endOffset) ?? "?"}) code points`,
-		`Source excerpt [${numberField(passage.excerptOffset) ?? "?"}, ${numberField(passage.excerptEndOffset) ?? "?"}) code points:`,
+		...(start !== null && end !== null ? [`Match [${start}, ${end}) code points`] : []),
+		excerptStart !== null && excerptEnd !== null
+			? `Source excerpt [${excerptStart}, ${excerptEnd}) code points:`
+			: "Source excerpt:",
 		excerpt,
 	];
 }
 
 function formulationLines(formulation: Record<string, unknown>): string[] {
 	return [
-		`Formulation: ${textField(formulation.query) ?? "unknown"} · ${numberField(formulation.rank) === null ? "no ranked match" : `rank ${formulation.rank}`}`,
+		...(textField(formulation.query)
+			? [
+					`Formulation: ${formulation.query}${countField(formulation.rank) === null ? "" : ` · rank ${formulation.rank}`}`,
+				]
+			: []),
 		...formulationEvidence(formulation),
 	];
 }
@@ -530,9 +614,9 @@ function noteEvidence(note: Record<string, unknown>, query: boolean): string[] {
 		"",
 		`${numberField(note.rank) !== null ? `${note.rank}. ` : ""}${noteHeading(note)}`,
 		...cues,
-		...(lifecycle ? [lifecycle.label] : []),
+		...(lifecycle ? [searchLifecycle(note, lifecycle)] : []),
 		...(lifecycle?.problem ? [`Lifecycle problem: ${lifecycle.problem}`] : []),
-		...freshnessEvidence(note.freshness),
+		...freshnessEvidence(note.freshness, true),
 		...(textField(note.cueProblem) ? [`Cue problem: ${note.cueProblem}`] : []),
 		...(textField(note.digest) ? [`Digest: ${note.digest}`] : []),
 		...formulationEvidence(note),
@@ -547,78 +631,134 @@ function searchBody(details: Record<string, unknown>, notes: Record<string, unkn
 	const querying = isQueryPage(query);
 	const header = [
 		querying ? `Query: ${typeof query === "string" ? query : stringList(query).join(" | ")}` : "",
+		searchContinuation(details),
 		...scanEvidence(details),
 		...queryCoverage(details),
 		typeof details.includeRetired === "boolean" ? `Includes retired notes: ${details.includeRetired}` : "",
 		...numberLines([["Page starts at window offset", details.pageOffset]]),
 		textField(record(details.coverage).meaning) ?? "",
-		searchContinuation(details),
 		textField(details.guidance) ?? "",
 		"Cues and excerpts are discovery evidence. Read selected notes from offset 0 with their digests.",
 	].filter(Boolean);
 	return [...header, ...notes.flatMap((note) => noteEvidence(note, querying))].join("\n");
 }
 
-/** A bounded page is not proof of absence: counts travel with a coverage word. */
+function searchLifecycle(note: Record<string, unknown>, lifecycle: LifecycleView): string {
+	const status = record(note.lifecycle).status;
+	return status === "active" || status === "retired" || status === "superseded"
+		? lifecycle.label
+		: "lifecycle not established";
+}
+
+function searchUnstructured(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: ResultContext,
+): Component {
+	const partial = options.isPartial;
+	const color = partial ? "muted" : context.isError ? "error" : "toolOutput";
+	const safe = partial ? "" : searchText(textContent(result)).trim();
+	const first = searchRow(safe.split("\n", 1)[0] ?? "");
+	const outcome = partial
+		? "Search in progress"
+		: first || (context.isError ? "Memory search failed" : "No displayable result");
+	if (safe && options.expanded) return textComponent(`\n${searchLimitBody(safe, theme, color)}`, context.lastComponent);
+	const hint = options.expanded ? "" : searchHint(theme, context, true);
+	return searchRows((width) => {
+		const rows = ["", truncateToWidth(theme.fg(color, outcome), width, "…")];
+		const hidden = safe !== first || (!!safe && visibleWidth(first) > width);
+		if (hint && (hidden || context.state?.searchDisclosure?.hidesArgs(width)))
+			rows.push(truncateToWidth(hint, width, "…"));
+		return rows;
+	});
+}
+
+function searchPreview(details: Record<string, unknown>, notes: Record<string, unknown>[]): string {
+	const retired = countField(details.excludedRetired);
+	return searchText(
+		[
+			...notes.map((note) =>
+				searchRow(
+					joinedParts([
+						`• ${noteHeading(note, true)}${textField(note.cueProblem) ? " [cue problem]" : ""}`,
+						note.lifecycle ? searchLifecycle(note, lifecycleView(note)) : "",
+						freshnessFlag(note.freshness),
+					]),
+				),
+			),
+			retired ? `${counted(retired, "retired note")} excluded in this window` : "",
+			textField(details.guidance) ?? "",
+		]
+			.filter(Boolean)
+			.join("\n"),
+	);
+}
+
 function searchResult(
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	context: ResultContext,
 ): Component {
-	if (options.isPartial) return partialCard("Searching memory...", theme, context);
-	if (context.isError) return errorCard("memory_search", result, options, theme, context);
+	const disclosure = context.state?.searchDisclosure;
+	if (disclosure) disclosure.hasResult = true;
 	const details = record(result.details);
 	const notes = Array.isArray(details.notes) ? details.notes.map(record) : null;
-	if (notes === null) return fallbackCard("memory_search", result, options, theme, context);
-	const { outcome, qualifiers } = searchOverview(details, notes);
-	return resultCard(
-		outcome,
-		qualifiers,
-		true,
-		options.expanded ? searchBody(details, notes) : "",
-		options,
-		theme,
-		context,
-		searchPreviews(notes),
-	);
-}
-
-function searchPreviews(notes: Record<string, unknown>[]): string[] {
-	const previews = notes
-		.slice(0, SEARCH_PREVIEW_LIMIT)
-		.map((note) =>
-			budgetedRow(
-				[
-					`• ${noteHeading(note, true)}${textField(note.cueProblem) ? " [cue problem]" : ""}`,
-					note.lifecycle ? previewMark(lifecycleView(note).label, COMPACT_LIFECYCLE_LIMIT).text : "",
-					freshnessFlag(note.freshness),
-				],
-				ROW_BUDGET,
-			),
+	if (options.isPartial || context.isError || !notes || notes.some((note) => !textField(note.slug)))
+		return searchUnstructured(result, options, theme, context);
+	const { outcome, warning } = searchOverview(details, notes.length);
+	const heading = theme.fg("toolOutput", outcome);
+	if (options.expanded) {
+		return textComponent(
+			["", heading, searchLimitBody(searchBody(details, notes), theme, "toolOutput")].join("\n"),
+			context.lastComponent,
 		);
-	if (notes.length > previews.length) previews.push(`+ ${notes.length - previews.length} more subjects on this page`);
-	return previews;
+	}
+	const hint = searchHint(theme, context, true);
+	const preview = searchPreview(details, notes);
+	return searchRows((width) => {
+		const rows = [
+			"",
+			truncateToWidth(heading, width, "…"),
+			...truncateToVisualLines(preview, SEARCH_PREVIEW_LINES, width, 0, "start").visualLines.map((line) =>
+				theme.fg("toolOutput", line),
+			),
+		];
+		if (warning) rows.push(truncateToWidth(theme.fg("warning", warning), width, "…"));
+		// The expanded evidence is not the rest of this preview, so the hint has no line count.
+		if (hint) rows.push(truncateToWidth(hint, width, "…"));
+		return rows;
+	});
 }
 
-function searchOverview(details: Record<string, unknown>, notes: Record<string, unknown>[]) {
-	const returned = numberField(details.returned) ?? notes.length;
+function searchCount(details: Record<string, unknown>, returned: number, complete: boolean): string {
 	const query = isQueryPage(details.query);
-	const { complete, total } = pageCoverage(details, query);
-	const scope = "source coverage";
-	const clean = complete && (query || record(details.scan).issueCount === 0);
-	const color: OutcomeColor = clean ? (returned > 0 ? "success" : "muted") : "warning";
-	const noun = query ? "matches" : "notes";
-	const counted = total > 0 ? total : returned;
-	const count = details.corpusEmpty === true ? "corpus empty" : `${returned} of ${counted} window ${noun}`;
-	const cueProblems = notes.filter((note) => textField(note.cueProblem)).length;
+	const noun = query ? "match" : countField(details.excludedRetired) ? "eligible note" : "note";
+	const plural = query ? "matches" : `${noun}s`;
+	const total = countField(query ? details.totalMatches : details.totalNotes);
+	if (returned === 0 && total === 0) {
+		if (complete && details.corpusEmpty === true) return "The memory corpus is empty";
+		return `No ${plural} returned from this source window`;
+	}
+	if (total === null || total < returned) return `${counted(returned, noun, plural)} on this page`;
+	return `${returned} of ${counted(total, noun, plural)} in this source window`;
+}
+
+function searchOverview(details: Record<string, unknown>, returned: number) {
+	const coverage = searchCoverage(details);
+	const hasCursor = !!textField(details.nextCursor);
+	const missingCursor = details.hasMore === true && !hasCursor;
+	const more = hasCursor ? "; more pages available" : "";
+	const warning = joinedParts([
+		coverage.complete ? "" : "Partial source coverage",
+		coverage.unavailable ? counted(coverage.unavailable, "unavailable note") : "",
+		coverage.issues ? counted(coverage.issues, "scan issue") : "",
+		missingCursor ? "Continuation cursor not supplied" : "",
+	]);
 	return {
-		outcome: { color, line: `${count} · ${scope} ${complete ? "complete" : "partial"}` },
-		qualifiers: joinedParts([
-			pageQualifiers(details, record(details.search), record(details.scan)),
-			cueProblems ? `${cueProblems} cue problems` : "",
-			textField(details.guidance) ?? "",
-		]),
+		outcome: `${searchCount(details, returned, coverage.complete)}${more}`,
+		warning: warning ? `[${warning}]` : "",
 	};
 }
 
@@ -699,18 +839,19 @@ function freshnessWarning(value: unknown): boolean {
 	);
 }
 
-function freshnessRecord(label: string, value: unknown): string[] {
+function freshnessRecord(label: string, value: unknown, omitMissing: boolean): string[] {
 	const evidence = record(value);
 	if (!Object.keys(evidence).length) return [];
+	const date = textField(evidence.date);
 	return [
-		`${label}: ${textField(evidence.date) ?? "unknown date"}`,
+		...(date || !omitMissing ? [`${label}: ${date ?? "unknown date"}`] : []),
 		...["digest", "reason", "sources"].flatMap((field) =>
 			textField(evidence[field]) ? [`${label} ${field}: ${evidence[field]}`] : [],
 		),
 	];
 }
 
-function freshnessEvidence(value: unknown): string[] {
+function freshnessEvidence(value: unknown, omitMissing = false): string[] {
 	const freshness = record(value);
 	if (Object.keys(freshness).length === 0) return [];
 	const declarations = [
@@ -721,11 +862,19 @@ function freshnessEvidence(value: unknown): string[] {
 		["deadline", `Review deadline: ${textField(freshness.deadline) ?? "unknown"}`],
 		["reviewAfter", `Review after: ${textField(freshness.reviewAfter) ?? "none or unknown"}`],
 	] as const;
-	const lines: string[] = declarations.filter(([field]) => Object.hasOwn(freshness, field)).map(([, line]) => line);
+	const lines: string[] = declarations
+		.filter(([field]) =>
+			omitMissing
+				? field === "verified"
+					? typeof freshness[field] === "boolean"
+					: textField(freshness[field]) !== null
+				: Object.hasOwn(freshness, field),
+		)
+		.map(([, line]) => line);
 	lines.push(
-		...freshnessRecord("Unresolved concern", freshness.concern),
-		...freshnessRecord("Last review", freshness.lastReview),
-		...freshnessRecord("Retirement", freshness.retirement),
+		...freshnessRecord("Unresolved concern", freshness.concern, omitMissing),
+		...freshnessRecord("Last review", freshness.lastReview, omitMissing),
+		...freshnessRecord("Retirement", freshness.retirement, omitMissing),
 	);
 	lines.push(...stringList(freshness.problems).map((problem) => `Freshness problem: ${problem}`));
 	lines.push("Metadata records declarations, not proof of current truth.");

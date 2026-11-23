@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { SessionManager, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+	initTheme,
+	SessionManager,
+	type Theme,
+	type ToolDefinition,
+	ToolExecutionComponent,
+} from "@earendil-works/pi-coding-agent";
+import { type KeyId, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { readHistory, searchHistory, toolResult } from "./core.ts";
+import { toolDisplay } from "./display.ts";
 import history from "./index.ts";
 import { renderReadCall, renderReadResult, renderSearchCall, renderSearchResult } from "./presentation.ts";
 
@@ -219,9 +228,9 @@ describe("history_read cards", () => {
 				argsComplete: true,
 			}),
 		);
-		assert.match(shown, /history_read · entry-9/);
+		assert.match(shown, /history_read entry-9/);
 		assert.match(shown, /\/message\/content\/0\/text · offset 12/);
-		assert.match(screen(renderReadCall({}, theme, { argsComplete: true })), /history_read · \(entry pending\)/);
+		assert.equal(screen(renderReadCall({}, theme, { argsComplete: true })), "history_read");
 	});
 
 	it("reads a string field and reports the page versus the total", () => {
@@ -231,14 +240,14 @@ describe("history_read cards", () => {
 		assert.equal(value.status, "complete");
 		const view = renderReadResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false });
 		const shown = screen(view);
-		assert.match(shown, /complete · \d+ of \d+ code units/);
+		assert.match(shown, /Read the field: \d+ of \d+ code units\./);
 		assert.match(shown, /the exact stored sentence/);
 		assert.doesNotMatch(shown, new RegExp(id));
-		assert.equal(rows(view).length, 2);
+		assert.equal(rows(view).length, 3);
 		const expanded = screen(
 			renderReadResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }),
 		);
-		assert.match(expanded, /"status": "complete"/);
+		assert.match(expanded, /Result details:/);
 		assert.match(expanded, /"totalCodeUnits"/);
 	});
 
@@ -261,10 +270,11 @@ describe("history_read cards", () => {
 		);
 		const view = renderReadResult(withheld, { expanded: false, isPartial: false }, theme, { isError: false });
 		const shown = screen(view);
-		assert.match(shown, /withheld content/);
+		assert.match(shown, /Withheld content/);
 		assert.match(shown, /Image payloads are not exposed/);
-		assert.match(shown, /(?:to expand result|expand for result)/i);
-		assert.equal(rows(view).length, 2);
+		assert.match(shown, /\.\.\. \(click to expand\)/);
+		assert.doesNotMatch(shown, /more lines/);
+		assert.equal(rows(view).length, 3);
 	});
 
 	it("reports a bounded string page with continuation", () => {
@@ -275,8 +285,14 @@ describe("history_read cards", () => {
 		const shown = screen(
 			renderReadResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false }),
 		);
-		assert.match(shown, /page · \d+ of \d+ code units/);
-		assert.match(shown, /continuation available/);
+		assert.match(shown, /Returned a page: 4 of 500 code units\. Continue at offset 4\./);
+		const expanded = screen(
+			renderReadResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }),
+		);
+		assert.match(
+			expanded,
+			/"next": \{\s*"sessionId": "[^"]+",\s*"entryId": "[^"]+",\s*"pointer": "\/message\/content",\s*"offset": 4/u,
+		);
 	});
 
 	it("reports unknown entries and absent fields with their action", () => {
@@ -287,13 +303,13 @@ describe("history_read cards", () => {
 		const unknownShown = screen(
 			renderReadResult(toolResult(unknown), { expanded: false, isPartial: false }, theme, { isError: false }),
 		);
-		assert.match(unknownShown, /unknown entry/);
+		assert.match(unknownShown, /Entry not found/);
 		assert.match(unknownShown, /Use an entry ID/);
 		const absent = readHistory(sm, { entryId: id, pointer: "/message/noSuchField" });
 		assert.equal(absent.status, "field_absent");
 		assert.match(
 			screen(renderReadResult(toolResult(absent), { expanded: false, isPartial: false }, theme, { isError: false })),
-			/field absent/,
+			/Field absent/,
 		);
 	});
 
@@ -313,24 +329,189 @@ describe("history_read cards", () => {
 			),
 			/read failed/,
 		);
-		const initial = renderReadCall({ entryId: "e" }, theme, { expanded: false, argsComplete: true });
-		const updated = renderReadCall({ entryId: "e" }, theme, {
+		const args = { entryId: "e", maxBytes: 50 };
+		const initial = renderReadCall(args, theme, { expanded: false, argsComplete: true });
+		const updated = renderReadCall(args, theme, {
 			expanded: true,
 			argsComplete: true,
 			lastComponent: initial,
 		});
 		assert.equal(initial, updated);
-		assert.match(screen(updated), /"entryId": "e"/);
+		assert.match(screen(updated), /history_read e\n {2}maxBytes: 50/);
 	});
 
-	it("bounds an oversized expanded body", () => {
+	it("labels a display cap without implying another source page", () => {
 		const long = JSON.stringify({ status: "complete", startId: "e", text: "line\n".repeat(9000) });
 		const expanded = screen(
 			renderReadResult(emptyResult(long), { expanded: true, isPartial: false }, theme, { isError: false }),
 			400,
 		);
-		assert.match(expanded, /Display limit; full text remains in native tool history/);
+		assert.match(expanded, /\[Truncated: showing 32000 of \d+ characters\]/u);
+		assert.doesNotMatch(expanded, /Continue at offset/u);
 		assert.ok(expanded.length < 90_000);
+	});
+});
+
+describe("history_read in Pi's tool card", () => {
+	it("uses a native entry ID and one binding-aware disclosure at the actual result boundary", async (t) => {
+		initTheme("dark", false);
+		const nativeTui = (await import(
+			createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui")
+		)) as typeof import("@earendil-works/pi-tui");
+		const previous = nativeTui.getKeybindings();
+		t.after(() => nativeTui.setKeybindings(previous));
+		const bindings = (keys: KeyId[]) =>
+			nativeTui.setKeybindings(
+				new nativeTui.KeybindingsManager({
+					...nativeTui.TUI_KEYBINDINGS,
+					"app.tools.expand": { defaultKeys: keys, description: "Expand tool output" },
+				}),
+			);
+		bindings([]);
+		const display = toolDisplay().tools.find((tool) => tool.name === "history_read");
+		assert.ok(display);
+		const args = { entryId: 42, pointer: "/model/0/content/0/text", maxBytes: 4096 };
+		const roles = new Set<string>();
+		const probe = (actual: Theme) =>
+			({
+				fg(role: Parameters<Theme["fg"]>[0], value: string) {
+					roles.add(role);
+					return actual.fg(role, value);
+				},
+				bold: actual.bold.bind(actual),
+			}) as Theme;
+		const card = new ToolExecutionComponent(
+			"history_read",
+			"call-history",
+			args,
+			undefined,
+			{
+				...display,
+				renderCall: (input, actual, context) => display.renderCall?.(input, probe(actual), context),
+				renderResult: (result, options, actual, context) =>
+					display.renderResult?.(result, options, probe(actual), context),
+			} as ToolDefinition,
+			{ requestRender() {} } as unknown as TUI,
+			".",
+		);
+		card.setArgsComplete();
+		assert.match(screen(card), /history_read #42/u);
+		assert.doesNotMatch(screen(card), /pending|to expand/u);
+		bindings(["ctrl+shift+p"]);
+		card.invalidate();
+		assert.equal(rows(card).at(-1)?.trim(), "... (ctrl+shift+p to expand)");
+		bindings([]);
+		const body = `${"一".repeat(80)}\n(line 2)\n(line 3)\n(line 4)\n(line 5)\n(line 6)\n(line 7)`;
+		const result = {
+			content: [{ type: "text" as const, text: '{"status":"withheld","reason":"TEXT SHOULD NOT WIN"}' }],
+			details: { status: "complete", text: body },
+			isError: false,
+		};
+		card.updateResult(result);
+		const width = 170;
+		const collapsed = rows(card, width);
+		assert.match(collapsed[0], /history_read #42/u);
+		assert.equal(collapsed[1]?.trim(), args.pointer);
+		assert.equal(collapsed[2]?.trim(), "Read the field.");
+		assert.equal(collapsed[7]?.trim(), "(line 5)");
+		assert.equal(collapsed[8]?.trim(), "... (2 more lines, click to expand)");
+		assert.doesNotMatch(collapsed.join("\n"), /TEXT SHOULD NOT WIN|line [67]|maxBytes/u);
+		assert.deepEqual([...roles].sort(), ["accent", "muted", "toolOutput", "toolTitle"]);
+
+		const narrow = card.render(38);
+		assert.ok(narrow.every((line) => visibleWidth(line) <= 38));
+		assert.doesNotMatch(rows(card, 38).join("\n"), /\(line 2\)/u, "one wide logical line fills the visual preview");
+		const clickRow = card.render(width).findIndex((line) => line.includes("click to expand"));
+		assert.ok(clickRow > 0);
+		assert.equal(
+			card.handleMouse({
+				type: "click",
+				button: "left",
+				x: 4,
+				y: clickRow,
+				screenX: 4,
+				screenY: clickRow,
+				width,
+				height: card.render(width).length,
+				shift: false,
+				alt: false,
+				ctrl: false,
+				clickCount: 1,
+			})?.handled,
+			true,
+		);
+		const expanded = screen(card, width);
+		assert.match(expanded, /\(line 7\)/u);
+		assert.match(expanded, /maxBytes: 4096/u);
+		assert.doesNotMatch(expanded, /to expand/u);
+
+		bindings(["ctrl+shift+p"]);
+		card.setExpanded(false);
+		assert.equal(rows(card, width).at(-1)?.trim(), "... (2 more lines, ctrl+shift+p to expand)");
+		assert.equal(screen(card, width).match(/to expand/gu)?.length, 1);
+		roles.clear();
+		card.updateResult({
+			...result,
+			content: [{ type: "text", text: "Source changed\nRetained cause" }],
+			isError: true,
+		});
+		assert.match(screen(card), /Source changed/u);
+		assert.doesNotMatch(screen(card), /Read the field|Retained cause/u);
+		assert.ok(roles.has("error"));
+		assert.ok(!roles.has("toolOutput"));
+		card.setExpanded(true);
+		assert.match(screen(card), /Retained cause/u);
+
+		const ordinaryId = `entry-${"x".repeat(100)}`;
+		card.updateArgs({ entryId: ordinaryId });
+		card.setExpanded(false);
+		assert.match(rows(card, 60)[0]?.trim() ?? "", /^history_read entry-x+…$/u);
+		assert.ok(screen(card, 140).includes(ordinaryId));
+	});
+
+	it("adds no hint for a short complete result and describes omitted records without a line count", () => {
+		const options = { expanded: false, isPartial: false };
+		const context = { isError: false, args: { entryId: 42 } };
+		const noDetails = renderReadResult(
+			{ ...emptyResult(""), details: { status: "complete", text: "Short." } },
+			options,
+			theme,
+			context,
+		);
+		assert.deepEqual(rows(noDetails), ["Read the field.", "Short."]);
+		const descriptors = Array.from({ length: 7 }, (_, index) => ({
+			pointer: `/field${index}`,
+			kind: "scalar",
+			value: index,
+		}));
+		const manifest = { ...emptyResult(""), details: { status: "complete", items: descriptors } };
+		assert.match(screen(renderReadResult(manifest, options, theme, context)), /\.\.\. \(click to expand\)$/u);
+		assert.doesNotMatch(screen(renderReadResult(manifest, options, theme, context)), /\/field5/u);
+		assert.match(
+			screen(renderReadResult(manifest, { ...options, expanded: true }, theme, context)),
+			/\/field6 · scalar · \{"value":6\}/u,
+		);
+	});
+
+	it("falls back to the first meaningful text line for malformed evidence", () => {
+		const result = { ...emptyResult("\nOutput unavailable.\nAdditional diagnostic."), details: { status: "other" } };
+		const context = { isError: false };
+		assert.deepEqual(rows(renderReadResult(result, { expanded: false, isPartial: false }, theme, context)), [
+			"Output unavailable.",
+			"... (click to expand)",
+		]);
+		assert.match(
+			screen(renderReadResult(result, { expanded: true, isPartial: false }, theme, context)),
+			/Additional diagnostic\./u,
+		);
+		const sameSlice = {
+			...emptyResult('{"status":"complete","text":"Retained JSON evidence"}'),
+			details: { status: "complete", text: 17 },
+		};
+		assert.match(
+			screen(renderReadResult(sameSlice, { expanded: false, isPartial: false }, theme, context)),
+			/Retained JSON evidence/u,
+		);
 	});
 });
 
@@ -387,22 +568,18 @@ describe("expanded history cards", () => {
 		assert.doesNotMatch(shown.slice(0, shown.indexOf("Raw payload")), /\u202e/u);
 	});
 
-	it("leads the read expansion with the exact stored text, then scope, then raw", () => {
+	it("shows the entire safe page once before supplemental details", () => {
 		const sm = SessionManager.inMemory();
-		const id = sessionUser(sm, "the exact stored sentence");
+		const id = sessionUser(sm, `${"x".repeat(4500)}\npage tail\twith spaces`);
 		const value = readHistory(sm, { entryId: id, pointer: "/message/content" });
 		const shown = screen(
 			renderReadResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }),
 			400,
 		);
-		assert.match(shown, /Text \(exact stored page\):/);
-		assert.match(shown, /the exact stored sentence/);
-		assert.ok(
-			shown.indexOf("Text (exact stored page):") < shown.indexOf("Scope:") &&
-				shown.indexOf("Scope:") < shown.indexOf("Raw payload (retained):"),
-		);
-		assert.match(shown, /Scope: entry message · user · /);
-		assert.match(shown, /membership not_checked/);
+		assert.match(shown, /page tail {3}with spaces\nResult details:/u);
+		assert.equal(shown.match(/page tail/gu)?.length, 1);
+		assert.match(shown, /"role": "user"/);
+		assert.match(shown, /"membership": "not_checked"/);
 		assert.match(shown, /"totalCodeUnits"/);
 	});
 
@@ -426,7 +603,7 @@ describe("expanded history cards", () => {
 			}),
 			400,
 		);
-		assert.match(shown, /Items \(first 2 of 2\):/);
+		assert.match(shown, /Read the field: 2 items\./);
 		assert.match(shown, /\/message\/content\/0 · block/);
 	});
 });
@@ -439,14 +616,15 @@ describe("retained error diagnostics and injected hints", () => {
 			renderReadResult(emptyResult(diagnostic), { expanded: false, isPartial: false }, theme, { isError: true }),
 			400,
 		);
-		assert.equal(collapsedRows.length, 1, "one clipped line beside the card's leading spacer");
+		assert.equal(collapsedRows.length, 2, "the first diagnostic line and an uncounted hint");
 		assert.match(collapsedRows[0], /^history_read failed: source changed/);
 		assert.doesNotMatch(collapsedRows[0], /second line/);
+		assert.equal(collapsedRows[1], "... (click to expand)");
 		const expandedView = screen(
 			renderReadResult(emptyResult(diagnostic), { expanded: true, isPartial: false }, theme, { isError: true }),
 			400,
 		);
-		assert.match(expandedView, /second line \\u\{202e\} with \\u\{1b\}\[31m controls/);
+		assert.match(expandedView, /second line {2}with {2}controls/);
 		assert.match(expandedView, /\u65e5\u672c\u8a9e\u306e\u8a3a\u65ad/);
 	});
 

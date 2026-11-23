@@ -18,12 +18,8 @@ the standalone Agent terminal can load the memory cards locally without the
 ordinary runtime. Importing it registers no tools, emits no events, and opens no
 store.
 
-Collapsed cards bound their rows to a 100-character budget: the meaningful title
-leads a subject row with the slug after it, lifecycle state and exceptional
-freshness flags (review due, unresolved concern, freshness problems) follow, and
-a revision prefix appears only when it fits. The expanded evidence keeps the
-exact revision, the full lifecycle policy, and coverage. Expand hints use the
-host-injected key binding and name no key when the host supplies none.
+See [Presentation and verification](#presentation-and-verification) for what the
+cards show.
 
 ## Configuration
 
@@ -1140,11 +1136,15 @@ line endings, and body bytes otherwise remain unchanged.
 
 ## Presentation and verification
 
-Ordinary Pi terminal cards show request subjects, outcomes and coverage limits. Collapsed
-search cards preview up to three subjects and name any additional subjects on the
-returned page. Expanded search cards label raw cues, cue problems, digests,
-per-formulation matches and missing terms, source excerpt ranges, scan issues and
-continuation instructions. Zero-match guidance appears without expansion. Raw cues
+The `memory_search` card follows the [emission grammar](../../docs/conventions/emissions.md).
+It shows the query or browse action, a count scoped to the current source window,
+and whether another page is available. Complete filename enumeration does not
+imply that note sources were readable. The collapsed card flags source gaps and
+previews the first results or displays guidance for a query with no matches.
+Expanded evidence separates filename enumeration, cursor traversal and source
+coverage. It keeps the exact cursor to use with the same query and
+`includeRetired` filter. Search evidence also includes raw cues, cue problems,
+digests, formulation matches, source excerpt ranges and scan issues. Raw cues
 remain untrusted source evidence, not attestations.
 
 Expanded read cards show the actual source text, digest and half-open code-point
@@ -1155,10 +1155,11 @@ review digests, concern sources, and retirement metadata without treating them a
 revision identity, capture time, and the separate current-authority boundary.
 History cards show capture identities, metadata coverage, read-only plan selections,
 reasons, and page-local byte totals. Mutation cards distinguish
-live changes, captures, and credential-policy omissions. Terminal controls are escaped, and the
-expanded evidence body is limited to 32,000 UTF-16 units after escaping, including
-its explicit clipping notice. Write/edit payloads and review/retirement reasons and
-sources stay withheld in both call views. Presentation never changes model-visible evidence or retained native history.
+live changes, captures, and credential-policy omissions. The search card strips
+terminal controls; the other cards show controls as text. Expanded evidence has an
+explicit display limit. Write/edit payloads and review/retirement reasons and
+sources stay withheld in both call views. Presentation never changes model-visible
+evidence or retained native history.
 Semantic tool behavior is identical in TUI and headless modes.
 
 Run focused tests with `node --test --test-concurrency=1 extensions/memory/*.test.mts`.

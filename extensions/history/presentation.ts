@@ -1,22 +1,14 @@
-/**
- * Terminal cards for the history tools.
- *
- * The history tools return one JSON object as their text; the renderers read
- * structured fields from that payload. A collapsed card shows the request on
- * its heading row and at most one qualifier row, then one or two outcome rows.
- * An expanded card leads with readable evidence (entry kind, role or tool,
- * time, excerpt or returned text, error flag), then the exact identity, scope,
- * and continuation, then a raw section with the retained payload. Terminal
- * controls render as text. An exhausted empty page is absence only within the
- * walked scope, and a bounded page never reads as the end of the ancestry.
- */
-
-import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { type Component, Text } from "@earendil-works/pi-tui";
+import {
+	type AgentToolResult,
+	type KeybindingHints,
+	type Theme,
+	type ToolRenderResultOptions,
+	truncateToVisualLines,
+} from "@earendil-works/pi-coding-agent";
+import { type Component, stripTerminalSequences, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const DISPLAY_LIMIT = 32_000;
 const EVIDENCE_MATCHES = 3;
-const EVIDENCE_ITEMS = 8;
 
 /** Controls render as text, never as terminal commands; newlines keep structure. */
 function escapeControls(value: string): string {
@@ -118,15 +110,22 @@ function numberField(value: Record<string, unknown>, key: string): number | unde
 	return typeof item === "number" && Number.isFinite(item) ? item : undefined;
 }
 
+interface ReadCardState {
+	readResultArrived?: boolean;
+}
+
 export interface CallContext extends Hints {
 	expanded?: boolean;
 	argsComplete?: boolean;
 	lastComponent?: Component;
+	state?: ReadCardState;
 }
 
 export interface ResultContext extends Hints {
 	isError: boolean;
+	args?: unknown;
 	lastComponent?: Component;
+	state?: ReadCardState;
 }
 
 type OutcomeColor = "success" | "muted" | "warning" | "error";
@@ -409,159 +408,269 @@ export function renderSearchResult(
 	);
 }
 
-export interface ReadDisplayArgs {
-	entryId: string;
-	sessionId?: string;
-	pointer?: string;
-	offset?: number;
-	maxBytes?: number;
-	maxItems?: number;
-	maxOutputBytes?: number;
+const READ_NAME = "history_read";
+const PREVIEW_LINES = 5;
+
+class ReadCard implements Component {
+	#layout: (width: number) => string[] = () => [];
+	#width?: number;
+	#lines: string[] = [];
+
+	update(layout: (width: number) => string[]): this {
+		this.#layout = layout;
+		this.invalidate();
+		return this;
+	}
+
+	invalidate(): void {
+		this.#width = undefined;
+	}
+
+	render(width: number): string[] {
+		if (this.#width !== width) {
+			this.#lines = this.#layout(width);
+			this.#width = width;
+		}
+		return this.#lines;
+	}
+}
+
+function readCard(previous: Component | undefined, layout: (width: number) => string[]): Component {
+	return (previous instanceof ReadCard ? previous : new ReadCard()).update(layout);
+}
+
+function safeReadText(value: string): string {
+	return stripTerminalSequences(value).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
+		char === "\n" || char === "\t" ? char : "",
+	);
+}
+
+function readLine(value: string): string {
+	return safeReadText(value).replace(/\s+/gu, " ").trim();
+}
+
+function readRequest(input: unknown) {
+	const { entryId, pointer, offset, ...extra } = asRecord(input) ?? {};
+	const subject =
+		typeof entryId === "number" && Number.isSafeInteger(entryId) && entryId > 0
+			? `#${entryId}`
+			: typeof entryId === "string"
+				? readLine(entryId)
+				: "";
+	const facts = [
+		typeof pointer === "string" ? readLine(pointer) : "",
+		typeof offset === "number" && offset > 0 ? `offset ${offset}` : "",
+	]
+		.filter(Boolean)
+		.join(" · ");
+	return { subject, facts, extra };
+}
+
+function requestHasMore({ subject, facts, extra }: ReturnType<typeof readRequest>, width: number): boolean {
+	return (
+		Object.keys(extra).length > 0 ||
+		(subject !== "" && READ_NAME.length + 1 + visibleWidth(subject) > width) ||
+		visibleWidth(facts) > width
+	);
+}
+
+function characterCount(value: string): number {
+	return value.length - (value.match(/[\u{10000}-\u{10FFFF}]/gu)?.length ?? 0);
+}
+
+function readLimit(shown: string, total: string): string {
+	return `[Truncated: showing ${characterCount(shown)} of ${characterCount(total)} characters]`;
 }
 
 export function renderReadCall(input: unknown, theme: Theme, context: CallContext): Component {
-	const args = asRecord(input);
-	const entryId = typeof args?.entryId === "string" ? previewMark(args.entryId, 72) : { text: "", clipped: false };
-	const subject = entryId.text || (context.argsComplete === false ? "" : "(entry pending)");
-	const qualifiers: string[] = [];
-	let hint = entryId.clipped;
-	if (typeof args?.pointer === "string" && args.pointer) {
-		const pointer = previewMark(args.pointer, 64);
-		qualifiers.push(pointer.text);
-		hint = hint || pointer.clipped;
+	const request = readRequest(input);
+	const { subject, facts, extra } = request;
+	const title = theme.fg("toolTitle", theme.bold(READ_NAME));
+	if (context.expanded) {
+		const heading = title + (subject ? ` ${theme.fg("accent", subject)}` : "");
+		const full = safeReadText(
+			Object.entries(extra)
+				.map(([key, value]) => `  ${readLine(key)}: ${JSON.stringify(value, null, 2)}`)
+				.join("\n"),
+		);
+		const shown = clip(full, DISPLAY_LIMIT);
+		const limit = shown.length < full.length ? readLimit(shown, full) : "";
+		const text = new Text(
+			[heading, facts ? theme.fg("muted", facts) : "", shown ? theme.fg("muted", shown) : ""]
+				.filter(Boolean)
+				.join("\n"),
+			0,
+			0,
+		);
+		return readCard(context.lastComponent, (width) => [
+			...text.render(width),
+			...(limit ? [theme.fg("warning", truncateToWidth(limit, width, "…"))] : []),
+		]);
 	}
-	if (typeof args?.offset === "number" && args.offset > 0) qualifiers.push(`offset ${args.offset}`);
-	if (args?.maxBytes !== undefined || args?.maxItems !== undefined || args?.maxOutputBytes !== undefined) hint = true;
-	return callCard("history_read", subject, qualifiers, hint, input, theme, context);
+	return readCard(context.lastComponent, (width) => {
+		const room = width - READ_NAME.length - 1;
+		// Pi runs both renderer factories before draw, including on replay.
+		const hint =
+			context.state &&
+			!context.state.readResultArrived &&
+			requestHasMore(request, width) &&
+			context.keyText?.("app.tools.expand")
+				? [truncateToWidth(readHint(theme, context, 0), width, "…")]
+				: [];
+		return [
+			width < READ_NAME.length
+				? theme.fg("toolTitle", theme.bold(truncateToWidth(READ_NAME, width, "…")))
+				: title + (subject && room > 0 ? ` ${theme.fg("accent", truncateToWidth(subject, room, "…"))}` : ""),
+			...(facts ? [theme.fg("muted", truncateToWidth(facts, width, "…"))] : []),
+			...hint,
+		];
+	});
 }
 
 const READ_STATUS: Record<string, string> = {
-	complete: "complete",
-	page: "page",
-	unknown_entry: "unknown entry",
-	withheld: "withheld content",
-	field_absent: "field absent",
-	structured_omitted: "structured value omitted",
+	complete: "Read the field",
+	page: "Returned a page",
+	unknown_entry: "Entry not found",
+	withheld: "Withheld content",
+	field_absent: "Field absent",
+	structured_omitted: "Structured value omitted",
 };
 
-function readDescriptor(value: Record<string, unknown>): string {
-	const total = typeof value.totalCodeUnits === "number" ? value.totalCodeUnits : undefined;
-	const end = typeof value.endOffset === "number" ? value.endOffset : undefined;
-	const start = typeof value.offset === "number" ? value.offset : 0;
-	if (end !== undefined && total !== undefined) {
-		const shown = Math.max(0, end - start);
-		return `${shown} of ${total} ${total === 1 ? "code unit" : "code units"}`;
-	}
-	const bytes = typeof value.bytes === "number" ? value.bytes : undefined;
-	if (bytes !== undefined) return `${bytes} ${bytes === 1 ? "byte" : "bytes"}`;
-	return "";
+function readPayload(result: AgentToolResult<unknown>): Record<string, unknown> | undefined {
+	const evidence = (value: unknown) => {
+		const record = asRecord(value);
+		if (!record || !Object.hasOwn(READ_STATUS, stringField(record, "status"))) return undefined;
+		if ([record.text, record.action, record.reason].some((field) => field !== undefined && typeof field !== "string"))
+			return undefined;
+		return record.items === undefined || Array.isArray(record.items) ? record : undefined;
+	};
+	// Both history hosts currently publish the bounded read envelope as JSON text with empty details.
+	return evidence(result.details) ?? evidence(payload(result));
 }
 
-function readItemLine(value: Record<string, unknown>): string {
+function readCount(value: Record<string, unknown>): string {
 	if (Array.isArray(value.items)) return countNoun(value.items.length, "item", "items");
-	if (typeof value.kind === "string") return `value ${previewMark(value.kind, 40).text}`;
+	if (typeof value.text === "string") {
+		const total = numberField(value, "totalCodeUnits");
+		const end = numberField(value, "endOffset");
+		const start = numberField(value, "offset");
+		if (total !== undefined && end !== undefined && start !== undefined && end >= start)
+			return `${end - start} of ${countNoun(total, "code unit", "code units")}`;
+		const bytes = numberField(value, "bytes");
+		if (bytes !== undefined) return countNoun(bytes, "byte", "bytes");
+	}
 	return "";
 }
 
-function readColor(status: string): OutcomeColor {
-	if (status === "complete") return "success";
-	if (status === "page") return "warning";
-	return "muted";
+function readItem(item: unknown): string {
+	const record = asRecord(item);
+	if (!record) return JSON.stringify(item) ?? "";
+	const { pointer, kind, ...extra } = record;
+	const selector = typeof pointer === "string" ? safeReadText(pointer) : "";
+	return [
+		selector === readLine(selector) ? selector : JSON.stringify(selector),
+		typeof kind === "string" ? readLine(kind) : "",
+		Object.keys(extra).length ? JSON.stringify(extra) : "",
+	]
+		.filter(Boolean)
+		.join(" · ");
 }
 
-/** The returned text with its continuation, or the action or reason when there is none. */
-function readSecondRow(value: Record<string, unknown>, continued: boolean): { text: string; hinted: boolean } {
-	const preview = typeof value.text === "string" && value.text ? previewMark(value.text, 48).text : "";
-	if (preview)
-		return { text: [preview, continued ? "continuation available" : ""].filter(Boolean).join(" · "), hinted: true };
-	const action = typeof value.action === "string" && value.action ? previewMark(value.action, 160).text : "";
-	const reason = typeof value.reason === "string" && value.reason ? previewMark(value.reason, 160).text : "";
-	const detail = action || reason;
+function readStructured(value: Record<string, unknown>) {
+	const { status, text, items, action, reason, value: scalar, ...metadata } = value;
+	const count = readCount(value);
+	const next = asRecord(value.next);
+	const offset = next ? numberField(next, "offset") : undefined;
+	const continued = offset === undefined ? "" : ` Continue at offset ${offset}.`;
+	const outcome = `${READ_STATUS[String(status)]}${count ? `: ${count}` : ""}.${continued}`;
+	const body = [
+		typeof text === "string" ? text : "",
+		Array.isArray(items) ? items.map(readItem).join("\n") : "",
+		scalar === undefined ? "" : JSON.stringify(scalar),
+		typeof reason === "string" ? reason : "",
+		typeof action === "string" ? action : "",
+	]
+		.filter(Boolean)
+		.join("\n");
+	if (metadata.next === null) delete metadata.next;
 	return {
-		text: [detail, continued ? "continuation available" : ""].filter(Boolean).join(" · "),
-		hinted: detail !== "" || continued,
+		outcome,
+		body,
+		details: Object.keys(metadata).length ? `Result details:\n${JSON.stringify(metadata, null, 2)}` : "",
+		countLines: !Array.isArray(items),
 	};
 }
 
-/** The exact stored evidence this page returns: text first, then item pointers. */
-function readEvidence(value: Record<string, unknown>): string {
-	const lines: string[] = [];
-	if (typeof value.text === "string" && value.text) {
-		lines.push("Text (exact stored page):", escapeControls(clip(value.text, 4000)));
-	} else if (Array.isArray(value.items)) {
-		lines.push(`Items (first ${Math.min(EVIDENCE_ITEMS, value.items.length)} of ${value.items.length}):`);
-		for (const itemValue of value.items.slice(0, EVIDENCE_ITEMS)) {
-			const item = asRecord(itemValue) ?? {};
-			const pointer = stringField(item, "pointer");
-			const kind = stringField(item, "kind");
-			lines.push(`  ${[pointer ? previewMark(pointer, 96).text : "", kind].filter(Boolean).join(" · ")}`);
-		}
-		if (value.items.length > EVIDENCE_ITEMS)
-			lines.push(`(+${value.items.length - EVIDENCE_ITEMS} more items in the raw payload)`);
-	} else {
-		const action = stringField(value, "action");
-		const reason = stringField(value, "reason");
-		const detail = action || reason;
-		if (detail) lines.push(previewMark(detail, 200).text);
-	}
-	return lines.join("\n");
+function readHint(theme: Theme, context: Hints, skipped: number): string {
+	const key = context.keyText?.("app.tools.expand");
+	const action = key
+		? (context.keyHint?.("app.tools.expand", "to expand") ?? theme.fg("dim", key) + theme.fg("muted", " to expand"))
+		: theme.fg("muted", "click to expand");
+	return (
+		theme.fg("muted", skipped ? `... (${countNoun(skipped, "more line", "more lines")}, ` : "... (") +
+		action +
+		theme.fg("muted", ")")
+	);
 }
 
-/** Entry identity plus selectors, membership, and continuation for the read page. */
-function readScope(value: Record<string, unknown>): string {
-	const entry = asRecord(field(value, "entry")) ?? {};
-	const identity = [entryIdentity(entry), entryLabel(field(entry, "id"))].filter(Boolean).join(" · ");
-	const pointer = stringField(value, "pointer");
-	const membership = stringField(value, "membership");
-	const parts = [
-		identity ? `entry ${identity}` : "",
-		`session ${previewMark(stringField(value, "sessionId") || "(unknown)", 48).text}`,
-		pointer ? `pointer ${previewMark(pointer, 96).text}` : "pointer (manifest)",
-		membership ? `membership ${membership}` : "",
-		continuationWord(value),
-	].filter(Boolean);
-	return parts.join(" · ");
-}
-
-/** The read card states the read status and returned page; the request already names the entry. */
 export function renderReadResult(
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
 	theme: Theme,
 	context: ResultContext,
 ): Component {
-	if (options.isPartial) return partialCard("Reading entry...", theme, context);
-	if (context.isError) return errorCard("history_read", result, options, theme, context);
-	const value = payload(result);
-	if (value === undefined) {
-		return resultCard(
-			{ color: "muted", line: previewMark(textContent(result), 160).text || "history_read" },
+	if (context.state) context.state.readResultArrived = true;
+	const request = readRequest(context.args);
+	if (options.isPartial && !context.isError) {
+		return readCard(context.lastComponent, (width) => [
 			"",
-			false,
-			textContent(result),
-			options,
-			theme,
-			context,
-		);
+			theme.fg("muted", truncateToWidth("Reading entry…", width, "…")),
+			...(!options.expanded && requestHasMore(request, width)
+				? [truncateToWidth(readHint(theme, context, 0), width, "…")]
+				: []),
+		]);
 	}
-	const status = typeof value.status === "string" ? value.status : "unknown";
-	const descriptor = typeof value.text === "string" ? readDescriptor(value) : readItemLine(value);
-	const statusWord = READ_STATUS[status] ?? status;
-	const continued = value.next !== null && value.next !== undefined;
-	const second = readSecondRow(value, continued);
-	const expandedBody = [
-		readEvidence(value),
-		`Scope: ${readScope(value)}`,
-		"Raw payload (retained):",
-		JSON.stringify(value, null, 2),
-	].join("\n\n");
-	return resultCard(
-		{ color: readColor(status), line: `${statusWord}${descriptor ? ` · ${descriptor}` : ""}` },
-		second.text,
-		second.hinted,
-		expandedBody,
-		options,
-		theme,
-		context,
-	);
+	const value = context.isError ? undefined : readPayload(result);
+	const fallback = value ? "" : safeReadText(textContent(result)).trimStart();
+	const firstBreak = fallback.indexOf("\n");
+	const first = firstBreak === -1 ? fallback : fallback.slice(0, firstBreak);
+	const { outcome, body, details, countLines } = value
+		? readStructured(value)
+		: {
+				outcome: first || (context.isError ? "History read failed." : "No read output."),
+				body: "",
+				details: firstBreak === -1 ? "" : fallback.slice(firstBreak + 1),
+				countLines: false,
+			};
+	const color = context.isError ? "error" : "toolOutput";
+	const safeOutcome = readLine(outcome);
+	const safeBody = safeReadText(body);
+	const safeDetails = safeReadText(details);
+	const total = safeOutcome.length + safeBody.length + safeDetails.length;
+	const shownOutcome = clip(safeOutcome, DISPLAY_LIMIT);
+	const shownBody = clip(safeBody, DISPLAY_LIMIT - shownOutcome.length);
+	const shownDetails = clip(safeDetails, DISPLAY_LIMIT - shownOutcome.length - shownBody.length);
+	const shown = shownOutcome.length + shownBody.length + shownDetails.length;
+	const limit =
+		shown < total ? readLimit(shownOutcome + shownBody + shownDetails, safeOutcome + safeBody + safeDetails) : "";
+	return readCard(context.lastComponent, (width) => {
+		const limited = limit ? [theme.fg("warning", truncateToWidth(limit, width, "…"))] : [];
+		if (options.expanded) {
+			const expanded = [shownOutcome, shownBody, shownDetails].filter(Boolean).join("\n");
+			return ["", ...new Text(theme.fg(color, expanded), 0, 0).render(width), ...limited];
+		}
+		const preview = truncateToVisualLines(theme.fg(color, shownBody), PREVIEW_LINES, width, 0, "start");
+		const hidden =
+			preview.skippedCount > 0 ||
+			shownDetails.trim() !== "" ||
+			visibleWidth(shownOutcome) > width ||
+			requestHasMore(request, width);
+		return [
+			"",
+			theme.fg(color, truncateToWidth(shownOutcome, width, "…")),
+			...preview.visualLines,
+			...limited,
+			...(hidden ? [truncateToWidth(readHint(theme, context, countLines ? preview.skippedCount : 0), width, "…")] : []),
+		];
+	});
 }
