@@ -915,6 +915,13 @@ function publish(root: string, plan: Publication & { temp: string }, lease: Writ
 	renameSync(plan.temp, path);
 	return undefined;
 }
+function recordPublication(receipt: WriteReceipt, plan: Publication): void {
+	receipt.written.push(plan.file);
+	receipt.notWritten.shift();
+	if (plan.file === "README.md") receipt.initialized = true;
+	if (plan.file === receipt.file) receipt.digest = sourceDigest(plan.content);
+}
+
 function recordFailure(receipt: WriteReceipt, message: string): void {
 	receipt.ok = false;
 	receipt.error = receipt.error ? `${receipt.error}; ${message}` : message;
@@ -1072,11 +1079,8 @@ function mutate(
 			const cleanupError = publish(root, plan, lease);
 			// Publication consumed the stage, or its failed unlink is reported here rather than retried in final cleanup.
 			staged.splice(staged.indexOf(plan.temp), 1);
-			receipt.written.push(plan.file);
-			receipt.notWritten.shift();
+			recordPublication(receipt, plan);
 			if (plan.staleSlug !== undefined) publishedStale.push(plan.staleSlug);
-			if (plan.file === "README.md") receipt.initialized = true;
-			if (plan.file === receipt.file) receipt.digest = sourceDigest(plan.content);
 			memorySourceCache.invalidate(root, plan.file);
 			if (root !== rootValue) memorySourceCache.invalidate(rootValue, plan.file);
 			if (cleanupError !== undefined) {
