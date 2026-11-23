@@ -187,8 +187,8 @@ test("lifecycle selection excludes retired notes without changing lexical rankin
 	});
 	const selectedRoot = corpus(files);
 	for (const query of [undefined, "dark theme", ["dark theme", "zebra-feature"]]) {
-		const page = await search(root, { query });
-		const baseline = await search(selectedRoot, { query });
+		const page = await detailedSearch(root, { query });
+		const baseline = await detailedSearch(selectedRoot, { query });
 		assert.deepEqual(page.notes, baseline.notes);
 		assert.equal(page.includeRetired, false);
 		assert.equal(page.excludedRetired, 2);
@@ -200,7 +200,7 @@ test("lifecycle selection excludes retired notes without changing lexical rankin
 			assert.equal(object(page.search).excludedRetired, 2);
 			assert.deepEqual(object(page.search).terms, object(baseline.search).terms);
 		}
-		const included = await search(root, { query, includeRetired: true });
+		const included = await detailedSearch(root, { query, includeRetired: true });
 		assert.equal(included.includeRetired, true);
 		assert.equal(included.excludedRetired, 0);
 		assert.equal(included.totalNotes, 5);
@@ -235,7 +235,8 @@ test("retired-only source windows preserve exact exclusions and continuation", a
 		assert.equal(first.excludedRetired, 4096);
 		assert.equal(first.corpusEmpty, false);
 		assert.equal(first.countScope, "source-window");
-		assert.equal(object(first.scan).windowNotes, 4096);
+		assert.equal(object(first.scan).windowStart, 0);
+		assert.equal(object(first.scan).windowEnd, 4096);
 		assert.equal(object(first.scan).unavailableNotes, 0);
 		const last = await search(root, { query, cursor: string(first.nextCursor) });
 		assert.deepEqual(
@@ -267,32 +268,30 @@ test("compact search preserves discovery evidence in substantially smaller pages
 	const detailed = await detailedSearch(root, { query });
 	assert.equal(compact.detail, false);
 	assert.equal(detailed.detail, true);
-	assert.equal(compact.returned, 10);
-	assert.equal(detailed.returned, 10);
+	assert.equal(compact.returned, 5);
+	assert.equal(detailed.returned, 5);
 	const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 	assert.ok(
 		bytes(compact) <= bytes(detailed) * 0.6,
 		`${bytes(compact)} compact bytes / ${bytes(detailed)} detailed bytes`,
 	);
-	assert.deepEqual(compact.search, detailed.search);
-	assert.deepEqual(compact.scan, detailed.scan);
+	assert.deepEqual(compact.coverage, detailed.coverage);
+	for (const [key, values] of [
+		["search", ["complete", "notesSearched", "unavailableNotes"]],
+		["scan", ["complete", "inventoryComplete", "windowStart", "windowEnd", "issueCount", "unavailableNotes"]],
+	] as const) {
+		assert.deepEqual(Object.keys(object(compact[key])).sort(), [...values].sort());
+		for (const field of values) assert.deepEqual(object(compact[key])[field], object(detailed[key])[field]);
+	}
+	assert.equal(object(detailed.search).ranking, "best-rank-then-reciprocal-rank-fusion");
+	assert.equal(array(object(detailed.search).formulations).length, query.length);
+	assert.ok(number(object(detailed.scan).sourceBytes) > 0);
+	assert.equal(array(object(detailed.scan).issues).length, 0);
 	for (const [index, note] of notes(compact).entries()) {
 		const full = notes(detailed)[index];
-		for (const key of ["slug", "title", "lifecycle", "tags", "supersedes", "digest", "rank", "sourceMatch"])
-			assert.deepEqual(note[key], full[key], key);
-		assert.equal(note.freshness, undefined);
-		assert.equal(note.formulations, undefined);
-		assert.equal(note.missing, undefined);
-		assert.equal(note.status, undefined);
-		assert.equal(note.superseded_by, undefined);
-		const best = array(full.formulations)
-			.map(object)
-			.filter((item) => item.rank !== null)
-			.sort((a, b) => number(a.rank) - number(b.rank))[0];
-		assert.deepEqual(
-			note.matched,
-			array(best.matched).map((item) => object(item).term),
-		);
+		const fields = ["slug", "title", "lifecycle", "digest", "rank", "sourceMatch"];
+		assert.deepEqual(Object.keys(note).sort(), [...fields].sort());
+		for (const key of fields) assert.deepEqual(note[key], full[key], key);
 		assert.equal(array(full.formulations).length, query.length);
 		assert.deepEqual(
 			full.freshness,
@@ -304,8 +303,8 @@ test("compact search preserves discovery evidence in substantially smaller pages
 		const full = notes(await detailedSearch(root, { query }))[0];
 		assert.equal(compact.freshness, undefined);
 		assert.equal(object(full.freshness).policy, "on-change");
-		if (query) assert.deepEqual(compact.matched, ["editor", "choice"]);
-		else assert.equal(compact.matched, undefined);
+		assert.equal(compact.matched, undefined);
+		assert.equal(compact.tags, query === undefined ? '["editor","preference"]' : undefined);
 	}
 });
 
@@ -334,8 +333,8 @@ test("compact search retains concerns, due dates, retirement and metadata proble
 	for (const slug of ["invalid", "superseded"])
 		expected.set(slug, { problems: object((await read(root, { slug })).freshness).problems });
 	for (const query of [undefined, "theme zebra-feature", ["theme", "zebra-feature"]]) {
-		const compact = notes(await search(root, { query, includeRetired: true }));
-		const detailed = notes(await detailedSearch(root, { query, includeRetired: true }));
+		const compact = notes(await search(root, { query, includeRetired: true, limit: 6 }));
+		const detailed = notes(await detailedSearch(root, { query, includeRetired: true, limit: 6 }));
 		for (const note of compact) {
 			const full = detailed.find((candidate) => candidate.slug === note.slug);
 			assert.ok(full);
@@ -354,7 +353,7 @@ test("compact search retains concerns, due dates, retirement and metadata proble
 test("a search cursor permits a different detail projection without changing result order", async () => {
 	const root = corpus({ "README.md": README, "a.md": ACTIVE, "b.md": ACTIVE });
 	const first = await search(root, { query: ["theme", "dark"], limit: 1 });
-	const next = await detailedSearch(root, { query: ["theme", "dark"], limit: 1, cursor: string(first.nextCursor) });
+	const next = await detailedSearch(root, { query: ["theme", "dark"], limit: 2, cursor: string(first.nextCursor) });
 	assert.equal(notes(first)[0].slug, "a");
 	assert.equal(notes(next)[0].slug, "b");
 	assert.equal(notes(next)[0].rank, 2);
@@ -504,7 +503,7 @@ test("source byte windows advance through empty pages without claiming a frozen 
 	for (let index = 0; index < 520; index++) files[`a-${String(index).padStart(3, "0")}.md`] = "x".repeat(65536);
 	files["zz-target.md"] = "latewindowtoken";
 	const root = corpus(files);
-	const first = await search(root, { query: "latewindowtoken", limit: 1 });
+	const first = await detailedSearch(root, { query: "latewindowtoken", limit: 1 });
 	assert.deepEqual(first.notes, []);
 	assert.equal(first.hasMore, true);
 	assert.ok(number(object(first.scan).sourceBytes) <= 32 * 1024 * 1024);
@@ -705,9 +704,10 @@ test("Unicode separators never create physical frontmatter delimiters", async ()
 
 test("preserves comma-bearing tag values", async () => {
 	const root = corpus({ "README.md": README, "comma.md": '---\ntitle: Comma tag\ntags: ["a,b", c]\n---\n# Comma\n' });
-	const result = await search(root, { query: "a,b" });
+	const result = await detailedSearch(root, { query: "a,b" });
 	assert.equal(result.totalMatches, 1);
 	assert.equal(notes(result)[0].tags, '["a,b", c]');
+	assert.equal(notes(await search(root))[0].tags, '["a,b", c]');
 });
 
 test("distinguishes clean emptiness, query misses, and uncertain emptiness", async () => {
@@ -965,16 +965,19 @@ test("requests no-follow and nonblocking opens and rejects symlink errors and no
 test("reports directory limits and counts unavailable notes beyond retained detail", async () => {
 	const files: Record<string, string> = { "README.md": README };
 	for (let i = 0; i < 30; i += 1) files[`bad ${i}.md`] = "needle";
-	const result = await search(corpus(files), { query: "needle" });
+	const incomplete = corpus(files);
+	const result = await search(incomplete, { query: "needle" });
 	assert.equal(object(result.search).unavailableNotes, 30);
 	assert.equal(object(result.scan).issueCount, 30);
-	assert.equal(object(result.scan).issuesShown, 20);
+	assert.equal(object(result.scan).issues, undefined);
+	const detail = await detailedSearch(incomplete, { query: "needle" });
+	assert.equal(object(detail.scan).issuesShown, 20);
 	assert.equal(result.corpusEmpty, null);
 	const many: Record<string, string> = { "README.md": README };
 	for (let i = 0; i < 520; i += 1) many[`entry-${i}.txt`] = "not a note";
 	const root = corpus(many);
 	for (const options of [{}, { query: "needle" }]) {
-		const limited = await search(root, options);
+		const limited = await detailedSearch(root, options);
 		assert.equal(object(limited.scan).complete, true);
 		assert.equal(object(limited.scan).visited, 521);
 		assert.equal(object(limited.scan).inventoryComplete, true);
@@ -1107,7 +1110,7 @@ test("real symbolic links remain excluded from browse and search", async () => {
 	symlinkSync(join(root, "target.md"), join(root, "linked.md"));
 	mkdirSync(join(root, "directory.md"));
 	for (const query of [undefined, "needle", ["needle", "target"]]) {
-		const result = await search(root, { query });
+		const result = await detailedSearch(root, { query });
 		assert.deepEqual(
 			notes(result).map((note) => note.slug),
 			["target"],
@@ -1305,7 +1308,6 @@ test("retains later source qualifications beyond a selected passage", async () =
 	const source = `${ACTIVE}\nneedle before a qualification\n${"x".repeat(6000)}\nneedle with a later qualification\n`;
 	const root = corpus({ "README.md": README, "note.md": source });
 	const result = await search(root, { query: "needle" });
-	assert.equal(object(result.search).ranking, "lexical");
 	const match = sourceLocation(notes(result)[0], source, "needle");
 	assert.ok(number(match.excerptEndOffset) < Array.from(source).length);
 	assert.equal((await collect(root, "note")).text, source);
@@ -1326,8 +1328,9 @@ test("separates coverage gaps from misses and cue warnings", async () => {
 	assert.equal(object(result.search).notesSearched, 1);
 	assert.equal(object(result.search).unavailableNotes, 4);
 	assert.equal(result.totalMatches, 1);
+	assert.equal(object(result.scan).issueCount, 5);
 	assert.deepEqual(
-		issues(result).sort(),
+		issues(await detailedSearch(root, { query: "needle" })).sort(),
 		["note.metadata", "note.nonregular", "note.oversized", "note.unaddressable", "note.unreadable"].sort(),
 	);
 	const miss = await search(root, { query: "nothing" });
@@ -1461,7 +1464,7 @@ test("requires phrases, ignores stopwords, and matches adjacent identifier token
 			notes(await search(root, { query })).map((note) => note.slug),
 			["yes"],
 		);
-	const result = await search(root, { query: "the model and model" });
+	const result = await detailedSearch(root, { query: "the model and model" });
 	assert.deepEqual(object(result.search).ignored, ["the", "and"]);
 	assert.equal(array(object(result.search).terms).length, 1);
 });
@@ -1477,15 +1480,15 @@ test("selects later concentrated evidence rather than the first occurrence", asy
 	assert.equal(Array.from(source).slice(number(match.offset), number(match.endOffset)).join(""), "alpha beta gamma");
 });
 
-test("defaults browse to byte-bounded cues and query to ten records with exact continuation", async () => {
+test("defaults browse to byte-bounded cues and query to five records with exact continuation", async () => {
 	const files: Record<string, string> = { "README.md": README };
 	for (let i = 0; i < 60; i += 1)
 		files[`note-${String(i).padStart(2, "0")}.md`] = `# Subject\n\nneedle ${"extra ".repeat(i)}\n`;
 	const root = corpus(files);
 	for (const query of [undefined, "needle"]) {
 		const initial = await search(root, { query });
-		assert.equal(initial.pageSize, query === undefined ? 512 : 10);
-		assert.equal(initial.returned, query === undefined ? 60 : 10);
+		assert.equal(initial.pageSize, query === undefined ? 512 : 5);
+		assert.equal(initial.returned, query === undefined ? 60 : 5);
 		if (query === undefined) assert.equal(initial.nextCursor, null);
 		else assert.equal(typeof initial.nextCursor, "string");
 		for (const limit of [1, 25]) {
@@ -1546,7 +1549,7 @@ test("fused passages prefer body evidence and preserve original code-point locat
 	const compact = notes(await search(root, { query: ["metadata", "bodyneedle", "uniquemetadata"] })).find(
 		(note) => note.slug === "subject",
 	);
-	assert.deepEqual(compact?.matched, ["metadata"]);
+	assert.equal(compact?.matched, undefined);
 	assert.deepEqual(compact?.sourceMatch, subject.sourceMatch);
 	const metadata = notes(result).find((note) => note.slug === "metadata-only");
 	assert.ok(metadata);
@@ -1737,8 +1740,10 @@ test("keeps phrase requirements local to each formulation", async () => {
 	assert.equal(object(array(slug.formulations)[2]).sourceMatch, undefined);
 	assert.equal(object(array(slug.formulations)[2]).rank, 1);
 	const compact = notes(await search(root, { query: ['"red bird" alpha', '"blue bird"', '"slug-only"'] }));
-	assert.deepEqual(compact.find((note) => note.slug === "blue")?.matched, ["blue bird"]);
-	assert.deepEqual(compact.find((note) => note.slug === "slug-only")?.matched, ["slug-only"]);
+	assert.deepEqual(
+		compact.map(({ slug, rank, sourceMatch }) => ({ slug, rank, sourceMatch })),
+		notes(result).map(({ slug, rank, sourceMatch }) => ({ slug, rank, sourceMatch })),
+	);
 	for (const query of [
 		[],
 		[" "],

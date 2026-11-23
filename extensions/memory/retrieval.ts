@@ -31,7 +31,7 @@ const WINDOW_SOURCE_BYTES = 32 * 1024 * 1024;
 const BROWSE_PAGE_CAP = 512;
 const INDEX_READ_BYTES = 8 * 1024;
 const SOURCE_READ_BYTES = 64 * 1024;
-const DEFAULT_PAGE_SIZE = 10;
+const DEFAULT_PAGE_SIZE = 5;
 const MAX_PAGE_SIZE = 25;
 const MAX_QUERY_TERMS = 16;
 const PAGE_CODEPOINTS = 12000;
@@ -327,27 +327,12 @@ function materialFreshness(freshness: Freshness): Partial<Freshness> | undefined
 	return Object.keys(material).length ? material : undefined;
 }
 
-type MatchSummary = { rank: number | null; matched: { term: string }[] };
-
-function matchedTerms(note: Record<string, unknown>): string[] | undefined {
-	if (Array.isArray(note.matched)) return note.matched.map((match) => match.term as string);
-	let best: MatchSummary | undefined;
-	for (const formulation of (note.formulations ?? []) as MatchSummary[]) {
-		if (formulation.rank !== null && (best === undefined || formulation.rank < (best.rank as number)))
-			best = formulation;
-	}
-	return best?.matched.map((match) => match.term);
-}
-
-function searchNoteOutput(note: Record<string, unknown>, detail: boolean): Record<string, unknown> {
-	if (detail) return note;
+function compactNoteOutput(note: Record<string, unknown>, browse: boolean): Record<string, unknown> {
 	const compact: Record<string, unknown> = { slug: note.slug, title: note.title, lifecycle: note.lifecycle };
-	for (const key of ["tags", "supersedes", "cueProblem", "digest", "rank", "sourceMatch"])
-		if (Object.hasOwn(note, key)) compact[key] = note[key];
+	const keys = browse ? ["tags", "supersedes", "cueProblem"] : ["cueProblem", "digest", "rank", "sourceMatch"];
+	for (const key of keys) if (Object.hasOwn(note, key)) compact[key] = note[key];
 	const freshness = materialFreshness(note.freshness as Freshness);
 	if (freshness) compact.freshness = freshness;
-	const matched = matchedTerms(note);
-	if (matched) compact.matched = matched;
 	return compact;
 }
 
@@ -611,16 +596,22 @@ function toSearchOutput(
 	query: Query,
 	idf: number[],
 	rank: number,
+	detail: boolean,
 	signal?: AbortSignal,
 ): Record<string, unknown> {
 	const output = toOutputNote(note);
 	const search = note.search;
 	if (search === undefined) return output;
 	const candidate = passageCandidate(analyze(search.analysis.text, note, query, signal), note);
-	return {
+	const evidence = {
 		...output,
 		digest: search.digest,
 		rank,
+		sourceMatch: bestPassage(candidate.analysis, idf, candidate.body ? candidate.bodyStart : 0),
+	};
+	if (!detail) return compactNoteOutput(evidence, false);
+	return {
+		...evidence,
 		matched: query.terms.flatMap((term, index) =>
 			search.analysis.counts[index].size === 0
 				? []
@@ -632,7 +623,6 @@ function toSearchOutput(
 					],
 		),
 		missing: query.terms.filter((_, index) => search.analysis.counts[index].size === 0).map((term) => term.text),
-		sourceMatch: bestPassage(candidate.analysis, idf, candidate.body ? candidate.bodyStart : 0),
 	};
 }
 
@@ -1027,7 +1017,16 @@ function serializedSize(value: unknown): number {
 	return byteLength(value) + 1;
 }
 
-function formatScan(scan: Scan): Record<string, unknown> {
+function formatScan(scan: Scan, full: boolean, retiredNotes: number, excludedRetired: number): Record<string, unknown> {
+	if (!full)
+		return {
+			complete: scan.complete,
+			inventoryComplete: true,
+			windowStart: scan.start,
+			windowEnd: scan.end,
+			issueCount: scan.issueCount,
+			unavailableNotes: scan.unavailable,
+		};
 	const shown = scan.issues.slice(0, MAX_ISSUES);
 	return {
 		complete: scan.complete,
@@ -1046,6 +1045,8 @@ function formatScan(scan: Scan): Record<string, unknown> {
 		unavailableNotes: scan.unavailable,
 		issuesShown: shown.length,
 		issues: shown,
+		retiredNotes,
+		excludedRetired,
 	};
 }
 
@@ -1108,15 +1109,20 @@ function toFusedOutput(
 	queries: Query[],
 	rankings: Ranking[],
 	rank: number,
+	detail: boolean,
 	signal?: AbortSignal,
 ): Record<string, unknown> {
 	const source = sources.find((candidate) => candidate.slug === note.slug);
 	if (!source) throw new CorpusError("query source is unavailable");
-	return {
+	const output = {
 		...toOutputNote(note),
 		digest: note.search?.digest,
 		rank,
 		sourceMatch: fusedPassage(source, queries, rankings, signal),
+	};
+	if (!detail) return compactNoteOutput(output, false);
+	return {
+		...output,
 		formulations: queries.map((query, index) => {
 			checkAbort(signal);
 			const evidence = source?.formulations?.[index];
@@ -1143,7 +1149,16 @@ function searchSummary(
 	texts: string[],
 	queries: Query[],
 	rankings: Ranking[],
+	selectedCount: number,
+	excludedRetired: number,
+	detail: boolean,
 ): Record<string, unknown> {
+	const coverage = {
+		complete: scan.complete && scan.unavailable === 0,
+		notesSearched: selectedCount,
+		unavailableNotes: scan.unavailable,
+	};
+	if (!detail) return coverage;
 	const evidence = queries.map((query, index) => ({
 		terms: query.terms.map((term, termIndex) => ({
 			text: term.text,
@@ -1153,12 +1168,11 @@ function searchSummary(
 		ignored: query.ignored,
 	}));
 	return {
-		complete: scan.complete && scan.unavailable === 0,
-		notesSearched: scan.notes.length,
-		unavailableNotes: scan.unavailable,
+		...coverage,
 		maxSourceBytes: SOURCE_READ_BYTES,
 		ranking: fused ? "best-rank-then-reciprocal-rank-fusion" : "lexical",
 		...(fused ? { formulations: evidence.map((item, index) => ({ query: texts[index], ...item })) } : evidence[0]),
+		excludedRetired,
 	};
 }
 
@@ -1246,15 +1260,11 @@ async function runIndex(
 		hasMore: false,
 		nextCursor: null,
 		corpusEmpty: corpusEmptiness(scan),
-		scan: { ...formatScan(scan), retiredNotes, excludedRetired },
+		scan: formatScan(scan, args.query === null || args.detail, retiredNotes, excludedRetired),
 		notes: [],
 	};
 	if (args.query !== null) {
-		result.search = {
-			...searchSummary(scan, fused, texts, queries, rankings),
-			notesSearched: selected.length,
-			excludedRetired,
-		};
+		result.search = searchSummary(scan, fused, texts, queries, rankings, selected.length, excludedRetired, args.detail);
 		if (totalMatches === 0)
 			result.guidance =
 				"No matches within covered sources. Matching uses exact tokens without stemming or camelCase splitting. Try alternate inflections, exact identifier forms, or quoted fragments; inspect coverage gaps.";
@@ -1264,15 +1274,15 @@ async function runIndex(
 		matches,
 		cursor.page,
 		pageSize,
-		(note, rank) =>
-			searchNoteOutput(
-				queries.length === 0
-					? toOutputNote(note)
-					: fused
-						? toFusedOutput(note, scan.notes, texts, queries, rankings, rank, signal)
-						: toSearchOutput(note, queries[0], rankings[0].idf, rank, signal),
-				args.detail,
-			),
+		(note, rank) => {
+			if (queries.length === 0) {
+				const output = toOutputNote(note);
+				return args.detail ? output : compactNoteOutput(output, true);
+			}
+			return fused
+				? toFusedOutput(note, scan.notes, texts, queries, rankings, rank, args.detail, signal)
+				: toSearchOutput(note, queries[0], rankings[0].idf, rank, args.detail, signal);
+		},
 		signal,
 	);
 	const nextCursor = indexContinuation(cursor, scan, cursor.page + kept.length, totalMatches);

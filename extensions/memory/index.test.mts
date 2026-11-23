@@ -77,14 +77,15 @@ test("factory registers only the memory jobs, with native cards and trigger guid
 		if (tool.name !== "memory_search") assert.equal(tool.outputSchema, undefined);
 	}
 	const searchParameters = JSON.stringify(all.get("memory_search")?.parameters);
-	assert.match(searchParameters, /quoted, case-insensitive literal fragments/);
-	assert.match(all.get("memory_read")?.description ?? "", /12,000 Unicode code points.*lifecycle/);
-	assert.ok(
-		all
-			.get("memory_read")
-			?.description.includes(
-				"If the source changes, read the note again from offset 0 without the old digest to obtain the current note and digest. Use memory_search only if the slug no longer exists.",
-			),
+	assert.match(
+		searchParameters,
+		/Exact tokens or quoted literals; case-insensitive, no stemming or camelCase splitting/,
+	);
+	assert.match(searchParameters, /1–25 \(default 5\).*up to 512/);
+	assert.match(all.get("memory_read")?.description ?? "", /lifecycle and freshness/);
+	assert.match(
+		all.get("memory_read")?.description ?? "",
+		/restart at offset 0 without the old digest; search if the slug is absent/,
 	);
 	const guidance = [...all.values()].flatMap((tool) => tool.promptGuidelines ?? []).join("\n");
 	for (const word of [
@@ -95,8 +96,12 @@ test("factory registers only the memory jobs, with native cards and trigger guid
 		"Low confidence",
 		"TODOs",
 		"never grant",
-		"does not require a memory write",
-		"only its disputed claim",
+		"the check needs no write",
+		"only the disputed claim",
+		"before creation or if the target is unknown",
+		"README before the first write",
+		"verified:true only after a whole-result check",
+		"A failed check is not confirmation",
 		"never reverses supersession",
 	])
 		assert.ok(guidance.includes(word), word);
@@ -189,7 +194,12 @@ test("registered jobs round-trip source evidence and serialize concurrent update
 		} else if (note) {
 			assert.equal(note.formulations, undefined);
 			assert.equal(note.freshness, undefined);
-			if (args.query) assert.ok((note.matched as unknown[]).every((term) => typeof term === "string"));
+			assert.equal(note.matched, undefined);
+			if (args.query) {
+				assert.equal(page.details.pageSize, 5);
+				assert.match(String(note.digest), /^[a-f0-9]{64}$/);
+				assert.ok(note.sourceMatch);
+			}
 		}
 	}
 	const structured = search.structuredContent;
