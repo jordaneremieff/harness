@@ -120,6 +120,30 @@ test("a version refusal reloads the saved status without dispatching a prompt or
 	await state.set(row, "open");
 	assert.equal(calls.length, 3);
 });
+test("installation and retries have no failure notice while the current sheet can still load", async () => {
+	const { state, calls, warnings, show } = fixture();
+	const early = show("B");
+	calls[0].resolve({ pending: true });
+	await early;
+	assert.equal(state.readState, "pending");
+	assert.equal(state.privateOnly, false);
+	const failed = state.refresh();
+	calls[1].reject(new Error("cannot read bound sheet"));
+	await failed;
+	assert.equal(state.readState, "failed");
+	const retry = state.refresh(),
+		latest = state.refresh();
+	assert.equal(state.readState, "pending");
+	calls[2].reject(new Error("old read"));
+	await retry;
+	assert.equal(state.readState, "pending");
+	calls[3].resolve({ available: true, comments: [row] });
+	await latest;
+	assert.equal(state.readState, "ready");
+	assert.equal(state.rows.get(row.commentId), row);
+	assert.deepEqual(warnings, [], "read status is not a mutation warning");
+});
+
 test("a failed refresh keeps confirmed rows, blocks writes, and never offers private status until the host confirms it", async () => {
 	const { state, calls } = fixture();
 	const load = state.refresh();
@@ -130,7 +154,7 @@ test("a failed refresh keeps confirmed rows, blocks writes, and never offers pri
 	await fail;
 	assert.equal(state.rows.get(row.commentId), row);
 	assert.equal(state.privateOnly, false);
-	assert.equal(state.readFailed, true);
+	assert.equal(state.readState, "failed");
 	await state.set(row, "closed");
 	assert.equal(calls.length, 2);
 	const retry = state.refresh();
@@ -138,5 +162,5 @@ test("a failed refresh keeps confirmed rows, blocks writes, and never offers pri
 	await retry;
 	assert.equal(state.privateOnly, true);
 	assert.equal(state.rows.size, 0);
-	assert.equal(state.readFailed, false);
+	assert.equal(state.readState, "ready");
 });

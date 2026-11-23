@@ -18,7 +18,7 @@
 	class Collection implements ReaderReviewCollection {
 		readonly rows = new Map<string, ReaderReviewComment>();
 		privateOnly: boolean;
-		readFailed = false;
+		readState: ReaderReviewReadState = "ready";
 		private scope: string | null = null;
 		private generation = 0;
 		private request = 0;
@@ -34,13 +34,16 @@
 			this.warn = warn;
 			this.privateOnly = !key();
 		}
-		private switchScope(key: string | null) {
-			if (this.scope === key) return;
-			this.scope = key;
-			this.generation++;
-			this.rows.clear();
-			this.privateOnly = !key;
-			this.readFailed = false;
+		private beginRead(key: string | null) {
+			const next = key ? "pending" : "ready";
+			if (this.scope === key && this.readState === next) return;
+			if (this.scope !== key) {
+				this.scope = key;
+				this.generation++;
+				this.rows.clear();
+				this.privateOnly = !key;
+			}
+			this.readState = next;
 			this.changed();
 		}
 		private current(key: string, generation: number) {
@@ -49,7 +52,7 @@
 		private load(result: Sheet) {
 			this.rows.clear();
 			this.privateOnly = !result.available;
-			this.readFailed = false;
+			this.readState = "ready";
 			if (result.available) for (const row of result.comments) this.rows.set(row.commentId, row);
 			this.changed();
 		}
@@ -57,24 +60,31 @@
 			if (this.disposed) return;
 			const documentKey = this.key(),
 				n = ++this.request;
-			this.switchScope(documentKey);
+			this.beginRead(documentKey);
 			if (!documentKey) return;
 			const current = () => !this.disposed && n === this.request && this.key() === documentKey;
 			try {
-				const result = (await this.host.request("query", { kind: "reviewComments", documentKey })) as Sheet;
-				if (current()) this.load(result);
+				const result = (await this.host.request("query", { kind: "reviewComments", documentKey })) as
+					| Sheet
+					| { pending: true };
+				// The confirmed presentation triggers reviewChanged; an installation receipt contains no sheet.
+				if (current() && !("pending" in result)) this.load(result);
 			} catch {
 				if (!current()) return;
 				this.privateOnly = false;
-				this.readFailed = true;
-				this.warn("The reader could not refresh saved comments.");
+				this.readState = "failed";
 				this.changed();
 			}
 		}
 		async set(row: ReaderReviewComment, commentState: ReaderCommentState) {
 			const documentKey = this.scope,
 				epoch = this.generation;
-			if (!documentKey || this.readFailed || this.rows.get(row.commentId) !== row || !this.current(documentKey, epoch))
+			if (
+				!documentKey ||
+				this.readState !== "ready" ||
+				this.rows.get(row.commentId) !== row ||
+				!this.current(documentKey, epoch)
+			)
 				return;
 			try {
 				const result = (await this.host.request("command", {

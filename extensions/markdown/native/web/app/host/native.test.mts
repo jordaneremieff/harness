@@ -256,6 +256,15 @@ test("the recovery boundary refuses thread state and validates passage evidence 
 	assert.equal(retained(proof).revision, 2);
 	assert.throws(() => retained({ ...proof, text: "**no**" }));
 });
+test("a pending saved-comment read makes no claim about availability or rows", () => {
+	const { reply } = bridge().bridge;
+	const pending = { v: 1, id: "q", type: "reply", ok: true, pending: true };
+	const check = (value: unknown) => reply(value, "q", "query", { kind: "reviewComments" });
+	assert.equal(check(pending).pending, true);
+	assert.throws(() => check({ ...pending, pending: false }));
+	assert.throws(() => check({ ...pending, available: false, revision: 0, comments: [] }));
+});
+
 test("ordinary messages enforce their exact byte bound", () => {
 	const api = bridge(),
 		base = { v: 1, type: "command", name: "copy", args: { text: "" } };

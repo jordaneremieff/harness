@@ -116,7 +116,12 @@
 				const payload = controller.payload;
 				return payload?.live && typeof payload.meta.documentKey === "string" ? payload.meta.documentKey : null;
 			},
-			refreshReview,
+			() => {
+				if (saved.readState === "failed")
+					ctx.notice("The reader could not refresh saved comments.", "warn", [], "saved-comments-read");
+				else ctx.removeNotice("saved-comments-read");
+				refreshReview();
+			},
 			(text) => ctx.notice(text, "warn"),
 		);
 		function parkedItems() {
@@ -187,7 +192,9 @@
 		}
 		function unavailableReason(thread: ReaderThread, row?: ReaderReviewComment) {
 			if (pending(thread)) return "Wait for delivery confirmation.";
-			if (saved.readFailed && thread.messages.length) return "Refresh saved comments before changing their status.";
+			if (thread.messages.length && saved.readState === "pending") return "Wait for saved comments to load.";
+			if (thread.messages.length && saved.readState === "failed")
+				return "Refresh saved comments before changing their status.";
 			if (!row && !saved.privateOnly && thread.messages.some((m) => m.state !== "failed"))
 				return "No saved comment is available yet.";
 			return "";
@@ -508,7 +515,7 @@
 				open ? "Close comment" : "Reopen comment",
 				() => void saved.set(row, open ? "closed" : "open"),
 			);
-			toggle.disabled = saved.readFailed;
+			toggle.disabled = saved.readState !== "ready";
 			activity.append(
 				el("p", { class: "review-text" }, row.text),
 				el("p", { class: "sec" }, "Read the reply in the original conversation."),

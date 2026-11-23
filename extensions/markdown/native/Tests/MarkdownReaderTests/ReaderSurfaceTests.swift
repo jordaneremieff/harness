@@ -127,6 +127,44 @@ import Testing
         }
     }
 
+    @Test func savedCommentReadWaitsForTheNewDocumentReceipt() async throws {
+        let fixture = try PaneRun(); defer { fixture.remove() }
+        let store = try DirectoryStore(root: URL(fileURLWithPath: fixture.store))
+        let stored = DocumentReference.stored(root: fixture.store, storeId: store.storeId, document: fixture.document)
+        try await withSurface { surface, model, drafts in
+            let workspace = EditorWorkspace(directory: drafts, store: fixture.store)
+            workspace.collaboration = CollaborationClient(configuration: CollaborationConfiguration(version: 1,
+                endpoint: URL(string: "http://127.0.0.1:1")!, token: "test", live: 3, conversation: "ordinary:review"),
+                workspace: UUID(), document: UUID()) { _ in LiveResult(status: "error") }
+            surface.setWorkspace(workspace)
+            let local = fixture.root.appendingPathComponent("before.md")
+            try Data("Before navigation".utf8).write(to: local)
+            await workspace.openReading(.file(path: local.path))
+            _ = try await model.page.callJavaScript("""
+                const receive = window.reader.receive;
+                window.reader.receive = async m => {
+                    const accepted = await receive(m);
+                    if (m.type === 'document') {
+                        window.reviewBeforeReceipt = await window.webkit.messageHandlers.reader.postMessage({
+                            v: 1, type: 'query', id: 'review', kind: 'reviewComments', documentKey: m.meta.documentKey
+                        });
+                    }
+                    return accepted;
+                };
+                return true;
+                """)
+            guard case .shown = await workspace.openReading(stored) else { Issue.record("Document did not open"); return }
+            let early = try #require(try await model.page.callJavaScript("return window.reviewBeforeReceipt;") as? [String: Any])
+            #expect(early["ok"] as? Bool == true)
+            #expect(early["pending"] as? Bool == true)
+            #expect(early["available"] == nil && early["comments"] == nil)
+            let key = try #require(workspace.logicalDocumentKey)
+            let ready = try await request("query", fields: ["kind": "reviewComments", "documentKey": key.uuidString], to: model)
+            #expect(ready["available"] as? Bool == true)
+            #expect(ready["pending"] == nil && (ready["comments"] as? [[String: Any]])?.isEmpty == true)
+        }
+    }
+
     @Test func nativeMenuCommandsReachThePageWithTheirArguments() async throws {
         try await withSurface { surface, model, _ in
             _ = try await model.page.callJavaScript("""

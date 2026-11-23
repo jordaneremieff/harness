@@ -316,7 +316,14 @@ final class ReaderSurface: NSView {
                 guard let workspace else { return ["available": false, "version": 0] }
                 return try await workspace.reviewDraftPage(message)
             }
-            if message["kind"] as? String == "reviewComments", let workspace { return try await workspace.reviewPage(message) }
+            if message["kind"] as? String == "reviewComments", let workspace {
+                // The page asks while it installs a document. Only a confirmed binding can read or reject its sheet.
+                guard pageMatchesWorkspace else {
+                    reviewedBinding = nil
+                    return ["pending": true]
+                }
+                return try await workspace.reviewPage(message)
+            }
             if message["kind"] as? String == "library", message["collection"] as? String == "drafts" { return try await draftLibrary(message) }
             guard message["kind"] as? String == "review", message["against"] as? String == "base",
                   let workspace, pageMatchesWorkspace, let document = workspace.active else { throw BridgeFailure.invalid }

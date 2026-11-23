@@ -388,7 +388,10 @@ public enum ReaderBridgeCodec {
                 }
             }
         } else if request.type == .query, request.fields["kind"] as? String == "reviewComments" {
-            try validateArrayGroup(fields, key: "comments", limit: renderedLimit)
+            if fields["pending"] != nil {
+                try BridgeField.keys(fields, allowed: ["v", "type", "ok", "id", "pending"])
+                guard try BridgeField.bool(fields, "pending") else { throw ReaderBridgeError.invalid("pending") }
+            } else { try validateArrayGroup(fields, key: "comments", limit: renderedLimit) }
         } else if request.type == .query, ["review", "markdown"].contains(request.fields["kind"] as? String) {
             guard let html = fields["html"] as? String else { throw ReaderBridgeError.invalid("html") }
             guard html.utf8.count <= renderedLimit else { throw ReaderBridgeError.oversized }

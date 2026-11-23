@@ -119,10 +119,11 @@ declare global {
 		commentState: ReaderCommentState;
 		version: number;
 	}
+	type ReaderReviewReadState = "pending" | "ready" | "failed";
 	interface ReaderReviewCollection {
 		readonly rows: ReadonlyMap<string, ReaderReviewComment>;
 		readonly privateOnly: boolean;
-		readonly readFailed: boolean;
+		readonly readState: ReaderReviewReadState;
 		refresh(): Promise<void>;
 		set(row: ReaderReviewComment, state: ReaderCommentState): Promise<void>;
 		dispose(): void;

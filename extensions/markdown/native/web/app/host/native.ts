@@ -628,6 +628,11 @@
 		}
 	}
 	function reviewCommentsReply(m: Fields) {
+		if (m.pending !== undefined) {
+			keys(m, ["v", "type", "id", "ok", "pending"]);
+			ensure(m.pending === true);
+			return;
+		}
 		ensure(
 			typeof m.available === "boolean" &&
 				integer(m.revision) &&
