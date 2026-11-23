@@ -23,13 +23,13 @@ const frameFields = {
 const participation = opt(
 	str({
 		description:
-			"Create and join only. At most 256 characters. Empty text clears the declaration; omission preserves it. Write longer content to a file and post its path.",
+			"Create and join only. Use a short declaration (256 UTF-16 units); put details in a separate post. Empty text clears the declaration; omission preserves it.",
 	}),
 );
 const message = str({
 	minLength: 1,
 	description:
-		"Post and close require message; leave accepts it optionally. At most 8,000 characters. Write longer content to a file and post its path. The handler enforces this cap with that remedy.",
+		"Post and close require message; leave accepts it optionally. At most 8,000 UTF-16 units. Write longer content to a file and post its path. The handler enforces this cap with that remedy.",
 });
 const threadId = textSchema(128);
 const limit = opt(int({ minimum: 1, maximum: 20 }));
@@ -341,10 +341,17 @@ export class CollaborationReadError extends Error {
 export function collaborationText(input: Record<string, unknown>, key: string, max: number, optional = false): string {
 	const value = input[key];
 	if (value === undefined && optional) return "";
-	if (typeof value === "string" && value.length > max)
+	if (typeof value === "string" && value.length > max) {
+		if (key === "participation")
+			throw new Error(
+				`participation exceeds ${max} UTF-16 units; use a short declaration, then post the details with action: post`,
+			);
+		if (key === "message")
+			throw new Error(`message exceeds ${max} UTF-16 units; write the full content to a file and post its path`);
 		throw new Error(
-			`${key} exceeds the maximum length of ${max} characters${key === "title" ? "; shorten title to at most 160 characters and repeat the call" : key === "participation" || key === "message" ? "; write the full content to a file and post its path" : ""}`,
+			`${key} exceeds the maximum length of ${max} characters${key === "title" ? "; shorten title to at most 160 characters and repeat the call" : ""}`,
 		);
+	}
 	if (typeof value !== "string" || value.trim() === "")
 		throw new Error(
 			`${key} is required and must be nonblank text${key === "title" ? "; supply title as nonblank text in the create or revise call" : ""}`,

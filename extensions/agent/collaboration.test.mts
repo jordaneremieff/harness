@@ -469,7 +469,12 @@ it("delivers actionable length errors after Pi argument validation without relax
 		["participation", 256, "join"],
 		["message", 8000, "post"],
 	] as const) {
-		const args = { action, threadId: created.threadId, [key]: "x".repeat(limit + 1) };
+		const full = "🧭".repeat(limit / 2);
+		const args = { action, threadId: created.threadId, [key]: `${full}x` };
+		const remedy =
+			key === "participation"
+				? "use a short declaration, then post the details with action: post"
+				: "write the full content to a file and post its path";
 		const checked = validateToolArguments(
 			{ name: "agent_collaborate", description: "Thread", parameters: CollaborationParams },
 			{ type: "toolCall", id: "length-check", name: "agent_collaborate", arguments: args },
@@ -478,7 +483,7 @@ it("delivers actionable length errors after Pi argument validation without relax
 		await assert.rejects(
 			mutateCollaboration(f.host.harness, f.storageId, mutation(action, `oversized-${key}`, checked), context),
 			{
-				message: `${key} exceeds the maximum length of ${limit} characters; write the full content to a file and post its path`,
+				message: `${key} exceeds ${limit} UTF-16 units; ${remedy}`,
 			},
 		);
 		for (const call of [
@@ -492,11 +497,11 @@ it("delivers actionable length errors after Pi argument validation without relax
 			() => readCollaboration(f.host.harness, { threadId: created.threadId, [key]: "x".repeat(limit + 1) }, context),
 			() => listCollaboration(f.host.harness, { [key]: "x".repeat(limit + 1) }, context),
 		])
-			await assert.rejects(call(), /write the full content to a file and post its path/u);
+			await assert.rejects(call(), { message: `${key} exceeds ${limit} UTF-16 units; ${remedy}` });
 		await mutateCollaboration(
 			f.host.harness,
 			f.storageId,
-			mutation(action, `boundary-${key}`, { ...args, [key]: "x".repeat(limit) }),
+			mutation(action, `boundary-${key}`, { ...args, [key]: full }),
 			context,
 		);
 	}

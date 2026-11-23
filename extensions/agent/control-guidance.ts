@@ -225,7 +225,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		guidelines: [
 			"If a shared thread would help the task, look for relevant threads before asking the primary to relay identities. Read the governing frame before joining. A thread does not require fixed roles or an agreement vote.",
 			"Use the shared frame for governing purpose and each member's contribution for its current hold, release or continuing condition. Rejoin to replace your contribution and cite the source exchange. Contributions are declarations, not consensus or permission.",
-			"Keep participation within 256 characters and message within 8,000 characters. Write longer content to a file and post its path.",
+			"Keep participation to a short declaration (256 UTF-16 units); use a separate post for details. If a message exceeds 8,000 UTF-16 units, write it to a file and post its path.",
 			"A thread preserves purpose, carried authority and source, restrictions, acceptance, and integrator. Agent labels do not prove operator authority. Keep the original decision and its scope distinct from interpretations and proposals.",
 			"Joining opts into bounded passive notices for new thread events at existing conversation boundaries. These notices start no model turn. Posts retain shared evidence without waking a model. Name notify recipients only when their attention matters. A notify starts a run in an idle recipient, so brief a new agent before you name it in notify. Notices do not request automatic replies or check-ins. Inspect the thread or peer evidence rather than poll while useful work continues.",
 		],

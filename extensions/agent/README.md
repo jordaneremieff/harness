@@ -115,7 +115,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. A query puts an exact retained handle first, with or without `@`, then observes other catalogue candidates; `coverage.next` holds the exact continuation call. Reads start no host. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected read returns compact state with an exact full-detail call; `detail: true` with one explicit `sessionId` returns the full selected status and cannot be combined with `view`, `storageId`, `cursor`, or `limit`. The full status of a selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan; `storageId`, `cursor`, and `limit` apply to that view only, and a refusal of one of them elsewhere names the view and tells the caller to omit the field. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. The result view returns the answer in pages with separate continuations for answer text and for recipient references; see [result pages](#result-pages). |
-| `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
+| `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `participation` within 256 UTF-16 units and post details separately. If a `message` exceeds 8,000 UTF-16 units, write it to a file and post its path. Handler length errors include the remedy because Pi's pre-handler schema errors omit field descriptions. |
 
 ### Briefs
 
@@ -2612,7 +2612,7 @@ without a live host.
 `acceptance`; `integrator` defaults to the caller. An ordinary primary also
 selects an existing participant with `sessionId`. Native agents default to
 their own storage. `create` and `join` accept `participation`, the member's
-self-chosen declaration of at most 256 characters; another join revises it.
+self-chosen declaration of at most 256 UTF-16 units; another join revises it.
 Omission keeps the stored declaration and an empty string clears it. A join
 that changes nothing appends no event and creates no notice. `join` accepts no
 `message`; discussion belongs in a post. `post` accepts `message`, optional
