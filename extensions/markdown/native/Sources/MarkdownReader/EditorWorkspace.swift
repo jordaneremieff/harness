@@ -536,7 +536,7 @@ final class EditorWorkspace {
         return .shown
     }
 
-    @discardableResult func editReading(copy: Bool, pagePromotion: Bool = false) async -> Bool {
+    @discardableResult func editReading(copy: Bool, pagePromotion: Bool = false, presentation: String? = nil) async -> Bool {
         guard pagePromotion ? allowAction("opening an edit") : allowNavigation("opening an edit"), let model = reading, model.phase == .ready, let snapshot = model.snapshot else { return false }
         let navigation = navigationGeneration
         do {
@@ -556,6 +556,7 @@ final class EditorWorkspace {
             } else { return false }
             guard navigation == navigationGeneration, reading === model, model.phase == .ready,
                   model.snapshot?.digest == snapshot.digest, model.snapshot?.revision == snapshot.revision,
+                  presentation == nil || (model.page.presentation == presentation && model.displayedPresentation == presentation),
                   allowAction("opening an edit") else { return false }
             if case .stored(let root, _, _) = model.reference { selectedStore = root }
             add(record, liveIdentity: liveDocumentID, pagePromotion: pagePromotion)
@@ -607,6 +608,7 @@ final class EditorWorkspace {
         guard !document.session.updatingExternal else { notice = "Wait for the external change before closing this document."; return }
         guard await document.session.persist() else { notice = "The draft was not retained. Keep this document open and retry recovery."; return }
         guard isDisplayed(document), !document.session.updatingExternal else { return }
+        if webHostModel != nil { webReady = false }
         documents.removeAll { $0.id == document.id }; selected = documents.last?.id
         liveDocumentID = active?.id ?? UUID(); collaboration?.bind(document: liveDocumentID, closing: document.id)
         active?.setVisible(true)

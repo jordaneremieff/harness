@@ -110,6 +110,7 @@ extension EditorWorkspace {
         let client = CollaborationClient(configuration: configuration, workspace: id, document: liveDocumentID,
             documentKey: { [weak self] in self?.logicalDocumentKey }, view: { [weak self] in self?.livePaneView ?? .loading }) { [weak self] command in
             guard let self else { return LiveResult(status: "closed", message: "The workspace closed.") }
+            guard self.webHostModel != nil else { return LiveResult(status: "busy", message: "The reader page has not opened yet.") }
             return await self.handleLive(command)
         }
         collaboration = client
@@ -145,7 +146,7 @@ extension EditorWorkspace {
         var copied = false
         if let reading {
             copied = reading.snapshot?.document?.kind != .published
-            guard await editReading(copy: copied, pagePromotion: true) else { throw WebMirrorError.copyFailed }
+            guard await editReading(copy: copied, pagePromotion: true, presentation: presentation) else { throw WebMirrorError.copyFailed }
         }
         guard identity == liveDocumentID, !closing, matchesPresentation(), let document = active else { throw WebMirrorError.closed }
         guard document.text.generation == change.baseGeneration, document.text.source.utf8.elementsEqual(source.utf8) else { throw WebMirrorError.stale }
@@ -311,10 +312,12 @@ extension EditorWorkspace {
             liveClaims[claim] = nil; webRelease?(claim)
             return LiveResult(status: "released", claimId: claim)
         }
-        if webHostModel != nil, livePaneView.kind == "loading" { return LiveResult(status: "busy", message: "The document page has not confirmed this buffer.") }
-        if command.op == "read" { return await readLive(command) }
+        let confirmed = webHostModel == nil || livePaneView.kind != "loading"
+        let notReady = LiveResult(status: "busy", message: "The document page has not confirmed this buffer.")
+        if command.op == "read" { return confirmed ? await readLive(command) : notReady }
         guard let (source, generation, digest) = visibleText else { return LiveResult(status: "busy", message: "The document has not opened yet.") }
         if command.op == "claim" {
+            guard confirmed else { return notReady }
             guard let ranges = command.ranges, !ranges.isEmpty, ranges.count <= 16,
                   command.label.map({ $0.count <= 80 }) ?? true,
                   ranges.allSatisfy({ $0.start >= 0 && $0.end >= $0.start && $0.end <= source.utf16.count }) else {
@@ -354,6 +357,7 @@ extension EditorWorkspace {
             releaseClaims(document: liveDocumentID)
             return LiveResult(status: "applied", generation: receipt.generation, digest: receipt.digest, operationId: operation, retained: true)
         }
+        guard confirmed else { return notReady }
         guard (active?.session.record.liveReceipts?.count ?? 0) < 1024 else { return LiveResult(status: "error", message: "The retained live-operation limit was reached. The draft remains intact.") }
         guard generation == baseGeneration, digest == baseDigest else { return LiveResult(status: "stale", message: "The document changed. Read the current buffer and revise the edit.") }
         guard webReady, let webAgentApply else { return LiveResult(status: "busy", message: "The document has not opened yet.") }
