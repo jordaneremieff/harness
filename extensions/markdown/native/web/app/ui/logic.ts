@@ -308,42 +308,147 @@
 		const start = source.indexOf(text);
 		return start >= 0 && source.indexOf(text, start + 1) < 0 ? start : undefined;
 	}
-	function capturePassage(source: string, range?: ReaderRange): ReaderPassageAnchor | undefined {
+	type Section = ReaderRange & { headings: string[] };
+	function sections(source: string, view: ReaderPassageView): Section[] {
+		if (!view.blocks.length) return [];
+		const rows: Section[] = [{ start: 0, end: source.length, headings: [] }];
+		const path: { level: number; title: string }[] = [];
+		for (const block of view.blocks) {
+			const match = /^heading([1-6])$/.exec(block.type);
+			if (!match) continue;
+			const level = Number(match[1]);
+			while (path.length && path[path.length - 1].level >= level) path.pop();
+			path.push({ level, title: source.slice(block.start, block.end) });
+			rows[rows.length - 1].end = block.start;
+			rows.push({ start: block.start, end: source.length, headings: path.map((entry) => entry.title) });
+		}
+		return rows;
+	}
+	const contains = (outer: ReaderRange, inner: ReaderRange) => outer.start <= inner.start && inner.end <= outer.end;
+	function uniqueSection(rows: Section[], headings: string[]) {
+		const matches = rows.filter(
+			(row) => row.headings.length === headings.length && headings.every((title, i) => row.headings[i] === title),
+		);
+		return matches.length === 1 ? matches[0] : undefined;
+	}
+	// Delimiters and whitespace alone do not distinguish a quote from the same words elsewhere.
+	const hasWording = (before: string, after: string) => /[\p{L}\p{N}\p{S}]/u.test(before + after);
+	function contextsFor(source: string, range: ReaderRange, section: Section) {
+		const within = source.slice(section.start, section.end);
+		const before = source
+			.slice(Math.max(section.start, range.start - 64), range.start)
+			.replace(/^[\uDC00-\uDFFF]/u, "");
+		const after = source.slice(range.end, Math.min(section.end, range.end + 64)).replace(/[\uD800-\uDBFF]$/u, "");
+		const text = source.slice(range.start, range.end);
+		const contexts: ReaderPassageAnchor["contexts"] = [];
+		function remember(left: string, right: string) {
+			if (!hasWording(left, right) || contexts.some((c) => c.before === left && c.after === right)) return;
+			if (uniqueStart(within, left + text + right) !== undefined) contexts.push({ before: left, after: right });
+		}
+		remember(before.slice(before.lastIndexOf("\n") + 1), after.split("\n", 1)[0]);
+		remember(before, after);
+		return contexts;
+	}
+	type Rendering = NonNullable<ReaderPassageAnchor["rendered"]>;
+	function mappedRange(block: ReaderMappedBlock, boundaries: (number | null)[], left: number, right: number) {
+		const start = boundaries[left],
+			end = boundaries[right];
+		if (start == null || end == null || start >= end || start < block.start || end > block.end) return undefined;
+		// A gap or collapsed boundary cannot prove an exact source interval.
+		for (let i = left + 1; i <= right; i++) {
+			const current = boundaries[i],
+				previous = boundaries[i - 1];
+			if (current == null || previous == null || current <= previous) return undefined;
+		}
+		return { start, end };
+	}
+	function renderedRange(view: ReaderPassageView, section: Section, rendered: Rendering) {
+		const paragraph = rendered.before + rendered.text + rendered.after;
+		let result: ReaderRange | undefined;
+		const paragraphs = view.blocks.filter((b) => b.type === "paragraph" && contains(section, b));
+		for (const block of paragraphs) {
+			const map = view.map?.(block);
+			if (!map) return undefined;
+			if (map.text !== paragraph) continue;
+			if (result) return null;
+			const left = rendered.before.length;
+			const range = mappedRange(block, map.boundaries, left, left + rendered.text.length);
+			if (!range) return null;
+			result = range;
+		}
+		return result;
+	}
+	function captureRendered(range: ReaderRange, quote: string, view: ReaderPassageView, section: Section) {
+		const block = view.blocks.find((b) => b.type === "paragraph" && contains(b, range));
+		const map = block && view.map?.(block);
+		if (!map) return undefined;
+		const at = uniqueStart(map.text, quote);
+		if (at === undefined || at > 256 || map.text.length - (at + quote.length) > 256) return undefined;
+		const rendered = { before: map.text.slice(0, at), text: quote, after: map.text.slice(at + quote.length) };
+		const original = renderedRange(view, section, rendered);
+		return original?.start === range.start && original.end === range.end ? rendered : undefined;
+	}
+	function capturePassage(
+		source: string,
+		range?: ReaderRange,
+		view?: ReaderPassageView,
+		quote?: string,
+	): ReaderPassageAnchor | undefined {
 		if (!range) return undefined;
 		const { start, end } = range;
 		if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > source.length || start >= end)
 			return undefined;
 		const text = source.slice(start, end);
-		const contexts: ReaderPassageAnchor["contexts"] = [];
-		function remember(before: string, after: string) {
-			if (contexts.some((c) => c.before === before && c.after === after)) return;
-			if (uniqueStart(source, before + text + after) !== undefined) contexts.push({ before, after });
-		}
-		remember("", "");
-		// Keep the line's own wording when adjacent lines change. Wider context also distinguishes
-		// identical lines under different headings without retaining a whole document per mark.
-		const before = source.slice(Math.max(0, start - 64), start);
-		const after = source.slice(end, end + 64);
-		const neighbourhood = (left: string, right: string) => {
-			if (left) remember(left, "");
-			if (right) remember("", right);
-			if (left && right) remember(left, right);
-		};
-		neighbourhood(before.slice(before.lastIndexOf("\n") + 1), after.split("\n", 1)[0]);
-		neighbourhood(before, after);
-		return { text, contexts };
+		const rows = view ? sections(source, view) : [];
+		const section = rows.find((row) => contains(row, range));
+		if (!section || !uniqueSection(rows, section.headings) || section.headings.some((h) => h.length > 256))
+			return { text, contexts: [] };
+		const contexts = contextsFor(source, range, section);
+		const rendered = view?.map && quote ? captureRendered(range, quote, view, section) : undefined;
+		return { text, headings: section.headings, contexts, ...(rendered ? { rendered } : {}) };
 	}
-	function reanchorPassage(source: string, anchor?: ReaderPassageAnchor): ReaderRange | undefined {
-		if (!anchor) return undefined;
-		let start: number | undefined;
+	function sourceRange(source: string, anchor: ReaderPassageAnchor, section: Section) {
+		const content = source.slice(section.start, section.end);
+		let result: ReaderRange | undefined;
 		for (const { before, after } of anchor.contexts) {
-			const at = uniqueStart(source, before + anchor.text + after);
+			if (!hasWording(before, after)) continue;
+			const at = uniqueStart(content, before + anchor.text + after);
 			if (at === undefined) continue;
-			const candidate = at + before.length;
-			if (start !== undefined && start !== candidate) return undefined;
-			start = candidate;
+			const start = section.start + at + before.length;
+			if (result && result.start !== start) return null;
+			result = { start, end: start + anchor.text.length };
 		}
-		return start === undefined ? undefined : { start, end: start + anchor.text.length };
+		return result;
+	}
+	function corroboratedRender(source: string, anchor: ReaderPassageAnchor, view: ReaderPassageView, section: Section) {
+		if (!view.map || !anchor.rendered) return undefined;
+		const range = renderedRange(view, section, anchor.rendered);
+		if (!range || hasWording(anchor.rendered.before, anchor.rendered.after)) return range;
+		// A selection of the entire visible paragraph still needs independent surroundings.
+		const matches = anchor.contexts.some(
+			({ before, after }) =>
+				hasWording(before, after) && source.endsWith(before, range.start) && source.startsWith(after, range.end),
+		);
+		return matches ? range : undefined;
+	}
+	function agreedRange(raw: ReaderRange | null | undefined, rendered: ReaderRange | null | undefined) {
+		if (raw === null || rendered === null) return undefined;
+		if (raw && rendered && (raw.start !== rendered.start || raw.end !== rendered.end)) return undefined;
+		return raw ?? rendered;
+	}
+	function reanchorPassage(
+		source: string,
+		anchor?: ReaderPassageAnchor,
+		view?: ReaderPassageView,
+		within?: ReaderRange,
+	): ReaderRange | undefined {
+		if (!view || !anchor?.headings || !anchor.text) return undefined;
+		const section = uniqueSection(sections(source, view), anchor.headings);
+		if (!section) return undefined;
+		const raw = sourceRange(source, anchor, section);
+		const rendered = corroboratedRender(source, anchor, view, section);
+		const result = agreedRange(raw, rendered);
+		return result && (!within || contains(within, result)) ? result : undefined;
 	}
 	api.uiLogic = {
 		stripPlacement,

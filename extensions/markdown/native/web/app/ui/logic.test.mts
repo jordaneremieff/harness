@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
+import { scripts } from "../../test/load.mts";
 import { runInNewContext } from "node:vm";
 
 const reader = {} as ReaderCoreAPI;
@@ -10,8 +11,13 @@ const logic = reader.uiLogic;
 const key = (key: string, writing = false, extra: Partial<ReaderKey> = {}, input = false) =>
 	logic.keyCommand({ key, metaKey: true, ...extra }, { writing, input });
 
-function passage(source: string, text: string, start: number) {
-	const anchor = logic.capturePassage(source, { start, end: start + text.length });
+function rootView(source: string): ReaderPassageView {
+	return { blocks: [{ key: "p", start: 0, end: source.length, type: "paragraph" }] };
+}
+const resolve = (source: string, anchor?: ReaderPassageAnchor, view = rootView(source), within?: ReaderRange) =>
+	logic.reanchorPassage(source, anchor, view, within);
+function passage(source: string, text: string, start: number, view = rootView(source)) {
+	const anchor = logic.capturePassage(source, { start, end: start + text.length }, view);
 	assert.equal(anchor?.text, text);
 	return anchor;
 }
@@ -21,7 +27,7 @@ test("a repeated selection follows its local source, not a different occurrence 
 	const anchor = passage(source, "OK", source.indexOf("B: ") + 3);
 	const revised = `X: OK\n${source}`;
 	const start = revised.indexOf("B: ") + 3;
-	assert.deepEqual({ ...logic.reanchorPassage(revised, anchor) }, { start, end: start + 2 });
+	assert.deepEqual({ ...resolve(revised, anchor) }, { start, end: start + 2 });
 });
 
 test("a selected line retains its identity when both adjacent paragraphs change", () => {
@@ -29,30 +35,30 @@ test("a selected line retains its identity when both adjacent paragraphs change"
 	const revised = "🎈 Prep: wait\nStage two: wait\nFinish: wait";
 	const anchor = passage(source, "wait", source.indexOf("two: ") + 5);
 	const start = revised.indexOf("two: ") + 5;
-	assert.deepEqual({ ...logic.reanchorPassage(revised, anchor) }, { start, end: start + 4 });
+	assert.deepEqual({ ...resolve(revised, anchor) }, { start, end: start + 4 });
 });
 
 test("deleting one repeat never relocates its mark to the sole surviving quote", () => {
 	const source = "left\nstatus: OK\nright\nstatus: OK";
 	const anchor = passage(source, "OK", source.lastIndexOf("OK"));
-	assert.equal(logic.reanchorPassage(source.slice(0, source.indexOf("right")), anchor), undefined);
+	assert.equal(resolve(source.slice(0, source.indexOf("right")), anchor), undefined);
 });
 
 test("indistinguishable copies, overlapping occurrences and conflicting neighbours leave no mark", () => {
 	const source = "left word right";
 	const anchor = passage(source, "word", 5);
-	assert.equal(logic.reanchorPassage(`${source}\n${source}`, anchor), undefined);
-	assert.equal(logic.reanchorPassage("left word west\neast word right", anchor), undefined);
-	assert.equal(logic.reanchorPassage("aaa", passage("aa", "aa", 0)), undefined);
+	assert.equal(resolve(`${source}\n${source}`, anchor), undefined);
+	assert.equal(resolve("left word west\neast word right", anchor), undefined);
+	assert.equal(resolve("aaa", passage("aa", "aa", 0)), undefined);
 });
 
 test("a rendered quote need not equal the exact Markdown in the UTF-16 range", () => {
 	const text = "**bold** and `🎈`";
 	const anchor = passage(`Start: ${text}`, text, 7);
-	const prefix = "😀 new start: ";
-	const moved = logic.reanchorPassage(prefix + text, anchor);
+	const prefix = "😀 new Start: ";
+	const moved = resolve(prefix + text, anchor);
 	assert.deepEqual({ ...moved }, { start: prefix.length, end: prefix.length + text.length });
-	assert.equal(logic.reanchorPassage(`${prefix}bold and 🎈`, anchor), undefined);
+	assert.equal(resolve(`${prefix}bold and 🎈`, anchor), undefined);
 });
 
 test("only a nonempty in-bounds source range creates a passage anchor", () => {
@@ -64,7 +70,129 @@ test("only a nonempty in-bounds source range creates a passage anchor", () => {
 		{ start: 1, end: 1 },
 	])
 		assert.equal(logic.capturePassage("test", range), undefined);
-	assert.equal(logic.reanchorPassage("test", undefined), undefined);
+	assert.equal(resolve("test", undefined), undefined);
+});
+
+function sectionView(source: string, headings: string[]): ReaderPassageView {
+	let after = 0;
+	const blocks = headings.map((title, i) => {
+		const start = source.indexOf(title, after);
+		assert.ok(start >= 0);
+		after = start + title.length;
+		return { start, end: after, type: "heading1", key: String(i) };
+	});
+	return { blocks };
+}
+
+test("a changed revision never transfers a unique quote from Alpha to Beta", () => {
+	const source = "# Alpha\nState: ready now.\n# Beta\nState: done now.";
+	const view = sectionView(source, ["# Alpha", "# Beta"]);
+	const anchor = passage(source, "ready", source.indexOf("ready"), view);
+	const revised = "# Alpha\nState: done now.\n# Beta\nState: ready now.";
+	assert.equal(resolve(revised, anchor, sectionView(revised, ["# Alpha", "# Beta"])), undefined);
+	const moved = `🎈\n${source}`;
+	const start = moved.indexOf("ready");
+	assert.deepEqual({ ...resolve(moved, anchor, sectionView(moved, ["# Alpha", "# Beta"])) }, { start, end: start + 5 });
+	assert.equal(resolve("ready", passage("ready", "ready", 0)), undefined);
+	assert.equal(resolve("A different paragraph is ready.", passage("ready.", "ready", 0)), undefined);
+});
+
+test("repeated native heading paths cannot identify the surviving occurrence across revisions", () => {
+	const one = "# Status\nProceed when ready.";
+	const both = `${one}\n# Status\nProceed when done.`;
+	const anchor = passage(both, "ready", both.indexOf("ready"), sectionView(both, ["# Status", "# Status"]));
+	assert.equal(resolve(one, anchor, sectionView(one, ["# Status"])), undefined);
+	const previouslyUnique = passage(one, "ready", one.indexOf("ready"), sectionView(one, ["# Status"]));
+	assert.equal(resolve(both, previouslyUnique, sectionView(both, ["# Status", "# Status"])), undefined);
+	assert.equal(logic.reanchorPassage(one, previouslyUnique), undefined);
+});
+
+test("identity and disjoint edit maps retain a chosen range without searching repeated headings", () => {
+	const {
+		reader: { exact },
+	} = scripts(["app/core/exact.ts"]);
+	const source = "# Status\nReady.\n# Status\nReady.";
+	const start = source.lastIndexOf("Ready"),
+		end = start + 5;
+	const anchor = passage(source, "Ready", start, sectionView(source, ["# Status", "# Status"]));
+	assert.equal(anchor?.headings, undefined);
+	const selected = { start, end, expected: "Ready", text: "Ready" };
+	const [same] = exact.mapEdits([selected], []);
+	assert.deepEqual({ start: same.start, end: same.end }, { start, end });
+	const edits = [{ start: 9, end: 14, expected: "Ready", text: "Finished" }];
+	const revised = exact.applyEdits(source, edits).source;
+	const [mapped] = exact.mapEdits([selected], edits);
+	assert.equal(mapped.start, revised.lastIndexOf("Ready"));
+	assert.equal(logic.capturePassage(revised, mapped)?.text, anchor?.text);
+});
+
+test("known replacement bounds exclude even a context match elsewhere", () => {
+	const original = "Status: ready now.";
+	const anchor = passage(original, "ready", 8);
+	const source = "Status: done now.\nStatus: ready now.";
+	assert.equal(resolve(source, anchor, rootView(source), { start: 8, end: 12 }), undefined);
+	assert.deepEqual(
+		{ ...resolve(source, anchor, rootView(source), { start: 18, end: source.length }) },
+		{ start: 26, end: 31 },
+	);
+});
+
+test("the native inline maps relocate a visible passage from strong to emphasis", () => {
+	class Element {
+		nodeType = 1;
+		matches() {
+			return false;
+		}
+		childNodes: { nodeType: number; data: string }[];
+		constructor(children: { nodeType: number; data: string }[]) {
+			this.childNodes = children;
+		}
+	}
+	const { reader: mapper } = scripts(["app/core/source-model.ts"], { Element });
+	const makeView = (mark: string) => {
+		const source = `😀 plain ${mark}bold${mark} tail`;
+		const block: ReaderMappedBlock = {
+			key: "p",
+			type: "paragraph",
+			start: 0,
+			end: source.length,
+			map: [
+				[1, 9, 0, 9],
+				[10, 4, 9 + mark.length, 4],
+				[14, 5, 13 + 2 * mark.length, 5],
+			],
+		};
+		const el = new Element(["\n", "😀 plain ", "bold", " tail", "\n"].map((data) => ({ nodeType: 3, data })));
+		const view = {
+			blocks: [block],
+			map: (b: ReaderMappedBlock) => mapper.sourceModel.map(b, source, el as unknown as HTMLElement),
+		};
+		return { source, view };
+	};
+	const old = makeView("**"),
+		next = makeView("_"),
+		quote = "plain bold ta";
+	const range = { start: old.source.indexOf("plain"), end: old.source.lastIndexOf("ta") + 2 };
+	const anchor = logic.capturePassage(old.source, range, old.view, quote);
+	assert.equal(anchor?.rendered?.text, quote);
+	assert.equal(resolve(next.source, anchor, { blocks: next.view.blocks }), undefined);
+	assert.deepEqual(
+		{ ...resolve(next.source, anchor, next.view) },
+		{ start: next.source.indexOf("plain"), end: next.source.lastIndexOf("ta") + 2 },
+	);
+	const duplicate = { ...next.view, blocks: [...next.view.blocks, ...next.view.blocks] };
+	assert.equal(resolve(next.source, anchor, duplicate), undefined);
+	const wrongOrigin = logic.capturePassage(old.source, { start: range.start + 1, end: range.end }, old.view, quote);
+	assert.equal(wrongOrigin?.rendered, undefined);
+	const unmapped = {
+		...next.view,
+		map(b: ReaderMappedBlock) {
+			const map = next.view.map(b);
+			map.boundaries[10] = null;
+			return map;
+		},
+	};
+	assert.equal(resolve(next.source, anchor, unmapped), undefined);
 });
 
 test("the mirrored Mac keys select one command for each context", () => {

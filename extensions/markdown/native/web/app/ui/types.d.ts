@@ -69,7 +69,15 @@ declare global {
 		detail?: string;
 		retryable?: boolean;
 	}
+	interface ReaderPassageView {
+		/** All native blocks for this exact source. An unavailable paragraph map cannot establish uniqueness. */
+		blocks: readonly ReaderMappedBlock[];
+		map?(block: ReaderMappedBlock): ReturnType<ReaderSourceModelAPI["map"]> | undefined;
+	}
 	interface ReaderPassageAnchor {
+		/** Exact native heading source from outermost to innermost; absent without a unique section. */
+		headings?: string[];
+		rendered?: { before: string; text: string; after: string };
 		text: string;
 		/** Each context identified only this occurrence when the passage was selected. */
 		contexts: { before: string; after: string }[];
@@ -161,8 +169,18 @@ declare global {
 		currentHeading(rows: { start: number; top: number }[], threshold: number): number;
 		promptTransition(old: ReaderAskState, next: ReaderAskState): ReaderAskState;
 		promptLabel(state: ReaderAskState): string;
-		capturePassage(source: string, range?: ReaderRange): ReaderPassageAnchor | undefined;
-		reanchorPassage(source: string, anchor?: ReaderPassageAnchor): ReaderRange | undefined;
+		capturePassage(
+			source: string,
+			range?: ReaderRange,
+			view?: ReaderPassageView,
+			quote?: string,
+		): ReaderPassageAnchor | undefined;
+		reanchorPassage(
+			source: string,
+			anchor?: ReaderPassageAnchor,
+			view?: ReaderPassageView,
+			within?: ReaderRange,
+		): ReaderRange | undefined;
 		diffWords(oldText: string, newText: string): ReaderDiffPart[] | null;
 		changeContext(
 			source: string,
