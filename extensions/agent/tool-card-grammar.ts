@@ -221,6 +221,17 @@ function resultDisclosure(
 	};
 }
 
+function resultOutcome(
+	presentation: ToolResultPresentation,
+	fallback: string | undefined,
+	error: boolean,
+	partial: boolean,
+): string {
+	if (error) return presentation.outcome ?? fallback ?? "Tool error";
+	if (partial) return presentation.partial ?? fallback ?? "Partial result";
+	return presentation.outcome ?? fallback ?? "No result text";
+}
+
 export function toolResultCard(
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
@@ -233,15 +244,7 @@ export function toolResultCard(
 	const fallback = safe(content).split("\n").map(oneLine).find(Boolean);
 	const error = context.isError === true;
 	const partial = options.isPartial && !error;
-	const outcome = bounded(
-		oneLine(
-			error
-				? (presentation.outcome ?? fallback ?? "Tool error")
-				: partial
-					? (presentation.partial ?? fallback ?? "Partial result")
-					: (presentation.outcome ?? fallback ?? "No result text"),
-		),
-	);
+	const outcome = bounded(oneLine(resultOutcome(presentation, fallback, error, partial)));
 	const source = bounded(presentation.source ?? content);
 	const [first, ...following] = source.text.trimStart().split("\n");
 	const hasOutcome = oneLine(first ?? "") === outcome.text;
