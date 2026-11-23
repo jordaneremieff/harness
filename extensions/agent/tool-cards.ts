@@ -603,7 +603,8 @@ function intentPresentation(
 		record(threads.coverage).complete === false ||
 		record(awareness.self).omitted === true;
 	return {
-		outcome: `Related efforts read · ${identity}${partial ? "; coverage incomplete" : ""}`,
+		outcome: `Related efforts read · ${identity}`,
+		limit: partial ? "Coverage incomplete" : undefined,
 		body: factLines([
 			effects,
 			hints,
@@ -2007,13 +2008,15 @@ function listPresentation(details: Record<string, unknown>): ToolResultPresentat
 		profiles = record(coverage.profileHints),
 		catalog = record(coverage.catalog);
 	const next = nextCall("agent_list", coverage.next);
-	const hasNext = Boolean(next || text(details.nextCursor));
+	const scope = !next && coverage.complete === true ? "; end of scan" : pageScope(Boolean(next), coverage);
 	const unavailable = array(coverage.unavailable).length;
+	const incomplete = unavailable > 0 || profiles.complete === false;
 	const visited = count(coverage.storagesVisited),
 		settled = count(catalog.settled),
 		pending = count(catalog.pending);
 	return {
-		outcome: `${quantity(details.rows.length, "conversation")} on this page${hasNext ? "; next page available" : coverage.complete === true ? "; end of scan" : coverage.complete === false ? "; coverage incomplete" : ""}`,
+		outcome: `${quantity(details.rows.length, "conversation")} on this page${scope}`,
+		limit: incomplete ? "Discovery evidence incomplete" : undefined,
 		body: factLines([
 			unavailable ? quantity(unavailable, "storage unavailable", "storages unavailable") : "",
 			profiles.complete === false ? "Profile search incomplete" : "",

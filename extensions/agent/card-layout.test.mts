@@ -406,6 +406,111 @@ it("registered inspect renders final report pages, state notes and absent answer
 	assert.doesNotMatch(text(unavailable), /No assistant answer/u);
 });
 
+function traceResultWarnings(tool: ToolDefinition, warnings: string[]): ToolDefinition {
+	const renderResult = tool.renderResult;
+	assert.ok(renderResult);
+	return {
+		...tool,
+		renderResult(result, options, cardTheme, context) {
+			const tracked: Theme = Object.create(cardTheme);
+			tracked.fg = (color, value) => {
+				if (color === "warning") warnings.push(value);
+				return cardTheme.fg(color, value);
+			};
+			return renderResult(result, options, tracked, context);
+		},
+	};
+}
+
+it("registered intent marks incomplete observation coverage as a warning at 60 columns", async () => {
+	const tool = (await registeredTools()).get("agent_intent");
+	assert.ok(tool);
+	for (const gap of ["presence", "threads", "self", undefined]) {
+		const warnings: string[] = [];
+		const component = nativeTool(
+			"agent_intent",
+			{ action: "read" },
+			{
+				awareness: {
+					self: { id: identity, ...(gap === "self" ? { omitted: true } : {}) },
+					presence: { efforts: [], coverage: { complete: gap !== "presence" } },
+					threads: { items: [], coverage: { complete: gap !== "threads" } },
+				},
+			},
+			[],
+			traceResultWarnings(tool, warnings),
+		);
+		const collapsed = text(component, 60);
+		assert.match(collapsed, /Related efforts read/u);
+		if (gap) assert.match(collapsed, /^\s*\[Coverage incomplete\]\s*$/mu);
+		else assert.doesNotMatch(collapsed, /Coverage incomplete/u);
+		assert.deepEqual(warnings, gap ? ["[Coverage incomplete]"] : []);
+	}
+});
+
+it("registered list separates evidence warnings from exact pagination at 60 columns", async () => {
+	const tool = (await registeredTools()).get("agent_list");
+	assert.ok(tool);
+	const args = { query: "review" };
+	const next = { ...args, cursor: "YWJj" };
+	const call = `agent_list(${JSON.stringify(next)})`;
+	for (const [unavailable, profileGap] of [
+		[false, false],
+		[true, false],
+		[false, true],
+		[true, true],
+	]) {
+		const warnings: string[] = [];
+		const component = nativeTool(
+			"agent_list",
+			args,
+			{
+				rows: [],
+				nextCursor: next.cursor,
+				coverage: {
+					complete: false,
+					storagesVisited: 32,
+					unavailable: unavailable ? [{ storageId: identity, reason: "Source unreadable" }] : [],
+					profileHints: { complete: !profileGap, unknownStorages: profileGap ? 1 : 0, omitted: 0 },
+					next: { tool: "agent_list", ...next },
+				},
+			},
+			[],
+			traceResultWarnings(tool, warnings),
+		);
+		const collapsed = text(component, 60);
+		assert.match(collapsed, /0 conversations on this page; next page available/u);
+		assert.doesNotMatch(collapsed, /YWJj/u);
+		const incomplete = unavailable || profileGap;
+		if (incomplete) assert.match(collapsed, /^\s*\[Discovery evidence incomplete\]\s*$/mu);
+		else assert.doesNotMatch(collapsed, /Discovery evidence incomplete/u);
+		assert.deepEqual(warnings, incomplete ? ["[Discovery evidence incomplete]"] : []);
+		component.setExpanded(true);
+		assert.ok(text(component, 60).includes(`Next page: ${call}`));
+	}
+});
+
+it("registered list does not offer a page for a cursor without a continuation call", async () => {
+	const tool = (await registeredTools()).get("agent_list");
+	assert.ok(tool);
+	const component = nativeTool(
+		"agent_list",
+		{ query: "review" },
+		{
+			rows: [],
+			nextCursor: "YWJj",
+			coverage: { complete: false, unavailable: [{ storageId: identity, reason: "Source unreadable" }] },
+		},
+		[],
+		tool,
+	);
+	assert.match(text(component, 60), /0 conversations on this page; coverage incomplete/u);
+	assert.match(text(component, 60), /\[Discovery evidence incomplete\]/u);
+	assert.doesNotMatch(text(component, 60), /next page available|YWJj/iu);
+	component.setExpanded(true);
+	assert.doesNotMatch(text(component, 60), /Next page:|agent_list\(/u);
+});
+
 it("registered list preserves an empty page and discloses its exact filtered continuation", async (t) => {
 	noticeKeys(t);
 	const tool = (await registeredTools()).get("agent_list");
