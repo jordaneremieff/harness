@@ -148,10 +148,10 @@ describe("history_search cards", () => {
 		const outcome = (value: string, isError = false) =>
 			screen(renderSearchResult(emptyResult(value), collapsed, theme, { isError }));
 		assert.equal(outcome('{"status":"ancestry_exhausted"}').trim(), "Reached the end of the selected ancestry.");
-		assert.match(
-			outcome('{"status":"missing_parent","next":null,"gap":{"entryId":"e","action":"Parent is absent."}}'),
-			/parent entry missing\.[\s\S]*e · Parent is absent\./iu,
-		);
+		const gap = '{"status":"missing_parent","next":null,"gap":{"entryId":"e","action":"Use a known ID."}}';
+		assert.match(outcome(gap), /parent entry missing\.\ne\n/iu);
+		assert.doesNotMatch(outcome(gap), /Use a known ID/u);
+		assert.match(screen(renderSearchResult(emptyResult(gap), expanded, theme, { isError: false })), /Use a known ID/u);
 		assert.match(outcome('{"status":"cycle","next":null}'), /Parent cycle/u);
 		assert.doesNotMatch(outcome('{"status":"cycle","next":null}'), /continuation|to expand/u);
 		assert.match(
@@ -244,7 +244,7 @@ describe("history_read cards", () => {
 		);
 	});
 
-	it("reports unknown entries and absent fields with their action", () => {
+	it("reports unknown entries and absent fields and keeps retry guidance in expansion", () => {
 		const sm = SessionManager.inMemory();
 		const id = sessionUser(sm, "body");
 		const unknown = readHistory(sm, { entryId: "missing", pointer: "/message/content" });
@@ -253,7 +253,11 @@ describe("history_read cards", () => {
 			renderReadResult(toolResult(unknown), { expanded: false, isPartial: false }, theme, { isError: false }),
 		);
 		assert.match(unknownShown, /Entry not found/);
-		assert.match(unknownShown, /Use an entry ID/);
+		assert.doesNotMatch(unknownShown, /Use an entry ID/);
+		assert.match(
+			screen(renderReadResult(toolResult(unknown), { expanded: true, isPartial: false }, theme, { isError: false })),
+			/Use an entry ID/u,
+		);
 		const absent = readHistory(sm, { entryId: id, pointer: "/message/noSuchField" });
 		assert.equal(absent.status, "field_absent");
 		assert.match(

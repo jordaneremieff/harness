@@ -427,7 +427,6 @@ function readView(value: RecordValue, args: unknown): ResultView {
 			...entries.map(({ body }) => body),
 			scalar === undefined ? "" : json(scalar),
 			typeof reason === "string" ? reason : "",
-			status === "unknown_entry" || status === "field_absent" ? guide : "",
 		]
 			.filter(Boolean)
 			.join("\n"),
@@ -435,7 +434,7 @@ function readView(value: RecordValue, args: unknown): ResultView {
 		details: resultDetails({
 			...metadata,
 			...(itemDetails.length ? { items: itemDetails } : {}),
-			...(guide && status !== "unknown_entry" && status !== "field_absent" ? { action: guide } : {}),
+			...(guide ? { action: guide } : {}),
 		}),
 		limit: asRecord(value.entry)?.truncated === true ? "[Stored source was truncated]" : undefined,
 		countLines: !Array.isArray(items),
@@ -558,7 +557,7 @@ function searchView(value: RecordValue, args: unknown): ResultView {
 	const gapAction = gapRecord ? stringField(gapRecord, "action") : "";
 	return {
 		outcome: searchOutcome(value, args),
-		body: [parts([gapId, gapAction]), ...records.map(({ body }) => body)].filter(Boolean).join("\n"),
+		body: [gapId, ...records.map(({ body }) => body)].filter(Boolean).join("\n"),
 		continuation: continuationCall("history_search", asRecord(next), args, [
 			"query",
 			"mode",
@@ -569,7 +568,11 @@ function searchView(value: RecordValue, args: unknown): ResultView {
 			"maxOutputBytes",
 		]),
 		limit: skippedValues(value.skipped),
-		details: resultDetails({ ...metadata, ...(notes.length ? { records: notes } : {}) }),
+		details: resultDetails({
+			...metadata,
+			...(gapAction ? { action: gapAction } : {}),
+			...(notes.length ? { records: notes } : {}),
+		}),
 	};
 }
 
