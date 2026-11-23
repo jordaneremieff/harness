@@ -262,7 +262,7 @@ test("ordinary mode source distinguishes flag, environment, file, and default", 
 		registerPolicy(adapter.pi);
 		const messages: string[] = [];
 		await adapter.command().handler("mode", {
-			mode: "tui",
+			mode: "rpc",
 			hasUI: true,
 			cwd: agentDir,
 			model: undefined,

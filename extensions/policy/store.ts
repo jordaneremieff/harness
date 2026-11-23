@@ -311,6 +311,7 @@ function lockAdvice(lock: TelemetryLockHolder | undefined): string {
 export interface TelemetryNotice {
 	readonly level: "info" | "warning" | "error";
 	readonly text: string;
+	readonly tuiText: string;
 }
 
 /** Shortest time between two stop notices of one writer. */
@@ -344,9 +345,11 @@ export class TelemetryNotices {
 			const uncertain = health.uncertainRecords
 				? ` ${health.uncertainRecords} record(s) of a failed batch may be partly stored and are not written again.`
 				: "";
+			const reason = health.reason ?? "unknown failure";
 			return {
 				level: "error",
-				text: `[policy] Telemetry persistence stopped: ${health.reason ?? "unknown failure"}. Rules still apply.${uncertain} The writer tries again by itself at growing intervals. Policy health shows the next attempt and the lost counts.`,
+				text: `[policy] Telemetry persistence stopped: ${reason}. Rules still apply.${uncertain} The writer tries again by itself at growing intervals. Policy health shows the next attempt and the lost counts.`,
+				tuiText: `Policy rules still apply after telemetry persistence stopped: ${reason}`,
 			};
 		}
 		this.stopped = false;
@@ -355,6 +358,7 @@ export class TelemetryNotices {
 			return {
 				level: "info",
 				text: "[policy] Telemetry persistence resumed: a batch reached storage. Policy health shows the lost counts.",
+				tuiText: "Policy telemetry persistence resumed after a batch reached storage.",
 			};
 		}
 		if (health.lostRecords === 0 || this.lossReported) return undefined;
@@ -362,6 +366,7 @@ export class TelemetryNotices {
 		return {
 			level: "warning",
 			text: `[policy] Telemetry dropped ${health.lostRecords} record(s). Rules still apply.${lockAdvice(health.lock)} Policy health shows the current counts.`,
+			tuiText: `Policy rules still apply after telemetry dropped ${health.lostRecords} ${health.lostRecords === 1 ? "record" : "records"}${health.lock ? ` while a writer holds ${health.lock.path}` : ""}.`,
 		};
 	}
 }

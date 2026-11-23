@@ -490,6 +490,33 @@ describe("panel command and shortcut", () => {
 		assert.equal(reads, 2, "a new frame reads again");
 	});
 
+	it("retains a command report until an open Policy panel closes", async () => {
+		const { pi, ctx, notifications } = await setup();
+		let report: Promise<void> | undefined;
+		let reportDrawn = false;
+		await driveFrame(
+			ctx,
+			() => pi.command().handler("", ctx as never),
+			async (frame) => {
+				if (frame.viewTitle === "Policy") {
+					await until(frame, /\d+ rules/);
+					report = pi.command().handler("mode", ctx as never);
+					await turn();
+					assert.equal(frame.viewTitle, "Policy");
+					assert.equal(reportDrawn, false);
+				} else {
+					assert.match(frameText(frame), /Policy report: \/policy mode/);
+					assert.match(frameText(frame), /applies no mechanism/);
+					reportDrawn = true;
+				}
+			},
+		);
+		assert.ok(report);
+		await report;
+		assert.equal(reportDrawn, true);
+		assert.deepEqual(notifications, []);
+	});
+
 	it("shows a registry read failure in the view, reports a UI failure, and opens again afterwards", async (t) => {
 		const { pi, ctx, notifications } = await setup();
 		const original = RuleRegistry.prototype.snapshot;
@@ -539,7 +566,7 @@ describe("panel command and shortcut", () => {
 		assert.equal(warn.mock.callCount(), 0, "a TUI session never receives a direct console write");
 		assert.equal(notifications.length, 3);
 		assert.deepEqual(notifications[2], { message: notifications[2].message, type: "error" });
-		assert.match(notifications[2].message, /^\[policy\] Invalid mode configuration: /);
+		assert.match(notifications[2].message, /^Policy mode configuration is invalid: /);
 		await assert.rejects(stat(dir), /ENOENT/);
 	});
 
@@ -603,9 +630,17 @@ describe("panel command and shortcut", () => {
 describe("telemetry operator command", () => {
 	it("reports an explicit date range without creating a rule or telemetry store", async () => {
 		const { dir, pi, ctx, notifications } = await setup();
-		await pi.command().handler("telemetry 2026-02-01 2026-02-02", ctx as never);
-		assert.match(notifications.at(-1)?.message ?? "", /2026-02-01 through 2026-02-02/);
-		assert.match(notifications.at(-1)?.message ?? "", /unavailable/);
+		await driveFrame(
+			ctx,
+			() => pi.command().handler("telemetry 2026-02-01 2026-02-02", ctx as never),
+			async (frame) => {
+				assert.match(frameText(frame), /Policy report: \/policy telemetry/);
+				assert.match(frameText(frame), /2026-02-01 through 2026-02-02/);
+				assert.match(frameText(frame), /unavailable/);
+			},
+		);
+		assert.deepEqual(notifications, []);
+		assert.deepEqual(pi.entries, []);
 		await assert.rejects(stat(dir), /ENOENT/);
 		assert.deepEqual(await pi.completions()("tele"), [{ value: "telemetry", label: "telemetry" }]);
 	});
@@ -619,7 +654,7 @@ describe("telemetry operator command", () => {
 			"telemetry 2026-01-01 2026-03-01",
 		]) {
 			await pi.command().handler(args, ctx as never);
-			assert.equal(notifications.at(-1)?.type, "error");
+			assert.equal(notifications.at(-1)?.type, args === "telemetry" ? "warning" : "error");
 		}
 		await assert.rejects(stat(dir), /ENOENT/);
 	});
@@ -643,7 +678,7 @@ describe("telemetry operator command", () => {
 describe("capabilities operator command", () => {
 	it("prints one page of the tool catalog and continues only from a valid cursor", async () => {
 		const { pi, ctx, notifications } = await setup();
-		await pi.command().handler("capabilities", ctx as never);
+		await pi.command().handler("capabilities", { ...ctx, mode: "rpc" } as never);
 		const page = JSON.parse(notifications.at(-1)?.message ?? "") as {
 			schemas: { tools: Array<{ name: string }> };
 			page: { nextCursor: string | null; total: number };
@@ -669,9 +704,16 @@ describe("unified tools and command gates", () => {
 		const { dir, pi, ctx, notifications } = await setup("enforce");
 		const command = pi.command();
 		const input = { tool: "read", input: { path: "sample.txt" }, result: { isError: false } };
-		await command.handler(`preview ${JSON.stringify(input)}`, ctx as never);
-		assert.equal(notifications.at(-1)?.type, "info");
-		assert.match(notifications.at(-1)?.message ?? "", /"preview": true/);
+		await driveFrame(
+			ctx,
+			() => command.handler(`preview ${JSON.stringify(input)}`, ctx as never),
+			async (frame) => {
+				assert.match(frameText(frame), /Policy report: \/policy preview/);
+				assert.match(frameText(frame), /"preview": true/);
+			},
+		);
+		assert.deepEqual(notifications, []);
+		assert.deepEqual(pi.entries, []);
 		const before = await storedEvents(dir);
 		for (const invalid of [
 			null,
@@ -712,7 +754,7 @@ describe("unified tools and command gates", () => {
 			expectedRevision: null,
 			data: { name: "rooms", kind: "table", source: "test", capturedAt: 1, rows: [{ key: "lobby", value: "1" }] },
 		};
-		await command.handler(`data set ${JSON.stringify(artifact)}`, ctx as never);
+		await command.handler(`data set ${JSON.stringify(artifact)}`, { ...ctx, mode: "rpc" } as never);
 		const approval = (notifications.at(-1)?.message ?? "").match(/\/policy data set (.+)/)?.[1];
 		assert.ok(approval);
 		await command.handler(`data set ${approval}`, ctx as never);
@@ -1325,14 +1367,25 @@ describe("unified tools and command gates", () => {
 	it("lists exact help and rejects state mutation through the inspection verb", async () => {
 		const { pi, ctx, notifications } = await setup();
 		const command = pi.command();
-		await command.handler("help", ctx as never);
-		const usage = notifications.at(-1)?.message ?? "";
-		assert.match(usage, /\/policy disable <id> <reason\.\.\.>/);
-		assert.match(usage, /\/policy enable <id> <reason\.\.\.>/);
-		assert.match(usage, /\/policy retire <id> <reason\.\.\.>/);
-		assert.doesNotMatch(usage, /\/policy state/);
+		await driveFrame(
+			ctx,
+			() => command.handler("help", ctx as never),
+			async (frame) => {
+				const top = frame.render(72);
+				assert.ok(top.length <= 40);
+				assert.match(top[0], /Policy report: \/policy help/);
+				assert.match(top.join("\n"), /\/policy disable <id> <reason\.\.\.>/);
+				assert.match(top.join("\n"), /\/policy enable <id> <reason\.\.\.>/);
+				assert.match(top.join("\n"), /\/policy retire <id> <reason\.\.\.>/);
+				assert.ok(frame.viewActions.some((action) => action.label === "Copy report"));
+				frame.handleInput(PAGE_DOWN);
+				assert.match(frame.render(72).slice(1).join("\n"), /Show this usage/);
+			},
+		);
+		assert.deepEqual(notifications, []);
+		assert.deepEqual(pi.entries, []);
 		await command.handler("state routing.cat-read active", ctx as never);
-		assert.match(notifications.at(-1)?.message ?? "", /Usage: \/policy state/);
+		assert.deepEqual(notifications.at(-1), { message: "Usage: /policy state", type: "warning" });
 	});
 });
 
@@ -1481,7 +1534,7 @@ describe("dispatch and telemetry", () => {
 		}
 		await pi.emit("session_shutdown", {}, ctx);
 		assert.equal(notifications.filter((entry) => /rule store unreadable/i.test(entry.message)).length, 1);
-		assert.equal(notifications.filter((entry) => /\[policy\] routing\.cat-read/.test(entry.message)).length, 0);
+		assert.equal(notifications.filter((entry) => /Policy matched .*routing\.cat-read/.test(entry.message)).length, 0);
 		const records = await telemetry(dir);
 		assert.equal(records.length, 3);
 		assert.ok(records.every((record) => record.ruleStoreDegraded === true));

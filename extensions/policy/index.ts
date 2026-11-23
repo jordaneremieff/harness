@@ -108,6 +108,9 @@ const MODE_EFFECT: Readonly<Record<PolicyMode, string>> = {
 function failureText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
+function noticeLine(text: string): string {
+	return text.replace(/\s+/g, " ").trim();
+}
 function scope(ctx: ExtensionContext) {
 	return {
 		...(ctx.model ? { provider: ctx.model.provider, model: `${ctx.model.provider}/${ctx.model.id}` } : {}),
@@ -258,8 +261,10 @@ function completionChoicesForPosition(
 	return [];
 }
 
+type CommandLevel = "info" | "warning" | "error";
+
 interface PolicyCommandEnv {
-	output: (ctx: ExtensionContext, text: string, error?: boolean) => void;
+	output: (ctx: ExtensionContext, text: string, level?: CommandLevel) => Promise<void>;
 	loadRegistry: (ctx?: ExtensionContext) => Promise<RuleSnapshot>;
 	registry: RuleRegistry;
 	runtime: PolicyRuntime;
@@ -359,38 +364,38 @@ async function policyTelemetryVerb(
 	parts: string[],
 ): Promise<void> {
 	if (parts.length !== 2 && parts.length !== 3) {
-		env.output(
+		await env.output(
 			ctx,
 			"Usage: /policy telemetry <from YYYY-MM-DD> <to YYYY-MM-DD> [cursor] (inclusive, at most 31 days)",
-			true,
+			"warning",
 		);
 		return;
 	}
 	const request = { from: parts[0], to: parts[1], ...(parts[2] === undefined ? {} : { cursor: parts[2] }) };
-	env.output(
+	await env.output(
 		ctx,
 		formatTelemetry(await readTelemetryPage(env.dir, request, { health: env.runtime.telemetryHealth() })),
 	);
 }
 
-function policyHelpVerb(env: PolicyCommandEnv, ctx: ExtensionCommandContext): void {
-	env.output(ctx, POLICY_USAGE);
+async function policyHelpVerb(env: PolicyCommandEnv, ctx: ExtensionCommandContext): Promise<void> {
+	await env.output(ctx, POLICY_USAGE);
 }
 
-function policyModeVerb(
+async function policyModeVerb(
 	env: PolicyCommandEnv,
 	ctx: ExtensionCommandContext,
 	_verb: string,
 	parts: string[],
 	_trimmed: string,
 	snapshot: RuleSnapshot,
-): void {
+): Promise<void> {
 	if (parts.length) {
-		env.output(ctx, "Usage: /policy mode", true);
+		await env.output(ctx, "Usage: /policy mode", "warning");
 		return;
 	}
 	const { mode, source } = env.modeText();
-	env.output(
+	await env.output(
 		ctx,
 		`${mode} (${source})\n${MODE_EFFECT[mode]}\n${
 			snapshot.health.status === "degraded"
@@ -409,10 +414,10 @@ async function policyListVerb(
 	snapshot: RuleSnapshot,
 ): Promise<void> {
 	if (parts.length) {
-		env.output(ctx, "Usage: /policy list", true);
+		await env.output(ctx, "Usage: /policy list", "warning");
 		return;
 	}
-	env.output(ctx, formatPolicyList({ snapshot, fireSummary: await readFireSummary(env.dir) }));
+	await env.output(ctx, formatPolicyList({ snapshot, fireSummary: await readFireSummary(env.dir) }));
 }
 
 async function policyShowVerb(
@@ -424,12 +429,17 @@ async function policyShowVerb(
 	snapshot: RuleSnapshot,
 ): Promise<void> {
 	if (parts.length !== 1) {
-		env.output(ctx, "Usage: /policy show <id-or-proposal-id>", true);
+		await env.output(ctx, "Usage: /policy show <id-or-proposal-id>", "warning");
 		return;
 	}
 	const shown = formatPolicyShow({ snapshot, fireSummary: await readFireSummary(env.dir) }, parts[0], scope(ctx));
-	if (shown) env.output(ctx, shown);
-	else env.output(ctx, ruleAbsenceMessage(snapshot.health, `No rule or pending proposal named "${parts[0]}".`), true);
+	if (shown) await env.output(ctx, shown);
+	else
+		await env.output(
+			ctx,
+			ruleAbsenceMessage(snapshot.health, `No rule or pending proposal named "${parts[0]}".`),
+			"warning",
+		);
 }
 
 async function policyInspectVerb(
@@ -442,14 +452,14 @@ async function policyInspectVerb(
 ): Promise<void> {
 	if (verb === "capabilities" && parts.length <= 1) {
 		const capabilities = (await env.runtime.inspect(verb, {}, ctx)) as PolicyCapabilities;
-		env.output(ctx, capabilitiesPage(capabilities, parts[0], COMMAND_PAGE_BYTES).text);
+		await env.output(ctx, capabilitiesPage(capabilities, parts[0], COMMAND_PAGE_BYTES).text);
 		return;
 	}
 	if (parts.length) {
-		env.output(ctx, `Usage: /policy ${verb}${verb === "capabilities" ? " [cursor]" : ""}`, true);
+		await env.output(ctx, `Usage: /policy ${verb}${verb === "capabilities" ? " [cursor]" : ""}`, "warning");
 		return;
 	}
-	env.output(ctx, JSON.stringify(await env.runtime.inspect(verb, {}, ctx), null, 2));
+	await env.output(ctx, JSON.stringify(await env.runtime.inspect(verb, {}, ctx), null, 2));
 }
 
 async function policyExplainVerb(
@@ -461,10 +471,10 @@ async function policyExplainVerb(
 	_snapshot: RuleSnapshot,
 ): Promise<void> {
 	if (parts.length !== 1) {
-		env.output(ctx, "Usage: /policy explain <rule-id|call:call-id>", true);
+		await env.output(ctx, "Usage: /policy explain <rule-id|call:call-id>", "warning");
 		return;
 	}
-	env.output(ctx, JSON.stringify(await env.runtime.inspect("explain", { id: parts[0] }, ctx), null, 2));
+	await env.output(ctx, JSON.stringify(await env.runtime.inspect("explain", { id: parts[0] }, ctx), null, 2));
 }
 
 async function policyPreviewVerb(
@@ -483,7 +493,7 @@ async function policyPreviewVerb(
 	if (params.view !== undefined && params.view !== "preview")
 		throw new Error("The preview command requires view preview");
 	validateInspectionParams({ ...params, view: "preview" });
-	env.output(ctx, JSON.stringify(await env.runtime.inspect("preview", params, ctx), null, 2));
+	await env.output(ctx, JSON.stringify(await env.runtime.inspect("preview", params, ctx), null, 2));
 }
 
 async function policyResetVerb(
@@ -505,10 +515,10 @@ async function policyResetVerb(
 	if (!completed) return env.output(ctx, "Policy reset canceled. No observation periods changed.");
 	parts = completed;
 	if (parts.length < 2) {
-		env.output(ctx, "Usage: /policy reset <id|--all> <reason...>", true);
+		await env.output(ctx, "Usage: /policy reset <id|--all> <reason...>", "warning");
 		return;
 	}
-	env.output(ctx, await applyReset(env, ctx, parts[0], parts.slice(1).join(" "), revision));
+	await env.output(ctx, await applyReset(env, ctx, parts[0], parts.slice(1).join(" "), revision));
 }
 
 /** Start a new observation period for one rule or all rules; the revision pins the admitted period. */
@@ -524,19 +534,19 @@ async function applyReset(
 	return "Started a new policy observation period.";
 }
 
-function policyCatalogVerb(
+async function policyCatalogVerb(
 	env: PolicyCommandEnv,
 	ctx: ExtensionCommandContext,
 	_verb: string,
 	parts: string[],
 	_trimmed: string,
 	_snapshot: RuleSnapshot,
-): void {
+): Promise<void> {
 	if (parts.length > 1) {
-		env.output(ctx, "Usage: /policy catalog [id]", true);
+		await env.output(ctx, "Usage: /policy catalog [id]", "warning");
 		return;
 	}
-	env.output(ctx, formatCatalog(env.registry, parts[0]));
+	await env.output(ctx, formatCatalog(env.registry, parts[0]));
 }
 
 async function policyImportVerb(
@@ -560,7 +570,7 @@ async function policyImportVerb(
 		env.reviewArtifact(ctx, title, artifact),
 	);
 	await env.loadRegistry(ctx);
-	env.output(ctx, text);
+	await env.output(ctx, text);
 }
 
 async function dataArguments(
@@ -597,7 +607,7 @@ async function policyDataVerb(
 		ctx.cwd,
 	);
 	await env.loadRegistry(ctx);
-	env.output(ctx, text);
+	await env.output(ctx, text);
 }
 
 function exactApprovalArguments(parts: string[]): { revision: string } | string {
@@ -689,7 +699,7 @@ async function approvalParts(
 	const interactive = ctx.mode === "tui" && ctx.hasUI;
 	if (parts.length > 1 && !(missingRevision && interactive)) return parts;
 	if (!interactive) {
-		env.output(ctx, proposalCommands(proposal));
+		await env.output(ctx, proposalCommands(proposal));
 		return undefined;
 	}
 	const effect =
@@ -699,7 +709,7 @@ async function approvalParts(
 		(await env.reviewArtifact(ctx, `Approve ${proposal.ruleId} as ${effect}`, JSON.stringify(proposal, null, 2)))
 	)
 		return [proposal.id, effect, proposalRevision(proposal)];
-	env.output(ctx, "Policy approval canceled. No rules changed.");
+	await env.output(ctx, "Policy approval canceled. No rules changed.");
 	return undefined;
 }
 
@@ -712,7 +722,7 @@ async function policyApproveVerb(
 	snapshot: RuleSnapshot,
 ): Promise<void> {
 	if (parts.length > 3) {
-		env.output(ctx, "Usage: /policy approve <proposal-id> [steer|block|exact <revision>]", true);
+		await env.output(ctx, "Usage: /policy approve <proposal-id> [steer|block|exact <revision>]", "warning");
 		return;
 	}
 	const proposal = await selectProposal(ctx, snapshot, parts[0], "Approve");
@@ -721,7 +731,7 @@ async function policyApproveVerb(
 	if (!resolvedParts) return;
 	const decision = approveArguments(resolvedParts, proposal);
 	if (typeof decision === "string") {
-		env.output(ctx, decision, true);
+		await env.output(ctx, decision, "warning");
 		return;
 	}
 	await env.registry.decide(
@@ -732,7 +742,7 @@ async function policyApproveVerb(
 		decision.revision ?? proposalRevision(proposal),
 	);
 	await env.loadRegistry(ctx);
-	env.output(ctx, `Approved ${proposal.operation} proposal ${proposal.id} for ${proposal.ruleId}.`);
+	await env.output(ctx, `Approved ${proposal.operation} proposal ${proposal.id} for ${proposal.ruleId}.`);
 }
 
 async function policyRejectVerb(
@@ -743,7 +753,7 @@ async function policyRejectVerb(
 	_trimmed: string,
 	snapshot: RuleSnapshot,
 ): Promise<void> {
-	if (parts.length > 2) return env.output(ctx, "Usage: /policy reject [rule-name|proposal-id] [revision]", true);
+	if (parts.length > 2) return env.output(ctx, "Usage: /policy reject [rule-name|proposal-id] [revision]", "warning");
 	const proposal = await selectProposal(ctx, snapshot, parts[0], "Reject");
 	if (!proposal) return env.output(ctx, pendingSelectionText(snapshot, parts[0]));
 	await env.registry.decide(
@@ -754,7 +764,7 @@ async function policyRejectVerb(
 		parts[1] ?? proposalRevision(proposal),
 	);
 	await env.loadRegistry(ctx);
-	env.output(ctx, `Rejected ${proposal.operation} proposal for ${proposal.ruleId}.`);
+	await env.output(ctx, `Rejected ${proposal.operation} proposal for ${proposal.ruleId}.`);
 }
 
 function validateControlTarget(
@@ -841,11 +851,14 @@ async function policyLifecycleVerb(
 	if (!completed) return env.output(ctx, "Policy control canceled. No rules changed.");
 	parts = completed;
 	if (parts.length < 2) {
-		env.output(ctx, `Usage: /policy ${verb} <id> <reason...>`, true);
+		await env.output(ctx, `Usage: /policy ${verb} <id> <reason...>`, "warning");
 		return;
 	}
 	const [id, ...reasons] = parts;
-	env.output(ctx, await applyLifecycle(env, ctx, verb, id, reasons.join(" "), makeRuleAudit(ctx, "command"), snapshot));
+	await env.output(
+		ctx,
+		await applyLifecycle(env, ctx, verb, id, reasons.join(" "), makeRuleAudit(ctx, "command"), snapshot),
+	);
 }
 
 /** Disable, enable, or retire one rule against the target identity the operator saw. */
@@ -878,10 +891,10 @@ async function policyEffectVerb(
 	if (!completed) return env.output(ctx, "Policy control canceled. No rules changed.");
 	parts = completed;
 	if (parts.length < 3 || (parts[1] !== "steer" && parts[1] !== "block")) {
-		env.output(ctx, "Usage: /policy effect <id> <steer|block> <reason...>", true);
+		await env.output(ctx, "Usage: /policy effect <id> <steer|block> <reason...>", "warning");
 		return;
 	}
-	env.output(
+	await env.output(
 		ctx,
 		await applyEffect(env, ctx, parts[0], parts[1], parts.slice(2).join(" "), makeRuleAudit(ctx, "command"), snapshot),
 	);
@@ -913,33 +926,37 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	 * wait for a session context, then use its UI, or stderr when the session has none.
 	 */
 	let noticeContext: ExtensionContext | undefined;
-	const heldNotices: { text: string; level: "warning" | "error" }[] = [];
-	const report = (text: string, level: "warning" | "error"): void => {
+	type StartupNotice = { text: string; level: "warning" | "error"; tuiText?: string };
+	const heldNotices: StartupNotice[] = [];
+	const report = ({ text, level, tuiText = text }: StartupNotice): void => {
 		try {
-			const safe = terminalSafe(text);
 			if (!noticeContext) {
-				if (heldNotices.length < HELD_NOTICE_LIMIT) heldNotices.push({ text: safe, level });
+				if (heldNotices.length < HELD_NOTICE_LIMIT) heldNotices.push({ text, level, tuiText });
 				return;
 			}
-			if (noticeContext.hasUI) noticeContext.ui.notify(safe, level);
-			else process.stderr.write(`${safe}\n`);
+			const safe = terminalSafe(text);
+			if (noticeContext.hasUI) {
+				const message = noticeContext.mode === "tui" ? noticeLine(terminalSafe(tuiText)) : safe;
+				noticeContext.ui.notify(message, level);
+			} else process.stderr.write(`${safe}\n`);
 		} catch {
 			/* Reporting has no authority. */
 		}
 	};
 	const bindNotices = (ctx: ExtensionContext): void => {
 		noticeContext = ctx;
-		for (const held of heldNotices.splice(0)) report(held.text, held.level);
+		for (const held of heldNotices.splice(0)) report(held);
 	};
 	pi.on("session_start", (_event, ctx) => bindNotices(ctx));
 	for (const diagnostic of configured.diagnostics) {
-		report(`[policy] ${diagnostic.field} (${diagnostic.source}): ${diagnostic.message}`, "warning");
+		const detail = `${diagnostic.field} (${diagnostic.source}): ${diagnostic.message}`;
+		report({ text: `[policy] ${detail}`, level: "warning", tuiText: `Policy setting ${detail}` });
 	}
 	const disposeSettings = publishSettings(eventBus, { agentDir });
 	let frame: Frame | undefined;
-	let opening: AbortController | undefined;
+	let opening: { controller: AbortController; closed: Promise<void> } | undefined;
 	pi.on("session_shutdown", () => {
-		opening?.abort();
+		opening?.controller.abort();
 		frame?.close();
 		disposeSettings();
 	});
@@ -967,7 +984,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	};
 	const registry = new RuleRegistry(dir, {
 		onNotice(message) {
-			report(message, "error");
+			report({ text: message, level: "error" });
 		},
 	});
 	let completionSnapshot: RuleSnapshot | undefined;
@@ -1002,7 +1019,11 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 			}
 		} catch (error) {
 			valid = false;
-			report(`[policy] Invalid mode configuration: ${failureText(error)}`, "error");
+			report({
+				text: `[policy] Invalid mode configuration: ${failureText(error)}`,
+				level: "error",
+				tuiText: `Policy mode configuration is invalid: ${failureText(error)}`,
+			});
 		}
 		return valid;
 	};
@@ -1038,18 +1059,22 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	/** One editor slot for Policy. Hold it during the imports as well as while the view is open. */
 	const openPolicyFrame = async (
 		ctx: ExtensionContext,
-		makeView: (module: typeof import("./operator-view.ts")) => (host: ViewHost) => View,
+		makeView: () => Promise<(host: ViewHost) => View>,
 		expanded = false,
 	): Promise<void> => {
 		if (opening) return;
 		const controller = new AbortController();
-		opening = controller;
+		let close!: () => void;
+		const closed = new Promise<void>((resolve) => {
+			close = resolve;
+		});
+		opening = { controller, closed };
 		try {
-			const [{ openFrame }, module] = await Promise.all([import("./frame.ts"), import("./operator-view.ts")]);
+			const [{ openFrame }, view] = await Promise.all([import("./frame.ts"), makeView()]);
 			if (!controller.signal.aborted)
 				await openFrame(
 					ctx,
-					makeView(module),
+					view,
 					(current) => {
 						frame = current;
 					},
@@ -1057,17 +1082,47 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 				);
 		} finally {
 			opening = undefined;
+			close();
 		}
 	};
 	const browse = (ctx: ExtensionContext) =>
-		openPolicyFrame(ctx, (module) => {
+		openPolicyFrame(ctx, async () => {
+			const module = await import("./operator-view.ts");
 			const id = ctx.sessionManager.getSessionId();
 			const state = viewStates.get(id) ?? module.createPolicyViewState();
 			viewStates.set(id, state);
 			return (host) => module.policyView(host, ordinaryOperations(commandEnv, ctx), state);
 		});
-	const output = (ctx: ExtensionContext, text: string, error = false): void => {
+	const showReport = async (ctx: ExtensionContext, text: string, verb?: string): Promise<void> => {
+		try {
+			while (opening) {
+				const previous = opening;
+				await previous.closed;
+				if (previous.controller.signal.aborted) return;
+			}
+			const title = verb ? `Policy report: /policy ${verb}` : "Policy report";
+			await openPolicyFrame(ctx, async () => {
+				const { CommandReport } = await import("./reader.ts");
+				return (host) => new CommandReport(title, host, text);
+			});
+		} catch (error) {
+			ctx.ui.notify(noticeLine(`Policy report did not open: ${terminalSafe(failureText(error))}`), "error");
+		}
+	};
+	const output = async (
+		ctx: ExtensionContext,
+		text: string,
+		level: CommandLevel = "info",
+		verb?: string,
+	): Promise<void> => {
 		const safe = capText(terminalSafe(text), 32768);
+		if (ctx.mode === "tui" && ctx.hasUI) {
+			if (/[\r\n]/.test(safe)) return showReport(ctx, safe, verb);
+			ctx.ui.notify(noticeLine(safe), level);
+			return;
+		}
+		// RPC and print retain their existing failure channel for usage and refused requests.
+		const error = level !== "info";
 		if (ctx.hasUI) {
 			ctx.ui.notify(safe, error ? "error" : "info");
 			return;
@@ -1088,8 +1143,9 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		let approved = false;
 		await openPolicyFrame(
 			ctx,
-			({ ArtifactReview }) =>
-				(host) =>
+			async () => {
+				const { ArtifactReview } = await import("./operator-view.ts");
+				return (host) =>
 					new ArtifactReview({
 						host,
 						title,
@@ -1100,19 +1156,20 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 							approved = decision;
 							host.close();
 						},
-					}),
+					});
+			},
 			true,
 		);
 		return approved;
 	};
 	const openPanel = async (ctx: ExtensionContext): Promise<void> => {
 		try {
-			if (!ensureMode()) return output(ctx, "Policy is stopped because its mode configuration is invalid.", true);
+			if (!ensureMode()) return output(ctx, "Policy is stopped because its mode configuration is invalid.", "error");
 			if (ctx.mode !== "tui" || !ctx.hasUI)
-				return output(ctx, "The policy view requires TUI mode. Run: /policy list", true);
+				return output(ctx, "The policy view requires TUI mode. Run: /policy list", "warning");
 			await browse(ctx);
 		} catch (error) {
-			output(ctx, `Policy registry action failed: ${failureText(error)}`, true);
+			return output(ctx, `Policy registry action failed: ${failureText(error)}`, "error");
 		}
 	};
 	pi.registerShortcut("ctrl+alt+p", {
@@ -1176,17 +1233,24 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		},
 		async handler(args, ctx) {
 			if (!args.trim()) return openPanel(ctx);
-			if (!ensureMode()) return output(ctx, "Policy is stopped because its mode configuration is invalid.", true);
+			if (!ensureMode()) return output(ctx, "Policy is stopped because its mode configuration is invalid.", "error");
 			try {
 				const trimmed = args.trim();
 				const [verb = "", ...parts] = trimmed.split(/\s+/);
-				if (verb === "telemetry") return await policyTelemetryVerb(commandEnv, ctx, parts);
+				const env =
+					verb === "telemetry" || Object.hasOwn(POLICY_VERB_HANDLERS, verb)
+						? {
+								...commandEnv,
+								output: (ctx: ExtensionContext, text: string, level?: CommandLevel) => output(ctx, text, level, verb),
+							}
+						: commandEnv;
+				if (verb === "telemetry") return await policyTelemetryVerb(env, ctx, parts);
 				const snapshot = await loadRegistry(ctx);
 				const run = POLICY_VERB_HANDLERS[verb];
-				if (run) return await run(commandEnv, ctx, verb, parts, trimmed, snapshot);
-				return output(ctx, `Unknown /policy action "${verb}". Use /policy help.`, true);
+				if (Object.hasOwn(POLICY_VERB_HANDLERS, verb)) return await run(env, ctx, verb, parts, trimmed, snapshot);
+				return output(ctx, `Unknown /policy action "${verb}". Use /policy help.`, "warning");
 			} catch (error) {
-				return output(ctx, `Policy registry action failed: ${failureText(error)}`, true);
+				return output(ctx, `Policy registry action failed: ${failureText(error)}`, "error");
 			}
 		},
 	});

@@ -1,4 +1,4 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, type Theme } from "@earendil-works/pi-coding-agent";
 import {
 	matchesKey,
 	truncateToWidth,
@@ -7,7 +7,8 @@ import {
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import { HitMap } from "./hits.ts";
-import { fitLine, type KeyHint, type View, type ViewHost } from "./frame.ts";
+import { type Action, fitLine, type KeyHint, type View, type ViewHost } from "./frame.ts";
+import { terminalSafe } from "./panel.ts";
 
 /** Display lines passed to Reader are already laid out, including exact review artifacts. */
 type ReaderContent = string | readonly string[];
@@ -173,5 +174,31 @@ export class ReaderView implements View {
 			{ keys: ["up", "down"], label: "scroll" },
 			{ keys: ["pageUp", "pageDown"], label: "page" },
 		];
+	}
+}
+
+/** Copy the report source so terminal wrapping does not split exact commands or cursors. */
+export class CommandReport extends ReaderView {
+	private readonly copyAction: Action;
+
+	constructor(title: string, host: ViewHost, source: string) {
+		const body = source.replace(/\r\n?/g, "\n").replaceAll("\t", "   ");
+		super(title, host, () => body);
+		this.copyAction = {
+			id: "copy",
+			label: "Copy report",
+			key: "c",
+			primary: true,
+			run: () => {
+				void copyToClipboard(source).then(
+					() => host.notify("Policy report sent to the clipboard.", "info"),
+					(error: unknown) => host.notify(`Policy report copy failed: ${terminalSafe(String(error))}`, "error"),
+				);
+			},
+		};
+	}
+
+	actions(): readonly Action[] {
+		return [this.copyAction];
 	}
 }

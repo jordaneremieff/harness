@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import type { NamedData } from "./data.ts";
+import type { Frame } from "./frame.ts";
 import registerPolicy from "./index.ts";
 import { MAX_RULE_EVENT_BYTES, namedDataRevision, RuleRegistry } from "./local-rules.ts";
 import { terminalSafe } from "./panel.ts";
@@ -57,9 +58,28 @@ async function setup(t: TestContext, mode: "tui" | "json" = "tui") {
 			notify(text: string, type?: string) {
 				messages.push({ text, type });
 			},
-			async custom() {
-				confirmations++;
-				return false;
+			async custom(factory: (...args: unknown[]) => Frame) {
+				const width = presentationLimit + 80;
+				const frame = factory(
+					{ terminal: { rows: 10, columns: width }, requestRender() {} },
+					{ fg: (_colour: string, text: string) => text, bold: (text: string) => text },
+					{ getKeys: () => [] },
+					() => {},
+				);
+				if (frame.viewTitle === "Policy report: /policy data") {
+					assert.ok(frame.viewActions.some((action) => action.label === "Copy report"));
+					const text = frame
+						.render(width)
+						.slice(1, -1)
+						.map((line) => line.trimEnd())
+						.join("\n")
+						.trimEnd();
+					messages.push({ text });
+				} else {
+					assert.equal(frame.viewTitle, "Approve policy data");
+					confirmations++;
+				}
+				frame.close();
 			},
 			async confirm() {
 				confirmations++;

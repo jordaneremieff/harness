@@ -101,6 +101,7 @@ function fixture(
 	};
 	const records: PolicyRecord[] = [];
 	const notifications: string[] = [];
+	const noticeLevels: string[] = [];
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
 	const failures: string[] = [];
 	const writer = new PolicyWriter(
@@ -124,7 +125,12 @@ function fixture(
 		model: { provider: "test", id: "model" },
 		sessionManager: session,
 		getSystemPrompt: () => "",
-		ui: { notify: (text: string) => notifications.push(text) },
+		ui: {
+			notify: (text: string, level: string) => {
+				notifications.push(text);
+				noticeLevels.push(level);
+			},
+		},
 	} as unknown as ExtensionContext;
 	const pi = {
 		getAllTools: () => [{ name: toolName, parameters: schema }],
@@ -258,6 +264,7 @@ function fixture(
 		writer,
 		ctx,
 		notifications,
+		noticeLevels,
 		handlers,
 		failures,
 		setMode: (next: PolicyMode) => {
@@ -1755,10 +1762,10 @@ describe("persistent context guidance placement", () => {
 		assert.equal(health.guidance.status, "capacity");
 		assert.equal(health.guidance.records, GUIDANCE_HISTORY_LIMITS.records);
 		assert.ok(health.guidance.retainedBytes > 0);
-		const noticesBefore = f.notifications.filter((text) => text.includes("Guidance history is full")).length;
+		const noticesBefore = f.notifications.filter((text) => text.includes("Policy guidance history is full")).length;
 		assert.equal(noticesBefore, 1);
 		await f.project();
-		assert.equal(f.notifications.filter((text) => text.includes("Guidance history is full")).length, 1);
+		assert.equal(f.notifications.filter((text) => text.includes("Policy guidance history is full")).length, 1);
 		await f.writer.close();
 	});
 
@@ -2282,6 +2289,20 @@ describe("input transactions and modes", () => {
 			assert.equal(f.records[0].error, false);
 			assert.equal(f.notifications.length > 0, mode === "notice");
 		});
+	it("distinguishes tool and context matches from enforcement in notice mode", async () => {
+		const f = fixture([rename(), repeatableGuide()], "notice");
+		const input = { old: "unchanged" };
+		assert.equal(await f.call("a", input), undefined);
+		assert.deepEqual(input, { old: "unchanged" });
+		assert.equal(await f.contextText(), undefined);
+		await f.result("a");
+		await f.finish("a");
+		await f.writer.close();
+		assert.equal(f.notifications.length, 2);
+		assert.match(f.notifications[0], /^Policy matched tool rules without enforcement: /);
+		assert.equal(f.notifications[1], "Policy matched context rules without enforcement: context.guide");
+		assert.deepEqual(f.noticeLevels, ["info", "info"]);
+	});
 	it("checks observational effective predicates against actual arguments", async () => {
 		const denial = rule("effective", {
 			phase: "input",
@@ -2976,7 +2997,7 @@ describe("telemetry health reporting", () => {
 		assert.equal(f.notifications[0].level, "warning");
 		assert.match(
 			f.notifications[0].text,
-			/^\[policy\] Telemetry dropped \d record\(s\).*telemetry\/\.telemetry-writer\.lock in the policy directory/,
+			/^Policy rules still apply after telemetry dropped 1 record while a writer holds .*telemetry\/\.telemetry-writer\.lock\.$/,
 		);
 		assert.deepEqual(f.terminal, []);
 	});
@@ -2988,7 +3009,7 @@ describe("telemetry health reporting", () => {
 		assert.equal((await f.health()).state, "failed");
 		assert.equal(f.notifications.length, 1);
 		assert.equal(f.notifications[0].level, "error");
-		assert.match(f.notifications[0].text, /^\[policy\] Telemetry persistence stopped: /);
+		assert.match(f.notifications[0].text, /^Policy rules still apply after telemetry persistence stopped: [^\r\n]+$/);
 		assert.deepEqual(f.terminal, []);
 	});
 

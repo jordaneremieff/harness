@@ -402,9 +402,13 @@ export class PolicyRuntime {
 			const hasUI = ctx.hasUI;
 			const notice = this.telemetryNotices.next(health);
 			if (!notice) return;
-			const text = terminalSafe(notice.text);
-			if (hasUI) ctx.ui.notify(text, notice.level);
-			else process.stderr.write(`${text}\n`);
+			if (hasUI && ctx.mode === "tui") {
+				ctx.ui.notify(terminalSafe(notice.tuiText).replace(/\s+/g, " ").trim(), notice.level);
+			} else {
+				const text = terminalSafe(notice.text);
+				if (hasUI) ctx.ui.notify(text, notice.level);
+				else process.stderr.write(`${text}\n`);
+			}
 		} catch {
 			/* Reporting has no policy authority. */
 		}
@@ -693,7 +697,7 @@ export class PolicyRuntime {
 		if (this.effectiveMode() !== "notice" || ctx.mode !== "tui" || !call.classes.length || call.effects.notified)
 			return;
 		try {
-			ctx.ui.notify(`[policy] ${call.classes.join(", ")}`, "warning");
+			ctx.ui.notify(`Policy matched tool rules without enforcement: ${call.classes.join(", ")}`, "info");
 			call.effects.notified = true;
 		} catch {
 			/* Notice failure does not cancel a decision. */
@@ -1151,13 +1155,13 @@ export class PolicyRuntime {
 			status === "capacity"
 				? this.guidanceLedger.records.length > GUIDANCE_HISTORY_LIMITS.records ||
 					this.guidanceLedger.retainedBytes > GUIDANCE_HISTORY_LIMITS.bytes
-					? "Guidance history exceeds its limits; guidance projection is paused without discarding records."
-					: "Guidance history is full; earlier guidance keeps its place and new context guidance is refused."
+					? "Policy guidance history exceeds its limits; guidance projection is paused without discarding records."
+					: "Policy guidance history is full; earlier guidance keeps its place and new context guidance is refused."
 				: status === "anchor-mismatch"
-					? "Guidance history cannot place an earlier notice; new context guidance is paused."
-					: "Guidance history could not persist a notice; its allowance is unchanged.";
+					? "Policy guidance history cannot place an earlier notice; new context guidance is paused."
+					: "Policy guidance history could not persist a notice; its allowance is unchanged.";
 		try {
-			ctx.ui.notify(`[policy] ${text}`, "warning");
+			ctx.ui.notify(text, "warning");
 		} catch {
 			/* Reporting guidance health does not change policy decisions. */
 		}
@@ -1183,7 +1187,7 @@ export class PolicyRuntime {
 			.map((entry) => entry.id);
 		if (!ids.length) return;
 		try {
-			ctx.ui.notify(`[policy] ${ids.join(", ")}`, "warning");
+			ctx.ui.notify(`Policy matched context rules without enforcement: ${ids.join(", ")}`, "info");
 		} catch {
 			/* Notice does not change guidance state. */
 		}
